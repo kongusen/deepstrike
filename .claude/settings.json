@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git remote *)",
+      "Bash(git branch *)",
+      "Bash(git push *)",
+      "Bash(sed -i '' 's/\"version\": \"0.1.0\"/\"version\": \"0.1.1\"/' /Users/shan/work/uploads/deepstrike/crates/deepstrike-node/package.json /Users/shan/work/uploads/deepstrike/node/package.json /Users/shan/work/uploads/deepstrike/wasm/package.json)",
+      "Bash(sed -i '' 's/core-darwin-arm64\": \"0.1.0\"/core-darwin-arm64\": \"0.1.1\"/' /Users/shan/work/uploads/deepstrike/crates/deepstrike-node/package.json)",
+      "Bash(sed -i '' 's/core-darwin-x64\": \"0.1.0\"/core-darwin-x64\": \"0.1.1\"/' /Users/shan/work/uploads/deepstrike/crates/deepstrike-node/package.json)",
+      "Bash(sed -i '' 's/core-linux-x64-gnu\": \"0.1.0\"/core-linux-x64-gnu\": \"0.1.1\"/' /Users/shan/work/uploads/deepstrike/crates/deepstrike-node/package.json)",
+      "Bash(sed -i '' 's/core-linux-arm64-gnu\": \"0.1.0\"/core-linux-arm64-gnu\": \"0.1.1\"/' /Users/shan/work/uploads/deepstrike/crates/deepstrike-node/package.json)",
+      "Bash(git tag *)"
+    ]
+  }
+}

@@ -1,6 +1,6 @@
 {
   "name": "@deepstrike/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DeepStrike kernel — pre-built native addon",
   "main": "index.js",
   "types": "index.d.ts",
@@ -18,12 +18,12 @@
     ]
   },
   "optionalDependencies": {
-    "@deepstrike/core-linux-x64-gnu": "0.1.0",
-    "@deepstrike/core-linux-arm64-gnu": "0.1.0",
-    "@deepstrike/core-linux-x64-musl": "0.1.0",
-    "@deepstrike/core-linux-arm64-musl": "0.1.0",
-    "@deepstrike/core-darwin-x64": "0.1.0",
-    "@deepstrike/core-darwin-arm64": "0.1.0",
-    "@deepstrike/core-win32-x64-msvc": "0.1.0"
+    "@deepstrike/core-linux-x64-gnu": "0.1.1",
+    "@deepstrike/core-linux-arm64-gnu": "0.1.1",
+    "@deepstrike/core-linux-x64-musl": "0.1.1",
+    "@deepstrike/core-linux-arm64-musl": "0.1.1",
+    "@deepstrike/core-darwin-x64": "0.1.1",
+    "@deepstrike/core-darwin-arm64": "0.1.1",
+    "@deepstrike/core-win32-x64-msvc": "0.1.1"
   }
 }
