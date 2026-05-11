@@ -1,0 +1,120 @@
+name: Release Node.js SDK
+
+on:
+  push:
+    tags: ["node-v*"]
+
+env:
+  NODE_VERSION: 20
+
+jobs:
+  # Step 1: Build platform-specific native addons in parallel
+  build-native:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            pkg: linux-x64-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            pkg: linux-arm64-gnu
+            cross: true
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            pkg: linux-x64-musl
+            musl: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            pkg: linux-arm64-musl
+            cross: true
+            musl: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            pkg: darwin-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            pkg: darwin-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            pkg: win32-x64-msvc
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.target }}" }
+      - uses: Swatinem/rust-cache@v2
+        with: { key: "${{ matrix.target }}" }
+
+      - name: Install cross-compilation tools (Linux ARM64)
+        if: matrix.cross && !matrix.musl
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Install musl tools
+        if: matrix.musl
+        run: sudo apt-get install -y musl-tools
+
+      - name: Install napi-rs CLI
+        run: npm install -g @napi-rs/cli
+
+      - name: Build native addon
+        run: napi build --release --platform --target ${{ matrix.target }} --output-dir artifacts
+        working-directory: crates/deepstrike-node
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.pkg }}
+          path: crates/deepstrike-node/artifacts/*.node
+
+  # Step 2: Publish @deepstrike/core-<platform> packages + @deepstrike/core + @deepstrike/sdk
+  publish:
+    needs: build-native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "${{ env.NODE_VERSION }}"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Download all native addons
+        uses: actions/download-artifact@v4
+        with:
+          path: crates/deepstrike-node/artifacts
+          merge-multiple: true
+
+      - name: Install napi-rs CLI
+        run: npm install -g @napi-rs/cli
+
+      # Publishes one small package per platform, e.g. @deepstrike/core-linux-x64-gnu
+      # Each contains only the .node file for that platform.
+      # Users never install these directly — npm resolves them via optionalDependencies.
+      - name: Publish platform packages
+        run: napi prepublish --skip-gh-release
+        working-directory: crates/deepstrike-node
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Publish the @deepstrike/core wrapper that declares all platform packages
+      # as optionalDependencies and loads the right one at runtime.
+      - name: Publish @deepstrike/core
+        run: npm publish --access public
+        working-directory: crates/deepstrike-node
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Build and publish the TypeScript SDK that depends on @deepstrike/core
+      - name: Build @deepstrike/sdk
+        run: npm ci && npm run build
+        working-directory: node
+
+      - name: Publish @deepstrike/sdk
+        run: npm publish --access public
+        working-directory: node
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,0 +1,38 @@
+name: Release WASM SDK
+
+on:
+  push:
+    tags: ["wasm-v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, registry-url: "https://registry.npmjs.org" }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM kernel
+        run: wasm-pack build --release --target bundler --out-dir pkg
+        working-directory: crates/deepstrike-wasm
+
+      - name: Publish @deepstrike/wasm-kernel
+        run: npm publish --access public
+        working-directory: crates/deepstrike-wasm/pkg
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Build and publish @deepstrike/wasm SDK
+        run: |
+          npm ci
+          npm run build
+          npm publish --access public
+        working-directory: wasm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,0 +1,12 @@
+[package]
+name = "deepstrike-tokenizer"
+description = "Multi-model token counting engine with SIMD acceleration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tiktoken-rs = "0.6"
+
+[dev-dependencies]
+pretty_assertions = "1"

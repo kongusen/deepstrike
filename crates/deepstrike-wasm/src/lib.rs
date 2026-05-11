@@ -1,0 +1,562 @@
+use compact_str::CompactString;
+use serde::{Deserialize, Serialize};
+use tsify_next::Tsify;
+use wasm_bindgen::prelude::*;
+
+use deepstrike_core::context::manager::ContextManager;
+use deepstrike_core::context::pressure::PressureAction;
+use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
+use deepstrike_core::scheduler::policy::LoopPolicy as RustLoopPolicy;
+use deepstrike_core::scheduler::state_machine::{
+    LoopAction as RustLoopAction, LoopEvent as RustLoopEvent,
+    LoopObservation as RustLoopObservation, LoopStateMachine as RustLoopStateMachine,
+};
+use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
+use deepstrike_core::types::policy::SignalDisposition as RustSignalDisposition;
+use deepstrike_core::types::signal::{
+    RuntimeSignal as RustRuntimeSignal, SignalSource as RustSignalSource,
+    SignalType as RustSignalType, Urgency as RustUrgency,
+};
+use deepstrike_core::types::message::{
+    Content, ContentPart, Message as RustMessage, Role, ToolCall as RustToolCall,
+    ToolResult as RustToolResult, ToolSchema as RustToolSchema,
+};
+use deepstrike_core::types::result::LoopResult as RustLoopResult;
+use deepstrike_core::types::skill::SkillMetadata as RustSkillMetadata;
+use deepstrike_core::types::task::RuntimeTask as RustRuntimeTask;
+
+// ────────────────────────────────────────────── POD types ──────────────────────────────────────────────
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct Message {
+    pub role: String,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_count: Option<u32>,
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCall>,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolResult {
+    pub call_id: String,
+    pub output: String,
+    #[serde(default)]
+    pub is_error: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_count: Option<u32>,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolSchema {
+    pub name: String,
+    pub description: String,
+    pub parameters: String,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeTask {
+    pub goal: String,
+    #[serde(default)]
+    pub criteria: Vec<String>,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopPolicy {
+    pub max_tokens: u32,
+    #[serde(default = "default_max_turns")]
+    pub max_turns: u32,
+    #[serde(default = "default_max_total_tokens")]
+    pub max_total_tokens: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<f64>,
+}
+
+fn default_max_turns() -> u32 { 25 }
+fn default_max_total_tokens() -> f64 { 1_000_000.0 }
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopResult {
+    pub termination: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_message: Option<Message>,
+    pub turns_used: u32,
+    pub total_tokens_used: f64,
+}
+
+// ────────────────────────────────────────────── Skill types ──────────────────────────────────────────────
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillMetadata {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when_to_use: Option<String>,
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<u8>,
+    #[serde(default)]
+    pub estimated_tokens: u32,
+}
+
+// ────────────────────────────────────────────── Signal types ──────────────────────────────────────────────
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeSignal {
+    pub id: String,
+    /// "cron" | "gateway" | "heartbeat" | "custom"
+    pub source: String,
+    /// "event" | "job" | "alert"
+    pub signal_type: String,
+    /// "low" | "normal" | "high" | "critical"
+    pub urgency: String,
+    pub summary: String,
+    pub payload: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedupe_key: Option<String>,
+    pub timestamp_ms: f64,
+}
+
+fn runtime_signal_to_rust(s: RuntimeSignal) -> RustRuntimeSignal {
+    let source = match s.source.as_str() {
+        "cron" => RustSignalSource::Cron,
+        "gateway" => RustSignalSource::Gateway,
+        "heartbeat" => RustSignalSource::Heartbeat,
+        _ => RustSignalSource::Custom,
+    };
+    let signal_type = match s.signal_type.as_str() {
+        "job" => RustSignalType::Job,
+        "alert" => RustSignalType::Alert,
+        _ => RustSignalType::Event,
+    };
+    let urgency = match s.urgency.as_str() {
+        "critical" => RustUrgency::Critical,
+        "high" => RustUrgency::High,
+        "low" => RustUrgency::Low,
+        _ => RustUrgency::Normal,
+    };
+    let payload: serde_json::Value = serde_json::from_str(&s.payload).unwrap_or(serde_json::Value::Null);
+    let mut sig = RustRuntimeSignal::new(source, signal_type, urgency, s.summary.as_str())
+        .with_payload(payload)
+        .with_timestamp(s.timestamp_ms as u64);
+    if let Some(key) = s.dedupe_key {
+        sig = sig.with_dedupe(key.as_str());
+    }
+    sig
+}
+
+fn runtime_signal_from_rust(s: &RustRuntimeSignal) -> RuntimeSignal {
+    RuntimeSignal {
+        id: s.id.to_string(),
+        source: match s.source { RustSignalSource::Cron => "cron", RustSignalSource::Gateway => "gateway", RustSignalSource::Heartbeat => "heartbeat", RustSignalSource::Custom => "custom" }.into(),
+        signal_type: match s.signal_type { RustSignalType::Event => "event", RustSignalType::Job => "job", RustSignalType::Alert => "alert" }.into(),
+        urgency: match s.urgency { RustUrgency::Critical => "critical", RustUrgency::High => "high", RustUrgency::Normal => "normal", RustUrgency::Low => "low" }.into(),
+        summary: s.summary.to_string(),
+        payload: serde_json::to_string(&s.payload).unwrap_or_else(|_| "null".into()),
+        dedupe_key: s.dedupe_key.as_ref().map(|k| k.to_string()),
+        timestamp_ms: s.timestamp_ms as f64,
+    }
+}
+
+fn disposition_str(d: RustSignalDisposition) -> &'static str {
+    match d {
+        RustSignalDisposition::Ignore => "ignore",
+        RustSignalDisposition::Observe => "observe",
+        RustSignalDisposition::Queue => "queue",
+        RustSignalDisposition::Run { .. } => "run",
+        RustSignalDisposition::Interrupt => "interrupt",
+        RustSignalDisposition::InterruptNow => "interrupt_now",
+        RustSignalDisposition::Dropped => "dropped",
+    }
+}
+
+// ────────────────────────────── Tagged unions: LoopAction / LoopObservation ──────────────────────────────
+
+/// Discriminated union; inspect `kind`:
+/// - `"call_llm"`      → `messages`, `tools` (includes meta-tools when configured)
+/// - `"execute_tools"` → `calls`
+/// - `"done"`          → `result`
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopAction {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub messages: Option<Vec<Message>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ToolSchema>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calls: Option<Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<LoopResult>,
+}
+
+/// Discriminated union for runtime observations:
+/// - `"compressed"` → `action`, `rhoAfter`
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopObservation {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rho_after: Option<f64>,
+}
+
+// ────────────────────────────────────── conversion helpers ──────────────────────────────────────
+
+fn role_str_to_rust(role: &str) -> Result<Role, JsValue> {
+    match role {
+        "system" => Ok(Role::System),
+        "user" => Ok(Role::User),
+        "assistant" => Ok(Role::Assistant),
+        "tool" => Ok(Role::Tool),
+        other => Err(JsValue::from_str(&format!("invalid role: {other}"))),
+    }
+}
+
+fn role_to_str(role: Role) -> &'static str {
+    match role {
+        Role::System => "system",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
+    }
+}
+
+fn message_to_rust(m: Message) -> Result<RustMessage, JsValue> {
+    let role = role_str_to_rust(&m.role)?;
+    let tool_calls: Vec<RustToolCall> = m.tool_calls.into_iter().map(tool_call_to_rust).collect::<Result<_, _>>()?;
+    Ok(RustMessage { role, content: Content::Text(m.content), tool_calls, token_count: m.token_count })
+}
+
+fn message_from_rust(m: &RustMessage) -> Message {
+    let content = match &m.content {
+        Content::Text(s) => s.clone(),
+        Content::Parts(parts) => parts.iter().map(|p| match p {
+            ContentPart::Text { text } => text.clone(),
+            ContentPart::Image { url } => format!("[image: {url}]"),
+            ContentPart::ToolResult { call_id, output, .. } => format!("[tool_result {call_id}]: {output}"),
+        }).collect::<Vec<_>>().join("\n"),
+    };
+    Message { role: role_to_str(m.role).to_string(), content, token_count: m.token_count, tool_calls: m.tool_calls.iter().map(tool_call_from_rust).collect() }
+}
+
+fn tool_call_to_rust(c: ToolCall) -> Result<RustToolCall, JsValue> {
+    let args: serde_json::Value = serde_json::from_str(&c.arguments)
+        .map_err(|e| JsValue::from_str(&format!("invalid JSON arguments: {e}")))?;
+    Ok(RustToolCall { id: CompactString::new(&c.id), name: CompactString::new(&c.name), arguments: args })
+}
+
+fn tool_call_from_rust(c: &RustToolCall) -> ToolCall {
+    ToolCall { id: c.id.to_string(), name: c.name.to_string(), arguments: serde_json::to_string(&c.arguments).unwrap_or_else(|_| "null".into()) }
+}
+
+fn tool_result_to_rust(r: ToolResult) -> RustToolResult {
+    RustToolResult { call_id: CompactString::new(&r.call_id), output: Content::Text(r.output), is_error: r.is_error, token_count: r.token_count }
+}
+
+fn tool_schema_to_rust(t: ToolSchema) -> Result<RustToolSchema, JsValue> {
+    let params: serde_json::Value = serde_json::from_str(&t.parameters)
+        .map_err(|e| JsValue::from_str(&format!("invalid JSON parameters: {e}")))?;
+    Ok(RustToolSchema { name: CompactString::new(&t.name), description: t.description, parameters: params })
+}
+
+fn tool_schema_from_rust(t: &RustToolSchema) -> ToolSchema {
+    ToolSchema { name: t.name.to_string(), description: t.description.clone(), parameters: serde_json::to_string(&t.parameters).unwrap_or_else(|_| "null".into()) }
+}
+
+fn skill_metadata_to_rust(s: SkillMetadata) -> RustSkillMetadata {
+    RustSkillMetadata {
+        name: CompactString::new(&s.name),
+        description: s.description,
+        when_to_use: s.when_to_use,
+        allowed_tools: s.allowed_tools.iter().map(CompactString::new).collect(),
+        effort: s.effort,
+        estimated_tokens: s.estimated_tokens,
+    }
+}
+
+fn task_to_rust(t: RuntimeTask) -> RustRuntimeTask {
+    RustRuntimeTask { goal: t.goal, criteria: t.criteria, metadata: serde_json::Value::Null }
+}
+
+fn policy_to_rust(p: LoopPolicy) -> RustLoopPolicy {
+    RustLoopPolicy { max_tokens: p.max_tokens, max_turns: p.max_turns, max_total_tokens: p.max_total_tokens as u64, timeout_ms: p.timeout_ms.map(|x| x as u64) }
+}
+
+fn pressure_action_str(a: PressureAction) -> &'static str {
+    match a {
+        PressureAction::None => "none",
+        PressureAction::SnipCompact => "snip_compact",
+        PressureAction::MicroCompact => "micro_compact",
+        PressureAction::ContextCollapse => "context_collapse",
+        PressureAction::AutoCompact => "auto_compact",
+    }
+}
+
+fn loop_result_from_rust(r: &RustLoopResult) -> LoopResult {
+    let termination = match r.termination {
+        deepstrike_core::types::result::TerminationReason::Completed => "completed",
+        deepstrike_core::types::result::TerminationReason::MaxTurns => "max_turns",
+        deepstrike_core::types::result::TerminationReason::TokenBudget => "token_budget",
+        deepstrike_core::types::result::TerminationReason::Timeout => "timeout",
+        deepstrike_core::types::result::TerminationReason::UserAbort => "user_abort",
+        deepstrike_core::types::result::TerminationReason::Error => "error",
+    };
+    LoopResult { termination: termination.to_string(), final_message: r.final_message.as_ref().map(message_from_rust), turns_used: r.turns_used, total_tokens_used: r.total_tokens_used as f64 }
+}
+
+fn loop_action_from_rust(a: RustLoopAction) -> LoopAction {
+    match a {
+        RustLoopAction::CallLLM { messages, tools } => LoopAction {
+            kind: "call_llm".into(),
+            messages: Some(messages.iter().map(message_from_rust).collect()),
+            tools: Some(tools.iter().map(tool_schema_from_rust).collect()),
+            calls: None,
+            result: None,
+        },
+        RustLoopAction::ExecuteTools { calls } => LoopAction {
+            kind: "execute_tools".into(),
+            messages: None,
+            tools: None,
+            calls: Some(calls.iter().map(tool_call_from_rust).collect()),
+            result: None,
+        },
+        RustLoopAction::Done { result } => LoopAction {
+            kind: "done".into(),
+            messages: None,
+            tools: None,
+            calls: None,
+            result: Some(loop_result_from_rust(&result)),
+        },
+    }
+}
+
+fn observation_from_rust(o: RustLoopObservation) -> LoopObservation {
+    match o {
+        RustLoopObservation::Compressed { action, rho_after } => LoopObservation {
+            kind: "compressed".into(),
+            action: Some(pressure_action_str(action).into()),
+            rho_after: Some(rho_after),
+        },
+    }
+}
+
+// ────────────────────────────────────────────── ContextEngine ──────────────────────────────────────────────
+
+#[wasm_bindgen]
+pub struct ContextEngine {
+    inner: ContextManager,
+}
+
+#[wasm_bindgen]
+impl ContextEngine {
+    #[wasm_bindgen(constructor)]
+    pub fn new(max_tokens: u32) -> Self {
+        Self { inner: ContextManager::new(max_tokens) }
+    }
+
+    #[wasm_bindgen(js_name = addSystemMessage)]
+    pub fn add_system_message(&mut self, content: String, tokens: u32) {
+        self.inner.partitions.system.push(RustMessage::system(content), tokens);
+    }
+
+    #[wasm_bindgen(js_name = addUserMessage)]
+    pub fn add_user_message(&mut self, content: String, tokens: u32) {
+        self.inner.push_history(RustMessage::user(content), tokens);
+    }
+
+    #[wasm_bindgen(js_name = addAssistantMessage)]
+    pub fn add_assistant_message(&mut self, content: String, tokens: u32) {
+        self.inner.push_history(RustMessage::assistant(content), tokens);
+    }
+
+    #[wasm_bindgen]
+    pub fn pressure(&self) -> f64 { self.inner.rho() }
+
+    #[wasm_bindgen(js_name = totalTokens)]
+    pub fn total_tokens(&self) -> u32 { self.inner.partitions.total_tokens() }
+
+    #[wasm_bindgen]
+    pub fn compress(&mut self) -> u32 {
+        let action = self.inner.should_compress();
+        if action == PressureAction::None { return 0; }
+        let before = self.inner.partitions.total_tokens();
+        self.inner.compress(action);
+        before.saturating_sub(self.inner.partitions.total_tokens())
+    }
+
+    #[wasm_bindgen]
+    pub fn render(&self) -> Vec<Message> {
+        self.inner.render().iter().map(message_from_rust).collect()
+    }
+
+    #[wasm_bindgen(js_name = setAvailableSkills)]
+    pub fn set_available_skills(&mut self, skills: Vec<SkillMetadata>) {
+        self.inner.set_available_skills(skills.into_iter().map(skill_metadata_to_rust).collect());
+    }
+}
+
+// ────────────────────────────────────────────── LoopStateMachine ──────────────────────────────────────────────
+
+#[wasm_bindgen]
+pub struct LoopStateMachine {
+    inner: RustLoopStateMachine,
+}
+
+#[wasm_bindgen]
+impl LoopStateMachine {
+    #[wasm_bindgen(constructor)]
+    pub fn new(policy: LoopPolicy) -> Self {
+        Self { inner: RustLoopStateMachine::new(policy_to_rust(policy)) }
+    }
+
+    #[wasm_bindgen(js_name = setAvailableSkills)]
+    pub fn set_available_skills(&mut self, skills: Vec<SkillMetadata>) {
+        self.inner.ctx.set_available_skills(skills.into_iter().map(skill_metadata_to_rust).collect());
+    }
+
+    #[wasm_bindgen(js_name = setMemoryEnabled)]
+    pub fn set_memory_enabled(&mut self, enabled: bool) {
+        self.inner.ctx.set_memory_enabled(enabled);
+    }
+
+    #[wasm_bindgen(js_name = setKnowledgeEnabled)]
+    pub fn set_knowledge_enabled(&mut self, enabled: bool) {
+        self.inner.ctx.set_knowledge_enabled(enabled);
+    }
+
+    #[wasm_bindgen(js_name = setTools)]
+    pub fn set_tools(&mut self, tools: Vec<ToolSchema>) -> Result<(), JsValue> {
+        self.inner.tools = tools.into_iter().map(tool_schema_to_rust).collect::<Result<_, _>>()?;
+        Ok(())
+    }
+
+    #[wasm_bindgen]
+    pub fn start(&mut self, task: RuntimeTask) -> LoopAction {
+        loop_action_from_rust(self.inner.start(task_to_rust(task)))
+    }
+
+    #[wasm_bindgen(js_name = feedLlmResponse)]
+    pub fn feed_llm_response(&mut self, message: Message) -> Result<LoopAction, JsValue> {
+        let msg = message_to_rust(message)?;
+        Ok(loop_action_from_rust(self.inner.feed(RustLoopEvent::LLMResponse { message: msg })))
+    }
+
+    #[wasm_bindgen(js_name = feedToolResults)]
+    pub fn feed_tool_results(&mut self, results: Vec<ToolResult>) -> LoopAction {
+        let results: Vec<RustToolResult> = results.into_iter().map(tool_result_to_rust).collect();
+        loop_action_from_rust(self.inner.feed(RustLoopEvent::ToolResults { results }))
+    }
+
+    #[wasm_bindgen(js_name = feedTimeout)]
+    pub fn feed_timeout(&mut self) -> LoopAction {
+        loop_action_from_rust(self.inner.feed(RustLoopEvent::Timeout))
+    }
+
+    #[wasm_bindgen(js_name = isTerminal)]
+    pub fn is_terminal(&self) -> bool { self.inner.is_terminal() }
+
+    #[wasm_bindgen(getter)]
+    pub fn turn(&self) -> u32 { self.inner.turn }
+
+    #[wasm_bindgen]
+    pub fn pressure(&self) -> f64 { self.inner.ctx.rho() }
+
+    #[wasm_bindgen(js_name = takeObservations)]
+    pub fn take_observations(&mut self) -> Vec<LoopObservation> {
+        self.inner.take_observations().into_iter().map(observation_from_rust).collect()
+    }
+
+    #[wasm_bindgen]
+    pub fn render(&self) -> Vec<Message> {
+        self.inner.ctx.render().iter().map(message_from_rust).collect()
+    }
+}
+
+// ────────────────────────────────────────────── SignalRouter ──────────────────────────────────────────────
+
+#[wasm_bindgen]
+pub struct SignalRouter {
+    inner: RustSignalRouter,
+}
+
+#[wasm_bindgen]
+impl SignalRouter {
+    #[wasm_bindgen(constructor)]
+    pub fn new(max_queue_size: u32) -> Self {
+        Self { inner: RustSignalRouter::new(max_queue_size as usize) }
+    }
+
+    /// Ingest a signal. Returns disposition: "ignore"|"observe"|"queue"|"run"|"interrupt"|"interrupt_now"|"dropped"
+    #[wasm_bindgen]
+    pub fn ingest(&mut self, signal: RuntimeSignal, is_running: bool) -> String {
+        disposition_str(self.inner.ingest(runtime_signal_to_rust(signal), is_running)).into()
+    }
+
+    /// Pull the next queued signal (highest priority first).
+    #[wasm_bindgen]
+    pub fn next(&mut self) -> Option<RuntimeSignal> {
+        self.inner.next().as_ref().map(runtime_signal_from_rust)
+    }
+
+    #[wasm_bindgen]
+    pub fn depth(&self) -> u32 { self.inner.depth() as u32 }
+
+    #[wasm_bindgen(js_name = clearDedup)]
+    pub fn clear_dedup(&mut self) { self.inner.clear_dedup(); }
+}
+
+// ────────────────────────────────────────────── Governance ──────────────────────────────────────────────
+
+#[wasm_bindgen]
+pub struct Governance {
+    inner: RustGovernancePipeline,
+}
+
+#[wasm_bindgen]
+impl Governance {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self { inner: RustGovernancePipeline::default() }
+    }
+
+    #[wasm_bindgen(js_name = blockTool)]
+    pub fn block_tool(&mut self, name: String) {
+        self.inner.veto.block_tool(name);
+    }
+
+    #[wasm_bindgen(js_name = setTime)]
+    pub fn set_time(&mut self, now_ms: f64) {
+        self.inner.set_time(now_ms as u64);
+    }
+}

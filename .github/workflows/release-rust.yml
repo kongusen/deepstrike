@@ -1,0 +1,27 @@
+name: Release Rust Crates
+
+on:
+  push:
+    tags: ["rust-v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Publish in dependency order — core first, then SDK
+      - name: Publish deepstrike-core
+        run: cargo publish -p deepstrike-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Wait for crates.io index
+        run: sleep 30
+
+      - name: Publish deepstrike-sdk
+        run: cargo publish -p deepstrike-sdk
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

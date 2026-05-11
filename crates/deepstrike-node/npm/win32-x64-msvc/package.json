@@ -1,0 +1,16 @@
+{
+  "name": "@deepstrike/core-win32-x64-msvc",
+  "version": "0.1.0",
+  "cpu": [
+    "x64"
+  ],
+  "main": "deepstrike-core.win32-x64-msvc.node",
+  "files": [
+    "deepstrike-core.win32-x64-msvc.node"
+  ],
+  "description": "DeepStrike kernel — pre-built native addon",
+  "license": "Apache-2.0 OR MIT",
+  "os": [
+    "win32"
+  ]
+}

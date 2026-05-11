@@ -1,0 +1,26 @@
+# Rust
+target/
+*.node
+
+# Node.js
+node_modules/
+dist/
+*.tgz
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.so
+*.pyd
+.pytest_cache/
+dist/
+*.egg-info/
+
+# WASM
+pkg/
+
+# IDE
+.DS_Store
+.idea/
+.vscode/

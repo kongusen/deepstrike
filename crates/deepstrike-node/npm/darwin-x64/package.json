@@ -1,0 +1,16 @@
+{
+  "name": "@deepstrike/core-darwin-x64",
+  "version": "0.1.0",
+  "cpu": [
+    "x64"
+  ],
+  "main": "deepstrike-core.darwin-x64.node",
+  "files": [
+    "deepstrike-core.darwin-x64.node"
+  ],
+  "description": "DeepStrike kernel — pre-built native addon",
+  "license": "Apache-2.0 OR MIT",
+  "os": [
+    "darwin"
+  ]
+}

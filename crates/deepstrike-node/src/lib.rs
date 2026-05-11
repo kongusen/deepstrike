@@ -1,0 +1,1030 @@
+//! # DeepStrike Node.js Bindings
+//!
+//! napi-rs bindings exposing the Rust kernel to Node.js.
+//! Build with: `napi build --release --platform`
+//!
+//! ## High-level API
+//!
+//! ```typescript
+//! import {
+//!   ContextEngine, LoopStateMachine, RuntimeTask, LoopPolicy,
+//!   Message, ToolCall, ToolResult, ToolSchema,
+//!   SkillMetadata,
+//! } from '@deepstrike/core'
+//!
+//! const sm = new LoopStateMachine({ maxTokens: 128_000 })
+//! // Register skills once; the kernel auto-injects the `skill` meta-tool.
+//! sm.setAvailableSkills([
+//!   { name: 'debug', description: 'Debug helper', estimatedTokens: 0 },
+//! ])
+//!
+//! let action = sm.start({ goal: 'Fix the bug' })
+//! while (!sm.isTerminal()) {
+//!   if (action.kind === 'call_llm') {
+//!     // tools list already includes the `skill` meta-tool
+//!     const msg = await callLlm(action.messages, action.tools)
+//!     action = sm.feedLlmResponse(msg)
+//!   } else if (action.kind === 'execute_tools') {
+//!     // SDK intercepts calls where name === 'skill' and reads the file
+//!     const results = await execTools(action.calls)
+//!     action = sm.feedToolResults(results)
+//!   } else if (action.kind === 'done') {
+//!     break
+//!   }
+//! }
+//! ```
+
+#![deny(clippy::all)]
+
+use napi::bindgen_prelude::*;
+use napi_derive::napi;
+
+use compact_str::CompactString;
+
+use deepstrike_core::context::manager::ContextManager;
+use deepstrike_core::context::pressure::PressureAction;
+use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
+use deepstrike_core::harness::eval_pipeline::{
+    EvalAction as RustEvalAction, EvalEvent as RustEvalEvent, EvalPolicy as RustEvalPolicy,
+    EvalPipeline as RustEvalPipeline,
+};
+use deepstrike_core::memory::curator::CurationResult as RustCurationResult;
+use deepstrike_core::memory::durable::SessionData as RustSessionData;
+use deepstrike_core::memory::idle_pipeline::{
+    IdleAction as RustIdleAction, IdleEvent as RustIdleEvent, IdlePolicy as RustIdlePolicy,
+    IdlePipeline as RustIdlePipeline,
+};
+use deepstrike_core::memory::semantic::MemoryEntry as RustMemoryEntry;
+use deepstrike_core::scheduler::policy::LoopPolicy as RustLoopPolicy;
+use deepstrike_core::scheduler::state_machine::{
+    LoopAction as RustLoopAction, LoopEvent as RustLoopEvent,
+    LoopObservation as RustLoopObservation, LoopStateMachine as RustLoopStateMachine,
+};
+use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
+use deepstrike_core::types::policy::SignalDisposition as RustSignalDisposition;
+use deepstrike_core::types::signal::{
+    RuntimeSignal as RustRuntimeSignal, SignalSource as RustSignalSource,
+    SignalType as RustSignalType, Urgency as RustUrgency,
+};
+use deepstrike_core::types::message::{
+    Content, ContentPart, Message as RustMessage, Role, ToolCall as RustToolCall,
+    ToolResult as RustToolResult, ToolSchema as RustToolSchema,
+};
+use deepstrike_core::types::result::LoopResult as RustLoopResult;
+use deepstrike_core::types::skill::SkillMetadata as RustSkillMetadata;
+use deepstrike_core::types::task::RuntimeTask as RustRuntimeTask;
+
+// ────────────────────────────────────── POD types (plain JS objects) ──────────────────────────────────────
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct Message {
+    pub role: String,
+    pub content: String,
+    pub token_count: Option<u32>,
+    pub tool_calls: Vec<ToolCall>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    /// JSON-encoded arguments. JS: `JSON.stringify(args)`.
+    pub arguments: String,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct ToolResult {
+    pub call_id: String,
+    pub output: String,
+    pub is_error: bool,
+    pub token_count: Option<u32>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct ToolSchema {
+    pub name: String,
+    pub description: String,
+    /// JSON-encoded JSON Schema. JS: `JSON.stringify(schema)`.
+    pub parameters: String,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct RuntimeTask {
+    pub goal: String,
+    pub criteria: Option<Vec<String>>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct LoopPolicy {
+    pub max_tokens: u32,
+    pub max_turns: Option<u32>,
+    pub max_total_tokens: Option<BigInt>,
+    pub timeout_ms: Option<BigInt>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct LoopResult {
+    pub termination: String,
+    pub final_message: Option<Message>,
+    pub turns_used: u32,
+    pub total_tokens_used: BigInt,
+}
+
+// ────────────────────────────────────── Skill types ──────────────────────────────────────
+
+// ────────────────────────────────────── Signal types ──────────────────────────────────────
+
+/// Unified RuntimeSignal exposed to Node.js — mirrors the kernel type.
+#[napi(object)]
+#[derive(Clone)]
+pub struct RuntimeSignal {
+    pub id: String,
+    /// "cron" | "gateway" | "heartbeat" | "custom"
+    pub source: String,
+    /// "event" | "job" | "alert"
+    pub signal_type: String,
+    /// "low" | "normal" | "high" | "critical"
+    pub urgency: String,
+    pub summary: String,
+    /// JSON-encoded payload.
+    pub payload: String,
+    pub dedupe_key: Option<String>,
+    pub timestamp_ms: f64,
+}
+
+fn runtime_signal_to_rust(s: RuntimeSignal) -> Result<RustRuntimeSignal> {
+    let source = match s.source.as_str() {
+        "cron" => RustSignalSource::Cron,
+        "gateway" => RustSignalSource::Gateway,
+        "heartbeat" => RustSignalSource::Heartbeat,
+        _ => RustSignalSource::Custom,
+    };
+    let signal_type = match s.signal_type.as_str() {
+        "job" => RustSignalType::Job,
+        "alert" => RustSignalType::Alert,
+        _ => RustSignalType::Event,
+    };
+    let urgency = match s.urgency.as_str() {
+        "critical" => RustUrgency::Critical,
+        "high" => RustUrgency::High,
+        "low" => RustUrgency::Low,
+        _ => RustUrgency::Normal,
+    };
+    let payload: serde_json::Value = serde_json::from_str(&s.payload)
+        .unwrap_or(serde_json::Value::Null);
+    let mut sig = RustRuntimeSignal::new(source, signal_type, urgency, s.summary.as_str())
+        .with_payload(payload)
+        .with_timestamp(s.timestamp_ms as u64);
+    if let Some(key) = s.dedupe_key {
+        sig = sig.with_dedupe(key.as_str());
+    }
+    Ok(sig)
+}
+
+fn runtime_signal_from_rust(s: &RustRuntimeSignal) -> RuntimeSignal {
+    let source = match s.source {
+        RustSignalSource::Cron => "cron",
+        RustSignalSource::Gateway => "gateway",
+        RustSignalSource::Heartbeat => "heartbeat",
+        RustSignalSource::Custom => "custom",
+    };
+    let signal_type = match s.signal_type {
+        RustSignalType::Event => "event",
+        RustSignalType::Job => "job",
+        RustSignalType::Alert => "alert",
+    };
+    let urgency = match s.urgency {
+        RustUrgency::Critical => "critical",
+        RustUrgency::High => "high",
+        RustUrgency::Normal => "normal",
+        RustUrgency::Low => "low",
+    };
+    RuntimeSignal {
+        id: s.id.to_string(),
+        source: source.into(),
+        signal_type: signal_type.into(),
+        urgency: urgency.into(),
+        summary: s.summary.to_string(),
+        payload: serde_json::to_string(&s.payload).unwrap_or_else(|_| "null".into()),
+        dedupe_key: s.dedupe_key.as_ref().map(|k| k.to_string()),
+        timestamp_ms: s.timestamp_ms as f64,
+    }
+}
+
+fn disposition_to_str(d: RustSignalDisposition) -> &'static str {
+    match d {
+        RustSignalDisposition::Ignore => "ignore",
+        RustSignalDisposition::Observe => "observe",
+        RustSignalDisposition::Queue => "queue",
+        RustSignalDisposition::Run { .. } => "run",
+        RustSignalDisposition::Interrupt => "interrupt",
+        RustSignalDisposition::InterruptNow => "interrupt_now",
+        RustSignalDisposition::Dropped => "dropped",
+    }
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct SkillMetadata {
+    pub name: String,
+    pub description: String,
+    pub when_to_use: Option<String>,
+    pub allowed_tools: Option<Vec<String>>,
+    pub effort: Option<u8>,
+    pub estimated_tokens: u32,
+}
+
+// ────────────────────────────── Tagged unions: LoopAction / LoopObservation ──────────────────────────────
+
+/// Discriminated union. Inspect `kind`:
+/// - `"call_llm"`      → `messages`, `tools` (includes `skill` meta-tool when skills are registered)
+/// - `"execute_tools"` → `calls`
+/// - `"done"`          → `result`
+#[napi(object)]
+#[derive(Clone)]
+pub struct LoopAction {
+    pub kind: String,
+    pub messages: Option<Vec<Message>>,
+    pub tools: Option<Vec<ToolSchema>>,
+    pub calls: Option<Vec<ToolCall>>,
+    pub result: Option<LoopResult>,
+}
+
+/// Discriminated union for observations:
+/// - `"compressed"` → `action`, `rho_after`
+#[napi(object)]
+#[derive(Clone)]
+pub struct LoopObservation {
+    pub kind: String,
+    pub action: Option<String>,
+    pub rho_after: Option<f64>,
+}
+
+// ────────────────────────────────── conversion helpers ──────────────────────────────────
+
+fn role_str_to_rust(role: &str) -> Result<Role> {
+    match role {
+        "system" => Ok(Role::System),
+        "user" => Ok(Role::User),
+        "assistant" => Ok(Role::Assistant),
+        "tool" => Ok(Role::Tool),
+        other => Err(Error::new(Status::InvalidArg, format!("invalid role: {other}"))),
+    }
+}
+
+fn role_to_str(role: Role) -> &'static str {
+    match role {
+        Role::System => "system",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
+    }
+}
+
+fn message_to_rust(m: Message) -> Result<RustMessage> {
+    let role = role_str_to_rust(&m.role)?;
+    let tool_calls: Vec<RustToolCall> = m
+        .tool_calls
+        .into_iter()
+        .map(tool_call_to_rust)
+        .collect::<Result<_>>()?;
+    Ok(RustMessage {
+        role,
+        content: Content::Text(m.content),
+        tool_calls,
+        token_count: m.token_count,
+    })
+}
+
+fn message_from_rust(m: &RustMessage) -> Message {
+    let content = match &m.content {
+        Content::Text(s) => s.clone(),
+        Content::Parts(parts) => parts
+            .iter()
+            .map(|p| match p {
+                ContentPart::Text { text } => text.clone(),
+                ContentPart::Image { url } => format!("[image: {url}]"),
+                ContentPart::ToolResult { call_id, output, .. } => {
+                    format!("[tool_result {call_id}]: {output}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    };
+    Message {
+        role: role_to_str(m.role).to_string(),
+        content,
+        token_count: m.token_count,
+        tool_calls: m.tool_calls.iter().map(tool_call_from_rust).collect(),
+    }
+}
+
+fn tool_call_to_rust(c: ToolCall) -> Result<RustToolCall> {
+    let args: serde_json::Value = serde_json::from_str(&c.arguments)
+        .map_err(|e| Error::new(Status::InvalidArg, format!("invalid JSON arguments: {e}")))?;
+    Ok(RustToolCall {
+        id: CompactString::new(&c.id),
+        name: CompactString::new(&c.name),
+        arguments: args,
+    })
+}
+
+fn tool_call_from_rust(c: &RustToolCall) -> ToolCall {
+    ToolCall {
+        id: c.id.to_string(),
+        name: c.name.to_string(),
+        arguments: serde_json::to_string(&c.arguments).unwrap_or_else(|_| "null".into()),
+    }
+}
+
+fn tool_result_to_rust(r: ToolResult) -> RustToolResult {
+    RustToolResult {
+        call_id: CompactString::new(&r.call_id),
+        output: Content::Text(r.output),
+        is_error: r.is_error,
+        token_count: r.token_count,
+    }
+}
+
+fn tool_schema_to_rust(t: ToolSchema) -> Result<RustToolSchema> {
+    let params: serde_json::Value = serde_json::from_str(&t.parameters)
+        .map_err(|e| Error::new(Status::InvalidArg, format!("invalid JSON parameters: {e}")))?;
+    Ok(RustToolSchema {
+        name: CompactString::new(&t.name),
+        description: t.description,
+        parameters: params,
+    })
+}
+
+fn tool_schema_from_rust(t: &RustToolSchema) -> ToolSchema {
+    ToolSchema {
+        name: t.name.to_string(),
+        description: t.description.clone(),
+        parameters: serde_json::to_string(&t.parameters).unwrap_or_else(|_| "null".into()),
+    }
+}
+
+fn skill_metadata_to_rust(s: SkillMetadata) -> RustSkillMetadata {
+    RustSkillMetadata {
+        name: CompactString::new(&s.name),
+        description: s.description,
+        when_to_use: s.when_to_use,
+        allowed_tools: s
+            .allowed_tools
+            .unwrap_or_default()
+            .iter()
+            .map(CompactString::new)
+            .collect(),
+        effort: s.effort,
+        estimated_tokens: s.estimated_tokens,
+    }
+}
+
+fn task_to_rust(t: RuntimeTask) -> RustRuntimeTask {
+    RustRuntimeTask {
+        goal: t.goal,
+        criteria: t.criteria.unwrap_or_default(),
+        metadata: serde_json::Value::Null,
+    }
+}
+
+fn policy_to_rust(p: LoopPolicy) -> RustLoopPolicy {
+    RustLoopPolicy {
+        max_tokens: p.max_tokens,
+        max_turns: p.max_turns.unwrap_or(25),
+        max_total_tokens: p
+            .max_total_tokens
+            .map(|b| b.get_u64().1)
+            .unwrap_or(1_000_000),
+        timeout_ms: p.timeout_ms.map(|b| b.get_u64().1),
+    }
+}
+
+fn pressure_action_str(a: PressureAction) -> &'static str {
+    match a {
+        PressureAction::None => "none",
+        PressureAction::SnipCompact => "snip_compact",
+        PressureAction::MicroCompact => "micro_compact",
+        PressureAction::ContextCollapse => "context_collapse",
+        PressureAction::AutoCompact => "auto_compact",
+    }
+}
+
+fn loop_result_from_rust(r: &RustLoopResult) -> LoopResult {
+    let termination = match r.termination {
+        deepstrike_core::types::result::TerminationReason::Completed => "completed",
+        deepstrike_core::types::result::TerminationReason::MaxTurns => "max_turns",
+        deepstrike_core::types::result::TerminationReason::TokenBudget => "token_budget",
+        deepstrike_core::types::result::TerminationReason::Timeout => "timeout",
+        deepstrike_core::types::result::TerminationReason::UserAbort => "user_abort",
+        deepstrike_core::types::result::TerminationReason::Error => "error",
+    };
+    LoopResult {
+        termination: termination.to_string(),
+        final_message: r.final_message.as_ref().map(message_from_rust),
+        turns_used: r.turns_used,
+        total_tokens_used: BigInt::from(r.total_tokens_used),
+    }
+}
+
+fn loop_action_from_rust(a: RustLoopAction) -> LoopAction {
+    match a {
+        RustLoopAction::CallLLM { messages, tools } => LoopAction {
+            kind: "call_llm".into(),
+            messages: Some(messages.iter().map(message_from_rust).collect()),
+            tools: Some(tools.iter().map(tool_schema_from_rust).collect()),
+            calls: None,
+            result: None,
+        },
+        RustLoopAction::ExecuteTools { calls } => LoopAction {
+            kind: "execute_tools".into(),
+            messages: None,
+            tools: None,
+            calls: Some(calls.iter().map(tool_call_from_rust).collect()),
+            result: None,
+        },
+        RustLoopAction::Done { result } => LoopAction {
+            kind: "done".into(),
+            messages: None,
+            tools: None,
+            calls: None,
+            result: Some(loop_result_from_rust(&result)),
+        },
+    }
+}
+
+fn observation_from_rust(o: RustLoopObservation) -> LoopObservation {
+    match o {
+        RustLoopObservation::Compressed { action, rho_after } => LoopObservation {
+            kind: "compressed".into(),
+            action: Some(pressure_action_str(action).into()),
+            rho_after: Some(rho_after),
+        },
+    }
+}
+
+// ─────────────────────────────────────────── ContextEngine ───────────────────────────────────────────
+
+#[napi]
+pub struct ContextEngine {
+    inner: ContextManager,
+}
+
+#[napi]
+impl ContextEngine {
+    #[napi(constructor)]
+    pub fn new(max_tokens: u32) -> Self {
+        Self { inner: ContextManager::new(max_tokens) }
+    }
+
+    #[napi]
+    pub fn add_system_message(&mut self, content: String, tokens: u32) {
+        self.inner
+            .partitions
+            .system
+            .push(RustMessage::system(content), tokens);
+    }
+
+    #[napi]
+    pub fn add_user_message(&mut self, content: String, tokens: u32) {
+        self.inner.push_history(RustMessage::user(content), tokens);
+    }
+
+    #[napi]
+    pub fn add_assistant_message(&mut self, content: String, tokens: u32) {
+        self.inner
+            .push_history(RustMessage::assistant(content), tokens);
+    }
+
+    #[napi]
+    pub fn pressure(&self) -> f64 {
+        self.inner.rho()
+    }
+
+    #[napi]
+    pub fn total_tokens(&self) -> u32 {
+        self.inner.partitions.total_tokens()
+    }
+
+    /// Run compression at the level the current pressure recommends.
+    /// Returns tokens saved.
+    #[napi]
+    pub fn compress(&mut self) -> u32 {
+        let action = self.inner.should_compress();
+        if action == PressureAction::None {
+            return 0;
+        }
+        let before = self.inner.partitions.total_tokens();
+        self.inner.compress(action);
+        let after = self.inner.partitions.total_tokens();
+        before.saturating_sub(after)
+    }
+
+    #[napi]
+    pub fn render(&self) -> Vec<Message> {
+        self.inner.render().iter().map(message_from_rust).collect()
+    }
+
+    /// Replace the available-skills set with frontmatter-only metadata.
+    /// The kernel will auto-inject the `skill` meta-tool into every `CallLLM` action.
+    #[napi]
+    pub fn set_available_skills(&mut self, skills: Vec<SkillMetadata>) {
+        let rust_skills = skills.into_iter().map(skill_metadata_to_rust).collect();
+        self.inner.set_available_skills(rust_skills);
+    }
+}
+
+// ─────────────────────────────────────────── LoopStateMachine ───────────────────────────────────────────
+
+#[napi]
+pub struct LoopStateMachine {
+    inner: RustLoopStateMachine,
+}
+
+#[napi]
+impl LoopStateMachine {
+    #[napi(constructor)]
+    pub fn new(policy: LoopPolicy) -> Self {
+        Self { inner: RustLoopStateMachine::new(policy_to_rust(policy)) }
+    }
+
+    /// Convenience: register skills directly on the state machine without
+    /// reaching into the inner ContextEngine.
+    #[napi]
+    pub fn set_available_skills(&mut self, skills: Vec<SkillMetadata>) {
+        let rust_skills = skills.into_iter().map(skill_metadata_to_rust).collect();
+        self.inner.ctx.set_available_skills(rust_skills);
+    }
+
+    /// Enable the `memory` meta-tool. Call with `true` when a DreamStore and agentId
+    /// are configured — the SDK layer intercepts `memory` tool calls and runs the search.
+    #[napi]
+    pub fn set_memory_enabled(&mut self, enabled: bool) {
+        self.inner.ctx.set_memory_enabled(enabled);
+    }
+
+    /// Enable the `knowledge` meta-tool. Call with `true` when a KnowledgeSource
+    /// is configured — the SDK layer intercepts `knowledge` tool calls and runs retrieval.
+    #[napi]
+    pub fn set_knowledge_enabled(&mut self, enabled: bool) {
+        self.inner.ctx.set_knowledge_enabled(enabled);
+    }
+
+    #[napi]
+    pub fn set_tools(&mut self, tools: Vec<ToolSchema>) -> Result<()> {
+        let rust_tools: Vec<RustToolSchema> = tools
+            .into_iter()
+            .map(tool_schema_to_rust)
+            .collect::<Result<_>>()?;
+        self.inner.tools = rust_tools;
+        Ok(())
+    }
+
+    #[napi]
+    pub fn start(&mut self, task: RuntimeTask) -> LoopAction {
+        loop_action_from_rust(self.inner.start(task_to_rust(task)))
+    }
+
+    #[napi]
+    pub fn feed_llm_response(&mut self, message: Message) -> Result<LoopAction> {
+        let msg = message_to_rust(message)?;
+        Ok(loop_action_from_rust(
+            self.inner.feed(RustLoopEvent::LLMResponse { message: msg }),
+        ))
+    }
+
+    #[napi]
+    pub fn feed_tool_results(&mut self, results: Vec<ToolResult>) -> LoopAction {
+        let results: Vec<RustToolResult> = results.into_iter().map(tool_result_to_rust).collect();
+        loop_action_from_rust(self.inner.feed(RustLoopEvent::ToolResults { results }))
+    }
+
+    #[napi]
+    pub fn feed_timeout(&mut self) -> LoopAction {
+        loop_action_from_rust(self.inner.feed(RustLoopEvent::Timeout))
+    }
+
+    #[napi]
+    pub fn is_terminal(&self) -> bool {
+        self.inner.is_terminal()
+    }
+
+    #[napi]
+    pub fn turn(&self) -> u32 {
+        self.inner.turn
+    }
+
+    #[napi]
+    pub fn pressure(&self) -> f64 {
+        self.inner.ctx.rho()
+    }
+
+    /// Drain observations emitted during the most recent feed call.
+    #[napi]
+    pub fn take_observations(&mut self) -> Vec<LoopObservation> {
+        self.inner
+            .take_observations()
+            .into_iter()
+            .map(observation_from_rust)
+            .collect()
+    }
+
+    #[napi]
+    pub fn render(&self) -> Vec<Message> {
+        self.inner.ctx.render().iter().map(message_from_rust).collect()
+    }
+}
+
+// ─────────────────────────────────────────── SignalRouter ───────────────────────────────────────────
+
+#[napi]
+pub struct SignalRouter {
+    inner: RustSignalRouter,
+}
+
+#[napi]
+impl SignalRouter {
+    #[napi(constructor)]
+    pub fn new(max_queue_size: u32) -> Self {
+        Self { inner: RustSignalRouter::new(max_queue_size as usize) }
+    }
+
+    /// Ingest a signal. Returns the disposition string:
+    /// "ignore" | "observe" | "queue" | "run" | "interrupt" | "interrupt_now" | "dropped"
+    #[napi]
+    pub fn ingest(&mut self, signal: RuntimeSignal, is_running: bool) -> Result<String> {
+        let rust_sig = runtime_signal_to_rust(signal)?;
+        Ok(disposition_to_str(self.inner.ingest(rust_sig, is_running)).into())
+    }
+
+    /// Pull the next queued signal (highest priority first).
+    #[napi]
+    pub fn next(&mut self) -> Option<RuntimeSignal> {
+        self.inner.next().as_ref().map(runtime_signal_from_rust)
+    }
+
+    #[napi]
+    pub fn depth(&self) -> u32 {
+        self.inner.depth() as u32
+    }
+
+    #[napi]
+    pub fn clear_dedup(&mut self) {
+        self.inner.clear_dedup();
+    }
+}
+
+// ─────────────────────────────────────────── Governance ───────────────────────────────────────────
+
+#[napi]
+pub struct Governance {
+    inner: RustGovernancePipeline,
+}
+
+#[napi]
+impl Governance {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self { inner: RustGovernancePipeline::default() }
+    }
+
+    #[napi]
+    pub fn block_tool(&mut self, name: String) {
+        self.inner.veto.block_tool(name);
+    }
+
+    #[napi]
+    pub fn set_time(&mut self, now_ms: BigInt) {
+        self.inner.set_time(now_ms.get_u64().1);
+    }
+}
+
+// ──────────────────────────────── Dream / idle-pipeline POD types ────────────────────────────────
+
+/// A single session of agent messages, used as input to `IdlePipeline.feedTrigger`.
+#[napi(object)]
+#[derive(Clone)]
+pub struct SessionData {
+    pub session_id: String,
+    pub agent_id: String,
+    /// Messages from this session.
+    pub messages: Vec<Message>,
+    /// JSON-encoded metadata blob.
+    pub metadata: String,
+    /// Unix ms timestamp.
+    pub created_at_ms: f64,
+    /// Unix ms timestamp.
+    pub updated_at_ms: f64,
+}
+
+/// A long-term memory entry as stored by the agent.
+#[napi(object)]
+#[derive(Clone)]
+pub struct MemoryEntry {
+    pub text: String,
+    pub score: f64,
+    /// JSON-encoded metadata blob.
+    pub metadata: String,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct CurationStats {
+    pub insights_processed: u32,
+    pub duplicates_removed: u32,
+    pub conflicts_resolved: u32,
+    pub entries_added: u32,
+}
+
+/// The delta the `DreamStore.commit` must apply: add `toAdd`, remove `toRemoveIndices`.
+#[napi(object)]
+#[derive(Clone)]
+pub struct CurationResult {
+    pub to_add: Vec<MemoryEntry>,
+    /// Indices into the `existingMemories` slice passed to `feedTrigger`.
+    pub to_remove_indices: Vec<u32>,
+    pub stats: CurationStats,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct IdleRunResult {
+    pub sessions_processed: u32,
+    pub insights_extracted: u32,
+}
+
+/// Discriminated union returned by `IdlePipeline` methods. Inspect `kind`:
+/// - `"synthesize_insights"` → `messages` (SDK must call LLM, then `feedSynthesisResult`)
+/// - `"commit_memories"`     → `agentId`, `curationResult`, `runResult`
+/// - `"noop"` | `"aborted"`
+#[napi(object)]
+#[derive(Clone)]
+pub struct IdlePipelineAction {
+    pub kind: String,
+    pub messages: Option<Vec<Message>>,
+    pub agent_id: Option<String>,
+    pub curation_result: Option<CurationResult>,
+    pub run_result: Option<IdleRunResult>,
+}
+
+// ─────────────────────── Dream conversion helpers ───────────────────────
+
+fn session_data_to_rust(s: SessionData) -> Result<RustSessionData> {
+    let messages: Vec<RustMessage> =
+        s.messages.into_iter().map(message_to_rust).collect::<Result<_>>()?;
+    let metadata: serde_json::Value =
+        serde_json::from_str(&s.metadata).unwrap_or(serde_json::Value::Null);
+    Ok(RustSessionData {
+        session_id: s.session_id,
+        agent_id: s.agent_id,
+        messages,
+        metadata,
+        created_at_ms: s.created_at_ms as u64,
+        updated_at_ms: s.updated_at_ms as u64,
+    })
+}
+
+fn memory_entry_to_rust(e: MemoryEntry) -> RustMemoryEntry {
+    let metadata: serde_json::Value =
+        serde_json::from_str(&e.metadata).unwrap_or(serde_json::Value::Null);
+    RustMemoryEntry { text: e.text, score: e.score, metadata }
+}
+
+fn memory_entry_from_rust(e: &RustMemoryEntry) -> MemoryEntry {
+    MemoryEntry {
+        text: e.text.clone(),
+        score: e.score,
+        metadata: serde_json::to_string(&e.metadata).unwrap_or_else(|_| "null".into()),
+    }
+}
+
+fn curation_result_from_rust(r: RustCurationResult) -> CurationResult {
+    CurationResult {
+        to_add: r.to_add.iter().map(memory_entry_from_rust).collect(),
+        to_remove_indices: r.to_remove_indices.iter().map(|&i| i as u32).collect(),
+        stats: CurationStats {
+            insights_processed: r.stats.insights_processed as u32,
+            duplicates_removed: r.stats.duplicates_removed as u32,
+            conflicts_resolved: r.stats.conflicts_resolved as u32,
+            entries_added: r.stats.entries_added as u32,
+        },
+    }
+}
+
+fn idle_pipeline_action_from_rust(a: RustIdleAction) -> IdlePipelineAction {
+    match a {
+        RustIdleAction::SynthesizeInsights { messages } => IdlePipelineAction {
+            kind: "synthesize_insights".into(),
+            messages: Some(messages.iter().map(message_from_rust).collect()),
+            agent_id: None,
+            curation_result: None,
+            run_result: None,
+        },
+        RustIdleAction::CommitMemories { agent_id, result, run_result } => IdlePipelineAction {
+            kind: "commit_memories".into(),
+            messages: None,
+            agent_id: Some(agent_id),
+            curation_result: Some(curation_result_from_rust(result)),
+            run_result: Some(IdleRunResult {
+                sessions_processed: run_result.sessions_processed as u32,
+                insights_extracted: run_result.insights_extracted as u32,
+            }),
+        },
+        RustIdleAction::Noop => IdlePipelineAction {
+            kind: "noop".into(),
+            messages: None,
+            agent_id: None,
+            curation_result: None,
+            run_result: None,
+        },
+        RustIdleAction::Aborted => IdlePipelineAction {
+            kind: "aborted".into(),
+            messages: None,
+            agent_id: None,
+            curation_result: None,
+            run_result: None,
+        },
+    }
+}
+
+// ─────────────────────────────────────────── EvalPipeline ────────────────────────────────────────
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct EvalPipelineOptions {
+    pub extract_skill_on_pass: Option<bool>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct SkillCandidate {
+    pub name: String,
+    pub description: String,
+    pub when_to_use: Option<String>,
+    pub content: String,
+}
+
+/// Discriminated union returned by `EvalPipeline` methods. Inspect `kind`:
+/// - `"evaluate"` → `messages` (SDK must call evaluator LLM, then `feedEvalResult`)
+/// - `"done"`     → `result` with `passed`, `feedback`, optional `skillCandidate`
+#[napi(object)]
+#[derive(Clone)]
+pub struct EvalPipelineAction {
+    pub kind: String,
+    pub messages: Option<Vec<Message>>,
+    pub passed: Option<bool>,
+    pub feedback: Option<String>,
+    pub skill_candidate: Option<SkillCandidate>,
+}
+
+/// Kernel state machine for the evaluation cycle.
+///
+/// Drive it like this:
+/// 1. `feedOutcome(goal, criteria, result, attempt)` → `"evaluate"` action
+/// 2. Call evaluator LLM with `action.messages`, collect the text response
+/// 3. `feedEvalResult(text)` → `"done"` action
+/// 4. Read `action.passed` / `action.feedback` / `action.skillCandidate`
+/// 5. Call `reset()` before the next attempt
+#[napi]
+pub struct EvalPipeline {
+    inner: RustEvalPipeline,
+}
+
+#[napi]
+impl EvalPipeline {
+    #[napi(constructor)]
+    pub fn new(options: Option<EvalPipelineOptions>) -> Self {
+        let policy = RustEvalPolicy {
+            extract_skill_on_pass: options
+                .and_then(|o| o.extract_skill_on_pass)
+                .unwrap_or(true),
+        };
+        Self { inner: RustEvalPipeline::new(policy) }
+    }
+
+    /// Phase 1 — provide the goal, criteria, agent output, and attempt number.
+    /// Returns an `"evaluate"` action with messages to send to the evaluator LLM.
+    #[napi]
+    pub fn feed_outcome(
+        &mut self,
+        goal: String,
+        criteria: Vec<String>,
+        result: String,
+        attempt: u32,
+    ) -> EvalPipelineAction {
+        match self.inner.feed(RustEvalEvent::Outcome { goal, criteria, result, attempt }) {
+            RustEvalAction::Evaluate { messages } => EvalPipelineAction {
+                kind: "evaluate".into(),
+                messages: Some(messages.iter().map(message_from_rust).collect()),
+                passed: None,
+                feedback: None,
+                skill_candidate: None,
+            },
+            RustEvalAction::Done { result } => eval_done_action(result),
+        }
+    }
+
+    /// Phase 2 — feed back the evaluator LLM's text response.
+    #[napi]
+    pub fn feed_eval_result(&mut self, content: String) -> EvalPipelineAction {
+        match self.inner.feed(RustEvalEvent::EvalResult { content }) {
+            RustEvalAction::Done { result } => eval_done_action(result),
+            RustEvalAction::Evaluate { messages } => EvalPipelineAction {
+                kind: "evaluate".into(),
+                messages: Some(messages.iter().map(message_from_rust).collect()),
+                passed: None,
+                feedback: None,
+                skill_candidate: None,
+            },
+        }
+    }
+
+    #[napi]
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    #[napi]
+    pub fn is_idle(&self) -> bool {
+        self.inner.is_idle()
+    }
+}
+
+fn eval_done_action(result: deepstrike_core::harness::eval_pipeline::EvalResult) -> EvalPipelineAction {
+    EvalPipelineAction {
+        kind: "done".into(),
+        messages: None,
+        passed: Some(result.passed),
+        feedback: Some(result.feedback),
+        skill_candidate: result.skill_candidate.map(|s| SkillCandidate {
+            name: s.name,
+            description: s.description,
+            when_to_use: s.when_to_use,
+            content: s.content,
+        }),
+    }
+}
+
+/// Kernel state machine for the idle dreaming cycle.
+///
+/// Drive it like this:
+/// 1. `feedTrigger(sessions, existingMemories, nowMs)` → `"synthesize_insights"` action
+/// 2. Call LLM with `action.messages`, collect the text response
+/// 3. `feedSynthesisResult(text)` → `"commit_memories"` action
+/// 4. Apply `action.curationResult` via `DreamStore.commit`, then call `reset()`
+#[napi]
+pub struct IdlePipeline {
+    inner: RustIdlePipeline,
+}
+
+#[napi]
+impl IdlePipeline {
+    #[napi(constructor)]
+    pub fn new(agent_id: String) -> Self {
+        Self { inner: RustIdlePipeline::new(RustIdlePolicy::new(agent_id)) }
+    }
+
+    /// Phase 1 — provide sessions + current memory snapshot; kernel builds the LLM prompt.
+    #[napi]
+    pub fn feed_trigger(
+        &mut self,
+        sessions: Vec<SessionData>,
+        existing_memories: Vec<MemoryEntry>,
+        now_ms: f64,
+    ) -> Result<IdlePipelineAction> {
+        let rust_sessions: Vec<RustSessionData> =
+            sessions.into_iter().map(session_data_to_rust).collect::<Result<_>>()?;
+        let rust_memories: Vec<RustMemoryEntry> =
+            existing_memories.into_iter().map(memory_entry_to_rust).collect();
+        let action = self.inner.feed(RustIdleEvent::Trigger {
+            sessions: rust_sessions,
+            existing_memories: rust_memories,
+            now_ms: now_ms as u64,
+        });
+        Ok(idle_pipeline_action_from_rust(action))
+    }
+
+    /// Phase 2 — feed back the LLM's synthesis text; kernel parses and curates.
+    #[napi]
+    pub fn feed_synthesis_result(&mut self, content: String) -> IdlePipelineAction {
+        idle_pipeline_action_from_rust(self.inner.feed(RustIdleEvent::SynthesisResult { content }))
+    }
+
+    #[napi]
+    pub fn is_idle(&self) -> bool {
+        self.inner.is_idle()
+    }
+
+    /// Reset to `Idle` after handling `CommitMemories` to allow the next cycle.
+    #[napi]
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
+}

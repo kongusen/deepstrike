@@ -1,0 +1,18 @@
+[package]
+name = "deepstrike-py"
+description = "Python bindings for DeepStrike runtime kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "deepstrike"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+deepstrike-core = { workspace = true }
+deepstrike-tokenizer = { workspace = true }
+serde_json = { workspace = true }
+compact_str = { workspace = true }
+uuid = { workspace = true }

@@ -1,0 +1,19 @@
+{
+  "name": "@deepstrike/core-linux-x64-musl",
+  "version": "0.1.0",
+  "cpu": [
+    "x64"
+  ],
+  "main": "deepstrike-core.linux-x64-musl.node",
+  "files": [
+    "deepstrike-core.linux-x64-musl.node"
+  ],
+  "description": "DeepStrike kernel — pre-built native addon",
+  "license": "Apache-2.0 OR MIT",
+  "os": [
+    "linux"
+  ],
+  "libc": [
+    "musl"
+  ]
+}

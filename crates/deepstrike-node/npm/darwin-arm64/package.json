@@ -1,0 +1,16 @@
+{
+  "name": "@deepstrike/core-darwin-arm64",
+  "version": "0.1.0",
+  "cpu": [
+    "arm64"
+  ],
+  "main": "deepstrike-core.darwin-arm64.node",
+  "files": [
+    "deepstrike-core.darwin-arm64.node"
+  ],
+  "description": "DeepStrike kernel — pre-built native addon",
+  "license": "Apache-2.0 OR MIT",
+  "os": [
+    "darwin"
+  ]
+}

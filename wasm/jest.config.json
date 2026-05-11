@@ -1,0 +1,11 @@
+{
+  "extensionsToTreatAsEsm": [".ts"],
+  "testEnvironment": "node",
+  "moduleNameMapper": {
+    "^(\\.{1,2}/.*)\\.js$": "$1",
+    "^@deepstrike/wasm-kernel$": "<rootDir>/tests/__mocks__/kernel.ts"
+  },
+  "transform": {
+    "^.+\\.tsx?$": ["ts-jest", { "useESM": true, "tsconfig": { "module": "ESNext", "moduleResolution": "bundler" } }]
+  }
+}
