@@ -107,7 +107,11 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Build @deepstrike/sdk
-        run: npm install && npm run build
+        run: |
+          npm install
+          # Patch @deepstrike/core type definitions with the freshly-built ones
+          cp ../crates/deepstrike-node/index.d.ts node_modules/@deepstrike/core/index.d.ts
+          npm run build
         working-directory: node
 
       - name: Publish @deepstrike/sdk

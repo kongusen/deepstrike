@@ -1,12 +1,15 @@
 from deepstrike._kernel import (
     Message, ToolCall, ToolResult, ToolSchema,
     RuntimeTask, LoopPolicy, LoopResult,
-    SkillMetadata, LoadedSkill, SelectionPlan,
+    SkillMetadata,
     LoopAction, LoopObservation,
     LoopStateMachine, ContextEngine,
     SignalRouter, Governance,
+    RuntimeSignal as KernelRuntimeSignal,
+    EvalPipeline, EvalPipelineAction, SkillCandidate,
+    IdlePipeline,
 )
-from deepstrike.agent import Agent, SkillLoader
+from deepstrike.agent import Agent
 from deepstrike.providers import (
     LLMProvider, AnthropicProvider, OpenAIProvider,
     QwenProvider, DeepSeekProvider, MiniMaxProvider, OllamaProvider,
@@ -20,13 +23,13 @@ from deepstrike.memory import (
     DreamStore, DreamResult, SessionData, MemoryEntry, CurationResult, CurationStats,
 )
 from deepstrike.safety import PermissionManager, PermissionMode, Permission, PermissionDecision
-from deepstrike.harness import Harness, SinglePassHarness, EvalLoopHarness, HarnessRequest, HarnessOutcome, QualityGate
+from deepstrike.harness import SinglePassHarness, HarnessLoop, HarnessRequest, HarnessOutcome
 from deepstrike.skills import SkillRegistry
 from deepstrike.knowledge import KnowledgeSource
 from deepstrike.signals import RuntimeSignal, SignalSource, ScheduledPrompt
 
 __all__ = [
-    "Agent", "SkillLoader",
+    "Agent",
     "LLMProvider", "AnthropicProvider", "OpenAIProvider",
     "QwenProvider", "DeepSeekProvider", "MiniMaxProvider", "OllamaProvider",
     "StreamEvent", "TextDelta", "ThinkingDelta",
@@ -36,14 +39,16 @@ __all__ = [
     "WorkingMemory",
     "DreamStore", "DreamResult", "SessionData", "MemoryEntry", "CurationResult", "CurationStats",
     "PermissionManager", "PermissionMode", "Permission", "PermissionDecision",
-    "Harness", "SinglePassHarness", "EvalLoopHarness", "HarnessRequest", "HarnessOutcome", "QualityGate",
+    "SinglePassHarness", "HarnessLoop", "HarnessRequest", "HarnessOutcome",
     "SkillRegistry",
     "KnowledgeSource",
     "RuntimeSignal", "SignalSource", "ScheduledPrompt",
     "Message", "ToolCall", "ToolResult", "ToolSchema",
     "RuntimeTask", "LoopPolicy", "LoopResult",
-    "SkillMetadata", "LoadedSkill", "SelectionPlan",
+    "SkillMetadata",
     "LoopAction", "LoopObservation",
     "LoopStateMachine", "ContextEngine",
     "SignalRouter", "Governance",
+    "EvalPipeline", "EvalPipelineAction", "SkillCandidate",
+    "IdlePipeline",
 ]
