@@ -96,12 +96,12 @@ jobs:
             node_file=$(ls ../../artifacts/deepstrike-core.*${pkg}*.node 2>/dev/null | head -1)
             if [ -n "$node_file" ]; then
               cp "$node_file" "$dir/"
-              npm publish "$dir" --access public
+              npm publish "$dir" --access public || echo "Skipping $pkg (already published)"
             fi
           done
 
       - name: Publish @deepstrike/core
-        run: npm publish --access public
+        run: npm publish --access public || echo "Skipping @deepstrike/core (already published)"
         working-directory: crates/deepstrike-node
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
