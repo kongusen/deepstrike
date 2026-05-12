@@ -1,8 +1,11 @@
 from __future__ import annotations
 import pathlib
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
-from deepstrike._kernel import EvalPipeline
+from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
+try:
+    from deepstrike._kernel import EvalPipeline
+except ImportError:
+    EvalPipeline = None  # type: ignore[assignment,misc]
 from deepstrike.providers.stream import DoneEvent, TextDelta
 
 if TYPE_CHECKING:
@@ -25,6 +28,16 @@ class HarnessOutcome:
     total_tokens: int
     status: str
     feedback: str | None = None
+
+
+@runtime_checkable
+class Harness(Protocol):
+    async def run(self, request: HarnessRequest) -> HarnessOutcome: ...
+
+
+@runtime_checkable
+class QualityGate(Protocol):
+    async def evaluate(self, request: HarnessRequest, outcome: HarnessOutcome) -> bool: ...
 
 
 async def _run_once(agent: "Agent", goal: str, request: HarnessRequest) -> HarnessOutcome:
@@ -122,4 +135,27 @@ class HarnessLoop:
             current_goal = f"{request.goal}\n\n[Previous attempt {attempt} failed: {done_action.feedback}]"
             pipeline.reset()
 
+        return outcome
+
+
+class EvalLoopHarness:
+    """Retry loop driven by a pluggable QualityGate (not LLM-as-judge)."""
+
+    def __init__(
+        self,
+        agent: "Agent",
+        gate: "QualityGate",
+        max_attempts: int = 3,
+    ):
+        self._agent = agent
+        self._gate = gate
+        self._max_attempts = max_attempts
+
+    async def run(self, request: HarnessRequest) -> HarnessOutcome:
+        outcome = HarnessOutcome(result="", passed=False, iterations=0, total_tokens=0, status="error")
+        for _ in range(self._max_attempts):
+            outcome = await _run_once(self._agent, request.goal, request)
+            if await self._gate.evaluate(request, outcome):
+                outcome.passed = True
+                return outcome
         return outcome

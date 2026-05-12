@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use compact_str::CompactString;
-use deepstrike_core::types::message::{Content, Message, Role, ToolCall, ToolSchema};
+use deepstrike_core::types::message::{Content, ContentPart, Message, Role, ToolCall, ToolSchema};
 use futures::{Stream, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -31,6 +31,37 @@ impl AnthropicProvider {
     }
 }
 
+fn content_part_to_anthropic(part: &ContentPart) -> Value {
+    match part {
+        ContentPart::Text { text } => json!({ "type": "text", "text": text }),
+        ContentPart::Image { url: Some(url), data: None, .. } => {
+            json!({ "type": "image", "source": { "type": "url", "url": url } })
+        }
+        ContentPart::Image { data: Some(data), media_type, .. } => {
+            let mt = media_type.as_deref().unwrap_or("image/png");
+            json!({ "type": "image", "source": { "type": "base64", "media_type": mt, "data": data } })
+        }
+        ContentPart::Image { .. } => json!({ "type": "text", "text": "" }),
+        ContentPart::Audio { media_type, .. } => {
+            // Anthropic messages API doesn't accept audio natively; surface as placeholder
+            json!({ "type": "text", "text": format!("[audio: {media_type}]") })
+        }
+        ContentPart::ToolResult { call_id, output, is_error } => {
+            json!({ "type": "tool_result", "tool_use_id": call_id.as_str(), "content": output, "is_error": is_error })
+        }
+    }
+}
+
+fn content_to_anthropic(content: &Content) -> Value {
+    match content {
+        Content::Text(s) => json!(s),
+        Content::Parts(parts) => {
+            let blocks: Vec<Value> = parts.iter().map(content_part_to_anthropic).collect();
+            json!(blocks)
+        }
+    }
+}
+
 fn messages_to_anthropic(messages: &[Message]) -> (Option<String>, Vec<Value>) {
     let system = messages
         .iter()
@@ -43,8 +74,7 @@ fn messages_to_anthropic(messages: &[Message]) -> (Option<String>, Vec<Value>) {
         .filter(|m| m.role != Role::System)
         .map(|m| {
             let role = match m.role { Role::User => "user", _ => "assistant" };
-            let content = match &m.content { Content::Text(s) => s.clone(), _ => String::new() };
-            json!({ "role": role, "content": content })
+            json!({ "role": role, "content": content_to_anthropic(&m.content) })
         })
         .collect();
     (if system.is_empty() { None } else { Some(system) }, msgs)

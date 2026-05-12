@@ -8,7 +8,15 @@ export class OllamaProvider implements LLMProvider {
   ) {}
 
   private toOllamaMessages(messages: Message[]) {
-    return messages.map(m => ({ role: m.role, content: m.content }))
+    return messages.map(m => {
+      const images: string[] = []
+      if (m.contentParts?.length) {
+        for (const p of m.contentParts) {
+          if (p.type === "image" && p.data) images.push(p.data)
+        }
+      }
+      return { role: m.role, content: m.content, ...(images.length ? { images } : {}) }
+    })
   }
 
   async complete(messages: Message[], tools: ToolSchema[]): Promise<Message> {

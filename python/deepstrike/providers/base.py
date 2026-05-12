@@ -98,6 +98,47 @@ class CircuitBreaker:
             logger.warning("Circuit breaker opened after %d failures", self._failures)
 
 
+def to_anthropic_content(msg: Message) -> str | list[dict]:
+    """Convert Message to Anthropic API content format."""
+    if not getattr(msg, "content_parts", None):
+        return msg.content
+    parts = []
+    for p in msg.content_parts:
+        if p.type == "text":
+            parts.append({"type": "text", "text": p.text or ""})
+        elif p.type == "image":
+            if p.data:
+                parts.append({"type": "image", "source": {"type": "base64", "media_type": p.media_type or "image/png", "data": p.data}})
+            elif p.url:
+                parts.append({"type": "image", "source": {"type": "url", "url": p.url}})
+        elif p.type == "audio":
+            parts.append({"type": "text", "text": f"[audio: {p.media_type}]"})
+    return parts or msg.content
+
+
+def to_openai_content(msg: Message) -> str | list[dict]:
+    """Convert Message to OpenAI API content format."""
+    if not getattr(msg, "content_parts", None):
+        return msg.content
+    parts = []
+    for p in msg.content_parts:
+        if p.type == "text":
+            parts.append({"type": "text", "text": p.text or ""})
+        elif p.type == "image":
+            if p.data:
+                url = f"data:{p.media_type or 'image/png'};base64,{p.data}"
+            else:
+                url = p.url or ""
+            image_url: dict = {"url": url}
+            if p.detail:
+                image_url["detail"] = p.detail
+            parts.append({"type": "image_url", "image_url": image_url})
+        elif p.type == "audio":
+            fmt = (p.media_type or "audio/wav").split("/")[-1]
+            parts.append({"type": "input_audio", "input_audio": {"data": p.data, "format": fmt}})
+    return parts or msg.content
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
     async def complete(self, messages: list[Message], tools: list[ToolSchema]) -> Message: ...

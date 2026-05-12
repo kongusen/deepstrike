@@ -1,6 +1,6 @@
 # DeepStrike Node.js SDK
 
-Agent framework built on a Rust kernel. The kernel handles loop control, context compression, skill selection, and termination — the SDK handles all I/O.
+Agent framework built on a Rust kernel. The kernel handles loop control, context compression, skill routing, governance, signal prioritization — the SDK handles all I/O.
 
 ## Install
 
@@ -15,21 +15,25 @@ Requires Node.js 18+. The Rust kernel is distributed as a pre-built native addon
 ## Quick start
 
 ```typescript
-import { Agent, AnthropicProvider, tool } from "@deepstrike/sdk"
+import { Agent, OpenAIProvider, tool } from "@deepstrike/sdk"
+
+const provider = new OpenAIProvider({
+  apiKey: process.env.OPENAI_API_KEY,
+  model: "gpt-5-mini",
+  baseUrl: "https://api.openai.com/v1",
+})
 
 const add = tool("add", "Add two numbers.", {
   type: "object",
   properties: { x: { type: "number" }, y: { type: "number" } },
   required: ["x", "y"],
-}, async ({ x, y }) => String((x as number) + (y as number)))
+}, async ({ x, y }) => String(Number(x) + Number(y)))
 
-const agent = new Agent(
-  new AnthropicProvider("sk-..."),
-  { maxTokens: 32_000, maxTurns: 10 },
-)
+const agent = new Agent(provider, { maxTokens: 4096 })
 agent.register(add)
 
-await agent.run("What is 2 + 3?")
+const result = await agent.run("What is 17 + 28?")
+console.log(result) // "done in 2 turns (completed)"
 ```
 
 Streaming:
@@ -38,34 +42,10 @@ Streaming:
 for await (const event of agent.runStreaming("Summarize README.md")) {
   if (event.type === "text_delta") process.stdout.write(event.delta)
   else if (event.type === "tool_call") console.log(`\n[→ ${event.name}]`)
+  else if (event.type === "tool_result") console.log(`  = ${event.content}`)
   else if (event.type === "done") console.log(`\ndone in ${event.iterations} turns (${event.status})`)
 }
 ```
-
----
-
-## Architecture
-
-```
-src/
-├── index.ts          # Public exports
-├── agent.ts          # Agent — top-level entry point
-├── types.ts          # Shared type definitions
-├── providers/        # LLM adapters (HTTP + streaming)
-├── tools/            # tool() helper, executeTools, built-ins
-├── skills/           # SkillLoader — .md file loading
-├── memory/           # WorkingMemory + MemorySource/Extractor interfaces
-├── knowledge/        # KnowledgeSource interface
-├── harness/          # SinglePassHarness, EvalLoopHarness, QualityGate
-├── signals/          # RuntimeSignal, SignalSource, ScheduledPrompt
-└── safety/           # PermissionManager
-```
-
-The kernel (`@deepstrike/core`, Rust/NAPI) owns:
-- `LoopStateMachine` — drives `call_llm → execute_tools → load_skills → done`
-- `ContextEngine` — 5-partition context with pressure-based compression
-- `Governance` — tool veto authority
-- `SignalRouter` — external interrupt queue
 
 ---
 
@@ -73,28 +53,33 @@ The kernel (`@deepstrike/core`, Rust/NAPI) owns:
 
 | Class | Backend | Notes |
 |-------|---------|-------|
-| `AnthropicProvider` | Anthropic API | Native SSE, `ThinkingDelta` support |
 | `OpenAIProvider` | OpenAI API | SSE tool-call accumulation |
+| `AnthropicProvider` | Anthropic API | Native SSE, `ThinkingDelta` support |
 | `QwenProvider` | DashScope | `enable_thinking` via extensions |
 | `DeepSeekProvider` | DeepSeek API | Reasoner models strip tools automatically |
 | `MiniMaxProvider` | MiniMax API | M1 reasoning via `expose_reasoning` |
 | `OllamaProvider` | Local Ollama | `http://localhost:11434` default |
+| `KimiProvider` | Moonshot API | |
+
+All providers accept `RetryConfig` for exponential backoff and share a `CircuitBreaker`.
+
+---
+
+## Agent options
 
 ```typescript
-import { AnthropicProvider } from "@deepstrike/sdk"
-
-const provider = new AnthropicProvider("sk-...", "claude-opus-4-7", {
-  maxRetries: 5,
-  baseDelay: 2000,
+const agent = new Agent(provider, {
+  maxTokens: 4096,            // context window size
+  maxTurns: 25,               // max turns (default 25)
+  timeoutMs: 60_000,          // timeout in ms
+  extensions: { temperature: 0.1 },  // pass-through to LLM
+  skillDir: "./skills",       // skill .md files directory
+  knowledgeSource: myKS,      // KnowledgeSource implementation
+  signalSource: rx,           // SignalSource for external signals
+  dreamStore: myStore,        // DreamStore for long-term memory
+  agentId: "my-agent",        // required with dreamStore for memory meta-tool
+  governance: gov,            // Governance pipeline instance
 })
-```
-
-Thinking / reasoning:
-
-```typescript
-for await (const event of agent.runStreaming("...", undefined, { enable_thinking: true })) {
-  if (event.type === "thinking_delta") process.stdout.write(event.delta)
-}
 ```
 
 ---
@@ -102,195 +87,177 @@ for await (const event of agent.runStreaming("...", undefined, { enable_thinking
 ## Tools
 
 ```typescript
-import { tool, Agent } from "@deepstrike/sdk"
+import { tool, readFile } from "@deepstrike/sdk"
 
-const search = tool("search", "Search the knowledge base.", {
-  type: "object",
-  properties: { query: { type: "string" }, topK: { type: "number" } },
-  required: ["query"],
-}, async ({ query, topK }) => mySearch(query as string, topK as number))
-
-agent.register(search)
+agent.register(tool("search", "Search.", schema, async (args) => ...))
+agent.register(readFile())   // built-in: read files from disk
 agent.unregister("search")
-agent.blockTool("bash")   // governance veto — permanent for this agent instance
+agent.blockTool("bash")      // governance veto
 ```
-
-Built-in tools: `readFile`.
 
 ---
 
 ## Skills
 
-Skills are `.md` files with YAML frontmatter. The kernel selects and injects them automatically.
+Skills are `.md` files with YAML frontmatter. Set `skillDir` on the agent — the kernel auto-injects a `skill` meta-tool, and the LLM loads skills by name on demand.
+
+```typescript
+const agent = new Agent(provider, { maxTokens: 4096, skillDir: "./skills" })
+```
 
 ```markdown
 ---
-name: debug
-description: Step-by-step debugging guide
-when_to_use: error, traceback, exception
-effort: 2
-estimated_tokens: 800
+name: summarize
+description: Summarize text into 2-3 concise bullet points
+when_to_use: When you need to condense long text
+effort: 1
 ---
-
-## Debug protocol
-1. Read the traceback carefully ...
-```
-
-```typescript
-import { Agent, SkillLoader } from "@deepstrike/sdk"
-
-const loader = new SkillLoader("~/.deepstrike/skills")
-const agent = new Agent(provider, { maxTokens: 32_000, maxTurns: 10, skillLoader: loader })
-```
-
----
-
-## Memory
-
-Implement `MemorySource` to inject persistent context before a run, and `MemoryExtractor` to persist what was learned after.
-
-```typescript
-import type { MemorySource, MemoryExtractor } from "@deepstrike/sdk"
-
-class MyMemorySource implements MemorySource {
-  async load(goal: string): Promise<string[]> {
-    return db.query(goal)
-  }
-}
-
-class MyMemoryExtractor implements MemoryExtractor {
-  async extract(goal: string, finalText: string, turns: number): Promise<void> {
-    await db.save(goal, finalText)
-  }
-}
-
-const agent = new Agent(provider, {
-  maxTokens: 32_000,
-  maxTurns: 10,
-  memorySource: new MyMemorySource(),
-  memoryExtractor: new MyMemoryExtractor(),
-})
-```
-
-`WorkingMemory` is an in-process scratch pad for within-run state:
-
-```typescript
-import { WorkingMemory } from "@deepstrike/sdk"
-
-const mem = new WorkingMemory()
-mem.set("step", 1)
-mem.get("step")   // 1
+1. Identify the 2-3 most important points
+2. Express each as a concise bullet
 ```
 
 ---
 
 ## Knowledge
 
-Inject run-scoped evidence (RAG results, API responses) without polluting long-term memory:
+Implement `KnowledgeSource` to connect any RAG system. The kernel injects a `knowledge` meta-tool that the LLM calls on demand.
 
 ```typescript
-import type { KnowledgeSource } from "@deepstrike/sdk"
-
-class VectorSearch implements KnowledgeSource {
-  async retrieve(goal: string, topK = 5): Promise<string[]> {
-    return vectorDb.search(goal, topK)
-  }
-}
-
 const agent = new Agent(provider, {
-  maxTokens: 32_000,
-  maxTurns: 10,
-  knowledgeSource: new VectorSearch(),
+  maxTokens: 4096,
+  knowledgeSource: {
+    async retrieve(query: string, topK: number): Promise<string[]> {
+      return vectorDb.search(query, topK)
+    }
+  }
 })
 ```
 
-Snippets are prepended as a system message before the first LLM call.
-
 ---
 
-## Harness
+## Memory
 
-Control how runs are attempted:
+### WorkingMemory (in-session scratch pad)
 
 ```typescript
-import { Agent, SinglePassHarness, EvalLoopHarness, HarnessRequest } from "@deepstrike/sdk"
-import type { QualityGate, HarnessOutcome } from "@deepstrike/sdk"
+import { WorkingMemory } from "@deepstrike/sdk"
+const mem = new WorkingMemory()
+mem.set("step", 1)
+mem.get("step")  // 1
+mem.clear()
+```
 
-// Single pass
-const harness = new SinglePassHarness(agent)
-const outcome = await harness.run({ goal: "Write a haiku" })
+### DreamStore (long-term memory + dreaming pipeline)
 
-// Eval loop — retry until QualityGate passes (max 3 attempts)
-class LengthGate implements QualityGate {
-  async evaluate(request: HarnessRequest, outcome: HarnessOutcome): Promise<boolean> {
-    return outcome.result.length > 50
-  }
+```typescript
+import type { DreamStore } from "@deepstrike/sdk"
+
+class MyStore implements DreamStore {
+  async loadSessions(agentId) { ... }
+  async loadMemories(agentId) { ... }
+  async commit(agentId, result, existing) { ... }
+  async search(agentId, query, topK) { ... }
 }
 
-const evalHarness = new EvalLoopHarness(agent, new LengthGate(), 3)
-const result = await evalHarness.run({ goal: "Write a haiku" })
-console.log(result.passed, result.iterations)
+const agent = new Agent(provider, {
+  maxTokens: 4096,
+  dreamStore: new MyStore(),
+  agentId: "my-agent",  // enables `memory` meta-tool
+})
+
+// In-session: LLM calls memory(query) → DreamStore.search()
+// Post-session: trigger memory consolidation
+const result = await agent.dream("my-agent", Date.now())
 ```
 
 ---
 
-## Signals & interrupts
+## Governance
 
-```typescript
-import { ScheduledPrompt } from "@deepstrike/sdk"
-import type { SignalSource, RuntimeSignal } from "@deepstrike/sdk"
-
-// Interrupt a running agent
-setTimeout(() => agent.interrupt(), 30_000)
-
-// Convert a scheduled prompt to a RuntimeSignal
-const prompt = new ScheduledPrompt("Daily standup summary", 1_700_000_000_000)
-const signal = prompt.toSignal()
-// signal.kind === "scheduled"
-// signal.payload === { goal: "Daily standup summary", criteria: [], runAtMs: ... }
-```
-
-Implement `SignalSource` to feed signals from any external source:
-
-```typescript
-class WebhookSource implements SignalSource {
-  async nextSignal(): Promise<RuntimeSignal | null> {
-    const event = await webhookQueue.get()
-    return { kind: "external", payload: event }
-  }
-}
-```
-
----
-
-## Permissions
+### SDK PermissionManager
 
 ```typescript
 import { PermissionManager, PermissionMode } from "@deepstrike/sdk"
 
 const pm = new PermissionManager(PermissionMode.DEFAULT)
-pm.grant("bash", "execute")
-pm.grant("fs", "*")          // wildcard: all actions on fs
-pm.revoke("bash", "execute")
-
-const decision = pm.evaluate("bash", "execute")
-decision.allowed   // boolean
-decision.reason    // string
+pm.grant("fs", "read")
+pm.grantWithApproval("db", "write", "Needs DBA approval")
+pm.revoke("db", "drop")
+pm.evaluate("fs", "read")  // { allowed: true, ... }
 ```
 
-Modes: `DEFAULT` (evaluate grants), `PLAN` (block all), `AUTO` (allow all).
+### Kernel Governance (full pipeline)
+
+```typescript
+import { Governance } from "@deepstrike/sdk"
+
+const gov = new Governance("allow")
+gov.addPermissionRule("danger.*", "deny")
+gov.blockTool("rm_rf")
+gov.setRateLimit("api_call", 10, 60_000)
+
+const agent = new Agent(provider, { maxTokens: 4096, governance: gov })
+// Every tool call goes through: Permission → Veto → RateLimit → Constraint → Audit
+```
+
+---
+
+## Signals
+
+```typescript
+import { SignalGateway, ScheduledPrompt } from "@deepstrike/sdk"
+
+const gw = new SignalGateway()
+const rx = gw.subscribe()
+
+gw.schedule(new ScheduledPrompt("standup", Date.now() + 3600_000))
+gw.ingest({ kind: "interrupt", payload: {}, priority: 10 })
+
+const agent = new Agent(provider, { maxTokens: 4096, signalSource: rx })
+// kind="interrupt" → immediately stops the running agent
+
+agent.interrupt() // also works directly
+gw.destroy()
+```
+
+---
+
+## Harness (evaluation framework)
+
+```typescript
+import { SinglePassHarness, EvalLoopHarness, HarnessLoop } from "@deepstrike/sdk"
+
+// 1. SinglePass — run once, always passes
+const outcome = await new SinglePassHarness(agent).run({ goal: "Say hello" })
+
+// 2. EvalLoop — retry until QualityGate passes
+const harness = new EvalLoopHarness(agent, {
+  gate: async (req, out) => out.result.includes("hello"),
+  maxAttempts: 3,
+})
+
+// 3. HarnessLoop — LLM-as-judge with feedback injection + skill extraction
+const loop = new HarnessLoop(agent, {
+  evalProvider,
+  maxAttempts: 3,
+  skillDir: "./skills",
+})
+const out = await loop.run({ goal: "Write a haiku", criteria: ["Must be 3 lines"] })
+console.log(out.passed, out.feedback)
+```
 
 ---
 
 ## Stream events
 
-| Event type | Fields |
-|------------|--------|
-| `text_delta` | `delta: string` |
-| `thinking_delta` | `delta: string` |
-| `tool_call` | `id, name, arguments` |
-| `tool_result` | `callId, name, content, isError` |
-| `done` | `iterations, totalTokens, status` |
-| `error` | `message: string` |
+| Event type | Key fields |
+|------------|------------|
+| `text_delta` | `delta` |
+| `thinking_delta` | `delta` |
+| `tool_call` | `id`, `name`, `arguments` |
+| `tool_result` | `callId`, `content`, `isError` |
+| `permission_request` | `toolName`, `reason` |
+| `done` | `iterations`, `totalTokens`, `status` |
+| `error` | `message` |
 
-`status` mirrors the kernel termination reason: `completed` / `max_turns` / `token_budget` / `timeout` / `user_abort` / `error`.
+`status`: `completed` · `max_turns` · `token_budget` · `timeout` · `user_abort` · `error`

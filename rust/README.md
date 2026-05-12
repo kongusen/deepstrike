@@ -1,13 +1,14 @@
 # DeepStrike Rust SDK
 
-Agent framework built on `deepstrike-core`. The kernel handles loop control, context compression, skill selection, and termination — the SDK handles all I/O.
+Agent framework built on `deepstrike-core`. The kernel handles loop control, context compression, skill routing, governance, signal prioritization — the SDK handles all I/O.
 
 ## Add to your project
 
 ```toml
 [dependencies]
-deepstrike-sdk = { path = "../deepstrike-sdk" }
+deepstrike-sdk = "0.1"
 tokio = { version = "1", features = ["full"] }
+futures = "0.3"
 ```
 
 ---
@@ -15,30 +16,39 @@ tokio = { version = "1", features = ["full"] }
 ## Quick start
 
 ```rust
-use deepstrike_sdk::{Agent, AgentOptions, AnthropicProvider};
+use deepstrike_sdk::{Agent, AgentOptions, OpenAIProvider, RegisteredTool};
 
 #[tokio::main]
 async fn main() {
-    let provider = AnthropicProvider::new("sk-...");
-    let agent = Agent::new(provider, AgentOptions::new(32_000));
-    let result = agent.run("What is 2 + 3?").await.unwrap();
-    println!("{result}");
+    let provider = OpenAIProvider::with_base_url("sk-...", "gpt-5-mini", "https://api.openai.com/v1");
+
+    let mut agent = Agent::new(provider, AgentOptions::new(4096));
+    agent.register(RegisteredTool::new(
+        "add", "Add two numbers.",
+        serde_json::json!({"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"}},"required":["x","y"]}),
+        |args| Box::pin(async move {
+            Ok(format!("{}", args["x"].as_i64().unwrap() + args["y"].as_i64().unwrap()))
+        }),
+    ));
+
+    let result = agent.run("What is 17 + 28?").await.unwrap();
+    println!("{result}"); // "done in 2 turns (completed)"
 }
 ```
 
 Streaming:
 
 ```rust
-use deepstrike_sdk::{Agent, AgentOptions, AnthropicProvider, RunEvent};
+use deepstrike_sdk::RunEvent;
 use futures::StreamExt;
 
 let mut stream = agent.run_streaming("Summarize README.md", &[], None).await?;
 while let Some(evt) = stream.next().await {
     match evt? {
-        RunEvent::TextDelta(d)           => print!("{d}"),
-        RunEvent::ToolCall { name, .. }  => println!("\n[→ {name}]"),
-        RunEvent::Done { iterations, status, .. } =>
-            println!("\ndone in {iterations} turns ({status})"),
+        RunEvent::TextDelta(d) => print!("{d}"),
+        RunEvent::ToolCall { name, .. } => println!("\n[→ {name}]"),
+        RunEvent::ToolResult { content, .. } => println!("  = {content}"),
+        RunEvent::Done { iterations, status, .. } => println!("\ndone in {iterations} turns ({status})"),
         _ => {}
     }
 }
@@ -46,57 +56,36 @@ while let Some(evt) = stream.next().await {
 
 ---
 
-## Architecture
-
-```
-crates/deepstrike-sdk/src/
-├── lib.rs          # Public re-exports
-├── agent.rs        # Agent + SinglePassHarness + EvalLoopHarness
-├── providers/      # LLMProvider trait + Anthropic/OpenAI impls
-├── tools.rs        # RegisteredTool, execute_tools, read_file_tool
-├── memory.rs       # WorkingMemory + MemorySource/Extractor traits
-├── knowledge.rs    # KnowledgeSource trait
-├── harness.rs      # Harness, HarnessRequest, HarnessOutcome, QualityGate
-├── signals.rs      # RuntimeSignal, SignalSource, ScheduledPrompt
-└── safety.rs       # PermissionManager + PermissionMode
-```
-
-The kernel (`deepstrike-core`) owns:
-- `LoopStateMachine` — drives `CallLLM → ExecuteTools → LoadSkills → Done`
-- `ContextManager` — 5-partition context with pressure-based compression
-- `GovernancePipeline` — tool veto authority
-- `SignalRouter` — external interrupt queue
-
----
-
 ## Providers
 
 | Constructor | Backend |
 |-------------|---------|
-| `AnthropicProvider::new(api_key)` | Anthropic API (SSE) |
-| `AnthropicProvider::with_model(api_key, model)` | Anthropic, custom model |
 | `OpenAIProvider::new(api_key)` | OpenAI API |
 | `OpenAIProvider::with_base_url(key, model, url)` | Any OpenAI-compatible endpoint |
-| `qwen(api_key)` | DashScope |
+| `AnthropicProvider::new(api_key)` | Anthropic API |
+| `qwen(api_key)` | DashScope (通义千问) |
 | `deepseek(api_key)` | DeepSeek API |
 | `minimax(api_key)` | MiniMax API |
-| `ollama(model)` | Local Ollama (`http://localhost:11434`) |
+| `ollama(model)` | Local Ollama |
+| `kimi(api_key)` | Moonshot Kimi |
+
+Custom providers: implement the `LLMProvider` trait.
+
+---
+
+## Agent options
 
 ```rust
-use deepstrike_sdk::providers::anthropic::AnthropicProvider;
-
-let provider = AnthropicProvider::with_model("sk-...", "claude-opus-4-7");
-```
-
-Thinking / reasoning:
-
-```rust
-use serde_json::json;
-
-let ext = json!({ "enable_thinking": true });
-let mut stream = agent.run_streaming("...", &[], Some(&ext)).await?;
-while let Some(evt) = stream.next().await {
-    if let RunEvent::ThinkingDelta(d) = evt? { print!("{d}") }
+AgentOptions {
+    max_tokens: 4096,
+    max_turns: 25,                   // default 25
+    timeout_ms: Some(60_000),
+    extensions: Some(json!({"temperature": 0.1})),
+    skill_dir: Some("./skills".into()),
+    knowledge_source: Some(Box::new(my_ks)),
+    signal_source: Some(Box::new(rx)),
+    dream_store: Some(Box::new(my_store)),
+    agent_id: Some("my-agent".into()),
 }
 ```
 
@@ -105,193 +94,145 @@ while let Some(evt) = stream.next().await {
 ## Tools
 
 ```rust
-use deepstrike_sdk::{Agent, AgentOptions, RegisteredTool};
+use deepstrike_sdk::{RegisteredTool, read_file_tool};
 
-let search = RegisteredTool::new(
-    "search",
-    "Search the knowledge base.",
-    serde_json::json!({
-        "type": "object",
-        "properties": { "query": { "type": "string" } },
-        "required": ["query"],
-    }),
-    |args| Box::pin(async move {
-        let query = args["query"].as_str().unwrap_or("").to_string();
-        Ok(my_search(&query).await)
-    }),
-);
-
-let mut agent = Agent::new(provider, AgentOptions::new(32_000));
-agent.register(search);
+agent.register(RegisteredTool::new("search", "Search.", schema, |args| Box::pin(async move { ... })));
+agent.register(read_file_tool());
 agent.unregister("search");
 agent.block_tool("bash");
 ```
-
-Built-in tools: `read_file_tool()`.
 
 ---
 
 ## Skills
 
-Skills are `.md` files with YAML frontmatter. The kernel selects them automatically; the SDK loads them from disk.
-
-```markdown
----
-name: debug
-description: Step-by-step debugging guide
-when_to_use: error, traceback, exception
-effort: 2
-estimated_tokens: 800
----
-
-## Debug protocol
-1. Read the traceback carefully ...
-```
-
-The SDK reads skill files from the path `{name}.md` relative to the working directory when the kernel requests `LoadSkills`.
-
----
-
-## Memory
-
-Implement `MemorySource` to inject persistent context before a run, and `MemoryExtractor` to persist what was learned after.
+Set `skill_dir` — the kernel auto-injects a `skill` meta-tool, and the LLM loads skills by name on demand.
 
 ```rust
-use async_trait::async_trait;
-use deepstrike_sdk::{MemorySource, MemoryExtractor, AgentOptions};
-
-struct MyMemory;
-
-#[async_trait]
-impl MemorySource for MyMemory {
-    async fn load(&self, goal: &str) -> deepstrike_sdk::Result<Vec<String>> {
-        Ok(db.query(goal).await)
-    }
-}
-
-#[async_trait]
-impl MemoryExtractor for MyMemory {
-    async fn extract(&self, goal: &str, final_text: &str, turns: u32) -> deepstrike_sdk::Result<()> {
-        db.save(goal, final_text).await;
-        Ok(())
-    }
-}
-
-let mut options = AgentOptions::new(32_000);
-options.memory_source = Some(Box::new(MyMemory));
-options.memory_extractor = Some(Box::new(MyMemory));
-```
-
-`WorkingMemory` is an in-process scratch pad for within-run state:
-
-```rust
-use deepstrike_sdk::WorkingMemory;
-
-let mut mem = WorkingMemory::default();
-mem.set("step", 1);
-mem.get("step"); // Some(1)
+let agent = Agent::new(provider, AgentOptions {
+    skill_dir: Some("./skills".into()),
+    ..AgentOptions::new(4096)
+});
 ```
 
 ---
 
 ## Knowledge
 
+Implement `KnowledgeSource` — the kernel injects a `knowledge` meta-tool.
+
 ```rust
 use async_trait::async_trait;
-use deepstrike_sdk::{KnowledgeSource, AgentOptions};
 
 struct VectorSearch;
 
 #[async_trait]
 impl KnowledgeSource for VectorSearch {
-    async fn retrieve(&self, goal: &str, top_k: usize) -> deepstrike_sdk::Result<Vec<String>> {
-        Ok(vector_db.search(goal, top_k).await)
+    async fn retrieve(&self, query: &str, top_k: usize) -> deepstrike_sdk::Result<Vec<String>> {
+        Ok(vector_db.search(query, top_k).await)
     }
 }
-
-let mut options = AgentOptions::new(32_000);
-options.knowledge_source = Some(Box::new(VectorSearch));
 ```
 
 ---
 
-## Harness
+## Memory
+
+### WorkingMemory (in-session scratch pad)
 
 ```rust
-use deepstrike_sdk::{Agent, AgentOptions, SinglePassHarness, EvalLoopHarness};
-use deepstrike_sdk::harness::{HarnessRequest, HarnessOutcome, QualityGate};
-use async_trait::async_trait;
+use deepstrike_sdk::WorkingMemory;
 
-// Single pass
-let harness = SinglePassHarness::new(&agent);
-let outcome = harness.run(HarnessRequest::new("Write a haiku")).await?;
-
-// Eval loop — retry until QualityGate passes (max 3 attempts)
-struct LengthGate;
-
-#[async_trait]
-impl QualityGate for LengthGate {
-    async fn evaluate(&self, _req: &HarnessRequest, outcome: &HarnessOutcome) -> deepstrike_sdk::Result<bool> {
-        Ok(outcome.result.len() > 50)
-    }
-}
-
-let harness = EvalLoopHarness::new(&agent, LengthGate, 3);
-let outcome = harness.run(HarnessRequest::new("Write a haiku")).await?;
-println!("{} in  turns", outcome.passed, outcome.iterations);
+let mut mem = WorkingMemory::default();
+mem.set("step", 1);
+mem.get("step");  // Some(&json!(1))
+mem.clear();
 ```
 
----
-
-## Signals & interrupts
+### DreamStore (long-term memory + dreaming pipeline)
 
 ```rust
-use deepstrike_sdk::{ScheduledPrompt, AgentOptions};
-use deepstrike_sdk::signals::{RuntimeSignal, SignalSource};
-use async_trait::async_trait;
-
-// Interrupt from another thread
-let agent = std::sync::Arc::new(agent);
-let agent_clone = agent.clone();
-tokio::spawn(async move {
-    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-    agent_clone.interrupt();
-});
-
-// Convert a scheduled prompt to a RuntimeSignal
-let prompt = ScheduledPrompt::new("Daily standup summary", 1_700_000_000_000);
-let signal = prompt.to_signal();
-// signal.kind == "scheduled"
-
-// Feed signals from any external source
-struct WebhookSource;
-
 #[async_trait]
-impl SignalSource for WebhookSource {
-    async fn next_signal(&self) -> deepstrike_sdk::Result<Option<RuntimeSignal>> {
-        Ok(webhook_queue.try_recv().ok())
-    }
+impl DreamStore for MyStore {
+    async fn load_sessions(&self, agent_id: &str) -> Result<Vec<SessionData>> { ... }
+    async fn load_memories(&self, agent_id: &str) -> Result<Vec<MemoryEntry>> { ... }
+    async fn commit(&self, agent_id: &str, result: CurationResult, existing: &[MemoryEntry]) -> Result<()> { ... }
+    async fn search(&self, agent_id: &str, query: &str, top_k: usize) -> Result<Vec<MemoryEntry>> { ... }
 }
+
+// In-session: LLM calls memory(query) → DreamStore.search()
+// Post-session:
+let result = agent.dream("my-agent", now_ms).await?;
 ```
 
 ---
 
-## Permissions
+## Governance
+
+### SDK PermissionManager
 
 ```rust
 use deepstrike_sdk::{PermissionManager, PermissionMode};
 
 let mut pm = PermissionManager::new(PermissionMode::Default);
 pm.grant("fs", "read");
-pm.grant("fs", "*");       // wildcard: all actions on fs
-pm.revoke("fs", "read");
-
-let decision = pm.evaluate("fs", "read");
-decision.allowed  // bool
-decision.reason   // &'static str
+pm.revoke("db", "drop");
+pm.grant_with_approval("db", "write", "Needs DBA approval");
 ```
 
-Modes: `Default` (evaluate grants), `Plan` (block all), `Auto` (allow all).
+### Kernel GovernancePipeline
+
+```rust
+use deepstrike_core::governance::pipeline::GovernancePipeline;
+use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
+
+let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
+pipeline.permission.add_rule(PermissionRule { tool_pattern: "danger.*".into(), action: PermissionAction::Deny });
+pipeline.veto.block_tool("rm_rf");
+pipeline.rate_limiter.set_limit("api", RateLimit { max_calls: 10, window_ms: 60_000 });
+// Permission → Veto → RateLimit → Constraint → Audit
+```
+
+---
+
+## Signals
+
+```rust
+use deepstrike_sdk::{SignalGateway, ScheduledPrompt, RuntimeSignal};
+
+let gw = SignalGateway::new();
+let rx = gw.subscribe();
+
+gw.schedule(ScheduledPrompt::new("standup", target_ms));
+gw.ingest(RuntimeSignal { kind: "interrupt".into(), payload: json!({}), priority: 10 });
+
+let agent = Agent::new(provider, AgentOptions {
+    signal_source: Some(Box::new(rx)),
+    ..AgentOptions::new(4096)
+});
+
+agent.interrupt(); // direct interrupt
+gw.destroy();
+```
+
+---
+
+## Harness (evaluation framework)
+
+```rust
+use deepstrike_sdk::*;
+
+// 1. SinglePass — run once, always passes
+let outcome = SinglePassHarness::new(&agent).run(HarnessRequest::new("Say hello")).await?;
+
+// 2. EvalLoop — retry until QualityGate passes
+let harness = EvalLoopHarness::new(&agent, MyGate, 3);
+
+// 3. HarnessLoop — LLM-as-judge with feedback injection + skill extraction
+let harness = HarnessLoop::new(&agent, eval_provider, 3, Some("./skills".into()));
+let outcome = harness.run(HarnessRequest { goal: "Write a haiku".into(), criteria: vec!["Must be 3 lines".into()], .. }).await?;
+println!("{} {}", outcome.passed, outcome.feedback.unwrap_or_default());
+```
 
 ---
 
@@ -306,4 +247,4 @@ Modes: `Default` (evaluate grants), `Plan` (block all), `Auto` (allow all).
 | `Done { iterations, total_tokens, status }` | run complete |
 | `Error(String)` | non-fatal error |
 
-`status` mirrors the kernel termination reason: `completed` / `max_turns` / `token_budget` / `timeout` / `user_abort` / `error`.
+`status`: `completed` · `max_turns` · `token_budget` · `timeout` · `user_abort` · `error`

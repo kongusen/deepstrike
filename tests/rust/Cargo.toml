@@ -1,0 +1,20 @@
+[package]
+name = "deepstrike-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+autobins = false
+
+[dependencies]
+deepstrike-core = { path = "../../crates/deepstrike-core" }
+deepstrike-sdk = { path = "../../rust" }
+serde_json = "1"
+compact_str = { version = "0.8", features = ["serde"] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+dotenvy = "0.15"
+async-trait = "0.1"
+
+[lib]
+name = "deepstrike_tests"
+path = "src/main.rs"

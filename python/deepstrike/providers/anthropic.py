@@ -6,7 +6,7 @@ from typing import AsyncIterator
 import httpx
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, DoneEvent
-from .base import RetryConfig, CircuitBreaker, normalize_tool_call, TokenUsage
+from .base import RetryConfig, CircuitBreaker, normalize_tool_call, TokenUsage, to_anthropic_content
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ class AnthropicProvider:
             "model": self._model,
             "max_tokens": 8096,
             "messages": [
-                {"role": m.role, "content": m.content}
+                {"role": m.role, "content": to_anthropic_content(m)}
                 for m in messages
                 if m.role != "system"
             ],

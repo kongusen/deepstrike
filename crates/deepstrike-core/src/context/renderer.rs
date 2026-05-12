@@ -20,13 +20,11 @@ pub fn render(partitions: &ContextPartitions, budget: u32) -> Vec<Message> {
     }
 
     // working partition second (goal, signals, interrupts)
+    // Always included — working messages are critical context even when token_count=0.
     for msg in &partitions.working.messages {
         let tokens = msg.token_count.unwrap_or(0);
-        if tokens == 0 { continue; } // skip uncosted messages
-        if tokens <= remaining {
-            result.push(msg.clone());
-            remaining = remaining.saturating_sub(tokens);
-        }
+        result.push(msg.clone());
+        remaining = remaining.saturating_sub(tokens);
     }
 
     // dashboard overlay

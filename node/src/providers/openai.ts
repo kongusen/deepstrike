@@ -1,6 +1,6 @@
 import OpenAI from "openai"
 import type { Message, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider } from "../types.js"
-import { CircuitBreaker, normalizeToolCall } from "./base.js"
+import { CircuitBreaker, normalizeToolCall, toOpenAIContent } from "./base.js"
 
 export class OpenAIProvider implements LLMProvider {
   protected client: OpenAI
@@ -29,7 +29,7 @@ export class OpenAIProvider implements LLMProvider {
 
   async complete(messages: Message[], tools: ToolSchema[]): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
-    const msgs = messages.map(m => ({ role: m.role, content: m.content })) as OpenAI.ChatCompletionMessageParam[]
+    const msgs = messages.map(m => ({ role: m.role, content: toOpenAIContent(m) })) as OpenAI.ChatCompletionMessageParam[]
 
     let lastErr: unknown
     for (let i = 0; i < this.maxRetries; i++) {
@@ -55,7 +55,7 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
-    const msgs = messages.map(m => ({ role: m.role, content: m.content })) as OpenAI.ChatCompletionMessageParam[]
+    const msgs = messages.map(m => ({ role: m.role, content: toOpenAIContent(m) })) as OpenAI.ChatCompletionMessageParam[]
     const toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }> = {}
 
     const stream = await this.client.chat.completions.create({
@@ -63,9 +63,12 @@ export class OpenAIProvider implements LLMProvider {
       messages: msgs,
       ...(tools.length ? { tools: this.buildTools(tools) } : {}),
       stream: true,
+      stream_options: { include_usage: true },
     })
 
+    let totalTokens = 0
     for await (const chunk of stream) {
+      if (chunk.usage) { totalTokens = chunk.usage.total_tokens; continue }
       const choice = chunk.choices[0]
       if (!choice) continue
       const delta = choice.delta
@@ -87,18 +90,56 @@ export class OpenAIProvider implements LLMProvider {
         }
       }
     }
+    if (totalTokens > 0) yield { type: "usage", totalTokens } as StreamEvent
   }
 }
 
 const DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 const DEEPSEEK_BASE = "https://api.deepseek.com/v1"
 const MINIMAX_BASE = "https://api.minimax.chat/v1"
+const MOONSHOT_BASE = "https://api.moonshot.cn/v1"
 const DEEPSEEK_REASONERS = new Set(["deepseek-reasoner", "deepseek-r1"])
 const MINIMAX_REASONERS = new Set(["MiniMax-M1", "minimax-m1"])
 
 export class QwenProvider extends OpenAIProvider {
-  constructor(apiKey: string, model = "qwen-plus", retry?: { maxRetries: number; baseDelay: number }) {
+  constructor(apiKey: string, model = "qwen-max", retry?: { maxRetries: number; baseDelay: number }) {
     super(apiKey, model, retry, DASHSCOPE_BASE)
+  }
+
+  async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+    const enableThinking = Boolean(extensions?.enableThinking)
+    const thinkingBudget = extensions?.thinkingBudget as number | undefined
+    const msgs = messages.map(m => ({ role: m.role, content: toOpenAIContent(m) })) as OpenAI.ChatCompletionMessageParam[]
+    const toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }> = {}
+
+    const stream = await this.client.chat.completions.create({
+      model: this.model,
+      messages: msgs,
+      ...(tools.length ? { tools: this.buildTools(tools) } : {}),
+      stream: true,
+      ...(enableThinking ? { extra_body: { enable_thinking: true, ...(thinkingBudget ? { thinking_budget: thinkingBudget } : {}) } } : {}),
+    } as OpenAI.ChatCompletionCreateParamsStreaming)
+
+    for await (const chunk of stream) {
+      const choice = chunk.choices[0]
+      if (!choice) continue
+      const delta = choice.delta as Record<string, unknown>
+      if (delta.reasoning_content) yield { type: "thinking_delta", delta: delta.reasoning_content } as ThinkingDelta
+      if (delta.content) yield { type: "text_delta", delta: delta.content } as TextDelta
+      for (const tc of (delta.tool_calls as OpenAI.ChatCompletionChunk.Choice.Delta.ToolCall[] | undefined) ?? []) {
+        const idx = tc.index
+        if (!toolCallBufs[idx]) toolCallBufs[idx] = { id: tc.id ?? "", name: "", argsBuf: "" }
+        if (tc.function?.name) toolCallBufs[idx].name += tc.function.name
+        toolCallBufs[idx].argsBuf += tc.function?.arguments ?? ""
+      }
+      if (choice.finish_reason === "tool_calls") {
+        for (const tb of Object.values(toolCallBufs)) {
+          let args: Record<string, unknown> = {}
+          try { args = JSON.parse(tb.argsBuf || "{}") } catch { args = {} }
+          yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
+        }
+      }
+    }
   }
 }
 
@@ -109,7 +150,7 @@ export class DeepSeekProvider extends OpenAIProvider {
 
   async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
     const exposeReasoning = extensions?.exposeReasoning ?? false
-    const msgs = messages.map(m => ({ role: m.role, content: m.content })) as OpenAI.ChatCompletionMessageParam[]
+    const msgs = messages.map(m => ({ role: m.role, content: toOpenAIContent(m) })) as OpenAI.ChatCompletionMessageParam[]
     const isReasoner = DEEPSEEK_REASONERS.has(this.model)
 
     const stream = await this.client.chat.completions.create({
@@ -136,7 +177,7 @@ export class MiniMaxProvider extends OpenAIProvider {
 
   async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
     const exposeReasoning = extensions?.exposeReasoning ?? false
-    const msgs = messages.map(m => ({ role: m.role, content: m.content })) as OpenAI.ChatCompletionMessageParam[]
+    const msgs = messages.map(m => ({ role: m.role, content: toOpenAIContent(m) })) as OpenAI.ChatCompletionMessageParam[]
     const isReasoner = MINIMAX_REASONERS.has(this.model)
 
     const stream = await this.client.chat.completions.create({
@@ -153,5 +194,11 @@ export class MiniMaxProvider extends OpenAIProvider {
       }
       if (delta.content) yield { type: "text_delta", delta: delta.content } as TextDelta
     }
+  }
+}
+
+export class KimiProvider extends OpenAIProvider {
+  constructor(apiKey: string, model = "moonshot-v1-8k", retry?: { maxRetries: number; baseDelay: number }) {
+    super(apiKey, model, retry, MOONSHOT_BASE)
   }
 }

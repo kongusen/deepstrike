@@ -30,9 +30,34 @@ use deepstrike_core::types::task::RuntimeTask as RustRuntimeTask;
 #[derive(Tsify, Clone, Serialize, Deserialize)]
 #[tsify(into_wasm_abi, from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
+pub struct ContentPartObj {
+    pub r#type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
 pub struct Message {
     pub role: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_parts: Option<Vec<ContentPartObj>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_count: Option<u32>,
     #[serde(default)]
@@ -252,22 +277,69 @@ fn role_to_str(role: Role) -> &'static str {
     }
 }
 
+fn content_part_to_rust(p: ContentPartObj) -> ContentPart {
+    match p.r#type.as_str() {
+        "image" => ContentPart::Image { url: p.url, data: p.data, media_type: p.media_type, detail: p.detail },
+        "audio" => ContentPart::Audio {
+            data: p.data.unwrap_or_default(),
+            media_type: p.media_type.unwrap_or_else(|| "audio/wav".into()),
+        },
+        "tool_result" => ContentPart::ToolResult {
+            call_id: CompactString::new(&p.call_id.unwrap_or_default()),
+            output: p.output.unwrap_or_default(),
+            is_error: p.is_error.unwrap_or(false),
+        },
+        _ => ContentPart::Text { text: p.text.unwrap_or_default() },
+    }
+}
+
+fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
+    match p {
+        ContentPart::Text { text } => ContentPartObj {
+            r#type: "text".into(), text: Some(text.clone()),
+            url: None, data: None, media_type: None, detail: None,
+            call_id: None, output: None, is_error: None,
+        },
+        ContentPart::Image { url, data, media_type, detail } => ContentPartObj {
+            r#type: "image".into(), text: None,
+            url: url.clone(), data: data.clone(), media_type: media_type.clone(), detail: detail.clone(),
+            call_id: None, output: None, is_error: None,
+        },
+        ContentPart::Audio { data, media_type } => ContentPartObj {
+            r#type: "audio".into(), text: None, url: None,
+            data: Some(data.clone()), media_type: Some(media_type.clone()), detail: None,
+            call_id: None, output: None, is_error: None,
+        },
+        ContentPart::ToolResult { call_id, output, is_error } => ContentPartObj {
+            r#type: "tool_result".into(), text: None, url: None, data: None, media_type: None, detail: None,
+            call_id: Some(call_id.to_string()), output: Some(output.clone()), is_error: Some(*is_error),
+        },
+    }
+}
+
 fn message_to_rust(m: Message) -> Result<RustMessage, JsValue> {
     let role = role_str_to_rust(&m.role)?;
     let tool_calls: Vec<RustToolCall> = m.tool_calls.into_iter().map(tool_call_to_rust).collect::<Result<_, _>>()?;
-    Ok(RustMessage { role, content: Content::Text(m.content), tool_calls, token_count: m.token_count })
+    let content = match m.content_parts {
+        Some(parts) if !parts.is_empty() => Content::Parts(parts.into_iter().map(content_part_to_rust).collect()),
+        _ => Content::Text(m.content),
+    };
+    Ok(RustMessage { role, content, tool_calls, token_count: m.token_count })
 }
 
 fn message_from_rust(m: &RustMessage) -> Message {
-    let content = match &m.content {
-        Content::Text(s) => s.clone(),
-        Content::Parts(parts) => parts.iter().map(|p| match p {
-            ContentPart::Text { text } => text.clone(),
-            ContentPart::Image { url } => format!("[image: {url}]"),
-            ContentPart::ToolResult { call_id, output, .. } => format!("[tool_result {call_id}]: {output}"),
-        }).collect::<Vec<_>>().join("\n"),
+    let (content, content_parts) = match &m.content {
+        Content::Text(s) => (s.clone(), None),
+        Content::Parts(parts) => {
+            let text_only: String = parts.iter().filter_map(|p| match p {
+                ContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            }).collect::<Vec<_>>().join("\n");
+            let objs: Vec<ContentPartObj> = parts.iter().map(content_part_from_rust).collect();
+            (text_only, Some(objs))
+        }
     };
-    Message { role: role_to_str(m.role).to_string(), content, token_count: m.token_count, tool_calls: m.tool_calls.iter().map(tool_call_from_rust).collect() }
+    Message { role: role_to_str(m.role).to_string(), content, content_parts, token_count: m.token_count, tool_calls: m.tool_calls.iter().map(tool_call_from_rust).collect() }
 }
 
 fn tool_call_to_rust(c: ToolCall) -> Result<RustToolCall, JsValue> {

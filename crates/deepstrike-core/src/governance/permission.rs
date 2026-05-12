@@ -22,10 +22,10 @@ impl PermissionRule {
     fn matches(&self, tool_name: &str) -> bool {
         let p = self.tool_pattern.as_str();
         if p == "*" { return true; }
-        if let Some(prefix) = p.strip_suffix(".*") {
+        if let Some(prefix) = p.strip_suffix('*') {
             return tool_name.starts_with(prefix);
         }
-        if let Some(suffix) = p.strip_prefix("*.") {
+        if let Some(suffix) = p.strip_prefix('*') {
             return tool_name.ends_with(suffix);
         }
         p == tool_name

@@ -6,7 +6,7 @@ from typing import AsyncIterator
 import httpx
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent, DoneEvent
-from .base import RetryConfig, CircuitBreaker, normalize_tool_call
+from .base import RetryConfig, CircuitBreaker, normalize_tool_call, to_openai_content
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class OpenAIProvider:
     def _build_body(self, messages: list[Message], tools: list[ToolSchema], stream: bool) -> dict:
         body: dict = {
             "model": self._model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [{"role": m.role, "content": to_openai_content(m)} for m in messages],
         }
         if tools:
             body["tools"] = [

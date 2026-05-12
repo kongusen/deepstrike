@@ -1,6 +1,6 @@
 use crate::context::manager::ContextManager;
 use crate::context::pressure::PressureAction;
-use crate::types::message::{Message, ToolCall, ToolResult, ToolSchema};
+use crate::types::message::{ContentPart, Message, ToolCall, ToolResult, ToolSchema};
 use crate::types::result::{LoopResult, TerminationReason};
 use crate::types::signal::{RuntimeSignal, Urgency};
 use crate::types::task::RuntimeTask;
@@ -53,6 +53,9 @@ pub struct LoopStateMachine {
     pub observations: Vec<LoopObservation>,
     policy: LoopPolicy,
     total_tokens: u64,
+    /// When set, the next LLM call strips tools to force a text response,
+    /// then terminates with this reason once the response arrives.
+    pending_termination: Option<TerminationReason>,
 }
 
 impl LoopStateMachine {
@@ -65,13 +68,25 @@ impl LoopStateMachine {
             observations: Vec::new(),
             policy,
             total_tokens: 0,
+            pending_termination: None,
         }
     }
 
     pub fn start(&mut self, task: RuntimeTask) -> LoopAction {
         self.observations.clear();
         self.ctx.current_goal = task.goal.clone();
-        self.ctx.partitions.working.push(Message::user(task.goal), 0);
+
+        let user_msg = if task.criteria.is_empty() {
+            task.goal
+        } else {
+            let criteria_text = task.criteria.iter().enumerate()
+                .map(|(i, c)| format!("{}. {}", i + 1, c))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("{}\n\nCriteria:\n{}", task.goal, criteria_text)
+        };
+
+        self.ctx.partitions.working.push(Message::user(user_msg), 0);
         self.phase = LoopPhase::Reason;
         self.emit_call_llm()
     }
@@ -84,6 +99,10 @@ impl LoopStateMachine {
             LoopEvent::LLMResponse { message } => {
                 let tokens = message.token_count.unwrap_or(0);
                 self.total_tokens += tokens as u64;
+
+                if let Some(reason) = self.pending_termination.take() {
+                    return self.terminate(reason, Some(message));
+                }
 
                 if message.tool_calls.is_empty() {
                     return self.terminate(TerminationReason::Completed, Some(message));
@@ -98,6 +117,13 @@ impl LoopStateMachine {
             LoopEvent::ToolResults { results } => {
                 for r in &results {
                     self.total_tokens += r.token_count.unwrap_or(0) as u64;
+                    let parts = vec![ContentPart::ToolResult {
+                        call_id: r.call_id.clone(),
+                        output: r.output.as_text().unwrap_or("").to_string(),
+                        is_error: r.is_error,
+                    }];
+                    let tokens = r.token_count.unwrap_or(0);
+                    self.ctx.push_history(Message::tool(parts), tokens);
                 }
                 self.turn += 1;
 
@@ -107,7 +133,9 @@ impl LoopStateMachine {
                     } else {
                         TerminationReason::TokenBudget
                     };
-                    return self.terminate(term, None);
+                    self.pending_termination = Some(term);
+                    self.phase = LoopPhase::Reason;
+                    return self.emit_call_llm();
                 }
 
                 let action = self.ctx.should_compress();
@@ -120,7 +148,6 @@ impl LoopStateMachine {
                     });
                 }
 
-                self.phase = LoopPhase::Observe { results };
                 self.phase = LoopPhase::Reason;
                 self.emit_call_llm()
             }
@@ -168,8 +195,12 @@ impl LoopStateMachine {
 
     /// Build the `CallLLM` action, automatically appending the `skill` and `memory`
     /// meta-tools when they are configured — the LLM can invoke them on demand.
+    /// When `pending_termination` is set, tools are stripped to force a text-only response.
     fn emit_call_llm(&self) -> LoopAction {
         let messages = self.ctx.render();
+        if self.pending_termination.is_some() {
+            return LoopAction::CallLLM { messages, tools: Vec::new() };
+        }
         let mut tools = self.tools.clone();
         if let Some(skill_tool) = self.ctx.skill_tool_schema() { tools.push(skill_tool); }
         if let Some(memory_tool) = self.ctx.memory_tool_schema() { tools.push(memory_tool); }
@@ -230,15 +261,30 @@ mod tests {
     }
 
     #[test]
-    fn max_turns_terminates() {
+    fn max_turns_emits_final_toolless_call_then_terminates() {
         let mut sm = LoopStateMachine::new(LoopPolicy {
             max_tokens: 128_000,
             max_turns: 1,
             ..LoopPolicy::default()
         });
         sm.start(RuntimeTask::new("test"));
-        match sm.feed(LoopEvent::ToolResults { results: vec![] }) {
-            LoopAction::Done { result } => assert_eq!(result.termination, TerminationReason::MaxTurns),
+
+        // After tool results hit maxTurns, kernel emits one final CallLLM with no tools
+        let action = sm.feed(LoopEvent::ToolResults { results: vec![] });
+        match action {
+            LoopAction::CallLLM { tools, .. } => assert!(tools.is_empty(), "final call must have no tools"),
+            _ => panic!("expected CallLLM for final text-only call"),
+        }
+
+        // The LLM responds with text → terminates with MaxTurns
+        let action = sm.feed(LoopEvent::LLMResponse {
+            message: Message::assistant("final summary"),
+        });
+        match action {
+            LoopAction::Done { result } => {
+                assert_eq!(result.termination, TerminationReason::MaxTurns);
+                assert!(result.final_message.is_some(), "final message must be preserved");
+            }
             _ => panic!("expected Done"),
         }
     }

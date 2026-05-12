@@ -5,7 +5,9 @@ import path from "path"
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function loadKernel(): Promise<any> {
-  return import("@deepstrike/core")
+  const mod = await import("@deepstrike/core")
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (mod as any).default ?? mod
 }
 
 export interface HarnessRequest {
@@ -40,11 +42,35 @@ async function runOnce(agent: Agent, req: HarnessRequest): Promise<HarnessOutcom
   }
 }
 
+export interface QualityGate {
+  evaluate(request: HarnessRequest, outcome: HarnessOutcome): Promise<boolean>
+}
+
 export class SinglePassHarness {
   constructor(private agent: Agent) {}
 
   async run(request: HarnessRequest): Promise<HarnessOutcome> {
     return { ...await runOnce(this.agent, request), passed: true }
+  }
+}
+
+/** Retry loop driven by a pluggable QualityGate (not LLM-as-judge). */
+export class EvalLoopHarness {
+  constructor(
+    private agent: Agent,
+    private gate: QualityGate,
+    private maxAttempts = 3,
+  ) {}
+
+  async run(request: HarnessRequest): Promise<HarnessOutcome> {
+    let outcome: HarnessOutcome = { result: "", passed: false, iterations: 0, totalTokens: 0, status: "error" }
+    for (let i = 0; i < this.maxAttempts; i++) {
+      outcome = await runOnce(this.agent, request)
+      if (await this.gate.evaluate(request, outcome)) {
+        return { ...outcome, passed: true }
+      }
+    }
+    return outcome
   }
 }
 
@@ -84,13 +110,13 @@ export class HarnessLoop {
     for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
       outcome = await runOnce(this.agent, { ...request, goal: currentGoal })
 
-      // Phase 1: kernel builds eval prompt
-      const evalAction = pipeline.feedOutcome({
-        goal: request.goal,
-        criteria: request.criteria ?? [],
-        result: outcome.result,
+      // Phase 1: kernel builds eval prompt (positional args per kernel API)
+      const evalAction = pipeline.feedOutcome(
+        request.goal,
+        request.criteria ?? [],
+        outcome.result,
         attempt,
-      })
+      )
       if (evalAction.kind !== "evaluate") break
 
       // Phase 2: SDK calls evaluator LLM
@@ -100,15 +126,14 @@ export class HarnessLoop {
       }
 
       // Phase 3: kernel parses verdict
-      const doneAction = pipeline.feedEvalResult({ content: evalText })
+      const doneAction = pipeline.feedEvalResult(evalText)
       if (doneAction.kind !== "done") break
 
-      const evalResult = doneAction.result!
-      outcome = { ...outcome, passed: evalResult.passed, feedback: evalResult.feedback }
+      outcome = { ...outcome, passed: doneAction.passed!, feedback: doneAction.feedback! }
 
-      if (evalResult.passed) {
-        if (evalResult.skillCandidate && this.skillDir) {
-          const { name, description, whenToUse, content } = evalResult.skillCandidate
+      if (doneAction.passed) {
+        if (doneAction.skill_candidate && this.skillDir) {
+          const { name, description, whenToUse, content } = doneAction.skill_candidate
           const frontmatter = [
             "---",
             `name: ${name}`,
@@ -123,7 +148,7 @@ export class HarnessLoop {
       }
 
       // Inject feedback into next attempt's goal
-      currentGoal = `${request.goal}\n\n[Previous attempt ${attempt} failed: ${evalResult.feedback}]`
+      currentGoal = `${request.goal}\n\n[Previous attempt ${attempt} failed: ${doneAction.feedback}]`
       pipeline.reset()
     }
 

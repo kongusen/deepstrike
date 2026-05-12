@@ -1,21 +1,33 @@
-import type { Message, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider } from "../types.js"
+import type { Message, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider } from "../types.js"
 
-// OpenAI-compatible provider — works for OpenAI, Qwen (DashScope), DeepSeek, MiniMax
+const DEEPSEEK_REASONERS = new Set(["deepseek-reasoner", "deepseek-r1"])
+const MINIMAX_REASONERS = new Set(["MiniMax-M1", "minimax-m1"])
+
+// OpenAI-compatible provider — works for OpenAI, Qwen (DashScope), DeepSeek, MiniMax, Kimi
 export class OpenAIProvider implements LLMProvider {
   constructor(
-    private readonly apiKey: string,
-    private readonly model = "gpt-4o",
-    private readonly baseUrl = "https://api.openai.com/v1",
+    protected readonly apiKey: string,
+    protected readonly model = "gpt-4o",
+    protected readonly baseUrl = "https://api.openai.com/v1",
   ) {}
 
-  async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+  protected buildTools(tools: ToolSchema[]) {
+    return tools.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: JSON.parse(t.parameters) } }))
+  }
+
+  protected async *streamInner(
+    messages: Message[],
+    tools: ToolSchema[],
+    extraBody: Record<string, unknown>,
+    exposeReasoning = false,
+  ): AsyncIterable<StreamEvent> {
     const msgs = messages.map(m => ({ role: m.role, content: m.content }))
     const body: Record<string, unknown> = {
       model: this.model,
       messages: msgs,
       stream: true,
-      ...(tools.length ? { tools: tools.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: JSON.parse(t.parameters) } })) } : {}),
-      ...(extensions ?? {}),
+      ...(tools.length ? { tools: this.buildTools(tools) } : {}),
+      ...extraBody,
     }
 
     const resp = await fetch(`${this.baseUrl}/chat/completions`, {
@@ -44,6 +56,8 @@ export class OpenAIProvider implements LLMProvider {
           const chunk = JSON.parse(data) as { choices: Array<{ delta: Record<string, unknown> }> }
           const delta = chunk.choices?.[0]?.delta
           if (!delta) continue
+          if (exposeReasoning && typeof delta.reasoning_content === "string" && delta.reasoning_content)
+            yield { type: "thinking_delta", delta: delta.reasoning_content } as ThinkingDelta
           if (typeof delta.content === "string" && delta.content)
             yield { type: "text_delta", delta: delta.content } as TextDelta
           for (const tc of (delta.tool_calls as Array<Record<string, unknown>> | undefined) ?? []) {
@@ -60,11 +74,27 @@ export class OpenAIProvider implements LLMProvider {
       yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
     }
   }
+
+  async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+    const { expose_reasoning: _, exposeReasoning: __, ...passthrough } = extensions ?? {}
+    yield* this.streamInner(messages, tools, passthrough)
+  }
 }
 
 export class QwenProvider extends OpenAIProvider {
   constructor(apiKey: string, model = "qwen-max") {
     super(apiKey, model, "https://dashscope.aliyuncs.com/compatible-mode/v1")
+  }
+
+  async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+    const enableThinking = Boolean(extensions?.enableThinking)
+    const thinkingBudget = extensions?.thinkingBudget as number | undefined
+    const { enableThinking: _, thinkingBudget: __, expose_reasoning: ___, exposeReasoning: ____, ...passthrough } = extensions ?? {}
+    const extra: Record<string, unknown> = {
+      ...passthrough,
+      ...(enableThinking ? { enable_thinking: true, ...(thinkingBudget ? { thinking_budget: thinkingBudget } : {}) } : {}),
+    }
+    yield* this.streamInner(messages, tools, extra, enableThinking)
   }
 }
 
@@ -72,10 +102,32 @@ export class DeepSeekProvider extends OpenAIProvider {
   constructor(apiKey: string, model = "deepseek-chat") {
     super(apiKey, model, "https://api.deepseek.com/v1")
   }
+
+  async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+    const exposeReasoning = Boolean(extensions?.exposeReasoning)
+    const isReasoner = DEEPSEEK_REASONERS.has(this.model)
+    const filteredTools = isReasoner ? [] : tools
+    const { exposeReasoning: _, expose_reasoning: __, ...passthrough } = extensions ?? {}
+    yield* this.streamInner(messages, filteredTools, passthrough, exposeReasoning)
+  }
 }
 
 export class MiniMaxProvider extends OpenAIProvider {
   constructor(apiKey: string, model = "MiniMax-Text-01") {
     super(apiKey, model, "https://api.minimax.chat/v1")
+  }
+
+  async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+    const exposeReasoning = Boolean(extensions?.exposeReasoning)
+    const isReasoner = MINIMAX_REASONERS.has(this.model)
+    const filteredTools = isReasoner ? [] : tools
+    const { exposeReasoning: _, expose_reasoning: __, ...passthrough } = extensions ?? {}
+    yield* this.streamInner(messages, filteredTools, passthrough, exposeReasoning)
+  }
+}
+
+export class KimiProvider extends OpenAIProvider {
+  constructor(apiKey: string, model = "moonshot-v1-8k") {
+    super(apiKey, model, "https://api.moonshot.cn/v1")
   }
 }

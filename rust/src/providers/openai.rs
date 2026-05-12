@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use deepstrike_core::types::message::{Content, Message, Role, ToolSchema};
+use deepstrike_core::types::message::{Content, ContentPart, Message, Role, ToolSchema};
 use futures::{Stream, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -40,11 +40,54 @@ pub fn ollama(model: impl Into<String>) -> OpenAIProvider {
     OpenAIProvider::with_base_url("", model, "http://localhost:11434/v1")
 }
 
+pub fn kimi(api_key: impl Into<String>) -> OpenAIProvider {
+    OpenAIProvider::with_base_url(api_key, "moonshot-v1-8k", "https://api.moonshot.cn/v1")
+}
+
+fn content_part_to_openai(part: &ContentPart) -> Value {
+    match part {
+        ContentPart::Text { text } => json!({ "type": "text", "text": text }),
+        ContentPart::Image { url: Some(url), data: None, detail, .. } => {
+            let image_url = match detail.as_deref() {
+                Some(d) => json!({ "url": url, "detail": d }),
+                None => json!({ "url": url }),
+            };
+            json!({ "type": "image_url", "image_url": image_url })
+        }
+        ContentPart::Image { data: Some(data), media_type, detail, .. } => {
+            let mt = media_type.as_deref().unwrap_or("image/png");
+            let url = format!("data:{mt};base64,{data}");
+            let image_url = match detail.as_deref() {
+                Some(d) => json!({ "url": url, "detail": d }),
+                None => json!({ "url": url }),
+            };
+            json!({ "type": "image_url", "image_url": image_url })
+        }
+        ContentPart::Image { .. } => json!({ "type": "text", "text": "" }),
+        ContentPart::Audio { data, media_type } => {
+            let fmt = media_type.split('/').nth(1).unwrap_or("wav");
+            json!({ "type": "input_audio", "input_audio": { "data": data, "format": fmt } })
+        }
+        ContentPart::ToolResult { output, .. } => {
+            json!({ "type": "text", "text": output })
+        }
+    }
+}
+
+fn content_to_openai(content: &Content) -> Value {
+    match content {
+        Content::Text(s) => json!(s),
+        Content::Parts(parts) => {
+            let blocks: Vec<Value> = parts.iter().map(content_part_to_openai).collect();
+            json!(blocks)
+        }
+    }
+}
+
 fn messages_to_openai(messages: &[Message]) -> Vec<Value> {
     messages.iter().map(|m| {
         let role = match m.role { Role::System => "system", Role::User => "user", Role::Tool => "tool", _ => "assistant" };
-        let content = match &m.content { Content::Text(s) => s.clone(), _ => String::new() };
-        json!({ "role": role, "content": content })
+        json!({ "role": role, "content": content_to_openai(&m.content) })
     }).collect()
 }
 
@@ -67,9 +110,16 @@ impl LLMProvider for OpenAIProvider {
                 "function": { "name": t.name.as_str(), "description": t.description, "parameters": t.parameters }
             })).collect::<Vec<_>>());
         }
+        let mut expose_reasoning = false;
         if let Some(ext) = extensions {
             if let Some(obj) = ext.as_object() {
-                for (k, v) in obj { body[k] = v.clone(); }
+                for (k, v) in obj {
+                    if k == "expose_reasoning" {
+                        expose_reasoning = v.as_bool().unwrap_or(false);
+                    } else {
+                        body[k] = v.clone();
+                    }
+                }
             }
         }
 
@@ -89,19 +139,20 @@ impl LLMProvider for OpenAIProvider {
         }
 
         let byte_stream = resp.bytes_stream();
-        let stream = parse_openai_sse(byte_stream);
+        let stream = parse_openai_sse(byte_stream, expose_reasoning);
         Ok(Box::new(Box::pin(stream)))
     }
 }
 
 fn parse_openai_sse(
     byte_stream: impl Stream<Item = reqwest::Result<bytes::Bytes>> + Send + 'static,
+    expose_reasoning: bool,
 ) -> impl Stream<Item = Result<StreamEvent>> + Send {
-    let mut tool_accum: std::collections::HashMap<usize, (String, String, String)> = std::collections::HashMap::new();
+    let tool_accum: std::collections::HashMap<usize, (String, String, String)> = std::collections::HashMap::new();
 
     futures::stream::unfold(
         (Box::pin(byte_stream), String::new(), tool_accum, false),
-        |(mut stream, mut buf, mut tool_accum, mut flushed)| async move {
+        move |(mut stream, mut buf, mut tool_accum, mut flushed)| async move {
             if flushed { return None; }
             loop {
                 if let Some(pos) = buf.find('\n') {
@@ -123,6 +174,13 @@ fn parse_openai_sse(
 
                     let Ok(chunk) = serde_json::from_str::<Value>(data) else { continue };
                     let delta = &chunk["choices"][0]["delta"];
+                    if expose_reasoning {
+                        if let Some(reasoning) = delta["reasoning_content"].as_str() {
+                            if !reasoning.is_empty() {
+                                return Some((Ok(StreamEvent::ThinkingDelta { delta: reasoning.to_string() }), (stream, buf, tool_accum, flushed)));
+                            }
+                        }
+                    }
                     if let Some(content) = delta["content"].as_str() {
                         if !content.is_empty() {
                             return Some((Ok(StreamEvent::TextDelta { delta: content.to_string() }), (stream, buf, tool_accum, flushed)));

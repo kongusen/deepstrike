@@ -14,11 +14,11 @@ pub use agent::{Agent, AgentOptions, EvalLoopHarness, HarnessLoop, RunEvent, Sin
 pub use harness::{Harness, HarnessOutcome, HarnessRequest, QualityGate};
 pub use knowledge::KnowledgeSource;
 pub use memory::{DreamResult, DreamStore, WorkingMemory};
-pub use providers::{LLMProvider, StreamEvent};
+pub use providers::{LLMProvider, StreamEvent, TokenUsage, ProviderToolSpec};
 pub use providers::anthropic::AnthropicProvider;
-pub use providers::openai::{OpenAIProvider, deepseek, minimax, ollama, qwen};
-pub use safety::{PermissionDecision, PermissionManager, PermissionMode};
-pub use signals::{RuntimeSignal, ScheduledPrompt, SignalSource};
+pub use providers::openai::{OpenAIProvider, deepseek, kimi, minimax, ollama, qwen};
+pub use safety::{Permission, PermissionDecision, PermissionManager, PermissionMode};
+pub use signals::{RuntimeSignal, ScheduledPrompt, SignalSource, SignalGateway, GatewayReceiver};
 pub use tools::{RegisteredTool, execute_tools, read_file_tool};
 
 #[derive(Debug, thiserror::Error)]

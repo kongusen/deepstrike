@@ -43,7 +43,10 @@ use compact_str::CompactString;
 
 use deepstrike_core::context::manager::ContextManager;
 use deepstrike_core::context::pressure::PressureAction;
+use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
+use deepstrike_core::types::agent::AgentIdentity;
+use deepstrike_core::types::policy::GovernanceVerdict as RustGovernanceVerdict;
 use deepstrike_core::harness::eval_pipeline::{
     EvalAction as RustEvalAction, EvalEvent as RustEvalEvent, EvalPolicy as RustEvalPolicy,
     EvalPipeline as RustEvalPipeline,
@@ -78,9 +81,28 @@ use deepstrike_core::types::task::RuntimeTask as RustRuntimeTask;
 
 #[napi(object)]
 #[derive(Clone)]
+pub struct ContentPartObj {
+    /// `"text"` | `"image"` | `"audio"` | `"tool_result"`
+    pub r#type: String,
+    pub text: Option<String>,
+    pub url: Option<String>,
+    pub data: Option<String>,
+    pub media_type: Option<String>,
+    pub detail: Option<String>,
+    pub call_id: Option<String>,
+    pub output: Option<String>,
+    pub is_error: Option<bool>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
 pub struct Message {
     pub role: String,
+    /// Plain-text content. When `content_parts` is present, this holds only the
+    /// concatenated text segments for backward compatibility.
     pub content: String,
+    /// Structured multimodal content parts. When present, takes precedence over `content`.
+    pub content_parts: Option<Vec<ContentPartObj>>,
     pub token_count: Option<u32>,
     pub tool_calls: Vec<ToolCall>,
 }
@@ -288,6 +310,51 @@ fn role_to_str(role: Role) -> &'static str {
     }
 }
 
+fn content_part_to_rust(p: ContentPartObj) -> ContentPart {
+    match p.r#type.as_str() {
+        "image" => ContentPart::Image {
+            url: p.url,
+            data: p.data,
+            media_type: p.media_type,
+            detail: p.detail,
+        },
+        "audio" => ContentPart::Audio {
+            data: p.data.unwrap_or_default(),
+            media_type: p.media_type.unwrap_or_else(|| "audio/wav".into()),
+        },
+        "tool_result" => ContentPart::ToolResult {
+            call_id: CompactString::new(&p.call_id.unwrap_or_default()),
+            output: p.output.unwrap_or_default(),
+            is_error: p.is_error.unwrap_or(false),
+        },
+        _ => ContentPart::Text { text: p.text.unwrap_or_default() },
+    }
+}
+
+fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
+    match p {
+        ContentPart::Text { text } => ContentPartObj {
+            r#type: "text".into(), text: Some(text.clone()),
+            url: None, data: None, media_type: None, detail: None,
+            call_id: None, output: None, is_error: None,
+        },
+        ContentPart::Image { url, data, media_type, detail } => ContentPartObj {
+            r#type: "image".into(), text: None,
+            url: url.clone(), data: data.clone(), media_type: media_type.clone(), detail: detail.clone(),
+            call_id: None, output: None, is_error: None,
+        },
+        ContentPart::Audio { data, media_type } => ContentPartObj {
+            r#type: "audio".into(), text: None, url: None,
+            data: Some(data.clone()), media_type: Some(media_type.clone()), detail: None,
+            call_id: None, output: None, is_error: None,
+        },
+        ContentPart::ToolResult { call_id, output, is_error } => ContentPartObj {
+            r#type: "tool_result".into(), text: None, url: None, data: None, media_type: None, detail: None,
+            call_id: Some(call_id.to_string()), output: Some(output.clone()), is_error: Some(*is_error),
+        },
+    }
+}
+
 fn message_to_rust(m: Message) -> Result<RustMessage> {
     let role = role_str_to_rust(&m.role)?;
     let tool_calls: Vec<RustToolCall> = m
@@ -295,32 +362,29 @@ fn message_to_rust(m: Message) -> Result<RustMessage> {
         .into_iter()
         .map(tool_call_to_rust)
         .collect::<Result<_>>()?;
-    Ok(RustMessage {
-        role,
-        content: Content::Text(m.content),
-        tool_calls,
-        token_count: m.token_count,
-    })
+    let content = match m.content_parts {
+        Some(parts) if !parts.is_empty() => Content::Parts(parts.into_iter().map(content_part_to_rust).collect()),
+        _ => Content::Text(m.content),
+    };
+    Ok(RustMessage { role, content, tool_calls, token_count: m.token_count })
 }
 
 fn message_from_rust(m: &RustMessage) -> Message {
-    let content = match &m.content {
-        Content::Text(s) => s.clone(),
-        Content::Parts(parts) => parts
-            .iter()
-            .map(|p| match p {
-                ContentPart::Text { text } => text.clone(),
-                ContentPart::Image { url } => format!("[image: {url}]"),
-                ContentPart::ToolResult { call_id, output, .. } => {
-                    format!("[tool_result {call_id}]: {output}")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
+    let (content, content_parts) = match &m.content {
+        Content::Text(s) => (s.clone(), None),
+        Content::Parts(parts) => {
+            let text_only: String = parts.iter().filter_map(|p| match p {
+                ContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            }).collect::<Vec<_>>().join("\n");
+            let objs: Vec<ContentPartObj> = parts.iter().map(content_part_from_rust).collect();
+            (text_only, Some(objs))
+        }
     };
     Message {
         role: role_to_str(m.role).to_string(),
         content,
+        content_parts,
         token_count: m.token_count,
         tool_calls: m.tool_calls.iter().map(tool_call_from_rust).collect(),
     }
@@ -683,26 +747,99 @@ impl SignalRouter {
 
 // ─────────────────────────────────────────── Governance ───────────────────────────────────────────
 
+/// JS-friendly governance verdict returned by `Governance.evaluate`.
+#[napi(object)]
+#[derive(Clone)]
+pub struct GovernanceVerdictObj {
+    /// `"allow"` | `"deny"` | `"rate_limited"` | `"ask_user"`
+    pub kind: String,
+    pub reason: Option<String>,
+    /// Milliseconds until the tool may be retried. Only set when `kind === "rate_limited"`.
+    pub retry_after_ms: Option<f64>,
+}
+
+fn verdict_to_js(v: RustGovernanceVerdict) -> GovernanceVerdictObj {
+    match v {
+        RustGovernanceVerdict::Allow => GovernanceVerdictObj { kind: "allow".into(), reason: None, retry_after_ms: None },
+        RustGovernanceVerdict::Deny { reason, .. } => GovernanceVerdictObj { kind: "deny".into(), reason: Some(reason), retry_after_ms: None },
+        RustGovernanceVerdict::RateLimited { retry_after_ms } => GovernanceVerdictObj { kind: "rate_limited".into(), reason: None, retry_after_ms: Some(retry_after_ms as f64) },
+        RustGovernanceVerdict::AskUser { reason } => GovernanceVerdictObj { kind: "ask_user".into(), reason: Some(reason), retry_after_ms: None },
+    }
+}
+
 #[napi]
 pub struct Governance {
     inner: RustGovernancePipeline,
+    agent_id: String,
+    session_id: String,
 }
 
 #[napi]
 impl Governance {
+    /// Create a governance pipeline.
+    /// `defaultAction` controls the fallback when no rule matches: `"allow"` (default) or `"deny"`.
     #[napi(constructor)]
-    pub fn new() -> Self {
-        Self { inner: RustGovernancePipeline::default() }
+    pub fn new(default_action: Option<String>) -> Self {
+        let action = match default_action.as_deref() {
+            Some("deny") => PermissionAction::Deny,
+            Some("ask_user") => PermissionAction::AskUser,
+            _ => PermissionAction::Allow,
+        };
+        Self {
+            inner: RustGovernancePipeline::new(action),
+            agent_id: "anonymous".into(),
+            session_id: "".into(),
+        }
     }
 
+    /// Set the agent identity used in governance audit logs.
+    #[napi]
+    pub fn set_identity(&mut self, agent_id: String, session_id: String) {
+        self.agent_id = agent_id;
+        self.session_id = session_id;
+    }
+
+    /// Add a permission rule. `pattern` supports globs: `"db.*"`, `"*.delete"`, `"*"`, or exact names.
+    /// `action`: `"allow"` | `"deny"` | `"ask_user"`.
+    /// Rules are evaluated in insertion order; first match wins.
+    #[napi]
+    pub fn add_permission_rule(&mut self, pattern: String, action: String) {
+        let perm_action = match action.as_str() {
+            "deny" => PermissionAction::Deny,
+            "ask_user" => PermissionAction::AskUser,
+            _ => PermissionAction::Allow,
+        };
+        self.inner.permission.add_rule(PermissionRule {
+            tool_pattern: pattern.into(),
+            action: perm_action,
+        });
+    }
+
+    /// Hard-block a tool name (veto stage — cannot be overridden by permission rules).
     #[napi]
     pub fn block_tool(&mut self, name: String) {
         self.inner.veto.block_tool(name);
     }
 
+    /// Advance the internal clock used by rate limiting and audit.
     #[napi]
     pub fn set_time(&mut self, now_ms: BigInt) {
         self.inner.set_time(now_ms.get_u64().1);
+    }
+
+    /// Evaluate a tool call through the full pipeline (Permission → Veto → RateLimit → Constraint → Audit).
+    /// `argsJson`: JSON-encoded tool arguments string.
+    #[napi]
+    pub fn evaluate(&mut self, tool_name: String, args_json: String) -> Result<GovernanceVerdictObj> {
+        let args: serde_json::Value = serde_json::from_str(&args_json)
+            .unwrap_or(serde_json::Value::Null);
+        let call = RustToolCall {
+            id: compact_str::CompactString::new(""),
+            name: compact_str::CompactString::new(&tool_name),
+            arguments: args,
+        };
+        let caller = AgentIdentity::new(self.agent_id.as_str(), self.session_id.as_str());
+        Ok(verdict_to_js(self.inner.evaluate(&call, &caller)))
     }
 }
 

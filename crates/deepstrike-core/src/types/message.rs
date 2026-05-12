@@ -32,7 +32,26 @@ pub enum Content {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPart {
     Text { text: String },
-    Image { url: String },
+    Image {
+        /// Remote URL (mutually exclusive with `data`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        /// Raw base64-encoded image bytes (mutually exclusive with `url`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
+        /// MIME type, e.g. `"image/png"`. Required when `data` is set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        media_type: Option<String>,
+        /// OpenAI vision detail level: `"auto"` | `"low"` | `"high"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+    Audio {
+        /// Raw base64-encoded audio bytes.
+        data: String,
+        /// MIME type, e.g. `"audio/wav"`, `"audio/mp3"`.
+        media_type: String,
+    },
     ToolResult { call_id: CompactString, output: String, is_error: bool },
 }
 
@@ -71,7 +90,14 @@ impl Content {
             Content::Text(s) => s.len(),
             Content::Parts(parts) => parts.iter().map(|p| match p {
                 ContentPart::Text { text } => text.len(),
-                ContentPart::Image { .. } => 340, // ~85 tokens * 4 chars/token estimate
+                ContentPart::Image { detail, .. } => {
+                    match detail.as_deref() {
+                        Some("low") => 340,   // 85 tokens
+                        Some("high") => 2720, // 680 tokens (4x4 tiles)
+                        _ => 1020,             // ~255 tokens (auto / unspecified)
+                    }
+                }
+                ContentPart::Audio { data, .. } => data.len() / 4, // rough estimate
                 ContentPart::ToolResult { output, .. } => output.len(),
             }).sum(),
         }
@@ -106,6 +132,15 @@ impl Message {
         }
     }
 
+    pub fn user_multimodal(parts: Vec<ContentPart>) -> Self {
+        Self {
+            role: Role::User,
+            content: Content::Parts(parts),
+            tool_calls: Vec::new(),
+            token_count: None,
+        }
+    }
+
     pub fn tool(parts: Vec<ContentPart>) -> Self {
         Self {
             role: Role::Tool,
@@ -113,5 +148,23 @@ impl Message {
             tool_calls: Vec::new(),
             token_count: None,
         }
+    }
+}
+
+impl ContentPart {
+    pub fn text(text: impl Into<String>) -> Self {
+        ContentPart::Text { text: text.into() }
+    }
+
+    pub fn image_url(url: impl Into<String>) -> Self {
+        ContentPart::Image { url: Some(url.into()), data: None, media_type: None, detail: None }
+    }
+
+    pub fn image_base64(data: impl Into<String>, media_type: impl Into<String>) -> Self {
+        ContentPart::Image { url: None, data: Some(data.into()), media_type: Some(media_type.into()), detail: None }
+    }
+
+    pub fn audio(data: impl Into<String>, media_type: impl Into<String>) -> Self {
+        ContentPart::Audio { data: data.into(), media_type: media_type.into() }
     }
 }

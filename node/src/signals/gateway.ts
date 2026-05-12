@@ -1,44 +1,42 @@
-import type { RuntimeSignal } from "./types.js"
+import type { RuntimeSignal, SignalSource } from "./types.js"
 import type { ScheduledPrompt } from "./scheduled.js"
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function loadKernel(): Promise<any> {
-  return import("@deepstrike/core")
-}
-
 /**
- * SignalGateway — the entry point for all external signals into the agent.
+ * SignalGateway — entry point for all external signals into the agent.
+ *
+ * Implements `SignalSource` so it can be passed directly to `AgentOptions.signalSource`.
+ * The gateway maintains an internal FIFO queue; `nextSignal()` drains it one entry at a time
+ * on each agent turn.
  *
  * Responsibilities:
- * - Cron scheduling: fires ScheduledPrompts at the right time (deduplicated)
- * - Webhook ingestion: converts raw external payloads to RuntimeSignal
- * - Routes all signals through the kernel SignalRouter for priority + dedup
- *
- * Usage:
- *   const gateway = new SignalGateway()
- *   gateway.schedule(new ScheduledPrompt("summarize", Date.now() + 60_000))
- *   gateway.onSignal(sig => agent.ingestSignal(sig))
+ * - Cron scheduling: fires ScheduledPrompts at the right wall-clock time (idempotent by goal+time)
+ * - Webhook / push ingestion: external code calls `ingest()` to push a signal in
+ * - Listener API: `onSignal()` for side-channel observers that don't need the pull interface
  */
-export class SignalGateway {
+export class SignalGateway implements SignalSource {
   private timers = new Map<string, ReturnType<typeof setTimeout>>()
+  private queue: RuntimeSignal[] = []
   private listeners: Array<(sig: RuntimeSignal) => void> = []
-  private router: any = null
 
-  async init(): Promise<void> {
-    const kernel = await loadKernel()
-    this.router = new kernel.SignalRouter(1024)
+  // ── SignalSource interface (pull model) ─────────────────────────────────────
+
+  /** Called by the agent loop each turn. Returns the oldest queued signal or null. */
+  async nextSignal(): Promise<RuntimeSignal | null> {
+    return this.queue.shift() ?? null
   }
 
+  // ── Push API ────────────────────────────────────────────────────────────────
+
+  /** Register a listener that is called synchronously whenever a signal is emitted. */
   onSignal(listener: (sig: RuntimeSignal) => void): void {
     this.listeners.push(listener)
   }
 
-  /** Schedule a ScheduledPrompt to fire at its runAtMs. Idempotent by goal. */
+  /** Schedule a ScheduledPrompt to fire at its `runAtMs`. Idempotent by goal+time. */
   schedule(prompt: ScheduledPrompt): void {
     const key = `cron:${prompt.goal}:${prompt.runAtMs}`
-    if (this.timers.has(key)) return  // already scheduled
+    if (this.timers.has(key)) return
 
-    const delay = prompt.runAtMs - Date.now()
     const fire = () => {
       this.timers.delete(key)
       this.emit({
@@ -47,6 +45,7 @@ export class SignalGateway {
       })
     }
 
+    const delay = prompt.runAtMs - Date.now()
     if (delay <= 0) {
       fire()
     } else {
@@ -54,24 +53,34 @@ export class SignalGateway {
     }
   }
 
-  /** Cancel a scheduled prompt. */
+  /** Cancel a scheduled prompt before it fires. */
   cancel(goal: string, runAtMs: number): void {
     const key = `cron:${goal}:${runAtMs}`
     const t = this.timers.get(key)
     if (t) { clearTimeout(t); this.timers.delete(key) }
   }
 
-  /** Ingest a raw external signal (e.g. from a webhook handler). */
+  /** Push a raw signal directly (e.g. from a webhook handler). */
   ingest(sig: RuntimeSignal): void {
     this.emit(sig)
   }
 
-  private emit(sig: RuntimeSignal): void {
-    for (const l of this.listeners) l(sig)
+  /** Number of signals currently buffered in the queue. */
+  get depth(): number {
+    return this.queue.length
   }
 
+  /** Clear all pending timers. Call when shutting down to avoid process leaks. */
   destroy(): void {
     for (const t of this.timers.values()) clearTimeout(t)
     this.timers.clear()
+    this.queue.length = 0
+  }
+
+  // ── Internal ────────────────────────────────────────────────────────────────
+
+  private emit(sig: RuntimeSignal): void {
+    this.queue.push(sig)
+    for (const l of this.listeners) l(sig)
   }
 }

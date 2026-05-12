@@ -11,7 +11,24 @@
       "Bash(sed -i '' 's/core-linux-arm64-gnu\": \"0.1.0\"/core-linux-arm64-gnu\": \"0.1.1\"/' /Users/shan/work/uploads/deepstrike/crates/deepstrike-node/package.json)",
       "Bash(git tag *)",
       "Bash(gh run *)",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "Bash(python -c \"import deepstrike; print\\('Python OK'\\); print\\([x for x in dir\\(deepstrike\\) if not x.startswith\\('_'\\)]\\)\")",
+      "Bash(python -)",
+      "Bash(cargo check *)",
+      "Bash(git checkout *)",
+      "Bash(npx tsx *)",
+      "Bash(curl -s -o /dev/null -w '%{http_code}' -X POST https://xiaoai.plus/v1/chat/completions -H 'Authorization: Bearer sk-cFoNGtf6djfyk1mJftn5xSOr6HMvV4jtxmnO9e1nEfnsXM4S' -H 'Content-Type: application/json' -d '{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":5}')",
+      "Bash(node -e ' *)",
+      "Bash(node --import tsx/esm -e ' *)",
+      "Bash(npm test *)",
+      "Bash(cargo build *)",
+      "Bash(npm run *)",
+      "Bash(node -e \"const m = require\\('/Users/shan/work/uploads/deepstrike/node/node_modules/@deepstrike/core'\\); console.log\\(Object.keys\\(m\\).filter\\(k => k.includes\\('Gov'\\) || k.includes\\('Eval'\\)\\)\\)\")",
+      "Bash(node -e \"const m = require\\('/Users/shan/work/uploads/deepstrike/node/node_modules/@deepstrike/core'\\); const g = new m.Governance\\('allow'\\); console.log\\(typeof g.evaluate, typeof g.addPermissionRule, Object.getOwnPropertyNames\\(Object.getPrototypeOf\\(g\\)\\)\\)\")",
+      "Bash(node -e \"const m = require\\('/Users/shan/work/uploads/deepstrike/node/node_modules/@deepstrike/core'\\); const g = new m.Governance\\('allow'\\); console.log\\('evaluate:', typeof g.evaluate, 'addPermissionRule:', typeof g.addPermissionRule\\)\")",
+      "Bash(npx napi *)",
+      "Bash(napi build *)",
+      "Bash(node -e \"delete require.cache[require.resolve\\('@deepstrike/core'\\)]; const m = require\\('@deepstrike/core'\\); const g = new m.Governance\\('allow'\\); console.log\\('evaluate:', typeof g.evaluate, 'addPermissionRule:', typeof g.addPermissionRule\\)\")"
     ]
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@deepstrike/wasm",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "description": "DeepStrike WASM SDK — browser, Cloudflare Workers, Deno Deploy",
   "type": "module",
   "main": "src/index.ts",

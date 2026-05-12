@@ -1,4 +1,4 @@
-from .base import LLMProvider, RetryConfig, CircuitBreaker, normalize_tool_call, parse_tool_arguments, TokenUsage, ProviderToolSpec
+from .base import LLMProvider, RetryConfig, CircuitBreaker, normalize_tool_call, parse_tool_arguments, TokenUsage, ProviderToolSpec, to_anthropic_content, to_openai_content
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent
 from .anthropic import AnthropicProvider
 from .openai import OpenAIProvider
@@ -6,12 +6,13 @@ from .qwen import QwenProvider
 from .deepseek import DeepSeekProvider
 from .minimax import MiniMaxProvider
 from .ollama import OllamaProvider
+from .kimi import KimiProvider
 
 __all__ = [
     "LLMProvider", "AnthropicProvider", "OpenAIProvider",
-    "QwenProvider", "DeepSeekProvider", "MiniMaxProvider", "OllamaProvider",
+    "QwenProvider", "DeepSeekProvider", "MiniMaxProvider", "OllamaProvider", "KimiProvider",
     "RetryConfig", "CircuitBreaker", "normalize_tool_call", "parse_tool_arguments",
-    "TokenUsage", "ProviderToolSpec",
+    "TokenUsage", "ProviderToolSpec", "to_anthropic_content", "to_openai_content",
     "StreamEvent", "TextDelta", "ThinkingDelta",
     "ToolCallEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent",
 ]

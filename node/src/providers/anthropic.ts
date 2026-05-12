@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk"
 import type { Message, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider } from "../types.js"
-import { CircuitBreaker, normalizeToolCall } from "./base.js"
+import { CircuitBreaker, normalizeToolCall, toAnthropicContent } from "./base.js"
 
 export class AnthropicProvider implements LLMProvider {
   private client: Anthropic
@@ -30,7 +30,7 @@ export class AnthropicProvider implements LLMProvider {
   async complete(messages: Message[], tools: ToolSchema[]): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
     const system = messages.filter(m => m.role === "system").map(m => m.content).join("\n\n")
-    const msgs = messages.filter(m => m.role !== "system").map(m => ({ role: m.role as "user" | "assistant", content: m.content }))
+    const msgs = messages.filter(m => m.role !== "system").map(m => ({ role: m.role as "user" | "assistant", content: toAnthropicContent(m) as Anthropic.MessageParam["content"] }))
 
     let lastErr: unknown
     for (let i = 0; i < this.maxRetries; i++) {
@@ -64,7 +64,7 @@ export class AnthropicProvider implements LLMProvider {
 
   async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
     const system = messages.filter(m => m.role === "system").map(m => m.content).join("\n\n")
-    const msgs = messages.filter(m => m.role !== "system").map(m => ({ role: m.role as "user" | "assistant", content: m.content }))
+    const msgs = messages.filter(m => m.role !== "system").map(m => ({ role: m.role as "user" | "assistant", content: toAnthropicContent(m) as Anthropic.MessageParam["content"] }))
     const toolBlocks: Record<number, { id: string; name: string; argsBuf: string }> = {}
 
     const stream = this.client.messages.stream({

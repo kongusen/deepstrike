@@ -170,11 +170,81 @@ fn disposition_str(d: RustSignalDisposition) -> &'static str {
 
 #[pyclass]
 #[derive(Clone)]
+struct ContentPartObj {
+    #[pyo3(get, set)]
+    r#type: String,
+    #[pyo3(get, set)]
+    text: Option<String>,
+    #[pyo3(get, set)]
+    url: Option<String>,
+    #[pyo3(get, set)]
+    data: Option<String>,
+    #[pyo3(get, set)]
+    media_type: Option<String>,
+    #[pyo3(get, set)]
+    detail: Option<String>,
+    #[pyo3(get, set)]
+    call_id: Option<String>,
+    #[pyo3(get, set)]
+    output: Option<String>,
+    #[pyo3(get, set)]
+    is_error: Option<bool>,
+}
+
+#[pymethods]
+impl ContentPartObj {
+    #[new]
+    #[pyo3(signature = (r#type, text=None, url=None, data=None, media_type=None, detail=None, call_id=None, output=None, is_error=None))]
+    fn new(
+        r#type: String,
+        text: Option<String>,
+        url: Option<String>,
+        data: Option<String>,
+        media_type: Option<String>,
+        detail: Option<String>,
+        call_id: Option<String>,
+        output: Option<String>,
+        is_error: Option<bool>,
+    ) -> Self {
+        Self { r#type, text, url, data, media_type, detail, call_id, output, is_error }
+    }
+
+    #[staticmethod]
+    fn text_part(text: String) -> Self {
+        Self { r#type: "text".into(), text: Some(text), url: None, data: None, media_type: None, detail: None, call_id: None, output: None, is_error: None }
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (url, detail=None))]
+    fn image_url(url: String, detail: Option<String>) -> Self {
+        Self { r#type: "image".into(), text: None, url: Some(url), data: None, media_type: None, detail, call_id: None, output: None, is_error: None }
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (data, media_type, detail=None))]
+    fn image_base64(data: String, media_type: String, detail: Option<String>) -> Self {
+        Self { r#type: "image".into(), text: None, url: None, data: Some(data), media_type: Some(media_type), detail, call_id: None, output: None, is_error: None }
+    }
+
+    #[staticmethod]
+    fn audio(data: String, media_type: String) -> Self {
+        Self { r#type: "audio".into(), text: None, url: None, data: Some(data), media_type: Some(media_type), detail: None, call_id: None, output: None, is_error: None }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("ContentPart(type={:?})", self.r#type)
+    }
+}
+
+#[pyclass]
+#[derive(Clone)]
 struct Message {
     #[pyo3(get, set)]
     role: String,
     #[pyo3(get, set)]
     content: String,
+    #[pyo3(get, set)]
+    content_parts: Option<Vec<ContentPartObj>>,
     #[pyo3(get, set)]
     token_count: Option<u32>,
     #[pyo3(get)]
@@ -184,26 +254,77 @@ struct Message {
 #[pymethods]
 impl Message {
     #[new]
-    #[pyo3(signature = (role, content, token_count = None, tool_calls = None))]
+    #[pyo3(signature = (role, content, token_count = None, tool_calls = None, content_parts = None))]
     fn new(
         role: String,
         content: String,
         token_count: Option<u32>,
         tool_calls: Option<Vec<ToolCall>>,
+        content_parts: Option<Vec<ContentPartObj>>,
     ) -> Self {
         Self {
             role,
             content,
+            content_parts,
             token_count,
             tool_calls: tool_calls.unwrap_or_default(),
         }
     }
 
     fn __repr__(&self) -> String {
+        let parts_info = match &self.content_parts {
+            Some(p) => format!(", parts={}", p.len()),
+            None => String::new(),
+        };
         format!(
-            "Message(role={:?}, content={:?}, tokens={:?})",
-            self.role, self.content, self.token_count
+            "Message(role={:?}, content={:?}, tokens={:?}{})",
+            self.role, self.content, self.token_count, parts_info
         )
+    }
+}
+
+fn content_part_obj_to_rust(p: &ContentPartObj) -> ContentPart {
+    match p.r#type.as_str() {
+        "image" => ContentPart::Image {
+            url: p.url.clone(),
+            data: p.data.clone(),
+            media_type: p.media_type.clone(),
+            detail: p.detail.clone(),
+        },
+        "audio" => ContentPart::Audio {
+            data: p.data.clone().unwrap_or_default(),
+            media_type: p.media_type.clone().unwrap_or_else(|| "audio/wav".into()),
+        },
+        "tool_result" => ContentPart::ToolResult {
+            call_id: CompactString::new(p.call_id.as_deref().unwrap_or("")),
+            output: p.output.clone().unwrap_or_default(),
+            is_error: p.is_error.unwrap_or(false),
+        },
+        _ => ContentPart::Text { text: p.text.clone().unwrap_or_default() },
+    }
+}
+
+fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
+    match p {
+        ContentPart::Text { text } => ContentPartObj {
+            r#type: "text".into(), text: Some(text.clone()),
+            url: None, data: None, media_type: None, detail: None,
+            call_id: None, output: None, is_error: None,
+        },
+        ContentPart::Image { url, data, media_type, detail } => ContentPartObj {
+            r#type: "image".into(), text: None,
+            url: url.clone(), data: data.clone(), media_type: media_type.clone(), detail: detail.clone(),
+            call_id: None, output: None, is_error: None,
+        },
+        ContentPart::Audio { data, media_type } => ContentPartObj {
+            r#type: "audio".into(), text: None, url: None,
+            data: Some(data.clone()), media_type: Some(media_type.clone()), detail: None,
+            call_id: None, output: None, is_error: None,
+        },
+        ContentPart::ToolResult { call_id, output, is_error } => ContentPartObj {
+            r#type: "tool_result".into(), text: None, url: None, data: None, media_type: None, detail: None,
+            call_id: Some(call_id.to_string()), output: Some(output.clone()), is_error: Some(*is_error),
+        },
     }
 }
 
@@ -216,9 +337,15 @@ impl Message {
             "tool" => Role::Tool,
             other => return Err(PyValueError::new_err(format!("invalid role: {other}"))),
         };
+        let content = match &self.content_parts {
+            Some(parts) if !parts.is_empty() => {
+                Content::Parts(parts.iter().map(content_part_obj_to_rust).collect())
+            }
+            _ => Content::Text(self.content.clone()),
+        };
         Ok(RustMessage {
             role,
-            content: Content::Text(self.content.clone()),
+            content,
             tool_calls: self.tool_calls.iter().map(|c| c.to_rust()).collect::<Result<_, _>>()?,
             token_count: self.token_count,
         })
@@ -231,23 +358,21 @@ impl Message {
             Role::Assistant => "assistant",
             Role::Tool => "tool",
         };
-        let content = match &msg.content {
-            Content::Text(s) => s.clone(),
-            Content::Parts(parts) => parts
-                .iter()
-                .map(|p| match p {
-                    ContentPart::Text { text } => text.clone(),
-                    ContentPart::Image { url } => format!("[image: {url}]"),
-                    ContentPart::ToolResult { call_id, output, .. } => {
-                        format!("[tool_result {call_id}]: {output}")
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
+        let (content, content_parts) = match &msg.content {
+            Content::Text(s) => (s.clone(), None),
+            Content::Parts(parts) => {
+                let text_only: String = parts.iter().filter_map(|p| match p {
+                    ContentPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                }).collect::<Vec<_>>().join("\n");
+                let objs: Vec<ContentPartObj> = parts.iter().map(content_part_from_rust).collect();
+                (text_only, Some(objs))
+            }
         };
         Self {
             role: role.to_string(),
             content,
+            content_parts,
             token_count: msg.token_count,
             tool_calls: msg.tool_calls.iter().map(ToolCall::from_rust).collect(),
         }
@@ -1253,6 +1378,7 @@ impl EvalPipeline {
 #[pymodule]
 fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // POD types
+    m.add_class::<ContentPartObj>()?;
     m.add_class::<Message>()?;
     m.add_class::<ToolCall>()?;
     m.add_class::<ToolResult>()?;

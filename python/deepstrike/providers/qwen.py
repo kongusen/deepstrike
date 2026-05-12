@@ -21,19 +21,16 @@ class QwenProvider(OpenAIProvider):
       thinking_budget (int): max tokens for thinking block
     """
 
-    def __init__(self, api_key: str, model: str = "qwen-plus", retry_config: RetryConfig | None = None, base_url: str = _DASHSCOPE_BASE_URL):
+    def __init__(self, api_key: str, model: str = "qwen-max", retry_config: RetryConfig | None = None, base_url: str = _DASHSCOPE_BASE_URL):
         super().__init__(api_key=api_key, model=model, retry_config=retry_config, base_url=base_url)
 
     def _build_body(self, messages: list[Message], tools: list[ToolSchema], stream: bool, extensions: dict | None = None) -> dict:
         body = super()._build_body(messages, tools, stream)
         ext = extensions or {}
-        extra: dict = {}
         if "enable_thinking" in ext:
-            extra["enable_thinking"] = bool(ext["enable_thinking"])
+            body["enable_thinking"] = bool(ext["enable_thinking"])
             if "thinking_budget" in ext:
-                extra["thinking_budget"] = int(ext["thinking_budget"])
-        if extra:
-            body["extra_body"] = extra
+                body["thinking_budget"] = int(ext["thinking_budget"])
         return body
 
     async def _stream_gen(self, messages: list[Message], tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:

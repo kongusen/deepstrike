@@ -1,6 +1,6 @@
 # DeepStrike Python SDK
 
-Agent framework built on a Rust kernel. The kernel handles loop control, context compression, skill selection, and termination — the SDK handles all I/O.
+Agent framework built on a Rust kernel. The kernel handles loop control, context compression, skill routing, governance, signal prioritization — the SDK handles all I/O.
 
 ## Install
 
@@ -16,57 +16,34 @@ Requires Python 3.10+. The Rust kernel is distributed as a pre-built wheel (`dee
 
 ```python
 import asyncio
-from deepstrike import Agent, AnthropicProvider, tool
+from deepstrike import Agent, OpenAIProvider, tool
 
-@tool
-def add(x: int, y: int) -> int:
-    """Add two numbers."""
-    return x + y
+@tool(name="add", description="Add two numbers.", parameters={
+    "type": "object",
+    "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}},
+    "required": ["x", "y"],
+})
+async def add(args):
+    return str(args["x"] + args["y"])
 
-agent = Agent(
-    AnthropicProvider(api_key="..."),
-    max_tokens=32_000,
-    max_turns=10,
-)
+agent = Agent(OpenAIProvider(api_key="sk-...", model="gpt-5-mini"), max_tokens=4096, max_turns=25)
 agent.register(add)
 
-asyncio.run(agent.run("What is 2 + 3?"))
+asyncio.run(agent.run("What is 17 + 28?"))
+# => "done in 2 turns (completed)"
 ```
 
 Streaming:
 
 ```python
 async for event in agent.run_streaming("Summarize README.md"):
-    if event.type == "text_delta":
+    if isinstance(event, TextDelta):
         print(event.delta, end="", flush=True)
-    elif event.type == "tool_call":
+    elif isinstance(event, ToolCallEvent):
         print(f"\n[→ {event.name}]")
-    elif event.type == "done":
+    elif isinstance(event, DoneEvent):
         print(f"\ndone in {event.iterations} turns ({event.status})")
 ```
-
----
-
-## Architecture
-
-```
-deepstrike/
-├── agent.py          # Agent — top-level entry point
-├── providers/        # LLM adapters (HTTP + streaming)
-├── tools/            # @tool decorator, execution, built-ins
-├── skills/           # SkillRegistry — .md file scanning
-├── memory/           # WorkingMemory + MemorySource/Extractor protocols
-├── knowledge/        # KnowledgeSource protocol
-├── harness/          # Run control: SinglePass, EvalLoop, QualityGate
-├── signals/          # RuntimeSignal, SignalSource, ScheduledPrompt
-└── safety/           # PermissionManager (DEFAULT / PLAN / AUTO)
-```
-
-The kernel (`deepstrike._kernel`, Rust/PyO3) owns:
-- `LoopStateMachine` — drives `call_llm → execute_tools → load_skills → done`
-- `ContextEngine` — 5-partition context with pressure-based compression
-- `Governance` — tool veto authority
-- `SignalRouter` — external interrupt queue
 
 ---
 
@@ -74,31 +51,34 @@ The kernel (`deepstrike._kernel`, Rust/PyO3) owns:
 
 | Class | Backend | Notes |
 |-------|---------|-------|
-| `AnthropicProvider` | Anthropic API | Native SSE, `ThinkingDelta` support |
 | `OpenAIProvider` | OpenAI API | SSE tool-call accumulation |
-| `QwenProvider` | DashScope | `enable_thinking` via `extensions` |
+| `AnthropicProvider` | Anthropic API | Native SSE, `ThinkingDelta` support |
+| `QwenProvider` | DashScope | `enable_thinking` via extensions |
 | `DeepSeekProvider` | DeepSeek API | Reasoner models strip tools automatically |
 | `MiniMaxProvider` | MiniMax API | M1 reasoning via `expose_reasoning` |
 | `OllamaProvider` | Local Ollama | `http://localhost:11434` default |
+| `KimiProvider` | Moonshot API | |
 
 All providers accept `RetryConfig` for exponential backoff and share a `CircuitBreaker`.
 
-```python
-from deepstrike import AnthropicProvider, RetryConfig
+---
 
-provider = AnthropicProvider(
-    api_key="...",
-    model="claude-opus-4-7",
-    retry_config=RetryConfig(max_retries=5, base_delay=2.0),
+## Agent options
+
+```python
+agent = Agent(
+    provider,
+    max_tokens=4096,            # context window size
+    max_turns=25,               # max turns (default 25)
+    timeout_ms=60_000,          # timeout in ms (None = no limit)
+    extensions={"temperature": 0.1},
+    skill_dir="./skills",       # skill .md files directory
+    knowledge_source=my_ks,     # KnowledgeSource implementation
+    governance=gov,             # kernel Governance instance
+    signal_router=router,       # SignalRouter for external signals
+    dream_store=my_store,       # DreamStore for long-term memory
+    agent_id="my-agent",        # required with dream_store for memory meta-tool
 )
-```
-
-Thinking / reasoning:
-
-```python
-async for event in agent.run_streaming("...", extensions={"enable_thinking": True}):
-    if event.type == "thinking_delta":
-        print(event.delta, end="")
 ```
 
 ---
@@ -106,203 +86,165 @@ async for event in agent.run_streaming("...", extensions={"enable_thinking": Tru
 ## Tools
 
 ```python
-from deepstrike import tool, Agent
+from deepstrike import tool, read_file
 
-@tool
-def search(query: str, top_k: int = 5) -> str:
-    """Search the knowledge base."""
-    return my_search(query, top_k)
-
-agent.register(search)
+agent.register(tool(name="search", description="Search.", parameters=schema)(my_fn))
+agent.register(read_file())
 agent.unregister("search")
-agent.block_tool("bash")   # Governance veto — permanent for this agent instance
+agent.block_tool("bash")
 ```
-
-Built-in tools: `read_file`.
 
 ---
 
 ## Skills
 
-Skills are `.md` files with YAML frontmatter. The kernel selects and injects them into `C_skill` automatically.
+Set `skill_dir` — the kernel auto-injects a `skill` meta-tool, and the LLM loads skills by name on demand.
+
+```python
+agent = Agent(provider, max_tokens=4096, max_turns=25, skill_dir="./skills")
+```
 
 ```markdown
 ---
-name: debug
-description: Step-by-step debugging guide
-when_to_use: error, traceback, exception
-effort: 2
-estimated_tokens: 800
+name: summarize
+description: Summarize text into 2-3 concise bullet points
+when_to_use: When you need to condense long text
+effort: 1
 ---
-
-## Debug protocol
-1. Read the traceback carefully ...
-```
-
-```python
-from deepstrike import Agent, SkillLoader, SkillRegistry
-
-# Register available skills with the kernel
-registry = SkillRegistry("~/.deepstrike/skills")
-skills = registry.scan()
-
-# Load skill content on demand
-loader = SkillLoader("~/.deepstrike/skills")
-agent = Agent(provider, max_tokens=32_000, max_turns=10, skill_loader=loader)
-```
-
----
-
-## Memory
-
-Implement `MemorySource` to inject persistent context before a run, and `MemoryExtractor` to persist what was learned after.
-
-```python
-from deepstrike import MemorySource, MemoryExtractor, Agent
-
-class MyMemorySource:
-    async def load(self, goal: str) -> list[str]:
-        return db.query(goal)          # your storage backend
-
-class MyMemoryExtractor:
-    async def extract(self, goal: str, final_text: str, turns: int) -> None:
-        db.save(goal, final_text)      # your storage backend
-
-agent = Agent(
-    provider,
-    max_tokens=32_000,
-    max_turns=10,
-    memory_source=MyMemorySource(),
-    memory_extractor=MyMemoryExtractor(),
-)
-```
-
-`WorkingMemory` is an in-process scratch pad for within-run state:
-
-```python
-from deepstrike import WorkingMemory
-mem = WorkingMemory()
-mem.set("step", 1)
-mem.get("step")   # 1
+1. Identify the 2-3 most important points
+2. Express each as a concise bullet
 ```
 
 ---
 
 ## Knowledge
 
-Inject run-scoped evidence (RAG results, API responses) without polluting long-term memory:
+Implement `KnowledgeSource` — the kernel injects a `knowledge` meta-tool.
 
 ```python
-from deepstrike import KnowledgeSource, Agent
+from deepstrike import KnowledgeSource
 
-class VectorSearch:
-    async def retrieve(self, goal: str, top_k: int = 5) -> list[str]:
-        return vector_db.search(goal, top_k)
+class VectorSearch(KnowledgeSource):
+    async def retrieve(self, query: str, top_k: int = 5) -> list[str]:
+        return await vector_db.search(query, top_k)
 
-agent = Agent(provider, max_tokens=32_000, max_turns=10,
-              knowledge_source=VectorSearch())
-```
-
-Snippets are prepended as a system message before the first LLM call.
-
----
-
-## Harness
-
-Control how runs are attempted:
-
-```python
-from deepstrike import Agent, SinglePassHarness, EvalLoopHarness, HarnessRequest, QualityGate
-
-# Single pass (default)
-harness = SinglePassHarness(agent)
-outcome = await harness.run(HarnessRequest(goal="Write a haiku"))
-
-# Eval loop — retry until QualityGate passes (max 3 attempts)
-class LengthGate:
-    async def evaluate(self, request, outcome) -> bool:
-        return len(outcome.result) > 50
-
-harness = EvalLoopHarness(agent, gate=LengthGate(), max_attempts=3)
-outcome = await harness.run(HarnessRequest(goal="Write a haiku"))
-print(outcome.passed, outcome.iterations)
+agent = Agent(provider, max_tokens=4096, max_turns=25, knowledge_source=VectorSearch())
 ```
 
 ---
 
-## Signals & interrupts
+## Memory
+
+### WorkingMemory (in-session scratch pad)
 
 ```python
-from deepstrike import RuntimeSignal, ScheduledPrompt
-import asyncio
+from deepstrike import WorkingMemory
 
-# Interrupt a running agent from another coroutine
-async def watchdog(agent):
-    await asyncio.sleep(30)
-    agent.interrupt()
-
-# Convert a scheduled prompt to a RuntimeSignal
-prompt = ScheduledPrompt(goal="Daily standup summary", run_at_ms=1_700_000_000_000)
-signal = prompt.to_signal()
-# signal.kind == "scheduled"
-# signal.payload == {"goal": "Daily standup summary", "criteria": []}
+mem = WorkingMemory()
+mem.set("step", 1)
+mem.get("step")  # 1
+mem.clear()
 ```
 
-Implement `SignalSource` to feed signals from any external source (cron, webhook, queue):
+### DreamStore (long-term memory + dreaming pipeline)
 
 ```python
-from deepstrike import SignalSource, RuntimeSignal
+from deepstrike import DreamStore
 
-class WebhookSource:
-    async def next_signal(self) -> RuntimeSignal | None:
-        event = await webhook_queue.get()
-        return RuntimeSignal(kind="external", payload=event)
+class MyStore(DreamStore):
+    async def load_sessions(self, agent_id): ...
+    async def load_memories(self, agent_id): ...
+    async def commit(self, agent_id, result, existing): ...
+    async def search(self, agent_id, query, top_k): ...
+
+agent = Agent(provider, max_tokens=4096, max_turns=25,
+              dream_store=MyStore(), agent_id="my-agent")
+
+# In-session: LLM calls memory(query) → DreamStore.search()
+# Post-session: trigger memory consolidation
+result = await agent.dream("my-agent", now_ms=int(time.time() * 1000))
 ```
-
----
-
-## Permissions
-
-```python
-from deepstrike import PermissionManager, PermissionMode
-
-pm = PermissionManager(mode=PermissionMode.DEFAULT)
-pm.grant("bash", "execute")
-pm.grant("fs", "*")          # wildcard: all actions on fs
-pm.revoke("bash", "execute")
-
-decision = pm.evaluate("bash", "execute")
-decision.allowed   # bool
-decision.reason    # str
-```
-
-Modes: `DEFAULT` (evaluate grants), `PLAN` (block all), `AUTO` (allow all).
 
 ---
 
 ## Governance
 
+### SDK PermissionManager
+
 ```python
-from deepstrike import Governance, Agent
+from deepstrike import PermissionManager, PermissionMode
 
-gov = Governance()
-gov.block_tool("bash")
+pm = PermissionManager(PermissionMode.DEFAULT)
+pm.grant("fs", "read")
+pm.revoke("db", "drop")
+pm.evaluate("fs", "read")  # PermissionDecision(allowed=True, ...)
+```
 
-agent = Agent(provider, max_tokens=32_000, max_turns=10, governance=gov)
-agent.block_tool("write_file")   # also tracked on the Python side
+### Kernel Governance (full pipeline)
+
+```python
+from deepstrike import Governance
+
+gov = Governance("allow")
+gov.add_permission_rule("danger.*", "deny")
+gov.block_tool("rm_rf")
+gov.set_rate_limit("api_call", max_calls=10, window_ms=60_000)
+
+agent = Agent(provider, max_tokens=4096, max_turns=25, governance=gov)
+# Every tool call: Permission → Veto → RateLimit → Constraint → Audit
+```
+
+---
+
+## Signals
+
+```python
+from deepstrike import SignalGateway, ScheduledPrompt, RuntimeSignal
+
+gw = SignalGateway()
+rx = gw.subscribe()
+
+gw.schedule(ScheduledPrompt(goal="standup", run_at_ms=target_time))
+gw.ingest(RuntimeSignal(kind="interrupt", payload={}, priority=10))
+
+agent.interrupt()  # direct interrupt
+gw.destroy()
+```
+
+---
+
+## Harness (evaluation framework)
+
+```python
+from deepstrike import SinglePassHarness, EvalLoopHarness, HarnessLoop, HarnessRequest
+
+# 1. SinglePass — run once, always passes
+outcome = await SinglePassHarness(agent).run(HarnessRequest(goal="Say hello"))
+
+# 2. EvalLoop — retry until QualityGate passes
+class ContainsHello(QualityGate):
+    async def evaluate(self, request, outcome) -> bool:
+        return "hello" in outcome.result.lower()
+
+outcome = await EvalLoopHarness(agent, gate=ContainsHello(), max_attempts=3).run(req)
+
+# 3. HarnessLoop — LLM-as-judge with feedback injection + skill extraction
+loop = HarnessLoop(agent, eval_provider=eval_provider, max_attempts=3, skill_dir="./skills")
+outcome = await loop.run(HarnessRequest(goal="Write a haiku", criteria=["Must be 3 lines"]))
+print(outcome.passed, outcome.feedback)
 ```
 
 ---
 
 ## Stream events
 
-| Event type | Fields |
-|------------|--------|
-| `text_delta` | `delta: str` |
-| `thinking_delta` | `delta: str` |
-| `tool_call` | `id, name, arguments` |
-| `tool_result` | `call_id, name, content, is_error` |
-| `done` | `iterations, total_tokens, status` |
-| `error` | `message: str` |
+| Class | Key fields |
+|-------|------------|
+| `TextDelta` | `delta` |
+| `ThinkingDelta` | `delta` |
+| `ToolCallEvent` | `id`, `name`, `arguments` |
+| `ToolResultEvent` | `call_id`, `content`, `is_error` |
+| `DoneEvent` | `iterations`, `total_tokens`, `status` |
+| `ErrorEvent` | `message` |
 
-`status` mirrors the kernel termination reason: `completed` / `max_turns` / `token_budget` / `timeout` / `user_abort` / `error`.
+`status`: `completed` · `max_turns` · `token_budget` · `timeout` · `user_abort` · `error`

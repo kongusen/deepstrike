@@ -27,6 +27,13 @@ class MiniMaxProvider(OpenAIProvider):
     def __init__(self, api_key: str, model: str = "MiniMax-Text-01", retry_config: RetryConfig | None = None, base_url: str = _MINIMAX_BASE_URL):
         super().__init__(api_key=api_key, model=model, retry_config=retry_config, base_url=base_url)
 
+    def _build_body(self, messages: list[Message], tools: list[ToolSchema], stream: bool) -> dict:
+        body = super()._build_body(messages, tools, stream)
+        if self._model in _REASONING_MODELS:
+            body.pop("tools", None)
+            body.pop("tool_choice", None)
+        return body
+
     async def _stream_gen(self, messages: list[Message], tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
         ext = extensions or {}
         tool_calls: dict[int, dict] = {}

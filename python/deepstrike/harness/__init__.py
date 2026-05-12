@@ -1,3 +1,11 @@
-from deepstrike.harness.harness import Harness, SinglePassHarness, EvalLoopHarness, HarnessRequest, HarnessOutcome, QualityGate
+from deepstrike.harness.harness import (
+    Harness, QualityGate,
+    SinglePassHarness, EvalLoopHarness, HarnessLoop,
+    HarnessRequest, HarnessOutcome,
+)
 
-__all__ = ["Harness", "SinglePassHarness", "EvalLoopHarness", "HarnessRequest", "HarnessOutcome", "QualityGate"]
+__all__ = [
+    "Harness", "QualityGate",
+    "SinglePassHarness", "EvalLoopHarness", "HarnessLoop",
+    "HarnessRequest", "HarnessOutcome",
+]

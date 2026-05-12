@@ -20,9 +20,18 @@ class OllamaProvider:
         self._circuit = CircuitBreaker(self._retry)
 
     def _build_body(self, messages: list[Message], tools: list[ToolSchema], stream: bool) -> dict:
+        msgs = []
+        for m in messages:
+            entry: dict = {"role": m.role, "content": m.content}
+            parts = getattr(m, "content_parts", None)
+            if parts:
+                images = [p.data for p in parts if p.type == "image" and p.data]
+                if images:
+                    entry["images"] = images
+            msgs.append(entry)
         body: dict = {
             "model": self._model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": msgs,
             "stream": stream,
         }
         if tools:

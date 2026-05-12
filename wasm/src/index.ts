@@ -1,7 +1,7 @@
 export { Agent } from "./agent.js"
 export type { AgentOptions } from "./agent.js"
 export { AnthropicProvider } from "./providers/anthropic.js"
-export { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider } from "./providers/openai.js"
+export { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider, KimiProvider } from "./providers/openai.js"
 export { tool, executeTools } from "./tools/index.js"
 export type { RegisteredTool } from "./tools/index.js"
 export { WorkingMemory } from "./memory/index.js"
