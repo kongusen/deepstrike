@@ -20,5 +20,3 @@ serde_json = { workspace = true }
 [build-dependencies]
 napi-build = "2"
 
-[profile.release]
-lto = true

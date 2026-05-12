@@ -62,6 +62,7 @@ impl SignalQueue {
         self.heap.len()
     }
 
+    #[allow(dead_code)]
     pub(super) fn is_empty(&self) -> bool {
         self.heap.is_empty()
     }

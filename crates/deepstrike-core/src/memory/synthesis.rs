@@ -7,7 +7,7 @@
 /// The SDK is responsible for the actual LLM call between steps 1 and 2.
 /// This keeps the kernel pure-computation while enabling intelligent synthesis.
 use crate::memory::trace_analyzer::{InsightKind, TraceInsight};
-use crate::types::message::{Content, Message, Role};
+use crate::types::message::{Message, Role};
 
 #[derive(Debug, Clone)]
 pub struct SynthesisPolicy {
