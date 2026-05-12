@@ -70,17 +70,26 @@ jobs:
       - name: Download all native addons
         uses: actions/download-artifact@v4
         with:
-          path: crates/deepstrike-node/artifacts
+          path: artifacts
           merge-multiple: true
 
       - name: Install napi-rs CLI
         run: npm install -g @napi-rs/cli
 
+      # Move each .node file into its platform npm dir and publish
       - name: Publish platform packages
-        run: napi prepublish --skip-gh-release
         working-directory: crates/deepstrike-node
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for dir in npm/*/; do
+            pkg=$(basename "$dir")
+            node_file=$(ls ../../artifacts/deepstrike-core.*${pkg}*.node 2>/dev/null | head -1)
+            if [ -n "$node_file" ]; then
+              cp "$node_file" "$dir/"
+              npm publish "$dir" --access public
+            fi
+          done
 
       - name: Publish @deepstrike/core
         run: npm publish --access public
