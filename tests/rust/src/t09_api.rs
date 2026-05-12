@@ -127,6 +127,7 @@ impl DreamStore for MockDreamStore {
 // ─── 01. Agent.run() basic ──────────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn agent_run_returns_done_string() {
     let agent = make_agent();
     let result = agent.run("Say hello in one word.").await.unwrap();
@@ -137,6 +138,7 @@ async fn agent_run_returns_done_string() {
 // ─── 02. Agent.run_streaming() ──────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn agent_streaming_produces_text_and_done() {
     let agent = make_agent();
     let (text, events) = collect_text(&agent, "What is 2+2? Answer with just the number.").await;
@@ -146,6 +148,7 @@ async fn agent_streaming_produces_text_and_done() {
 }
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn agent_streaming_done_has_iterations() {
     let agent = make_agent();
     let (_, events) = collect_text(&agent, "Say hi.").await;
@@ -162,6 +165,7 @@ async fn agent_streaming_done_has_iterations() {
 // ─── 03. Agent with criteria ────────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn agent_with_criteria() {
     let agent = make_agent();
     let criteria = vec!["Must contain the word 'hello'".to_string()];
@@ -182,6 +186,7 @@ async fn agent_with_criteria() {
 // ─── 04. Tool calling ──────────────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn agent_calls_tool() {
     let mut agent = Agent::new(make_provider(), AgentOptions::new(4096));
     agent.register(RegisteredTool::new(
@@ -214,6 +219,7 @@ async fn agent_calls_tool() {
 // ─── 05. Skills ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn agent_with_skill_dir() {
     let agent = Agent::new(make_provider(), AgentOptions {
         skill_dir: Some(skills_dir()),
@@ -236,6 +242,7 @@ async fn agent_with_skill_dir() {
 // ─── 06. Knowledge source ───────────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn agent_with_knowledge_source() {
     let agent = Agent::new(make_provider(), AgentOptions {
         knowledge_source: Some(Box::new(MockKnowledgeSource {
@@ -260,6 +267,7 @@ async fn agent_with_knowledge_source() {
 // ─── 07. Governance — blocked tool ──────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn blocked_tool_yields_error_event() {
     let mut agent = Agent::new(make_provider(), AgentOptions::new(4096));
     agent.register(RegisteredTool::new(
@@ -285,6 +293,7 @@ async fn blocked_tool_yields_error_event() {
 // ─── 08. Agent.interrupt() ──────────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn agent_interrupt() {
     let agent = make_agent();
 
@@ -315,6 +324,7 @@ async fn agent_interrupt() {
 // ─── 09. DreamStore integration ─────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn dream_with_empty_sessions() {
     let store = MockDreamStore::empty();
     let agent = Agent::new(make_provider(), AgentOptions {
@@ -328,6 +338,7 @@ async fn dream_with_empty_sessions() {
 }
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn dream_processes_session() {
     let store = MockDreamStore::with_session();
     let committed = store.committed.clone();
@@ -346,6 +357,7 @@ async fn dream_processes_session() {
 // ─── 10. SinglePassHarness ──────────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn single_pass_harness_always_passes() {
     let agent = make_agent();
     let harness = SinglePassHarness::new(&agent);
@@ -367,6 +379,7 @@ impl QualityGate for AlwaysPass {
 }
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn eval_loop_harness_with_always_pass_gate() {
     let agent = make_agent();
     let harness = EvalLoopHarness::new(&agent, AlwaysPass, 3);
@@ -377,6 +390,7 @@ async fn eval_loop_harness_with_always_pass_gate() {
 // ─── 12. Tools + Governance combo ───────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn tools_plus_governance_allowed_tool_works() {
     let mut agent = Agent::new(make_provider(), AgentOptions::new(4096));
     agent.register(RegisteredTool::new(
@@ -412,6 +426,7 @@ async fn tools_plus_governance_allowed_tool_works() {
 // ─── 13. Memory + Agent combo ───────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn agent_with_dream_store_enables_memory_tool() {
     let store = MockDreamStore::empty();
     let agent = Agent::new(make_provider(), AgentOptions {
@@ -433,6 +448,7 @@ async fn agent_with_dream_store_enables_memory_tool() {
 // ─── 14. HarnessLoop (LLM-as-judge) ────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn harness_loop_llm_judge() {
     let agent = make_agent();
     let eval_provider = make_provider();
@@ -450,6 +466,7 @@ async fn harness_loop_llm_judge() {
 // ─── 15. Extensions pass-through ────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn agent_with_extensions() {
     let agent = Agent::new(make_provider(), AgentOptions {
         extensions: Some(serde_json::json!({"temperature": 0.1})),
@@ -463,6 +480,7 @@ async fn agent_with_extensions() {
 // ─── 16. Multiple tool calls in one turn ────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn agent_multiple_tools() {
     let mut agent = Agent::new(make_provider(), AgentOptions::new(4096));
 
@@ -542,6 +560,7 @@ async fn signal_gateway_schedule_fires() {
 // ─── 18. Telemetry in Done event ────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "requires OPENAI_API_KEY"]
 async fn done_event_has_telemetry() {
     let agent = make_agent();
     let (_, events) = collect_text(&agent, "Say one word.").await;

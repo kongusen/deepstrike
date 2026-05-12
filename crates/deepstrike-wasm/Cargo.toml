@@ -22,6 +22,9 @@ compact_str = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
 [profile.release]
 lto = true
-opt-level = "z"   # WASM size optimization
+opt-level = "z"

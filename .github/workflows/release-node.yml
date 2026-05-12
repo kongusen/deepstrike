@@ -82,7 +82,7 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           for dir in npm/*/; do
-            npm version "$VERSION" --no-git-tag-version --prefix "$dir"
+            npm version "$VERSION" --no-git-tag-version --allow-same-version --prefix "$dir"
           done
 
       # Move each .node file into its platform npm dir and publish
