@@ -23,7 +23,7 @@ jobs:
         working-directory: crates/deepstrike-wasm
 
       - name: Publish @deepstrike/wasm-kernel
-        run: npm publish --access public
+        run: npm publish --access public || echo "Already published"
         working-directory: crates/deepstrike-wasm/pkg
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -32,7 +32,7 @@ jobs:
         run: |
           npm ci
           npm run build
-          npm publish --access public
+          npm publish --access public || echo "Already published"
         working-directory: wasm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

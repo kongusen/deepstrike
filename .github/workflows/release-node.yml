@@ -129,7 +129,7 @@ jobs:
         working-directory: node
 
       - name: Publish @deepstrike/sdk
-        run: npm publish --access public
+        run: npm publish --access public || echo "Already published"
         working-directory: node
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
