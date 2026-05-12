@@ -2,7 +2,7 @@ name: Release Rust Crates
 
 on:
   push:
-    tags: ["rust-v*"]
+    tags: ["v*"]
 
 jobs:
   publish:

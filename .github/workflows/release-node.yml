@@ -2,7 +2,7 @@ name: Release Node.js SDK
 
 on:
   push:
-    tags: ["node-v*"]
+    tags: ["v*"]
 
 env:
   NODE_VERSION: 20
@@ -80,7 +80,7 @@ jobs:
       - name: Sync platform package versions
         working-directory: crates/deepstrike-node
         run: |
-          VERSION=${GITHUB_REF_NAME#node-v}
+          VERSION=${GITHUB_REF_NAME#v}
           for dir in npm/*/; do
             npm version "$VERSION" --no-git-tag-version --prefix "$dir"
           done

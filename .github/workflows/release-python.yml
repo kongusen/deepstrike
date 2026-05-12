@@ -2,7 +2,7 @@ name: Release Python SDK
 
 on:
   push:
-    tags: ["python-v*"]
+    tags: ["v*"]
 
 jobs:
   build-wheels:

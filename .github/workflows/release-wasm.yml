@@ -2,7 +2,7 @@ name: Release WASM SDK
 
 on:
   push:
-    tags: ["wasm-v*"]
+    tags: ["v*"]
 
 jobs:
   publish:
