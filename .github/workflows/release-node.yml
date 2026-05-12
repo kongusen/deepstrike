@@ -52,7 +52,7 @@ jobs:
         run: napi build --release --platform --target ${{ matrix.target }} --output-dir artifacts
         working-directory: crates/deepstrike-node
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.pkg }}
           path: crates/deepstrike-node/artifacts/*.node
@@ -68,7 +68,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Download all native addons
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
