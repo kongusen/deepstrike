@@ -19,12 +19,6 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             pkg: linux-arm64-gnu
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            pkg: linux-x64-musl
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-musl
-            pkg: linux-arm64-musl
           - os: macos-latest
             target: x86_64-apple-darwin
             pkg: darwin-x64
@@ -48,14 +42,13 @@ jobs:
       - name: Install napi-rs CLI
         run: npm install -g @napi-rs/cli
 
-      # Use napi-cross for Linux cross-compilation (handles musl + ARM64 via zig)
-      - name: Build native addon (Linux)
-        if: runner.os == 'Linux'
+      - name: Build native addon (Linux ARM64 cross-compile)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: napi build --release --platform --target ${{ matrix.target }} --output-dir artifacts --use-napi-cross
         working-directory: crates/deepstrike-node
 
-      - name: Build native addon (macOS / Windows)
-        if: runner.os != 'Linux'
+      - name: Build native addon
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
         run: napi build --release --platform --target ${{ matrix.target }} --output-dir artifacts
         working-directory: crates/deepstrike-node
 
@@ -73,9 +66,6 @@ jobs:
         with:
           node-version: "${{ env.NODE_VERSION }}"
           registry-url: "https://registry.npmjs.org"
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
 
       - name: Download all native addons
         uses: actions/download-artifact@v4
