@@ -76,6 +76,15 @@ jobs:
       - name: Install napi-rs CLI
         run: npm install -g @napi-rs/cli
 
+      # Sync platform package versions to match the tag (e.g. node-v0.1.1 → 0.1.1)
+      - name: Sync platform package versions
+        working-directory: crates/deepstrike-node
+        run: |
+          VERSION=${GITHUB_REF_NAME#node-v}
+          for dir in npm/*/; do
+            npm version "$VERSION" --no-git-tag-version --prefix "$dir"
+          done
+
       # Move each .node file into its platform npm dir and publish
       - name: Publish platform packages
         working-directory: crates/deepstrike-node
