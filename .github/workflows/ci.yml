@@ -22,7 +22,7 @@ jobs:
         with: { node-version: 24 }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: npm ci
+      - run: npm install
         working-directory: node
       - run: npm test
         working-directory: node
@@ -36,7 +36,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: pip install maturin pytest pytest-asyncio
-      - run: maturin develop
+      - name: Build and install wheel
         working-directory: python
+        run: |
+          maturin build --release --out dist
+          pip install dist/*.whl
       - run: pytest
         working-directory: python

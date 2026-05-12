@@ -1,8 +1,8 @@
 import type { RuntimeSignal } from "./types.js"
 import type { ScheduledPrompt } from "./scheduled.js"
 
-type KernelModule = typeof import("@deepstrike/core")
-async function loadKernel(): Promise<KernelModule> {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function loadKernel(): Promise<any> {
   return import("@deepstrike/core")
 }
 
@@ -22,7 +22,7 @@ async function loadKernel(): Promise<KernelModule> {
 export class SignalGateway {
   private timers = new Map<string, ReturnType<typeof setTimeout>>()
   private listeners: Array<(sig: RuntimeSignal) => void> = []
-  private router: InstanceType<KernelModule["SignalRouter"]> | null = null
+  private router: any = null
 
   async init(): Promise<void> {
     const kernel = await loadKernel()

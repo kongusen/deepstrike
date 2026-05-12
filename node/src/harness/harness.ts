@@ -3,8 +3,8 @@ import type { DoneEvent, TextDelta } from "../types.js"
 import { writeFile } from "fs/promises"
 import path from "path"
 
-type KernelModule = typeof import("@deepstrike/core")
-async function loadKernel(): Promise<KernelModule> {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function loadKernel(): Promise<any> {
   return import("@deepstrike/core")
 }
 

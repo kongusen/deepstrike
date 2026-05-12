@@ -6,9 +6,8 @@ import type { DreamStore, DreamResult, CurationResult, MemoryEntry } from "./mem
 import type { KnowledgeSource } from "./knowledge/source.js"
 import type { SignalSource } from "./signals/types.js"
 
-type KernelModule = typeof import("@deepstrike/core")
-
-async function loadKernel(): Promise<KernelModule> {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function loadKernel(): Promise<any> {
   return import("@deepstrike/core")
 }
 
@@ -33,7 +32,7 @@ export interface AgentOptions {
    */
   agentId?: string
   /** Governance instance from @deepstrike/core for permission checks on tool calls. */
-  governance?: import("@deepstrike/core").Governance
+  governance?: { evaluate(toolName: string, args: string): { kind: string; reason?: string } }
 }
 
 export class Agent {
@@ -222,13 +221,9 @@ export class Agent {
               const name = String(args?.name ?? "")
               const content = await readSkillFile(this.skillDir!, name)
               const output = content ?? `Skill "${name}" not found.`
-              yield { type: "tool_result", callId: c.id, name: c.name, content: output, isError: !content } as ToolResultEvent
-              return { callId: c.id, output, isError: !content }
+              return { callId: c.id, name: c.name, output, isError: !content }
             }))
-          : skillCalls.map((c: ToolCall) => {
-              const output = "No skill directory configured."
-              return { callId: c.id, output, isError: true }
-            })
+          : skillCalls.map((c: ToolCall) => ({ callId: c.id, name: c.name, output: "No skill directory configured.", isError: true }))
 
         const memoryResults = (this.dreamStore && this.options.agentId)
           ? await Promise.all(memoryCalls.map(async (c: ToolCall) => {
@@ -239,13 +234,9 @@ export class Agent {
               const output = entries.length
                 ? entries.map(e => `[score=${e.score.toFixed(3)}] ${e.text}`).join("\n---\n")
                 : "No relevant memories found."
-              yield { type: "tool_result", callId: c.id, name: c.name, content: output, isError: false } as ToolResultEvent
-              return { callId: c.id, output, isError: false }
+              return { callId: c.id, name: c.name, output, isError: false }
             }))
-          : memoryCalls.map((c: ToolCall) => {
-              const output = "Memory retrieval not configured."
-              return { callId: c.id, output, isError: true }
-            })
+          : memoryCalls.map((c: ToolCall) => ({ callId: c.id, name: c.name, output: "Memory retrieval not configured.", isError: true }))
 
         const knowledgeResults = this.knowledgeSource
           ? await Promise.all(knowledgeCalls.map(async (c: ToolCall) => {
@@ -254,10 +245,13 @@ export class Agent {
               const topK = typeof args?.top_k === "number" ? args.top_k : 5
               const snippets = await this.knowledgeSource!.retrieve(query, topK)
               const output = snippets.length ? snippets.join("\n---\n") : "No relevant knowledge found."
-              yield { type: "tool_result", callId: c.id, name: c.name, content: output, isError: false } as ToolResultEvent
-              return { callId: c.id, output, isError: false }
+              return { callId: c.id, name: c.name, output, isError: false }
             }))
-          : knowledgeCalls.map((c: ToolCall) => ({ callId: c.id, output: "Knowledge source not configured.", isError: true }))
+          : knowledgeCalls.map((c: ToolCall) => ({ callId: c.id, name: c.name, output: "Knowledge source not configured.", isError: true }))
+
+        // Yield all meta-tool results
+        for (const r of [...skillResults, ...memoryResults, ...knowledgeResults])
+          yield { type: "tool_result", callId: r.callId, name: r.name, content: r.output, isError: r.isError } as ToolResultEvent
 
         const results = await executeTools(regularCalls, this.tools)
         for (const r of results) {
@@ -353,10 +347,10 @@ export class Agent {
     const rr = action2.runResult!
 
     const dsResult: CurationResult = {
-      toAdd: (cr.toAdd ?? []).map((e): MemoryEntry => ({
+      toAdd: (cr.toAdd ?? []).map((e: MemoryEntry): MemoryEntry => ({
         text: e.text,
         score: e.score,
-        metadata: tryParseJson(e.metadata),
+        metadata: tryParseJson(e.metadata as string),
       })),
       toRemoveIndices: (cr.toRemoveIndices ?? []).map(Number),
       stats: {
