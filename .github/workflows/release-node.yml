@@ -57,6 +57,15 @@ jobs:
           name: native-${{ matrix.pkg }}
           path: crates/deepstrike-node/artifacts/*.node
 
+      - name: Upload generated type definitions
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-types
+          path: |
+            crates/deepstrike-node/index.d.ts
+            crates/deepstrike-node/index.js
+
   publish:
     needs: build-native
     runs-on: ubuntu-latest
@@ -73,10 +82,16 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Download generated type definitions
+        uses: actions/download-artifact@v4
+        with:
+          name: napi-types
+          path: crates/deepstrike-node
+
       - name: Install napi-rs CLI
         run: npm install -g @napi-rs/cli
 
-      # Sync platform package versions to match the tag (e.g. node-v0.1.1 → 0.1.1)
+      # Sync platform package versions to match the tag
       - name: Sync platform package versions
         working-directory: crates/deepstrike-node
         run: |
@@ -109,7 +124,6 @@ jobs:
       - name: Build @deepstrike/sdk
         run: |
           npm install
-          # Patch @deepstrike/core type definitions with the freshly-built ones
           cp ../crates/deepstrike-node/index.d.ts node_modules/@deepstrike/core/index.d.ts
           npm run build
         working-directory: node
