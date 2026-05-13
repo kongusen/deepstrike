@@ -39,8 +39,9 @@ use deepstrike_core::context::manager::ContextManager;
 use deepstrike_core::context::pressure::PressureAction;
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
 use deepstrike_core::harness::eval_pipeline::{
-    EvalAction as RustEvalAction, EvalEvent as RustEvalEvent, EvalPolicy as RustEvalPolicy,
-    EvalPipeline as RustEvalPipeline, EvalResult as RustEvalResult, SkillCandidate as RustSkillCandidate,
+    Criterion as RustCriterion, EvalAction as RustEvalAction, EvalEvent as RustEvalEvent,
+    EvalPolicy as RustEvalPolicy, EvalPipeline as RustEvalPipeline, EvalResult as RustEvalResult,
+    SkillCandidate as RustSkillCandidate,
 };
 use deepstrike_core::memory::curator::CurationResult as RustCurationResult;
 use deepstrike_core::memory::durable::SessionData as RustSessionData;
@@ -1273,6 +1274,26 @@ impl IdlePipeline {
 
 #[pyclass]
 #[derive(Clone)]
+struct PyCriterionResult {
+    #[pyo3(get)]
+    criterion: String,
+    #[pyo3(get)]
+    passed: bool,
+    #[pyo3(get)]
+    score: f32,
+    #[pyo3(get)]
+    feedback: String,
+}
+
+#[pymethods]
+impl PyCriterionResult {
+    fn __repr__(&self) -> String {
+        format!("CriterionResult(criterion={:?}, passed={:?})", self.criterion, self.passed)
+    }
+}
+
+#[pyclass]
+#[derive(Clone)]
 struct SkillCandidate {
     #[pyo3(get)]
     name: String,
@@ -1299,7 +1320,7 @@ impl SkillCandidate {
 
 /// Tagged union returned by `EvalPipeline` methods. Inspect `kind`:
 /// - `"evaluate"` → `messages` (SDK must call evaluator LLM, then `feed_eval_result`)
-/// - `"done"`     → `passed`, `feedback`, optional `skill_candidate`
+/// - `"done"`     → `passed`, `overall_score`, `feedback`, `details`, optional `skill_candidate`
 #[pyclass]
 #[derive(Clone)]
 struct EvalPipelineAction {
@@ -1310,7 +1331,11 @@ struct EvalPipelineAction {
     #[pyo3(get)]
     passed: Option<bool>,
     #[pyo3(get)]
+    overall_score: Option<f32>,
+    #[pyo3(get)]
     feedback: Option<String>,
+    #[pyo3(get)]
+    details: Option<Vec<PyCriterionResult>>,
     #[pyo3(get)]
     skill_candidate: Option<SkillCandidate>,
 }
@@ -1329,7 +1354,9 @@ impl EvalPipelineAction {
                 kind: "evaluate".into(),
                 messages: Some(messages.iter().map(Message::from_rust).collect()),
                 passed: None,
+                overall_score: None,
                 feedback: None,
+                details: None,
                 skill_candidate: None,
             },
             RustEvalAction::Done { result } => Self::from_rust_result(result),
@@ -1341,7 +1368,14 @@ impl EvalPipelineAction {
             kind: "done".into(),
             messages: None,
             passed: Some(r.passed),
+            overall_score: Some(r.overall_score),
             feedback: Some(r.feedback),
+            details: Some(r.details.into_iter().map(|d| PyCriterionResult {
+                criterion: d.criterion,
+                passed: d.passed,
+                score: d.score,
+                feedback: d.feedback,
+            }).collect()),
             skill_candidate: r.skill_candidate.map(SkillCandidate::from_rust),
         }
     }
@@ -1371,12 +1405,21 @@ impl EvalPipeline {
     fn feed_outcome(
         &mut self,
         goal: String,
-        criteria: Vec<String>,
+        criteria: Vec<PyObject>,
         result: String,
         attempt: u32,
     ) -> EvalPipelineAction {
+        use pyo3::Python;
+        let rust_criteria = Python::with_gil(|py| {
+            criteria.iter().map(|obj| {
+                let text = obj.getattr(py, "text").and_then(|v| v.extract::<String>(py)).unwrap_or_default();
+                let required = obj.getattr(py, "required").and_then(|v| v.extract::<bool>(py)).unwrap_or(true);
+                let weight = obj.getattr(py, "weight").and_then(|v| v.extract::<f32>(py)).unwrap_or(1.0);
+                RustCriterion { text, required, weight }
+            }).collect::<Vec<_>>()
+        });
         EvalPipelineAction::from_rust_action(
-            self.inner.feed(RustEvalEvent::Outcome { goal, criteria, result, attempt }),
+            self.inner.feed(RustEvalEvent::Outcome { goal, criteria: rust_criteria, result, attempt }),
         )
     }
 
@@ -1429,6 +1472,7 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<IdlePipelineAction>()?;
     m.add_class::<IdlePipeline>()?;
     // Eval / harness pipeline
+    m.add_class::<PyCriterionResult>()?;
     m.add_class::<SkillCandidate>()?;
     m.add_class::<EvalPipelineAction>()?;
     m.add_class::<EvalPipeline>()?;

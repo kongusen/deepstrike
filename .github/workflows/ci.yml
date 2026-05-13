@@ -22,7 +22,17 @@ jobs:
         with: { node-version: 24 }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: npm install
+      - name: Install napi-rs CLI
+        run: npm install -g @napi-rs/cli@2
+      - name: Build @deepstrike/core native addon
+        run: napi build --release --platform artifacts
+        working-directory: crates/deepstrike-node
+      - name: Install @deepstrike/core from local build
+        run: |
+          cp crates/deepstrike-node/artifacts/index.d.ts crates/deepstrike-node/artifacts/index.js crates/deepstrike-node/
+          npm install --no-save
+          cp crates/deepstrike-node/artifacts/*.node node_modules/@deepstrike/core/
+          cp crates/deepstrike-node/index.d.ts crates/deepstrike-node/index.js node_modules/@deepstrike/core/
         working-directory: node
       - run: npm test
         working-directory: node
