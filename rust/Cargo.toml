@@ -4,6 +4,7 @@ description = "DeepStrike Rust SDK — agent framework built on deepstrike-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+readme = "README.md"
 
 [dependencies]
 deepstrike-core = { workspace = true }
