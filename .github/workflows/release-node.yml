@@ -49,16 +49,22 @@ jobs:
         with: { key: "${{ matrix.target }}" }
 
       - name: Install napi-rs CLI
-        run: npm install -g @napi-rs/cli
+        run: npm install -g @napi-rs/cli@2
 
       - name: Build native addon (Linux ARM64 cross-compile)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: napi build --release --platform --target ${{ matrix.target }} --output-dir artifacts --use-napi-cross
+        shell: bash
+        run: |
+          napi build --release --platform --target ${{ matrix.target }} --use-napi-cross
+          mkdir -p artifacts && mv deepstrike-core.*.node artifacts/
         working-directory: crates/deepstrike-node
 
       - name: Build native addon
         if: matrix.target != 'aarch64-unknown-linux-gnu'
-        run: napi build --release --platform --target ${{ matrix.target }} --output-dir artifacts
+        shell: bash
+        run: |
+          napi build --release --platform --target ${{ matrix.target }}
+          mkdir -p artifacts && mv deepstrike-core.*.node artifacts/
         working-directory: crates/deepstrike-node
 
       - uses: actions/upload-artifact@v4
@@ -66,33 +72,26 @@ jobs:
           name: native-${{ matrix.pkg }}
           path: crates/deepstrike-node/artifacts/*.node
 
-      # With `--output-dir artifacts`, napi writes index.d.ts / index.js under artifacts/,
-      # not the package root (root files may stay empty from git). Publish needs real defs.
+      # napi v2 CLI always writes index.d.ts / index.js to the package root (CWD),
+      # regardless of --output-dir. We removed --output-dir and move the .node manually,
+      # so the DTS is reliably at the package root after every build.
       - name: Upload generated type definitions
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         shell: bash
         run: |
           set -euo pipefail
-          ART="crates/deepstrike-node/artifacts"
+          PKG="crates/deepstrike-node"
           mkdir -p napi-types-artifact
-          if [ -s "$ART/index.d.ts" ]; then
-            cp "$ART/index.d.ts" napi-types-artifact/
-            if [ -f "$ART/index.js" ]; then
-              cp "$ART/index.js" napi-types-artifact/
-            elif [ -f crates/deepstrike-node/index.js ]; then
-              cp crates/deepstrike-node/index.js napi-types-artifact/
-            else
-              echo "::error::index.js missing in artifacts and package root"
-              exit 1
-            fi
-          elif [ -s "crates/deepstrike-node/index.d.ts" ]; then
-            cp crates/deepstrike-node/index.d.ts crates/deepstrike-node/index.js napi-types-artifact/
-          else
-            echo "::error::No generated index.d.ts found (checked $ART and package root)"
-            ls -la "$ART" || true
-            ls -la crates/deepstrike-node/*.d.ts crates/deepstrike-node/*.js 2>/dev/null || true
+
+          if [ ! -s "$PKG/index.d.ts" ]; then
+            echo "::error::napi did not generate a non-empty index.d.ts at $PKG/index.d.ts"
+            find "$PKG" -maxdepth 4 \( -name '*.d.ts' -o -name '*.js' \) \
+              -not -path '*/node_modules/*' | sort || true
             exit 1
           fi
+
+          cp "$PKG/index.d.ts" napi-types-artifact/index.d.ts
+          cp "$PKG/index.js"   napi-types-artifact/index.js
           test -s napi-types-artifact/index.d.ts
       - name: Upload napi-types artifact
         if: matrix.target == 'x86_64-unknown-linux-gnu'
@@ -129,7 +128,7 @@ jobs:
           test -s crates/deepstrike-node/index.d.ts
 
       - name: Install napi-rs CLI
-        run: npm install -g @napi-rs/cli
+        run: npm install -g @napi-rs/cli@2
 
       - name: Resolve publish version
         id: release
