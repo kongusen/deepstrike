@@ -2,37 +2,61 @@ name: Release WASM SDK
 
 on:
   push:
-    tags: ["v*"]
+    tags:
+      - "v*"
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
       - uses: actions/setup-node@v5
-        with: { node-version: 24, registry-url: "https://registry.npmjs.org" }
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
       - uses: dtolnay/rust-toolchain@stable
-        with: { targets: wasm32-unknown-unknown }
+        with:
+          targets: wasm32-unknown-unknown
+
       - uses: Swatinem/rust-cache@v2
 
       - name: Install wasm-pack
+        shell: bash
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build WASM kernel
-        run: wasm-pack build --release --target bundler --out-dir pkg
+        shell: bash
         working-directory: crates/deepstrike-wasm
+        run: wasm-pack build --release --target bundler --out-dir pkg
 
       - name: Publish @deepstrike/wasm-kernel
-        run: npm publish --access public || echo "Already published"
+        shell: bash
         working-directory: crates/deepstrike-wasm/pkg
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set +e
+          npm publish --access public
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            echo "npm publish exited $code (often: version already on registry)"
+          fi
 
       - name: Build and publish @deepstrike/wasm SDK
-        run: |
-          npm ci
-          npm run build
-          npm publish --access public || echo "Already published"
+        shell: bash
         working-directory: wasm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm ci
+          npm run build
+          set +e
+          npm publish --access public
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            echo "npm publish exited $code (often: version already on registry)"
+          fi
