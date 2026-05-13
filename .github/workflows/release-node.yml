@@ -54,17 +54,13 @@ jobs:
       - name: Build native addon (Linux ARM64 cross-compile)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         shell: bash
-        run: |
-          napi build --release --platform --target ${{ matrix.target }} --use-napi-cross
-          mkdir -p artifacts && mv deepstrike-core.*.node artifacts/
+        run: napi build --release --platform --target ${{ matrix.target }} --output-dir artifacts --use-napi-cross
         working-directory: crates/deepstrike-node
 
       - name: Build native addon
         if: matrix.target != 'aarch64-unknown-linux-gnu'
         shell: bash
-        run: |
-          napi build --release --platform --target ${{ matrix.target }}
-          mkdir -p artifacts && mv deepstrike-core.*.node artifacts/
+        run: napi build --release --platform --target ${{ matrix.target }} --output-dir artifacts
         working-directory: crates/deepstrike-node
 
       - uses: actions/upload-artifact@v4
@@ -72,25 +68,25 @@ jobs:
           name: native-${{ matrix.pkg }}
           path: crates/deepstrike-node/artifacts/*.node
 
-      # napi v2 CLI always writes index.d.ts / index.js to the package root (CWD),
-      # regardless of --output-dir. We removed --output-dir and move the .node manually,
-      # so the DTS is reliably at the package root after every build.
+      # napi v2 CLI with --output-dir writes .node + index.d.ts to artifacts/,
+      # index.js stays in the package root (CWD). Pinning CLI@2 ensures DTS is non-empty.
       - name: Upload generated type definitions
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         shell: bash
         run: |
           set -euo pipefail
           PKG="crates/deepstrike-node"
+          ART="$PKG/artifacts"
           mkdir -p napi-types-artifact
 
-          if [ ! -s "$PKG/index.d.ts" ]; then
-            echo "::error::napi did not generate a non-empty index.d.ts at $PKG/index.d.ts"
+          if [ ! -s "$ART/index.d.ts" ]; then
+            echo "::error::napi did not generate a non-empty index.d.ts at $ART/index.d.ts"
             find "$PKG" -maxdepth 4 \( -name '*.d.ts' -o -name '*.js' \) \
               -not -path '*/node_modules/*' | sort || true
             exit 1
           fi
 
-          cp "$PKG/index.d.ts" napi-types-artifact/index.d.ts
+          cp "$ART/index.d.ts" napi-types-artifact/index.d.ts
           cp "$PKG/index.js"   napi-types-artifact/index.js
           test -s napi-types-artifact/index.d.ts
       - name: Upload napi-types artifact
