@@ -56,6 +56,7 @@ impl KnowledgeSource for MockKnowledgeSource {
     async fn retrieve(&self, _goal: &str, top_k: usize) -> deepstrike_sdk::Result<Vec<String>> {
         Ok(self.snippets.iter().take(top_k).cloned().collect())
     }
+    async fn init(&self) -> deepstrike_sdk::Result<()> { Ok(()) }
 }
 
 struct MockDreamStore {
@@ -121,6 +122,9 @@ impl DreamStore for MockDreamStore {
             score: 0.95,
             metadata: serde_json::Value::Null,
         }])
+    }
+    async fn save_session(&self, _data: deepstrike_core::memory::durable::SessionData) -> deepstrike_sdk::Result<()> {
+        Ok(())
     }
 }
 
