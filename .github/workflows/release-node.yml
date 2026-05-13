@@ -57,14 +57,21 @@ jobs:
           name: native-${{ matrix.pkg }}
           path: crates/deepstrike-node/artifacts/*.node
 
+      # Flatten paths: upload-artifact preserves directory structure; if we upload
+      # `crates/deepstrike-node/index.d.ts`, download to `crates/deepstrike-node` nests
+      # another `crates/deepstrike-node/` and the publish job copies the empty git file.
       - name: Upload generated type definitions
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          mkdir -p napi-types-artifact
+          cp crates/deepstrike-node/index.d.ts crates/deepstrike-node/index.js napi-types-artifact/
+          test -s napi-types-artifact/index.d.ts
+      - name: Upload napi-types artifact
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         uses: actions/upload-artifact@v4
         with:
           name: napi-types
-          path: |
-            crates/deepstrike-node/index.d.ts
-            crates/deepstrike-node/index.js
+          path: napi-types-artifact/
 
   publish:
     needs: build-native
@@ -86,7 +93,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: napi-types
-          path: crates/deepstrike-node
+          path: napi-types-artifact
+
+      - name: Install napi bindings into crate root
+        run: |
+          cp napi-types-artifact/index.d.ts napi-types-artifact/index.js crates/deepstrike-node/
+          test -s crates/deepstrike-node/index.d.ts
 
       - name: Install napi-rs CLI
         run: npm install -g @napi-rs/cli
@@ -124,7 +136,8 @@ jobs:
       - name: Build @deepstrike/sdk
         run: |
           npm install
-          cp ../crates/deepstrike-node/index.d.ts node_modules/@deepstrike/core/index.d.ts
+          cp ../crates/deepstrike-node/index.d.ts ../crates/deepstrike-node/index.js node_modules/@deepstrike/core/
+          test -s node_modules/@deepstrike/core/index.d.ts
           npm run build
         working-directory: node
 
