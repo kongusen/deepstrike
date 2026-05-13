@@ -20,6 +20,17 @@ export interface AgentOptions {
   timeoutMs?: number
   extensions?: Record<string, unknown>
   /**
+   * System-level instructions prepended to every context render.
+   * Passed to the kernel's `system` partition before the first LLM call.
+   */
+  systemPrompt?: string
+  /**
+   * Long-term memory snippets pre-seeded into the context before the first LLM call.
+   * Each string is pushed to the kernel's `memory` partition (highest-priority context
+   * after system). Use to inject memories retrieved from a DreamStore before a run.
+   */
+  initialMemory?: string[]
+  /**
    * Directory containing skill `.md` files. The kernel auto-injects a `skill`
    * meta-tool so the model can load any skill by name on demand.
    */
@@ -108,6 +119,10 @@ export class Agent {
     this._turn = 0
     this._pressure = 0
 
+    if (this.knowledgeSource) {
+      await this.knowledgeSource.init()
+    }
+
     const kernel = await loadKernel()
     const ext = { ...this.extensions, ...(extensions ?? {}) }
 
@@ -122,6 +137,15 @@ export class Agent {
 
     const toolSchemas: ToolSchema[] = Array.from(this.tools.values()).map(t => t.schema)
     sm.setTools(toolSchemas)
+
+    if (this.options.systemPrompt) {
+      const tokens = Math.max(1, Math.ceil(this.options.systemPrompt.length / 4))
+      sm.addSystemMessage(this.options.systemPrompt, tokens)
+    }
+
+    for (const mem of this.options.initialMemory ?? []) {
+      sm.addMemoryMessage(mem, Math.max(1, Math.ceil(mem.length / 4)))
+    }
 
     if (this.skillDir) {
       const skillMetas = await scanSkillDir(this.skillDir)
@@ -143,6 +167,9 @@ export class Agent {
     }
 
     let action = sm.start({ goal, criteria: criteria ?? [] })
+
+    const sessionStart = Date.now()
+    const sessionMsgs: import("./memory/protocols.js").SessionMessage[] = [{ role: "user", content: goal }]
 
     while (!sm.isTerminal()) {
       // Update telemetry
@@ -211,6 +238,7 @@ export class Agent {
         }
 
         action = sm.feedLlmResponse({ role: "assistant", content: finalText, toolCalls: finalToolCalls, tokenCount: turnTokens || undefined })
+        sessionMsgs.push({ role: "assistant", content: finalText, toolCalls: finalToolCalls })
 
       } else if (action.kind === "execute_tools") {
         const allCalls: ToolCall[] = action.calls ?? []
@@ -307,9 +335,20 @@ export class Agent {
     this._pressure = sm.pressure()
 
     const status = result?.termination === "completed" ? "success" : (result?.termination ?? "error")
-    // turnsUsed counts tool execution rounds; for single-turn text-only runs it's 0.
-    // Map to iterations: at least 1 if we got a result.
     const iterations = result ? Math.max(1, result.turnsUsed) : 0
+
+    if (this.options.dreamStore && this.options.agentId && sessionMsgs.length > 1) {
+      try {
+        await this.options.dreamStore.saveSession({
+          sessionId: crypto.randomUUID(),
+          agentId: this.options.agentId,
+          messages: sessionMsgs,
+          metadata: null,
+          createdAtMs: sessionStart,
+          updatedAtMs: Date.now(),
+        })
+      } catch { /* session save failure must not surface to caller */ }
+    }
 
     yield {
       type: "done",

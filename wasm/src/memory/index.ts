@@ -54,4 +54,6 @@ export interface DreamStore {
   loadMemories(agentId: string): Promise<MemoryEntry[]>
   commit(agentId: string, result: CurationResult, existing: MemoryEntry[]): Promise<void>
   search(agentId: string, query: string, topK?: number): Promise<MemoryEntry[]>
+  /** Persist a completed session for future consolidation via `Agent.dream()`. */
+  saveSession(data: SessionData): Promise<void>
 }

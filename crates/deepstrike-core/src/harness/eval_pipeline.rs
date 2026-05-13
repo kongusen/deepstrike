@@ -21,13 +21,59 @@
 use crate::types::message::{Content, Message, Role};
 
 // ---------------------------------------------------------------------------
+// Input types
+// ---------------------------------------------------------------------------
+
+/// A single evaluation criterion with optional weight and required flag.
+#[derive(Debug, Clone)]
+pub struct Criterion {
+    pub text: String,
+    /// If true, failing this criterion fails the entire evaluation.
+    pub required: bool,
+    /// Relative weight for scoring (default 1.0).
+    pub weight: f32,
+}
+
+impl Criterion {
+    pub fn required(text: impl Into<String>) -> Self {
+        Self { text: text.into(), required: true, weight: 1.0 }
+    }
+
+    pub fn optional(text: impl Into<String>) -> Self {
+        Self { text: text.into(), required: false, weight: 1.0 }
+    }
+
+    pub fn with_weight(mut self, w: f32) -> Self {
+        self.weight = w;
+        self
+    }
+}
+
+impl From<String> for Criterion {
+    fn from(s: String) -> Self { Self::required(s) }
+}
+
+impl From<&str> for Criterion {
+    fn from(s: &str) -> Self { Self::required(s) }
+}
+
+// ---------------------------------------------------------------------------
 // Output types
 // ---------------------------------------------------------------------------
+
+/// Per-criterion evaluation result.
+#[derive(Debug, Clone)]
+pub struct CriterionResult {
+    pub criterion: String,
+    pub passed: bool,
+    /// 0.0–1.0 partial credit score.
+    pub score: f32,
+    pub feedback: String,
+}
 
 /// A skill distilled from a successful run — SDK writes this to `skill_dir`.
 #[derive(Debug, Clone)]
 pub struct SkillCandidate {
-    /// Filename stem (no extension). E.g. `"robust_api_call"`.
     pub name: String,
     pub description: String,
     pub when_to_use: Option<String>,
@@ -38,9 +84,12 @@ pub struct SkillCandidate {
 #[derive(Debug, Clone)]
 pub struct EvalResult {
     pub passed: bool,
-    /// Human-readable explanation injected into the next attempt's goal.
+    /// Weighted aggregate score across all criteria (0.0–1.0).
+    pub overall_score: f32,
+    /// Human-readable summary injected into the next attempt's goal.
     pub feedback: String,
-    /// Present when the run succeeded and the LLM identified a reusable pattern.
+    /// Per-criterion breakdown.
+    pub details: Vec<CriterionResult>,
     pub skill_candidate: Option<SkillCandidate>,
 }
 
@@ -56,14 +105,12 @@ pub enum EvalPhase {
 }
 
 pub enum EvalEvent {
-    /// SDK provides the goal, criteria, and the agent's output text.
     Outcome {
         goal: String,
-        criteria: Vec<String>,
+        criteria: Vec<Criterion>,
         result: String,
         attempt: u32,
     },
-    /// SDK feeds back the LLM evaluator's text response.
     EvalResult { content: String },
 }
 
@@ -134,7 +181,7 @@ impl EvalPipeline {
 
 fn build_eval_prompt(
     goal: &str,
-    criteria: &[String],
+    criteria: &[Criterion],
     result: &str,
     attempt: u32,
     policy: &EvalPolicy,
@@ -142,8 +189,14 @@ fn build_eval_prompt(
     let criteria_text = if criteria.is_empty() {
         "No explicit criteria — use general quality judgement.".to_string()
     } else {
-        criteria.iter().enumerate().map(|(i, c)| format!("{}. {}", i + 1, c)).collect::<Vec<_>>().join("\n")
+        criteria.iter().enumerate().map(|(i, c)| {
+            let tag = if c.required { "[required]" } else { "[optional]" };
+            let weight = if (c.weight - 1.0).abs() > 0.01 { format!(" weight={:.1}", c.weight) } else { String::new() };
+            format!("{}. {}{}{}", i + 1, tag, weight, c.text)
+        }).collect::<Vec<_>>().join("\n")
     };
+
+    let details_schema = r#"[{"criterion":"...","passed":bool,"score":0.0-1.0,"feedback":"..."}]"#;
 
     let skill_instruction = if policy.extract_skill_on_pass {
         "\nIf passed=true and the approach is reusable, add a \"skill\" field:\
@@ -156,8 +209,11 @@ fn build_eval_prompt(
         role: Role::System,
         content: Content::Text(format!(
             "You are an impartial evaluator. Assess whether the agent's output meets the goal and criteria.\n\
+             [required] criteria must ALL pass for overall passed=true.\n\
+             [optional] criteria contribute to overall_score but do not block passing.\n\
              Respond with JSON only:\n\
-             {{\"passed\": bool, \"feedback\": \"concise explanation\"{skill_instruction}}}"
+             {{\"passed\":bool,\"overall_score\":0.0-1.0,\"feedback\":\"concise summary\",\
+             \"details\":{details_schema}{skill_instruction}}}"
         )),
         tool_calls: vec![],
         token_count: None,
@@ -180,13 +236,23 @@ fn build_eval_prompt(
 // ---------------------------------------------------------------------------
 
 fn parse_eval_response(content: &str) -> EvalResult {
-    // Extract JSON from possible markdown fences.
     let json_str = extract_json(content);
-
     let v: serde_json::Value = serde_json::from_str(json_str).unwrap_or(serde_json::Value::Null);
 
     let passed = v.get("passed").and_then(|x| x.as_bool()).unwrap_or(false);
+    let overall_score = v.get("overall_score").and_then(|x| x.as_f64()).map(|f| f as f32).unwrap_or(if passed { 1.0 } else { 0.0 });
     let feedback = v.get("feedback").and_then(|x| x.as_str()).unwrap_or("No feedback provided.").to_string();
+
+    let details = v.get("details")
+        .and_then(|d| d.as_array())
+        .map(|arr| arr.iter().filter_map(|item| {
+            let criterion = item.get("criterion")?.as_str()?.to_string();
+            let item_passed = item.get("passed").and_then(|x| x.as_bool()).unwrap_or(false);
+            let score = item.get("score").and_then(|x| x.as_f64()).map(|f| f as f32).unwrap_or(if item_passed { 1.0 } else { 0.0 });
+            let item_feedback = item.get("feedback").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            Some(CriterionResult { criterion, passed: item_passed, score, feedback: item_feedback })
+        }).collect())
+        .unwrap_or_default();
 
     let skill_candidate = v.get("skill").and_then(|s| {
         let name = s.get("name")?.as_str()?.to_string();
@@ -197,7 +263,7 @@ fn parse_eval_response(content: &str) -> EvalResult {
         Some(SkillCandidate { name, description, when_to_use, content })
     });
 
-    EvalResult { passed, feedback, skill_candidate }
+    EvalResult { passed, overall_score, feedback, details, skill_candidate }
 }
 
 fn extract_json(s: &str) -> &str {
@@ -232,7 +298,7 @@ mod tests {
         let mut p = pipeline();
         let action = p.feed(EvalEvent::Outcome {
             goal: "Write a function".into(),
-            criteria: vec!["Must handle errors".into()],
+            criteria: vec![Criterion::required("Must handle errors")],
             result: "fn foo() {}".into(),
             attempt: 1,
         });
@@ -247,12 +313,14 @@ mod tests {
             goal: "g".into(), criteria: vec![], result: "r".into(), attempt: 1,
         });
         let action = p.feed(EvalEvent::EvalResult {
-            content: r#"{"passed": false, "feedback": "Missing error handling"}"#.into(),
+            content: r#"{"passed":false,"overall_score":0.2,"feedback":"Missing error handling","details":[{"criterion":"Must handle errors","passed":false,"score":0.2,"feedback":"No error handling found"}]}"#.into(),
         });
         match action {
             EvalAction::Done { result } => {
                 assert!(!result.passed);
                 assert_eq!(result.feedback, "Missing error handling");
+                assert_eq!(result.details.len(), 1);
+                assert!(!result.details[0].passed);
                 assert!(result.skill_candidate.is_none());
             }
             _ => panic!("expected Done"),
@@ -260,22 +328,39 @@ mod tests {
     }
 
     #[test]
-    fn eval_result_passed_with_skill() {
+    fn eval_result_passed_with_skill_and_details() {
         let mut p = pipeline();
         p.feed(EvalEvent::Outcome {
             goal: "g".into(), criteria: vec![], result: "r".into(), attempt: 1,
         });
-        let json = r#"{"passed":true,"feedback":"All criteria met","skill":{"name":"robust_api_call","description":"How to call APIs with retries","content":"Robust API Call - Always retry on 5xx."}}"#;
+        let json = r#"{"passed":true,"overall_score":0.95,"feedback":"All criteria met","details":[{"criterion":"Must handle errors","passed":true,"score":1.0,"feedback":"Good error handling"}],"skill":{"name":"robust_api_call","description":"How to call APIs with retries","content":"Robust API Call - Always retry on 5xx."}}"#;
         let action = p.feed(EvalEvent::EvalResult { content: json.into() });
         match action {
             EvalAction::Done { result } => {
                 assert!(result.passed);
+                assert!(result.overall_score > 0.9);
+                assert_eq!(result.details.len(), 1);
+                assert!(result.details[0].passed);
                 let skill = result.skill_candidate.unwrap();
                 assert_eq!(skill.name, "robust_api_call");
                 assert!(skill.content.contains("retry"));
             }
             _ => panic!("expected Done"),
         }
+    }
+
+    #[test]
+    fn criterion_from_string_is_required() {
+        let c = Criterion::from("some check");
+        assert!(c.required);
+        assert!((c.weight - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn optional_criterion_with_weight() {
+        let c = Criterion::optional("bonus check").with_weight(0.5);
+        assert!(!c.required);
+        assert!((c.weight - 0.5).abs() < 0.001);
     }
 
     #[test]

@@ -20,10 +20,11 @@ function parseFrontmatter(content: string): { meta: Record<string, unknown>; bod
   return { meta, body: match[2] }
 }
 
-/** Read one skill file and return its full markdown content. */
+/** Read one skill file and return its body (frontmatter stripped). */
 export async function readSkillFile(skillDir: string, name: string): Promise<string | null> {
   try {
-    return await readFile(path.join(skillDir, `${name}.md`), "utf8")
+    const raw = await readFile(path.join(skillDir, `${name}.md`), "utf8")
+    return parseFrontmatter(raw).body
   } catch {
     return null
   }

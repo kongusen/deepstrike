@@ -1,9 +1,40 @@
 use async_trait::async_trait;
 
 #[derive(Debug, Clone)]
+pub struct Criterion {
+    pub text: String,
+    pub required: bool,
+    pub weight: f32,
+}
+
+impl Criterion {
+    pub fn required(text: impl Into<String>) -> Self {
+        Self { text: text.into(), required: true, weight: 1.0 }
+    }
+
+    pub fn optional(text: impl Into<String>) -> Self {
+        Self { text: text.into(), required: false, weight: 1.0 }
+    }
+
+    pub fn with_weight(mut self, w: f32) -> Self {
+        self.weight = w;
+        self
+    }
+}
+
+
+#[derive(Debug, Clone)]
+pub struct CriterionResult {
+    pub criterion: String,
+    pub passed: bool,
+    pub score: f32,
+    pub feedback: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct HarnessRequest {
     pub goal: String,
-    pub criteria: Vec<String>,
+    pub criteria: Vec<Criterion>,
     pub extensions: Option<serde_json::Value>,
 }
 
@@ -20,7 +51,9 @@ pub struct HarnessOutcome {
     pub iterations: u32,
     pub total_tokens: u64,
     pub status: String,
+    pub overall_score: f32,
     pub feedback: Option<String>,
+    pub details: Vec<CriterionResult>,
 }
 
 #[async_trait]

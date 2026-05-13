@@ -71,3 +71,7 @@ class DreamStore(Protocol):
     async def search(self, agent_id: str, query: str, top_k: int = 5) -> list[MemoryEntry]:
         """Semantic search over the agent's long-term memories. Called on demand during a run."""
         ...
+
+    async def save_session(self, data: "SessionData") -> None:
+        """Persist a completed session for future consolidation via `Agent.dream()`."""
+        ...

@@ -24,6 +24,11 @@ if TYPE_CHECKING:
     from deepstrike.knowledge.source import KnowledgeSource
 
 
+def _strip_frontmatter(content: str) -> str:
+    import re
+    return re.sub(r"^---\n.*?\n---\n?", "", content, count=1, flags=re.DOTALL)
+
+
 class Agent:
     def __init__(
         self,
@@ -32,6 +37,8 @@ class Agent:
         max_tokens: int,
         max_turns: int,
         timeout_ms: int | None = None,
+        system_prompt: str | None = None,
+        initial_memory: list[str] | None = None,
         skill_dir: str | None = None,
         extensions: dict | None = None,
         governance: Governance | None = None,
@@ -47,6 +54,8 @@ class Agent:
             timeout_ms=timeout_ms,
         )
         self._tools: dict[str, RegisteredTool] = {}
+        self._system_prompt = system_prompt
+        self._initial_memory: list[str] = initial_memory or []
         self._skill_dir = pathlib.Path(skill_dir) if skill_dir else None
         self._extensions: dict = extensions or {}
         self._governance = governance
@@ -85,10 +94,21 @@ class Agent:
 
     async def run_streaming(self, goal: str, *, criteria: list[str] | None = None, extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
         self._interrupted = False
+
+        if self._knowledge_source:
+            await self._knowledge_source.init()
+
         from deepstrike._kernel import SkillMetadata as KernelSkillMetadata
         sm = LoopStateMachine(self._policy)
         sm.set_tools([t.schema for t in self._tools.values()])
         ext = {**self._extensions, **(extensions or {})}
+
+        if self._system_prompt:
+            tokens = max(1, len(self._system_prompt) // 4)
+            sm.add_system_message(self._system_prompt, tokens)
+
+        for mem in self._initial_memory:
+            sm.add_memory_message(mem, max(1, len(mem) // 4))
 
         # Scan skill directory and register metadata so the kernel injects the skill meta-tool.
         if self._skill_dir and self._skill_dir.is_dir():
@@ -116,6 +136,9 @@ class Agent:
 
         action = sm.start(RuntimeTask(goal, criteria=criteria))
         final_text = ""
+        import time as _time
+        session_start = int(_time.time() * 1000)
+        session_msgs: list[dict] = [{"role": "user", "content": goal}]
 
         while not sm.is_terminal():
             if self._interrupted:
@@ -159,6 +182,11 @@ class Agent:
                     content=final_text,
                     tool_calls=final_tool_calls,
                 ))
+                session_msgs.append({
+                    "role": "assistant",
+                    "content": final_text,
+                    "toolCalls": [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in final_tool_calls],
+                })
 
             elif action.kind == "execute_tools":
                 calls = action.calls or []
@@ -189,7 +217,8 @@ class Agent:
                     if self._skill_dir and name:
                         skill_path = self._skill_dir / f"{name}.md"
                         if skill_path.exists():
-                            content = skill_path.read_text(encoding="utf-8")
+                            raw = skill_path.read_text(encoding="utf-8")
+                            content = _strip_frontmatter(raw)
                     output = content if content is not None else f'Skill "{name}" not found.'
                     is_error = content is None
                     yield ToolResultEvent(call_id=c.id, name=c.name, content=output, is_error=is_error)
@@ -249,6 +278,22 @@ class Agent:
                 break
 
         result = action.result
+
+        if self._dream_store and self._agent_id and len(session_msgs) > 1:
+            try:
+                from deepstrike.memory.protocols import SessionData
+                now_ms = int(_time.time() * 1000)
+                import uuid as _uuid
+                await self._dream_store.save_session(SessionData(
+                    session_id=str(_uuid.uuid4()),
+                    agent_id=self._agent_id,
+                    messages=session_msgs,
+                    created_at_ms=session_start,
+                    updated_at_ms=now_ms,
+                ))
+            except Exception:
+                pass
+
         yield DoneEvent(
             iterations=result.turns_used if result else 0,
             total_tokens=result.total_tokens_used if result else 0,

@@ -8,3 +8,7 @@ class KnowledgeSource(Protocol):
     async def retrieve(self, goal: str, top_k: int = 5) -> list[str]:
         """Return a list of relevant text snippets for the given goal."""
         ...
+
+    async def init(self) -> None:
+        """One-time warmup called before the first run (load index, open connection, etc.)."""
+        ...

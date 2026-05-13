@@ -24,6 +24,12 @@ pub struct AgentOptions {
     pub max_turns: u32,
     pub timeout_ms: Option<u64>,
     pub extensions: Option<serde_json::Value>,
+    /// System-level instructions prepended to every context render.
+    /// Injected into the `system` partition before `start()` is called.
+    pub system_prompt: Option<String>,
+    /// Long-term memory snippets pre-seeded into the `memory` context partition.
+    /// Injected before `start()` so they are available from the first LLM call.
+    pub initial_memory: Vec<String>,
     /// Directory containing skill `.md` files. The kernel auto-injects the
     /// `skill` meta-tool so the model can load any skill on demand.
     pub skill_dir: Option<std::path::PathBuf>,
@@ -44,6 +50,8 @@ impl AgentOptions {
             max_turns: 25,
             timeout_ms: None,
             extensions: None,
+            system_prompt: None,
+            initial_memory: Vec::new(),
             skill_dir: None,
             knowledge_source: None,
             signal_source: None,
@@ -115,6 +123,11 @@ impl Agent {
     ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<RunEvent>> + 'a>>> {
         self.interrupted.store(false, std::sync::atomic::Ordering::Relaxed);
 
+        // Warm up the knowledge source once per run.
+        if let Some(ks) = &self.options.knowledge_source {
+            ks.init().await?;
+        }
+
         let policy = LoopPolicy {
             max_tokens: self.options.max_tokens,
             max_turns: self.options.max_turns,
@@ -132,6 +145,24 @@ impl Agent {
         // Enable knowledge meta-tool when a KnowledgeSource is configured.
         if self.options.knowledge_source.is_some() {
             sm.ctx.set_knowledge_enabled(true);
+        }
+
+        // Inject system prompt into the system partition before starting.
+        if let Some(ref sp) = self.options.system_prompt {
+            let tokens = ((sp.len() / 4) as u32).max(1);
+            sm.ctx.partitions.system.push(
+                deepstrike_core::types::message::Message::system(sp.clone()),
+                tokens,
+            );
+        }
+
+        // Pre-seed the memory partition with caller-supplied long-term memories.
+        for mem in &self.options.initial_memory {
+            let tokens = ((mem.len() / 4) as u32).max(1);
+            sm.ctx.partitions.memory.push(
+                deepstrike_core::types::message::Message::user(mem.clone()),
+                tokens,
+            );
         }
 
         // Scan skill directory and register metadata so the kernel injects the skill meta-tool.
@@ -174,6 +205,12 @@ impl Agent {
         Ok(Box::pin(async_stream::try_stream! {
             let mut final_text = String::new();
             let mut router = SignalRouter::new(256);
+            let session_start_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let mut session_messages: Vec<deepstrike_core::types::message::Message> =
+                vec![deepstrike_core::types::message::Message::user(goal.to_string())];
 
             loop {
                 if self.interrupted.load(std::sync::atomic::Ordering::Relaxed) {
@@ -237,9 +274,15 @@ impl Agent {
                             message: Message {
                                 role: Role::Assistant,
                                 content: Content::Text(final_text.clone()),
-                                tool_calls: final_tool_calls,
+                                tool_calls: final_tool_calls.clone(),
                                 token_count: None,
                             },
+                        });
+                        session_messages.push(Message {
+                            role: Role::Assistant,
+                            content: Content::Text(final_text.clone()),
+                            tool_calls: final_tool_calls,
+                            token_count: None,
                         });
                     }
                     deepstrike_core::scheduler::state_machine::LoopAction::ExecuteTools { calls } => {
@@ -265,7 +308,7 @@ impl Agent {
                             let (output, is_error) = if let Some(dir) = &self.options.skill_dir {
                                 let path = dir.join(format!("{name}.md"));
                                 match tokio::fs::read_to_string(&path).await {
-                                    Ok(content) => (content, false),
+                                    Ok(content) => (strip_frontmatter(&content).to_string(), false),
                                     Err(_) => (format!("Skill \"{name}\" not found."), true),
                                 }
                             } else {
@@ -340,6 +383,24 @@ impl Agent {
                         action = sm.feed(LoopEvent::ToolResults { results: all_results });
                     }
                     deepstrike_core::scheduler::state_machine::LoopAction::Done { result } => {
+                        // Auto-save session when DreamStore is configured.
+                        if let (Some(store), Some(agent_id)) = (&self.options.dream_store, &self.options.agent_id) {
+                            if session_messages.len() > 1 {
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis() as u64;
+                                let session = deepstrike_core::memory::durable::SessionData {
+                                    session_id: format!("{agent_id}-{session_start_ms}"),
+                                    agent_id: agent_id.clone(),
+                                    messages: session_messages.clone(),
+                                    metadata: serde_json::Value::Null,
+                                    created_at_ms: session_start_ms,
+                                    updated_at_ms: now_ms,
+                                };
+                                let _ = store.save_session(session).await;
+                            }
+                        }
                         let termination = format!("{:?}", result.termination).to_lowercase();
                         yield RunEvent::Done {
                             iterations: result.turns_used,
@@ -429,6 +490,17 @@ impl Agent {
     }
 }
 
+fn strip_frontmatter(content: &str) -> &str {
+    let s = content.trim_start();
+    if !s.starts_with("---") { return s; }
+    let rest = &s[3..];
+    if let Some(end) = rest.find("\n---") {
+        rest[end + 4..].trim_start_matches('\n')
+    } else {
+        s
+    }
+}
+
 /// Extract `description:` from YAML frontmatter in a skill `.md` file.
 fn parse_frontmatter_description(content: &str) -> String {
     let body = content.trim_start();
@@ -465,7 +537,7 @@ impl<'a> SinglePassHarness<'a> {
 
     pub async fn run(&self, request: HarnessRequest) -> Result<HarnessOutcome> {
         let (text, iterations, total_tokens, status) = collect_run(self.agent, &request).await?;
-        Ok(HarnessOutcome { result: text, passed: true, iterations, total_tokens, status, feedback: None })
+        Ok(HarnessOutcome { result: text, passed: true, iterations, total_tokens, status, overall_score: 1.0, feedback: None, details: vec![] })
     }
 }
 
@@ -482,10 +554,10 @@ impl<'a, G: QualityGate> EvalLoopHarness<'a, G> {
     }
 
     pub async fn run(&self, request: HarnessRequest) -> Result<HarnessOutcome> {
-        let mut outcome = HarnessOutcome { result: String::new(), passed: false, iterations: 0, total_tokens: 0, status: "error".into(), feedback: None };
+        let mut outcome = HarnessOutcome { result: String::new(), passed: false, iterations: 0, total_tokens: 0, status: "error".into(), overall_score: 0.0, feedback: None, details: vec![] };
         for _ in 0..self.max_attempts {
             let (text, iterations, total_tokens, status) = collect_run(self.agent, &request).await?;
-            outcome = HarnessOutcome { result: text, passed: false, iterations, total_tokens, status, feedback: None };
+            outcome = HarnessOutcome { result: text, passed: false, iterations, total_tokens, status, overall_score: 0.0, feedback: None, details: vec![] };
             if self.gate.evaluate(&request, &outcome).await? {
                 outcome.passed = true;
                 return Ok(outcome);
@@ -525,17 +597,23 @@ impl<'a> HarnessLoop<'a> {
             iterations: 0,
             total_tokens: 0,
             status: "error".into(),
+            overall_score: 0.0,
             feedback: None,
+            details: vec![],
         };
 
         for attempt in 1..=self.max_attempts as u32 {
             let (text, iterations, total_tokens, status) = collect_run_with_goal(self.agent, &current_goal, &request).await?;
-            outcome = HarnessOutcome { result: text.clone(), passed: false, iterations, total_tokens, status, feedback: None };
+            outcome = HarnessOutcome { result: text.clone(), passed: false, iterations, total_tokens, status, overall_score: 0.0, feedback: None, details: vec![] };
 
             // Phase 1: kernel builds eval prompt
             let eval_action = pipeline.feed(EvalEvent::Outcome {
                 goal: request.goal.clone(),
-                criteria: request.criteria.clone(),
+                criteria: request.criteria.iter().map(|c| deepstrike_core::harness::eval_pipeline::Criterion {
+                    text: c.text.clone(),
+                    required: c.required,
+                    weight: c.weight,
+                }).collect(),
                 result: text,
                 attempt,
             });
@@ -561,7 +639,14 @@ impl<'a> HarnessLoop<'a> {
             };
 
             outcome.passed = eval_result.passed;
+            outcome.overall_score = eval_result.overall_score;
             outcome.feedback = Some(eval_result.feedback.clone());
+            outcome.details = eval_result.details.iter().map(|d| crate::harness::CriterionResult {
+                criterion: d.criterion.clone(),
+                passed: d.passed,
+                score: d.score,
+                feedback: d.feedback.clone(),
+            }).collect();
 
             if eval_result.passed {
                 if let Some(sc) = eval_result.skill_candidate {
@@ -596,7 +681,8 @@ async fn collect_run_with_goal(agent: &Agent, goal: &str, req: &HarnessRequest) 
     let mut iterations = 0u32;
     let mut total_tokens = 0u64;
     let mut status = "error".to_string();
-    let mut stream = agent.run_streaming(goal, &req.criteria, req.extensions.as_ref()).await?;
+    let criteria_texts: Vec<String> = req.criteria.iter().map(|c| c.text.clone()).collect();
+    let mut stream = agent.run_streaming(goal, &criteria_texts, req.extensions.as_ref()).await?;
     while let Some(evt) = stream.next().await {
         match evt? {
             RunEvent::TextDelta(d) => text.push_str(&d),

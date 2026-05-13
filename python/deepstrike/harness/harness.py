@@ -14,9 +14,24 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class Criterion:
+    text: str
+    required: bool = True
+    weight: float = 1.0
+
+
+@dataclass
+class CriterionResult:
+    criterion: str
+    passed: bool
+    score: float
+    feedback: str
+
+
+@dataclass
 class HarnessRequest:
     goal: str
-    criteria: list[str] | None = None
+    criteria: list[Criterion] | None = None
     extensions: dict[str, Any] | None = None
 
 
@@ -27,7 +42,10 @@ class HarnessOutcome:
     iterations: int
     total_tokens: int
     status: str
+    overall_score: float | None = None
     feedback: str | None = None
+    details: list[CriterionResult] = field(default_factory=list)
+
 
 
 @runtime_checkable
@@ -43,7 +61,7 @@ class QualityGate(Protocol):
 async def _run_once(agent: "Agent", goal: str, request: HarnessRequest) -> HarnessOutcome:
     done: DoneEvent | None = None
     text = ""
-    async for evt in agent.run_streaming(goal, criteria=request.criteria, extensions=request.extensions):
+    async for evt in agent.run_streaming(goal, criteria=[c.text for c in (request.criteria or [])], extensions=request.extensions):
         if isinstance(evt, TextDelta):
             text += evt.delta
         elif isinstance(evt, DoneEvent):
@@ -68,14 +86,6 @@ class SinglePassHarness:
 
 
 class HarnessLoop:
-    """
-    Eval loop with LLM-as-judge and feedback injection.
-
-    Each failed attempt feeds the evaluator's feedback back into the next goal.
-    On success, if the evaluator proposes a skill candidate it is written to
-    `skill_dir` for future sessions to reuse.
-    """
-
     def __init__(
         self,
         agent: "Agent",
@@ -91,35 +101,38 @@ class HarnessLoop:
 
     async def run(self, request: HarnessRequest) -> HarnessOutcome:
         pipeline = EvalPipeline(extract_skill_on_pass=True)
+        kernel_criteria = [{"text": c.text, "required": c.required, "weight": c.weight} for c in (request.criteria or [])]
         current_goal = request.goal
         outcome = HarnessOutcome(result="", passed=False, iterations=0, total_tokens=0, status="error")
 
         for attempt in range(1, self._max_attempts + 1):
             outcome = await _run_once(self._agent, current_goal, request)
 
-            # Phase 1: kernel builds eval prompt
-            eval_action = pipeline.feed_outcome(
-                request.goal,
-                request.criteria or [],
-                outcome.result,
-                attempt,
-            )
+            eval_action = pipeline.feed_outcome(request.goal, kernel_criteria, outcome.result, attempt)
             if eval_action.kind != "evaluate":
                 break
 
-            # Phase 2: SDK calls evaluator LLM
             eval_text = ""
             async for evt in await self._eval_provider.stream(eval_action.messages or [], [], extensions=None):
                 if isinstance(evt, TextDelta):
                     eval_text += evt.delta
 
-            # Phase 3: kernel parses verdict
             done_action = pipeline.feed_eval_result(eval_text)
             if done_action.kind != "done":
                 break
 
             outcome.passed = done_action.passed or False
+            outcome.overall_score = getattr(done_action, "overall_score", None)
             outcome.feedback = done_action.feedback
+            outcome.details = [
+                CriterionResult(
+                    criterion=d.criterion,
+                    passed=d.passed,
+                    score=d.score,
+                    feedback=d.feedback,
+                )
+                for d in (getattr(done_action, "details", None) or [])
+            ]
 
             if outcome.passed:
                 sc = done_action.skill_candidate
@@ -139,14 +152,7 @@ class HarnessLoop:
 
 
 class EvalLoopHarness:
-    """Retry loop driven by a pluggable QualityGate (not LLM-as-judge)."""
-
-    def __init__(
-        self,
-        agent: "Agent",
-        gate: "QualityGate",
-        max_attempts: int = 3,
-    ):
+    def __init__(self, agent: "Agent", gate: "QualityGate", max_attempts: int = 3):
         self._agent = agent
         self._gate = gate
         self._max_attempts = max_attempts
@@ -159,3 +165,4 @@ class EvalLoopHarness:
                 outcome.passed = True
                 return outcome
         return outcome
+

@@ -65,9 +65,16 @@ impl SkillCatalog {
         let mut xml = String::from("<available_skills>\n");
         for meta in &skills {
             xml.push_str(&format!(
-                "  <skill>\n    <name>{}</name>\n    <description>{}</description>\n  </skill>\n",
+                "  <skill>\n    <name>{}</name>\n    <description>{}</description>\n",
                 meta.name, meta.description,
             ));
+            if let Some(ref w) = meta.when_to_use {
+                xml.push_str(&format!("    <when_to_use>{w}</when_to_use>\n"));
+            }
+            if let Some(e) = meta.effort {
+                xml.push_str(&format!("    <effort>{e}</effort>\n"));
+            }
+            xml.push_str("  </skill>\n");
         }
         xml.push_str("</available_skills>");
 

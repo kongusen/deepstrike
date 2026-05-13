@@ -42,6 +42,8 @@ export interface DreamStore {
   commit(agentId: string, result: CurationResult, existing: MemoryEntry[]): Promise<void>
   /** Semantic search over the agent's long-term memories. Called on demand during a run. */
   search(agentId: string, query: string, topK?: number): Promise<MemoryEntry[]>
+  /** Persist a completed session for future consolidation via `Agent.dream()`. */
+  saveSession(data: SessionData): Promise<void>
 }
 
 export interface DreamResult {

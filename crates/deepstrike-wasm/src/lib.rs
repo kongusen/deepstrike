@@ -527,6 +527,30 @@ impl LoopStateMachine {
         self.inner.ctx.set_knowledge_enabled(enabled);
     }
 
+    /// Prepend a system-level instruction to the context. Must be called before `start`.
+    /// `tokens` is a caller-supplied estimate (use `content.length / 4` if unsure).
+    /// The renderer skips messages with `tokens == 0`, so always pass at least 1.
+    #[wasm_bindgen(js_name = addSystemMessage)]
+    pub fn add_system_message(&mut self, content: String, tokens: u32) {
+        self.inner
+            .ctx
+            .partitions
+            .system
+            .push(RustMessage::system(content), tokens.max(1));
+    }
+
+    /// Pre-populate the memory partition with a long-term memory snippet.
+    /// Must be called before `start`. Use for seeding known context from past sessions.
+    /// `tokens` is a caller-supplied estimate; pass at least 1.
+    #[wasm_bindgen(js_name = addMemoryMessage)]
+    pub fn add_memory_message(&mut self, content: String, tokens: u32) {
+        self.inner
+            .ctx
+            .partitions
+            .memory
+            .push(RustMessage::user(content), tokens.max(1));
+    }
+
     #[wasm_bindgen(js_name = setTools)]
     pub fn set_tools(&mut self, tools: Vec<ToolSchema>) -> Result<(), JsValue> {
         self.inner.tools = tools.into_iter().map(tool_schema_to_rust).collect::<Result<_, _>>()?;

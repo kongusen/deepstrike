@@ -848,6 +848,28 @@ impl LoopStateMachine {
         self.inner.ctx.set_knowledge_enabled(enabled);
     }
 
+    /// Prepend a system-level instruction to the context. Must be called before `start`.
+    /// `tokens` is a caller-supplied estimate (use `len(content) // 4` if unsure).
+    /// The renderer skips messages with `tokens == 0`, so always pass at least 1.
+    fn add_system_message(&mut self, content: String, tokens: u32) {
+        self.inner
+            .ctx
+            .partitions
+            .system
+            .push(RustMessage::system(content), tokens.max(1));
+    }
+
+    /// Pre-populate the memory partition with a long-term memory snippet.
+    /// Must be called before `start`. Use for seeding known context from past sessions.
+    /// `tokens` is a caller-supplied estimate; pass at least 1.
+    fn add_memory_message(&mut self, content: String, tokens: u32) {
+        self.inner
+            .ctx
+            .partitions
+            .memory
+            .push(RustMessage::user(content), tokens.max(1));
+    }
+
     fn set_tools(&mut self, tools: Vec<ToolSchema>) -> PyResult<()> {
         let rust_tools: Vec<RustToolSchema> = tools
             .iter()

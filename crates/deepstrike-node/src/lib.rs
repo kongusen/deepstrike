@@ -48,8 +48,8 @@ use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernanceP
 use deepstrike_core::types::agent::AgentIdentity;
 use deepstrike_core::types::policy::GovernanceVerdict as RustGovernanceVerdict;
 use deepstrike_core::harness::eval_pipeline::{
-    EvalAction as RustEvalAction, EvalEvent as RustEvalEvent, EvalPolicy as RustEvalPolicy,
-    EvalPipeline as RustEvalPipeline,
+    Criterion as RustCriterion, EvalAction as RustEvalAction, EvalEvent as RustEvalEvent,
+    EvalPolicy as RustEvalPolicy, EvalPipeline as RustEvalPipeline,
 };
 use deepstrike_core::memory::curator::CurationResult as RustCurationResult;
 use deepstrike_core::memory::durable::SessionData as RustSessionData;
@@ -641,6 +641,30 @@ impl LoopStateMachine {
         self.inner.ctx.set_knowledge_enabled(enabled);
     }
 
+    /// Prepend a system-level instruction to the context. Must be called before `start`.
+    /// `tokens` is a caller-supplied estimate (use `content.length / 4` if unsure).
+    /// The renderer skips messages with `tokens == 0`, so always pass at least 1.
+    #[napi]
+    pub fn add_system_message(&mut self, content: String, tokens: u32) {
+        self.inner
+            .ctx
+            .partitions
+            .system
+            .push(RustMessage::system(content), tokens.max(1));
+    }
+
+    /// Pre-populate the memory partition with a long-term memory snippet.
+    /// Must be called before `start`. Use for seeding known context from past sessions.
+    /// `tokens` is a caller-supplied estimate; pass at least 1.
+    #[napi]
+    pub fn add_memory_message(&mut self, content: String, tokens: u32) {
+        self.inner
+            .ctx
+            .partitions
+            .memory
+            .push(RustMessage::user(content), tokens.max(1));
+    }
+
     #[napi]
     pub fn set_tools(&mut self, tools: Vec<ToolSchema>) -> Result<()> {
         let rust_tools: Vec<RustToolSchema> = tools
@@ -995,6 +1019,23 @@ fn idle_pipeline_action_from_rust(a: RustIdleAction) -> IdlePipelineAction {
 
 #[napi(object)]
 #[derive(Clone)]
+pub struct Criterion {
+    pub text: String,
+    pub required: bool,
+    pub weight: Option<f64>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct CriterionResult {
+    pub criterion: String,
+    pub passed: bool,
+    pub score: f64,
+    pub feedback: String,
+}
+
+#[napi(object)]
+#[derive(Clone)]
 pub struct EvalPipelineOptions {
     pub extract_skill_on_pass: Option<bool>,
 }
@@ -1010,14 +1051,16 @@ pub struct SkillCandidate {
 
 /// Discriminated union returned by `EvalPipeline` methods. Inspect `kind`:
 /// - `"evaluate"` → `messages` (SDK must call evaluator LLM, then `feedEvalResult`)
-/// - `"done"`     → `result` with `passed`, `feedback`, optional `skillCandidate`
+/// - `"done"`     → `passed`, `overallScore`, `feedback`, `details`, optional `skillCandidate`
 #[napi(object)]
 #[derive(Clone)]
 pub struct EvalPipelineAction {
     pub kind: String,
     pub messages: Option<Vec<Message>>,
     pub passed: Option<bool>,
+    pub overall_score: Option<f64>,
     pub feedback: Option<String>,
+    pub details: Option<Vec<CriterionResult>>,
     pub skill_candidate: Option<SkillCandidate>,
 }
 
@@ -1052,16 +1095,23 @@ impl EvalPipeline {
     pub fn feed_outcome(
         &mut self,
         goal: String,
-        criteria: Vec<String>,
+        criteria: Vec<Criterion>,
         result: String,
         attempt: u32,
     ) -> EvalPipelineAction {
-        match self.inner.feed(RustEvalEvent::Outcome { goal, criteria, result, attempt }) {
+        let rust_criteria = criteria.into_iter().map(|c| RustCriterion {
+            text: c.text,
+            required: c.required,
+            weight: c.weight.map(|w| w as f32).unwrap_or(1.0),
+        }).collect();
+        match self.inner.feed(RustEvalEvent::Outcome { goal, criteria: rust_criteria, result, attempt }) {
             RustEvalAction::Evaluate { messages } => EvalPipelineAction {
                 kind: "evaluate".into(),
                 messages: Some(messages.iter().map(message_from_rust).collect()),
                 passed: None,
+                overall_score: None,
                 feedback: None,
+                details: None,
                 skill_candidate: None,
             },
             RustEvalAction::Done { result } => eval_done_action(result),
@@ -1077,7 +1127,9 @@ impl EvalPipeline {
                 kind: "evaluate".into(),
                 messages: Some(messages.iter().map(message_from_rust).collect()),
                 passed: None,
+                overall_score: None,
                 feedback: None,
+                details: None,
                 skill_candidate: None,
             },
         }
@@ -1099,7 +1151,14 @@ fn eval_done_action(result: deepstrike_core::harness::eval_pipeline::EvalResult)
         kind: "done".into(),
         messages: None,
         passed: Some(result.passed),
+        overall_score: Some(result.overall_score as f64),
         feedback: Some(result.feedback),
+        details: Some(result.details.into_iter().map(|d| CriterionResult {
+            criterion: d.criterion,
+            passed: d.passed,
+            score: d.score as f64,
+            feedback: d.feedback,
+        }).collect()),
         skill_candidate: result.skill_candidate.map(|s| SkillCandidate {
             name: s.name,
             description: s.description,

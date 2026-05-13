@@ -41,6 +41,9 @@ pub trait DreamStore: Send + Sync {
         query: &str,
         top_k: usize,
     ) -> crate::Result<Vec<MemoryEntry>>;
+
+    /// Persist a completed session for future consolidation via `Agent::dream()`.
+    async fn save_session(&self, data: deepstrike_core::memory::durable::SessionData) -> crate::Result<()>;
 }
 
 /// Summary of one dreaming cycle returned to the caller.
