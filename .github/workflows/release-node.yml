@@ -66,14 +66,33 @@ jobs:
           name: native-${{ matrix.pkg }}
           path: crates/deepstrike-node/artifacts/*.node
 
-      # Flatten paths: upload-artifact preserves directory structure; if we upload
-      # `crates/deepstrike-node/index.d.ts`, download to `crates/deepstrike-node` nests
-      # another `crates/deepstrike-node/` and the publish job copies the empty git file.
+      # With `--output-dir artifacts`, napi writes index.d.ts / index.js under artifacts/,
+      # not the package root (root files may stay empty from git). Publish needs real defs.
       - name: Upload generated type definitions
         if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
         run: |
+          set -euo pipefail
+          ART="crates/deepstrike-node/artifacts"
           mkdir -p napi-types-artifact
-          cp crates/deepstrike-node/index.d.ts crates/deepstrike-node/index.js napi-types-artifact/
+          if [ -s "$ART/index.d.ts" ]; then
+            cp "$ART/index.d.ts" napi-types-artifact/
+            if [ -f "$ART/index.js" ]; then
+              cp "$ART/index.js" napi-types-artifact/
+            elif [ -f crates/deepstrike-node/index.js ]; then
+              cp crates/deepstrike-node/index.js napi-types-artifact/
+            else
+              echo "::error::index.js missing in artifacts and package root"
+              exit 1
+            fi
+          elif [ -s "crates/deepstrike-node/index.d.ts" ]; then
+            cp crates/deepstrike-node/index.d.ts crates/deepstrike-node/index.js napi-types-artifact/
+          else
+            echo "::error::No generated index.d.ts found (checked $ART and package root)"
+            ls -la "$ART" || true
+            ls -la crates/deepstrike-node/*.d.ts crates/deepstrike-node/*.js 2>/dev/null || true
+            exit 1
+          fi
           test -s napi-types-artifact/index.d.ts
       - name: Upload napi-types artifact
         if: matrix.target == 'x86_64-unknown-linux-gnu'
