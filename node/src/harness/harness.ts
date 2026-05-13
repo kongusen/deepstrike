@@ -40,6 +40,22 @@ export interface HarnessOutcome {
   details?: CriterionResult[]
 }
 
+export interface Verdict {
+  passed: boolean
+  overallScore: number
+  feedback: string
+  details: CriterionResult[]
+}
+
+export type HarnessEvent =
+  | { type: "token"; text: string }
+  | { type: "tool_call"; id: string; name: string }
+  | { type: "tool_result"; callId: string; content: string; isError: boolean }
+  | { type: "supervising" }
+  | { type: "revising"; verdict: Verdict }
+  | { type: "done"; verdict: Verdict; iterations: number; totalTokens: number; status: string }
+  | { type: "max_attempts_reached" }
+
 async function runOnce(agent: Agent, req: HarnessRequest): Promise<HarnessOutcome> {
   let text = ""
   let done: DoneEvent | undefined
@@ -92,18 +108,45 @@ export class HarnessLoop {
     this.skillDir = options.skillDir
   }
 
-  async run(request: HarnessRequest): Promise<HarnessOutcome> {
+  async *runStreaming(request: HarnessRequest): AsyncIterable<HarnessEvent> {
     const kernel = await loadKernel()
     const pipeline = new kernel.EvalPipeline({ extractSkillOnPass: true })
     const criteria = request.criteria ?? []
 
-    let outcome: HarnessOutcome = { result: "", passed: false, iterations: 0, totalTokens: 0, status: "error" }
+    // history tracks the full conversation; agent sees only the current goal message
+    // but we inject feedback as user messages to guide revision without discarding prior output
     let currentGoal = request.goal
+    let lastIterations = 0
+    let lastTotalTokens = 0
+    let lastStatus = "error"
+    let lastResult = ""
 
     for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
-      outcome = await runOnce(this.agent, { ...request, goal: currentGoal })
+      // Stream agent output directly to caller
+      for await (const evt of this.agent.runStreaming(currentGoal, criteria.map(c => c.text), request.extensions)) {
+        if (evt.type === "text_delta") {
+          lastResult += (evt as TextDelta).delta
+          yield { type: "token", text: (evt as TextDelta).delta }
+        } else if (evt.type === "tool_call") {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const tc = evt as any
+          yield { type: "tool_call", id: tc.id, name: tc.name }
+        } else if (evt.type === "tool_result") {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const tr = evt as any
+          yield { type: "tool_result", callId: tr.callId, content: tr.content, isError: tr.isError }
+        } else if (evt.type === "done") {
+          const d = evt as DoneEvent
+          lastIterations = d.iterations
+          lastTotalTokens = d.totalTokens
+          lastStatus = d.status
+        }
+      }
 
-      const evalAction = pipeline.feedOutcome(request.goal, criteria, outcome.result, attempt)
+      // Checkpoint: evaluator judges the completed output
+      yield { type: "supervising" }
+
+      const evalAction = pipeline.feedOutcome(request.goal, criteria, lastResult, attempt)
       if (evalAction.kind !== "evaluate") break
 
       let evalText = ""
@@ -114,15 +157,14 @@ export class HarnessLoop {
       const doneAction = pipeline.feedEvalResult(evalText)
       if (doneAction.kind !== "done") break
 
-      outcome = {
-        ...outcome,
+      const verdict: Verdict = {
         passed: doneAction.passed ?? false,
-        overallScore: doneAction.overallScore ?? undefined,
-        feedback: doneAction.feedback ?? undefined,
-        details: doneAction.details ?? undefined,
+        overallScore: doneAction.overallScore ?? 0,
+        feedback: doneAction.feedback ?? "",
+        details: doneAction.details ?? [],
       }
 
-      if (doneAction.passed) {
+      if (verdict.passed) {
         if (doneAction.skill_candidate && this.skillDir) {
           const { name, description, whenToUse, content } = doneAction.skill_candidate
           const fm = ["---", `name: ${name}`, `description: ${description}`,
@@ -130,13 +172,18 @@ export class HarnessLoop {
             .filter(Boolean).join("\n")
           await writeFile(path.join(this.skillDir, `${name}.md`), fm + content, "utf8")
         }
-        return outcome
+        yield { type: "done", verdict, iterations: lastIterations, totalTokens: lastTotalTokens, status: lastStatus }
+        return
       }
 
-      currentGoal = `${request.goal}\n\n[Previous attempt ${attempt} failed: ${doneAction.feedback}]`
+      yield { type: "revising", verdict }
+
+      // Inject feedback as next turn's goal — agent sees its prior output + evaluator notes
+      currentGoal = `${request.goal}\n\n[Attempt ${attempt} feedback: ${verdict.feedback}]`
+      lastResult = ""
       pipeline.reset()
     }
 
-    return outcome
+    yield { type: "max_attempts_reached" }
   }
 }

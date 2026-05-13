@@ -1,7 +1,7 @@
 from __future__ import annotations
 import pathlib
 from dataclasses import dataclass, field
-from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
+from typing import Any, AsyncIterator, Protocol, TYPE_CHECKING, runtime_checkable
 try:
     from deepstrike._kernel import EvalPipeline
 except ImportError:
@@ -47,10 +47,32 @@ class HarnessOutcome:
     details: list[CriterionResult] = field(default_factory=list)
 
 
+@dataclass
+class Verdict:
+    passed: bool
+    overall_score: float
+    feedback: str
+    details: list[CriterionResult]
 
-@runtime_checkable
-class Harness(Protocol):
-    async def run(self, request: HarnessRequest) -> HarnessOutcome: ...
+
+@dataclass
+class HarnessEvent:
+    type: str
+    # token
+    text: str | None = None
+    # tool_call
+    id: str | None = None
+    name: str | None = None
+    # tool_result
+    call_id: str | None = None
+    content: str | None = None
+    is_error: bool | None = None
+    # revising / done
+    verdict: Verdict | None = None
+    # done
+    iterations: int | None = None
+    total_tokens: int | None = None
+    status: str | None = None
 
 
 @runtime_checkable
@@ -85,72 +107,6 @@ class SinglePassHarness:
         return outcome
 
 
-class HarnessLoop:
-    def __init__(
-        self,
-        agent: "Agent",
-        eval_provider: "LLMProvider",
-        *,
-        max_attempts: int = 3,
-        skill_dir: str | None = None,
-    ):
-        self._agent = agent
-        self._eval_provider = eval_provider
-        self._max_attempts = max_attempts
-        self._skill_dir = pathlib.Path(skill_dir) if skill_dir else None
-
-    async def run(self, request: HarnessRequest) -> HarnessOutcome:
-        pipeline = EvalPipeline(extract_skill_on_pass=True)
-        kernel_criteria = [{"text": c.text, "required": c.required, "weight": c.weight} for c in (request.criteria or [])]
-        current_goal = request.goal
-        outcome = HarnessOutcome(result="", passed=False, iterations=0, total_tokens=0, status="error")
-
-        for attempt in range(1, self._max_attempts + 1):
-            outcome = await _run_once(self._agent, current_goal, request)
-
-            eval_action = pipeline.feed_outcome(request.goal, kernel_criteria, outcome.result, attempt)
-            if eval_action.kind != "evaluate":
-                break
-
-            eval_text = ""
-            async for evt in await self._eval_provider.stream(eval_action.messages or [], [], extensions=None):
-                if isinstance(evt, TextDelta):
-                    eval_text += evt.delta
-
-            done_action = pipeline.feed_eval_result(eval_text)
-            if done_action.kind != "done":
-                break
-
-            outcome.passed = done_action.passed or False
-            outcome.overall_score = getattr(done_action, "overall_score", None)
-            outcome.feedback = done_action.feedback
-            outcome.details = [
-                CriterionResult(
-                    criterion=d.criterion,
-                    passed=d.passed,
-                    score=d.score,
-                    feedback=d.feedback,
-                )
-                for d in (getattr(done_action, "details", None) or [])
-            ]
-
-            if outcome.passed:
-                sc = done_action.skill_candidate
-                if sc and self._skill_dir:
-                    lines = ["---", f"name: {sc.name}", f"description: {sc.description}"]
-                    if sc.when_to_use:
-                        lines.append(f"when_to_use: {sc.when_to_use}")
-                    lines += ["---", ""]
-                    skill_path = self._skill_dir / f"{sc.name}.md"
-                    skill_path.write_text("\n".join(lines) + sc.content, encoding="utf-8")
-                return outcome
-
-            current_goal = f"{request.goal}\n\n[Previous attempt {attempt} failed: {done_action.feedback}]"
-            pipeline.reset()
-
-        return outcome
-
-
 class EvalLoopHarness:
     def __init__(self, agent: "Agent", gate: "QualityGate", max_attempts: int = 3):
         self._agent = agent
@@ -166,3 +122,92 @@ class EvalLoopHarness:
                 return outcome
         return outcome
 
+
+class HarnessLoop:
+    def __init__(
+        self,
+        agent: "Agent",
+        eval_provider: "LLMProvider",
+        *,
+        max_attempts: int = 3,
+        skill_dir: str | None = None,
+    ):
+        self._agent = agent
+        self._eval_provider = eval_provider
+        self._max_attempts = max_attempts
+        self._skill_dir = pathlib.Path(skill_dir) if skill_dir else None
+
+    async def run_streaming(self, request: HarnessRequest) -> AsyncIterator[HarnessEvent]:
+        return self._run_streaming_impl(request)
+
+    async def _run_streaming_impl(self, request: HarnessRequest) -> AsyncIterator[HarnessEvent]:
+        pipeline = EvalPipeline(extract_skill_on_pass=True)
+        kernel_criteria = [{"text": c.text, "required": c.required, "weight": c.weight} for c in (request.criteria or [])]
+        criteria = request.criteria or []
+
+        current_goal = request.goal
+        last_iterations = 0
+        last_total_tokens = 0
+        last_status = "error"
+        last_result = ""
+
+        for attempt in range(1, self._max_attempts + 1):
+            async for evt in self._agent.run_streaming(current_goal, criteria=[c.text for c in criteria], extensions=request.extensions):
+                if isinstance(evt, TextDelta):
+                    last_result += evt.delta
+                    yield HarnessEvent(type="token", text=evt.delta)
+                elif isinstance(evt, DoneEvent):
+                    last_iterations = evt.iterations
+                    last_total_tokens = evt.total_tokens
+                    last_status = evt.status
+                else:
+                    # tool_call / tool_result pass-through
+                    kind = getattr(evt, "type", None)
+                    if kind == "tool_call":
+                        yield HarnessEvent(type="tool_call", id=getattr(evt, "id", None), name=getattr(evt, "name", None))
+                    elif kind == "tool_result":
+                        yield HarnessEvent(type="tool_result", call_id=getattr(evt, "call_id", None), content=getattr(evt, "content", None), is_error=getattr(evt, "is_error", None))
+
+            yield HarnessEvent(type="supervising")
+
+            eval_action = pipeline.feed_outcome(request.goal, kernel_criteria, last_result, attempt)
+            if eval_action.kind != "evaluate":
+                break
+
+            eval_text = ""
+            async for evt in await self._eval_provider.stream(eval_action.messages or [], [], extensions=None):
+                if isinstance(evt, TextDelta):
+                    eval_text += evt.delta
+
+            done_action = pipeline.feed_eval_result(eval_text)
+            if done_action.kind != "done":
+                break
+
+            verdict = Verdict(
+                passed=done_action.passed or False,
+                overall_score=getattr(done_action, "overall_score", 0.0) or 0.0,
+                feedback=done_action.feedback or "",
+                details=[
+                    CriterionResult(criterion=d.criterion, passed=d.passed, score=d.score, feedback=d.feedback)
+                    for d in (getattr(done_action, "details", None) or [])
+                ],
+            )
+
+            if verdict.passed:
+                sc = done_action.skill_candidate
+                if sc and self._skill_dir:
+                    lines = ["---", f"name: {sc.name}", f"description: {sc.description}"]
+                    if sc.when_to_use:
+                        lines.append(f"when_to_use: {sc.when_to_use}")
+                    lines += ["---", ""]
+                    skill_path = self._skill_dir / f"{sc.name}.md"
+                    skill_path.write_text("\n".join(lines) + sc.content, encoding="utf-8")
+                yield HarnessEvent(type="done", verdict=verdict, iterations=last_iterations, total_tokens=last_total_tokens, status=last_status)
+                return
+
+            yield HarnessEvent(type="revising", verdict=verdict)
+            current_goal = f"{request.goal}\n\n[Attempt {attempt} feedback: {verdict.feedback}]"
+            last_result = ""
+            pipeline.reset()
+
+        yield HarnessEvent(type="max_attempts_reached")

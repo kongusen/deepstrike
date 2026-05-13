@@ -31,14 +31,26 @@ export interface HarnessOutcome {
   details?: CriterionResult[]
 }
 
-function normalizeCriteria(criteria?: Criterion[]): Criterion[] {
-  return criteria ?? []
+export interface Verdict {
+  passed: boolean
+  overallScore: number
+  feedback: string
+  details: CriterionResult[]
 }
+
+export type HarnessEvent =
+  | { type: "token"; text: string }
+  | { type: "tool_call"; id: string; name: string }
+  | { type: "tool_result"; callId: string; content: string; isError: boolean }
+  | { type: "supervising" }
+  | { type: "revising"; verdict: Verdict }
+  | { type: "done"; verdict: Verdict; iterations: number; totalTokens: number; status: string }
+  | { type: "max_attempts_reached" }
 
 async function runOnce(agent: Agent, goal: string, req: HarnessRequest): Promise<HarnessOutcome> {
   let text = ""
   let done: DoneEvent | undefined
-  for await (const evt of agent.runStreaming(goal, normalizeCriteria(req.criteria).map(c => c.text), req.extensions)) {
+  for await (const evt of agent.runStreaming(goal, (req.criteria ?? []).map(c => c.text), req.extensions)) {
     if (evt.type === "text_delta") text += (evt as TextDelta).delta
     else if (evt.type === "done") done = evt as DoneEvent
   }
@@ -67,18 +79,41 @@ export class HarnessLoop {
     this.maxAttempts = options.maxAttempts ?? 3
   }
 
-  async run(request: HarnessRequest): Promise<HarnessOutcome> {
+  async *runStreaming(request: HarnessRequest): AsyncIterable<HarnessEvent> {
     const kernel = await import("@deepstrike/wasm-kernel")
     const pipeline = new kernel.EvalPipeline({ extractSkillOnPass: true })
-    const kernelCriteria = normalizeCriteria(request.criteria)
+    const criteria = request.criteria ?? []
 
-    let outcome: HarnessOutcome = { result: "", passed: false, iterations: 0, totalTokens: 0, status: "error" }
     let currentGoal = request.goal
+    let lastIterations = 0
+    let lastTotalTokens = 0
+    let lastStatus = "error"
+    let lastResult = ""
 
     for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
-      outcome = await runOnce(this.agent, currentGoal, request)
+      for await (const evt of this.agent.runStreaming(currentGoal, criteria.map(c => c.text), request.extensions)) {
+        if (evt.type === "text_delta") {
+          lastResult += (evt as TextDelta).delta
+          yield { type: "token", text: (evt as TextDelta).delta }
+        } else if (evt.type === "tool_call") {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const tc = evt as any
+          yield { type: "tool_call", id: tc.id, name: tc.name }
+        } else if (evt.type === "tool_result") {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const tr = evt as any
+          yield { type: "tool_result", callId: tr.callId, content: tr.content, isError: tr.isError }
+        } else if (evt.type === "done") {
+          const d = evt as DoneEvent
+          lastIterations = d.iterations
+          lastTotalTokens = d.totalTokens
+          lastStatus = d.status
+        }
+      }
 
-      const evalAction = pipeline.feedOutcome(request.goal, kernelCriteria, outcome.result, attempt)
+      yield { type: "supervising" }
+
+      const evalAction = pipeline.feedOutcome(request.goal, criteria, lastResult, attempt)
       if (evalAction.kind !== "evaluate") break
 
       let evalText = ""
@@ -89,20 +124,24 @@ export class HarnessLoop {
       const doneAction = pipeline.feedEvalResult({ content: evalText })
       if (doneAction.kind !== "done") break
 
-      outcome = {
-        ...outcome,
+      const verdict: Verdict = {
         passed: doneAction.passed ?? false,
-        overallScore: doneAction.overall_score ?? undefined,
-        feedback: doneAction.feedback ?? undefined,
-        details: doneAction.details ?? undefined,
+        overallScore: doneAction.overall_score ?? 0,
+        feedback: doneAction.feedback ?? "",
+        details: doneAction.details ?? [],
       }
 
-      if (outcome.passed) return outcome
+      if (verdict.passed) {
+        yield { type: "done", verdict, iterations: lastIterations, totalTokens: lastTotalTokens, status: lastStatus }
+        return
+      }
 
-      currentGoal = `${request.goal}\n\n[Previous attempt ${attempt} failed: ${doneAction.feedback}]`
+      yield { type: "revising", verdict }
+      currentGoal = `${request.goal}\n\n[Attempt ${attempt} feedback: ${verdict.feedback}]`
+      lastResult = ""
       pipeline.reset()
     }
 
-    return outcome
+    yield { type: "max_attempts_reached" }
   }
 }

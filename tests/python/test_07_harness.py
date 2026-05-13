@@ -63,12 +63,23 @@ class TestEvalLoopHarness:
 
 class TestHarnessLoop:
     @pytest.mark.timeout(120)
-    async def test_returns_valid_outcome(self):
-        outcome = await HarnessLoop(
+    async def test_run_streaming_emits_events(self):
+        events = []
+        result = ""
+        passed = False
+        async for evt in await HarnessLoop(
             make_agent(), make_provider(), max_attempts=3,
-        ).run(HarnessRequest(
+        ).run_streaming(HarnessRequest(
             goal="What is 9 * 9? Output only the number.",
-            criteria=["Answer must be exactly 81"],
-        ))
-        assert isinstance(outcome.passed, bool)
-        assert len(outcome.result) > 0
+            criteria=[__import__('deepstrike').harness.harness.Criterion(text="Answer must be exactly 81")],
+        )):
+            events.append(evt)
+            if evt.type == "token":
+                result += evt.text or ""
+            if evt.type == "done":
+                passed = evt.verdict.passed if evt.verdict else False
+        assert isinstance(passed, bool)
+        assert len(result) > 0
+        assert any(e.type == "token" for e in events)
+        assert any(e.type == "supervising" for e in events)
+        assert any(e.type in ("done", "max_attempts_reached") for e in events)

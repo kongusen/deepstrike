@@ -459,12 +459,22 @@ async fn harness_loop_llm_judge() {
     let harness = HarnessLoop::new(&agent, eval_provider, 2, None);
 
     let mut req = HarnessRequest::new("Write a haiku about the ocean.");
-    req.criteria = vec!["Must be exactly 3 lines.".into()];
+    req.criteria = vec![deepstrike_sdk::harness::Criterion::required("Must be exactly 3 lines.")];
 
-    let outcome = harness.run(req).await.unwrap();
-    assert!(!outcome.result.is_empty());
-    // LLM-as-judge might pass or fail, but it should complete
-    assert!(!outcome.status.is_empty());
+    let stream = harness.run_streaming(req);
+    futures::pin_mut!(stream);
+    let mut result = String::new();
+    let mut status = String::new();
+    while let Some(evt) = futures::StreamExt::next(&mut stream).await {
+        match evt.unwrap() {
+            deepstrike_sdk::harness::HarnessEvent::Token(t) => result.push_str(&t),
+            deepstrike_sdk::harness::HarnessEvent::Done { status: s, .. } => status = s,
+            deepstrike_sdk::harness::HarnessEvent::MaxAttemptsReached => status = "max_attempts".into(),
+            _ => {}
+        }
+    }
+    assert!(!result.is_empty());
+    assert!(!status.is_empty());
 }
 
 // ─── 15. Extensions pass-through ────────────────────────────────────────────

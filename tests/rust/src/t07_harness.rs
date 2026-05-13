@@ -230,7 +230,9 @@ fn harness_outcome_fields() {
         iterations: 1,
         total_tokens: 100,
         status: "completed".into(),
+        overall_score: 1.0,
         feedback: Some("Great work!".into()),
+        details: vec![],
     };
     assert!(outcome.passed);
     assert_eq!(outcome.iterations, 1);

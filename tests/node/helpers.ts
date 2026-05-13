@@ -34,6 +34,7 @@ export const SKILL_DIR = resolve(__dirname, "fixtures/skills")
 export class MockDreamStore implements DreamStore {
   private sessions = new Map<string, SessionData[]>()
   private memories = new Map<string, MemoryEntry[]>()
+  savedSessions: SessionData[] = []
 
   addSession(agentId: string, session: SessionData): void {
     const list = this.sessions.get(agentId) ?? []
@@ -57,12 +58,18 @@ export class MockDreamStore implements DreamStore {
   async search(agentId: string, _query: string, topK = 5): Promise<MemoryEntry[]> {
     return (this.memories.get(agentId) ?? []).slice(0, topK)
   }
+
+  async saveSession(data: SessionData): Promise<void> {
+    this.savedSessions.push(data)
+  }
 }
 
 // ─── In-memory KnowledgeSource ─────────────────────────────────────────────
 
 export class MockKnowledgeSource implements KnowledgeSource {
+  initCalled = 0
   constructor(private readonly snippets: string[]) {}
+  async init(): Promise<void> { this.initCalled++ }
   async retrieve(_query: string, topK = 5): Promise<string[]> {
     return this.snippets.slice(0, topK)
   }

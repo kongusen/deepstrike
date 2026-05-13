@@ -585,90 +585,111 @@ impl<'a> HarnessLoop<'a> {
         Self { agent, eval_provider: Box::new(eval_provider), max_attempts, skill_dir }
     }
 
-    pub async fn run(&self, request: HarnessRequest) -> Result<HarnessOutcome> {
+    pub fn run_streaming<'b>(
+        &'b self,
+        request: HarnessRequest,
+    ) -> impl futures::Stream<Item = Result<crate::harness::HarnessEvent>> + 'b {
         use deepstrike_core::harness::eval_pipeline::{EvalAction, EvalEvent, EvalPipeline, EvalPolicy};
-        use futures::StreamExt;
+        use crate::harness::{HarnessEvent, Verdict};
 
-        let mut pipeline = EvalPipeline::new(EvalPolicy { extract_skill_on_pass: true });
-        let mut current_goal = request.goal.clone();
-        let mut outcome = HarnessOutcome {
-            result: String::new(),
-            passed: false,
-            iterations: 0,
-            total_tokens: 0,
-            status: "error".into(),
-            overall_score: 0.0,
-            feedback: None,
-            details: vec![],
-        };
+        async_stream::stream! {
+            let mut pipeline = EvalPipeline::new(EvalPolicy { extract_skill_on_pass: true });
+            let mut current_goal = request.goal.clone();
+            let criteria_texts: Vec<String> = request.criteria.iter().map(|c| c.text.clone()).collect();
 
-        for attempt in 1..=self.max_attempts as u32 {
-            let (text, iterations, total_tokens, status) = collect_run_with_goal(self.agent, &current_goal, &request).await?;
-            outcome = HarnessOutcome { result: text.clone(), passed: false, iterations, total_tokens, status, overall_score: 0.0, feedback: None, details: vec![] };
+            for attempt in 1..=self.max_attempts as u32 {
+                let mut last_result = String::new();
+                let mut last_iterations = 0u32;
+                let mut last_total_tokens = 0u64;
+                let mut last_status = "error".to_string();
 
-            // Phase 1: kernel builds eval prompt
-            let eval_action = pipeline.feed(EvalEvent::Outcome {
-                goal: request.goal.clone(),
-                criteria: request.criteria.iter().map(|c| deepstrike_core::harness::eval_pipeline::Criterion {
-                    text: c.text.clone(),
-                    required: c.required,
-                    weight: c.weight,
-                }).collect(),
-                result: text,
-                attempt,
-            });
-            let messages = match eval_action {
-                EvalAction::Evaluate { messages } => messages,
-                EvalAction::Done { .. } => break,
-            };
+                let goal_for_run = current_goal.clone();
+                let mut stream = match self.agent.run_streaming(&goal_for_run, &criteria_texts, request.extensions.as_ref()).await {
+                    Ok(s) => s,
+                    Err(e) => { yield Err(e); return; }
+                };
 
-            // Phase 2: SDK calls evaluator LLM
-            let mut eval_text = String::new();
-            let mut eval_stream = self.eval_provider.stream(&messages, &[], None).await?;
-            while let Some(evt) = eval_stream.next().await {
-                if let StreamEvent::TextDelta { delta } = evt? {
-                    eval_text.push_str(&delta);
-                }
-            }
-
-            // Phase 3: kernel parses verdict
-            let done_action = pipeline.feed(EvalEvent::EvalResult { content: eval_text });
-            let eval_result = match done_action {
-                EvalAction::Done { result } => result,
-                _ => break,
-            };
-
-            outcome.passed = eval_result.passed;
-            outcome.overall_score = eval_result.overall_score;
-            outcome.feedback = Some(eval_result.feedback.clone());
-            outcome.details = eval_result.details.iter().map(|d| crate::harness::CriterionResult {
-                criterion: d.criterion.clone(),
-                passed: d.passed,
-                score: d.score,
-                feedback: d.feedback.clone(),
-            }).collect();
-
-            if eval_result.passed {
-                if let Some(sc) = eval_result.skill_candidate {
-                    if let Some(dir) = &self.skill_dir {
-                        let mut fm = format!("---\nname: {}\ndescription: {}\n", sc.name, sc.description);
-                        if let Some(wtu) = &sc.when_to_use {
-                            fm.push_str(&format!("when_to_use: {}\n", wtu));
+                while let Some(evt) = stream.next().await {
+                    match evt {
+                        Ok(RunEvent::TextDelta(d)) => {
+                            last_result.push_str(&d);
+                            yield Ok(HarnessEvent::Token(d));
                         }
-                        fm.push_str("---\n\n");
-                        fm.push_str(&sc.content);
-                        tokio::fs::write(dir.join(format!("{}.md", sc.name)), fm).await?;
+                        Ok(RunEvent::ToolCall { id, name }) => yield Ok(HarnessEvent::ToolCall { id, name }),
+                        Ok(RunEvent::ToolResult { call_id, content, is_error }) => yield Ok(HarnessEvent::ToolResult { call_id, content, is_error }),
+                        Ok(RunEvent::Done { iterations, total_tokens, status }) => {
+                            last_iterations = iterations;
+                            last_total_tokens = total_tokens;
+                            last_status = status;
+                        }
+                        Ok(_) => {}
+                        Err(e) => { yield Err(e); return; }
                     }
                 }
-                return Ok(outcome);
+
+                yield Ok(HarnessEvent::Supervising);
+
+                let eval_action = pipeline.feed(EvalEvent::Outcome {
+                    goal: request.goal.clone(),
+                    criteria: request.criteria.iter().map(|c| deepstrike_core::harness::eval_pipeline::Criterion {
+                        text: c.text.clone(), required: c.required, weight: c.weight,
+                    }).collect(),
+                    result: last_result,
+                    attempt,
+                });
+                let messages = match eval_action {
+                    EvalAction::Evaluate { messages } => messages,
+                    EvalAction::Done { .. } => break,
+                };
+
+                let mut eval_text = String::new();
+                let mut eval_stream = match self.eval_provider.stream(&messages, &[], None).await {
+                    Ok(s) => s,
+                    Err(e) => { yield Err(e); return; }
+                };
+                while let Some(evt) = eval_stream.next().await {
+                    if let Ok(StreamEvent::TextDelta { delta }) = evt {
+                        eval_text.push_str(&delta);
+                    }
+                }
+
+                let eval_result = match pipeline.feed(EvalEvent::EvalResult { content: eval_text }) {
+                    EvalAction::Done { result } => result,
+                    _ => break,
+                };
+
+                let verdict = Verdict {
+                    passed: eval_result.passed,
+                    overall_score: eval_result.overall_score,
+                    feedback: eval_result.feedback.clone(),
+                    details: eval_result.details.iter().map(|d| crate::harness::CriterionResult {
+                        criterion: d.criterion.clone(), passed: d.passed, score: d.score, feedback: d.feedback.clone(),
+                    }).collect(),
+                };
+
+                if verdict.passed {
+                    if let Some(sc) = eval_result.skill_candidate {
+                        if let Some(dir) = &self.skill_dir {
+                            let mut fm = format!("---\nname: {}\ndescription: {}\n", sc.name, sc.description);
+                            if let Some(wtu) = &sc.when_to_use { fm.push_str(&format!("when_to_use: {}\n", wtu)); }
+                            fm.push_str("---\n\n");
+                            fm.push_str(&sc.content);
+                            if let Err(e) = tokio::fs::write(dir.join(format!("{}.md", sc.name)), fm).await {
+                                yield Err(e.into()); return;
+                            }
+                        }
+                    }
+                    yield Ok(HarnessEvent::Done { verdict, iterations: last_iterations, total_tokens: last_total_tokens, status: last_status });
+                    return;
+                }
+
+                yield Ok(HarnessEvent::Revising { verdict: verdict.clone() });
+                current_goal = format!("{}\n\n[Attempt {} feedback: {}]", request.goal, attempt, verdict.feedback);
+                pipeline.reset();
             }
 
-            // Inject feedback into next attempt
-            current_goal = format!("{}\n\n[Previous attempt {} failed: {}]", request.goal, attempt, eval_result.feedback);
-            pipeline.reset();
+            yield Ok(HarnessEvent::MaxAttemptsReached);
         }
-
-        Ok(outcome)
     }
 }
 

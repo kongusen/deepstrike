@@ -22,7 +22,6 @@ impl Criterion {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct CriterionResult {
     pub criterion: String,
@@ -54,6 +53,25 @@ pub struct HarnessOutcome {
     pub overall_score: f32,
     pub feedback: Option<String>,
     pub details: Vec<CriterionResult>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Verdict {
+    pub passed: bool,
+    pub overall_score: f32,
+    pub feedback: String,
+    pub details: Vec<CriterionResult>,
+}
+
+#[derive(Debug, Clone)]
+pub enum HarnessEvent {
+    Token(String),
+    ToolCall { id: String, name: String },
+    ToolResult { call_id: String, content: String, is_error: bool },
+    Supervising,
+    Revising { verdict: Verdict },
+    Done { verdict: Verdict, iterations: u32, total_tokens: u64, status: String },
+    MaxAttemptsReached,
 }
 
 #[async_trait]

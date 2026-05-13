@@ -73,6 +73,7 @@ class MockDreamStore:
     def __init__(self):
         self._sessions: dict[str, list[SessionData]] = {}
         self._memories: dict[str, list[MemoryEntry]] = {}
+        self.saved_sessions: list[SessionData] = []
 
     def add_session(self, agent_id: str, session: SessionData):
         self._sessions.setdefault(agent_id, []).append(session)
@@ -90,11 +91,18 @@ class MockDreamStore:
     async def search(self, agent_id: str, query: str, top_k: int = 5) -> list[MemoryEntry]:
         return (self._memories.get(agent_id, []))[:top_k]
 
+    async def save_session(self, data: SessionData) -> None:
+        self.saved_sessions.append(data)
+
 # ─── In-memory KnowledgeSource ──────────────────────────────────────────────
 
 class MockKnowledgeSource:
     def __init__(self, snippets: list[str]):
         self._snippets = snippets
+        self.init_called = 0
+
+    async def init(self) -> None:
+        self.init_called += 1
 
     async def retrieve(self, query: str, top_k: int = 5) -> list[str]:
         return self._snippets[:top_k]

@@ -4,7 +4,19 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import { SinglePassHarness, EvalLoopHarness, HarnessLoop } from "@deepstrike/sdk"
-import type { QualityGate, HarnessRequest, HarnessOutcome } from "@deepstrike/sdk"
+import type { QualityGate, HarnessRequest, HarnessOutcome, HarnessEvent } from "@deepstrike/sdk"
+
+async function collectHarness(loop: HarnessLoop, req: HarnessRequest): Promise<{ passed: boolean; result: string; events: HarnessEvent[] }> {
+  const events: HarnessEvent[] = []
+  let result = ""
+  let passed = false
+  for await (const evt of loop.runStreaming(req)) {
+    events.push(evt)
+    if (evt.type === "token") result += evt.text
+    if (evt.type === "done") passed = evt.verdict.passed
+  }
+  return { passed, result, events }
+}
 import { makeAgent, makeProvider } from "./helpers.js"
 
 describe("SinglePassHarness", () => {
@@ -40,24 +52,27 @@ describe("EvalLoopHarness", () => {
 })
 
 describe("HarnessLoop (LLM-as-judge)", () => {
-  it("returns valid outcome for a simple task", { timeout: 90_000 }, async () => {
-    const outcome = await new HarnessLoop(makeAgent(), makeProvider(), { maxAttempts: 3 }).run({
-      goal: "What is 9 * 9? Output only the number.",
-      criteria: ["Answer must be exactly 81"],
-    })
-    assert.ok(typeof outcome.passed === "boolean")
-    assert.ok(outcome.result.length > 0)
+  it("runStreaming emits token and done events", { timeout: 90_000 }, async () => {
+    const { passed, result, events } = await collectHarness(
+      new HarnessLoop(makeAgent(), makeProvider(), { maxAttempts: 3 }),
+      { goal: "What is 9 * 9? Output only the number.", criteria: [{ text: "Answer must be exactly 81", required: true }] },
+    )
+    assert.ok(typeof passed === "boolean")
+    assert.ok(result.length > 0)
+    assert.ok(events.some(e => e.type === "token"))
+    assert.ok(events.some(e => e.type === "supervising"))
+    assert.ok(events.some(e => e.type === "done" || e.type === "max_attempts_reached"))
   })
 
   it("feedback is injected and outcome is structured correctly", { timeout: 120_000 }, async () => {
-    const outcome = await new HarnessLoop(makeAgent(), makeProvider(), { maxAttempts: 3 }).run({
-      goal: 'Reply with JSON: {"status":"ok"}. Nothing else.',
-      criteria: ["Response must be valid JSON", "Must have key 'status' with value 'ok'"],
-    })
-    assert.ok(typeof outcome.passed === "boolean")
-    if (outcome.passed) {
+    const { passed, result } = await collectHarness(
+      new HarnessLoop(makeAgent(), makeProvider(), { maxAttempts: 3 }),
+      { goal: 'Reply with JSON: {"status":"ok"}. Nothing else.', criteria: [{ text: "Response must be valid JSON", required: true }, { text: "Must have key 'status' with value 'ok'", required: true }] },
+    )
+    assert.ok(typeof passed === "boolean")
+    if (passed) {
       try {
-        const parsed = JSON.parse(outcome.result.trim())
+        const parsed = JSON.parse(result.trim())
         assert.equal(parsed.status, "ok")
       } catch { /* model may wrap in markdown */ }
     }
