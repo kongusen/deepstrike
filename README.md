@@ -37,6 +37,11 @@ Cross-language agent runtime. A Rust kernel handles all pure computation — loo
 ## Quick Start
 
 **Node.js**
+
+```bash
+npm install @deepstrike/sdk
+```
+
 ```typescript
 import { Agent, AnthropicProvider, tool } from "@deepstrike/sdk"
 
@@ -46,6 +51,11 @@ await agent.run("What is 2 + 3?")
 ```
 
 **Python**
+
+```bash
+pip install deepstrike
+```
+
 ```python
 from deepstrike import Agent, AnthropicProvider, tool
 
@@ -60,6 +70,12 @@ await agent.run("What is 2 + 3?")
 ```
 
 **Rust**
+
+```toml
+[dependencies]
+deepstrike-sdk = "0.1.3"
+```
+
 ```rust
 let agent = Agent::new(AnthropicProvider::new("sk-..."), AgentOptions::new(32_000));
 let result = agent.run("What is 2 + 3?").await?;

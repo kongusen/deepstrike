@@ -8,7 +8,23 @@ Agent framework built on a Rust kernel. The kernel handles loop control, context
 npm install @deepstrike/sdk
 ```
 
-Requires Node.js 18+. The Rust kernel is distributed as a pre-built native addon (`@deepstrike/core`).
+Requires Node.js 18+.
+
+### Platform support
+
+Pre-built native addons are available for the following platforms:
+
+| Platform | Package |
+| -------- | ------- |
+| Linux x64 (glibc) | `@deepstrike/core-linux-x64-gnu` |
+| Linux ARM64 (glibc) | `@deepstrike/core-linux-arm64-gnu` |
+| macOS x64 | `@deepstrike/core-darwin-x64` |
+| macOS ARM64 (Apple Silicon) | `@deepstrike/core-darwin-arm64` |
+| Windows x64 | `@deepstrike/core-win32-x64-msvc` |
+
+The correct platform package is selected and installed automatically via `optionalDependencies`.
+
+> **Note:** `@deepstrike/core` is the low-level native addon package and is not intended for direct use. It is an internal dependency automatically managed by `@deepstrike/sdk`. Direct installation is only relevant when building from Rust source.
 
 ---
 
