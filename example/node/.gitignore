@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+inbox/*
+!inbox/.gitkeep
+archive/*
+!archive/.gitkeep
+output/*
+!output/.gitkeep
