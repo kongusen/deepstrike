@@ -51,16 +51,19 @@ jobs:
       - name: Install napi-rs CLI
         run: npm install -g @napi-rs/cli@2
 
+      # napi v2 CLI 语法：napi build [options] [destDir]
+      # destDir 是位置参数，控制 .node 文件输出目录。
+      # index.d.ts 和 index.js 始终写入 CWD（package root），与 destDir 无关。
       - name: Build native addon (Linux ARM64 cross-compile)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         shell: bash
-        run: napi build --release --platform --target ${{ matrix.target }} --output-dir artifacts --use-napi-cross
+        run: napi build --release --platform --target ${{ matrix.target }} --use-napi-cross artifacts
         working-directory: crates/deepstrike-node
 
       - name: Build native addon
         if: matrix.target != 'aarch64-unknown-linux-gnu'
         shell: bash
-        run: napi build --release --platform --target ${{ matrix.target }} --output-dir artifacts
+        run: napi build --release --platform --target ${{ matrix.target }} artifacts
         working-directory: crates/deepstrike-node
 
       - uses: actions/upload-artifact@v4
@@ -68,27 +71,28 @@ jobs:
           name: native-${{ matrix.pkg }}
           path: crates/deepstrike-node/artifacts/*.node
 
-      # napi v2 CLI with --output-dir writes .node + index.d.ts to artifacts/,
-      # index.js stays in the package root (CWD). Pinning CLI@2 ensures DTS is non-empty.
+      # 只在 linux-x64-gnu 上收集 DTS/JS（其它平台产物相同）。
+      # napi v2 把 index.d.ts 和 index.js 写入 CWD（crates/deepstrike-node/），
+      # 而不是 destDir（artifacts/）。
       - name: Upload generated type definitions
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         shell: bash
         run: |
           set -euo pipefail
           PKG="crates/deepstrike-node"
-          ART="$PKG/artifacts"
           mkdir -p napi-types-artifact
 
-          if [ ! -s "$ART/index.d.ts" ]; then
-            echo "::error::napi did not generate a non-empty index.d.ts at $ART/index.d.ts"
+          if [ ! -s "$PKG/index.d.ts" ]; then
+            echo "::error::napi 未在 $PKG/index.d.ts 生成非空的类型定义文件"
             find "$PKG" -maxdepth 4 \( -name '*.d.ts' -o -name '*.js' \) \
               -not -path '*/node_modules/*' | sort || true
             exit 1
           fi
 
-          cp "$ART/index.d.ts" napi-types-artifact/index.d.ts
+          cp "$PKG/index.d.ts" napi-types-artifact/index.d.ts
           cp "$PKG/index.js"   napi-types-artifact/index.js
           test -s napi-types-artifact/index.d.ts
+
       - name: Upload napi-types artifact
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         uses: actions/upload-artifact@v4
