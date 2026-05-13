@@ -88,25 +88,26 @@ jobs:
           name: native-${{ matrix.pkg }}
           path: crates/deepstrike-node/artifacts/*.node
 
-      # index.d.ts 和 index.js 由 napi 写入 CWD（crates/deepstrike-node/）
-      # 只需从 linux-x64-gnu 收集一次（各平台产物相同）
+      # napi v2 指定 destDir 后，.node / index.d.ts / index.js 全部写入 destDir（artifacts/）
+      # CWD 里的文件不会被覆盖，所以从 artifacts/ 收集
+      # 只需从 linux-x64-gnu 收集一次（各平台 DTS 相同）
       - name: Upload generated type definitions
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         shell: bash
         run: |
           set -euo pipefail
-          PKG="crates/deepstrike-node"
+          ART="crates/deepstrike-node/artifacts"
           mkdir -p napi-types-artifact
 
-          if [ ! -s "$PKG/index.d.ts" ]; then
-            echo "::error::napi 未在 $PKG/index.d.ts 生成非空类型定义"
-            find "$PKG" -maxdepth 4 \( -name '*.d.ts' -o -name '*.js' \) \
+          if [ ! -s "$ART/index.d.ts" ]; then
+            echo "::error::napi 未在 $ART/index.d.ts 生成非空类型定义"
+            find "crates/deepstrike-node" -maxdepth 4 \( -name '*.d.ts' -o -name '*.js' \) \
               -not -path '*/node_modules/*' | sort || true
             exit 1
           fi
 
-          cp "$PKG/index.d.ts" napi-types-artifact/index.d.ts
-          cp "$PKG/index.js"   napi-types-artifact/index.js
+          cp "$ART/index.d.ts" napi-types-artifact/index.d.ts
+          cp "$ART/index.js"   napi-types-artifact/index.js
           test -s napi-types-artifact/index.d.ts
 
       - name: Upload napi-types artifact
