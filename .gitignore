@@ -25,3 +25,4 @@ pkg/
 .idea/
 .vscode/
 .env
+.claude
