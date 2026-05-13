@@ -1,11 +1,13 @@
 from deepstrike.harness.harness import (
-    Harness, QualityGate,
+    QualityGate,
     SinglePassHarness, EvalLoopHarness, HarnessLoop,
-    HarnessRequest, HarnessOutcome,
+    HarnessRequest, HarnessOutcome, HarnessEvent, Verdict,
+    Criterion, CriterionResult,
 )
 
 __all__ = [
-    "Harness", "QualityGate",
+    "QualityGate",
     "SinglePassHarness", "EvalLoopHarness", "HarnessLoop",
-    "HarnessRequest", "HarnessOutcome",
+    "HarnessRequest", "HarnessOutcome", "HarnessEvent", "Verdict",
+    "Criterion", "CriterionResult",
 ]

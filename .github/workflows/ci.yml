@@ -29,13 +29,36 @@ jobs:
         working-directory: crates/deepstrike-node
       - name: Install @deepstrike/core from local build
         run: |
-          cp crates/deepstrike-node/artifacts/index.d.ts crates/deepstrike-node/artifacts/index.js crates/deepstrike-node/
+          cp ../crates/deepstrike-node/artifacts/index.d.ts ../crates/deepstrike-node/artifacts/index.js ../crates/deepstrike-node/
           npm install --no-save
-          cp crates/deepstrike-node/artifacts/*.node node_modules/@deepstrike/core/
-          cp crates/deepstrike-node/index.d.ts crates/deepstrike-node/index.js node_modules/@deepstrike/core/
+          cp ../crates/deepstrike-node/artifacts/*.node node_modules/@deepstrike/core/
+          cp ../crates/deepstrike-node/index.d.ts ../crates/deepstrike-node/index.js node_modules/@deepstrike/core/
         working-directory: node
       - run: npm test
         working-directory: node
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 24 }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Build wasm-kernel
+        run: wasm-pack build --release --target bundler --out-dir pkg --scope deepstrike
+        working-directory: crates/deepstrike-wasm
+      - name: Link wasm-kernel for tsc
+        run: |
+          npm install
+          npm install ../crates/deepstrike-wasm/pkg
+        working-directory: wasm
+      - name: Build WASM SDK
+        run: npm run build
+        working-directory: wasm
 
   python:
     runs-on: ubuntu-latest
