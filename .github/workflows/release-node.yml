@@ -17,6 +17,16 @@ env:
   NODE_VERSION: 20
 
 jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # 阶段一：各平台分别编译 .node 原生 addon
+  #
+  # napi v2 CLI 关键行为：
+  #   napi build [options] [destDir]
+  #   - destDir（位置参数）：.node 文件输出目录，默认为 CWD
+  #   - index.d.ts 和 index.js：始终输出到 CWD（package root），与 destDir 无关
+  #   - 没有 --output-dir / --use-napi-cross 选项（这些是 napi v3 的参数）
+  #   - ARM64 Linux 交叉编译：通过 gcc-aarch64-linux-gnu 工具链 + 环境变量实现
+  # ──────────────────────────────────────────────────────────────────────────
   build-native:
     strategy:
       fail-fast: false
@@ -51,13 +61,19 @@ jobs:
       - name: Install napi-rs CLI
         run: npm install -g @napi-rs/cli@2
 
-      # napi v2 CLI 语法：napi build [options] [destDir]
-      # destDir 是位置参数，控制 .node 文件输出目录。
-      # index.d.ts 和 index.js 始终写入 CWD（package root），与 destDir 无关。
-      - name: Build native addon (Linux ARM64 cross-compile)
+      # ARM64 Linux 交叉编译：安装 gcc 交叉工具链
+      # （napi v2 无 --use-napi-cross，需手动设置 linker）
+      - name: Install ARM64 cross-compiler
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build native addon (ARM64 Linux cross-compile)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         shell: bash
-        run: napi build --release --platform --target ${{ matrix.target }} --use-napi-cross artifacts
+        env:
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: napi build --release --platform --target ${{ matrix.target }} artifacts
         working-directory: crates/deepstrike-node
 
       - name: Build native addon
@@ -66,14 +82,14 @@ jobs:
         run: napi build --release --platform --target ${{ matrix.target }} artifacts
         working-directory: crates/deepstrike-node
 
+      # .node 文件由 napi 写入 artifacts/；上传至 GHA artifact
       - uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.pkg }}
           path: crates/deepstrike-node/artifacts/*.node
 
-      # 只在 linux-x64-gnu 上收集 DTS/JS（其它平台产物相同）。
-      # napi v2 把 index.d.ts 和 index.js 写入 CWD（crates/deepstrike-node/），
-      # 而不是 destDir（artifacts/）。
+      # index.d.ts 和 index.js 由 napi 写入 CWD（crates/deepstrike-node/）
+      # 只需从 linux-x64-gnu 收集一次（各平台产物相同）
       - name: Upload generated type definitions
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         shell: bash
@@ -83,7 +99,7 @@ jobs:
           mkdir -p napi-types-artifact
 
           if [ ! -s "$PKG/index.d.ts" ]; then
-            echo "::error::napi 未在 $PKG/index.d.ts 生成非空的类型定义文件"
+            echo "::error::napi 未在 $PKG/index.d.ts 生成非空类型定义"
             find "$PKG" -maxdepth 4 \( -name '*.d.ts' -o -name '*.js' \) \
               -not -path '*/node_modules/*' | sort || true
             exit 1
@@ -100,6 +116,14 @@ jobs:
           name: napi-types
           path: napi-types-artifact/
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # 阶段二：汇总产物，发布到 npm
+  #
+  # 发布顺序：
+  #   1. @deepstrike/core-<platform>  （5 个平台包，各含一个 .node 文件）
+  #   2. @deepstrike/core             （含 index.js loader + index.d.ts 类型）
+  #   3. @deepstrike/sdk              （TypeScript SDK，tsc 编译后发布）
+  # ──────────────────────────────────────────────────────────────────────────
   publish:
     needs: build-native
     runs-on: ubuntu-latest
@@ -110,18 +134,21 @@ jobs:
           node-version: "${{ env.NODE_VERSION }}"
           registry-url: "https://registry.npmjs.org"
 
+      # 下载所有 .node 文件到 artifacts/（repo root 下）
       - name: Download all native addons
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
+      # 下载 index.d.ts / index.js 到 napi-types-artifact/
       - name: Download generated type definitions
         uses: actions/download-artifact@v4
         with:
           name: napi-types
           path: napi-types-artifact
 
+      # 将生成的类型定义写回 crate root，供后续步骤使用
       - name: Install napi bindings into crate root
         run: |
           cp napi-types-artifact/index.d.ts napi-types-artifact/index.js crates/deepstrike-node/
@@ -140,7 +167,7 @@ jobs:
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           fi
 
-      # Sync platform package versions to match the tag or manual input
+      # 将各平台包版本号同步为本次发布版本
       - name: Sync platform package versions
         working-directory: crates/deepstrike-node
         run: |
@@ -149,7 +176,8 @@ jobs:
             npm version "$VERSION" --no-git-tag-version --allow-same-version --prefix "$dir"
           done
 
-      # Move each .node file into its platform npm dir and publish
+      # 把对应 .node 文件复制进各平台 npm 目录，然后发布
+      # artifacts/ 在 repo root，从 crates/deepstrike-node/ 需 ../../artifacts/
       - name: Publish platform packages
         working-directory: crates/deepstrike-node
         env:
@@ -161,6 +189,8 @@ jobs:
             if [ -n "$node_file" ]; then
               cp "$node_file" "$dir/"
               npm publish "$dir" --access public || echo "Skipping $pkg (already published)"
+            else
+              echo "No .node file found for $pkg, skipping"
             fi
           done
 
