@@ -54,8 +54,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      # maturin-action@v1 latest 有 installRustTarget 调用 rustup-init --print 的 regression
+      # 提前 add target 后 action 会检测到已存在而跳过，避免触发 bug
+      - name: Pre-install macOS cross-compile Rust targets
+        if: matrix.os == 'macos-latest'
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
       - name: Build wheels
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@v1.7.0
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --interpreter 3.12
