@@ -63,7 +63,7 @@ jobs:
 
   # ARM64 host + musl：与 release-node.yml 中 linux-arm64-musl 矩阵一致（Alpine arm64）
   node-linux-arm64-musl:
-    runs-on: ubuntu-24.04-arm64
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
