@@ -56,7 +56,7 @@ jobs:
           set -euo pipefail
           cargo zigbuild --release --target x86_64-unknown-linux-musl --manifest-path Cargo.toml
           mkdir -p artifacts-musl
-          cp target/x86_64-unknown-linux-musl/release/libdeepstrike_node.so \
+          cp ../../target/x86_64-unknown-linux-musl/release/libdeepstrike_node.so \
              artifacts-musl/deepstrike-core.linux-x64-musl.node
           test -f artifacts-musl/deepstrike-core.linux-x64-musl.node
         working-directory: crates/deepstrike-node
@@ -91,7 +91,7 @@ jobs:
           set -euo pipefail
           cargo zigbuild --release --target aarch64-unknown-linux-musl --manifest-path Cargo.toml
           mkdir -p artifacts-musl-arm64
-          cp target/aarch64-unknown-linux-musl/release/libdeepstrike_node.so \
+          cp ../../target/aarch64-unknown-linux-musl/release/libdeepstrike_node.so \
              artifacts-musl-arm64/deepstrike-core.linux-arm64-musl.node
           test -f artifacts-musl-arm64/deepstrike-core.linux-arm64-musl.node
         working-directory: crates/deepstrike-node

@@ -114,7 +114,7 @@ jobs:
         run: |
           cargo zigbuild --release --target ${{ matrix.target }} --manifest-path Cargo.toml
           mkdir -p artifacts
-          cp "target/${{ matrix.target }}/release/libdeepstrike_node.so" \
+          cp "../../target/${{ matrix.target }}/release/libdeepstrike_node.so" \
              "artifacts/deepstrike-core.${{ matrix.pkg }}.node"
         working-directory: crates/deepstrike-node
 
@@ -126,7 +126,7 @@ jobs:
         run: |
           cargo zigbuild --release --target ${{ matrix.target }} --manifest-path Cargo.toml
           mkdir -p artifacts
-          cp "target/${{ matrix.target }}/release/libdeepstrike_node.so" \
+          cp "../../target/${{ matrix.target }}/release/libdeepstrike_node.so" \
              "artifacts/deepstrike-core.${{ matrix.pkg }}.node"
         working-directory: crates/deepstrike-node
 
