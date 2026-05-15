@@ -38,19 +38,26 @@ jobs:
       - run: npm test
         working-directory: node
 
-      # 与 release 一致：显式 +crt-static 使 cdylib 走静态 libgcc_eh 而非动态 libgcc_s.so.1
-      - name: Install musl toolchain for x64 musl verification
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      # 与 release 一致：zigbuild 提供动态 musl 所需的 libgcc_s 等价实现
+      - name: Install zig + cargo-zigbuild for x64 musl verification
+        shell: bash
+        run: |
+          ZIG_VERSION="0.13.0"
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" \
+            | sudo tar -xJ -C /usr/local/
+          sudo ln -sf "/usr/local/zig-linux-x86_64-${ZIG_VERSION}/zig" /usr/local/bin/zig
+          cargo install cargo-zigbuild
 
       - name: Verify Linux x64 musl native build
         shell: bash
         env:
-          RUSTFLAGS: "-C target-feature=+crt-static"
-          CC_x86_64_unknown_linux_musl: x86_64-linux-musl-gcc
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-linux-musl-gcc
+          RUSTFLAGS: "-C target-feature=-crt-static"
         run: |
           set -euo pipefail
-          napi build --release --platform --target x86_64-unknown-linux-musl artifacts-musl
+          cargo zigbuild --release --target x86_64-unknown-linux-musl --manifest-path Cargo.toml
+          mkdir -p artifacts-musl
+          cp target/x86_64-unknown-linux-musl/release/libdeepstrike_node.so \
+             artifacts-musl/deepstrike-core.linux-x64-musl.node
           test -f artifacts-musl/deepstrike-core.linux-x64-musl.node
         working-directory: crates/deepstrike-node
 
@@ -67,18 +74,25 @@ jobs:
         with: { key: "aarch64-unknown-linux-musl" }
       - name: Install napi-rs CLI
         run: npm install -g @napi-rs/cli@2
-      - name: Install musl toolchain (arm64 native)
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install zig + cargo-zigbuild for arm64 musl verification
+        shell: bash
+        run: |
+          ZIG_VERSION="0.13.0"
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-aarch64-${ZIG_VERSION}.tar.xz" \
+            | sudo tar -xJ -C /usr/local/
+          sudo ln -sf "/usr/local/zig-linux-aarch64-${ZIG_VERSION}/zig" /usr/local/bin/zig
+          cargo install cargo-zigbuild
 
       - name: Verify Linux arm64 musl native build
         shell: bash
         env:
-          RUSTFLAGS: "-C target-feature=+crt-static"
-          CC_aarch64_unknown_linux_musl: musl-gcc
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          RUSTFLAGS: "-C target-feature=-crt-static"
         run: |
           set -euo pipefail
-          napi build --release --platform --target aarch64-unknown-linux-musl artifacts-musl-arm64
+          cargo zigbuild --release --target aarch64-unknown-linux-musl --manifest-path Cargo.toml
+          mkdir -p artifacts-musl-arm64
+          cp target/aarch64-unknown-linux-musl/release/libdeepstrike_node.so \
+             artifacts-musl-arm64/deepstrike-core.linux-arm64-musl.node
           test -f artifacts-musl-arm64/deepstrike-core.linux-arm64-musl.node
         working-directory: crates/deepstrike-node
 

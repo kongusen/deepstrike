@@ -58,10 +58,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # macOS：提前安装双架构 Rust target，供 maturin cross-compile 使用
+      # macOS / Windows cross-compile: 安装目标架构的 Rust target
       - name: Add macOS cross-compile Rust targets
         if: matrix.os == 'macos-latest'
         run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+      - name: Add cross-compile Rust target
+        if: matrix.rust_target && matrix.os == 'windows-latest'
+        shell: bash
+        run: rustup target add ${{ matrix.rust_target }}
 
       # Linux：maturin-action 负责启动 manylinux/musllinux Docker 容器
       - name: Build wheels (Linux)

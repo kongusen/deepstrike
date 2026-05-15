@@ -75,9 +75,25 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Install musl toolchain (Linux)
+      # musl cdylib 原理：
+      #   +crt-static 在 musl 上会禁用 cdylib 支持（Rust 编译器限制）
+      #   -crt-static（动态 musl）需要 libgcc_s.so.1，而 musl 工具链没有它
+      #   解法：用 cargo-zigbuild，zig 自带完整 musl 运行时，包含 libgcc_s 等价实现
+      - name: Install zig + cargo-zigbuild (musl targets)
         if: contains(matrix.target, 'linux-musl')
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        shell: bash
+        run: |
+          ZIG_VERSION="0.13.0"
+          ARCH=$(uname -m)
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${ARCH}-${ZIG_VERSION}.tar.xz" \
+            | sudo tar -xJ -C /usr/local/
+          sudo ln -sf "/usr/local/zig-linux-${ARCH}-${ZIG_VERSION}/zig" /usr/local/bin/zig
+          zig version
+          cargo install cargo-zigbuild
+
+      - name: Install ARM64 cross-compiler
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Build native addon (ARM64 Linux cross-compile)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -85,35 +101,42 @@ jobs:
         env:
           CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: napi build --release --platform --target ${{ matrix.target }} artifacts
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          napi build --release --platform --target ${{ matrix.target }} artifacts
         working-directory: crates/deepstrike-node
 
-      # musl cdylib：对共享库 Rust 不自动启用 +crt-static，需显式指定
-      # +crt-static → 链接 libgcc_eh.a（静态）替代 libgcc_s.so.1（动态，musl 工具链无此文件）
       - name: Build native addon (Linux x64 musl)
         if: matrix.target == 'x86_64-unknown-linux-musl'
         shell: bash
         env:
-          RUSTFLAGS: "-C target-feature=+crt-static"
-          CC_x86_64_unknown_linux_musl: x86_64-linux-musl-gcc
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-linux-musl-gcc
-        run: napi build --release --platform --target ${{ matrix.target }} artifacts
+          RUSTFLAGS: "-C target-feature=-crt-static"
+        run: |
+          cargo zigbuild --release --target ${{ matrix.target }} --manifest-path Cargo.toml
+          mkdir -p artifacts
+          cp "target/${{ matrix.target }}/release/libdeepstrike_node.so" \
+             "artifacts/deepstrike-core.${{ matrix.pkg }}.node"
         working-directory: crates/deepstrike-node
 
       - name: Build native addon (Linux arm64 musl)
         if: matrix.target == 'aarch64-unknown-linux-musl'
         shell: bash
         env:
-          RUSTFLAGS: "-C target-feature=+crt-static"
-          CC_aarch64_unknown_linux_musl: musl-gcc
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-        run: napi build --release --platform --target ${{ matrix.target }} artifacts
+          RUSTFLAGS: "-C target-feature=-crt-static"
+        run: |
+          cargo zigbuild --release --target ${{ matrix.target }} --manifest-path Cargo.toml
+          mkdir -p artifacts
+          cp "target/${{ matrix.target }}/release/libdeepstrike_node.so" \
+             "artifacts/deepstrike-core.${{ matrix.pkg }}.node"
         working-directory: crates/deepstrike-node
 
       - name: Build native addon
         if: matrix.target != 'aarch64-unknown-linux-gnu' && !contains(matrix.target, 'linux-musl')
         shell: bash
-        run: napi build --release --platform --target ${{ matrix.target }} artifacts
+        run: |
+          # Prepend ~/.cargo/bin to PATH: macOS runners may have a broken system cargo (rustup-init proxy)
+          export PATH="$HOME/.cargo/bin:$PATH"
+          napi build --release --platform --target ${{ matrix.target }} artifacts
         working-directory: crates/deepstrike-node
 
       # .node 文件由 napi 写入 artifacts/；上传至 GHA artifact
