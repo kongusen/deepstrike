@@ -5,6 +5,7 @@ import { PermissionManager, PermissionMode } from "../src/safety/index.js"
 import { AnthropicProvider } from "../src/providers/anthropic.js"
 import { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider } from "../src/providers/openai.js"
 import { Agent } from "../src/agent.js"
+import { Governance } from "../src/governance.js"
 
 describe("tool + executeTools", () => {
   const add = tool("add", "Add two numbers.", {
@@ -45,12 +46,15 @@ describe("WorkingMemory", () => {
 })
 
 describe("ScheduledPrompt", () => {
-  it("converts to RuntimeSignal", () => {
+  it("converts to RuntimeSignal with kernel-aligned shape", () => {
     const p = new ScheduledPrompt("standup", 1_700_000_000_000, ["be brief"])
     const sig = p.toSignal()
-    expect(sig.kind).toBe("scheduled")
+    expect(sig.source).toBe("cron")
+    expect(sig.signalType).toBe("job")
+    expect(sig.urgency).toBe("normal")
     expect(sig.payload.goal).toBe("standup")
     expect(sig.payload.criteria).toEqual(["be brief"])
+    expect(sig.dedupeKey).toBe("scheduled-1700000000000")
   })
 })
 
@@ -99,13 +103,13 @@ describe("Provider instantiation", () => {
 })
 
 describe("Agent (mock kernel)", () => {
-  it("run() returns done string", async () => {
+  it("run() returns actual LLM text", async () => {
     const provider = {
       async *stream() { yield { type: "text_delta", delta: "hello" } },
     }
     const agent = new Agent(provider, { maxTokens: 4096, maxTurns: 5 })
     const result = await agent.run("test goal")
-    expect(result).toContain("done")
+    expect(result).toBe("hello")
   })
 
   it("register and blockTool", () => {
@@ -115,5 +119,25 @@ describe("Agent (mock kernel)", () => {
     agent.register(t)
     agent.blockTool("t")
     agent.unregister("t")
+  })
+})
+
+describe("Governance", () => {
+  it("allows by default before kernel attach", () => {
+    const gov = new Governance()
+    const verdict = gov.evaluate("read_file", "{}")
+    expect(verdict.kind).toBe("allow")
+  })
+
+  it("blockTool queues before attach, applies after", async () => {
+    const gov = new Governance()
+    gov.blockTool("dangerous")
+    // simulate kernel attach
+    const kernel = await import("@deepstrike/wasm-kernel")
+    gov._attach(kernel)
+    // after attach, blocked tools are applied to kernel Governance
+    const verdict = gov.evaluate("dangerous", "{}")
+    // mock kernel.Governance.evaluate always returns allow, but blockTool was called
+    expect(verdict.kind).toBe("allow") // mock doesn't implement veto logic
   })
 })

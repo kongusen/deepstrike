@@ -4,15 +4,8 @@ import { executeTools } from "./tools/index.js"
 import { readSkillFile, scanSkillDir } from "./skills/loader.js"
 import type { DreamStore, DreamResult, CurationResult, MemoryEntry } from "./memory/protocols.js"
 import type { KnowledgeSource } from "./knowledge/source.js"
-import type { SignalSource } from "./signals/types.js"
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function loadKernel(): Promise<any> {
-  const mod = await import("@deepstrike/core")
-  // CJS modules imported via ESM dynamic import expose exports under `.default`
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (mod as any).default ?? mod
-}
+import type { RuntimeSignal, RuntimeSignalUrgency, SignalSource } from "./signals/types.js"
+import { getKernel } from "./kernel.js"
 
 export interface AgentOptions {
   maxTokens: number
@@ -45,11 +38,14 @@ export interface AgentOptions {
    */
   agentId?: string
   /**
-   * Kernel Governance instance (from `@deepstrike/core`) or any object implementing
+   * SDK Governance instance or any object implementing
    * `evaluate(toolName: string, argsJson: string): { kind: string; reason?: string; retryAfterMs?: number }`.
    * When provided, every tool call is evaluated through the full pipeline.
    */
-  governance?: { evaluate(toolName: string, argsJson: string): { kind: string; reason?: string; retryAfterMs?: number } }
+  governance?: {
+    setTime?(nowMs: bigint): void
+    evaluate(toolName: string, argsJson: string): { kind: string; reason?: string; retryAfterMs?: number }
+  }
 }
 
 export class Agent {
@@ -123,13 +119,13 @@ export class Agent {
       await this.knowledgeSource.init()
     }
 
-    const kernel = await loadKernel()
+    const kernel = getKernel()
     const ext = { ...this.extensions, ...(extensions ?? {}) }
 
     const sm = new kernel.LoopStateMachine({
       maxTokens: this.options.maxTokens,
       maxTurns: this.options.maxTurns ?? 25,
-      timeoutMs: this.options.timeoutMs,
+      timeoutMs: this.options.timeoutMs === undefined ? undefined : BigInt(this.options.timeoutMs),
     })
 
     // Per-run SignalRouter — dedup state never leaks between runs.
@@ -187,16 +183,14 @@ export class Agent {
       if (this.signalSource) {
         const sig = await this.signalSource.nextSignal()
         if (sig) {
-          const sigAny = sig as unknown as Record<string, unknown>
           const kernelSig = {
             id: crypto.randomUUID(),
-            source: (sigAny.source as string | undefined) ?? "custom",
-            signalType: (sigAny.signalType as string | undefined) ?? "event",
-            urgency: (sigAny.urgency as string | undefined)
-              ?? (sig.kind === "interrupt" ? "critical" : "normal"),
-            summary: String((sig.payload as Record<string, unknown>)?.goal ?? sig.kind),
+            source: sig.source ?? "custom",
+            signalType: sig.signalType ?? "event",
+            urgency: normalizeSignalUrgency(sig),
+            summary: String((sig.payload as Record<string, unknown>)?.goal ?? sig.kind ?? "signal"),
             payload: JSON.stringify(sig.payload ?? {}),
-            dedupeKey: (sigAny.dedupeKey as string | undefined) ?? null,
+            dedupeKey: sig.dedupeKey,
             timestampMs: Date.now(),
           }
           const disposition = router.ingest(kernelSig, action.kind === "execute_tools")
@@ -248,6 +242,7 @@ export class Agent {
         const deniedResults: { callId: string; name: string; output: string; isError: boolean }[] = []
         for (const c of allCalls) {
           if (this.options.governance) {
+            this.options.governance.setTime?.(BigInt(Date.now()))
             const verdict = this.options.governance.evaluate(c.name, c.arguments)
             if (verdict.kind === "deny") {
               const msg = `permission denied: ${c.name} — ${verdict.reason ?? ""}`
@@ -334,7 +329,7 @@ export class Agent {
     this._turn = sm.turn
     this._pressure = sm.pressure()
 
-    const status = result?.termination === "completed" ? "success" : (result?.termination ?? "error")
+    const status = result?.termination ?? "error"
     const iterations = result ? Math.max(1, result.turnsUsed) : 0
 
     if (this.options.dreamStore && this.options.agentId && sessionMsgs.length > 1) {
@@ -369,7 +364,7 @@ export class Agent {
    */
   async dream(agentId: string, nowMs = Date.now()): Promise<DreamResult> {
     if (!this.dreamStore) throw new Error("dreamStore not configured on AgentOptions")
-    const kernel = await loadKernel()
+    const kernel = getKernel()
 
     const sessions = await this.dreamStore.loadSessions(agentId)
     const existingMemories = await this.dreamStore.loadMemories(agentId)
@@ -450,4 +445,8 @@ export class Agent {
 
 function tryParseJson(s: string): unknown {
   try { return JSON.parse(s) } catch { return null }
+}
+
+function normalizeSignalUrgency(sig: RuntimeSignal): RuntimeSignalUrgency {
+  return sig.urgency
 }

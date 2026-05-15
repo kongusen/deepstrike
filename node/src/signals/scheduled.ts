@@ -11,6 +11,10 @@ export class ScheduledPrompt {
   toSignal(): RuntimeSignal {
     return {
       kind: "scheduled",
+      source: "cron",
+      signalType: "job",
+      urgency: "normal",
+      dedupeKey: `cron:${this.goal}:${this.runAtMs}`,
       payload: { goal: this.goal, criteria: this.criteria, runAtMs: this.runAtMs, ...this.metadata },
     }
   }

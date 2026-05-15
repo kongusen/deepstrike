@@ -1,7 +1,9 @@
 export interface RuntimeSignal {
-  kind: "interrupt" | "scheduled" | "external"
+  source: "cron" | "gateway" | "heartbeat" | "custom"
+  signalType: "event" | "job" | "alert"
+  urgency: "low" | "normal" | "high" | "critical"
   payload: Record<string, unknown>
-  priority?: number
+  dedupeKey?: string
 }
 
 export interface SignalSource {
@@ -18,8 +20,11 @@ export class ScheduledPrompt {
 
   toSignal(): RuntimeSignal {
     return {
-      kind: "scheduled",
+      source: "cron",
+      signalType: "job",
+      urgency: "normal",
       payload: { goal: this.goal, criteria: this.criteria, runAtMs: this.runAtMs, ...this.metadata },
+      dedupeKey: `scheduled-${this.runAtMs}`,
     }
   }
 }

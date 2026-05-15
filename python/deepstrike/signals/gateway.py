@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import time
+from collections import deque
 from typing import Callable
 from deepstrike.signals.types import RuntimeSignal
 from deepstrike.signals.scheduled import ScheduledPrompt
@@ -27,6 +28,7 @@ class SignalGateway:
     def __init__(self) -> None:
         self._listeners: list[Callable[[RuntimeSignal], None]] = []
         self._tasks: dict[str, asyncio.Task] = {}
+        self._pending: deque[RuntimeSignal] = deque()
 
     def on_signal(self, listener: Callable[[RuntimeSignal], None]) -> None:
         self._listeners.append(listener)
@@ -64,6 +66,10 @@ class SignalGateway:
         """Ingest a raw external signal (e.g. from a webhook handler)."""
         self._emit(signal)
 
+    async def next_signal(self) -> RuntimeSignal | None:
+        """Return the next pending signal so the gateway can be passed directly to Agent."""
+        return self._pending.popleft() if self._pending else None
+
     def destroy(self) -> None:
         """Cancel all pending scheduled tasks."""
         for task in list(self._tasks.values()):
@@ -71,5 +77,6 @@ class SignalGateway:
         self._tasks.clear()
 
     def _emit(self, signal: RuntimeSignal) -> None:
+        self._pending.append(signal)
         for listener in self._listeners:
             listener(signal)

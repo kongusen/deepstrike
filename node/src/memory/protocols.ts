@@ -1,7 +1,8 @@
 // ─── Dream / idle-pipeline types ─────────────────────────────────────────────
+import type { Message } from "../types.js"
 
 export interface SessionMessage {
-  role: string
+  role: Message["role"]
   content: string
   tokenCount?: number
   toolCalls?: Array<{ id: string; name: string; arguments: string }>

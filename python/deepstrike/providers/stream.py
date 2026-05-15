@@ -47,4 +47,21 @@ class ErrorEvent:
     message: str = ""
 
 
-StreamEvent = Union[ThinkingDelta, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent]
+@dataclass
+class PermissionRequestEvent:
+    type: str = "permission_request"
+    call_id: str = ""
+    tool_name: str = ""
+    arguments: str = ""
+    reason: str = ""
+
+
+StreamEvent = Union[
+    ThinkingDelta,
+    TextDelta,
+    ToolCallEvent,
+    ToolResultEvent,
+    DoneEvent,
+    ErrorEvent,
+    PermissionRequestEvent,
+]

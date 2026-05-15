@@ -121,7 +121,7 @@ export class HarnessLoop {
         if (evt.type === "text_delta") evalText += (evt as TextDelta).delta
       }
 
-      const doneAction = pipeline.feedEvalResult({ content: evalText })
+      const doneAction = pipeline.feedEvalResult(evalText)
       if (doneAction.kind !== "done") break
 
       const verdict: Verdict = {

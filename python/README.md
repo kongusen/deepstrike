@@ -18,19 +18,16 @@ Requires Python 3.10+. The Rust kernel is distributed as a pre-built wheel (`dee
 import asyncio
 from deepstrike import Agent, OpenAIProvider, tool
 
-@tool(name="add", description="Add two numbers.", parameters={
-    "type": "object",
-    "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}},
-    "required": ["x", "y"],
-})
-async def add(args):
-    return str(args["x"] + args["y"])
+@tool
+async def add(x: int, y: int) -> str:
+    """Add two numbers."""
+    return str(x + y)
 
 agent = Agent(OpenAIProvider(api_key="sk-...", model="gpt-5-mini"), max_tokens=4096, max_turns=25)
 agent.register(add)
 
 asyncio.run(agent.run("What is 17 + 28?"))
-# => "done in 2 turns (completed)"
+# => "45"
 ```
 
 Streaming:
@@ -75,7 +72,7 @@ agent = Agent(
     skill_dir="./skills",       # skill .md files directory
     knowledge_source=my_ks,     # KnowledgeSource implementation
     governance=gov,             # kernel Governance instance
-    signal_router=router,       # SignalRouter for external signals
+    signal_source=gateway,      # SignalGateway or any SignalSource
     dream_store=my_store,       # DreamStore for long-term memory
     agent_id="my-agent",        # required with dream_store for memory meta-tool
 )
@@ -89,7 +86,7 @@ agent = Agent(
 from deepstrike import tool, read_file
 
 agent.register(tool(name="search", description="Search.", parameters=schema)(my_fn))
-agent.register(read_file())
+agent.register(read_file)
 agent.unregister("search")
 agent.block_tool("bash")
 ```
@@ -202,10 +199,11 @@ agent = Agent(provider, max_tokens=4096, max_turns=25, governance=gov)
 from deepstrike import SignalGateway, ScheduledPrompt, RuntimeSignal
 
 gw = SignalGateway()
-rx = gw.subscribe()
 
 gw.schedule(ScheduledPrompt(goal="standup", run_at_ms=target_time))
-gw.ingest(RuntimeSignal(kind="interrupt", payload={}, priority=10))
+gw.ingest(RuntimeSignal(kind="interrupt", payload={}, urgency="critical"))
+
+agent = Agent(provider, max_tokens=4096, max_turns=25, signal_source=gw)
 
 agent.interrupt()  # direct interrupt
 gw.destroy()

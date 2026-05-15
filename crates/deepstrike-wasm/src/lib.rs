@@ -6,6 +6,10 @@ use wasm_bindgen::prelude::*;
 use deepstrike_core::context::manager::ContextManager;
 use deepstrike_core::context::pressure::PressureAction;
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
+use deepstrike_core::harness::eval_pipeline::{
+    Criterion as RustCriterion, EvalAction as RustEvalAction, EvalEvent as RustEvalEvent,
+    EvalPipeline as RustEvalPipeline, EvalPolicy as RustEvalPolicy, EvalResult as RustEvalResult,
+};
 use deepstrike_core::scheduler::policy::LoopPolicy as RustLoopPolicy;
 use deepstrike_core::scheduler::state_machine::{
     LoopAction as RustLoopAction, LoopEvent as RustLoopEvent,
@@ -21,6 +25,8 @@ use deepstrike_core::types::message::{
     Content, ContentPart, Message as RustMessage, Role, ToolCall as RustToolCall,
     ToolResult as RustToolResult, ToolSchema as RustToolSchema,
 };
+use deepstrike_core::types::agent::AgentIdentity;
+use deepstrike_core::types::policy::GovernanceVerdict as RustGovernanceVerdict;
 use deepstrike_core::types::result::LoopResult as RustLoopResult;
 use deepstrike_core::types::skill::SkillMetadata as RustSkillMetadata;
 use deepstrike_core::types::task::RuntimeTask as RustRuntimeTask;
@@ -256,6 +262,75 @@ pub struct LoopObservation {
     pub rho_after: Option<f64>,
 }
 
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct Criterion {
+    pub text: String,
+    pub required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<f64>,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct CriterionResult {
+    pub criterion: String,
+    pub passed: bool,
+    pub score: f64,
+    pub feedback: String,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalPipelineOptions {
+    #[serde(default)]
+    pub extract_skill_on_pass: bool,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillCandidate {
+    pub name: String,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when_to_use: Option<String>,
+    pub content: String,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalPipelineAction {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub messages: Option<Vec<Message>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overall_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Vec<CriterionResult>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_candidate: Option<SkillCandidate>,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct GovernanceVerdict {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<f64>,
+}
+
 // ────────────────────────────────────── conversion helpers ──────────────────────────────────────
 
 fn role_str_to_rust(role: &str) -> Result<Role, JsValue> {
@@ -439,6 +514,68 @@ fn observation_from_rust(o: RustLoopObservation) -> LoopObservation {
             kind: "compressed".into(),
             action: Some(pressure_action_str(action).into()),
             rho_after: Some(rho_after),
+        },
+    }
+}
+
+fn eval_done_action(result: RustEvalResult) -> EvalPipelineAction {
+    EvalPipelineAction {
+        kind: "done".into(),
+        messages: None,
+        passed: Some(result.passed),
+        overall_score: Some(result.overall_score as f64),
+        feedback: Some(result.feedback),
+        details: Some(result.details.into_iter().map(|detail| CriterionResult {
+            criterion: detail.criterion,
+            passed: detail.passed,
+            score: detail.score as f64,
+            feedback: detail.feedback,
+        }).collect()),
+        skill_candidate: result.skill_candidate.map(|skill| SkillCandidate {
+            name: skill.name,
+            description: skill.description,
+            when_to_use: skill.when_to_use,
+            content: skill.content,
+        }),
+    }
+}
+
+fn eval_action_from_rust(action: RustEvalAction) -> EvalPipelineAction {
+    match action {
+        RustEvalAction::Evaluate { messages } => EvalPipelineAction {
+            kind: "evaluate".into(),
+            messages: Some(messages.iter().map(message_from_rust).collect()),
+            passed: None,
+            overall_score: None,
+            feedback: None,
+            details: None,
+            skill_candidate: None,
+        },
+        RustEvalAction::Done { result } => eval_done_action(result),
+    }
+}
+
+fn governance_verdict_from_rust(verdict: RustGovernanceVerdict) -> GovernanceVerdict {
+    match verdict {
+        RustGovernanceVerdict::Allow => GovernanceVerdict {
+            kind: "allow".into(),
+            reason: None,
+            retry_after_ms: None,
+        },
+        RustGovernanceVerdict::Deny { reason, .. } => GovernanceVerdict {
+            kind: "deny".into(),
+            reason: Some(reason),
+            retry_after_ms: None,
+        },
+        RustGovernanceVerdict::RateLimited { retry_after_ms } => GovernanceVerdict {
+            kind: "rate_limited".into(),
+            reason: None,
+            retry_after_ms: Some(retry_after_ms as f64),
+        },
+        RustGovernanceVerdict::AskUser { reason } => GovernanceVerdict {
+            kind: "ask_user".into(),
+            reason: Some(reason),
+            retry_after_ms: None,
         },
     }
 }
@@ -632,6 +769,61 @@ impl SignalRouter {
     pub fn clear_dedup(&mut self) { self.inner.clear_dedup(); }
 }
 
+// ────────────────────────────────────────────── EvalPipeline ──────────────────────────────────────────────
+
+#[wasm_bindgen]
+pub struct EvalPipeline {
+    inner: RustEvalPipeline,
+}
+
+#[wasm_bindgen]
+impl EvalPipeline {
+    #[wasm_bindgen(constructor)]
+    pub fn new(options: EvalPipelineOptions) -> Self {
+        Self {
+            inner: RustEvalPipeline::new(RustEvalPolicy {
+                extract_skill_on_pass: options.extract_skill_on_pass,
+            }),
+        }
+    }
+
+    #[wasm_bindgen(js_name = feedOutcome)]
+    pub fn feed_outcome(
+        &mut self,
+        goal: String,
+        criteria: Vec<Criterion>,
+        result: String,
+        attempt: u32,
+    ) -> EvalPipelineAction {
+        let criteria = criteria.into_iter().map(|criterion| RustCriterion {
+            text: criterion.text,
+            required: criterion.required,
+            weight: criterion.weight.map(|weight| weight as f32).unwrap_or(1.0),
+        }).collect();
+        eval_action_from_rust(self.inner.feed(RustEvalEvent::Outcome {
+            goal,
+            criteria,
+            result,
+            attempt,
+        }))
+    }
+
+    #[wasm_bindgen(js_name = feedEvalResult)]
+    pub fn feed_eval_result(&mut self, content: String) -> EvalPipelineAction {
+        eval_action_from_rust(self.inner.feed(RustEvalEvent::EvalResult { content }))
+    }
+
+    #[wasm_bindgen]
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    #[wasm_bindgen(js_name = isIdle)]
+    pub fn is_idle(&self) -> bool {
+        self.inner.is_idle()
+    }
+}
+
 // ────────────────────────────────────────────── Governance ──────────────────────────────────────────────
 
 #[wasm_bindgen]
@@ -654,5 +846,17 @@ impl Governance {
     #[wasm_bindgen(js_name = setTime)]
     pub fn set_time(&mut self, now_ms: f64) {
         self.inner.set_time(now_ms as u64);
+    }
+
+    #[wasm_bindgen]
+    pub fn evaluate(&mut self, tool_name: String, args_json: String) -> GovernanceVerdict {
+        let args = serde_json::from_str(&args_json).unwrap_or(serde_json::Value::Null);
+        let call = RustToolCall {
+            id: CompactString::new(""),
+            name: CompactString::new(&tool_name),
+            arguments: args,
+        };
+        let caller = AgentIdentity::new("anonymous", "");
+        governance_verdict_from_rust(self.inner.evaluate(&call, &caller))
     }
 }

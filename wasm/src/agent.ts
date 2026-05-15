@@ -4,6 +4,16 @@ import { executeTools } from "./tools/index.js"
 import type { KnowledgeSource } from "./knowledge/index.js"
 import type { SignalSource } from "./signals/index.js"
 import type { DreamStore } from "./memory/index.js"
+import { Governance } from "./governance.js"
+
+export interface SkillMetadata {
+  name: string
+  description: string
+  whenToUse?: string
+  allowedTools?: string[]
+  effort?: number
+  estimatedTokens?: number
+}
 
 type WasmKernel = typeof import("@deepstrike/wasm-kernel")
 async function loadKernel(): Promise<WasmKernel> {
@@ -30,7 +40,7 @@ export interface AgentOptions {
   signalSource?: SignalSource
   dreamStore?: DreamStore
   agentId?: string
-  governance?: import("@deepstrike/wasm-kernel").Governance
+  governance?: Governance
   /** Host-provided skill content map (name → markdown body). WASM has no fs access. */
   skillContentMap?: Map<string, string>
 }
@@ -41,7 +51,7 @@ export class Agent {
   private extensions: Record<string, unknown>
   private interrupted = false
   private pendingInterrupt = false
-  private _pendingSkills: import("@deepstrike/wasm-kernel").SkillMetadata[] = []
+  private _pendingSkills: SkillMetadata[] = []
 
   constructor(
     private readonly provider: LLMProvider,
@@ -60,11 +70,11 @@ export class Agent {
   interrupt(): void { this.interrupted = true }
 
   async run(goal: string, criteria?: string[], extensions?: Record<string, unknown>): Promise<string> {
-    let result: DoneEvent | undefined
+    let text = ""
     for await (const evt of this.runStreaming(goal, criteria, extensions)) {
-      if (evt.type === "done") result = evt as DoneEvent
+      if (evt.type === "text_delta") text += (evt as TextDelta).delta
     }
-    return result ? `done in ${result.iterations} turns (${result.status})` : "done"
+    return text
   }
 
   async *runStreaming(
@@ -80,6 +90,7 @@ export class Agent {
     }
 
     const kernel = await loadKernel()
+    if (this.options.governance) this.options.governance._attach(kernel)
     const ext = { ...this.extensions, ...(extensions ?? {}) }
 
     const sm = new kernel.LoopStateMachine({
@@ -122,12 +133,12 @@ export class Agent {
         if (sig) {
           const kernelSig = {
             id: crypto.randomUUID(),
-            source: (sig as any).source ?? "custom",
-            signalType: (sig as any).signalType ?? "event",
-            urgency: (sig as any).urgency ?? (sig.kind === "interrupt" ? "critical" : "normal"),
-            summary: String((sig.payload as any)?.goal ?? sig.kind),
+            source: sig.source,
+            signalType: sig.signalType,
+            urgency: sig.urgency,
+            summary: String(sig.payload?.goal ?? sig.signalType),
             payload: JSON.stringify(sig.payload ?? {}),
-            dedupeKey: (sig as any).dedupeKey ?? null,
+            dedupeKey: sig.dedupeKey,
             timestampMs: Date.now(),
           }
           const disposition = router.ingest(kernelSig, action.kind === "execute_tools")
@@ -172,6 +183,7 @@ export class Agent {
             continue
           }
           if (this.options.governance) {
+            this.options.governance.setTime(Date.now())
             const verdict = this.options.governance.evaluate(c.name, c.arguments)
             if (verdict.kind === "deny") {
               yield { type: "error", message: `permission denied: ${c.name} — ${verdict.reason}` } as ErrorEvent
@@ -272,7 +284,7 @@ export class Agent {
   }
 
   /** Register available skills from host-provided metadata (WASM has no fs access). */
-  setAvailableSkills(skills: import("@deepstrike/wasm-kernel").SkillMetadata[]): void {
+  setAvailableSkills(skills: SkillMetadata[]): void {
     this._pendingSkills = skills
   }
 }

@@ -6,11 +6,13 @@ from typing import AsyncIterator, TYPE_CHECKING
 from deepstrike._kernel import (
     LoopStateMachine, LoopPolicy, RuntimeTask,
     Message, ToolCall, ToolSchema, ToolResult,
-    Governance, SignalRouter,
+    SignalRouter,
 )
+from deepstrike.governance import Governance
 from deepstrike.providers.base import LLMProvider
 from deepstrike.providers.stream import (
     StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
+    PermissionRequestEvent,
 )
 from deepstrike.tools.registry import RegisteredTool
 from deepstrike.tools.execution import execute_tools
@@ -22,6 +24,7 @@ if TYPE_CHECKING:
         CurationStats as DsCurationStats,
     )
     from deepstrike.knowledge.source import KnowledgeSource
+    from deepstrike.signals.types import SignalSource
 
 
 def _strip_frontmatter(content: str) -> str:
@@ -35,14 +38,14 @@ class Agent:
         provider: LLMProvider,
         *,
         max_tokens: int,
-        max_turns: int,
+        max_turns: int = 25,
         timeout_ms: int | None = None,
         system_prompt: str | None = None,
         initial_memory: list[str] | None = None,
         skill_dir: str | None = None,
         extensions: dict | None = None,
         governance: Governance | None = None,
-        signal_router: SignalRouter | None = None,
+        signal_source: "SignalSource | None" = None,
         knowledge_source: "KnowledgeSource | None" = None,
         dream_store: "DreamStore | None" = None,
         agent_id: str | None = None,
@@ -53,28 +56,41 @@ class Agent:
             max_turns=max_turns,
             timeout_ms=timeout_ms,
         )
+        self._max_tokens = max_tokens
         self._tools: dict[str, RegisteredTool] = {}
         self._system_prompt = system_prompt
         self._initial_memory: list[str] = initial_memory or []
         self._skill_dir = pathlib.Path(skill_dir) if skill_dir else None
         self._extensions: dict = extensions or {}
         self._governance = governance
-        self._blocked_tools: set[str] = set()
-        self._signal_router = signal_router
+        self._signal_source = signal_source
         self._knowledge_source = knowledge_source
         self._dream_store = dream_store
         self._agent_id = agent_id
         self._interrupted = False
+        self._pending_interrupt = False
+        self._turn = 0
+        self._pressure = 0.0
 
     def block_tool(self, name: str) -> "Agent":
-        if self._governance:
-            self._governance.block_tool(name)
-        self._blocked_tools.add(name)
+        if self._governance is None:
+            self._governance = Governance()
+        self._governance.block_tool(name)
         return self
 
     def interrupt(self) -> None:
         """Signal the running loop to stop after the current step."""
         self._interrupted = True
+
+    @property
+    def turn(self) -> int:
+        """Current turn index within the active run (0 before a run starts)."""
+        return self._turn
+
+    @property
+    def pressure(self) -> float:
+        """Token budget pressure ratio [0–1]. Updated after each run completes."""
+        return self._pressure
 
     def register(self, *tools: RegisteredTool) -> "Agent":
         for t in tools:
@@ -86,14 +102,17 @@ class Agent:
         return self
 
     async def run(self, goal: str, criteria: list[str] | None = None, extensions: dict | None = None) -> str:
-        result = None
+        content = ""
         async for event in self.run_streaming(goal, criteria=criteria, extensions=extensions):
-            if isinstance(event, DoneEvent):
-                result = event
-        return f"done in {result.iterations} turns ({result.status})" if result else "done"
+            if isinstance(event, TextDelta):
+                content += event.delta
+        return content
 
     async def run_streaming(self, goal: str, *, criteria: list[str] | None = None, extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
         self._interrupted = False
+        self._pending_interrupt = False
+        self._turn = 0
+        self._pressure = 0.0
 
         if self._knowledge_source:
             await self._knowledge_source.init()
@@ -138,25 +157,46 @@ class Agent:
         final_text = ""
         import time as _time
         session_start = int(_time.time() * 1000)
-        session_msgs: list[dict] = [{"role": "user", "content": goal}]
+        session_msgs: list[Message] = [Message(role="user", content=goal)]
+        router = SignalRouter(max_queue_size=256)
 
         while not sm.is_terminal():
             if self._interrupted:
                 action = sm.feed_timeout()
                 break
+            if self._pending_interrupt:
+                self._pending_interrupt = False
+                action = sm.feed_timeout()
+                break
 
-            # Drain queued signals through kernel SignalRouter
-            if self._signal_router and self._signal_router.depth() > 0:
-                queued = self._signal_router.next()
-                if queued:
-                    disposition = self._signal_router.ingest(queued, action.kind == "execute_tools")
-                    if disposition in ("interrupt_now", "interrupt"):
+            if self._signal_source:
+                sig = await self._signal_source.next_signal()
+                if sig:
+                    disposition = router.ingest(
+                        sig.to_kernel_signal(),
+                        action.kind == "execute_tools",
+                    )
+                    if disposition == "interrupt_now":
                         action = sm.feed_timeout()
                         break
+                    if disposition == "interrupt":
+                        self._pending_interrupt = True
+
+            queued = router.next()
+            while queued:
+                if queued.urgency == "critical":
+                    action = sm.feed_timeout()
+                    break
+                if queued.urgency == "high":
+                    self._pending_interrupt = True
+                queued = router.next()
+            if self._interrupted or sm.is_terminal():
+                break
 
             sm.take_observations()
 
             if action.kind == "call_llm":
+                self._turn += 1
                 final_text = ""
                 final_tool_calls: list[ToolCall] = []
                 messages = list(action.messages or [])
@@ -182,22 +222,45 @@ class Agent:
                     content=final_text,
                     tool_calls=final_tool_calls,
                 ))
-                session_msgs.append({
-                    "role": "assistant",
-                    "content": final_text,
-                    "toolCalls": [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in final_tool_calls],
-                })
+                session_msgs.append(Message(
+                    role="assistant",
+                    content=final_text,
+                    tool_calls=final_tool_calls,
+                ))
 
             elif action.kind == "execute_tools":
                 calls = action.calls or []
-
-                # Governance: blocked tools check
                 permitted = []
+                denied_results = []
                 for c in calls:
-                    if c.name in self._blocked_tools:
-                        yield ErrorEvent(message=f"tool blocked: {c.name}")
-                    else:
-                        permitted.append(c)
+                    if self._governance:
+                        self._governance.set_time(int(_time.time() * 1000))
+                        verdict = self._governance.evaluate(c.name, c.arguments)
+                        if verdict.kind == "deny":
+                            message = f"permission denied: {c.name} - {verdict.reason or ''}"
+                            yield ErrorEvent(message=message)
+                            denied_results.append(ToolResult(call_id=c.id, output=message, is_error=True))
+                            continue
+                        if verdict.kind == "rate_limited":
+                            retry_after = int(verdict.retry_after_ms or 0)
+                            message = f"rate limited: {c.name} - retry after {retry_after}ms"
+                            yield ErrorEvent(message=message)
+                            denied_results.append(ToolResult(call_id=c.id, output=message, is_error=True))
+                            continue
+                        if verdict.kind == "ask_user":
+                            yield PermissionRequestEvent(
+                                call_id=c.id,
+                                tool_name=c.name,
+                                arguments=c.arguments,
+                                reason=verdict.reason or "",
+                            )
+                            denied_results.append(ToolResult(
+                                call_id=c.id,
+                                output=f"awaiting user approval: {c.name}",
+                                is_error=True,
+                            ))
+                            continue
+                    permitted.append(c)
                 calls = permitted
 
                 # Intercept meta-tool calls
@@ -206,7 +269,7 @@ class Agent:
                 knowledge_calls = [c for c in calls if c.name == "knowledge"]
                 regular_calls = [c for c in calls if c.name not in ("skill", "memory", "knowledge")]
 
-                all_results = []
+                all_results = list(denied_results)
                 for c in skill_calls:
                     try:
                         args = json.loads(c.arguments) if isinstance(c.arguments, str) else c.arguments
@@ -278,6 +341,8 @@ class Agent:
                 break
 
         result = action.result
+        if result and self._max_tokens:
+            self._pressure = result.total_tokens_used / self._max_tokens
 
         if self._dream_store and self._agent_id and len(session_msgs) > 1:
             try:
@@ -300,7 +365,7 @@ class Agent:
             status=result.termination if result else "error",
         )
 
-    async def dream(self, agent_id: str, now_ms: int = 0) -> "DreamResult":
+    async def dream(self, agent_id: str, now_ms: int | None = None) -> "DreamResult":
         """
         Trigger an idle dreaming cycle for the given agent.
 
@@ -325,6 +390,9 @@ class Agent:
 
         if self._dream_store is None:
             raise RuntimeError("dream_store not configured on Agent")
+        import time as _time
+        if now_ms is None:
+            now_ms = int(_time.time() * 1000)
 
         # --- Phase 0: SDK I/O — load raw data ----------------------------
         sessions = await self._dream_store.load_sessions(agent_id)
@@ -334,11 +402,32 @@ class Agent:
             return DreamResult()
 
         # Convert DreamStore types → kernel types
+        def _to_kernel_message(message: object) -> Message:
+            if isinstance(message, Message):
+                return message
+            if isinstance(message, dict):
+                raw_tool_calls = message.get("tool_calls") or message.get("toolCalls") or []
+                tool_calls = [
+                    ToolCall(
+                        id=str(call.get("id", "")),
+                        name=str(call.get("name", "")),
+                        arguments=str(call.get("arguments", "{}")),
+                    )
+                    for call in raw_tool_calls
+                    if isinstance(call, dict)
+                ]
+                return Message(
+                    role=str(message.get("role", "user")),
+                    content=str(message.get("content", "")),
+                    tool_calls=tool_calls,
+                )
+            raise TypeError(f"unsupported session message type: {type(message)!r}")
+
         kernel_sessions = [
             KernelSessionData(
                 session_id=s.session_id,
                 agent_id=s.agent_id,
-                messages=s.messages,
+                messages=[_to_kernel_message(m) for m in s.messages],
                 metadata=json.dumps(s.metadata) if s.metadata is not None else "null",
                 created_at_ms=float(s.created_at_ms),
                 updated_at_ms=float(s.updated_at_ms),
@@ -414,5 +503,3 @@ class Agent:
             entries_added=cr.stats.entries_added,
             entries_removed=len(cr.to_remove_indices or []),
         )
-
-

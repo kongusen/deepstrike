@@ -1,6 +1,9 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from deepstrike._kernel import Message
 
 
 # ─── Dream / idle-pipeline types ─────────────────────────────────────────────
@@ -32,8 +35,8 @@ class CurationResult:
 class SessionData:
     session_id: str
     agent_id: str
-    """Message objects — typically `deepstrike._kernel.Message` instances."""
-    messages: list
+    """Message objects using the kernel message contract."""
+    messages: list["Message"]
     metadata: Any = None
     created_at_ms: int = 0
     updated_at_ms: int = 0

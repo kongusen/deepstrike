@@ -1,5 +1,14 @@
 from .base import LLMProvider, RetryConfig, CircuitBreaker, normalize_tool_call, parse_tool_arguments, TokenUsage, ProviderToolSpec, to_anthropic_content, to_openai_content
-from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent
+from .stream import (
+    StreamEvent,
+    TextDelta,
+    ThinkingDelta,
+    ToolCallEvent,
+    ToolResultEvent,
+    DoneEvent,
+    ErrorEvent,
+    PermissionRequestEvent,
+)
 from .anthropic import AnthropicProvider
 from .openai import OpenAIProvider
 from .qwen import QwenProvider
@@ -14,5 +23,5 @@ __all__ = [
     "RetryConfig", "CircuitBreaker", "normalize_tool_call", "parse_tool_arguments",
     "TokenUsage", "ProviderToolSpec", "to_anthropic_content", "to_openai_content",
     "StreamEvent", "TextDelta", "ThinkingDelta",
-    "ToolCallEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent",
+    "ToolCallEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent", "PermissionRequestEvent",
 ]

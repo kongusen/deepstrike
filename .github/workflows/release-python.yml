@@ -9,16 +9,42 @@ jobs:
     strategy:
       matrix:
         include:
+          # glibc Linux
           - os: ubuntu-latest
             target: x86_64
+            manylinux: auto
+            run_smoke: "true"
           - os: ubuntu-latest
             target: aarch64
+            manylinux: auto
+            run_smoke: "false"  # cross-compiled; can't install aarch64 wheel on x86_64 runner
+          # musl Linux (Alpine-compatible)
+          - os: ubuntu-latest
+            target: x86_64
+            manylinux: musllinux_1_2
+            run_smoke: "false"  # musl wheel won't install on glibc runner
+          - os: ubuntu-latest
+            target: aarch64
+            manylinux: musllinux_1_2
+            run_smoke: "false"
+          # macOS
           - os: macos-latest
             target: x86_64
+            manylinux: auto
+            run_smoke: "false"  # macos-latest runners are arm64; cross-compiled x86_64 won't run
           - os: macos-latest
             target: aarch64
+            manylinux: auto
+            run_smoke: "true"
+          # Windows
           - os: windows-latest
             target: x86_64
+            manylinux: auto
+            run_smoke: "true"
+          - os: windows-latest
+            target: aarch64
+            manylinux: auto
+            run_smoke: "false"
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -34,11 +60,26 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --out dist --interpreter 3.12
           working-directory: python
-          manylinux: auto
+          manylinux: ${{ matrix.manylinux }}
+
+      - name: Smoke install wheel
+        if: matrix.run_smoke == 'true'
+        shell: bash
+        run: |
+          ls python/dist/*abi3*.whl
+          python -m pip install python/dist/*.whl
+          python -c "
+          import deepstrike
+          from deepstrike import Governance
+          from deepstrike.kernel import LoopStateMachine, LoopPolicy
+          assert Governance().evaluate('x', '{}').kind == 'allow'
+          sm = LoopStateMachine(LoopPolicy())
+          assert not sm.is_terminal()
+          "
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}-${{ matrix.target }}
+          name: wheels-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux }}
           path: python/dist/*.whl
 
   build-sdist:

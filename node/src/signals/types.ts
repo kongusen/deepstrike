@@ -1,6 +1,16 @@
+export type RuntimeSignalSource = "cron" | "gateway" | "heartbeat" | "custom"
+export type RuntimeSignalType = "event" | "job" | "alert"
+export type RuntimeSignalUrgency = "low" | "normal" | "high" | "critical"
+
 export interface RuntimeSignal {
-  kind: "interrupt" | "scheduled" | "external"
+  source: RuntimeSignalSource
+  signalType: RuntimeSignalType
+  urgency: RuntimeSignalUrgency
   payload: Record<string, unknown>
+  dedupeKey?: string
+  /** @deprecated Use source/signalType/urgency directly. */
+  kind?: "interrupt" | "scheduled" | "external"
+  /** @deprecated Prefer explicit `urgency`. */
   priority?: number
 }
 

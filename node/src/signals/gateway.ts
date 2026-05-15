@@ -41,6 +41,10 @@ export class SignalGateway implements SignalSource {
       this.timers.delete(key)
       this.emit({
         kind: "scheduled",
+        source: "cron",
+        signalType: "job",
+        urgency: "normal",
+        dedupeKey: key,
         payload: { goal: prompt.goal, criteria: prompt.criteria, runAtMs: prompt.runAtMs, ...prompt.metadata },
       })
     }

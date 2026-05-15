@@ -1,18 +1,21 @@
 {
   "name": "@deepstrike/sdk",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "DeepStrike Node.js SDK",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "node --experimental-vm-modules node_modules/.bin/jest"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
-    "@deepstrike/core": "0.1.5",
+    "@deepstrike/core": "0.1.6",
     "openai": "^4.77.0"
   },
   "devDependencies": {

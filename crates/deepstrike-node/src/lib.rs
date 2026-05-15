@@ -43,19 +43,19 @@ use compact_str::CompactString;
 
 use deepstrike_core::context::manager::ContextManager;
 use deepstrike_core::context::pressure::PressureAction;
+use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
 use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
-use deepstrike_core::types::agent::AgentIdentity;
-use deepstrike_core::types::policy::GovernanceVerdict as RustGovernanceVerdict;
+use deepstrike_core::governance::rate_limit::RateLimit;
 use deepstrike_core::harness::eval_pipeline::{
     Criterion as RustCriterion, EvalAction as RustEvalAction, EvalEvent as RustEvalEvent,
-    EvalPolicy as RustEvalPolicy, EvalPipeline as RustEvalPipeline,
+    EvalPipeline as RustEvalPipeline, EvalPolicy as RustEvalPolicy,
 };
 use deepstrike_core::memory::curator::CurationResult as RustCurationResult;
 use deepstrike_core::memory::durable::SessionData as RustSessionData;
 use deepstrike_core::memory::idle_pipeline::{
-    IdleAction as RustIdleAction, IdleEvent as RustIdleEvent, IdlePolicy as RustIdlePolicy,
-    IdlePipeline as RustIdlePipeline,
+    IdleAction as RustIdleAction, IdleEvent as RustIdleEvent, IdlePipeline as RustIdlePipeline,
+    IdlePolicy as RustIdlePolicy,
 };
 use deepstrike_core::memory::semantic::MemoryEntry as RustMemoryEntry;
 use deepstrike_core::scheduler::policy::LoopPolicy as RustLoopPolicy;
@@ -64,16 +64,18 @@ use deepstrike_core::scheduler::state_machine::{
     LoopObservation as RustLoopObservation, LoopStateMachine as RustLoopStateMachine,
 };
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
-use deepstrike_core::types::policy::SignalDisposition as RustSignalDisposition;
-use deepstrike_core::types::signal::{
-    RuntimeSignal as RustRuntimeSignal, SignalSource as RustSignalSource,
-    SignalType as RustSignalType, Urgency as RustUrgency,
-};
+use deepstrike_core::types::agent::AgentIdentity;
 use deepstrike_core::types::message::{
     Content, ContentPart, Message as RustMessage, Role, ToolCall as RustToolCall,
     ToolResult as RustToolResult, ToolSchema as RustToolSchema,
 };
+use deepstrike_core::types::policy::GovernanceVerdict as RustGovernanceVerdict;
+use deepstrike_core::types::policy::SignalDisposition as RustSignalDisposition;
 use deepstrike_core::types::result::LoopResult as RustLoopResult;
+use deepstrike_core::types::signal::{
+    RuntimeSignal as RustRuntimeSignal, SignalSource as RustSignalSource,
+    SignalType as RustSignalType, Urgency as RustUrgency,
+};
 use deepstrike_core::types::skill::SkillMetadata as RustSkillMetadata;
 use deepstrike_core::types::task::RuntimeTask as RustRuntimeTask;
 
@@ -199,8 +201,8 @@ fn runtime_signal_to_rust(s: RuntimeSignal) -> Result<RustRuntimeSignal> {
         "low" => RustUrgency::Low,
         _ => RustUrgency::Normal,
     };
-    let payload: serde_json::Value = serde_json::from_str(&s.payload)
-        .unwrap_or(serde_json::Value::Null);
+    let payload: serde_json::Value =
+        serde_json::from_str(&s.payload).unwrap_or(serde_json::Value::Null);
     let mut sig = RustRuntimeSignal::new(source, signal_type, urgency, s.summary.as_str())
         .with_payload(payload)
         .with_timestamp(s.timestamp_ms as u64);
@@ -297,7 +299,10 @@ fn role_str_to_rust(role: &str) -> Result<Role> {
         "user" => Ok(Role::User),
         "assistant" => Ok(Role::Assistant),
         "tool" => Ok(Role::Tool),
-        other => Err(Error::new(Status::InvalidArg, format!("invalid role: {other}"))),
+        other => Err(Error::new(
+            Status::InvalidArg,
+            format!("invalid role: {other}"),
+        )),
     }
 }
 
@@ -327,30 +332,66 @@ fn content_part_to_rust(p: ContentPartObj) -> ContentPart {
             output: p.output.unwrap_or_default(),
             is_error: p.is_error.unwrap_or(false),
         },
-        _ => ContentPart::Text { text: p.text.unwrap_or_default() },
+        _ => ContentPart::Text {
+            text: p.text.unwrap_or_default(),
+        },
     }
 }
 
 fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
     match p {
         ContentPart::Text { text } => ContentPartObj {
-            r#type: "text".into(), text: Some(text.clone()),
-            url: None, data: None, media_type: None, detail: None,
-            call_id: None, output: None, is_error: None,
+            r#type: "text".into(),
+            text: Some(text.clone()),
+            url: None,
+            data: None,
+            media_type: None,
+            detail: None,
+            call_id: None,
+            output: None,
+            is_error: None,
         },
-        ContentPart::Image { url, data, media_type, detail } => ContentPartObj {
-            r#type: "image".into(), text: None,
-            url: url.clone(), data: data.clone(), media_type: media_type.clone(), detail: detail.clone(),
-            call_id: None, output: None, is_error: None,
+        ContentPart::Image {
+            url,
+            data,
+            media_type,
+            detail,
+        } => ContentPartObj {
+            r#type: "image".into(),
+            text: None,
+            url: url.clone(),
+            data: data.clone(),
+            media_type: media_type.clone(),
+            detail: detail.clone(),
+            call_id: None,
+            output: None,
+            is_error: None,
         },
         ContentPart::Audio { data, media_type } => ContentPartObj {
-            r#type: "audio".into(), text: None, url: None,
-            data: Some(data.clone()), media_type: Some(media_type.clone()), detail: None,
-            call_id: None, output: None, is_error: None,
+            r#type: "audio".into(),
+            text: None,
+            url: None,
+            data: Some(data.clone()),
+            media_type: Some(media_type.clone()),
+            detail: None,
+            call_id: None,
+            output: None,
+            is_error: None,
         },
-        ContentPart::ToolResult { call_id, output, is_error } => ContentPartObj {
-            r#type: "tool_result".into(), text: None, url: None, data: None, media_type: None, detail: None,
-            call_id: Some(call_id.to_string()), output: Some(output.clone()), is_error: Some(*is_error),
+        ContentPart::ToolResult {
+            call_id,
+            output,
+            is_error,
+        } => ContentPartObj {
+            r#type: "tool_result".into(),
+            text: None,
+            url: None,
+            data: None,
+            media_type: None,
+            detail: None,
+            call_id: Some(call_id.to_string()),
+            output: Some(output.clone()),
+            is_error: Some(*is_error),
         },
     }
 }
@@ -363,20 +404,31 @@ fn message_to_rust(m: Message) -> Result<RustMessage> {
         .map(tool_call_to_rust)
         .collect::<Result<_>>()?;
     let content = match m.content_parts {
-        Some(parts) if !parts.is_empty() => Content::Parts(parts.into_iter().map(content_part_to_rust).collect()),
+        Some(parts) if !parts.is_empty() => {
+            Content::Parts(parts.into_iter().map(content_part_to_rust).collect())
+        }
         _ => Content::Text(m.content),
     };
-    Ok(RustMessage { role, content, tool_calls, token_count: m.token_count })
+    Ok(RustMessage {
+        role,
+        content,
+        tool_calls,
+        token_count: m.token_count,
+    })
 }
 
 fn message_from_rust(m: &RustMessage) -> Message {
     let (content, content_parts) = match &m.content {
         Content::Text(s) => (s.clone(), None),
         Content::Parts(parts) => {
-            let text_only: String = parts.iter().filter_map(|p| match p {
-                ContentPart::Text { text } => Some(text.as_str()),
-                _ => None,
-            }).collect::<Vec<_>>().join("\n");
+            let text_only: String = parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             let objs: Vec<ContentPartObj> = parts.iter().map(content_part_from_rust).collect();
             (text_only, Some(objs))
         }
@@ -545,7 +597,9 @@ pub struct ContextEngine {
 impl ContextEngine {
     #[napi(constructor)]
     pub fn new(max_tokens: u32) -> Self {
-        Self { inner: ContextManager::new(max_tokens) }
+        Self {
+            inner: ContextManager::new(max_tokens),
+        }
     }
 
     #[napi]
@@ -616,7 +670,9 @@ pub struct LoopStateMachine {
 impl LoopStateMachine {
     #[napi(constructor)]
     pub fn new(policy: LoopPolicy) -> Self {
-        Self { inner: RustLoopStateMachine::new(policy_to_rust(policy)) }
+        Self {
+            inner: RustLoopStateMachine::new(policy_to_rust(policy)),
+        }
     }
 
     /// Convenience: register skills directly on the state machine without
@@ -726,7 +782,12 @@ impl LoopStateMachine {
 
     #[napi]
     pub fn render(&self) -> Vec<Message> {
-        self.inner.ctx.render().iter().map(message_from_rust).collect()
+        self.inner
+            .ctx
+            .render()
+            .iter()
+            .map(message_from_rust)
+            .collect()
     }
 }
 
@@ -741,7 +802,9 @@ pub struct SignalRouter {
 impl SignalRouter {
     #[napi(constructor)]
     pub fn new(max_queue_size: u32) -> Self {
-        Self { inner: RustSignalRouter::new(max_queue_size as usize) }
+        Self {
+            inner: RustSignalRouter::new(max_queue_size as usize),
+        }
     }
 
     /// Ingest a signal. Returns the disposition string:
@@ -774,7 +837,7 @@ impl SignalRouter {
 /// JS-friendly governance verdict returned by `Governance.evaluate`.
 #[napi(object)]
 #[derive(Clone)]
-pub struct GovernanceVerdictObj {
+pub struct GovernanceVerdict {
     /// `"allow"` | `"deny"` | `"rate_limited"` | `"ask_user"`
     pub kind: String,
     pub reason: Option<String>,
@@ -782,12 +845,28 @@ pub struct GovernanceVerdictObj {
     pub retry_after_ms: Option<f64>,
 }
 
-fn verdict_to_js(v: RustGovernanceVerdict) -> GovernanceVerdictObj {
+fn verdict_to_js(v: RustGovernanceVerdict) -> GovernanceVerdict {
     match v {
-        RustGovernanceVerdict::Allow => GovernanceVerdictObj { kind: "allow".into(), reason: None, retry_after_ms: None },
-        RustGovernanceVerdict::Deny { reason, .. } => GovernanceVerdictObj { kind: "deny".into(), reason: Some(reason), retry_after_ms: None },
-        RustGovernanceVerdict::RateLimited { retry_after_ms } => GovernanceVerdictObj { kind: "rate_limited".into(), reason: None, retry_after_ms: Some(retry_after_ms as f64) },
-        RustGovernanceVerdict::AskUser { reason } => GovernanceVerdictObj { kind: "ask_user".into(), reason: Some(reason), retry_after_ms: None },
+        RustGovernanceVerdict::Allow => GovernanceVerdict {
+            kind: "allow".into(),
+            reason: None,
+            retry_after_ms: None,
+        },
+        RustGovernanceVerdict::Deny { reason, .. } => GovernanceVerdict {
+            kind: "deny".into(),
+            reason: Some(reason),
+            retry_after_ms: None,
+        },
+        RustGovernanceVerdict::RateLimited { retry_after_ms } => GovernanceVerdict {
+            kind: "rate_limited".into(),
+            reason: None,
+            retry_after_ms: Some(retry_after_ms as f64),
+        },
+        RustGovernanceVerdict::AskUser { reason } => GovernanceVerdict {
+            kind: "ask_user".into(),
+            reason: Some(reason),
+            retry_after_ms: None,
+        },
     }
 }
 
@@ -845,6 +924,59 @@ impl Governance {
         self.inner.veto.block_tool(name);
     }
 
+    /// Configure a per-tool sliding-window rate limit.
+    #[napi]
+    pub fn set_rate_limit(&mut self, tool_name: String, max_calls: u32, window_ms: BigInt) {
+        self.inner.rate_limiter.set_limit(
+            tool_name,
+            RateLimit {
+                max_calls,
+                window_ms: window_ms.get_u64().1,
+            },
+        );
+    }
+
+    /// Require a parameter path such as `"path"` or `"payload.mode"` to be present.
+    #[napi]
+    pub fn require_param(&mut self, tool_name: String, param_path: String) {
+        self.inner.constraints.add(ParamConstraint {
+            tool_name,
+            param_path,
+            rule: ConstraintRule::Required,
+        });
+    }
+
+    /// Restrict a string parameter path to one of the allowed values.
+    #[napi]
+    pub fn allow_param_values(
+        &mut self,
+        tool_name: String,
+        param_path: String,
+        allowed_values: Vec<String>,
+    ) {
+        self.inner.constraints.add(ParamConstraint {
+            tool_name,
+            param_path,
+            rule: ConstraintRule::Enum(allowed_values),
+        });
+    }
+
+    /// Restrict a numeric parameter path to an inclusive range.
+    #[napi]
+    pub fn limit_param_range(
+        &mut self,
+        tool_name: String,
+        param_path: String,
+        min: Option<f64>,
+        max: Option<f64>,
+    ) {
+        self.inner.constraints.add(ParamConstraint {
+            tool_name,
+            param_path,
+            rule: ConstraintRule::Range { min, max },
+        });
+    }
+
     /// Advance the internal clock used by rate limiting and audit.
     #[napi]
     pub fn set_time(&mut self, now_ms: BigInt) {
@@ -854,9 +986,9 @@ impl Governance {
     /// Evaluate a tool call through the full pipeline (Permission → Veto → RateLimit → Constraint → Audit).
     /// `argsJson`: JSON-encoded tool arguments string.
     #[napi]
-    pub fn evaluate(&mut self, tool_name: String, args_json: String) -> Result<GovernanceVerdictObj> {
-        let args: serde_json::Value = serde_json::from_str(&args_json)
-            .unwrap_or(serde_json::Value::Null);
+    pub fn evaluate(&mut self, tool_name: String, args_json: String) -> Result<GovernanceVerdict> {
+        let args: serde_json::Value =
+            serde_json::from_str(&args_json).unwrap_or(serde_json::Value::Null);
         let call = RustToolCall {
             id: compact_str::CompactString::new(""),
             name: compact_str::CompactString::new(&tool_name),
@@ -938,8 +1070,11 @@ pub struct IdlePipelineAction {
 // ─────────────────────── Dream conversion helpers ───────────────────────
 
 fn session_data_to_rust(s: SessionData) -> Result<RustSessionData> {
-    let messages: Vec<RustMessage> =
-        s.messages.into_iter().map(message_to_rust).collect::<Result<_>>()?;
+    let messages: Vec<RustMessage> = s
+        .messages
+        .into_iter()
+        .map(message_to_rust)
+        .collect::<Result<_>>()?;
     let metadata: serde_json::Value =
         serde_json::from_str(&s.metadata).unwrap_or(serde_json::Value::Null);
     Ok(RustSessionData {
@@ -955,7 +1090,11 @@ fn session_data_to_rust(s: SessionData) -> Result<RustSessionData> {
 fn memory_entry_to_rust(e: MemoryEntry) -> RustMemoryEntry {
     let metadata: serde_json::Value =
         serde_json::from_str(&e.metadata).unwrap_or(serde_json::Value::Null);
-    RustMemoryEntry { text: e.text, score: e.score, metadata }
+    RustMemoryEntry {
+        text: e.text,
+        score: e.score,
+        metadata,
+    }
 }
 
 fn memory_entry_from_rust(e: &RustMemoryEntry) -> MemoryEntry {
@@ -988,7 +1127,11 @@ fn idle_pipeline_action_from_rust(a: RustIdleAction) -> IdlePipelineAction {
             curation_result: None,
             run_result: None,
         },
-        RustIdleAction::CommitMemories { agent_id, result, run_result } => IdlePipelineAction {
+        RustIdleAction::CommitMemories {
+            agent_id,
+            result,
+            run_result,
+        } => IdlePipelineAction {
             kind: "commit_memories".into(),
             messages: None,
             agent_id: Some(agent_id),
@@ -1086,7 +1229,9 @@ impl EvalPipeline {
                 .and_then(|o| o.extract_skill_on_pass)
                 .unwrap_or(true),
         };
-        Self { inner: RustEvalPipeline::new(policy) }
+        Self {
+            inner: RustEvalPipeline::new(policy),
+        }
     }
 
     /// Phase 1 — provide the goal, criteria, agent output, and attempt number.
@@ -1099,12 +1244,20 @@ impl EvalPipeline {
         result: String,
         attempt: u32,
     ) -> EvalPipelineAction {
-        let rust_criteria = criteria.into_iter().map(|c| RustCriterion {
-            text: c.text,
-            required: c.required,
-            weight: c.weight.map(|w| w as f32).unwrap_or(1.0),
-        }).collect();
-        match self.inner.feed(RustEvalEvent::Outcome { goal, criteria: rust_criteria, result, attempt }) {
+        let rust_criteria = criteria
+            .into_iter()
+            .map(|c| RustCriterion {
+                text: c.text,
+                required: c.required,
+                weight: c.weight.map(|w| w as f32).unwrap_or(1.0),
+            })
+            .collect();
+        match self.inner.feed(RustEvalEvent::Outcome {
+            goal,
+            criteria: rust_criteria,
+            result,
+            attempt,
+        }) {
             RustEvalAction::Evaluate { messages } => EvalPipelineAction {
                 kind: "evaluate".into(),
                 messages: Some(messages.iter().map(message_from_rust).collect()),
@@ -1146,19 +1299,27 @@ impl EvalPipeline {
     }
 }
 
-fn eval_done_action(result: deepstrike_core::harness::eval_pipeline::EvalResult) -> EvalPipelineAction {
+fn eval_done_action(
+    result: deepstrike_core::harness::eval_pipeline::EvalResult,
+) -> EvalPipelineAction {
     EvalPipelineAction {
         kind: "done".into(),
         messages: None,
         passed: Some(result.passed),
         overall_score: Some(result.overall_score as f64),
         feedback: Some(result.feedback),
-        details: Some(result.details.into_iter().map(|d| CriterionResult {
-            criterion: d.criterion,
-            passed: d.passed,
-            score: d.score as f64,
-            feedback: d.feedback,
-        }).collect()),
+        details: Some(
+            result
+                .details
+                .into_iter()
+                .map(|d| CriterionResult {
+                    criterion: d.criterion,
+                    passed: d.passed,
+                    score: d.score as f64,
+                    feedback: d.feedback,
+                })
+                .collect(),
+        ),
         skill_candidate: result.skill_candidate.map(|s| SkillCandidate {
             name: s.name,
             description: s.description,
@@ -1184,7 +1345,9 @@ pub struct IdlePipeline {
 impl IdlePipeline {
     #[napi(constructor)]
     pub fn new(agent_id: String) -> Self {
-        Self { inner: RustIdlePipeline::new(RustIdlePolicy::new(agent_id)) }
+        Self {
+            inner: RustIdlePipeline::new(RustIdlePolicy::new(agent_id)),
+        }
     }
 
     /// Phase 1 — provide sessions + current memory snapshot; kernel builds the LLM prompt.
@@ -1195,10 +1358,14 @@ impl IdlePipeline {
         existing_memories: Vec<MemoryEntry>,
         now_ms: f64,
     ) -> Result<IdlePipelineAction> {
-        let rust_sessions: Vec<RustSessionData> =
-            sessions.into_iter().map(session_data_to_rust).collect::<Result<_>>()?;
-        let rust_memories: Vec<RustMemoryEntry> =
-            existing_memories.into_iter().map(memory_entry_to_rust).collect();
+        let rust_sessions: Vec<RustSessionData> = sessions
+            .into_iter()
+            .map(session_data_to_rust)
+            .collect::<Result<_>>()?;
+        let rust_memories: Vec<RustMemoryEntry> = existing_memories
+            .into_iter()
+            .map(memory_entry_to_rust)
+            .collect();
         let action = self.inner.feed(RustIdleEvent::Trigger {
             sessions: rust_sessions,
             existing_memories: rust_memories,

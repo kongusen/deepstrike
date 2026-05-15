@@ -15,5 +15,9 @@ class ScheduledPrompt:
         return RuntimeSignal(
             kind="scheduled",
             payload={"goal": self.goal, "criteria": self.criteria, **self.metadata},
-            priority=self.metadata.get("priority", 0),
+            source="cron",
+            signal_type="job",
+            urgency=self.metadata.get("urgency", "normal"),
+            dedupe_key=f"cron:{self.goal}:{self.run_at_ms}",
+            priority=self.metadata.get("priority"),
         )

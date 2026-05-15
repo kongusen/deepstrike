@@ -3,6 +3,8 @@ import { tool, executeTools, readFile } from "../src/tools/index.js"
 import { WorkingMemory } from "../src/memory/working.js"
 import { AnthropicProvider } from "../src/providers/anthropic.js"
 import { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider } from "../src/providers/openai.js"
+import { PermissionManager, PermissionMode } from "../src/safety/permissions.js"
+import { ScheduledPrompt } from "../src/signals/scheduled.js"
 
 describe("CircuitBreaker", () => {
   it("starts closed", () => {
@@ -86,6 +88,31 @@ describe("WorkingMemory", () => {
     mem.set("a", 1)
     mem.clear()
     expect(mem.has("a")).toBe(false)
+  })
+})
+
+describe("PermissionManager", () => {
+  it("supports approval-gated grants", () => {
+    const pm = new PermissionManager(PermissionMode.DEFAULT)
+    pm.grantWithApproval("db", "write", "Needs review")
+    expect(pm.evaluate("db", "write")).toEqual(expect.objectContaining({
+      allowed: false,
+      requiresApproval: true,
+      reason: "Needs review",
+    }))
+  })
+})
+
+describe("ScheduledPrompt", () => {
+  it("preserves kernel routing metadata", () => {
+    const sig = new ScheduledPrompt("standup", 123).toSignal()
+    expect(sig).toMatchObject({
+      kind: "scheduled",
+      source: "cron",
+      signalType: "job",
+      urgency: "normal",
+      dedupeKey: "cron:standup:123",
+    })
   })
 })
 

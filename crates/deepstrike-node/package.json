@@ -1,9 +1,14 @@
 {
   "name": "@deepstrike/core",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "DeepStrike kernel — pre-built native addon",
   "main": "index.js",
   "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
   "license": "Apache-2.0 OR MIT",
   "napi": {
     "binaryName": "deepstrike-core",
@@ -12,14 +17,18 @@
       "aarch64-apple-darwin",
       "x86_64-unknown-linux-gnu",
       "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-musl",
       "x86_64-pc-windows-msvc"
     ]
   },
   "optionalDependencies": {
-    "@deepstrike/core-linux-x64-gnu": "0.1.5",
-    "@deepstrike/core-linux-arm64-gnu": "0.1.5",
-    "@deepstrike/core-darwin-x64": "0.1.5",
-    "@deepstrike/core-darwin-arm64": "0.1.5",
-    "@deepstrike/core-win32-x64-msvc": "0.1.5"
+    "@deepstrike/core-darwin-arm64": "0.1.6",
+    "@deepstrike/core-darwin-x64": "0.1.6",
+    "@deepstrike/core-linux-arm64-gnu": "0.1.6",
+    "@deepstrike/core-linux-arm64-musl": "0.1.6",
+    "@deepstrike/core-linux-x64-gnu": "0.1.6",
+    "@deepstrike/core-linux-x64-musl": "0.1.6",
+    "@deepstrike/core-win32-x64-msvc": "0.1.6"
   }
 }

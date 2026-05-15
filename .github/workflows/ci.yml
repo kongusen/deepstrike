@@ -21,6 +21,7 @@ jobs:
       - uses: actions/setup-node@v5
         with: { node-version: 24 }
       - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "x86_64-unknown-linux-musl" }
       - uses: Swatinem/rust-cache@v2
       - name: Install napi-rs CLI
         run: npm install -g @napi-rs/cli@2
@@ -29,13 +30,53 @@ jobs:
         working-directory: crates/deepstrike-node
       - name: Install @deepstrike/core from local build
         run: |
-          cp ../crates/deepstrike-node/artifacts/index.d.ts ../crates/deepstrike-node/artifacts/index.js ../crates/deepstrike-node/
-          npm install --no-save
+          cp ../crates/deepstrike-node/artifacts/index.d.ts ../crates/deepstrike-node/
+          npm install --no-save --package-lock=false --ignore-scripts --omit=optional ../crates/deepstrike-node
           cp ../crates/deepstrike-node/artifacts/*.node node_modules/@deepstrike/core/
           cp ../crates/deepstrike-node/index.d.ts ../crates/deepstrike-node/index.js node_modules/@deepstrike/core/
         working-directory: node
       - run: npm test
         working-directory: node
+
+      # 与 release 一致：Alpine / musl 需单独 target；输出到独立目录以免覆盖 gnu 产物
+      - name: Verify Linux x64 musl native build
+        shell: bash
+        env:
+          RUSTFLAGS: "-C target-feature=-crt-static"
+          CC_x86_64_unknown_linux_musl: x86_64-linux-musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-linux-musl-gcc
+        run: |
+          set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          napi build --release --platform --target x86_64-unknown-linux-musl artifacts-musl
+          test -f artifacts-musl/deepstrike-core.linux-x64-musl.node
+        working-directory: crates/deepstrike-node
+
+  # ARM64 host + musl：与 release-node.yml 中 linux-arm64-musl 矩阵一致（Alpine arm64）
+  node-linux-arm64-musl:
+    runs-on: ubuntu-24.04-arm64
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 24 }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "aarch64-unknown-linux-musl" }
+      - uses: Swatinem/rust-cache@v2
+        with: { key: "aarch64-unknown-linux-musl" }
+      - name: Install napi-rs CLI
+        run: npm install -g @napi-rs/cli@2
+      - name: Verify Linux arm64 musl native build
+        shell: bash
+        env:
+          RUSTFLAGS: "-C target-feature=-crt-static"
+          CC_aarch64_unknown_linux_musl: aarch64-linux-musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-musl-gcc
+        run: |
+          set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          napi build --release --platform --target aarch64-unknown-linux-musl artifacts-musl-arm64
+          test -f artifacts-musl-arm64/deepstrike-core.linux-arm64-musl.node
+        working-directory: crates/deepstrike-node
 
   wasm:
     runs-on: ubuntu-latest
@@ -51,10 +92,10 @@ jobs:
       - name: Build wasm-kernel
         run: wasm-pack build --release --target bundler --out-dir pkg --scope deepstrike
         working-directory: crates/deepstrike-wasm
+      - name: Normalize wasm-kernel package metadata
+        run: node scripts/normalize-wasm-kernel-package.mjs "$(node -p "require('./wasm/package.json').version")" crates/deepstrike-wasm/pkg
       - name: Link wasm-kernel for tsc
-        run: |
-          npm install
-          npm install ../crates/deepstrike-wasm/pkg
+        run: npm install --no-save --package-lock=false ../crates/deepstrike-wasm/pkg
         working-directory: wasm
       - name: Build WASM SDK
         run: npm run build

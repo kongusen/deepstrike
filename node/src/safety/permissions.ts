@@ -34,6 +34,10 @@ export class PermissionManager {
     return this
   }
 
+  grantWithApproval(resource: string, action: string, note = ""): this {
+    return this.grant(resource, action, { requiresApproval: true, note })
+  }
+
   revoke(resource: string, action: string, note = ""): this {
     const key = `${resource}:${action}`
     this.permissions.set(key, { tool: resource, action, allowed: false, requiresApproval: false, note })

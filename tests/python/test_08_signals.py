@@ -29,6 +29,19 @@ class TestSignalGateway:
         assert "fire-me" in received
         gw.destroy()
 
+    async def test_schedule_preserves_kernel_routing_metadata(self):
+        gw = SignalGateway()
+        run_at = int(time.time() * 1000) + 40
+        gw.schedule(ScheduledPrompt("fire-me", run_at))
+        await asyncio.sleep(0.1)
+        sig = await gw.next_signal()
+        assert sig is not None
+        assert sig.source == "cron"
+        assert sig.signal_type == "job"
+        assert sig.urgency == "normal"
+        assert sig.dedupe_key == f"cron:fire-me:{run_at}"
+        gw.destroy()
+
     async def test_cancel_prevents_firing(self):
         gw = SignalGateway()
         run_at = int(time.time() * 1000) + 50

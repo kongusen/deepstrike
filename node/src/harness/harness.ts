@@ -2,13 +2,7 @@ import type { Agent } from "../agent.js"
 import type { DoneEvent, TextDelta } from "../types.js"
 import { writeFile } from "fs/promises"
 import path from "path"
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function loadKernel(): Promise<any> {
-  const mod = await import("@deepstrike/core")
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (mod as any).default ?? mod
-}
+import { getKernel } from "../kernel.js"
 
 export interface Criterion {
   text: string
@@ -109,7 +103,7 @@ export class HarnessLoop {
   }
 
   async *runStreaming(request: HarnessRequest): AsyncIterable<HarnessEvent> {
-    const kernel = await loadKernel()
+    const kernel = getKernel()
     const pipeline = new kernel.EvalPipeline({ extractSkillOnPass: true })
     const criteria = request.criteria ?? []
 
@@ -165,8 +159,8 @@ export class HarnessLoop {
       }
 
       if (verdict.passed) {
-        if (doneAction.skill_candidate && this.skillDir) {
-          const { name, description, whenToUse, content } = doneAction.skill_candidate
+        if (doneAction.skillCandidate && this.skillDir) {
+          const { name, description, whenToUse, content } = doneAction.skillCandidate
           const fm = ["---", `name: ${name}`, `description: ${description}`,
             whenToUse ? `when_to_use: ${whenToUse}` : null, "---", ""]
             .filter(Boolean).join("\n")

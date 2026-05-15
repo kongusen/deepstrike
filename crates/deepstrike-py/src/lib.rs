@@ -37,35 +37,41 @@ use compact_str::CompactString;
 
 use deepstrike_core::context::manager::ContextManager;
 use deepstrike_core::context::pressure::PressureAction;
+use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
+use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
+use deepstrike_core::governance::rate_limit::RateLimit;
 use deepstrike_core::harness::eval_pipeline::{
     Criterion as RustCriterion, EvalAction as RustEvalAction, EvalEvent as RustEvalEvent,
-    EvalPolicy as RustEvalPolicy, EvalPipeline as RustEvalPipeline, EvalResult as RustEvalResult,
+    EvalPipeline as RustEvalPipeline, EvalPolicy as RustEvalPolicy, EvalResult as RustEvalResult,
     SkillCandidate as RustSkillCandidate,
 };
 use deepstrike_core::memory::curator::CurationResult as RustCurationResult;
 use deepstrike_core::memory::durable::SessionData as RustSessionData;
 use deepstrike_core::memory::idle_pipeline::{
-    IdleAction as RustIdleAction, IdleEvent as RustIdleEvent, IdlePolicy as RustIdlePolicy,
-    IdlePipeline as RustIdlePipeline,
+    IdleAction as RustIdleAction, IdleEvent as RustIdleEvent, IdlePipeline as RustIdlePipeline,
+    IdlePolicy as RustIdlePolicy,
 };
 use deepstrike_core::memory::semantic::MemoryEntry as RustMemoryEntry;
 use deepstrike_core::scheduler::policy::LoopPolicy as RustLoopPolicy;
 use deepstrike_core::scheduler::state_machine::{
-    LoopAction as RustLoopAction, LoopEvent as RustLoopEvent, LoopObservation as RustLoopObservation,
-    LoopStateMachine as RustLoopStateMachine,
+    LoopAction as RustLoopAction, LoopEvent as RustLoopEvent,
+    LoopObservation as RustLoopObservation, LoopStateMachine as RustLoopStateMachine,
 };
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
-use deepstrike_core::types::policy::SignalDisposition as RustSignalDisposition;
-use deepstrike_core::types::signal::{
-    RuntimeSignal as RustRuntimeSignal, SignalSource as RustSignalSource,
-    SignalType as RustSignalType, Urgency as RustUrgency,
-};
+use deepstrike_core::types::agent::AgentIdentity;
 use deepstrike_core::types::message::{
     Content, ContentPart, Message as RustMessage, Role, ToolCall as RustToolCall,
     ToolResult as RustToolResult, ToolSchema as RustToolSchema,
 };
+use deepstrike_core::types::policy::{
+    GovernanceVerdict as RustGovernanceVerdict, SignalDisposition as RustSignalDisposition,
+};
 use deepstrike_core::types::result::LoopResult as RustLoopResult;
+use deepstrike_core::types::signal::{
+    RuntimeSignal as RustRuntimeSignal, SignalSource as RustSignalSource,
+    SignalType as RustSignalType, Urgency as RustUrgency,
+};
 use deepstrike_core::types::skill::SkillMetadata as RustSkillMetadata;
 use deepstrike_core::types::task::RuntimeTask as RustRuntimeTask;
 
@@ -96,10 +102,20 @@ struct RuntimeSignal {
 impl RuntimeSignal {
     #[new]
     #[pyo3(signature = (source, urgency, summary, signal_type="event", payload="null", dedupe_key=None, timestamp_ms=0.0))]
-    fn new(source: String, urgency: String, summary: String, signal_type: &str, payload: &str, dedupe_key: Option<String>, timestamp_ms: f64) -> Self {
+    fn new(
+        source: String,
+        urgency: String,
+        summary: String,
+        signal_type: &str,
+        payload: &str,
+        dedupe_key: Option<String>,
+        timestamp_ms: f64,
+    ) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
-            source, urgency, summary,
+            source,
+            urgency,
+            summary,
             signal_type: signal_type.into(),
             payload: payload.into(),
             dedupe_key,
@@ -108,7 +124,10 @@ impl RuntimeSignal {
     }
 
     fn __repr__(&self) -> String {
-        format!("RuntimeSignal(urgency={:?}, summary={:?})", self.urgency, self.summary)
+        format!(
+            "RuntimeSignal(urgency={:?}, summary={:?})",
+            self.urgency, self.summary
+        )
     }
 }
 
@@ -131,7 +150,8 @@ impl RuntimeSignal {
             "low" => RustUrgency::Low,
             _ => RustUrgency::Normal,
         };
-        let payload: serde_json::Value = serde_json::from_str(&self.payload).unwrap_or(serde_json::Value::Null);
+        let payload: serde_json::Value =
+            serde_json::from_str(&self.payload).unwrap_or(serde_json::Value::Null);
         let mut sig = RustRuntimeSignal::new(source, signal_type, urgency, self.summary.as_str())
             .with_payload(payload)
             .with_timestamp(self.timestamp_ms as u64);
@@ -144,9 +164,26 @@ impl RuntimeSignal {
     fn from_rust(s: &RustRuntimeSignal) -> Self {
         Self {
             id: s.id.to_string(),
-            source: match s.source { RustSignalSource::Cron => "cron", RustSignalSource::Gateway => "gateway", RustSignalSource::Heartbeat => "heartbeat", RustSignalSource::Custom => "custom" }.into(),
-            signal_type: match s.signal_type { RustSignalType::Event => "event", RustSignalType::Job => "job", RustSignalType::Alert => "alert" }.into(),
-            urgency: match s.urgency { RustUrgency::Critical => "critical", RustUrgency::High => "high", RustUrgency::Normal => "normal", RustUrgency::Low => "low" }.into(),
+            source: match s.source {
+                RustSignalSource::Cron => "cron",
+                RustSignalSource::Gateway => "gateway",
+                RustSignalSource::Heartbeat => "heartbeat",
+                RustSignalSource::Custom => "custom",
+            }
+            .into(),
+            signal_type: match s.signal_type {
+                RustSignalType::Event => "event",
+                RustSignalType::Job => "job",
+                RustSignalType::Alert => "alert",
+            }
+            .into(),
+            urgency: match s.urgency {
+                RustUrgency::Critical => "critical",
+                RustUrgency::High => "high",
+                RustUrgency::Normal => "normal",
+                RustUrgency::Low => "low",
+            }
+            .into(),
             summary: s.summary.to_string(),
             payload: serde_json::to_string(&s.payload).unwrap_or_else(|_| "null".into()),
             dedupe_key: s.dedupe_key.as_ref().map(|k| k.to_string()),
@@ -207,29 +244,79 @@ impl ContentPartObj {
         output: Option<String>,
         is_error: Option<bool>,
     ) -> Self {
-        Self { r#type, text, url, data, media_type, detail, call_id, output, is_error }
+        Self {
+            r#type,
+            text,
+            url,
+            data,
+            media_type,
+            detail,
+            call_id,
+            output,
+            is_error,
+        }
     }
 
     #[staticmethod]
     fn text_part(text: String) -> Self {
-        Self { r#type: "text".into(), text: Some(text), url: None, data: None, media_type: None, detail: None, call_id: None, output: None, is_error: None }
+        Self {
+            r#type: "text".into(),
+            text: Some(text),
+            url: None,
+            data: None,
+            media_type: None,
+            detail: None,
+            call_id: None,
+            output: None,
+            is_error: None,
+        }
     }
 
     #[staticmethod]
     #[pyo3(signature = (url, detail=None))]
     fn image_url(url: String, detail: Option<String>) -> Self {
-        Self { r#type: "image".into(), text: None, url: Some(url), data: None, media_type: None, detail, call_id: None, output: None, is_error: None }
+        Self {
+            r#type: "image".into(),
+            text: None,
+            url: Some(url),
+            data: None,
+            media_type: None,
+            detail,
+            call_id: None,
+            output: None,
+            is_error: None,
+        }
     }
 
     #[staticmethod]
     #[pyo3(signature = (data, media_type, detail=None))]
     fn image_base64(data: String, media_type: String, detail: Option<String>) -> Self {
-        Self { r#type: "image".into(), text: None, url: None, data: Some(data), media_type: Some(media_type), detail, call_id: None, output: None, is_error: None }
+        Self {
+            r#type: "image".into(),
+            text: None,
+            url: None,
+            data: Some(data),
+            media_type: Some(media_type),
+            detail,
+            call_id: None,
+            output: None,
+            is_error: None,
+        }
     }
 
     #[staticmethod]
     fn audio(data: String, media_type: String) -> Self {
-        Self { r#type: "audio".into(), text: None, url: None, data: Some(data), media_type: Some(media_type), detail: None, call_id: None, output: None, is_error: None }
+        Self {
+            r#type: "audio".into(),
+            text: None,
+            url: None,
+            data: Some(data),
+            media_type: Some(media_type),
+            detail: None,
+            call_id: None,
+            output: None,
+            is_error: None,
+        }
     }
 
     fn __repr__(&self) -> String {
@@ -301,30 +388,66 @@ fn content_part_obj_to_rust(p: &ContentPartObj) -> ContentPart {
             output: p.output.clone().unwrap_or_default(),
             is_error: p.is_error.unwrap_or(false),
         },
-        _ => ContentPart::Text { text: p.text.clone().unwrap_or_default() },
+        _ => ContentPart::Text {
+            text: p.text.clone().unwrap_or_default(),
+        },
     }
 }
 
 fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
     match p {
         ContentPart::Text { text } => ContentPartObj {
-            r#type: "text".into(), text: Some(text.clone()),
-            url: None, data: None, media_type: None, detail: None,
-            call_id: None, output: None, is_error: None,
+            r#type: "text".into(),
+            text: Some(text.clone()),
+            url: None,
+            data: None,
+            media_type: None,
+            detail: None,
+            call_id: None,
+            output: None,
+            is_error: None,
         },
-        ContentPart::Image { url, data, media_type, detail } => ContentPartObj {
-            r#type: "image".into(), text: None,
-            url: url.clone(), data: data.clone(), media_type: media_type.clone(), detail: detail.clone(),
-            call_id: None, output: None, is_error: None,
+        ContentPart::Image {
+            url,
+            data,
+            media_type,
+            detail,
+        } => ContentPartObj {
+            r#type: "image".into(),
+            text: None,
+            url: url.clone(),
+            data: data.clone(),
+            media_type: media_type.clone(),
+            detail: detail.clone(),
+            call_id: None,
+            output: None,
+            is_error: None,
         },
         ContentPart::Audio { data, media_type } => ContentPartObj {
-            r#type: "audio".into(), text: None, url: None,
-            data: Some(data.clone()), media_type: Some(media_type.clone()), detail: None,
-            call_id: None, output: None, is_error: None,
+            r#type: "audio".into(),
+            text: None,
+            url: None,
+            data: Some(data.clone()),
+            media_type: Some(media_type.clone()),
+            detail: None,
+            call_id: None,
+            output: None,
+            is_error: None,
         },
-        ContentPart::ToolResult { call_id, output, is_error } => ContentPartObj {
-            r#type: "tool_result".into(), text: None, url: None, data: None, media_type: None, detail: None,
-            call_id: Some(call_id.to_string()), output: Some(output.clone()), is_error: Some(*is_error),
+        ContentPart::ToolResult {
+            call_id,
+            output,
+            is_error,
+        } => ContentPartObj {
+            r#type: "tool_result".into(),
+            text: None,
+            url: None,
+            data: None,
+            media_type: None,
+            detail: None,
+            call_id: Some(call_id.to_string()),
+            output: Some(output.clone()),
+            is_error: Some(*is_error),
         },
     }
 }
@@ -347,7 +470,11 @@ impl Message {
         Ok(RustMessage {
             role,
             content,
-            tool_calls: self.tool_calls.iter().map(|c| c.to_rust()).collect::<Result<_, _>>()?,
+            tool_calls: self
+                .tool_calls
+                .iter()
+                .map(|c| c.to_rust())
+                .collect::<Result<_, _>>()?,
             token_count: self.token_count,
         })
     }
@@ -362,10 +489,14 @@ impl Message {
         let (content, content_parts) = match &msg.content {
             Content::Text(s) => (s.clone(), None),
             Content::Parts(parts) => {
-                let text_only: String = parts.iter().filter_map(|p| match p {
-                    ContentPart::Text { text } => Some(text.as_str()),
-                    _ => None,
-                }).collect::<Vec<_>>().join("\n");
+                let text_only: String = parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        ContentPart::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 let objs: Vec<ContentPartObj> = parts.iter().map(content_part_from_rust).collect();
                 (text_only, Some(objs))
             }
@@ -396,7 +527,11 @@ struct ToolCall {
 impl ToolCall {
     #[new]
     fn new(id: String, name: String, arguments: String) -> Self {
-        Self { id, name, arguments }
+        Self {
+            id,
+            name,
+            arguments,
+        }
     }
 
     fn __repr__(&self) -> String {
@@ -442,7 +577,12 @@ impl ToolResult {
     #[new]
     #[pyo3(signature = (call_id, output, is_error = false, token_count = None))]
     fn new(call_id: String, output: String, is_error: bool, token_count: Option<u32>) -> Self {
-        Self { call_id, output, is_error, token_count }
+        Self {
+            call_id,
+            output,
+            is_error,
+            token_count,
+        }
     }
 }
 
@@ -473,7 +613,11 @@ struct ToolSchema {
 impl ToolSchema {
     #[new]
     fn new(name: String, description: String, parameters: String) -> Self {
-        Self { name, description, parameters }
+        Self {
+            name,
+            description,
+            parameters,
+        }
     }
 }
 
@@ -503,7 +647,10 @@ impl RuntimeTask {
     #[new]
     #[pyo3(signature = (goal, criteria = None))]
     fn new(goal: String, criteria: Option<Vec<String>>) -> Self {
-        Self { goal, criteria: criteria.unwrap_or_default() }
+        Self {
+            goal,
+            criteria: criteria.unwrap_or_default(),
+        }
     }
 }
 
@@ -534,8 +681,18 @@ struct LoopPolicy {
 impl LoopPolicy {
     #[new]
     #[pyo3(signature = (max_tokens = 128_000, max_turns = 25, max_total_tokens = 1_000_000, timeout_ms = None))]
-    fn new(max_tokens: u32, max_turns: u32, max_total_tokens: u64, timeout_ms: Option<u64>) -> Self {
-        Self { max_tokens, max_turns, max_total_tokens, timeout_ms }
+    fn new(
+        max_tokens: u32,
+        max_turns: u32,
+        max_total_tokens: u64,
+        timeout_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            max_tokens,
+            max_turns,
+            max_total_tokens,
+            timeout_ms,
+        }
     }
 }
 
@@ -624,7 +781,10 @@ impl SkillMetadata {
     }
 
     fn __repr__(&self) -> String {
-        format!("SkillMetadata(name={:?}, effort={:?}, est_tokens={})", self.name, self.effort, self.estimated_tokens)
+        format!(
+            "SkillMetadata(name={:?}, effort={:?}, est_tokens={})",
+            self.name, self.effort, self.estimated_tokens
+        )
     }
 }
 
@@ -763,7 +923,9 @@ struct ContextEngine {
 impl ContextEngine {
     #[new]
     fn new(max_tokens: u32) -> Self {
-        Self { inner: ContextManager::new(max_tokens) }
+        Self {
+            inner: ContextManager::new(max_tokens),
+        }
     }
 
     fn add_system_message(&mut self, content: String, tokens: u32) {
@@ -826,7 +988,9 @@ struct LoopStateMachine {
 impl LoopStateMachine {
     #[new]
     fn new(policy: LoopPolicy) -> Self {
-        Self { inner: RustLoopStateMachine::new(policy.to_rust()) }
+        Self {
+            inner: RustLoopStateMachine::new(policy.to_rust()),
+        }
     }
 
     /// Convenience: forward to inner ContextManager for skill registration
@@ -886,7 +1050,9 @@ impl LoopStateMachine {
 
     fn feed_llm_response(&mut self, message: Message) -> PyResult<LoopAction> {
         let msg = message.to_rust()?;
-        Ok(LoopAction::from_rust(self.inner.feed(RustLoopEvent::LLMResponse { message: msg })))
+        Ok(LoopAction::from_rust(
+            self.inner.feed(RustLoopEvent::LLMResponse { message: msg }),
+        ))
     }
 
     fn feed_tool_results(&mut self, results: Vec<ToolResult>) -> LoopAction {
@@ -920,7 +1086,12 @@ impl LoopStateMachine {
 
     /// Read-only access to the rendered context for inspection / LLM call building.
     fn render(&self) -> Vec<Message> {
-        self.inner.ctx.render().iter().map(Message::from_rust).collect()
+        self.inner
+            .ctx
+            .render()
+            .iter()
+            .map(Message::from_rust)
+            .collect()
     }
 }
 
@@ -935,7 +1106,9 @@ struct SignalRouter {
 impl SignalRouter {
     #[new]
     fn new(max_queue_size: usize) -> Self {
-        Self { inner: RustSignalRouter::new(max_queue_size) }
+        Self {
+            inner: RustSignalRouter::new(max_queue_size),
+        }
     }
 
     /// Ingest a signal. Returns disposition string:
@@ -958,26 +1131,156 @@ impl SignalRouter {
     }
 }
 
-// ──────────────────────────────────────── Governance (passthrough) ─────────────────────────────
+// ──────────────────────────────────────── Governance ────────────────────────────────────────────
+
+#[pyclass]
+#[derive(Clone)]
+struct GovernanceVerdict {
+    #[pyo3(get)]
+    kind: String,
+    #[pyo3(get)]
+    reason: Option<String>,
+    #[pyo3(get)]
+    retry_after_ms: Option<f64>,
+}
+
+#[pymethods]
+impl GovernanceVerdict {
+    fn __repr__(&self) -> String {
+        format!("GovernanceVerdict(kind={:?})", self.kind)
+    }
+}
+
+fn governance_verdict_from_rust(v: RustGovernanceVerdict) -> GovernanceVerdict {
+    match v {
+        RustGovernanceVerdict::Allow => GovernanceVerdict {
+            kind: "allow".into(),
+            reason: None,
+            retry_after_ms: None,
+        },
+        RustGovernanceVerdict::Deny { reason, .. } => GovernanceVerdict {
+            kind: "deny".into(),
+            reason: Some(reason),
+            retry_after_ms: None,
+        },
+        RustGovernanceVerdict::RateLimited { retry_after_ms } => GovernanceVerdict {
+            kind: "rate_limited".into(),
+            reason: None,
+            retry_after_ms: Some(retry_after_ms as f64),
+        },
+        RustGovernanceVerdict::AskUser { reason } => GovernanceVerdict {
+            kind: "ask_user".into(),
+            reason: Some(reason),
+            retry_after_ms: None,
+        },
+    }
+}
 
 #[pyclass]
 struct Governance {
     inner: RustGovernancePipeline,
+    agent_id: String,
+    session_id: String,
 }
 
 #[pymethods]
 impl Governance {
     #[new]
-    fn new() -> Self {
-        Self { inner: RustGovernancePipeline::default() }
+    #[pyo3(signature = (default_action = "allow"))]
+    fn new(default_action: &str) -> Self {
+        let action = match default_action {
+            "deny" => PermissionAction::Deny,
+            "ask_user" => PermissionAction::AskUser,
+            _ => PermissionAction::Allow,
+        };
+        Self {
+            inner: RustGovernancePipeline::new(action),
+            agent_id: "anonymous".into(),
+            session_id: "".into(),
+        }
+    }
+
+    fn set_identity(&mut self, agent_id: String, session_id: String) {
+        self.agent_id = agent_id;
+        self.session_id = session_id;
+    }
+
+    fn add_permission_rule(&mut self, pattern: String, action: String) {
+        let action = match action.as_str() {
+            "deny" => PermissionAction::Deny,
+            "ask_user" => PermissionAction::AskUser,
+            _ => PermissionAction::Allow,
+        };
+        self.inner.permission.add_rule(PermissionRule {
+            tool_pattern: pattern.into(),
+            action,
+        });
     }
 
     fn block_tool(&mut self, name: String) {
         self.inner.veto.block_tool(name);
     }
 
+    fn set_rate_limit(&mut self, tool_name: String, max_calls: u32, window_ms: u64) {
+        self.inner.rate_limiter.set_limit(
+            tool_name,
+            RateLimit {
+                max_calls,
+                window_ms,
+            },
+        );
+    }
+
+    fn require_param(&mut self, tool_name: String, param_path: String) {
+        self.inner.constraints.add(ParamConstraint {
+            tool_name,
+            param_path,
+            rule: ConstraintRule::Required,
+        });
+    }
+
+    fn allow_param_values(
+        &mut self,
+        tool_name: String,
+        param_path: String,
+        allowed_values: Vec<String>,
+    ) {
+        self.inner.constraints.add(ParamConstraint {
+            tool_name,
+            param_path,
+            rule: ConstraintRule::Enum(allowed_values),
+        });
+    }
+
+    #[pyo3(signature = (tool_name, param_path, min = None, max = None))]
+    fn limit_param_range(
+        &mut self,
+        tool_name: String,
+        param_path: String,
+        min: Option<f64>,
+        max: Option<f64>,
+    ) {
+        self.inner.constraints.add(ParamConstraint {
+            tool_name,
+            param_path,
+            rule: ConstraintRule::Range { min, max },
+        });
+    }
+
     fn set_time(&mut self, now_ms: u64) {
         self.inner.set_time(now_ms);
+    }
+
+    fn evaluate(&mut self, tool_name: String, args_json: String) -> GovernanceVerdict {
+        let args: serde_json::Value =
+            serde_json::from_str(&args_json).unwrap_or(serde_json::Value::Null);
+        let call = RustToolCall {
+            id: CompactString::new(""),
+            name: CompactString::new(&tool_name),
+            arguments: args,
+        };
+        let caller = AgentIdentity::new(self.agent_id.as_str(), self.session_id.as_str());
+        governance_verdict_from_rust(self.inner.evaluate(&call, &caller))
     }
 }
 
@@ -1014,18 +1317,31 @@ impl SessionData {
         created_at_ms: f64,
         updated_at_ms: f64,
     ) -> Self {
-        Self { session_id, agent_id, messages, metadata, created_at_ms, updated_at_ms }
+        Self {
+            session_id,
+            agent_id,
+            messages,
+            metadata,
+            created_at_ms,
+            updated_at_ms,
+        }
     }
 
     fn __repr__(&self) -> String {
-        format!("SessionData(session_id={:?}, agent_id={:?})", self.session_id, self.agent_id)
+        format!(
+            "SessionData(session_id={:?}, agent_id={:?})",
+            self.session_id, self.agent_id
+        )
     }
 }
 
 impl SessionData {
     fn to_rust(&self) -> Result<RustSessionData, PyErr> {
-        let messages: Vec<RustMessage> =
-            self.messages.iter().map(|m| m.to_rust()).collect::<Result<_, _>>()?;
+        let messages: Vec<RustMessage> = self
+            .messages
+            .iter()
+            .map(|m| m.to_rust())
+            .collect::<Result<_, _>>()?;
         let metadata: serde_json::Value =
             serde_json::from_str(&self.metadata).unwrap_or(serde_json::Value::Null);
         Ok(RustSessionData {
@@ -1057,7 +1373,11 @@ impl MemoryEntry {
     #[new]
     #[pyo3(signature = (text, score = 0.0, metadata = String::from("null")))]
     fn new(text: String, score: f64, metadata: String) -> Self {
-        Self { text, score, metadata }
+        Self {
+            text,
+            score,
+            metadata,
+        }
     }
 
     fn __repr__(&self) -> String {
@@ -1069,7 +1389,11 @@ impl MemoryEntry {
     fn to_rust(&self) -> RustMemoryEntry {
         let metadata: serde_json::Value =
             serde_json::from_str(&self.metadata).unwrap_or(serde_json::Value::Null);
-        RustMemoryEntry { text: self.text.clone(), score: self.score, metadata }
+        RustMemoryEntry {
+            text: self.text.clone(),
+            score: self.score,
+            metadata,
+        }
     }
 
     fn from_rust(e: &RustMemoryEntry) -> Self {
@@ -1187,7 +1511,11 @@ impl IdlePipelineAction {
                 curation_result: None,
                 run_result: None,
             },
-            RustIdleAction::CommitMemories { agent_id, result, run_result } => Self {
+            RustIdleAction::CommitMemories {
+                agent_id,
+                result,
+                run_result,
+            } => Self {
                 kind: "commit_memories".into(),
                 messages: None,
                 agent_id: Some(agent_id),
@@ -1231,7 +1559,9 @@ struct IdlePipeline {
 impl IdlePipeline {
     #[new]
     fn new(agent_id: String) -> Self {
-        Self { inner: RustIdlePipeline::new(RustIdlePolicy::new(agent_id)) }
+        Self {
+            inner: RustIdlePipeline::new(RustIdlePolicy::new(agent_id)),
+        }
     }
 
     /// Phase 1 — provide sessions + current memory snapshot; kernel builds the LLM prompt.
@@ -1241,8 +1571,10 @@ impl IdlePipeline {
         existing_memories: Vec<MemoryEntry>,
         now_ms: f64,
     ) -> PyResult<IdlePipelineAction> {
-        let rust_sessions: Vec<RustSessionData> =
-            sessions.iter().map(|s| s.to_rust()).collect::<Result<_, _>>()?;
+        let rust_sessions: Vec<RustSessionData> = sessions
+            .iter()
+            .map(|s| s.to_rust())
+            .collect::<Result<_, _>>()?;
         let rust_memories: Vec<RustMemoryEntry> =
             existing_memories.iter().map(|e| e.to_rust()).collect();
         let action = self.inner.feed(RustIdleEvent::Trigger {
@@ -1255,9 +1587,7 @@ impl IdlePipeline {
 
     /// Phase 2 — feed back the LLM's synthesis text; kernel parses and curates.
     fn feed_synthesis_result(&mut self, content: String) -> IdlePipelineAction {
-        IdlePipelineAction::from_rust(
-            self.inner.feed(RustIdleEvent::SynthesisResult { content }),
-        )
+        IdlePipelineAction::from_rust(self.inner.feed(RustIdleEvent::SynthesisResult { content }))
     }
 
     fn is_idle(&self) -> bool {
@@ -1288,7 +1618,10 @@ struct PyCriterionResult {
 #[pymethods]
 impl PyCriterionResult {
     fn __repr__(&self) -> String {
-        format!("CriterionResult(criterion={:?}, passed={:?})", self.criterion, self.passed)
+        format!(
+            "CriterionResult(criterion={:?}, passed={:?})",
+            self.criterion, self.passed
+        )
     }
 }
 
@@ -1314,7 +1647,12 @@ impl SkillCandidate {
 
 impl SkillCandidate {
     fn from_rust(s: RustSkillCandidate) -> Self {
-        Self { name: s.name, description: s.description, when_to_use: s.when_to_use, content: s.content }
+        Self {
+            name: s.name,
+            description: s.description,
+            when_to_use: s.when_to_use,
+            content: s.content,
+        }
     }
 }
 
@@ -1343,7 +1681,10 @@ struct EvalPipelineAction {
 #[pymethods]
 impl EvalPipelineAction {
     fn __repr__(&self) -> String {
-        format!("EvalPipelineAction(kind={:?}, passed={:?})", self.kind, self.passed)
+        format!(
+            "EvalPipelineAction(kind={:?}, passed={:?})",
+            self.kind, self.passed
+        )
     }
 }
 
@@ -1370,12 +1711,17 @@ impl EvalPipelineAction {
             passed: Some(r.passed),
             overall_score: Some(r.overall_score),
             feedback: Some(r.feedback),
-            details: Some(r.details.into_iter().map(|d| PyCriterionResult {
-                criterion: d.criterion,
-                passed: d.passed,
-                score: d.score,
-                feedback: d.feedback,
-            }).collect()),
+            details: Some(
+                r.details
+                    .into_iter()
+                    .map(|d| PyCriterionResult {
+                        criterion: d.criterion,
+                        passed: d.passed,
+                        score: d.score,
+                        feedback: d.feedback,
+                    })
+                    .collect(),
+            ),
             skill_candidate: r.skill_candidate.map(SkillCandidate::from_rust),
         }
     }
@@ -1399,7 +1745,11 @@ impl EvalPipeline {
     #[new]
     #[pyo3(signature = (extract_skill_on_pass = true))]
     fn new(extract_skill_on_pass: bool) -> Self {
-        Self { inner: RustEvalPipeline::new(RustEvalPolicy { extract_skill_on_pass }) }
+        Self {
+            inner: RustEvalPipeline::new(RustEvalPolicy {
+                extract_skill_on_pass,
+            }),
+        }
     }
 
     fn feed_outcome(
@@ -1411,22 +1761,39 @@ impl EvalPipeline {
     ) -> EvalPipelineAction {
         use pyo3::Python;
         let rust_criteria = Python::with_gil(|py| {
-            criteria.iter().map(|obj| {
-                let text = obj.getattr(py, "text").and_then(|v| v.extract::<String>(py)).unwrap_or_default();
-                let required = obj.getattr(py, "required").and_then(|v| v.extract::<bool>(py)).unwrap_or(true);
-                let weight = obj.getattr(py, "weight").and_then(|v| v.extract::<f32>(py)).unwrap_or(1.0);
-                RustCriterion { text, required, weight }
-            }).collect::<Vec<_>>()
+            criteria
+                .iter()
+                .map(|obj| {
+                    let text = obj
+                        .getattr(py, "text")
+                        .and_then(|v| v.extract::<String>(py))
+                        .unwrap_or_default();
+                    let required = obj
+                        .getattr(py, "required")
+                        .and_then(|v| v.extract::<bool>(py))
+                        .unwrap_or(true);
+                    let weight = obj
+                        .getattr(py, "weight")
+                        .and_then(|v| v.extract::<f32>(py))
+                        .unwrap_or(1.0);
+                    RustCriterion {
+                        text,
+                        required,
+                        weight,
+                    }
+                })
+                .collect::<Vec<_>>()
         });
-        EvalPipelineAction::from_rust_action(
-            self.inner.feed(RustEvalEvent::Outcome { goal, criteria: rust_criteria, result, attempt }),
-        )
+        EvalPipelineAction::from_rust_action(self.inner.feed(RustEvalEvent::Outcome {
+            goal,
+            criteria: rust_criteria,
+            result,
+            attempt,
+        }))
     }
 
     fn feed_eval_result(&mut self, content: String) -> EvalPipelineAction {
-        EvalPipelineAction::from_rust_action(
-            self.inner.feed(RustEvalEvent::EvalResult { content }),
-        )
+        EvalPipelineAction::from_rust_action(self.inner.feed(RustEvalEvent::EvalResult { content }))
     }
 
     fn is_idle(&self) -> bool {
@@ -1462,6 +1829,7 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Signal types
     m.add_class::<RuntimeSignal>()?;
     m.add_class::<SignalRouter>()?;
+    m.add_class::<GovernanceVerdict>()?;
     m.add_class::<Governance>()?;
     // Dream / idle-pipeline
     m.add_class::<SessionData>()?;

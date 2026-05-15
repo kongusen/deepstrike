@@ -1,12 +1,9 @@
 from __future__ import annotations
 import pathlib
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Protocol, TYPE_CHECKING, runtime_checkable
-try:
-    from deepstrike._kernel import EvalPipeline
-except ImportError:
-    EvalPipeline = None  # type: ignore[assignment,misc]
-from deepstrike.providers.stream import DoneEvent, TextDelta
+from typing import Any, AsyncIterator, Protocol, TYPE_CHECKING, Union, runtime_checkable
+from deepstrike._kernel import EvalPipeline
+from deepstrike.providers.stream import DoneEvent as _ProviderDoneEvent, TextDelta
 
 if TYPE_CHECKING:
     from deepstrike.agent import Agent
@@ -56,23 +53,55 @@ class Verdict:
 
 
 @dataclass
-class HarnessEvent:
-    type: str
-    # token
-    text: str | None = None
-    # tool_call
+class TokenEvent:
+    text: str
+    type: str = "token"
+
+
+@dataclass
+class ToolCallEvent:
     id: str | None = None
     name: str | None = None
-    # tool_result
+    type: str = "tool_call"
+
+
+@dataclass
+class ToolResultEvent:
     call_id: str | None = None
     content: str | None = None
     is_error: bool | None = None
-    # revising / done
-    verdict: Verdict | None = None
-    # done
-    iterations: int | None = None
-    total_tokens: int | None = None
-    status: str | None = None
+    type: str = "tool_result"
+
+
+@dataclass
+class SupervisingEvent:
+    type: str = "supervising"
+
+
+@dataclass
+class RevisingEvent:
+    verdict: Verdict
+    type: str = "revising"
+
+
+@dataclass
+class DoneEvent:
+    verdict: Verdict
+    iterations: int
+    total_tokens: int
+    status: str
+    type: str = "done"
+
+
+@dataclass
+class MaxAttemptsReachedEvent:
+    type: str = "max_attempts_reached"
+
+
+HarnessEvent = Union[
+    TokenEvent, ToolCallEvent, ToolResultEvent,
+    SupervisingEvent, RevisingEvent, DoneEvent, MaxAttemptsReachedEvent,
+]
 
 
 @runtime_checkable
@@ -81,12 +110,12 @@ class QualityGate(Protocol):
 
 
 async def _run_once(agent: "Agent", goal: str, request: HarnessRequest) -> HarnessOutcome:
-    done: DoneEvent | None = None
+    done: _ProviderDoneEvent | None = None
     text = ""
     async for evt in agent.run_streaming(goal, criteria=[c.text for c in (request.criteria or [])], extensions=request.extensions):
         if isinstance(evt, TextDelta):
             text += evt.delta
-        elif isinstance(evt, DoneEvent):
+        elif isinstance(evt, _ProviderDoneEvent):
             done = evt
     return HarnessOutcome(
         result=text,
@@ -137,12 +166,11 @@ class HarnessLoop:
         self._max_attempts = max_attempts
         self._skill_dir = pathlib.Path(skill_dir) if skill_dir else None
 
-    async def run_streaming(self, request: HarnessRequest) -> AsyncIterator[HarnessEvent]:
+    def run_streaming(self, request: HarnessRequest) -> AsyncIterator[HarnessEvent]:
         return self._run_streaming_impl(request)
 
     async def _run_streaming_impl(self, request: HarnessRequest) -> AsyncIterator[HarnessEvent]:
         pipeline = EvalPipeline(extract_skill_on_pass=True)
-        kernel_criteria = [{"text": c.text, "required": c.required, "weight": c.weight} for c in (request.criteria or [])]
         criteria = request.criteria or []
 
         current_goal = request.goal
@@ -155,22 +183,21 @@ class HarnessLoop:
             async for evt in self._agent.run_streaming(current_goal, criteria=[c.text for c in criteria], extensions=request.extensions):
                 if isinstance(evt, TextDelta):
                     last_result += evt.delta
-                    yield HarnessEvent(type="token", text=evt.delta)
-                elif isinstance(evt, DoneEvent):
+                    yield TokenEvent(text=evt.delta)
+                elif isinstance(evt, _ProviderDoneEvent):
                     last_iterations = evt.iterations
                     last_total_tokens = evt.total_tokens
                     last_status = evt.status
                 else:
-                    # tool_call / tool_result pass-through
                     kind = getattr(evt, "type", None)
                     if kind == "tool_call":
-                        yield HarnessEvent(type="tool_call", id=getattr(evt, "id", None), name=getattr(evt, "name", None))
+                        yield ToolCallEvent(id=getattr(evt, "id", None), name=getattr(evt, "name", None))
                     elif kind == "tool_result":
-                        yield HarnessEvent(type="tool_result", call_id=getattr(evt, "call_id", None), content=getattr(evt, "content", None), is_error=getattr(evt, "is_error", None))
+                        yield ToolResultEvent(call_id=getattr(evt, "call_id", None), content=getattr(evt, "content", None), is_error=getattr(evt, "is_error", None))
 
-            yield HarnessEvent(type="supervising")
+            yield SupervisingEvent()
 
-            eval_action = pipeline.feed_outcome(request.goal, kernel_criteria, last_result, attempt)
+            eval_action = pipeline.feed_outcome(request.goal, criteria, last_result, attempt)
             if eval_action.kind != "evaluate":
                 break
 
@@ -202,12 +229,12 @@ class HarnessLoop:
                     lines += ["---", ""]
                     skill_path = self._skill_dir / f"{sc.name}.md"
                     skill_path.write_text("\n".join(lines) + sc.content, encoding="utf-8")
-                yield HarnessEvent(type="done", verdict=verdict, iterations=last_iterations, total_tokens=last_total_tokens, status=last_status)
+                yield DoneEvent(verdict=verdict, iterations=last_iterations, total_tokens=last_total_tokens, status=last_status)
                 return
 
-            yield HarnessEvent(type="revising", verdict=verdict)
+            yield RevisingEvent(verdict=verdict)
             current_goal = f"{request.goal}\n\n[Attempt {attempt} feedback: {verdict.feedback}]"
             last_result = ""
             pipeline.reset()
 
-        yield HarnessEvent(type="max_attempts_reached")
+        yield MaxAttemptsReachedEvent()

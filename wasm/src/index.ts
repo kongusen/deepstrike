@@ -1,5 +1,7 @@
 export { Agent } from "./agent.js"
-export type { AgentOptions } from "./agent.js"
+export type { AgentOptions, SkillMetadata } from "./agent.js"
+export { Governance } from "./governance.js"
+export type { GovernanceVerdict } from "./governance.js"
 export { AnthropicProvider } from "./providers/anthropic.js"
 export { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider, KimiProvider } from "./providers/openai.js"
 export { tool, executeTools } from "./tools/index.js"

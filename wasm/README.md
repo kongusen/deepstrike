@@ -8,17 +8,14 @@ Agent framework built on a Rust kernel compiled to WebAssembly. Runs in browsers
 npm install @deepstrike/wasm
 ```
 
-The Rust kernel is distributed as a pre-built `.wasm` binary (`@deepstrike/wasm-kernel`). Call `await init()` once before using any kernel classes.
+The Rust kernel is distributed as a pre-built `.wasm` binary (`@deepstrike/wasm-kernel`), which is an indirect dependency — you never import from it directly.
 
 ---
 
 ## Quick start
 
 ```typescript
-import init, { LoopStateMachine } from "@deepstrike/wasm-kernel"
 import { Agent, AnthropicProvider, tool } from "@deepstrike/wasm"
-
-await init() // load .wasm binary once
 
 const add = tool("add", "Add two numbers.", {
   type: "object",
@@ -32,7 +29,8 @@ const agent = new Agent(
 )
 agent.register(add)
 
-await agent.run("What is 2 + 3?")
+const answer = await agent.run("What is 2 + 3?")
+console.log(answer) // "5"
 ```
 
 Streaming:
@@ -127,32 +125,27 @@ const fetchUrl = tool("fetch_url", "Fetch a URL and return its text.", {
 })
 
 agent.register(fetchUrl)
-agent.blockTool("fetch_url")  // governance veto
+```
+
+---
+
+## Governance
+
+```typescript
+import { Agent, AnthropicProvider, Governance } from "@deepstrike/wasm"
+
+const gov = new Governance()
+gov.blockTool("dangerous_tool")
+
+const agent = new Agent(provider, {
+  maxTokens: 32_000,
+  governance: gov,
+})
 ```
 
 ---
 
 ## Memory
-
-```typescript
-import type { MemorySource, MemoryExtractor } from "@deepstrike/wasm"
-
-class IndexedDBMemory implements MemorySource, MemoryExtractor {
-  async load(goal: string): Promise<string[]> {
-    return idb.get(goal) ?? []
-  }
-  async extract(goal: string, finalText: string, turns: number): Promise<void> {
-    await idb.set(goal, [finalText])
-  }
-}
-
-const agent = new Agent(provider, {
-  maxTokens: 32_000,
-  maxTurns: 10,
-  memorySource: new IndexedDBMemory(),
-  memoryExtractor: new IndexedDBMemory(),
-})
-```
 
 `WorkingMemory` is an in-process scratch pad for within-run state:
 
@@ -190,23 +183,24 @@ const agent = new Agent(provider, {
 ## Harness
 
 ```typescript
-import { SinglePassHarness, EvalLoopHarness } from "@deepstrike/wasm"
-import type { QualityGate, HarnessRequest, HarnessOutcome } from "@deepstrike/wasm"
+import { SinglePassHarness, HarnessLoop } from "@deepstrike/wasm"
 
-// Single pass
+// Single pass — always passes
 const harness = new SinglePassHarness(agent)
 const outcome = await harness.run({ goal: "Write a haiku" })
+console.log(outcome.result)
 
-// Eval loop — retry until QualityGate passes (max 3 attempts)
-class LengthGate implements QualityGate {
-  async evaluate(_req: HarnessRequest, outcome: HarnessOutcome): Promise<boolean> {
-    return outcome.result.length > 50
-  }
+// Eval loop — LLM-judges the output; retries up to 3 times
+const loop = new HarnessLoop(agent, evalProvider, { maxAttempts: 3 })
+for await (const event of loop.runStreaming({
+  goal: "Write a haiku",
+  criteria: [
+    { text: "Exactly 3 lines", required: true },
+    { text: "Contains a seasonal reference", required: false },
+  ],
+})) {
+  if (event.type === "done") console.log(event.verdict.passed, event.verdict.overallScore)
 }
-
-const evalHarness = new EvalLoopHarness(agent, new LengthGate(), 3)
-const result = await evalHarness.run({ goal: "Write a haiku" })
-console.log(result.passed, result.iterations)
 ```
 
 ---
@@ -223,14 +217,14 @@ document.getElementById("stop")!.onclick = () => agent.interrupt()
 // Convert a scheduled prompt to a RuntimeSignal
 const prompt = new ScheduledPrompt("Daily standup summary", 1_700_000_000_000)
 const signal = prompt.toSignal()
-// signal.kind === "scheduled"
+// signal.source === "cron", signal.signalType === "job"
 
 // Feed signals from postMessage (browser) or Cloudflare event
 class PostMessageSource implements SignalSource {
   private queue: RuntimeSignal[] = []
   constructor() {
     self.addEventListener("message", (e: MessageEvent) => {
-      if (e.data?.kind) this.queue.push(e.data as RuntimeSignal)
+      if (e.data?.source) this.queue.push(e.data as RuntimeSignal)
     })
   }
   async nextSignal(): Promise<RuntimeSignal | null> {

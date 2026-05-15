@@ -9,6 +9,11 @@ export class LoopStateMachine {
   }
 
   setTools(_tools: unknown[]): void {}
+  setAvailableSkills(_skills: unknown[]): void {}
+  setMemoryEnabled(_enabled: boolean): void {}
+  setKnowledgeEnabled(_enabled: boolean): void {}
+  addSystemMessage(_content: string, _tokens: number): void {}
+  addMemoryMessage(_content: string, _tokens: number): void {}
   takeObservations(): unknown[] { return [] }
   isTerminal(): boolean { return this.terminal }
 
@@ -35,4 +40,41 @@ export class LoopStateMachine {
     this.terminal = true
     return { kind: "done", result: { turnsUsed: this.turn, totalTokensUsed: 0, termination: "timeout" } }
   }
+}
+
+export class Governance {
+  blockTool(_name: string): void {}
+  setTime(_nowMs: number): void {}
+  evaluate(_toolName: string, _argsJson: string) {
+    return { kind: "allow" as const }
+  }
+}
+
+export class SignalRouter {
+  constructor(_maxQueueSize: number) {}
+  ingest(_signal: unknown, _isRunning: boolean): string { return "ignore" }
+  next(): null { return null }
+  depth(): number { return 0 }
+  clearDedup(): void {}
+}
+
+export class EvalPipeline {
+  constructor(_options: { extractSkillOnPass: boolean }) {}
+
+  feedOutcome(_goal: string, _criteria: unknown[], _result: string, _attempt: number) {
+    return { kind: "evaluate", messages: [] }
+  }
+
+  feedEvalResult(_content: string) {
+    return {
+      kind: "done",
+      passed: true,
+      overallScore: 1,
+      feedback: "",
+      details: [],
+    }
+  }
+
+  reset(): void {}
+  isIdle(): boolean { return true }
 }

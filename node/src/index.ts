@@ -20,14 +20,8 @@ export { SignalGateway } from "./signals/gateway.js"
 export type { RuntimeSignal, SignalSource } from "./signals/types.js"
 export { PermissionManager, PermissionMode } from "./safety/permissions.js"
 export type { PermissionDecision, Permission } from "./safety/permissions.js"
-// Kernel Governance — full pipeline (Permission → Veto → RateLimit → Constraint → Audit)
-// @deepstrike/core is a CJS native addon; static ESM named re-export doesn't work,
-// so we load it via createRequire and re-export with proper types preserved.
-import { createRequire } from "module"
-const _cjsRequire = createRequire(import.meta.url)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const Governance: typeof import("@deepstrike/core").Governance = _cjsRequire("@deepstrike/core").Governance
-export type { GovernanceVerdictObj as GovernanceVerdict } from "@deepstrike/core"
+export { Governance } from "./governance.js"
+export type { GovernanceVerdict } from "./governance.js"
 export type {
   Message, ToolCall, ToolResult, ToolSchema,
   ContentPart, TextPart, ImagePart, AudioPart,

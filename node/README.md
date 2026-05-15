@@ -16,13 +16,15 @@ Pre-built native addons are available for the following platforms:
 
 | Platform | Package |
 | -------- | ------- |
-| Linux x64 (glibc) | `@deepstrike/core-linux-x64-gnu` |
-| Linux ARM64 (glibc) | `@deepstrike/core-linux-arm64-gnu` |
 | macOS x64 | `@deepstrike/core-darwin-x64` |
 | macOS ARM64 (Apple Silicon) | `@deepstrike/core-darwin-arm64` |
+| Linux x64 (glibc) | `@deepstrike/core-linux-x64-gnu` |
+| Linux x64 (musl / Alpine) | `@deepstrike/core-linux-x64-musl` |
+| Linux ARM64 (glibc) | `@deepstrike/core-linux-arm64-gnu` |
+| Linux ARM64 (musl / Alpine) | `@deepstrike/core-linux-arm64-musl` |
 | Windows x64 | `@deepstrike/core-win32-x64-msvc` |
 
-The correct platform package is selected and installed automatically via `optionalDependencies`.
+The correct platform package is selected and installed automatically via `optionalDependencies`. No postinstall download is required.
 
 > **Note:** `@deepstrike/core` is the low-level native addon package and is not intended for direct use. It is an internal dependency automatically managed by `@deepstrike/sdk`. Direct installation is only relevant when building from Rust source.
 
@@ -33,11 +35,7 @@ The correct platform package is selected and installed automatically via `option
 ```typescript
 import { Agent, OpenAIProvider, tool } from "@deepstrike/sdk"
 
-const provider = new OpenAIProvider({
-  apiKey: process.env.OPENAI_API_KEY,
-  model: "gpt-5-mini",
-  baseUrl: "https://api.openai.com/v1",
-})
+const provider = new OpenAIProvider(process.env.OPENAI_API_KEY!, "gpt-5-mini")
 
 const add = tool("add", "Add two numbers.", {
   type: "object",
@@ -49,7 +47,7 @@ const agent = new Agent(provider, { maxTokens: 4096 })
 agent.register(add)
 
 const result = await agent.run("What is 17 + 28?")
-console.log(result) // "done in 2 turns (completed)"
+console.log(result)
 ```
 
 Streaming:
@@ -106,9 +104,8 @@ const agent = new Agent(provider, {
 import { tool, readFile } from "@deepstrike/sdk"
 
 agent.register(tool("search", "Search.", schema, async (args) => ...))
-agent.register(readFile())   // built-in: read files from disk
+agent.register(readFile)     // built-in: read files from disk
 agent.unregister("search")
-agent.blockTool("bash")      // governance veto
 ```
 
 ---
@@ -211,6 +208,9 @@ const gov = new Governance("allow")
 gov.addPermissionRule("danger.*", "deny")
 gov.blockTool("rm_rf")
 gov.setRateLimit("api_call", 10, 60_000)
+gov.requireParam("write_file", "path")
+gov.allowParamValues("set_mode", "mode", ["read", "write"])
+gov.limitParamRange("sleep", "seconds", 0, 10)
 
 const agent = new Agent(provider, { maxTokens: 4096, governance: gov })
 // Every tool call goes through: Permission → Veto → RateLimit → Constraint → Audit
@@ -224,12 +224,10 @@ const agent = new Agent(provider, { maxTokens: 4096, governance: gov })
 import { SignalGateway, ScheduledPrompt } from "@deepstrike/sdk"
 
 const gw = new SignalGateway()
-const rx = gw.subscribe()
-
 gw.schedule(new ScheduledPrompt("standup", Date.now() + 3600_000))
-gw.ingest({ kind: "interrupt", payload: {}, priority: 10 })
+gw.ingest({ kind: "interrupt", urgency: "critical", payload: {} })
 
-const agent = new Agent(provider, { maxTokens: 4096, signalSource: rx })
+const agent = new Agent(provider, { maxTokens: 4096, signalSource: gw })
 // kind="interrupt" → immediately stops the running agent
 
 agent.interrupt() // also works directly

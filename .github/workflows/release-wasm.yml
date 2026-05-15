@@ -31,19 +31,15 @@ jobs:
         working-directory: crates/deepstrike-wasm
         run: wasm-pack build --release --target bundler --out-dir pkg
 
+      - name: Normalize wasm-kernel package metadata
+        run: node scripts/normalize-wasm-kernel-package.mjs "${GITHUB_REF_NAME#v}" crates/deepstrike-wasm/pkg
+
       - name: Publish @deepstrike/wasm-kernel
         shell: bash
         working-directory: crates/deepstrike-wasm/pkg
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set +e
-          npm publish --access public
-          code=$?
-          set -e
-          if [ "$code" -ne 0 ]; then
-            echo "npm publish exited $code (often: version already on registry)"
-          fi
+        run: node ../../../scripts/publish-npm-package.mjs .
 
       - name: Build and publish @deepstrike/wasm SDK
         shell: bash
@@ -51,12 +47,10 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          npm ci
+          npm install --no-save --package-lock=false ../crates/deepstrike-wasm/pkg
           npm run build
-          set +e
-          npm publish --access public
-          code=$?
-          set -e
-          if [ "$code" -ne 0 ]; then
-            echo "npm publish exited $code (often: version already on registry)"
-          fi
+          test -s dist/index.js
+          test -s dist/index.d.ts
+          npm test
+          npm pack --dry-run >/dev/null
+          node ../scripts/publish-npm-package.mjs .
