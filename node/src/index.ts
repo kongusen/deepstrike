@@ -1,9 +1,20 @@
 export { Agent } from "./agent.js"
 export type { AgentOptions } from "./agent.js"
 export { AnthropicProvider } from "./providers/anthropic.js"
-export { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider, KimiProvider } from "./providers/openai.js"
+export { OpenAIChatProvider, OpenAIProvider } from "./providers/openai.js"
+export { DeepSeekProvider } from "./providers/deepseek.js"
+export { KimiProvider } from "./providers/kimi.js"
+export { QwenProvider } from "./providers/qwen.js"
+export { GeminiProvider } from "./providers/gemini.js"
+export { MiniMaxProvider } from "./providers/minimax.js"
 export { OllamaProvider } from "./providers/ollama.js"
 export { CircuitBreaker, normalizeToolCall } from "./providers/base.js"
+export { OpenAIChatAdapter } from "./providers/openai-chat.js"
+export { OpenAIResponsesAdapter, OpenAIResponsesProvider } from "./providers/openai-responses.js"
+export type { OpenAIResponsesRunState } from "./providers/openai-responses.js"
+export { endpointProfiles, modelProfiles, getModelProfile } from "./providers/profiles.js"
+export { createProvider } from "./providers/catalog.js"
+export type { CreateProviderOptions, EndpointProfileId } from "./providers/catalog.js"
 export { tool, executeTools, readFile } from "./tools/index.js"
 export type { RegisteredTool } from "./tools/index.js"
 export { scanSkillDir, readSkillFile } from "./skills/loader.js"
@@ -27,5 +38,5 @@ export type {
   ContentPart, TextPart, ImagePart, AudioPart,
   StreamEvent, TextDelta, ThinkingDelta,
   ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent,
-  LLMProvider, RetryConfig, TokenUsage, ProviderToolSpec,
+  LLMProvider, RetryConfig, TokenUsage, ProviderToolSpec, ProviderRunState,
 } from "./types.js"

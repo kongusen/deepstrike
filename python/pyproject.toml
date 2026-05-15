@@ -11,6 +11,10 @@ dependencies = [
     "httpx>=0.27",
     "pyyaml>=6.0",
     "anyio>=4.0",
+    "anthropic>=0.40",
+    "openai>=1.0",
+    "google-generativeai>=0.8",
+    "dashscope>=1.20",
 ]
 
 [tool.maturin]

@@ -33,9 +33,9 @@ The correct platform package is selected and installed automatically via `option
 ## Quick start
 
 ```typescript
-import { Agent, OpenAIProvider, tool } from "@deepstrike/sdk"
+import { Agent, OpenAIResponsesProvider, tool } from "@deepstrike/sdk"
 
-const provider = new OpenAIProvider(process.env.OPENAI_API_KEY!, "gpt-5-mini")
+const provider = new OpenAIResponsesProvider(process.env.OPENAI_API_KEY!, "gpt-5-mini")
 
 const add = tool("add", "Add two numbers.", {
   type: "object",
@@ -67,15 +67,28 @@ for await (const event of agent.runStreaming("Summarize README.md")) {
 
 | Class | Backend | Notes |
 |-------|---------|-------|
-| `OpenAIProvider` | OpenAI API | SSE tool-call accumulation |
+| `OpenAIChatProvider` | OpenAI Chat Completions API | SSE tool-call accumulation |
+| `OpenAIProvider` | OpenAI Chat Completions API | Compatibility alias for `OpenAIChatProvider` |
+| `OpenAIResponsesProvider` | OpenAI Responses API | Native `previous_response_id` continuation |
 | `AnthropicProvider` | Anthropic API | Native SSE, `ThinkingDelta` support |
 | `QwenProvider` | DashScope | `enable_thinking` via extensions |
-| `DeepSeekProvider` | DeepSeek API | Reasoner models strip tools automatically |
-| `MiniMaxProvider` | MiniMax API | M1 reasoning via `expose_reasoning` |
+| `DeepSeekProvider` | DeepSeek API | V4 thinking controls + reasoning replay across tool turns |
+| `MiniMaxProvider` | MiniMax API | Anthropic-compatible M2.7/M2.5 path |
 | `OllamaProvider` | Local Ollama | `http://localhost:11434` default |
-| `KimiProvider` | Moonshot API | |
+| `KimiProvider` | Moonshot API | K2.6 default; K2.5 also supported |
 
 All providers accept `RetryConfig` for exponential backoff and share a `CircuitBreaker`.
+
+OpenAI can also be selected through the provider catalog:
+
+```typescript
+import { createProvider } from "@deepstrike/sdk"
+
+const provider = createProvider({
+  model: "openai/gpt-5-mini",
+  apiKey: process.env.OPENAI_API_KEY!,
+})
+```
 
 ---
 

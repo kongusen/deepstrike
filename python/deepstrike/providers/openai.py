@@ -1,140 +1,126 @@
 from __future__ import annotations
-import asyncio
 import json
 import logging
 from typing import AsyncIterator
-import httpx
+from openai import AsyncOpenAI
 from deepstrike._kernel import Message, ToolCall, ToolSchema
-from .stream import StreamEvent, TextDelta, ToolCallEvent, DoneEvent
+from .stream import StreamEvent, TextDelta, ToolCallEvent
 from .base import RetryConfig, CircuitBreaker, normalize_tool_call, to_openai_content
 
 logger = logging.getLogger(__name__)
 
 
 class OpenAIProvider:
-    def __init__(self, api_key: str, model: str = "gpt-4o", retry_config: RetryConfig | None = None, base_url: str = "https://api.openai.com/v1"):
-        self._api_key = api_key
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gpt-4o",
+        retry_config: RetryConfig | None = None,
+        base_url: str = "https://api.openai.com/v1",
+    ):
         self._model = model
-        self._base_url = base_url
         self._retry = retry_config or RetryConfig()
         self._circuit = CircuitBreaker(self._retry)
+        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
 
-    def _headers(self) -> dict:
-        return {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
+    def _build_messages(self, messages: list[Message]) -> list[dict]:
+        return [{"role": m.role, "content": to_openai_content(m)} for m in messages]
 
-    def _build_body(self, messages: list[Message], tools: list[ToolSchema], stream: bool) -> dict:
-        body: dict = {
-            "model": self._model,
-            "messages": [{"role": m.role, "content": to_openai_content(m)} for m in messages],
-        }
-        if tools:
-            body["tools"] = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": json.loads(t.parameters),
-                    },
-                }
-                for t in tools
-            ]
-        if stream:
-            body["stream"] = True
-            body["stream_options"] = {"include_usage": True}
-        return body
+    def _build_tools(self, tools: list[ToolSchema]) -> list[dict] | None:
+        if not tools:
+            return None
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": json.loads(t.parameters),
+                },
+            }
+            for t in tools
+        ]
 
     async def complete(self, messages: list[Message], tools: list[ToolSchema]) -> Message:
         if self._circuit.is_open():
-            raise Exception("Circuit breaker open")
+            raise RuntimeError("Circuit breaker open")
+
+        msgs = self._build_messages(messages)
+        tool_defs = self._build_tools(tools)
 
         last_exc = None
         for attempt in range(self._retry.max_retries):
             try:
-                async with httpx.AsyncClient() as client:
-                    resp = await client.post(
-                        f"{self._base_url}/chat/completions",
-                        headers=self._headers(),
-                        json=self._build_body(messages, tools, stream=False),
-                        timeout=120,
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
+                resp = await self._client.chat.completions.create(
+                    model=self._model,
+                    messages=msgs,
+                    tools=tool_defs,
+                )
+                self._circuit.record_success()
 
-                choice = data["choices"][0]["message"]
-                content_text = choice.get("content") or ""
+                choice = resp.choices[0].message
+                content = choice.content or ""
                 tool_calls: list[ToolCall] = []
-                for tc in choice.get("tool_calls") or []:
-                    normalized = normalize_tool_call(tc["id"], tc["function"]["name"], tc["function"].get("arguments", "{}"))
+
+                for tc in choice.tool_calls or []:
+                    normalized = normalize_tool_call(tc.id, tc.function.name, tc.function.arguments)
                     if normalized:
                         tool_calls.append(normalized)
 
-                usage = data.get("usage", {})
-                self._circuit.record_success()
                 return Message(
                     role="assistant",
-                    content=content_text,
-                    token_count=usage.get("total_tokens", 0),
-                    tool_calls=tool_calls,
+                    content=content,
+                    token_count=resp.usage.total_tokens if resp.usage else None,
+                    tool_calls=tool_calls or None,
                 )
             except Exception as exc:
                 last_exc = exc
                 self._circuit.record_failure()
                 if attempt < self._retry.max_retries - 1:
+                    import asyncio
                     delay = self._retry.base_delay * (2 ** attempt)
-                    logger.warning("Retry %d/%d after %.1fs: %s", attempt + 1, self._retry.max_retries, delay, exc)
                     await asyncio.sleep(delay)
 
-        raise last_exc or Exception("Complete failed")
+        raise last_exc or RuntimeError("Complete failed")
 
     async def stream(self, messages: list[Message], tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
-        return self._stream_gen(messages, tools)
+        msgs = self._build_messages(messages)
+        tool_defs = self._build_tools(tools)
+        tool_call_bufs: dict[int, dict] = {}
 
-    async def _stream_gen(self, messages: list[Message], tools: list[ToolSchema]) -> AsyncIterator[StreamEvent]:
-        # per-index accumulator for tool calls
-        tool_calls: dict[int, dict] = {}
+        stream = await self._client.chat.completions.create(
+            model=self._model,
+            messages=msgs,
+            tools=tool_defs,
+            stream=True,
+            stream_options={"include_usage": True},
+        )
 
-        async with httpx.AsyncClient() as client:
-            async with client.stream(
-                "POST",
-                f"{self._base_url}/chat/completions",
-                headers=self._headers(),
-                json=self._build_body(messages, tools, stream=True),
-                timeout=120,
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    raw = line[5:].strip()
-                    if raw in ("", "[DONE]"):
-                        continue
-                    chunk = json.loads(raw)
-                    choice = (chunk.get("choices") or [{}])[0]
-                    delta = choice.get("delta", {})
+        async for chunk in stream:
+            choice = chunk.choices[0] if chunk.choices else None
+            if not choice:
+                continue
 
-                    if text := delta.get("content"):
-                        yield TextDelta(delta=text)
+            delta = choice.delta
+            if delta.content:
+                yield TextDelta(delta=delta.content)
 
-                    for tc_delta in delta.get("tool_calls") or []:
-                        idx = tc_delta["index"]
-                        if idx not in tool_calls:
-                            tool_calls[idx] = {"id": tc_delta.get("id", ""), "name": "", "args_buf": ""}
-                        fn = tc_delta.get("function", {})
-                        if fn.get("name"):
-                            tool_calls[idx]["name"] += fn["name"]
-                        tool_calls[idx]["args_buf"] += fn.get("arguments", "")
+            for tc in delta.tool_calls or []:
+                idx = tc.index
+                if idx not in tool_call_bufs:
+                    tool_call_bufs[idx] = {"id": tc.id or "", "name": "", "args_buf": ""}
+                if tc.function and tc.function.name:
+                    tool_call_bufs[idx]["name"] += tc.function.name
+                if tc.function and tc.function.arguments:
+                    tool_call_bufs[idx]["args_buf"] += tc.function.arguments
 
-                    if choice.get("finish_reason") == "tool_calls":
-                        for tb in tool_calls.values():
-                            try:
-                                args = json.loads(tb["args_buf"] or "{}")
-                            except json.JSONDecodeError:
-                                args = {}
-                            tc = normalize_tool_call(tb["id"], tb["name"], args)
-                            if tc:
-                                yield ToolCallEvent(id=tc.id, name=tc.name, arguments=args)
-                        tool_calls.clear()
+            if choice.finish_reason == "tool_calls":
+                for tb in tool_call_bufs.values():
+                    try:
+                        args = json.loads(tb["args_buf"] or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    tc_obj = normalize_tool_call(tb["id"], tb["name"], args)
+                    if tc_obj:
+                        yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)
+                tool_call_bufs.clear()

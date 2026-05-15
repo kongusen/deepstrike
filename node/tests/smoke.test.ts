@@ -2,7 +2,9 @@ import { CircuitBreaker, normalizeToolCall } from "../src/providers/base.js"
 import { tool, executeTools, readFile } from "../src/tools/index.js"
 import { WorkingMemory } from "../src/memory/working.js"
 import { AnthropicProvider } from "../src/providers/anthropic.js"
-import { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider } from "../src/providers/openai.js"
+import { OpenAIChatProvider, OpenAIProvider, QwenProvider, DeepSeekProvider, KimiProvider } from "../src/providers/openai.js"
+import { OpenAIResponsesProvider } from "../src/providers/openai-responses.js"
+import { MiniMaxProvider } from "../src/providers/minimax.js"
 import { PermissionManager, PermissionMode } from "../src/safety/permissions.js"
 import { ScheduledPrompt } from "../src/signals/scheduled.js"
 
@@ -125,6 +127,31 @@ describe("Provider instantiation", () => {
   it("OpenAIProvider constructs", () => {
     const p = new OpenAIProvider("test-key")
     expect(p).toBeDefined()
+  })
+
+  it("OpenAIChatProvider and OpenAIResponsesProvider construct as separate native paths", () => {
+    expect(new OpenAIChatProvider("test-key")).toBeInstanceOf(OpenAIChatProvider)
+    expect(new OpenAIProvider("test-key")).toBeInstanceOf(OpenAIChatProvider)
+    expect(new OpenAIResponsesProvider("test-key")).toBeInstanceOf(OpenAIResponsesProvider)
+  })
+
+  it("OpenAI-compatible providers construct beside browser-like editor globals and restore them", () => {
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: { document: {} },
+    })
+
+    try {
+      const providers = [OpenAIProvider, OpenAIChatProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider, KimiProvider]
+      for (const Provider of providers) expect(new Provider("test-key")).toBeDefined()
+      expect((globalThis as typeof globalThis & { window?: unknown }).window).toEqual({ document: {} })
+    } finally {
+      if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow)
+      else Reflect.deleteProperty(globalThis, "window")
+    }
   })
 
   it("QwenProvider constructs", () => {

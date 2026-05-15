@@ -121,6 +121,7 @@ export class Agent {
 
     const kernel = getKernel()
     const ext = { ...this.extensions, ...(extensions ?? {}) }
+    const providerState = this.provider.createRunState?.()
 
     const sm = new kernel.LoopStateMachine({
       maxTokens: this.options.maxTokens,
@@ -216,7 +217,7 @@ export class Agent {
 
         let turnTokens = 0
         try {
-          for await (const evt of this.provider.stream(messages, tools, Object.keys(ext).length ? ext : undefined)) {
+          for await (const evt of this.provider.stream(messages, tools, Object.keys(ext).length ? ext : undefined, providerState)) {
             if (evt.type === "usage") { turnTokens = (evt as { type: string; totalTokens: number }).totalTokens; continue }
             yield evt
             if (evt.type === "text_delta") finalText += (evt as TextDelta).delta
@@ -402,10 +403,12 @@ export class Agent {
     }
 
     let synthesisText = ""
+    const providerState = this.provider.createRunState?.()
     for await (const evt of this.provider.stream(
       (action1.messages ?? []) as Message[],
       [],
       undefined,
+      providerState,
     )) {
       if (evt.type === "text_delta") synthesisText += (evt as TextDelta).delta
     }

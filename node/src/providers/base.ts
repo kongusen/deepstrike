@@ -54,6 +54,9 @@ export function toAnthropicContent(msg: Message): string | Array<Record<string, 
     if (p.type === "audio") {
       return { type: "text", text: `[audio: ${p.mediaType}]` }
     }
+    if (p.type === "tool_result") {
+      return { type: "tool_result", tool_use_id: p.callId, content: p.output, is_error: p.isError }
+    }
     return { type: "text", text: "" }
   })
 }
@@ -69,6 +72,89 @@ export function toOpenAIContent(msg: Message): string | Array<Record<string, unk
     if (p.type === "audio") {
       return { type: "input_audio", input_audio: { data: p.data, format: p.mediaType?.split("/")[1] ?? "wav" } }
     }
+    if (p.type === "tool_result") {
+      return { type: "text", text: p.output }
+    }
     return { type: "text", text: "" }
   })
+}
+
+function parseToolArguments(args: string): Record<string, unknown> {
+  try { return JSON.parse(args || "{}") as Record<string, unknown> } catch { return {} }
+}
+
+export function splitAnthropicSystem(messages: Message[]): string {
+  return messages.filter(m => m.role === "system").map(m => m.content).join("\n\n")
+}
+
+export function toAnthropicMessages(
+  messages: Message[],
+  nativeReplay?: (message: Message) => Array<Record<string, unknown>> | undefined,
+): Array<Record<string, unknown>> {
+  const result: Array<Record<string, unknown>> = []
+
+  for (const msg of messages.filter(m => m.role !== "system")) {
+    if (msg.role === "tool") {
+      const parts = (msg.contentParts ?? [])
+        .filter((p): p is Extract<ContentPart, { type: "tool_result" }> => p.type === "tool_result")
+        .map(p => ({ type: "tool_result", tool_use_id: p.callId, content: p.output, is_error: p.isError }))
+      if (parts.length) result.push({ role: "user", content: parts })
+      continue
+    }
+
+    if (msg.role === "assistant" && msg.toolCalls?.length) {
+      const replay = nativeReplay?.(msg)
+      if (replay) {
+        result.push({ role: "assistant", content: replay })
+        continue
+      }
+      const blocks: Array<Record<string, unknown>> = []
+      if (msg.content) blocks.push({ type: "text", text: msg.content })
+      blocks.push(...msg.toolCalls.map(tc => ({
+        type: "tool_use",
+        id: tc.id,
+        name: tc.name,
+        input: parseToolArguments(tc.arguments),
+      })))
+      result.push({ role: "assistant", content: blocks })
+      continue
+    }
+
+    result.push({
+      role: msg.role,
+      content: toAnthropicContent(msg),
+    })
+  }
+
+  return result
+}
+
+export function toOpenAIMessageParams(messages: Message[]): Array<Record<string, unknown>> {
+  const result: Array<Record<string, unknown>> = []
+
+  for (const msg of messages) {
+    if (msg.role === "tool") {
+      const parts = (msg.contentParts ?? [])
+        .filter((p): p is Extract<ContentPart, { type: "tool_result" }> => p.type === "tool_result")
+      for (const p of parts) {
+        result.push({ role: "tool", tool_call_id: p.callId, content: p.output })
+      }
+      continue
+    }
+
+    const next: Record<string, unknown> = {
+      role: msg.role,
+      content: toOpenAIContent(msg),
+    }
+    if (msg.role === "assistant" && msg.toolCalls?.length) {
+      next.tool_calls = msg.toolCalls.map(tc => ({
+        id: tc.id,
+        type: "function",
+        function: { name: tc.name, arguments: tc.arguments },
+      }))
+    }
+    result.push(next)
+  }
+
+  return result
 }

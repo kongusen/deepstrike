@@ -9,7 +9,8 @@ All providers implement the `LLMProvider` interface and can be dropped into any 
 | Provider | API endpoint | Default model | Thinking / Reasoning | Images | SDK availability |
 |----------|-------------|---------------|----------------------|--------|-----------------|
 | `AnthropicProvider` | `api.anthropic.com` | `claude-sonnet-4-6` | `ThinkingDelta` via `enable_thinking` | URL + base64 | Node / Python / Rust / WASM |
-| `OpenAIProvider` | `api.openai.com` | `gpt-4o` | — | URL + base64 (data-URI) | Node / Python / Rust / WASM |
+| `OpenAIChatProvider` / `OpenAIProvider` | OpenAI Chat Completions | `gpt-4o` | — | URL + base64 (data-URI) | Node / Python / Rust / WASM |
+| `OpenAIResponsesProvider` | OpenAI Responses | `gpt-4.1` | Native `previous_response_id` continuation | URL + base64 (data-URI) | Node |
 | `QwenProvider` | DashScope `dashscope.aliyuncs.com` | `qwen-max` | `ThinkingDelta` via `enableThinking` | URL | Node / Python / Rust / WASM |
 | `DeepSeekProvider` | `api.deepseek.com` | `deepseek-chat` | `ThinkingDelta` via `exposeReasoning` (reasoner models) | — | Node / Python / Rust / WASM |
 | `MiniMaxProvider` | `api.minimax.chat` | `MiniMax-Text-01` | `ThinkingDelta` via `exposeReasoning` (M1 models) | — | Node / Python / Rust / WASM |
@@ -69,21 +70,43 @@ let provider = AnthropicProvider::with_model(api_key, "claude-opus-4-7");
 
 ---
 
-## OpenAIProvider
+## OpenAIChatProvider / OpenAIProvider
 
-Compatible with any OpenAI-compatible API (OpenAI, Azure OpenAI, local gateways). Pass a custom `baseUrl` to redirect traffic.
+Compatible with any OpenAI-compatible Chat Completions API (OpenAI, Azure OpenAI, local gateways). Pass a custom `baseUrl` to redirect traffic. `OpenAIProvider` remains a compatibility alias for `OpenAIChatProvider`.
 
 ### Node.js
 
 ```typescript
-import { OpenAIProvider } from "@deepstrike/sdk"
+import { OpenAIChatProvider } from "@deepstrike/sdk"
 
-const provider = new OpenAIProvider(
+const provider = new OpenAIChatProvider(
   process.env.OPENAI_API_KEY!,
   "gpt-4o",                         // optional; default: "gpt-4o"
   { maxRetries: 3, baseDelay: 1000 },
   "https://my-gateway.example.com/v1",  // optional custom base URL
 )
+```
+
+Use `OpenAIResponsesProvider` for OpenAI's Responses API and native run continuation:
+
+```typescript
+import { OpenAIResponsesProvider } from "@deepstrike/sdk"
+
+const provider = new OpenAIResponsesProvider(
+  process.env.OPENAI_API_KEY!,
+  "gpt-5-mini",
+)
+```
+
+The Node catalog selects the protocol from model profiles:
+
+```typescript
+import { createProvider } from "@deepstrike/sdk"
+
+const provider = createProvider({
+  model: "openai/gpt-5-mini",
+  apiKey: process.env.OPENAI_API_KEY!,
+})
 ```
 
 ### Python

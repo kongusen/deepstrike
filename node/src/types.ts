@@ -23,7 +23,14 @@ export interface AudioPart {
   mediaType: string
 }
 
-export type ContentPart = TextPart | ImagePart | AudioPart
+export interface ToolResultPart {
+  type: "tool_result"
+  callId: string
+  output: string
+  isError: boolean
+}
+
+export type ContentPart = TextPart | ImagePart | AudioPart | ToolResultPart
 
 export interface Message {
   role: "system" | "user" | "assistant" | "tool"
@@ -122,7 +129,22 @@ export interface RetryConfig {
   circuitResetAfter?: number
 }
 
+/**
+ * Opaque provider-owned state scoped to a single Agent run.
+ *
+ * The framework only creates and threads this object through provider turns.
+ * Providers may use it for protocol-native continuation state such as
+ * Responses `previous_response_id` without leaking those semantics into the kernel.
+ */
+export type ProviderRunState = Record<string, unknown>
+
 export interface LLMProvider {
+  createRunState?(): ProviderRunState
   complete(messages: Message[], tools: ToolSchema[]): Promise<Message>
-  stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent>
+  stream(
+    messages: Message[],
+    tools: ToolSchema[],
+    extensions?: Record<string, unknown>,
+    state?: ProviderRunState,
+  ): AsyncIterable<StreamEvent>
 }
