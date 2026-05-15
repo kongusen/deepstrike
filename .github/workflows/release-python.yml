@@ -9,7 +9,7 @@ jobs:
     strategy:
       matrix:
         include:
-          # glibc Linux
+          # glibc Linux — maturin-action 提供 manylinux Docker 环境
           - os: ubuntu-latest
             target: x86_64
             manylinux: auto
@@ -27,24 +27,28 @@ jobs:
             target: aarch64
             manylinux: musllinux_1_2
             run_smoke: "false"
-          # macOS
+          # macOS — 直接跑 maturin，不经过 action（规避 rustup-init --print regression）
           - os: macos-latest
             target: x86_64
             manylinux: auto
             run_smoke: "false"  # macos-latest runners are arm64; cross-compiled x86_64 won't run
+            rust_target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64
             manylinux: auto
             run_smoke: "true"
-          # Windows
+            rust_target: aarch64-apple-darwin
+          # Windows — 直接跑 maturin；aarch64 依赖 PyO3 generate-import-lib
           - os: windows-latest
             target: x86_64
             manylinux: auto
             run_smoke: "true"
+            rust_target: x86_64-pc-windows-msvc
           - os: windows-latest
             target: aarch64
             manylinux: auto
             run_smoke: "false"
+            rust_target: aarch64-pc-windows-msvc
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -54,19 +58,29 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # maturin-action@v1 latest 有 installRustTarget 调用 rustup-init --print 的 regression
-      # 提前 add target 后 action 会检测到已存在而跳过，避免触发 bug
-      - name: Pre-install macOS cross-compile Rust targets
+      # macOS：提前安装双架构 Rust target，供 maturin cross-compile 使用
+      - name: Add macOS cross-compile Rust targets
         if: matrix.os == 'macos-latest'
         run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
 
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1.7.0
+      # Linux：maturin-action 负责启动 manylinux/musllinux Docker 容器
+      - name: Build wheels (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --interpreter 3.12
           working-directory: python
           manylinux: ${{ matrix.manylinux }}
+
+      # macOS / Windows：直接调用 maturin，绕过 action 的 rustup-init 问题
+      - name: Build wheels (macOS / Windows)
+        if: matrix.os != 'ubuntu-latest'
+        shell: bash
+        working-directory: python
+        run: |
+          pip install "maturin>=1.7,<2"
+          maturin build --release --out dist --interpreter 3.12 --target ${{ matrix.rust_target }}
 
       - name: Smoke install wheel
         if: matrix.run_smoke == 'true'
