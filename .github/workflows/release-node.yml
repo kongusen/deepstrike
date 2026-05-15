@@ -285,8 +285,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/deepstrike-node-smoke/packs /tmp/deepstrike-node-smoke/app
-          npm pack crates/deepstrike-node --pack-destination /tmp/deepstrike-node-smoke/packs
-          npm pack crates/deepstrike-node/npm/linux-x64-gnu --pack-destination /tmp/deepstrike-node-smoke/packs
+          npm pack ./crates/deepstrike-node --pack-destination /tmp/deepstrike-node-smoke/packs
+          npm pack ./crates/deepstrike-node/npm/linux-x64-gnu --pack-destination /tmp/deepstrike-node-smoke/packs
           cd /tmp/deepstrike-node-smoke/app
           npm init -y >/dev/null
           npm install --ignore-scripts /tmp/deepstrike-node-smoke/packs/deepstrike-core-*.tgz /tmp/deepstrike-node-smoke/packs/deepstrike-core-linux-x64-gnu-*.tgz
