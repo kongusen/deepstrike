@@ -115,7 +115,7 @@ jobs:
           cargo zigbuild --release --target ${{ matrix.target }} --manifest-path Cargo.toml
           mkdir -p artifacts
           cp "../../target/${{ matrix.target }}/release/libdeepstrike_node.so" \
-             "artifacts/deepstrike-core.${{ matrix.pkg }}.node"
+             "artifacts/index.${{ matrix.pkg }}.node"
         working-directory: crates/deepstrike-node
 
       - name: Build native addon (Linux arm64 musl)
@@ -127,7 +127,7 @@ jobs:
           cargo zigbuild --release --target ${{ matrix.target }} --manifest-path Cargo.toml
           mkdir -p artifacts
           cp "../../target/${{ matrix.target }}/release/libdeepstrike_node.so" \
-             "artifacts/deepstrike-core.${{ matrix.pkg }}.node"
+             "artifacts/index.${{ matrix.pkg }}.node"
         working-directory: crates/deepstrike-node
 
       - name: Build native addon
@@ -230,7 +230,8 @@ jobs:
           VERSION="${{ steps.release.outputs.version }}"
           node scripts/sync-node-release-version.mjs "$VERSION"
 
-      # 把对应 .node 文件复制进各平台 npm 目录，然后发布
+      # 构建阶段统一收敛为 napi 生成的 index.<pkg>.node 命名；
+      # 发布时再复制为各平台 npm 包实际暴露的 deepstrike-core.<pkg>.node。
       # artifacts/ 在 repo root，从 crates/deepstrike-node/ 需 ../../artifacts/
       - name: Install native addons into platform packages
         working-directory: crates/deepstrike-node
@@ -239,7 +240,7 @@ jobs:
           for dir in npm/*/; do
             pkg=$(basename "$dir")
             expected="$dir/deepstrike-core.${pkg}.node"
-            node_file=$(find ../../artifacts -maxdepth 1 -type f -name "deepstrike-core.${pkg}.node" -print -quit)
+            node_file=$(find ../../artifacts -maxdepth 1 -type f -name "index.${pkg}.node" -print -quit)
             if [ -z "$node_file" ]; then
               echo "::error::No .node file found for $pkg"
               ls -la ../../artifacts
