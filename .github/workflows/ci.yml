@@ -38,13 +38,14 @@ jobs:
       - run: npm test
         working-directory: node
 
-      # 与 release 一致：静态 musl（Rust 对 musl target 默认 +crt-static，无需 libgcc_s.so.1）
+      # 与 release 一致：显式 +crt-static 使 cdylib 走静态 libgcc_eh 而非动态 libgcc_s.so.1
       - name: Install musl toolchain for x64 musl verification
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Verify Linux x64 musl native build
         shell: bash
         env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
           CC_x86_64_unknown_linux_musl: x86_64-linux-musl-gcc
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-linux-musl-gcc
         run: |
@@ -72,6 +73,7 @@ jobs:
       - name: Verify Linux arm64 musl native build
         shell: bash
         env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
           CC_aarch64_unknown_linux_musl: musl-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |

@@ -88,12 +88,13 @@ jobs:
         run: napi build --release --platform --target ${{ matrix.target }} artifacts
         working-directory: crates/deepstrike-node
 
-      # musl：Rust 对 musl target 默认使用静态 libc（+crt-static），无需 libgcc_s.so.1
-      # x64-musl 在 x64 Ubuntu 上交叉编译；arm64-musl 在 arm64 runner 上原生编译
+      # musl cdylib：对共享库 Rust 不自动启用 +crt-static，需显式指定
+      # +crt-static → 链接 libgcc_eh.a（静态）替代 libgcc_s.so.1（动态，musl 工具链无此文件）
       - name: Build native addon (Linux x64 musl)
         if: matrix.target == 'x86_64-unknown-linux-musl'
         shell: bash
         env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
           CC_x86_64_unknown_linux_musl: x86_64-linux-musl-gcc
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-linux-musl-gcc
         run: napi build --release --platform --target ${{ matrix.target }} artifacts
@@ -103,6 +104,7 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-musl'
         shell: bash
         env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
           CC_aarch64_unknown_linux_musl: musl-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: napi build --release --platform --target ${{ matrix.target }} artifacts
