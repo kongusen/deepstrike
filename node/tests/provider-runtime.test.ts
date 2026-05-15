@@ -1,4 +1,5 @@
-import { DeepSeekProvider, KimiProvider } from "../src/providers/openai.js"
+import { DeepSeekProvider } from "../src/providers/deepseek.js"
+import { KimiProvider } from "../src/providers/kimi.js"
 import { MiniMaxProvider } from "../src/providers/minimax.js"
 
 describe("current provider runtime behavior", () => {

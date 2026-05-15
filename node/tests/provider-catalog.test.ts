@@ -1,5 +1,7 @@
 import { createProvider } from "../src/providers/catalog.js"
-import { DeepSeekProvider, KimiProvider, OpenAIChatProvider } from "../src/providers/openai.js"
+import { OpenAIChatProvider } from "../src/providers/openai.js"
+import { DeepSeekProvider } from "../src/providers/deepseek.js"
+import { KimiProvider } from "../src/providers/kimi.js"
 import { OpenAIResponsesProvider } from "../src/providers/openai-responses.js"
 import { MiniMaxProvider } from "../src/providers/minimax.js"
 
