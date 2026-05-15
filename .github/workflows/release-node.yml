@@ -75,13 +75,9 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Install ARM64 musl cross-compiler (for aarch64-unknown-linux-musl on ARM64 runner)
-        if: matrix.target == 'aarch64-unknown-linux-musl'
+      - name: Install musl toolchain (Linux)
+        if: contains(matrix.target, 'linux-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-
-      - name: Install cargo-zigbuild (x64 musl cross-compile)
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: pip install ziglang && cargo install cargo-zigbuild
 
       - name: Build native addon (ARM64 Linux cross-compile)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -92,25 +88,21 @@ jobs:
         run: napi build --release --platform --target ${{ matrix.target }} artifacts
         working-directory: crates/deepstrike-node
 
-      # x64 musl: zig 提供完整工具链（含 libgcc_s），避免 musl-tools 缺少动态 libgcc 的链接错误
-      - name: Build native addon (Linux x64 musl via zigbuild)
+      # musl：Rust 对 musl target 默认使用静态 libc（+crt-static），无需 libgcc_s.so.1
+      # x64-musl 在 x64 Ubuntu 上交叉编译；arm64-musl 在 arm64 runner 上原生编译
+      - name: Build native addon (Linux x64 musl)
         if: matrix.target == 'x86_64-unknown-linux-musl'
         shell: bash
         env:
-          RUSTFLAGS: "-C target-feature=-crt-static"
-        run: |
-          cargo zigbuild --release --target ${{ matrix.target }} --manifest-path Cargo.toml
-          mkdir -p artifacts
-          cp "target/${{ matrix.target }}/release/libdeepstrike_node.so" \
-             "artifacts/deepstrike-core.${{ matrix.pkg }}.node"
+          CC_x86_64_unknown_linux_musl: x86_64-linux-musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-linux-musl-gcc
+        run: napi build --release --platform --target ${{ matrix.target }} artifacts
         working-directory: crates/deepstrike-node
 
-      # arm64 musl: 在 arm64 runner 上原生编译，musl-tools 提供 musl-gcc 即可
       - name: Build native addon (Linux arm64 musl)
         if: matrix.target == 'aarch64-unknown-linux-musl'
         shell: bash
         env:
-          RUSTFLAGS: "-C target-feature=-crt-static"
           CC_aarch64_unknown_linux_musl: musl-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: napi build --release --platform --target ${{ matrix.target }} artifacts
