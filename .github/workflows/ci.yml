@@ -30,25 +30,28 @@ jobs:
         working-directory: crates/deepstrike-node
       - name: Install @deepstrike/core from local build
         run: |
+          # 先把生成物写入 crate root，npm install 建 symlink 后文件自动就位
           cp ../crates/deepstrike-node/artifacts/index.d.ts ../crates/deepstrike-node/
+          cp ../crates/deepstrike-node/artifacts/*.node     ../crates/deepstrike-node/
           npm install --no-save --package-lock=false --ignore-scripts --omit=optional ../crates/deepstrike-node
-          cp ../crates/deepstrike-node/artifacts/*.node node_modules/@deepstrike/core/
-          cp ../crates/deepstrike-node/index.d.ts ../crates/deepstrike-node/index.js node_modules/@deepstrike/core/
         working-directory: node
       - run: npm test
         working-directory: node
 
-      # 与 release 一致：Alpine / musl 需单独 target；输出到独立目录以免覆盖 gnu 产物
+      # 与 release 一致：Alpine / musl 需单独 target；用 zigbuild 解决动态 libgcc_s 缺失
+      - name: Install cargo-zigbuild for musl verification
+        run: pip install ziglang && cargo install cargo-zigbuild
+
       - name: Verify Linux x64 musl native build
         shell: bash
         env:
           RUSTFLAGS: "-C target-feature=-crt-static"
-          CC_x86_64_unknown_linux_musl: x86_64-linux-musl-gcc
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-linux-musl-gcc
         run: |
           set -euo pipefail
-          sudo apt-get update && sudo apt-get install -y musl-tools
-          napi build --release --platform --target x86_64-unknown-linux-musl artifacts-musl
+          cargo zigbuild --release --target x86_64-unknown-linux-musl --manifest-path Cargo.toml
+          mkdir -p artifacts-musl
+          cp target/x86_64-unknown-linux-musl/release/libdeepstrike_node.so \
+             artifacts-musl/deepstrike-core.linux-x64-musl.node
           test -f artifacts-musl/deepstrike-core.linux-x64-musl.node
         working-directory: crates/deepstrike-node
 
@@ -65,15 +68,17 @@ jobs:
         with: { key: "aarch64-unknown-linux-musl" }
       - name: Install napi-rs CLI
         run: npm install -g @napi-rs/cli@2
+      - name: Install musl toolchain (arm64 native)
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
       - name: Verify Linux arm64 musl native build
         shell: bash
         env:
           RUSTFLAGS: "-C target-feature=-crt-static"
-          CC_aarch64_unknown_linux_musl: aarch64-linux-musl-gcc
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
           set -euo pipefail
-          sudo apt-get update && sudo apt-get install -y musl-tools
           napi build --release --platform --target aarch64-unknown-linux-musl artifacts-musl-arm64
           test -f artifacts-musl-arm64/deepstrike-core.linux-arm64-musl.node
         working-directory: crates/deepstrike-node

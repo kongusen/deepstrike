@@ -117,7 +117,7 @@ export class HarnessLoop {
       if (evalAction.kind !== "evaluate") break
 
       let evalText = ""
-      for await (const evt of this.evalProvider.stream(evalAction.messages ?? [], [], undefined)) {
+      for await (const evt of this.evalProvider.stream((evalAction.messages ?? []) as import("../types.js").Message[], [], undefined)) {
         if (evt.type === "text_delta") evalText += (evt as TextDelta).delta
       }
 
@@ -126,7 +126,7 @@ export class HarnessLoop {
 
       const verdict: Verdict = {
         passed: doneAction.passed ?? false,
-        overallScore: doneAction.overall_score ?? 0,
+        overallScore: doneAction.overallScore ?? 0,
         feedback: doneAction.feedback ?? "",
         details: doneAction.details ?? [],
       }

@@ -28,6 +28,6 @@ export class Governance {
 
   evaluate(toolName: string, argsJson: string): GovernanceVerdict {
     if (!this._inner) return { kind: "allow" }
-    return this._inner.evaluate(toolName, argsJson)
+    return this._inner.evaluate(toolName, argsJson) as GovernanceVerdict
   }
 }
