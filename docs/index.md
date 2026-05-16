@@ -12,6 +12,7 @@ DeepStrike is a cross-language agent runtime built around a pure-Rust kernel. Th
 | [Architecture](./architecture.md) | Kernel design, SDK layer, binding architecture, message content model |
 | [Core Concepts](./core-concepts.md) | Skills, Memory, Knowledge, Harness, Signals, Safety |
 | [Providers](./providers.md) | All LLM providers, configuration, thinking/reasoning flags, multimodal support |
+| [Release Runbook](./release-runbook.md) | Version propagation, verification, release flow, and recovery |
 
 ---
 
