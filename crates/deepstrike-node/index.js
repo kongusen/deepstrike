@@ -60,7 +60,9 @@ function packageTriple() {
 function requireLocal(triple) {
   const candidates = [
     `deepstrike-core.${triple}.node`,
+    `index.${triple}.node`,
     'deepstrike-core.node',
+    'index.node',
   ]
 
   for (const candidate of candidates) {
