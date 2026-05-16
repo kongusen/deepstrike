@@ -10,7 +10,7 @@ export class MiniMaxProvider extends AnthropicProvider {
   ) {
     super(apiKey, model, retry, {
       baseURL,
-      authMode: "bearer",
+      authMode: "api-key",
     })
   }
 }

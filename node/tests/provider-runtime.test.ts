@@ -9,6 +9,16 @@ describe("current provider runtime behavior", () => {
       .toBe("https://api.minimaxi.com/anthropic")
   })
 
+  it("uses Anthropic api-key auth for MiniMax by default", () => {
+    const provider = new MiniMaxProvider("test-key")
+    const client = (provider as unknown as {
+      client: { apiKey: string | null; authToken: string | null }
+    }).client
+
+    expect(client.apiKey).toBe("test-key")
+    expect(client.authToken).toBeNull()
+  })
+
   it("uses kimi-k2.6 as the current Kimi default", () => {
     const provider = new KimiProvider("test-key")
     expect((provider as unknown as { model: string }).model).toBe("kimi-k2.6")
