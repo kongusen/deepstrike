@@ -53,6 +53,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: "24" }
+      - name: Verify release manifests
+        shell: bash
+        run: |
+          test "v$(cat VERSION)" = "$GITHUB_REF_NAME"
+          node scripts/sync-release-version.mjs --check
       - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - uses: dtolnay/rust-toolchain@stable
@@ -111,6 +118,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: "24" }
+      - name: Verify release manifests
+        run: |
+          test "v$(cat VERSION)" = "$GITHUB_REF_NAME"
+          node scripts/sync-release-version.mjs --check
       - uses: PyO3/maturin-action@v1
         with:
           command: sdist

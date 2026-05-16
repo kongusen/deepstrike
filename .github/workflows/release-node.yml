@@ -7,11 +7,6 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      version:
-        description: "要发布的版本号（不要带 v），例如 0.1.6；与 node/package.json 一致"
-        required: true
-        type: string
 
 env:
   NODE_VERSION: 20
@@ -218,17 +213,15 @@ jobs:
         id: release
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          VERSION="$(cat VERSION)"
+          if [ "${{ github.event_name }}" = "push" ] && [ "v$VERSION" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match VERSION=$VERSION"
+            exit 1
           fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      # 将 SDK、core loader、平台二进制包统一到本次发布版本，避免 npm install 解析到旧平台包
-      - name: Sync Node package versions
-        run: |
-          VERSION="${{ steps.release.outputs.version }}"
-          node scripts/sync-node-release-version.mjs "$VERSION"
+      - name: Verify synchronized release manifests
+        run: node scripts/sync-release-version.mjs --check
 
       # 构建阶段统一收敛为 napi 生成的 index.<pkg>.node 命名；
       # 发布时再复制为各平台 npm 包实际暴露的 deepstrike-core.<pkg>.node。

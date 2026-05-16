@@ -16,6 +16,11 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
+      - name: Verify synchronized release manifests
+        run: |
+          test "v$(cat VERSION)" = "$GITHUB_REF_NAME"
+          node scripts/sync-release-version.mjs --check
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -32,7 +37,7 @@ jobs:
         run: wasm-pack build --release --target bundler --out-dir pkg
 
       - name: Normalize wasm-kernel package metadata
-        run: node scripts/normalize-wasm-kernel-package.mjs "${GITHUB_REF_NAME#v}" crates/deepstrike-wasm/pkg
+        run: node scripts/normalize-wasm-kernel-package.mjs "$(cat VERSION)" crates/deepstrike-wasm/pkg
 
       - name: Publish @deepstrike/wasm-kernel
         shell: bash

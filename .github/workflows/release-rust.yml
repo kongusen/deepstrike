@@ -9,6 +9,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: "24" }
+      - name: Verify release manifests
+        run: |
+          test "v$(cat VERSION)" = "$GITHUB_REF_NAME"
+          node scripts/sync-release-version.mjs --check
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
