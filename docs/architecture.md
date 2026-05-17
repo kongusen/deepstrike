@@ -6,14 +6,31 @@ DeepStrike separates computation from I/O at the language boundary. A pure-Rust 
 
 ## Layer overview
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────┐
-│                      Application Layer                           │
+│  Layer 4: Application                                            │
 │  goals · custom tools · knowledge sources · UI / API surface     │
 └──────────────────────────────┬───────────────────────────────────┘
                                │
 ┌──────────────────────────────▼───────────────────────────────────┐
-│                         SDK Layer  (I/O)                          │
+│  Layer 3: Collaboration Modes                                     │
+│                                                                   │
+│  CreatorVerifierMode — executor + verifier, drift metrics        │
+│  OrchestrationMode   — orchestrator → contract → execute → verify│
+└──────────────────────────────┬───────────────────────────────────┘
+                               │
+┌──────────────────────────────▼───────────────────────────────────┐
+│  Layer 2: Collaboration Primitives                                │
+│                                                                   │
+│  VerificationContract — what correct looks like, system partition│
+│  AgentPool            — role-isolated agent instances            │
+│  ContractDrivenHarness— executor/verifier isolation protocol     │
+│  HandoffBus           — unified artifact between all transitions │
+│  TaskLane             — parallelism hints on RuntimeTask         │
+└──────────────────────────────┬───────────────────────────────────┘
+                               │
+┌──────────────────────────────▼───────────────────────────────────┐
+│  Layer 1: SDK Layer  (I/O)                                        │
 │                                                                   │
 │  Node.js  @deepstrike/sdk   │  Python  deepstrike                │
 │  Rust     deepstrike-sdk    │  WASM    @deepstrike/wasm           │
@@ -27,7 +44,7 @@ DeepStrike separates computation from I/O at the language boundary. A pure-Rust 
 └──────────────────────────────┬───────────────────────────────────┘
                                │  FFI / WASM bridge
 ┌──────────────────────────────▼───────────────────────────────────┐
-│              deepstrike-core  (pure Rust, zero I/O)               │
+│  Layer 0: deepstrike-core  (pure Rust, zero I/O)                  │
 │                                                                   │
 │  LoopStateMachine   — turn-by-turn control, termination policy    │
 │  ContextEngine      — 5-partition context + pressure compression  │
@@ -35,6 +52,7 @@ DeepStrike separates computation from I/O at the language boundary. A pure-Rust 
 │  SignalRouter       — priority queue, dedup, dispositions         │
 │  EvalPipeline       — LLM-as-judge, skill candidate extraction    │
 │  IdlePipeline       — post-session dreaming, memory curation      │
+│  VerificationContract / TaskLane / HandoffArtifact (kernel types) │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -46,7 +64,7 @@ The kernel is pure Rust with **zero async I/O**. It exposes a synchronous state 
 
 ### State machine interface
 
-```
+```text
 sm.start(task)             → Action::CallLLM   { messages, tools }
 sm.feed_llm_response(msg)  → Action::ExecTools { calls }
 sm.feed_tool_results(res)  → Action::CallLLM   { ... }     ← next turn
@@ -58,7 +76,7 @@ The kernel never touches the network, filesystem, or clock. All time-dependent b
 ### Subsystems
 
 | Subsystem | Responsibility |
-|-----------|----------------|
+| --- | --- |
 | `LoopStateMachine` | Turn-by-turn control; enforces `max_turns`, `token_budget`, and `timeout` termination policy |
 | `ContextEngine` | Manages a 5-partition context window (system / working / memory / history / skill); compresses under pressure |
 | `GovernancePipeline` | Evaluates every tool call: Permission → Veto → RateLimit → Constraint → Audit |
@@ -68,7 +86,7 @@ The kernel never touches the network, filesystem, or clock. All time-dependent b
 
 ### Context partitions
 
-```
+```text
 ┌─────────────────────────────────────────────────────┐
 │ system       — base instructions, governance rules   │  fixed
 │ skill        — active skill guide (loaded on demand) │  swappable
@@ -89,7 +107,7 @@ Each SDK wraps the kernel over a language-native FFI bridge and adds all I/O.
 ### Binding architecture
 
 | SDK | Binding crate | Mechanism |
-|-----|--------------|-----------|
+| --- | --- | --- |
 | Node.js | `crates/deepstrike-node` | napi-rs (native `.node` addon) |
 | Python | `crates/deepstrike-py` | PyO3 (`.so` / `.pyd`) |
 | WASM | `crates/deepstrike-wasm` | wasm-bindgen + Tsify |
@@ -97,7 +115,7 @@ Each SDK wraps the kernel over a language-native FFI bridge and adds all I/O.
 
 ### Agent loop (detailed)
 
-```
+```text
 Agent.run_streaming(goal)
 │
 ├─ Startup
@@ -137,7 +155,7 @@ Agent.run_streaming(goal)
 
 All four SDKs share the kernel's `Content` type, which is either plain text or an array of typed content parts:
 
-```
+```text
 Content
 ├─ Text(string)
 └─ Parts([ContentPart, ...])
@@ -150,8 +168,8 @@ Content
 Provider serialisation is automatic. The SDK converts `ContentPart` to the correct wire format before sending:
 
 | Provider | Image format | Audio format |
-|----------|-------------|--------------|
-| Anthropic | `{type:"image", source:{type:"url"|"base64", ...}}` | placeholder text |
+| --- | --- | --- |
+| Anthropic | `{type:"image", source:{type:"url"\|"base64", ...}}` | placeholder text |
 | OpenAI-compat | `{type:"image_url", image_url:{url, detail?}}` / data-URI | `{type:"input_audio", input_audio:{data, format}}` |
 | Ollama | `images: [base64string]` array | not supported |
 
@@ -170,7 +188,7 @@ The WASM SDK targets browsers and edge runtimes. It shares the same kernel but d
 
 ## Repository layout
 
-```
+```text
 deepstrike/
 ├─ crates/
 │   ├─ deepstrike-core/      # Rust kernel (pure computation)

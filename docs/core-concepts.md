@@ -27,7 +27,7 @@ estimated_tokens: 800
 ```
 
 | Frontmatter field | Purpose |
-|-------------------|---------|
+| --- | --- |
 | `name` | Identifier used in `skill(name="X")` calls |
 | `description` | Shown to the model when it decides which skill to load |
 | `when_to_use` | Comma-separated trigger keywords |
@@ -60,7 +60,7 @@ Memory is a two-phase pipeline that separates in-session retrieval from post-ses
 
 When the model needs context from prior sessions, it calls `memory(query)`. The SDK calls `DreamStore.search(query)` and injects the returned entries into the context window.
 
-```
+```text
 model → tool call: memory(query="how did we handle auth last time?")
 SDK  → dream_store.search("how did we handle auth last time?")
      → [MemoryEntry { content: "Used JWT with RS256 ...", relevance: 0.91 }, ...]
@@ -151,7 +151,7 @@ When the model calls `knowledge(query="...")`, the SDK calls `retrieve()` and in
 **Memory vs Knowledge:**
 
 | | Memory | Knowledge |
-|--|--------|-----------|
+| --- | --- | --- |
 | Updated by the agent | Yes (post-session) | No |
 | Query mechanism | Semantic search over `DreamStore` | `KnowledgeSource.retrieve()` |
 | Scope | Agent-specific, accumulated over time | Shared, externally managed |
@@ -178,7 +178,7 @@ print(outcome.passed, outcome.score, outcome.feedback)
 
 Wraps a full agent session with LLM-as-judge retry:
 
-```
+```text
 attempt 1 → agent.run(goal)
           → EvalPipeline: score=0.4  feedback="no error handling, no docstring"
 attempt 2 → agent.run(goal + "\n\nPrevious feedback: " + feedback)
@@ -218,7 +218,7 @@ class MyEval(EvalLoopHarness):
 ### Dispositions
 
 | Disposition | Urgency | Behaviour |
-|-------------|---------|-----------|
+| --- | --- | --- |
 | `interrupt_now` | Critical | Stop immediately; discard the current turn |
 | `interrupt` | High | Finish the current tool call, then stop |
 | `queue` | Normal | Deliver the signal at the start of the next turn |
@@ -254,18 +254,83 @@ agent.injectSignal({
 
 ---
 
+## Collaboration — *multi-agent coordination*
+
+The collaboration layer lets you run multiple agents in coordinated roles without sharing their conversation histories. It builds on the primitives described in the [Collaboration guide](./collaboration.md).
+
+### VerificationContract — *what correct looks like*
+
+A `VerificationContract` defines success criteria before execution starts. It lives in the executor's `system` partition (never compressed) and is given to the verifier alongside the artifact.
+
+```typescript
+import { ContractBuilder } from "@deepstrike/sdk"
+
+const contract = new ContractBuilder("report-v1", "Write a research report on X")
+  .criterion("has-sources",      "Report cites at least 3 sources", { weight: 0.4 })
+  .criterion("no-hallucination", "All claims traceable to sources",  { weight: 0.6 })
+  .antiPattern("Do not fabricate citations")
+  .build()
+```
+
+### AgentPool — *role-isolated instances*
+
+`AgentPool` holds one Agent per role. The verifier never sees the executor's history; the executor never sees the verifier's audit.
+
+```typescript
+import { AgentPool } from "@deepstrike/sdk"
+
+const pool = new AgentPool()
+  .add("executor", executorAgent)   // full tools, large context
+  .add("verifier", verifierAgent)   // no tools, low temperature
+```
+
+### CreatorVerifierMode — *the simplest multi-agent pattern*
+
+```typescript
+import { CreatorVerifierMode, HandoffBus } from "@deepstrike/sdk"
+
+const mode = new CreatorVerifierMode(pool, { maxAttempts: 3 })
+const outcome = await mode.run(contract)
+
+console.log(outcome.success)              // true / false
+console.log(outcome.handoff.driftRate24h) // ratio of failed required criteria
+
+if (HandoffBus.requiresEscalation(outcome.handoff)) {
+  // drift > 5% or blocked_on non-empty — pause autonomous delegation
+}
+```
+
+### HandoffArtifact — *what has been proven*
+
+Every transition between sprints or agent instances produces a `HandoffArtifact`. It carries not only a progress summary but also `contractStatus` (per-criterion verdicts) and `driftRate24h`, so the next agent knows what has been verified, not just what was attempted.
+
+### TaskLane — *parallelism hints*
+
+`TaskLane` on `RuntimeTask` tells the executor how to schedule work:
+
+| Lane | Parallelism |
+| --- | --- |
+| `orchestrate` | Serial — produces contracts |
+| `implement` | Serial — code / content generation |
+| `retrieve` | Parallel — web search, knowledge queries |
+| `verify` | Parallel, context-isolated |
+
+See the full [Collaboration guide](./collaboration.md) for API details and model selection recommendations.
+
+---
+
 ## Safety — *permission boundaries*
 
 Every tool call passes through the `GovernancePipeline` before execution. This happens inside the kernel — the SDK cannot bypass it.
 
 ### Pipeline stages
 
-```
+```text
 Permission → Veto → RateLimit → Constraint → Audit
 ```
 
 | Stage | Purpose |
-|-------|---------|
+| --- | --- |
 | `Permission` | Checks whether this call is allowed under the current `PermissionMode` and per-tool rules |
 | `Veto` | Hard blocks (e.g. shell commands matching a deny pattern); cannot be overridden at runtime |
 | `RateLimit` | Token-bucket per tool per time window |
@@ -277,7 +342,7 @@ Permission → Veto → RateLimit → Constraint → Audit
 `PermissionMode` controls the default permission posture:
 
 | Mode | Behaviour |
-|------|-----------|
+| --- | --- |
 | `auto` | Allow all registered tools without asking |
 | `confirm_sensitive` | Ask for approval on tools flagged as sensitive |
 | `confirm_all` | Ask for approval on every tool call |

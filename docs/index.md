@@ -7,10 +7,11 @@ DeepStrike is a cross-language agent runtime built around a pure-Rust kernel. Th
 ## Guides
 
 | Guide | Description |
-|-------|-------------|
+| --- | --- |
 | [Quick Start](./quick-start.md) | Install, run your first agent, stream output, add tools, use images |
-| [Architecture](./architecture.md) | Kernel design, SDK layer, binding architecture, message content model |
-| [Core Concepts](./core-concepts.md) | Skills, Memory, Knowledge, Harness, Signals, Safety |
+| [Architecture](./architecture.md) | Layer overview (0–4), kernel design, SDK layer, binding architecture |
+| [Core Concepts](./core-concepts.md) | Skills, Memory, Knowledge, Harness, Signals, Collaboration, Safety |
+| [Collaboration](./collaboration.md) | VerificationContract, AgentPool, ContractDrivenHarness, Modes, HandoffBus |
 | [Providers](./providers.md) | All LLM providers, configuration, thinking/reasoning flags, multimodal support |
 | [Release Runbook](./release-runbook.md) | Version propagation, verification, release flow, and recovery |
 
@@ -19,7 +20,7 @@ DeepStrike is a cross-language agent runtime built around a pure-Rust kernel. Th
 ## Packages
 
 | Package | Language | Install |
-|---------|----------|---------|
+| --- | --- | --- |
 | `@deepstrike/sdk` | TypeScript / Node.js | `npm install @deepstrike/sdk` |
 | `deepstrike` | Python | `pip install deepstrike` |
 | `deepstrike-sdk` | Rust | `cargo add deepstrike-sdk` |
@@ -41,7 +42,7 @@ DeepStrike is a cross-language agent runtime built around a pure-Rust kernel. Th
 Every SDK yields the same typed event stream from `agent.run_streaming()`:
 
 | Event | Key fields | Description |
-|-------|-----------|-------------|
+| --- | --- | --- |
 | `text_delta` | `delta: string` | Incremental text from the model |
 | `thinking_delta` | `delta: string` | Incremental reasoning/thinking trace |
 | `tool_call` | `id`, `name`, `arguments` | Model requested a tool call |

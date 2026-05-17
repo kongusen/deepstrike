@@ -1,13 +1,39 @@
+use serde::{Deserialize, Serialize};
+
 use super::partitions::ContextPartitions;
 use super::pressure::PressureMonitor;
 
-#[derive(Debug, Clone)]
+/// The per-criterion verdict produced by the verifier and carried in HandoffArtifact.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContractCheckResult {
+    /// Matches `AcceptanceCriterion.id`.
+    pub criterion_id: String,
+    pub passed: bool,
+    /// Optional excerpt or observation supporting the verdict.
+    pub evidence: Option<String>,
+}
+
+/// Structured state passed between sprints / agent instances.
+///
+/// Every handoff path (context renewal, sub-agent completion, dream consolidation)
+/// must produce a `HandoffArtifact` so the next agent knows not only *what was done*
+/// but also *what has been proven*.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandoffArtifact {
     pub goal: String,
     pub sprint: u32,
     pub progress_summary: String,
     pub open_tasks: Vec<String>,
     pub context_snapshot: serde_json::Value,
+    /// Per-criterion verification results from the most recent contract run.
+    #[serde(default)]
+    pub contract_status: Vec<ContractCheckResult>,
+    /// Ratio of verification failures over 24 h (failed / total). 0.0 if no data.
+    #[serde(default)]
+    pub drift_rate_24h: f64,
+    /// Issues that prevented completion and require human or orchestrator attention.
+    #[serde(default)]
+    pub blocked_on: Vec<String>,
 }
 
 /// Context renewal strategy — when compression isn't enough,
@@ -83,6 +109,9 @@ impl RenewalPolicy {
                 "history_len": partitions.history.messages.len(),
                 "memory_len": partitions.memory.messages.len(),
             }),
+            contract_status: Vec::new(),
+            drift_rate_24h: 0.0,
+            blocked_on: Vec::new(),
         };
 
         (renewed, artifact)

@@ -35,7 +35,9 @@ pub mod types;
 
 // Re-export key types at crate root for convenience
 pub use types::agent::AgentIdentity;
+pub use types::contract::{AcceptanceCriterion, VerificationContract};
 pub use types::error::{DeepStrikeError, Result};
 pub use types::message::{Message, ToolCall, ToolResult};
 pub use types::signal::RuntimeSignal;
-pub use types::task::RuntimeTask;
+pub use types::task::{RuntimeTask, TaskLane};
+pub use context::renewal::{ContractCheckResult, HandoffArtifact};

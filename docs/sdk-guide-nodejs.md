@@ -12,6 +12,7 @@
 8. [治理管线 (Governance)](#8-治理管线-governance)
 9. [信号系统 (Signals)](#9-信号系统-signals)
 10. [评估框架 (Harness)](#10-评估框架-harness)
+11. [协作层 (Collaboration)](#11-协作层-collaboration)
 
 ---
 
@@ -401,7 +402,7 @@ console.log(outcome.passed, outcome.feedback)
 ## 流式事件类型
 
 | 事件 | type 字段 | 主要字段 |
-|------|-----------|----------|
+| --- | --- | --- |
 | 文本片段 | `text_delta` | `delta: string` |
 | 思维链 | `thinking_delta` | `delta: string` |
 | 工具调用 | `tool_call` | `id, name, arguments` |
@@ -409,3 +410,98 @@ console.log(outcome.passed, outcome.feedback)
 | 完成 | `done` | `iterations, totalTokens, status` |
 | 错误 | `error` | `message` |
 | 权限请求 | `permission_request` | `toolName, reason` |
+
+---
+
+## 11. 协作层 (Collaboration)
+
+协作层提供多 Agent 协调能力。完整 API 参见 [collaboration.md](./collaboration.md)。
+
+### 11.1 VerificationContract — 验证契约
+
+```typescript
+import { ContractBuilder } from "@deepstrike/sdk"
+
+const contract = new ContractBuilder("report-v1", "撰写关于 X 的研究报告")
+  .criterion("has-sources",      "报告引用至少 3 个来源", { weight: 0.4 })
+  .criterion("no-hallucination", "所有结论均可追溯至引用", { weight: 0.6 })
+  .antiPattern("不得伪造引用")
+  .evidence("最终报告正文")
+  .build()
+```
+
+### 11.2 AgentPool — 角色隔离的代理池
+
+```typescript
+import { AgentPool } from "@deepstrike/sdk"
+
+const pool = new AgentPool()
+  .add("executor", new Agent(provider, { maxTokens: 32_000, skillDir: "./skills" }))
+  .add("verifier", new Agent(provider, { maxTokens: 8_000 }))  // 无工具，低温
+```
+
+### 11.3 CreatorVerifierMode — 双 Agent 协作
+
+```typescript
+import { CreatorVerifierMode, HandoffBus } from "@deepstrike/sdk"
+
+const mode = new CreatorVerifierMode(pool, { maxAttempts: 3 })
+const outcome = await mode.run(contract)
+
+console.log(outcome.success)           // true / false
+console.log(outcome.attemptsUsed)      // 实际尝试次数
+console.log(outcome.checkResults)      // ContractCheckResult[] — 每条标准的审核结果
+console.log(outcome.handoff)           // HandoffArtifact — 可传递给下一个 sprint
+
+// 漂移监控
+const metrics = mode.getMetrics()      // { total, failed, driftRate }
+if (mode.isDrifting(0.05)) {
+  // driftRate > 5% — 暂停自动委派，升级人工审核
+}
+
+// 交接协议
+if (HandoffBus.requiresEscalation(outcome.handoff)) {
+  console.log("Blocked on:", outcome.handoff.blockedOn)
+}
+const note = HandoffBus.toContextNote(outcome.handoff)
+// 注入下一轮 Agent 的 working 分区
+```
+
+### 11.4 OrchestrationMode — 三角色完整流
+
+编排者（orchestrator）从原始目标生成 VerificationContract，然后由 CreatorVerifierMode 执行。
+
+```typescript
+import { AgentPool, OrchestrationMode } from "@deepstrike/sdk"
+
+const pool = new AgentPool()
+  .add("orchestrator", new Agent(reasonerProvider, { maxTokens: 8_000 }))
+  .add("executor",     new Agent(executorProvider, { maxTokens: 32_000 }))
+  .add("verifier",     new Agent(verifierProvider, { maxTokens: 8_000 }))
+
+const mode = new OrchestrationMode(pool)
+const { outcome, contract } = await mode.run("为新能源汽车行业撰写市场分析")
+
+console.log(contract.id, outcome.success)
+```
+
+### 11.5 HandoffBus — 统一交接面
+
+```typescript
+import { HandoffBus } from "@deepstrike/sdk"
+
+// 从 ContractDrivenHarness 结果构建
+const handoff = HandoffBus.fromContractOutcome({ contract, checkResults, artifact, success })
+
+// 从子 Agent 最终消息构建
+const handoff = HandoffBus.fromSubAgentResult({ goal, finalMessage, sprint: 2 })
+
+// 从 dream 整合结果构建
+const handoff = HandoffBus.fromDream({ goal, dreamResult })
+
+// 渲染为上下文注入字符串
+const note = HandoffBus.toContextNote(handoff)
+
+// 检查是否需要升级
+if (HandoffBus.requiresEscalation(handoff, { driftThreshold: 0.05 })) { ... }
+```

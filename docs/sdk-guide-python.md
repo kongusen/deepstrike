@@ -12,6 +12,7 @@
 8. [治理管线 (Governance)](#8-治理管线-governance)
 9. [信号系统 (Signals)](#9-信号系统-signals)
 10. [评估框架 (Harness)](#10-评估框架-harness)
+11. [协作层 (Collaboration)](#11-协作层-collaboration)
 
 ---
 
@@ -419,10 +420,106 @@ print(f"Passed: {outcome.passed}, Feedback: {outcome.feedback}")
 ## 流式事件类型
 
 | 类 | 主要字段 |
-|----|----------|
+| --- | --- |
 | `TextDelta` | `delta: str` |
 | `ThinkingDelta` | `delta: str` |
 | `ToolCallEvent` | `id, name, arguments` |
 | `ToolResultEvent` | `call_id, content, is_error` |
 | `DoneEvent` | `iterations, total_tokens, status` |
 | `ErrorEvent` | `message: str` |
+
+---
+
+## 11. 协作层 (Collaboration)
+
+协作层提供多 Agent 协调能力。完整 API 参见 [collaboration.md](./collaboration.md)。
+
+### 11.1 VerificationContract — 验证契约
+
+```python
+from deepstrike import ContractBuilder
+
+contract = (ContractBuilder("report-v1", "撰写关于 X 的研究报告")
+    .criterion("has-sources",      "报告引用至少 3 个来源", weight=0.4)
+    .criterion("no-hallucination", "所有结论均可追溯至引用", weight=0.6)
+    .anti_pattern("不得伪造引用")
+    .evidence("最终报告正文")
+    .build())
+```
+
+### 11.2 AgentPool — 角色隔离的代理池
+
+```python
+from deepstrike import AgentPool, Agent
+
+pool = (AgentPool()
+    .add("executor", Agent(provider, max_tokens=32_000, skill_dir="./skills"))
+    .add("verifier", Agent(provider, max_tokens=8_000)))   # 无工具，低温
+```
+
+### 11.3 CreatorVerifierMode — 双 Agent 协作
+
+```python
+from deepstrike import CreatorVerifierMode, HandoffBus
+
+mode = CreatorVerifierMode(pool, max_attempts=3)
+outcome = await mode.run(contract)
+
+print(outcome.success)           # True / False
+print(outcome.attempts_used)     # 实际尝试次数
+print(outcome.check_results)     # list[ContractCheckResult] — 每条标准的审核结果
+print(outcome.handoff)           # HandoffArtifact — 可传递给下一个 sprint
+
+# 漂移监控
+metrics = mode.get_metrics()     # CreatorVerifierMetrics(total, failed, drift_rate)
+if mode.is_drifting(0.05):
+    pass  # drift_rate > 5% — 暂停自动委派，升级人工审核
+
+# 交接协议
+if HandoffBus.requires_escalation(outcome.handoff):
+    print("Blocked on:", outcome.handoff.blocked_on)
+note = HandoffBus.to_context_note(outcome.handoff)
+# 注入下一轮 Agent 的 working 分区
+```
+
+### 11.4 OrchestrationMode — 三角色完整流
+
+编排者（orchestrator）从原始目标生成 VerificationContract，然后由 CreatorVerifierMode 执行。
+
+```python
+from deepstrike import AgentPool, OrchestrationMode
+
+pool = (AgentPool()
+    .add("orchestrator", Agent(reasoner_provider, max_tokens=8_000))
+    .add("executor",     Agent(executor_provider, max_tokens=32_000))
+    .add("verifier",     Agent(verifier_provider, max_tokens=8_000)))
+
+mode = OrchestrationMode(pool)
+outcome, contract = await mode.run("为新能源汽车行业撰写市场分析")
+
+print(contract.id, outcome.success)
+```
+
+### 11.5 HandoffBus — 统一交接面
+
+```python
+from deepstrike import HandoffBus, ContractOutcomeInput
+
+# 从 ContractDrivenHarness 结果构建
+handoff = HandoffBus.from_contract_outcome(
+    ContractOutcomeInput(contract, check_results, artifact, success=True)
+)
+
+# 从子 Agent 最终消息构建
+handoff = HandoffBus.from_sub_agent_result(goal=goal, final_message=msg, sprint=2)
+
+# 从 dream 整合结果构建
+handoff = HandoffBus.from_dream(goal=goal, dream_result=result)
+
+# 渲染为上下文注入字符串
+note = HandoffBus.to_context_note(handoff)
+
+# 检查是否需要升级
+if HandoffBus.requires_escalation(handoff, drift_threshold=0.05):
+    ...
+```

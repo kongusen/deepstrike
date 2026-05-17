@@ -26,6 +26,14 @@ from deepstrike.harness import (
 from deepstrike.skills import SkillRegistry
 from deepstrike.knowledge import KnowledgeSource
 from deepstrike.signals import RuntimeSignal, SignalSource, ScheduledPrompt, SignalGateway
+from deepstrike.collaboration import (
+    AcceptanceCriterion, VerificationContract, ContractCheckResult,
+    ContractBuilder, format_contract_for_system_prompt, contract_to_criteria_strings,
+    AgentPool, AgentRole, IsolatedVerifierContext,
+    ContractDrivenHarness, ContractOutcome, ContractHarnessOptions, Violation,
+    HandoffArtifact, HandoffBus, ContractOutcomeInput,
+    CreatorVerifierMode, OrchestrationMode, CreatorVerifierMetrics,
+)
 
 __all__ = [
     "Agent",
@@ -47,4 +55,11 @@ __all__ = [
     "Message", "ToolCall", "ToolResult", "ToolSchema",
     "SkillMetadata",
     "Governance", "GovernanceVerdict",
+    # Collaboration layer
+    "AcceptanceCriterion", "VerificationContract", "ContractCheckResult",
+    "ContractBuilder", "format_contract_for_system_prompt", "contract_to_criteria_strings",
+    "AgentPool", "AgentRole", "IsolatedVerifierContext",
+    "ContractDrivenHarness", "ContractOutcome", "ContractHarnessOptions", "Violation",
+    "HandoffArtifact", "HandoffBus", "ContractOutcomeInput",
+    "CreatorVerifierMode", "OrchestrationMode", "CreatorVerifierMetrics",
 ]

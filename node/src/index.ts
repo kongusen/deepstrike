@@ -40,3 +40,23 @@ export type {
   ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent,
   LLMProvider, RetryConfig, TokenUsage, ProviderToolSpec, ProviderRunState,
 } from "./types.js"
+
+// ── Collaboration layer (Layer 2 + Layer 3) ────────────────────────────────
+export type {
+  AcceptanceCriterion,
+  VerificationContract,
+  ContractCheckResult,
+} from "./collaboration/contract.js"
+export {
+  ContractBuilder,
+  formatContractForSystemPrompt,
+  contractToCriteriaStrings,
+} from "./collaboration/contract.js"
+export { AgentPool } from "./collaboration/pool.js"
+export type { AgentRole, IsolatedVerifierContext } from "./collaboration/pool.js"
+export { ContractDrivenHarness } from "./collaboration/harness.js"
+export type { ContractOutcome, ContractHarnessOptions, Violation } from "./collaboration/harness.js"
+export { HandoffBus } from "./collaboration/handoff.js"
+export type { HandoffArtifact, ContractOutcomeInput } from "./collaboration/handoff.js"
+export { CreatorVerifierMode, OrchestrationMode } from "./collaboration/modes/creator-verifier.js"
+export type { CreatorVerifierMetrics } from "./collaboration/modes/creator-verifier.js"

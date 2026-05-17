@@ -76,8 +76,14 @@ use deepstrike_core::types::signal::{
     RuntimeSignal as RustRuntimeSignal, SignalSource as RustSignalSource,
     SignalType as RustSignalType, Urgency as RustUrgency,
 };
+use deepstrike_core::context::renewal::{
+    ContractCheckResult as RustContractCheckResult, HandoffArtifact as RustHandoffArtifact,
+};
+use deepstrike_core::types::contract::{
+    AcceptanceCriterion as RustAcceptanceCriterion, VerificationContract as RustVerificationContract,
+};
 use deepstrike_core::types::skill::SkillMetadata as RustSkillMetadata;
-use deepstrike_core::types::task::RuntimeTask as RustRuntimeTask;
+use deepstrike_core::types::task::{RuntimeTask as RustRuntimeTask, TaskLane as RustTaskLane};
 
 // ────────────────────────────────────── POD types (plain JS objects) ──────────────────────────────────────
 
@@ -141,6 +147,52 @@ pub struct ToolSchema {
 pub struct RuntimeTask {
     pub goal: String,
     pub criteria: Option<Vec<String>>,
+    /// `"orchestrate"` | `"implement"` (default) | `"retrieve"` | `"verify"`
+    pub lane: Option<String>,
+}
+
+// ────────────────────────────────────── Contract types ──────────────────────────────────────
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct AcceptanceCriterion {
+    pub id: String,
+    pub text: String,
+    pub required: bool,
+    pub weight: f64,
+    pub machine_checkable: bool,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct VerificationContract {
+    pub id: String,
+    pub goal: String,
+    pub acceptance: Vec<AcceptanceCriterion>,
+    pub anti_patterns: Vec<String>,
+    pub evidence_required: Vec<String>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct ContractCheckResult {
+    pub criterion_id: String,
+    pub passed: bool,
+    pub evidence: Option<String>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct HandoffArtifact {
+    pub goal: String,
+    pub sprint: u32,
+    pub progress_summary: String,
+    pub open_tasks: Vec<String>,
+    /// JSON-encoded context snapshot.
+    pub context_snapshot: String,
+    pub contract_status: Vec<ContractCheckResult>,
+    pub drift_rate_24h: f64,
+    pub blocked_on: Vec<String>,
 }
 
 #[napi(object)]
@@ -503,11 +555,72 @@ fn skill_metadata_to_rust(s: SkillMetadata) -> RustSkillMetadata {
     }
 }
 
+fn task_lane_to_rust(lane: Option<String>) -> RustTaskLane {
+    match lane.as_deref() {
+        Some("orchestrate") => RustTaskLane::Orchestrate,
+        Some("retrieve") => RustTaskLane::Retrieve,
+        Some("verify") => RustTaskLane::Verify,
+        _ => RustTaskLane::Implement,
+    }
+}
+
 fn task_to_rust(t: RuntimeTask) -> RustRuntimeTask {
     RustRuntimeTask {
         goal: t.goal,
         criteria: t.criteria.unwrap_or_default(),
         metadata: serde_json::Value::Null,
+        lane: task_lane_to_rust(t.lane),
+    }
+}
+
+fn acceptance_criterion_to_rust(c: AcceptanceCriterion) -> RustAcceptanceCriterion {
+    RustAcceptanceCriterion {
+        id: c.id,
+        text: c.text,
+        required: c.required,
+        weight: c.weight as f32,
+        machine_checkable: c.machine_checkable,
+    }
+}
+
+fn acceptance_criterion_from_rust(c: &RustAcceptanceCriterion) -> AcceptanceCriterion {
+    AcceptanceCriterion {
+        id: c.id.clone(),
+        text: c.text.clone(),
+        required: c.required,
+        weight: c.weight as f64,
+        machine_checkable: c.machine_checkable,
+    }
+}
+
+fn verification_contract_to_rust(v: VerificationContract) -> RustVerificationContract {
+    RustVerificationContract {
+        id: v.id,
+        goal: v.goal,
+        acceptance: v.acceptance.into_iter().map(acceptance_criterion_to_rust).collect(),
+        anti_patterns: v.anti_patterns,
+        evidence_required: v.evidence_required,
+    }
+}
+
+fn contract_check_result_from_rust(r: &RustContractCheckResult) -> ContractCheckResult {
+    ContractCheckResult {
+        criterion_id: r.criterion_id.clone(),
+        passed: r.passed,
+        evidence: r.evidence.clone(),
+    }
+}
+
+fn handoff_artifact_from_rust(a: &RustHandoffArtifact) -> HandoffArtifact {
+    HandoffArtifact {
+        goal: a.goal.clone(),
+        sprint: a.sprint,
+        progress_summary: a.progress_summary.clone(),
+        open_tasks: a.open_tasks.clone(),
+        context_snapshot: serde_json::to_string(&a.context_snapshot).unwrap_or_else(|_| "null".into()),
+        contract_status: a.contract_status.iter().map(contract_check_result_from_rust).collect(),
+        drift_rate_24h: a.drift_rate_24h,
+        blocked_on: a.blocked_on.clone(),
     }
 }
 
@@ -584,6 +697,16 @@ fn observation_from_rust(o: RustLoopObservation) -> LoopObservation {
             rho_after: Some(rho_after),
         },
     }
+}
+
+// ────────────────────────────────── Contract helpers ──────────────────────────────────────
+
+/// Format a VerificationContract as a markdown string suitable for injection
+/// into an agent's system prompt. The returned string is ready to pass to
+/// `LoopStateMachine.addSystemMessage()` or `LoopStateMachine.setContract()`.
+#[napi]
+pub fn format_contract_for_system_prompt(contract: VerificationContract) -> String {
+    verification_contract_to_rust(contract).format_for_system_prompt()
 }
 
 // ─────────────────────────────────────────── ContextEngine ───────────────────────────────────────────
@@ -719,6 +842,22 @@ impl LoopStateMachine {
             .partitions
             .memory
             .push(RustMessage::user(content), tokens.max(1));
+    }
+
+    /// Inject a VerificationContract into the system partition.
+    /// The contract is formatted as markdown and pushed to the `system` partition
+    /// (Priority::Critical) so it survives context renewal and compression.
+    /// Call before `start()`.
+    #[napi]
+    pub fn set_contract(&mut self, contract: VerificationContract) {
+        let rust_contract = verification_contract_to_rust(contract);
+        let formatted = rust_contract.format_for_system_prompt();
+        let tokens = (formatted.len() / 4).max(1) as u32;
+        self.inner
+            .ctx
+            .partitions
+            .system
+            .push(RustMessage::system(formatted), tokens);
     }
 
     #[napi]
