@@ -4,6 +4,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. v0.1.10); must match VERSION file'
+        required: false
+        default: ''
 
 jobs:
   build-wheels:
@@ -56,11 +61,16 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with: { node-version: "24" }
-      - name: Verify release manifests
+      - name: Resolve and verify release version
         shell: bash
         run: |
+          VERSION="$(cat VERSION)"
           if [ "${{ github.event_name }}" = "push" ]; then
-            test "v$(cat VERSION)" = "$GITHUB_REF_NAME"
+            test "v$VERSION" = "$GITHUB_REF_NAME" || \
+              { echo "::error::Tag $GITHUB_REF_NAME does not match VERSION=$VERSION"; exit 1; }
+          elif [ -n "${{ github.event.inputs.tag }}" ]; then
+            test "v$VERSION" = "${{ github.event.inputs.tag }}" || \
+              { echo "::error::Input tag ${{ github.event.inputs.tag }} does not match VERSION=$VERSION"; exit 1; }
           fi
           node scripts/sync-release-version.mjs --check
       - uses: actions/setup-python@v6
@@ -123,11 +133,16 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with: { node-version: "24" }
-      - name: Verify release manifests
+      - name: Resolve and verify release version
         shell: bash
         run: |
+          VERSION="$(cat VERSION)"
           if [ "${{ github.event_name }}" = "push" ]; then
-            test "v$(cat VERSION)" = "$GITHUB_REF_NAME"
+            test "v$VERSION" = "$GITHUB_REF_NAME" || \
+              { echo "::error::Tag $GITHUB_REF_NAME does not match VERSION=$VERSION"; exit 1; }
+          elif [ -n "${{ github.event.inputs.tag }}" ]; then
+            test "v$VERSION" = "${{ github.event.inputs.tag }}" || \
+              { echo "::error::Input tag ${{ github.event.inputs.tag }} does not match VERSION=$VERSION"; exit 1; }
           fi
           node scripts/sync-release-version.mjs --check
       - uses: PyO3/maturin-action@v1
@@ -147,6 +162,21 @@ jobs:
     permissions:
       id-token: write  # OIDC trusted publishing
     steps:
+      - uses: actions/checkout@v5
+      - name: Resolve publish version
+        id: release
+        shell: bash
+        run: |
+          VERSION="$(cat VERSION)"
+          if [ "${{ github.event_name }}" = "push" ] && [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match VERSION=$VERSION"
+            exit 1
+          fi
+          if [ -n "${{ github.event.inputs.tag }}" ] && [ "v$VERSION" != "${{ github.event.inputs.tag }}" ]; then
+            echo "::error::Input tag ${{ github.event.inputs.tag }} does not match VERSION=$VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with: { path: dist, merge-multiple: true }
       - uses: pypa/gh-action-pypi-publish@release/v1
