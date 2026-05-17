@@ -36,9 +36,9 @@ export async function scanSkillDir(skillDir: string): Promise<SkillMetadata[]> {
   const results: SkillMetadata[] = []
   for (const file of files.filter(f => f.endsWith(".md"))) {
     const name = file.slice(0, -3)
-    const content = await readSkillFile(skillDir, name)
-    if (!content) continue
-    const { meta } = parseFrontmatter(content)
+    const raw = await readFile(path.join(skillDir, `${name}.md`), "utf8").catch(() => null)
+    if (!raw) continue
+    const { meta } = parseFrontmatter(raw)
     results.push({
       name: meta.name ? String(meta.name) : name,
       description: meta.description ? String(meta.description) : "",

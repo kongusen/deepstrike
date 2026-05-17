@@ -124,7 +124,7 @@ function updateCargoLock(text, version) {
     (nextText, packageName) =>
       replaceRequired(
         nextText,
-        new RegExp(`(name = "${escapeRegExp(packageName)}"\\nversion = ")[^"]+(")`),
+        new RegExp(`(name = "${escapeRegExp(packageName)}"\\r?\\nversion = ")[^"]+(")`),
         `$1${version}$2`,
         `Cargo.lock package ${packageName}`,
       ),
