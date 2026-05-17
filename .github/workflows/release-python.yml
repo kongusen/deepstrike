@@ -3,6 +3,7 @@ name: Release Python SDK
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 jobs:
   build-wheels:
@@ -58,7 +59,9 @@ jobs:
       - name: Verify release manifests
         shell: bash
         run: |
-          test "v$(cat VERSION)" = "$GITHUB_REF_NAME"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            test "v$(cat VERSION)" = "$GITHUB_REF_NAME"
+          fi
           node scripts/sync-release-version.mjs --check
       - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
@@ -121,8 +124,11 @@ jobs:
       - uses: actions/setup-node@v5
         with: { node-version: "24" }
       - name: Verify release manifests
+        shell: bash
         run: |
-          test "v$(cat VERSION)" = "$GITHUB_REF_NAME"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            test "v$(cat VERSION)" = "$GITHUB_REF_NAME"
+          fi
           node scripts/sync-release-version.mjs --check
       - uses: PyO3/maturin-action@v1
         with:
