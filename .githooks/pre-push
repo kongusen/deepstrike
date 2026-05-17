@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# .githooks/pre-push
+#
+# Blocks pushes when any platform SDK version is out of sync with VERSION.
+# Install once per clone: git config core.hooksPath .githooks
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+if ! command -v node &>/dev/null; then
+  exit 0   # node not available in this environment — skip silently
+fi
+
+if node scripts/sync-release-version.mjs --check 2>/dev/null; then
+  exit 0
+fi
+
+echo ""
+echo "pre-push: version drift detected. Fix with:"
+echo "  ./scripts/release.sh $(cat VERSION)"
+echo ""
+exit 1
