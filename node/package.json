@@ -1,6 +1,6 @@
 {
   "name": "@deepstrike/sdk",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "DeepStrike Node.js SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
-    "@deepstrike/core": "0.1.10",
+    "@deepstrike/core": "0.1.11",
     "@google/generative-ai": "^0.24.1",
     "openai": "^4.77.0"
   },
