@@ -29,7 +29,7 @@ use deepstrike_core::types::agent::AgentIdentity;
 use deepstrike_core::types::policy::GovernanceVerdict as RustGovernanceVerdict;
 use deepstrike_core::types::result::LoopResult as RustLoopResult;
 use deepstrike_core::types::skill::SkillMetadata as RustSkillMetadata;
-use deepstrike_core::types::task::RuntimeTask as RustRuntimeTask;
+use deepstrike_core::types::task::{RuntimeTask as RustRuntimeTask, TaskLane as RustTaskLane};
 
 // ────────────────────────────────────────────── POD types ──────────────────────────────────────────────
 
@@ -107,6 +107,9 @@ pub struct RuntimeTask {
     pub goal: String,
     #[serde(default)]
     pub criteria: Vec<String>,
+    /// `"orchestrate"` | `"implement"` (default) | `"retrieve"` | `"verify"`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<String>,
 }
 
 #[derive(Tsify, Clone, Serialize, Deserialize)]
@@ -452,8 +455,22 @@ fn skill_metadata_to_rust(s: SkillMetadata) -> RustSkillMetadata {
     }
 }
 
+fn task_lane_to_rust(lane: Option<String>) -> RustTaskLane {
+    match lane.as_deref() {
+        Some("orchestrate") => RustTaskLane::Orchestrate,
+        Some("retrieve") => RustTaskLane::Retrieve,
+        Some("verify") => RustTaskLane::Verify,
+        _ => RustTaskLane::Implement,
+    }
+}
+
 fn task_to_rust(t: RuntimeTask) -> RustRuntimeTask {
-    RustRuntimeTask { goal: t.goal, criteria: t.criteria, metadata: serde_json::Value::Null }
+    RustRuntimeTask {
+        goal: t.goal,
+        criteria: t.criteria,
+        metadata: serde_json::Value::Null,
+        lane: task_lane_to_rust(t.lane),
+    }
 }
 
 fn policy_to_rust(p: LoopPolicy) -> RustLoopPolicy {

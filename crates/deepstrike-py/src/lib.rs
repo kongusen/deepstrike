@@ -73,7 +73,7 @@ use deepstrike_core::types::signal::{
     SignalType as RustSignalType, Urgency as RustUrgency,
 };
 use deepstrike_core::types::skill::SkillMetadata as RustSkillMetadata;
-use deepstrike_core::types::task::RuntimeTask as RustRuntimeTask;
+use deepstrike_core::types::task::{RuntimeTask as RustRuntimeTask, TaskLane as RustTaskLane};
 
 // ───────────────────────────────────────── Signal types ──────────────────────────────────────
 
@@ -633,6 +633,15 @@ impl ToolSchema {
     }
 }
 
+fn task_lane_to_rust(lane: Option<&str>) -> RustTaskLane {
+    match lane {
+        Some("orchestrate") => RustTaskLane::Orchestrate,
+        Some("retrieve") => RustTaskLane::Retrieve,
+        Some("verify") => RustTaskLane::Verify,
+        _ => RustTaskLane::Implement,
+    }
+}
+
 #[pyclass]
 #[derive(Clone)]
 struct RuntimeTask {
@@ -640,16 +649,20 @@ struct RuntimeTask {
     goal: String,
     #[pyo3(get, set)]
     criteria: Vec<String>,
+    /// `"orchestrate"` | `"implement"` (default) | `"retrieve"` | `"verify"`
+    #[pyo3(get, set)]
+    lane: Option<String>,
 }
 
 #[pymethods]
 impl RuntimeTask {
     #[new]
-    #[pyo3(signature = (goal, criteria = None))]
-    fn new(goal: String, criteria: Option<Vec<String>>) -> Self {
+    #[pyo3(signature = (goal, criteria = None, lane = None))]
+    fn new(goal: String, criteria: Option<Vec<String>>, lane: Option<String>) -> Self {
         Self {
             goal,
             criteria: criteria.unwrap_or_default(),
+            lane,
         }
     }
 }
@@ -660,6 +673,7 @@ impl RuntimeTask {
             goal: self.goal.clone(),
             criteria: self.criteria.clone(),
             metadata: serde_json::Value::Null,
+            lane: task_lane_to_rust(self.lane.as_deref()),
         }
     }
 }
