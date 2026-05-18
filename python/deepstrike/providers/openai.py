@@ -5,7 +5,7 @@ from typing import AsyncIterator
 from openai import AsyncOpenAI
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, normalize_tool_call, to_openai_content
+from .base import RetryConfig, CircuitBreaker, RenderedContext, normalize_tool_call, to_openai_content
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +23,12 @@ class OpenAIProvider:
         self._circuit = CircuitBreaker(self._retry)
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
 
-    def _build_messages(self, messages: list[Message]) -> list[dict]:
-        return [{"role": m.role, "content": to_openai_content(m)} for m in messages]
+    def _build_messages(self, context: RenderedContext) -> list[dict]:
+        result = []
+        if context.system_text:
+            result.append({"role": "system", "content": context.system_text})
+        result.extend({"role": m.role, "content": to_openai_content(m)} for m in context.turns)
+        return result
 
     def _build_tools(self, tools: list[ToolSchema]) -> list[dict] | None:
         if not tools:
@@ -41,11 +45,11 @@ class OpenAIProvider:
             for t in tools
         ]
 
-    async def complete(self, messages: list[Message], tools: list[ToolSchema]) -> Message:
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema]) -> Message:
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
 
-        msgs = self._build_messages(messages)
+        msgs = self._build_messages(context)
         tool_defs = self._build_tools(tools)
 
         last_exc = None
@@ -83,8 +87,8 @@ class OpenAIProvider:
 
         raise last_exc or RuntimeError("Complete failed")
 
-    async def stream(self, messages: list[Message], tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
-        msgs = self._build_messages(messages)
+    async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
+        msgs = self._build_messages(context)
         tool_defs = self._build_tools(tools)
         tool_call_bufs: dict[int, dict] = {}
 

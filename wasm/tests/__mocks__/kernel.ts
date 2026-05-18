@@ -14,6 +14,7 @@ export class LoopStateMachine {
   setKnowledgeEnabled(_enabled: boolean): void {}
   addSystemMessage(_content: string, _tokens: number): void {}
   addMemoryMessage(_content: string, _tokens: number): void {}
+  addHistoryMessage(_message: unknown, _tokens: number): void {}
   takeObservations(): unknown[] { return [] }
   isTerminal(): boolean { return this.terminal }
 

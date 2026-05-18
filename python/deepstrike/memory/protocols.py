@@ -78,3 +78,14 @@ class DreamStore(Protocol):
     async def save_session(self, data: "SessionData") -> None:
         """Persist a completed session for future consolidation via `Agent.dream()`."""
         ...
+
+
+@runtime_checkable
+class SessionStore(Protocol):
+    """Durable transcript storage for same-session conversational continuity."""
+
+    async def load_session(self, session_id: str) -> SessionData | None:
+        ...
+
+    async def save_session(self, data: SessionData) -> None:
+        ...

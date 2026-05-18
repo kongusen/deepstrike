@@ -57,3 +57,8 @@ export interface DreamStore {
   /** Persist a completed session for future consolidation via `Agent.dream()`. */
   saveSession(data: SessionData): Promise<void>
 }
+
+export interface SessionStore {
+  loadSession(sessionId: string): Promise<SessionData | undefined>
+  saveSession(data: SessionData): Promise<void>
+}

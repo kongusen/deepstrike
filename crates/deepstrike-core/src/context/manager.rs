@@ -1,6 +1,7 @@
 use super::compression::CompressionPipeline;
 use super::partitions::ContextPartitions;
 use super::pressure::{PressureAction, PressureMonitor};
+use super::renderer::RenderedContext;
 use super::renewal::{HandoffArtifact, RenewalPolicy};
 use super::skill_catalog::SkillCatalog;
 use crate::types::message::{Message, ToolSchema};
@@ -52,7 +53,7 @@ impl ContextManager {
     }
 
     pub fn compress(&mut self, action: PressureAction) {
-        self.compression.compress(&mut self.partitions, action);
+        self.compression.compress(&mut self.partitions, action, self.max_tokens);
     }
 
     pub fn should_renew(&self) -> bool {
@@ -70,7 +71,7 @@ impl ContextManager {
         self.sprint += 1;
     }
 
-    pub fn render(&self) -> Vec<Message> {
+    pub fn render(&self) -> RenderedContext {
         super::renderer::render(&self.partitions, self.max_tokens)
     }
 
@@ -173,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn compress_only_touches_history_and_skill() {
+    fn compress_only_touches_history_not_memory() {
         let mut mgr = ContextManager::new(1000);
         mgr.partitions.memory.push(Message::user("memory"), 100);
         for _ in 0..5 {
@@ -182,7 +183,8 @@ mod tests {
         let memory_before = mgr.partitions.memory.token_count;
         mgr.compress(PressureAction::AutoCompact);
         assert_eq!(mgr.partitions.memory.token_count, memory_before);
-        assert!(mgr.partitions.history.token_count < 250);
+        // AutoCompact collapses history to a 10-token placeholder.
+        assert!(mgr.partitions.history.token_count <= 10);
     }
 
     #[test]

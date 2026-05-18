@@ -1,6 +1,7 @@
 use crate::context::manager::ContextManager;
 use crate::context::pressure::PressureAction;
-use crate::types::message::{ContentPart, Message, ToolCall, ToolResult, ToolSchema};
+use crate::context::renderer::RenderedContext;
+use crate::types::message::{Content, ContentPart, Message, ToolCall, ToolResult, ToolSchema};
 use crate::types::result::{LoopResult, TerminationReason};
 use crate::types::signal::{RuntimeSignal, Urgency};
 use crate::types::task::RuntimeTask;
@@ -31,8 +32,11 @@ pub enum LoopEvent {
 /// Actions the state machine outputs — SDK layer executes the I/O.
 #[derive(Debug)]
 pub enum LoopAction {
-    /// `tools` always includes the `skill` meta-tool when skills are registered.
-    CallLLM { messages: Vec<Message>, tools: Vec<ToolSchema> },
+    /// Structured context ready for a provider call.
+    /// `context.system_text` → provider system param.
+    /// `context.turns`       → provider messages array (strictly alternating).
+    /// `tools`               → tool schemas (skill / memory / knowledge / user tools).
+    CallLLM { context: RenderedContext, tools: Vec<ToolSchema> },
     ExecuteTools { calls: Vec<ToolCall> },
     Done { result: LoopResult },
 }
@@ -42,6 +46,8 @@ pub enum LoopAction {
 #[derive(Debug, Clone)]
 pub enum LoopObservation {
     Compressed { action: PressureAction, rho_after: f64 },
+    /// Context renewal fired — a new sprint started to carry the conversation forward.
+    Renewed { sprint: u32 },
 }
 
 /// Pure state machine for the L* execution loop. No I/O — only state transitions.
@@ -56,6 +62,9 @@ pub struct LoopStateMachine {
     /// When set, the next LLM call strips tools to force a text response,
     /// then terminates with this reason once the response arrives.
     pending_termination: Option<TerminationReason>,
+    /// Number of history messages present at session start (after preload_history).
+    /// drain_new_messages() returns the slice from this offset onward.
+    session_history_baseline: usize,
 }
 
 impl LoopStateMachine {
@@ -69,7 +78,31 @@ impl LoopStateMachine {
             policy,
             total_tokens: 0,
             pending_termination: None,
+            session_history_baseline: 0,
         }
+    }
+
+    /// Pre-populate the history partition with messages from a prior session.
+    ///
+    /// Call **before** `start()` when resuming a conversation. Sets the baseline
+    /// so `drain_new_messages()` returns only the messages from the current run.
+    pub fn preload_history(&mut self, messages: Vec<Message>) {
+        for msg in messages {
+            let tokens = msg.token_count.unwrap_or(0);
+            self.ctx.push_history(msg, tokens);
+        }
+        self.session_history_baseline = self.ctx.partitions.history.messages.len();
+    }
+
+    /// Return all messages added to history during the current run
+    /// (since the last `preload_history` call or since construction).
+    ///
+    /// Call after `LoopAction::Done` to get the complete turn transcript
+    /// for persistence to a SessionStore.
+    pub fn drain_new_messages(&self) -> Vec<Message> {
+        let history = &self.ctx.partitions.history.messages;
+        let start = self.session_history_baseline.min(history.len());
+        history[start..].to_vec()
     }
 
     pub fn start(&mut self, task: RuntimeTask) -> LoopAction {
@@ -86,7 +119,13 @@ impl LoopStateMachine {
             format!("{}\n\nCriteria:\n{}", task.goal, criteria_text)
         };
 
-        self.ctx.partitions.working.push(Message::user(user_msg), 0);
+        // User message goes into history so it appears at the correct chronological
+        // position: [prior turns...] → [current user message] — LLM reads left-to-right
+        // and responds to the last message. working is reserved for runtime signals only.
+        // Estimate tokens (1 token ≈ 4 chars) with a minimum of 1 so the renderer
+        // does not skip this message (it skips zero-token entries).
+        let user_tokens = (user_msg.len() as u32 / 4).max(1);
+        self.ctx.push_history(Message::user(user_msg), user_tokens);
         self.phase = LoopPhase::Reason;
         self.emit_call_llm()
     }
@@ -117,9 +156,17 @@ impl LoopStateMachine {
             LoopEvent::ToolResults { results } => {
                 for r in &results {
                     self.total_tokens += r.token_count.unwrap_or(0) as u64;
+                    // Preserve Content::Parts (structured / multimodal tool output).
+                    // Parts are serialised to JSON so the text can be restored faithfully.
+                    let output = match &r.output {
+                        Content::Text(s) => s.clone(),
+                        Content::Parts(parts) => {
+                            serde_json::to_string(parts).unwrap_or_default()
+                        }
+                    };
                     let parts = vec![ContentPart::ToolResult {
                         call_id: r.call_id.clone(),
-                        output: r.output.as_text().unwrap_or("").to_string(),
+                        output,
                         is_error: r.is_error,
                     }];
                     let tokens = r.token_count.unwrap_or(0);
@@ -148,11 +195,22 @@ impl LoopStateMachine {
                     });
                 }
 
+                // Renewal: when compression alone cannot recover enough headroom,
+                // start a new sprint — carry forward system + memory + last N history turns.
+                if self.ctx.should_renew() {
+                    self.ctx.renew();
+                    self.observations.push(LoopObservation::Renewed {
+                        sprint: self.ctx.sprint,
+                    });
+                }
+
                 self.phase = LoopPhase::Reason;
                 self.emit_call_llm()
             }
 
             LoopEvent::Signal { signal } => {
+                // Signals go into working (not history) — they are runtime events,
+                // not part of the conversation transcript.
                 match signal.urgency {
                     Urgency::Critical => {
                         let note = Message::user(format!("[INTERRUPT] {}", signal.summary));
@@ -183,6 +241,12 @@ impl LoopStateMachine {
     }
 
     fn terminate(&mut self, termination: TerminationReason, final_message: Option<Message>) -> LoopAction {
+        // Commit the final response into history so subsequent session restores
+        // include the complete transcript: user → [tool turns] → final assistant.
+        if let Some(ref msg) = final_message {
+            let tokens = msg.token_count.unwrap_or(0);
+            self.ctx.push_history(msg.clone(), tokens);
+        }
         let result = LoopResult {
             termination,
             final_message,
@@ -193,19 +257,20 @@ impl LoopStateMachine {
         LoopAction::Done { result }
     }
 
-    /// Build the `CallLLM` action, automatically appending the `skill` and `memory`
-    /// meta-tools when they are configured — the LLM can invoke them on demand.
-    /// When `pending_termination` is set, tools are stripped to force a text-only response.
+    /// Build the `CallLLM` action with a structured `RenderedContext`.
+    /// Meta-tools (skill / memory / knowledge) are appended to the tool list
+    /// when configured. When `pending_termination` is set, tools are stripped
+    /// to force a plain-text response before the loop terminates.
     fn emit_call_llm(&self) -> LoopAction {
-        let messages = self.ctx.render();
+        let context = self.ctx.render();
         if self.pending_termination.is_some() {
-            return LoopAction::CallLLM { messages, tools: Vec::new() };
+            return LoopAction::CallLLM { context, tools: Vec::new() };
         }
         let mut tools = self.tools.clone();
-        if let Some(skill_tool) = self.ctx.skill_tool_schema() { tools.push(skill_tool); }
-        if let Some(memory_tool) = self.ctx.memory_tool_schema() { tools.push(memory_tool); }
+        if let Some(skill_tool)     = self.ctx.skill_tool_schema()     { tools.push(skill_tool); }
+        if let Some(memory_tool)    = self.ctx.memory_tool_schema()    { tools.push(memory_tool); }
         if let Some(knowledge_tool) = self.ctx.knowledge_tool_schema() { tools.push(knowledge_tool); }
-        LoopAction::CallLLM { messages, tools }
+        LoopAction::CallLLM { context, tools }
     }
 }
 
@@ -228,12 +293,24 @@ mod tests {
     }
 
     #[test]
-    fn llm_response_without_tools_terminates() {
+    fn start_places_user_message_in_history_not_working() {
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("Say hello"));
+        // User message goes to history so it appears in the correct chronological position
+        assert!(!sm.ctx.partitions.history.is_empty(), "history should have user message");
+        assert!(sm.ctx.partitions.working.is_empty(), "working should stay empty — signals only");
+    }
+
+    #[test]
+    fn llm_response_without_tools_terminates_and_saves_to_history() {
         let mut sm = sm();
         sm.start(RuntimeTask::new("Say hello"));
         let action = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("Hello!") });
         assert!(matches!(action, LoopAction::Done { .. }));
         assert!(sm.is_terminal());
+        // Final response is committed to history
+        let history = &sm.ctx.partitions.history.messages;
+        assert!(history.iter().any(|m| m.content.as_text() == Some("Hello!")));
     }
 
     #[test]
@@ -247,17 +324,22 @@ mod tests {
     }
 
     #[test]
-    fn critical_signal_interrupts_and_rereason() {
+    fn critical_signal_goes_to_working_not_history() {
         use crate::types::signal::{SignalSource, SignalType, Urgency};
         let mut sm = sm();
         sm.start(RuntimeTask::new("test"));
+        let history_len_before = sm.ctx.partitions.history.messages.len();
+
         let sig = RuntimeSignal::new(SignalSource::Gateway, SignalType::Alert, Urgency::Critical, "fire");
         let action = sm.feed(LoopEvent::Signal { signal: sig });
         assert!(matches!(action, LoopAction::CallLLM { .. }));
         assert!(matches!(sm.phase, LoopPhase::Reason));
+        // Signal injected into working
         assert!(sm.ctx.partitions.working.messages.iter().any(|m| {
             m.content.as_text().map(|t| t.contains("[INTERRUPT]")).unwrap_or(false)
         }));
+        // History did not grow from the signal
+        assert_eq!(sm.ctx.partitions.history.messages.len(), history_len_before);
     }
 
     #[test]
@@ -330,5 +412,95 @@ mod tests {
         sm.feed(LoopEvent::ToolResults { results: vec![] });
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(o, LoopObservation::Compressed { .. })));
+    }
+
+    #[test]
+    fn renewal_emits_observation_when_pressure_extreme() {
+        // Renewal fires only when pressure stays > 0.98 even AFTER compression.
+        // Compression only targets history + skill, so we saturate the system
+        // partition (non-compressible) to keep rho above the threshold.
+        let mut sm = LoopStateMachine::new(LoopPolicy {
+            max_tokens: 100,
+            max_turns: 100,
+            ..LoopPolicy::default()
+        });
+        sm.start(RuntimeTask::new("test"));
+        // 10 system messages × 10 tokens = 100 tokens in non-compressible partition.
+        // rho = 100/100 = 1.0 > 0.98; compression on history saves nothing meaningful.
+        for i in 0..10 {
+            sm.ctx.partitions.system.push(Message::system(format!("constraint {i}")), 10);
+        }
+        sm.feed(LoopEvent::ToolResults { results: vec![] });
+        let obs = sm.take_observations();
+        assert!(obs.iter().any(|o| matches!(o, LoopObservation::Renewed { .. })));
+    }
+
+    #[test]
+    fn preload_history_and_drain_new_messages() {
+        let mut sm = sm();
+
+        // Simulate restoring a prior session with one exchange
+        let prior = vec![
+            Message::user("Hello from last time"),
+            Message::assistant("Hi! I remember."),
+        ];
+        sm.preload_history(prior.clone());
+        assert_eq!(sm.ctx.partitions.history.messages.len(), 2);
+
+        // Start a new turn
+        sm.start(RuntimeTask::new("What did I say before?"));
+
+        // New messages = user message from start() + (after termination) final assistant
+        let new_msgs = sm.drain_new_messages();
+        // At minimum the new user message must be present
+        assert!(!new_msgs.is_empty());
+        assert!(new_msgs.iter().any(|m| {
+            m.content.as_text().map(|t| t.contains("What did I say before")).unwrap_or(false)
+        }));
+        // Prior session messages are NOT in drain_new_messages
+        assert!(!new_msgs.iter().any(|m| {
+            m.content.as_text().map(|t| t.contains("Hello from last time")).unwrap_or(false)
+        }));
+    }
+
+    #[test]
+    fn tool_result_content_parts_preserved_as_json() {
+        use crate::types::message::Content;
+        use compact_str::CompactString;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("test"));
+
+        // Simulate an LLM tool call
+        let mut msg = Message::assistant("");
+        msg.tool_calls.push(crate::types::message::ToolCall {
+            id: CompactString::new("c1"),
+            name: CompactString::new("my_tool"),
+            arguments: serde_json::json!({}),
+        });
+        sm.feed(LoopEvent::LLMResponse { message: msg });
+
+        // Feed a structured (Parts) tool result
+        let structured = Content::Parts(vec![
+            ContentPart::Text { text: "structured output".to_string() },
+        ]);
+        sm.feed(LoopEvent::ToolResults {
+            results: vec![ToolResult {
+                call_id: CompactString::new("c1"),
+                output: structured,
+                is_error: false,
+                token_count: None,
+            }],
+        });
+
+        // The history should contain a tool message with JSON-serialised content
+        let tool_msgs: Vec<_> = sm.ctx.partitions.history.messages.iter()
+            .filter(|m| matches!(m.role, crate::types::message::Role::Tool))
+            .collect();
+        assert!(!tool_msgs.is_empty(), "tool result message must be in history");
+        // Content is Parts (ToolResult part), not empty
+        if let Content::Parts(parts) = &tool_msgs[0].content {
+            assert!(!parts.is_empty());
+        }
     }
 }

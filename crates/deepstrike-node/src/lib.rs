@@ -22,7 +22,7 @@
 //! while (!sm.isTerminal()) {
 //!   if (action.kind === 'call_llm') {
 //!     // tools list already includes the `skill` meta-tool
-//!     const msg = await callLlm(action.messages, action.tools)
+//!     const msg = await callLlm(action.context, action.tools)
 //!     action = sm.feedLlmResponse(msg)
 //!   } else if (action.kind === 'execute_tools') {
 //!     // SDK intercepts calls where name === 'skill' and reads the file
@@ -58,6 +58,7 @@ use deepstrike_core::memory::idle_pipeline::{
     IdlePolicy as RustIdlePolicy,
 };
 use deepstrike_core::memory::semantic::MemoryEntry as RustMemoryEntry;
+use deepstrike_core::context::renderer::RenderedContext as RustRenderedContext;
 use deepstrike_core::scheduler::policy::LoopPolicy as RustLoopPolicy;
 use deepstrike_core::scheduler::state_machine::{
     LoopAction as RustLoopAction, LoopEvent as RustLoopEvent,
@@ -319,15 +320,30 @@ pub struct SkillMetadata {
 
 // ────────────────────────────── Tagged unions: LoopAction / LoopObservation ──────────────────────────────
 
+/// Structured context for a provider call — emitted with `kind === "call_llm"`.
+/// Separates system configuration from the conversation transcript so providers
+/// can map each field to their own API contract without role-filtering.
+#[napi(object)]
+#[derive(Clone)]
+pub struct RenderedContext {
+    /// Combined system text: system partition + dashboard (when non-empty).
+    /// Anthropic → `system` param · OpenAI → `messages[0]` system role ·
+    /// Gemini → `systemInstruction`.
+    pub system_text: String,
+    /// Strictly alternating user / assistant / tool turns.
+    /// Working-partition signals are already folded into the first user turn.
+    pub turns: Vec<Message>,
+}
+
 /// Discriminated union. Inspect `kind`:
-/// - `"call_llm"`      → `messages`, `tools` (includes `skill` meta-tool when skills are registered)
+/// - `"call_llm"`      → `context` (RenderedContext), `tools`
 /// - `"execute_tools"` → `calls`
 /// - `"done"`          → `result`
 #[napi(object)]
 #[derive(Clone)]
 pub struct LoopAction {
     pub kind: String,
-    pub messages: Option<Vec<Message>>,
+    pub context: Option<RenderedContext>,
     pub tools: Option<Vec<ToolSchema>>,
     pub calls: Option<Vec<ToolCall>>,
     pub result: Option<LoopResult>,
@@ -335,12 +351,15 @@ pub struct LoopAction {
 
 /// Discriminated union for observations:
 /// - `"compressed"` → `action`, `rho_after`
+/// - `"renewed"`    → `sprint`
 #[napi(object)]
 #[derive(Clone)]
 pub struct LoopObservation {
     pub kind: String,
     pub action: Option<String>,
     pub rho_after: Option<f64>,
+    /// Sprint number after renewal. Set when `kind === "renewed"`.
+    pub sprint: Option<u32>,
 }
 
 // ────────────────────────────────── conversion helpers ──────────────────────────────────
@@ -663,25 +682,32 @@ fn loop_result_from_rust(r: &RustLoopResult) -> LoopResult {
     }
 }
 
+fn rendered_context_from_rust(rc: RustRenderedContext) -> RenderedContext {
+    RenderedContext {
+        system_text: rc.system_text,
+        turns: rc.turns.iter().map(message_from_rust).collect(),
+    }
+}
+
 fn loop_action_from_rust(a: RustLoopAction) -> LoopAction {
     match a {
-        RustLoopAction::CallLLM { messages, tools } => LoopAction {
+        RustLoopAction::CallLLM { context, tools } => LoopAction {
             kind: "call_llm".into(),
-            messages: Some(messages.iter().map(message_from_rust).collect()),
+            context: Some(rendered_context_from_rust(context)),
             tools: Some(tools.iter().map(tool_schema_from_rust).collect()),
             calls: None,
             result: None,
         },
         RustLoopAction::ExecuteTools { calls } => LoopAction {
             kind: "execute_tools".into(),
-            messages: None,
+            context: None,
             tools: None,
             calls: Some(calls.iter().map(tool_call_from_rust).collect()),
             result: None,
         },
         RustLoopAction::Done { result } => LoopAction {
             kind: "done".into(),
-            messages: None,
+            context: None,
             tools: None,
             calls: None,
             result: Some(loop_result_from_rust(&result)),
@@ -695,6 +721,13 @@ fn observation_from_rust(o: RustLoopObservation) -> LoopObservation {
             kind: "compressed".into(),
             action: Some(pressure_action_str(action).into()),
             rho_after: Some(rho_after),
+            sprint: None,
+        },
+        RustLoopObservation::Renewed { sprint } => LoopObservation {
+            kind: "renewed".into(),
+            action: None,
+            rho_after: None,
+            sprint: Some(sprint),
         },
     }
 }
@@ -769,8 +802,8 @@ impl ContextEngine {
     }
 
     #[napi]
-    pub fn render(&self) -> Vec<Message> {
-        self.inner.render().iter().map(message_from_rust).collect()
+    pub fn render(&self) -> RenderedContext {
+        rendered_context_from_rust(self.inner.render())
     }
 
     /// Replace the available-skills set with frontmatter-only metadata.
@@ -842,6 +875,16 @@ impl LoopStateMachine {
             .partitions
             .memory
             .push(RustMessage::user(content), tokens.max(1));
+    }
+
+    /// Pre-populate the history partition with a prior transcript message.
+    /// Must be called before `start`.
+    #[napi]
+    pub fn add_history_message(&mut self, message: Message, tokens: u32) -> Result<()> {
+        self.inner
+            .ctx
+            .push_history(message_to_rust(message)?, tokens.max(1));
+        Ok(())
     }
 
     /// Inject a VerificationContract into the system partition.
@@ -919,14 +962,32 @@ impl LoopStateMachine {
             .collect()
     }
 
+    /// Pre-populate history with messages from a prior session.
+    /// Call before `start()` to restore conversational continuity across runs.
     #[napi]
-    pub fn render(&self) -> Vec<Message> {
+    pub fn preload_history(&mut self, messages: Vec<Message>) -> Result<()> {
+        let rust_msgs: Vec<RustMessage> = messages
+            .into_iter()
+            .map(message_to_rust)
+            .collect::<Result<_>>()?;
+        self.inner.preload_history(rust_msgs);
+        Ok(())
+    }
+
+    /// Return only messages added during the current run (since the last `preload_history`
+    /// or construction). Use this to persist the session delta to `SessionStore.saveSession`.
+    #[napi]
+    pub fn drain_new_messages(&self) -> Vec<Message> {
         self.inner
-            .ctx
-            .render()
+            .drain_new_messages()
             .iter()
             .map(message_from_rust)
             .collect()
+    }
+
+    #[napi]
+    pub fn render(&self) -> RenderedContext {
+        rendered_context_from_rust(self.inner.ctx.render())
     }
 }
 

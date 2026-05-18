@@ -5,7 +5,7 @@ from typing import AsyncIterator
 import google.generativeai as genai
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, normalize_tool_call
+from .base import RetryConfig, CircuitBreaker, RenderedContext, normalize_tool_call
 
 logger = logging.getLogger(__name__)
 
@@ -24,11 +24,9 @@ class GeminiProvider:
         genai.configure(api_key=api_key)
         self._model = genai.GenerativeModel(model)
 
-    def _build_contents(self, messages: list[Message]) -> list[dict]:
+    def _build_contents(self, turns: list[Message]) -> list[dict]:
         contents = []
-        for msg in messages:
-            if msg.role == "system":
-                continue
+        for msg in turns:
             if msg.role == "tool":
                 parts = []
                 for p in getattr(msg, "content_parts", []):
@@ -70,18 +68,12 @@ class GeminiProvider:
             for t in tools
         ]
 
-    def _system_instruction(self, messages: list[Message]) -> str | None:
-        for msg in messages:
-            if msg.role == "system":
-                return msg.content
-        return None
-
-    async def complete(self, messages: list[Message], tools: list[ToolSchema]) -> Message:
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema]) -> Message:
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
 
-        system = self._system_instruction(messages)
-        contents = self._build_contents(messages)
+        system = context.system_text or None
+        contents = self._build_contents(context.turns)
         tool_defs = self._build_tools(tools)
 
         if system:
@@ -123,9 +115,9 @@ class GeminiProvider:
 
         raise last_exc or RuntimeError("Complete failed")
 
-    async def stream(self, messages: list[Message], tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
-        system = self._system_instruction(messages)
-        contents = self._build_contents(messages)
+    async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
+        system = context.system_text or None
+        contents = self._build_contents(context.turns)
         tool_defs = self._build_tools(tools)
 
         if system:

@@ -56,6 +56,44 @@ impl Dashboard {
         base + dynamic as u32
     }
 
+    /// Compact single-block representation for embedding in system_text.
+    /// Returns an empty string when all fields are at their default/empty values
+    /// so the renderer can skip it entirely on fresh agents.
+    pub fn format_compact(&self) -> String {
+        let has_progress = !self.goal_progress.is_empty();
+        let has_plan = !self.plan.is_empty();
+        let has_scratchpad = !self.scratchpad.is_empty();
+        let has_questions = !self.knowledge_surface.active_questions.is_empty();
+        let has_activity = self.error_count > 0 || self.depth > 0 || self.interrupt_requested;
+
+        if !has_progress && !has_plan && !has_scratchpad && !has_questions && !has_activity {
+            return String::new();
+        }
+
+        let mut parts: Vec<String> = Vec::new();
+        parts.push(format!(
+            "[AGENT STATE] rho={:.3} turn={} errors={} interrupt={}",
+            self.rho, self.depth, self.error_count, self.interrupt_requested
+        ));
+        if has_progress {
+            parts.push(format!("goal_progress: {}", self.goal_progress));
+        }
+        if has_plan {
+            let plan = self.plan.iter().enumerate()
+                .map(|(i, s)| format!("  {}. {}", i + 1, s))
+                .collect::<Vec<_>>()
+                .join("\n");
+            parts.push(format!("plan:\n{plan}"));
+        }
+        if has_questions {
+            parts.push(format!("active_questions: {}", self.knowledge_surface.active_questions.join(", ")));
+        }
+        if has_scratchpad {
+            parts.push(format!("scratchpad: {}", self.scratchpad));
+        }
+        parts.join("\n")
+    }
+
     pub fn format_message(&self) -> Message {
         let plan_str = if self.plan.is_empty() {
             "(none)".to_string()

@@ -1,3 +1,5 @@
+import type { Message, ContentPart, RenderedContext } from "../types.js"
+
 export class CircuitBreaker {
   private failures = 0
   private openedAt: number | null = null
@@ -39,7 +41,11 @@ export function normalizeToolCall(id: string, name: string, args: unknown): { id
   return { id: String(id ?? ""), name: n, arguments: JSON.stringify(parsed) }
 }
 
-import type { Message, ContentPart } from "../types.js"
+function parseToolArguments(args: string): Record<string, unknown> {
+  try { return JSON.parse(args || "{}") as Record<string, unknown> } catch { return {} }
+}
+
+// ─── Anthropic message conversion ────────────────────────────────────────────
 
 export function toAnthropicContent(msg: Message): string | Array<Record<string, unknown>> {
   if (!msg.contentParts?.length) return msg.content
@@ -61,39 +67,15 @@ export function toAnthropicContent(msg: Message): string | Array<Record<string, 
   })
 }
 
-export function toOpenAIContent(msg: Message): string | Array<Record<string, unknown>> {
-  if (!msg.contentParts?.length) return msg.content
-  return msg.contentParts.map(p => {
-    if (p.type === "text") return { type: "text", text: p.text }
-    if (p.type === "image") {
-      const url = p.data ? `data:${p.mediaType ?? "image/png"};base64,${p.data}` : p.url!
-      return { type: "image_url", image_url: { url, ...(p.detail ? { detail: p.detail } : {}) } }
-    }
-    if (p.type === "audio") {
-      return { type: "input_audio", input_audio: { data: p.data, format: p.mediaType?.split("/")[1] ?? "wav" } }
-    }
-    if (p.type === "tool_result") {
-      return { type: "text", text: p.output }
-    }
-    return { type: "text", text: "" }
-  })
-}
-
-function parseToolArguments(args: string): Record<string, unknown> {
-  try { return JSON.parse(args || "{}") as Record<string, unknown> } catch { return {} }
-}
-
-export function splitAnthropicSystem(messages: Message[]): string {
-  return messages.filter(m => m.role === "system").map(m => m.content).join("\n\n")
-}
-
+/** Convert RenderedContext.turns to Anthropic messages array.
+ *  `turns` contains only user / assistant / tool roles — no system filtering needed. */
 export function toAnthropicMessages(
-  messages: Message[],
+  turns: Message[],
   nativeReplay?: (message: Message) => Array<Record<string, unknown>> | undefined,
 ): Array<Record<string, unknown>> {
   const result: Array<Record<string, unknown>> = []
 
-  for (const msg of messages.filter(m => m.role !== "system")) {
+  for (const msg of turns) {
     if (msg.role === "tool") {
       const parts = (msg.contentParts ?? [])
         .filter((p): p is Extract<ContentPart, { type: "tool_result" }> => p.type === "tool_result")
@@ -120,19 +102,42 @@ export function toAnthropicMessages(
       continue
     }
 
-    result.push({
-      role: msg.role,
-      content: toAnthropicContent(msg),
-    })
+    result.push({ role: msg.role, content: toAnthropicContent(msg) })
   }
 
   return result
 }
 
-export function toOpenAIMessageParams(messages: Message[]): Array<Record<string, unknown>> {
+// ─── OpenAI-compatible message conversion ────────────────────────────────────
+
+export function toOpenAIContent(msg: Message): string | Array<Record<string, unknown>> {
+  if (!msg.contentParts?.length) return msg.content
+  return msg.contentParts.map(p => {
+    if (p.type === "text") return { type: "text", text: p.text }
+    if (p.type === "image") {
+      const url = p.data ? `data:${p.mediaType ?? "image/png"};base64,${p.data}` : p.url!
+      return { type: "image_url", image_url: { url, ...(p.detail ? { detail: p.detail } : {}) } }
+    }
+    if (p.type === "audio") {
+      return { type: "input_audio", input_audio: { data: p.data, format: p.mediaType?.split("/")[1] ?? "wav" } }
+    }
+    if (p.type === "tool_result") {
+      return { type: "text", text: p.output }
+    }
+    return { type: "text", text: "" }
+  })
+}
+
+/** Build the full OpenAI messages array from a RenderedContext.
+ *  Prepends systemText as the first system message, then converts turns. */
+export function toOpenAIMessageParams(context: RenderedContext): Array<Record<string, unknown>> {
   const result: Array<Record<string, unknown>> = []
 
-  for (const msg of messages) {
+  if (context.systemText) {
+    result.push({ role: "system", content: context.systemText })
+  }
+
+  for (const msg of context.turns) {
     if (msg.role === "tool") {
       const parts = (msg.contentParts ?? [])
         .filter((p): p is Extract<ContentPart, { type: "tool_result" }> => p.type === "tool_result")

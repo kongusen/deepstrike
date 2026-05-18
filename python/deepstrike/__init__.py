@@ -5,7 +5,7 @@ from deepstrike._kernel import (
 from deepstrike.agent import Agent
 from deepstrike.governance import Governance, GovernanceVerdict
 from deepstrike.providers import (
-    LLMProvider, AnthropicProvider, OpenAIProvider,
+    LLMProvider, RenderedContext, AnthropicProvider, OpenAIProvider,
     QwenProvider, DeepSeekProvider, MiniMaxProvider, OllamaProvider, KimiProvider,
     StreamEvent, TextDelta, ThinkingDelta,
     ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
@@ -15,7 +15,7 @@ from deepstrike.providers import (
 from deepstrike.tools import RegisteredTool, tool, execute_tools, read_file
 from deepstrike.memory import (
     WorkingMemory,
-    DreamStore, DreamResult, SessionData, MemoryEntry, CurationResult, CurationStats,
+    DreamStore, DreamResult, SessionStore, SessionData, MemoryEntry, CurationResult, CurationStats,
 )
 from deepstrike.safety import PermissionManager, PermissionMode, Permission, PermissionDecision
 from deepstrike.harness import (
@@ -45,7 +45,7 @@ __all__ = [
     "RetryConfig", "CircuitBreaker", "TokenUsage", "ProviderToolSpec",
     "RegisteredTool", "tool", "execute_tools", "read_file",
     "WorkingMemory",
-    "DreamStore", "DreamResult", "SessionData", "MemoryEntry", "CurationResult", "CurationStats",
+    "DreamStore", "DreamResult", "SessionStore", "SessionData", "MemoryEntry", "CurationResult", "CurationStats",
     "PermissionManager", "PermissionMode", "Permission", "PermissionDecision",
     "QualityGate",
     "SinglePassHarness", "HarnessLoop", "EvalLoopHarness", "HarnessRequest", "HarnessOutcome",

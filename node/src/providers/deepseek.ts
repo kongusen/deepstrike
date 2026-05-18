@@ -1,5 +1,5 @@
 import OpenAI from "openai"
-import type { Message, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent } from "../types.js"
+import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent } from "../types.js"
 import { OpenAIChatProvider } from "./openai.js"
 import { endpointProfiles } from "./profiles.js"
 
@@ -15,11 +15,11 @@ export class DeepSeekProvider extends OpenAIChatProvider {
     super(apiKey, model, retry, baseURL)
   }
 
-  async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
     const exposeReasoning = extensions?.exposeReasoning ?? false
     const thinking = extensions?.thinking === false ? "disabled" : "enabled"
     const reasoningEffort = extensions?.reasoningEffort === "max" ? "max" : "high"
-    const msgs = this.chat.buildMessages(messages)
+    const msgs = this.chat.buildMessages(context)
     const toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }> = {}
     let reasoningContent = ""
     let finalText = ""

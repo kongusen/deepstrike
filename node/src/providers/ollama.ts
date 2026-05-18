@@ -1,4 +1,4 @@
-import type { Message, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider } from "../types.js"
+import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider } from "../types.js"
 import { normalizeToolCall } from "./base.js"
 
 export class OllamaProvider implements LLMProvider {
@@ -7,34 +7,37 @@ export class OllamaProvider implements LLMProvider {
     private readonly baseUrl = "http://localhost:11434",
   ) {}
 
-  private toOllamaMessages(messages: Message[]) {
-    return messages.map(m => {
+  private toOllamaMessages(context: RenderedContext) {
+    const result = []
+    if (context.systemText) result.push({ role: "system", content: context.systemText })
+    for (const m of context.turns) {
       const images: string[] = []
       if (m.contentParts?.length) {
         for (const p of m.contentParts) {
           if (p.type === "image" && p.data) images.push(p.data)
         }
       }
-      return { role: m.role, content: m.content, ...(images.length ? { images } : {}) }
-    })
+      result.push({ role: m.role, content: m.content, ...(images.length ? { images } : {}) })
+    }
+    return result
   }
 
-  async complete(messages: Message[], tools: ToolSchema[]): Promise<Message> {
+  async complete(context: RenderedContext, tools: ToolSchema[]): Promise<Message> {
     const resp = await fetch(`${this.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: this.model, messages: this.toOllamaMessages(messages), stream: false }),
+      body: JSON.stringify({ model: this.model, messages: this.toOllamaMessages(context), stream: false }),
     })
     if (!resp.ok) throw new Error(`Ollama error: ${resp.status}`)
     const data = await resp.json() as { message: { content: string } }
     return { role: "assistant", content: data.message.content }
   }
 
-  async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
     const resp = await fetch(`${this.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: this.model, messages: this.toOllamaMessages(messages), stream: true }),
+      body: JSON.stringify({ model: this.model, messages: this.toOllamaMessages(context), stream: true }),
     })
     if (!resp.ok) throw new Error(`Ollama error: ${resp.status}`)
     const reader = resp.body!.getReader()

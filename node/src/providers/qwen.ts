@@ -1,5 +1,5 @@
 import OpenAI from "openai"
-import type { LLMProvider, Message, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, ToolSchema } from "../types.js"
+import type { LLMProvider, Message, RenderedContext, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, ToolSchema } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker } from "./base.js"
 import { OpenAIChatAdapter } from "./openai-chat.js"
@@ -26,9 +26,9 @@ export class QwenProvider implements LLMProvider {
     this.baseDelay = retry.baseDelay
   }
 
-  async complete(messages: Message[], tools: ToolSchema[]): Promise<Message> {
+  async complete(context: RenderedContext, tools: ToolSchema[]): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
-    const msgs = this.chat.buildMessages(messages)
+    const msgs = this.chat.buildMessages(context)
 
     let lastErr: unknown
     for (let i = 0; i < this.maxRetries; i++) {
@@ -51,10 +51,10 @@ export class QwenProvider implements LLMProvider {
     throw lastErr
   }
 
-  async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
     const enableThinking = Boolean(extensions?.enableThinking ?? extensions?.enable_thinking)
     const thinkingBudget = extensions?.thinkingBudget ?? extensions?.thinking_budget
-    const msgs = this.chat.buildMessages(messages)
+    const msgs = this.chat.buildMessages(context)
     const toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }> = {}
 
     const stream = await this.client.chat.completions.create({

@@ -56,6 +56,8 @@ agent.set_skill_registry(registry)
 
 Memory is a two-phase pipeline that separates in-session retrieval from post-session consolidation.
 
+Session continuity is a separate concern from memory. Reuse the same `sessionId` when you want an agent to continue the same conversation and see the earlier transcript; use `DreamStore` when you want distilled knowledge to survive across different sessions.
+
 ### Phase 1 — In-session retrieval
 
 When the model needs context from prior sessions, it calls `memory(query)`. The SDK calls `DreamStore.search(query)` and injects the returned entries into the context window.

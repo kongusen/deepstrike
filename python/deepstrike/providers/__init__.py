@@ -1,4 +1,4 @@
-from .base import LLMProvider, RetryConfig, CircuitBreaker, normalize_tool_call, parse_tool_arguments, TokenUsage, ProviderToolSpec, to_anthropic_content, to_openai_content
+from .base import LLMProvider, RenderedContext, RetryConfig, CircuitBreaker, normalize_tool_call, parse_tool_arguments, TokenUsage, ProviderToolSpec, to_anthropic_content, to_openai_content
 from .stream import (
     StreamEvent,
     TextDelta,
@@ -19,7 +19,7 @@ from .kimi import KimiProvider
 from .gemini import GeminiProvider
 
 __all__ = [
-    "LLMProvider", "AnthropicProvider", "OpenAIProvider",
+    "LLMProvider", "RenderedContext", "AnthropicProvider", "OpenAIProvider",
     "QwenProvider", "DeepSeekProvider", "MiniMaxProvider", "OllamaProvider", "KimiProvider", "GeminiProvider",
     "RetryConfig", "CircuitBreaker", "normalize_tool_call", "parse_tool_arguments",
     "TokenUsage", "ProviderToolSpec", "to_anthropic_content", "to_openai_content",

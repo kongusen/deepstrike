@@ -144,7 +144,13 @@ export class HarnessLoop {
       if (evalAction.kind !== "evaluate") break
 
       let evalText = ""
-      for await (const evt of this.evalProvider.stream(evalAction.messages ?? [], [], undefined)) {
+      // Wrap harness eval messages in a RenderedContext (system messages → systemText, rest → turns).
+      const evalMsgs = evalAction.messages ?? []
+      const evalContext = {
+        systemText: evalMsgs.filter((m: { role: string }) => m.role === "system").map((m: { content: string }) => m.content).join("\n\n"),
+        turns: evalMsgs.filter((m: { role: string }) => m.role !== "system"),
+      }
+      for await (const evt of this.evalProvider.stream(evalContext, [], undefined)) {
         if (evt.type === "text_delta") evalText += (evt as TextDelta).delta
       }
 

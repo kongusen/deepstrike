@@ -5,6 +5,7 @@ from typing import Any, AsyncIterator, Protocol, TYPE_CHECKING, Union, runtime_c
 from deepstrike._kernel import EvalPipeline
 from deepstrike.providers.stream import DoneEvent as _ProviderDoneEvent, TextDelta
 
+from deepstrike.providers.base import RenderedContext
 if TYPE_CHECKING:
     from deepstrike.agent import Agent
     from deepstrike.providers.base import LLMProvider
@@ -202,7 +203,11 @@ class HarnessLoop:
                 break
 
             eval_text = ""
-            async for evt in await self._eval_provider.stream(eval_action.messages or [], [], extensions=None):
+            eval_msgs = eval_action.messages or []
+            eval_system = "\n\n".join(m.content for m in eval_msgs if m.role == "system")
+            eval_turns = [m for m in eval_msgs if m.role != "system"]
+            eval_context = RenderedContext(system_text=eval_system, turns=eval_turns)
+            async for evt in await self._eval_provider.stream(eval_context, [], extensions=None):
                 if isinstance(evt, TextDelta):
                     eval_text += evt.delta
 

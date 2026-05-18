@@ -705,6 +705,16 @@ impl LoopStateMachine {
             .push(RustMessage::user(content), tokens.max(1));
     }
 
+    /// Pre-populate the history partition with a prior transcript message.
+    /// Must be called before `start`.
+    #[wasm_bindgen(js_name = addHistoryMessage)]
+    pub fn add_history_message(&mut self, message: Message, tokens: u32) -> Result<(), JsValue> {
+        self.inner
+            .ctx
+            .push_history(message_to_rust(message)?, tokens.max(1));
+        Ok(())
+    }
+
     #[wasm_bindgen(js_name = setTools)]
     pub fn set_tools(&mut self, tools: Vec<ToolSchema>) -> Result<(), JsValue> {
         self.inner.tools = tools.into_iter().map(tool_schema_to_rust).collect::<Result<_, _>>()?;

@@ -3,7 +3,7 @@ import type { RegisteredTool } from "./tools/index.js"
 import { executeTools } from "./tools/index.js"
 import type { KnowledgeSource } from "./knowledge/index.js"
 import type { SignalSource } from "./signals/index.js"
-import type { DreamStore } from "./memory/index.js"
+import type { DreamStore, SessionData, SessionMessage, SessionStore } from "./memory/index.js"
 import { Governance } from "./governance.js"
 
 export interface SkillMetadata {
@@ -39,6 +39,7 @@ export interface AgentOptions {
   knowledgeSource?: KnowledgeSource
   signalSource?: SignalSource
   dreamStore?: DreamStore
+  sessionStore?: SessionStore
   agentId?: string
   governance?: Governance
   /** Host-provided skill content map (name → markdown body). WASM has no fs access. */
@@ -52,6 +53,7 @@ export class Agent {
   private interrupted = false
   private pendingInterrupt = false
   private _pendingSkills: SkillMetadata[] = []
+  private readonly inMemorySessions = new Map<string, SessionData>()
 
   constructor(
     private readonly provider: LLMProvider,
@@ -69,9 +71,9 @@ export class Agent {
   blockTool(name: string): this { this.blockedTools.add(name); return this }
   interrupt(): void { this.interrupted = true }
 
-  async run(goal: string, criteria?: string[], extensions?: Record<string, unknown>): Promise<string> {
+  async run(goal: string, criteria?: string[], extensions?: Record<string, unknown>, sessionId?: string): Promise<string> {
     let text = ""
-    for await (const evt of this.runStreaming(goal, criteria, extensions)) {
+    for await (const evt of this.runStreaming(goal, criteria, extensions, sessionId)) {
       if (evt.type === "text_delta") text += (evt as TextDelta).delta
     }
     return text
@@ -81,6 +83,7 @@ export class Agent {
     goal: string,
     criteria?: string[],
     extensions?: Record<string, unknown>,
+    sessionId?: string,
   ): AsyncIterable<StreamEvent> {
     this.interrupted = false
     this.pendingInterrupt = false
@@ -109,6 +112,11 @@ export class Agent {
       sm.addMemoryMessage(mem, Math.max(1, Math.ceil(mem.length / 4)))
     }
 
+    const previousSession = sessionId ? await this.loadSession(sessionId) : undefined
+    for (const message of previousSession?.messages ?? []) {
+      sm.addHistoryMessage(this.toMessage(message), Math.max(1, Math.ceil(message.content.length / 4)))
+    }
+
     if (this._pendingSkills.length > 0) {
       sm.setAvailableSkills(this._pendingSkills)
     }
@@ -122,7 +130,7 @@ export class Agent {
     let finalText = ""
 
     const sessionStart = Date.now()
-    const sessionMsgs: import("./memory/index.js").SessionMessage[] = [{ role: "user", content: goal }]
+    const sessionMsgs: SessionMessage[] = [{ role: "user", content: goal }]
 
     while (!sm.isTerminal()) {
       if (this.interrupted) { action = sm.feedTimeout(); break }
@@ -275,12 +283,46 @@ export class Agent {
       } catch { /* session save failure must not surface to caller */ }
     }
 
+    if (sessionId) {
+      await this.saveSession({
+        sessionId,
+        agentId: this.options.agentId ?? "default",
+        messages: [...(previousSession?.messages ?? []), ...sessionMsgs],
+        metadata: previousSession?.metadata ?? null,
+        createdAtMs: previousSession?.createdAtMs ?? sessionStart,
+        updatedAtMs: Date.now(),
+      })
+    }
+
     yield {
       type: "done",
       iterations: result?.turnsUsed ?? 0,
       totalTokens: Number(result?.totalTokensUsed ?? 0),
       status: result?.termination ?? "error",
     } as DoneEvent
+  }
+
+  private async loadSession(sessionId: string): Promise<SessionData | undefined> {
+    return this.options.sessionStore
+      ? this.options.sessionStore.loadSession(sessionId)
+      : this.inMemorySessions.get(sessionId)
+  }
+
+  private async saveSession(data: SessionData): Promise<void> {
+    if (this.options.sessionStore) {
+      await this.options.sessionStore.saveSession(data)
+      return
+    }
+    this.inMemorySessions.set(data.sessionId, data)
+  }
+
+  private toMessage(message: SessionMessage): Message {
+    return {
+      role: message.role,
+      content: message.content,
+      tokenCount: message.tokenCount,
+      toolCalls: message.toolCalls,
+    }
   }
 
   /** Register available skills from host-provided metadata (WASM has no fs access). */

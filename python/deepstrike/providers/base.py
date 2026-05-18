@@ -139,7 +139,13 @@ def to_openai_content(msg: Message) -> str | list[dict]:
     return parts or msg.content
 
 
+@dataclass
+class RenderedContext:
+    system_text: str = ""
+    turns: list[Message] = field(default_factory=list)
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
-    async def complete(self, messages: list[Message], tools: list[ToolSchema]) -> Message: ...
-    async def stream(self, messages: list[Message], tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]: ...
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema]) -> Message: ...
+    async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]: ...

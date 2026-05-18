@@ -2,7 +2,7 @@ import type { LLMProvider, Message, ToolCall, ToolSchema, StreamEvent, TextDelta
 import type { RegisteredTool } from "./tools/index.js"
 import { executeTools } from "./tools/index.js"
 import { readSkillFile, scanSkillDir } from "./skills/loader.js"
-import type { DreamStore, DreamResult, CurationResult, MemoryEntry } from "./memory/protocols.js"
+import type { DreamStore, DreamResult, CurationResult, MemoryEntry, SessionData, SessionMessage, SessionStore } from "./memory/protocols.js"
 import type { KnowledgeSource } from "./knowledge/source.js"
 import type { RuntimeSignal, RuntimeSignalUrgency, SignalSource } from "./signals/types.js"
 import { getKernel } from "./kernel.js"
@@ -18,12 +18,6 @@ export interface AgentOptions {
    */
   systemPrompt?: string
   /**
-   * Long-term memory snippets pre-seeded into the context before the first LLM call.
-   * Each string is pushed to the kernel's `memory` partition (highest-priority context
-   * after system). Use to inject memories retrieved from a DreamStore before a run.
-   */
-  initialMemory?: string[]
-  /**
    * Directory containing skill `.md` files. The kernel auto-injects a `skill`
    * meta-tool so the model can load any skill by name on demand.
    */
@@ -32,6 +26,8 @@ export interface AgentOptions {
   signalSource?: SignalSource
   /** Backing store for the idle dreaming pipeline. Required to call `Agent.dream()`. */
   dreamStore?: DreamStore
+  /** Optional durable transcript store for same-session conversational continuity. */
+  sessionStore?: SessionStore
   /**
    * Stable identifier for this agent. Required to enable in-session memory retrieval
    * when `dreamStore` is configured.
@@ -55,6 +51,7 @@ export class Agent {
   private knowledgeSource?: KnowledgeSource
   private signalSource?: SignalSource
   private dreamStore?: DreamStore
+  private readonly inMemorySessions = new Map<string, SessionData>()
   private interrupted = false
   private pendingInterrupt = false
 
@@ -97,9 +94,9 @@ export class Agent {
    * Collect the full text response and return it.
    * For richer control (streaming, tool events, token counts) use `runStreaming`.
    */
-  async run(goal: string, criteria?: string[], extensions?: Record<string, unknown>): Promise<string> {
+  async run(goal: string, criteria?: string[], extensions?: Record<string, unknown>, sessionId?: string): Promise<string> {
     let content = ""
-    for await (const evt of this.runStreaming(goal, criteria, extensions)) {
+    for await (const evt of this.runStreaming(goal, criteria, extensions, sessionId)) {
       if (evt.type === "text_delta") content += (evt as TextDelta).delta
     }
     return content
@@ -109,6 +106,7 @@ export class Agent {
     goal: string,
     criteria?: string[],
     extensions?: Record<string, unknown>,
+    sessionId?: string,
   ): AsyncIterable<StreamEvent> {
     this.interrupted = false
     this.pendingInterrupt = false
@@ -140,8 +138,10 @@ export class Agent {
       sm.addSystemMessage(this.options.systemPrompt, tokens)
     }
 
-    for (const mem of this.options.initialMemory ?? []) {
-      sm.addMemoryMessage(mem, Math.max(1, Math.ceil(mem.length / 4)))
+    const previousSession = sessionId ? await this.loadSession(sessionId) : undefined
+    const previousMsgs = previousSession?.messages ?? []
+    if (previousMsgs.length > 0) {
+      sm.preloadHistory(previousMsgs.map(m => this.toMessage(m)))
     }
 
     if (this.skillDir) {
@@ -166,7 +166,6 @@ export class Agent {
     let action = sm.start({ goal, criteria: criteria ?? [] })
 
     const sessionStart = Date.now()
-    const sessionMsgs: import("./memory/protocols.js").SessionMessage[] = [{ role: "user", content: goal }]
 
     while (!sm.isTerminal()) {
       // Update telemetry
@@ -212,12 +211,12 @@ export class Agent {
       if (action.kind === "call_llm") {
         const finalToolCalls: ToolCall[] = []
         let finalText = ""
-        const messages = (action.messages ?? []) as Message[]
+        const context = (action as unknown as { context: import("./types.js").RenderedContext }).context
         const tools = (action.tools ?? []) as ToolSchema[]
 
         let turnTokens = 0
         try {
-          for await (const evt of this.provider.stream(messages, tools, Object.keys(ext).length ? ext : undefined, providerState)) {
+          for await (const evt of this.provider.stream(context, tools, Object.keys(ext).length ? ext : undefined, providerState)) {
             if (evt.type === "usage") { turnTokens = (evt as { type: string; totalTokens: number }).totalTokens; continue }
             yield evt
             if (evt.type === "text_delta") finalText += (evt as TextDelta).delta
@@ -233,7 +232,6 @@ export class Agent {
         }
 
         action = sm.feedLlmResponse({ role: "assistant", content: finalText, toolCalls: finalToolCalls, tokenCount: turnTokens || undefined })
-        sessionMsgs.push({ role: "assistant", content: finalText, toolCalls: finalToolCalls })
 
       } else if (action.kind === "execute_tools") {
         const allCalls: ToolCall[] = action.calls ?? []
@@ -333,17 +331,31 @@ export class Agent {
     const status = result?.termination ?? "error"
     const iterations = result ? Math.max(1, result.turnsUsed) : 0
 
-    if (this.options.dreamStore && this.options.agentId && sessionMsgs.length > 1) {
+    const newMsgs = (sm.drainNewMessages() as Message[]).map(m => this.kernelMsgToSessionMsg(m))
+
+    if (this.options.dreamStore && this.options.agentId && newMsgs.length > 0) {
       try {
         await this.options.dreamStore.saveSession({
           sessionId: crypto.randomUUID(),
           agentId: this.options.agentId,
-          messages: sessionMsgs,
+          messages: newMsgs,
           metadata: null,
           createdAtMs: sessionStart,
           updatedAtMs: Date.now(),
         })
       } catch { /* session save failure must not surface to caller */ }
+    }
+
+    if (sessionId) {
+      const now = Date.now()
+      await this.saveSession({
+        sessionId,
+        agentId: this.options.agentId ?? "default",
+        messages: [...previousMsgs, ...newMsgs],
+        metadata: previousSession?.metadata ?? null,
+        createdAtMs: previousSession?.createdAtMs ?? sessionStart,
+        updatedAtMs: now,
+      })
     }
 
     yield {
@@ -353,6 +365,41 @@ export class Agent {
       status,
     } as DoneEvent
   }
+
+  private async loadSession(sessionId: string): Promise<SessionData | undefined> {
+    return this.options.sessionStore
+      ? this.options.sessionStore.loadSession(sessionId)
+      : this.inMemorySessions.get(sessionId)
+  }
+
+  private async saveSession(data: SessionData): Promise<void> {
+    if (this.options.sessionStore) {
+      await this.options.sessionStore.saveSession(data)
+      return
+    }
+    this.inMemorySessions.set(data.sessionId, data)
+  }
+
+  private toMessage(message: SessionMessage): Message {
+    return {
+      role: message.role,
+      content: message.content,
+      contentParts: message.contentParts,
+      tokenCount: message.tokenCount,
+      toolCalls: message.toolCalls,
+    }
+  }
+
+  private kernelMsgToSessionMsg(msg: Message): SessionMessage {
+    return {
+      role: msg.role,
+      content: msg.content,
+      contentParts: msg.contentParts,
+      tokenCount: msg.tokenCount,
+      toolCalls: msg.toolCalls?.length ? msg.toolCalls : undefined,
+    }
+  }
+
 
   /**
    * Trigger the idle dreaming cycle for this agent.
@@ -404,8 +451,17 @@ export class Agent {
 
     let synthesisText = ""
     const providerState = this.provider.createRunState?.()
+    // IdlePipeline produces raw messages for synthesis; wrap them in a RenderedContext.
+    // The first system message (if any) becomes systemText; the rest are turns.
+    const synthMsgs = (action1.messages ?? []) as Message[]
+    const synthSystemMsgs = synthMsgs.filter(m => m.role === "system")
+    const synthTurns = synthMsgs.filter(m => m.role !== "system")
+    const synthContext = {
+      systemText: synthSystemMsgs.map(m => m.content).join("\n\n"),
+      turns: synthTurns,
+    }
     for await (const evt of this.provider.stream(
-      (action1.messages ?? []) as Message[],
+      synthContext,
       [],
       undefined,
       providerState,

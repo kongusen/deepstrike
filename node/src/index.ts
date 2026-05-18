@@ -21,7 +21,7 @@ export { scanSkillDir, readSkillFile } from "./skills/loader.js"
 export type { SkillMetadata } from "./skills/loader.js"
 export { WorkingMemory } from "./memory/working.js"
 export type {
-  DreamStore, DreamResult, SessionData, SessionMessage, MemoryEntry, CurationResult, CurationStats,
+  DreamStore, DreamResult, SessionStore, SessionData, SessionMessage, MemoryEntry, CurationResult, CurationStats,
 } from "./memory/protocols.js"
 export type { KnowledgeSource } from "./knowledge/source.js"
 export { SinglePassHarness, EvalLoopHarness, HarnessLoop } from "./harness/harness.js"

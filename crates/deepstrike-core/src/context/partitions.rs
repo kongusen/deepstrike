@@ -100,6 +100,7 @@ impl ContextPartitions {
     pub fn partitions_by_priority(&self) -> [&Partition; 4] {
         [&self.history, &self.skill, &self.memory, &self.system]
     }
+
 }
 
 impl Default for ContextPartitions {

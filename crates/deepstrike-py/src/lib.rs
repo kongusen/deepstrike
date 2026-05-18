@@ -20,7 +20,7 @@
 //! while not sm.is_terminal():
 //!     if action.kind == "call_llm":
 //!         # tools list already includes the `skill` meta-tool
-//!         msg = call_llm(action.messages, action.tools)
+//!         msg = call_llm(action.context, action.tools)
 //!         action = sm.feed_llm_response(msg)
 //!     elif action.kind == "execute_tools":
 //!         # SDK intercepts calls where name == "skill" and reads the file
@@ -53,6 +53,7 @@ use deepstrike_core::memory::idle_pipeline::{
     IdlePolicy as RustIdlePolicy,
 };
 use deepstrike_core::memory::semantic::MemoryEntry as RustMemoryEntry;
+use deepstrike_core::context::renderer::RenderedContext as RustRenderedContext;
 use deepstrike_core::scheduler::policy::LoopPolicy as RustLoopPolicy;
 use deepstrike_core::scheduler::state_machine::{
     LoopAction as RustLoopAction, LoopEvent as RustLoopEvent,
@@ -828,8 +829,34 @@ impl SkillMetadata {
 
 // ─────────────────────────────── Tagged-union: LoopAction / Observation ────────────────────────
 
+/// Structured context for a provider call — present when `kind == "call_llm"`.
+#[pyclass]
+#[derive(Clone)]
+struct RenderedContext {
+    #[pyo3(get)]
+    system_text: String,
+    #[pyo3(get)]
+    turns: Vec<Message>,
+}
+
+#[pymethods]
+impl RenderedContext {
+    fn __repr__(&self) -> String {
+        format!("RenderedContext(turns={})", self.turns.len())
+    }
+}
+
+impl RenderedContext {
+    fn from_rust(rc: RustRenderedContext) -> Self {
+        Self {
+            system_text: rc.system_text,
+            turns: rc.turns.iter().map(Message::from_rust).collect(),
+        }
+    }
+}
+
 /// Tagged union for `LoopAction`. Inspect `kind` then read the matching field:
-/// - `kind == "call_llm"`      → `messages`, `tools` (includes `skill` meta-tool when skills registered)
+/// - `kind == "call_llm"`      → `context` (RenderedContext), `tools`
 /// - `kind == "execute_tools"` → `calls`
 /// - `kind == "done"`          → `result`
 #[pyclass]
@@ -838,7 +865,7 @@ struct LoopAction {
     #[pyo3(get)]
     kind: String,
     #[pyo3(get)]
-    messages: Option<Vec<Message>>,
+    context: Option<RenderedContext>,
     #[pyo3(get)]
     tools: Option<Vec<ToolSchema>>,
     #[pyo3(get)]
@@ -857,9 +884,9 @@ impl LoopAction {
 impl LoopAction {
     fn from_rust(a: RustLoopAction) -> Self {
         match a {
-            RustLoopAction::CallLLM { messages, tools } => Self {
+            RustLoopAction::CallLLM { context, tools } => Self {
                 kind: "call_llm".to_string(),
-                messages: Some(messages.iter().map(Message::from_rust).collect()),
+                context: Some(RenderedContext::from_rust(context)),
                 tools: Some(
                     tools
                         .iter()
@@ -876,14 +903,14 @@ impl LoopAction {
             },
             RustLoopAction::ExecuteTools { calls } => Self {
                 kind: "execute_tools".to_string(),
-                messages: None,
+                context: None,
                 tools: None,
                 calls: Some(calls.iter().map(ToolCall::from_rust).collect()),
                 result: None,
             },
             RustLoopAction::Done { result } => Self {
                 kind: "done".to_string(),
-                messages: None,
+                context: None,
                 tools: None,
                 calls: None,
                 result: Some(LoopResult::from_rust(&result)),
@@ -894,6 +921,7 @@ impl LoopAction {
 
 /// Tagged union for `LoopObservation`. Inspect `kind`:
 /// - `kind == "compressed"` → `action`, `rho_after`
+/// - `kind == "renewed"`    → `sprint`
 #[pyclass]
 #[derive(Clone)]
 struct LoopObservation {
@@ -903,6 +931,9 @@ struct LoopObservation {
     action: Option<String>,
     #[pyo3(get)]
     rho_after: Option<f64>,
+    /// Sprint number after renewal. Set when `kind == "renewed"`.
+    #[pyo3(get)]
+    sprint: Option<u32>,
 }
 
 impl LoopObservation {
@@ -920,8 +951,15 @@ impl LoopObservation {
                     kind: "compressed".into(),
                     action: Some(action_str.into()),
                     rho_after: Some(rho_after),
+                    sprint: None,
                 }
             }
+            RustLoopObservation::Renewed { sprint } => Self {
+                kind: "renewed".into(),
+                action: None,
+                rho_after: None,
+                sprint: Some(sprint),
+            },
         }
     }
 }
@@ -979,8 +1017,8 @@ impl ContextEngine {
         before.saturating_sub(after)
     }
 
-    fn render(&self, _budget: u32) -> Vec<Message> {
-        self.inner.render().iter().map(Message::from_rust).collect()
+    fn render(&self) -> RenderedContext {
+        RenderedContext::from_rust(self.inner.render())
     }
 
     /// Replace the available-skills set. The kernel auto-injects the `skill`
@@ -1049,6 +1087,15 @@ impl LoopStateMachine {
             .push(RustMessage::user(content), tokens.max(1));
     }
 
+    /// Pre-populate the history partition with a prior transcript message.
+    /// Must be called before `start`.
+    fn add_history_message(&mut self, message: Message, tokens: u32) -> PyResult<()> {
+        self.inner
+            .ctx
+            .push_history(message.to_rust()?, tokens.max(1));
+        Ok(())
+    }
+
     fn set_tools(&mut self, tools: Vec<ToolSchema>) -> PyResult<()> {
         let rust_tools: Vec<RustToolSchema> = tools
             .iter()
@@ -1098,14 +1145,30 @@ impl LoopStateMachine {
             .collect()
     }
 
-    /// Read-only access to the rendered context for inspection / LLM call building.
-    fn render(&self) -> Vec<Message> {
+    /// Pre-populate history with messages from a prior session.
+    /// Call before `start()` to restore conversational continuity across runs.
+    fn preload_history(&mut self, messages: Vec<Message>) -> PyResult<()> {
+        let rust_msgs: Vec<RustMessage> = messages
+            .iter()
+            .map(|m| m.to_rust())
+            .collect::<Result<_, _>>()?;
+        self.inner.preload_history(rust_msgs);
+        Ok(())
+    }
+
+    /// Return only messages added during the current run (since the last `preload_history`
+    /// or construction). Use this to persist the session delta to a SessionStore.
+    fn drain_new_messages(&self) -> Vec<Message> {
         self.inner
-            .ctx
-            .render()
+            .drain_new_messages()
             .iter()
             .map(Message::from_rust)
             .collect()
+    }
+
+    /// Read-only access to the rendered context for inspection / LLM call building.
+    fn render(&self) -> RenderedContext {
+        RenderedContext::from_rust(self.inner.ctx.render())
     }
 }
 

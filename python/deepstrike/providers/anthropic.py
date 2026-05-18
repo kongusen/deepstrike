@@ -5,7 +5,7 @@ from typing import AsyncIterator
 from anthropic import AsyncAnthropic
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, normalize_tool_call, to_anthropic_content
+from .base import RetryConfig, CircuitBreaker, RenderedContext, normalize_tool_call, to_anthropic_content
 
 logger = logging.getLogger(__name__)
 
@@ -22,16 +22,8 @@ class AnthropicProvider:
         self._circuit = CircuitBreaker(self._retry)
         self._client = AsyncAnthropic(api_key=api_key)
 
-    def _build_messages(self, messages: list[Message]) -> list[dict]:
-        return [
-            {"role": m.role, "content": to_anthropic_content(m)}
-            for m in messages
-            if m.role != "system"
-        ]
-
-    def _build_system(self, messages: list[Message]) -> str | None:
-        system_parts = [m.content for m in messages if m.role == "system"]
-        return "\n\n".join(system_parts) if system_parts else None
+    def _build_messages(self, turns: list[Message]) -> list[dict]:
+        return [{"role": m.role, "content": to_anthropic_content(m)} for m in turns]
 
     def _build_tools(self, tools: list[ToolSchema]) -> list[dict] | None:
         if not tools:
@@ -45,12 +37,12 @@ class AnthropicProvider:
             for t in tools
         ]
 
-    async def complete(self, messages: list[Message], tools: list[ToolSchema]) -> Message:
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema]) -> Message:
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
 
-        msgs = self._build_messages(messages)
-        system = self._build_system(messages)
+        msgs = self._build_messages(context.turns)
+        system = context.system_text or None
         tool_defs = self._build_tools(tools)
 
         last_exc = None
@@ -92,9 +84,9 @@ class AnthropicProvider:
 
         raise last_exc or RuntimeError("Complete failed")
 
-    async def stream(self, messages: list[Message], tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
-        msgs = self._build_messages(messages)
-        system = self._build_system(messages)
+    async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
+        msgs = self._build_messages(context.turns)
+        system = context.system_text or None
         tool_defs = self._build_tools(tools)
 
         async with self._client.messages.stream(

@@ -5,7 +5,7 @@ from typing import AsyncIterator
 import httpx
 from deepstrike._kernel import Message, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, normalize_tool_call
+from .base import RetryConfig, CircuitBreaker, RenderedContext, normalize_tool_call
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +19,11 @@ class OllamaProvider:
         self._retry = retry_config or RetryConfig()
         self._circuit = CircuitBreaker(self._retry)
 
-    def _build_body(self, messages: list[Message], tools: list[ToolSchema], stream: bool) -> dict:
+    def _build_body(self, context: RenderedContext, tools: list[ToolSchema], stream: bool) -> dict:
         msgs = []
-        for m in messages:
+        if context.system_text:
+            msgs.append({"role": "system", "content": context.system_text})
+        for m in context.turns:
             entry: dict = {"role": m.role, "content": m.content}
             parts = getattr(m, "content_parts", None)
             if parts:
@@ -48,7 +50,7 @@ class OllamaProvider:
             ]
         return body
 
-    async def complete(self, messages: list[Message], tools: list[ToolSchema]) -> Message:
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema]) -> Message:
         if self._circuit.is_open():
             raise Exception("Circuit breaker open")
 
@@ -58,7 +60,7 @@ class OllamaProvider:
                 async with httpx.AsyncClient() as client:
                     resp = await client.post(
                         f"{self._base_url}/api/chat",
-                        json=self._build_body(messages, tools, stream=False),
+                        json=self._build_body(context, tools, stream=False),
                         timeout=120,
                     )
                     resp.raise_for_status()
@@ -87,17 +89,17 @@ class OllamaProvider:
 
         raise last_exc or Exception("Complete failed")
 
-    async def stream(self, messages: list[Message], tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
-        return self._stream_gen(messages, tools)
+    async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
+        return self._stream_gen(context, tools)
 
-    async def _stream_gen(self, messages: list[Message], tools: list[ToolSchema]) -> AsyncIterator[StreamEvent]:
+    async def _stream_gen(self, context: RenderedContext, tools: list[ToolSchema]) -> AsyncIterator[StreamEvent]:
         tool_calls: dict[int, dict] = {}
 
         async with httpx.AsyncClient() as client:
             async with client.stream(
                 "POST",
                 f"{self._base_url}/api/chat",
-                json=self._build_body(messages, tools, stream=True),
+                json=self._build_body(context, tools, stream=True),
                 timeout=120,
             ) as resp:
                 resp.raise_for_status()

@@ -8,7 +8,7 @@ export { tool, executeTools } from "./tools/index.js"
 export type { RegisteredTool } from "./tools/index.js"
 export { WorkingMemory } from "./memory/index.js"
 export type {
-  DreamStore, DreamResult, SessionData, SessionMessage, MemoryEntry, CurationResult, CurationStats,
+  DreamStore, DreamResult, SessionStore, SessionData, SessionMessage, MemoryEntry, CurationResult, CurationStats,
 } from "./memory/index.js"
 export type { KnowledgeSource } from "./knowledge/index.js"
 export { SinglePassHarness, HarnessLoop } from "./harness/index.js"

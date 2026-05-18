@@ -1,15 +1,14 @@
 import { GoogleGenerativeAI, type Content, type Part, type Tool } from "@google/generative-ai"
-import type { Message, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider } from "../types.js"
+import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, normalizeToolCall } from "./base.js"
 import { endpointProfiles } from "./profiles.js"
 
 const GEMINI_BASE = (endpointProfiles as Record<string, { baseURL: string }>)["gemini.google"].baseURL
 
-function buildContents(messages: Message[]): Content[] {
+function buildContents(turns: Message[]): Content[] {
   const contents: Content[] = []
-  for (const msg of messages) {
-    if (msg.role === "system") continue
+  for (const msg of turns) {
     if (msg.role === "tool") {
       const parts: Part[] = (msg.contentParts ?? [])
         .filter(p => p.type === "tool_result")
@@ -45,10 +44,6 @@ function buildTools(tools: ToolSchema[]): Tool[] {
   }]
 }
 
-function systemInstruction(messages: Message[]): string | undefined {
-  return messages.find(m => m.role === "system")?.content
-}
-
 export class GeminiProvider implements LLMProvider {
   private genAI: GoogleGenerativeAI
   private circuit: CircuitBreaker
@@ -67,10 +62,10 @@ export class GeminiProvider implements LLMProvider {
     this.baseDelay = retry.baseDelay
   }
 
-  async complete(messages: Message[], tools: ToolSchema[]): Promise<Message> {
+  async complete(context: RenderedContext, tools: ToolSchema[]): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
-    const system = systemInstruction(messages)
-    const contents = buildContents(messages)
+    const system = context.systemText || undefined
+    const contents = buildContents(context.turns)
     const geminiTools = buildTools(tools)
 
     let lastErr: unknown
@@ -109,9 +104,9 @@ export class GeminiProvider implements LLMProvider {
     throw lastErr
   }
 
-  async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
-    const system = systemInstruction(messages)
-    const contents = buildContents(messages)
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+    const system = context.systemText || undefined
+    const contents = buildContents(context.turns)
     const geminiTools = buildTools(tools)
 
     const m = this.genAI.getGenerativeModel({

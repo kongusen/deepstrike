@@ -1,5 +1,5 @@
 import OpenAI from "openai"
-import type { Message, ProviderRunState, StreamEvent, TextDelta, ToolCallEvent, ToolSchema, LLMProvider } from "../types.js"
+import type { Message, ProviderRunState, RenderedContext, StreamEvent, TextDelta, ToolCallEvent, ToolSchema, LLMProvider } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker } from "./base.js"
 import { normalizeToolCall } from "./base.js"
@@ -19,26 +19,18 @@ export class OpenAIResponsesAdapter {
     }))
   }
 
-  buildInstructions(messages: Message[]): string | undefined {
-    const instructions = messages
-      .filter(message => message.role === "system")
-      .map(message => message.content)
-      .filter(Boolean)
-
-    return instructions.length ? instructions.join("\n\n") : undefined
+  buildInstructions(context: RenderedContext): string | undefined {
+    return context.systemText || undefined
   }
 
-  buildInput(messages: Message[], state?: OpenAIResponsesRunState): Array<Record<string, unknown>> {
+  buildInput(context: RenderedContext, state?: OpenAIResponsesRunState): Array<Record<string, unknown>> {
     const input: Array<Record<string, unknown>> = []
+    const turns = context.turns
     const uncoveredMessages = state?.previousResponseId
-      ? messages.slice(state.coveredMessageCount)
-      : messages
+      ? turns.slice(state.coveredMessageCount)
+      : turns
 
     for (const message of uncoveredMessages) {
-      if (message.role === "system") {
-        continue
-      }
-
       if (message.role === "assistant" && message.toolCalls?.length) {
         if (message.content || message.contentParts?.length) {
           input.push({
@@ -153,16 +145,16 @@ export class OpenAIResponsesProvider implements LLMProvider {
     return { coveredMessageCount: 0 }
   }
 
-  async complete(messages: Message[], tools: ToolSchema[]): Promise<Message> {
+  async complete(context: RenderedContext, tools: ToolSchema[]): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
     let lastErr: unknown
 
     for (let i = 0; i < this.maxRetries; i++) {
       try {
-        const instructions = this.responses.buildInstructions(messages)
+        const instructions = this.responses.buildInstructions(context)
         const resp = await this.client.responses.create({
           model: this.model,
-          input: this.responses.buildInput(messages) as unknown as OpenAI.Responses.ResponseInput,
+          input: this.responses.buildInput(context) as unknown as OpenAI.Responses.ResponseInput,
           ...(instructions ? { instructions } : {}),
           ...(tools.length ? { tools: this.responses.buildTools(tools) as OpenAI.Responses.Tool[] } : {}),
         })
@@ -185,18 +177,18 @@ export class OpenAIResponsesProvider implements LLMProvider {
   }
 
   async *stream(
-    messages: Message[],
+    context: RenderedContext,
     tools: ToolSchema[],
     _extensions?: Record<string, unknown>,
     state?: ProviderRunState,
   ): AsyncIterable<StreamEvent> {
     const runState = this.asRunState(state)
     const functionCalls = new Map<number, { id: string; name: string; argsBuf: string }>()
-    const instructions = this.responses.buildInstructions(messages)
+    const instructions = this.responses.buildInstructions(context)
 
     const stream = await this.client.responses.create({
       model: this.model,
-      input: this.responses.buildInput(messages, runState) as unknown as OpenAI.Responses.ResponseInput,
+      input: this.responses.buildInput(context, runState) as unknown as OpenAI.Responses.ResponseInput,
       ...(instructions ? { instructions } : {}),
       ...(runState.previousResponseId ? { previous_response_id: runState.previousResponseId } : {}),
       ...(tools.length ? { tools: this.responses.buildTools(tools) as OpenAI.Responses.Tool[] } : {}),
@@ -229,7 +221,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
         yield { type: "tool_call", id: call.id, name: call.name, arguments: args } as ToolCallEvent
       } else if (evt.type === "response.completed") {
         runState.previousResponseId = evt.response.id
-        runState.coveredMessageCount = messages.length + 1
+        runState.coveredMessageCount = context.turns.length + 1
         if (evt.response.usage?.total_tokens) {
           yield { type: "usage", totalTokens: evt.response.usage.total_tokens } as StreamEvent
         }

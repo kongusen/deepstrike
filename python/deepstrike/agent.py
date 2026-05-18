@@ -9,7 +9,7 @@ from deepstrike._kernel import (
     SignalRouter,
 )
 from deepstrike.governance import Governance
-from deepstrike.providers.base import LLMProvider
+from deepstrike.providers.base import LLMProvider, RenderedContext
 from deepstrike.providers.stream import (
     StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
     PermissionRequestEvent,
@@ -19,6 +19,7 @@ from deepstrike.tools.execution import execute_tools
 if TYPE_CHECKING:
     from deepstrike.memory.protocols import (
         DreamStore, DreamResult,
+        SessionStore,
         MemoryEntry as DsMemoryEntry,
         CurationResult as DsCurationResult,
         CurationStats as DsCurationStats,
@@ -41,13 +42,13 @@ class Agent:
         max_turns: int = 25,
         timeout_ms: int | None = None,
         system_prompt: str | None = None,
-        initial_memory: list[str] | None = None,
         skill_dir: str | None = None,
         extensions: dict | None = None,
         governance: Governance | None = None,
         signal_source: "SignalSource | None" = None,
         knowledge_source: "KnowledgeSource | None" = None,
         dream_store: "DreamStore | None" = None,
+        session_store: "SessionStore | None" = None,
         agent_id: str | None = None,
     ):
         self._provider = provider
@@ -59,13 +60,14 @@ class Agent:
         self._max_tokens = max_tokens
         self._tools: dict[str, RegisteredTool] = {}
         self._system_prompt = system_prompt
-        self._initial_memory: list[str] = initial_memory or []
         self._skill_dir = pathlib.Path(skill_dir) if skill_dir else None
         self._extensions: dict = extensions or {}
         self._governance = governance
         self._signal_source = signal_source
         self._knowledge_source = knowledge_source
         self._dream_store = dream_store
+        self._session_store = session_store
+        self._sessions: dict[str, "SessionData"] = {}
         self._agent_id = agent_id
         self._interrupted = False
         self._pending_interrupt = False
@@ -101,14 +103,14 @@ class Agent:
         self._tools.pop(tool_name, None)
         return self
 
-    async def run(self, goal: str, criteria: list[str] | None = None, extensions: dict | None = None) -> str:
+    async def run(self, goal: str, criteria: list[str] | None = None, extensions: dict | None = None, session_id: str | None = None) -> str:
         content = ""
-        async for event in self.run_streaming(goal, criteria=criteria, extensions=extensions):
+        async for event in self.run_streaming(goal, criteria=criteria, extensions=extensions, session_id=session_id):
             if isinstance(event, TextDelta):
                 content += event.delta
         return content
 
-    async def run_streaming(self, goal: str, *, criteria: list[str] | None = None, extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
+    async def run_streaming(self, goal: str, *, criteria: list[str] | None = None, extensions: dict | None = None, session_id: str | None = None) -> AsyncIterator[StreamEvent]:
         self._interrupted = False
         self._pending_interrupt = False
         self._turn = 0
@@ -126,8 +128,10 @@ class Agent:
             tokens = max(1, len(self._system_prompt) // 4)
             sm.add_system_message(self._system_prompt, tokens)
 
-        for mem in self._initial_memory:
-            sm.add_memory_message(mem, max(1, len(mem) // 4))
+        previous_session = await self._load_session(session_id) if session_id else None
+        previous_msgs = list(previous_session.messages) if previous_session else []
+        if previous_msgs:
+            sm.preload_history(previous_msgs)
 
         # Scan skill directory and register metadata so the kernel injects the skill meta-tool.
         if self._skill_dir and self._skill_dir.is_dir():
@@ -157,7 +161,6 @@ class Agent:
         final_text = ""
         import time as _time
         session_start = int(_time.time() * 1000)
-        session_msgs: list[Message] = [Message(role="user", content=goal)]
         router = SignalRouter(max_queue_size=256)
 
         while not sm.is_terminal():
@@ -199,10 +202,14 @@ class Agent:
                 self._turn += 1
                 final_text = ""
                 final_tool_calls: list[ToolCall] = []
-                messages = list(action.messages or [])
+                raw_ctx = action.context
+                context = RenderedContext(
+                    system_text=getattr(raw_ctx, "system_text", "") or "",
+                    turns=list(getattr(raw_ctx, "turns", [])),
+                )
 
                 try:
-                    gen = await self._provider.stream(messages, action.tools or [], extensions=ext if ext else None)
+                    gen = await self._provider.stream(context, action.tools or [], extensions=ext if ext else None)
                     async for evt in gen:
                         yield evt
                         if isinstance(evt, TextDelta):
@@ -218,11 +225,6 @@ class Agent:
                     break
 
                 action = sm.feed_llm_response(Message(
-                    role="assistant",
-                    content=final_text,
-                    tool_calls=final_tool_calls,
-                ))
-                session_msgs.append(Message(
                     role="assistant",
                     content=final_text,
                     tool_calls=final_tool_calls,
@@ -344,7 +346,9 @@ class Agent:
         if result and self._max_tokens:
             self._pressure = result.total_tokens_used / self._max_tokens
 
-        if self._dream_store and self._agent_id and len(session_msgs) > 1:
+        new_msgs = list(sm.drain_new_messages())
+
+        if self._dream_store and self._agent_id and new_msgs:
             try:
                 from deepstrike.memory.protocols import SessionData
                 now_ms = int(_time.time() * 1000)
@@ -352,18 +356,41 @@ class Agent:
                 await self._dream_store.save_session(SessionData(
                     session_id=str(_uuid.uuid4()),
                     agent_id=self._agent_id,
-                    messages=session_msgs,
+                    messages=new_msgs,
                     created_at_ms=session_start,
                     updated_at_ms=now_ms,
                 ))
             except Exception:
                 pass
 
+        if session_id:
+            from deepstrike.memory.protocols import SessionData
+            now_ms = int(_time.time() * 1000)
+            await self._save_session(SessionData(
+                session_id=session_id,
+                agent_id=self._agent_id or "default",
+                messages=[*previous_msgs, *new_msgs],
+                metadata=previous_session.metadata if previous_session else None,
+                created_at_ms=previous_session.created_at_ms if previous_session else session_start,
+                updated_at_ms=now_ms,
+            ))
+
         yield DoneEvent(
             iterations=result.turns_used if result else 0,
             total_tokens=result.total_tokens_used if result else 0,
             status=result.termination if result else "error",
         )
+
+    async def _load_session(self, session_id: str):
+        if self._session_store:
+            return await self._session_store.load_session(session_id)
+        return self._sessions.get(session_id)
+
+    async def _save_session(self, data):
+        if self._session_store:
+            await self._session_store.save_session(data)
+        else:
+            self._sessions[data.session_id] = data
 
     async def dream(self, agent_id: str, now_ms: int | None = None) -> "DreamResult":
         """
@@ -453,9 +480,11 @@ class Agent:
 
         # --- Phase 2: SDK calls LLM for synthesis (I/O) ------------------
         synthesis_text = ""
-        async for evt in await self._provider.stream(
-            action.messages or [], [], extensions=None
-        ):
+        synth_msgs = action.messages or []
+        synth_system = "\n\n".join(m.content for m in synth_msgs if m.role == "system")
+        synth_turns = [m for m in synth_msgs if m.role != "system"]
+        synth_context = RenderedContext(system_text=synth_system, turns=synth_turns)
+        async for evt in await self._provider.stream(synth_context, [], extensions=None):
             if isinstance(evt, TextDelta):
                 synthesis_text += evt.delta
 

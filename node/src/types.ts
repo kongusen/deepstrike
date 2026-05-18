@@ -138,11 +138,22 @@ export interface RetryConfig {
  */
 export type ProviderRunState = Record<string, unknown>
 
+/** Structured render output produced by the kernel for each LLM call. */
+export interface RenderedContext {
+  /** Combined system text: system partition + dashboard (when non-empty).
+   *  Anthropic → `system` param · OpenAI → messages[0] system role ·
+   *  Gemini → `systemInstruction`. */
+  systemText: string
+  /** Strictly alternating user / assistant / tool turns.
+   *  Working-partition signals are already folded into the first user turn. */
+  turns: Message[]
+}
+
 export interface LLMProvider {
   createRunState?(): ProviderRunState
-  complete(messages: Message[], tools: ToolSchema[]): Promise<Message>
+  complete(context: RenderedContext, tools: ToolSchema[]): Promise<Message>
   stream(
-    messages: Message[],
+    context: RenderedContext,
     tools: ToolSchema[],
     extensions?: Record<string, unknown>,
     state?: ProviderRunState,

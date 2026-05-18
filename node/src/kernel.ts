@@ -55,6 +55,7 @@ interface LoopStateMachineInstance {
   setKnowledgeEnabled(enabled: boolean): void
   addSystemMessage(content: string, tokens: number): void
   addMemoryMessage(content: string, tokens: number): void
+  addHistoryMessage(message: Message, tokens: number): void
   setTools(tools: ToolSchema[]): void
   start(task: { goal: string; criteria: string[] }): LoopAction
   feedLlmResponse(message: Message): LoopAction

@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk"
-import type { Message, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider } from "../types.js"
+import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
-import { CircuitBreaker, normalizeToolCall, splitAnthropicSystem, toAnthropicMessages } from "./base.js"
+import { CircuitBreaker, normalizeToolCall, toAnthropicMessages } from "./base.js"
 
 interface AnthropicProviderOptions {
   baseURL?: string
@@ -38,10 +38,10 @@ export class AnthropicProvider implements LLMProvider {
     }))
   }
 
-  async complete(messages: Message[], tools: ToolSchema[]): Promise<Message> {
+  async complete(context: RenderedContext, tools: ToolSchema[]): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
-    const system = splitAnthropicSystem(messages)
-    const msgs = this.buildMessages(messages)
+    const system = context.systemText || undefined
+    const msgs = this.buildMessages(context)
 
     let lastErr: unknown
     for (let i = 0; i < this.maxRetries; i++) {
@@ -75,9 +75,9 @@ export class AnthropicProvider implements LLMProvider {
     throw lastErr
   }
 
-  async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
-    const system = splitAnthropicSystem(messages)
-    const msgs = this.buildMessages(messages)
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+    const system = context.systemText || undefined
+    const msgs = this.buildMessages(context)
     const toolBlocks: Record<number, { id: string; name: string; argsBuf: string }> = {}
     const nativeBlocks: Record<number, Record<string, unknown>> = {}
     let finalText = ""
@@ -128,8 +128,8 @@ export class AnthropicProvider implements LLMProvider {
     )
   }
 
-  private buildMessages(messages: Message[]): Anthropic.MessageParam[] {
-    return toAnthropicMessages(messages, message =>
+  private buildMessages(context: RenderedContext): Anthropic.MessageParam[] {
+    return toAnthropicMessages(context.turns, message =>
       this.nativeAssistantBlocks.get(this.assistantReplayKey(message))
     ) as unknown as Anthropic.MessageParam[]
   }

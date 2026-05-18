@@ -5,7 +5,7 @@ from typing import AsyncIterator
 import httpx
 from deepstrike._kernel import Message, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent
-from .base import RetryConfig, normalize_tool_call
+from .base import RetryConfig, RenderedContext, normalize_tool_call
 from .openai import OpenAIProvider
 
 logger = logging.getLogger(__name__)
@@ -76,5 +76,6 @@ class MiniMaxProvider(OpenAIProvider):
                                 yield ToolCallEvent(id=tc.id, name=tc.name, arguments=args)
                         tool_calls.clear()
 
-    async def stream(self, messages: list[Message], tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
+    async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
+        messages = self._build_messages(context)
         return self._stream_gen(messages, tools, extensions)

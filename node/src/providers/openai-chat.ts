@@ -1,5 +1,5 @@
 import type OpenAI from "openai"
-import type { Message, ToolSchema } from "../types.js"
+import type { Message, RenderedContext, ToolSchema } from "../types.js"
 import { normalizeToolCall, toOpenAIMessageParams } from "./base.js"
 
 export class OpenAIChatAdapter {
@@ -12,11 +12,13 @@ export class OpenAIChatAdapter {
     }))
   }
 
-  buildMessages(messages: Message[]): OpenAI.ChatCompletionMessageParam[] {
-    const serialized = toOpenAIMessageParams(messages)
-    let cursor = 0
+  buildMessages(context: RenderedContext): OpenAI.ChatCompletionMessageParam[] {
+    // toOpenAIMessageParams prepends systemText as messages[0], then turns.
+    const serialized = toOpenAIMessageParams(context)
+    // Cursor starts at 1 to skip the system message injected by toOpenAIMessageParams.
+    let cursor = context.systemText ? 1 : 0
 
-    for (const source of messages) {
+    for (const source of context.turns) {
       if (source.role === "tool") {
         cursor += (source.contentParts ?? []).filter(p => p.type === "tool_result").length
         continue

@@ -5,14 +5,11 @@ use crate::context::partitions::ContextPartitions;
 
 /// Trait for compression strategies.
 pub trait Compressor: Send + Sync {
-    /// Compress the partition to fit within target_tokens.
-    /// Returns the number of tokens saved.
     fn compress(&self, partition: &mut Partition, target_tokens: u32) -> u32;
 }
 
 /// rho > 0.70: Truncate long text segments in messages.
 pub struct SnipCompactor {
-    /// Max characters per message before truncation.
     pub max_chars: usize,
 }
 
@@ -30,7 +27,6 @@ impl Compressor for SnipCompactor {
                 if text.len() > self.max_chars {
                     let original_tokens = msg.token_count.unwrap_or(0);
                     let truncated = format!("{}... [truncated]", &text[..self.max_chars]);
-                    // Rough estimate: tokens proportional to char reduction
                     let ratio = truncated.len() as f64 / text.len() as f64;
                     let new_tokens = (original_tokens as f64 * ratio) as u32;
                     msg.content = Content::Text(truncated);
@@ -73,7 +69,7 @@ impl Compressor for MicroCompactor {
     }
 }
 
-/// rho > 0.90: Drop oldest messages from partition.
+/// rho > 0.90: Drop oldest messages from partition until within target.
 pub struct CollapseCompactor;
 
 impl Compressor for CollapseCompactor {
@@ -93,7 +89,7 @@ impl Compressor for CollapseCompactor {
     }
 }
 
-/// rho > 0.95: Aggressive — summarize to a single message placeholder.
+/// rho > 0.95: Aggressive — summarize history to a single placeholder.
 pub struct AutoCompactor;
 
 impl Compressor for AutoCompactor {
@@ -111,53 +107,55 @@ impl Compressor for AutoCompactor {
     }
 }
 
-/// Compression pipeline: runs compressors in order based on pressure level.
+/// Compression pipeline — all compressors operate only on the `history`
+/// partition.  `memory` and `skill` partitions are excluded:
+///   - `memory` is a reserved slot (currently empty after dynamic-retrieval redesign).
+///   - `skill` messages are never populated; schemas flow through the tools
+///     parameter in CallLLM, not through the message partitions.
 pub struct CompressionPipeline {
     stages: Vec<(PressureAction, Box<dyn Compressor>)>,
+    /// Target pressure after compression (fraction of max_tokens).
+    /// Compressing to 70 % leaves headroom for the next response turn.
+    target_fraction: f64,
 }
 
 impl CompressionPipeline {
     pub fn new() -> Self {
         Self {
             stages: vec![
-                (PressureAction::SnipCompact, Box::new(SnipCompactor::default())),
-                (PressureAction::MicroCompact, Box::new(MicroCompactor)),
+                (PressureAction::SnipCompact,     Box::new(SnipCompactor::default())),
+                (PressureAction::MicroCompact,    Box::new(MicroCompactor)),
                 (PressureAction::ContextCollapse, Box::new(CollapseCompactor)),
-                (PressureAction::AutoCompact, Box::new(AutoCompactor)),
+                (PressureAction::AutoCompact,     Box::new(AutoCompactor)),
             ],
+            target_fraction: 0.70,
         }
     }
 
-    /// Run compression on all compressible partitions for the given pressure action.
-    /// Returns total tokens saved.
+    /// Run compression on the **history** partition only for the given pressure
+    /// action, targeting `max_tokens * 0.70` tokens after compression.
     ///
-    /// Partition escalation by pressure level:
-    /// - `SnipCompact` (rho>0.70): history only (text snip)
-    /// - `MicroCompact` (rho>0.80): + skill (snip text-heavy skill descriptions)
-    /// - `ContextCollapse` (rho>0.90): + drop oldest skill entries
-    /// - `AutoCompact` (rho>0.95): aggressive on history; skill snip+collapse
-    pub fn compress(&self, partitions: &mut ContextPartitions, action: PressureAction) -> u32 {
+    /// Pressure escalation:
+    ///   SnipCompact     (rho > 0.70): snip long texts in history
+    ///   MicroCompact    (rho > 0.80): replace tool-result bodies with placeholders
+    ///   ContextCollapse (rho > 0.90): drop oldest history turns
+    ///   AutoCompact     (rho > 0.95): collapse entire history to one placeholder
+    pub fn compress(
+        &self,
+        partitions: &mut ContextPartitions,
+        action: PressureAction,
+        max_tokens: u32,
+    ) -> u32 {
         if action == PressureAction::None {
             return 0;
         }
-        let target = partitions.total_tokens() / 2;
-        let mut total_saved: u32 = 0;
+        let target = (max_tokens as f64 * self.target_fraction) as u32;
 
-        // History uses the compressor designed for the current pressure band.
         if let Some(compressor) = self.compressor_for(action) {
-            total_saved += compressor.compress(&mut partitions.history, target);
+            compressor.compress(&mut partitions.history, target)
+        } else {
+            0
         }
-
-        // Skill is text-heavy; tool-result caching (MicroCompactor) is a no-op on it.
-        // Use SnipCompactor for shrinking and CollapseCompactor at higher pressure.
-        if action >= PressureAction::MicroCompact && partitions.skill.compressible {
-            total_saved += SnipCompactor::default().compress(&mut partitions.skill, target);
-            if action >= PressureAction::ContextCollapse {
-                total_saved += CollapseCompactor.compress(&mut partitions.skill, target);
-            }
-        }
-
-        total_saved
     }
 
     fn compressor_for(&self, action: PressureAction) -> Option<&dyn Compressor> {
@@ -180,12 +178,13 @@ mod tests {
     use crate::context::partitions::ContextPartitions;
     use crate::types::message::Message;
 
+    const MAX: u32 = 1_000;
+
     #[test]
     fn snip_compactor_truncates_long_text() {
         let compactor = SnipCompactor { max_chars: 10 };
         let mut ctx = ContextPartitions::new();
-        ctx.history.push(Message::user("a]".repeat(100)), 200);
-
+        ctx.history.push(Message::user("a".repeat(100)), 200);
         let saved = compactor.compress(&mut ctx.history, 0);
         assert!(saved > 0);
         if let Content::Text(ref t) = ctx.history.messages[0].content {
@@ -200,38 +199,47 @@ mod tests {
         ctx.history.push(Message::user("first"), 50);
         ctx.history.push(Message::user("second"), 50);
         ctx.history.push(Message::user("third"), 50);
-
         let saved = compactor.compress(&mut ctx.history, 60);
         assert!(saved > 0);
         assert!(ctx.history.token_count <= 60);
     }
 
     #[test]
-    fn pipeline_compresses_skill_at_micro_and_above() {
+    fn pipeline_targets_70_percent_of_max_tokens() {
         let pipeline = CompressionPipeline::new();
         let mut ctx = ContextPartitions::new();
-        // Long text in skill partition triggers SnipCompactor
-        ctx.skill.push(Message::system("a".repeat(5_000)), 1_000);
-        ctx.history.push(Message::user("hist"), 100);
-
-        let before = ctx.skill.token_count;
-        let saved = pipeline.compress(&mut ctx, PressureAction::MicroCompact);
-        assert!(saved > 0);
-        assert!(ctx.skill.token_count < before);
+        for _ in 0..20 {
+            ctx.history.push(Message::user("msg".repeat(50)), 50);
+        }
+        // total = 1000; target = 700
+        pipeline.compress(&mut ctx, PressureAction::ContextCollapse, MAX);
+        assert!(ctx.history.token_count <= (MAX as f64 * 0.70) as u32 + 50); // within one message
     }
 
     #[test]
-    fn pipeline_skips_skill_at_snip_level() {
-        // SnipCompact only touches history per design.
+    fn pipeline_only_touches_history_not_memory() {
         let pipeline = CompressionPipeline::new();
         let mut ctx = ContextPartitions::new();
-        ctx.skill.push(Message::system("a".repeat(5_000)), 1_000);
-        ctx.history.push(Message::user("a".repeat(5_000)), 1_000);
+        ctx.memory.push(Message::user("memory"), 200);
+        for _ in 0..5 {
+            ctx.history.push(Message::user("hist"), 50);
+        }
+        let memory_before = ctx.memory.token_count;
+        pipeline.compress(&mut ctx, PressureAction::AutoCompact, MAX);
+        assert_eq!(ctx.memory.token_count, memory_before);
+    }
 
-        let skill_before = ctx.skill.token_count;
-        pipeline.compress(&mut ctx, PressureAction::SnipCompact);
-        assert_eq!(ctx.skill.token_count, skill_before);
-        // history is touched
-        assert!(ctx.history.token_count < 1_000);
+    #[test]
+    fn autocompact_collapses_history_to_placeholder() {
+        let pipeline = CompressionPipeline::new();
+        let mut ctx = ContextPartitions::new();
+        for i in 0..10 {
+            ctx.history.push(Message::user(format!("msg {i}")), 50);
+        }
+        pipeline.compress(&mut ctx, PressureAction::AutoCompact, MAX);
+        assert_eq!(ctx.history.messages.len(), 1);
+        if let Content::Text(ref t) = ctx.history.messages[0].content {
+            assert!(t.contains("compressed"));
+        }
     }
 }

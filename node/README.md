@@ -50,6 +50,15 @@ const result = await agent.run("What is 17 + 28?")
 console.log(result)
 ```
 
+Same-session conversation continuity is explicit via `sessionId`:
+
+```typescript
+await agent.run("My name is Ada.", undefined, undefined, "chat-1")
+const reply = await agent.run("What is my name?", undefined, undefined, "chat-1")
+```
+
+By default, the agent keeps session transcripts in memory for the lifetime of that `Agent` instance. Provide a `sessionStore` when the transcript must survive process restarts or be shared across workers.
+
 Streaming:
 
 ```typescript
@@ -194,6 +203,22 @@ const agent = new Agent(provider, {
 // In-session: LLM calls memory(query) → DreamStore.search()
 // Post-session: trigger memory consolidation
 const result = await agent.dream("my-agent", Date.now())
+```
+
+### SessionStore (same-session transcript continuity)
+
+```typescript
+import type { SessionStore } from "@deepstrike/sdk"
+
+class MySessionStore implements SessionStore {
+  async loadSession(sessionId) { return db.sessions.get(sessionId) }
+  async saveSession(session) { await db.sessions.put(session.sessionId, session) }
+}
+
+const agent = new Agent(provider, {
+  maxTokens: 4096,
+  sessionStore: new MySessionStore(),
+})
 ```
 
 ---

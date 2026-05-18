@@ -1,9 +1,11 @@
 // ─── Dream / idle-pipeline types ─────────────────────────────────────────────
-import type { Message } from "../types.js"
+import type { Message, ContentPart } from "../types.js"
 
 export interface SessionMessage {
   role: Message["role"]
   content: string
+  /** Structured multimodal parts. Preserved for round-trip fidelity (e.g. tool result messages). */
+  contentParts?: ContentPart[]
   tokenCount?: number
   toolCalls?: Array<{ id: string; name: string; arguments: string }>
 }
@@ -44,6 +46,12 @@ export interface DreamStore {
   /** Semantic search over the agent's long-term memories. Called on demand during a run. */
   search(agentId: string, query: string, topK?: number): Promise<MemoryEntry[]>
   /** Persist a completed session for future consolidation via `Agent.dream()`. */
+  saveSession(data: SessionData): Promise<void>
+}
+
+/** Durable transcript storage for same-session conversational continuity. */
+export interface SessionStore {
+  loadSession(sessionId: string): Promise<SessionData | undefined>
   saveSession(data: SessionData): Promise<void>
 }
 
