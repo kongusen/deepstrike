@@ -1,3 +1,10 @@
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("deepstrike")
+except PackageNotFoundError:
+    __version__ = "0+unknown"
+
 from deepstrike._kernel import (
     Message, ToolCall, ToolResult, ToolSchema,
     SkillMetadata,
@@ -34,7 +41,6 @@ from deepstrike.collaboration import (
     HandoffArtifact, HandoffBus, ContractOutcomeInput,
     CreatorVerifierMode, OrchestrationMode, CreatorVerifierMetrics,
 )
-
 __all__ = [
     "Agent",
     "LLMProvider", "AnthropicProvider", "OpenAIProvider",
@@ -62,4 +68,5 @@ __all__ = [
     "ContractDrivenHarness", "ContractOutcome", "ContractHarnessOptions", "Violation",
     "HandoffArtifact", "HandoffBus", "ContractOutcomeInput",
     "CreatorVerifierMode", "OrchestrationMode", "CreatorVerifierMetrics",
+    "__version__",
 ]
