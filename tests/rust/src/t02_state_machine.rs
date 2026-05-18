@@ -157,8 +157,8 @@ fn criteria_injected_into_user_message() {
     let action = sm.start(task);
 
     match action {
-        LoopAction::CallLLM { messages, .. } => {
-            let user_msgs: Vec<_> = messages.iter()
+        LoopAction::CallLLM { context, .. } => {
+            let user_msgs: Vec<_> = context.turns.iter()
                 .filter(|m| m.role == Role::User)
                 .collect();
             assert!(!user_msgs.is_empty());
@@ -177,8 +177,8 @@ fn no_criteria_means_plain_goal() {
     let mut sm = default_sm();
     let action = sm.start(RuntimeTask::new("Say hello"));
     match action {
-        LoopAction::CallLLM { messages, .. } => {
-            let user_text = messages.iter()
+        LoopAction::CallLLM { context, .. } => {
+            let user_text = context.turns.iter()
                 .filter(|m| m.role == Role::User)
                 .last()
                 .unwrap()

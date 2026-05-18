@@ -68,6 +68,12 @@ pub struct LoopStateMachine {
 }
 
 impl LoopStateMachine {
+    fn message_tokens(message: &Message) -> u32 {
+        message
+            .token_count
+            .unwrap_or_else(|| ((message.content.text_len() as u32) / 4).max(1))
+    }
+
     pub fn new(policy: LoopPolicy) -> Self {
         Self {
             phase: LoopPhase::Idle,
@@ -88,7 +94,7 @@ impl LoopStateMachine {
     /// so `drain_new_messages()` returns only the messages from the current run.
     pub fn preload_history(&mut self, messages: Vec<Message>) {
         for msg in messages {
-            let tokens = msg.token_count.unwrap_or(0);
+            let tokens = Self::message_tokens(&msg);
             self.ctx.push_history(msg, tokens);
         }
         self.session_history_baseline = self.ctx.partitions.history.messages.len();
@@ -136,7 +142,7 @@ impl LoopStateMachine {
             LoopEvent::Start { task } => self.start(task),
 
             LoopEvent::LLMResponse { message } => {
-                let tokens = message.token_count.unwrap_or(0);
+                let tokens = Self::message_tokens(&message);
                 self.total_tokens += tokens as u64;
 
                 if let Some(reason) = self.pending_termination.take() {
@@ -169,7 +175,7 @@ impl LoopStateMachine {
                         output,
                         is_error: r.is_error,
                     }];
-                    let tokens = r.token_count.unwrap_or(0);
+                    let tokens = r.token_count.unwrap_or_else(|| ((r.output.text_len() as u32) / 4).max(1));
                     self.ctx.push_history(Message::tool(parts), tokens);
                 }
                 self.turn += 1;
@@ -244,7 +250,7 @@ impl LoopStateMachine {
         // Commit the final response into history so subsequent session restores
         // include the complete transcript: user → [tool turns] → final assistant.
         if let Some(ref msg) = final_message {
-            let tokens = msg.token_count.unwrap_or(0);
+            let tokens = Self::message_tokens(msg);
             self.ctx.push_history(msg.clone(), tokens);
         }
         let result = LoopResult {

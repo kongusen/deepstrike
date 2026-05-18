@@ -19,6 +19,26 @@ use crate::signals::SignalSource;
 use crate::tools::{RegisteredTool, execute_tools};
 use crate::{Error, Result};
 
+fn rendered_context_from_messages(messages: Vec<Message>) -> deepstrike_core::context::renderer::RenderedContext {
+    let mut system_parts = Vec::new();
+    let mut turns = Vec::new();
+
+    for message in messages {
+        if message.role == Role::System {
+            if let Some(text) = message.content.as_text() {
+                system_parts.push(text.to_owned());
+            }
+        } else {
+            turns.push(message);
+        }
+    }
+
+    deepstrike_core::context::renderer::RenderedContext {
+        system_text: system_parts.join("\n\n"),
+        turns,
+    }
+}
+
 pub struct AgentOptions {
     pub max_tokens: u32,
     pub max_turns: u32,
@@ -246,10 +266,10 @@ impl Agent {
                 sm.take_observations(); // drain
 
                 match &action {
-                    deepstrike_core::scheduler::state_machine::LoopAction::CallLLM { messages, tools } => {
+                    deepstrike_core::scheduler::state_machine::LoopAction::CallLLM { context, tools } => {
                         final_text.clear();
                         let mut final_tool_calls: Vec<ToolCall> = Vec::new();
-                        let mut provider_stream = self.provider.stream(messages, tools, ext.as_ref()).await?;
+                        let mut provider_stream = self.provider.stream(context, tools, ext.as_ref()).await?;
                         while let Some(evt) = provider_stream.next().await {
                             match evt? {
                                 StreamEvent::TextDelta { delta } => {
@@ -457,7 +477,8 @@ impl Agent {
 
         // --- Phase 2: SDK calls LLM (I/O) ------------------------------------
         let mut synthesis_text = String::new();
-        let mut stream = self.provider.stream(&messages, &[], None).await?;
+        let context = rendered_context_from_messages(messages);
+        let mut stream = self.provider.stream(&context, &[], None).await?;
         while let Some(evt) = stream.next().await {
             if let Ok(StreamEvent::TextDelta { delta }) = evt {
                 synthesis_text.push_str(&delta);
@@ -643,7 +664,8 @@ impl<'a> HarnessLoop<'a> {
                 };
 
                 let mut eval_text = String::new();
-                let mut eval_stream = match self.eval_provider.stream(&messages, &[], None).await {
+                let context = rendered_context_from_messages(messages);
+                let mut eval_stream = match self.eval_provider.stream(&context, &[], None).await {
                     Ok(s) => s,
                     Err(e) => { yield Err(e); return; }
                 };

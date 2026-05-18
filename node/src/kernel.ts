@@ -1,5 +1,5 @@
 import { createRequire } from "module"
-import type { Message, ToolCall, ToolResult, ToolSchema } from "./types.js"
+import type { Message, RenderedContext, ToolCall, ToolResult, ToolSchema } from "./types.js"
 import type { SkillMetadata } from "./skills/loader.js"
 
 export interface GovernanceVerdict {
@@ -33,7 +33,7 @@ export interface RuntimeSignal {
 
 export interface LoopAction {
   kind: "call_llm" | "execute_tools" | "done"
-  messages?: Message[]
+  context?: RenderedContext
   tools?: ToolSchema[]
   calls?: ToolCall[]
   result?: {
@@ -62,6 +62,8 @@ interface LoopStateMachineInstance {
   feedToolResults(results: ToolResult[]): LoopAction
   feedTimeout(): LoopAction
   isTerminal(): boolean
+  preloadHistory(messages: Message[]): void
+  drainNewMessages(): Message[]
   readonly turn: number
   pressure(): number
   takeObservations(): LoopObservation[]

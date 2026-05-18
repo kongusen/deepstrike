@@ -39,6 +39,7 @@ export type {
   StreamEvent, TextDelta, ThinkingDelta,
   ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent,
   LLMProvider, RetryConfig, TokenUsage, ProviderToolSpec, ProviderRunState,
+  RenderedContext,
 } from "./types.js"
 
 // ── Collaboration layer (Layer 2 + Layer 3) ────────────────────────────────

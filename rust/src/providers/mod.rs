@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use deepstrike_core::types::message::{Message, ToolSchema};
+use deepstrike_core::context::renderer::RenderedContext;
+use deepstrike_core::types::message::ToolSchema;
 
 pub mod anthropic;
 pub mod openai;
@@ -17,7 +18,7 @@ pub enum StreamEvent {
 pub trait LLMProvider: Send + Sync {
     async fn stream(
         &self,
-        messages: &[Message],
+        context: &RenderedContext,
         tools: &[ToolSchema],
         extensions: Option<&serde_json::Value>,
     ) -> crate::Result<Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>>;

@@ -1,10 +1,9 @@
 use async_trait::async_trait;
-use compact_str::CompactString;
-use deepstrike_core::types::message::{Content, ContentPart, Message, Role, ToolCall, ToolSchema};
+use deepstrike_core::context::renderer::RenderedContext;
+use deepstrike_core::types::message::{Content, ContentPart, Role, ToolSchema};
 use futures::{Stream, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::pin::Pin;
 
 use super::{LLMProvider, StreamEvent};
 use crate::{Error, Result};
@@ -62,22 +61,19 @@ fn content_to_anthropic(content: &Content) -> Value {
     }
 }
 
-fn messages_to_anthropic(messages: &[Message]) -> (Option<String>, Vec<Value>) {
-    let system = messages
+fn context_to_anthropic(context: &RenderedContext) -> (Option<String>, Vec<Value>) {
+    let msgs = context
+        .turns
         .iter()
-        .filter(|m| m.role == Role::System)
-        .map(|m| match &m.content { Content::Text(s) => s.clone(), _ => String::new() })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let msgs = messages
-        .iter()
-        .filter(|m| m.role != Role::System)
         .map(|m| {
             let role = match m.role { Role::User => "user", _ => "assistant" };
             json!({ "role": role, "content": content_to_anthropic(&m.content) })
         })
         .collect();
-    (if system.is_empty() { None } else { Some(system) }, msgs)
+    (
+        if context.system_text.is_empty() { None } else { Some(context.system_text.clone()) },
+        msgs,
+    )
 }
 
 fn tools_to_anthropic(tools: &[ToolSchema]) -> Vec<Value> {
@@ -92,11 +88,11 @@ fn tools_to_anthropic(tools: &[ToolSchema]) -> Vec<Value> {
 impl LLMProvider for AnthropicProvider {
     async fn stream(
         &self,
-        messages: &[Message],
+        context: &RenderedContext,
         tools: &[ToolSchema],
         extensions: Option<&Value>,
     ) -> Result<Box<dyn Stream<Item = Result<StreamEvent>> + Send + Unpin>> {
-        let (system, msgs) = messages_to_anthropic(messages);
+        let (system, msgs) = context_to_anthropic(context);
         let mut body = json!({
             "model": self.model,
             "max_tokens": self.max_tokens,

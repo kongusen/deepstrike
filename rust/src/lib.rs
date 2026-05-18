@@ -20,6 +20,7 @@ pub use providers::openai::{OpenAIProvider, deepseek, kimi, minimax, ollama, qwe
 pub use safety::{Permission, PermissionDecision, PermissionManager, PermissionMode};
 pub use signals::{RuntimeSignal, ScheduledPrompt, SignalSource, SignalGateway, GatewayReceiver};
 pub use tools::{RegisteredTool, execute_tools, read_file_tool};
+pub use deepstrike_core::context::renderer::RenderedContext;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

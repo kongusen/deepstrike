@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use deepstrike_core::types::message::{Content, ContentPart, Message, Role, ToolSchema};
+use deepstrike_core::context::renderer::RenderedContext;
+use deepstrike_core::types::message::{Content, ContentPart, Role, ToolSchema};
 use futures::{Stream, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -84,24 +85,29 @@ fn content_to_openai(content: &Content) -> Value {
     }
 }
 
-fn messages_to_openai(messages: &[Message]) -> Vec<Value> {
-    messages.iter().map(|m| {
+fn context_to_openai(context: &RenderedContext) -> Vec<Value> {
+    let mut messages = Vec::new();
+    if !context.system_text.is_empty() {
+        messages.push(json!({ "role": "system", "content": context.system_text }));
+    }
+    messages.extend(context.turns.iter().map(|m| {
         let role = match m.role { Role::System => "system", Role::User => "user", Role::Tool => "tool", _ => "assistant" };
         json!({ "role": role, "content": content_to_openai(&m.content) })
-    }).collect()
+    }));
+    messages
 }
 
 #[async_trait]
 impl LLMProvider for OpenAIProvider {
     async fn stream(
         &self,
-        messages: &[Message],
+        context: &RenderedContext,
         tools: &[ToolSchema],
         extensions: Option<&Value>,
     ) -> Result<Box<dyn Stream<Item = Result<StreamEvent>> + Send + Unpin>> {
         let mut body = json!({
             "model": self.model,
-            "messages": messages_to_openai(messages),
+            "messages": context_to_openai(context),
             "stream": true,
         });
         if !tools.is_empty() {

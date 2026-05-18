@@ -67,10 +67,11 @@ fn should_compress_returns_none_when_low_pressure() {
 // ─── Render ─────────────────────────────────────────────────────────────────
 
 #[test]
-fn render_empty_context_returns_messages() {
+fn render_empty_context_returns_structured_context() {
     let mgr = ContextManager::new(10_000);
     let rendered = mgr.render();
-    assert!(rendered.is_empty() || rendered.iter().all(|m| m.content.text_len() < usize::MAX));
+    assert!(rendered.system_text.is_empty());
+    assert!(rendered.turns.is_empty() || rendered.turns.iter().all(|m| m.content.text_len() < usize::MAX));
 }
 
 #[test]
@@ -81,9 +82,9 @@ fn render_includes_system_and_history() {
     mgr.push_history(Message::assistant("Hi!"), 5);
 
     let rendered = mgr.render();
-    assert!(rendered.len() >= 3);
-    assert!(rendered.iter().any(|m| m.content.as_text().map(|t| t.contains("You are helpful")).unwrap_or(false)));
-    assert!(rendered.iter().any(|m| m.content.as_text() == Some("Hello")));
+    assert!(rendered.system_text.contains("You are helpful"));
+    assert_eq!(rendered.turns.len(), 2);
+    assert!(rendered.turns.iter().any(|m| m.content.as_text() == Some("Hello")));
 }
 
 // ─── Renewal ────────────────────────────────────────────────────────────────

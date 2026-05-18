@@ -25,6 +25,7 @@ use deepstrike_core::types::message::{
     Content, ContentPart, Message as RustMessage, Role, ToolCall as RustToolCall,
     ToolResult as RustToolResult, ToolSchema as RustToolSchema,
 };
+use deepstrike_core::context::renderer::RenderedContext as RustRenderedContext;
 use deepstrike_core::types::agent::AgentIdentity;
 use deepstrike_core::types::policy::GovernanceVerdict as RustGovernanceVerdict;
 use deepstrike_core::types::result::LoopResult as RustLoopResult;
@@ -233,8 +234,17 @@ fn disposition_str(d: RustSignalDisposition) -> &'static str {
 
 // ────────────────────────────── Tagged unions: LoopAction / LoopObservation ──────────────────────────────
 
+/// Structured context for a provider call — emitted with `kind === "call_llm"`.
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderedContext {
+    pub system_text: String,
+    pub turns: Vec<Message>,
+}
+
 /// Discriminated union; inspect `kind`:
-/// - `"call_llm"`      → `messages`, `tools` (includes meta-tools when configured)
+/// - `"call_llm"`      → `context`, `tools` (includes meta-tools when configured)
 /// - `"execute_tools"` → `calls`
 /// - `"done"`          → `result`
 #[derive(Tsify, Clone, Serialize, Deserialize)]
@@ -243,7 +253,7 @@ fn disposition_str(d: RustSignalDisposition) -> &'static str {
 pub struct LoopAction {
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub messages: Option<Vec<Message>>,
+    pub context: Option<RenderedContext>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolSchema>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -263,6 +273,8 @@ pub struct LoopObservation {
     pub action: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rho_after: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sprint: Option<u32>,
 }
 
 #[derive(Tsify, Clone, Serialize, Deserialize)]
@@ -501,27 +513,34 @@ fn loop_result_from_rust(r: &RustLoopResult) -> LoopResult {
 
 fn loop_action_from_rust(a: RustLoopAction) -> LoopAction {
     match a {
-        RustLoopAction::CallLLM { messages, tools } => LoopAction {
+        RustLoopAction::CallLLM { context, tools } => LoopAction {
             kind: "call_llm".into(),
-            messages: Some(messages.iter().map(message_from_rust).collect()),
+            context: Some(rendered_context_from_rust(context)),
             tools: Some(tools.iter().map(tool_schema_from_rust).collect()),
             calls: None,
             result: None,
         },
         RustLoopAction::ExecuteTools { calls } => LoopAction {
             kind: "execute_tools".into(),
-            messages: None,
+            context: None,
             tools: None,
             calls: Some(calls.iter().map(tool_call_from_rust).collect()),
             result: None,
         },
         RustLoopAction::Done { result } => LoopAction {
             kind: "done".into(),
-            messages: None,
+            context: None,
             tools: None,
             calls: None,
             result: Some(loop_result_from_rust(&result)),
         },
+    }
+}
+
+fn rendered_context_from_rust(rc: RustRenderedContext) -> RenderedContext {
+    RenderedContext {
+        system_text: rc.system_text,
+        turns: rc.turns.iter().map(message_from_rust).collect(),
     }
 }
 
@@ -531,6 +550,13 @@ fn observation_from_rust(o: RustLoopObservation) -> LoopObservation {
             kind: "compressed".into(),
             action: Some(pressure_action_str(action).into()),
             rho_after: Some(rho_after),
+            sprint: None,
+        },
+        RustLoopObservation::Renewed { sprint } => LoopObservation {
+            kind: "renewed".into(),
+            action: None,
+            rho_after: None,
+            sprint: Some(sprint),
         },
     }
 }
@@ -642,8 +668,8 @@ impl ContextEngine {
     }
 
     #[wasm_bindgen]
-    pub fn render(&self) -> Vec<Message> {
-        self.inner.render().iter().map(message_from_rust).collect()
+    pub fn render(&self) -> RenderedContext {
+        rendered_context_from_rust(self.inner.render())
     }
 
     #[wasm_bindgen(js_name = setAvailableSkills)]
@@ -758,8 +784,8 @@ impl LoopStateMachine {
     }
 
     #[wasm_bindgen]
-    pub fn render(&self) -> Vec<Message> {
-        self.inner.ctx.render().iter().map(message_from_rust).collect()
+    pub fn render(&self) -> RenderedContext {
+        rendered_context_from_rust(self.inner.ctx.render())
     }
 }
 
