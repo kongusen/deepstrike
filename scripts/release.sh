@@ -40,14 +40,18 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
 fi
 echo "    Working tree clean ✓"
 
-# ── 3. Pre-flight: HEAD must be on origin/main ────────────────────────────────
-git fetch origin main --quiet
-if ! git merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
-  echo "Error: HEAD is not an ancestor of origin/main." >&2
-  echo "       Push your commits first, or verify you are on the right branch." >&2
-  exit 1
+# ── 3. Pre-flight: HEAD must be on origin/main (skipped if network unreachable) ──
+if git fetch origin main --quiet 2>/dev/null; then
+  if ! git merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+    echo "Error: HEAD is not an ancestor of origin/main." >&2
+    echo "       Push your commits first, or verify you are on the right branch." >&2
+    exit 1
+  fi
+  echo "    HEAD is on origin/main ✓"
+else
+  echo "    Warning: cannot reach origin (network/proxy issue) — skipping origin/main check"
+  echo "    Make sure your commits are pushed before tagging in CI."
 fi
-echo "    HEAD is on origin/main ✓"
 
 # ── 4. Write canonical VERSION file ──────────────────────────────────────────
 echo "$VERSION" > VERSION
