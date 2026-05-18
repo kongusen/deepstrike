@@ -73,7 +73,7 @@ await agent.run("What is 2 + 3?")
 
 ```toml
 [dependencies]
-deepstrike-sdk = "0.1.12"
+deepstrike-sdk = "0.1.13"
 ```
 
 ```rust
