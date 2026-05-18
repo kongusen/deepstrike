@@ -88,6 +88,8 @@ for await (const event of agent.runStreaming("Summarize README.md")) {
 
 All providers accept `RetryConfig` for exponential backoff and share a `CircuitBreaker`.
 
+`extensions` are forwarded by every provider in both `complete()` and `stream()` while SDK-owned structural fields such as `model`, `messages`, `tools`, and streaming flags remain protected. Provider-specific controls still keep their native spellings: for example Anthropic `thinking` / `betas`, OpenAI Responses `reasoning`, Gemini `generationConfig`, Ollama `think` / `options`, DeepSeek `thinking` + `reasoningEffort`, and Qwen `enableThinking` + `thinkingBudget`.
+
 OpenAI can also be selected through the provider catalog:
 
 ```typescript
@@ -108,7 +110,7 @@ const agent = new Agent(provider, {
   maxTokens: 4096,            // context window size
   maxTurns: 25,               // max turns (default 25)
   timeoutMs: 60_000,          // timeout in ms
-  extensions: { temperature: 0.1 },  // pass-through to LLM
+  extensions: { temperature: 0.1 },  // provider-native controls, passed through to the LLM
   skillDir: "./skills",       // skill .md files directory
   knowledgeSource: myKS,      // KnowledgeSource implementation
   signalSource: rx,           // SignalSource for external signals
@@ -307,6 +309,8 @@ console.log(out.passed, out.feedback)
 | `text_delta` | `delta` |
 | `thinking_delta` | `delta` |
 | `tool_call` | `id`, `name`, `arguments` |
+| `tool_delta` | `callId`, `delta?`, `chunk?` |
+| `tool_suspend` | `callId`, `suspensionId`, `payload?` |
 | `tool_result` | `callId`, `content`, `isError` |
 | `permission_request` | `toolName`, `reason` |
 | `done` | `iterations`, `totalTokens`, `status` |

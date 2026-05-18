@@ -1,7 +1,7 @@
 import OpenAI from "openai"
 import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
-import { CircuitBreaker } from "./base.js"
+import { CircuitBreaker, omitExtensionKeys } from "./base.js"
 import { OpenAIChatAdapter } from "./openai-chat.js"
 
 export class OpenAIChatProvider implements LLMProvider {
@@ -23,7 +23,7 @@ export class OpenAIChatProvider implements LLMProvider {
     this.baseDelay = retry.baseDelay
   }
 
-  async complete(context: RenderedContext, tools: ToolSchema[]): Promise<Message> {
+  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
     const msgs = this.chat.buildMessages(context)
 
@@ -31,6 +31,7 @@ export class OpenAIChatProvider implements LLMProvider {
     for (let i = 0; i < this.maxRetries; i++) {
       try {
         const resp = await this.client.chat.completions.create({
+          ...this.requestExtensions(extensions),
           model: this.model,
           messages: msgs,
           ...(tools.length ? { tools: this.chat.buildTools(tools) } : {}),
@@ -51,8 +52,10 @@ export class OpenAIChatProvider implements LLMProvider {
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
     const msgs = this.chat.buildMessages(context)
     const toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }> = {}
+    const emittedToolCallIndexes = new Set<number>()
 
     const stream = await this.client.chat.completions.create({
+      ...this.requestExtensions(extensions),
       model: this.model,
       messages: msgs,
       ...(tools.length ? { tools: this.chat.buildTools(tools) } : {}),
@@ -77,14 +80,29 @@ export class OpenAIChatProvider implements LLMProvider {
       }
 
       if (choice.finish_reason === "tool_calls") {
-        for (const tb of Object.values(toolCallBufs)) {
+        for (const [index, tb] of Object.entries(toolCallBufs)) {
+          const idx = Number(index)
+          if (emittedToolCallIndexes.has(idx)) continue
           let args: Record<string, unknown> = {}
           try { args = JSON.parse(tb.argsBuf || "{}") } catch { args = {} }
+          emittedToolCallIndexes.add(idx)
           yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
         }
       }
     }
+    for (const [index, tb] of Object.entries(toolCallBufs)) {
+      const idx = Number(index)
+      if (emittedToolCallIndexes.has(idx)) continue
+      let args: Record<string, unknown> = {}
+      try { args = JSON.parse(tb.argsBuf || "{}") } catch { args = {} }
+      emittedToolCallIndexes.add(idx)
+      yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
+    }
     if (totalTokens > 0) yield { type: "usage", totalTokens } as StreamEvent
+  }
+
+  protected requestExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
+    return omitExtensionKeys(extensions, ["model", "messages", "tools", "stream", "stream_options"])
   }
 }
 

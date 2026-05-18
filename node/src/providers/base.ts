@@ -29,6 +29,16 @@ export class CircuitBreaker {
   }
 }
 
+
+export function omitExtensionKeys(
+  extensions: Record<string, unknown> | undefined,
+  keys: readonly string[],
+): Record<string, unknown> {
+  if (!extensions) return {}
+  const blocked = new Set(keys)
+  return Object.fromEntries(Object.entries(extensions).filter(([key]) => !blocked.has(key)))
+}
+
 export function normalizeToolCall(id: string, name: string, args: unknown): { id: string; name: string; arguments: string } | null {
   const n = String(name ?? "").trim()
   if (!n) return null

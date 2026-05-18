@@ -37,6 +37,7 @@ class MiniMaxProvider(OpenAIProvider):
     async def _stream_gen(self, messages: list[Message], tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
         ext = extensions or {}
         tool_calls: dict[int, dict] = {}
+        emitted_tool_call_indexes: set[int] = set()
         async with httpx.AsyncClient() as client:
             async with client.stream("POST", f"{self._base_url}/chat/completions",
                                      headers=self._headers(),
@@ -66,16 +67,29 @@ class MiniMaxProvider(OpenAIProvider):
                             tool_calls[idx]["name"] += fn["name"]
                         tool_calls[idx]["args_buf"] += fn.get("arguments", "")
                     if choice.get("finish_reason") == "tool_calls":
-                        for tb in tool_calls.values():
+                        for idx, tb in tool_calls.items():
+                            if idx in emitted_tool_call_indexes:
+                                continue
                             try:
                                 args = json.loads(tb["args_buf"] or "{}")
                             except json.JSONDecodeError:
                                 args = {}
                             tc = normalize_tool_call(tb["id"], tb["name"], args)
                             if tc:
+                                emitted_tool_call_indexes.add(idx)
                                 yield ToolCallEvent(id=tc.id, name=tc.name, arguments=args)
-                        tool_calls.clear()
 
-    async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
+        for idx, tb in tool_calls.items():
+            if idx in emitted_tool_call_indexes:
+                continue
+            try:
+                args = json.loads(tb["args_buf"] or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            tc = normalize_tool_call(tb["id"], tb["name"], args)
+            if tc:
+                yield ToolCallEvent(id=tc.id, name=tc.name, arguments=args)
+
+    def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
         messages = self._build_messages(context)
         return self._stream_gen(messages, tools, extensions)

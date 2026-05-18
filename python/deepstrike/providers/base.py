@@ -113,6 +113,13 @@ def to_anthropic_content(msg: Message) -> str | list[dict]:
                 parts.append({"type": "image", "source": {"type": "url", "url": p.url}})
         elif p.type == "audio":
             parts.append({"type": "text", "text": f"[audio: {p.media_type}]"})
+        elif p.type == "tool_result":
+            parts.append({
+                "type": "tool_result",
+                "tool_use_id": p.call_id,
+                "content": p.output,
+                "is_error": p.is_error,
+            })
     return parts or msg.content
 
 
@@ -136,7 +143,88 @@ def to_openai_content(msg: Message) -> str | list[dict]:
         elif p.type == "audio":
             fmt = (p.media_type or "audio/wav").split("/")[-1]
             parts.append({"type": "input_audio", "input_audio": {"data": p.data, "format": fmt}})
+        elif p.type == "tool_result":
+            parts.append({"type": "text", "text": p.output or ""})
     return parts or msg.content
+
+
+def to_anthropic_messages(
+    turns: list[Message],
+    native_replay: Callable[[Message], list[dict] | None] | None = None,
+) -> list[dict]:
+    """Serialize provider-neutral turns into Anthropic-native messages."""
+    result: list[dict] = []
+    for msg in turns:
+        if msg.role == "tool":
+            parts = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": p.call_id,
+                    "content": p.output,
+                    "is_error": p.is_error,
+                }
+                for p in (getattr(msg, "content_parts", None) or [])
+                if p.type == "tool_result"
+            ]
+            if parts:
+                result.append({"role": "user", "content": parts})
+            continue
+
+        if msg.role == "assistant" and getattr(msg, "tool_calls", None):
+            replay = native_replay(msg) if native_replay else None
+            if replay is not None:
+                result.append({"role": "assistant", "content": replay})
+                continue
+
+            blocks: list[dict] = []
+            if msg.content:
+                blocks.append({"type": "text", "text": msg.content})
+            for tc in msg.tool_calls:
+                blocks.append({
+                    "type": "tool_use",
+                    "id": tc.id,
+                    "name": tc.name,
+                    "input": parse_tool_arguments(tc.arguments),
+                })
+            result.append({"role": "assistant", "content": blocks})
+            continue
+
+        result.append({"role": msg.role, "content": to_anthropic_content(msg)})
+    return result
+
+
+def to_openai_message_params(context: "RenderedContext") -> list[dict]:
+    """Serialize provider-neutral context into OpenAI-compatible chat messages."""
+    result: list[dict] = []
+    if context.system_text:
+        result.append({"role": "system", "content": context.system_text})
+
+    for msg in context.turns:
+        if msg.role == "tool":
+            for p in (getattr(msg, "content_parts", None) or []):
+                if p.type == "tool_result":
+                    result.append({
+                        "role": "tool",
+                        "tool_call_id": p.call_id,
+                        "content": p.output,
+                    })
+            continue
+
+        next_msg: dict[str, Any] = {
+            "role": msg.role,
+            "content": to_openai_content(msg),
+        }
+        if msg.role == "assistant" and getattr(msg, "tool_calls", None):
+            next_msg["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.name, "arguments": tc.arguments},
+                }
+                for tc in msg.tool_calls
+            ]
+        result.append(next_msg)
+    return result
 
 
 @dataclass
@@ -147,5 +235,5 @@ class RenderedContext:
 
 @runtime_checkable
 class LLMProvider(Protocol):
-    async def complete(self, context: RenderedContext, tools: list[ToolSchema]) -> Message: ...
-    async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]: ...
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message: ...
+    def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]: ...

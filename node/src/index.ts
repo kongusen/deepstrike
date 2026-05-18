@@ -15,7 +15,7 @@ export type { OpenAIResponsesRunState } from "./providers/openai-responses.js"
 export { endpointProfiles, modelProfiles, getModelProfile } from "./providers/profiles.js"
 export { createProvider } from "./providers/catalog.js"
 export type { CreateProviderOptions, EndpointProfileId } from "./providers/catalog.js"
-export { tool, executeTools, readFile } from "./tools/index.js"
+export { tool, streamingTool, executeTools, readFile, validateToolArguments } from "./tools/index.js"
 export type { RegisteredTool } from "./tools/index.js"
 export { scanSkillDir, readSkillFile } from "./skills/loader.js"
 export type { SkillMetadata } from "./skills/loader.js"
@@ -37,7 +37,7 @@ export type {
   Message, ToolCall, ToolResult, ToolSchema,
   ContentPart, TextPart, ImagePart, AudioPart,
   StreamEvent, TextDelta, ThinkingDelta,
-  ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent,
+  ToolCallEvent, ToolChunk, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent,
   LLMProvider, RetryConfig, TokenUsage, ProviderToolSpec, ProviderRunState,
   RenderedContext,
 } from "./types.js"

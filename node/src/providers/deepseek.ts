@@ -2,6 +2,7 @@ import OpenAI from "openai"
 import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent } from "../types.js"
 import { OpenAIChatProvider } from "./openai.js"
 import { endpointProfiles } from "./profiles.js"
+import { omitExtensionKeys } from "./base.js"
 
 const DEEPSEEK_BASE = endpointProfiles["deepseek.openai"].baseURL
 
@@ -15,16 +16,31 @@ export class DeepSeekProvider extends OpenAIChatProvider {
     super(apiKey, model, retry, baseURL)
   }
 
+  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
+    const thinking = extensions?.thinking === false ? "disabled" : "enabled"
+    const reasoningEffort = extensions?.reasoningEffort === "max" ? "max" : "high"
+    return super.complete(context, tools, {
+      ...omitExtensionKeys(extensions, ["thinking", "reasoningEffort", "exposeReasoning", "extra_body", "reasoning_effort"]),
+      reasoning_effort: reasoningEffort,
+      extra_body: { thinking: { type: thinking } },
+    })
+  }
+
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
     const exposeReasoning = extensions?.exposeReasoning ?? false
     const thinking = extensions?.thinking === false ? "disabled" : "enabled"
     const reasoningEffort = extensions?.reasoningEffort === "max" ? "max" : "high"
     const msgs = this.chat.buildMessages(context)
     const toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }> = {}
+    const emittedToolCallIndexes = new Set<number>()
     let reasoningContent = ""
     let finalText = ""
 
     const stream = await this.client.chat.completions.create({
+      ...omitExtensionKeys(extensions, [
+        "model", "messages", "tools", "stream", "extra_body", "reasoning_effort",
+        "exposeReasoning", "thinking", "reasoningEffort",
+      ]),
       model: this.model,
       messages: msgs,
       ...(tools.length ? { tools: this.chat.buildTools(tools) } : {}),
@@ -56,12 +72,30 @@ export class DeepSeekProvider extends OpenAIChatProvider {
           id: tb.id, name: tb.name, arguments: tb.argsBuf || "{}",
         }))
         this.chat.rememberReplayFields({ content: finalText, toolCalls }, { reasoning_content: reasoningContent })
-        for (const tb of Object.values(toolCallBufs)) {
+        for (const [index, tb] of Object.entries(toolCallBufs)) {
+          const idx = Number(index)
+          if (emittedToolCallIndexes.has(idx)) continue
           let args: Record<string, unknown> = {}
           try { args = JSON.parse(tb.argsBuf || "{}") } catch { args = {} }
+          emittedToolCallIndexes.add(idx)
           yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
         }
       }
+    }
+
+    const toolCalls = Object.values(toolCallBufs).map(tb => ({
+      id: tb.id, name: tb.name, arguments: tb.argsBuf || "{}",
+    }))
+    if (toolCalls.length) {
+      this.chat.rememberReplayFields({ content: finalText, toolCalls }, { reasoning_content: reasoningContent })
+    }
+    for (const [index, tb] of Object.entries(toolCallBufs)) {
+      const idx = Number(index)
+      if (emittedToolCallIndexes.has(idx)) continue
+      let args: Record<string, unknown> = {}
+      try { args = JSON.parse(tb.argsBuf || "{}") } catch { args = {} }
+      emittedToolCallIndexes.add(idx)
+      yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
     }
   }
 }

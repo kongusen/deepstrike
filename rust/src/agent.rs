@@ -6,7 +6,7 @@ use deepstrike_core::types::task::RuntimeTask;
 use deepstrike_core::signals::router::SignalRouter;
 use deepstrike_core::types::policy::SignalDisposition;
 use deepstrike_core::types::signal::{RuntimeSignal as KernelSignal, SignalSource as KernelSignalSource, SignalType as KernelSignalType, Urgency};
-use futures::StreamExt;
+use futures::{StreamExt, stream::FuturesUnordered};
 use std::collections::HashMap;
 
 use deepstrike_core::memory::idle_pipeline::{IdleAction, IdleEvent, IdlePolicy, IdlePipeline};
@@ -16,7 +16,7 @@ use crate::knowledge::KnowledgeSource;
 use crate::memory::{DreamResult, DreamStore};
 use crate::providers::{LLMProvider, StreamEvent};
 use crate::signals::SignalSource;
-use crate::tools::{RegisteredTool, execute_tools};
+use crate::tools::{RegisteredTool, ToolChunk, ToolStep, validate_tool_arguments};
 use crate::{Error, Result};
 
 fn rendered_context_from_messages(messages: Vec<Message>) -> deepstrike_core::context::renderer::RenderedContext {
@@ -39,11 +39,22 @@ fn rendered_context_from_messages(messages: Vec<Message>) -> deepstrike_core::co
     }
 }
 
+#[derive(Clone)]
+pub struct ToolSuspendRequest {
+    pub call_id: String,
+    pub name: String,
+    pub suspension_id: String,
+    pub payload: Option<serde_json::Value>,
+}
+
+pub type ToolSuspendHandler = std::sync::Arc<dyn Fn(ToolSuspendRequest) -> futures::future::BoxFuture<'static, Result<serde_json::Value>> + Send + Sync>;
+
 pub struct AgentOptions {
     pub max_tokens: u32,
     pub max_turns: u32,
     pub timeout_ms: Option<u64>,
     pub extensions: Option<serde_json::Value>,
+    pub on_tool_suspend: Option<ToolSuspendHandler>,
     /// System-level instructions prepended to every context render.
     /// Injected into the `system` partition before `start()` is called.
     pub system_prompt: Option<String>,
@@ -70,6 +81,7 @@ impl AgentOptions {
             max_turns: 25,
             timeout_ms: None,
             extensions: None,
+            on_tool_suspend: None,
             system_prompt: None,
             initial_memory: Vec::new(),
             skill_dir: None,
@@ -394,12 +406,109 @@ impl Agent {
                             });
                         }
 
-                        let results = execute_tools(&regular_calls, &self.tools).await;
-                        for r in &results {
-                            let content = match &r.output { Content::Text(s) => s.clone(), _ => String::new() };
-                            yield RunEvent::ToolResult { call_id: r.call_id.to_string(), content, is_error: r.is_error };
+                        struct ActiveTool {
+                            call_id: CompactString,
+                            name: String,
+                            session: Box<dyn crate::tools::ToolSession>,
+                            resume_input: Option<serde_json::Value>,
+                            combined: String,
                         }
-                        all_results.extend(results);
+
+                        let mut active_tools: FuturesUnordered<futures::future::BoxFuture<'_, (ActiveTool, Result<ToolStep>)>> = FuturesUnordered::new();
+                        for call in regular_calls {
+                            let Some(tool) = self.tools.get(call.name.as_str()) else {
+                                let content = format!("unknown tool: {}", call.name);
+                                yield RunEvent::ToolResult { call_id: call.id.to_string(), content: content.clone(), is_error: true };
+                                all_results.push(deepstrike_core::types::message::ToolResult {
+                                    call_id: call.id.clone(), output: Content::Text(content), is_error: true, token_count: None,
+                                });
+                                continue;
+                            };
+                            if let Err(e) = validate_tool_arguments(&tool.schema.parameters, &call.arguments) {
+                                let content = format!("invalid arguments: {e}");
+                                yield RunEvent::ToolResult { call_id: call.id.to_string(), content: content.clone(), is_error: true };
+                                all_results.push(deepstrike_core::types::message::ToolResult {
+                                    call_id: call.id.clone(), output: Content::Text(content), is_error: true, token_count: None,
+                                });
+                                continue;
+                            }
+                            match (tool.start)(call.arguments.clone()).await {
+                                Ok(session) => {
+                                    let active = ActiveTool { call_id: call.id.clone(), name: call.name.to_string(), session, resume_input: None, combined: String::new() };
+                                    active_tools.push(Box::pin(async move {
+                                        let mut active = active;
+                                        let step = active.session.next(active.resume_input.take()).await;
+                                        (active, step)
+                                    }));
+                                }
+                                Err(e) => {
+                                    let content = e.to_string();
+                                    yield RunEvent::ToolResult { call_id: call.id.to_string(), content: content.clone(), is_error: true };
+                                    all_results.push(deepstrike_core::types::message::ToolResult {
+                                        call_id: call.id.clone(), output: Content::Text(content), is_error: true, token_count: None,
+                                    });
+                                }
+                            }
+                        }
+
+                        while let Some((mut active, step)) = active_tools.next().await {
+                            match step {
+                                Ok(ToolStep::Chunk(chunk)) => {
+                                    match &chunk {
+                                        ToolChunk::Suspend { suspension_id, payload } => {
+                                            yield RunEvent::ToolSuspend {
+                                                call_id: active.call_id.to_string(),
+                                                name: active.name.clone(),
+                                                suspension_id: suspension_id.clone(),
+                                                payload: payload.clone(),
+                                            };
+                                            match &self.options.on_tool_suspend {
+                                                Some(handler) => {
+                                                    active.resume_input = Some(handler(ToolSuspendRequest {
+                                                        call_id: active.call_id.to_string(),
+                                                        name: active.name.clone(),
+                                                        suspension_id: suspension_id.clone(),
+                                                        payload: payload.clone(),
+                                                    }).await?);
+                                                }
+                                                None => {
+                                                    let content = format!("tool suspended without resume handler: {suspension_id}");
+                                                    yield RunEvent::ToolResult { call_id: active.call_id.to_string(), content: content.clone(), is_error: true };
+                                                    all_results.push(deepstrike_core::types::message::ToolResult {
+                                                        call_id: active.call_id.clone(), output: Content::Text(content), is_error: true, token_count: None,
+                                                    });
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            active.combined.push_str(chunk.text_projection());
+                                            yield RunEvent::ToolDelta { call_id: active.call_id.to_string(), name: active.name.clone(), chunk };
+                                        }
+                                    }
+                                    active_tools.push(Box::pin(async move {
+                                        let mut active = active;
+                                        let step = active.session.next(active.resume_input.take()).await;
+                                        (active, step)
+                                    }));
+                                }
+                                Ok(ToolStep::Done(text)) => {
+                                    active.combined.push_str(&text);
+                                    yield RunEvent::ToolResult { call_id: active.call_id.to_string(), content: active.combined.clone(), is_error: false };
+                                    all_results.push(deepstrike_core::types::message::ToolResult {
+                                        call_id: active.call_id, output: Content::Text(active.combined), is_error: false, token_count: None,
+                                    });
+                                }
+                                Err(e) => {
+                                    let content = e.to_string();
+                                    yield RunEvent::ToolResult { call_id: active.call_id.to_string(), content: content.clone(), is_error: true };
+                                    all_results.push(deepstrike_core::types::message::ToolResult {
+                                        call_id: active.call_id, output: Content::Text(content), is_error: true, token_count: None,
+                                    });
+                                }
+                            }
+                        }
+
                         action = sm.feed(LoopEvent::ToolResults { results: all_results });
                     }
                     deepstrike_core::scheduler::state_machine::LoopAction::Done { result } => {
@@ -543,6 +652,8 @@ pub enum RunEvent {
     TextDelta(String),
     ThinkingDelta(String),
     ToolCall { id: String, name: String },
+    ToolDelta { call_id: String, name: String, chunk: ToolChunk },
+    ToolSuspend { call_id: String, name: String, suspension_id: String, payload: Option<serde_json::Value> },
     ToolResult { call_id: String, content: String, is_error: bool },
     Done { iterations: u32, total_tokens: u64, status: String },
     Error(String),

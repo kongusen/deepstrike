@@ -25,6 +25,24 @@ class ToolCallEvent:
 
 
 @dataclass
+class ToolDeltaEvent:
+    type: str = "tool_delta"
+    call_id: str = ""
+    name: str = ""
+    delta: str = ""
+    chunk: dict | None = None
+
+
+@dataclass
+class ToolSuspendEvent:
+    type: str = "tool_suspend"
+    call_id: str = ""
+    name: str = ""
+    suspension_id: str = ""
+    payload: dict | None = None
+
+
+@dataclass
 class ToolResultEvent:
     type: str = "tool_result"
     call_id: str = ""
@@ -60,6 +78,8 @@ StreamEvent = Union[
     ThinkingDelta,
     TextDelta,
     ToolCallEvent,
+    ToolDeltaEvent,
+    ToolSuspendEvent,
     ToolResultEvent,
     DoneEvent,
     ErrorEvent,

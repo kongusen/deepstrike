@@ -68,7 +68,7 @@ class GeminiProvider:
             for t in tools
         ]
 
-    async def complete(self, context: RenderedContext, tools: list[ToolSchema]) -> Message:
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
 
@@ -125,7 +125,7 @@ class GeminiProvider:
         if tool_defs:
             self._model = genai.GenerativeModel(self._model_name, tools=tool_defs)
 
-        tool_call_bufs = {}
+        tool_calls: list[dict] = []
 
         async for chunk in await self._model.generate_content_async(contents, stream=True):
             for part in chunk.candidates[0].content.parts if chunk.candidates else []:
@@ -133,7 +133,7 @@ class GeminiProvider:
                     yield TextDelta(delta=part.text)
                 elif hasattr(part, "function_call"):
                     fc = part.function_call
-                    tool_call_bufs[fc.name] = {"name": fc.name, "args": dict(fc.args)}
+                    tool_calls.append({"id": f"call_{len(tool_calls) + 1}", "name": fc.name, "args": dict(fc.args)})
 
-        for call_id, tc in tool_call_bufs.items():
-            yield ToolCallEvent(id=call_id, name=tc["name"], arguments=tc["args"])
+        for tc in tool_calls:
+            yield ToolCallEvent(id=tc["id"], name=tc["name"], arguments=tc["args"])

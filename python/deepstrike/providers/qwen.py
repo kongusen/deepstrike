@@ -3,11 +3,9 @@ import json
 import logging
 from typing import AsyncIterator
 from http import HTTPStatus
-from dashscope import AioGeneration
-from dashscope.api_entities.dashscope_response import Role
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, RenderedContext, normalize_tool_call
+from .base import RetryConfig, CircuitBreaker, RenderedContext, normalize_tool_call, to_openai_message_params
 
 logger = logging.getLogger(__name__)
 
@@ -26,20 +24,20 @@ class QwenProvider:
         self._circuit = CircuitBreaker(self._retry)
         import dashscope
         dashscope.api_key = api_key
+        from dashscope import AioGeneration
+        from dashscope.api_entities.dashscope_response import Role
+        self._generation = AioGeneration
+        self._role = Role
 
     def _build_messages(self, context: RenderedContext) -> list[dict]:
-        result = []
-        if context.system_text:
-            result.append({"role": Role.SYSTEM, "content": context.system_text})
-        for msg in context.turns:
-            role = msg.role
-            if role == "assistant":
-                role = Role.ASSISTANT
-            elif role == "user":
-                role = Role.USER
-            else:
-                continue
-            result.append({"role": role, "content": msg.content})
+        result = to_openai_message_params(context)
+        for msg in result:
+            if msg["role"] == "system":
+                msg["role"] = self._role.SYSTEM
+            elif msg["role"] == "assistant":
+                msg["role"] = self._role.ASSISTANT
+            elif msg["role"] == "user":
+                msg["role"] = self._role.USER
         return result
 
     def _build_tools(self, tools: list[ToolSchema]) -> list[dict] | None:
@@ -57,7 +55,7 @@ class QwenProvider:
             for t in tools
         ]
 
-    async def complete(self, context: RenderedContext, tools: list[ToolSchema]) -> Message:
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
 
@@ -67,12 +65,21 @@ class QwenProvider:
         last_exc = None
         for attempt in range(self._retry.max_retries):
             try:
-                resp = await AioGeneration.call(
-                    model=self._model,
-                    messages=msgs,
-                    result_format="message",
-                    tools=tool_defs,
-                )
+                ext = extensions or {}
+                kwargs = {
+                    "model": self._model,
+                    "messages": msgs,
+                    "result_format": "message",
+                    "tools": tool_defs,
+                }
+                if ext.get("enable_thinking") or ext.get("enableThinking"):
+                    kwargs["enable_thinking"] = True
+                    if "thinking_budget" in ext or "thinkingBudget" in ext:
+                        kwargs["thinking_budget"] = int(ext.get("thinking_budget", ext.get("thinkingBudget")))
+                for key, value in ext.items():
+                    if key not in {"model", "messages", "tools", "stream", "enable_thinking", "enableThinking", "thinking_budget", "thinkingBudget"}:
+                        kwargs[key] = value
+                resp = await self._generation.call(**kwargs)
                 if resp.status_code != HTTPStatus.OK:
                     raise RuntimeError(f"DashScope error: {resp.code} - {resp.message}")
 
@@ -122,8 +129,9 @@ class QwenProvider:
                 kwargs["thinking_budget"] = int(ext["thinking_budget"])
 
         tool_call_bufs: dict[int, dict] = {}
+        emitted_tool_call_indexes: set[int] = set()
 
-        stream = await AioGeneration.call(**kwargs)
+        stream = await self._generation.call(**kwargs)
         async for chunk in stream:
             if chunk.status_code != HTTPStatus.OK:
                 continue
@@ -148,12 +156,25 @@ class QwenProvider:
                     tool_call_bufs[idx]["args_buf"] = tc.function.arguments
 
             if choice.finish_reason == "tool_calls":
-                for tb in tool_call_bufs.values():
+                for idx, tb in tool_call_bufs.items():
+                    if idx in emitted_tool_call_indexes:
+                        continue
                     try:
                         args = json.loads(tb["args_buf"] or "{}")
                     except json.JSONDecodeError:
                         args = {}
                     tc_obj = normalize_tool_call(tb["id"], tb["name"], args)
                     if tc_obj:
+                        emitted_tool_call_indexes.add(idx)
                         yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)
-                tool_call_bufs.clear()
+
+        for idx, tb in tool_call_bufs.items():
+            if idx in emitted_tool_call_indexes:
+                continue
+            try:
+                args = json.loads(tb["args_buf"] or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            tc_obj = normalize_tool_call(tb["id"], tb["name"], args)
+            if tc_obj:
+                yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)

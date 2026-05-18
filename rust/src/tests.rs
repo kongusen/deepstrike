@@ -4,7 +4,7 @@ mod tests {
     use crate::memory::WorkingMemory;
     use crate::safety::{PermissionManager, PermissionMode};
     use crate::signals::ScheduledPrompt;
-    use crate::tools::{RegisteredTool, execute_tools, read_file_tool};
+    use crate::tools::{RegisteredTool, ToolChunk, execute_tools, read_file_tool, validate_tool_arguments};
     use deepstrike_core::types::message::ToolCall;
     use compact_str::CompactString;
     use std::collections::HashMap;
@@ -69,7 +69,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_tools_success() {
-        let tool = RegisteredTool::new(
+        let tool = RegisteredTool::text(
             "add", "Add two numbers.",
             serde_json::json!({ "type": "object" }),
             |args| Box::pin(async move {
@@ -84,6 +84,22 @@ mod tests {
         let results = execute_tools(&[call], &registry).await;
         assert!(!results[0].is_error);
         assert_eq!(results[0].output.as_text(), Some("5"));
+    }
+
+    #[test]
+    fn validate_tool_arguments_rejects_missing_required_fields() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "value": { "type": "string" } },
+            "required": ["value"]
+        });
+        assert!(validate_tool_arguments(&schema, &serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn text_tool_chunk_projects_to_text() {
+        assert_eq!(ToolChunk::text("hello").text_projection(), "hello");
+        assert_eq!(ToolChunk::progress(0.5, Some("half".into())).text_projection(), "");
     }
 
     #[test]

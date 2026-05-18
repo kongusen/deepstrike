@@ -3,7 +3,7 @@ from deepstrike.harness.harness import (
     SinglePassHarness, EvalLoopHarness, HarnessLoop,
     HarnessRequest, HarnessOutcome, HarnessEvent, Verdict,
     Criterion, CriterionResult,
-    TokenEvent, ToolCallEvent, ToolResultEvent,
+    TokenEvent, ToolCallEvent, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent,
     SupervisingEvent, RevisingEvent, DoneEvent, MaxAttemptsReachedEvent,
 )
 
@@ -12,6 +12,6 @@ __all__ = [
     "SinglePassHarness", "EvalLoopHarness", "HarnessLoop",
     "HarnessRequest", "HarnessOutcome", "HarnessEvent", "Verdict",
     "Criterion", "CriterionResult",
-    "TokenEvent", "ToolCallEvent", "ToolResultEvent",
+    "TokenEvent", "ToolCallEvent", "ToolDeltaEvent", "ToolSuspendEvent", "ToolResultEvent",
     "SupervisingEvent", "RevisingEvent", "DoneEvent", "MaxAttemptsReachedEvent",
 ]

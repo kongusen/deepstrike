@@ -1,9 +1,24 @@
-from .base import LLMProvider, RenderedContext, RetryConfig, CircuitBreaker, normalize_tool_call, parse_tool_arguments, TokenUsage, ProviderToolSpec, to_anthropic_content, to_openai_content
+from .base import (
+    LLMProvider,
+    RenderedContext,
+    RetryConfig,
+    CircuitBreaker,
+    normalize_tool_call,
+    parse_tool_arguments,
+    TokenUsage,
+    ProviderToolSpec,
+    to_anthropic_content,
+    to_anthropic_messages,
+    to_openai_content,
+    to_openai_message_params,
+)
 from .stream import (
     StreamEvent,
     TextDelta,
     ThinkingDelta,
     ToolCallEvent,
+    ToolDeltaEvent,
+    ToolSuspendEvent,
     ToolResultEvent,
     DoneEvent,
     ErrorEvent,
@@ -22,7 +37,9 @@ __all__ = [
     "LLMProvider", "RenderedContext", "AnthropicProvider", "OpenAIProvider",
     "QwenProvider", "DeepSeekProvider", "MiniMaxProvider", "OllamaProvider", "KimiProvider", "GeminiProvider",
     "RetryConfig", "CircuitBreaker", "normalize_tool_call", "parse_tool_arguments",
-    "TokenUsage", "ProviderToolSpec", "to_anthropic_content", "to_openai_content",
+    "TokenUsage", "ProviderToolSpec",
+    "to_anthropic_content", "to_anthropic_messages",
+    "to_openai_content", "to_openai_message_params",
     "StreamEvent", "TextDelta", "ThinkingDelta",
-    "ToolCallEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent", "PermissionRequestEvent",
+    "ToolCallEvent", "ToolDeltaEvent", "ToolSuspendEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent", "PermissionRequestEvent",
 ]

@@ -1,7 +1,7 @@
 import OpenAI from "openai"
 import type { Message, ProviderRunState, RenderedContext, StreamEvent, TextDelta, ToolCallEvent, ToolSchema, LLMProvider } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
-import { CircuitBreaker } from "./base.js"
+import { CircuitBreaker, omitExtensionKeys } from "./base.js"
 import { normalizeToolCall } from "./base.js"
 
 export interface OpenAIResponsesRunState extends ProviderRunState {
@@ -145,7 +145,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
     return { coveredMessageCount: 0 }
   }
 
-  async complete(context: RenderedContext, tools: ToolSchema[]): Promise<Message> {
+  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
     let lastErr: unknown
 
@@ -153,6 +153,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
       try {
         const instructions = this.responses.buildInstructions(context)
         const resp = await this.client.responses.create({
+          ...this.requestExtensions(extensions),
           model: this.model,
           input: this.responses.buildInput(context) as unknown as OpenAI.Responses.ResponseInput,
           ...(instructions ? { instructions } : {}),
@@ -179,7 +180,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
   async *stream(
     context: RenderedContext,
     tools: ToolSchema[],
-    _extensions?: Record<string, unknown>,
+    extensions?: Record<string, unknown>,
     state?: ProviderRunState,
   ): AsyncIterable<StreamEvent> {
     const runState = this.asRunState(state)
@@ -187,6 +188,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
     const instructions = this.responses.buildInstructions(context)
 
     const stream = await this.client.responses.create({
+      ...this.requestExtensions(extensions),
       model: this.model,
       input: this.responses.buildInput(context, runState) as unknown as OpenAI.Responses.ResponseInput,
       ...(instructions ? { instructions } : {}),
@@ -227,6 +229,12 @@ export class OpenAIResponsesProvider implements LLMProvider {
         }
       }
     }
+  }
+
+  private requestExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
+    return omitExtensionKeys(extensions, [
+      "model", "input", "instructions", "tools", "stream", "previous_response_id",
+    ])
   }
 
   private asRunState(state?: ProviderRunState): OpenAIResponsesRunState {

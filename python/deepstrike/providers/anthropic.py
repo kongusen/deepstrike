@@ -5,7 +5,7 @@ from typing import AsyncIterator
 from anthropic import AsyncAnthropic
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, RenderedContext, normalize_tool_call, to_anthropic_content
+from .base import RetryConfig, CircuitBreaker, RenderedContext, normalize_tool_call, to_anthropic_messages
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +21,15 @@ class AnthropicProvider:
         self._retry = retry_config or RetryConfig()
         self._circuit = CircuitBreaker(self._retry)
         self._client = AsyncAnthropic(api_key=api_key)
+        self._native_assistant_blocks: dict[str, list[dict]] = {}
 
     def _build_messages(self, turns: list[Message]) -> list[dict]:
-        return [{"role": m.role, "content": to_anthropic_content(m)} for m in turns]
+        return to_anthropic_messages(
+            turns,
+            native_replay=lambda message: self._native_assistant_blocks.get(
+                self._assistant_replay_key(message)
+            ),
+        )
 
     def _build_tools(self, tools: list[ToolSchema]) -> list[dict] | None:
         if not tools:
@@ -37,7 +43,7 @@ class AnthropicProvider:
             for t in tools
         ]
 
-    async def complete(self, context: RenderedContext, tools: list[ToolSchema]) -> Message:
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
 
@@ -48,9 +54,11 @@ class AnthropicProvider:
         last_exc = None
         for attempt in range(self._retry.max_retries):
             try:
+                request_extensions = {k: v for k, v in (extensions or {}).items() if k not in {"model", "messages", "system", "tools", "stream", "max_tokens"}}
                 resp = await self._client.messages.create(
+                    **request_extensions,
                     model=self._model,
-                    max_tokens=8096,
+                    max_tokens=(extensions or {}).get("max_tokens", 8096),
                     system=system,
                     messages=msgs,
                     tools=tool_defs,
@@ -59,14 +67,33 @@ class AnthropicProvider:
 
                 content = ""
                 tool_calls: list[ToolCall] = []
+                native_blocks: list[dict] = []
 
                 for block in resp.content:
                     if block.type == "text":
                         content += block.text
+                        native_blocks.append({"type": "text", "text": block.text})
                     elif block.type == "tool_use":
                         tc = normalize_tool_call(block.id, block.name, block.input)
                         if tc:
                             tool_calls.append(tc)
+                        native_blocks.append({
+                            "type": "tool_use",
+                            "id": block.id,
+                            "name": block.name,
+                            "input": block.input,
+                        })
+                    elif block.type == "thinking":
+                        native_blocks.append({
+                            "type": "thinking",
+                            "thinking": block.thinking,
+                            "signature": getattr(block, "signature", None),
+                        })
+
+                if tool_calls:
+                    self._native_assistant_blocks[
+                        self._assistant_replay_key_parts(content, tool_calls)
+                    ] = native_blocks
 
                 return Message(
                     role="assistant",
@@ -89,9 +116,11 @@ class AnthropicProvider:
         system = context.system_text or None
         tool_defs = self._build_tools(tools)
 
+        request_extensions = {k: v for k, v in (extensions or {}).items() if k not in {"model", "messages", "system", "tools", "stream", "max_tokens"}}
         async with self._client.messages.stream(
+            **request_extensions,
             model=self._model,
-            max_tokens=8096,
+            max_tokens=(extensions or {}).get("max_tokens", 8096),
             system=system,
             messages=msgs,
             tools=tool_defs,
@@ -111,3 +140,15 @@ class AnthropicProvider:
                         tc = normalize_tool_call(block.id, block.name, block.input)
                         if tc:
                             yield ToolCallEvent(id=tc.id, name=tc.name, arguments=json.loads(tc.arguments))
+
+    def _assistant_replay_key(self, message: Message) -> str:
+        return self._assistant_replay_key_parts(message.content, message.tool_calls or [])
+
+    def _assistant_replay_key_parts(self, content: str, tool_calls: list[ToolCall]) -> str:
+        return json.dumps({
+            "content": content,
+            "tool_calls": [
+                {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                for tc in tool_calls
+            ],
+        }, sort_keys=True)

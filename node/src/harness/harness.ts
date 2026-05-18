@@ -44,6 +44,8 @@ export interface Verdict {
 export type HarnessEvent =
   | { type: "token"; text: string }
   | { type: "tool_call"; id: string; name: string }
+  | { type: "tool_delta"; callId: string; delta?: string; chunk?: Record<string, unknown> }
+  | { type: "tool_suspend"; callId: string; suspensionId: string; payload?: Record<string, unknown> }
   | { type: "tool_result"; callId: string; content: string; isError: boolean }
   | { type: "supervising" }
   | { type: "revising"; verdict: Verdict }
@@ -125,6 +127,12 @@ export class HarnessLoop {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const tc = evt as any
           yield { type: "tool_call", id: tc.id, name: tc.name }
+        } else if (evt.type === "tool_delta") {
+          const td = evt as unknown as { callId: string; delta?: string; chunk?: Record<string, unknown> }
+          yield { type: "tool_delta", callId: td.callId, ...(td.delta ? { delta: td.delta } : {}), ...(td.chunk ? { chunk: td.chunk } : {}) }
+        } else if (evt.type === "tool_suspend") {
+          const ts = evt as unknown as { callId: string; suspensionId: string; payload?: Record<string, unknown> }
+          yield { type: "tool_suspend", callId: ts.callId, suspensionId: ts.suspensionId, ...(ts.payload ? { payload: ts.payload } : {}) }
         } else if (evt.type === "tool_result") {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const tr = evt as any

@@ -2,7 +2,7 @@ from __future__ import annotations
 import asyncio
 import json
 import pathlib
-from typing import AsyncIterator, TYPE_CHECKING
+from typing import AsyncIterator, TYPE_CHECKING, Awaitable, Callable, Any
 from deepstrike._kernel import (
     LoopStateMachine, LoopPolicy, RuntimeTask,
     Message, ToolCall, ToolSchema, ToolResult,
@@ -11,11 +11,14 @@ from deepstrike._kernel import (
 from deepstrike.governance import Governance
 from deepstrike.providers.base import LLMProvider, RenderedContext
 from deepstrike.providers.stream import (
-    StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
+    StreamEvent, TextDelta, ToolCallEvent, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, DoneEvent, ErrorEvent,
     PermissionRequestEvent,
 )
 from deepstrike.tools.registry import RegisteredTool
 from deepstrike.tools.execution import execute_tools
+from deepstrike.tools.registry import normalize_tool_chunk, tool_chunk_text, validate_tool_arguments
+from collections.abc import AsyncIterable
+import asyncio
 if TYPE_CHECKING:
     from deepstrike.memory.protocols import (
         DreamStore, DreamResult,
@@ -44,6 +47,7 @@ class Agent:
         system_prompt: str | None = None,
         skill_dir: str | None = None,
         extensions: dict | None = None,
+        on_tool_suspend: Callable[[ToolSuspendEvent], Awaitable[Any] | Any] | None = None,
         governance: Governance | None = None,
         signal_source: "SignalSource | None" = None,
         knowledge_source: "KnowledgeSource | None" = None,
@@ -62,6 +66,7 @@ class Agent:
         self._system_prompt = system_prompt
         self._skill_dir = pathlib.Path(skill_dir) if skill_dir else None
         self._extensions: dict = extensions or {}
+        self._on_tool_suspend = on_tool_suspend
         self._governance = governance
         self._signal_source = signal_source
         self._knowledge_source = knowledge_source
@@ -209,8 +214,7 @@ class Agent:
                 )
 
                 try:
-                    gen = await self._provider.stream(context, action.tools or [], extensions=ext if ext else None)
-                    async for evt in gen:
+                    async for evt in self._provider.stream(context, action.tools or [], extensions=ext if ext else None):
                         yield evt
                         if isinstance(evt, TextDelta):
                             final_text += evt.delta
@@ -312,7 +316,75 @@ class Agent:
                     yield ToolResultEvent(call_id=c.id, name=c.name, content=output, is_error=is_error)
                     all_results.append(ToolResult(call_id=c.id, output=output, is_error=is_error))
 
-                results = await execute_tools(regular_calls, self._tools)
+                results = []
+                queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
+
+                async def run_regular_tool(call):
+                    registered = self._tools.get(call.name)
+                    if registered is None:
+                        await queue.put(("result", ToolResult(call_id=call.id, output=f"unknown tool: {call.name}", is_error=True)))
+                        return
+                    try:
+                        kwargs = json.loads(call.arguments or "{}")
+                        validation_error = validate_tool_arguments(registered.schema.parameters, kwargs)
+                        if validation_error:
+                            await queue.put(("result", ToolResult(call_id=call.id, output=f"invalid arguments: {validation_error}", is_error=True)))
+                            return
+                        output = await registered(**kwargs)
+                        if isinstance(output, AsyncIterable):
+                            chunks = []
+                            iterator = output.__aiter__()
+                            resume_value = None
+                            while True:
+                                try:
+                                    raw_chunk = await (iterator.__anext__() if resume_value is None else iterator.asend(resume_value))
+                                    resume_value = None
+                                except StopAsyncIteration:
+                                    break
+                                normalized = normalize_tool_chunk(raw_chunk)
+                                if normalized.get("type") == "suspend":
+                                    event = ToolSuspendEvent(
+                                        call_id=call.id,
+                                        name=call.name,
+                                        suspension_id=str(normalized.get("suspensionId", normalized.get("suspension_id", ""))),
+                                        payload=normalized.get("payload"),
+                                    )
+                                    await queue.put(("delta", event))
+                                    if self._on_tool_suspend is None:
+                                        await queue.put(("result", ToolResult(
+                                            call_id=call.id,
+                                            output=f"tool suspended without resume handler: {event.suspension_id}",
+                                            is_error=True,
+                                        )))
+                                        return
+                                    resume_value = self._on_tool_suspend(event)
+                                    if hasattr(resume_value, "__await__"):
+                                        resume_value = await resume_value
+                                    continue
+                                text = tool_chunk_text(raw_chunk)
+                                chunks.append(text)
+                                await queue.put(("delta", ToolDeltaEvent(
+                                    call_id=call.id,
+                                    name=call.name,
+                                    delta=text,
+                                    chunk=None if isinstance(raw_chunk, str) else normalized,
+                                )))
+                            output = "".join(chunks)
+                        await queue.put(("result", ToolResult(call_id=call.id, output=str(output), is_error=False)))
+                    except Exception as exc:
+                        await queue.put(("result", ToolResult(call_id=call.id, output=str(exc), is_error=True)))
+
+                tasks = [asyncio.create_task(run_regular_tool(call)) for call in regular_calls]
+                pending_results = len(tasks)
+                while pending_results:
+                    kind, item = await queue.get()
+                    if kind == "delta":
+                        yield item
+                    else:
+                        results.append(item)
+                        pending_results -= 1
+                if tasks:
+                    await asyncio.gather(*tasks)
                 for r in results:
                     tool_name = next((c.name for c in regular_calls if c.id == r.call_id), "")
                     yield ToolResultEvent(call_id=r.call_id, name=tool_name, content=r.output, is_error=r.is_error)
@@ -484,7 +556,7 @@ class Agent:
         synth_system = "\n\n".join(m.content for m in synth_msgs if m.role == "system")
         synth_turns = [m for m in synth_msgs if m.role != "system"]
         synth_context = RenderedContext(system_text=synth_system, turns=synth_turns)
-        async for evt in await self._provider.stream(synth_context, [], extensions=None):
+        async for evt in self._provider.stream(synth_context, [], extensions=None):
             if isinstance(evt, TextDelta):
                 synthesis_text += evt.delta
 

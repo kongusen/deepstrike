@@ -1,7 +1,8 @@
 from __future__ import annotations
 import json
 from deepstrike._kernel import ToolCall, ToolResult
-from .registry import RegisteredTool
+from collections.abc import AsyncIterable
+from .registry import RegisteredTool, tool_chunk_text, validate_tool_arguments
 
 
 async def execute_tools(
@@ -16,8 +17,17 @@ async def execute_tools(
             continue
         try:
             kwargs = json.loads(call.arguments)
+            validation_error = validate_tool_arguments(tool.schema.parameters, kwargs)
+            if validation_error:
+                results.append(ToolResult(call_id=call.id, output=f"invalid arguments: {validation_error}", is_error=True))
+                continue
             output = await tool(**kwargs)
-            results.append(ToolResult(call_id=call.id, output=output))
+            if isinstance(output, AsyncIterable):
+                chunks = []
+                async for chunk in output:
+                    chunks.append(tool_chunk_text(chunk))
+                output = "".join(chunks)
+            results.append(ToolResult(call_id=call.id, output=str(output)))
         except Exception as exc:
             results.append(ToolResult(call_id=call.id, output=str(exc), is_error=True))
     return results

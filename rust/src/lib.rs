@@ -10,7 +10,7 @@ pub mod tools;
 #[cfg(test)]
 mod tests;
 
-pub use agent::{Agent, AgentOptions, EvalLoopHarness, HarnessLoop, RunEvent, SinglePassHarness};
+pub use agent::{Agent, AgentOptions, EvalLoopHarness, HarnessLoop, RunEvent, SinglePassHarness, ToolSuspendRequest, ToolSuspendHandler};
 pub use harness::{Harness, HarnessOutcome, HarnessRequest, QualityGate};
 pub use knowledge::KnowledgeSource;
 pub use memory::{DreamResult, DreamStore, WorkingMemory};
@@ -19,7 +19,7 @@ pub use providers::anthropic::AnthropicProvider;
 pub use providers::openai::{OpenAIProvider, deepseek, kimi, minimax, ollama, qwen};
 pub use safety::{Permission, PermissionDecision, PermissionManager, PermissionMode};
 pub use signals::{RuntimeSignal, ScheduledPrompt, SignalSource, SignalGateway, GatewayReceiver};
-pub use tools::{RegisteredTool, execute_tools, read_file_tool};
+pub use tools::{RegisteredTool, ToolChunk, ToolSession, ToolStep, TextToolSession, execute_tools, read_file_tool, validate_tool_arguments};
 pub use deepstrike_core::context::renderer::RenderedContext;
 
 #[derive(Debug, thiserror::Error)]

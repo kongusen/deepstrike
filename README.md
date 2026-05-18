@@ -229,6 +229,8 @@ All providers share `RetryConfig` (exponential backoff) and `CircuitBreaker`.
 | `text_delta` | `delta` |
 | `thinking_delta` | `delta` |
 | `tool_call` | `id`, `name`, `arguments` |
+| `tool_delta` | `callId`, `name`, `delta?`, `chunk?` |
+| `tool_suspend` | `callId`, `name`, `suspensionId`, `payload?` |
 | `tool_result` | `callId`, `name`, `content`, `isError` |
 | `permission_request` | `callId`, `toolName`, `arguments`, `reason` |
 | `done` | `iterations`, `totalTokens`, `status` |

@@ -23,7 +23,7 @@ async fn main() {
     let provider = OpenAIProvider::with_base_url("sk-...", "gpt-5-mini", "https://api.openai.com/v1");
 
     let mut agent = Agent::new(provider, AgentOptions::new(4096));
-    agent.register(RegisteredTool::new(
+    agent.register(RegisteredTool::text(
         "add", "Add two numbers.",
         serde_json::json!({"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"}},"required":["x","y"]}),
         |args| Box::pin(async move {
@@ -96,7 +96,7 @@ AgentOptions {
 ```rust
 use deepstrike_sdk::{RegisteredTool, read_file_tool};
 
-agent.register(RegisteredTool::new("search", "Search.", schema, |args| Box::pin(async move { ... })));
+agent.register(RegisteredTool::text("search", "Search.", schema, |args| Box::pin(async move { ... })));
 agent.register(read_file_tool());
 agent.unregister("search");
 agent.block_tool("bash");

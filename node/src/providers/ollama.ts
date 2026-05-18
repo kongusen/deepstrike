@@ -1,5 +1,5 @@
 import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider } from "../types.js"
-import { normalizeToolCall } from "./base.js"
+import { normalizeToolCall, omitExtensionKeys } from "./base.js"
 
 export class OllamaProvider implements LLMProvider {
   constructor(
@@ -22,11 +22,28 @@ export class OllamaProvider implements LLMProvider {
     return result
   }
 
-  async complete(context: RenderedContext, tools: ToolSchema[]): Promise<Message> {
+  private buildTools(tools: ToolSchema[]) {
+    return tools.map(t => ({
+      type: "function",
+      function: { name: t.name, description: t.description, parameters: JSON.parse(t.parameters) },
+    }))
+  }
+
+  private requestExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
+    return omitExtensionKeys(extensions, ["model", "messages", "tools", "stream"])
+  }
+
+  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
     const resp = await fetch(`${this.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: this.model, messages: this.toOllamaMessages(context), stream: false }),
+      body: JSON.stringify({
+        ...this.requestExtensions(extensions),
+        model: this.model,
+        messages: this.toOllamaMessages(context),
+        ...(tools.length ? { tools: this.buildTools(tools) } : {}),
+        stream: false,
+      }),
     })
     if (!resp.ok) throw new Error(`Ollama error: ${resp.status}`)
     const data = await resp.json() as { message: { content: string } }
@@ -37,12 +54,19 @@ export class OllamaProvider implements LLMProvider {
     const resp = await fetch(`${this.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: this.model, messages: this.toOllamaMessages(context), stream: true }),
+      body: JSON.stringify({
+        ...this.requestExtensions(extensions),
+        model: this.model,
+        messages: this.toOllamaMessages(context),
+        ...(tools.length ? { tools: this.buildTools(tools) } : {}),
+        stream: true,
+      }),
     })
     if (!resp.ok) throw new Error(`Ollama error: ${resp.status}`)
     const reader = resp.body!.getReader()
     const decoder = new TextDecoder()
     let buf = ""
+    const pendingToolCalls = new Map<string, { id: string; name: string; arguments: Record<string, unknown> }>()
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -55,11 +79,23 @@ export class OllamaProvider implements LLMProvider {
           const chunk = JSON.parse(line) as { message?: { content?: string; tool_calls?: Array<{ function: { name: string; arguments: unknown } }> } }
           if (chunk.message?.content) yield { type: "text_delta", delta: chunk.message.content } as TextDelta
           for (const tc of chunk.message?.tool_calls ?? []) {
-            const norm = normalizeToolCall(crypto.randomUUID(), tc.function.name, tc.function.arguments)
-            if (norm) yield { type: "tool_call", id: norm.id, name: norm.name, arguments: JSON.parse(norm.arguments) } as ToolCallEvent
+            const norm = normalizeToolCall("", tc.function.name, tc.function.arguments)
+            if (!norm) continue
+            const args = JSON.parse(norm.arguments) as Record<string, unknown>
+            const key = `${norm.name}:${norm.arguments}`
+            if (!pendingToolCalls.has(key)) {
+              pendingToolCalls.set(key, {
+                id: `call_${pendingToolCalls.size + 1}`,
+                name: norm.name,
+                arguments: args,
+              })
+            }
           }
         } catch { /* skip malformed lines */ }
       }
+    }
+    for (const tc of pendingToolCalls.values()) {
+      yield { type: "tool_call", id: tc.id, name: tc.name, arguments: tc.arguments } as ToolCallEvent
     }
   }
 }

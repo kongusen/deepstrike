@@ -241,6 +241,8 @@ print(outcome.passed, outcome.feedback)
 | `TextDelta` | `delta` |
 | `ThinkingDelta` | `delta` |
 | `ToolCallEvent` | `id`, `name`, `arguments` |
+| `ToolDeltaEvent` | `call_id`, `name`, `delta`, `chunk?` |
+| `ToolSuspendEvent` | `call_id`, `name`, `suspension_id`, `payload?` |
 | `ToolResultEvent` | `call_id`, `content`, `is_error` |
 | `DoneEvent` | `iterations`, `total_tokens`, `status` |
 | `ErrorEvent` | `message` |

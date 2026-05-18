@@ -193,7 +193,7 @@ async fn agent_with_criteria() {
 #[ignore = "requires OPENAI_API_KEY"]
 async fn agent_calls_tool() {
     let mut agent = Agent::new(make_provider(), AgentOptions::new(4096));
-    agent.register(RegisteredTool::new(
+    agent.register(RegisteredTool::text(
         "add",
         "Add two integers and return the sum.",
         serde_json::json!({
@@ -274,7 +274,7 @@ async fn agent_with_knowledge_source() {
 #[ignore = "requires OPENAI_API_KEY"]
 async fn blocked_tool_yields_error_event() {
     let mut agent = Agent::new(make_provider(), AgentOptions::new(4096));
-    agent.register(RegisteredTool::new(
+    agent.register(RegisteredTool::text(
         "forbidden_action",
         "This tool is blocked.",
         serde_json::json!({"type": "object", "properties": {}, "required": []}),
@@ -397,7 +397,7 @@ async fn eval_loop_harness_with_always_pass_gate() {
 #[ignore = "requires OPENAI_API_KEY"]
 async fn tools_plus_governance_allowed_tool_works() {
     let mut agent = Agent::new(make_provider(), AgentOptions::new(4096));
-    agent.register(RegisteredTool::new(
+    agent.register(RegisteredTool::text(
         "greet",
         "Return a greeting for the given name.",
         serde_json::json!({
@@ -410,7 +410,7 @@ async fn tools_plus_governance_allowed_tool_works() {
             Ok(format!("Hello, {name}!"))
         }),
     ));
-    agent.register(RegisteredTool::new(
+    agent.register(RegisteredTool::text(
         "dangerous",
         "A dangerous tool.",
         serde_json::json!({"type": "object", "properties": {}, "required": []}),
@@ -498,7 +498,7 @@ async fn agent_with_extensions() {
 async fn agent_multiple_tools() {
     let mut agent = Agent::new(make_provider(), AgentOptions::new(4096));
 
-    agent.register(RegisteredTool::new(
+    agent.register(RegisteredTool::text(
         "add", "Add two numbers.", serde_json::json!({
             "type": "object",
             "properties": { "x": {"type":"integer"}, "y": {"type":"integer"} },
@@ -510,7 +510,7 @@ async fn agent_multiple_tools() {
             Ok(format!("{}", x + y))
         }),
     ));
-    agent.register(RegisteredTool::new(
+    agent.register(RegisteredTool::text(
         "multiply", "Multiply two numbers.", serde_json::json!({
             "type": "object",
             "properties": { "x": {"type":"integer"}, "y": {"type":"integer"} },

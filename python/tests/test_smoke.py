@@ -96,10 +96,7 @@ async def test_agent_run_returns_model_text():
             raise NotImplementedError
 
         async def stream(self, messages, tools, extensions=None):
-            async def _events():
-                yield TextDelta(delta="pong")
-
-            return _events()
+            yield TextDelta(delta="pong")
 
     agent = Agent(FakeProvider(), max_tokens=1000, max_turns=3)
     assert await agent.run("ping") == "pong"

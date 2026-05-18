@@ -19,7 +19,7 @@ class OllamaProvider:
         self._retry = retry_config or RetryConfig()
         self._circuit = CircuitBreaker(self._retry)
 
-    def _build_body(self, context: RenderedContext, tools: list[ToolSchema], stream: bool) -> dict:
+    def _build_body(self, context: RenderedContext, tools: list[ToolSchema], stream: bool, extensions: dict | None = None) -> dict:
         msgs = []
         if context.system_text:
             msgs.append({"role": "system", "content": context.system_text})
@@ -32,6 +32,7 @@ class OllamaProvider:
                     entry["images"] = images
             msgs.append(entry)
         body: dict = {
+            **{k: v for k, v in (extensions or {}).items() if k not in {"model", "messages", "tools", "stream"}},
             "model": self._model,
             "messages": msgs,
             "stream": stream,
@@ -50,7 +51,7 @@ class OllamaProvider:
             ]
         return body
 
-    async def complete(self, context: RenderedContext, tools: list[ToolSchema]) -> Message:
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
         if self._circuit.is_open():
             raise Exception("Circuit breaker open")
 
@@ -60,7 +61,7 @@ class OllamaProvider:
                 async with httpx.AsyncClient() as client:
                     resp = await client.post(
                         f"{self._base_url}/api/chat",
-                        json=self._build_body(context, tools, stream=False),
+                        json=self._build_body(context, tools, stream=False, extensions=extensions),
                         timeout=120,
                     )
                     resp.raise_for_status()
@@ -89,17 +90,17 @@ class OllamaProvider:
 
         raise last_exc or Exception("Complete failed")
 
-    async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
-        return self._stream_gen(context, tools)
+    def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
+        return self._stream_gen(context, tools, extensions)
 
-    async def _stream_gen(self, context: RenderedContext, tools: list[ToolSchema]) -> AsyncIterator[StreamEvent]:
-        tool_calls: dict[int, dict] = {}
+    async def _stream_gen(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
+        pending_tool_calls: dict[str, dict] = {}
 
         async with httpx.AsyncClient() as client:
             async with client.stream(
                 "POST",
                 f"{self._base_url}/api/chat",
-                json=self._build_body(context, tools, stream=True),
+                json=self._build_body(context, tools, stream=True, extensions=extensions),
                 timeout=120,
             ) as resp:
                 resp.raise_for_status()
@@ -112,9 +113,18 @@ class OllamaProvider:
                     if text := msg.get("content"):
                         yield TextDelta(delta=text)
 
-                    for idx, tc in enumerate(msg.get("tool_calls") or []):
+                    for tc in msg.get("tool_calls") or []:
                         fn = tc.get("function", {})
                         args = fn.get("arguments", {})
-                        normalized = normalize_tool_call(tc.get("id", str(idx)), fn.get("name", ""), args)
+                        normalized = normalize_tool_call("", fn.get("name", ""), args)
                         if normalized:
-                            yield ToolCallEvent(id=normalized.id, name=normalized.name, arguments=args)
+                            key = f"{normalized.name}:{normalized.arguments}"
+                            if key not in pending_tool_calls:
+                                pending_tool_calls[key] = {
+                                    "id": f"call_{len(pending_tool_calls) + 1}",
+                                    "name": normalized.name,
+                                    "arguments": args,
+                                }
+
+        for tc in pending_tool_calls.values():
+            yield ToolCallEvent(id=tc["id"], name=tc["name"], arguments=tc["arguments"])

@@ -1,7 +1,7 @@
 import OpenAI from "openai"
 import type { LLMProvider, Message, RenderedContext, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, ToolSchema } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
-import { CircuitBreaker } from "./base.js"
+import { CircuitBreaker, omitExtensionKeys } from "./base.js"
 import { OpenAIChatAdapter } from "./openai-chat.js"
 import { endpointProfiles } from "./profiles.js"
 
@@ -26,17 +26,20 @@ export class QwenProvider implements LLMProvider {
     this.baseDelay = retry.baseDelay
   }
 
-  async complete(context: RenderedContext, tools: ToolSchema[]): Promise<Message> {
+  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
     const msgs = this.chat.buildMessages(context)
+    const extraBody = this.thinkingExtraBody(extensions)
 
     let lastErr: unknown
     for (let i = 0; i < this.maxRetries; i++) {
       try {
         const resp = await this.client.chat.completions.create({
+          ...this.requestExtensions(extensions),
           model: this.model,
           messages: msgs,
           ...(tools.length ? { tools: this.chat.buildTools(tools) } : {}),
+          ...(extraBody ? { extra_body: extraBody } : {}),
         })
         this.circuit.recordSuccess()
         const choice = resp.choices[0].message
@@ -52,23 +55,19 @@ export class QwenProvider implements LLMProvider {
   }
 
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
-    const enableThinking = Boolean(extensions?.enableThinking ?? extensions?.enable_thinking)
-    const thinkingBudget = extensions?.thinkingBudget ?? extensions?.thinking_budget
     const msgs = this.chat.buildMessages(context)
     const toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }> = {}
+    const emittedToolCallIndexes = new Set<number>()
 
+    const extraBody = this.thinkingExtraBody(extensions)
     const stream = await this.client.chat.completions.create({
+      ...this.requestExtensions(extensions),
       model: this.model,
       messages: msgs,
       ...(tools.length ? { tools: this.chat.buildTools(tools) } : {}),
       stream: true,
       stream_options: { include_usage: true },
-      ...(enableThinking ? {
-        extra_body: {
-          enable_thinking: true,
-          ...(typeof thinkingBudget === "number" ? { thinking_budget: thinkingBudget } : {}),
-        },
-      } : {}),
+      ...(extraBody ? { extra_body: extraBody } : {}),
     } as OpenAI.ChatCompletionCreateParamsStreaming)
 
     let totalTokens = 0
@@ -86,13 +85,41 @@ export class QwenProvider implements LLMProvider {
         toolCallBufs[idx].argsBuf += tc.function?.arguments ?? ""
       }
       if (choice.finish_reason === "tool_calls") {
-        for (const tb of Object.values(toolCallBufs)) {
+        for (const [index, tb] of Object.entries(toolCallBufs)) {
+          const idx = Number(index)
+          if (emittedToolCallIndexes.has(idx)) continue
           let args: Record<string, unknown> = {}
           try { args = JSON.parse(tb.argsBuf || "{}") } catch { args = {} }
+          emittedToolCallIndexes.add(idx)
           yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
         }
       }
     }
+    for (const [index, tb] of Object.entries(toolCallBufs)) {
+      const idx = Number(index)
+      if (emittedToolCallIndexes.has(idx)) continue
+      let args: Record<string, unknown> = {}
+      try { args = JSON.parse(tb.argsBuf || "{}") } catch { args = {} }
+      emittedToolCallIndexes.add(idx)
+      yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
+    }
     if (totalTokens > 0) yield { type: "usage", totalTokens } as StreamEvent
+  }
+
+  private thinkingExtraBody(extensions?: Record<string, unknown>): Record<string, unknown> | undefined {
+    const enableThinking = Boolean(extensions?.enableThinking ?? extensions?.enable_thinking)
+    const thinkingBudget = extensions?.thinkingBudget ?? extensions?.thinking_budget
+    if (!enableThinking) return undefined
+    return {
+      enable_thinking: true,
+      ...(typeof thinkingBudget === "number" ? { thinking_budget: thinkingBudget } : {}),
+    }
+  }
+
+  private requestExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
+    return omitExtensionKeys(extensions, [
+      "model", "messages", "tools", "stream", "stream_options", "extra_body",
+      "enableThinking", "enable_thinking", "thinkingBudget", "thinking_budget",
+    ])
   }
 }

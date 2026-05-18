@@ -90,10 +90,44 @@ fn context_to_openai(context: &RenderedContext) -> Vec<Value> {
     if !context.system_text.is_empty() {
         messages.push(json!({ "role": "system", "content": context.system_text }));
     }
-    messages.extend(context.turns.iter().map(|m| {
-        let role = match m.role { Role::System => "system", Role::User => "user", Role::Tool => "tool", _ => "assistant" };
-        json!({ "role": role, "content": content_to_openai(&m.content) })
-    }));
+    for message in &context.turns {
+        if message.role == Role::Tool {
+            if let Content::Parts(parts) = &message.content {
+                for part in parts {
+                    if let ContentPart::ToolResult { call_id, output, .. } = part {
+                        messages.push(json!({
+                            "role": "tool",
+                            "tool_call_id": call_id.as_str(),
+                            "content": output,
+                        }));
+                    }
+                }
+            }
+            continue;
+        }
+
+        let role = match message.role {
+            Role::System => "system",
+            Role::User => "user",
+            Role::Tool => "tool",
+            Role::Assistant => "assistant",
+        };
+        let mut next = json!({
+            "role": role,
+            "content": content_to_openai(&message.content),
+        });
+        if message.role == Role::Assistant && !message.tool_calls.is_empty() {
+            next["tool_calls"] = json!(message.tool_calls.iter().map(|tc| json!({
+                "id": tc.id.as_str(),
+                "type": "function",
+                "function": {
+                    "name": tc.name.as_str(),
+                    "arguments": tc.arguments.to_string(),
+                }
+            })).collect::<Vec<_>>());
+        }
+        messages.push(next);
+    }
     messages
 }
 
@@ -214,4 +248,57 @@ fn parse_openai_sse(
             }
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use compact_str::CompactString;
+    use deepstrike_core::types::message::{ContentPart, Message, ToolCall};
+
+    #[test]
+    fn context_replays_tool_calls_and_results_natively() {
+        let context = RenderedContext {
+            system_text: "system rules".into(),
+            turns: vec![
+                Message::user("What is the weather?"),
+                Message {
+                    role: Role::Assistant,
+                    content: Content::Text("I'll check.".into()),
+                    tool_calls: vec![ToolCall {
+                        id: CompactString::new("call_1"),
+                        name: CompactString::new("get_weather"),
+                        arguments: json!({ "city": "Shanghai" }),
+                    }],
+                    token_count: None,
+                },
+                Message::tool(vec![ContentPart::ToolResult {
+                    call_id: CompactString::new("call_1"),
+                    output: "sunny".into(),
+                    is_error: false,
+                }]),
+            ],
+        };
+
+        assert_eq!(
+            context_to_openai(&context),
+            vec![
+                json!({ "role": "system", "content": "system rules" }),
+                json!({ "role": "user", "content": "What is the weather?" }),
+                json!({
+                    "role": "assistant",
+                    "content": "I'll check.",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": "{\"city\":\"Shanghai\"}",
+                        }
+                    }],
+                }),
+                json!({ "role": "tool", "tool_call_id": "call_1", "content": "sunny" }),
+            ]
+        );
+    }
 }

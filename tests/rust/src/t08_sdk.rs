@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 #[test]
 fn registered_tool_schema() {
-    let tool = RegisteredTool::new(
+    let tool = RegisteredTool::text(
         "add",
         "Add two numbers",
         serde_json::json!({
@@ -40,7 +40,7 @@ fn read_file_tool_has_correct_schema() {
 
 #[tokio::test]
 async fn execute_tools_success() {
-    let tool = RegisteredTool::new(
+    let tool = RegisteredTool::text(
         "multiply",
         "Multiply two numbers.",
         serde_json::json!({"type": "object"}),
@@ -78,7 +78,7 @@ async fn execute_tools_unknown_tool() {
 
 #[tokio::test]
 async fn execute_tools_error_propagation() {
-    let tool = RegisteredTool::new(
+    let tool = RegisteredTool::text(
         "fail",
         "Always fails.",
         serde_json::json!({}),
@@ -102,7 +102,7 @@ async fn execute_tools_error_propagation() {
 
 #[tokio::test]
 async fn execute_multiple_tools_parallel() {
-    let add = RegisteredTool::new(
+    let add = RegisteredTool::text(
         "add", "Add.", serde_json::json!({}),
         |args| Box::pin(async move {
             let x = args["x"].as_i64().unwrap_or(0);
@@ -110,7 +110,7 @@ async fn execute_multiple_tools_parallel() {
             Ok(format!("{}", x + y))
         }),
     );
-    let sub = RegisteredTool::new(
+    let sub = RegisteredTool::text(
         "sub", "Subtract.", serde_json::json!({}),
         |args| Box::pin(async move {
             let x = args["x"].as_i64().unwrap_or(0);

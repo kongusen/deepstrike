@@ -15,11 +15,11 @@ from deepstrike.providers import (
     LLMProvider, RenderedContext, AnthropicProvider, OpenAIProvider,
     QwenProvider, DeepSeekProvider, MiniMaxProvider, OllamaProvider, KimiProvider,
     StreamEvent, TextDelta, ThinkingDelta,
-    ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
+    ToolCallEvent, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, DoneEvent, ErrorEvent,
     PermissionRequestEvent,
     RetryConfig, CircuitBreaker, TokenUsage, ProviderToolSpec,
 )
-from deepstrike.tools import RegisteredTool, tool, execute_tools, read_file
+from deepstrike.tools import RegisteredTool, tool, streaming_tool, validate_tool_arguments, execute_tools, read_file
 from deepstrike.memory import (
     WorkingMemory,
     DreamStore, DreamResult, SessionStore, SessionData, MemoryEntry, CurationResult, CurationStats,
@@ -46,10 +46,10 @@ __all__ = [
     "LLMProvider", "AnthropicProvider", "OpenAIProvider",
     "QwenProvider", "DeepSeekProvider", "MiniMaxProvider", "OllamaProvider", "KimiProvider",
     "StreamEvent", "TextDelta", "ThinkingDelta",
-    "ToolCallEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent",
+    "ToolCallEvent", "ToolDeltaEvent", "ToolSuspendEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent",
     "PermissionRequestEvent",
     "RetryConfig", "CircuitBreaker", "TokenUsage", "ProviderToolSpec",
-    "RegisteredTool", "tool", "execute_tools", "read_file",
+    "RegisteredTool", "tool", "streaming_tool", "validate_tool_arguments", "execute_tools", "read_file",
     "WorkingMemory",
     "DreamStore", "DreamResult", "SessionStore", "SessionData", "MemoryEntry", "CurationResult", "CurationStats",
     "PermissionManager", "PermissionMode", "Permission", "PermissionDecision",

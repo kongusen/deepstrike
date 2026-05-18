@@ -82,6 +82,31 @@ export interface ToolCallEvent extends StreamEvent {
   arguments: Record<string, unknown>
 }
 
+export type ToolChunk =
+  | string
+  | { type: "text"; text: string }
+  | { type: "progress"; progress: number; message?: string }
+  | { type: "artifact"; artifactId: string; mimeType?: string; label?: string }
+  | { type: "json_patch"; patch: Record<string, unknown> }
+  | { type: "suspend"; suspensionId: string; payload?: Record<string, unknown> }
+
+export interface ToolDeltaEvent extends StreamEvent {
+  type: "tool_delta"
+  callId: string
+  name: string
+  /** Backward-compatible text projection when the chunk carries text. */
+  delta?: string
+  chunk: Exclude<ToolChunk, string>
+}
+
+export interface ToolSuspendEvent extends StreamEvent {
+  type: "tool_suspend"
+  callId: string
+  name: string
+  suspensionId: string
+  payload?: Record<string, unknown>
+}
+
 export interface ToolResultEvent extends StreamEvent {
   type: "tool_result"
   callId: string
@@ -151,7 +176,7 @@ export interface RenderedContext {
 
 export interface LLMProvider {
   createRunState?(): ProviderRunState
-  complete(context: RenderedContext, tools: ToolSchema[]): Promise<Message>
+  complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message>
   stream(
     context: RenderedContext,
     tools: ToolSchema[],

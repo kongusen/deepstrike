@@ -67,6 +67,21 @@ class ToolCallEvent:
 
 
 @dataclass
+class ToolDeltaEvent:
+    call_id: str
+    delta: str
+    type: str = "tool_delta"
+
+
+@dataclass
+class ToolSuspendEvent:
+    call_id: str
+    suspension_id: str
+    payload: dict | None = None
+    type: str = "tool_suspend"
+
+
+@dataclass
 class ToolResultEvent:
     call_id: str | None = None
     content: str | None = None
@@ -100,7 +115,7 @@ class MaxAttemptsReachedEvent:
 
 
 HarnessEvent = Union[
-    TokenEvent, ToolCallEvent, ToolResultEvent,
+    TokenEvent, ToolCallEvent, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent,
     SupervisingEvent, RevisingEvent, DoneEvent, MaxAttemptsReachedEvent,
 ]
 
@@ -193,6 +208,10 @@ class HarnessLoop:
                     kind = getattr(evt, "type", None)
                     if kind == "tool_call":
                         yield ToolCallEvent(id=getattr(evt, "id", None), name=getattr(evt, "name", None))
+                    elif kind == "tool_delta":
+                        yield ToolDeltaEvent(call_id=getattr(evt, "call_id", None), delta=getattr(evt, "delta", None))
+                    elif kind == "tool_suspend":
+                        yield ToolSuspendEvent(call_id=getattr(evt, "call_id", None), suspension_id=getattr(evt, "suspension_id", None), payload=getattr(evt, "payload", None))
                     elif kind == "tool_result":
                         yield ToolResultEvent(call_id=getattr(evt, "call_id", None), content=getattr(evt, "content", None), is_error=getattr(evt, "is_error", None))
 
@@ -207,7 +226,7 @@ class HarnessLoop:
             eval_system = "\n\n".join(m.content for m in eval_msgs if m.role == "system")
             eval_turns = [m for m in eval_msgs if m.role != "system"]
             eval_context = RenderedContext(system_text=eval_system, turns=eval_turns)
-            async for evt in await self._eval_provider.stream(eval_context, [], extensions=None):
+            async for evt in self._eval_provider.stream(eval_context, [], extensions=None):
                 if isinstance(evt, TextDelta):
                     eval_text += evt.delta
 

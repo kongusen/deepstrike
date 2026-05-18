@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk"
 import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
-import { CircuitBreaker, normalizeToolCall, toAnthropicMessages } from "./base.js"
+import { CircuitBreaker, normalizeToolCall, omitExtensionKeys, toAnthropicMessages } from "./base.js"
 
 interface AnthropicProviderOptions {
   baseURL?: string
@@ -38,21 +38,23 @@ export class AnthropicProvider implements LLMProvider {
     }))
   }
 
-  async complete(context: RenderedContext, tools: ToolSchema[]): Promise<Message> {
+  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
     const system = context.systemText || undefined
     const msgs = this.buildMessages(context)
+    const requestExtensions = this.requestExtensions(extensions)
 
     let lastErr: unknown
     for (let i = 0; i < this.maxRetries; i++) {
       try {
-        const resp = await this.client.messages.create({
+        const resp = await this.createMessage({
+          ...requestExtensions,
           model: this.model,
-          max_tokens: 8096,
+          max_tokens: typeof extensions?.max_tokens === "number" ? extensions.max_tokens : 8096,
           ...(system ? { system } : {}),
           messages: msgs,
           ...(tools.length ? { tools: this.buildTools(tools) } : {}),
-        })
+        }, extensions)
         this.circuit.recordSuccess()
         let content = ""
         const toolCalls = []
@@ -78,18 +80,20 @@ export class AnthropicProvider implements LLMProvider {
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
     const system = context.systemText || undefined
     const msgs = this.buildMessages(context)
+    const requestExtensions = this.requestExtensions(extensions)
     const toolBlocks: Record<number, { id: string; name: string; argsBuf: string }> = {}
     const nativeBlocks: Record<number, Record<string, unknown>> = {}
     let finalText = ""
     const finalToolCalls: Array<{ id: string; name: string; arguments: string }> = []
 
-    const stream = this.client.messages.stream({
+    const stream = this.streamMessage({
+      ...requestExtensions,
       model: this.model,
-      max_tokens: 8096,
+      max_tokens: typeof extensions?.max_tokens === "number" ? extensions.max_tokens : 8096,
       ...(system ? { system } : {}),
       messages: msgs,
       ...(tools.length ? { tools: this.buildTools(tools) } : {}),
-    })
+    }, extensions)
 
     for await (const evt of stream) {
       if (evt.type === "content_block_start") {
@@ -126,6 +130,34 @@ export class AnthropicProvider implements LLMProvider {
       { content: finalText, toolCalls: finalToolCalls },
       Object.keys(nativeBlocks).map(Number).sort((a, b) => a - b).map(index => nativeBlocks[index]),
     )
+  }
+
+  private requestExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
+    return omitExtensionKeys(extensions, ["model", "messages", "system", "tools", "max_tokens", "stream"])
+  }
+
+  private hasBetas(extensions?: Record<string, unknown>): boolean {
+    const betas = extensions?.betas
+    return Array.isArray(betas) && betas.length > 0
+  }
+
+  private createMessage(
+    params: Record<string, unknown>,
+    extensions?: Record<string, unknown>,
+  ): Promise<any> {
+    return this.hasBetas(extensions)
+      ? this.client.beta.messages.create(params as unknown as Parameters<typeof this.client.beta.messages.create>[0])
+      : this.client.messages.create(params as unknown as Anthropic.MessageCreateParamsNonStreaming)
+  }
+
+  private streamMessage(
+    params: Record<string, unknown>,
+    extensions?: Record<string, unknown>,
+  ): AsyncIterable<any> {
+    return (this.hasBetas(extensions)
+      ? this.client.beta.messages.stream(params as unknown as Parameters<typeof this.client.beta.messages.stream>[0])
+      : this.client.messages.stream(params as unknown as Anthropic.MessageStreamParams)
+    ) as unknown as AsyncIterable<any>
   }
 
   private buildMessages(context: RenderedContext): Anthropic.MessageParam[] {

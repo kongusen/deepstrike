@@ -62,7 +62,7 @@ export class GeminiProvider implements LLMProvider {
     this.baseDelay = retry.baseDelay
   }
 
-  async complete(context: RenderedContext, tools: ToolSchema[]): Promise<Message> {
+  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
     const system = context.systemText || undefined
     const contents = buildContents(context.turns)
@@ -72,6 +72,7 @@ export class GeminiProvider implements LLMProvider {
     for (let i = 0; i < this.maxRetries; i++) {
       try {
         const m = this.genAI.getGenerativeModel({
+          ...this.modelExtensions(extensions),
           model: this.model,
           ...(system ? { systemInstruction: system } : {}),
           ...(geminiTools.length ? { tools: geminiTools } : {}),
@@ -110,29 +111,36 @@ export class GeminiProvider implements LLMProvider {
     const geminiTools = buildTools(tools)
 
     const m = this.genAI.getGenerativeModel({
+      ...this.modelExtensions(extensions),
       model: this.model,
       ...(system ? { systemInstruction: system } : {}),
       ...(geminiTools.length ? { tools: geminiTools } : {}),
     })
 
     const result = await m.generateContentStream({ contents })
-    const toolCallBufs: Record<string, { name: string; args: Record<string, unknown> }> = {}
+    const toolCalls: Array<{ id: string; name: string; args: Record<string, unknown> }> = []
 
     for await (const chunk of result.stream) {
       for (const part of chunk.candidates?.[0]?.content.parts ?? []) {
         if (part.text) yield { type: "text_delta", delta: part.text } as TextDelta
         else if (part.functionCall) {
           const { name, args } = part.functionCall
-          toolCallBufs[name] = { name, args: args as Record<string, unknown> }
+          toolCalls.push({ id: `call_${toolCalls.length + 1}`, name, args: args as Record<string, unknown> })
         }
       }
     }
 
-    for (const [id, tc] of Object.entries(toolCallBufs)) {
-      yield { type: "tool_call", id, name: tc.name, arguments: tc.args } as ToolCallEvent
+    for (const tc of toolCalls) {
+      yield { type: "tool_call", id: tc.id, name: tc.name, arguments: tc.args } as ToolCallEvent
     }
 
     const usage = (await result.response).usageMetadata
     if (usage?.totalTokenCount) yield { type: "usage", totalTokens: usage.totalTokenCount } as StreamEvent
+  }
+
+  private modelExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
+    if (!extensions) return {}
+    const { model: _model, systemInstruction: _systemInstruction, tools: _tools, ...rest } = extensions
+    return rest
   }
 }

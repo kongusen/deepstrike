@@ -62,14 +62,54 @@ fn content_to_anthropic(content: &Content) -> Value {
 }
 
 fn context_to_anthropic(context: &RenderedContext) -> (Option<String>, Vec<Value>) {
-    let msgs = context
-        .turns
-        .iter()
-        .map(|m| {
-            let role = match m.role { Role::User => "user", _ => "assistant" };
-            json!({ "role": role, "content": content_to_anthropic(&m.content) })
-        })
-        .collect();
+    let mut msgs = Vec::new();
+    for message in &context.turns {
+        if message.role == Role::Tool {
+            if let Content::Parts(parts) = &message.content {
+                let tool_results = parts.iter().filter_map(|part| {
+                    if let ContentPart::ToolResult { call_id, output, is_error } = part {
+                        Some(json!({
+                            "type": "tool_result",
+                            "tool_use_id": call_id.as_str(),
+                            "content": output,
+                            "is_error": is_error,
+                        }))
+                    } else {
+                        None
+                    }
+                }).collect::<Vec<_>>();
+                if !tool_results.is_empty() {
+                    msgs.push(json!({ "role": "user", "content": tool_results }));
+                }
+            }
+            continue;
+        }
+
+        if message.role == Role::Assistant && !message.tool_calls.is_empty() {
+            let mut blocks = Vec::new();
+            if let Some(text) = message.content.as_text() {
+                if !text.is_empty() {
+                    blocks.push(json!({ "type": "text", "text": text }));
+                }
+            }
+            blocks.extend(message.tool_calls.iter().map(|tc| json!({
+                "type": "tool_use",
+                "id": tc.id.as_str(),
+                "name": tc.name.as_str(),
+                "input": tc.arguments.clone(),
+            })));
+            msgs.push(json!({ "role": "assistant", "content": blocks }));
+            continue;
+        }
+
+        let role = match message.role {
+            Role::User => "user",
+            Role::Assistant => "assistant",
+            Role::System => "assistant",
+            Role::Tool => unreachable!(),
+        };
+        msgs.push(json!({ "role": role, "content": content_to_anthropic(&message.content) }));
+    }
     (
         if context.system_text.is_empty() { None } else { Some(context.system_text.clone()) },
         msgs,
@@ -202,4 +242,66 @@ fn parse_anthropic_sse(
             }
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use compact_str::CompactString;
+    use deepstrike_core::types::message::{ContentPart, Message, ToolCall};
+
+    #[test]
+    fn context_replays_tool_calls_and_results_as_blocks() {
+        let context = RenderedContext {
+            system_text: "system rules".into(),
+            turns: vec![
+                Message::user("What is the weather?"),
+                Message {
+                    role: Role::Assistant,
+                    content: Content::Text("I'll check.".into()),
+                    tool_calls: vec![ToolCall {
+                        id: CompactString::new("call_1"),
+                        name: CompactString::new("get_weather"),
+                        arguments: json!({ "city": "Shanghai" }),
+                    }],
+                    token_count: None,
+                },
+                Message::tool(vec![ContentPart::ToolResult {
+                    call_id: CompactString::new("call_1"),
+                    output: "sunny".into(),
+                    is_error: false,
+                }]),
+            ],
+        };
+
+        let (system, messages) = context_to_anthropic(&context);
+        assert_eq!(system.as_deref(), Some("system rules"));
+        assert_eq!(
+            messages,
+            vec![
+                json!({ "role": "user", "content": "What is the weather?" }),
+                json!({
+                    "role": "assistant",
+                    "content": [
+                        { "type": "text", "text": "I'll check." },
+                        {
+                            "type": "tool_use",
+                            "id": "call_1",
+                            "name": "get_weather",
+                            "input": { "city": "Shanghai" },
+                        },
+                    ],
+                }),
+                json!({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "call_1",
+                        "content": "sunny",
+                        "is_error": false,
+                    }],
+                }),
+            ]
+        );
+    }
 }

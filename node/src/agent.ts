@@ -1,6 +1,6 @@
-import type { LLMProvider, Message, ToolCall, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent } from "./types.js"
+import type { LLMProvider, Message, ToolCall, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, ToolSuspendEvent, DoneEvent, ErrorEvent, PermissionRequestEvent } from "./types.js"
 import type { RegisteredTool } from "./tools/index.js"
-import { executeTools } from "./tools/index.js"
+import { executeTools, isAsyncIterable, normalizeToolChunk, toolChunkText, validateToolArguments } from "./tools/index.js"
 import { readSkillFile, scanSkillDir } from "./skills/loader.js"
 import type { DreamStore, DreamResult, CurationResult, MemoryEntry, SessionData, SessionMessage, SessionStore } from "./memory/protocols.js"
 import type { KnowledgeSource } from "./knowledge/source.js"
@@ -38,6 +38,7 @@ export interface AgentOptions {
    * `evaluate(toolName: string, argsJson: string): { kind: string; reason?: string; retryAfterMs?: number }`.
    * When provided, every tool call is evaluated through the full pipeline.
    */
+  onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
   governance?: {
     setTime?(nowMs: bigint): void
     evaluate(toolName: string, argsJson: string): { kind: string; reason?: string; retryAfterMs?: number }
@@ -305,7 +306,22 @@ export class Agent {
         for (const r of [...skillResults, ...memoryResults, ...knowledgeResults])
           yield { type: "tool_result", callId: r.callId, name: r.name, content: r.output, isError: r.isError } as ToolResultEvent
 
-        const results = await executeTools(regularCalls, this.tools)
+        const results = []
+        const active = regularCalls.map(call => {
+          const iterator = this.runRegularTool(call)
+          return { iterator, pending: iterator.next() }
+        })
+        while (active.length) {
+          const next = await Promise.race(active.map((task, index) => task.pending.then(result => ({ index, result }))))
+          const task = active[next.index]
+          if (next.result.done) {
+            results.push(next.result.value)
+            active.splice(next.index, 1)
+            continue
+          }
+          yield next.result.value
+          task.pending = task.iterator.next()
+        }
         for (const r of results) {
           const name = regularCalls.find((c: ToolCall) => c.id === r.callId)?.name ?? ""
           yield { type: "tool_result", callId: r.callId, name, content: r.output, isError: r.isError } as ToolResultEvent
@@ -364,6 +380,58 @@ export class Agent {
       totalTokens: result?.totalTokensUsed ? Number(result.totalTokensUsed) : 0,
       status,
     } as DoneEvent
+  }
+
+
+  private async *runRegularTool(call: ToolCall): AsyncGenerator<StreamEvent, { callId: string; output: string; isError: boolean }, void> {
+    const registeredTool = this.tools.get(call.name)
+    if (!registeredTool) return { callId: call.id, output: `unknown tool: ${call.name}`, isError: true }
+    try {
+      const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>
+      const validationError = validateToolArguments(registeredTool.schema.parameters, args)
+      if (validationError) return { callId: call.id, output: `invalid arguments: ${validationError}`, isError: true }
+      const output = await registeredTool.execute(args)
+      if (isAsyncIterable(output)) {
+        let combined = ""
+        const iterator = output[Symbol.asyncIterator]()
+        let resumeValue: unknown
+        while (true) {
+          const next = await iterator.next(resumeValue)
+          resumeValue = undefined
+          if (next.done) break
+          const rawChunk = next.value
+          const chunk = normalizeToolChunk(rawChunk)
+          if (chunk.type === "suspend") {
+            const event = {
+              type: "tool_suspend",
+              callId: call.id,
+              name: call.name,
+              suspensionId: chunk.suspensionId,
+              ...(chunk.payload ? { payload: chunk.payload } : {}),
+            } as ToolSuspendEvent
+            yield event
+            if (!this.options.onToolSuspend) {
+              return { callId: call.id, output: `tool suspended without resume handler: ${chunk.suspensionId}`, isError: true }
+            }
+            resumeValue = await this.options.onToolSuspend(event)
+            continue
+          }
+          const delta = toolChunkText(rawChunk)
+          combined += delta
+          yield {
+            type: "tool_delta",
+            callId: call.id,
+            name: call.name,
+            ...(delta ? { delta } : {}),
+            ...(typeof rawChunk === "string" ? {} : { chunk }),
+          } as StreamEvent
+        }
+        return { callId: call.id, output: combined, isError: false }
+      }
+      return { callId: call.id, output, isError: false }
+    } catch (err) {
+      return { callId: call.id, output: String(err), isError: true }
+    }
   }
 
   private async loadSession(sessionId: string): Promise<SessionData | undefined> {
