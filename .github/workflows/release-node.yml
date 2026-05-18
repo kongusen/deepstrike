@@ -12,6 +12,9 @@ env:
   NODE_VERSION: 20
 
 jobs:
+  verify:
+    uses: ./.github/workflows/_verify-version.yml
+
   # ──────────────────────────────────────────────────────────────────────────
   # 阶段一：各平台分别编译 .node 原生 addon
   #
@@ -25,6 +28,7 @@ jobs:
   #   - musl 默认静态链接 libc；Node 需动态链 musl，故 RUSTFLAGS=-C target-feature=-crt-static
   # ──────────────────────────────────────────────────────────────────────────
   build-native:
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -85,10 +89,6 @@ jobs:
           sudo ln -sf "/usr/local/zig-linux-${ARCH}-${ZIG_VERSION}/zig" /usr/local/bin/zig
           zig version
           cargo install cargo-zigbuild
-
-      - name: Install ARM64 cross-compiler
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Build native addon (ARM64 Linux cross-compile)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -177,7 +177,7 @@ jobs:
   #   3. @deepstrike/sdk              （TypeScript SDK，tsc 编译后发布）
   # ──────────────────────────────────────────────────────────────────────────
   publish:
-    needs: build-native
+    needs: [verify, build-native]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -208,20 +208,6 @@ jobs:
 
       - name: Install napi-rs CLI
         run: npm install -g @napi-rs/cli@2
-
-      - name: Resolve publish version
-        id: release
-        shell: bash
-        run: |
-          VERSION="$(cat VERSION)"
-          if [ "${{ github.event_name }}" = "push" ] && [ "v$VERSION" != "${GITHUB_REF_NAME}" ]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match VERSION=$VERSION"
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Verify synchronized release manifests
-        run: node scripts/sync-release-version.mjs --check
 
       # 构建阶段统一收敛为 napi 生成的 index.<pkg>.node 命名；
       # 发布时再复制为各平台 npm 包实际暴露的 deepstrike-core.<pkg>.node。

@@ -1,0 +1,30 @@
+name: Verify Release Version
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag override for workflow_dispatch (e.g. v0.1.12)'
+        type: string
+        required: false
+        default: ''
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: "24" }
+      - name: Verify release version
+        shell: bash
+        run: |
+          VERSION="$(cat VERSION)"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            test "v$VERSION" = "$GITHUB_REF_NAME" || \
+              { echo "::error::Tag $GITHUB_REF_NAME does not match VERSION=$VERSION"; exit 1; }
+          elif [ -n "${{ inputs.tag }}" ]; then
+            test "v$VERSION" = "${{ inputs.tag }}" || \
+              { echo "::error::Input tag ${{ inputs.tag }} does not match VERSION=$VERSION"; exit 1; }
+          fi
+          node scripts/sync-release-version.mjs --check

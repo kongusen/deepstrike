@@ -5,36 +5,54 @@ on:
     tags: ["v*"]
 
 jobs:
+  verify:
+    uses: ./.github/workflows/_verify-version.yml
+
   publish:
+    needs: verify
     runs-on: ubuntu-latest
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with: { node-version: "24" }
-      - name: Verify release manifests
-        run: |
-          test "v$(cat VERSION)" = "$GITHUB_REF_NAME"
-          node scripts/sync-release-version.mjs --check
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      - name: Dry-run publish check
+        run: |
+          cargo publish -p deepstrike-tokenizer --dry-run
+          cargo publish -p deepstrike-core --dry-run --allow-dirty
+          cargo publish -p deepstrike-sdk --dry-run --allow-dirty
+
       - name: Publish deepstrike-tokenizer
         run: cargo publish -p deepstrike-tokenizer
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-      - name: Wait for crates.io index
-        run: sleep 30
+      - name: Wait for deepstrike-tokenizer in crates.io index
+        shell: bash
+        run: |
+          VERSION="$(cat VERSION)"
+          for i in $(seq 1 12); do
+            if cargo search deepstrike-tokenizer 2>/dev/null | grep -q "\"$VERSION\""; then
+              echo "deepstrike-tokenizer $VERSION is indexed"; break
+            fi
+            echo "Waiting for index... attempt $i/12"
+            sleep 15
+          done
 
       - name: Publish deepstrike-core
         run: cargo publish -p deepstrike-core
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-      - name: Wait for crates.io index
-        run: sleep 30
+      - name: Wait for deepstrike-core in crates.io index
+        shell: bash
+        run: |
+          VERSION="$(cat VERSION)"
+          for i in $(seq 1 12); do
+            if cargo search deepstrike-core 2>/dev/null | grep -q "\"$VERSION\""; then
+              echo "deepstrike-core $VERSION is indexed"; break
+            fi
+            echo "Waiting for index... attempt $i/12"
+            sleep 15
+          done
 
       - name: Publish deepstrike-sdk
         run: cargo publish -p deepstrike-sdk
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

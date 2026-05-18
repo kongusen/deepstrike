@@ -9,7 +9,7 @@
 #   ./scripts/release.sh v0.1.12
 #
 # After this script, push with:
-#   git push origin main && git push origin v<version> --force
+#   git push origin main && git push origin v<version>
 #   (or set HTTP_PROXY / HTTPS_PROXY if behind a proxy)
 
 set -euo pipefail
@@ -32,20 +32,37 @@ fi
 
 echo "==> Releasing v${VERSION}"
 
-# ── 2. Write canonical VERSION file ──────────────────────────────────────────
+# ── 2. Pre-flight: working tree must be clean ─────────────────────────────────
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "Error: working tree has uncommitted changes. Commit or stash before releasing." >&2
+  git status --short >&2
+  exit 1
+fi
+echo "    Working tree clean ✓"
+
+# ── 3. Pre-flight: HEAD must be on origin/main ────────────────────────────────
+git fetch origin main --quiet
+if ! git merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+  echo "Error: HEAD is not an ancestor of origin/main." >&2
+  echo "       Push your commits first, or verify you are on the right branch." >&2
+  exit 1
+fi
+echo "    HEAD is on origin/main ✓"
+
+# ── 4. Write canonical VERSION file ──────────────────────────────────────────
 echo "$VERSION" > VERSION
 echo "    VERSION file → $VERSION"
 
-# ── 3. Sync all platform packages via the existing JS script ─────────────────
+# ── 5. Sync all platform packages via the existing JS script ─────────────────
 echo "    Syncing package versions..."
 node scripts/sync-release-version.mjs
 
-# ── 4. Verify — fail fast if any file still drifts ───────────────────────────
+# ── 6. Verify — fail fast if any file still drifts ───────────────────────────
 echo "    Verifying..."
 node scripts/sync-release-version.mjs --check
 echo "    All versions aligned at $VERSION ✓"
 
-# ── 5. Stage every version-bearing file ──────────────────────────────────────
+# ── 7. Stage every version-bearing file ──────────────────────────────────────
 git add \
   VERSION \
   Cargo.toml \
@@ -67,15 +84,19 @@ else
   echo "    Committed version bump"
 fi
 
-# ── 6. Create / move tag to HEAD ──────────────────────────────────────────────
-git tag -f "v${VERSION}"
+# ── 8. Create tag (no -f: fail if tag already exists to prevent accidental re-tag) ──
+if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+  echo "Error: tag v${VERSION} already exists. Delete it first if you intend to re-release." >&2
+  exit 1
+fi
+git tag "v${VERSION}"
 echo "    Tagged v${VERSION} → $(git rev-parse --short HEAD)"
 
-# ── 7. Print push instructions ────────────────────────────────────────────────
+# ── 9. Print push instructions ────────────────────────────────────────────────
 echo ""
 echo "Done. Push with:"
 echo ""
-echo "  git push origin main && git push origin v${VERSION} --force"
+echo "  git push origin main && git push origin v${VERSION}"
 echo ""
 echo "Behind a proxy? Prefix with:"
 echo "  https_proxy=http://127.0.0.1:7897 http_proxy=http://127.0.0.1:7897 \\"

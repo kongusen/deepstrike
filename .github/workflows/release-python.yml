@@ -11,7 +11,13 @@ on:
         default: ''
 
 jobs:
+  verify:
+    uses: ./.github/workflows/_verify-version.yml
+    with:
+      tag: ${{ github.event.inputs.tag || '' }}
+
   build-wheels:
+    needs: verify
     strategy:
       matrix:
         include:
@@ -59,20 +65,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with: { node-version: "24" }
-      - name: Resolve and verify release version
-        shell: bash
-        run: |
-          VERSION="$(cat VERSION)"
-          if [ "${{ github.event_name }}" = "push" ]; then
-            test "v$VERSION" = "$GITHUB_REF_NAME" || \
-              { echo "::error::Tag $GITHUB_REF_NAME does not match VERSION=$VERSION"; exit 1; }
-          elif [ -n "${{ github.event.inputs.tag }}" ]; then
-            test "v$VERSION" = "${{ github.event.inputs.tag }}" || \
-              { echo "::error::Input tag ${{ github.event.inputs.tag }} does not match VERSION=$VERSION"; exit 1; }
-          fi
-          node scripts/sync-release-version.mjs --check
       - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - uses: dtolnay/rust-toolchain@stable
@@ -128,28 +120,25 @@ jobs:
           path: python/dist/*.whl
 
   build-sdist:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with: { node-version: "24" }
-      - name: Resolve and verify release version
-        shell: bash
-        run: |
-          VERSION="$(cat VERSION)"
-          if [ "${{ github.event_name }}" = "push" ]; then
-            test "v$VERSION" = "$GITHUB_REF_NAME" || \
-              { echo "::error::Tag $GITHUB_REF_NAME does not match VERSION=$VERSION"; exit 1; }
-          elif [ -n "${{ github.event.inputs.tag }}" ]; then
-            test "v$VERSION" = "${{ github.event.inputs.tag }}" || \
-              { echo "::error::Input tag ${{ github.event.inputs.tag }} does not match VERSION=$VERSION"; exit 1; }
-          fi
-          node scripts/sync-release-version.mjs --check
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - uses: PyO3/maturin-action@v1
         with:
           command: sdist
           args: --out dist
           working-directory: python
+      - name: Smoke install from sdist
+        shell: bash
+        run: |
+          pip install "maturin>=1.7,<2"
+          pip install python/dist/*.tar.gz
+          python -c "import deepstrike; print('sdist ok:', deepstrike.__version__)"
       - uses: actions/upload-artifact@v4
         with:
           name: sdist
@@ -162,22 +151,11 @@ jobs:
     permissions:
       id-token: write  # OIDC trusted publishing
     steps:
-      - uses: actions/checkout@v5
-      - name: Resolve publish version
-        id: release
-        shell: bash
-        run: |
-          VERSION="$(cat VERSION)"
-          if [ "${{ github.event_name }}" = "push" ] && [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match VERSION=$VERSION"
-            exit 1
-          fi
-          if [ -n "${{ github.event.inputs.tag }}" ] && [ "v$VERSION" != "${{ github.event.inputs.tag }}" ]; then
-            echo "::error::Input tag ${{ github.event.inputs.tag }} does not match VERSION=$VERSION"
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with: { path: dist, merge-multiple: true }
+      - name: Validate wheel and sdist metadata
+        run: |
+          pip install twine
+          twine check dist/*.whl dist/*.tar.gz
       - uses: pypa/gh-action-pypi-publish@release/v1
         with: { packages-dir: dist }

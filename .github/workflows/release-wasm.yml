@@ -6,7 +6,11 @@ on:
       - "v*"
 
 jobs:
+  verify:
+    uses: ./.github/workflows/_verify-version.yml
+
   publish:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -15,11 +19,6 @@ jobs:
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
-
-      - name: Verify synchronized release manifests
-        run: |
-          test "v$(cat VERSION)" = "$GITHUB_REF_NAME"
-          node scripts/sync-release-version.mjs --check
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -39,6 +38,32 @@ jobs:
       - name: Normalize wasm-kernel package metadata
         run: node scripts/normalize-wasm-kernel-package.mjs "$(cat VERSION)" crates/deepstrike-wasm/pkg
 
+      - name: Build WASM SDK
+        shell: bash
+        working-directory: wasm
+        run: |
+          npm install --no-save --package-lock=false ../crates/deepstrike-wasm/pkg
+          npm run build
+          test -s dist/index.js
+          test -s dist/index.d.ts
+          npm test
+
+      - name: Smoke install packed WASM SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/wasm-smoke/packs /tmp/wasm-smoke/app
+          npm pack ./crates/deepstrike-wasm/pkg --pack-destination /tmp/wasm-smoke/packs
+          npm pack ./wasm --pack-destination /tmp/wasm-smoke/packs
+          cd /tmp/wasm-smoke/app
+          npm init -y >/dev/null
+          npm install /tmp/wasm-smoke/packs/*.tgz
+          node -e "
+          const w = require('@deepstrike/wasm');
+          if (!w || typeof w !== 'object') throw new Error('wasm sdk did not load');
+          console.log('wasm smoke ok');
+          "
+
       - name: Publish @deepstrike/wasm-kernel
         shell: bash
         working-directory: crates/deepstrike-wasm/pkg
@@ -46,16 +71,9 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: node ../../../scripts/publish-npm-package.mjs .
 
-      - name: Build and publish @deepstrike/wasm SDK
+      - name: Publish @deepstrike/wasm SDK
         shell: bash
         working-directory: wasm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          npm install --no-save --package-lock=false ../crates/deepstrike-wasm/pkg
-          npm run build
-          test -s dist/index.js
-          test -s dist/index.d.ts
-          npm test
-          npm pack --dry-run >/dev/null
-          node ../scripts/publish-npm-package.mjs .
+        run: node ../scripts/publish-npm-package.mjs .
