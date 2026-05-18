@@ -68,7 +68,15 @@ jobs:
       - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - uses: dtolnay/rust-toolchain@stable
+      # Linux wheels are built inside maturin-action's manylinux/musllinux
+      # containers. Do not restore host-built `target/` binaries into those
+      # older libc environments; cache only Cargo registry data there.
       - uses: Swatinem/rust-cache@v2
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          cache-targets: false
+      - uses: Swatinem/rust-cache@v2
+        if: matrix.os != 'ubuntu-latest'
 
       # macOS / Windows cross-compile: 安装目标架构的 Rust target
       - name: Add macOS cross-compile Rust targets
