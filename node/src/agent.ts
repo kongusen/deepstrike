@@ -386,7 +386,7 @@ export class Agent {
       content: message.content,
       contentParts: message.contentParts,
       tokenCount: message.tokenCount,
-      toolCalls: message.toolCalls,
+      toolCalls: message.toolCalls ?? [],
     }
   }
 

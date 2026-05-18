@@ -1,28 +1,29 @@
 import {
-  splitAnthropicSystem,
   toAnthropicMessages,
   toOpenAIMessageParams,
 } from "../src/providers/base.js"
-import type { Message } from "../src/types.js"
+import type { RenderedContext } from "../src/types.js"
 
-const toolConversation: Message[] = [
-  { role: "system", content: "system rules" },
-  { role: "user", content: "What is the weather?" },
-  {
-    role: "assistant",
-    content: "I'll check.",
-    toolCalls: [{ id: "call_1", name: "get_weather", arguments: '{"city":"Shanghai"}' }],
-  },
-  {
-    role: "tool",
-    content: "",
-    contentParts: [{ type: "tool_result", callId: "call_1", output: "sunny", isError: false }],
-  },
-]
+const context: RenderedContext = {
+  systemText: "system rules",
+  turns: [
+    { role: "user", content: "What is the weather?" },
+    {
+      role: "assistant",
+      content: "I'll check.",
+      toolCalls: [{ id: "call_1", name: "get_weather", arguments: '{"city":"Shanghai"}' }],
+    },
+    {
+      role: "tool",
+      content: "",
+      contentParts: [{ type: "tool_result", callId: "call_1", output: "sunny", isError: false }],
+    },
+  ],
+}
 
 describe("provider-native context construction", () => {
   it("replays OpenAI tool calls and tool results with native fields", () => {
-    expect(toOpenAIMessageParams(toolConversation)).toEqual([
+    expect(toOpenAIMessageParams(context)).toEqual([
       { role: "system", content: "system rules" },
       { role: "user", content: "What is the weather?" },
       {
@@ -39,8 +40,8 @@ describe("provider-native context construction", () => {
   })
 
   it("replays Anthropic tool calls and tool results as content blocks", () => {
-    expect(splitAnthropicSystem(toolConversation)).toBe("system rules")
-    expect(toAnthropicMessages(toolConversation)).toEqual([
+    expect(context.systemText).toBe("system rules")
+    expect(toAnthropicMessages(context.turns)).toEqual([
       { role: "user", content: "What is the weather?" },
       {
         role: "assistant",
@@ -57,7 +58,7 @@ describe("provider-native context construction", () => {
   })
 
   it("lets Anthropic callers replay preserved native assistant blocks", () => {
-    expect(toAnthropicMessages(toolConversation, () => [
+    expect(toAnthropicMessages(context.turns, () => [
       { type: "thinking", thinking: "reason first", signature: "sig" },
       { type: "tool_use", id: "call_1", name: "get_weather", input: { city: "Shanghai" } },
     ])).toEqual([

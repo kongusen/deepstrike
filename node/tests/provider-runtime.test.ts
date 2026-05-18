@@ -59,20 +59,23 @@ describe("current provider runtime behavior", () => {
       },
     }
 
-    for await (const _event of provider.stream([{ role: "user", content: "hi" }], [])) {}
-    for await (const _event of provider.stream([
-      { role: "user", content: "hi" },
-      {
-        role: "assistant",
-        content: "checking",
-        toolCalls: [{ id: "call_1", name: "lookup", arguments: '{"q":"x"}' }],
-      },
-      {
-        role: "tool",
-        content: "",
-        contentParts: [{ type: "tool_result", callId: "call_1", output: "ok", isError: false }],
-      },
-    ], [])) {}
+    for await (const _event of provider.stream({ systemText: "", turns: [{ role: "user", content: "hi" }] }, [])) {}
+    for await (const _event of provider.stream({
+      systemText: "",
+      turns: [
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: "checking",
+          toolCalls: [{ id: "call_1", name: "lookup", arguments: '{"q":"x"}' }],
+        },
+        {
+          role: "tool",
+          content: "",
+          contentParts: [{ type: "tool_result", callId: "call_1", output: "ok", isError: false }],
+        },
+      ],
+    }, [])) {}
 
     expect(capturedSecondRequest?.messages).toEqual([
       { role: "user", content: "hi" },
@@ -124,7 +127,7 @@ describe("current provider runtime behavior", () => {
 
     const events = []
     for await (const event of provider.stream(
-      [{ role: "user", content: "hi" }],
+      { systemText: "", turns: [{ role: "user", content: "hi" }] },
       [{ name: "lookup", description: "lookup", parameters: '{"type":"object"}' }],
       { reasoningEffort: "max" },
     )) {

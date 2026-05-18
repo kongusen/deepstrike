@@ -1,6 +1,6 @@
 import { Agent } from "../src/agent.js"
 import { tool } from "../src/tools/index.js"
-import type { LLMProvider, Message, ProviderRunState, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, Message, ProviderRunState, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 
 class StatefulTestProvider implements LLMProvider {
   readonly states: ProviderRunState[] = []
@@ -10,14 +10,14 @@ class StatefulTestProvider implements LLMProvider {
     return { marker: crypto.randomUUID() }
   }
 
-  async complete(_messages: Message[], _tools: ToolSchema[]): Promise<Message> {
-    return { role: "assistant", content: "unused" }
+  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<Message> {
+    return { role: "assistant", content: "unused", toolCalls: [] }
   }
 
   async *stream(
-    _messages: Message[],
+    _context: RenderedContext,
     _tools: ToolSchema[],
-    _extensions?: Record<string, unknown>,
+    _extensions?: Record<string, unknown> | null,
     state?: ProviderRunState,
   ): AsyncIterable<StreamEvent> {
     this.states.push(state ?? {})

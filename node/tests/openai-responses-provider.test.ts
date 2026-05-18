@@ -1,5 +1,5 @@
 import { OpenAIResponsesProvider } from "../src/providers/openai-responses.js"
-import type { Message } from "../src/types.js"
+import type { RenderedContext } from "../src/types.js"
 
 describe("OpenAIResponsesProvider", () => {
   it("continues with previous_response_id and only sends the uncovered tail", async () => {
@@ -66,28 +66,31 @@ describe("OpenAIResponsesProvider", () => {
       },
     }
 
-    const firstMessages: Message[] = [
-      { role: "system", content: "system rules" },
-      { role: "user", content: "Find weather" },
-    ]
+    const firstContext: RenderedContext = {
+      systemText: "system rules",
+      turns: [{ role: "user", content: "Find weather" }],
+    }
     const firstEvents = []
-    for await (const event of provider.stream(firstMessages, [], undefined, state)) firstEvents.push(event)
+    for await (const event of provider.stream(firstContext, [], undefined, state)) firstEvents.push(event)
 
-    const secondMessages: Message[] = [
-      ...firstMessages,
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: [{ id: "call_1", name: "lookup", arguments: '{"city":"Shanghai"}' }],
-      },
-      {
-        role: "tool",
-        content: "",
-        contentParts: [{ type: "tool_result", callId: "call_1", output: "sunny", isError: false }],
-      },
-    ]
+    const secondContext: RenderedContext = {
+      systemText: "system rules",
+      turns: [
+        { role: "user", content: "Find weather" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [{ id: "call_1", name: "lookup", arguments: '{"city":"Shanghai"}' }],
+        },
+        {
+          role: "tool",
+          content: "",
+          contentParts: [{ type: "tool_result", callId: "call_1", output: "sunny", isError: false }],
+        },
+      ],
+    }
     const secondEvents = []
-    for await (const event of provider.stream(secondMessages, [], undefined, state)) secondEvents.push(event)
+    for await (const event of provider.stream(secondContext, [], undefined, state)) secondEvents.push(event)
 
     expect(firstEvents).toEqual([
       { type: "tool_call", id: "call_1", name: "lookup", arguments: { city: "Shanghai" } },

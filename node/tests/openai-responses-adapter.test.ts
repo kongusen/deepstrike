@@ -1,20 +1,22 @@
 import { OpenAIResponsesAdapter } from "../src/providers/openai-responses.js"
-import type { Message } from "../src/types.js"
+import type { RenderedContext } from "../src/types.js"
 
-const conversation: Message[] = [
-  { role: "system", content: "system rules" },
-  { role: "user", content: "Find weather" },
-  {
-    role: "assistant",
-    content: "",
-    toolCalls: [{ id: "call_1", name: "lookup", arguments: '{"city":"Shanghai"}' }],
-  },
-  {
-    role: "tool",
-    content: "",
-    contentParts: [{ type: "tool_result", callId: "call_1", output: "sunny", isError: false }],
-  },
-]
+const context: RenderedContext = {
+  systemText: "system rules",
+  turns: [
+    { role: "user", content: "Find weather" },
+    {
+      role: "assistant",
+      content: "",
+      toolCalls: [{ id: "call_1", name: "lookup", arguments: '{"city":"Shanghai"}' }],
+    },
+    {
+      role: "tool",
+      content: "",
+      contentParts: [{ type: "tool_result", callId: "call_1", output: "sunny", isError: false }],
+    },
+  ],
+}
 
 describe("OpenAIResponsesAdapter", () => {
   it("builds Responses tools with flat function metadata", () => {
@@ -33,8 +35,8 @@ describe("OpenAIResponsesAdapter", () => {
 
   it("extracts system instructions separately from response input items", () => {
     const adapter = new OpenAIResponsesAdapter()
-    expect(adapter.buildInstructions(conversation)).toBe("system rules")
-    expect(adapter.buildInput(conversation)).toEqual([
+    expect(adapter.buildInstructions(context)).toBe("system rules")
+    expect(adapter.buildInput(context)).toEqual([
       { role: "user", content: "Find weather" },
       { type: "function_call", call_id: "call_1", name: "lookup", arguments: '{"city":"Shanghai"}' },
       { type: "function_call_output", call_id: "call_1", output: "sunny" },
@@ -43,9 +45,11 @@ describe("OpenAIResponsesAdapter", () => {
 
   it("serializes only the uncovered tail when continuing from a previous response", () => {
     const adapter = new OpenAIResponsesAdapter()
-    expect(adapter.buildInput(conversation, {
+    // context.turns = [user(0), assistant+toolcall(1), tool_result(2)]
+    // covering 2 messages (user + assistant) leaves tool_result as the uncovered tail
+    expect(adapter.buildInput(context, {
       previousResponseId: "resp_1",
-      coveredMessageCount: 3,
+      coveredMessageCount: 2,
     })).toEqual([
       { type: "function_call_output", call_id: "call_1", output: "sunny" },
     ])
@@ -53,13 +57,17 @@ describe("OpenAIResponsesAdapter", () => {
 
   it("keeps assistant text when a historical turn also contains tool calls", () => {
     const adapter = new OpenAIResponsesAdapter()
-    expect(adapter.buildInput([
-      {
-        role: "assistant",
-        content: "I will check.",
-        toolCalls: [{ id: "call_1", name: "lookup", arguments: '{"city":"Shanghai"}' }],
-      },
-    ])).toEqual([
+    const ctx: RenderedContext = {
+      systemText: "",
+      turns: [
+        {
+          role: "assistant",
+          content: "I will check.",
+          toolCalls: [{ id: "call_1", name: "lookup", arguments: '{"city":"Shanghai"}' }],
+        },
+      ],
+    }
+    expect(adapter.buildInput(ctx)).toEqual([
       { role: "assistant", content: "I will check." },
       { type: "function_call", call_id: "call_1", name: "lookup", arguments: '{"city":"Shanghai"}' },
     ])
