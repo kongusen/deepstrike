@@ -1,4 +1,5 @@
-import type { Message, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider } from "../types.js"
+import type { RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, Message } from "../types.js"
+import { collectStreamMessage, toAnthropicMessages } from "./base.js"
 
 function buildAnthropicTools(tools: ToolSchema[]) {
   return tools.map(t => ({ name: t.name, description: t.description, input_schema: JSON.parse(t.parameters) }))
@@ -11,9 +12,13 @@ export class AnthropicProvider implements LLMProvider {
     private readonly maxTokens = 8096,
   ) {}
 
-  async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
-    const system = messages.filter(m => m.role === "system").map(m => m.content).join("\n\n")
-    const msgs = messages.filter(m => m.role !== "system").map(m => ({ role: m.role, content: m.content }))
+  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
+    return collectStreamMessage(this.stream(context, tools, extensions))
+  }
+
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+    const system = context.systemText || undefined
+    const msgs = toAnthropicMessages(context)
 
     const body: Record<string, unknown> = {
       model: this.model,

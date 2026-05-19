@@ -108,4 +108,69 @@ mod tests {
         assert_eq!(req.goal, "Write a haiku");
         assert!(req.criteria.is_empty());
     }
+
+    struct StatefulTestProvider {
+        states: std::sync::Arc<std::sync::Mutex<Vec<Option<crate::providers::ProviderRunState>>>>,
+        call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        marker: crate::providers::ProviderRunState,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::providers::LLMProvider for StatefulTestProvider {
+        fn create_run_state(&self) -> Option<crate::providers::ProviderRunState> {
+            Some(self.marker.clone())
+        }
+
+        async fn stream(
+            &self,
+            _context: &deepstrike_core::context::renderer::RenderedContext,
+            _tools: &[deepstrike_core::types::message::ToolSchema],
+            _extensions: Option<&serde_json::Value>,
+            state: Option<&crate::providers::ProviderRunState>,
+        ) -> crate::Result<Box<dyn futures::Stream<Item = crate::Result<crate::providers::StreamEvent>> + Send + Unpin>> {
+            self.states.lock().unwrap().push(state.cloned());
+            let n = self.call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let events: Vec<crate::Result<crate::providers::StreamEvent>> = if n == 1 {
+                vec![Ok(crate::providers::StreamEvent::ToolCall {
+                    id: "call_1".into(),
+                    name: "ping".into(),
+                    arguments: serde_json::json!({}),
+                })]
+            } else {
+                vec![Ok(crate::providers::StreamEvent::TextDelta { delta: "done".into() })]
+            };
+            Ok(Box::new(futures::stream::iter(events)))
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_threads_provider_run_state_through_turns() {
+        use crate::agent::{Agent, AgentOptions};
+        use crate::tools::RegisteredTool;
+        use futures::StreamExt;
+
+        let states = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Option<crate::providers::ProviderRunState>>::new()));
+        let provider = StatefulTestProvider {
+            states: states.clone(),
+            call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            marker: serde_json::json!({ "marker": "test-run-state" }),
+        };
+
+        let ping = RegisteredTool::text(
+            "ping",
+            "Ping",
+            serde_json::json!({ "type": "object", "properties": {} }),
+            |_args| Box::pin(async { Ok("pong".into()) }),
+        );
+
+        let mut agent = Agent::new(provider, AgentOptions::new(2048));
+        agent.register(ping);
+
+        let mut stream = agent.run_streaming("Use ping once, then finish.", &[], None).await.unwrap();
+        while stream.next().await.transpose().unwrap().is_some() {}
+
+        let seen = states.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], seen[1]);
+    }
 }

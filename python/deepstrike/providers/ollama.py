@@ -90,7 +90,7 @@ class OllamaProvider:
 
         raise last_exc or Exception("Complete failed")
 
-    def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
+    def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
         return self._stream_gen(context, tools, extensions)
 
     async def _stream_gen(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:

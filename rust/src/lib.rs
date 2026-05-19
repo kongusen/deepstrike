@@ -14,7 +14,7 @@ pub use agent::{Agent, AgentOptions, EvalLoopHarness, HarnessLoop, RunEvent, Sin
 pub use harness::{Harness, HarnessOutcome, HarnessRequest, QualityGate};
 pub use knowledge::KnowledgeSource;
 pub use memory::{DreamResult, DreamStore, WorkingMemory};
-pub use providers::{LLMProvider, StreamEvent, TokenUsage, ProviderToolSpec};
+pub use providers::{LLMProvider, StreamEvent, TokenUsage, ProviderToolSpec, ProviderRunState};
 pub use providers::anthropic::AnthropicProvider;
 pub use providers::openai::{OpenAIProvider, deepseek, kimi, minimax, ollama, qwen};
 pub use safety::{Permission, PermissionDecision, PermissionManager, PermissionMode};

@@ -234,6 +234,8 @@ impl Agent {
             _ => None,
         };
 
+        let provider_state = self.provider.create_run_state();
+
         Ok(Box::pin(async_stream::try_stream! {
             let mut final_text = String::new();
             let mut router = SignalRouter::new(256);
@@ -281,7 +283,7 @@ impl Agent {
                     deepstrike_core::scheduler::state_machine::LoopAction::CallLLM { context, tools } => {
                         final_text.clear();
                         let mut final_tool_calls: Vec<ToolCall> = Vec::new();
-                        let mut provider_stream = self.provider.stream(context, tools, ext.as_ref()).await?;
+                        let mut provider_stream = self.provider.stream(context, tools, ext.as_ref(), provider_state.as_ref()).await?;
                         while let Some(evt) = provider_stream.next().await {
                             match evt? {
                                 StreamEvent::TextDelta { delta } => {
@@ -587,7 +589,8 @@ impl Agent {
         // --- Phase 2: SDK calls LLM (I/O) ------------------------------------
         let mut synthesis_text = String::new();
         let context = rendered_context_from_messages(messages);
-        let mut stream = self.provider.stream(&context, &[], None).await?;
+        let synth_state = self.provider.create_run_state();
+        let mut stream = self.provider.stream(&context, &[], None, synth_state.as_ref()).await?;
         while let Some(evt) = stream.next().await {
             if let Ok(StreamEvent::TextDelta { delta }) = evt {
                 synthesis_text.push_str(&delta);
@@ -776,7 +779,8 @@ impl<'a> HarnessLoop<'a> {
 
                 let mut eval_text = String::new();
                 let context = rendered_context_from_messages(messages);
-                let mut eval_stream = match self.eval_provider.stream(&context, &[], None).await {
+                let eval_state = self.eval_provider.create_run_state();
+                let mut eval_stream = match self.eval_provider.stream(&context, &[], None, eval_state.as_ref()).await {
                     Ok(s) => s,
                     Err(e) => { yield Err(e); return; }
                 };

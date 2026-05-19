@@ -91,6 +91,6 @@ class DeepSeekProvider(OpenAIProvider):
             if tc:
                 yield ToolCallEvent(id=tc.id, name=tc.name, arguments=args)
 
-    def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
+    def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
         messages = self._build_messages(context)
         return self._stream_gen(messages, tools, extensions)

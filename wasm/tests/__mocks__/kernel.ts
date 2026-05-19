@@ -2,6 +2,7 @@
 export class LoopStateMachine {
   private terminal = false
   private turn = 0
+  private phase = 0
   private maxTurns: number
 
   constructor(policy: { maxTokens: number; maxTurns?: number }) {
@@ -20,21 +21,27 @@ export class LoopStateMachine {
 
   start(_task: unknown) {
     this.turn = 0
+    this.phase = 0
     this.terminal = false
-    return { kind: "call_llm", messages: [{ role: "user", content: "test" }], tools: [] }
+    return { kind: "call_llm", context: { systemText: "", turns: [{ role: "user", content: "test" }] }, tools: [] }
   }
 
-  feedLlmResponse(_msg: unknown) {
+  feedLlmResponse(msg: unknown) {
+    const toolCalls = (msg as { toolCalls?: unknown[] })?.toolCalls ?? []
+    if (this.phase === 0 && toolCalls.length > 0) {
+      this.phase = 1
+      return { kind: "execute_tools", calls: toolCalls }
+    }
     this.terminal = true
-    return { kind: "done", result: { turnsUsed: 1, totalTokensUsed: 100, termination: "completed" } }
+    return { kind: "done", result: { turnsUsed: 2, totalTokensUsed: 100, termination: "completed" } }
   }
 
   feedToolResults(_results: unknown[]) {
-    return { kind: "call_llm", messages: [], tools: [] }
+    return { kind: "call_llm", context: { systemText: "", turns: [] }, tools: [] }
   }
 
   feedSkillsLoaded(_skills: unknown[]) {
-    return { kind: "call_llm", messages: [], tools: [] }
+    return { kind: "call_llm", context: { systemText: "", turns: [] }, tools: [] }
   }
 
   feedTimeout() {

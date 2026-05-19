@@ -19,6 +19,7 @@ export { PermissionManager, PermissionMode } from "./safety/index.js"
 export type { PermissionDecision } from "./safety/index.js"
 export type {
   Message, ToolCall, ToolResult, ToolSchema,
+  RenderedContext, ProviderRunState,
   StreamEvent, TextDelta, ThinkingDelta,
   ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent,
   LLMProvider,

@@ -26,6 +26,12 @@ export interface ToolSchema {
   parameters: string // JSON-encoded JSON Schema
 }
 
+/** Structured provider context from the kernel (`call_llm` action). */
+export interface RenderedContext {
+  systemText: string
+  turns: Message[]
+}
+
 export interface StreamEvent { type: string }
 export interface TextDelta extends StreamEvent { type: "text_delta"; delta: string }
 export interface ThinkingDelta extends StreamEvent { type: "thinking_delta"; delta: string }
@@ -35,6 +41,19 @@ export interface DoneEvent extends StreamEvent { type: "done"; iterations: numbe
 export interface ErrorEvent extends StreamEvent { type: "error"; message: string }
 export interface PermissionRequestEvent extends StreamEvent { type: "permission_request"; callId: string; toolName: string; arguments: string; reason: string }
 
+/**
+ * Opaque per-run state owned by the provider (e.g. OpenAI Responses continuation).
+ * The framework creates and threads this object; providers may read/write it.
+ */
+export type ProviderRunState = Record<string, unknown>
+
 export interface LLMProvider {
-  stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent>
+  createRunState?(): ProviderRunState
+  complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message>
+  stream(
+    context: RenderedContext,
+    tools: ToolSchema[],
+    extensions?: Record<string, unknown>,
+    state?: ProviderRunState,
+  ): AsyncIterable<StreamEvent>
 }

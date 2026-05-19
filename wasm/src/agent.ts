@@ -1,4 +1,4 @@
-import type { LLMProvider, Message, ToolCall, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent } from "./types.js"
+import type { LLMProvider, Message, RenderedContext, ToolCall, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent } from "./types.js"
 import type { RegisteredTool } from "./tools/index.js"
 import { executeTools } from "./tools/index.js"
 import type { KnowledgeSource } from "./knowledge/index.js"
@@ -95,6 +95,7 @@ export class Agent {
     const kernel = await loadKernel()
     if (this.options.governance) this.options.governance._attach(kernel)
     const ext = { ...this.extensions, ...(extensions ?? {}) }
+    const providerState = this.provider.createRunState?.()
 
     const sm = new kernel.LoopStateMachine({
       maxTokens: this.options.maxTokens,
@@ -160,11 +161,21 @@ export class Agent {
       if (action.kind === "call_llm") {
         finalText = ""
         const finalToolCalls: ToolCall[] = []
-        const messages = (action.messages ?? []) as Message[]
+        const context = action.context as RenderedContext | undefined
+        if (!context) {
+          yield { type: "error", message: "call_llm missing context" } as ErrorEvent
+          action = sm.feedTimeout()
+          break
+        }
         const tools = (action.tools ?? []) as ToolSchema[]
 
         try {
-          for await (const evt of this.provider.stream(messages, tools, Object.keys(ext).length ? ext : undefined)) {
+          for await (const evt of this.provider.stream(
+            context,
+            tools,
+            Object.keys(ext).length ? ext : undefined,
+            providerState,
+          )) {
             yield evt
             if (evt.type === "text_delta") finalText += (evt as TextDelta).delta
             else if (evt.type === "tool_call") {

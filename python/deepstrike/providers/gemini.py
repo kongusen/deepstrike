@@ -115,7 +115,7 @@ class GeminiProvider:
 
         raise last_exc or RuntimeError("Complete failed")
 
-    async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
+    async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
         system = context.system_text or None
         contents = self._build_contents(context.turns)
         tool_defs = self._build_tools(tools)

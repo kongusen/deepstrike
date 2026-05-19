@@ -138,6 +138,7 @@ impl LLMProvider for OpenAIProvider {
         context: &RenderedContext,
         tools: &[ToolSchema],
         extensions: Option<&Value>,
+        _state: Option<&super::ProviderRunState>,
     ) -> Result<Box<dyn Stream<Item = Result<StreamEvent>> + Send + Unpin>> {
         let mut body = json!({
             "model": self.model,

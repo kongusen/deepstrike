@@ -1,4 +1,5 @@
-import type { Message, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider } from "../types.js"
+import type { RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, Message } from "../types.js"
+import { collectStreamMessage, toOpenAIMessages } from "./base.js"
 
 const DEEPSEEK_REASONERS = new Set(["deepseek-reasoner", "deepseek-r1"])
 const MINIMAX_REASONERS = new Set(["MiniMax-M1", "minimax-m1"])
@@ -15,16 +16,19 @@ export class OpenAIProvider implements LLMProvider {
     return tools.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: JSON.parse(t.parameters) } }))
   }
 
+  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
+    return collectStreamMessage(this.stream(context, tools, extensions))
+  }
+
   protected async *streamInner(
-    messages: Message[],
+    context: RenderedContext,
     tools: ToolSchema[],
     extraBody: Record<string, unknown>,
     exposeReasoning = false,
   ): AsyncIterable<StreamEvent> {
-    const msgs = messages.map(m => ({ role: m.role, content: m.content }))
     const body: Record<string, unknown> = {
       model: this.model,
-      messages: msgs,
+      messages: toOpenAIMessages(context),
       stream: true,
       ...(tools.length ? { tools: this.buildTools(tools) } : {}),
       ...extraBody,
@@ -75,9 +79,9 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
-  async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
     const { expose_reasoning: _, exposeReasoning: __, ...passthrough } = extensions ?? {}
-    yield* this.streamInner(messages, tools, passthrough)
+    yield* this.streamInner(context, tools, passthrough)
   }
 }
 
@@ -86,7 +90,7 @@ export class QwenProvider extends OpenAIProvider {
     super(apiKey, model, "https://dashscope.aliyuncs.com/compatible-mode/v1")
   }
 
-  async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
     const enableThinking = Boolean(extensions?.enableThinking)
     const thinkingBudget = extensions?.thinkingBudget as number | undefined
     const { enableThinking: _, thinkingBudget: __, expose_reasoning: ___, exposeReasoning: ____, ...passthrough } = extensions ?? {}
@@ -94,7 +98,7 @@ export class QwenProvider extends OpenAIProvider {
       ...passthrough,
       ...(enableThinking ? { enable_thinking: true, ...(thinkingBudget ? { thinking_budget: thinkingBudget } : {}) } : {}),
     }
-    yield* this.streamInner(messages, tools, extra, enableThinking)
+    yield* this.streamInner(context, tools, extra, enableThinking)
   }
 }
 
@@ -103,12 +107,12 @@ export class DeepSeekProvider extends OpenAIProvider {
     super(apiKey, model, "https://api.deepseek.com/v1")
   }
 
-  async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
     const exposeReasoning = Boolean(extensions?.exposeReasoning)
     const isReasoner = DEEPSEEK_REASONERS.has(this.model)
     const filteredTools = isReasoner ? [] : tools
     const { exposeReasoning: _, expose_reasoning: __, ...passthrough } = extensions ?? {}
-    yield* this.streamInner(messages, filteredTools, passthrough, exposeReasoning)
+    yield* this.streamInner(context, filteredTools, passthrough, exposeReasoning)
   }
 }
 
@@ -117,12 +121,12 @@ export class MiniMaxProvider extends OpenAIProvider {
     super(apiKey, model, "https://api.minimax.chat/v1")
   }
 
-  async *stream(messages: Message[], tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
     const exposeReasoning = Boolean(extensions?.exposeReasoning)
     const isReasoner = MINIMAX_REASONERS.has(this.model)
     const filteredTools = isReasoner ? [] : tools
     const { exposeReasoning: _, expose_reasoning: __, ...passthrough } = extensions ?? {}
-    yield* this.streamInner(messages, filteredTools, passthrough, exposeReasoning)
+    yield* this.streamInner(context, filteredTools, passthrough, exposeReasoning)
   }
 }
 

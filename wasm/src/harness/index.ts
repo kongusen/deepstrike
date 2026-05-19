@@ -117,7 +117,11 @@ export class HarnessLoop {
       if (evalAction.kind !== "evaluate") break
 
       let evalText = ""
-      for await (const evt of this.evalProvider.stream((evalAction.messages ?? []) as import("../types.js").Message[], [], undefined)) {
+      const evalContext: import("../types.js").RenderedContext = {
+        systemText: "",
+        turns: (evalAction.messages ?? []) as import("../types.js").Message[],
+      }
+      for await (const evt of this.evalProvider.stream(evalContext, [], undefined)) {
         if (evt.type === "text_delta") evalText += (evt as TextDelta).delta
       }
 

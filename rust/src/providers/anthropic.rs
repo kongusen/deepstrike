@@ -131,6 +131,7 @@ impl LLMProvider for AnthropicProvider {
         context: &RenderedContext,
         tools: &[ToolSchema],
         extensions: Option<&Value>,
+        _state: Option<&super::ProviderRunState>,
     ) -> Result<Box<dyn Stream<Item = Result<StreamEvent>> + Send + Unpin>> {
         let (system, msgs) = context_to_anthropic(context);
         let mut body = json!({

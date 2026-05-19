@@ -6,6 +6,7 @@ import { AnthropicProvider } from "../src/providers/anthropic.js"
 import { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider } from "../src/providers/openai.js"
 import { Agent } from "../src/agent.js"
 import { Governance } from "../src/governance.js"
+import type { LLMProvider, Message, ProviderRunState, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 
 describe("tool + executeTools", () => {
   const add = tool("add", "Add two numbers.", {
@@ -105,6 +106,7 @@ describe("Provider instantiation", () => {
 describe("Agent (mock kernel)", () => {
   it("run() returns actual LLM text", async () => {
     const provider = {
+      async complete() { return { role: "assistant" as const, content: "hello" } },
       async *stream() { yield { type: "text_delta", delta: "hello" } },
     }
     const agent = new Agent(provider, { maxTokens: 4096, maxTurns: 5 })
@@ -113,12 +115,51 @@ describe("Agent (mock kernel)", () => {
   })
 
   it("register and blockTool", () => {
-    const provider = { async *stream() {} }
+    const provider = { async complete() { return { role: "assistant" as const, content: "" } }, async *stream() {} }
     const agent = new Agent(provider, { maxTokens: 4096 })
     const t = tool("t", "d", {}, async () => "ok")
     agent.register(t)
     agent.blockTool("t")
     agent.unregister("t")
+  })
+
+  it("threads provider run state through every turn in one run", async () => {
+    class StatefulTestProvider implements LLMProvider {
+      readonly states: ProviderRunState[] = []
+      private callCount = 0
+
+      createRunState(): ProviderRunState {
+        return { marker: crypto.randomUUID() }
+      }
+
+      async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<Message> {
+        return { role: "assistant", content: "unused" }
+      }
+
+      async *stream(
+        _context: RenderedContext,
+        _tools: ToolSchema[],
+        _extensions?: Record<string, unknown>,
+        state?: ProviderRunState,
+      ): AsyncIterable<StreamEvent> {
+        this.states.push(state ?? {})
+        this.callCount += 1
+        if (this.callCount === 1) {
+          yield { type: "tool_call", id: "call_1", name: "ping", arguments: {} }
+          return
+        }
+        yield { type: "text_delta", delta: "done" }
+      }
+    }
+
+    const provider = new StatefulTestProvider()
+    const agent = new Agent(provider, { maxTokens: 2048, maxTurns: 4 })
+      .register(tool("ping", "Ping", { type: "object", properties: {} }, () => "pong"))
+
+    for await (const _event of agent.runStreaming("Use ping once, then finish.")) {}
+
+    expect(provider.states).toHaveLength(2)
+    expect(provider.states[0]).toBe(provider.states[1])
   })
 })
 

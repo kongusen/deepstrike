@@ -12,7 +12,7 @@ from deepstrike._kernel import (
 from deepstrike.agent import Agent
 from deepstrike.governance import Governance, GovernanceVerdict
 from deepstrike.providers import (
-    LLMProvider, RenderedContext, AnthropicProvider, OpenAIProvider,
+    LLMProvider, RenderedContext, ProviderRunState, AnthropicProvider, OpenAIProvider,
     QwenProvider, DeepSeekProvider, MiniMaxProvider, OllamaProvider, KimiProvider,
     StreamEvent, TextDelta, ThinkingDelta,
     ToolCallEvent, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, DoneEvent, ErrorEvent,
@@ -43,7 +43,7 @@ from deepstrike.collaboration import (
 )
 __all__ = [
     "Agent",
-    "LLMProvider", "AnthropicProvider", "OpenAIProvider",
+    "LLMProvider", "RenderedContext", "ProviderRunState", "AnthropicProvider", "OpenAIProvider",
     "QwenProvider", "DeepSeekProvider", "MiniMaxProvider", "OllamaProvider", "KimiProvider",
     "StreamEvent", "TextDelta", "ThinkingDelta",
     "ToolCallEvent", "ToolDeltaEvent", "ToolSuspendEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent",

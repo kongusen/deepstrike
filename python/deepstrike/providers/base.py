@@ -233,7 +233,17 @@ class RenderedContext:
     turns: list[Message] = field(default_factory=list)
 
 
+# Opaque per-run state owned by the provider (e.g. OpenAI Responses continuation).
+ProviderRunState = dict[str, Any]
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
     async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message: ...
-    def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]: ...
+    def stream(
+        self,
+        context: RenderedContext,
+        tools: list[ToolSchema],
+        extensions: dict | None = None,
+        state: ProviderRunState | None = None,
+    ) -> AsyncIterator[StreamEvent]: ...

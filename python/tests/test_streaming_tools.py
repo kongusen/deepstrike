@@ -12,7 +12,7 @@ class ToolStreamingProvider:
     async def complete(self, context, tools, extensions=None):
         return Message(role="assistant", content="unused")
 
-    async def stream(self, context, tools, extensions=None):
+    async def stream(self, context, tools, extensions=None, state=None):
         self.calls += 1
         if self.calls == 1:
             yield ToolCallEvent(id="call_1", name="compose", arguments={})

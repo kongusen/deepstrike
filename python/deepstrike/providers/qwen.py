@@ -109,7 +109,7 @@ class QwenProvider:
 
         raise last_exc or RuntimeError("Complete failed")
 
-    async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
+    async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
         msgs = self._build_messages(context)
         tool_defs = self._build_tools(tools)
 

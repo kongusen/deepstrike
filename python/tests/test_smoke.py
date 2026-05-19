@@ -92,10 +92,10 @@ def test_retry_config_defaults():
 @pytest.mark.asyncio
 async def test_agent_run_returns_model_text():
     class FakeProvider:
-        async def complete(self, messages, tools):
+        async def complete(self, context, tools, extensions=None):
             raise NotImplementedError
 
-        async def stream(self, messages, tools, extensions=None):
+        async def stream(self, context, tools, extensions=None, state=None):
             yield TextDelta(delta="pong")
 
     agent = Agent(FakeProvider(), max_tokens=1000, max_turns=3)

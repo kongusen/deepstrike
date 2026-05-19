@@ -128,6 +128,8 @@ class Agent:
         sm = LoopStateMachine(self._policy)
         sm.set_tools([t.schema for t in self._tools.values()])
         ext = {**self._extensions, **(extensions or {})}
+        create_run_state = getattr(self._provider, "create_run_state", None)
+        provider_state = create_run_state() if callable(create_run_state) else None
 
         if self._system_prompt:
             tokens = max(1, len(self._system_prompt) // 4)
@@ -214,7 +216,9 @@ class Agent:
                 )
 
                 try:
-                    async for evt in self._provider.stream(context, action.tools or [], extensions=ext if ext else None):
+                    async for evt in self._provider.stream(
+                        context, action.tools or [], extensions=ext if ext else None, state=provider_state,
+                    ):
                         yield evt
                         if isinstance(evt, TextDelta):
                             final_text += evt.delta
@@ -556,7 +560,9 @@ class Agent:
         synth_system = "\n\n".join(m.content for m in synth_msgs if m.role == "system")
         synth_turns = [m for m in synth_msgs if m.role != "system"]
         synth_context = RenderedContext(system_text=synth_system, turns=synth_turns)
-        async for evt in self._provider.stream(synth_context, [], extensions=None):
+        create_run_state = getattr(self._provider, "create_run_state", None)
+        synth_state = create_run_state() if callable(create_run_state) else None
+        async for evt in self._provider.stream(synth_context, [], extensions=None, state=synth_state):
             if isinstance(evt, TextDelta):
                 synthesis_text += evt.delta
 

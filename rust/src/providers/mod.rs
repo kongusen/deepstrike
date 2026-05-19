@@ -1,9 +1,14 @@
 use async_trait::async_trait;
 use deepstrike_core::context::renderer::RenderedContext;
-use deepstrike_core::types::message::ToolSchema;
+use deepstrike_core::types::message::{Content, Message, Role, ToolCall, ToolSchema};
+use compact_str::CompactString;
+use futures::{Stream, StreamExt};
 
 pub mod anthropic;
 pub mod openai;
+
+/// Opaque per-run state owned by the provider (e.g. OpenAI Responses continuation).
+pub type ProviderRunState = serde_json::Value;
 
 /// Stream event emitted by providers.
 #[derive(Debug, Clone)]
@@ -16,12 +21,56 @@ pub enum StreamEvent {
 
 #[async_trait]
 pub trait LLMProvider: Send + Sync {
+    /// Optional per-run state for protocol-native continuation (e.g. Responses API).
+    fn create_run_state(&self) -> Option<ProviderRunState> {
+        None
+    }
+
+    /// Non-streaming completion — default collects from `stream`.
+    async fn complete(
+        &self,
+        context: &RenderedContext,
+        tools: &[ToolSchema],
+        extensions: Option<&serde_json::Value>,
+    ) -> crate::Result<Message> {
+        let mut stream = self.stream(context, tools, extensions, None).await?;
+        collect_message_from_stream(&mut stream).await
+    }
+
     async fn stream(
         &self,
         context: &RenderedContext,
         tools: &[ToolSchema],
         extensions: Option<&serde_json::Value>,
-    ) -> crate::Result<Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>>;
+        state: Option<&ProviderRunState>,
+    ) -> crate::Result<Box<dyn Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>>;
+}
+
+pub async fn collect_message_from_stream(
+    stream: &mut (dyn Stream<Item = crate::Result<StreamEvent>> + Send + Unpin),
+) -> crate::Result<Message> {
+    let mut content = String::new();
+    let mut tool_calls = Vec::new();
+    while let Some(evt) = stream.next().await {
+        match evt? {
+            StreamEvent::TextDelta { delta } => content.push_str(&delta),
+            StreamEvent::ThinkingDelta { .. } => {}
+            StreamEvent::ToolCall { id, name, arguments } => {
+                tool_calls.push(ToolCall {
+                    id: CompactString::new(&id),
+                    name: CompactString::new(&name),
+                    arguments,
+                });
+            }
+            StreamEvent::Done => {}
+        }
+    }
+    Ok(Message {
+        role: Role::Assistant,
+        content: Content::Text(content),
+        tool_calls,
+        token_count: None,
+    })
 }
 
 /// Token consumption for a single LLM call.
