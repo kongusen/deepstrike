@@ -1,6 +1,6 @@
 # Providers
 
-All providers implement the `LLMProvider` interface and can be dropped into any `Agent`. They share `RetryConfig` (exponential backoff) and `CircuitBreaker` (automatic failure isolation).
+All providers implement the `LLMProvider` interface and plug into `RuntimeRunner` via `RuntimeOptions.provider`. They share `RetryConfig` (exponential backoff) and `CircuitBreaker` (automatic failure isolation).
 
 ---
 
@@ -38,7 +38,9 @@ const provider = new AnthropicProvider(
 **With extended thinking:**
 
 ```typescript
-for await (const event of agent.runStreaming(goal, {
+for await (const event of runner.run({
+  sessionId: "demo",
+  goal,
   extensions: { enable_thinking: true, thinking_budget_tokens: 8000 },
 })) {
   if (event.type === "thinking_delta") process.stdout.write(`[thinking] ${event.delta}`)
@@ -148,7 +150,9 @@ import { QwenProvider } from "@deepstrike/sdk"
 
 const provider = new QwenProvider(process.env.DASHSCOPE_API_KEY!, "qwen3-235b-a22b")
 
-for await (const event of agent.runStreaming(goal, {
+for await (const event of runner.run({
+  sessionId: "demo",
+  goal,
   extensions: { enableThinking: true, thinkingBudget: 4096 },
 })) {
   if (event.type === "thinking_delta") process.stdout.write(`[thinking] ${event.delta}`)
@@ -163,7 +167,7 @@ from deepstrike import QwenProvider
 
 provider = QwenProvider(api_key=os.environ["DASHSCOPE_API_KEY"], model="qwen3-235b-a22b")
 
-async for event in agent.run_streaming(goal, extensions={"enable_thinking": True, "thinking_budget": 4096}):
+async for event in runner.run_streaming(goal, extensions={"enable_thinking": True, "thinking_budget": 4096}):
     if event.type == "thinking_delta":
         print(f"[thinking] {event.delta}", end="", flush=True)
     elif event.type == "text_delta":
@@ -191,7 +195,9 @@ import { DeepSeekProvider } from "@deepstrike/sdk"
 
 const provider = new DeepSeekProvider(process.env.DEEPSEEK_API_KEY!, "deepseek-reasoner")
 
-for await (const event of agent.runStreaming(goal, {
+for await (const event of runner.run({
+  sessionId: "demo",
+  goal,
   extensions: { exposeReasoning: true },
 })) {
   if (event.type === "thinking_delta") process.stdout.write(`[reasoning] ${event.delta}`)
@@ -206,7 +212,7 @@ from deepstrike import DeepSeekProvider
 
 provider = DeepSeekProvider(api_key=os.environ["DEEPSEEK_API_KEY"], model="deepseek-reasoner")
 
-async for event in agent.run_streaming(goal, extensions={"exposeReasoning": True}):
+async for event in runner.run_streaming(goal, extensions={"exposeReasoning": True}):
     ...
 ```
 
@@ -217,7 +223,7 @@ use deepstrike_sdk::providers::deepseek;
 use serde_json::json;
 
 let provider = deepseek(api_key, Some("deepseek-reasoner"));
-// pass expose_reasoning in extensions when calling agent.run_streaming
+// pass expose_reasoning in extensions when calling runner.run_streaming
 ```
 
 ---
@@ -233,7 +239,9 @@ import { MiniMaxProvider } from "@deepstrike/sdk"
 
 const provider = new MiniMaxProvider(process.env.MINIMAX_API_KEY!, "MiniMax-M1")
 
-for await (const event of agent.runStreaming(goal, {
+for await (const event of runner.run({
+  sessionId: "demo",
+  goal,
   extensions: { exposeReasoning: true },
 })) {
   if (event.type === "thinking_delta") process.stdout.write(`[reasoning] ${event.delta}`)
@@ -248,7 +256,7 @@ from deepstrike import MiniMaxProvider
 
 provider = MiniMaxProvider(api_key=os.environ["MINIMAX_API_KEY"], model="MiniMax-M1")
 
-async for event in agent.run_streaming(goal, extensions={"exposeReasoning": True}):
+async for event in runner.run_streaming(goal, extensions={"exposeReasoning": True}):
     ...
 ```
 
@@ -350,16 +358,9 @@ const provider = new AnthropicProvider(apiKey, "claude-sonnet-4-6", {
 Image inputs are handled automatically by the provider layer. Pass a `content` array in the message:
 
 ```typescript
-// Node.js — works with Anthropic, OpenAI, Qwen (vision models), Kimi (vision models)
-const result = await agent.run({
-  role: "user",
-  content: [
-    { type: "text", text: "What's in this image?" },
-    { type: "image", url: "https://example.com/chart.png" },
-    // or base64:
-    // { type: "image", data: base64String, mediaType: "image/jpeg" }
-  ],
-})
+// Build multimodal turns on RenderedContext, then call provider.stream() directly,
+// or encode image URLs in the goal / system_prompt for simple cases.
+// RuntimeRunner goals are strings; see provider-specific ContentPart mapping below.
 ```
 
 The provider serialises `ContentPart` to the correct wire format automatically:

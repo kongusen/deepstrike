@@ -2,6 +2,7 @@ from .base import (
     LLMProvider,
     RenderedContext,
     ProviderRunState,
+    RuntimePolicy,
     RetryConfig,
     CircuitBreaker,
     normalize_tool_call,
@@ -35,7 +36,7 @@ from .kimi import KimiProvider
 from .gemini import GeminiProvider
 
 __all__ = [
-    "LLMProvider", "RenderedContext", "ProviderRunState", "AnthropicProvider", "OpenAIProvider",
+    "LLMProvider", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
     "QwenProvider", "DeepSeekProvider", "MiniMaxProvider", "OllamaProvider", "KimiProvider", "GeminiProvider",
     "RetryConfig", "CircuitBreaker", "normalize_tool_call", "parse_tool_arguments",
     "TokenUsage", "ProviderToolSpec",

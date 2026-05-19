@@ -5,13 +5,21 @@ from typing import AsyncIterator
 import httpx
 from deepstrike._kernel import Message, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent
-from .base import RetryConfig, RenderedContext, normalize_tool_call
+from .base import RetryConfig, RenderedContext, RuntimePolicy, normalize_tool_call
 from .openai import OpenAIProvider
 
 logger = logging.getLogger(__name__)
 
 _DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 _REASONER_MODELS = {"deepseek-reasoner", "deepseek-r1"}
+
+_DEEPSEEK_POLICIES: dict[str, RuntimePolicy] = {
+    "deepseek-chat":     RuntimePolicy(max_turns=25),
+    "deepseek-reasoner": RuntimePolicy(max_turns=50),
+    "deepseek-r1":       RuntimePolicy(max_turns=50),
+    "deepseek-v4-flash": RuntimePolicy(max_turns=20),
+    "deepseek-v4-pro":   RuntimePolicy(max_turns=35),
+}
 
 
 class DeepSeekProvider(OpenAIProvider):
@@ -26,6 +34,9 @@ class DeepSeekProvider(OpenAIProvider):
 
     def __init__(self, api_key: str, model: str = "deepseek-chat", retry_config: RetryConfig | None = None, base_url: str = _DEEPSEEK_BASE_URL):
         super().__init__(api_key=api_key, model=model, retry_config=retry_config, base_url=base_url)
+
+    def runtime_policy(self) -> RuntimePolicy:
+        return _DEEPSEEK_POLICIES.get(self._model, RuntimePolicy())
 
     def _build_body(self, messages: list[Message], tools: list[ToolSchema], stream: bool, extensions: dict | None = None) -> dict:
         body = super()._build_body(messages, tools, stream)

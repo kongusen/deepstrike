@@ -1,6 +1,6 @@
 # DeepStrike Python SDK
 
-Agent framework built on a Rust kernel. The kernel handles loop control, context compression, skill routing, governance, signal prioritization — the SDK handles all I/O.
+Runtime framework built on a Rust kernel. The kernel handles loop control, context compression, skill routing, governance, signal prioritization — the SDK handles all I/O.
 
 ## Install
 
@@ -16,24 +16,38 @@ Requires Python 3.10+. The Rust kernel is distributed as a pre-built wheel (`dee
 
 ```python
 import asyncio
-from deepstrike import Agent, OpenAIProvider, tool
+from deepstrike import (
+    InMemorySessionLog,
+    LocalExecutionPlane,
+    OpenAIProvider,
+    RuntimeOptions,
+    RuntimeRunner,
+    collect_text,
+    tool,
+)
 
 @tool
 async def add(x: int, y: int) -> str:
     """Add two numbers."""
     return str(x + y)
 
-agent = Agent(OpenAIProvider(api_key="sk-...", model="gpt-5-mini"), max_tokens=4096, max_turns=25)
-agent.register(add)
+plane = LocalExecutionPlane().register(add)
+runner = RuntimeRunner(RuntimeOptions(
+    provider=OpenAIProvider(api_key="sk-...", model="gpt-5-mini"),
+    session_log=InMemorySessionLog(),
+    execution_plane=plane,
+    max_tokens=4096,
+    max_turns=25,
+))
 
-asyncio.run(agent.run("What is 17 + 28?"))
+asyncio.run(collect_text(runner.run_streaming("What is 17 + 28?")))
 # => "45"
 ```
 
 Streaming:
 
 ```python
-async for event in agent.run_streaming("Summarize README.md"):
+async for event in runner.run_streaming("Summarize README.md"):
     if isinstance(event, TextDelta):
         print(event.delta, end="", flush=True)
     elif isinstance(event, ToolCallEvent):
@@ -60,11 +74,13 @@ All providers accept `RetryConfig` for exponential backoff and share a `CircuitB
 
 ---
 
-## Agent options
+## Runtime options
 
 ```python
-agent = Agent(
-    provider,
+runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=InMemorySessionLog(),
+    execution_plane=plane,
     max_tokens=4096,            # context window size
     max_turns=25,               # max turns (default 25)
     timeout_ms=60_000,          # timeout in ms (None = no limit)
@@ -75,7 +91,7 @@ agent = Agent(
     signal_source=gateway,      # SignalGateway or any SignalSource
     dream_store=my_store,       # DreamStore for long-term memory
     agent_id="my-agent",        # required with dream_store for memory meta-tool
-)
+))
 ```
 
 ---
@@ -85,10 +101,9 @@ agent = Agent(
 ```python
 from deepstrike import tool, read_file
 
-agent.register(tool(name="search", description="Search.", parameters=schema)(my_fn))
-agent.register(read_file)
-agent.unregister("search")
-agent.block_tool("bash")
+plane.register(tool(name="search", description="Search.", parameters=schema)(my_fn))
+plane.register(read_file)
+plane.unregister("search")
 ```
 
 ---
@@ -98,7 +113,14 @@ agent.block_tool("bash")
 Set `skill_dir` — the kernel auto-injects a `skill` meta-tool, and the LLM loads skills by name on demand.
 
 ```python
-agent = Agent(provider, max_tokens=4096, max_turns=25, skill_dir="./skills")
+runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=InMemorySessionLog(),
+    execution_plane=plane,
+    max_tokens=4096,
+    max_turns=25,
+    skill_dir="./skills",
+))
 ```
 
 ```markdown
@@ -122,10 +144,20 @@ Implement `KnowledgeSource` — the kernel injects a `knowledge` meta-tool.
 from deepstrike import KnowledgeSource
 
 class VectorSearch(KnowledgeSource):
+    async def init(self) -> None:
+        await vector_db.connect()
+
     async def retrieve(self, query: str, top_k: int = 5) -> list[str]:
         return await vector_db.search(query, top_k)
 
-agent = Agent(provider, max_tokens=4096, max_turns=25, knowledge_source=VectorSearch())
+runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=InMemorySessionLog(),
+    execution_plane=plane,
+    max_tokens=4096,
+    max_turns=25,
+    knowledge_source=VectorSearch(),
+))
 ```
 
 ---
@@ -153,13 +185,21 @@ class MyStore(DreamStore):
     async def load_memories(self, agent_id): ...
     async def commit(self, agent_id, result, existing): ...
     async def search(self, agent_id, query, top_k): ...
+    async def save_session(self, data): ...
 
-agent = Agent(provider, max_tokens=4096, max_turns=25,
-              dream_store=MyStore(), agent_id="my-agent")
+runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=InMemorySessionLog(),
+    execution_plane=plane,
+    max_tokens=4096,
+    max_turns=25,
+    dream_store=MyStore(),
+    agent_id="my-agent",
+))
 
 # In-session: LLM calls memory(query) → DreamStore.search()
 # Post-session: trigger memory consolidation
-result = await agent.dream("my-agent", now_ms=int(time.time() * 1000))
+result = await runner.dream("my-agent", now_ms=int(time.time() * 1000))
 ```
 
 ---
@@ -187,7 +227,14 @@ gov.add_permission_rule("danger.*", "deny")
 gov.block_tool("rm_rf")
 gov.set_rate_limit("api_call", max_calls=10, window_ms=60_000)
 
-agent = Agent(provider, max_tokens=4096, max_turns=25, governance=gov)
+runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=InMemorySessionLog(),
+    execution_plane=plane,
+    max_tokens=4096,
+    max_turns=25,
+    governance=gov,
+))
 # Every tool call: Permission → Veto → RateLimit → Constraint → Audit
 ```
 
@@ -203,9 +250,16 @@ gw = SignalGateway()
 gw.schedule(ScheduledPrompt(goal="standup", run_at_ms=target_time))
 gw.ingest(RuntimeSignal(kind="interrupt", payload={}, urgency="critical"))
 
-agent = Agent(provider, max_tokens=4096, max_turns=25, signal_source=gw)
+runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=InMemorySessionLog(),
+    execution_plane=plane,
+    max_tokens=4096,
+    max_turns=25,
+    signal_source=gw,
+))
 
-agent.interrupt()  # direct interrupt
+runner.interrupt()  # direct interrupt
 gw.destroy()
 ```
 
@@ -217,19 +271,20 @@ gw.destroy()
 from deepstrike import SinglePassHarness, EvalLoopHarness, HarnessLoop, HarnessRequest
 
 # 1. SinglePass — run once, always passes
-outcome = await SinglePassHarness(agent).run(HarnessRequest(goal="Say hello"))
+outcome = await SinglePassHarness(runner).run(HarnessRequest(goal="Say hello"))
 
 # 2. EvalLoop — retry until QualityGate passes
 class ContainsHello(QualityGate):
     async def evaluate(self, request, outcome) -> bool:
         return "hello" in outcome.result.lower()
 
-outcome = await EvalLoopHarness(agent, gate=ContainsHello(), max_attempts=3).run(req)
+outcome = await EvalLoopHarness(runner, gate=ContainsHello(), max_attempts=3).run(req)
 
 # 3. HarnessLoop — LLM-as-judge with feedback injection + skill extraction
-loop = HarnessLoop(agent, eval_provider=eval_provider, max_attempts=3, skill_dir="./skills")
-outcome = await loop.run(HarnessRequest(goal="Write a haiku", criteria=["Must be 3 lines"]))
-print(outcome.passed, outcome.feedback)
+loop = HarnessLoop(runner, eval_provider=eval_provider, max_attempts=3, skill_dir="./skills")
+async for event in loop.run_streaming(HarnessRequest(goal="Write a haiku")):
+    if event.type == "done":
+        print(event.verdict.passed, event.verdict.feedback)
 ```
 
 ---

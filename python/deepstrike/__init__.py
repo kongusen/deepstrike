@@ -9,10 +9,19 @@ from deepstrike._kernel import (
     Message, ToolCall, ToolResult, ToolSchema,
     SkillMetadata,
 )
-from deepstrike.agent import Agent
+from deepstrike.runtime import (
+    RuntimeRunner,
+    RuntimeOptions,
+    collect_text,
+    LocalExecutionPlane,
+    InMemorySessionLog,
+    FileSessionLog,
+    SessionLog,
+)
 from deepstrike.governance import Governance, GovernanceVerdict
 from deepstrike.providers import (
-    LLMProvider, RenderedContext, ProviderRunState, AnthropicProvider, OpenAIProvider,
+    LLMProvider, RenderedContext, ProviderRunState, RuntimePolicy,
+    AnthropicProvider, OpenAIProvider,
     QwenProvider, DeepSeekProvider, MiniMaxProvider, OllamaProvider, KimiProvider,
     StreamEvent, TextDelta, ThinkingDelta,
     ToolCallEvent, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, DoneEvent, ErrorEvent,
@@ -22,7 +31,7 @@ from deepstrike.providers import (
 from deepstrike.tools import RegisteredTool, tool, streaming_tool, validate_tool_arguments, execute_tools, read_file
 from deepstrike.memory import (
     WorkingMemory,
-    DreamStore, DreamResult, SessionStore, SessionData, MemoryEntry, CurationResult, CurationStats,
+    DreamStore, DreamResult, SessionData, MemoryEntry, CurationResult, CurationStats,
 )
 from deepstrike.safety import PermissionManager, PermissionMode, Permission, PermissionDecision
 from deepstrike.harness import (
@@ -42,8 +51,14 @@ from deepstrike.collaboration import (
     CreatorVerifierMode, OrchestrationMode, CreatorVerifierMetrics,
 )
 __all__ = [
-    "Agent",
-    "LLMProvider", "RenderedContext", "ProviderRunState", "AnthropicProvider", "OpenAIProvider",
+    "RuntimeRunner",
+    "RuntimeOptions",
+    "collect_text",
+    "LocalExecutionPlane",
+    "InMemorySessionLog",
+    "FileSessionLog",
+    "SessionLog",
+    "LLMProvider", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
     "QwenProvider", "DeepSeekProvider", "MiniMaxProvider", "OllamaProvider", "KimiProvider",
     "StreamEvent", "TextDelta", "ThinkingDelta",
     "ToolCallEvent", "ToolDeltaEvent", "ToolSuspendEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent",
@@ -51,7 +66,7 @@ __all__ = [
     "RetryConfig", "CircuitBreaker", "TokenUsage", "ProviderToolSpec",
     "RegisteredTool", "tool", "streaming_tool", "validate_tool_arguments", "execute_tools", "read_file",
     "WorkingMemory",
-    "DreamStore", "DreamResult", "SessionStore", "SessionData", "MemoryEntry", "CurationResult", "CurationStats",
+    "DreamStore", "DreamResult", "SessionData", "MemoryEntry", "CurationResult", "CurationStats",
     "PermissionManager", "PermissionMode", "Permission", "PermissionDecision",
     "QualityGate",
     "SinglePassHarness", "HarnessLoop", "EvalLoopHarness", "HarnessRequest", "HarnessOutcome",

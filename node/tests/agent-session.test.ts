@@ -1,5 +1,6 @@
-import { Agent } from "../src/agent.js"
 import type { LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import { collectText } from "../src/runtime/runner.js"
+import { createRunner } from "./runtime/helpers.js"
 
 class CapturingProvider implements LLMProvider {
   readonly calls: RenderedContext[] = []
@@ -14,13 +15,13 @@ class CapturingProvider implements LLMProvider {
   }
 }
 
-describe("Agent session continuity", () => {
+describe("RuntimeRunner session continuity", () => {
   it("replays prior messages when the same session id is reused", async () => {
     const provider = new CapturingProvider()
-    const agent = new Agent(provider, { maxTokens: 2048 })
+    const { runner } = createRunner(provider, [], { maxTokens: 2048 })
 
-    await agent.run("My name is Ada.", undefined, undefined, "chat-1")
-    await agent.run("What is my name?", undefined, undefined, "chat-1")
+    await collectText(runner.run({ sessionId: "chat-1", goal: "My name is Ada." }))
+    await collectText(runner.run({ sessionId: "chat-1", goal: "What is my name?" }))
 
     expect(provider.calls[1].turns).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user", content: "My name is Ada." }),
@@ -31,10 +32,10 @@ describe("Agent session continuity", () => {
 
   it("keeps different session ids isolated", async () => {
     const provider = new CapturingProvider()
-    const agent = new Agent(provider, { maxTokens: 2048 })
+    const { runner } = createRunner(provider, [], { maxTokens: 2048 })
 
-    await agent.run("Secret for A", undefined, undefined, "chat-a")
-    await agent.run("Question for B", undefined, undefined, "chat-b")
+    await collectText(runner.run({ sessionId: "chat-a", goal: "Secret for A" }))
+    await collectText(runner.run({ sessionId: "chat-b", goal: "Question for B" }))
 
     expect(provider.calls[1].turns).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ content: "Secret for A" }),

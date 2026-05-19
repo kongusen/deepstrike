@@ -1156,6 +1156,11 @@ impl LoopStateMachine {
         Ok(())
     }
 
+    /// Continue from preloaded history without appending a new user turn (mid-run recovery).
+    fn resume_after_preload(&mut self) -> LoopAction {
+        LoopAction::from_rust(self.inner.resume_after_preload())
+    }
+
     /// Return only messages added during the current run (since the last `preload_history`
     /// or construction). Use this to persist the session delta to a SessionStore.
     fn drain_new_messages(&self) -> Vec<Message> {

@@ -144,10 +144,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_threads_provider_run_state_through_turns() {
-        use crate::agent::{Agent, AgentOptions};
+    async fn runner_threads_provider_run_state_through_turns() {
+        use crate::runtime::{InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner};
         use crate::tools::RegisteredTool;
         use futures::StreamExt;
+        use std::sync::Arc;
 
         let states = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Option<crate::providers::ProviderRunState>>::new()));
         let provider = StatefulTestProvider {
@@ -156,17 +157,38 @@ mod tests {
             marker: serde_json::json!({ "marker": "test-run-state" }),
         };
 
-        let ping = RegisteredTool::text(
+        let mut plane = LocalExecutionPlane::new();
+        plane.register(RegisteredTool::text(
             "ping",
             "Ping",
             serde_json::json!({ "type": "object", "properties": {} }),
             |_args| Box::pin(async { Ok("pong".into()) }),
-        );
+        ));
 
-        let mut agent = Agent::new(provider, AgentOptions::new(2048));
-        agent.register(ping);
+        let runner = RuntimeRunner::new(RuntimeOptions {
+            provider: Box::new(provider),
+            execution_plane: Some(Box::new(plane)),
+            session_log: Some(Arc::new(InMemorySessionLog::new())),
+            session_id: None,
+            max_tokens: 2048,
+            max_turns: Some(4),
+            timeout_ms: None,
+            extensions: None,
+            agent_id: None,
+            system_prompt: None,
+            initial_memory: vec![],
+            skill_dir: None,
+            dream_store: None,
+            knowledge_source: None,
+            signal_source: None,
+            governance: None,
+            on_tool_suspend: None,
+        });
 
-        let mut stream = agent.run_streaming("Use ping once, then finish.", &[], None).await.unwrap();
+        let mut stream = runner
+            .run_streaming("Use ping once, then finish.", &[], None, None)
+            .await
+            .unwrap();
         while stream.next().await.transpose().unwrap().is_some() {}
 
         let seen = states.lock().unwrap();

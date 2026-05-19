@@ -1,4 +1,7 @@
-pub mod agent;
+pub mod governance;
+pub mod harness_loop;
+pub mod run_event;
+pub mod runtime;
 pub mod harness;
 pub mod knowledge;
 pub mod memory;
@@ -10,7 +13,19 @@ pub mod tools;
 #[cfg(test)]
 mod tests;
 
-pub use agent::{Agent, AgentOptions, EvalLoopHarness, HarnessLoop, RunEvent, SinglePassHarness, ToolSuspendRequest, ToolSuspendHandler};
+pub use run_event::RunEvent;
+pub use governance::{Governance, GovernanceVerdict};
+pub use harness_loop::{EvalLoopHarness, HarnessLoop, SinglePassHarness};
+pub use runtime::{ToolSuspendRequest, ToolSuspendHandler, RunContext};
+pub use deepstrike_core::governance::permission::PermissionAction;
+pub use runtime::{FileSessionLog, InMemorySessionLog, SessionEntry, SessionLog};
+pub use runtime::{CredentialVault, EnvCredentialVault, InMemoryCredentialVault, ChainedCredentialVault};
+pub use runtime::{ExecutionPlane, LocalExecutionPlane};
+pub use runtime::{ProcessSandboxPlane, SandboxOptions};
+pub use runtime::{McpProxyPlane, McpServerConfig};
+pub use runtime::{RemoteVpcOptions, RemoteVpcPlane};
+pub use runtime::{collect_text, RuntimeOptions, RuntimeRunner};
+pub use providers::RuntimePolicy;
 pub use harness::{Harness, HarnessOutcome, HarnessRequest, QualityGate};
 pub use knowledge::KnowledgeSource;
 pub use memory::{DreamResult, DreamStore, WorkingMemory};

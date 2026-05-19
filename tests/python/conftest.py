@@ -6,13 +6,11 @@ from __future__ import annotations
 
 import os
 import sys
+import uuid
 from pathlib import Path
-from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
-
-# ─── Environment ────────────────────────────────────────────────────────────
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -22,11 +20,10 @@ try:
 except ImportError:
     pass
 
-# Ensure the Python SDK package is importable without install
 sys.path.insert(0, str(ROOT / "python"))
 
 from deepstrike import (
-    Agent, OpenAIProvider,
+    OpenAIProvider,
     WorkingMemory,
     PermissionManager, PermissionMode,
     Governance,
@@ -34,12 +31,17 @@ from deepstrike import (
     KnowledgeSource,
     SignalGateway,
 )
+from deepstrike.runtime import (
+    RuntimeRunner,
+    RuntimeOptions,
+    InMemorySessionLog,
+    LocalExecutionPlane,
+    collect_text,
+)
 from deepstrike.providers.stream import StreamEvent, TextDelta, DoneEvent
 from deepstrike.memory.protocols import (
     DreamStore, SessionData, MemoryEntry, CurationResult, CurationStats,
 )
-
-# ─── ENV config ─────────────────────────────────────────────────────────────
 
 ENV = {
     "api_key":  os.environ.get("OPENAI_API_KEY", ""),
@@ -49,7 +51,6 @@ ENV = {
 
 SKILL_DIR = str(Path(__file__).parent / "fixtures" / "skills")
 
-# ─── Factory helpers ────────────────────────────────────────────────────────
 
 def make_provider():
     from deepstrike.providers.base import RetryConfig
@@ -61,13 +62,60 @@ def make_provider():
     )
 
 
-def make_agent(**overrides):
-    defaults = dict(max_tokens=4096, max_turns=10)
+class RunnerHandle:
+    """Test helper: RuntimeRunner with ergonomic register/run helpers."""
+
+    def __init__(self, runner: RuntimeRunner) -> None:
+        self._runner = runner
+
+    def register(self, *tools: Any) -> "RunnerHandle":
+        for t in tools:
+            self._runner.execution_plane.register(t)
+        return self
+
+    def interrupt(self) -> None:
+        self._runner.interrupt()
+
+    @property
+    def _interrupted(self) -> bool:
+        return self._runner._interrupted
+
+    def run_streaming(self, goal: str, **kwargs: Any):
+        return self._runner.run_streaming(goal, **kwargs)
+
+    async def run(self, goal: str, **kwargs: Any) -> str:
+        session_id = kwargs.pop("session_id", None) or str(uuid.uuid4())
+        return await collect_text(self._runner.run_streaming(
+            goal,
+            session_id=session_id,
+            **kwargs,
+        ))
+
+    async def dream(self, agent_id: str, now_ms: int | None = None):
+        return await self._runner.dream(agent_id, now_ms)
+
+
+def make_runner(**overrides: Any) -> RunnerHandle:
+    defaults: dict[str, Any] = dict(max_tokens=4096, max_turns=10)
     defaults.update(overrides)
     provider = defaults.pop("provider", None) or make_provider()
-    return Agent(provider, **defaults)
+    session_log = defaults.pop("session_log", None) or InMemorySessionLog()
+    tools = defaults.pop("tools", [])
+    plane = LocalExecutionPlane()
+    for t in tools:
+        plane.register(t)
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=provider,
+        session_log=session_log,
+        execution_plane=plane,
+        **defaults,
+    ))
+    return RunnerHandle(runner)
 
-# ─── In-memory DreamStore ───────────────────────────────────────────────────
+
+# Test-only alias (not the removed Agent class)
+make_agent = make_runner
+
 
 class MockDreamStore:
     def __init__(self):
@@ -94,7 +142,6 @@ class MockDreamStore:
     async def save_session(self, data: SessionData) -> None:
         self.saved_sessions.append(data)
 
-# ─── In-memory KnowledgeSource ──────────────────────────────────────────────
 
 class MockKnowledgeSource:
     def __init__(self, snippets: list[str]):
@@ -107,7 +154,6 @@ class MockKnowledgeSource:
     async def retrieve(self, query: str, top_k: int = 5) -> list[str]:
         return self._snippets[:top_k]
 
-# ─── Stream helpers ─────────────────────────────────────────────────────────
 
 async def collect_events(gen) -> list[StreamEvent]:
     events: list[StreamEvent] = []
@@ -117,6 +163,4 @@ async def collect_events(gen) -> list[StreamEvent]:
 
 
 def text(events: list[StreamEvent]) -> str:
-    return "".join(
-        e.delta for e in events if isinstance(e, TextDelta)
-    )
+    return "".join(e.delta for e in events if isinstance(e, TextDelta))

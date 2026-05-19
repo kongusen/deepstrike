@@ -1,6 +1,7 @@
 import pytest
 from deepstrike import (
-    Agent, AnthropicProvider, OpenAIProvider, OllamaProvider,
+    AnthropicProvider, InMemorySessionLog, LocalExecutionPlane, OpenAIProvider, OllamaProvider,
+    RuntimeOptions, RuntimeRunner, collect_text,
     Message, ToolSchema, ToolCall, ToolResult,
     tool, read_file,
     Governance,
@@ -40,11 +41,7 @@ def test_read_file_tool():
 def test_governance_block_tool():
     gov = Governance()
     gov.block_tool("dangerous")
-    provider = AnthropicProvider(api_key="test")
-    agent = Agent(provider, max_tokens=1000, max_turns=3, governance=gov)
-    result = agent.block_tool("dangerous")
-    assert result is agent
-    verdict = agent._governance.evaluate("dangerous", "{}")
+    verdict = gov.evaluate("dangerous", "{}")
     assert verdict.kind == "deny"
 
 
@@ -66,14 +63,6 @@ def test_signal_router():
     router = SignalRouter(max_queue_size=10)
     assert router.depth() == 0
     router.clear_dedup()
-
-
-@pytest.mark.xfail(reason="requires current Governance kernel binary; stale local .so predates Governance API")
-def test_agent_block_tool_no_governance():
-    provider = AnthropicProvider(api_key="test")
-    agent = Agent(provider, max_tokens=1000, max_turns=3)
-    result = agent.block_tool("shell")
-    assert result is agent  # chainable
 
 
 def test_provider_instantiation():
@@ -98,5 +87,11 @@ async def test_agent_run_returns_model_text():
         async def stream(self, context, tools, extensions=None, state=None):
             yield TextDelta(delta="pong")
 
-    agent = Agent(FakeProvider(), max_tokens=1000, max_turns=3)
-    assert await agent.run("ping") == "pong"
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=FakeProvider(),
+        session_log=InMemorySessionLog(),
+        execution_plane=LocalExecutionPlane(),
+        max_tokens=1000,
+        max_turns=3,
+    ))
+    assert await collect_text(runner.run_streaming("ping")) == "pong"

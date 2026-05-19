@@ -51,7 +51,7 @@ class RuntimeSignal:
 
 @runtime_checkable
 class SignalSource(Protocol):
-    """Implement this to feed signals into an Agent from any external source."""
+    """Implement this to feed signals into a RuntimeRunner from any external source."""
     async def next_signal(self) -> RuntimeSignal | None:
         """Return the next pending signal, or None if none available."""
         ...

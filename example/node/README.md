@@ -17,10 +17,10 @@ FlashNote 是**常驻守护进程**，同时支持三条输入路径，产出汇
 | 测试 | SDK 能力 | 本示例文件 | 在场景里做什么 |
 | --- | --- | --- | --- |
 | `01_provider` | `OpenAIProvider`、`CircuitBreaker` | `src/provider.ts` | 构造 provider，包熔断器；常驻进程中上游连续 5 次失败即熔断 60s 自愈 |
-| `02_agent` | `Agent.run`、`pressure` | `src/agent.ts` | 个人/社区捕获 `maxTurns=5` 短回路；`/research` 后切 `maxTurns=20`；`pressure>0.7` 触发批量 flush |
+| `02_runtime` | `RuntimeRunner.run`、`FileSessionLog` | `src/runtime.ts` | 个人/社区捕获 `maxTurns=5` 短回路；`/research` 后切 `maxTurns=20`；每次运行写入事件日志，可用 `wake(sessionId)` 恢复 |
 | `03_tools` | `tool()`、`executeTools()` | `src/tools/*.ts` | 注册 8 个工具（详见下表） |
 | `04_skills` | `scanSkillDir()`、`skillDir` | `skills/*.md` | LLM 在不同阶段自动挑套路，不硬编码 prompt |
-| `05_memory` | `WorkingMemory`、`DreamStore`、`Agent.dream()` | `src/memory/{working,dream_store}.ts` | 当批上下文用 WorkingMemory；session 结束调 `dream()` 沉淀主题图谱，下次召回 |
+| `05_memory` | `WorkingMemory`、`DreamStore`、`RuntimeRunner.dream()` | `src/memory/{working,dream_store}.ts` | 当批上下文用 WorkingMemory；session 结束调 `dream()` 沉淀主题图谱，下次召回 |
 | `06_knowledge` | `KnowledgeSource.retrieve()` | `src/knowledge/archive_source.ts` | archive 同时作为个人知识库和社区语料库，检索时按来源权重区分 |
 | `07_harness` | `HarnessLoop`（LLM-as-judge） | `src/harness/{note,contribution,report}_judge.ts` | 三套 criteria（见下），未达标重处理 ≤2 次 |
 | `08_signals` | `SignalGateway`、`ScheduledPrompt` | `src/signals/{inbox_watcher,cli_bridge}.ts` | 定时扫 inbox + stdin 接 `/dump` `/interview` `/research` `/export` `/export-dataset` `/stop` |
@@ -87,8 +87,8 @@ FlashNote 是**常驻守护进程**，同时支持三条输入路径，产出汇
   - `/export [digest|outline|actions|clusters]` → 生成可读输出，默认 `digest`
   - `/export-dataset [jsonl|rag|memory_pack] [--min-quality 0.8] [--anonymize]` → 生成数据产品
   - `/cluster <topic>` → 对某主题做聚类融合
-  - `/stop` → 干净终止，调 `agent.dream()` 沉淀后退出
-- `agent.pressure > 0.7` → 外层主动触发 flush，批量处理积压队列
+  - `/stop` → 干净终止，调 `runtime.dream()` 沉淀后退出
+- 每次运行写入 `output/sessions/*.jsonl`，中断后可按 `sessionId` 用 `wake()` 续跑
 
 ## 目录骨架
 
@@ -109,7 +109,7 @@ example/node/
 ├── src/
 │   ├── main.ts                   # 守护进程入口
 │   ├── provider.ts               # 01
-│   ├── agent.ts                  # 02 支持动态切换 maxTurns
+│   ├── runtime.ts                # 02 RuntimeRunner + ExecutionPlane + SessionLog
 │   ├── tools/                    # 03
 │   │   ├── capture_text.ts
 │   │   ├── ingest_file.ts
@@ -174,7 +174,7 @@ npm run dev
 
 每一步都能独立跑、独立看效果。
 
-1. 骨架 + `provider.ts` + `agent.ts` + `main.ts`：能接受 `/dump` 并打印分类结果
+1. 骨架 + `provider.ts` + `runtime.ts` + `main.ts`：能接受 `/dump` 并打印分类结果
 2. 5 个基础 tools + `governance/policy.ts`：演示 `export` ask_user、干扰域名 deny
 3. 个人模式 skills + `harness/note_judge.ts`：看到不合格笔记被重处理
 4. `archive_source.ts` + `memory/working.ts`：入库前检索，看到去重和关联提示
@@ -182,4 +182,4 @@ npm run dev
 6. `deep_research` tool + 研究 skills + `harness/report_judge.ts`：`/research` 命令跑通
 7. `interview_capture` tool + `elicit_insight` skill + `harness/contribution_judge.ts`：`/interview` 跑通，看到 agent 追问
 8. `export_dataset` tool + PII 过滤 + 归因元数据：`/export-dataset` 输出可用 JSONL
-9. `memory/dream_store.ts` + `agent.dream()`：重启后验证主题图谱被召回
+9. `memory/dream_store.ts` + `runtime.dream()`：重启后验证主题图谱被召回

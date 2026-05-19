@@ -67,7 +67,7 @@ class SignalGateway:
         self._emit(signal)
 
     async def next_signal(self) -> RuntimeSignal | None:
-        """Return the next pending signal so the gateway can be passed directly to Agent."""
+        """Return the next pending signal so the gateway can be passed directly to RuntimeRunner."""
         return self._pending.popleft() if self._pending else None
 
     def destroy(self) -> None:

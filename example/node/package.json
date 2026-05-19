@@ -10,7 +10,7 @@
     "build": "tsc --noEmit"
   },
   "dependencies": {
-    "@deepstrike/sdk": "^0.1.3",
+    "@deepstrike/sdk": "file:../../node",
     "dotenv": "^16.4.0"
   },
   "devDependencies": {

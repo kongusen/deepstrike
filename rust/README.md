@@ -1,6 +1,8 @@
 # DeepStrike Rust SDK
 
-Agent framework built on `deepstrike-core`. The kernel handles loop control, context compression, skill routing, governance, signal prioritization — the SDK handles all I/O.
+Runtime framework built on `deepstrike-core`. The kernel handles loop control, context compression, skill routing, governance, signal prioritization — the SDK handles all I/O.
+
+> **Runtime v1:** Use `RuntimeRunner` + `SessionLog` + `LocalExecutionPlane` (same model as Node/Python/WASM).
 
 ## Add to your project
 
@@ -16,14 +18,17 @@ futures = "0.3"
 ## Quick start
 
 ```rust
-use deepstrike_sdk::{Agent, AgentOptions, OpenAIProvider, RegisteredTool};
+use std::sync::Arc;
+use deepstrike_sdk::{
+    InMemorySessionLog, LocalExecutionPlane, OpenAIProvider,
+    RegisteredTool, RuntimeOptions, RuntimeRunner,
+};
 
 #[tokio::main]
 async fn main() {
     let provider = OpenAIProvider::with_base_url("sk-...", "gpt-5-mini", "https://api.openai.com/v1");
-
-    let mut agent = Agent::new(provider, AgentOptions::new(4096));
-    agent.register(RegisteredTool::text(
+    let plane = LocalExecutionPlane::new();
+    plane.register(RegisteredTool::text(
         "add", "Add two numbers.",
         serde_json::json!({"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"}},"required":["x","y"]}),
         |args| Box::pin(async move {
@@ -31,18 +36,41 @@ async fn main() {
         }),
     ));
 
-    let result = agent.run("What is 17 + 28?").await.unwrap();
-    println!("{result}"); // "done in 2 turns (completed)"
+    let runner = RuntimeRunner::new(RuntimeOptions {
+        provider: Box::new(provider),
+        execution_plane: Some(Box::new(plane)),
+        session_log: Some(Arc::new(InMemorySessionLog::new())),
+        session_id: None,
+        max_tokens: 32_000,
+        max_turns: Some(10),
+        timeout_ms: None,
+        extensions: None,
+        agent_id: None,
+        system_prompt: None,
+        initial_memory: vec![],
+        skill_dir: None,
+        dream_store: None,
+        knowledge_source: None,
+        signal_source: None,
+        governance: None,
+        on_tool_suspend: None,
+    });
+
+    // Same session_id → prior turns are replayed from SessionLog
+    // runner.wake("session-1").await?;  // resume mid-run after crash
+
+    let text = runner.execute("What is 17 + 28?").await.unwrap();
+    println!("{text}");
 }
 ```
 
-Streaming:
+Streaming via `RuntimeRunner::run_streaming`:
 
 ```rust
-use deepstrike_sdk::RunEvent;
+use deepstrike_sdk::{RunEvent, RuntimeRunner};
 use futures::StreamExt;
 
-let mut stream = agent.run_streaming("Summarize README.md", &[], None).await?;
+let mut stream = runner.run_streaming("Summarize README.md", &[], None, None).await?;
 while let Some(evt) = stream.next().await {
     match evt? {
         RunEvent::TextDelta(d) => print!("{d}"),
@@ -73,12 +101,15 @@ Custom providers: implement the `LLMProvider` trait.
 
 ---
 
-## Agent options
+## RuntimeOptions
 
 ```rust
-AgentOptions {
+RuntimeOptions {
+    provider: Box::new(provider),
+    execution_plane: Some(Box::new(plane)),
+    session_log: Some(Arc::new(InMemorySessionLog::new())),
     max_tokens: 4096,
-    max_turns: 25,                   // default 25
+    max_turns: Some(25),
     timeout_ms: Some(60_000),
     extensions: Some(json!({"temperature": 0.1})),
     skill_dir: Some("./skills".into()),
@@ -86,6 +117,9 @@ AgentOptions {
     signal_source: Some(Box::new(rx)),
     dream_store: Some(Box::new(my_store)),
     agent_id: Some("my-agent".into()),
+    governance: None,
+    on_tool_suspend: None,
+    // ...
 }
 ```
 
@@ -94,12 +128,15 @@ AgentOptions {
 ## Tools
 
 ```rust
-use deepstrike_sdk::{RegisteredTool, read_file_tool};
+use deepstrike_sdk::{RegisteredTool, read_file_tool, Governance};
 
-agent.register(RegisteredTool::text("search", "Search.", schema, |args| Box::pin(async move { ... })));
-agent.register(read_file_tool());
-agent.unregister("search");
-agent.block_tool("bash");
+let mut plane = LocalExecutionPlane::new();
+plane.register(RegisteredTool::text("search", "Search.", schema, |args| Box::pin(async move { ... })));
+plane.register(read_file_tool());
+plane.unregister("search");
+
+let mut gov = Governance::allow();
+gov.block_tool("bash");
 ```
 
 ---
@@ -109,9 +146,10 @@ agent.block_tool("bash");
 Set `skill_dir` — the kernel auto-injects a `skill` meta-tool, and the LLM loads skills by name on demand.
 
 ```rust
-let agent = Agent::new(provider, AgentOptions {
+let runner = RuntimeRunner::new(RuntimeOptions {
     skill_dir: Some("./skills".into()),
-    ..AgentOptions::new(4096)
+    max_tokens: 4096,
+    /* provider, execution_plane, session_log, ... */
 });
 ```
 
@@ -162,7 +200,7 @@ impl DreamStore for MyStore {
 
 // In-session: LLM calls memory(query) → DreamStore.search()
 // Post-session:
-let result = agent.dream("my-agent", now_ms).await?;
+let result = runner.dream("my-agent", now_ms).await?;
 ```
 
 ---
@@ -206,12 +244,13 @@ let rx = gw.subscribe();
 gw.schedule(ScheduledPrompt::new("standup", target_ms));
 gw.ingest(RuntimeSignal { kind: "interrupt".into(), payload: json!({}), priority: 10 });
 
-let agent = Agent::new(provider, AgentOptions {
+let runner = RuntimeRunner::new(RuntimeOptions {
     signal_source: Some(Box::new(rx)),
-    ..AgentOptions::new(4096)
+    max_tokens: 4096,
+    /* ... */
 });
 
-agent.interrupt(); // direct interrupt
+runner.interrupt(); // direct interrupt
 gw.destroy();
 ```
 
@@ -223,13 +262,13 @@ gw.destroy();
 use deepstrike_sdk::*;
 
 // 1. SinglePass — run once, always passes
-let outcome = SinglePassHarness::new(&agent).run(HarnessRequest::new("Say hello")).await?;
+let outcome = SinglePassHarness::new(&runner).run(HarnessRequest::new("Say hello")).await?;
 
 // 2. EvalLoop — retry until QualityGate passes
-let harness = EvalLoopHarness::new(&agent, MyGate, 3);
+let harness = EvalLoopHarness::new(&runner, MyGate, 3);
 
 // 3. HarnessLoop — LLM-as-judge with feedback injection + skill extraction
-let harness = HarnessLoop::new(&agent, eval_provider, 3, Some("./skills".into()));
+let harness = HarnessLoop::new(&runner, eval_provider, 3, Some("./skills".into()));
 let outcome = harness.run(HarnessRequest { goal: "Write a haiku".into(), criteria: vec!["Must be 3 lines".into()], .. }).await?;
 println!("{} {}", outcome.passed, outcome.feedback.unwrap_or_default());
 ```

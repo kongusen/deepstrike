@@ -133,20 +133,33 @@ async fn execute_multiple_tools_parallel() {
     assert_eq!(results[1].output.as_text(), Some("5"));
 }
 
-// ─── AgentOptions ───────────────────────────────────────────────────────────
+// ─── RuntimeOptions (field presence via construction) ─────────────────────────
 
 #[test]
-fn agent_options_defaults() {
-    let opts = AgentOptions::new(4096);
-    assert_eq!(opts.max_tokens, 4096);
-    assert_eq!(opts.max_turns, 25);
-    assert!(opts.timeout_ms.is_none());
-    assert!(opts.extensions.is_none());
-    assert!(opts.skill_dir.is_none());
-    assert!(opts.knowledge_source.is_none());
-    assert!(opts.signal_source.is_none());
-    assert!(opts.dream_store.is_none());
-    assert!(opts.agent_id.is_none());
+fn runtime_options_can_be_constructed() {
+    use deepstrike_sdk::{InMemorySessionLog, LocalExecutionPlane, OpenAIProvider, RuntimeOptions, RuntimeRunner};
+    use std::sync::Arc;
+
+    let runner = RuntimeRunner::new(RuntimeOptions {
+        provider: Box::new(OpenAIProvider::new("sk-test")),
+        execution_plane: Some(Box::new(LocalExecutionPlane::new())),
+        session_log: Some(Arc::new(InMemorySessionLog::new())),
+        session_id: None,
+        max_tokens: 4096,
+        max_turns: Some(25),
+        timeout_ms: None,
+        extensions: None,
+        agent_id: None,
+        system_prompt: None,
+        initial_memory: vec![],
+        skill_dir: None,
+        dream_store: None,
+        knowledge_source: None,
+        signal_source: None,
+        governance: None,
+        on_tool_suspend: None,
+    });
+    assert_eq!(runner.execution_plane().schemas().len(), 0);
 }
 
 // ─── PermissionManager (SDK) ────────────────────────────────────────────────

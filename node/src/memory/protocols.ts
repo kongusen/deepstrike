@@ -50,10 +50,6 @@ export interface DreamStore {
 }
 
 /** Durable transcript storage for same-session conversational continuity. */
-export interface SessionStore {
-  loadSession(sessionId: string): Promise<SessionData | undefined>
-  saveSession(data: SessionData): Promise<void>
-}
 
 export interface DreamResult {
   sessionsProcessed: number

@@ -38,12 +38,19 @@ npm install @deepstrike/wasm
 
 ---
 
-## Your first agent
+## Your first runtime
 
 ### Node.js
 
 ```typescript
-import { Agent, AnthropicProvider, tool } from "@deepstrike/sdk"
+import {
+  AnthropicProvider,
+  InMemorySessionLog,
+  LocalExecutionPlane,
+  RuntimeRunner,
+  collectText,
+  tool,
+} from "@deepstrike/sdk"
 
 // 1. Define a tool
 const schema = JSON.stringify({
@@ -59,17 +66,18 @@ const add = tool("add", "Add two numbers and return the sum.", schema, async ({ 
   return String((x as number) + (y as number))
 })
 
-// 2. Create the agent
-const agent = new Agent(new AnthropicProvider(process.env.ANTHROPIC_API_KEY!), {
+// 2. Create the execution plane and runner
+const plane = new LocalExecutionPlane().register(add)
+const runner = new RuntimeRunner({
+  provider: new AnthropicProvider(process.env.ANTHROPIC_API_KEY!),
+  sessionLog: new InMemorySessionLog(),
+  executionPlane: plane,
   maxTokens: 32_000,
 })
 
-// 3. Register the tool
-agent.register(add)
-
-// 4. Run
-const result = await agent.run("What is 12 + 30?")
-console.log(result.content) // "42"
+// 3. Run
+const result = await collectText(runner.run({ sessionId: "quick-start", goal: "What is 12 + 30?" }))
+console.log(result) // "42"
 ```
 
 ### Python
@@ -77,7 +85,15 @@ console.log(result.content) // "42"
 ```python
 import asyncio
 import os
-from deepstrike import Agent, AnthropicProvider, tool
+from deepstrike import (
+    AnthropicProvider,
+    InMemorySessionLog,
+    LocalExecutionPlane,
+    RuntimeOptions,
+    RuntimeRunner,
+    collect_text,
+    tool,
+)
 
 @tool
 def add(x: int, y: int) -> int:
@@ -85,13 +101,15 @@ def add(x: int, y: int) -> int:
     return x + y
 
 async def main():
-    agent = Agent(
-        AnthropicProvider(api_key=os.environ["ANTHROPIC_API_KEY"]),
+    plane = LocalExecutionPlane().register(add)
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=AnthropicProvider(api_key=os.environ["ANTHROPIC_API_KEY"]),
+        session_log=InMemorySessionLog(),
+        execution_plane=plane,
         max_tokens=32_000,
-    )
-    agent.register(add)
-    result = await agent.run("What is 12 + 30?")
-    print(result.content)  # "42"
+    ))
+    result = await collect_text(runner.run_streaming("What is 12 + 30?"))
+    print(result)  # "42"
 
 asyncio.run(main())
 ```
@@ -99,27 +117,53 @@ asyncio.run(main())
 ### Rust
 
 ```rust
-use deepstrike_sdk::{Agent, AgentOptions, tool, providers::AnthropicProvider};
+use std::sync::Arc;
+use deepstrike_sdk::{
+    AnthropicProvider, InMemorySessionLog, LocalExecutionPlane, RegisteredTool,
+    RuntimeOptions, RuntimeRunner, collect_text,
+};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let provider = AnthropicProvider::new(std::env::var("ANTHROPIC_API_KEY")?);
-    let mut agent = Agent::new(provider, AgentOptions::new(32_000));
-
-    agent.register(tool(
+    let mut plane = LocalExecutionPlane::new();
+    plane.register(RegisteredTool::text(
         "add",
         "Add two numbers and return the sum.",
         json!({ "type": "object", "properties": { "x": { "type": "number" }, "y": { "type": "number" } }, "required": ["x", "y"] }),
-        |args| async move {
+        |args| Box::pin(async move {
             let x = args["x"].as_f64().unwrap_or(0.0);
             let y = args["y"].as_f64().unwrap_or(0.0);
             Ok(format!("{}", x + y))
-        },
+        }),
     ));
 
-    let result = agent.run("What is 12 + 30?").await?;
-    println!("{}", result.content); // "42"
+    let runner = RuntimeRunner::new(RuntimeOptions {
+        provider: Box::new(provider),
+        execution_plane: Some(Box::new(plane)),
+        session_log: Some(Arc::new(InMemorySessionLog::new())),
+        session_id: None,
+        max_tokens: 32_000,
+        max_turns: Some(10),
+        timeout_ms: None,
+        extensions: None,
+        agent_id: None,
+        system_prompt: None,
+        initial_memory: vec![],
+        skill_dir: None,
+        dream_store: None,
+        knowledge_source: None,
+        signal_source: None,
+        governance: None,
+        on_tool_suspend: None,
+    });
+
+    let text = collect_text(
+        runner.run_streaming("What is 12 + 30?", &[], None, Some("quick-start")).await?,
+    )
+    .await?;
+    println!("{text}"); // "42"
     Ok(())
 }
 ```
@@ -133,7 +177,7 @@ Reading stream events gives you incremental text, reasoning traces, and tool lif
 ### Node.js
 
 ```typescript
-for await (const event of agent.runStreaming("Explain how TCP handshakes work")) {
+for await (const event of runner.run({ sessionId: "demo", goal: "Explain how TCP handshakes work" })) {
   switch (event.type) {
     case "text_delta":
       process.stdout.write(event.delta)
@@ -157,7 +201,7 @@ for await (const event of agent.runStreaming("Explain how TCP handshakes work"))
 ### Python
 
 ```python
-async for event in agent.run_streaming("Explain how TCP handshakes work"):
+async for event in runner.run_streaming("Explain how TCP handshakes work"):
     if event.type == "text_delta":
         print(event.delta, end="", flush=True)
     elif event.type == "thinking_delta":
@@ -174,7 +218,7 @@ async for event in agent.run_streaming("Explain how TCP handshakes work"):
 use deepstrike_sdk::types::StreamEvent;
 use futures::StreamExt;
 
-let mut stream = agent.run_streaming("Explain TCP handshakes").await?;
+let mut stream = runner.run_streaming("Explain TCP handshakes", &[], None, None).await?;
 while let Some(event) = stream.next().await {
     match event? {
         StreamEvent::TextDelta { delta } => print!("{delta}"),
@@ -198,24 +242,10 @@ Pass an array of content parts instead of a plain string to include images along
 
 ```typescript
 // Image by URL
-const result = await agent.run({
-  role: "user",
-  content: [
-    { type: "text", text: "What does this chart show?" },
-    { type: "image", url: "https://example.com/chart.png" },
-  ],
-})
-
-// Image by base64
-import { readFileSync } from "fs"
-const data = readFileSync("screenshot.png").toString("base64")
-const result2 = await agent.run({
-  role: "user",
-  content: [
-    { type: "text", text: "Describe this UI." },
-    { type: "image", data, mediaType: "image/png" },
-  ],
-})
+// Multimodal goals are passed via provider-native message shaping in extensions
+// or by building RenderedContext turns before calling the provider directly.
+// RuntimeRunner goals are plain strings; attach images in a custom provider
+// or pre-seed context via system_prompt / initial_memory for simple cases.
 ```
 
 ### Python
@@ -224,30 +254,14 @@ const result2 = await agent.run({
 import base64, pathlib
 
 # Image by URL
-result = await agent.run({
-    "role": "user",
-    "content": [
-        {"type": "text", "text": "What does this chart show?"},
-        {"type": "image", "url": "https://example.com/chart.png", "detail": "high"},
-    ],
-})
-
-# Image by base64
-data = base64.b64encode(pathlib.Path("screenshot.png").read_bytes()).decode()
-result = await agent.run({
-    "role": "user",
-    "content": [
-        {"type": "text", "text": "Describe this UI."},
-        {"type": "image", "data": data, "media_type": "image/png"},
-    ],
-})
+# See providers.md for multimodal RenderedContext patterns with RuntimeRunner.
 ```
 
 ---
 
 ## Choosing a provider
 
-Swap the provider to change models. All providers share the same `Agent` interface.
+Swap the provider to change models. All providers share the same `LLMProvider` interface.
 
 ```typescript
 // Node.js — swap any of these

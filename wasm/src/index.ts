@@ -1,5 +1,16 @@
-export { Agent } from "./agent.js"
-export type { AgentOptions, SkillMetadata } from "./agent.js"
+export {
+  RuntimeRunner,
+  collectText,
+  InMemorySessionLog,
+  LocalExecutionPlane,
+} from "./runtime/index.js"
+export type {
+  RuntimeOptions,
+  SessionEvent,
+  SessionLog,
+  RunContext,
+  ExecutionPlane,
+} from "./runtime/index.js"
 export { Governance } from "./governance.js"
 export type { GovernanceVerdict } from "./governance.js"
 export { AnthropicProvider } from "./providers/anthropic.js"

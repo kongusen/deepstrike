@@ -1,10 +1,12 @@
 # DeepStrike Node.js SDK — API 使用指南
 
+> Runtime v1：公共入口为 `RuntimeRunner` + `SessionLog` + `ExecutionPlane`。详见 `node/README.md` 与 `docs/spec-runtime-v1.md`。
+
 ## 目录
 
 1. [快速开始](#1-快速开始)
 2. [Provider 配置](#2-provider-配置)
-3. [Agent 基础](#3-agent-基础)
+3. [RuntimeRunner 基础](#3-runtimerunner-基础)
 4. [工具调用 (Tools)](#4-工具调用-tools)
 5. [技能 (Skills)](#5-技能-skills)
 6. [知识检索 (Knowledge)](#6-知识检索-knowledge)
@@ -23,7 +25,13 @@ npm install deepstrike
 ```
 
 ```typescript
-import { Agent, OpenAIProvider } from "deepstrike"
+import {
+  OpenAIProvider,
+  InMemorySessionLog,
+  LocalExecutionPlane,
+  RuntimeRunner,
+  collectText,
+} from "deepstrike"
 
 const provider = new OpenAIProvider({
   apiKey: "sk-your-key",
@@ -31,9 +39,18 @@ const provider = new OpenAIProvider({
   baseUrl: "https://api.openai.com/v1",
 })
 
-const agent = new Agent(provider, { maxTokens: 4096 })
-const result = await agent.run("用一句话解释什么是 TypeScript")
-console.log(result) // => "done in 1 turns (completed)"
+const runner = new RuntimeRunner({
+  provider,
+  sessionLog: new InMemorySessionLog(),
+  executionPlane: new LocalExecutionPlane(),
+  maxTokens: 4096,
+})
+
+const result = await collectText(runner.run({
+  sessionId: "demo",
+  goal: "用一句话解释什么是 TypeScript",
+}))
+console.log(result)
 ```
 
 ---
@@ -83,21 +100,19 @@ const myProvider: LLMProvider = {
 
 ---
 
-## 3. Agent 基础
+## 3. RuntimeRunner 基础
 
 ### 3.1 同步运行
 
 ```typescript
-const agent = new Agent(provider, { maxTokens: 4096 })
-const result = await agent.run("Say hello")
-// => "done in 1 turns (completed)"
+const result = await collectText(runner.run({ sessionId: "s1", goal: "Say hello" }))
 ```
 
 ### 3.2 流式运行
 
 ```typescript
 let text = ""
-for await (const event of agent.runStreaming("What is 2+2?")) {
+for await (const event of runner.run({ sessionId: "s1", goal: "What is 2+2?" })) {
   switch (event.type) {
     case "text_delta":
       process.stdout.write(event.delta)
@@ -122,7 +137,9 @@ for await (const event of agent.runStreaming("What is 2+2?")) {
 ### 3.3 带 Criteria 运行
 
 ```typescript
-for await (const event of agent.runStreaming("打个招呼", {
+for await (const event of runner.run({
+  sessionId: "s1",
+  goal: "打个招呼",
   criteria: ["必须包含 hello", "不超过 20 字"],
 })) {
   // ...
@@ -132,7 +149,10 @@ for await (const event of agent.runStreaming("打个招呼", {
 ### 3.4 Extensions
 
 ```typescript
-const agent = new Agent(provider, {
+const runner = new RuntimeRunner({
+  provider,
+  sessionLog: new InMemorySessionLog(),
+  executionPlane: new LocalExecutionPlane(),
   maxTokens: 4096,
   extensions: { temperature: 0.1, top_p: 0.9 },
 })
@@ -141,32 +161,39 @@ const agent = new Agent(provider, {
 ### 3.5 中断
 
 ```typescript
-setTimeout(() => agent.interrupt(), 5000)
-const result = await agent.run("Write a long essay...")
+setTimeout(() => runner.interrupt(), 5000)
+const result = await collectText(runner.run({ sessionId: "s1", goal: "Write a long essay..." }))
 ```
 
-### 3.6 遥测
+### 3.6 会话恢复
 
 ```typescript
-// 运行期间实时查看
-console.log(agent.turn)     // 当前轮次
-console.log(agent.pressure) // 上下文压力 [0-1]
+// 同一 sessionId 会从 SessionLog 重放历史
+await collectText(runner.run({ sessionId: "chat-1", goal: "My name is Ada." }))
+await collectText(runner.run({ sessionId: "chat-1", goal: "What is my name?" }))
+
+// 崩溃后从中断点继续（不重复插入 run_started）
+for await (const e of runner.wake("chat-1")) { /* ... */ }
 ```
 
-### 3.7 AgentOptions
+### 3.7 RuntimeOptions
 
 ```typescript
-interface AgentOptions {
-  maxTokens: number              // 上下文窗口大小
-  maxTurns?: number              // 最大轮次（默认 25）
-  timeoutMs?: number             // 超时毫秒
-  extensions?: Record<string, unknown>  // LLM 参数
-  skillDir?: string              // 技能目录
+interface RuntimeOptions {
+  provider: LLMProvider
+  sessionLog: SessionLog
+  executionPlane: ExecutionPlane
+  maxTokens: number
+  maxTurns?: number
+  timeoutMs?: number
+  extensions?: Record<string, unknown>
+  skillDir?: string
   knowledgeSource?: KnowledgeSource
   signalSource?: SignalSource
   dreamStore?: DreamStore
   agentId?: string
   governance?: Governance
+  onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown>
 }
 ```
 
@@ -195,8 +222,13 @@ const add = tool({
   },
 })
 
-const agent = new Agent(provider, { maxTokens: 4096 })
-agent.register(add)
+const plane = new LocalExecutionPlane().register(add)
+const runner = new RuntimeRunner({
+  provider,
+  sessionLog: new InMemorySessionLog(),
+  executionPlane: plane,
+  maxTokens: 4096,
+})
 ```
 
 ### 4.2 内置 readFile 工具
@@ -204,13 +236,13 @@ agent.register(add)
 ```typescript
 import { readFile } from "deepstrike"
 
-agent.register(readFile())
+plane.register(readFile())
 ```
 
 ### 4.3 取消注册
 
 ```typescript
-agent.unregister("add")
+plane.unregister("add")
 ```
 
 ---
@@ -218,9 +250,12 @@ agent.unregister("add")
 ## 5. 技能 (Skills)
 
 ```typescript
-import { Agent, scanSkillDir } from "deepstrike"
+import { scanSkillDir } from "deepstrike"
 
-const agent = new Agent(provider, {
+const runner = new RuntimeRunner({
+  provider,
+  sessionLog: new InMemorySessionLog(),
+  executionPlane: new LocalExecutionPlane(),
   maxTokens: 4096,
   skillDir: "./skills",   // 内核自动注入 `skill` meta-tool
 })
@@ -244,7 +279,10 @@ const myKnowledge: KnowledgeSource = {
   },
 }
 
-const agent = new Agent(provider, {
+const runner = new RuntimeRunner({
+  provider,
+  sessionLog: new InMemorySessionLog(),
+  executionPlane: new LocalExecutionPlane(),
   maxTokens: 4096,
   knowledgeSource: myKnowledge,
 })
@@ -278,14 +316,17 @@ class MyDreamStore implements DreamStore {
   async search(agentId: string, query: string, topK: number): Promise<MemoryEntry[]> { ... }
 }
 
-const agent = new Agent(provider, {
+const runner = new RuntimeRunner({
+  provider,
+  sessionLog: new InMemorySessionLog(),
+  executionPlane: new LocalExecutionPlane(),
   maxTokens: 4096,
   dreamStore: new MyDreamStore(),
   agentId: "my-agent-1",
 })
 
 // 触发记忆整合
-const result = await agent.dream("my-agent-1", Date.now())
+const result = await runner.dream("my-agent-1", Date.now())
 console.log(`${result.sessionsProcessed} sessions, ${result.insightsExtracted} insights`)
 ```
 
@@ -317,7 +358,10 @@ gov.addPermissionRule("danger.*", "deny")
 gov.blockTool("rm_rf")
 gov.setRateLimit("api_call", 10, 60_000)
 
-const agent = new Agent(provider, {
+const runner = new RuntimeRunner({
+  provider,
+  sessionLog: new InMemorySessionLog(),
+  executionPlane: new LocalExecutionPlane(),
   maxTokens: 4096,
   governance: gov,
 })
@@ -342,8 +386,11 @@ const rx = gw.subscribe()
 // 注入外部信号
 gw.ingest({ kind: "interrupt", payload: {}, priority: 10 })
 
-// Agent 集成
-const agent = new Agent(provider, {
+// RuntimeRunner 集成
+const runner = new RuntimeRunner({
+  provider,
+  sessionLog: new InMemorySessionLog(),
+  executionPlane: new LocalExecutionPlane(),
   maxTokens: 4096,
   signalSource: rx,
 })
@@ -361,7 +408,7 @@ gw.destroy()
 ```typescript
 import { SinglePassHarness } from "deepstrike"
 
-const harness = new SinglePassHarness(agent)
+const harness = new SinglePassHarness(runner)
 const outcome = await harness.run({ goal: "Say hello" })
 console.log(outcome.passed)  // true
 console.log(outcome.result)
@@ -372,7 +419,7 @@ console.log(outcome.result)
 ```typescript
 import { EvalLoopHarness } from "deepstrike"
 
-const harness = new EvalLoopHarness(agent, {
+const harness = new EvalLoopHarness(runner, {
   gate: async (request, outcome) => outcome.result.includes("hello"),
   maxAttempts: 3,
 })
@@ -384,7 +431,7 @@ const outcome = await harness.run({ goal: "Greet the user" })
 ```typescript
 import { HarnessLoop } from "deepstrike"
 
-const harness = new HarnessLoop(agent, {
+const harness = new HarnessLoop(runner, {
   evalProvider: evalProvider,
   maxAttempts: 3,
   skillDir: "./skills",  // 通过时自动提取技能
@@ -435,9 +482,19 @@ const contract = new ContractBuilder("report-v1", "撰写关于 X 的研究报�
 ```typescript
 import { AgentPool } from "@deepstrike/sdk"
 
+function makeRunner(opts: Partial<RuntimeOptions> = {}) {
+  return new RuntimeRunner({
+    provider,
+    sessionLog: new InMemorySessionLog(),
+    executionPlane: new LocalExecutionPlane(),
+    maxTokens: 4096,
+    ...opts,
+  })
+}
+
 const pool = new AgentPool()
-  .add("executor", new Agent(provider, { maxTokens: 32_000, skillDir: "./skills" }))
-  .add("verifier", new Agent(provider, { maxTokens: 8_000 }))  // 无工具，低温
+  .add("executor", makeRunner({ maxTokens: 32_000, skillDir: "./skills" }))
+  .add("verifier", makeRunner({ maxTokens: 8_000 }))
 ```
 
 ### 11.3 CreatorVerifierMode — 双 Agent 协作
@@ -475,9 +532,9 @@ const note = HandoffBus.toContextNote(outcome.handoff)
 import { AgentPool, OrchestrationMode } from "@deepstrike/sdk"
 
 const pool = new AgentPool()
-  .add("orchestrator", new Agent(reasonerProvider, { maxTokens: 8_000 }))
-  .add("executor",     new Agent(executorProvider, { maxTokens: 32_000 }))
-  .add("verifier",     new Agent(verifierProvider, { maxTokens: 8_000 }))
+  .add("orchestrator", new RuntimeRunner({ provider: reasonerProvider, sessionLog: new InMemorySessionLog(), executionPlane: new LocalExecutionPlane(), maxTokens: 8_000 }))
+  .add("executor",     new RuntimeRunner({ provider: executorProvider, sessionLog: new InMemorySessionLog(), executionPlane: new LocalExecutionPlane(), maxTokens: 32_000 }))
+  .add("verifier",     new RuntimeRunner({ provider: verifierProvider, sessionLog: new InMemorySessionLog(), executionPlane: new LocalExecutionPlane(), maxTokens: 8_000 }))
 
 const mode = new OrchestrationMode(pool)
 const { outcome, contract } = await mode.run("为新能源汽车行业撰写市场分析")

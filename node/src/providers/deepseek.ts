@@ -1,19 +1,30 @@
 import OpenAI from "openai"
-import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent } from "../types.js"
+import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, RuntimePolicy } from "../types.js"
 import { OpenAIChatProvider } from "./openai.js"
 import { endpointProfiles } from "./profiles.js"
 import { omitExtensionKeys } from "./base.js"
 
 const DEEPSEEK_BASE = endpointProfiles["deepseek.openai"].baseURL
 
+const DEEPSEEK_POLICIES: Record<string, RuntimePolicy> = {
+  "deepseek-chat":      { maxTurns: 25 },
+  "deepseek-reasoner":  { maxTurns: 50 },
+  "deepseek-v4-flash":  { maxTurns: 20 },
+  "deepseek-v4-pro":    { maxTurns: 35 },
+}
+
 export class DeepSeekProvider extends OpenAIChatProvider {
   constructor(
     apiKey: string,
-    model: "deepseek-v4-flash" | "deepseek-v4-pro" = "deepseek-v4-flash",
+    model: string = "deepseek-v4-flash",
     retry?: { maxRetries: number; baseDelay: number },
     baseURL: string = DEEPSEEK_BASE,
   ) {
     super(apiKey, model, retry, baseURL)
+  }
+
+  override runtimePolicy(): RuntimePolicy {
+    return DEEPSEEK_POLICIES[this.model] ?? {}
   }
 
   async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {

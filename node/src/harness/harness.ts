@@ -1,4 +1,5 @@
-import type { Agent } from "../agent.js"
+import type { RuntimeRunner } from "../runtime/runner.js"
+import { collectText } from "../runtime/runner.js"
 import type { DoneEvent, TextDelta } from "../types.js"
 import { writeFile } from "fs/promises"
 import path from "path"
@@ -52,10 +53,11 @@ export type HarnessEvent =
   | { type: "done"; verdict: Verdict; iterations: number; totalTokens: number; status: string }
   | { type: "max_attempts_reached" }
 
-async function runOnce(agent: Agent, req: HarnessRequest): Promise<HarnessOutcome> {
+async function runOnce(runner: RuntimeRunner, req: HarnessRequest): Promise<HarnessOutcome> {
   let text = ""
   let done: DoneEvent | undefined
-  for await (const evt of agent.runStreaming(req.goal, req.criteria?.map(c => c.text), req.extensions)) {
+  const sessionId = crypto.randomUUID()
+  for await (const evt of runner.run({ sessionId, goal: req.goal, criteria: req.criteria?.map(c => c.text), extensions: req.extensions })) {
     if (evt.type === "text_delta") text += (evt as TextDelta).delta
     else if (evt.type === "done") done = evt as DoneEvent
   }
@@ -67,19 +69,19 @@ export interface QualityGate {
 }
 
 export class SinglePassHarness {
-  constructor(private agent: Agent) {}
+  constructor(private runner: RuntimeRunner) {}
   async run(request: HarnessRequest): Promise<HarnessOutcome> {
-    return { ...await runOnce(this.agent, request), passed: true }
+    return { ...await runOnce(this.runner, request), passed: true }
   }
 }
 
 export class EvalLoopHarness {
-  constructor(private agent: Agent, private gate: QualityGate, private maxAttempts = 3) {}
+  constructor(private runner: RuntimeRunner, private gate: QualityGate, private maxAttempts = 3) {}
 
   async run(request: HarnessRequest): Promise<HarnessOutcome> {
     let outcome: HarnessOutcome = { result: "", passed: false, iterations: 0, totalTokens: 0, status: "error" }
     for (let i = 0; i < this.maxAttempts; i++) {
-      outcome = await runOnce(this.agent, request)
+      outcome = await runOnce(this.runner, request)
       if (await this.gate.evaluate(request, outcome)) return { ...outcome, passed: true }
     }
     return outcome
@@ -96,7 +98,7 @@ export class HarnessLoop {
   private skillDir?: string
 
   constructor(
-    private agent: Agent,
+    private runner: RuntimeRunner,
     private evalProvider: import("../types.js").LLMProvider,
     options: HarnessLoopOptions = {},
   ) {
@@ -109,8 +111,6 @@ export class HarnessLoop {
     const pipeline = new kernel.EvalPipeline({ extractSkillOnPass: true })
     const criteria = request.criteria ?? []
 
-    // history tracks the full conversation; agent sees only the current goal message
-    // but we inject feedback as user messages to guide revision without discarding prior output
     let currentGoal = request.goal
     let lastIterations = 0
     let lastTotalTokens = 0
@@ -118,14 +118,13 @@ export class HarnessLoop {
     let lastResult = ""
 
     for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
-      // Stream agent output directly to caller
-      for await (const evt of this.agent.runStreaming(currentGoal, criteria.map(c => c.text), request.extensions)) {
+      const sessionId = crypto.randomUUID()
+      for await (const evt of this.runner.run({ sessionId, goal: currentGoal, criteria: criteria.map(c => c.text), extensions: request.extensions })) {
         if (evt.type === "text_delta") {
           lastResult += (evt as TextDelta).delta
           yield { type: "token", text: (evt as TextDelta).delta }
         } else if (evt.type === "tool_call") {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const tc = evt as any
+          const tc = evt as unknown as { id: string; name: string }
           yield { type: "tool_call", id: tc.id, name: tc.name }
         } else if (evt.type === "tool_delta") {
           const td = evt as unknown as { callId: string; delta?: string; chunk?: Record<string, unknown> }
@@ -134,8 +133,7 @@ export class HarnessLoop {
           const ts = evt as unknown as { callId: string; suspensionId: string; payload?: Record<string, unknown> }
           yield { type: "tool_suspend", callId: ts.callId, suspensionId: ts.suspensionId, ...(ts.payload ? { payload: ts.payload } : {}) }
         } else if (evt.type === "tool_result") {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const tr = evt as any
+          const tr = evt as unknown as { callId: string; content: string; isError: boolean }
           yield { type: "tool_result", callId: tr.callId, content: tr.content, isError: tr.isError }
         } else if (evt.type === "done") {
           const d = evt as DoneEvent
@@ -145,14 +143,12 @@ export class HarnessLoop {
         }
       }
 
-      // Checkpoint: evaluator judges the completed output
       yield { type: "supervising" }
 
       const evalAction = pipeline.feedOutcome(request.goal, criteria, lastResult, attempt)
       if (evalAction.kind !== "evaluate") break
 
       let evalText = ""
-      // Wrap harness eval messages in a RenderedContext (system messages → systemText, rest → turns).
       const evalMsgs = evalAction.messages ?? []
       const evalContext = {
         systemText: evalMsgs.filter((m: { role: string }) => m.role === "system").map((m: { content: string }) => m.content).join("\n\n"),
@@ -185,8 +181,6 @@ export class HarnessLoop {
       }
 
       yield { type: "revising", verdict }
-
-      // Inject feedback as next turn's goal — agent sees its prior output + evaluator notes
       currentGoal = `${request.goal}\n\n[Attempt ${attempt} feedback: ${verdict.feedback}]`
       lastResult = ""
       pipeline.reset()
@@ -195,3 +189,6 @@ export class HarnessLoop {
     yield { type: "max_attempts_reached" }
   }
 }
+
+// Re-export collectText so harness callers can use it without knowing runner internals.
+export { collectText }

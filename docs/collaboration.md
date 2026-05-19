@@ -1,12 +1,12 @@
 # Collaboration Layer
 
-DeepStrike's collaboration layer lets you wire multiple agents together into structured multi-agent workflows — without rewriting your single-agent code. It sits between the Agent runtime (Layer 1) and your application (Layer 4) as two composable layers of primitives.
+DeepStrike's collaboration layer lets you wire multiple runners together into structured multi-runner workflows. It sits between the RuntimeRunner layer (Layer 1) and your application (Layer 4) as two composable layers of primitives.
 
 ---
 
-## Why multi-agent?
+## Why multi-runner?
 
-A single agent re-using its own context to retry a failed task is vulnerable to **cost-of-maintaining bias** — the model's effort shifts from solving the problem to defending its prior choices. The collaboration layer solves this by separating three concerns across independent agent instances:
+A single runner re-using its own context to retry a failed task is vulnerable to **cost-of-maintaining bias** — the model's effort shifts from solving the problem to defending its prior choices. The collaboration layer solves this by separating three concerns across independent runner instances:
 
 | Role | Responsibility | Context policy |
 |------|---------------|---------------|
@@ -29,7 +29,7 @@ A single agent re-using its own context to retry a failed task is vulnerable to 
 │    VerificationContract │ AgentPool │ ContractDrivenHarness  │
 │    HandoffBus           │ TaskLane                           │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 1: Agent Runtime  (Agent, HarnessLoop, DreamStore)    │
+│  Layer 1: RuntimeRunner  (SessionLog, ExecutionPlane, DreamStore) │
 ├──────────────────────────────────────────────────────────────┤
 │  Layer 0: Kernel  (ContextManager, TaskGraph, EvalPipeline)  │
 └──────────────────────────────────────────────────────────────┘
@@ -111,23 +111,15 @@ sm.addSystemMessage(text, Math.ceil(text.length / 4))
 
 ## AgentPool
 
-`AgentPool` manages a set of role-specific Agent instances. The key invariant: **each role has its own Agent instance with its own history partition**. The verifier never sees what the executor wrote.
+`AgentPool` manages a set of role-specific `RuntimeRunner` instances. The key invariant: **each role has its own runner with its own session log partition**. The verifier never sees what the executor wrote.
 
 ```typescript
-import { AgentPool, Agent, AnthropicProvider } from "@deepstrike/sdk"
+import { AgentPool } from "@deepstrike/sdk"
 
 const pool = new AgentPool()
-  .add("executor", new Agent(executorProvider, {
-    maxTokens: 32_000,
-    skillDir: "./skills",
-  }))
-  .add("verifier", new Agent(verifierProvider, {
-    maxTokens: 8_000,
-    // no tools — verifier must only read, never act
-  }))
-  .add("orchestrator", new Agent(reasonerProvider, {
-    maxTokens: 8_000,
-  }))
+  .add("executor", executorRunner)
+  .add("verifier", verifierRunner)       // no tools — verifier must only read, never act
+  .add("orchestrator", orchestratorRunner)
 ```
 
 **Pool API:**
@@ -178,8 +170,8 @@ const contract = new ContractBuilder("sort-fn", "Write a Python sort function")
   .build()
 
 const pool = new AgentPool()
-  .add("executor", executorAgent)
-  .add("verifier", verifierAgent)
+  .add("executor", executorRunner)
+  .add("verifier", verifierRunner)
 
 const harness = new ContractDrivenHarness(pool, contract, { maxAttempts: 3 })
 const outcome = await harness.run()
@@ -201,7 +193,7 @@ contract = (ContractBuilder("sort-fn", "Write a Python sort function")
     .criterion("handles-empty","Function handles an empty list")
     .build())
 
-pool = AgentPool().add("executor", executor_agent).add("verifier", verifier_agent)
+pool = AgentPool().add("executor", executor_runner).add("verifier", verifier_runner)
 
 harness = ContractDrivenHarness(pool, contract, ContractHarnessOptions(max_attempts=3))
 outcome = await harness.run()
@@ -271,8 +263,8 @@ The simplest mode — two agents, one contract. Wraps `ContractDrivenHarness` an
 import { AgentPool, CreatorVerifierMode, ContractBuilder, HandoffBus } from "@deepstrike/sdk"
 
 const pool = new AgentPool()
-  .add("executor", executorAgent)
-  .add("verifier", verifierAgent)
+  .add("executor", executorRunner)
+  .add("verifier", verifierRunner)
 
 const mode = new CreatorVerifierMode(pool, { maxAttempts: 3 })
 
@@ -291,7 +283,7 @@ if (mode.isDrifting(0.05)) {
 ```python
 from deepstrike import AgentPool, CreatorVerifierMode, HandoffBus
 
-pool = AgentPool().add("executor", executor_agent).add("verifier", verifier_agent)
+pool = AgentPool().add("executor", executor_runner).add("verifier", verifier_runner)
 mode = CreatorVerifierMode(pool, max_attempts=3)
 
 outcome = await mode.run(contract)
@@ -310,9 +302,9 @@ Three-role mode — the orchestrator produces a `VerificationContract` from a ra
 import { AgentPool, OrchestrationMode } from "@deepstrike/sdk"
 
 const pool = new AgentPool()
-  .add("orchestrator", reasonerAgent)   // strong reasoning model
-  .add("executor",     executorAgent)
-  .add("verifier",     verifierAgent)
+  .add("orchestrator", reasonerRunner)   // strong reasoning model
+  .add("executor",     executorRunner)
+  .add("verifier",     verifierRunner)
 
 const mode = new OrchestrationMode(pool)
 
@@ -329,9 +321,9 @@ console.log(outcome.handoff)
 from deepstrike import AgentPool, OrchestrationMode
 
 pool = (AgentPool()
-    .add("orchestrator", reasoner_agent)
-    .add("executor",     executor_agent)
-    .add("verifier",     verifier_agent))
+    .add("orchestrator", reasoner_runner)
+    .add("executor",     executor_runner)
+    .add("verifier",     verifier_runner))
 
 mode = OrchestrationMode(pool)
 outcome, contract = await mode.run("Write a market analysis for the EV sector")
@@ -408,13 +400,7 @@ Role-specific model selection improves quality and reduces cost:
 
 ```typescript
 const pool = new AgentPool()
-  .add("orchestrator", new Agent(new AnthropicProvider({
-    model: "claude-opus-4-7", thinkingBudget: 8000,
-  }), { maxTokens: 8_000 }))
-  .add("executor", new Agent(new AnthropicProvider({
-    model: "claude-sonnet-4-6",
-  }), { maxTokens: 32_000, skillDir: "./skills" }))
-  .add("verifier", new Agent(new AnthropicProvider({
-    model: "claude-sonnet-4-6",
-  }), { maxTokens: 8_000 }))
+  .add("orchestrator", orchestratorRunner) // strong reasoning; small tool surface
+  .add("executor", executorRunner)         // larger context; task tools registered
+  .add("verifier", verifierRunner)         // deterministic; no mutating tools
 ```

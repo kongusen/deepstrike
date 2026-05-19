@@ -1,10 +1,19 @@
 import { GoogleGenerativeAI, type Content, type Part, type Tool } from "@google/generative-ai"
-import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider } from "../types.js"
+import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, normalizeToolCall } from "./base.js"
 import { endpointProfiles } from "./profiles.js"
 
 const GEMINI_BASE = (endpointProfiles as Record<string, { baseURL: string }>)["gemini.google"].baseURL
+
+const GEMINI_POLICIES: Record<string, RuntimePolicy> = {
+  "gemini-2.5-pro":        { maxTurns: 35 },
+  "gemini-2.5-flash":      { maxTurns: 20 },
+  "gemini-2.0-flash":      { maxTurns: 15 },
+  "gemini-2.0-flash-lite": { maxTurns: 10 },
+  "gemini-1.5-pro":        { maxTurns: 30 },
+  "gemini-1.5-flash":      { maxTurns: 15 },
+}
 
 function buildContents(turns: Message[]): Content[] {
   const contents: Content[] = []
@@ -60,6 +69,10 @@ export class GeminiProvider implements LLMProvider {
     this.circuit = new CircuitBreaker()
     this.maxRetries = retry.maxRetries
     this.baseDelay = retry.baseDelay
+  }
+
+  runtimePolicy(): RuntimePolicy {
+    return GEMINI_POLICIES[this.model] ?? {}
   }
 
   async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {

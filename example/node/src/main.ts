@@ -1,6 +1,6 @@
 import "dotenv/config"
 import * as readline from "readline"
-import { makeAgent } from "./agent.js"
+import { makeRuntime } from "./runtime.js"
 import { makeProvider } from "./provider.js"
 import { makeNoteJudge, NOTE_CRITERIA } from "./harness/note_judge.js"
 import { makeContributionJudge, CONTRIBUTION_CRITERIA } from "./harness/contribution_judge.js"
@@ -16,6 +16,8 @@ import type { TextDelta, DoneEvent, PermissionRequestEvent } from "@deepstrike/s
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
+const criteria = (items: string[]) => items.map(text => ({ text, required: true }))
+
 function banner(msg: string) {
   console.log(`\n\x1b[36m── ${msg} ${"─".repeat(Math.max(0, 52 - msg.length))}\x1b[0m`)
 }
@@ -24,7 +26,7 @@ function ok(msg: string) { console.log(`\x1b[32m✓\x1b[0m ${msg}`) }
 function warn(msg: string) { console.log(`\x1b[33m⚠\x1b[0m ${msg}`) }
 function err(msg: string) { console.log(`\x1b[31m✗\x1b[0m ${msg}`) }
 
-async function streamRun(label: string, agent: ReturnType<typeof makeAgent>): Promise<string> {
+async function streamRun(label: string, agent: ReturnType<typeof makeRuntime>): Promise<string> {
   banner(label)
   let text = ""
   for await (const evt of agent.runStreaming(label)) {
@@ -46,7 +48,7 @@ async function streamRun(label: string, agent: ReturnType<typeof makeAgent>): Pr
 // ─── capture a personal note ─────────────────────────────────────────────────
 
 async function processCapture(raw: string, source: "personal" | "community" = "personal", contributor?: string) {
-  const agent = makeAgent("capture")
+  const agent = makeRuntime("capture")
   agent.register(searchArchive, fetchAndClip, exportTool)
 
   const goal = `Organize this note into the FlashNote knowledge base.
@@ -64,7 +66,7 @@ Note to organize:
 ${raw}`
 
   const harness = makeNoteJudge(agent)
-  const outcome = await harness.run({ goal, criteria: NOTE_CRITERIA })
+  const outcome = await harness.run({ goal, criteria: criteria(NOTE_CRITERIA) })
 
   const note = parseNoteOutput(outcome.result, raw, source, contributor)
   if (note) {
@@ -101,7 +103,7 @@ async function processFile(filePath: string) {
 
 async function processResearch(topic: string) {
   banner(`research: ${topic}`)
-  const agent = makeAgent("research")
+  const agent = makeRuntime("research")
   agent.register(webSearch, fetchAndClip, searchArchive, exportTool)
 
   const goal = `Research this topic thoroughly: "${topic}"
@@ -122,7 +124,17 @@ Steps:
 All claims must cite a URL or archive note ID.`
 
   const harness = makeReportJudge(agent, makeProvider())
-  const outcome = await harness.run({ goal, criteria: REPORT_CRITERIA })
+  let report = ""
+  let passed = false
+  for await (const event of harness.runStreaming({ goal, criteria: criteria(REPORT_CRITERIA) })) {
+    if (event.type === "token") {
+      process.stdout.write(event.text)
+      report += event.text
+    } else if (event.type === "done") {
+      passed = event.verdict.passed
+      process.stdout.write("\n")
+    }
+  }
 
   // Save as research note
   const note = {
@@ -132,12 +144,12 @@ All claims must cite a URL or archive note ID.`
     summary: `Research: ${topic.slice(0, 60)}`,
     connections: [],
     source: "personal" as const,
-    raw: outcome.result,
-    qualityScore: outcome.passed ? 0.9 : 0.7,
+    raw: report,
+    qualityScore: passed ? 0.9 : 0.7,
     createdAt: Date.now(),
   }
   await saveNote(note)
-  ok(`research saved → archive/${note.id}.json  [passed=${outcome.passed}]`)
+  ok(`research saved → archive/${note.id}.json  [passed=${passed}]`)
 }
 
 // ─── structured interview ────────────────────────────────────────────────────
@@ -147,7 +159,7 @@ async function processInterview(contributor: string, topic: string) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
   const ask = (q: string) => new Promise<string>(res => rl.question(q, res))
 
-  const agent = makeAgent("capture")
+  const agent = makeRuntime("capture")
   agent.register(searchArchive)
 
   const exchanges: string[] = []
@@ -185,7 +197,7 @@ async function processInterview(contributor: string, topic: string) {
   const raw = `Interview with ${contributor} on "${topic}"\n\n${exchanges.join("\n\n")}`
   banner("processing interview")
 
-  const processAgent = makeAgent("capture")
+  const processAgent = makeRuntime("capture")
   processAgent.register(searchArchive, exportTool)
 
   const goal = `Extract and organize insights from this interview.
@@ -195,7 +207,7 @@ Output JSON with type="insight", tags, summary, connections, and a body field co
 ${raw}`
 
   const harness = makeContributionJudge(processAgent)
-  const outcome = await harness.run({ goal, criteria: CONTRIBUTION_CRITERIA })
+  const outcome = await harness.run({ goal, criteria: criteria(CONTRIBUTION_CRITERIA) })
 
   const note = parseNoteOutput(outcome.result, raw, "community", contributor)
   if (note) {
@@ -218,7 +230,7 @@ ${raw}`
 
 async function processExport(format: string) {
   banner(`export: ${format}`)
-  const agent = makeAgent("capture")
+  const agent = makeRuntime("capture")
   agent.register(exportTool)
   const result = await agent.run(`Call the export tool with format="${format}".`)
   console.log(result)
@@ -226,7 +238,7 @@ async function processExport(format: string) {
 
 async function processExportDataset(format: string, minQuality: number, anonymize: boolean) {
   banner(`export-dataset: ${format} (min_quality=${minQuality}${anonymize ? ", anonymize" : ""})`)
-  const agent = makeAgent("capture")
+  const agent = makeRuntime("capture")
   agent.register(exportDataset)
   const result = await agent.run(
     `Call export_dataset with format="${format}", min_quality=${minQuality}, anonymize=${anonymize}.`,
@@ -238,7 +250,7 @@ async function processExportDataset(format: string, minQuality: number, anonymiz
 
 async function processCluster(topic: string) {
   banner(`cluster: ${topic}`)
-  const agent = makeAgent("capture")
+  const agent = makeRuntime("capture")
   agent.register(searchArchive, exportTool)
   const result = await agent.run(
     `Find notes related to "${topic}" using search_archive, then use the synthesize_cluster skill to fuse them into a single insight note. Output the insight JSON.`,
@@ -257,8 +269,8 @@ async function processCluster(topic: string) {
 async function shutdown() {
   banner("shutting down — saving memory")
   try {
-    const agent = makeAgent("capture")
-    const result = await agent.dream("flashnote")
+    const runtime = makeRuntime("capture")
+    const result = await runtime.dream("flashnote")
     ok(`dream complete: +${result.entriesAdded} memories, ${result.sessionsProcessed} sessions processed`)
   } catch (e) {
     warn(`dream skipped: ${String(e)}`)

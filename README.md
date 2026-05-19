@@ -43,11 +43,25 @@ npm install @deepstrike/sdk
 ```
 
 ```typescript
-import { Agent, AnthropicProvider, tool } from "@deepstrike/sdk"
+import {
+  AnthropicProvider,
+  InMemorySessionLog,
+  LocalExecutionPlane,
+  RuntimeRunner,
+  collectText,
+  tool,
+} from "@deepstrike/sdk"
 
-const agent = new Agent(new AnthropicProvider("sk-..."), { maxTokens: 32_000 })
-agent.register(tool("add", "Add two numbers.", schema, async ({ x, y }) => String(x + y)))
-await agent.run("What is 2 + 3?")
+const add = tool("add", "Add two numbers.", schema, async ({ x, y }) => String(x + y))
+const plane = new LocalExecutionPlane().register(add)
+const runner = new RuntimeRunner({
+  provider: new AnthropicProvider("sk-..."),
+  executionPlane: plane,
+  sessionLog: new InMemorySessionLog(),
+  maxTokens: 32_000,
+})
+
+await collectText(runner.run({ sessionId: "demo", goal: "What is 2 + 3?" }))
 ```
 
 **Python**
@@ -57,29 +71,72 @@ pip install deepstrike
 ```
 
 ```python
-from deepstrike import Agent, AnthropicProvider, tool
+from deepstrike import (
+    AnthropicProvider,
+    InMemorySessionLog,
+    LocalExecutionPlane,
+    RuntimeOptions,
+    RuntimeRunner,
+    collect_text,
+    tool,
+)
 
 @tool
 def add(x: int, y: int) -> int:
     """Add two numbers."""
     return x + y
 
-agent = Agent(AnthropicProvider(api_key="..."), max_tokens=32_000)
-agent.register(add)
-await agent.run("What is 2 + 3?")
+plane = LocalExecutionPlane().register(add)
+runner = RuntimeRunner(RuntimeOptions(
+    provider=AnthropicProvider(api_key="..."),
+    session_log=InMemorySessionLog(),
+    execution_plane=plane,
+    max_tokens=32_000,
+))
+
+await collect_text(runner.run_streaming("What is 2 + 3?"))
 ```
 
 **Rust**
 
 ```toml
 [dependencies]
-deepstrike-sdk = "0.1.13"
+deepstrike-sdk = "0.1.14"
 ```
 
 ```rust
-let agent = Agent::new(AnthropicProvider::new("sk-..."), AgentOptions::new(32_000));
-let result = agent.run("What is 2 + 3?").await?;
+use std::sync::Arc;
+use deepstrike_sdk::{
+    AnthropicProvider, InMemorySessionLog, LocalExecutionPlane,
+    RegisteredTool, RuntimeOptions, RuntimeRunner,
+};
+
+let mut plane = LocalExecutionPlane::new();
+plane.register(/* RegisteredTool::text(...) */);
+let runner = RuntimeRunner::new(RuntimeOptions {
+    provider: Box::new(AnthropicProvider::new("sk-...")),
+    execution_plane: Some(Box::new(plane)),
+    session_log: Some(Arc::new(InMemorySessionLog::new())),
+    session_id: None,
+    max_tokens: 32_000,
+    max_turns: Some(25),
+    timeout_ms: None,
+    extensions: None,
+    agent_id: None,
+    system_prompt: None,
+    initial_memory: vec![],
+    skill_dir: None,
+    dream_store: None,
+    knowledge_source: None,
+    signal_source: None,
+    governance: None,
+    on_tool_suspend: None,
+});
+let answer = runner.execute("What is 2 + 3?").await?;
+// runner.run_streaming(...).await?  — streaming; runner.dream(...).await? — idle pipeline
 ```
+
+All SDKs use `RuntimeRunner` + `SessionLog` + `LocalExecutionPlane` (see `docs/spec-runtime-v1.md`).
 
 ---
 
@@ -112,7 +169,7 @@ sm.feedToolResults(res) → CallLLM { ... }   (next turn)
 Each SDK wraps the kernel and handles all I/O:
 
 ```
-Agent.runStreaming(goal)
+RuntimeRunner.run({ sessionId, goal })
 │
 ├─ Startup
 │   ├─ scan skill/*.md → sm.setAvailableSkills()   [skills]
@@ -130,7 +187,7 @@ Agent.runStreaming(goal)
 │       └─ regular tools   → executeTools()
 │
 └─ After session
-    └─ agent.dream(agentId) → IdlePipeline → DreamStore [memory]
+    └─ runner.dream(agentId) → IdlePipeline → DreamStore [memory]
 ```
 
 ---
@@ -161,13 +218,13 @@ Skills can be created at runtime by `HarnessLoop` when a successful run produces
 Two-phase pipeline:
 
 1. **In-session**: LLM calls `memory(query)` → `DreamStore.search()` returns relevant past experiences
-2. **Post-session**: `agent.dream(agentId)` runs `IdlePipeline` — sessions are analyzed, insights synthesized by LLM, curated (dedup + conflict resolution), and committed to `DreamStore`
+2. **Post-session**: `runner.dream(agentId)` runs `IdlePipeline` — sessions are analyzed, insights synthesized by LLM, curated (dedup + conflict resolution), and committed to `DreamStore`
 
 Implement `DreamStore` to connect any storage backend (vector DB, Postgres, etc.).
 
 ### Knowledge — *external facts*
 
-`KnowledgeSource.retrieve(query)` is called when the LLM invokes the `knowledge` meta-tool. Connect any RAG system, API, or document store. Unlike memory, knowledge is read-only and not updated by the agent.
+`KnowledgeSource.retrieve(query)` is called when the LLM invokes the `knowledge` meta-tool. Connect any RAG system, API, or document store. Unlike memory, knowledge is read-only and not updated by the runner.
 
 ### Harness — *quality control*
 
@@ -175,7 +232,7 @@ Implement `DreamStore` to connect any storage backend (vector DB, Postgres, etc.
 
 ```
 attempt 1 → EvalPipeline → failed, feedback="missing error handling"
-attempt 2 → agent.run(goal + feedback) → EvalPipeline → passed
+attempt 2 → runner.run(goal + feedback) → EvalPipeline → passed
           → write skill_candidate to skill/*.md
 ```
 
@@ -250,7 +307,9 @@ cargo build
 cd node && npm install && npm run build
 
 # Python SDK (requires maturin)
-cd python && maturin develop
+cd python && python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]" 2>/dev/null || pip install maturin pytest pytest-asyncio && maturin develop --release
+# If you used `maturin develop --skip-install`, also run: pip install -e . --no-deps
 
 # Run tests
 cargo test

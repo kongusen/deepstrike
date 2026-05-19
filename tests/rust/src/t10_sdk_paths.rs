@@ -50,16 +50,44 @@ fn make_provider() -> OpenAIProvider {
     OpenAIProvider::with_base_url(key, model, url)
 }
 
+fn make_runner_with<F>(setup: F) -> RuntimeRunner
+where
+    F: FnOnce(&mut LocalExecutionPlane, &mut RuntimeOptions),
+{
+    let mut plane = LocalExecutionPlane::new();
+    let mut opts = RuntimeOptions {
+        provider: Box::new(make_provider()),
+        execution_plane: None,
+        session_log: Some(Arc::new(InMemorySessionLog::new())),
+        session_id: None,
+        max_tokens: 4096,
+        max_turns: Some(25),
+        timeout_ms: None,
+        extensions: None,
+        agent_id: None,
+        system_prompt: None,
+        initial_memory: vec![],
+        skill_dir: None,
+        dream_store: None,
+        knowledge_source: None,
+        signal_source: None,
+        governance: None,
+        on_tool_suspend: None,
+    };
+    setup(&mut plane, &mut opts);
+    opts.execution_plane = Some(Box::new(plane));
+    RuntimeRunner::new(opts)
+}
+
 // ─── system_prompt ───────────────────────────────────────────────────────────
 
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
 async fn system_prompt_is_followed() {
-    let agent = Agent::new(make_provider(), AgentOptions {
-        system_prompt: Some("You are a pirate. Always end every reply with 'Arrr!'".into()),
-        ..AgentOptions::new(4096)
+    let runner = make_runner_with(|_, opts| {
+        opts.system_prompt = Some("You are a pirate. Always end every reply with 'Arrr!'".into());
     });
-    let result = agent.run("Say hello.").await.unwrap();
+    let result = runner.execute("Say hello.").await.unwrap();
     assert!(result.to_lowercase().contains("arrr"), "expected 'Arrr!' in: {result}");
 }
 
@@ -68,11 +96,10 @@ async fn system_prompt_is_followed() {
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
 async fn initial_memory_is_recalled() {
-    let agent = Agent::new(make_provider(), AgentOptions {
-        initial_memory: vec!["The user's favourite colour is chartreuse.".into()],
-        ..AgentOptions::new(4096)
+    let runner = make_runner_with(|_, opts| {
+        opts.initial_memory = vec!["The user's favourite colour is chartreuse.".into()];
     });
-    let result = agent.run("What is the user's favourite colour? Answer in one word.").await.unwrap();
+    let result = runner.execute("What is the user's favourite colour? Answer in one word.").await.unwrap();
     assert!(result.to_lowercase().contains("chartreuse"), "expected 'chartreuse' in: {result}");
 }
 
@@ -83,12 +110,11 @@ async fn initial_memory_is_recalled() {
 async fn save_session_called_after_run() {
     let saved = Arc::new(Mutex::new(vec![]));
     let store = TrackingDreamStore { saved: saved.clone() };
-    let agent = Agent::new(make_provider(), AgentOptions {
-        dream_store: Some(Box::new(store)),
-        agent_id: Some("test-agent".into()),
-        ..AgentOptions::new(4096)
+    let runner = make_runner_with(|_, opts| {
+        opts.dream_store = Some(Box::new(store));
+        opts.agent_id = Some("test-agent".into());
     });
-    agent.run("Reply \"ok\".").await.unwrap();
+    runner.execute("Reply \"ok\".").await.unwrap();
     assert!(!saved.lock().unwrap().is_empty(), "save_session should have been called");
     assert_eq!(saved.lock().unwrap()[0].agent_id, "test-agent");
 }
@@ -100,11 +126,10 @@ async fn save_session_called_after_run() {
 async fn knowledge_init_called_before_run() {
     let init_count = Arc::new(Mutex::new(0u32));
     let ks = TrackingKnowledgeSource { init_count: init_count.clone() };
-    let agent = Agent::new(make_provider(), AgentOptions {
-        knowledge_source: Some(Box::new(ks)),
-        ..AgentOptions::new(4096)
+    let runner = make_runner_with(|_, opts| {
+        opts.knowledge_source = Some(Box::new(ks));
     });
-    agent.run("Reply \"ok\".").await.unwrap();
+    runner.execute("Reply \"ok\".").await.unwrap();
     assert!(*init_count.lock().unwrap() >= 1, "init() should have been called");
 }
 
@@ -113,11 +138,10 @@ async fn knowledge_init_called_before_run() {
 async fn knowledge_init_called_once_per_run() {
     let init_count = Arc::new(Mutex::new(0u32));
     let ks = TrackingKnowledgeSource { init_count: init_count.clone() };
-    let agent = Agent::new(make_provider(), AgentOptions {
-        knowledge_source: Some(Box::new(ks)),
-        ..AgentOptions::new(4096)
+    let runner = make_runner_with(|_, opts| {
+        opts.knowledge_source = Some(Box::new(ks));
     });
-    agent.run("Reply \"ok\".").await.unwrap();
+    runner.execute("Reply \"ok\".").await.unwrap();
     assert_eq!(*init_count.lock().unwrap(), 1);
 }
 
@@ -129,8 +153,8 @@ async fn harness_loop_streaming_emits_events() {
     use futures::StreamExt;
     use deepstrike_sdk::harness::{HarnessEvent, HarnessRequest, Criterion};
 
-    let agent = Agent::new(make_provider(), AgentOptions::new(4096));
-    let harness = HarnessLoop::new(&agent, make_provider(), 2, None);
+    let runner = make_runner_with(|_, _| {});
+    let harness = HarnessLoop::new(&runner, make_provider(), 2, None);
     let req = HarnessRequest {
         goal: "What is 6 * 7? Output only the number.".into(),
         criteria: vec![Criterion::required("Answer must be 42")],
@@ -166,8 +190,8 @@ async fn harness_loop_done_verdict_has_details() {
     use futures::StreamExt;
     use deepstrike_sdk::harness::{HarnessEvent, HarnessRequest, Criterion};
 
-    let agent = Agent::new(make_provider(), AgentOptions::new(4096));
-    let harness = HarnessLoop::new(&agent, make_provider(), 2, None);
+    let runner = make_runner_with(|_, _| {});
+    let harness = HarnessLoop::new(&runner, make_provider(), 2, None);
     let req = HarnessRequest {
         goal: "Output the number 99.".into(),
         criteria: vec![

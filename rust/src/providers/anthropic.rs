@@ -5,7 +5,7 @@ use futures::{Stream, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
 
-use super::{LLMProvider, StreamEvent};
+use super::{LLMProvider, RuntimePolicy, StreamEvent};
 use crate::{Error, Result};
 
 pub struct AnthropicProvider {
@@ -126,6 +126,15 @@ fn tools_to_anthropic(tools: &[ToolSchema]) -> Vec<Value> {
 
 #[async_trait]
 impl LLMProvider for AnthropicProvider {
+    fn runtime_policy(&self) -> RuntimePolicy {
+        match self.model.as_str() {
+            "claude-opus-4-7" | "claude-opus-4-6" => RuntimePolicy { max_turns: Some(50), timeout_ms: None },
+            "claude-sonnet-4-6" => RuntimePolicy { max_turns: Some(25), timeout_ms: None },
+            "claude-haiku-4-5" | "claude-haiku-4-5-20251001" => RuntimePolicy { max_turns: Some(15), timeout_ms: None },
+            _ => RuntimePolicy::default(),
+        }
+    }
+
     async fn stream(
         &self,
         context: &RenderedContext,
@@ -168,6 +177,15 @@ impl LLMProvider for AnthropicProvider {
         let stream = parse_anthropic_sse(byte_stream);
         Ok(Box::new(Box::pin(stream)))
     }
+}
+
+fn anthropic_usage_total(usage: &Value) -> Option<u32> {
+    let input = usage.get("input_tokens")?.as_u64()?;
+    let output = usage
+        .get("output_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    Some((input + output) as u32)
 }
 
 fn parse_anthropic_sse(
@@ -226,6 +244,21 @@ fn parse_anthropic_sse(
                             let arguments: Value = serde_json::from_str(&args_buf).unwrap_or(Value::Object(Default::default()));
                             return Some((Ok(StreamEvent::ToolCall { id, name, arguments }), (stream, buf, tool_blocks)));
                         }
+                    } else if kind == "message_start" || kind == "message_delta" {
+                        if let Some(total) = evt
+                            .get("usage")
+                            .and_then(anthropic_usage_total)
+                            .or_else(|| {
+                                evt.get("message")
+                                    .and_then(|m| m.get("usage"))
+                                    .and_then(anthropic_usage_total)
+                            })
+                        {
+                            return Some((
+                                Ok(StreamEvent::Usage { total_tokens: total }),
+                                (stream, buf, tool_blocks),
+                            ));
+                        }
                     }
                     continue;
                 }
@@ -250,6 +283,12 @@ mod tests {
     use super::*;
     use compact_str::CompactString;
     use deepstrike_core::types::message::{ContentPart, Message, ToolCall};
+
+    #[test]
+    fn anthropic_usage_total_sums_input_and_output() {
+        let usage = json!({ "input_tokens": 100, "output_tokens": 50 });
+        assert_eq!(anthropic_usage_total(&usage), Some(150));
+    }
 
     #[test]
     fn context_replays_tool_calls_and_results_as_blocks() {

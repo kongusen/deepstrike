@@ -1,5 +1,5 @@
 """
-hello_agent — Sprint 1 end-to-end demo.
+hello_runtime — RuntimeRunner end-to-end demo.
 
 Usage:
     cd deepstrike/python
@@ -9,14 +9,32 @@ Usage:
 import asyncio
 import os
 import sys
-from deepstrike import Agent, AnthropicProvider, read_file, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent
+from deepstrike import (
+    AnthropicProvider,
+    InMemorySessionLog,
+    LocalExecutionPlane,
+    RuntimeOptions,
+    RuntimeRunner,
+    read_file,
+    TextDelta,
+    ToolCallEvent,
+    ToolResultEvent,
+    DoneEvent,
+)
 
 
 async def main(goal: str):
     provider = AnthropicProvider(api_key=os.environ["ANTHROPIC_API_KEY"])
-    agent = Agent(provider, max_tokens=200_000, max_turns=10).register(read_file)
+    plane = LocalExecutionPlane().register(read_file)
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=provider,
+        session_log=InMemorySessionLog(),
+        execution_plane=plane,
+        max_tokens=200_000,
+        max_turns=10,
+    ))
 
-    async for event in agent.run_streaming(goal):
+    async for event in runner.run_streaming(goal):
         if isinstance(event, TextDelta):
             print(event.delta, end="", flush=True)
         elif isinstance(event, ToolCallEvent):

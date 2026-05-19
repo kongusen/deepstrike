@@ -1,6 +1,6 @@
 import { EvalLoopHarness } from "@deepstrike/sdk"
 import type { QualityGate, HarnessRequest, HarnessOutcome } from "@deepstrike/sdk"
-import type { Agent } from "@deepstrike/sdk"
+import type { FlashNoteRuntime } from "../runtime.js"
 
 const noteGate: QualityGate = {
   async evaluate(_req: HarnessRequest, outcome: HarnessOutcome): Promise<boolean> {
@@ -21,8 +21,8 @@ const noteGate: QualityGate = {
   },
 }
 
-export function makeNoteJudge(agent: Agent): EvalLoopHarness {
-  return new EvalLoopHarness(agent, noteGate, 2)
+export function makeNoteJudge(runtime: FlashNoteRuntime): EvalLoopHarness {
+  return new EvalLoopHarness(runtime.runner, noteGate, 2)
 }
 
 export const NOTE_CRITERIA = [

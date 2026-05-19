@@ -5,9 +5,18 @@ from typing import AsyncIterator
 import google.generativeai as genai
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, RenderedContext, normalize_tool_call
+from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call
 
 logger = logging.getLogger(__name__)
+
+_GEMINI_POLICIES: dict[str, RuntimePolicy] = {
+    "gemini-2.5-pro":        RuntimePolicy(max_turns=35),
+    "gemini-2.5-flash":      RuntimePolicy(max_turns=20),
+    "gemini-2.0-flash":      RuntimePolicy(max_turns=15),
+    "gemini-2.0-flash-lite": RuntimePolicy(max_turns=10),
+    "gemini-1.5-pro":        RuntimePolicy(max_turns=30),
+    "gemini-1.5-flash":      RuntimePolicy(max_turns=15),
+}
 
 
 class GeminiProvider:
@@ -23,6 +32,9 @@ class GeminiProvider:
         self._circuit = CircuitBreaker(self._retry)
         genai.configure(api_key=api_key)
         self._model = genai.GenerativeModel(model)
+
+    def runtime_policy(self) -> RuntimePolicy:
+        return _GEMINI_POLICIES.get(self._model_name, RuntimePolicy())
 
     def _build_contents(self, turns: list[Message]) -> list[dict]:
         contents = []

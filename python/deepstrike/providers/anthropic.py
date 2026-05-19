@@ -5,9 +5,17 @@ from typing import AsyncIterator
 from anthropic import AsyncAnthropic
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, RenderedContext, normalize_tool_call, to_anthropic_messages
+from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, to_anthropic_messages
 
 logger = logging.getLogger(__name__)
+
+_CLAUDE_POLICIES: dict[str, RuntimePolicy] = {
+    "claude-opus-4-7":           RuntimePolicy(max_turns=50),
+    "claude-opus-4-6":           RuntimePolicy(max_turns=50),
+    "claude-sonnet-4-6":         RuntimePolicy(max_turns=25),
+    "claude-haiku-4-5":          RuntimePolicy(max_turns=15),
+    "claude-haiku-4-5-20251001": RuntimePolicy(max_turns=15),
+}
 
 
 class AnthropicProvider:
@@ -22,6 +30,9 @@ class AnthropicProvider:
         self._circuit = CircuitBreaker(self._retry)
         self._client = AsyncAnthropic(api_key=api_key)
         self._native_assistant_blocks: dict[str, list[dict]] = {}
+
+    def runtime_policy(self) -> RuntimePolicy:
+        return _CLAUDE_POLICIES.get(self._model, RuntimePolicy())
 
     def _build_messages(self, turns: list[Message]) -> list[dict]:
         return to_anthropic_messages(
@@ -126,7 +137,12 @@ class AnthropicProvider:
             tools=tool_defs,
         ) as stream:
             async for event in stream:
-                if event.type == "content_block_delta":
+                if event.type in ("message_start", "message_delta"):
+                    usage = getattr(event, "usage", None) or getattr(getattr(event, "message", None), "usage", None)
+                    if usage is not None:
+                        from deepstrike.providers.stream import UsageEvent
+                        yield UsageEvent(total_tokens=usage.input_tokens + getattr(usage, "output_tokens", 0))
+                elif event.type == "content_block_delta":
                     delta = event.delta
                     if delta.type == "text_delta":
                         yield TextDelta(delta=delta.text)

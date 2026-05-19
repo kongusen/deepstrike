@@ -5,11 +5,25 @@ from typing import AsyncIterator
 import httpx
 from deepstrike._kernel import Message, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, RenderedContext, normalize_tool_call
+from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "http://localhost:11434"
+
+_OLLAMA_PREFIX_POLICIES: list[tuple[str, RuntimePolicy]] = [
+    ("deepseek-r1",  RuntimePolicy(max_turns=40)),
+    ("qwq",          RuntimePolicy(max_turns=35)),
+    ("llama3.3",     RuntimePolicy(max_turns=25)),
+    ("llama3.2",     RuntimePolicy(max_turns=20)),
+    ("llama3.1",     RuntimePolicy(max_turns=20)),
+    ("llama3",       RuntimePolicy(max_turns=20)),
+    ("mistral",      RuntimePolicy(max_turns=20)),
+    ("gemma2",       RuntimePolicy(max_turns=20)),
+    ("phi4",         RuntimePolicy(max_turns=20)),
+    ("phi3",         RuntimePolicy(max_turns=15)),
+    ("codellama",    RuntimePolicy(max_turns=20)),
+]
 
 
 class OllamaProvider:
@@ -18,6 +32,13 @@ class OllamaProvider:
         self._base_url = base_url.rstrip("/")
         self._retry = retry_config or RetryConfig()
         self._circuit = CircuitBreaker(self._retry)
+
+    def runtime_policy(self) -> RuntimePolicy:
+        m = self._model.lower()
+        for prefix, policy in _OLLAMA_PREFIX_POLICIES:
+            if m.startswith(prefix):
+                return policy
+        return RuntimePolicy(max_turns=20)
 
     def _build_body(self, context: RenderedContext, tools: list[ToolSchema], stream: bool, extensions: dict | None = None) -> dict:
         msgs = []

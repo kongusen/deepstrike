@@ -5,9 +5,22 @@ from typing import AsyncIterator
 from http import HTTPStatus
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, RenderedContext, normalize_tool_call, to_openai_message_params
+from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, to_openai_message_params
 
 logger = logging.getLogger(__name__)
+
+_QWEN_POLICIES: dict[str, RuntimePolicy] = {
+    "qwen-max":        RuntimePolicy(max_turns=25),
+    "qwen-plus":       RuntimePolicy(max_turns=20),
+    "qwen-turbo":      RuntimePolicy(max_turns=15),
+    "qwq-plus":        RuntimePolicy(max_turns=40),
+    "qwq-32b":         RuntimePolicy(max_turns=35),
+    "qwen3-235b-a22b": RuntimePolicy(max_turns=35),
+    "qwen3-72b":       RuntimePolicy(max_turns=25),
+    "qwen3-32b":       RuntimePolicy(max_turns=20),
+    "qwen3-14b":       RuntimePolicy(max_turns=15),
+    "qwen3-8b":        RuntimePolicy(max_turns=15),
+}
 
 
 class QwenProvider:
@@ -22,12 +35,15 @@ class QwenProvider:
         self._model = model
         self._retry = retry_config or RetryConfig()
         self._circuit = CircuitBreaker(self._retry)
-        import dashscope
+        import dashscope  # noqa: PLC0415
         dashscope.api_key = api_key
         from dashscope import AioGeneration
         from dashscope.api_entities.dashscope_response import Role
         self._generation = AioGeneration
         self._role = Role
+
+    def runtime_policy(self) -> RuntimePolicy:
+        return _QWEN_POLICIES.get(self._model, RuntimePolicy())
 
     def _build_messages(self, context: RenderedContext) -> list[dict]:
         result = to_openai_message_params(context)

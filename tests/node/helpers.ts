@@ -7,11 +7,17 @@ const dotenv = createRequire(import.meta.url)("dotenv") as { config(opts: { path
 dotenv.config({ path: resolve(__dirname, "../../.env") })
 
 import {
-  OpenAIProvider, Agent,
-  type AgentOptions, type StreamEvent,
+  OpenAIProvider,
+  RuntimeRunner,
+  collectText,
+  InMemorySessionLog,
+  LocalExecutionPlane,
+  type StreamEvent,
 } from "@deepstrike/sdk"
 import type { DreamStore, SessionData, MemoryEntry, CurationResult } from "@deepstrike/sdk"
 import type { KnowledgeSource } from "@deepstrike/sdk"
+import type { RegisteredTool } from "@deepstrike/sdk"
+import type { Governance } from "@deepstrike/sdk"
 
 export const ENV = {
   apiKey:  process.env.OPENAI_API_KEY  ?? "",
@@ -23,13 +29,76 @@ export function makeProvider() {
   return new OpenAIProvider(ENV.apiKey, ENV.model, { maxRetries: 2, baseDelay: 500 }, ENV.baseURL)
 }
 
-export function makeAgent(options: Partial<AgentOptions> = {}) {
-  return new Agent(makeProvider(), { maxTokens: 4096, maxTurns: 10, ...options })
+export interface MakeRunnerOptions {
+  maxTokens?: number
+  maxTurns?: number
+  systemPrompt?: string
+  initialMemory?: string[]
+  skillDir?: string
+  dreamStore?: DreamStore
+  agentId?: string
+  knowledgeSource?: KnowledgeSource
+  governance?: Governance
+  tools?: RegisteredTool[]
 }
 
-export const SKILL_DIR = resolve(__dirname, "fixtures/skills")
+export class RunnerHandle {
+  constructor(
+    readonly runner: RuntimeRunner,
+    private readonly plane: LocalExecutionPlane,
+  ) {}
 
-// ─── In-memory DreamStore ──────────────────────────────────────────────────
+  register(...tools: RegisteredTool[]): this {
+    for (const t of tools) this.plane.register(t)
+    return this
+  }
+
+  interrupt(): void {
+    this.runner.interrupt()
+  }
+
+  runStreaming(goal: string, opts: { criteria?: string[]; sessionId?: string } = {}) {
+    return this.runner.run({
+      sessionId: opts.sessionId ?? crypto.randomUUID(),
+      goal,
+      criteria: opts.criteria,
+    })
+  }
+
+  async run(goal: string, opts: { criteria?: string[]; sessionId?: string } = {}): Promise<string> {
+    return collectText(this.runStreaming(goal, opts))
+  }
+
+  async dream(agentId: string, nowMs?: number) {
+    return this.runner.dream(agentId, nowMs)
+  }
+}
+
+export function makeRunner(options: MakeRunnerOptions = {}): RunnerHandle {
+  const sessionLog = new InMemorySessionLog()
+  const plane = new LocalExecutionPlane()
+  for (const t of options.tools ?? []) plane.register(t)
+  const runner = new RuntimeRunner({
+    provider: makeProvider(),
+    sessionLog,
+    executionPlane: plane,
+    maxTokens: options.maxTokens ?? 4096,
+    maxTurns: options.maxTurns ?? 10,
+    systemPrompt: options.systemPrompt,
+    initialMemory: options.initialMemory,
+    skillDir: options.skillDir,
+    dreamStore: options.dreamStore,
+    agentId: options.agentId,
+    knowledgeSource: options.knowledgeSource,
+    governance: options.governance,
+  })
+  return new RunnerHandle(runner, plane)
+}
+
+/** Test-only alias for `makeRunner` (not the removed Agent class). */
+export const makeAgent = makeRunner
+
+export const SKILL_DIR = resolve(__dirname, "fixtures/skills")
 
 export class MockDreamStore implements DreamStore {
   private sessions = new Map<string, SessionData[]>()
@@ -64,8 +133,6 @@ export class MockDreamStore implements DreamStore {
   }
 }
 
-// ─── In-memory KnowledgeSource ─────────────────────────────────────────────
-
 export class MockKnowledgeSource implements KnowledgeSource {
   initCalled = 0
   constructor(private readonly snippets: string[]) {}
@@ -74,8 +141,6 @@ export class MockKnowledgeSource implements KnowledgeSource {
     return this.snippets.slice(0, topK)
   }
 }
-
-// ─── Stream helpers ─────────────────────────────────────────────────────────
 
 export async function collectEvents(gen: AsyncIterable<StreamEvent>): Promise<StreamEvent[]> {
   const events: StreamEvent[] = []

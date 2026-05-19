@@ -1,8 +1,9 @@
 import { HarnessLoop } from "@deepstrike/sdk"
-import type { Agent, LLMProvider } from "@deepstrike/sdk"
+import type { LLMProvider } from "@deepstrike/sdk"
+import type { FlashNoteRuntime } from "../runtime.js"
 
-export function makeReportJudge(agent: Agent, evalProvider: LLMProvider): HarnessLoop {
-  return new HarnessLoop(agent, evalProvider, { maxAttempts: 2 })
+export function makeReportJudge(runtime: FlashNoteRuntime, evalProvider: LLMProvider): HarnessLoop {
+  return new HarnessLoop(runtime.runner, evalProvider, { maxAttempts: 2 })
 }
 
 export const REPORT_CRITERIA = [

@@ -39,7 +39,7 @@ DeepStrike is a cross-language agent runtime built around a pure-Rust kernel. Th
 
 ## Stream event reference
 
-Every SDK yields the same typed event stream from `agent.run_streaming()`:
+Every SDK yields the same typed event stream from `RuntimeRunner.run()` / `run_streaming()`:
 
 | Event | Key fields | Description |
 | --- | --- | --- |

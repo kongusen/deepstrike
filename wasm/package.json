@@ -1,6 +1,6 @@
 {
   "name": "@deepstrike/wasm",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "DeepStrike WASM SDK — browser, Cloudflare Workers, Deno Deploy",
   "type": "module",
   "main": "dist/index.js",
@@ -15,7 +15,7 @@
     "test": "node --experimental-vm-modules node_modules/.bin/jest"
   },
   "dependencies": {
-    "@deepstrike/wasm-kernel": "0.1.13"
+    "@deepstrike/wasm-kernel": "0.1.14"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",

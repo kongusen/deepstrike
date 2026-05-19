@@ -11,6 +11,8 @@ from deepstrike.collaboration.contract import (
     contract_to_criteria_strings,
 )
 from deepstrike.collaboration.handoff import HandoffArtifact, HandoffBus, ContractOutcomeInput
+from deepstrike.runtime import collect_text
+import uuid
 
 if TYPE_CHECKING:
     from deepstrike.collaboration.pool import AgentPool
@@ -44,7 +46,7 @@ class ContractDrivenHarness:
     Core multi-agent execution primitive.
 
     Differs from HarnessLoop in three ways:
-      1. Executor and verifier are separate Agent instances — no shared history.
+      1. Executor and verifier are separate RuntimeRunner instances — no shared history.
       2. Verifier receives only the artifact + contract, not the implementation transcript.
       3. Feedback is a structured Violation list, not free-text.
 
@@ -88,10 +90,11 @@ class ContractDrivenHarness:
                 )
             executor_goal = f"{contract_block}\n\n---\n\n{current_goal}{violation_note}"
 
-            artifact = await self._pool.get("executor").run(
-                executor_goal,
-                contract_to_criteria_strings(self._contract),
-            )
+            artifact = await collect_text(self._pool.get("executor").run(
+                session_id=str(uuid.uuid4()),
+                goal=executor_goal,
+                criteria=contract_to_criteria_strings(self._contract),
+            ))
 
             # Phase 2: Verifier — isolated context, no executor history
             audit_text = await self._pool.run_verifier(

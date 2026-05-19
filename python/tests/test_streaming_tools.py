@@ -1,6 +1,6 @@
 import pytest
 
-from deepstrike import Agent, Message, ToolSchema, streaming_tool
+from deepstrike import InMemorySessionLog, LocalExecutionPlane, Message, RuntimeOptions, RuntimeRunner, streaming_tool
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta, ToolCallEvent, ToolDeltaEvent, ToolResultEvent
 
@@ -28,10 +28,16 @@ async def test_streaming_tool_chunks_are_forwarded_and_aggregated():
         yield "world"
 
     provider = ToolStreamingProvider()
-    agent = Agent(provider, max_tokens=2048, max_turns=4)
-    agent.register(streaming_tool(compose))
+    plane = LocalExecutionPlane().register(streaming_tool(compose))
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=provider,
+        session_log=InMemorySessionLog(),
+        execution_plane=plane,
+        max_tokens=2048,
+        max_turns=4,
+    ))
 
-    events = [event async for event in agent.run_streaming("compose once")]
+    events = [event async for event in runner.run_streaming("compose once")]
 
     assert any(isinstance(e, ToolDeltaEvent) and e.delta == "hello" for e in events)
     assert any(isinstance(e, ToolDeltaEvent) and e.delta == " " for e in events)

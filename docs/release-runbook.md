@@ -47,12 +47,24 @@ Release workflows run the same check in CI. A tag may trigger publication, but i
 
 ## Pre-release checklist
 
-Run these from the repository root:
+**Must run from the repository root** (`deepstrike/`), not from `python/` or other subdirs.
+`npm test --prefix node` resolves paths relative to your current working directory.
+
+One command (works from any subdirectory):
 
 ```bash
+./scripts/verify-release.sh
+```
+
+Or run each step manually from the repo root:
+
+```bash
+cd /path/to/deepstrike   # not python/
+
 node scripts/sync-release-version.mjs --check
 node --test scripts/release-version.test.mjs
 cargo metadata --format-version=1 --no-deps >/dev/null
+cargo test -p deepstrike-tests
 npm test --prefix node
 npm test --prefix wasm
 ```
@@ -73,12 +85,8 @@ Before publishing, also confirm:
 printf '0.1.10\n' > VERSION
 node scripts/sync-release-version.mjs
 
-# 2. Verify locally
-node scripts/sync-release-version.mjs --check
-node --test scripts/release-version.test.mjs
-cargo metadata --format-version=1 --no-deps >/dev/null
-npm test --prefix node
-npm test --prefix wasm
+# 2. Verify locally (from repo root)
+./scripts/verify-release.sh
 
 # 3. Commit the release preparation
 git add VERSION Cargo.toml Cargo.lock README.md node/package-lock.json wasm/package.json wasm/package-lock.json

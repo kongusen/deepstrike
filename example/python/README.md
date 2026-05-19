@@ -14,7 +14,7 @@ AI Meeting Intelligence — paste a transcript, get structured action items, dec
 ### Knowledge Flywheel
 
 ```text
-transcript → Agent extracts structure → stored in meetings/ + actions/
+transcript → RuntimeRunner extracts structure → stored in meetings/ + actions/
                                               ↓
                               KnowledgeSource feeds past context into next run
                                               ↓
@@ -28,7 +28,7 @@ transcript → Agent extracts structure → stored in meetings/ + actions/
 
 | Module | Where used |
 |---|---|
-| `Agent` | `meetingmind/agent.py` — extract mode (5 turns) and report mode (15 turns) |
+| `RuntimeRunner` | `meetingmind/agent.py` — extract mode (5 turns) and report mode (15 turns) |
 | `OpenAIProvider` + `CircuitBreaker` | `meetingmind/provider.py` |
 | `@tool` | 5 tools: `search_meetings`, `list_actions`, `update_action`, `export_data`, `web_fetch` |
 | `SkillRegistry` | 6 skills: `extract_actions`, `identify_decisions`, `detect_blockers`, `generate_standup`, `weekly_summary`, `assign_owners` |

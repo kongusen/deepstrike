@@ -1,8 +1,23 @@
 import OpenAI from "openai"
-import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider } from "../types.js"
+import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, omitExtensionKeys } from "./base.js"
 import { OpenAIChatAdapter } from "./openai-chat.js"
+
+const OPENAI_POLICIES: Record<string, RuntimePolicy> = {
+  "gpt-4o":        { maxTurns: 25 },
+  "gpt-4o-mini":   { maxTurns: 15 },
+  "gpt-4.1":       { maxTurns: 35 },
+  "gpt-4.1-mini":  { maxTurns: 20 },
+  "gpt-4.1-nano":  { maxTurns: 15 },
+  "gpt-5":         { maxTurns: 50 },
+  "gpt-5-mini":    { maxTurns: 25 },
+  "o1":            { maxTurns: 50 },
+  "o1-mini":       { maxTurns: 25 },
+  "o3":            { maxTurns: 50 },
+  "o3-mini":       { maxTurns: 25 },
+  "o4-mini":       { maxTurns: 25 },
+}
 
 export class OpenAIChatProvider implements LLMProvider {
   protected client: OpenAI
@@ -21,6 +36,10 @@ export class OpenAIChatProvider implements LLMProvider {
     this.circuit = new CircuitBreaker()
     this.maxRetries = retry.maxRetries
     this.baseDelay = retry.baseDelay
+  }
+
+  runtimePolicy(): RuntimePolicy {
+    return OPENAI_POLICIES[this.model] ?? {}
   }
 
   async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {

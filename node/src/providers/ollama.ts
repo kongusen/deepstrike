@@ -1,11 +1,34 @@
-import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider } from "../types.js"
+import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
 import { normalizeToolCall, omitExtensionKeys } from "./base.js"
+
+// Prefix-based policy for local models (first match wins)
+const OLLAMA_PREFIX_POLICIES: Array<[string, RuntimePolicy]> = [
+  ["deepseek-r1",  { maxTurns: 40 }],
+  ["qwq",          { maxTurns: 35 }],
+  ["llama3.3",     { maxTurns: 25 }],
+  ["llama3.2",     { maxTurns: 20 }],
+  ["llama3.1",     { maxTurns: 20 }],
+  ["llama3",       { maxTurns: 20 }],
+  ["mistral",      { maxTurns: 20 }],
+  ["gemma2",       { maxTurns: 20 }],
+  ["phi4",         { maxTurns: 20 }],
+  ["phi3",         { maxTurns: 15 }],
+  ["codellama",    { maxTurns: 20 }],
+]
 
 export class OllamaProvider implements LLMProvider {
   constructor(
     private readonly model = "llama3",
     private readonly baseUrl = "http://localhost:11434",
   ) {}
+
+  runtimePolicy(): RuntimePolicy {
+    const m = this.model.toLowerCase()
+    for (const [prefix, policy] of OLLAMA_PREFIX_POLICIES) {
+      if (m.startsWith(prefix)) return policy
+    }
+    return { maxTurns: 20 }
+  }
 
   private toOllamaMessages(context: RenderedContext) {
     const result = []

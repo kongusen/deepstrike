@@ -5,9 +5,24 @@ from typing import AsyncIterator
 from openai import AsyncOpenAI
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, RenderedContext, normalize_tool_call, to_openai_message_params
+from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, to_openai_message_params
 
 logger = logging.getLogger(__name__)
+
+_OPENAI_POLICIES: dict[str, RuntimePolicy] = {
+    "gpt-4o":       RuntimePolicy(max_turns=25),
+    "gpt-4o-mini":  RuntimePolicy(max_turns=15),
+    "gpt-4.1":      RuntimePolicy(max_turns=35),
+    "gpt-4.1-mini": RuntimePolicy(max_turns=20),
+    "gpt-4.1-nano": RuntimePolicy(max_turns=15),
+    "gpt-5":        RuntimePolicy(max_turns=50),
+    "gpt-5-mini":   RuntimePolicy(max_turns=25),
+    "o1":           RuntimePolicy(max_turns=50),
+    "o1-mini":      RuntimePolicy(max_turns=25),
+    "o3":           RuntimePolicy(max_turns=50),
+    "o3-mini":      RuntimePolicy(max_turns=25),
+    "o4-mini":      RuntimePolicy(max_turns=25),
+}
 
 
 class OpenAIProvider:
@@ -24,6 +39,9 @@ class OpenAIProvider:
         self._base_url = base_url.rstrip("/")
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._replay_fields: dict[str, dict] = {}
+
+    def runtime_policy(self) -> RuntimePolicy:
+        return _OPENAI_POLICIES.get(self._model, RuntimePolicy())
 
     def _build_messages(self, context: RenderedContext) -> list[dict]:
         serialized = to_openai_message_params(context)

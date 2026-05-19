@@ -68,7 +68,7 @@ example/
 - [ ] `deep_research` + 研究 skills + `report_judge`
 - [ ] `interview_capture` + `elicit_insight` skill（社区采集模式）
 - [ ] `export_dataset` + PII 过滤 + 贡献者归因（数据产品输出）
-- [ ] DreamStore + `Agent.dream()`
+- [x] DreamStore + `RuntimeRunner.dream()` (Node / Python / Rust / WASM)
 
 ### 其他平台与 Integration
 

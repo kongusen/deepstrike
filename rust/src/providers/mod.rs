@@ -10,12 +10,22 @@ pub mod openai;
 /// Opaque per-run state owned by the provider (e.g. OpenAI Responses continuation).
 pub type ProviderRunState = serde_json::Value;
 
+/// Per-model execution policy returned by providers.
+/// Three-layer merge in RuntimeRunner: RuntimeOptions > provider > defaults.
+#[derive(Debug, Clone, Default)]
+pub struct RuntimePolicy {
+    pub max_turns: Option<u32>,
+    pub timeout_ms: Option<u64>,
+}
+
 /// Stream event emitted by providers.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
     TextDelta { delta: String },
     ThinkingDelta { delta: String },
     ToolCall { id: String, name: String, arguments: serde_json::Value },
+    /// Token usage from the provider (e.g. OpenAI `stream_options.include_usage`).
+    Usage { total_tokens: u32 },
     Done,
 }
 
@@ -24,6 +34,11 @@ pub trait LLMProvider: Send + Sync {
     /// Optional per-run state for protocol-native continuation (e.g. Responses API).
     fn create_run_state(&self) -> Option<ProviderRunState> {
         None
+    }
+
+    /// Per-model runtime policy. Overridden by RuntimeOptions fields when set.
+    fn runtime_policy(&self) -> RuntimePolicy {
+        RuntimePolicy::default()
     }
 
     /// Non-streaming completion — default collects from `stream`.
@@ -62,7 +77,7 @@ pub async fn collect_message_from_stream(
                     arguments,
                 });
             }
-            StreamEvent::Done => {}
+            StreamEvent::Usage { .. } | StreamEvent::Done => {}
         }
     }
     Ok(Message {

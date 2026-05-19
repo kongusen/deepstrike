@@ -5,7 +5,7 @@ use futures::{Stream, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
 
-use super::{LLMProvider, StreamEvent};
+use super::{LLMProvider, RuntimePolicy, StreamEvent};
 use crate::{Error, Result};
 
 pub struct OpenAIProvider {
@@ -133,6 +133,46 @@ fn context_to_openai(context: &RenderedContext) -> Vec<Value> {
 
 #[async_trait]
 impl LLMProvider for OpenAIProvider {
+    fn runtime_policy(&self) -> RuntimePolicy {
+        match self.model.as_str() {
+            // OpenAI
+            "gpt-4o" => RuntimePolicy { max_turns: Some(25), timeout_ms: None },
+            "gpt-4o-mini" => RuntimePolicy { max_turns: Some(15), timeout_ms: None },
+            "gpt-4.1" => RuntimePolicy { max_turns: Some(35), timeout_ms: None },
+            "gpt-4.1-mini" => RuntimePolicy { max_turns: Some(20), timeout_ms: None },
+            "gpt-4.1-nano" => RuntimePolicy { max_turns: Some(15), timeout_ms: None },
+            "gpt-5" => RuntimePolicy { max_turns: Some(50), timeout_ms: None },
+            "gpt-5-mini" => RuntimePolicy { max_turns: Some(25), timeout_ms: None },
+            "o3" | "o3-mini" | "o4-mini" => RuntimePolicy { max_turns: Some(50), timeout_ms: None },
+            // DeepSeek
+            "deepseek-chat" | "deepseek-v4-flash" => RuntimePolicy { max_turns: Some(25), timeout_ms: None },
+            "deepseek-reasoner" | "deepseek-r1" => RuntimePolicy { max_turns: Some(50), timeout_ms: None },
+            "deepseek-v4-pro" => RuntimePolicy { max_turns: Some(35), timeout_ms: None },
+            // Qwen
+            "qwen-max" => RuntimePolicy { max_turns: Some(25), timeout_ms: None },
+            "qwen-plus" => RuntimePolicy { max_turns: Some(20), timeout_ms: None },
+            "qwq-plus" | "qwq-32b" => RuntimePolicy { max_turns: Some(40), timeout_ms: None },
+            "qwen3-235b-a22b" => RuntimePolicy { max_turns: Some(35), timeout_ms: None },
+            "qwen3-72b" => RuntimePolicy { max_turns: Some(25), timeout_ms: None },
+            "qwen3-32b" | "qwen3-14b" | "qwen3-8b" => RuntimePolicy { max_turns: Some(20), timeout_ms: None },
+            // Kimi (Moonshot)
+            "moonshot-v1-8k" => RuntimePolicy { max_turns: Some(15), timeout_ms: None },
+            "moonshot-v1-32k" => RuntimePolicy { max_turns: Some(20), timeout_ms: None },
+            "moonshot-v1-128k" | "kimi-k2.5" => RuntimePolicy { max_turns: Some(30), timeout_ms: None },
+            "kimi-k2.6" => RuntimePolicy { max_turns: Some(35), timeout_ms: None },
+            // MiniMax
+            "MiniMax-M2.7" => RuntimePolicy { max_turns: Some(35), timeout_ms: None },
+            "MiniMax-M2.5" | "MiniMax-M1" => RuntimePolicy { max_turns: Some(25), timeout_ms: None },
+            "MiniMax-Text-01" => RuntimePolicy { max_turns: Some(20), timeout_ms: None },
+            // Ollama prefix matching
+            m if m.starts_with("deepseek-r1") => RuntimePolicy { max_turns: Some(40), timeout_ms: None },
+            m if m.starts_with("qwq") => RuntimePolicy { max_turns: Some(35), timeout_ms: None },
+            m if m.starts_with("llama3") => RuntimePolicy { max_turns: Some(20), timeout_ms: None },
+            m if m.starts_with("mistral") || m.starts_with("gemma") || m.starts_with("phi") => RuntimePolicy { max_turns: Some(20), timeout_ms: None },
+            _ => RuntimePolicy { max_turns: Some(20), timeout_ms: None },
+        }
+    }
+
     async fn stream(
         &self,
         context: &RenderedContext,
@@ -144,6 +184,7 @@ impl LLMProvider for OpenAIProvider {
             "model": self.model,
             "messages": context_to_openai(context),
             "stream": true,
+            "stream_options": { "include_usage": true },
         });
         if !tools.is_empty() {
             body["tools"] = json!(tools.iter().map(|t| json!({
@@ -214,6 +255,14 @@ fn parse_openai_sse(
                     }
 
                     let Ok(chunk) = serde_json::from_str::<Value>(data) else { continue };
+                    if let Some(total) = chunk["usage"]["total_tokens"].as_u64() {
+                        return Some((
+                            Ok(StreamEvent::Usage {
+                                total_tokens: total as u32,
+                            }),
+                            (stream, buf, tool_accum, flushed),
+                        ));
+                    }
                     let delta = &chunk["choices"][0]["delta"];
                     if expose_reasoning {
                         if let Some(reasoning) = delta["reasoning_content"].as_str() {

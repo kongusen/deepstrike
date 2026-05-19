@@ -1,10 +1,12 @@
 # DeepStrike Python SDK — API 使用指南
 
+> Runtime v1：公共入口为 `RuntimeRunner` + `SessionLog` + `ExecutionPlane`。详见 `python/README.md` 与 `docs/spec-runtime-v1.md`。
+
 ## 目录
 
 1. [快速开始](#1-快速开始)
 2. [Provider 配置](#2-provider-配置)
-3. [Agent 基础](#3-agent-基础)
+3. [RuntimeRunner 基础](#3-runtimerunner-基础)
 4. [工具调用 (Tools)](#4-工具调用-tools)
 5. [技能 (Skills)](#5-技能-skills)
 6. [知识检索 (Knowledge)](#6-知识检索-knowledge)
@@ -24,7 +26,10 @@ pip install deepstrike
 
 ```python
 import asyncio
-from deepstrike import Agent, OpenAIProvider
+from deepstrike import (
+    OpenAIProvider, InMemorySessionLog, LocalExecutionPlane,
+    RuntimeOptions, RuntimeRunner, collect_text,
+)
 
 provider = OpenAIProvider(
     api_key="sk-your-key",
@@ -32,11 +37,16 @@ provider = OpenAIProvider(
     base_url="https://api.openai.com/v1",
 )
 
-agent = Agent(provider, max_tokens=4096, max_turns=25)
-
 async def main():
-    result = await agent.run("用一句话解释什么是 Python")
-    print(result)  # => "done in 1 turns (completed)"
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=provider,
+        session_log=InMemorySessionLog(),
+        execution_plane=LocalExecutionPlane(),
+        max_tokens=4096,
+        max_turns=25,
+    ))
+    result = await collect_text(runner.run_streaming("用一句话解释什么是 Python"))
+    print(result)
 
 asyncio.run(main())
 ```
@@ -81,13 +91,12 @@ class MyProvider(LLMProvider):
 
 ---
 
-## 3. Agent 基础
+## 3. RuntimeRunner 基础
 
 ### 3.1 同步运行
 
 ```python
-result = await agent.run("Say hello")
-# => "done in 1 turns (completed)"
+result = await collect_text(runner.run_streaming("Say hello"))
 ```
 
 ### 3.2 流式运行
@@ -96,7 +105,7 @@ result = await agent.run("Say hello")
 from deepstrike import TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent
 
 text = ""
-async for event in agent.run_streaming("What is 2+2?"):
+async for event in runner.run_streaming("What is 2+2?"):
     if isinstance(event, TextDelta):
         print(event.delta, end="", flush=True)
         text += event.delta
@@ -113,15 +122,21 @@ async for event in agent.run_streaming("What is 2+2?"):
 ### 3.3 带 Criteria 运行
 
 ```python
-async for event in agent.run_streaming("打个招呼", criteria=["必须包含 hello", "不超过 20 字"]):
+async for event in runner.run_streaming("打个招呼", criteria=["必须包含 hello", "不超过 20 字"]):
     ...
 ```
 
 ### 3.4 Extensions
 
 ```python
-agent = Agent(provider, max_tokens=4096, max_turns=25,
-              extensions={"temperature": 0.1, "top_p": 0.9})
+runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=InMemorySessionLog(),
+    execution_plane=LocalExecutionPlane(),
+    max_tokens=4096,
+    max_turns=25,
+    extensions={"temperature": 0.1, "top_p": 0.9},
+))
 ```
 
 ### 3.5 中断
@@ -131,27 +146,29 @@ import asyncio
 
 async def interrupt_later():
     await asyncio.sleep(5)
-    agent.interrupt()
+    runner.interrupt()
 
 asyncio.create_task(interrupt_later())
-result = await agent.run("Write a long essay...")
+result = await collect_text(runner.run_streaming("Write a long essay..."))
 ```
 
-### 3.6 Agent 构造参数
+### 3.6 RuntimeOptions 主要字段
 
 ```python
-Agent(
-    provider,
-    max_tokens=4096,        # 上下文窗口大小
-    max_turns=25,           # 最大轮次
-    timeout_ms=60_000,      # 超时（毫秒），None 则无限
-    skill_dir="./skills",   # 技能目录
-    extensions={},          # LLM 参数透传
-    governance=None,        # 内核 Governance 实例
-    signal_router=None,     # SignalRouter 实例
-    knowledge_source=None,  # KnowledgeSource 实例
-    dream_store=None,       # DreamStore 实例
-    agent_id=None,          # Agent 标识
+RuntimeOptions(
+    provider=provider,
+    session_log=InMemorySessionLog(),
+    execution_plane=LocalExecutionPlane(),
+    max_tokens=4096,
+    max_turns=25,
+    timeout_ms=60_000,
+    skill_dir="./skills",
+    extensions={},
+    governance=None,
+    signal_source=None,
+    knowledge_source=None,
+    dream_store=None,
+    agent_id=None,
 )
 ```
 
@@ -179,7 +196,8 @@ from deepstrike import tool
 async def add(args):
     return str(args["x"] + args["y"])
 
-agent.register(add)
+plane = LocalExecutionPlane().register(add)
+runner = RuntimeRunner(RuntimeOptions(provider=provider, session_log=InMemorySessionLog(), execution_plane=plane, max_tokens=4096))
 ```
 
 ### 4.2 内置工具
@@ -187,13 +205,13 @@ agent.register(add)
 ```python
 from deepstrike import read_file
 
-agent.register(read_file())
+plane.register(read_file())
 ```
 
 ### 4.3 取消注册
 
 ```python
-agent.unregister("add")
+plane.unregister("add")
 ```
 
 ### 4.4 手动执行
@@ -209,7 +227,7 @@ for r in results:
 ### 4.5 屏蔽工具
 
 ```python
-agent.block_tool("dangerous_tool")
+gov.block_tool("dangerous_tool")  # 通过 Governance 屏蔽
 ```
 
 ---
@@ -225,8 +243,15 @@ skills = registry.scan("./skills")
 for s in skills:
     print(f"{s.name}: {s.description}")
 
-# Agent 自动加载
-agent = Agent(provider, max_tokens=4096, max_turns=25, skill_dir="./skills")
+# skill_dir 在 RuntimeOptions 上配置
+runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=InMemorySessionLog(),
+    execution_plane=LocalExecutionPlane(),
+    max_tokens=4096,
+    max_turns=25,
+    skill_dir="./skills",
+))
 # 内核注入 `skill` meta-tool，LLM 按名称加载
 ```
 
@@ -258,8 +283,14 @@ class MyKnowledge(KnowledgeSource):
         # 向量搜索、API 调用等
         return ["DeepStrike 是一个 Agent 框架。"]
 
-agent = Agent(provider, max_tokens=4096, max_turns=25,
-              knowledge_source=MyKnowledge())
+runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=InMemorySessionLog(),
+    execution_plane=LocalExecutionPlane(),
+    max_tokens=4096,
+    max_turns=25,
+    knowledge_source=MyKnowledge(),
+))
 # 内核注入 `knowledge` meta-tool
 ```
 
@@ -294,11 +325,18 @@ class MyStore(DreamStore):
     async def search(self, agent_id: str, query: str, top_k: int) -> list[MemoryEntry]:
         ...
 
-agent = Agent(provider, max_tokens=4096, max_turns=25,
-              dream_store=MyStore(), agent_id="my-agent-1")
+runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=InMemorySessionLog(),
+    execution_plane=LocalExecutionPlane(),
+    max_tokens=4096,
+    max_turns=25,
+    dream_store=MyStore(),
+    agent_id="my-agent-1",
+))
 
 # 触发记忆整合
-result = await agent.dream("my-agent-1", now_ms=int(time.time() * 1000))
+result = await runner.dream("my-agent-1", now_ms=int(time.time() * 1000))
 print(f"{result.sessions_processed} sessions, {result.insights_extracted} insights")
 ```
 
@@ -330,15 +368,22 @@ gov.add_permission_rule("danger.*", "deny")
 gov.block_tool("rm_rf")
 gov.set_rate_limit("api_call", max_calls=10, window_ms=60_000)
 
-agent = Agent(provider, max_tokens=4096, max_turns=25, governance=gov)
+runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=InMemorySessionLog(),
+    execution_plane=LocalExecutionPlane(),
+    max_tokens=4096,
+    max_turns=25,
+    governance=gov,
+))
 # 每次工具调用自动经过 Permission → Veto → RateLimit → Constraint 管线
 ```
 
-### 8.3 Agent 级屏蔽
+### 8.3 工具级屏蔽
 
 ```python
-agent.register(dangerous_tool)
-agent.block_tool("dangerous_tool")
+plane.register(dangerous_tool)
+gov.block_tool("dangerous_tool")  # 通过 Governance 屏蔽
 # LLM 调用被屏蔽工具 → 返回 ErrorEvent
 ```
 
@@ -360,10 +405,17 @@ rx = gw.subscribe()
 # 注入外部信号
 gw.ingest(RuntimeSignal(kind="interrupt", payload={}, priority=10))
 
-# Agent 集成
-from deepstrike import SignalRouter
-router = SignalRouter(max_queue_size=256)
-agent = Agent(provider, max_tokens=4096, max_turns=25, signal_router=router)
+# RuntimeRunner 集成
+from deepstrike import SignalGateway
+rx = SignalGateway().subscribe()
+runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=InMemorySessionLog(),
+    execution_plane=LocalExecutionPlane(),
+    max_tokens=4096,
+    max_turns=25,
+    signal_source=rx,
+))
 
 gw.destroy()
 ```
@@ -377,7 +429,7 @@ gw.destroy()
 ```python
 from deepstrike import SinglePassHarness, HarnessRequest
 
-harness = SinglePassHarness(agent)
+harness = SinglePassHarness(runner)
 outcome = await harness.run(HarnessRequest(goal="Say hello"))
 assert outcome.passed
 print(outcome.result)
@@ -392,7 +444,7 @@ class ContainsHello(QualityGate):
     async def evaluate(self, request: HarnessRequest, outcome: HarnessOutcome) -> bool:
         return "hello" in outcome.result.lower()
 
-harness = EvalLoopHarness(agent, gate=ContainsHello(), max_attempts=3)
+harness = EvalLoopHarness(runner, gate=ContainsHello(), max_attempts=3)
 outcome = await harness.run(HarnessRequest(goal="Greet the user"))
 ```
 
@@ -402,7 +454,7 @@ outcome = await harness.run(HarnessRequest(goal="Greet the user"))
 from deepstrike import HarnessLoop, HarnessRequest
 
 harness = HarnessLoop(
-    agent,
+    runner,
     eval_provider=eval_provider,
     max_attempts=3,
     skill_dir="./skills",
@@ -450,11 +502,20 @@ contract = (ContractBuilder("report-v1", "撰写关于 X 的研究报告")
 ### 11.2 AgentPool — 角色隔离的代理池
 
 ```python
-from deepstrike import AgentPool, Agent
+from deepstrike import AgentPool, RuntimeRunner, RuntimeOptions, InMemorySessionLog, LocalExecutionPlane
+
+def make_runner(**kw):
+    return RuntimeRunner(RuntimeOptions(
+        provider=provider,
+        session_log=InMemorySessionLog(),
+        execution_plane=LocalExecutionPlane(),
+        max_tokens=4096,
+        **kw,
+    ))
 
 pool = (AgentPool()
-    .add("executor", Agent(provider, max_tokens=32_000, skill_dir="./skills"))
-    .add("verifier", Agent(provider, max_tokens=8_000)))   # 无工具，低温
+    .add("executor", make_runner(max_tokens=32_000, skill_dir="./skills"))
+    .add("verifier", make_runner(max_tokens=8_000)))
 ```
 
 ### 11.3 CreatorVerifierMode — 双 Agent 协作
@@ -489,10 +550,13 @@ note = HandoffBus.to_context_note(outcome.handoff)
 ```python
 from deepstrike import AgentPool, OrchestrationMode
 
+def runner_for(p, **kw):
+    return RuntimeRunner(RuntimeOptions(provider=p, session_log=InMemorySessionLog(), execution_plane=LocalExecutionPlane(), max_tokens=4096, **kw))
+
 pool = (AgentPool()
-    .add("orchestrator", Agent(reasoner_provider, max_tokens=8_000))
-    .add("executor",     Agent(executor_provider, max_tokens=32_000))
-    .add("verifier",     Agent(verifier_provider, max_tokens=8_000)))
+    .add("orchestrator", runner_for(reasoner_provider, max_tokens=8_000))
+    .add("executor",     runner_for(executor_provider, max_tokens=32_000))
+    .add("verifier",     runner_for(verifier_provider, max_tokens=8_000)))
 
 mode = OrchestrationMode(pool)
 outcome, contract = await mode.run("为新能源汽车行业撰写市场分析")

@@ -1,6 +1,6 @@
 {
   "name": "@deepstrike/sdk",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "DeepStrike Node.js SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -12,11 +12,12 @@
   "scripts": {
     "build": "tsc",
     "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "test:local-core": "cd ../crates/deepstrike-node && napi build --platform && cd ../../node && npm test",
     "smoke:providers": "node ../scripts/smoke-node-provider-loops.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
-    "@deepstrike/core": "0.1.13",
+    "@deepstrike/core": "0.1.14",
     "@google/generative-ai": "^0.24.1",
     "openai": "^4.77.0"
   },

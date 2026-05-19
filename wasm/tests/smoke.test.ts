@@ -4,8 +4,9 @@ import { ScheduledPrompt } from "../src/signals/index.js"
 import { PermissionManager, PermissionMode } from "../src/safety/index.js"
 import { AnthropicProvider } from "../src/providers/anthropic.js"
 import { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider } from "../src/providers/openai.js"
-import { Agent } from "../src/agent.js"
 import { Governance } from "../src/governance.js"
+import { RuntimeRunner, collectText, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
+import { tool } from "../src/tools/index.js"
 import type { LLMProvider, Message, ProviderRunState, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 
 describe("tool + executeTools", () => {
@@ -103,26 +104,7 @@ describe("Provider instantiation", () => {
   })
 })
 
-describe("Agent (mock kernel)", () => {
-  it("run() returns actual LLM text", async () => {
-    const provider = {
-      async complete() { return { role: "assistant" as const, content: "hello" } },
-      async *stream() { yield { type: "text_delta", delta: "hello" } },
-    }
-    const agent = new Agent(provider, { maxTokens: 4096, maxTurns: 5 })
-    const result = await agent.run("test goal")
-    expect(result).toBe("hello")
-  })
-
-  it("register and blockTool", () => {
-    const provider = { async complete() { return { role: "assistant" as const, content: "" } }, async *stream() {} }
-    const agent = new Agent(provider, { maxTokens: 4096 })
-    const t = tool("t", "d", {}, async () => "ok")
-    agent.register(t)
-    agent.blockTool("t")
-    agent.unregister("t")
-  })
-
+describe("RuntimeRunner", () => {
   it("threads provider run state through every turn in one run", async () => {
     class StatefulTestProvider implements LLMProvider {
       readonly states: ProviderRunState[] = []
@@ -153,13 +135,47 @@ describe("Agent (mock kernel)", () => {
     }
 
     const provider = new StatefulTestProvider()
-    const agent = new Agent(provider, { maxTokens: 2048, maxTurns: 4 })
-      .register(tool("ping", "Ping", { type: "object", properties: {} }, () => "pong"))
+    const plane = new LocalExecutionPlane()
+    plane.register(tool("ping", "Ping", { type: "object", properties: {} }, () => "pong"))
+    const runner = new RuntimeRunner({
+      provider,
+      sessionLog: new InMemorySessionLog(),
+      executionPlane: plane,
+      maxTokens: 2048,
+      maxTurns: 4,
+    })
 
-    for await (const _event of agent.runStreaming("Use ping once, then finish.")) {}
+    for await (const _event of runner.run({ sessionId: "s-state", goal: "Use ping once, then finish." })) {}
 
     expect(provider.states).toHaveLength(2)
     expect(provider.states[0]).toBe(provider.states[1])
+  })
+
+  it("run_streaming yields text and done", async () => {
+    const provider: LLMProvider = {
+      async *stream() {
+        yield { type: "text_delta", delta: "hi" }
+        yield { type: "done", iterations: 1, totalTokens: 1, status: "completed" }
+      },
+      async complete() {
+        return { role: "assistant", content: "hi", toolCalls: [] }
+      },
+    }
+    const log = new InMemorySessionLog()
+    const runner = new RuntimeRunner({
+      provider,
+      sessionLog: log,
+      executionPlane: new LocalExecutionPlane(),
+      maxTokens: 2048,
+    })
+    const events: StreamEvent[] = []
+    for await (const evt of runner.run({ sessionId: "s1", goal: "hello" })) {
+      events.push(evt)
+    }
+    expect(events.some(e => e.type === "text_delta")).toBe(true)
+    expect(events.some(e => e.type === "done")).toBe(true)
+    const text = await collectText(runner.run({ sessionId: "s2", goal: "ping" }))
+    expect(text).toBe("hi")
   })
 })
 

@@ -174,8 +174,25 @@ export interface RenderedContext {
   turns: Message[]
 }
 
+/**
+ * Runtime execution policy advertised by a provider.
+ * RuntimeRunner merges these with RuntimeOptions — explicit options always win.
+ */
+export interface RuntimePolicy {
+  /** Maximum agent turns before termination. */
+  maxTurns?: number
+  /** Per-run wall-clock timeout in ms. */
+  timeoutMs?: number
+}
+
 export interface LLMProvider {
   createRunState?(): ProviderRunState
+  /**
+   * Optional: return the recommended runtime policy for this provider's model.
+   * RuntimeRunner uses this as a fallback when the caller has not specified
+   * maxTurns / timeoutMs in RuntimeOptions.
+   */
+  runtimePolicy?(): RuntimePolicy
   complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message>
   stream(
     context: RenderedContext,

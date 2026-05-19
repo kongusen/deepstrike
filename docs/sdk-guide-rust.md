@@ -4,7 +4,7 @@
 
 1. [快速开始](#1-快速开始)
 2. [Provider 配置](#2-provider-配置)
-3. [Agent 基础](#3-agent-基础)
+3. [RuntimeRunner 基础](#3-runtimerunner-基础)
 4. [工具调用 (Tools)](#4-工具调用-tools)
 5. [技能 (Skills)](#5-技能-skills)
 6. [知识检索 (Knowledge)](#6-知识检索-knowledge)
@@ -21,7 +21,7 @@
 ```toml
 # Cargo.toml
 [dependencies]
-deepstrike-sdk  = { path = "rust" }          # SDK 层（Agent, Provider, Tools）
+deepstrike-sdk  = { path = "rust" }          # SDK 层（RuntimeRunner, Provider, Tools）
 deepstrike-core = { path = "crates/deepstrike-core" }  # 内核层（可选，直接访问状态机）
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
@@ -29,7 +29,11 @@ serde_json = "1"
 ```
 
 ```rust
-use deepstrike_sdk::{Agent, AgentOptions, OpenAIProvider};
+use std::sync::Arc;
+use deepstrike_sdk::{
+    InMemorySessionLog, LocalExecutionPlane, OpenAIProvider,
+    RuntimeOptions, RuntimeRunner, collect_text,
+};
 
 #[tokio::main]
 async fn main() {
@@ -39,10 +43,32 @@ async fn main() {
         "https://api.openai.com/v1",
     );
 
-    let agent = Agent::new(provider, AgentOptions::new(4096));
-    let result = agent.run("用一句话解释什么是 Rust").await.unwrap();
-    println!("{result}");
-    // => "done in 1 turns (completed)"
+    let runner = RuntimeRunner::new(RuntimeOptions {
+        provider: Box::new(provider),
+        execution_plane: Some(Box::new(LocalExecutionPlane::new())),
+        session_log: Some(Arc::new(InMemorySessionLog::new())),
+        session_id: None,
+        max_tokens: 4096,
+        max_turns: Some(25),
+        timeout_ms: None,
+        extensions: None,
+        agent_id: None,
+        system_prompt: None,
+        initial_memory: vec![],
+        skill_dir: None,
+        dream_store: None,
+        knowledge_source: None,
+        signal_source: None,
+        governance: None,
+        on_tool_suspend: None,
+    });
+
+    let text = collect_text(
+        runner.run_streaming("用一句话解释什么是 Rust", &[], None, None).await.unwrap(),
+    )
+    .await
+    .unwrap();
+    println!("{text}");
 }
 ```
 
@@ -94,16 +120,13 @@ impl LLMProvider for MyProvider {
 
 ---
 
-## 3. Agent 基础
+## 3. RuntimeRunner 基础
 
 ### 3.1 同步运行
 
 ```rust
-let agent = Agent::new(provider, AgentOptions::new(4096));
-
-// run() 返回 "done in N turns (status)"
-let result = agent.run("Say hello").await.unwrap();
-assert!(result.starts_with("done in"));
+let text = runner.execute("Say hello").await.unwrap();
+assert!(!text.is_empty());
 ```
 
 ### 3.2 流式运行
@@ -112,7 +135,7 @@ assert!(result.starts_with("done in"));
 use deepstrike_sdk::RunEvent;
 use futures::StreamExt;
 
-let mut stream = agent.run_streaming("What is 2+2?", &[], None).await.unwrap();
+let mut stream = runner.run_streaming("What is 2+2?", &[], None, None).await.unwrap();
 let mut text = String::new();
 
 while let Some(evt) = stream.next().await {
@@ -133,15 +156,30 @@ while let Some(evt) = stream.next().await {
 
 ```rust
 let criteria = vec!["必须包含 hello".to_string(), "不超过 20 字".to_string()];
-let mut stream = agent.run_streaming("打个招呼", &criteria, None).await.unwrap();
+let mut stream = runner.run_streaming("打个招呼", &criteria, None, None).await.unwrap();
 ```
 
 ### 3.4 Extensions（温度等参数透传）
 
 ```rust
-let agent = Agent::new(provider, AgentOptions {
+let runner = RuntimeRunner::new(RuntimeOptions {
+    provider: Box::new(provider),
+    execution_plane: Some(Box::new(LocalExecutionPlane::new())),
+    session_log: Some(Arc::new(InMemorySessionLog::new())),
     extensions: Some(serde_json::json!({"temperature": 0.1, "top_p": 0.9})),
-    ..AgentOptions::new(4096)
+    max_tokens: 4096,
+    max_turns: Some(25),
+    timeout_ms: None,
+    session_id: None,
+    agent_id: None,
+    system_prompt: None,
+    initial_memory: vec![],
+    skill_dir: None,
+    dream_store: None,
+    knowledge_source: None,
+    signal_source: None,
+    governance: None,
+    on_tool_suspend: None,
 });
 ```
 
@@ -150,29 +188,36 @@ let agent = Agent::new(provider, AgentOptions {
 ```rust
 use std::sync::Arc;
 
-let agent = Arc::new(Agent::new(provider, AgentOptions::new(4096)));
+let runner = Arc::new(/* RuntimeRunner::new(...) */);
 
-// 在另一个任务中中断
-let a2 = agent.clone();
+let r2 = runner.clone();
 tokio::spawn(async move {
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-    a2.interrupt();
+    r2.interrupt();
 });
 ```
 
-### 3.6 AgentOptions 完整字段
+### 3.6 RuntimeOptions 主要字段
 
 ```rust
-AgentOptions {
-    max_tokens: 4096,           // 上下文窗口大小
-    max_turns: 25,              // 最大轮次（默认 25）
-    timeout_ms: Some(60_000),   // 超时（毫秒）
-    extensions: None,           // LLM 参数透传
-    skill_dir: None,            // 技能目录
-    knowledge_source: None,     // 知识检索源
-    signal_source: None,        // 信号源
-    dream_store: None,          // 长期记忆存储
-    agent_id: None,             // Agent 标识（启用 memory meta-tool 需要）
+RuntimeOptions {
+    provider: Box::new(provider),
+    execution_plane: Some(Box::new(plane)),
+    session_log: Some(Arc::new(InMemorySessionLog::new())),
+    session_id: None,
+    max_tokens: 4096,
+    max_turns: Some(25),
+    timeout_ms: Some(60_000),
+    extensions: None,
+    agent_id: None,
+    system_prompt: None,
+    initial_memory: vec![],
+    skill_dir: None,
+    dream_store: None,
+    knowledge_source: None,
+    signal_source: None,
+    governance: None,
+    on_tool_suspend: None,
 }
 ```
 
@@ -203,8 +248,9 @@ let add_tool = RegisteredTool::new(
     }),
 );
 
-let mut agent = Agent::new(provider, AgentOptions::new(4096));
-agent.register(add_tool);
+let mut plane = LocalExecutionPlane::new();
+plane.register(add_tool);
+let runner = RuntimeRunner::new(/* RuntimeOptions { execution_plane: Some(Box::new(plane)), ... } */);
 ```
 
 ### 4.2 内置工具
@@ -212,7 +258,7 @@ agent.register(add_tool);
 ```rust
 use deepstrike_sdk::read_file_tool;
 
-agent.register(read_file_tool()); // 读文件工具
+plane.register(read_file_tool()); // 读文件工具
 ```
 
 ### 4.3 手动执行工具
@@ -234,8 +280,8 @@ assert_eq!(results[0].output.as_text(), Some("10"));
 ### 4.4 屏蔽工具
 
 ```rust
-agent.block_tool("dangerous_tool");
-// LLM 若调用该工具，会收到 "tool blocked" 错误
+// 通过 Governance::block_tool 屏蔽（见治理章节）
+gov.block_tool("dangerous_tool");
 ```
 
 ---
@@ -261,9 +307,10 @@ To summarize text effectively:
 ### 使用方式
 
 ```rust
-let agent = Agent::new(provider, AgentOptions {
+let runner = RuntimeRunner::new(RuntimeOptions {
     skill_dir: Some(std::path::PathBuf::from("./skills")),
-    ..AgentOptions::new(4096)
+    max_tokens: 4096,
+    /* provider, execution_plane, session_log, ... */
 });
 // 内核自动注入 `skill` meta-tool，LLM 可按名称加载技能
 ```
@@ -298,14 +345,15 @@ impl KnowledgeSource for MyKnowledge {
 }
 ```
 
-### 6.2 配置 Agent
+### 6.2 配置 RuntimeRunner
 
 ```rust
-let agent = Agent::new(provider, AgentOptions {
+let runner = RuntimeRunner::new(RuntimeOptions {
     knowledge_source: Some(Box::new(MyKnowledge {
-        documents: vec!["DeepStrike 是一个 Agent 框架。".into()],
+        documents: vec!["DeepStrike 是一个 agent 运行时框架。".into()],
     })),
-    ..AgentOptions::new(4096)
+    max_tokens: 4096,
+    /* ... */
 });
 // 内核注入 `knowledge` meta-tool，LLM 按需调用检索
 ```
@@ -328,7 +376,7 @@ mem.clear();
 
 ### 7.2 DreamStore（长期记忆）
 
-实现 `DreamStore` trait 以支持记忆持久化和 `Agent::dream()` 管线：
+实现 `DreamStore` trait 以支持记忆持久化和 `RuntimeRunner::dream()` 管线：
 
 ```rust
 use async_trait::async_trait;
@@ -349,15 +397,16 @@ impl DreamStore for PostgresStore {
 ### 7.3 启用记忆检索 + dream 管线
 
 ```rust
-let agent = Agent::new(provider, AgentOptions {
+let runner = RuntimeRunner::new(RuntimeOptions {
     dream_store: Some(Box::new(my_store)),
     agent_id: Some("my-agent-1".into()),
-    ..AgentOptions::new(4096)
+    max_tokens: 4096,
+    /* ... */
 });
 
 // 会话中：内核自动注入 `memory` meta-tool，LLM 可搜索长期记忆
 // 空闲时：触发记忆整合
-let dream_result = agent.dream("my-agent-1", now_ms).await?;
+let dream_result = runner.dream("my-agent-1", now_ms).await?;
 println!("处理 {} 个 session，提取 {} 条洞察",
     dream_result.sessions_processed,
     dream_result.insights_extracted,
@@ -427,12 +476,12 @@ let verdict = pipeline.evaluate(&tool_call, &caller_context);
 
 **管线执行顺序**：Permission → Veto → RateLimit → Constraint，任一阶段 deny 即终止。
 
-### 8.3 Agent 级别屏蔽
+### 8.3 工具级屏蔽
 
 ```rust
-let mut agent = Agent::new(provider, AgentOptions::new(4096));
-agent.register(dangerous_tool);
-agent.block_tool("dangerous_tool");
+let gov = Arc::new(tokio::sync::Mutex::new(Governance::allow()));
+gov.lock().await.block_tool("dangerous_tool");
+// RuntimeOptions.governance = Some(gov)
 // LLM 调用被屏蔽的工具 → 返回 RunEvent::Error
 ```
 
@@ -467,17 +516,18 @@ gw.cancel("daily standup", run_at_ms);
 gw.destroy();
 ```
 
-### 9.2 Agent 集成
+### 9.2 RuntimeRunner 集成
 
 ```rust
 let gw = SignalGateway::new();
 let rx = gw.subscribe();
 
-let agent = Agent::new(provider, AgentOptions {
+let runner = RuntimeRunner::new(RuntimeOptions {
     signal_source: Some(Box::new(rx)),
-    ..AgentOptions::new(4096)
+    max_tokens: 4096,
+    /* ... */
 });
-// kind="interrupt" 的信号 → 立即中断 Agent 运行
+// kind="interrupt" 的信号 → 立即中断运行
 ```
 
 ### 9.3 内核 SignalRouter
@@ -518,8 +568,8 @@ match router.ingest(sig, /* is_running */ false) {
 ```rust
 use deepstrike_sdk::{SinglePassHarness, HarnessRequest};
 
-let agent = Agent::new(provider, AgentOptions::new(4096));
-let harness = SinglePassHarness::new(&agent);
+let runner = RuntimeRunner::new(/* RuntimeOptions */);
+let harness = SinglePassHarness::new(&runner);
 
 let outcome = harness.run(HarnessRequest::new("Say hello")).await?;
 assert!(outcome.passed);
@@ -543,7 +593,7 @@ impl QualityGate for ContainsHello {
     }
 }
 
-let harness = EvalLoopHarness::new(&agent, ContainsHello, /* max_attempts */ 3);
+let harness = EvalLoopHarness::new(&runner, ContainsHello, /* max_attempts */ 3);
 let outcome = harness.run(HarnessRequest::new("Greet the user")).await?;
 ```
 
@@ -556,7 +606,7 @@ use deepstrike_sdk::HarnessLoop;
 
 let eval_provider = OpenAIProvider::with_base_url("key", "gpt-5-mini", "https://...");
 let harness = HarnessLoop::new(
-    &agent,
+    &runner,
     eval_provider,
     /* max_attempts */ 3,
     /* skill_dir */ Some("./skills".into()), // 通过时自动提取技能
@@ -703,7 +753,7 @@ pipeline.reset(); // 可重用
 ```rust
 use deepstrike_sdk::Error;
 
-match agent.run("...").await {
+match runner.execute("...").await {
     Ok(result) => println!("{result}"),
     Err(Error::Provider(msg)) => eprintln!("LLM 错误: {msg}"),
     Err(Error::Tool(msg)) => eprintln!("工具错误: {msg}"),

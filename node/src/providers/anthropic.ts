@@ -1,7 +1,15 @@
 import Anthropic from "@anthropic-ai/sdk"
-import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider } from "../types.js"
+import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, normalizeToolCall, omitExtensionKeys, toAnthropicMessages } from "./base.js"
+
+const CLAUDE_POLICIES: Record<string, RuntimePolicy> = {
+  "claude-opus-4-7":          { maxTurns: 50 },
+  "claude-opus-4-6":          { maxTurns: 50 },
+  "claude-sonnet-4-6":        { maxTurns: 25 },
+  "claude-haiku-4-5":         { maxTurns: 15 },
+  "claude-haiku-4-5-20251001": { maxTurns: 15 },
+}
 
 interface AnthropicProviderOptions {
   baseURL?: string
@@ -28,6 +36,10 @@ export class AnthropicProvider implements LLMProvider {
     this.circuit = new CircuitBreaker()
     this.maxRetries = retry.maxRetries
     this.baseDelay = retry.baseDelay
+  }
+
+  runtimePolicy(): RuntimePolicy {
+    return CLAUDE_POLICIES[this.model] ?? {}
   }
 
   private buildTools(tools: ToolSchema[]) {
@@ -95,8 +107,15 @@ export class AnthropicProvider implements LLMProvider {
       ...(tools.length ? { tools: this.buildTools(tools) } : {}),
     }, extensions)
 
+    let totalTokens = 0
     for await (const evt of stream) {
-      if (evt.type === "content_block_start") {
+      if (evt.type === "message_start" || evt.type === "message_delta") {
+        const usage = evt.usage ?? evt.message?.usage
+        if (usage) {
+          totalTokens = usage.input_tokens + (usage.output_tokens ?? 0)
+          yield { type: "usage", totalTokens } as StreamEvent
+        }
+      } else if (evt.type === "content_block_start") {
         nativeBlocks[evt.index] = { ...(evt.content_block as unknown as Record<string, unknown>) }
         if (evt.content_block.type === "tool_use") {
           toolBlocks[evt.index] = { id: evt.content_block.id, name: evt.content_block.name, argsBuf: "" }

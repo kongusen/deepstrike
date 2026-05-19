@@ -1,4 +1,4 @@
-import type { RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, Message } from "../types.js"
+import type { RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent, LLMProvider, Message } from "../types.js"
 import { collectStreamMessage, toAnthropicMessages } from "./base.js"
 
 function buildAnthropicTools(tools: ToolSchema[]) {
@@ -60,7 +60,17 @@ export class AnthropicProvider implements LLMProvider {
         if (data === "[DONE]") return
         try {
           const evt = JSON.parse(data) as Record<string, unknown>
-          if (evt.type === "content_block_start") {
+          if (evt.type === "message_start" || evt.type === "message_delta") {
+            const usage = (evt.usage ?? (evt.message as Record<string, unknown> | undefined)?.usage) as
+              | { input_tokens?: number; output_tokens?: number }
+              | undefined
+            if (usage?.input_tokens != null) {
+              yield {
+                type: "usage",
+                totalTokens: usage.input_tokens + (usage.output_tokens ?? 0),
+              } as UsageEvent
+            }
+          } else if (evt.type === "content_block_start") {
             const cb = evt.content_block as Record<string, unknown>
             if (cb.type === "tool_use")
               toolBlocks[evt.index as number] = { id: cb.id as string, name: cb.name as string, argsBuf: "" }

@@ -34,6 +34,7 @@ export interface RenderedContext {
 
 export interface StreamEvent { type: string }
 export interface TextDelta extends StreamEvent { type: "text_delta"; delta: string }
+export interface UsageEvent extends StreamEvent { type: "usage"; totalTokens: number }
 export interface ThinkingDelta extends StreamEvent { type: "thinking_delta"; delta: string }
 export interface ToolCallEvent extends StreamEvent { type: "tool_call"; id: string; name: string; arguments: Record<string, unknown> }
 export interface ToolResultEvent extends StreamEvent { type: "tool_result"; callId: string; name: string; content: string; isError: boolean }
@@ -49,6 +50,7 @@ export type ProviderRunState = Record<string, unknown>
 
 export interface LLMProvider {
   createRunState?(): ProviderRunState
+  runtimePolicy?(): { maxTurns?: number; timeoutMs?: number }
   complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message>
   stream(
     context: RenderedContext,

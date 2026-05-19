@@ -974,6 +974,12 @@ impl LoopStateMachine {
         Ok(())
     }
 
+    /// Continue from preloaded history without a new user turn (mid-run recovery).
+    #[napi(js_name = "resumeAfterPreload")]
+    pub fn resume_after_preload(&mut self) -> LoopAction {
+        loop_action_from_rust(self.inner.resume_after_preload())
+    }
+
     /// Return only messages added during the current run (since the last `preload_history`
     /// or construction). Use this to persist the session delta to `SessionStore.saveSession`.
     #[napi]

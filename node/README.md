@@ -1,6 +1,6 @@
 # DeepStrike Node.js SDK
 
-Agent framework built on a Rust kernel. The kernel handles loop control, context compression, skill routing, governance, signal prioritization — the SDK handles all I/O.
+Runtime framework built on a Rust kernel. The kernel handles loop control, context compression, skill routing, governance, signal prioritization — the SDK handles all I/O.
 
 ## Install
 
@@ -33,7 +33,14 @@ The correct platform package is selected and installed automatically via `option
 ## Quick start
 
 ```typescript
-import { Agent, OpenAIResponsesProvider, tool } from "@deepstrike/sdk"
+import {
+  FileSessionLog,
+  LocalExecutionPlane,
+  RuntimeRunner,
+  OpenAIResponsesProvider,
+  collectText,
+  tool,
+} from "@deepstrike/sdk"
 
 const provider = new OpenAIResponsesProvider(process.env.OPENAI_API_KEY!, "gpt-5-mini")
 
@@ -43,26 +50,34 @@ const add = tool("add", "Add two numbers.", {
   required: ["x", "y"],
 }, async ({ x, y }) => String(Number(x) + Number(y)))
 
-const agent = new Agent(provider, { maxTokens: 4096 })
-agent.register(add)
+const plane = new LocalExecutionPlane().register(add)
+const runner = new RuntimeRunner({
+  provider,
+  executionPlane: plane,
+  sessionLog: new FileSessionLog(".deepstrike/sessions"),
+  maxTokens: 4096,
+})
 
-const result = await agent.run("What is 17 + 28?")
+const result = await collectText(runner.run({
+  sessionId: "math-1",
+  goal: "What is 17 + 28?",
+}))
 console.log(result)
 ```
 
 Same-session conversation continuity is explicit via `sessionId`:
 
 ```typescript
-await agent.run("My name is Ada.", undefined, undefined, "chat-1")
-const reply = await agent.run("What is my name?", undefined, undefined, "chat-1")
+await collectText(runner.run({ sessionId: "chat-1", goal: "My name is Ada." }))
+const reply = await collectText(runner.run({ sessionId: "chat-1", goal: "What is my name?" }))
 ```
 
-By default, the agent keeps session transcripts in memory for the lifetime of that `Agent` instance. Provide a `sessionStore` when the transcript must survive process restarts or be shared across workers.
+Use `InMemorySessionLog` for process-local sessions or `FileSessionLog` when event replay should survive restarts. `wake(sessionId)` resumes from the event log without inserting a duplicate user start event.
 
 Streaming:
 
 ```typescript
-for await (const event of agent.runStreaming("Summarize README.md")) {
+for await (const event of runner.run({ sessionId: "readme-1", goal: "Summarize README.md" })) {
   if (event.type === "text_delta") process.stdout.write(event.delta)
   else if (event.type === "tool_call") console.log(`\n[→ ${event.name}]`)
   else if (event.type === "tool_result") console.log(`  = ${event.content}`)
@@ -103,10 +118,14 @@ const provider = createProvider({
 
 ---
 
-## Agent options
+## Runtime options
 
 ```typescript
-const agent = new Agent(provider, {
+const plane = new LocalExecutionPlane()
+const runner = new RuntimeRunner({
+  provider,
+  executionPlane: plane,
+  sessionLog: new FileSessionLog(".deepstrike/sessions"),
   maxTokens: 4096,            // context window size
   maxTurns: 25,               // max turns (default 25)
   timeoutMs: 60_000,          // timeout in ms
@@ -127,19 +146,25 @@ const agent = new Agent(provider, {
 ```typescript
 import { tool, readFile } from "@deepstrike/sdk"
 
-agent.register(tool("search", "Search.", schema, async (args) => ...))
-agent.register(readFile)     // built-in: read files from disk
-agent.unregister("search")
+plane.register(tool("search", "Search.", schema, async (args) => ...))
+plane.register(readFile)     // built-in: read files from disk
+plane.unregister("search")
 ```
 
 ---
 
 ## Skills
 
-Skills are `.md` files with YAML frontmatter. Set `skillDir` on the agent — the kernel auto-injects a `skill` meta-tool, and the LLM loads skills by name on demand.
+Skills are `.md` files with YAML frontmatter. Set `skillDir` on the runner — the kernel auto-injects a `skill` meta-tool, and the LLM loads skills by name on demand.
 
 ```typescript
-const agent = new Agent(provider, { maxTokens: 4096, skillDir: "./skills" })
+const runner = new RuntimeRunner({
+  provider,
+  executionPlane: plane,
+  sessionLog: new FileSessionLog(".deepstrike/sessions"),
+  maxTokens: 4096,
+  skillDir: "./skills",
+})
 ```
 
 ```markdown
@@ -160,7 +185,10 @@ effort: 1
 Implement `KnowledgeSource` to connect any RAG system. The kernel injects a `knowledge` meta-tool that the LLM calls on demand.
 
 ```typescript
-const agent = new Agent(provider, {
+const runner = new RuntimeRunner({
+  provider,
+  executionPlane: plane,
+  sessionLog: new FileSessionLog(".deepstrike/sessions"),
   maxTokens: 4096,
   knowledgeSource: {
     async retrieve(query: string, topK: number): Promise<string[]> {
@@ -196,7 +224,10 @@ class MyStore implements DreamStore {
   async search(agentId, query, topK) { ... }
 }
 
-const agent = new Agent(provider, {
+const runner = new RuntimeRunner({
+  provider,
+  executionPlane: plane,
+  sessionLog: new FileSessionLog(".deepstrike/sessions"),
   maxTokens: 4096,
   dreamStore: new MyStore(),
   agentId: "my-agent",  // enables `memory` meta-tool
@@ -204,23 +235,7 @@ const agent = new Agent(provider, {
 
 // In-session: LLM calls memory(query) → DreamStore.search()
 // Post-session: trigger memory consolidation
-const result = await agent.dream("my-agent", Date.now())
-```
-
-### SessionStore (same-session transcript continuity)
-
-```typescript
-import type { SessionStore } from "@deepstrike/sdk"
-
-class MySessionStore implements SessionStore {
-  async loadSession(sessionId) { return db.sessions.get(sessionId) }
-  async saveSession(session) { await db.sessions.put(session.sessionId, session) }
-}
-
-const agent = new Agent(provider, {
-  maxTokens: 4096,
-  sessionStore: new MySessionStore(),
-})
+const result = await runner.dream("my-agent", Date.now())
 ```
 
 ---
@@ -252,7 +267,13 @@ gov.requireParam("write_file", "path")
 gov.allowParamValues("set_mode", "mode", ["read", "write"])
 gov.limitParamRange("sleep", "seconds", 0, 10)
 
-const agent = new Agent(provider, { maxTokens: 4096, governance: gov })
+const runner = new RuntimeRunner({
+  provider,
+  executionPlane: plane,
+  sessionLog: new FileSessionLog(".deepstrike/sessions"),
+  maxTokens: 4096,
+  governance: gov,
+})
 // Every tool call goes through: Permission → Veto → RateLimit → Constraint → Audit
 ```
 
@@ -267,10 +288,16 @@ const gw = new SignalGateway()
 gw.schedule(new ScheduledPrompt("standup", Date.now() + 3600_000))
 gw.ingest({ kind: "interrupt", urgency: "critical", payload: {} })
 
-const agent = new Agent(provider, { maxTokens: 4096, signalSource: gw })
-// kind="interrupt" → immediately stops the running agent
+const runner = new RuntimeRunner({
+  provider,
+  executionPlane: plane,
+  sessionLog: new FileSessionLog(".deepstrike/sessions"),
+  maxTokens: 4096,
+  signalSource: gw,
+})
+// kind="interrupt" → immediately stops the running runner
 
-agent.interrupt() // also works directly
+runner.interrupt() // also works directly
 gw.destroy()
 ```
 
@@ -282,22 +309,21 @@ gw.destroy()
 import { SinglePassHarness, EvalLoopHarness, HarnessLoop } from "@deepstrike/sdk"
 
 // 1. SinglePass — run once, always passes
-const outcome = await new SinglePassHarness(agent).run({ goal: "Say hello" })
+const outcome = await new SinglePassHarness(runner).run({ goal: "Say hello" })
 
 // 2. EvalLoop — retry until QualityGate passes
-const harness = new EvalLoopHarness(agent, {
-  gate: async (req, out) => out.result.includes("hello"),
-  maxAttempts: 3,
-})
+const harness = new EvalLoopHarness(runner, {
+  async evaluate(_req, out) { return out.result.includes("hello") },
+}, 3)
 
 // 3. HarnessLoop — LLM-as-judge with feedback injection + skill extraction
-const loop = new HarnessLoop(agent, {
-  evalProvider,
-  maxAttempts: 3,
-  skillDir: "./skills",
-})
-const out = await loop.run({ goal: "Write a haiku", criteria: ["Must be 3 lines"] })
-console.log(out.passed, out.feedback)
+const loop = new HarnessLoop(runner, evalProvider, { maxAttempts: 3, skillDir: "./skills" })
+for await (const event of loop.runStreaming({
+  goal: "Write a haiku",
+  criteria: [{ text: "Must be 3 lines", required: true }],
+})) {
+  if (event.type === "done") console.log(event.verdict.passed, event.verdict.feedback)
+}
 ```
 
 ---

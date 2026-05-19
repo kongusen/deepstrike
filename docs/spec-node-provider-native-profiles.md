@@ -92,7 +92,7 @@ The first implementation target is **MiniMax**, because the current Node SDK sti
 
 ```mermaid
 flowchart LR
-  A["Agent / Kernel"] --> B["Provider Catalog"]
+  A["RuntimeRunner / Kernel"] --> B["Provider Catalog"]
   B --> C["Model Profile"]
   B --> D["Endpoint Profile"]
   C --> E["Provider Adapter"]

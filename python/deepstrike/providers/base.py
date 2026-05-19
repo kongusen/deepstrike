@@ -237,6 +237,13 @@ class RenderedContext:
 ProviderRunState = dict[str, Any]
 
 
+class RuntimePolicy:
+    """Recommended runtime execution policy for a provider's model."""
+    def __init__(self, *, max_turns: int | None = None, timeout_ms: int | None = None) -> None:
+        self.max_turns = max_turns
+        self.timeout_ms = timeout_ms
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
     async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message: ...
@@ -247,3 +254,4 @@ class LLMProvider(Protocol):
         extensions: dict | None = None,
         state: ProviderRunState | None = None,
     ) -> AsyncIterator[StreamEvent]: ...
+    def runtime_policy(self) -> RuntimePolicy: ...

@@ -7,7 +7,7 @@ from deepstrike.providers.stream import DoneEvent as _ProviderDoneEvent, TextDel
 
 from deepstrike.providers.base import RenderedContext
 if TYPE_CHECKING:
-    from deepstrike.agent import Agent
+    from deepstrike.runtime import RuntimeRunner
     from deepstrike.providers.base import LLMProvider
 
 
@@ -125,10 +125,10 @@ class QualityGate(Protocol):
     async def evaluate(self, request: HarnessRequest, outcome: HarnessOutcome) -> bool: ...
 
 
-async def _run_once(agent: "Agent", goal: str, request: HarnessRequest) -> HarnessOutcome:
+async def _run_once(runner: "RuntimeRunner", goal: str, request: HarnessRequest) -> HarnessOutcome:
     done: _ProviderDoneEvent | None = None
     text = ""
-    async for evt in agent.run_streaming(goal, criteria=[c.text for c in (request.criteria or [])], extensions=request.extensions):
+    async for evt in runner.run_streaming(goal, criteria=[c.text for c in (request.criteria or [])], extensions=request.extensions):
         if isinstance(evt, TextDelta):
             text += evt.delta
         elif isinstance(evt, _ProviderDoneEvent):
@@ -143,25 +143,25 @@ async def _run_once(agent: "Agent", goal: str, request: HarnessRequest) -> Harne
 
 
 class SinglePassHarness:
-    def __init__(self, agent: "Agent"):
-        self._agent = agent
+    def __init__(self, runner: "RuntimeRunner"):
+        self._runner = runner
 
     async def run(self, request: HarnessRequest) -> HarnessOutcome:
-        outcome = await _run_once(self._agent, request.goal, request)
+        outcome = await _run_once(self._runner, request.goal, request)
         outcome.passed = True
         return outcome
 
 
 class EvalLoopHarness:
-    def __init__(self, agent: "Agent", gate: "QualityGate", max_attempts: int = 3):
-        self._agent = agent
+    def __init__(self, runner: "RuntimeRunner", gate: "QualityGate", max_attempts: int = 3):
+        self._runner = runner
         self._gate = gate
         self._max_attempts = max_attempts
 
     async def run(self, request: HarnessRequest) -> HarnessOutcome:
         outcome = HarnessOutcome(result="", passed=False, iterations=0, total_tokens=0, status="error")
         for _ in range(self._max_attempts):
-            outcome = await _run_once(self._agent, request.goal, request)
+            outcome = await _run_once(self._runner, request.goal, request)
             if await self._gate.evaluate(request, outcome):
                 outcome.passed = True
                 return outcome
@@ -171,13 +171,13 @@ class EvalLoopHarness:
 class HarnessLoop:
     def __init__(
         self,
-        agent: "Agent",
+        runner: "RuntimeRunner",
         eval_provider: "LLMProvider",
         *,
         max_attempts: int = 3,
         skill_dir: str | None = None,
     ):
-        self._agent = agent
+        self._runner = runner
         self._eval_provider = eval_provider
         self._max_attempts = max_attempts
         self._skill_dir = pathlib.Path(skill_dir) if skill_dir else None
@@ -196,7 +196,7 @@ class HarnessLoop:
         last_result = ""
 
         for attempt in range(1, self._max_attempts + 1):
-            async for evt in self._agent.run_streaming(current_goal, criteria=[c.text for c in criteria], extensions=request.extensions):
+            async for evt in self._runner.run_streaming(current_goal, criteria=[c.text for c in criteria], extensions=request.extensions):
                 if isinstance(evt, TextDelta):
                     last_result += evt.delta
                     yield TokenEvent(text=evt.delta)

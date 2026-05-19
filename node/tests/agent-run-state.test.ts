@@ -1,6 +1,6 @@
-import { Agent } from "../src/agent.js"
 import { tool } from "../src/tools/index.js"
 import type { LLMProvider, Message, ProviderRunState, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import { createRunner } from "./runtime/helpers.js"
 
 class StatefulTestProvider implements LLMProvider {
   readonly states: ProviderRunState[] = []
@@ -32,13 +32,16 @@ class StatefulTestProvider implements LLMProvider {
   }
 }
 
-describe("Agent provider run state", () => {
+describe("RuntimeRunner provider run state", () => {
   it("threads the same provider-owned state through every turn in one run", async () => {
     const provider = new StatefulTestProvider()
-    const agent = new Agent(provider, { maxTokens: 2048, maxTurns: 4 })
-      .register(tool("ping", "Ping", { type: "object", properties: {} }, () => "pong"))
+    const { runner } = createRunner(
+      provider,
+      [tool("ping", "Ping", { type: "object", properties: {} }, () => "pong")],
+      { maxTurns: 4 },
+    )
 
-    for await (const _event of agent.runStreaming("Use ping once, then finish.")) {}
+    for await (const _event of runner.run({ sessionId: "state-test", goal: "Use ping once, then finish." })) {}
 
     expect(provider.states).toHaveLength(2)
     expect(provider.states[0]).toBe(provider.states[1])

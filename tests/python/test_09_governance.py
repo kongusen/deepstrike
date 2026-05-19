@@ -57,9 +57,8 @@ class TestGovernanceKernel:
     def test_block_tool(self):
         gov = Governance()
         gov.block_tool("dangerous")
-        agent = make_agent(governance=gov)
-        agent.block_tool("dangerous")
-        assert "dangerous" in agent._blocked_tools
+        verdict = gov.evaluate("dangerous", "{}")
+        assert verdict.kind == "deny"
 
     def test_set_time_does_not_throw(self):
         gov = Governance()
@@ -84,13 +83,12 @@ class TestAgentGovernance:
             """Reply safely."""
             return msg
 
-        agent = make_agent(governance=gov)
-        agent.register(forbidden_action)
-        agent.register(safe_reply)
-        agent.block_tool("forbidden_action")
+        runner = make_agent(governance=gov)
+        runner.register(forbidden_action)
+        runner.register(safe_reply)
 
         events = await collect_events(
-            agent.run_streaming("First call forbidden_action. If blocked, call safe_reply with msg='ok'.")
+            runner.run_streaming("First call forbidden_action. If blocked, call safe_reply with msg='ok'.")
         )
 
         errors = [e for e in events if isinstance(e, ErrorEvent)]

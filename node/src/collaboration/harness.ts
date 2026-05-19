@@ -1,4 +1,5 @@
 import type { AgentPool } from "./pool.js"
+import { collectText } from "../runtime/runner.js"
 import type { VerificationContract, ContractCheckResult } from "./contract.js"
 import { formatContractForSystemPrompt, contractToCriteriaStrings } from "./contract.js"
 import type { HandoffArtifact } from "./handoff.js"
@@ -71,9 +72,12 @@ export class ContractDrivenHarness {
         : ""
       const executorGoal = `${contractBlock}\n\n---\n\n${currentGoal}${violationNote}`
 
-      artifact = await this.pool.get("executor").run(
-        executorGoal,
-        contractToCriteriaStrings(this.contract),
+      artifact = await collectText(
+        this.pool.get("executor").run({
+          sessionId: crypto.randomUUID(),
+          goal: executorGoal,
+          criteria: contractToCriteriaStrings(this.contract),
+        }),
       )
 
       // ── Phase 2: Verifier ──────────────────────────────────────────────────

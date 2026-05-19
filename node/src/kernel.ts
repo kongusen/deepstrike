@@ -1,4 +1,7 @@
 import { createRequire } from "module"
+import { existsSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import type { Message, RenderedContext, ToolCall, ToolResult, ToolSchema } from "./types.js"
 import type { SkillMetadata } from "./skills/loader.js"
 
@@ -58,6 +61,7 @@ interface LoopStateMachineInstance {
   addHistoryMessage(message: Message, tokens: number): void
   setTools(tools: ToolSchema[]): void
   start(task: { goal: string; criteria: string[] }): LoopAction
+  resumeAfterPreload(): LoopAction
   feedLlmResponse(message: Message): LoopAction
   feedToolResults(results: ToolResult[]): LoopAction
   feedTimeout(): LoopAction
@@ -157,9 +161,15 @@ interface KernelModule {
 const cjsRequire = createRequire(import.meta.url)
 let cachedKernel: KernelModule | undefined
 
+function resolveCoreModule(): string {
+  const localCore = join(dirname(fileURLToPath(import.meta.url)), "../../../crates/deepstrike-node")
+  if (existsSync(join(localCore, "index.js"))) return localCore
+  return "@deepstrike/core"
+}
+
 export function getKernel(): KernelModule {
   if (!cachedKernel) {
-    cachedKernel = cjsRequire("@deepstrike/core") as KernelModule
+    cachedKernel = cjsRequire(resolveCoreModule()) as KernelModule
   }
   return cachedKernel
 }

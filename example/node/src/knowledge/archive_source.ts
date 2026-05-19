@@ -2,6 +2,8 @@ import { loadNotes } from "../archive.js"
 import type { KnowledgeSource } from "@deepstrike/sdk"
 
 export class ArchiveKnowledgeSource implements KnowledgeSource {
+  async init(): Promise<void> {}
+
   async retrieve(goal: string, topK = 5): Promise<string[]> {
     const notes = await loadNotes()
     if (!notes.length) return []

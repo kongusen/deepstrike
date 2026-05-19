@@ -1,6 +1,6 @@
 {
   "name": "@deepstrike/core-linux-x64-gnu",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "cpu": [
     "x64"
   ],

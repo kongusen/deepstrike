@@ -100,6 +100,14 @@ impl LoopStateMachine {
         self.session_history_baseline = self.ctx.partitions.history.messages.len();
     }
 
+    /// Continue from preloaded history without appending a new user turn.
+    /// Use after `preload_history` when recovering a session that ended mid-run.
+    pub fn resume_after_preload(&mut self) -> LoopAction {
+        self.observations.clear();
+        self.phase = LoopPhase::Reason;
+        self.emit_call_llm()
+    }
+
     /// Return all messages added to history during the current run
     /// (since the last `preload_history` call or since construction).
     ///
@@ -296,6 +304,19 @@ mod tests {
         let action = sm.start(RuntimeTask::new("Say hello"));
         assert!(matches!(action, LoopAction::CallLLM { .. }));
         assert!(matches!(sm.phase, LoopPhase::Reason));
+    }
+
+    #[test]
+    fn resume_after_preload_emits_call_llm_without_duplicate_user() {
+        let mut sm = sm();
+        sm.preload_history(vec![
+            Message::user("prior goal"),
+            Message::assistant("partial"),
+        ]);
+        let history_len = sm.ctx.partitions.history.messages.len();
+        let action = sm.resume_after_preload();
+        assert!(matches!(action, LoopAction::CallLLM { .. }));
+        assert_eq!(sm.ctx.partitions.history.messages.len(), history_len);
     }
 
     #[test]

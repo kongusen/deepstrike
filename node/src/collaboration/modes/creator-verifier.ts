@@ -20,8 +20,8 @@ export interface CreatorVerifierMetrics {
  * Usage:
  * ```ts
  * const pool = new AgentPool()
- *   .add("executor", new Agent(provider, { maxTokens: 32_000, skillDir }))
- *   .add("verifier", new Agent(provider, { maxTokens: 8_000 }))
+ *   .add("executor", executorRunner)
+ *   .add("verifier", verifierRunner)
  *
  * const mode = new CreatorVerifierMode(pool)
  * const result = await mode.run(contract)

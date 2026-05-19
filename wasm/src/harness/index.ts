@@ -1,4 +1,5 @@
-import type { Agent } from "../agent.js"
+import type { RuntimeRunner } from "../runtime/runner.js"
+import { collectText } from "../runtime/runner.js"
 import type { DoneEvent, TextDelta } from "../types.js"
 
 export interface Criterion {
@@ -47,10 +48,11 @@ export type HarnessEvent =
   | { type: "done"; verdict: Verdict; iterations: number; totalTokens: number; status: string }
   | { type: "max_attempts_reached" }
 
-async function runOnce(agent: Agent, goal: string, req: HarnessRequest): Promise<HarnessOutcome> {
+async function runOnce(runner: RuntimeRunner, req: HarnessRequest): Promise<HarnessOutcome> {
   let text = ""
   let done: DoneEvent | undefined
-  for await (const evt of agent.runStreaming(goal, (req.criteria ?? []).map(c => c.text), req.extensions)) {
+  const sessionId = crypto.randomUUID()
+  for await (const evt of runner.run({ sessionId, goal: req.goal, criteria: req.criteria?.map(c => c.text), extensions: req.extensions })) {
     if (evt.type === "text_delta") text += (evt as TextDelta).delta
     else if (evt.type === "done") done = evt as DoneEvent
   }
@@ -58,9 +60,9 @@ async function runOnce(agent: Agent, goal: string, req: HarnessRequest): Promise
 }
 
 export class SinglePassHarness {
-  constructor(private agent: Agent) {}
+  constructor(private runner: RuntimeRunner) {}
   async run(request: HarnessRequest): Promise<HarnessOutcome> {
-    return { ...await runOnce(this.agent, request.goal, request), passed: true }
+    return { ...await runOnce(this.runner, request), passed: true }
   }
 }
 
@@ -72,7 +74,7 @@ export class HarnessLoop {
   private maxAttempts: number
 
   constructor(
-    private agent: Agent,
+    private runner: RuntimeRunner,
     private evalProvider: import("../types.js").LLMProvider,
     options: HarnessLoopOptions = {},
   ) {
@@ -89,9 +91,10 @@ export class HarnessLoop {
     let lastTotalTokens = 0
     let lastStatus = "error"
     let lastResult = ""
+    const sessionId = crypto.randomUUID()
 
     for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
-      for await (const evt of this.agent.runStreaming(currentGoal, criteria.map(c => c.text), request.extensions)) {
+      for await (const evt of this.runner.run({ sessionId, goal: currentGoal, criteria: criteria.map(c => c.text), extensions: request.extensions })) {
         if (evt.type === "text_delta") {
           lastResult += (evt as TextDelta).delta
           yield { type: "token", text: (evt as TextDelta).delta }
@@ -132,7 +135,7 @@ export class HarnessLoop {
         passed: doneAction.passed ?? false,
         overallScore: doneAction.overallScore ?? 0,
         feedback: doneAction.feedback ?? "",
-        details: doneAction.details ?? [],
+        details: (doneAction.details ?? []) as CriterionResult[],
       }
 
       if (verdict.passed) {

@@ -2,7 +2,7 @@ import uuid
 
 import pytest
 
-from deepstrike import Agent
+from deepstrike import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner
 from deepstrike.providers.base import RenderedContext, ProviderRunState
 from deepstrike.providers.stream import TextDelta, ToolCallEvent
 from deepstrike.tools.registry import tool
@@ -37,10 +37,16 @@ def ping() -> str:
 @pytest.mark.asyncio
 async def test_agent_threads_provider_run_state_through_turns():
     provider = StatefulTestProvider()
-    agent = Agent(provider, max_tokens=2048, max_turns=4)
-    agent.register(ping)
+    plane = LocalExecutionPlane().register(ping)
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=provider,
+        session_log=InMemorySessionLog(),
+        execution_plane=plane,
+        max_tokens=2048,
+        max_turns=4,
+    ))
 
-    async for _ in agent.run_streaming("Use ping once, then finish."):
+    async for _ in runner.run_streaming("Use ping once, then finish."):
         pass
 
     assert len(provider.states) == 2

@@ -113,10 +113,10 @@ Each SDK wraps the kernel over a language-native FFI bridge and adds all I/O.
 | WASM | `crates/deepstrike-wasm` | wasm-bindgen + Tsify |
 | Rust SDK | — | Links `deepstrike-core` directly |
 
-### Agent loop (detailed)
+### Runtime loop (detailed)
 
 ```text
-Agent.run_streaming(goal)
+RuntimeRunner.run({ sessionId, goal })  /  run_streaming (Rust)
 │
 ├─ Startup
 │   ├─ scan  skills/*.md          → sm.set_available_skills([...])
@@ -147,7 +147,7 @@ Agent.run_streaming(goal)
 │       └─ user tools             → execute_tools(calls)
 │
 └─ After session
-    └─ agent.dream(agent_id)
+    └─ runner.dream(agent_id)
         └─ idle_pipeline.run(session_data) → dream_store.commit(entries)
 ```
 

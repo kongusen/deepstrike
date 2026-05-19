@@ -1,11 +1,24 @@
 import OpenAI from "openai"
-import type { LLMProvider, Message, RenderedContext, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, ToolSchema } from "../types.js"
+import type { LLMProvider, Message, RenderedContext, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, ToolSchema, RuntimePolicy } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, omitExtensionKeys } from "./base.js"
 import { OpenAIChatAdapter } from "./openai-chat.js"
 import { endpointProfiles } from "./profiles.js"
 
 const QWEN_BASE = (endpointProfiles as Record<string, { baseURL: string }>)["qwen.dashscope"].baseURL
+
+const QWEN_POLICIES: Record<string, RuntimePolicy> = {
+  "qwen-max":         { maxTurns: 25 },
+  "qwen-plus":        { maxTurns: 20 },
+  "qwen-turbo":       { maxTurns: 15 },
+  "qwq-plus":         { maxTurns: 40 },
+  "qwq-32b":          { maxTurns: 35 },
+  "qwen3-235b-a22b":  { maxTurns: 35 },
+  "qwen3-72b":        { maxTurns: 25 },
+  "qwen3-32b":        { maxTurns: 20 },
+  "qwen3-14b":        { maxTurns: 15 },
+  "qwen3-8b":         { maxTurns: 15 },
+}
 
 export class QwenProvider implements LLMProvider {
   protected client: OpenAI
@@ -24,6 +37,10 @@ export class QwenProvider implements LLMProvider {
     this.circuit = new CircuitBreaker()
     this.maxRetries = retry.maxRetries
     this.baseDelay = retry.baseDelay
+  }
+
+  runtimePolicy(): RuntimePolicy {
+    return QWEN_POLICIES[this.model] ?? {}
   }
 
   async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {

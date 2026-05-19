@@ -5,13 +5,20 @@ from typing import AsyncIterator
 import httpx
 from deepstrike._kernel import Message, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent
-from .base import RetryConfig, RenderedContext, normalize_tool_call
+from .base import RetryConfig, RenderedContext, RuntimePolicy, normalize_tool_call
 from .openai import OpenAIProvider
 
 logger = logging.getLogger(__name__)
 
 _MINIMAX_BASE_URL = "https://api.minimax.chat/v1"
 _REASONING_MODELS = {"MiniMax-M1", "minimax-m1"}
+
+_MINIMAX_POLICIES: dict[str, RuntimePolicy] = {
+    "MiniMax-M2.7":    RuntimePolicy(max_turns=35),
+    "MiniMax-M2.5":    RuntimePolicy(max_turns=25),
+    "MiniMax-Text-01": RuntimePolicy(max_turns=20),
+    "MiniMax-M1":      RuntimePolicy(max_turns=40),
+}
 
 
 class MiniMaxProvider(OpenAIProvider):
@@ -26,6 +33,9 @@ class MiniMaxProvider(OpenAIProvider):
 
     def __init__(self, api_key: str, model: str = "MiniMax-Text-01", retry_config: RetryConfig | None = None, base_url: str = _MINIMAX_BASE_URL):
         super().__init__(api_key=api_key, model=model, retry_config=retry_config, base_url=base_url)
+
+    def runtime_policy(self) -> RuntimePolicy:
+        return _MINIMAX_POLICIES.get(self._model, RuntimePolicy())
 
     def _build_body(self, messages: list[Message], tools: list[ToolSchema], stream: bool) -> dict:
         body = super()._build_body(messages, tools, stream)

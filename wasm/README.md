@@ -1,6 +1,6 @@
 # DeepStrike WASM SDK
 
-Agent framework built on a Rust kernel compiled to WebAssembly. Runs in browsers, Cloudflare Workers, Deno Deploy, and Vercel Edge — anywhere that supports `fetch` and WASM.
+Runtime framework built on a Rust kernel compiled to WebAssembly. Runs in browsers, Cloudflare Workers, Deno Deploy, and Vercel Edge — anywhere that supports `fetch` and WASM.
 
 ## Install
 
@@ -15,7 +15,14 @@ The Rust kernel is distributed as a pre-built `.wasm` binary (`@deepstrike/wasm-
 ## Quick start
 
 ```typescript
-import { Agent, AnthropicProvider, tool } from "@deepstrike/wasm"
+import {
+  RuntimeRunner,
+  collectText,
+  InMemorySessionLog,
+  LocalExecutionPlane,
+  AnthropicProvider,
+  tool,
+} from "@deepstrike/wasm"
 
 const add = tool("add", "Add two numbers.", {
   type: "object",
@@ -23,20 +30,25 @@ const add = tool("add", "Add two numbers.", {
   required: ["x", "y"],
 }, async ({ x, y }) => String((x as number) + (y as number)))
 
-const agent = new Agent(
-  new AnthropicProvider(apiKey),
-  { maxTokens: 32_000, maxTurns: 10 },
-)
-agent.register(add)
+const plane = new LocalExecutionPlane()
+plane.register(add)
 
-const answer = await agent.run("What is 2 + 3?")
+const runner = new RuntimeRunner({
+  provider: new AnthropicProvider(apiKey),
+  sessionLog: new InMemorySessionLog(),
+  executionPlane: plane,
+  maxTokens: 32_000,
+  maxTurns: 10,
+})
+
+const answer = await collectText(runner.run({ sessionId: "demo", goal: "What is 2 + 3?" }))
 console.log(answer) // "5"
 ```
 
 Streaming:
 
 ```typescript
-for await (const event of agent.runStreaming("Summarize this page")) {
+for await (const event of runner.run({ sessionId: "demo", goal: "Summarize this page" })) {
   if (event.type === "text_delta") process.stdout.write(event.delta)
   else if (event.type === "tool_call") console.log(`\n[→ ${event.name}]`)
   else if (event.type === "done") console.log(`\ndone in ${event.iterations} turns (${event.status})`)
@@ -50,13 +62,13 @@ for await (const event of agent.runStreaming("Summarize this page")) {
 ```
 src/
 ├── index.ts          # Public exports
-├── agent.ts          # Agent — top-level entry point
+├── runtime/          # RuntimeRunner, SessionLog, ExecutionPlane
 ├── types.ts          # Shared type definitions
 ├── providers/        # LLM adapters (fetch-based SSE)
 ├── tools/            # tool() helper, executeTools (no fs/shell)
-├── memory/           # WorkingMemory + MemorySource/Extractor interfaces
+├── memory/           # WorkingMemory + DreamStore interfaces
 ├── knowledge/        # KnowledgeSource interface
-├── harness/          # SinglePassHarness, EvalLoopHarness, QualityGate
+├── harness/          # SinglePassHarness, HarnessLoop
 ├── signals/          # RuntimeSignal, SignalSource, ScheduledPrompt
 └── safety/           # PermissionManager
 ```
@@ -76,7 +88,7 @@ The kernel (`@deepstrike/wasm-kernel`, Rust/wasm-bindgen) owns:
 | Long-term storage | IndexedDB | KV / D1 | SQLite |
 | External signals | `postMessage` | event | any |
 
-The WASM SDK ships **no `readFile` built-in**. Tools must be pure JS / serializable data. Skill loading is delegated to the host (fetch from a URL, read from IndexedDB, etc.).
+The WASM SDK ships **no `readFile` built-in**. Tools must be pure JS / serializable data. Skills use `skillContentMap` on `RuntimeOptions` (no filesystem).
 
 ---
 
@@ -101,7 +113,11 @@ const provider = new AnthropicProvider("sk-...", "claude-opus-4-7")
 Thinking / reasoning:
 
 ```typescript
-for await (const event of agent.runStreaming("...", undefined, { enable_thinking: true })) {
+for await (const event of runner.run({
+  sessionId: "demo",
+  goal: "...",
+  extensions: { enable_thinking: true },
+})) {
   if (event.type === "thinking_delta") console.log(event.delta)
 }
 ```
@@ -113,7 +129,7 @@ for await (const event of agent.runStreaming("...", undefined, { enable_thinking
 Tools must be pure functions — no shell, no filesystem.
 
 ```typescript
-import { tool, Agent } from "@deepstrike/wasm"
+import { tool, LocalExecutionPlane } from "@deepstrike/wasm"
 
 const fetchUrl = tool("fetch_url", "Fetch a URL and return its text.", {
   type: "object",
@@ -124,7 +140,8 @@ const fetchUrl = tool("fetch_url", "Fetch a URL and return its text.", {
   return resp.text()
 })
 
-agent.register(fetchUrl)
+const plane = new LocalExecutionPlane()
+plane.register(fetchUrl)
 ```
 
 ---
@@ -132,12 +149,15 @@ agent.register(fetchUrl)
 ## Governance
 
 ```typescript
-import { Agent, AnthropicProvider, Governance } from "@deepstrike/wasm"
+import { RuntimeRunner, AnthropicProvider, Governance } from "@deepstrike/wasm"
 
 const gov = new Governance()
 gov.blockTool("dangerous_tool")
 
-const agent = new Agent(provider, {
+const runner = new RuntimeRunner({
+  provider: new AnthropicProvider(apiKey),
+  sessionLog: new InMemorySessionLog(),
+  executionPlane: new LocalExecutionPlane(),
   maxTokens: 32_000,
   governance: gov,
 })
@@ -171,7 +191,10 @@ class VectorSearch implements KnowledgeSource {
   }
 }
 
-const agent = new Agent(provider, {
+const runner = new RuntimeRunner({
+  provider,
+  sessionLog: new InMemorySessionLog(),
+  executionPlane: new LocalExecutionPlane(),
   maxTokens: 32_000,
   maxTurns: 10,
   knowledgeSource: new VectorSearch(),
@@ -186,12 +209,12 @@ const agent = new Agent(provider, {
 import { SinglePassHarness, HarnessLoop } from "@deepstrike/wasm"
 
 // Single pass — always passes
-const harness = new SinglePassHarness(agent)
+const harness = new SinglePassHarness(runner)
 const outcome = await harness.run({ goal: "Write a haiku" })
 console.log(outcome.result)
 
 // Eval loop — LLM-judges the output; retries up to 3 times
-const loop = new HarnessLoop(agent, evalProvider, { maxAttempts: 3 })
+const loop = new HarnessLoop(runner, evalProvider, { maxAttempts: 3 })
 for await (const event of loop.runStreaming({
   goal: "Write a haiku",
   criteria: [
@@ -212,7 +235,7 @@ import { ScheduledPrompt } from "@deepstrike/wasm"
 import type { SignalSource, RuntimeSignal } from "@deepstrike/wasm"
 
 // Interrupt from a UI button
-document.getElementById("stop")!.onclick = () => agent.interrupt()
+document.getElementById("stop")!.onclick = () => runner.interrupt()
 
 // Convert a scheduled prompt to a RuntimeSignal
 const prompt = new ScheduledPrompt("Daily standup summary", 1_700_000_000_000)
@@ -260,14 +283,29 @@ Modes: `DEFAULT` (evaluate grants), `PLAN` (block all), `AUTO` (allow all).
 
 ```typescript
 import init from "@deepstrike/wasm-kernel"
-import { Agent, AnthropicProvider } from "@deepstrike/wasm"
+import {
+  RuntimeRunner,
+  collectText,
+  InMemorySessionLog,
+  LocalExecutionPlane,
+  AnthropicProvider,
+} from "@deepstrike/wasm"
 import wasmBinary from "@deepstrike/wasm-kernel/deepstrike_wasm_bg.wasm"
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     await init(wasmBinary)
-    const agent = new Agent(new AnthropicProvider(env.ANTHROPIC_KEY), { maxTokens: 32_000, maxTurns: 10 })
-    const result = await agent.run(await request.text())
+    const runner = new RuntimeRunner({
+      provider: new AnthropicProvider(env.ANTHROPIC_KEY),
+      sessionLog: new InMemorySessionLog(),
+      executionPlane: new LocalExecutionPlane(),
+      maxTokens: 32_000,
+      maxTurns: 10,
+    })
+    const result = await collectText(runner.run({
+      sessionId: crypto.randomUUID(),
+      goal: await request.text(),
+    }))
     return new Response(result)
   },
 }
@@ -277,10 +315,16 @@ export default {
 
 ```typescript
 import init from "@deepstrike/wasm-kernel"
-import { Agent, AnthropicProvider } from "@deepstrike/wasm"
+import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane, AnthropicProvider } from "@deepstrike/wasm"
 
 await init()
-const agent = new Agent(new AnthropicProvider(import.meta.env.VITE_ANTHROPIC_KEY), { maxTokens: 32_000, maxTurns: 10 })
+const runner = new RuntimeRunner({
+  provider: new AnthropicProvider(import.meta.env.VITE_ANTHROPIC_KEY),
+  sessionLog: new InMemorySessionLog(),
+  executionPlane: new LocalExecutionPlane(),
+  maxTokens: 32_000,
+  maxTurns: 10,
+})
 ```
 
 ---
@@ -291,6 +335,7 @@ const agent = new Agent(new AnthropicProvider(import.meta.env.VITE_ANTHROPIC_KEY
 |------------|--------|
 | `text_delta` | `delta: string` |
 | `thinking_delta` | `delta: string` |
+| `usage` | `totalTokens: number` |
 | `tool_call` | `id, name, arguments` |
 | `tool_result` | `callId, name, content, isError` |
 | `done` | `iterations, totalTokens, status` |

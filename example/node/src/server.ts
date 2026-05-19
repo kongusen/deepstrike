@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "http"
 import { readFile } from "fs/promises"
 import { resolve } from "path"
 import { ROOT } from "./paths.js"
-import { makeAgent } from "./agent.js"
+import { makeRuntime } from "./runtime.js"
 import { makeProvider } from "./provider.js"
 import { makeReportJudge, REPORT_CRITERIA } from "./harness/report_judge.js"
 import { webSearch, fetchAndClip, searchArchive, exportTool, exportDataset } from "./tools/index.js"
@@ -44,7 +44,7 @@ function cors(res: ServerResponse) {
 // ─── agent streaming helper ──────────────────────────────────────────────────
 
 async function streamAgent(
-  agent: ReturnType<typeof makeAgent>,
+  agent: ReturnType<typeof makeRuntime>,
   goal: string,
   criteria: string[],
   send: (d: object) => void,
@@ -82,7 +82,7 @@ async function handleCapture(body: Record<string, unknown>, res: ServerResponse)
 
   const { send, done } = sse(res)
 
-  const agent = makeAgent("capture")
+  const agent = makeRuntime("capture")
   agent.register(searchArchive, fetchAndClip, exportTool)
 
   const goal = `Organize this note for the FlashNote knowledge base.
@@ -123,7 +123,7 @@ async function handleResearch(body: Record<string, unknown>, res: ServerResponse
 
   const { send, done } = sse(res)
 
-  const agent = makeAgent("research")
+  const agent = makeRuntime("research")
   agent.register(webSearch, fetchAndClip, searchArchive, exportTool)
 
   const goal = `Research this topic: "${topic}"
@@ -150,7 +150,7 @@ async function handleResearch(body: Record<string, unknown>, res: ServerResponse
 
 async function handleExport(params: URLSearchParams, res: ServerResponse) {
   const format = params.get("format") ?? "digest"
-  const agent = makeAgent("capture")
+  const agent = makeRuntime("capture")
   agent.register(exportTool)
   const result = await agent.run(`Call the export tool with format="${format}".`)
   res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" })
@@ -161,7 +161,7 @@ async function handleExportDataset(params: URLSearchParams, res: ServerResponse)
   const format = params.get("format") ?? "jsonl"
   const minQ = parseFloat(params.get("min_quality") ?? "0.7")
   const anon = params.get("anonymize") === "true"
-  const agent = makeAgent("capture")
+  const agent = makeRuntime("capture")
   agent.register(exportDataset)
   const result = await agent.run(
     `Call export_dataset with format="${format}", min_quality=${minQ}, anonymize=${anon}.`

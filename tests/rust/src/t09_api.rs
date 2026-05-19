@@ -23,16 +23,45 @@ fn make_provider() -> OpenAIProvider {
     OpenAIProvider::with_base_url(key, model, url)
 }
 
-fn make_agent() -> Agent {
-    Agent::new(make_provider(), AgentOptions::new(4096))
+fn make_runner() -> RuntimeRunner {
+    make_runner_with(|_, _| {})
+}
+
+fn make_runner_with<F>(setup: F) -> RuntimeRunner
+where
+    F: FnOnce(&mut LocalExecutionPlane, &mut RuntimeOptions),
+{
+    let mut plane = LocalExecutionPlane::new();
+    let mut opts = RuntimeOptions {
+        provider: Box::new(make_provider()),
+        execution_plane: None,
+        session_log: Some(Arc::new(InMemorySessionLog::new())),
+        session_id: None,
+        max_tokens: 4096,
+        max_turns: Some(25),
+        timeout_ms: None,
+        extensions: None,
+        agent_id: None,
+        system_prompt: None,
+        initial_memory: vec![],
+        skill_dir: None,
+        dream_store: None,
+        knowledge_source: None,
+        signal_source: None,
+        governance: None,
+        on_tool_suspend: None,
+    };
+    setup(&mut plane, &mut opts);
+    opts.execution_plane = Some(Box::new(plane));
+    RuntimeRunner::new(opts)
 }
 
 fn skills_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/skills")
 }
 
-async fn collect_text(agent: &Agent, goal: &str) -> (String, Vec<RunEvent>) {
-    let mut stream = agent.run_streaming(goal, &[], None).await.unwrap();
+async fn collect_text(runner: &RuntimeRunner, goal: &str) -> (String, Vec<RunEvent>) {
+    let mut stream = runner.run_streaming(goal, &[], None, None).await.unwrap();
     let mut text = String::new();
     let mut events = Vec::new();
     while let Some(evt) = stream.next().await {
@@ -128,24 +157,23 @@ impl DreamStore for MockDreamStore {
     }
 }
 
-// ─── 01. Agent.run() basic ──────────────────────────────────────────────────
+// ─── 01. RuntimeRunner.execute() basic ──────────────────────────────────────
 
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
-async fn agent_run_returns_done_string() {
-    let agent = make_agent();
-    let result = agent.run("Say hello in one word.").await.unwrap();
-    assert!(result.starts_with("done in"));
-    assert!(result.contains("turns"));
+async fn runner_execute_returns_text() {
+    let runner = make_runner();
+    let result = runner.execute("Say hello in one word.").await.unwrap();
+    assert!(!result.is_empty());
 }
 
 // ─── 02. Agent.run_streaming() ──────────────────────────────────────────────
 
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
-async fn agent_streaming_produces_text_and_done() {
-    let agent = make_agent();
-    let (text, events) = collect_text(&agent, "What is 2+2? Answer with just the number.").await;
+async fn runner_streaming_produces_text_and_done() {
+    let runner = make_runner();
+    let (text, events) = collect_text(&runner, "What is 2+2? Answer with just the number.").await;
     assert!(!text.is_empty());
     assert!(events.iter().any(|e| matches!(e, RunEvent::TextDelta(_))));
     assert!(events.iter().any(|e| matches!(e, RunEvent::Done { .. })));
@@ -153,9 +181,9 @@ async fn agent_streaming_produces_text_and_done() {
 
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
-async fn agent_streaming_done_has_iterations() {
-    let agent = make_agent();
-    let (_, events) = collect_text(&agent, "Say hi.").await;
+async fn runner_streaming_done_has_iterations() {
+    let runner = make_runner();
+    let (_, events) = collect_text(&runner, "Say hi.").await;
     let done = events.iter().find(|e| matches!(e, RunEvent::Done { .. }));
     match done.unwrap() {
         RunEvent::Done { iterations, status, .. } => {
@@ -170,11 +198,11 @@ async fn agent_streaming_done_has_iterations() {
 
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
-async fn agent_with_criteria() {
-    let agent = make_agent();
+async fn runner_with_criteria() {
+    let runner = make_runner();
     let criteria = vec!["Must contain the word 'hello'".to_string()];
-    let mut stream = agent.run_streaming(
-        "Greet the user.", &criteria, None,
+    let mut stream = runner.run_streaming(
+        "Greet the user.", &criteria, None, None,
     ).await.unwrap();
 
     let mut text = String::new();
@@ -191,27 +219,28 @@ async fn agent_with_criteria() {
 
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
-async fn agent_calls_tool() {
-    let mut agent = Agent::new(make_provider(), AgentOptions::new(4096));
-    agent.register(RegisteredTool::text(
-        "add",
-        "Add two integers and return the sum.",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "x": { "type": "integer", "description": "First number" },
-                "y": { "type": "integer", "description": "Second number" }
-            },
-            "required": ["x", "y"]
-        }),
-        |args| Box::pin(async move {
-            let x = args["x"].as_i64().unwrap_or(0);
-            let y = args["y"].as_i64().unwrap_or(0);
-            Ok(format!("{}", x + y))
-        }),
-    ));
+async fn runner_calls_tool() {
+    let runner = make_runner_with(|plane, _| {
+        plane.register(RegisteredTool::text(
+            "add",
+            "Add two integers and return the sum.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "x": { "type": "integer", "description": "First number" },
+                    "y": { "type": "integer", "description": "Second number" }
+                },
+                "required": ["x", "y"]
+            }),
+            |args| Box::pin(async move {
+                let x = args["x"].as_i64().unwrap_or(0);
+                let y = args["y"].as_i64().unwrap_or(0);
+                Ok(format!("{}", x + y))
+            }),
+        ));
+    });
 
-    let (text, events) = collect_text(&agent, "Use the add tool to compute 17 + 28. Report the result.").await;
+    let (text, events) = collect_text(&runner, "Use the add tool to compute 17 + 28. Report the result.").await;
 
     let has_tool_call = events.iter().any(|e| matches!(e, RunEvent::ToolCall { name, .. } if name == "add"));
     let has_tool_result = events.iter().any(|e| matches!(e, RunEvent::ToolResult { is_error, .. } if !is_error));
@@ -224,14 +253,14 @@ async fn agent_calls_tool() {
 
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
-async fn agent_with_skill_dir() {
-    let agent = Agent::new(make_provider(), AgentOptions {
-        skill_dir: Some(skills_dir()),
-        ..AgentOptions::new(4096)
+async fn runner_with_skill_dir() {
+    let dir = skills_dir();
+    let runner = make_runner_with(|_, opts| {
+        opts.skill_dir = Some(dir);
     });
 
     let (text, events) = collect_text(
-        &agent,
+        &runner,
         "Use the summarize skill to learn how to summarize, then summarize: 'Rust is a systems programming language focused on safety, speed, and concurrency.'",
     ).await;
 
@@ -247,19 +276,18 @@ async fn agent_with_skill_dir() {
 
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
-async fn agent_with_knowledge_source() {
-    let agent = Agent::new(make_provider(), AgentOptions {
-        knowledge_source: Some(Box::new(MockKnowledgeSource {
+async fn runner_with_knowledge_source() {
+    let runner = make_runner_with(|_, opts| {
+        opts.knowledge_source = Some(Box::new(MockKnowledgeSource {
             snippets: vec![
                 "DeepStrike is an agent framework with a Rust kernel.".into(),
                 "DeepStrike supports Node.js, Python, and Rust SDKs.".into(),
             ],
-        })),
-        ..AgentOptions::new(4096)
+        }));
     });
 
     let (text, events) = collect_text(
-        &agent,
+        &runner,
         "Use the knowledge tool to find out what DeepStrike is, then explain it.",
     ).await;
 
@@ -273,17 +301,20 @@ async fn agent_with_knowledge_source() {
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
 async fn blocked_tool_yields_error_event() {
-    let mut agent = Agent::new(make_provider(), AgentOptions::new(4096));
-    agent.register(RegisteredTool::text(
-        "forbidden_action",
-        "This tool is blocked.",
-        serde_json::json!({"type": "object", "properties": {}, "required": []}),
-        |_| Box::pin(async { Ok("should not run".into()) }),
-    ));
-    agent.block_tool("forbidden_action");
+    let gov = Arc::new(tokio::sync::Mutex::new(Governance::allow()));
+    gov.lock().await.block_tool("forbidden_action");
+    let runner = make_runner_with(|plane, opts| {
+        plane.register(RegisteredTool::text(
+            "forbidden_action",
+            "This tool is blocked.",
+            serde_json::json!({"type": "object", "properties": {}, "required": []}),
+            |_| Box::pin(async { Ok("should not run".into()) }),
+        ));
+        opts.governance = Some(gov);
+    });
 
     let (_, events) = collect_text(
-        &agent,
+        &runner,
         "Call the forbidden_action tool.",
     ).await;
 
@@ -298,31 +329,12 @@ async fn blocked_tool_yields_error_event() {
 
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
-async fn agent_interrupt() {
-    let agent = make_agent();
-
-    // Schedule interrupt after a short delay via a separate task
-    let interrupted = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let int_flag = interrupted.clone();
-
-    // We can't tokio::spawn agent.run() because the stream isn't Send.
-    // Instead, use interrupt() from a background task and run on current task.
-    let agent_ref = &agent;
-    let int_task = tokio::spawn({
-        let int_flag = int_flag.clone();
-        async move {
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-            int_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-    });
-
-    // Pre-set interrupt so the run terminates quickly
+async fn runner_interrupt() {
+    let runner = make_runner();
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    agent_ref.interrupt();
-
-    let result = agent_ref.run("Write a very long essay about the history of computing.").await;
+    runner.interrupt();
+    let result = runner.execute("Write a very long essay about the history of computing.").await;
     assert!(result.is_ok());
-    int_task.abort();
 }
 
 // ─── 09. DreamStore integration ─────────────────────────────────────────────
@@ -331,13 +343,12 @@ async fn agent_interrupt() {
 #[ignore = "requires OPENAI_API_KEY"]
 async fn dream_with_empty_sessions() {
     let store = MockDreamStore::empty();
-    let agent = Agent::new(make_provider(), AgentOptions {
-        dream_store: Some(Box::new(store)),
-        agent_id: Some("test-agent".into()),
-        ..AgentOptions::new(4096)
+    let runner = make_runner_with(|_, opts| {
+        opts.dream_store = Some(Box::new(store));
+        opts.agent_id = Some("test-agent".into());
     });
 
-    let result = agent.dream("test-agent", 1_000_000).await.unwrap();
+    let result = runner.dream("test-agent", 1_000_000).await.unwrap();
     assert_eq!(result.sessions_processed, 0);
 }
 
@@ -347,13 +358,12 @@ async fn dream_processes_session() {
     let store = MockDreamStore::with_session();
     let committed = store.committed.clone();
 
-    let agent = Agent::new(make_provider(), AgentOptions {
-        dream_store: Some(Box::new(store)),
-        agent_id: Some("test-agent".into()),
-        ..AgentOptions::new(4096)
+    let runner = make_runner_with(|_, opts| {
+        opts.dream_store = Some(Box::new(store));
+        opts.agent_id = Some("test-agent".into());
     });
 
-    let result = agent.dream("test-agent", 2_000_000).await.unwrap();
+    let result = runner.dream("test-agent", 2_000_000).await.unwrap();
     assert!(result.sessions_processed >= 1);
     assert!(*committed.lock().unwrap(), "commit should have been called");
 }
@@ -363,8 +373,8 @@ async fn dream_processes_session() {
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
 async fn single_pass_harness_always_passes() {
-    let agent = make_agent();
-    let harness = SinglePassHarness::new(&agent);
+    let runner = make_runner();
+    let harness = SinglePassHarness::new(&runner);
     let outcome = harness.run(HarnessRequest::new("Say hello.")).await.unwrap();
     assert!(outcome.passed);
     assert!(!outcome.result.is_empty());
@@ -385,8 +395,8 @@ impl QualityGate for AlwaysPass {
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
 async fn eval_loop_harness_with_always_pass_gate() {
-    let agent = make_agent();
-    let harness = EvalLoopHarness::new(&agent, AlwaysPass, 3);
+    let runner = make_runner();
+    let harness = EvalLoopHarness::new(&runner, AlwaysPass, 3);
     let outcome = harness.run(HarnessRequest::new("Say hi.")).await.unwrap();
     assert!(outcome.passed);
 }
@@ -396,30 +406,33 @@ async fn eval_loop_harness_with_always_pass_gate() {
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
 async fn tools_plus_governance_allowed_tool_works() {
-    let mut agent = Agent::new(make_provider(), AgentOptions::new(4096));
-    agent.register(RegisteredTool::text(
-        "greet",
-        "Return a greeting for the given name.",
-        serde_json::json!({
-            "type": "object",
-            "properties": { "name": { "type": "string" } },
-            "required": ["name"]
-        }),
-        |args| Box::pin(async move {
-            let name = args["name"].as_str().unwrap_or("World");
-            Ok(format!("Hello, {name}!"))
-        }),
-    ));
-    agent.register(RegisteredTool::text(
-        "dangerous",
-        "A dangerous tool.",
-        serde_json::json!({"type": "object", "properties": {}, "required": []}),
-        |_| Box::pin(async { Ok("danger!".into()) }),
-    ));
-    agent.block_tool("dangerous");
+    let gov = Arc::new(tokio::sync::Mutex::new(Governance::allow()));
+    gov.lock().await.block_tool("dangerous");
+    let runner = make_runner_with(|plane, opts| {
+        plane.register(RegisteredTool::text(
+            "greet",
+            "Return a greeting for the given name.",
+            serde_json::json!({
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"]
+            }),
+            |args| Box::pin(async move {
+                let name = args["name"].as_str().unwrap_or("World");
+                Ok(format!("Hello, {name}!"))
+            }),
+        ));
+        plane.register(RegisteredTool::text(
+            "dangerous",
+            "A dangerous tool.",
+            serde_json::json!({"type": "object", "properties": {}, "required": []}),
+            |_| Box::pin(async { Ok("danger!".into()) }),
+        ));
+        opts.governance = Some(gov);
+    });
 
     let (text, events) = collect_text(
-        &agent,
+        &runner,
         "Use the greet tool with name='Rust'. Do NOT call dangerous.",
     ).await;
 
@@ -433,14 +446,13 @@ async fn tools_plus_governance_allowed_tool_works() {
 #[ignore = "requires OPENAI_API_KEY"]
 async fn agent_with_dream_store_enables_memory_tool() {
     let store = MockDreamStore::empty();
-    let agent = Agent::new(make_provider(), AgentOptions {
-        dream_store: Some(Box::new(store)),
-        agent_id: Some("memory-agent".into()),
-        ..AgentOptions::new(4096)
+    let runner = make_runner_with(|_, opts| {
+        opts.dream_store = Some(Box::new(store));
+        opts.agent_id = Some("memory-agent".into());
     });
 
     let (text, events) = collect_text(
-        &agent,
+        &runner,
         "Use the memory tool to search for 'Rust history'. Report what you found.",
     ).await;
 
@@ -454,9 +466,9 @@ async fn agent_with_dream_store_enables_memory_tool() {
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
 async fn harness_loop_llm_judge() {
-    let agent = make_agent();
+    let runner = make_runner();
     let eval_provider = make_provider();
-    let harness = HarnessLoop::new(&agent, eval_provider, 2, None);
+    let harness = HarnessLoop::new(&runner, eval_provider, 2, None);
 
     let mut req = HarnessRequest::new("Write a haiku about the ocean.");
     req.criteria = vec![deepstrike_sdk::harness::Criterion::required("Must be exactly 3 lines.")];
@@ -482,12 +494,11 @@ async fn harness_loop_llm_judge() {
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
 async fn agent_with_extensions() {
-    let agent = Agent::new(make_provider(), AgentOptions {
-        extensions: Some(serde_json::json!({"temperature": 0.1})),
-        ..AgentOptions::new(4096)
+    let runner = make_runner_with(|_, opts| {
+        opts.extensions = Some(serde_json::json!({"temperature": 0.1}));
     });
 
-    let (text, _) = collect_text(&agent, "Say exactly: 'test passed'").await;
+    let (text, _) = collect_text(&runner, "Say exactly: 'test passed'").await;
     assert!(!text.is_empty());
 }
 
@@ -495,36 +506,36 @@ async fn agent_with_extensions() {
 
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
-async fn agent_multiple_tools() {
-    let mut agent = Agent::new(make_provider(), AgentOptions::new(4096));
-
-    agent.register(RegisteredTool::text(
-        "add", "Add two numbers.", serde_json::json!({
-            "type": "object",
-            "properties": { "x": {"type":"integer"}, "y": {"type":"integer"} },
-            "required": ["x","y"]
-        }),
-        |args| Box::pin(async move {
-            let x = args["x"].as_i64().unwrap_or(0);
-            let y = args["y"].as_i64().unwrap_or(0);
-            Ok(format!("{}", x + y))
-        }),
-    ));
-    agent.register(RegisteredTool::text(
-        "multiply", "Multiply two numbers.", serde_json::json!({
-            "type": "object",
-            "properties": { "x": {"type":"integer"}, "y": {"type":"integer"} },
-            "required": ["x","y"]
-        }),
-        |args| Box::pin(async move {
-            let x = args["x"].as_i64().unwrap_or(0);
-            let y = args["y"].as_i64().unwrap_or(0);
-            Ok(format!("{}", x * y))
-        }),
-    ));
+async fn runner_multiple_tools() {
+    let runner = make_runner_with(|plane, _| {
+        plane.register(RegisteredTool::text(
+            "add", "Add two numbers.", serde_json::json!({
+                "type": "object",
+                "properties": { "x": {"type":"integer"}, "y": {"type":"integer"} },
+                "required": ["x","y"]
+            }),
+            |args| Box::pin(async move {
+                let x = args["x"].as_i64().unwrap_or(0);
+                let y = args["y"].as_i64().unwrap_or(0);
+                Ok(format!("{}", x + y))
+            }),
+        ));
+        plane.register(RegisteredTool::text(
+            "multiply", "Multiply two numbers.", serde_json::json!({
+                "type": "object",
+                "properties": { "x": {"type":"integer"}, "y": {"type":"integer"} },
+                "required": ["x","y"]
+            }),
+            |args| Box::pin(async move {
+                let x = args["x"].as_i64().unwrap_or(0);
+                let y = args["y"].as_i64().unwrap_or(0);
+                Ok(format!("{}", x * y))
+            }),
+        ));
+    });
 
     let (text, events) = collect_text(
-        &agent,
+        &runner,
         "Compute add(3,4) and multiply(5,6). Report both results.",
     ).await;
 
@@ -576,8 +587,8 @@ async fn signal_gateway_schedule_fires() {
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
 async fn done_event_has_telemetry() {
-    let agent = make_agent();
-    let (_, events) = collect_text(&agent, "Say one word.").await;
+    let runner = make_runner();
+    let (_, events) = collect_text(&runner, "Say one word.").await;
 
     let done = events.iter().find(|e| matches!(e, RunEvent::Done { .. })).unwrap();
     match done {

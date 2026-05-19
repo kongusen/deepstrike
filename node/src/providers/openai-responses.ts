@@ -141,6 +141,20 @@ export class OpenAIResponsesProvider implements LLMProvider {
     this.baseDelay = retry.baseDelay
   }
 
+  runtimePolicy(): import("../types.js").RuntimePolicy {
+    const table: Record<string, import("../types.js").RuntimePolicy> = {
+      "gpt-4.1":      { maxTurns: 35 },
+      "gpt-4.1-mini": { maxTurns: 20 },
+      "gpt-4.1-nano": { maxTurns: 15 },
+      "gpt-5":        { maxTurns: 50 },
+      "gpt-5-mini":   { maxTurns: 25 },
+      "o3":           { maxTurns: 50 },
+      "o3-mini":      { maxTurns: 25 },
+      "o4-mini":      { maxTurns: 25 },
+    }
+    return table[this.model] ?? {}
+  }
+
   createRunState(): OpenAIResponsesRunState {
     return { coveredMessageCount: 0 }
   }

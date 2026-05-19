@@ -1,7 +1,7 @@
 // Mock @deepstrike/wasm-kernel for tests (no .wasm binary needed)
 export class LoopStateMachine {
   private terminal = false
-  private turn = 0
+  turn = 0
   private phase = 0
   private maxTurns: number
 
@@ -16,6 +16,11 @@ export class LoopStateMachine {
   addSystemMessage(_content: string, _tokens: number): void {}
   addMemoryMessage(_content: string, _tokens: number): void {}
   addHistoryMessage(_message: unknown, _tokens: number): void {}
+  preloadHistory(_messages: unknown[]): void {}
+  resumeAfterPreload() {
+    return { kind: "call_llm", context: { systemText: "", turns: [{ role: "user", content: "resume" }] }, tools: [] }
+  }
+  drainNewMessages(): unknown[] { return [] }
   takeObservations(): unknown[] { return [] }
   isTerminal(): boolean { return this.terminal }
 
@@ -47,6 +52,20 @@ export class LoopStateMachine {
   feedTimeout() {
     this.terminal = true
     return { kind: "done", result: { turnsUsed: this.turn, totalTokensUsed: 0, termination: "timeout" } }
+  }
+
+  get result() {
+    return this.terminal ? { termination: "completed", turnsUsed: 2, totalTokensUsed: 100 } : undefined
+  }
+}
+
+export class IdlePipeline {
+  constructor(_agentId: string) {}
+  feedTrigger() {
+    return { kind: "noop" }
+  }
+  feedSynthesisResult(_content: string) {
+    return { kind: "noop" }
   }
 }
 

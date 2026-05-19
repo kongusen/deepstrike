@@ -11,14 +11,14 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.13"
+version = "0.1.14"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/anthropics/deepstrike"
 
 [workspace.dependencies]
-deepstrike-core = { path = "crates/deepstrike-core", version = "0.1.13" }
-deepstrike-tokenizer = { path = "crates/deepstrike-tokenizer", version = "0.1.13" }
+deepstrike-core = { path = "crates/deepstrike-core", version = "0.1.14" }
+deepstrike-tokenizer = { path = "crates/deepstrike-tokenizer", version = "0.1.14" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

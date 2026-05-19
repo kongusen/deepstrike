@@ -47,7 +47,7 @@ from deepstrike import SkillRegistry
 
 registry = SkillRegistry(skills_dir="./skills")
 registry.register(name="deploy", content="## Deploy protocol\n...")
-agent.set_skill_registry(registry)
+// Pass skill_dir on RuntimeOptions, or register skills via SkillRegistry + skillContentMap (WASM)
 ```
 
 ---
@@ -71,7 +71,7 @@ SDK  → dream_store.search("how did we handle auth last time?")
 
 ### Phase 2 — Post-session consolidation ("dreaming")
 
-After each session, call `agent.dream(agent_id)` to trigger the `IdlePipeline`:
+After each session, call `runner.dream(agent_id)` to trigger the `IdlePipeline`:
 
 1. The pipeline reads `SessionData` (full transcript + metadata)
 2. An LLM synthesises key insights, decisions, and patterns
@@ -80,20 +80,20 @@ After each session, call `agent.dream(agent_id)` to trigger the `IdlePipeline`:
 
 ```python
 # Python — call after every session
-result = await agent.run(goal)
-await agent.dream("my-agent-id")
+result = await collect_text(runner.run_streaming(goal))
+await runner.dream("my-agent-id")
 ```
 
 ```typescript
 // Node.js
-const result = await agent.run(goal)
-await agent.dream("my-agent-id")
+const result = await collectText(runner.run({ sessionId: "s1", goal }))
+await runner.dream("my-agent-id")
 ```
 
 ```rust
 // Rust
-let result = agent.run(goal).await?;
-agent.dream("my-agent-id").await?;
+let result = runner.execute(goal).await?;
+runner.dream("my-agent-id", now_ms).await?;
 ```
 
 ### DreamStore interface
@@ -133,7 +133,7 @@ class CompanyWiki implements KnowledgeSource {
   }
 }
 
-agent.setKnowledgeSource(new CompanyWiki())
+// RuntimeOptions.knowledgeSource = new CompanyWiki() (Node: pass in constructor)
 ```
 
 ```python
@@ -145,7 +145,7 @@ class CompanyWiki(KnowledgeSource):
         docs = await vector_db.search(query, top_k=3)
         return "\n\n---\n\n".join(d.content for d in docs)
 
-agent.set_knowledge_source(CompanyWiki())
+# RuntimeOptions(knowledge_source=CompanyWiki())
 ```
 
 When the model calls `knowledge(query="...")`, the SDK calls `retrieve()` and injects the result as a tool result. The agent cannot write to knowledge — it is a one-directional source of truth.
@@ -181,9 +181,9 @@ print(outcome.passed, outcome.score, outcome.feedback)
 Wraps a full agent session with LLM-as-judge retry:
 
 ```text
-attempt 1 → agent.run(goal)
+attempt 1 → runner.run(goal)
           → EvalPipeline: score=0.4  feedback="no error handling, no docstring"
-attempt 2 → agent.run(goal + "\n\nPrevious feedback: " + feedback)
+attempt 2 → runner.run(goal + "\n\nPrevious feedback: " + feedback)
           → EvalPipeline: score=0.85 ✓ passed
           → SkillCandidate extracted → written to skills/sort_function.md
 ```
@@ -240,18 +240,19 @@ gateway.schedule(ScheduledPrompt(
     goal="Summarise today's activity log",
     run_at_ms=int(time.time() * 1000) + 60_000,  # 1 minute from now
 ))
-agent.set_signal_gateway(gateway)
+// RuntimeOptions.signalSource = gateway (implements SignalSource)
 ```
 
 ### Custom signal sources
 
 ```typescript
-// Node.js — inject a webhook event
-agent.injectSignal({
-  type: "user_message",
-  content: "Please stop what you're doing — priority changed.",
-  urgency: "high",  // → disposition: interrupt
+// Node.js — inject a webhook event via SignalGateway
+gateway.ingest({
+  kind: "interrupt",
+  payload: { reason: "priority changed" },
+  priority: 10,
 })
+// Consumed through RuntimeOptions.signalSource on RuntimeRunner
 ```
 
 ---
@@ -276,7 +277,7 @@ const contract = new ContractBuilder("report-v1", "Write a research report on X"
 
 ### AgentPool — *role-isolated instances*
 
-`AgentPool` holds one Agent per role. The verifier never sees the executor's history; the executor never sees the verifier's audit.
+`AgentPool` holds one `RuntimeRunner` per role. The verifier never sees the executor's history; the executor never sees the verifier's audit.
 
 ```typescript
 import { AgentPool } from "@deepstrike/sdk"
@@ -356,7 +357,7 @@ from deepstrike import PermissionManager, PermissionMode
 pm = PermissionManager(mode=PermissionMode.CONFIRM_SENSITIVE)
 pm.allow("read_file")      # always allow
 pm.deny("delete_file")     # always deny
-agent.set_permission_manager(pm)
+// Use Governance on RuntimeOptions for kernel pipeline; PermissionManager for local SDK checks
 ```
 
 ### Handling PermissionRequestEvent
@@ -365,12 +366,12 @@ When the pipeline requires user approval, the SDK yields a `PermissionRequestEve
 
 ```typescript
 // Node.js
-for await (const event of agent.runStreaming(goal)) {
+for await (const event of runner.run({ sessionId: "s1", goal })) {
   if (event.type === "permission_request") {
     const granted = await promptUser(
       `Allow ${event.toolName}(${JSON.stringify(event.arguments)})?`
     )
-    agent.resolvePermission(event.callId, granted)
+    // resolve via governance / execution plane policy for your deployment
   } else if (event.type === "text_delta") {
     process.stdout.write(event.delta)
   }
@@ -379,10 +380,10 @@ for await (const event of agent.runStreaming(goal)) {
 
 ```python
 # Python
-async for event in agent.run_streaming(goal):
+async for event in runner.run_streaming(goal):
     if event.type == "permission_request":
         granted = await ask_user(event.tool_name, event.arguments)
-        await agent.resolve_permission(event.call_id, granted)
+        # resolve via governance / execution plane policy for your deployment
     elif event.type == "text_delta":
         print(event.delta, end="", flush=True)
 ```

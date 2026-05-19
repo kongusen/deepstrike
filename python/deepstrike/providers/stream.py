@@ -52,6 +52,12 @@ class ToolResultEvent:
 
 
 @dataclass
+class UsageEvent:
+    type: str = "usage"
+    total_tokens: int = 0
+
+
+@dataclass
 class DoneEvent:
     type: str = "done"
     iterations: int = 0
@@ -75,6 +81,7 @@ class PermissionRequestEvent:
 
 
 StreamEvent = Union[
+    UsageEvent,
     ThinkingDelta,
     TextDelta,
     ToolCallEvent,

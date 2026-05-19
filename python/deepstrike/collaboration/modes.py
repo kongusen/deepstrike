@@ -34,8 +34,8 @@ class CreatorVerifierMode:
     Usage::
 
         pool = (AgentPool()
-            .add("executor", Agent(provider, max_tokens=32_000, skill_dir=skill_dir))
-            .add("verifier", Agent(provider, max_tokens=8_000)))
+            .add("executor", executor_runner)
+            .add("verifier", verifier_runner))
 
         mode = CreatorVerifierMode(pool)
         result = await mode.run(contract)

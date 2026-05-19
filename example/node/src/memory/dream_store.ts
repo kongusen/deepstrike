@@ -25,7 +25,8 @@ export class FileDreamStore implements DreamStore {
     }
   }
 
-  async saveSession(agentId: string, session: SessionData): Promise<void> {
+  async saveSession(session: SessionData): Promise<void> {
+    const agentId = session.agentId
     const dir = join(agentDir(agentId), "sessions")
     await mkdir(dir, { recursive: true })
     await writeFile(join(dir, `${session.sessionId}.json`), JSON.stringify(session, null, 2))

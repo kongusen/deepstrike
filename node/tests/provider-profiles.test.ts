@@ -6,11 +6,19 @@ describe("provider profiles", () => {
     expect(endpointProfiles["minimax.anthropic"].baseURL).toBe("https://api.minimaxi.com/anthropic")
   })
 
-  it("keeps Kimi support on the current 2.5/2.6 family", () => {
+  it("registers Kimi legacy moonshot-v1 and current k2.5/k2.6 profiles", () => {
     expect(Object.keys(modelProfiles).filter(id => id.startsWith("kimi/")).sort()).toEqual([
       "kimi/kimi-k2.5",
       "kimi/kimi-k2.6",
+      "kimi/moonshot-v1-128k",
+      "kimi/moonshot-v1-32k",
+      "kimi/moonshot-v1-8k",
     ])
+    expect(modelProfiles["kimi/kimi-k2.6"]).toMatchObject({
+      providerId: "kimi",
+      defaultEndpointId: "kimi.openai",
+      reasoning: { supported: true },
+    })
   })
 
   it("models current DeepSeek V4 endpoints and thinking controls", () => {
