@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use deepstrike_core::context::renderer::RenderedContext;
+use deepstrike_core::runtime::session::ProviderReplay;
 use deepstrike_core::types::message::{Content, Message, Role, ToolCall, ToolSchema};
 use compact_str::CompactString;
 use futures::{Stream, StreamExt};
@@ -40,6 +41,14 @@ pub trait LLMProvider: Send + Sync {
     fn runtime_policy(&self) -> RuntimePolicy {
         RuntimePolicy::default()
     }
+
+    fn peek_provider_replay(&self, _content: &str, _tool_calls: &[ToolCall]) -> Option<ProviderReplay> {
+        None
+    }
+
+    fn seed_provider_replay(&self, _content: &str, _tool_calls: &[ToolCall], _replay: &ProviderReplay) {}
+
+    fn commit_stream_replay(&self, _content: &str, _tool_calls: &[ToolCall]) {}
 
     /// Non-streaming completion — default collects from `stream`.
     async fn complete(

@@ -3,4 +3,4 @@
 
 pub mod session;
 
-pub use session::SessionEvent;
+pub use session::{ProviderReplay, SessionEvent};

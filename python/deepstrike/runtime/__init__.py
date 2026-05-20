@@ -7,6 +7,12 @@ from deepstrike.runtime.session_log import (
   SessionEvent,
   SessionLog,
 )
+from deepstrike.runtime.provider_replay import (
+  ProviderReplay,
+  assistant_replay_key,
+  peek_provider_replay,
+  seed_provider_replay_from_events,
+)
 from deepstrike.runtime.credential_vault import (
   CredentialVault,
   EnvCredentialVault,
@@ -29,6 +35,10 @@ __all__ = [
   "SessionLog",
   "SessionEvent",
   "SessionEntry",
+  "ProviderReplay",
+  "assistant_replay_key",
+  "peek_provider_replay",
+  "seed_provider_replay_from_events",
   "CredentialVault",
   "EnvCredentialVault",
   "InMemoryCredentialVault",

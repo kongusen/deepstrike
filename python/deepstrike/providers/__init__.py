@@ -26,6 +26,7 @@ from .stream import (
     ErrorEvent,
     PermissionRequestEvent,
 )
+from .replay import ReasoningReplayMixin, assistant_replay_key
 from .anthropic import AnthropicProvider
 from .openai import OpenAIProvider
 from .qwen import QwenProvider
@@ -42,6 +43,7 @@ __all__ = [
     "TokenUsage", "ProviderToolSpec",
     "to_anthropic_content", "to_anthropic_messages",
     "to_openai_content", "to_openai_message_params",
+    "ReasoningReplayMixin", "assistant_replay_key",
     "StreamEvent", "TextDelta", "ThinkingDelta",
     "ToolCallEvent", "ToolDeltaEvent", "ToolSuspendEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent", "PermissionRequestEvent",
 ]

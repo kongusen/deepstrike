@@ -6,6 +6,7 @@ from http import HTTPStatus
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent
 from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, to_openai_message_params
+from .replay import ReasoningReplayMixin
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ _QWEN_POLICIES: dict[str, RuntimePolicy] = {
 }
 
 
-class QwenProvider:
+class QwenProvider(ReasoningReplayMixin):
     def __init__(
         self,
         api_key: str,
@@ -35,6 +36,8 @@ class QwenProvider:
         self._model = model
         self._retry = retry_config or RetryConfig()
         self._circuit = CircuitBreaker(self._retry)
+        self._base_url = base_url
+        self._init_replay_store()
         import dashscope  # noqa: PLC0415
         dashscope.api_key = api_key
         from dashscope import AioGeneration
@@ -46,15 +49,20 @@ class QwenProvider:
         return _QWEN_POLICIES.get(self._model, RuntimePolicy())
 
     def _build_messages(self, context: RenderedContext) -> list[dict]:
-        result = to_openai_message_params(context)
-        for msg in result:
+        serialized = self._merge_replay_into_openai_messages(
+            to_openai_message_params(context),
+            context,
+        )
+        for msg in serialized:
             if msg["role"] == "system":
                 msg["role"] = self._role.SYSTEM
             elif msg["role"] == "assistant":
                 msg["role"] = self._role.ASSISTANT
             elif msg["role"] == "user":
                 msg["role"] = self._role.USER
-        return result
+            elif msg["role"] == "tool":
+                msg["role"] = self._role.TOOL
+        return serialized
 
     def _build_tools(self, tools: list[ToolSchema]) -> list[dict] | None:
         if not tools:
@@ -139,13 +147,16 @@ class QwenProvider:
         }
         if tool_defs:
             kwargs["tools"] = tool_defs
-        if ext.get("enable_thinking"):
+        if ext.get("enable_thinking") or ext.get("enableThinking"):
             kwargs["enable_thinking"] = True
-            if "thinking_budget" in ext:
-                kwargs["thinking_budget"] = int(ext["thinking_budget"])
+            if "thinking_budget" in ext or "thinkingBudget" in ext:
+                kwargs["thinking_budget"] = int(ext.get("thinking_budget", ext.get("thinkingBudget")))
 
         tool_call_bufs: dict[int, dict] = {}
         emitted_tool_call_indexes: set[int] = set()
+        reasoning_content = ""
+        final_text = ""
+        final_tool_calls: list[ToolCall] = []
 
         stream = await self._generation.call(**kwargs)
         async for chunk in stream:
@@ -158,8 +169,10 @@ class QwenProvider:
 
             delta = choice.message
             if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                reasoning_content += str(delta.reasoning_content)
                 yield ThinkingDelta(delta=delta.reasoning_content)
             if delta.content:
+                final_text += str(delta.content)
                 yield TextDelta(delta=delta.content)
 
             for tc in delta.tool_calls or []:
@@ -181,6 +194,7 @@ class QwenProvider:
                         args = {}
                     tc_obj = normalize_tool_call(tb["id"], tb["name"], args)
                     if tc_obj:
+                        final_tool_calls.append(tc_obj)
                         emitted_tool_call_indexes.add(idx)
                         yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)
 
@@ -193,4 +207,7 @@ class QwenProvider:
                 args = {}
             tc_obj = normalize_tool_call(tb["id"], tb["name"], args)
             if tc_obj:
+                final_tool_calls.append(tc_obj)
                 yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)
+
+        self.remember_reasoning_for_turn(final_text, final_tool_calls, reasoning_content)

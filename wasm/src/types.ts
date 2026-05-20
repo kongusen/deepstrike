@@ -48,9 +48,16 @@ export interface PermissionRequestEvent extends StreamEvent { type: "permission_
  */
 export type ProviderRunState = Record<string, unknown>
 
+export interface ProviderReplay {
+  native_blocks?: Array<Record<string, unknown>>
+  reasoning_content?: string
+}
+
 export interface LLMProvider {
   createRunState?(): ProviderRunState
   runtimePolicy?(): { maxTurns?: number; timeoutMs?: number }
+  peekProviderReplay?(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined
+  seedProviderReplay?(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void
   complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message>
   stream(
     context: RenderedContext,

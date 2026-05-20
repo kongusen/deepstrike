@@ -65,7 +65,7 @@ export type {
   ContentPart, TextPart, ImagePart, AudioPart,
   StreamEvent, TextDelta, ThinkingDelta,
   ToolCallEvent, ToolChunk, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent,
-  LLMProvider, RetryConfig, TokenUsage, ProviderToolSpec, ProviderRunState,
+  LLMProvider, RetryConfig, TokenUsage, ProviderToolSpec, ProviderRunState, ProviderReplay,
   RenderedContext,
 } from "./types.js"
 

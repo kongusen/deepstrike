@@ -3,7 +3,7 @@ import json
 import logging
 from typing import AsyncIterator
 import httpx
-from deepstrike._kernel import Message, ToolSchema
+from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent
 from .base import RetryConfig, RenderedContext, RuntimePolicy, normalize_tool_call
 from .openai import OpenAIProvider
@@ -40,7 +40,6 @@ class DeepSeekProvider(OpenAIProvider):
 
     def _build_body(self, messages: list[Message], tools: list[ToolSchema], stream: bool, extensions: dict | None = None) -> dict:
         body = super()._build_body(messages, tools, stream)
-        # reasoner models don't support tool calling
         if self._model in _REASONER_MODELS:
             body.pop("tools", None)
             body.pop("tool_choice", None)
@@ -50,6 +49,9 @@ class DeepSeekProvider(OpenAIProvider):
         ext = extensions or {}
         tool_calls: dict[int, dict] = {}
         emitted_tool_call_indexes: set[int] = set()
+        reasoning_content = ""
+        final_text = ""
+        final_tool_calls: list[ToolCall] = []
         async with httpx.AsyncClient() as client:
             async with client.stream("POST", f"{self._base_url}/chat/completions",
                                      headers=self._headers(),
@@ -66,9 +68,11 @@ class DeepSeekProvider(OpenAIProvider):
                     choice = (chunk.get("choices") or [{}])[0]
                     delta = choice.get("delta", {})
                     if reasoning := delta.get("reasoning_content"):
+                        reasoning_content += str(reasoning)
                         if ext.get("expose_reasoning"):
                             yield ThinkingDelta(delta=reasoning)
                     if text := delta.get("content"):
+                        final_text += str(text)
                         yield TextDelta(delta=text)
                     for tc_delta in delta.get("tool_calls") or []:
                         idx = tc_delta["index"]
@@ -88,6 +92,7 @@ class DeepSeekProvider(OpenAIProvider):
                                 args = {}
                             tc = normalize_tool_call(tb["id"], tb["name"], args)
                             if tc:
+                                final_tool_calls.append(tc)
                                 emitted_tool_call_indexes.add(idx)
                                 yield ToolCallEvent(id=tc.id, name=tc.name, arguments=args)
 
@@ -100,7 +105,11 @@ class DeepSeekProvider(OpenAIProvider):
                 args = {}
             tc = normalize_tool_call(tb["id"], tb["name"], args)
             if tc:
+                final_tool_calls.append(tc)
                 yield ToolCallEvent(id=tc.id, name=tc.name, arguments=args)
+
+        if final_tool_calls and reasoning_content:
+            self.remember_reasoning_for_turn(final_text, final_tool_calls, reasoning_content)
 
     def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
         messages = self._build_messages(context)

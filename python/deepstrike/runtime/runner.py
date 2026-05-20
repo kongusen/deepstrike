@@ -275,6 +275,8 @@ class RuntimeRunner:
       sm.set_knowledge_enabled(True)
 
     if prior_events:
+      from deepstrike.runtime.provider_replay import seed_provider_replay_from_events
+      seed_provider_replay_from_events(self._opts.provider, prior_events)
       sm.preload_history(_replay_messages(prior_events))
 
     session_start = int(time.time() * 1000)
@@ -337,18 +339,23 @@ class RuntimeRunner:
           role="assistant", content=final_text, tool_calls=final_tool_calls,
           token_count=turn_tokens or None,
         ))
-        await self._opts.session_log.append(session_id, {
+        from deepstrike.runtime.provider_replay import peek_provider_replay
+        provider_replay = peek_provider_replay(self._opts.provider, final_text, final_tool_calls)
+        llm_event: dict = {
           "kind": "llm_completed",
-          "turn": sm.turn,
+          "turn": sm.turn(),
           "content": final_text,
           "token_count": turn_tokens or None,
           "tool_calls": final_tool_calls,
-        })
+        }
+        if provider_replay:
+          llm_event["provider_replay"] = provider_replay
+        await self._opts.session_log.append(session_id, llm_event)
 
       elif action.kind == "execute_tools":
         all_calls = list(action.calls or [])
         await self._opts.session_log.append(session_id, {
-          "kind": "tool_requested", "turn": sm.turn, "calls": all_calls,
+          "kind": "tool_requested", "turn": sm.turn(), "calls": all_calls,
         })
         run_ctx = RunContext(
           agent_id=self._opts.agent_id,
@@ -366,7 +373,7 @@ class RuntimeRunner:
               call_id=evt.call_id, output=evt.content, is_error=evt.is_error,
             ))
         await self._opts.session_log.append(session_id, {
-          "kind": "tool_completed", "turn": sm.turn, "results": tool_results,
+          "kind": "tool_completed", "turn": sm.turn(), "results": tool_results,
         })
         action = sm.feed_tool_results(tool_results)
 
@@ -421,7 +428,7 @@ class RuntimeRunner:
       end = latest
       compressed_seq = await self._opts.session_log.append(session_id, {
         "kind": "compressed",
-        "turn": sm.turn,
+        "turn": sm.turn(),
         "archived_seq_range": (next_archive_start, end),
       })
       next_archive_start = compressed_seq + 1

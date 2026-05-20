@@ -1,5 +1,6 @@
 import type OpenAI from "openai"
-import type { Message, RenderedContext, ToolSchema } from "../types.js"
+import type { Message, ProviderReplay, RenderedContext, ToolSchema } from "../types.js"
+import { assistantReplayKey } from "../runtime/provider-replay.js"
 import { normalizeToolCall, toOpenAIMessageParams } from "./base.js"
 
 export class OpenAIChatAdapter {
@@ -46,13 +47,10 @@ export class OpenAIChatAdapter {
     message: Pick<Message, "content" | "toolCalls">,
     fields: Record<string, unknown>,
   ): void {
-    this.replayFields.set(this.assistantReplayKey(message), fields)
+    this.replayFields.set(assistantReplayKey(message), fields)
   }
 
-  private assistantReplayKey(message: Pick<Message, "content" | "toolCalls">): string {
-    return JSON.stringify({
-      content: message.content,
-      toolCalls: message.toolCalls ?? [],
-    })
+  peekReplayFields(message: Pick<Message, "content" | "toolCalls">): Record<string, unknown> | undefined {
+    return this.replayFields.get(assistantReplayKey(message))
   }
 }

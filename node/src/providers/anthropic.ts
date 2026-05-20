@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk"
-import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
+import type { Message, ProviderReplay, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
+import { assistantReplayKey } from "../runtime/provider-replay.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, normalizeToolCall, omitExtensionKeys, toAnthropicMessages } from "./base.js"
 
@@ -40,6 +41,17 @@ export class AnthropicProvider implements LLMProvider {
 
   runtimePolicy(): RuntimePolicy {
     return CLAUDE_POLICIES[this.model] ?? {}
+  }
+
+  peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {
+    const blocks = this.nativeAssistantBlocks.get(assistantReplayKey(message))
+    return blocks?.length ? { native_blocks: blocks } : undefined
+  }
+
+  seedProviderReplay(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void {
+    if (replay.native_blocks?.length) {
+      this.nativeAssistantBlocks.set(assistantReplayKey(message), replay.native_blocks)
+    }
   }
 
   private buildTools(tools: ToolSchema[]) {
@@ -181,7 +193,7 @@ export class AnthropicProvider implements LLMProvider {
 
   private buildMessages(context: RenderedContext): Anthropic.MessageParam[] {
     return toAnthropicMessages(context.turns, message =>
-      this.nativeAssistantBlocks.get(this.assistantReplayKey(message))
+      this.nativeAssistantBlocks.get(assistantReplayKey(message))
     ) as unknown as Anthropic.MessageParam[]
   }
 
@@ -189,14 +201,8 @@ export class AnthropicProvider implements LLMProvider {
     message: Pick<Message, "content" | "toolCalls">,
     blocks: Array<Record<string, unknown>>,
   ): void {
-    if (!message.toolCalls?.length) return
-    this.nativeAssistantBlocks.set(this.assistantReplayKey(message), blocks)
-  }
-
-  private assistantReplayKey(message: Pick<Message, "content" | "toolCalls">): string {
-    return JSON.stringify({
-      content: message.content,
-      toolCalls: message.toolCalls ?? [],
-    })
+    if (!blocks.length) return
+    if (!message.toolCalls?.length && !blocks.some(b => b.type === "thinking")) return
+    this.nativeAssistantBlocks.set(assistantReplayKey(message), blocks)
   }
 }

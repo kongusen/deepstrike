@@ -1,5 +1,5 @@
 import OpenAI from "openai"
-import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
+import type { Message, ProviderReplay, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, omitExtensionKeys } from "./base.js"
 import { OpenAIChatAdapter } from "./openai-chat.js"
@@ -40,6 +40,18 @@ export class OpenAIChatProvider implements LLMProvider {
 
   runtimePolicy(): RuntimePolicy {
     return OPENAI_POLICIES[this.model] ?? {}
+  }
+
+  peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {
+    const fields = this.chat.peekReplayFields(message)
+    if (!fields?.reasoning_content) return undefined
+    return { reasoning_content: String(fields.reasoning_content) }
+  }
+
+  seedProviderReplay(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void {
+    if (replay.reasoning_content) {
+      this.chat.rememberReplayFields(message, { reasoning_content: replay.reasoning_content })
+    }
   }
 
   async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {

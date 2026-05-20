@@ -163,6 +163,14 @@ export interface RetryConfig {
  */
 export type ProviderRunState = Record<string, unknown>
 
+/** Provider-native fields required to replay a turn across requests (thinking blocks, reasoning_content, etc.). */
+export interface ProviderReplay {
+  /** Anthropic-style assistant content blocks (thinking, text, tool_use). */
+  native_blocks?: Array<Record<string, unknown>>
+  /** OpenAI-compatible reasoning field (DeepSeek, etc.). */
+  reasoning_content?: string
+}
+
 /** Structured render output produced by the kernel for each LLM call. */
 export interface RenderedContext {
   /** Combined system text: system partition + dashboard (when non-empty).
@@ -193,6 +201,10 @@ export interface LLMProvider {
    * maxTurns / timeoutMs in RuntimeOptions.
    */
   runtimePolicy?(): RuntimePolicy
+  /** Read provider-native replay fields captured after the most recent assistant turn. */
+  peekProviderReplay?(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined
+  /** Restore provider-native replay fields when rebuilding history from SessionLog. */
+  seedProviderReplay?(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void
   complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message>
   stream(
     context: RenderedContext,

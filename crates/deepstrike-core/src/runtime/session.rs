@@ -2,6 +2,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::message::{Message, ToolCall, ToolResult};
 
+/// Provider-native replay payload persisted in `llm_completed` for wake/preload recovery.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ProviderReplay {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_blocks: Option<Vec<serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+}
+
 /// Append-only session event kinds (Runtime v1 — frozen schema).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -17,6 +26,8 @@ pub enum SessionEvent {
     LlmCompleted {
         turn: u32,
         message: Message,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_replay: Option<ProviderReplay>,
     },
     ToolRequested {
         turn: u32,

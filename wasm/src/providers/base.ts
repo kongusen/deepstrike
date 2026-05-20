@@ -1,4 +1,9 @@
 import type { Message, RenderedContext } from "../types.js"
+import { assistantReplayKey } from "../runtime/provider-replay.js"
+
+function parseToolArguments(args: string): Record<string, unknown> {
+  try { return JSON.parse(args || "{}") as Record<string, unknown> } catch { return {} }
+}
 
 /** Build OpenAI-compatible chat messages from a RenderedContext. */
 export function toOpenAIMessages(context: RenderedContext): Array<Record<string, unknown>> {
@@ -24,11 +29,40 @@ export function toOpenAIMessages(context: RenderedContext): Array<Record<string,
   return messages
 }
 
-/** Anthropic messages array (system is a separate top-level param). */
-export function toAnthropicMessages(context: RenderedContext): Array<{ role: string; content: string }> {
-  return context.turns
-    .filter(m => m.role !== "system")
-    .map(m => ({ role: m.role, content: m.content }))
+export function toAnthropicMessages(
+  context: RenderedContext,
+  nativeReplay?: (message: Message) => Array<Record<string, unknown>> | undefined,
+): Array<Record<string, unknown>> {
+  const result: Array<Record<string, unknown>> = []
+
+  for (const msg of context.turns) {
+    if (msg.role === "tool") {
+      result.push({ role: "user", content: [{ type: "tool_result", tool_use_id: msg.content ? undefined : "", content: msg.content, is_error: false }] })
+      continue
+    }
+
+    if (msg.role === "assistant" && msg.toolCalls?.length) {
+      const replay = nativeReplay?.(msg)
+      if (replay) {
+        result.push({ role: "assistant", content: replay })
+        continue
+      }
+      const blocks: Array<Record<string, unknown>> = []
+      if (msg.content) blocks.push({ type: "text", text: msg.content })
+      blocks.push(...msg.toolCalls.map(tc => ({
+        type: "tool_use",
+        id: tc.id,
+        name: tc.name,
+        input: parseToolArguments(tc.arguments),
+      })))
+      result.push({ role: "assistant", content: blocks })
+      continue
+    }
+
+    result.push({ role: msg.role, content: msg.content })
+  }
+
+  return result
 }
 
 /** Collect a non-streaming assistant Message from stream events. */
@@ -45,3 +79,5 @@ export async function collectStreamMessage(
   }
   return { role: "assistant", content, ...(toolCalls.length ? { toolCalls } : {}) }
 }
+
+export { assistantReplayKey }

@@ -24,15 +24,28 @@ class AnthropicProvider:
         api_key: str,
         model: str = "claude-sonnet-4-6",
         retry_config: RetryConfig | None = None,
+        base_url: str | None = None,
     ):
         self._model = model
         self._retry = retry_config or RetryConfig()
         self._circuit = CircuitBreaker(self._retry)
-        self._client = AsyncAnthropic(api_key=api_key)
+        client_kwargs: dict = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self._client = AsyncAnthropic(**client_kwargs)
         self._native_assistant_blocks: dict[str, list[dict]] = {}
 
     def runtime_policy(self) -> RuntimePolicy:
         return _CLAUDE_POLICIES.get(self._model, RuntimePolicy())
+
+    def peek_provider_replay(self, content: str, tool_calls: list[ToolCall]) -> dict | None:
+        blocks = self._native_assistant_blocks.get(self._assistant_replay_key_parts(content, tool_calls))
+        return {"native_blocks": blocks} if blocks else None
+
+    def seed_provider_replay(self, content: str, tool_calls: list[ToolCall], replay: dict) -> None:
+        blocks = replay.get("native_blocks")
+        if blocks:
+            self._native_assistant_blocks[self._assistant_replay_key_parts(content, tool_calls)] = blocks
 
     def _build_messages(self, turns: list[Message]) -> list[dict]:
         return to_anthropic_messages(
@@ -53,6 +66,13 @@ class AnthropicProvider:
             }
             for t in tools
         ]
+
+    def _remember_native_blocks(self, content: str, tool_calls: list[ToolCall], blocks: list[dict]) -> None:
+        if not blocks:
+            return
+        if not tool_calls and not any(b.get("type") == "thinking" for b in blocks):
+            return
+        self._native_assistant_blocks[self._assistant_replay_key_parts(content, tool_calls)] = blocks
 
     async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
         if self._circuit.is_open():
@@ -101,10 +121,7 @@ class AnthropicProvider:
                             "signature": getattr(block, "signature", None),
                         })
 
-                if tool_calls:
-                    self._native_assistant_blocks[
-                        self._assistant_replay_key_parts(content, tool_calls)
-                    ] = native_blocks
+                self._remember_native_blocks(content, tool_calls, native_blocks)
 
                 return Message(
                     role="assistant",
@@ -127,6 +144,11 @@ class AnthropicProvider:
         system = context.system_text or None
         tool_defs = self._build_tools(tools)
 
+        native_blocks: dict[int, dict] = {}
+        tool_blocks: dict[int, dict] = {}
+        final_text = ""
+        final_tool_calls: list[ToolCall] = []
+
         request_extensions = {k: v for k, v in (extensions or {}).items() if k not in {"model", "messages", "system", "tools", "stream", "max_tokens"}}
         async with self._client.messages.stream(
             **request_extensions,
@@ -142,20 +164,52 @@ class AnthropicProvider:
                     if usage is not None:
                         from deepstrike.providers.stream import UsageEvent
                         yield UsageEvent(total_tokens=usage.input_tokens + getattr(usage, "output_tokens", 0))
+                elif event.type == "content_block_start":
+                    idx = event.index
+                    block = event.content_block
+                    native_blocks[idx] = {"type": block.type}
+                    if block.type == "thinking":
+                        native_blocks[idx]["thinking"] = getattr(block, "thinking", "") or ""
+                        native_blocks[idx]["signature"] = getattr(block, "signature", "") or ""
+                    elif block.type == "text":
+                        native_blocks[idx]["text"] = getattr(block, "text", "") or ""
+                    elif block.type == "tool_use":
+                        native_blocks[idx].update({
+                            "id": block.id,
+                            "name": block.name,
+                            "input": getattr(block, "input", {}) or {},
+                        })
+                        tool_blocks[idx] = {"id": block.id, "name": block.name, "args_buf": ""}
                 elif event.type == "content_block_delta":
                     delta = event.delta
+                    idx = event.index
                     if delta.type == "text_delta":
+                        final_text += delta.text
+                        native_blocks[idx]["text"] = native_blocks[idx].get("text", "") + delta.text
                         yield TextDelta(delta=delta.text)
                     elif delta.type == "thinking_delta":
+                        native_blocks[idx]["thinking"] = native_blocks[idx].get("thinking", "") + delta.thinking
                         yield ThinkingDelta(delta=delta.thinking)
-                    elif delta.type == "input_json_delta":
-                        pass
+                    elif delta.type == "signature_delta":
+                        native_blocks[idx]["signature"] = native_blocks[idx].get("signature", "") + delta.signature
+                    elif delta.type == "input_json_delta" and idx in tool_blocks:
+                        tool_blocks[idx]["args_buf"] += delta.partial_json
                 elif event.type == "content_block_stop":
-                    if hasattr(event, "content_block") and event.content_block.type == "tool_use":
-                        block = event.content_block
-                        tc = normalize_tool_call(block.id, block.name, block.input)
+                    idx = event.index
+                    if idx in tool_blocks:
+                        tb = tool_blocks.pop(idx)
+                        try:
+                            args = json.loads(tb["args_buf"] or "{}")
+                        except json.JSONDecodeError:
+                            args = {}
+                        native_blocks[idx]["input"] = args
+                        tc = normalize_tool_call(tb["id"], tb["name"], args)
                         if tc:
-                            yield ToolCallEvent(id=tc.id, name=tc.name, arguments=json.loads(tc.arguments))
+                            final_tool_calls.append(tc)
+                            yield ToolCallEvent(id=tc.id, name=tc.name, arguments=args)
+
+        ordered_blocks = [native_blocks[i] for i in sorted(native_blocks)]
+        self._remember_native_blocks(final_text, final_tool_calls, ordered_blocks)
 
     def _assistant_replay_key(self, message: Message) -> str:
         return self._assistant_replay_key_parts(message.content, message.tool_calls or [])

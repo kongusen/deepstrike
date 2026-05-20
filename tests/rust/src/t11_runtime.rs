@@ -160,6 +160,7 @@ async fn wake_continues_after_tool_completed() {
                     }],
                     token_count: None,
                 },
+                provider_replay: None,
             },
         )
         .await

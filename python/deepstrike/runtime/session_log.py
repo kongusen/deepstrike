@@ -23,6 +23,7 @@ class LlmCompletedEvent(TypedDict, total=False):
     content: str
     token_count: int
     tool_calls: list[ToolCall]
+    provider_replay: dict
 
 
 class ToolRequestedEvent(TypedDict, total=False):
@@ -177,6 +178,7 @@ def _event_from_json(raw: dict) -> SessionEvent:
         ToolCall(id=c["id"], name=c["name"], arguments=c["arguments"])
         for c in raw.get("tool_calls", [])
       ],
+      **({"provider_replay": raw["provider_replay"]} if "provider_replay" in raw else {}),
     }
   if kind == "tool_requested":
     return {

@@ -110,6 +110,7 @@ mod tests {
                         tool_calls: vec![],
                         token_count: None,
                     },
+                    provider_replay: None,
                 },
             },
         ];

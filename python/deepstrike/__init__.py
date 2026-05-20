@@ -17,6 +17,7 @@ from deepstrike.runtime import (
     InMemorySessionLog,
     FileSessionLog,
     SessionLog,
+    ProviderReplay,
 )
 from deepstrike.governance import Governance, GovernanceVerdict
 from deepstrike.providers import (
@@ -58,6 +59,9 @@ __all__ = [
     "InMemorySessionLog",
     "FileSessionLog",
     "SessionLog",
+    "ProviderReplay",
+    "ProviderReplay",
+    "ProviderReplay",
     "LLMProvider", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
     "QwenProvider", "DeepSeekProvider", "MiniMaxProvider", "OllamaProvider", "KimiProvider",
     "StreamEvent", "TextDelta", "ThinkingDelta",

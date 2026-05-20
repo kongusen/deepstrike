@@ -17,9 +17,14 @@ The kernel is unchanged except for `LoopStateMachine.resumeAfterPreload()` used 
 Events are tagged with `kind` (snake_case). Only append new variants in future versions; do not rename or remove fields.
 
 ```typescript
+interface ProviderReplay {
+  native_blocks?: Array<Record<string, unknown>>  // Anthropic thinking/tool blocks
+  reasoning_content?: string                       // DeepSeek / OpenAI-compatible reasoning
+}
+
 type SessionEvent =
   | { kind: "run_started"; run_id: string; goal: string; criteria: string[]; agent_id?: string; system_prompt?: string }
-  | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[] }
+  | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; provider_replay?: ProviderReplay }
   | { kind: "tool_requested"; turn: number; calls: ToolCall[] }
   | { kind: "tool_completed"; turn: number; results: Array<{ call_id: string; output: string; is_error?: boolean; token_count?: number }> }
   | { kind: "compressed"; turn: number; archived_seq_range: [number, number] }
@@ -78,6 +83,7 @@ class RuntimeRunner {
 
 - `run_started` → `user`
 - `llm_completed` → `assistant` (always include `tool_calls: []` when empty)
+- `llm_completed.provider_replay` → restored into provider native replay cache on preload/wake (thinking blocks, `reasoning_content`, etc.)
 - `tool_completed` → `tool` messages with `contentParts`
 
 Context compression still happens inside the kernel; `compressed` events record that compression occurred and the archived session event seq range (summary body is not duplicated in the log).

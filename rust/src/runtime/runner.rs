@@ -23,6 +23,7 @@ use crate::runtime::execution_plane::{
     ExecutionPlane, LocalExecutionPlane, RunContext, ToolSuspendHandler,
 };
 use crate::runtime::replay::{is_mid_run, replay_messages};
+use crate::runtime::provider_replay::{peek_provider_replay, seed_provider_replay_from_events};
 use crate::runtime::session_log::{SessionEntry, SessionLog};
 use crate::signals::SignalSource;
 use crate::{Error, Result};
@@ -298,6 +299,7 @@ impl RuntimeRunner {
             }
 
             if let Some(events) = &prior_events {
+                seed_provider_replay_from_events(self.opts.provider.as_ref(), events);
                 sm.preload_history(replay_messages(events));
             }
 
@@ -419,12 +421,20 @@ impl RuntimeRunner {
                             token_count: if turn_tokens > 0 { Some(turn_tokens) } else { None },
                         };
 
+                        self.opts.provider.commit_stream_replay(&final_text, &final_tool_calls);
+                        let provider_replay = peek_provider_replay(
+                            self.opts.provider.as_ref(),
+                            &final_text,
+                            &final_tool_calls,
+                        );
+
                         action = sm.feed(LoopEvent::LLMResponse { message: assistant.clone() });
                         self.log(
                             &session_id,
                             SessionEvent::LlmCompleted {
                                 turn: sm.turn,
                                 message: assistant,
+                                provider_replay,
                             },
                         )
                         .await;

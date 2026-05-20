@@ -1,11 +1,15 @@
 use async_trait::async_trait;
 use deepstrike_core::context::renderer::RenderedContext;
-use deepstrike_core::types::message::{Content, ContentPart, Role, ToolSchema};
+use deepstrike_core::runtime::session::ProviderReplay;
+use deepstrike_core::types::message::{Content, ContentPart, Message, Role, ToolCall, ToolSchema};
 use futures::{Stream, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use super::{LLMProvider, RuntimePolicy, StreamEvent};
+use crate::runtime::provider_replay::assistant_replay_key;
 use crate::{Error, Result};
 
 pub struct AnthropicProvider {
@@ -13,6 +17,8 @@ pub struct AnthropicProvider {
     api_key: String,
     model: String,
     max_tokens: u32,
+    native_assistant_blocks: Mutex<HashMap<String, Vec<Value>>>,
+    stream_native_blocks: Arc<Mutex<HashMap<usize, Value>>>,
 }
 
 impl AnthropicProvider {
@@ -26,7 +32,29 @@ impl AnthropicProvider {
             api_key: api_key.into(),
             model: model.into(),
             max_tokens: 8096,
+            native_assistant_blocks: Mutex::new(HashMap::new()),
+            stream_native_blocks: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    fn remember_native_blocks(&self, content: &str, tool_calls: &[ToolCall], blocks: Vec<Value>) {
+        if blocks.is_empty() {
+            return;
+        }
+        if tool_calls.is_empty() && !blocks.iter().any(|b| b.get("type").and_then(|v| v.as_str()) == Some("thinking")) {
+            return;
+        }
+        self.native_assistant_blocks
+            .lock()
+            .unwrap()
+            .insert(assistant_replay_key(content, tool_calls), blocks);
+    }
+
+    fn context_to_anthropic(&self, context: &RenderedContext) -> (Option<String>, Vec<Value>) {
+        let native = self.native_assistant_blocks.lock().unwrap();
+        context_to_anthropic(context, |content, tool_calls| {
+            native.get(&assistant_replay_key(content, tool_calls)).cloned()
+        })
     }
 }
 
@@ -61,7 +89,10 @@ fn content_to_anthropic(content: &Content) -> Value {
     }
 }
 
-fn context_to_anthropic(context: &RenderedContext) -> (Option<String>, Vec<Value>) {
+fn context_to_anthropic(
+    context: &RenderedContext,
+    native_replay: impl Fn(&str, &[ToolCall]) -> Option<Vec<Value>>,
+) -> (Option<String>, Vec<Value>) {
     let mut msgs = Vec::new();
     for message in &context.turns {
         if message.role == Role::Tool {
@@ -86,11 +117,14 @@ fn context_to_anthropic(context: &RenderedContext) -> (Option<String>, Vec<Value
         }
 
         if message.role == Role::Assistant && !message.tool_calls.is_empty() {
+            let content = message.content.as_text().unwrap_or("");
+            if let Some(replay) = native_replay(content, &message.tool_calls) {
+                msgs.push(json!({ "role": "assistant", "content": replay }));
+                continue;
+            }
             let mut blocks = Vec::new();
-            if let Some(text) = message.content.as_text() {
-                if !text.is_empty() {
-                    blocks.push(json!({ "type": "text", "text": text }));
-                }
+            if !content.is_empty() {
+                blocks.push(json!({ "type": "text", "text": content }));
             }
             blocks.extend(message.tool_calls.iter().map(|tc| json!({
                 "type": "tool_use",
@@ -135,6 +169,36 @@ impl LLMProvider for AnthropicProvider {
         }
     }
 
+    fn peek_provider_replay(&self, content: &str, tool_calls: &[ToolCall]) -> Option<ProviderReplay> {
+        let blocks = self.native_assistant_blocks.lock().unwrap().get(&assistant_replay_key(content, tool_calls))?.clone();
+        if blocks.is_empty() {
+            None
+        } else {
+            Some(ProviderReplay { native_blocks: Some(blocks), reasoning_content: None })
+        }
+    }
+
+    fn seed_provider_replay(&self, content: &str, tool_calls: &[ToolCall], replay: &ProviderReplay) {
+        if let Some(blocks) = &replay.native_blocks {
+            if !blocks.is_empty() {
+                self.native_assistant_blocks
+                    .lock()
+                    .unwrap()
+                    .insert(assistant_replay_key(content, tool_calls), blocks.clone());
+            }
+        }
+    }
+
+    fn commit_stream_replay(&self, content: &str, tool_calls: &[ToolCall]) {
+        let blocks: Vec<Value> = {
+            let map = self.stream_native_blocks.lock().unwrap();
+            let mut indices: Vec<_> = map.keys().copied().collect();
+            indices.sort_unstable();
+            indices.into_iter().filter_map(|idx| map.get(&idx).cloned()).collect()
+        };
+        self.remember_native_blocks(content, tool_calls, blocks);
+    }
+
     async fn stream(
         &self,
         context: &RenderedContext,
@@ -142,7 +206,8 @@ impl LLMProvider for AnthropicProvider {
         extensions: Option<&Value>,
         _state: Option<&super::ProviderRunState>,
     ) -> Result<Box<dyn Stream<Item = Result<StreamEvent>> + Send + Unpin>> {
-        let (system, msgs) = context_to_anthropic(context);
+        self.stream_native_blocks.lock().unwrap().clear();
+        let (system, msgs) = self.context_to_anthropic(context);
         let mut body = json!({
             "model": self.model,
             "max_tokens": self.max_tokens,
@@ -174,7 +239,7 @@ impl LLMProvider for AnthropicProvider {
         }
 
         let byte_stream = resp.bytes_stream();
-        let stream = parse_anthropic_sse(byte_stream);
+        let stream = parse_anthropic_sse(byte_stream, self.stream_native_blocks.clone());
         Ok(Box::new(Box::pin(stream)))
     }
 }
@@ -190,15 +255,15 @@ fn anthropic_usage_total(usage: &Value) -> Option<u32> {
 
 fn parse_anthropic_sse(
     byte_stream: impl Stream<Item = reqwest::Result<bytes::Bytes>> + Send + 'static,
+    native_blocks: Arc<Mutex<HashMap<usize, Value>>>,
 ) -> impl Stream<Item = Result<StreamEvent>> + Send {
     let mut buf = String::new();
     let mut tool_blocks: std::collections::HashMap<usize, (String, String, String)> = std::collections::HashMap::new();
 
     futures::stream::unfold(
-        (Box::pin(byte_stream), buf, tool_blocks),
-        |(mut stream, mut buf, mut tool_blocks)| async move {
+        (Box::pin(byte_stream), buf, tool_blocks, native_blocks),
+        |(mut stream, mut buf, mut tool_blocks, native_blocks)| async move {
             loop {
-                // Try to parse buffered lines first
                 if let Some(pos) = buf.find('\n') {
                     let line = buf[..pos].trim().to_string();
                     buf = buf[pos + 1..].to_string();
@@ -211,9 +276,10 @@ fn parse_anthropic_sse(
                     let kind = evt["type"].as_str().unwrap_or("");
 
                     if kind == "content_block_start" {
+                        let idx = evt["index"].as_u64().unwrap_or(0) as usize;
                         let cb = &evt["content_block"];
+                        native_blocks.lock().unwrap().insert(idx, cb.clone());
                         if cb["type"] == "tool_use" {
-                            let idx = evt["index"].as_u64().unwrap_or(0) as usize;
                             tool_blocks.insert(idx, (
                                 cb["id"].as_str().unwrap_or("").to_string(),
                                 cb["name"].as_str().unwrap_or("").to_string(),
@@ -225,13 +291,27 @@ fn parse_anthropic_sse(
                         let idx = evt["index"].as_u64().unwrap_or(0) as usize;
                         if d["type"] == "text_delta" {
                             let delta = d["text"].as_str().unwrap_or("").to_string();
+                            if let Some(block) = native_blocks.lock().unwrap().get_mut(&idx) {
+                                let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                                block["text"] = json!(format!("{text}{delta}"));
+                            }
                             if !delta.is_empty() {
-                                return Some((Ok(StreamEvent::TextDelta { delta }), (stream, buf, tool_blocks)));
+                                return Some((Ok(StreamEvent::TextDelta { delta }), (stream, buf, tool_blocks, native_blocks)));
                             }
                         } else if d["type"] == "thinking_delta" {
                             let delta = d["thinking"].as_str().unwrap_or("").to_string();
+                            if let Some(block) = native_blocks.lock().unwrap().get_mut(&idx) {
+                                let text = block.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
+                                block["thinking"] = json!(format!("{text}{delta}"));
+                            }
                             if !delta.is_empty() {
-                                return Some((Ok(StreamEvent::ThinkingDelta { delta }), (stream, buf, tool_blocks)));
+                                return Some((Ok(StreamEvent::ThinkingDelta { delta }), (stream, buf, tool_blocks, native_blocks)));
+                            }
+                        } else if d["type"] == "signature_delta" {
+                            if let Some(block) = native_blocks.lock().unwrap().get_mut(&idx) {
+                                let sig = block.get("signature").and_then(|v| v.as_str()).unwrap_or("");
+                                let delta = d["signature"].as_str().unwrap_or("");
+                                block["signature"] = json!(format!("{sig}{delta}"));
                             }
                         } else if d["type"] == "input_json_delta" {
                             if let Some(tb) = tool_blocks.get_mut(&idx) {
@@ -242,7 +322,10 @@ fn parse_anthropic_sse(
                         let idx = evt["index"].as_u64().unwrap_or(0) as usize;
                         if let Some((id, name, args_buf)) = tool_blocks.remove(&idx) {
                             let arguments: Value = serde_json::from_str(&args_buf).unwrap_or(Value::Object(Default::default()));
-                            return Some((Ok(StreamEvent::ToolCall { id, name, arguments }), (stream, buf, tool_blocks)));
+                            if let Some(block) = native_blocks.lock().unwrap().get_mut(&idx) {
+                                block["input"] = arguments.clone();
+                            }
+                            return Some((Ok(StreamEvent::ToolCall { id, name, arguments }), (stream, buf, tool_blocks, native_blocks)));
                         }
                     } else if kind == "message_start" || kind == "message_delta" {
                         if let Some(total) = evt
@@ -256,20 +339,19 @@ fn parse_anthropic_sse(
                         {
                             return Some((
                                 Ok(StreamEvent::Usage { total_tokens: total }),
-                                (stream, buf, tool_blocks),
+                                (stream, buf, tool_blocks, native_blocks),
                             ));
                         }
                     }
                     continue;
                 }
 
-                // Need more data
                 match stream.next().await {
                     Some(Ok(chunk)) => {
                         buf.push_str(&String::from_utf8_lossy(&chunk));
                     }
                     Some(Err(e)) => {
-                        return Some((Err(Error::Provider(e.to_string())), (stream, buf, tool_blocks)));
+                        return Some((Err(Error::Provider(e.to_string())), (stream, buf, tool_blocks, native_blocks)));
                     }
                     None => return None,
                 }
@@ -314,7 +396,7 @@ mod tests {
             ],
         };
 
-        let (system, messages) = context_to_anthropic(&context);
+        let (system, messages) = context_to_anthropic(&context, |_, _| None);
         assert_eq!(system.as_deref(), Some("system rules"));
         assert_eq!(
             messages,

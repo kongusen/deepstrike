@@ -2,11 +2,11 @@ import { createWriteStream, createReadStream } from "node:fs"
 import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { createInterface } from "node:readline"
-import type { ToolCall } from "../types.js"
+import type { ProviderReplay, ToolCall } from "../types.js"
 
 export type SessionEvent =
   | { kind: "run_started"; run_id: string; goal: string; criteria: string[]; agent_id?: string; system_prompt?: string }
-  | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[] }
+  | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; provider_replay?: ProviderReplay }
   | { kind: "tool_requested"; turn: number; calls: ToolCall[] }
   | { kind: "tool_completed"; turn: number; results: Array<{ call_id: string; output: string; is_error?: boolean; token_count?: number }> }
   | { kind: "compressed"; turn: number; archived_seq_range: [number, number] }

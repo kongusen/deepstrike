@@ -10,6 +10,7 @@ import type { SessionLog, SessionEvent } from "./session-log.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
 import type { Governance } from "../governance.js"
 import { getKernel } from "./kernel.js"
+import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
 
 export interface RuntimeOptions {
   provider: LLMProvider
@@ -203,6 +204,7 @@ export class RuntimeRunner {
     if (this.opts.knowledgeSource) sm.setKnowledgeEnabled(true)
 
     if (priorEvents && priorEvents.length > 0) {
+      seedProviderReplayFromEvents(this.opts.provider, priorEvents)
       sm.preloadHistory(replayMessages(priorEvents))
     }
 
@@ -269,12 +271,14 @@ export class RuntimeRunner {
           toolCalls: finalToolCalls,
           tokenCount: turnTokens || undefined,
         })
+        const providerReplay = peekProviderReplay(this.opts.provider, finalText, finalToolCalls)
         await this.opts.sessionLog.append(sessionId, {
           kind: "llm_completed",
           turn: sm.turn,
           content: finalText,
           token_count: turnTokens || undefined,
           tool_calls: finalToolCalls,
+          ...(providerReplay ? { provider_replay: providerReplay } : {}),
         })
 
       } else if (action.kind === "execute_tools") {

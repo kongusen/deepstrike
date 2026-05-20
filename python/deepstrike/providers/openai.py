@@ -6,6 +6,7 @@ from openai import AsyncOpenAI
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent
 from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, to_openai_message_params
+from .replay import ReasoningReplayMixin
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ _OPENAI_POLICIES: dict[str, RuntimePolicy] = {
 }
 
 
-class OpenAIProvider:
+class OpenAIProvider(ReasoningReplayMixin):
     def __init__(
         self,
         api_key: str,
@@ -38,29 +39,14 @@ class OpenAIProvider:
         self._circuit = CircuitBreaker(self._retry)
         self._base_url = base_url.rstrip("/")
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        self._replay_fields: dict[str, dict] = {}
+        self._init_replay_store()
 
     def runtime_policy(self) -> RuntimePolicy:
         return _OPENAI_POLICIES.get(self._model, RuntimePolicy())
 
     def _build_messages(self, context: RenderedContext) -> list[dict]:
         serialized = to_openai_message_params(context)
-        cursor = 1 if context.system_text else 0
-
-        for source in context.turns:
-            if source.role == "tool":
-                cursor += sum(
-                    1 for p in (getattr(source, "content_parts", None) or [])
-                    if p.type == "tool_result"
-                )
-                continue
-            if source.role == "assistant":
-                replay = self._replay_fields.get(self._assistant_replay_key(source))
-                if replay:
-                    serialized[cursor] = {**serialized[cursor], **replay}
-            cursor += 1
-
-        return serialized
+        return self._merge_replay_into_openai_messages(serialized, context)
 
     def _build_tools(self, tools: list[ToolSchema]) -> list[dict] | None:
         if not tools:
@@ -104,16 +90,6 @@ class OpenAIProvider:
         if tool_defs:
             body["tools"] = tool_defs
         return body
-
-    def remember_replay_fields(self, message: Message, fields: dict) -> None:
-        self._replay_fields[self._assistant_replay_key(message)] = fields
-
-    def _assistant_replay_key(self, message: Message) -> str:
-        tool_calls = [
-            {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
-            for tc in (message.tool_calls or [])
-        ]
-        return json.dumps({"content": message.content, "tool_calls": tool_calls}, sort_keys=True)
 
     async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
         if self._circuit.is_open():
