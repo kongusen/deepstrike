@@ -1,5 +1,5 @@
 import type OpenAI from "openai"
-import type { Message, ProviderReplay, RenderedContext, ToolSchema } from "../types.js"
+import type { Message, RenderedContext, ToolSchema } from "../types.js"
 import { assistantReplayKey } from "../runtime/provider-replay.js"
 import { normalizeToolCall, toOpenAIMessageParams } from "./base.js"
 
@@ -25,7 +25,7 @@ export class OpenAIChatAdapter {
         continue
       }
       if (source.role === "assistant") {
-        const replay = this.replayFields.get(this.assistantReplayKey(source))
+        const replay = this.replayFields.get(assistantReplayKey(source))
         if (replay) serialized[cursor] = { ...serialized[cursor], ...replay }
       }
       cursor += 1
