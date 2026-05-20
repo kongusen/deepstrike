@@ -5,11 +5,14 @@ import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, normalizeToolCall, omitExtensionKeys, toAnthropicMessages } from "./base.js"
 
 const CLAUDE_POLICIES: Record<string, RuntimePolicy> = {
+  "claude-opus-4-1":          { maxTurns: 50 },
   "claude-opus-4-7":          { maxTurns: 50 },
   "claude-opus-4-6":          { maxTurns: 50 },
+  "claude-opus-4-0":          { maxTurns: 50 },
   "claude-sonnet-4-6":        { maxTurns: 25 },
+  "claude-sonnet-4-0":        { maxTurns: 25 },
   "claude-haiku-4-5":         { maxTurns: 15 },
-  "claude-haiku-4-5-20251001": { maxTurns: 15 },
+  "claude-3-5-haiku-latest":  { maxTurns: 15 },
 }
 
 interface AnthropicProviderOptions {

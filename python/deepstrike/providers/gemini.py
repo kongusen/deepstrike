@@ -10,6 +10,9 @@ from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, n
 logger = logging.getLogger(__name__)
 
 _GEMINI_POLICIES: dict[str, RuntimePolicy] = {
+    "gemini-3-pro-preview": RuntimePolicy(max_turns=50),
+    "gemini-3-flash-preview": RuntimePolicy(max_turns=25),
+    "gemini-3.5-flash": RuntimePolicy(max_turns=30),
     "gemini-2.5-pro":        RuntimePolicy(max_turns=35),
     "gemini-2.5-flash":      RuntimePolicy(max_turns=20),
     "gemini-2.0-flash":      RuntimePolicy(max_turns=15),
@@ -30,7 +33,8 @@ class GeminiProvider:
         self._model_name = model
         self._retry = retry_config or RetryConfig()
         self._circuit = CircuitBreaker(self._retry)
-        genai.configure(api_key=api_key)
+        self._base_url = base_url.rstrip("/")
+        genai.configure(api_key=api_key, client_options={"api_endpoint": self._base_url})
         self._model = genai.GenerativeModel(model)
 
     def runtime_policy(self) -> RuntimePolicy:
@@ -43,9 +47,16 @@ class GeminiProvider:
                 parts = []
                 for p in getattr(msg, "content_parts", []):
                     if p.type == "tool_result":
+                        tool_name = p.call_id
+                        for turn in reversed(turns):
+                            if turn.role == "assistant" and turn.tool_calls:
+                                matched = next((tc for tc in turn.tool_calls if tc.id == p.call_id), None)
+                                if matched:
+                                    tool_name = matched.name
+                                    break
                         parts.append({
                             "function_response": {
-                                "name": p.call_id,
+                                "name": tool_name,
                                 "response": {"output": p.output},
                             }
                         })

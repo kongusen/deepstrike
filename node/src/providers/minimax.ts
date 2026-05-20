@@ -3,9 +3,14 @@ import { AnthropicProvider } from "./anthropic.js"
 import { endpointProfiles } from "./profiles.js"
 
 const MINIMAX_POLICIES: Record<string, RuntimePolicy> = {
-  "MiniMax-M2.7":    { maxTurns: 35 },
-  "MiniMax-M2.5":    { maxTurns: 25 },
-  "MiniMax-Text-01": { maxTurns: 20 },
+  "MiniMax-M2.7":           { maxTurns: 35 },
+  "MiniMax-M2.7-highspeed": { maxTurns: 35 },
+  "MiniMax-M2.5":           { maxTurns: 25 },
+  "MiniMax-M2.5-highspeed": { maxTurns: 25 },
+  "MiniMax-M2.1":           { maxTurns: 25 },
+  "MiniMax-M2.1-highspeed": { maxTurns: 25 },
+  "MiniMax-M2":             { maxTurns: 20 },
+  "MiniMax-Text-01":        { maxTurns: 20 },
 }
 
 export class MiniMaxProvider extends AnthropicProvider {

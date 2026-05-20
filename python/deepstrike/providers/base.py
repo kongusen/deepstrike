@@ -255,3 +255,63 @@ class LLMProvider(Protocol):
         state: ProviderRunState | None = None,
     ) -> AsyncIterator[StreamEvent]: ...
     def runtime_policy(self) -> RuntimePolicy: ...
+
+
+class ThinkingTagStreamExtractor:
+    def __init__(self) -> None:
+        self.buffer = ""
+        self.in_thinking = False
+
+    def feed(self, chunk: str):
+        self.buffer += chunk
+        while True:
+            if not self.in_thinking:
+                think_idx = self.buffer.find("<think>")
+                if think_idx != -1:
+                    text_before = self.buffer[:think_idx]
+                    if text_before:
+                        yield {"type": "text", "content": text_before}
+                    self.in_thinking = True
+                    self.buffer = self.buffer[think_idx + 7:]
+                    continue
+
+                possible_tag_start = self.buffer.rfind("<")
+                if possible_tag_start != -1 and "<think>".startswith(self.buffer[possible_tag_start:]):
+                    to_emit = self.buffer[:possible_tag_start]
+                    if to_emit:
+                        yield {"type": "text", "content": to_emit}
+                    self.buffer = self.buffer[possible_tag_start:]
+                    break
+                else:
+                    if self.buffer:
+                        yield {"type": "text", "content": self.buffer}
+                        self.buffer = ""
+                    break
+            else:
+                end_think_idx = self.buffer.find("</think>")
+                if end_think_idx != -1:
+                    thinking_content = self.buffer[:end_think_idx]
+                    if thinking_content:
+                        yield {"type": "thinking", "content": thinking_content}
+                    self.in_thinking = False
+                    self.buffer = self.buffer[end_think_idx + 8:]
+                    continue
+
+                possible_end_start = self.buffer.rfind("<")
+                if possible_end_start != -1 and "</think>".startswith(self.buffer[possible_end_start:]):
+                    to_emit = self.buffer[:possible_end_start]
+                    if to_emit:
+                        yield {"type": "thinking", "content": to_emit}
+                    self.buffer = self.buffer[possible_end_start:]
+                    break
+                else:
+                    if self.buffer:
+                        yield {"type": "thinking", "content": self.buffer}
+                        self.buffer = ""
+                    break
+
+    def flush(self):
+        if self.buffer:
+            yield {"type": "thinking" if self.in_thinking else "text", "content": self.buffer}
+            self.buffer = ""
+

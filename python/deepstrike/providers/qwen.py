@@ -11,16 +11,19 @@ from .replay import ReasoningReplayMixin
 logger = logging.getLogger(__name__)
 
 _QWEN_POLICIES: dict[str, RuntimePolicy] = {
-    "qwen-max":        RuntimePolicy(max_turns=25),
-    "qwen-plus":       RuntimePolicy(max_turns=20),
-    "qwen-turbo":      RuntimePolicy(max_turns=15),
-    "qwq-plus":        RuntimePolicy(max_turns=40),
-    "qwq-32b":         RuntimePolicy(max_turns=35),
-    "qwen3-235b-a22b": RuntimePolicy(max_turns=35),
-    "qwen3-72b":       RuntimePolicy(max_turns=25),
-    "qwen3-32b":       RuntimePolicy(max_turns=20),
-    "qwen3-14b":       RuntimePolicy(max_turns=15),
-    "qwen3-8b":        RuntimePolicy(max_turns=15),
+    "qwen3.7-max-preview": RuntimePolicy(max_turns=45),
+    "qwen3.7-plus-preview": RuntimePolicy(max_turns=40),
+    "qwen3.6-max-preview": RuntimePolicy(max_turns=40),
+    "qwen3.6-plus": RuntimePolicy(max_turns=35),
+    "qwen3.6-flash": RuntimePolicy(max_turns=20),
+    "qwen3.6-35b-a3b": RuntimePolicy(max_turns=25),
+    "qwen3.6-27b": RuntimePolicy(max_turns=25),
+    "qwen3.5-plus": RuntimePolicy(max_turns=35),
+    "qwen3.5-flash": RuntimePolicy(max_turns=20),
+    "qwen3.5-397b-a17b": RuntimePolicy(max_turns=35),
+    "qwen3.5-122b-a10b": RuntimePolicy(max_turns=25),
+    "qwen3.5-35b-a3b": RuntimePolicy(max_turns=20),
+    "qwen3.5-27b": RuntimePolicy(max_turns=20),
 }
 
 
@@ -28,7 +31,7 @@ class QwenProvider(ReasoningReplayMixin):
     def __init__(
         self,
         api_key: str,
-        model: str = "qwen-max",
+        model: str = "qwen3.6-plus",
         retry_config: RetryConfig | None = None,
         base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
     ):

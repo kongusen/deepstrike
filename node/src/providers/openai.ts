@@ -1,17 +1,26 @@
 import OpenAI from "openai"
-import type { Message, ProviderReplay, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
+import type { Message, ProviderReplay, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
-import { CircuitBreaker, omitExtensionKeys } from "./base.js"
+import { CircuitBreaker, omitExtensionKeys, ThinkingTagStreamExtractor } from "./base.js"
 import { OpenAIChatAdapter } from "./openai-chat.js"
 
 const OPENAI_POLICIES: Record<string, RuntimePolicy> = {
+  "gpt-5.5":       { maxTurns: 60 },
+  "gpt-5.4":       { maxTurns: 50 },
+  "gpt-5.4-mini":  { maxTurns: 25 },
+  "gpt-5.4-nano":  { maxTurns: 15 },
+  "gpt-5.2":       { maxTurns: 50 },
+  "gpt-5.2-pro":   { maxTurns: 60 },
+  "gpt-5.1":       { maxTurns: 50 },
   "gpt-4o":        { maxTurns: 25 },
   "gpt-4o-mini":   { maxTurns: 15 },
   "gpt-4.1":       { maxTurns: 35 },
   "gpt-4.1-mini":  { maxTurns: 20 },
   "gpt-4.1-nano":  { maxTurns: 15 },
   "gpt-5":         { maxTurns: 50 },
+  "gpt-5-pro":     { maxTurns: 60 },
   "gpt-5-mini":    { maxTurns: 25 },
+  "gpt-5-nano":    { maxTurns: 15 },
   "o1":            { maxTurns: 50 },
   "o1-mini":       { maxTurns: 25 },
   "o3":            { maxTurns: 50 },
@@ -44,12 +53,12 @@ export class OpenAIChatProvider implements LLMProvider {
 
   peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {
     const fields = this.chat.peekReplayFields(message)
-    if (!fields?.reasoning_content) return undefined
-    return { reasoning_content: String(fields.reasoning_content) }
+    if (!fields || !("reasoning_content" in fields)) return undefined
+    return { reasoning_content: String(fields.reasoning_content ?? "") }
   }
 
   seedProviderReplay(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void {
-    if (replay.reasoning_content) {
+    if (replay.reasoning_content !== undefined) {
       this.chat.rememberReplayFields(message, { reasoning_content: replay.reasoning_content })
     }
   }
@@ -84,6 +93,9 @@ export class OpenAIChatProvider implements LLMProvider {
     const msgs = this.chat.buildMessages(context)
     const toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }> = {}
     const emittedToolCallIndexes = new Set<number>()
+    const extractor = new ThinkingTagStreamExtractor()
+    let accumulatedReasoning = ""
+    let accumulatedContent = ""
 
     const stream = await this.client.chat.completions.create({
       ...this.requestExtensions(extensions),
@@ -99,9 +111,24 @@ export class OpenAIChatProvider implements LLMProvider {
       if (chunk.usage) { totalTokens = chunk.usage.total_tokens; continue }
       const choice = chunk.choices[0]
       if (!choice) continue
-      const delta = choice.delta
+      const delta = choice.delta as any
 
-      if (delta.content) yield { type: "text_delta", delta: delta.content } as TextDelta
+      if (delta.reasoning_content) {
+        accumulatedReasoning += delta.reasoning_content
+        yield { type: "thinking_delta", delta: delta.reasoning_content } as ThinkingDelta
+      }
+
+      if (delta.content) {
+        for (const part of extractor.feed(delta.content)) {
+          if (part.type === "thinking") {
+            accumulatedReasoning += part.content
+            yield { type: "thinking_delta", delta: part.content } as ThinkingDelta
+          } else {
+            accumulatedContent += part.content
+            yield { type: "text_delta", delta: part.content } as TextDelta
+          }
+        }
+      }
 
       for (const tc of delta.tool_calls ?? []) {
         const idx = tc.index
@@ -111,6 +138,10 @@ export class OpenAIChatProvider implements LLMProvider {
       }
 
       if (choice.finish_reason === "tool_calls") {
+        const toolCalls = Object.values(toolCallBufs).map(tb => ({
+          id: tb.id, name: tb.name, arguments: tb.argsBuf || "{}",
+        }))
+        this.chat.rememberReplayFields({ content: accumulatedContent, toolCalls }, { reasoning_content: accumulatedReasoning })
         for (const [index, tb] of Object.entries(toolCallBufs)) {
           const idx = Number(index)
           if (emittedToolCallIndexes.has(idx)) continue
@@ -121,6 +152,24 @@ export class OpenAIChatProvider implements LLMProvider {
         }
       }
     }
+
+    for (const part of extractor.flush()) {
+      if (part.type === "thinking") {
+        accumulatedReasoning += part.content
+        yield { type: "thinking_delta", delta: part.content } as ThinkingDelta
+      } else {
+        accumulatedContent += part.content
+        yield { type: "text_delta", delta: part.content } as TextDelta
+      }
+    }
+
+    const toolCalls = Object.values(toolCallBufs).map(tb => ({
+      id: tb.id, name: tb.name, arguments: tb.argsBuf || "{}",
+    }))
+    if (toolCalls.length || accumulatedReasoning) {
+      this.chat.rememberReplayFields({ content: accumulatedContent, toolCalls }, { reasoning_content: accumulatedReasoning })
+    }
+
     for (const [index, tb] of Object.entries(toolCallBufs)) {
       const idx = Number(index)
       if (emittedToolCallIndexes.has(idx)) continue
@@ -138,4 +187,3 @@ export class OpenAIChatProvider implements LLMProvider {
 }
 
 export { OpenAIChatProvider as OpenAIProvider }
-

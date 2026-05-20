@@ -10,11 +10,14 @@ from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, n
 logger = logging.getLogger(__name__)
 
 _CLAUDE_POLICIES: dict[str, RuntimePolicy] = {
+    "claude-opus-4-1":           RuntimePolicy(max_turns=50),
     "claude-opus-4-7":           RuntimePolicy(max_turns=50),
     "claude-opus-4-6":           RuntimePolicy(max_turns=50),
+    "claude-opus-4-0":           RuntimePolicy(max_turns=50),
     "claude-sonnet-4-6":         RuntimePolicy(max_turns=25),
+    "claude-sonnet-4-0":         RuntimePolicy(max_turns=25),
     "claude-haiku-4-5":          RuntimePolicy(max_turns=15),
-    "claude-haiku-4-5-20251001": RuntimePolicy(max_turns=15),
+    "claude-3-5-haiku-latest":   RuntimePolicy(max_turns=15),
 }
 
 

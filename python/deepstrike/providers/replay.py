@@ -8,13 +8,34 @@ from deepstrike._kernel import Message, ToolCall
 from .base import RenderedContext
 
 
+def _sort_dict_keys(val: Any) -> Any:
+    if isinstance(val, dict):
+        return {k: _sort_dict_keys(val[k]) for k in sorted(val.keys())}
+    if isinstance(val, list):
+        return [_sort_dict_keys(item) for item in val]
+    return val
+
+
 def assistant_replay_key(content: str, tool_calls: list[ToolCall]) -> str:
+    normalized_calls = []
+    for tc in tool_calls:
+        args = tc.arguments
+        if isinstance(args, str):
+            try:
+                parsed = json.loads(args)
+                args = json.dumps(_sort_dict_keys(parsed), separators=(',', ':'))
+            except Exception:
+                pass
+        elif isinstance(args, (dict, list)):
+            args = json.dumps(_sort_dict_keys(args), separators=(',', ':'))
+        normalized_calls.append({
+            "id": tc.id,
+            "name": tc.name,
+            "arguments": args
+        })
     return json.dumps({
         "content": content,
-        "tool_calls": [
-            {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
-            for tc in tool_calls
-        ],
+        "tool_calls": normalized_calls,
     }, sort_keys=True)
 
 
@@ -31,16 +52,15 @@ class ReasoningReplayMixin:
 
     def peek_provider_replay(self, content: str, tool_calls: list[ToolCall]) -> dict | None:
         fields = self._replay_fields.get(assistant_replay_key(content, tool_calls))
-        if fields and fields.get("reasoning_content"):
+        if fields and "reasoning_content" in fields:
             return {"reasoning_content": fields["reasoning_content"]}
         return None
 
     def seed_provider_replay(self, content: str, tool_calls: list[ToolCall], replay: dict) -> None:
-        reasoning = replay.get("reasoning_content")
-        if reasoning:
+        if "reasoning_content" in replay:
             self.remember_replay_fields(
                 Message(role="assistant", content=content, tool_calls=tool_calls or None),
-                {"reasoning_content": reasoning},
+                {"reasoning_content": replay["reasoning_content"]},
             )
 
     def _merge_replay_into_openai_messages(
@@ -71,7 +91,7 @@ class ReasoningReplayMixin:
         tool_calls: list[ToolCall],
         reasoning_content: str,
     ) -> None:
-        if tool_calls and reasoning_content:
+        if tool_calls or reasoning_content:
             self.remember_replay_fields(
                 Message(role="assistant", content=content, tool_calls=tool_calls),
                 {"reasoning_content": reasoning_content},

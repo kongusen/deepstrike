@@ -101,7 +101,7 @@ await collect_text(runner.run_streaming("What is 2 + 3?"))
 
 ```toml
 [dependencies]
-deepstrike-sdk = "0.1.15"
+deepstrike-sdk = "0.1.16"
 ```
 
 ```rust

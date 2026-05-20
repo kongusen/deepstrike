@@ -69,6 +69,20 @@ def test_provider_instantiation():
     assert OpenAIProvider(api_key="test")._model == "gpt-4o"
     assert OllamaProvider(model="llama3")._model == "llama3"
     assert AnthropicProvider(api_key="test", model="claude-opus-4-7")._model == "claude-opus-4-7"
+    from deepstrike.providers import GLMProvider
+    assert GLMProvider(api_key="test")._model == "glm-5.1"
+    assert GLMProvider(api_key="test", model="glm/glm-4-plus").runtime_policy().max_turns == 35
+    from deepstrike.providers import GeminiProvider, KimiProvider, MiniMaxProvider, QwenProvider
+    assert AnthropicProvider(api_key="test", model="claude-opus-4-1").runtime_policy().max_turns == 50
+    assert OpenAIProvider(api_key="test", model="gpt-5.5").runtime_policy().max_turns == 60
+    assert MiniMaxProvider(api_key="test", model="MiniMax-M2.7-highspeed").runtime_policy().max_turns == 35
+    assert KimiProvider(api_key="test", model="kimi-k2-thinking").runtime_policy().max_turns == 50
+    assert QwenProvider(api_key="test", model="qwen3.7-max-preview").runtime_policy().max_turns == 45
+    assert QwenProvider(api_key="test", model="qwen3.5-plus").runtime_policy().max_turns == 35
+    assert GeminiProvider(api_key="test", model="gemini-3.5-flash").runtime_policy().max_turns == 30
+    assert OpenAIProvider(api_key="test", model="gpt-next-custom", base_url="https://gateway.example.com/v1")._base_url == "https://gateway.example.com/v1"
+    assert QwenProvider(api_key="test", model="qwen-next-custom", base_url="https://dashscope-gateway.example.com/v1")._base_url == "https://dashscope-gateway.example.com/v1"
+    assert GeminiProvider(api_key="test", model="gemini-next-custom", base_url="https://gemini-gateway.example.com")._base_url == "https://gemini-gateway.example.com"
 
 
 def test_retry_config_defaults():

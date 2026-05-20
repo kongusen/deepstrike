@@ -108,7 +108,7 @@ class DeepSeekProvider(OpenAIProvider):
                 final_tool_calls.append(tc)
                 yield ToolCallEvent(id=tc.id, name=tc.name, arguments=args)
 
-        if final_tool_calls and reasoning_content:
+        if final_tool_calls or reasoning_content:
             self.remember_reasoning_for_turn(final_text, final_tool_calls, reasoning_content)
 
     def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:

@@ -4,20 +4,29 @@ import logging
 from typing import AsyncIterator
 from openai import AsyncOpenAI
 from deepstrike._kernel import Message, ToolCall, ToolSchema
-from .stream import StreamEvent, TextDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, to_openai_message_params
+from .stream import StreamEvent, TextDelta, ToolCallEvent, ThinkingDelta
+from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, to_openai_message_params, ThinkingTagStreamExtractor
 from .replay import ReasoningReplayMixin
 
 logger = logging.getLogger(__name__)
 
 _OPENAI_POLICIES: dict[str, RuntimePolicy] = {
+    "gpt-5.5":      RuntimePolicy(max_turns=60),
+    "gpt-5.4":      RuntimePolicy(max_turns=50),
+    "gpt-5.4-mini": RuntimePolicy(max_turns=25),
+    "gpt-5.4-nano": RuntimePolicy(max_turns=15),
+    "gpt-5.2":      RuntimePolicy(max_turns=50),
+    "gpt-5.2-pro":  RuntimePolicy(max_turns=60),
+    "gpt-5.1":      RuntimePolicy(max_turns=50),
     "gpt-4o":       RuntimePolicy(max_turns=25),
     "gpt-4o-mini":  RuntimePolicy(max_turns=15),
     "gpt-4.1":      RuntimePolicy(max_turns=35),
     "gpt-4.1-mini": RuntimePolicy(max_turns=20),
     "gpt-4.1-nano": RuntimePolicy(max_turns=15),
     "gpt-5":        RuntimePolicy(max_turns=50),
+    "gpt-5-pro":    RuntimePolicy(max_turns=60),
     "gpt-5-mini":   RuntimePolicy(max_turns=25),
+    "gpt-5-nano":   RuntimePolicy(max_turns=15),
     "o1":           RuntimePolicy(max_turns=50),
     "o1-mini":      RuntimePolicy(max_turns=25),
     "o3":           RuntimePolicy(max_turns=50),
@@ -140,6 +149,10 @@ class OpenAIProvider(ReasoningReplayMixin):
         tool_defs = self._build_tools(tools)
         tool_call_bufs: dict[int, dict] = {}
         emitted_tool_call_indexes: set[int] = set()
+        extractor = ThinkingTagStreamExtractor()
+        accumulated_reasoning = ""
+        accumulated_content = ""
+        final_tool_calls = []
 
         request_extensions = {k: v for k, v in (extensions or {}).items() if k not in {"model", "messages", "tools", "stream", "stream_options"}}
         stream = await self._client.chat.completions.create(
@@ -157,8 +170,20 @@ class OpenAIProvider(ReasoningReplayMixin):
                 continue
 
             delta = choice.delta
+
+            native_reasoning = getattr(delta, "reasoning_content", None)
+            if native_reasoning:
+                accumulated_reasoning += native_reasoning
+                yield ThinkingDelta(delta=native_reasoning)
+
             if delta.content:
-                yield TextDelta(delta=delta.content)
+                for part in extractor.feed(delta.content):
+                    if part["type"] == "thinking":
+                        accumulated_reasoning += part["content"]
+                        yield ThinkingDelta(delta=part["content"])
+                    else:
+                        accumulated_content += part["content"]
+                        yield TextDelta(delta=part["content"])
 
             for tc in delta.tool_calls or []:
                 idx = tc.index
@@ -179,8 +204,18 @@ class OpenAIProvider(ReasoningReplayMixin):
                         args = {}
                     tc_obj = normalize_tool_call(tb["id"], tb["name"], args)
                     if tc_obj:
+                        final_tool_calls.append(tc_obj)
                         emitted_tool_call_indexes.add(idx)
                         yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)
+                self.remember_reasoning_for_turn(accumulated_content, final_tool_calls, accumulated_reasoning)
+
+        for part in extractor.flush():
+            if part["type"] == "thinking":
+                accumulated_reasoning += part["content"]
+                yield ThinkingDelta(delta=part["content"])
+            else:
+                accumulated_content += part["content"]
+                yield TextDelta(delta=part["content"])
 
         for idx, tb in tool_call_bufs.items():
             if idx in emitted_tool_call_indexes:
@@ -191,4 +226,7 @@ class OpenAIProvider(ReasoningReplayMixin):
                 args = {}
             tc_obj = normalize_tool_call(tb["id"], tb["name"], args)
             if tc_obj:
+                final_tool_calls.append(tc_obj)
                 yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)
+
+        self.remember_reasoning_for_turn(accumulated_content, final_tool_calls, accumulated_reasoning)

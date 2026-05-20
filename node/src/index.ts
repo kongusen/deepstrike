@@ -28,6 +28,7 @@ export { OpenAIChatAdapter } from "./providers/openai-chat.js"
 export { OpenAIResponsesAdapter, OpenAIResponsesProvider } from "./providers/openai-responses.js"
 export type { OpenAIResponsesRunState } from "./providers/openai-responses.js"
 export { endpointProfiles, modelProfiles, getModelProfile } from "./providers/profiles.js"
+export type { ModelProfileId, ProviderId } from "./providers/profiles.js"
 export { createProvider } from "./providers/catalog.js"
 export type { CreateProviderOptions, EndpointProfileId } from "./providers/catalog.js"
 

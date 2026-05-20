@@ -11,7 +11,7 @@ All providers implement the `LLMProvider` interface and plug into `RuntimeRunner
 | `AnthropicProvider` | `api.anthropic.com` | `claude-sonnet-4-6` | `ThinkingDelta` via `enable_thinking` | URL + base64 | Node / Python / Rust / WASM |
 | `OpenAIChatProvider` / `OpenAIProvider` | OpenAI Chat Completions | `gpt-4o` | — | URL + base64 (data-URI) | Node / Python / Rust / WASM |
 | `OpenAIResponsesProvider` | OpenAI Responses | `gpt-4.1` | Native `previous_response_id` continuation | URL + base64 (data-URI) | Node |
-| `QwenProvider` | DashScope `dashscope.aliyuncs.com` | `qwen-max` | `ThinkingDelta` via `enableThinking` | URL | Node / Python / Rust / WASM |
+| `QwenProvider` | DashScope `dashscope.aliyuncs.com` | `qwen3.6-plus` | `ThinkingDelta` via `enableThinking` | URL | Node / Python / Rust / WASM |
 | `DeepSeekProvider` | `api.deepseek.com` | `deepseek-chat` | `ThinkingDelta` via `exposeReasoning` (reasoner models) | — | Node / Python / Rust / WASM |
 | `MiniMaxProvider` | `api.minimax.chat` | `MiniMax-Text-01` | `ThinkingDelta` via `exposeReasoning` (M1 models) | — | Node / Python / Rust / WASM |
 | `KimiProvider` | `api.moonshot.cn` | `moonshot-v1-8k` | — | URL (vision models) | Node / Python / Rust / WASM |
@@ -111,6 +111,19 @@ const provider = createProvider({
 })
 ```
 
+For future models or third-party gateways, keep the provider family explicit and pass the custom model/base URL directly:
+
+```typescript
+const provider = createProvider({
+  provider: "openai",
+  model: "gpt-next-custom",
+  apiKey: process.env.GATEWAY_API_KEY!,
+  baseURL: "https://gateway.example.com/v1",
+})
+```
+
+Custom models can also use a provider-prefixed name such as `qwen/qwen-next-custom` or an explicit endpoint such as `endpoint: "glm.openai"`. Known model profiles still select their catalog default endpoint unless you intentionally override `endpoint`.
+
 ### Python
 
 ```python
@@ -137,7 +150,9 @@ let provider = OpenAIProvider::with_base_url(api_key, "gpt-4o", "https://my-gate
 
 ## QwenProvider
 
-Backed by Alibaba's DashScope. Models include the `qwen-max` / `qwen-plus` / `qwen-turbo` family and extended-thinking models such as `qwen3-235b-a22b`.
+Backed by Alibaba's DashScope. Supported chat profiles start at Qwen 3.5 and include the Qwen 3.7 preview, Qwen 3.6, and Qwen 3.5 families. Embedding profiles include `text-embedding-v4`, `text-embedding-v3`, `qwen3-vl-embedding`, and `qwen2.5-vl-embedding`.
+
+The Node model catalog also includes embedding profiles for OpenAI (`text-embedding-3-large`, `text-embedding-3-small`, `text-embedding-ada-002`), Gemini (`gemini-embedding-2`, `gemini-embedding-001`), GLM (`embedding-3`, `embedding-2`), and BAAI BGE (`bge-m3`, BGE v1.5 English/Chinese sizes, `bge-code-v1`, and BGE-VL v1.5). Embedding endpoints are tracked separately from chat endpoints so `createProvider` does not accidentally construct a chat adapter for a vectorization model. Qwen text embeddings use the OpenAI-compatible embeddings endpoint; Qwen VL embeddings use DashScope's multimodal embeddings endpoint. BGE profiles are metadata for self-hosted or Hugging Face/FlagEmbedding deployments rather than a managed API adapter.
 
 ### Thinking mode
 
@@ -148,7 +163,7 @@ Pass `enableThinking: true` in `extensions` to activate Qwen's extended thinking
 ```typescript
 import { QwenProvider } from "@deepstrike/sdk"
 
-const provider = new QwenProvider(process.env.DASHSCOPE_API_KEY!, "qwen3-235b-a22b")
+const provider = new QwenProvider(process.env.DASHSCOPE_API_KEY!, "qwen3.6-plus")
 
 for await (const event of runner.run({
   sessionId: "demo",
@@ -165,7 +180,7 @@ for await (const event of runner.run({
 ```python
 from deepstrike import QwenProvider
 
-provider = QwenProvider(api_key=os.environ["DASHSCOPE_API_KEY"], model="qwen3-235b-a22b")
+provider = QwenProvider(api_key=os.environ["DASHSCOPE_API_KEY"], model="qwen3.6-plus")
 
 async for event in runner.run_streaming(goal, extensions={"enable_thinking": True, "thinking_budget": 4096}):
     if event.type == "thinking_delta":
@@ -179,7 +194,7 @@ async for event in runner.run_streaming(goal, extensions={"enable_thinking": Tru
 ```rust
 use deepstrike_sdk::providers::qwen;
 
-let provider = qwen(std::env::var("DASHSCOPE_API_KEY")?, Some("qwen3-235b-a22b"));
+let provider = qwen(std::env::var("DASHSCOPE_API_KEY")?, Some("qwen3.6-plus"));
 ```
 
 ---

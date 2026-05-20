@@ -6,8 +6,13 @@ from .base import RetryConfig, RuntimePolicy
 _MINIMAX_ANTHROPIC_BASE = "https://api.minimaxi.com/anthropic"
 
 _MINIMAX_POLICIES: dict[str, RuntimePolicy] = {
-    "MiniMax-M2.7":    RuntimePolicy(max_turns=35),
-    "MiniMax-M2.5":    RuntimePolicy(max_turns=25),
+    "MiniMax-M2.7": RuntimePolicy(max_turns=35),
+    "MiniMax-M2.7-highspeed": RuntimePolicy(max_turns=35),
+    "MiniMax-M2.5": RuntimePolicy(max_turns=25),
+    "MiniMax-M2.5-highspeed": RuntimePolicy(max_turns=25),
+    "MiniMax-M2.1": RuntimePolicy(max_turns=25),
+    "MiniMax-M2.1-highspeed": RuntimePolicy(max_turns=25),
+    "MiniMax-M2": RuntimePolicy(max_turns=20),
     "MiniMax-Text-01": RuntimePolicy(max_turns=20),
 }
 

@@ -97,7 +97,7 @@ export class DeepSeekProvider extends OpenAIChatProvider {
     const toolCalls = Object.values(toolCallBufs).map(tb => ({
       id: tb.id, name: tb.name, arguments: tb.argsBuf || "{}",
     }))
-    if (toolCalls.length) {
+    if (toolCalls.length || reasoningContent) {
       this.chat.rememberReplayFields({ content: finalText, toolCalls }, { reasoning_content: reasoningContent })
     }
     for (const [index, tb] of Object.entries(toolCallBufs)) {

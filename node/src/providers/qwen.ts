@@ -1,5 +1,5 @@
 import OpenAI from "openai"
-import type { LLMProvider, Message, RenderedContext, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, ToolSchema, RuntimePolicy } from "../types.js"
+import type { LLMProvider, Message, RenderedContext, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, ToolSchema, RuntimePolicy, ProviderReplay } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, omitExtensionKeys } from "./base.js"
 import { OpenAIChatAdapter } from "./openai-chat.js"
@@ -8,16 +8,19 @@ import { endpointProfiles } from "./profiles.js"
 const QWEN_BASE = (endpointProfiles as Record<string, { baseURL: string }>)["qwen.dashscope"].baseURL
 
 const QWEN_POLICIES: Record<string, RuntimePolicy> = {
-  "qwen-max":         { maxTurns: 25 },
-  "qwen-plus":        { maxTurns: 20 },
-  "qwen-turbo":       { maxTurns: 15 },
-  "qwq-plus":         { maxTurns: 40 },
-  "qwq-32b":          { maxTurns: 35 },
-  "qwen3-235b-a22b":  { maxTurns: 35 },
-  "qwen3-72b":        { maxTurns: 25 },
-  "qwen3-32b":        { maxTurns: 20 },
-  "qwen3-14b":        { maxTurns: 15 },
-  "qwen3-8b":         { maxTurns: 15 },
+  "qwen3.7-max-preview": { maxTurns: 45 },
+  "qwen3.7-plus-preview": { maxTurns: 40 },
+  "qwen3.6-max-preview": { maxTurns: 40 },
+  "qwen3.6-plus": { maxTurns: 35 },
+  "qwen3.6-flash": { maxTurns: 20 },
+  "qwen3.6-35b-a3b": { maxTurns: 25 },
+  "qwen3.6-27b": { maxTurns: 25 },
+  "qwen3.5-plus": { maxTurns: 35 },
+  "qwen3.5-flash": { maxTurns: 20 },
+  "qwen3.5-397b-a17b": { maxTurns: 35 },
+  "qwen3.5-122b-a10b": { maxTurns: 25 },
+  "qwen3.5-35b-a3b": { maxTurns: 20 },
+  "qwen3.5-27b": { maxTurns: 20 },
 }
 
 export class QwenProvider implements LLMProvider {
@@ -29,7 +32,7 @@ export class QwenProvider implements LLMProvider {
 
   constructor(
     apiKey: string,
-    protected readonly model = "qwen-max",
+    protected readonly model = "qwen3.6-plus",
     retry = { maxRetries: 3, baseDelay: 1000 },
     baseURL: string = QWEN_BASE,
   ) {
@@ -41,6 +44,18 @@ export class QwenProvider implements LLMProvider {
 
   runtimePolicy(): RuntimePolicy {
     return QWEN_POLICIES[this.model] ?? {}
+  }
+
+  peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {
+    const fields = this.chat.peekReplayFields(message)
+    if (!fields || !("reasoning_content" in fields)) return undefined
+    return { reasoning_content: String(fields.reasoning_content ?? "") }
+  }
+
+  seedProviderReplay(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void {
+    if (replay.reasoning_content !== undefined) {
+      this.chat.rememberReplayFields(message, { reasoning_content: replay.reasoning_content })
+    }
   }
 
   async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
@@ -75,6 +90,8 @@ export class QwenProvider implements LLMProvider {
     const msgs = this.chat.buildMessages(context)
     const toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }> = {}
     const emittedToolCallIndexes = new Set<number>()
+    let reasoningContent = ""
+    let finalText = ""
 
     const extraBody = this.thinkingExtraBody(extensions)
     const stream = await this.client.chat.completions.create({
@@ -93,8 +110,14 @@ export class QwenProvider implements LLMProvider {
       const choice = chunk.choices[0]
       if (!choice) continue
       const delta = choice.delta as Record<string, unknown>
-      if (delta.reasoning_content) yield { type: "thinking_delta", delta: delta.reasoning_content } as ThinkingDelta
-      if (delta.content) yield { type: "text_delta", delta: delta.content } as TextDelta
+      if (delta.reasoning_content) {
+        reasoningContent += String(delta.reasoning_content)
+        yield { type: "thinking_delta", delta: delta.reasoning_content } as ThinkingDelta
+      }
+      if (delta.content) {
+        finalText += String(delta.content)
+        yield { type: "text_delta", delta: delta.content } as TextDelta
+      }
       for (const tc of (delta.tool_calls as OpenAI.ChatCompletionChunk.Choice.Delta.ToolCall[] | undefined) ?? []) {
         const idx = tc.index
         if (!toolCallBufs[idx]) toolCallBufs[idx] = { id: tc.id ?? "", name: "", argsBuf: "" }
@@ -102,6 +125,10 @@ export class QwenProvider implements LLMProvider {
         toolCallBufs[idx].argsBuf += tc.function?.arguments ?? ""
       }
       if (choice.finish_reason === "tool_calls") {
+        const toolCalls = Object.values(toolCallBufs).map(tb => ({
+          id: tb.id, name: tb.name, arguments: tb.argsBuf || "{}",
+        }))
+        this.chat.rememberReplayFields({ content: finalText, toolCalls }, { reasoning_content: reasoningContent })
         for (const [index, tb] of Object.entries(toolCallBufs)) {
           const idx = Number(index)
           if (emittedToolCallIndexes.has(idx)) continue
@@ -111,6 +138,12 @@ export class QwenProvider implements LLMProvider {
           yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
         }
       }
+    }
+    const toolCalls = Object.values(toolCallBufs).map(tb => ({
+      id: tb.id, name: tb.name, arguments: tb.argsBuf || "{}",
+    }))
+    if (toolCalls.length || reasoningContent) {
+      this.chat.rememberReplayFields({ content: finalText, toolCalls }, { reasoning_content: reasoningContent })
     }
     for (const [index, tb] of Object.entries(toolCallBufs)) {
       const idx = Number(index)

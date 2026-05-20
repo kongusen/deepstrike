@@ -173,3 +173,81 @@ export function toOpenAIMessageParams(context: RenderedContext): Array<Record<st
 
   return result
 }
+
+export class ThinkingTagStreamExtractor {
+  private buffer = ""
+  private inThinking = false
+
+  feed(chunk: string): Array<{ type: "text" | "thinking"; content: string }> {
+    this.buffer += chunk
+    const events: Array<{ type: "text" | "thinking"; content: string }> = []
+
+    while (true) {
+      if (!this.inThinking) {
+        const thinkIndex = this.buffer.indexOf("<think>")
+        if (thinkIndex !== -1) {
+          const textBefore = this.buffer.substring(0, thinkIndex)
+          if (textBefore) {
+            events.push({ type: "text", content: textBefore })
+          }
+          this.inThinking = true
+          this.buffer = this.buffer.substring(thinkIndex + 7)
+          continue
+        }
+
+        const possibleTagStart = this.buffer.lastIndexOf("<")
+        if (possibleTagStart !== -1 && "<think>".startsWith(this.buffer.substring(possibleTagStart))) {
+          const toEmit = this.buffer.substring(0, possibleTagStart)
+          if (toEmit) {
+            events.push({ type: "text", content: toEmit })
+          }
+          this.buffer = this.buffer.substring(possibleTagStart)
+          break
+        } else {
+          if (this.buffer) {
+            events.push({ type: "text", content: this.buffer })
+            this.buffer = ""
+          }
+          break
+        }
+      } else {
+        const endThinkIndex = this.buffer.indexOf("</think>")
+        if (endThinkIndex !== -1) {
+          const thinkingContent = this.buffer.substring(0, endThinkIndex)
+          if (thinkingContent) {
+            events.push({ type: "thinking", content: thinkingContent })
+          }
+          this.inThinking = false
+          this.buffer = this.buffer.substring(endThinkIndex + 8)
+          continue
+        }
+
+        const possibleEndStart = this.buffer.lastIndexOf("<")
+        if (possibleEndStart !== -1 && "</think>".startsWith(this.buffer.substring(possibleEndStart))) {
+          const toEmit = this.buffer.substring(0, possibleEndStart)
+          if (toEmit) {
+            events.push({ type: "thinking", content: toEmit })
+          }
+          this.buffer = this.buffer.substring(possibleEndStart)
+          break
+        } else {
+          if (this.buffer) {
+            events.push({ type: "thinking", content: this.buffer })
+            this.buffer = ""
+          }
+          break
+        }
+      }
+    }
+    return events
+  }
+
+  flush(): Array<{ type: "text" | "thinking"; content: string }> {
+    const events: Array<{ type: "text" | "thinking"; content: string }> = []
+    if (this.buffer) {
+      events.push({ type: this.inThinking ? "thinking" : "text", content: this.buffer })
+      this.buffer = ""
+    }
+    return events
+  }
+}

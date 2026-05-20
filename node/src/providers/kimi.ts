@@ -10,6 +10,8 @@ const KIMI_POLICIES: Record<string, RuntimePolicy> = {
   "moonshot-v1-128k": { maxTurns: 30 },
   "kimi-k2.5":        { maxTurns: 30 },
   "kimi-k2.6":        { maxTurns: 35 },
+  "kimi-k2-thinking": { maxTurns: 50 },
+  "kimi-k2-thinking-turbo": { maxTurns: 40 },
 }
 
 export class KimiProvider extends OpenAIChatProvider {

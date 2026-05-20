@@ -143,11 +143,20 @@ export class OpenAIResponsesProvider implements LLMProvider {
 
   runtimePolicy(): import("../types.js").RuntimePolicy {
     const table: Record<string, import("../types.js").RuntimePolicy> = {
+      "gpt-5.5":      { maxTurns: 60 },
+      "gpt-5.4":      { maxTurns: 50 },
+      "gpt-5.4-mini": { maxTurns: 25 },
+      "gpt-5.4-nano": { maxTurns: 15 },
+      "gpt-5.2":      { maxTurns: 50 },
+      "gpt-5.2-pro":  { maxTurns: 60 },
+      "gpt-5.1":      { maxTurns: 50 },
       "gpt-4.1":      { maxTurns: 35 },
       "gpt-4.1-mini": { maxTurns: 20 },
       "gpt-4.1-nano": { maxTurns: 15 },
       "gpt-5":        { maxTurns: 50 },
+      "gpt-5-pro":    { maxTurns: 60 },
       "gpt-5-mini":   { maxTurns: 25 },
+      "gpt-5-nano":   { maxTurns: 15 },
       "o3":           { maxTurns: 50 },
       "o3-mini":      { maxTurns: 25 },
       "o4-mini":      { maxTurns: 25 },
