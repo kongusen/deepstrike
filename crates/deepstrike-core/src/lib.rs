@@ -40,6 +40,8 @@ pub use context::snapshot::ContextSnapshotHint;
 pub use governance::tool_decision::{
     ToolDecision, ToolDecisionContext, ToolDecisionPipeline, ToolDecisionStage,
 };
+pub use governance::sandbox::SandboxProfile;
+pub use governance::pipeline::SecurityPolicySnapshot;
 pub use runtime::session::SessionEvent;
 pub use runtime::{
     reconstruct_messages_with_fallback, KERNEL_ABI_VERSION, KernelAction, KernelInput,

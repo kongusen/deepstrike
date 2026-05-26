@@ -38,6 +38,10 @@ impl ConstraintValidator {
 
     pub fn add(&mut self, constraint: ParamConstraint) {
         self.constraints.push(constraint);
+     }
+
+    pub fn constraint_count(&self) -> usize {
+        self.constraints.len()
     }
 
     pub fn validate(&self, call: &ToolCall) -> Option<GovernanceVerdict> {

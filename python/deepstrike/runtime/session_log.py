@@ -49,8 +49,24 @@ class ToolArgumentRepairedEvent(TypedDict, total=False):
 class ToolDeniedEvent(TypedDict, total=False):
     kind: Literal["tool_denied"]
     turn: int
-    tool: str
+    call_id: str
+    tool_name: str
     reason: str
+
+
+class PermissionRequestedEvent(TypedDict, total=False):
+    kind: Literal["permission_requested"]
+    turn: int
+    tool: str
+    arguments: str
+    reason: str
+
+
+class PermissionResolvedEvent(TypedDict, total=False):
+    kind: Literal["permission_resolved"]
+    turn: int
+    approved: bool
+    responder: str
 
 
 class CompressedEvent(TypedDict, total=False):
@@ -105,6 +121,8 @@ SessionEvent = (
     | ToolCompletedEvent
     | ToolArgumentRepairedEvent
     | ToolDeniedEvent
+    | PermissionRequestedEvent
+    | PermissionResolvedEvent
     | CompressedEvent
     | RollbackedEvent
     | CapabilityChangedEvent

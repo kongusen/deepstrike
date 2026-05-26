@@ -2,14 +2,16 @@ use crate::types::message::ToolCall;
 use crate::types::policy::{CallerContext, GovernanceVerdict};
 
 /// Explicit stage in the tool-decision path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolDecisionStage {
     Classifier,
-    Hook,
-    Permission,
-    Veto,
+    CapabilityCheck,
+    ConstraintCheck,
+    PermissionCheck,
+    VetoCheck,
     RateLimit,
-    Constraint,
+    SandboxPolicy,
     Audit,
 }
 
@@ -17,11 +19,12 @@ impl ToolDecisionStage {
     pub fn as_str(self) -> &'static str {
         match self {
             ToolDecisionStage::Classifier => "classifier",
-            ToolDecisionStage::Hook => "hook",
-            ToolDecisionStage::Permission => "permission",
-            ToolDecisionStage::Veto => "veto",
+            ToolDecisionStage::CapabilityCheck => "capability_check",
+            ToolDecisionStage::ConstraintCheck => "constraint",
+            ToolDecisionStage::PermissionCheck => "permission",
+            ToolDecisionStage::VetoCheck => "veto",
             ToolDecisionStage::RateLimit => "rate_limit",
-            ToolDecisionStage::Constraint => "constraint",
+            ToolDecisionStage::SandboxPolicy => "sandbox_policy",
             ToolDecisionStage::Audit => "audit",
         }
     }
@@ -106,8 +109,8 @@ mod tests {
     #[test]
     fn deny_is_monotonic_over_later_allow() {
         let verdict = ToolDecisionPipeline::reduce(&[
-            ToolDecision::deny(ToolDecisionStage::Permission, "blocked by settings"),
-            ToolDecision::allow(ToolDecisionStage::Hook),
+            ToolDecision::deny(ToolDecisionStage::PermissionCheck, "blocked by settings"),
+            ToolDecision::allow(ToolDecisionStage::VetoCheck),
         ]);
 
         assert!(matches!(
@@ -123,8 +126,8 @@ mod tests {
     fn ask_user_survives_when_no_deny_exists() {
         let verdict = ToolDecisionPipeline::reduce(&[
             ToolDecision::allow(ToolDecisionStage::Classifier),
-            ToolDecision::ask_user(ToolDecisionStage::Permission, "needs approval"),
-            ToolDecision::allow(ToolDecisionStage::Hook),
+            ToolDecision::ask_user(ToolDecisionStage::PermissionCheck, "needs approval"),
+            ToolDecision::allow(ToolDecisionStage::VetoCheck),
         ]);
 
         assert!(matches!(verdict, GovernanceVerdict::AskUser { .. }));
@@ -134,7 +137,7 @@ mod tests {
     fn all_allow_reduces_to_allow() {
         let verdict = ToolDecisionPipeline::reduce(&[
             ToolDecision::allow(ToolDecisionStage::Classifier),
-            ToolDecision::allow(ToolDecisionStage::Permission),
+            ToolDecision::allow(ToolDecisionStage::PermissionCheck),
         ]);
 
         assert!(matches!(verdict, GovernanceVerdict::Allow));

@@ -6,7 +6,9 @@ export type SessionEvent =
   | { kind: "tool_requested"; turn: number; calls: ToolCall[] }
   | { kind: "tool_completed"; turn: number; results: Array<{ call_id: string; output: string; is_error?: boolean; token_count?: number }> }
   | { kind: "tool_argument_repaired"; turn: number; tool: string; original_arguments: string; repaired_arguments: string }
-  | { kind: "tool_denied"; turn: number; tool: string; reason: string }
+  | { kind: "tool_denied"; turn: number; call_id: string; tool_name: string; reason: string }
+  | { kind: "permission_requested"; turn: number; tool: string; arguments: string; reason?: string }
+  | { kind: "permission_resolved"; turn: number; approved: boolean; responder: string }
   | {
       kind: "compressed"
       turn: number

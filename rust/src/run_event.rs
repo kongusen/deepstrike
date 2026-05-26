@@ -40,6 +40,15 @@ pub enum RunEvent {
         tool_name: String,
         reason: String,
     },
+    /// Governance pipeline requires user approval (ask_user verdict).
+    /// Emitted before `ToolResult { is_error: true }` so runners can write
+    /// `SessionEvent::PermissionRequested` + `SessionEvent::PermissionResolved`.
+    PermissionRequest {
+        call_id: String,
+        tool_name: String,
+        arguments: String,
+        reason: String,
+    },
     Done {
         iterations: u32,
         total_tokens: u64,

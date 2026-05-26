@@ -1,7 +1,7 @@
 import type {
   LLMProvider, Message, ToolCall, ToolResult, ToolSchema,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
-  ToolArgumentRepairedEvent, ToolDeniedEvent,
+  ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
 } from "../types.js"
 import type { ToolSuspendEvent } from "./execution-plane.js"
 import type { DreamStore, DreamResult, MemoryEntry, CurationResult, SessionData } from "../memory/index.js"
@@ -393,8 +393,32 @@ export class RuntimeRunner {
             await this.opts.sessionLog.append(sessionId, {
               kind: "tool_denied",
               turn: runtime.turn(),
-              tool: tde.toolName,
+              call_id: tde.callId,
+              tool_name: tde.toolName,
               reason: tde.reason,
+            })
+          } else if (evt.type === "permission_request") {
+            const pre = evt as PermissionRequestEvent
+            const turn = runtime.turn()
+            await this.opts.sessionLog.append(sessionId, {
+              kind: "permission_requested",
+              turn,
+              tool: pre.toolName,
+              arguments: typeof pre.arguments === "string" ? pre.arguments : JSON.stringify(pre.arguments),
+              reason: pre.reason,
+            })
+            await this.opts.sessionLog.append(sessionId, {
+              kind: "permission_resolved",
+              turn,
+              approved: false,
+              responder: "policy_gate",
+            })
+            await this.opts.sessionLog.append(sessionId, {
+              kind: "tool_denied",
+              turn,
+              call_id: pre.callId,
+              tool_name: pre.toolName,
+              reason: `permission denied by policy gate: ${pre.reason}`,
             })
           }
         }

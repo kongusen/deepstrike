@@ -25,6 +25,14 @@ impl VetoAuthority {
         self.blocked_tools.insert(name.into());
     }
 
+    pub fn blocked_count(&self) -> usize {
+        self.blocked_tools.len()
+    }
+
+    pub fn custom_count(&self) -> usize {
+        self.custom_checks.len()
+    }
+
     /// Register a check via the `VetoCheck` trait.
     /// Plain closures work too thanks to the blanket impl in `types::policy`.
     pub fn add_check<C>(&mut self, check: C)

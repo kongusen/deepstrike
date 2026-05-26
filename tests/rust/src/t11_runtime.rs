@@ -138,6 +138,50 @@ async fn governance_denies_tool_on_plane() {
 }
 
 #[tokio::test]
+async fn governance_ask_user_emits_permission_request_event() {
+    let mut plane = LocalExecutionPlane::new();
+    plane.register(RegisteredTool::text(
+        "sensitive_op",
+        "Needs user approval",
+        serde_json::json!({"type": "object", "properties": {}}),
+        |_| Box::pin(async { Ok("done".into()) }),
+    ));
+
+    let mut gov = Governance::allow();
+    gov.add_permission_rule("sensitive_op", PermissionAction::AskUser);
+
+    let call = ToolCall {
+        id: CompactString::new("c1"),
+        name: CompactString::new("sensitive_op"),
+        arguments: serde_json::json!({}),
+    };
+
+    let ctx = RunContext {
+        agent_id: None,
+        skill_dir: None,
+        dream_store: None,
+        knowledge_source: None,
+        governance: Some(Arc::new(Mutex::new(gov))),
+        on_tool_suspend: None,
+    };
+
+    let calls = [call];
+    let mut stream = plane.execute_all(&calls, ctx);
+    let mut saw_permission_request = false;
+    let mut saw_denied_result = false;
+    while let Some(evt) = stream.next().await {
+        match evt.unwrap() {
+            RunEvent::PermissionRequest { .. } => saw_permission_request = true,
+            RunEvent::ToolResult { is_error: true, .. } => saw_denied_result = true,
+            RunEvent::ToolDenied { .. } => panic!("ask_user must not emit ToolDenied from the plane"),
+            _ => {}
+        }
+    }
+    assert!(saw_permission_request, "expected PermissionRequest event for ask_user verdict");
+    assert!(saw_denied_result, "expected error ToolResult when no resume handler");
+}
+
+#[tokio::test]
 async fn wake_continues_after_tool_completed() {
     let session_log = Arc::new(InMemorySessionLog::new());
     let session_id = "crash-test";

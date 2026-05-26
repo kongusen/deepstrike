@@ -31,6 +31,7 @@ from deepstrike.providers.stream import (
   ToolResultEvent,
   ToolSuspendEvent,
   ToolArgumentRepairedEvent,
+  PermissionRequestEvent,
 )
 from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPlane, RunContext
 from deepstrike.runtime.kernel_step import (
@@ -523,8 +524,32 @@ class RuntimeRunner:
               await self._opts.session_log.append(session_id, {
                 "kind": "tool_denied",
                 "turn": runtime.turn(),
-                "tool": evt.tool_name,
+                "call_id": evt.call_id,
+                "tool_name": evt.tool_name,
                 "reason": evt.reason,
+              })
+            elif isinstance(evt, PermissionRequestEvent):
+              turn = runtime.turn()
+              import json as _json
+              await self._opts.session_log.append(session_id, {
+                "kind": "permission_requested",
+                "turn": turn,
+                "tool": evt.tool_name,
+                "arguments": _json.dumps(evt.arguments) if not isinstance(evt.arguments, str) else evt.arguments,
+                "reason": evt.reason,
+              })
+              await self._opts.session_log.append(session_id, {
+                "kind": "permission_resolved",
+                "turn": turn,
+                "approved": False,
+                "responder": "policy_gate",
+              })
+              await self._opts.session_log.append(session_id, {
+                "kind": "tool_denied",
+                "turn": turn,
+                "call_id": evt.call_id,
+                "tool_name": evt.tool_name,
+                "reason": f"permission denied by policy gate: {evt.reason}",
               })
           names = ", ".join(c.name for c in normal_calls)
           kernel_apply(runtime, self._pending_observations, {

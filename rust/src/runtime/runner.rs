@@ -741,6 +741,39 @@ impl RuntimeRunner {
                                         .await;
                                         yield RunEvent::ToolDenied { call_id, tool_name, reason };
                                     }
+                                    RunEvent::PermissionRequest { call_id, tool_name, arguments, reason } => {
+                                        let turn = kernel.state_machine().turn;
+                                        self.log(
+                                            &session_id,
+                                            SessionEvent::PermissionRequested {
+                                                turn,
+                                                tool: tool_name.clone(),
+                                                arguments: arguments.clone(),
+                                                reason: Some(reason.clone()),
+                                            },
+                                        )
+                                        .await;
+                                        self.log(
+                                            &session_id,
+                                            SessionEvent::PermissionResolved {
+                                                turn,
+                                                approved: false,
+                                                responder: "policy_gate".to_string(),
+                                            },
+                                        )
+                                        .await;
+                                        self.log(
+                                            &session_id,
+                                            SessionEvent::ToolDenied {
+                                                turn,
+                                                call_id: call_id.clone(),
+                                                tool_name: tool_name.clone(),
+                                                reason: format!("permission denied by policy gate: {reason}"),
+                                            },
+                                        )
+                                        .await;
+                                        yield RunEvent::PermissionRequest { call_id, tool_name, arguments, reason };
+                                    }
                                     other => yield other,
                                 }
                             }

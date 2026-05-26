@@ -52,6 +52,14 @@ impl PermissionManager {
         self.rules.push(rule);
     }
 
+    pub fn rule_count(&self) -> usize {
+        self.rules.len()
+    }
+
+    pub fn default_action(&self) -> &PermissionAction {
+        &self.default
+    }
+
     pub fn check(&self, call: &ToolCall, _caller: &CallerContext) -> Option<GovernanceVerdict> {
         for rule in &self.rules {
             if rule.matches(&call.name) {

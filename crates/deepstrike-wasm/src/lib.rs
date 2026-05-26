@@ -6,7 +6,10 @@ use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
 
 use deepstrike_core::context::renderer::RenderedContext as RustRenderedContext;
+use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
+use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
+use deepstrike_core::governance::rate_limit::RateLimit;
 use deepstrike_core::harness::eval_pipeline::{
     Criterion as RustCriterion, EvalAction as RustEvalAction, EvalEvent as RustEvalEvent,
     EvalPipeline as RustEvalPipeline, EvalPolicy as RustEvalPolicy, EvalResult as RustEvalResult,
@@ -690,20 +693,86 @@ impl EvalPipeline {
 #[wasm_bindgen]
 pub struct Governance {
     inner: RustGovernancePipeline,
+    agent_id: String,
+    session_id: String,
 }
 
 #[wasm_bindgen]
 impl Governance {
     #[wasm_bindgen(constructor)]
-    pub fn new() -> Self {
+    pub fn new(default_action: Option<String>) -> Self {
+        let action = match default_action.as_deref() {
+            Some("deny") => PermissionAction::Deny,
+            Some("ask_user") => PermissionAction::AskUser,
+            _ => PermissionAction::Allow,
+        };
         Self {
-            inner: RustGovernancePipeline::default(),
+            inner: RustGovernancePipeline::new(action),
+            agent_id: "anonymous".into(),
+            session_id: "".into(),
         }
+    }
+
+    #[wasm_bindgen(js_name = setIdentity)]
+    pub fn set_identity(&mut self, agent_id: String, session_id: String) {
+        self.agent_id = agent_id;
+        self.session_id = session_id;
+    }
+
+    #[wasm_bindgen(js_name = addPermissionRule)]
+    pub fn add_permission_rule(&mut self, pattern: String, action: String) {
+        let perm_action = match action.as_str() {
+            "deny" => PermissionAction::Deny,
+            "ask_user" => PermissionAction::AskUser,
+            _ => PermissionAction::Allow,
+        };
+        self.inner.permission.add_rule(PermissionRule {
+            tool_pattern: pattern.into(),
+            action: perm_action,
+        });
     }
 
     #[wasm_bindgen(js_name = blockTool)]
     pub fn block_tool(&mut self, name: String) {
         self.inner.veto.block_tool(name);
+    }
+
+    #[wasm_bindgen(js_name = setRateLimit)]
+    pub fn set_rate_limit(&mut self, tool_name: String, max_calls: u32, window_ms: f64) {
+        self.inner.rate_limiter.set_limit(
+            tool_name,
+            RateLimit {
+                max_calls,
+                window_ms: window_ms as u64,
+            },
+        );
+    }
+
+    #[wasm_bindgen(js_name = requireParam)]
+    pub fn require_param(&mut self, tool_name: String, param_path: String) {
+        self.inner.constraints.add(ParamConstraint {
+            tool_name,
+            param_path,
+            rule: ConstraintRule::Required,
+        });
+    }
+
+    #[wasm_bindgen(js_name = allowParamValues)]
+    pub fn allow_param_values(&mut self, tool_name: String, param_path: String, allowed_values: Vec<String>) {
+        self.inner.constraints.add(ParamConstraint {
+            tool_name,
+            param_path,
+            rule: ConstraintRule::Enum(allowed_values),
+        });
+    }
+
+    #[wasm_bindgen(js_name = limitParamRange)]
+    pub fn limit_param_range(&mut self, tool_name: String, param_path: String, min: Option<f64>, max: Option<f64>) {
+        self.inner.constraints.add(ParamConstraint {
+            tool_name,
+            param_path,
+            rule: ConstraintRule::Range { min, max },
+        });
     }
 
     #[wasm_bindgen(js_name = setTime)]
@@ -719,7 +788,7 @@ impl Governance {
             name: CompactString::new(&tool_name),
             arguments: args,
         };
-        let caller = AgentIdentity::new("anonymous", "");
+        let caller = AgentIdentity::new(&self.agent_id, &self.session_id);
         governance_verdict_from_rust(self.inner.evaluate(&call, &caller))
     }
 }

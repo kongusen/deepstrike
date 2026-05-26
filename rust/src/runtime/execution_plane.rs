@@ -158,14 +158,17 @@ fn execute_all_local<'a>(
                     }
                     "ask_user" => {
                         let reason = verdict.reason.unwrap_or_default();
-                        yield RunEvent::ToolDenied {
+                        let args_str = serde_json::to_string(&c.arguments)
+                            .unwrap_or_else(|_| "{}".to_string());
+                        yield RunEvent::PermissionRequest {
                             call_id: c.id.to_string(),
                             tool_name: c.name.to_string(),
-                            reason: format!("awaiting user approval: {reason}"),
+                            arguments: args_str,
+                            reason: reason.clone(),
                         };
                         yield RunEvent::ToolResult {
                             call_id: c.id.to_string(),
-                            content: "awaiting user approval".into(),
+                            content: format!("permission denied: awaiting user approval: {reason}"),
                             is_error: true,
                         };
                         continue;
