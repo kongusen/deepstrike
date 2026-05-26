@@ -2,6 +2,62 @@ use serde::{Deserialize, Serialize};
 
 use super::capability::CapabilityDescriptor;
 
+/// How the kernel should evaluate a milestone phase.
+///
+/// Carried inside `EvaluateMilestone` so the SDK/runner knows which
+/// evaluation path to take. Defaults to `HarnessEval` when unset.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MilestoneVerifier {
+    /// Deterministic machine check (e.g., regex, JSON schema, test suite).
+    MachineCheck,
+    /// Harness-driven evaluation (the default `EvaluateMilestone` callback).
+    HarnessEval,
+    /// LLM-as-judge: a secondary LLM call scores the output against criteria.
+    LlmJudge,
+    /// Requires explicit human approval before the phase can advance.
+    HumanApproval,
+    /// Runs an external command and uses its exit code as pass/fail.
+    ExternalCommand { cmd: String },
+}
+
+/// Policy governing capability unlock on a phase advance.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MilestoneUnlockPolicy {
+    /// Mount capabilities immediately when the phase passes (default).
+    #[default]
+    Immediate,
+    /// Defer capability mounting — caller mounts manually via `CapabilityCommand`.
+    Deferred,
+}
+
+/// What the kernel does when a blocked milestone exceeds its retry budget.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MilestoneRollbackPolicy {
+    /// Terminate the run with `MilestoneExceeded` (default).
+    #[default]
+    Terminate,
+    /// Roll back context to the last checkpoint and let the LLM retry from there.
+    Rollback,
+    /// Continue injecting blocked messages indefinitely (no budget enforcement).
+    Continue,
+}
+
+/// Controls how many times a blocked phase is retried before policy kicks in.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryPolicy {
+    /// Maximum number of blocked retries. `0` means unlimited (no enforcement).
+    pub max_attempts: u32,
+}
+
+impl RetryPolicy {
+    pub fn max(max_attempts: u32) -> Self {
+        Self { max_attempts }
+    }
+}
+
 /// One named phase in a [`MilestoneContract`].
 ///
 /// A phase defines the criteria the agent must satisfy before the kernel
@@ -16,6 +72,21 @@ pub struct MilestonePhase {
     /// Capabilities unlocked and mounted when this phase passes.
     #[serde(default)]
     pub unlocks: Vec<CapabilityDescriptor>,
+    /// How to evaluate this phase. `None` → defaults to `HarnessEval`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verifier: Option<MilestoneVerifier>,
+    /// Evidence keys the verifier must supply in `MilestoneCheckResult`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_evidence: Vec<String>,
+    /// How capabilities are mounted on advance.
+    #[serde(default)]
+    pub unlock_policy: MilestoneUnlockPolicy,
+    /// What happens when `retry_policy.max_attempts` is exceeded.
+    #[serde(default)]
+    pub rollback_policy: MilestoneRollbackPolicy,
+    /// Retry budget for blocked phases. `None` → unlimited retries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_policy: Option<RetryPolicy>,
 }
 
 impl MilestonePhase {
@@ -24,6 +95,11 @@ impl MilestonePhase {
             id: id.into(),
             criteria: Vec::new(),
             unlocks: Vec::new(),
+            verifier: None,
+            required_evidence: Vec::new(),
+            unlock_policy: MilestoneUnlockPolicy::default(),
+            rollback_policy: MilestoneRollbackPolicy::default(),
+            retry_policy: None,
         }
     }
 
@@ -34,6 +110,26 @@ impl MilestonePhase {
 
     pub fn unlocking(mut self, capability: CapabilityDescriptor) -> Self {
         self.unlocks.push(capability);
+        self
+    }
+
+    pub fn with_verifier(mut self, verifier: MilestoneVerifier) -> Self {
+        self.verifier = Some(verifier);
+        self
+    }
+
+    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = Some(policy);
+        self
+    }
+
+    pub fn with_rollback_policy(mut self, policy: MilestoneRollbackPolicy) -> Self {
+        self.rollback_policy = policy;
+        self
+    }
+
+    pub fn requiring_evidence(mut self, key: impl Into<String>) -> Self {
+        self.required_evidence.push(key.into());
         self
     }
 }

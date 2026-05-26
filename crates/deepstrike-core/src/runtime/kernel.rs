@@ -159,6 +159,10 @@ pub enum KernelAction {
     EvaluateMilestone {
         phase_id: String,
         criteria: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        verifier: Option<crate::types::milestone::MilestoneVerifier>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        required_evidence: Vec<String>,
     },
     Done {
         result: LoopResult,
@@ -170,9 +174,17 @@ impl From<LoopAction> for KernelAction {
         match action {
             LoopAction::CallLLM { context, tools } => Self::CallProvider { context, tools },
             LoopAction::ExecuteTools { calls } => Self::ExecuteTool { calls },
-            LoopAction::EvaluateMilestone { phase_id, criteria } => {
-                Self::EvaluateMilestone { phase_id, criteria }
-            }
+            LoopAction::EvaluateMilestone {
+                phase_id,
+                criteria,
+                verifier,
+                required_evidence,
+            } => Self::EvaluateMilestone {
+                phase_id,
+                criteria,
+                verifier,
+                required_evidence,
+            },
             LoopAction::Done { result } => Self::Done { result },
         }
     }
@@ -222,6 +234,13 @@ pub enum KernelObservation {
         turn: u32,
         phase_id: String,
         reason: String,
+    },
+    /// Evidence collected by the verifier during milestone evaluation.
+    MilestoneEvidence {
+        turn: u32,
+        phase_id: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        evidence: Vec<String>,
     },
     /// Checkpoint taken at the start of a turn transaction (before LLM call).
     CheckpointTaken {
@@ -290,6 +309,15 @@ impl From<LoopObservation> for KernelObservation {
                 turn,
                 phase_id,
                 reason,
+            },
+            LoopObservation::MilestoneEvidence {
+                turn,
+                phase_id,
+                evidence,
+            } => Self::MilestoneEvidence {
+                turn,
+                phase_id,
+                evidence,
             },
             LoopObservation::CheckpointTaken { turn, history_len } => {
                 Self::CheckpointTaken { turn, history_len }

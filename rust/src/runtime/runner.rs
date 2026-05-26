@@ -809,7 +809,7 @@ impl RuntimeRunner {
                             },
                         );
                     }
-                    KernelAction::EvaluateMilestone { phase_id, criteria: _ } => {
+                    KernelAction::EvaluateMilestone { phase_id, .. } => {
                         match self.opts.milestone_policy {
                             MilestonePolicy::AutoPass => {
                                 let result = MilestoneCheckResult::pass(phase_id.clone());
@@ -1073,6 +1073,21 @@ impl RuntimeRunner {
                             turn,
                             phase_id,
                             reason,
+                        },
+                    )
+                    .await;
+                }
+                KernelObservation::MilestoneEvidence {
+                    turn,
+                    phase_id,
+                    evidence,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::MilestoneEvidence {
+                            turn,
+                            phase_id,
+                            evidence,
                         },
                     )
                     .await;

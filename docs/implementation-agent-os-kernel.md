@@ -128,8 +128,9 @@ KernelOutput:
 | Phase 3 / PR 4：Capability Bus | ✅ 已完成 | `6be8003 feat(p3): add mounted_by/mount_reason provenance to capability bus` — CapabilityCommand::Mount provenance，lease 自动 revoke，四端 CapabilityChanged audit，unlocked_by_milestone_id 延至 Phase 6 |
 | Phase 4 / PR 5：Security LSM | ✅ 已完成 | `d0b95e1 feat(p4): implement Security LSM governance pipeline` — 8 阶段 GovernancePipeline，deny monotonic，PermissionRequested/Resolved audit 三元组，四端 ToolDenied schema 统一，WASM Governance 全功能对齐，182 Rust 测试 |
 | Phase 5 / PR 6：Transaction Runtime | ✅ 已完成 | `TurnCheckpoint` 公共类型，`TransactionObservation` enum，`SessionEvent::CheckpointTaken`，`LoopObservation::CheckpointTaken`，`SessionEvent::Rollbacked` + repair.rs 精确截断，`ToolErrorKind` + `RollbackReason` 全变体，G5 gate 通过，`t13_transaction.rs` 9 项专属测试，193 Rust 测试 |
+| Phase 6 / PR 7：Milestone Contracts | ✅ 已完成 | `MilestoneVerifier`（5 种类型），`RetryPolicy { max_attempts }`，`MilestoneRollbackPolicy`（Terminate/Rollback/Continue），`MilestoneUnlockPolicy`，`required_evidence` 字段，`EvaluateMilestone` 携带 verifier + required_evidence，capability unlock 走 `mount_capability()` 带 provenance（`mounted_by = "milestone:{phase_id}"`），`MilestoneEvidence` session event，`milestone_blocked_count` 计数，`TerminationReason::MilestoneExceeded`，G6 gate 通过，`t14_milestone.rs` 11 项专属测试，204 Rust 测试 |
 
-**当前主线：** Phase 5（Transaction Runtime）已完成。`TurnCheckpoint`，`TransactionObservation`，`CheckpointTaken` audit event，G5 gate 通过（recoverable error 不 rollback；replay 精确截断）。**下一步：Phase 6 — Milestone Contracts。**
+**当前主线：** Phase 6（Milestone Contracts）已完成。G6 gate 通过（verifier 驱动 phase advance；blocked retry 可控；unlock capabilities 带 provenance）。**下一步：Phase 7 — Sub-Agent Isolation。**
 
 **Phase 1 最新提交链：**
 
@@ -560,7 +561,7 @@ PR 1 与 PR 3 有重叠（milestone/rollback），可按实际 diff 大小拆分
 | **G3 — Capability Bus** | ✅ mount/unmount/lease audit 完整；provenance 四端透传；unlocked_by_milestone_id 延至 Phase 6 |
 | **G4 — LSM** | ✅ deny monotonic 测试 + 四端 ToolDenied 一致；PermissionRequested/Resolved audit 三元组；WASM Governance 全功能对齐 |
 | **G5 — Transaction** | ✅ recoverable error 不 rollback；replay 精确截断；`CheckpointTaken` audit event；`TurnCheckpoint` + `TransactionObservation` 具名类型 |
-| **G6 — Milestone** | verifier 驱动 phase advance；blocked retry 可控 |
+| **G6 — Milestone** | ✅ verifier 驱动 phase advance；blocked retry 可控；unlock capabilities 带 milestone provenance |
 | **G7 — Multi-Agent** | sub-agent isolation + lineage replay |
 
 ---

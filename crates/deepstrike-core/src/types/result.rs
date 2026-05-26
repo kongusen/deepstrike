@@ -12,6 +12,8 @@ pub enum TerminationReason {
     Timeout,
     UserAbort,
     Error,
+    /// Milestone phase retry budget exhausted and rollback_policy = Terminate.
+    MilestoneExceeded,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

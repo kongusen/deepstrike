@@ -168,4 +168,11 @@ pub enum SessionEvent {
         phase_id: String,
         reason: String,
     },
+    /// Evidence collected by the verifier during milestone evaluation.
+    MilestoneEvidence {
+        turn: u32,
+        phase_id: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        evidence: Vec<String>,
+    },
 }

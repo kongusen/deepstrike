@@ -68,12 +68,13 @@ pub enum LoopAction {
     },
     /// Kernel requests the SDK to evaluate the current milestone phase.
     ///
-    /// The SDK should assess `criteria` against the agent's output (via an
-    /// external verifier or a machine check), then feed back
-    /// `LoopEvent::MilestoneResult { result }`.
+    /// The SDK should assess `criteria` against the agent's output using the
+    /// specified `verifier`, then feed back `LoopEvent::MilestoneResult { result }`.
     EvaluateMilestone {
         phase_id: String,
         criteria: Vec<String>,
+        verifier: Option<crate::types::milestone::MilestoneVerifier>,
+        required_evidence: Vec<String>,
     },
 }
 
@@ -127,6 +128,12 @@ pub enum LoopObservation {
         phase_id: String,
         reason: String,
     },
+    /// Evidence collected by the verifier during milestone evaluation.
+    MilestoneEvidence {
+        turn: u32,
+        phase_id: String,
+        evidence: Vec<String>,
+    },
     /// Checkpoint taken at the start of a turn transaction (before LLM call).
     CheckpointTaken {
         turn: u32,
@@ -158,6 +165,8 @@ pub struct LoopStateMachine {
     milestone_contract: Option<MilestoneContract>,
     /// Index of the current (not-yet-passed) phase within `milestone_contract`.
     current_milestone_phase: usize,
+    /// How many times the current phase has been blocked (reset on advance).
+    milestone_blocked_count: usize,
     pub run_spec: Option<AgentRunSpec>,
 }
 
@@ -182,6 +191,7 @@ impl LoopStateMachine {
             checkpoint: TurnCheckpoint::default(),
             milestone_contract: None,
             current_milestone_phase: 0,
+            milestone_blocked_count: 0,
             run_spec: None,
         }
     }
@@ -308,9 +318,20 @@ impl LoopStateMachine {
                     if !self.is_milestone_complete() {
                         let phase_id = self.current_milestone_phase_id().unwrap_or("").to_string();
                         let criteria = self.current_milestone_criteria().to_vec();
+                        let (verifier, required_evidence) = self
+                            .milestone_contract
+                            .as_ref()
+                            .and_then(|c| c.phases.get(self.current_milestone_phase))
+                            .map(|p| (p.verifier.clone(), p.required_evidence.clone()))
+                            .unwrap_or_default();
                         let tokens = self.message_tokens(&message);
                         self.ctx.push_history(message, tokens);
-                        return LoopAction::EvaluateMilestone { phase_id, criteria };
+                        return LoopAction::EvaluateMilestone {
+                            phase_id,
+                            criteria,
+                            verifier,
+                            required_evidence,
+                        };
                     }
                     return self.terminate(TerminationReason::Completed, Some(message));
                 }
@@ -714,6 +735,7 @@ impl LoopStateMachine {
     pub fn load_milestone_contract(&mut self, contract: MilestoneContract) {
         self.milestone_contract = Some(contract);
         self.current_milestone_phase = 0;
+        self.milestone_blocked_count = 0;
     }
 
     /// Returns the ID of the current (not-yet-passed) phase, or `None` when
@@ -746,15 +768,20 @@ impl LoopStateMachine {
         self.observations.clear();
 
         if result.passed {
-            // Mount unlocked capabilities and advance the phase.
+            // Advance phase: mount unlocked capabilities with milestone provenance.
             let mut unlocked: Vec<String> = Vec::new();
-            if let Some(contract) = &self.milestone_contract {
+            if let Some(contract) = &self.milestone_contract.clone() {
                 if let Some(phase) = contract.phases.get(self.current_milestone_phase) {
+                    let mounted_by = Some(format!("milestone:{}", phase.id));
                     for cap in phase.unlocks.clone() {
                         let kind_str = format!("{:?}", cap.kind);
                         let id = cap.id.to_string();
-                        self.ctx.capabilities.upsert(cap);
                         unlocked.push(format!("{}:{}", kind_str, id));
+                        self.mount_capability(
+                            cap,
+                            mounted_by.clone(),
+                            Some("phase_advance".to_string()),
+                        );
                     }
                     self.observations.push(LoopObservation::MilestoneAdvanced {
                         turn: self.turn,
@@ -764,13 +791,13 @@ impl LoopStateMachine {
                 }
             }
             self.current_milestone_phase += 1;
+            self.milestone_blocked_count = 0;
 
             if self.is_milestone_complete() {
-                // All phases done — terminate normally.
                 return self.terminate(TerminationReason::Completed, None);
             }
 
-            // More phases remain: prompt the LLM with the next phase context.
+            // Prompt the LLM with the next phase context.
             if let Some(criteria) = self
                 .milestone_contract
                 .as_ref()
@@ -787,23 +814,70 @@ impl LoopStateMachine {
                     }
                 })
             {
-                let note = Message::user(criteria);
-                self.ctx.partitions.working.push(note, 0);
+                self.ctx.partitions.working.push(Message::user(criteria), 0);
             }
             self.phase = LoopPhase::Reason;
             self.emit_call_llm()
         } else {
-            // Assertion failed — inject blocked message and re-invite the LLM.
-            let reason = result
-                .reason
-                .as_deref()
-                .unwrap_or("milestone criteria not met");
+            // Phase blocked — increment retry count.
+            self.milestone_blocked_count += 1;
+            let reason = result.reason.as_deref().unwrap_or("milestone criteria not met");
+
+            // Retrieve the rollback_policy and retry budget for the current phase.
+            let (rollback_policy, max_attempts) = self
+                .milestone_contract
+                .as_ref()
+                .and_then(|c| c.phases.get(self.current_milestone_phase))
+                .map(|p| {
+                    let max = p
+                        .retry_policy
+                        .as_ref()
+                        .map(|rp| rp.max_attempts)
+                        .unwrap_or(0);
+                    (p.rollback_policy.clone(), max)
+                })
+                .unwrap_or_default();
+
+            // Check retry budget (0 = unlimited).
+            let budget_exceeded = max_attempts > 0
+                && self.milestone_blocked_count as u32 >= max_attempts;
+
+            if budget_exceeded {
+                use crate::types::milestone::MilestoneRollbackPolicy;
+                match rollback_policy {
+                    MilestoneRollbackPolicy::Terminate => {
+                        self.observations.push(LoopObservation::MilestoneBlocked {
+                            turn: self.turn,
+                            phase_id: result.phase_id.clone(),
+                            reason: format!("retry budget exhausted: {reason}"),
+                        });
+                        return self.terminate(TerminationReason::MilestoneExceeded, None);
+                    }
+                    MilestoneRollbackPolicy::Rollback => {
+                        self.observations.push(LoopObservation::MilestoneBlocked {
+                            turn: self.turn,
+                            phase_id: result.phase_id.clone(),
+                            reason: format!("retry budget exhausted (rollback): {reason}"),
+                        });
+                        let rb_reason = crate::runtime::session::RollbackReason::MalformedReplay {
+                            reason: format!("milestone {} retry budget exhausted", result.phase_id),
+                        };
+                        self.rollback(rb_reason);
+                        self.phase = LoopPhase::Reason;
+                        return self.emit_call_llm();
+                    }
+                    MilestoneRollbackPolicy::Continue => {
+                        // Fall through to normal blocked handling below.
+                    }
+                }
+            }
+
+            // Normal blocked: inject message and retry.
             let msg = format!(
                 "[MILESTONE BLOCKED: {} — {}. Address the criteria and try again.]",
                 result.phase_id, reason
             );
-            let note = Message::user(msg);
-            self.ctx.partitions.working.push(note, 0);
+            self.ctx.partitions.working.push(Message::user(msg), 0);
             self.observations.push(LoopObservation::MilestoneBlocked {
                 turn: self.turn,
                 phase_id: result.phase_id,
