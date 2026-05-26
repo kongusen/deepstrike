@@ -3,11 +3,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_stream::try_stream;
 use deepstrike_core::memory::idle_pipeline::{IdleAction, IdleEvent, IdlePipeline, IdlePolicy};
+use deepstrike_core::runtime::kernel::{
+    KernelAction, KernelInput, KernelInputEvent, KernelObservation, KernelPressureAction,
+    KernelRuntime, KernelStep,
+};
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::scheduler::policy::LoopPolicy;
-use deepstrike_core::scheduler::state_machine::{
-    LoopAction, LoopEvent, LoopObservation, LoopStateMachine,
-};
 use deepstrike_core::types::milestone::MilestoneCheckResult;
 use deepstrike_core::signals::router::SignalRouter;
 use deepstrike_core::types::message::{Message, ToolCall};
@@ -33,14 +34,12 @@ use crate::runtime::execution_plane::{
 };
 use crate::runtime::provider_replay::{peek_provider_replay, seed_provider_replay_from_events};
 use crate::runtime::replay::{
-    is_mid_run, repair_entries, repair_entries_with_cap, replay_messages, replay_messages_with_cap,
+    is_mid_run, repair_entries_with_cap, replay_messages_with_cap,
 };
 use crate::runtime::session_log::{SessionEntry, SessionLog};
 use crate::{Error, Result};
-use deepstrike_core::context::pressure::PressureAction;
 use deepstrike_core::context::task_state::TaskUpdate;
-use deepstrike_core::context::token_engine::ContextTokenEngine;
-use deepstrike_core::runtime::repair::{repair_llm_completed, repair_llm_completed_with_cap};
+use deepstrike_core::runtime::repair::repair_llm_completed;
 
 /// Controls what the runner does when the state machine returns
 /// `EvaluateMilestone` — i.e., the LLM finished a turn but a milestone phase
@@ -84,7 +83,7 @@ pub struct RuntimeOptions {
     pub milestone_policy: MilestonePolicy,
 }
 
-/// Orchestrates the agentic turn loop via `LoopStateMachine` + session event log.
+/// Orchestrates the agentic turn loop via the runtime kernel + session event log.
 pub struct RuntimeRunner {
     opts: RuntimeOptions,
     plane: Box<dyn ExecutionPlane>,
@@ -299,50 +298,104 @@ impl RuntimeRunner {
                 ..Default::default()
             };
 
-            let mut sm = LoopStateMachine::new(policy);
+            let mut kernel = KernelRuntime::new(policy);
+            let mut pending_observations = Vec::new();
 
             if let Some(tokenizer_name) = &self.opts.tokenizer {
-                let engine = match tokenizer_name.as_str() {
-                    "tiktoken_cl100k" | "cl100k" => ContextTokenEngine::cl100k(),
-                    "tiktoken_o200k" | "o200k" => ContextTokenEngine::o200k(),
-                    _ => ContextTokenEngine::char_approx(),
-                };
-                sm.ctx.engine = engine;
+                kernel_apply(
+                    &mut kernel,
+                    &mut pending_observations,
+                    KernelInputEvent::SetTokenizer {
+                        name: tokenizer_name.clone(),
+                    },
+                );
             }
             if let Some(enabled) = self.opts.enable_plan_tool {
-                sm.ctx.set_plan_tool_enabled(enabled);
+                kernel_apply(
+                    &mut kernel,
+                    &mut pending_observations,
+                    KernelInputEvent::SetPlanToolEnabled { enabled },
+                );
             }
 
-            sm.tools = self.plane.schemas();
+            kernel_apply(
+                &mut kernel,
+                &mut pending_observations,
+                KernelInputEvent::SetTools {
+                    tools: self.plane.schemas(),
+                },
+            );
 
             if self.opts.dream_store.is_some() && self.opts.agent_id.is_some() {
-                sm.ctx.set_memory_enabled(true);
+                kernel_apply(
+                    &mut kernel,
+                    &mut pending_observations,
+                    KernelInputEvent::SetMemoryEnabled { enabled: true },
+                );
             }
             if self.opts.knowledge_source.is_some() {
-                sm.ctx.set_knowledge_enabled(true);
+                kernel_apply(
+                    &mut kernel,
+                    &mut pending_observations,
+                    KernelInputEvent::SetKnowledgeEnabled { enabled: true },
+                );
             }
 
             if let Some(sp) = &self.opts.system_prompt {
                 let tokens = ((sp.len() / 4) as u32).max(1);
-                sm.ctx.partitions.system.push(Message::system(sp.clone()), tokens);
+                kernel_apply(
+                    &mut kernel,
+                    &mut pending_observations,
+                    KernelInputEvent::AddSystemMessage {
+                        content: sp.clone(),
+                        tokens,
+                    },
+                );
             }
             for mem in &self.opts.initial_memory {
                 let tokens = ((mem.len() / 4) as u32).max(1);
-                sm.ctx.partitions.memory.push(Message::user(mem.clone()), tokens);
+                kernel_apply(
+                    &mut kernel,
+                    &mut pending_observations,
+                    KernelInputEvent::AddMemoryMessage {
+                        content: mem.clone(),
+                        tokens,
+                    },
+                );
             }
 
             let skill_watcher = self.opts.skill_dir.as_deref().and_then(SkillWatcher::start);
             if let Some(skill_dir) = &self.opts.skill_dir {
-                sm.ctx.set_available_skills(scan_skill_dir(skill_dir));
+                kernel_apply(
+                    &mut kernel,
+                    &mut pending_observations,
+                    KernelInputEvent::SetAvailableSkills {
+                        skills: scan_skill_dir(skill_dir),
+                    },
+                );
             }
 
-            let recovery_tokens = sm.ctx.config.recovery_content_tokens(sm.ctx.max_tokens);
-            let max_bytes = sm.ctx.engine.token_budget_to_bytes(recovery_tokens);
+            let recovery_tokens = kernel
+                .state_machine()
+                .ctx
+                .config
+                .recovery_content_tokens(kernel.state_machine().ctx.max_tokens);
+            let max_bytes = kernel
+                .state_machine()
+                .ctx
+                .engine
+                .token_budget_to_bytes(recovery_tokens);
 
             if let Some(ref events) = prior_events {
                 let repaired = repair_entries_with_cap(events, max_bytes);
                 seed_provider_replay_from_events(self.opts.provider.as_ref(), &repaired);
-                sm.preload_history(replay_messages_with_cap(&repaired, max_bytes));
+                kernel_apply(
+                    &mut kernel,
+                    &mut pending_observations,
+                    KernelInputEvent::PreloadHistory {
+                        messages: replay_messages_with_cap(&repaired, max_bytes),
+                    },
+                );
             }
 
             let ext = merge_extensions(self.opts.extensions.as_ref(), extensions.as_ref());
@@ -356,14 +409,24 @@ impl RuntimeRunner {
                 .as_millis() as u64;
 
             let mut action = if resume_mid_run {
-                sm.resume_after_preload()
+                kernel_action(
+                    &mut kernel,
+                    &mut pending_observations,
+                    KernelInputEvent::Resume,
+                )
             } else {
-                sm.start(RuntimeTask::new(&goal).with_criteria(criteria))
+                kernel_action(
+                    &mut kernel,
+                    &mut pending_observations,
+                    KernelInputEvent::StartRun {
+                        task: RuntimeTask::new(&goal).with_criteria(criteria),
+                    },
+                )
             };
 
             let mut last_skill_version: u64 = skill_watcher.as_ref().map(|w| w.version()).unwrap_or(0);
 
-            while !sm.is_terminal() {
+            while !kernel.is_terminal() {
                 // Hot-reload: refresh skill catalog if the watcher detected changes.
                 if let (Some(watcher), Some(skill_dir)) =
                     (&skill_watcher, &self.opts.skill_dir)
@@ -371,16 +434,31 @@ impl RuntimeRunner {
                     let cur = watcher.version();
                     if cur != last_skill_version {
                         last_skill_version = cur;
-                        sm.ctx.set_available_skills(scan_skill_dir(skill_dir));
+                        kernel_apply(
+                            &mut kernel,
+                            &mut pending_observations,
+                            KernelInputEvent::SetAvailableSkills {
+                                skills: scan_skill_dir(skill_dir),
+                            },
+                        );
                     }
                 }
 
                 next_archive_start = self
-                    .append_observations(&session_id, &mut sm, next_archive_start)
+                    .append_observations(
+                        &session_id,
+                        &kernel,
+                        &mut pending_observations,
+                        next_archive_start,
+                    )
                     .await;
 
                 if self.interrupted.load(Ordering::Relaxed) {
-                    let _ = sm.feed(LoopEvent::Timeout);
+                    kernel_apply(
+                        &mut kernel,
+                        &mut pending_observations,
+                        KernelInputEvent::Timeout,
+                    );
                     break;
                 }
 
@@ -403,10 +481,14 @@ impl RuntimeRunner {
                                 .unwrap_or_default()
                                 .as_millis() as u64,
                         );
-                        let executing = matches!(action, LoopAction::ExecuteTools { .. });
+                        let executing = matches!(action, KernelAction::ExecuteTool { .. });
                         match router.ingest(kernel_sig, executing) {
                             SignalDisposition::InterruptNow | SignalDisposition::Interrupt => {
-                                let _ = sm.feed(LoopEvent::Timeout);
+                                kernel_apply(
+                                    &mut kernel,
+                                    &mut pending_observations,
+                                    KernelInputEvent::Timeout,
+                                );
                                 break;
                             }
                             _ => {}
@@ -417,17 +499,21 @@ impl RuntimeRunner {
                 let mut queued = router.next();
                 while let Some(sig) = queued {
                     if sig.urgency == Urgency::Critical {
-                        let _ = sm.feed(LoopEvent::Timeout);
+                        kernel_apply(
+                            &mut kernel,
+                            &mut pending_observations,
+                            KernelInputEvent::Timeout,
+                        );
                         break;
                     }
                     queued = router.next();
                 }
-                if sm.is_terminal() {
+                if kernel.is_terminal() {
                     break;
                 }
 
                 match &action {
-                    LoopAction::CallLLM { context, tools } => {
+                    KernelAction::CallProvider { context, tools } => {
                         let mut final_text = String::new();
                         let mut final_tool_calls: Vec<ToolCall> = Vec::new();
                         let mut turn_tokens: u32 = 0;
@@ -444,23 +530,35 @@ impl RuntimeRunner {
                                     && !has_attempted_reactive_compact
                                 {
                                     has_attempted_reactive_compact = true;
-                                    if sm.force_compact() {
+                                    let compact_step = kernel.step(KernelInput::new(
+                                        KernelInputEvent::ForceCompact,
+                                    ));
+                                    let compacted = compact_step.observations.iter().any(|obs| {
+                                        matches!(obs, KernelObservation::Compressed { .. })
+                                    });
+                                    pending_observations.extend(compact_step.observations);
+                                    if compacted {
                                         next_archive_start = self
                                             .append_observations(
                                                 &session_id,
-                                                &mut sm,
+                                                &kernel,
+                                                &mut pending_observations,
                                                 next_archive_start,
                                             )
                                             .await;
-                                        action = LoopAction::CallLLM {
-                                            context: sm.ctx.render(),
+                                        action = KernelAction::CallProvider {
+                                            context: kernel.state_machine().ctx.render(),
                                             tools: tools.clone(),
                                         };
                                         continue;
                                     }
                                 }
                                 yield RunEvent::Error(e.to_string());
-                                let _ = sm.feed(LoopEvent::Timeout);
+                                kernel_apply(
+                                    &mut kernel,
+                                    &mut pending_observations,
+                                    KernelInputEvent::Timeout,
+                                );
                                 break;
                             }
                         };
@@ -504,23 +602,29 @@ impl RuntimeRunner {
                         );
                         repair_llm_completed(&mut assistant, &mut provider_replay);
 
-                        action = sm.feed(LoopEvent::LLMResponse { message: assistant.clone() });
+                        action = kernel_action(
+                            &mut kernel,
+                            &mut pending_observations,
+                            KernelInputEvent::ProviderResult {
+                                message: assistant.clone(),
+                            },
+                        );
                         self.log(
                             &session_id,
                             SessionEvent::LlmCompleted {
-                                turn: sm.turn,
+                                turn: kernel.state_machine().turn,
                                 message: assistant,
                                 provider_replay,
                             },
                         )
                         .await;
                     }
-                    LoopAction::ExecuteTools { calls } => {
+                    KernelAction::ExecuteTool { calls } => {
                         let tool_calls = calls.clone();
                         self.log(
                             &session_id,
                             SessionEvent::ToolRequested {
-                                turn: sm.turn,
+                                turn: kernel.state_machine().turn,
                                 calls: tool_calls.clone(),
                             },
                         )
@@ -556,7 +660,11 @@ impl RuntimeRunner {
 
                         for call in plan_calls {
                             let update = parse_update_plan_args(&call.arguments);
-                            sm.ctx.update_task(update);
+                            kernel_apply(
+                                &mut kernel,
+                                &mut pending_observations,
+                                KernelInputEvent::UpdateTask { update },
+                            );
                             tool_results.push(deepstrike_core::types::message::ToolResult {
                                 call_id: call.id.clone(),
                                 output: deepstrike_core::types::message::Content::Text("success".to_string()),
@@ -589,7 +697,7 @@ impl RuntimeRunner {
                                         self.log(
                                             &session_id,
                                             SessionEvent::ToolArgumentRepaired {
-                                                turn: sm.turn,
+                                                turn: kernel.state_machine().turn,
                                                 tool: name.clone(),
                                                 original_arguments: original_arguments.clone(),
                                                 repaired_arguments: repaired_arguments.clone(),
@@ -607,7 +715,7 @@ impl RuntimeRunner {
                                         self.log(
                                             &session_id,
                                             SessionEvent::ToolDenied {
-                                                turn: sm.turn,
+                                                turn: kernel.state_machine().turn,
                                                 call_id: call_id.clone(),
                                                 tool_name: tool_name.clone(),
                                                 reason: reason.clone(),
@@ -620,49 +728,75 @@ impl RuntimeRunner {
                                 }
                             }
                             let names: Vec<String> = normal_calls.iter().map(|c| c.name.to_string()).collect();
-                            sm.ctx.update_task(TaskUpdate {
-                                progress: Some(format!("Executed tools: {}", names.join(", "))),
-                                ..Default::default()
-                            });
+                            kernel_apply(
+                                &mut kernel,
+                                &mut pending_observations,
+                                KernelInputEvent::UpdateTask {
+                                    update: TaskUpdate {
+                                        progress: Some(format!("Executed tools: {}", names.join(", "))),
+                                        ..Default::default()
+                                    },
+                                },
+                            );
                         }
 
                         self.log(
                             &session_id,
                             SessionEvent::ToolCompleted {
-                                turn: sm.turn,
+                                turn: kernel.state_machine().turn,
                                 results: tool_results.clone(),
                             },
                         )
                         .await;
 
-                        action = sm.feed(LoopEvent::ToolResults { results: tool_results });
+                        action = kernel_action(
+                            &mut kernel,
+                            &mut pending_observations,
+                            KernelInputEvent::ToolResults {
+                                results: tool_results,
+                            },
+                        );
                     }
-                    LoopAction::EvaluateMilestone { phase_id, criteria: _ } => {
+                    KernelAction::EvaluateMilestone { phase_id, criteria: _ } => {
                         match self.opts.milestone_policy {
                             MilestonePolicy::AutoPass => {
                                 let result = MilestoneCheckResult::pass(phase_id.clone());
-                                action = sm.feed(LoopEvent::MilestoneResult { result });
+                                action = kernel_action(
+                                    &mut kernel,
+                                    &mut pending_observations,
+                                    KernelInputEvent::MilestoneResult { result },
+                                );
                                 next_archive_start = self
-                                    .append_observations(&session_id, &mut sm, next_archive_start)
+                                    .append_observations(
+                                        &session_id,
+                                        &kernel,
+                                        &mut pending_observations,
+                                        next_archive_start,
+                                    )
                                     .await;
                             }
                             MilestonePolicy::Terminate => {
                                 // No external verifier — terminate so the caller can drive
                                 // evaluation themselves via a custom run loop.
                                 next_archive_start = self
-                                    .append_observations(&session_id, &mut sm, next_archive_start)
+                                    .append_observations(
+                                        &session_id,
+                                        &kernel,
+                                        &mut pending_observations,
+                                        next_archive_start,
+                                    )
                                     .await;
                                 self.log(
                                     &session_id,
                                     SessionEvent::RunTerminal {
                                         reason: "milestone_pending".to_string(),
-                                        turns_used: sm.turn.max(1),
+                                        turns_used: kernel.state_machine().turn.max(1),
                                         total_tokens: 0,
                                     },
                                 )
                                 .await;
                                 yield RunEvent::Done {
-                                    iterations: sm.turn.max(1),
+                                    iterations: kernel.state_machine().turn.max(1),
                                     total_tokens: 0,
                                     status: "milestone_pending".to_string(),
                                 };
@@ -670,13 +804,18 @@ impl RuntimeRunner {
                             }
                         }
                     }
-                    LoopAction::Done { result } => {
+                    KernelAction::Done { result } => {
                         let status = format!("{:?}", result.termination).to_lowercase();
                         let turns_used = result.turns_used.max(1);
                         let total_tokens = result.total_tokens_used;
 
                         next_archive_start = self
-                            .append_observations(&session_id, &mut sm, next_archive_start)
+                            .append_observations(
+                                &session_id,
+                                &kernel,
+                                &mut pending_observations,
+                                next_archive_start,
+                            )
                             .await;
 
                         self.log(
@@ -692,7 +831,7 @@ impl RuntimeRunner {
                         if let (Some(store), Some(agent_id)) =
                             (&self.opts.dream_store, &self.opts.agent_id)
                         {
-                            let new_msgs = sm.drain_new_messages();
+                            let new_msgs = kernel.state_machine_mut().drain_new_messages();
                             if !new_msgs.is_empty() {
                                 let now_ms = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
@@ -721,7 +860,12 @@ impl RuntimeRunner {
             }
 
             next_archive_start = self
-                .append_observations(&session_id, &mut sm, next_archive_start)
+                .append_observations(
+                    &session_id,
+                    &kernel,
+                    &mut pending_observations,
+                    next_archive_start,
+                )
                 .await;
 
             let reason = "error".to_string();
@@ -729,14 +873,14 @@ impl RuntimeRunner {
                 &session_id,
                 SessionEvent::RunTerminal {
                     reason: reason.clone(),
-                    turns_used: sm.turn.max(1),
+                    turns_used: kernel.state_machine().turn.max(1),
                     total_tokens: 0,
                 },
             )
             .await;
 
             yield RunEvent::Done {
-                iterations: sm.turn.max(1),
+                iterations: kernel.state_machine().turn.max(1),
                 total_tokens: 0,
                 status: reason,
             };
@@ -746,13 +890,17 @@ impl RuntimeRunner {
     async fn append_observations(
         &self,
         session_id: &str,
-        sm: &mut LoopStateMachine,
+        kernel: &KernelRuntime,
+        observations: &mut Vec<KernelObservation>,
         mut next_archive_start: u64,
     ) -> u64 {
-        let observations = sm.take_observations();
-        for obs in observations {
+        let sm = kernel.state_machine();
+        let turn = sm.turn;
+        let preserved_refs = sm.ctx.partitions.task_state.preserved_refs.clone();
+        let drained = std::mem::take(observations);
+        for obs in drained {
             match obs {
-                LoopObservation::Compressed {
+                KernelObservation::Compressed {
                     action,
                     rho_after: _,
                     summary,
@@ -780,24 +928,24 @@ impl RuntimeRunner {
 
                     let summary_tokens = summary.as_ref().map(|s| sm.ctx.engine.count(s));
                     let action_str = match action {
-                        PressureAction::None => "none".to_string(),
-                        PressureAction::SnipCompact => "snip_compact".to_string(),
-                        PressureAction::MicroCompact => "micro_compact".to_string(),
-                        PressureAction::ContextCollapse => "context_collapse".to_string(),
-                        PressureAction::AutoCompact => "auto_compact".to_string(),
+                        KernelPressureAction::None => "none".to_string(),
+                        KernelPressureAction::SnipCompact => "snip_compact".to_string(),
+                        KernelPressureAction::MicroCompact => "micro_compact".to_string(),
+                        KernelPressureAction::ContextCollapse => "context_collapse".to_string(),
+                        KernelPressureAction::AutoCompact => "auto_compact".to_string(),
                     };
 
                     if let Ok(compressed_seq) = log
                         .append(
                             session_id,
                             SessionEvent::Compressed {
-                                turn: sm.turn,
+                                turn,
                                 archived_seq_range: (next_archive_start, end),
                                 action: Some(action_str),
                                 summary: summary.clone(),
                                 summary_tokens,
                                 archive_ref,
-                                preserved_refs: sm.ctx.partitions.task_state.preserved_refs.clone(),
+                                preserved_refs: preserved_refs.clone(),
                             },
                         )
                         .await
@@ -805,7 +953,7 @@ impl RuntimeRunner {
                         next_archive_start = compressed_seq + 1;
                     }
                 }
-                LoopObservation::Rollbacked {
+                KernelObservation::Rollbacked {
                     turn,
                     checkpoint_history_len,
                 } => {
@@ -818,7 +966,7 @@ impl RuntimeRunner {
                     )
                     .await;
                 }
-                LoopObservation::CapabilityChanged {
+                KernelObservation::CapabilityChanged {
                     turn,
                     added,
                     removed,
@@ -833,7 +981,7 @@ impl RuntimeRunner {
                     )
                     .await;
                 }
-                LoopObservation::MilestoneAdvanced {
+                KernelObservation::MilestoneAdvanced {
                     turn,
                     phase_id,
                     capabilities_unlocked,
@@ -848,7 +996,7 @@ impl RuntimeRunner {
                     )
                     .await;
                 }
-                LoopObservation::MilestoneBlocked {
+                KernelObservation::MilestoneBlocked {
                     turn,
                     phase_id,
                     reason,
@@ -863,7 +1011,7 @@ impl RuntimeRunner {
                     )
                     .await;
                 }
-                _ => {}
+                KernelObservation::Renewed { .. } => {}
             }
         }
         next_archive_start
@@ -882,6 +1030,31 @@ impl RuntimeRunner {
             let _ = log.append(session_id, event).await;
         }
     }
+}
+
+fn kernel_apply(
+    kernel: &mut KernelRuntime,
+    pending_observations: &mut Vec<KernelObservation>,
+    event: KernelInputEvent,
+) {
+    let step = kernel.step(KernelInput::new(event));
+    pending_observations.extend(step.observations);
+}
+
+fn kernel_action(
+    kernel: &mut KernelRuntime,
+    pending_observations: &mut Vec<KernelObservation>,
+    event: KernelInputEvent,
+) -> KernelAction {
+    let mut step = kernel.step(KernelInput::new(event));
+    pending_observations.append(&mut step.observations);
+    take_single_action(step)
+}
+
+fn take_single_action(mut step: KernelStep) -> KernelAction {
+    step.actions
+        .pop()
+        .expect("kernel transition must return one action")
 }
 
 pub async fn collect_text(
