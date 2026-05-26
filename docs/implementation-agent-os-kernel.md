@@ -123,9 +123,9 @@ KernelOutput:
 | Phase 0 / PR 1：V2 收口 | ✅ 已完成 | `68c7496 feat(kernel): add agent OS v2 runtime primitives` |
 | PR 1 文档规划 | ✅ 已完成 | `6e1fecd docs: plan agent OS kernel roadmap` |
 | G0 — V2 Mergeable | ✅ 已通过 | `cargo check --workspace`、`cargo test -p deepstrike-core`、`cargo test --manifest-path rust/Cargo.toml`、Node/WASM build + targeted tests、Python targeted tests |
-| Phase 1 / PR 2：Kernel ABI 固化 | 🟡 收口中 | Core ABI + Node/PyO3/WASM JSON ABI `KernelRuntime.step()` 已落地；四端 runner 已迁入 step 驱动；Node/PyO3/WASM legacy runtime facade 已移除（`91e0fc5`）；四端 golden fixture 已写（untracked，待提交验证）；JSON ABI 长期边界策略待决 |
+| Phase 1 / PR 2：Kernel ABI 固化 | ✅ 已完成 | `b84af51 test(abi): add golden fixtures and confirm JSON ABI as long-term FFI boundary` — JSON ABI 冻结，四端 golden fixture CI 全绿，spec-kernel-abi.md 更新完毕 |
 
-**当前主线：** Phase 1 核心工作已完成：四端 runner 迁移、旧 facade 清除、golden fixture 全套写好（`tests/fixtures/abi/` 6 个 JSON 文件 + Rust `t12_golden_fixtures` + Node/Python/WASM 测试文件，均 untracked 待提交）。剩余两项：①确认 JSON ABI 作为长期 FFI 边界并冻结 schema；②更新 SDK public docs。
+**当前主线：** Phase 1 已完成（`b84af51`）。JSON ABI 已冻结为长期 FFI 边界，四端 golden fixture CI 全绿，`spec-kernel-abi.md` 更新完毕。**下一步：Phase 2 — Virtual Context Memory。**
 
 **Phase 1 最新提交链：**
 
@@ -557,7 +557,7 @@ PR 1 与 PR 3 有重叠（milestone/rollback），可按实际 diff 大小拆分
 | Gate | 条件 |
 |---|---|
 | **G0 — V2 Mergeable** | workspace compile + core/SDK tests 全绿；无默认 auto-pass；rollback 仅 fatal |
-| **G1 — ABI Stable** | 四端仅 KernelInput/Output；FFI 无内部结构泄漏；golden fixture 四端 CI 通过；JSON ABI schema 冻结 |
+| **G1 — ABI Stable** | ✅ 四端仅 KernelInput/Output；FFI 无内部结构泄漏；golden fixture 四端 CI 通过；JSON ABI schema 已冻结 |
 | **G2 — Context VM** | 6 分区 + fault + replay repair 测试通过 |
 | **G3 — Capability Bus** | mount/unmount/lease audit 完整 |
 | **G4 — LSM** | deny monotonic 测试 + 四端 ToolDenied 一致 |
