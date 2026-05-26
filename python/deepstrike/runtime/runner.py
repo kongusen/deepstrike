@@ -11,10 +11,9 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from deepstrike._kernel import (
   ContentPartObj,
+  KernelRuntime,
   LoopPolicy,
-  DeepStrikeRuntime,
   Message,
-  RuntimeTask,
   SignalRouter,
   SkillMetadata,
   ToolCall,
@@ -34,6 +33,19 @@ from deepstrike.providers.stream import (
   ToolArgumentRepairedEvent,
 )
 from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPlane, RunContext
+from deepstrike.runtime.kernel_step import (
+  capability_marker,
+  capability_skill,
+  capability_tool,
+  force_compact,
+  kernel_action,
+  kernel_apply,
+  message_to_kernel,
+  skill_metadata_to_kernel,
+  task_update_to_kernel,
+  tool_result_to_kernel,
+  tool_schema_to_kernel,
+)
 from deepstrike.runtime.replay_sanitize import sanitize_replay_text
 from deepstrike.runtime.session_repair import (
   build_llm_completed_event,
@@ -78,30 +90,44 @@ class RuntimeRunner:
     self._opts = opts
     self._interrupted = False
     self._plane = opts.execution_plane or LocalExecutionPlane()
-    self._active_sm: DeepStrikeRuntime | None = None
+    self._active_kernel: KernelRuntime | None = None
+    self._pending_observations: list[dict] = []
 
   def interrupt(self) -> None:
     self._interrupted = True
 
   def mount_tool(self, schema: dict) -> None:
     """Mount a tool capability on the active run. No-op if not running."""
-    if self._active_sm is not None:
-      self._active_sm.mount_tool(schema)
+    if self._active_kernel is not None:
+      kernel_apply(self._active_kernel, self._pending_observations, {
+        "kind": "mount_capability",
+        "capability": capability_tool(schema),
+      })
 
   def mount_skill(self, name: str, description: str) -> None:
     """Mount a skill capability on the active run. No-op if not running."""
-    if self._active_sm is not None:
-      self._active_sm.mount_skill({"name": name, "description": description})
+    if self._active_kernel is not None:
+      kernel_apply(self._active_kernel, self._pending_observations, {
+        "kind": "mount_capability",
+        "capability": capability_skill(name, description),
+      })
 
   def mount_marker(self, kind: str, id: str, description: str) -> None:
     """Mount a generic marker capability (e.g. MCP server) on the active run. No-op if not running."""
-    if self._active_sm is not None:
-      self._active_sm.mount_marker(kind, id, description)
+    if self._active_kernel is not None:
+      kernel_apply(self._active_kernel, self._pending_observations, {
+        "kind": "mount_capability",
+        "capability": capability_marker(kind, id, description),
+      })
 
   def unmount_capability(self, kind: str, id: str) -> None:
     """Unmount a capability by kind + id from the active run. No-op if not running."""
-    if self._active_sm is not None:
-      self._active_sm.unmount_capability(kind, id)
+    if self._active_kernel is not None:
+      kernel_apply(self._active_kernel, self._pending_observations, {
+        "kind": "unmount_capability",
+        "capability_kind": kind,
+        "id": id,
+      })
 
   @property
   def execution_plane(self) -> ExecutionPlane:
@@ -262,6 +288,7 @@ class RuntimeRunner:
     resume_mid_run: bool,
   ) -> AsyncIterator[StreamEvent]:
     self._interrupted = False
+    self._pending_observations = []
     ext = {**(self._opts.extensions or {}), **(extensions or {})}
     create_run_state = getattr(self._opts.provider, "create_run_state", None)
     provider_state = create_run_state() if callable(create_run_state) else None
@@ -278,29 +305,46 @@ class RuntimeRunner:
       max_turns=effective_max_turns,
       timeout_ms=effective_timeout_ms,
     )
-    sm = DeepStrikeRuntime(policy)
-    self._active_sm = sm
+    runtime = KernelRuntime(policy)
+    self._active_kernel = runtime
     router = SignalRouter(max_queue_size=256)
 
     if self._opts.tokenizer:
-      sm.set_tokenizer(self._opts.tokenizer)
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "set_tokenizer",
+        "name": self._opts.tokenizer,
+      })
     if self._opts.enable_plan_tool is not None:
-      sm.set_plan_tool_enabled(self._opts.enable_plan_tool)
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "set_plan_tool_enabled",
+        "enabled": self._opts.enable_plan_tool,
+      })
 
-    sm.set_tools(self._plane.schemas())
+    kernel_apply(runtime, self._pending_observations, {
+      "kind": "set_tools",
+      "tools": [tool_schema_to_kernel(schema) for schema in self._plane.schemas()],
+    })
 
     if self._opts.system_prompt:
-      sm.add_system_message(self._opts.system_prompt, max(1, len(self._opts.system_prompt) // 4))
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "add_system_message",
+        "content": self._opts.system_prompt,
+        "tokens": max(1, len(self._opts.system_prompt) // 4),
+      })
 
     if self._opts.initial_memory:
       for mem in self._opts.initial_memory:
-        sm.add_memory_message(mem, max(1, len(mem) // 4))
+        kernel_apply(runtime, self._pending_observations, {
+          "kind": "add_memory_message",
+          "content": mem,
+          "tokens": max(1, len(mem) // 4),
+        })
 
     skill_dir = Path(self._opts.skill_dir) if self._opts.skill_dir else None
     if skill_dir and skill_dir.is_dir():
       from deepstrike.skills.registry import SkillRegistry
       registry = SkillRegistry(str(skill_dir))
-      sm.set_available_skills([
+      skills = [
         SkillMetadata(
           name=m.name,
           description=m.description or "",
@@ -309,58 +353,68 @@ class RuntimeRunner:
           estimated_tokens=getattr(m, "estimated_tokens", 0) or 0,
         )
         for m in registry.scan()
-      ])
+      ]
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "set_available_skills",
+        "skills": [skill_metadata_to_kernel(skill) for skill in skills],
+      })
 
     if self._opts.dream_store and self._opts.agent_id:
-      sm.set_memory_enabled(True)
+      kernel_apply(runtime, self._pending_observations, {"kind": "set_memory_enabled", "enabled": True})
     if self._opts.knowledge_source:
-      sm.set_knowledge_enabled(True)
+      kernel_apply(runtime, self._pending_observations, {"kind": "set_knowledge_enabled", "enabled": True})
 
-    max_bytes = sm.recovery_content_bytes()
+    max_bytes = runtime.recovery_content_bytes()
 
     if prior_events:
       from deepstrike.runtime.provider_replay import seed_provider_replay_from_events
       repaired = repair_events_for_recovery(prior_events, max_bytes)
       seed_provider_replay_from_events(self._opts.provider, repaired)
-      sm.preload_history(_replay_messages(repaired, max_bytes))
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "preload_history",
+        "messages": [message_to_kernel(message) for message in _replay_messages(repaired, max_bytes)],
+      })
 
     session_start = int(time.time() * 1000)
-    action = sm.resume_after_preload() if resume_mid_run else sm.start(RuntimeTask(goal, criteria=criteria))
+    action = (
+      kernel_action(runtime, self._pending_observations, {"kind": "resume"})
+      if resume_mid_run
+      else kernel_action(runtime, self._pending_observations, {
+        "kind": "start_run",
+        "task": {"goal": goal, "criteria": criteria},
+      })
+    )
     has_attempted_reactive_compact = False
 
-    while not sm.is_terminal():
+    while not runtime.is_terminal():
       next_compressed_archive_start = await self._append_observations(
-        session_id, sm, next_compressed_archive_start,
+        session_id, runtime, next_compressed_archive_start,
       )
       if self._interrupted:
-        action = sm.feed_timeout()
+        action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
         break
 
       if self._opts.signal_source:
         sig = await self._opts.signal_source.next_signal()
         if sig:
-          disposition = router.ingest(sig.to_kernel_signal(), action.kind == "execute_tools")
+          disposition = router.ingest(sig.to_kernel_signal(), action.kind == "execute_tool")
           if disposition == "interrupt_now":
-            action = sm.feed_timeout()
+            action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
             break
 
       queued = router.next()
       while queued:
         if queued.urgency == "critical":
-          action = sm.feed_timeout()
+          action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
           break
         queued = router.next()
-      if sm.is_terminal():
+      if runtime.is_terminal():
         break
 
-      if action.kind == "call_llm":
+      if action.kind == "call_provider":
         final_tool_calls: list[ToolCall] = []
         final_text = ""
-        raw_ctx = action.context
-        context = RenderedContext(
-          system_text=getattr(raw_ctx, "system_text", "") or "",
-          turns=list(getattr(raw_ctx, "turns", [])),
-        )
+        context = action.context or RenderedContext()
         turn_tokens = 0
         should_retry = False
         try:
@@ -384,44 +438,47 @@ class RuntimeRunner:
             and not has_attempted_reactive_compact
           ):
             has_attempted_reactive_compact = True
-            compacted = sm.force_compact()
-            if compacted:
+            if force_compact(runtime, self._pending_observations):
               next_compressed_archive_start = await self._append_observations(
-                session_id, sm, next_compressed_archive_start,
+                session_id, runtime, next_compressed_archive_start,
               )
               should_retry = True
           
           if not should_retry:
             yield ErrorEvent(message=str(exc))
-            action = sm.feed_timeout()
+            action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
             break
 
         if should_retry:
           action = SimpleNamespace(
-            kind="call_llm",
-            context=sm.render(),
+            kind="call_provider",
+            context=runtime.render(),
             tools=action.tools or [],
           )
           continue
 
-        action = sm.feed_llm_response(Message(
+        assistant_message = Message(
           role="assistant", content=final_text, tool_calls=final_tool_calls,
           token_count=turn_tokens or None,
-        ))
+        )
+        action = kernel_action(runtime, self._pending_observations, {
+          "kind": "provider_result",
+          "message": message_to_kernel(assistant_message),
+        })
         from deepstrike.runtime.provider_replay import peek_provider_replay
         provider_replay = peek_provider_replay(self._opts.provider, final_text, final_tool_calls)
         await self._opts.session_log.append(session_id, build_llm_completed_event(
-          turn=sm.turn(),
+          turn=runtime.turn(),
           content=final_text,
           tool_calls=final_tool_calls,
           token_count=turn_tokens or None,
           provider_replay=provider_replay,
         ))
 
-      elif action.kind == "execute_tools":
+      elif action.kind == "execute_tool":
         all_calls = list(action.calls or [])
         await self._opts.session_log.append(session_id, {
-          "kind": "tool_requested", "turn": sm.turn(), "calls": all_calls,
+          "kind": "tool_requested", "turn": runtime.turn(), "calls": all_calls,
         })
         run_ctx = RunContext(
           agent_id=self._opts.agent_id,
@@ -437,7 +494,10 @@ class RuntimeRunner:
 
         for call in plan_calls:
           update = _parse_update_plan_args(call.arguments)
-          sm.update_task(update)
+          kernel_apply(runtime, self._pending_observations, {
+            "kind": "update_task",
+            "update": task_update_to_kernel(update),
+          })
           result = ToolResult(call_id=call.id, output="success", is_error=False)
           tool_results.append(result)
           yield ToolResultEvent(call_id=call.id, content="success", is_error=False)
@@ -452,7 +512,7 @@ class RuntimeRunner:
             elif isinstance(evt, ToolArgumentRepairedEvent):
               await self._opts.session_log.append(session_id, {
                 "kind": "tool_argument_repaired",
-                "turn": sm.turn(),
+                "turn": runtime.turn(),
                 "tool": evt.name,
                 "original_arguments": evt.original_arguments,
                 "repaired_arguments": evt.repaired_arguments,
@@ -460,42 +520,48 @@ class RuntimeRunner:
             elif isinstance(evt, ToolDeniedEvent):
               await self._opts.session_log.append(session_id, {
                 "kind": "tool_denied",
-                "turn": sm.turn(),
+                "turn": runtime.turn(),
                 "tool": evt.tool_name,
                 "reason": evt.reason,
               })
           names = ", ".join(c.name for c in normal_calls)
-          sm.update_task(TaskUpdate(progress=f"Executed tools: {names}"))
+          kernel_apply(runtime, self._pending_observations, {
+            "kind": "update_task",
+            "update": task_update_to_kernel(TaskUpdate(progress=f"Executed tools: {names}")),
+          })
 
         await self._opts.session_log.append(session_id, {
-          "kind": "tool_completed", "turn": sm.turn(), "results": tool_results,
+          "kind": "tool_completed", "turn": runtime.turn(), "results": tool_results,
         })
-        action = sm.feed_tool_results(tool_results)
+        action = kernel_action(runtime, self._pending_observations, {
+          "kind": "tool_results",
+          "results": [tool_result_to_kernel(result) for result in tool_results],
+        })
 
       elif action.kind == "evaluate_milestone":
         next_compressed_archive_start = await self._append_observations(
-          session_id, sm, next_compressed_archive_start,
+          session_id, runtime, next_compressed_archive_start,
         )
-        turns_used = max(1, sm.turn())
+        turns_used = max(1, runtime.turn())
         await self._opts.session_log.append(session_id, build_run_terminal_event(
           reason="milestone_pending",
           turns_used=turns_used,
           total_tokens=0,
         ))
-        self._active_sm = None
+        self._active_kernel = None
         yield DoneEvent(iterations=turns_used, total_tokens=0, status="milestone_pending")
         return
 
       elif action.kind == "done":
         break
 
-    result = action.result
+    result = action.result if action.kind == "done" else None
     status = result.termination if result else "error"
-    turns_used = max(1, result.turns_used) if result else 0
+    turns_used = max(1, result.turns_used) if result else (runtime.turn() or 0)
     total_tokens = result.total_tokens_used if result else 0
 
     next_compressed_archive_start = await self._append_observations(
-      session_id, sm, next_compressed_archive_start,
+      session_id, runtime, next_compressed_archive_start,
     )
     await self._opts.session_log.append(session_id, build_run_terminal_event(
       reason=status,
@@ -504,7 +570,7 @@ class RuntimeRunner:
     ))
 
     if self._opts.dream_store and self._opts.agent_id:
-      new_msgs = list(sm.drain_new_messages())
+      new_msgs = list(runtime.drain_new_messages())
       if new_msgs:
         try:
           from deepstrike.memory.protocols import SessionData
@@ -519,17 +585,21 @@ class RuntimeRunner:
         except Exception:
           pass
 
-    self._active_sm = None
+    self._active_kernel = None
     yield DoneEvent(iterations=turns_used, total_tokens=total_tokens, status=status)
 
   async def _append_observations(
     self,
     session_id: str,
-    sm: DeepStrikeRuntime,
+    runtime: KernelRuntime,
     next_archive_start: int,
   ) -> int:
-    for obs in sm.take_observations():
-      kind = getattr(obs, "kind", None)
+    turn = runtime.turn()
+    preserved_refs = runtime.preserved_refs()
+    observations = self._pending_observations
+    self._pending_observations = []
+    for obs in observations:
+      kind = obs.get("kind")
       if kind == "compressed":
         latest = await self._opts.session_log.latest_seq(session_id)
         if latest < next_archive_start:
@@ -537,7 +607,7 @@ class RuntimeRunner:
         end = latest
 
         archive_ref = None
-        archived = getattr(obs, "archived", None)
+        archived = obs.get("archived")
         if self._opts.compression_store and archived:
           try:
             path_ref = await self._opts.compression_store.write(session_id, next_archive_start, archived)
@@ -546,46 +616,46 @@ class RuntimeRunner:
           except Exception:
             pass
 
-        summary = getattr(obs, "summary", None)
+        summary = obs.get("summary")
         summary_tokens = max(1, len(summary) // 4) if summary else None
 
         compressed_seq = await self._opts.session_log.append(session_id, {
           "kind": "compressed",
-          "turn": sm.turn(),
+          "turn": turn,
           "archived_seq_range": (next_archive_start, end),
-          "action": getattr(obs, "action", "none"),
+          "action": obs.get("action") or "none",
           "summary": summary or "",
           "summary_tokens": summary_tokens,
           "archive_ref": archive_ref,
-          "preserved_refs": sm.preserved_refs(),
+          "preserved_refs": preserved_refs,
         })
         next_archive_start = compressed_seq + 1
       elif kind == "rollbacked":
         await self._opts.session_log.append(session_id, {
           "kind": "rollbacked",
-          "turn": getattr(obs, "turn", None) or sm.turn(),
-          "checkpoint_history_len": getattr(obs, "checkpoint_history_len", 0),
+          "turn": obs.get("turn") or turn,
+          "checkpoint_history_len": obs.get("checkpoint_history_len", 0),
         })
       elif kind == "capability_changed":
         await self._opts.session_log.append(session_id, {
           "kind": "capability_changed",
-          "turn": getattr(obs, "turn", None) or sm.turn(),
-          "added": getattr(obs, "added", []) or [],
-          "removed": getattr(obs, "removed", []) or [],
+          "turn": obs.get("turn") or turn,
+          "added": obs.get("added") or [],
+          "removed": obs.get("removed") or [],
         })
       elif kind == "milestone_advanced":
         await self._opts.session_log.append(session_id, {
           "kind": "milestone_advanced",
-          "turn": getattr(obs, "turn", None) or sm.turn(),
-          "phase_id": getattr(obs, "phase_id", "") or "",
-          "capabilities_unlocked": getattr(obs, "capabilities_unlocked", []) or [],
+          "turn": obs.get("turn") or turn,
+          "phase_id": obs.get("phase_id") or "",
+          "capabilities_unlocked": obs.get("capabilities_unlocked") or [],
         })
       elif kind == "milestone_blocked":
         await self._opts.session_log.append(session_id, {
           "kind": "milestone_blocked",
-          "turn": getattr(obs, "turn", None) or sm.turn(),
-          "phase_id": getattr(obs, "phase_id", "") or "",
-          "reason": getattr(obs, "milestone_reason", "") or "",
+          "turn": obs.get("turn") or turn,
+          "phase_id": obs.get("phase_id") or "",
+          "reason": obs.get("reason") or "",
         })
     return next_archive_start
 
