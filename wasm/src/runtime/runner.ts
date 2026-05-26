@@ -26,6 +26,9 @@ import {
   type KernelRunnerAction,
   type KernelRuntimeHandle,
 } from "./kernel-step.js"
+import type { AgentRunSpec, AgentSpawnedObservation, SubAgentResult } from "./types/agent.js"
+import { agentRunSpecToKernel, subAgentResultToKernel } from "./types/agent.js"
+import { defaultSubAgentOrchestrator, type SubAgentOrchestrator } from "./sub-agent-orchestrator.js"
 
 export interface RuntimeOptions {
   provider: LLMProvider
@@ -45,13 +48,19 @@ export interface RuntimeOptions {
   extensions?: Record<string, unknown>
   governance?: Governance
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
+  subAgentOrchestrator?: SubAgentOrchestrator
 }
 
 export class RuntimeRunner {
   private interrupted = false
   private pendingObservations: KernelObservation[] = []
+  private activeKernel: KernelRuntimeHandle | null = null
+  private currentSessionId: string | null = null
+  private nextArchiveStart = 0
 
   constructor(private readonly opts: RuntimeOptions) {}
+
+  get hostOptions(): RuntimeOptions { return this.opts }
 
   interrupt(): void { this.interrupted = true }
 
@@ -178,6 +187,7 @@ export class RuntimeRunner {
   ): AsyncIterable<StreamEvent> {
     this.interrupted = false
     this.pendingObservations = []
+    this.currentSessionId = sessionId
     const kernel = await getKernel()
     this.opts.governance?._attach(kernel)
 
@@ -194,6 +204,7 @@ export class RuntimeRunner {
       maxTurns: effectiveMaxTurns,
       timeoutMs: effectiveTimeoutMs !== undefined ? BigInt(effectiveTimeoutMs) : undefined,
     })
+    this.activeKernel = runtime
     const router = new kernel.SignalRouter(256)
 
     kernelApply(runtime, this.pendingObservations, {
@@ -378,7 +389,13 @@ export class RuntimeRunner {
           yield evt
           if (evt.type === "tool_result") {
             const tre = evt as ToolResultEvent
-            toolResults.push({ callId: tre.callId, output: tre.content, isError: tre.isError })
+            toolResults.push({
+              callId: tre.callId,
+              output: tre.content,
+              isError: tre.isError,
+              isFatal: tre.isFatal,
+              errorKind: tre.errorKind,
+            })
           } else if (evt.type === "tool_argument_repaired") {
             const tare = evt as ToolArgumentRepairedEvent
             await this.opts.sessionLog.append(sessionId, {
@@ -488,6 +505,52 @@ export class RuntimeRunner {
     }
 
     yield { type: "done", iterations: turnsUsed, totalTokens, status } as DoneEvent
+    this.activeKernel = null
+    this.currentSessionId = null
+  }
+
+  async spawnSubAgent(spec: AgentRunSpec): Promise<SubAgentResult> {
+    if (!this.activeKernel || !this.currentSessionId) {
+      throw new Error("spawnSubAgent requires an active parent run")
+    }
+    const parentSessionId = this.currentSessionId
+    const runtime = this.activeKernel
+
+    const observations = kernelApply(runtime, this.pendingObservations, {
+      kind: "spawn_sub_agent",
+      spec: agentRunSpecToKernel(spec),
+      parent_session_id: parentSessionId,
+    })
+    this.nextArchiveStart = await this.appendObservations(parentSessionId, runtime, this.nextArchiveStart)
+
+    const spawned = observations.find(o => o.kind === "agent_spawned" && typeof o.agent_id === "string")
+    if (!spawned) throw new Error("spawn_sub_agent did not emit agent_spawned")
+
+    const manifest: AgentSpawnedObservation = {
+      kind: "agent_spawned",
+      turn: spawned.turn,
+      agent_id: spawned.agent_id!,
+      parent_session_id: spawned.parent_session_id ?? parentSessionId,
+      role: spawned.role ?? spec.role,
+      isolation: spawned.isolation ?? spec.isolation ?? "shared",
+      context_inheritance: spawned.context_inheritance ?? "none",
+      permitted_capability_ids: spawned.permitted_capability_ids ?? [],
+    }
+
+    const orchestrator = this.opts.subAgentOrchestrator ?? defaultSubAgentOrchestrator
+    const result = await orchestrator.run({
+      parentOpts: this.opts,
+      parentSessionId,
+      spec,
+      manifest,
+      sessionLog: this.opts.sessionLog,
+    })
+
+    kernelApply(runtime, this.pendingObservations, {
+      kind: "sub_agent_completed",
+      result: subAgentResultToKernel(result),
+    })
+    return result
   }
 
   private async appendObservations(
@@ -520,6 +583,7 @@ export class RuntimeRunner {
           kind: "rollbacked",
           turn: obs.turn ?? turn,
           checkpoint_history_len: obs.checkpoint_history_len ?? 0,
+          reason: obs.reason,
         })
       } else if (obs.kind === "capability_changed") {
         await this.opts.sessionLog.append(sessionId, {
@@ -545,7 +609,31 @@ export class RuntimeRunner {
           kind: "milestone_blocked",
           turn: obs.turn ?? turn,
           phase_id: obs.phase_id ?? "",
-          reason: obs.reason ?? "",
+          reason: typeof obs.reason === "string" ? obs.reason : "",
+        })
+      } else if (obs.kind === "milestone_evidence") {
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "milestone_evidence",
+          turn: obs.turn ?? turn,
+          phase_id: obs.phase_id ?? "",
+          evidence: obs.evidence ?? [],
+        })
+      } else if (obs.kind === "checkpoint_taken") {
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "checkpoint_taken",
+          turn: obs.turn ?? turn,
+          history_len: obs.history_len ?? 0,
+        })
+      } else if (obs.kind === "agent_spawned") {
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "agent_spawned",
+          turn: obs.turn ?? turn,
+          agent_id: obs.agent_id ?? "",
+          parent_session_id: obs.parent_session_id ?? "",
+          role: obs.role ?? "",
+          isolation: obs.isolation ?? "",
+          context_inheritance: obs.context_inheritance ?? "",
+          permitted_capability_ids: obs.permitted_capability_ids ?? [],
         })
       }
     }

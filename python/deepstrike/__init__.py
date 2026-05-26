@@ -18,6 +18,10 @@ from deepstrike.runtime import (
     FileSessionLog,
     SessionLog,
     ProviderReplay,
+    FilteredExecutionPlane,
+    SubAgentOrchestrator,
+    spawn_standalone,
+    default_sub_agent_orchestrator,
 )
 from deepstrike.governance import Governance, GovernanceVerdict
 from deepstrike.providers import (
@@ -43,6 +47,11 @@ from deepstrike.harness import (
 from deepstrike.skills import SkillRegistry
 from deepstrike.knowledge import KnowledgeSource
 from deepstrike.signals import RuntimeSignal, SignalSource, ScheduledPrompt, SignalGateway
+from deepstrike.types.agent import (
+    AgentIdentity, AgentCapabilityFilter, AgentRunSpec,
+    AgentSpawnedObservation, SubAgentResult, LoopResult,
+    KernelAgentRole, AgentIsolation, ContextInheritance,
+)
 from deepstrike.collaboration import (
     AcceptanceCriterion, VerificationContract, ContractCheckResult,
     ContractBuilder, format_contract_for_system_prompt, contract_to_criteria_strings,
@@ -80,6 +89,12 @@ __all__ = [
     "Message", "ToolCall", "ToolResult", "ToolSchema",
     "SkillMetadata",
     "Governance", "GovernanceVerdict",
+    # Sub-agent isolation
+    "AgentIdentity", "AgentCapabilityFilter", "AgentRunSpec",
+    "AgentSpawnedObservation", "SubAgentResult", "LoopResult",
+    "KernelAgentRole", "AgentIsolation", "ContextInheritance",
+    "FilteredExecutionPlane",
+    "SubAgentOrchestrator", "spawn_standalone", "default_sub_agent_orchestrator",
     # Collaboration layer
     "AcceptanceCriterion", "VerificationContract", "ContractCheckResult",
     "ContractBuilder", "format_contract_for_system_prompt", "contract_to_criteria_strings",

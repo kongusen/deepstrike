@@ -11,6 +11,25 @@ export type {
   RunContext,
   ExecutionPlane,
 } from "./runtime/index.js"
+export { FilteredExecutionPlane } from "./runtime/filtered-plane.js"
+export { SubAgentOrchestrator, defaultSubAgentOrchestrator, spawnStandalone } from "./runtime/sub-agent-orchestrator.js"
+export type { SubAgentRunContext } from "./runtime/sub-agent-orchestrator.js"
+export type {
+  AgentCapabilityFilter,
+  AgentIdentity,
+  AgentIsolation,
+  AgentRunSpec,
+  AgentSpawnedObservation,
+  ContextInheritance,
+  KernelAgentRole,
+  LoopResult,
+  MilestoneCheckResult,
+  MilestoneContract,
+  MilestonePhase,
+  MilestonePolicy,
+  SubAgentResult,
+  TerminationReason,
+} from "./runtime/types/agent.js"
 export { Governance } from "./governance.js"
 export type { GovernanceVerdict } from "./governance.js"
 export { AnthropicProvider } from "./providers/anthropic.js"
