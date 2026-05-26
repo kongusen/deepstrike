@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "actions": [
+    {
+      "kind": "execute_tool",
+      "calls": [
+        {
+          "id": "call_123",
+          "name": "web_search",
+          "arguments": {
+            "query": "quantum computing"
+          }
+        }
+      ]
+    }
+  ],
+  "observations": []
+}

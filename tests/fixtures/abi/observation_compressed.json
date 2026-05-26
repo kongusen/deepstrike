@@ -1,0 +1,12 @@
+{
+  "kind": "compressed",
+  "action": "auto_compact",
+  "rho_after": 0.45,
+  "summary": "Compacted history",
+  "archived": [
+    {
+      "role": "user",
+      "content": "Filler message"
+    }
+  ]
+}

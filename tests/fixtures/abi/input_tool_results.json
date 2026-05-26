@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "event": {
+    "kind": "tool_results",
+    "results": [
+      {
+        "call_id": "call_123",
+        "output": "Tool execution output",
+        "is_error": false,
+        "is_fatal": false,
+        "token_count": 45
+      }
+    ]
+  }
+}

@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft, Phase 1 close-out.
+Phase 1 complete.
 
 Current implementation status:
 
@@ -11,6 +11,7 @@ Current implementation status:
 - Node, PyO3, and WASM FFI expose JSON `step(input_json) -> step_json` plus read-side helpers needed by host runners.
 - Node, PyO3, and WASM legacy direct runtime facades have been removed from the public binding surface.
 - Core `LoopStateMachine` and `ContextManager` remain internal implementation details and white-box test targets.
+- Golden ABI fixtures cover all four host bindings (`tests/fixtures/abi/`). Rust, Node, Python, and WASM each run round-trip deserialization tests against the same fixture set.
 
 ## Goal
 
@@ -24,7 +25,24 @@ Current ABI version: `1`.
 
 Every top-level ABI payload carries a `version` field. Consumers must reject newer major versions they do not understand.
 
-For Node, Python, and WASM FFI, Phase 1 currently uses JSON as the canonical transport shape. The next close-out decision is whether this JSON ABI remains the long-term cross-language boundary or becomes an internal bridge behind generated/strongly typed bindings.
+## JSON ABI as Long-Term FFI Boundary
+
+**Decision:** JSON is the confirmed long-term cross-language boundary for the Node, Python, and WASM FFI layers.
+
+Rationale:
+
+- All three host environments (V8/Node, CPython, WASM runtime) handle JSON natively without codegen tooling.
+- The `serde` tag convention (`"kind"` discriminant, `snake_case`) is stable and matches existing SDK consumers.
+- Strongly typed generated bindings (e.g. `napi` struct derives, PyO3 `#[pyclass]`) would require regenerating bindings on every ABI addition; JSON lets the Rust type system remain authoritative while SDKs stay forward-compatible.
+- Version field (`"version": 1`) gives the runtime a rejection path for future major breaks without requiring SDK recompiles.
+
+**Schema freeze commitment:**
+
+- Adding a new `KernelInputEvent` variant: add to Rust enum + re-export, update all four FFI `match` arms in one PR, add a fixture file, bump golden fixture tests.
+- Removing or renaming a variant is a major version bump (`version: 2`) and requires a migration adapter in `KernelRuntime::step`.
+- Optional fields may be added to existing variants without a version bump; consumers must tolerate unknown fields.
+
+The `tests/fixtures/abi/` directory is the canonical schema snapshot. CI must pass round-trip fixture tests on all four platforms before any ABI-touching PR merges.
 
 ## Types
 
@@ -126,7 +144,7 @@ Read-side helpers exposed for SDK bookkeeping:
 6. [x] Python SDK runner migrated from direct runtime calls to `KernelRuntime.step()`.
 7. [x] WASM SDK runner migrated from direct runtime calls to `KernelRuntime.step()`.
 8. [x] Direct `LoopStateMachine` / `ContextManager` / legacy runtime access becomes internal, deprecated, or test-only.
-9. [ ] Golden ABI fixtures cover all four host bindings.
+9. [x] Golden ABI fixtures cover all four host bindings (`tests/fixtures/abi/`).
 
 ## Compatibility Rules
 

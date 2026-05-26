@@ -9,3 +9,4 @@ mod t08_sdk;
 mod t09_api;
 mod t10_sdk_paths;
 mod t11_runtime;
+mod t12_golden_fixtures;

@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "actions": [
+    {
+      "kind": "call_provider",
+      "context": {
+        "system_text": "System prompt",
+        "turns": [
+          {
+            "role": "user",
+            "content": "Hello"
+          }
+        ]
+      },
+      "tools": [
+        {
+          "name": "web_search",
+          "description": "Search the web",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "observations": []
+}

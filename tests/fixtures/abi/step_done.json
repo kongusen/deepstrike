@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "actions": [
+    {
+      "kind": "done",
+      "result": {
+        "termination": "completed",
+        "final_message": {
+          "role": "assistant",
+          "content": "Final answer"
+        },
+        "turns_used": 2,
+        "total_tokens_used": 150
+      }
+    }
+  ],
+  "observations": []
+}

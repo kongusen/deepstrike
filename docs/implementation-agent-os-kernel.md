@@ -123,9 +123,9 @@ KernelOutput:
 | Phase 0 / PR 1：V2 收口 | ✅ 已完成 | `68c7496 feat(kernel): add agent OS v2 runtime primitives` |
 | PR 1 文档规划 | ✅ 已完成 | `6e1fecd docs: plan agent OS kernel roadmap` |
 | G0 — V2 Mergeable | ✅ 已通过 | `cargo check --workspace`、`cargo test -p deepstrike-core`、`cargo test --manifest-path rust/Cargo.toml`、Node/WASM build + targeted tests、Python targeted tests |
-| Phase 1 / PR 2：Kernel ABI 固化 | 🟡 收口中 | Core ABI + Node/PyO3/WASM JSON ABI `KernelRuntime.step()` 已落地；Rust/Node/Python/WASM SDK Runner 已迁入 step 驱动；Node/PyO3/WASM legacy runtime facade 已清理；ABI 策略待最终清理 |
+| Phase 1 / PR 2：Kernel ABI 固化 | 🟡 收口中 | Core ABI + Node/PyO3/WASM JSON ABI `KernelRuntime.step()` 已落地；四端 runner 已迁入 step 驱动；Node/PyO3/WASM legacy runtime facade 已移除（`91e0fc5`）；四端 golden fixture 已写（untracked，待提交验证）；JSON ABI 长期边界策略待决 |
 
-**当前主线：** PR 2 已完成四端 runner 迁移，并移除了 Node/PyO3/WASM 的旧 `DeepStrikeRuntime` facade。下一步集中收口 ABI 稳定性：决定 JSON ABI 是否作为长期 FFI 边界，并补四端 golden fixture。
+**当前主线：** Phase 1 核心工作已完成：四端 runner 迁移、旧 facade 清除、golden fixture 全套写好（`tests/fixtures/abi/` 6 个 JSON 文件 + Rust `t12_golden_fixtures` + Node/Python/WASM 测试文件，均 untracked 待提交）。剩余两项：①确认 JSON ABI 作为长期 FFI 边界并冻结 schema；②更新 SDK public docs。
 
 **Phase 1 最新提交链：**
 
@@ -139,7 +139,8 @@ KernelOutput:
 | `d087ca1` / `8695f35` | Node 读侧 helper + runner 迁移 |
 | `571d3f3` / `9f3d867` | Python 读侧 helper + runner 迁移 |
 | `d014065` | WASM 读侧 helper + runner 迁移，补 413 reactive compact retry |
-| 本轮 | 清理 Node/PyO3/WASM 旧 runtime facade 与专用 `LoopAction` / `LoopObservation` wrapper |
+| `91e0fc5` | 清理 Node/PyO3/WASM 旧 runtime facade 与专用 `LoopAction` / `LoopObservation` wrapper |
+| untracked | 四端 golden fixture：`tests/fixtures/abi/`（6 文件）+ `t12_golden_fixtures.rs` + node/python/wasm test files |
 
 ## 阶段规划
 
@@ -227,9 +228,9 @@ PYTHONPATH=/Users/shan/work/uploads/deepstrike/python poetry run pytest -q
 
 **剩余收口任务：**
 
-1. [x] 明确旧 `DeepStrikeRuntime` / `LoopStateMachine` FFI：Node/PyO3/WASM public facade 删除，core 白盒测试继续直接测内部状态机。
-2. [ ] 确认 JSON ABI 是否作为长期跨语言边界；若保留，冻结 schema 并补 contract tests。
-3. [ ] 为 `KernelInput` / `KernelAction` / `KernelObservation` 增加四端 golden fixture，防止字段漂移。
+1. [x] 明确旧 `DeepStrikeRuntime` / `LoopStateMachine` FFI：Node/PyO3/WASM public facade 删除（`91e0fc5`），core 白盒测试继续直接测内部状态机。
+2. [ ] 确认 JSON ABI 作为长期跨语言边界（当前三端 FFI 均已 `step(String) -> String`，建议直接冻结），更新 `spec-kernel-abi.md` 中 schema 版本策略。
+3. [x] 为 `KernelInput` / `KernelAction` / `KernelObservation` 增加四端 golden fixture（`tests/fixtures/abi/` 6 文件 + Rust t12 + Node/Python/WASM 测试文件已写，**untracked，待提交并跑通四端 CI**）。
 4. [ ] 更新 SDK public docs，明确 SDK 是 host effect driver，不再持有 runtime semantics。
 
 **验收：**
@@ -556,7 +557,7 @@ PR 1 与 PR 3 有重叠（milestone/rollback），可按实际 diff 大小拆分
 | Gate | 条件 |
 |---|---|
 | **G0 — V2 Mergeable** | workspace compile + core/SDK tests 全绿；无默认 auto-pass；rollback 仅 fatal |
-| **G1 — ABI Stable** | 四端仅 KernelInput/Output；FFI 无内部结构泄漏 |
+| **G1 — ABI Stable** | 四端仅 KernelInput/Output；FFI 无内部结构泄漏；golden fixture 四端 CI 通过；JSON ABI schema 冻结 |
 | **G2 — Context VM** | 6 分区 + fault + replay repair 测试通过 |
 | **G3 — Capability Bus** | mount/unmount/lease audit 完整 |
 | **G4 — LSM** | deny monotonic 测试 + 四端 ToolDenied 一致 |

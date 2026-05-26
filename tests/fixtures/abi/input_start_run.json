@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "event": {
+    "kind": "start_run",
+    "task": {
+      "goal": "Verify implementation",
+      "criteria": [
+        "All tests pass",
+        "No compilation warnings"
+      ],
+      "metadata": null,
+      "lane": "implement"
+    }
+  }
+}

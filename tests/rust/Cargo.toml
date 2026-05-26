@@ -9,6 +9,7 @@ autobins = false
 deepstrike-core = { path = "../../crates/deepstrike-core" }
 deepstrike-sdk = { path = "../../rust" }
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 compact_str = { version = "0.8", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
