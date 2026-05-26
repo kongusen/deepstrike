@@ -4,7 +4,7 @@ use deepstrike_core::runtime::session::ProviderReplay;
 use deepstrike_core::types::message::{Content, ContentPart, Message, Role, ToolCall, ToolSchema};
 use futures::{Stream, StreamExt};
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -41,7 +41,11 @@ impl AnthropicProvider {
         if blocks.is_empty() {
             return;
         }
-        if tool_calls.is_empty() && !blocks.iter().any(|b| b.get("type").and_then(|v| v.as_str()) == Some("thinking")) {
+        if tool_calls.is_empty()
+            && !blocks
+                .iter()
+                .any(|b| b.get("type").and_then(|v| v.as_str()) == Some("thinking"))
+        {
             return;
         }
         self.native_assistant_blocks
@@ -53,7 +57,9 @@ impl AnthropicProvider {
     fn context_to_anthropic(&self, context: &RenderedContext) -> (Option<String>, Vec<Value>) {
         let native = self.native_assistant_blocks.lock().unwrap();
         context_to_anthropic(context, |content, tool_calls| {
-            native.get(&assistant_replay_key(content, tool_calls)).cloned()
+            native
+                .get(&assistant_replay_key(content, tool_calls))
+                .cloned()
         })
     }
 }
@@ -61,10 +67,18 @@ impl AnthropicProvider {
 fn content_part_to_anthropic(part: &ContentPart) -> Value {
     match part {
         ContentPart::Text { text } => json!({ "type": "text", "text": text }),
-        ContentPart::Image { url: Some(url), data: None, .. } => {
+        ContentPart::Image {
+            url: Some(url),
+            data: None,
+            ..
+        } => {
             json!({ "type": "image", "source": { "type": "url", "url": url } })
         }
-        ContentPart::Image { data: Some(data), media_type, .. } => {
+        ContentPart::Image {
+            data: Some(data),
+            media_type,
+            ..
+        } => {
             let mt = media_type.as_deref().unwrap_or("image/png");
             json!({ "type": "image", "source": { "type": "base64", "media_type": mt, "data": data } })
         }
@@ -73,7 +87,11 @@ fn content_part_to_anthropic(part: &ContentPart) -> Value {
             // Anthropic messages API doesn't accept audio natively; surface as placeholder
             json!({ "type": "text", "text": format!("[audio: {media_type}]") })
         }
-        ContentPart::ToolResult { call_id, output, is_error } => {
+        ContentPart::ToolResult {
+            call_id,
+            output,
+            is_error,
+        } => {
             json!({ "type": "tool_result", "tool_use_id": call_id.as_str(), "content": output, "is_error": is_error })
         }
     }
@@ -97,18 +115,26 @@ fn context_to_anthropic(
     for message in &context.turns {
         if message.role == Role::Tool {
             if let Content::Parts(parts) = &message.content {
-                let tool_results = parts.iter().filter_map(|part| {
-                    if let ContentPart::ToolResult { call_id, output, is_error } = part {
-                        Some(json!({
-                            "type": "tool_result",
-                            "tool_use_id": call_id.as_str(),
-                            "content": output,
-                            "is_error": is_error,
-                        }))
-                    } else {
-                        None
-                    }
-                }).collect::<Vec<_>>();
+                let tool_results = parts
+                    .iter()
+                    .filter_map(|part| {
+                        if let ContentPart::ToolResult {
+                            call_id,
+                            output,
+                            is_error,
+                        } = part
+                        {
+                            Some(json!({
+                                "type": "tool_result",
+                                "tool_use_id": call_id.as_str(),
+                                "content": output,
+                                "is_error": is_error,
+                            }))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
                 if !tool_results.is_empty() {
                     msgs.push(json!({ "role": "user", "content": tool_results }));
                 }
@@ -126,12 +152,14 @@ fn context_to_anthropic(
             if !content.is_empty() {
                 blocks.push(json!({ "type": "text", "text": content }));
             }
-            blocks.extend(message.tool_calls.iter().map(|tc| json!({
-                "type": "tool_use",
-                "id": tc.id.as_str(),
-                "name": tc.name.as_str(),
-                "input": tc.arguments.clone(),
-            })));
+            blocks.extend(message.tool_calls.iter().map(|tc| {
+                json!({
+                    "type": "tool_use",
+                    "id": tc.id.as_str(),
+                    "name": tc.name.as_str(),
+                    "input": tc.arguments.clone(),
+                })
+            }));
             msgs.push(json!({ "role": "assistant", "content": blocks }));
             continue;
         }
@@ -145,40 +173,75 @@ fn context_to_anthropic(
         msgs.push(json!({ "role": role, "content": content_to_anthropic(&message.content) }));
     }
     (
-        if context.system_text.is_empty() { None } else { Some(context.system_text.clone()) },
+        if context.system_text.is_empty() {
+            None
+        } else {
+            Some(context.system_text.clone())
+        },
         msgs,
     )
 }
 
 fn tools_to_anthropic(tools: &[ToolSchema]) -> Vec<Value> {
-    tools.iter().map(|t| json!({
-        "name": t.name.as_str(),
-        "description": t.description,
-        "input_schema": t.parameters,
-    })).collect()
+    tools
+        .iter()
+        .map(|t| {
+            json!({
+                "name": t.name.as_str(),
+                "description": t.description,
+                "input_schema": t.parameters,
+            })
+        })
+        .collect()
 }
 
 #[async_trait]
 impl LLMProvider for AnthropicProvider {
     fn runtime_policy(&self) -> RuntimePolicy {
         match self.model.as_str() {
-            "claude-opus-4-7" | "claude-opus-4-6" => RuntimePolicy { max_turns: Some(50), timeout_ms: None },
-            "claude-sonnet-4-6" => RuntimePolicy { max_turns: Some(25), timeout_ms: None },
-            "claude-haiku-4-5" | "claude-haiku-4-5-20251001" => RuntimePolicy { max_turns: Some(15), timeout_ms: None },
+            "claude-opus-4-7" | "claude-opus-4-6" => RuntimePolicy {
+                max_turns: Some(50),
+                timeout_ms: None,
+            },
+            "claude-sonnet-4-6" => RuntimePolicy {
+                max_turns: Some(25),
+                timeout_ms: None,
+            },
+            "claude-haiku-4-5" | "claude-haiku-4-5-20251001" => RuntimePolicy {
+                max_turns: Some(15),
+                timeout_ms: None,
+            },
             _ => RuntimePolicy::default(),
         }
     }
 
-    fn peek_provider_replay(&self, content: &str, tool_calls: &[ToolCall]) -> Option<ProviderReplay> {
-        let blocks = self.native_assistant_blocks.lock().unwrap().get(&assistant_replay_key(content, tool_calls))?.clone();
+    fn peek_provider_replay(
+        &self,
+        content: &str,
+        tool_calls: &[ToolCall],
+    ) -> Option<ProviderReplay> {
+        let blocks = self
+            .native_assistant_blocks
+            .lock()
+            .unwrap()
+            .get(&assistant_replay_key(content, tool_calls))?
+            .clone();
         if blocks.is_empty() {
             None
         } else {
-            Some(ProviderReplay { native_blocks: Some(blocks), reasoning_content: None })
+            Some(ProviderReplay {
+                native_blocks: Some(blocks),
+                reasoning_content: None,
+            })
         }
     }
 
-    fn seed_provider_replay(&self, content: &str, tool_calls: &[ToolCall], replay: &ProviderReplay) {
+    fn seed_provider_replay(
+        &self,
+        content: &str,
+        tool_calls: &[ToolCall],
+        replay: &ProviderReplay,
+    ) {
         if let Some(blocks) = &replay.native_blocks {
             if !blocks.is_empty() {
                 self.native_assistant_blocks
@@ -194,7 +257,10 @@ impl LLMProvider for AnthropicProvider {
             let map = self.stream_native_blocks.lock().unwrap();
             let mut indices: Vec<_> = map.keys().copied().collect();
             indices.sort_unstable();
-            indices.into_iter().filter_map(|idx| map.get(&idx).cloned()).collect()
+            indices
+                .into_iter()
+                .filter_map(|idx| map.get(&idx).cloned())
+                .collect()
         };
         self.remember_native_blocks(content, tool_calls, blocks);
     }
@@ -214,15 +280,24 @@ impl LLMProvider for AnthropicProvider {
             "messages": msgs,
             "stream": true,
         });
-        if let Some(s) = system { body["system"] = json!(s); }
-        if !tools.is_empty() { body["tools"] = json!(tools_to_anthropic(tools)); }
+        if let Some(s) = system {
+            body["system"] = json!(s);
+        }
+        if !tools.is_empty() {
+            body["tools"] = json!(tools_to_anthropic(tools));
+        }
         if let Some(ext) = extensions {
-            if ext.get("enable_thinking").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if ext
+                .get("enable_thinking")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 body["thinking"] = json!({ "type": "enabled", "budget_tokens": 8000 });
             }
         }
 
-        let resp = self.client
+        let resp = self
+            .client
             .post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
@@ -258,7 +333,8 @@ fn parse_anthropic_sse(
     native_blocks: Arc<Mutex<HashMap<usize, Value>>>,
 ) -> impl Stream<Item = Result<StreamEvent>> + Send {
     let mut buf = String::new();
-    let mut tool_blocks: std::collections::HashMap<usize, (String, String, String)> = std::collections::HashMap::new();
+    let mut tool_blocks: std::collections::HashMap<usize, (String, String, String)> =
+        std::collections::HashMap::new();
 
     futures::stream::unfold(
         (Box::pin(byte_stream), buf, tool_blocks, native_blocks),
@@ -268,11 +344,17 @@ fn parse_anthropic_sse(
                     let line = buf[..pos].trim().to_string();
                     buf = buf[pos + 1..].to_string();
 
-                    if !line.starts_with("data: ") { continue; }
+                    if !line.starts_with("data: ") {
+                        continue;
+                    }
                     let data = &line[6..];
-                    if data == "[DONE]" { return None; }
+                    if data == "[DONE]" {
+                        return None;
+                    }
 
-                    let Ok(evt) = serde_json::from_str::<Value>(data) else { continue };
+                    let Ok(evt) = serde_json::from_str::<Value>(data) else {
+                        continue;
+                    };
                     let kind = evt["type"].as_str().unwrap_or("");
 
                     if kind == "content_block_start" {
@@ -280,11 +362,14 @@ fn parse_anthropic_sse(
                         let cb = &evt["content_block"];
                         native_blocks.lock().unwrap().insert(idx, cb.clone());
                         if cb["type"] == "tool_use" {
-                            tool_blocks.insert(idx, (
-                                cb["id"].as_str().unwrap_or("").to_string(),
-                                cb["name"].as_str().unwrap_or("").to_string(),
-                                String::new(),
-                            ));
+                            tool_blocks.insert(
+                                idx,
+                                (
+                                    cb["id"].as_str().unwrap_or("").to_string(),
+                                    cb["name"].as_str().unwrap_or("").to_string(),
+                                    String::new(),
+                                ),
+                            );
                         }
                     } else if kind == "content_block_delta" {
                         let d = &evt["delta"];
@@ -296,20 +381,30 @@ fn parse_anthropic_sse(
                                 block["text"] = json!(format!("{text}{delta}"));
                             }
                             if !delta.is_empty() {
-                                return Some((Ok(StreamEvent::TextDelta { delta }), (stream, buf, tool_blocks, native_blocks)));
+                                return Some((
+                                    Ok(StreamEvent::TextDelta { delta }),
+                                    (stream, buf, tool_blocks, native_blocks),
+                                ));
                             }
                         } else if d["type"] == "thinking_delta" {
                             let delta = d["thinking"].as_str().unwrap_or("").to_string();
                             if let Some(block) = native_blocks.lock().unwrap().get_mut(&idx) {
-                                let text = block.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
+                                let text =
+                                    block.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
                                 block["thinking"] = json!(format!("{text}{delta}"));
                             }
                             if !delta.is_empty() {
-                                return Some((Ok(StreamEvent::ThinkingDelta { delta }), (stream, buf, tool_blocks, native_blocks)));
+                                return Some((
+                                    Ok(StreamEvent::ThinkingDelta { delta }),
+                                    (stream, buf, tool_blocks, native_blocks),
+                                ));
                             }
                         } else if d["type"] == "signature_delta" {
                             if let Some(block) = native_blocks.lock().unwrap().get_mut(&idx) {
-                                let sig = block.get("signature").and_then(|v| v.as_str()).unwrap_or("");
+                                let sig = block
+                                    .get("signature")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
                                 let delta = d["signature"].as_str().unwrap_or("");
                                 block["signature"] = json!(format!("{sig}{delta}"));
                             }
@@ -321,11 +416,19 @@ fn parse_anthropic_sse(
                     } else if kind == "content_block_stop" {
                         let idx = evt["index"].as_u64().unwrap_or(0) as usize;
                         if let Some((id, name, args_buf)) = tool_blocks.remove(&idx) {
-                            let arguments: Value = serde_json::from_str(&args_buf).unwrap_or(Value::Object(Default::default()));
+                            let arguments: Value = serde_json::from_str(&args_buf)
+                                .unwrap_or(Value::Object(Default::default()));
                             if let Some(block) = native_blocks.lock().unwrap().get_mut(&idx) {
                                 block["input"] = arguments.clone();
                             }
-                            return Some((Ok(StreamEvent::ToolCall { id, name, arguments }), (stream, buf, tool_blocks, native_blocks)));
+                            return Some((
+                                Ok(StreamEvent::ToolCall {
+                                    id,
+                                    name,
+                                    arguments,
+                                }),
+                                (stream, buf, tool_blocks, native_blocks),
+                            ));
                         }
                     } else if kind == "message_start" || kind == "message_delta" {
                         if let Some(total) = evt
@@ -338,7 +441,9 @@ fn parse_anthropic_sse(
                             })
                         {
                             return Some((
-                                Ok(StreamEvent::Usage { total_tokens: total }),
+                                Ok(StreamEvent::Usage {
+                                    total_tokens: total,
+                                }),
                                 (stream, buf, tool_blocks, native_blocks),
                             ));
                         }
@@ -351,7 +456,10 @@ fn parse_anthropic_sse(
                         buf.push_str(&String::from_utf8_lossy(&chunk));
                     }
                     Some(Err(e)) => {
-                        return Some((Err(Error::Provider(e.to_string())), (stream, buf, tool_blocks, native_blocks)));
+                        return Some((
+                            Err(Error::Provider(e.to_string())),
+                            (stream, buf, tool_blocks, native_blocks),
+                        ));
                     }
                     None => return None,
                 }

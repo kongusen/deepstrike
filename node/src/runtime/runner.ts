@@ -7,9 +7,12 @@ import type { DreamStore, DreamResult, MemoryEntry, CurationResult, SessionData 
 import type { KnowledgeSource } from "../knowledge/source.js"
 import type { SignalSource, RuntimeSignal } from "../signals/types.js"
 import type { SessionLog, SessionEvent } from "./session-log.js"
+import type { ArchiveStore } from "./archive.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
 import { getKernel } from "../kernel.js"
 import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
+import { sanitizeReplayText } from "./replay-sanitize.js"
+import { buildLlmCompletedEvent, buildRunTerminalEvent, repairEventsForRecovery } from "./session-repair.js"
 
 export interface RuntimeOptions {
   provider: LLMProvider
@@ -30,6 +33,9 @@ export interface RuntimeOptions {
     setTime?(nowMs: bigint): void
     evaluate(name: string, argsJson: string): { kind: string; reason?: string; retryAfterMs?: number }
   }
+  tokenizer?: string
+  enablePlanTool?: boolean
+  compressionStore?: ArchiveStore
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
 }
 
@@ -170,6 +176,13 @@ export class RuntimeRunner {
     })
     const router = new kernel.SignalRouter(256)
 
+    if (this.opts.tokenizer) {
+      sm.setTokenizer(this.opts.tokenizer)
+    }
+    if (this.opts.enablePlanTool !== undefined) {
+      sm.setPlanToolEnabled(this.opts.enablePlanTool)
+    }
+
     sm.setTools(this.opts.executionPlane.schemas())
 
     if (this.opts.systemPrompt) {
@@ -194,15 +207,19 @@ export class RuntimeRunner {
     if (this.opts.dreamStore && this.opts.agentId) sm.setMemoryEnabled(true)
     if (this.opts.knowledgeSource) sm.setKnowledgeEnabled(true)
 
+    const maxBytes = sm.recoveryContentBytes()
+
     if (priorEvents && priorEvents.length > 0) {
-      seedProviderReplayFromEvents(this.opts.provider, priorEvents)
-      sm.preloadHistory(replayMessages(priorEvents))
+      const repaired = repairEventsForRecovery(priorEvents, maxBytes)
+      seedProviderReplayFromEvents(this.opts.provider, repaired)
+      sm.preloadHistory(replayMessages(repaired, maxBytes))
     }
 
     const sessionStart = Date.now()
     let action = resumeMidRun
       ? sm.resumeAfterPreload()
       : sm.start({ goal, criteria })
+    let hasAttemptedReactiveCompact = false
 
     while (!sm.isTerminal()) {
       nextCompressedArchiveStart = await this.appendObservations(sessionId, sm, nextCompressedArchiveStart)
@@ -236,9 +253,10 @@ export class RuntimeRunner {
       if (action.kind === "call_llm") {
         const finalToolCalls: ToolCall[] = []
         let finalText = ""
-        const context = (action as unknown as { context: import("../types.js").RenderedContext }).context
+        let context = (action as unknown as { context: import("../types.js").RenderedContext }).context
         const tools = (action.tools ?? []) as ToolSchema[]
         let turnTokens = 0
+        let shouldRetry = false
 
         try {
           for await (const evt of this.opts.provider.stream(context, tools, Object.keys(ext).length ? ext : undefined, providerState)) {
@@ -251,9 +269,28 @@ export class RuntimeRunner {
             }
           }
         } catch (err) {
-          yield { type: "error", message: String(err) } as ErrorEvent
-          action = sm.feedTimeout()
-          break
+          const errMsg = String(err).toLowerCase()
+          if (
+            (errMsg.includes("413") || errMsg.includes("too long") || errMsg.includes("context length exceeded") || errMsg.includes("context_length_exceeded")) &&
+            !hasAttemptedReactiveCompact
+          ) {
+            hasAttemptedReactiveCompact = true
+            const compacted = forceCompact(sm)
+            if (compacted) {
+              nextCompressedArchiveStart = await this.appendObservations(sessionId, sm, nextCompressedArchiveStart)
+              shouldRetry = true
+            }
+          }
+          if (!shouldRetry) {
+            yield { type: "error", message: String(err) } as ErrorEvent
+            action = sm.feedTimeout()
+            break
+          }
+        }
+
+        if (shouldRetry) {
+          (action as any).context = sm.render()
+          continue
         }
 
         action = sm.feedLlmResponse({
@@ -263,14 +300,13 @@ export class RuntimeRunner {
           tokenCount: turnTokens || undefined,
         })
         const providerReplay = peekProviderReplay(this.opts.provider, finalText, finalToolCalls)
-        await this.opts.sessionLog.append(sessionId, {
-          kind: "llm_completed",
+        await this.opts.sessionLog.append(sessionId, buildLlmCompletedEvent({
           turn: sm.turn,
           content: finalText,
-          token_count: turnTokens || undefined,
-          tool_calls: finalToolCalls,
-          ...(providerReplay ? { provider_replay: providerReplay } : {}),
-        })
+          tokenCount: turnTokens || undefined,
+          toolCalls: finalToolCalls,
+          providerReplay,
+        }))
 
       } else if (action.kind === "execute_tools") {
         const allCalls: ToolCall[] = action.calls ?? []
@@ -286,12 +322,27 @@ export class RuntimeRunner {
         }
 
         const toolResults: ToolResult[] = []
-        for await (const evt of this.opts.executionPlane.executeAll(allCalls, runCtx)) {
-          yield evt
-          if (evt.type === "tool_result") {
-            const tre = evt as ToolResultEvent
-            toolResults.push({ callId: tre.callId, output: tre.content, isError: tre.isError })
+        const normalCalls = allCalls.filter(c => c.name !== "update_plan")
+        const planCalls = allCalls.filter(c => c.name === "update_plan")
+
+        for (const call of planCalls) {
+          const update = parseUpdatePlanArgs(call.arguments)
+          sm.updateTask(update)
+          const result = { callId: call.id, output: "success", isError: false }
+          toolResults.push(result)
+          yield { type: "tool_result", callId: call.id, content: "success", isError: false } as ToolResultEvent
+        }
+
+        if (normalCalls.length > 0) {
+          for await (const evt of this.opts.executionPlane.executeAll(normalCalls, runCtx)) {
+            yield evt
+            if (evt.type === "tool_result") {
+              const tre = evt as ToolResultEvent
+              toolResults.push({ callId: tre.callId, output: tre.content, isError: tre.isError })
+            }
           }
+          const names = normalCalls.map(c => c.name).join(", ")
+          sm.updateTask({ progress: `Executed tools: ${names}` })
         }
 
         await this.opts.sessionLog.append(sessionId, {
@@ -317,7 +368,11 @@ export class RuntimeRunner {
     const totalTokens = result?.totalTokensUsed ? Number(result.totalTokensUsed) : 0
 
     nextCompressedArchiveStart = await this.appendObservations(sessionId, sm, nextCompressedArchiveStart)
-    await this.opts.sessionLog.append(sessionId, { kind: "run_terminal", reason: status, turns_used: turnsUsed, total_tokens: totalTokens })
+    await this.opts.sessionLog.append(sessionId, buildRunTerminalEvent({
+      reason: status,
+      turnsUsed,
+      totalTokens,
+    }))
 
     if (this.opts.dreamStore && this.opts.agentId) {
       const newMsgs = (sm.drainNewMessages() as Message[]).map(m => ({
@@ -346,7 +401,7 @@ export class RuntimeRunner {
 
   private async appendObservations(
     sessionId: string,
-    sm: { turn: number; takeObservations(): Array<{ kind: string }> },
+    sm: { turn: number; takeObservations(): Array<any> },
     nextArchiveStart: number,
   ): Promise<number> {
     const observations = sm.takeObservations()
@@ -355,10 +410,27 @@ export class RuntimeRunner {
       const latest = await this.opts.sessionLog.latestSeq(sessionId)
       if (latest < nextArchiveStart) continue
       const end = latest
+
+      let archiveRef: string | undefined = undefined
+      const archived = obs.archived
+      if (this.opts.compressionStore && archived && archived.length > 0) {
+        try {
+          const pathRef = await this.opts.compressionStore.write(sessionId, nextArchiveStart, archived)
+          if (pathRef) archiveRef = pathRef
+        } catch (err) {
+          // ignore or log
+        }
+      }
+
       const compressedSeq = await this.opts.sessionLog.append(sessionId, {
         kind: "compressed",
         turn: sm.turn,
         archived_seq_range: [nextArchiveStart, end],
+        action: obs.action,
+        summary: obs.summary,
+        summary_tokens: obs.summary ? Math.max(1, Math.ceil(obs.summary.length / 4)) : undefined,
+        archive_ref: archiveRef,
+        preserved_refs: (sm as any).ctx?.partitions?.task_state?.preserved_refs ?? [],
       })
       nextArchiveStart = compressedSeq + 1
     }
@@ -370,11 +442,13 @@ function isMidRun(events: Array<{ seq: number; event: SessionEvent }>): boolean 
   return events.length > 0 && !events.some(e => e.event.kind === "run_terminal")
 }
 
-/**
- * Replay session events into Message[] for preloadHistory.
- * run_started → user turn; llm_completed → assistant; tool_completed → tool messages.
- */
-function replayMessages(events: Array<{ seq: number; event: SessionEvent }>): Message[] {
+function forceCompact(sm: { forceCompact?: () => boolean; force_compact?: () => boolean }): boolean {
+  if (typeof sm.forceCompact === "function") return sm.forceCompact()
+  if (typeof sm.force_compact === "function") return sm.force_compact()
+  throw new TypeError("LoopStateMachine forceCompact binding is unavailable")
+}
+
+function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, maxBytes?: number): Message[] {
   const messages: Message[] = []
   for (const { event: e } of events) {
     if (e.kind === "run_started") {
@@ -387,10 +461,20 @@ function replayMessages(events: Array<{ seq: number; event: SessionEvent }>): Me
         toolCalls: [],
         tokenCount: Math.max(1, Math.ceil(userText.length / 4)),
       })
+    } else if (e.kind === "compressed") {
+      if (e.summary) {
+        const systemText = `[Compressed context: turn ${e.turn}]\n${e.summary}`
+        messages.push({
+          role: "system",
+          content: systemText,
+          toolCalls: [],
+          tokenCount: Math.max(1, Math.ceil(systemText.length / 4)),
+        })
+      }
     } else if (e.kind === "llm_completed") {
       messages.push({
         role: "assistant",
-        content: e.content,
+        content: sanitizeReplayText(e.content, maxBytes),
         toolCalls: e.tool_calls ?? [],
         tokenCount: e.token_count,
       })
@@ -400,7 +484,7 @@ function replayMessages(events: Array<{ seq: number; event: SessionEvent }>): Me
           role: "tool",
           content: "",
           toolCalls: [],
-          contentParts: [{ type: "tool_result", callId: r.call_id, output: r.output, isError: r.is_error ?? false }],
+          contentParts: [{ type: "tool_result", callId: r.call_id, output: sanitizeReplayText(r.output, maxBytes), isError: r.is_error ?? false }],
           tokenCount: r.token_count,
         })
       }
@@ -428,4 +512,20 @@ export async function collectText(stream: AsyncIterable<StreamEvent>): Promise<s
     if (evt.type === "text_delta") text += (evt as TextDelta).delta
   }
   return text
+}
+
+function parseUpdatePlanArgs(argsStr: string): any {
+  let parsed: any = {}
+  try {
+    parsed = JSON.parse(argsStr)
+  } catch {
+    // Ignore parse error
+  }
+  return {
+    plan: parsed.plan,
+    currentStep: parsed.currentStep !== undefined ? parsed.currentStep : parsed.current_step,
+    progress: parsed.progress,
+    scratchpad: parsed.scratchpad,
+    blockedOn: parsed.blockedOn !== undefined ? parsed.blockedOn : parsed.blocked_on,
+  }
 }

@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use async_stream::try_stream;
 use deepstrike_core::types::message::{ToolCall, ToolSchema};
-use futures::stream::Stream;
 use futures::StreamExt;
+use futures::stream::Stream;
 
+use crate::Result;
 use crate::run_event::RunEvent;
 use crate::runtime::credential_vault::CredentialVault;
 use crate::runtime::execution_plane::{ExecutionPlane, LocalExecutionPlane, RunContext};
 use crate::tools::RegisteredTool;
-use crate::Result;
 
 pub struct RemoteVpcOptions {
     /// Base URL of the remote worker endpoint inside the customer VPC.
@@ -74,11 +74,18 @@ impl RemoteVpcPlane {
 
 impl ExecutionPlane for RemoteVpcPlane {
     fn schemas(&self) -> Vec<ToolSchema> {
-        let local_names: HashSet<_> =
-            self.local.schemas().into_iter().map(|s| s.name.clone()).collect();
+        let local_names: HashSet<_> = self
+            .local
+            .schemas()
+            .into_iter()
+            .map(|s| s.name.clone())
+            .collect();
         let mut result = self.local.schemas();
         result.extend(
-            self.remote_schemas.iter().filter(|s| !local_names.contains(&s.name)).cloned(),
+            self.remote_schemas
+                .iter()
+                .filter(|s| !local_names.contains(&s.name))
+                .cloned(),
         );
         result
     }
@@ -177,10 +184,15 @@ async fn call_remote(
             }
             match resp.json::<serde_json::Value>().await {
                 Ok(result) => {
-                    let output =
-                        result.get("output").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let is_error =
-                        result.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let output = result
+                        .get("output")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let is_error = result
+                        .get("isError")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
                     (output, is_error)
                 }
                 Err(e) => (e.to_string(), true),

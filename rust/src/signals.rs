@@ -27,7 +27,11 @@ pub struct ScheduledPrompt {
 
 impl ScheduledPrompt {
     pub fn new(goal: impl Into<String>, run_at_ms: u64) -> Self {
-        Self { goal: goal.into(), run_at_ms, criteria: Vec::new() }
+        Self {
+            goal: goal.into(),
+            run_at_ms,
+            criteria: Vec::new(),
+        }
     }
 
     pub fn to_signal(&self) -> RuntimeSignal {
@@ -56,20 +60,27 @@ pub struct SignalGateway {
 impl SignalGateway {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(1024);
-        Self { tx, tasks: Mutex::new(HashMap::new()) }
+        Self {
+            tx,
+            tasks: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Subscribe to all signals emitted by this gateway.
     /// Returns a [`GatewayReceiver`] that implements [`SignalSource`].
     pub fn subscribe(&self) -> GatewayReceiver {
-        GatewayReceiver { rx: tokio::sync::Mutex::new(self.tx.subscribe()) }
+        GatewayReceiver {
+            rx: tokio::sync::Mutex::new(self.tx.subscribe()),
+        }
     }
 
     /// Schedule a [`ScheduledPrompt`] to fire at its `run_at_ms`. Idempotent by goal+time.
     pub fn schedule(&self, prompt: ScheduledPrompt) {
         let key = format!("cron:{}:{}", prompt.goal, prompt.run_at_ms);
         let mut guard = self.tasks.lock().unwrap();
-        if guard.contains_key(&key) { return; }
+        if guard.contains_key(&key) {
+            return;
+        }
 
         let tx = self.tx.clone();
         let signal = prompt.to_signal();
@@ -110,7 +121,9 @@ impl SignalGateway {
 }
 
 impl Default for SignalGateway {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// A broadcast receiver from a [`SignalGateway`] that implements [`SignalSource`].

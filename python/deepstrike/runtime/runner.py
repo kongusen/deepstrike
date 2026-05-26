@@ -6,6 +6,7 @@ import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from deepstrike._kernel import (
@@ -18,6 +19,7 @@ from deepstrike._kernel import (
   SkillMetadata,
   ToolCall,
   ToolResult,
+  TaskUpdate,
 )
 from deepstrike.providers.base import LLMProvider, RenderedContext
 from deepstrike.providers.stream import (
@@ -30,7 +32,14 @@ from deepstrike.providers.stream import (
   ToolSuspendEvent,
 )
 from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPlane, RunContext
+from deepstrike.runtime.replay_sanitize import sanitize_replay_text
+from deepstrike.runtime.session_repair import (
+  build_llm_completed_event,
+  build_run_terminal_event,
+  repair_events_for_recovery,
+)
 from deepstrike.runtime.session_log import SessionEntry, SessionEvent, SessionLog
+from deepstrike.runtime.archive import ArchiveStore
 
 if TYPE_CHECKING:
   from deepstrike.governance import Governance
@@ -44,6 +53,7 @@ class RuntimeOptions:
   provider: LLMProvider
   session_log: SessionLog
   execution_plane: ExecutionPlane | None = None
+  compression_store: ArchiveStore | None = None
   max_tokens: int = 32_000
   max_turns: int = 25
   timeout_ms: int | None = None
@@ -56,6 +66,8 @@ class RuntimeOptions:
   signal_source: "SignalSource | None" = None
   extensions: dict | None = None
   governance: "Governance | None" = None
+  tokenizer: str | None = None
+  enable_plan_tool: bool | None = None
   on_tool_suspend: Callable[[ToolSuspendEvent], Awaitable[Any] | Any] | None = None
 
 
@@ -245,6 +257,12 @@ class RuntimeRunner:
     )
     sm = LoopStateMachine(policy)
     router = SignalRouter(max_queue_size=256)
+
+    if self._opts.tokenizer:
+      sm.set_tokenizer(self._opts.tokenizer)
+    if self._opts.enable_plan_tool is not None:
+      sm.set_plan_tool_enabled(self._opts.enable_plan_tool)
+
     sm.set_tools(self._plane.schemas())
 
     if self._opts.system_prompt:
@@ -274,13 +292,17 @@ class RuntimeRunner:
     if self._opts.knowledge_source:
       sm.set_knowledge_enabled(True)
 
+    max_bytes = sm.recovery_content_bytes()
+
     if prior_events:
       from deepstrike.runtime.provider_replay import seed_provider_replay_from_events
-      seed_provider_replay_from_events(self._opts.provider, prior_events)
-      sm.preload_history(_replay_messages(prior_events))
+      repaired = repair_events_for_recovery(prior_events, max_bytes)
+      seed_provider_replay_from_events(self._opts.provider, repaired)
+      sm.preload_history(_replay_messages(repaired, max_bytes))
 
     session_start = int(time.time() * 1000)
     action = sm.resume_after_preload() if resume_mid_run else sm.start(RuntimeTask(goal, criteria=criteria))
+    has_attempted_reactive_compact = False
 
     while not sm.is_terminal():
       next_compressed_archive_start = await self._append_observations(
@@ -316,6 +338,7 @@ class RuntimeRunner:
           turns=list(getattr(raw_ctx, "turns", [])),
         )
         turn_tokens = 0
+        should_retry = False
         try:
           async for evt in self._opts.provider.stream(
             context, action.tools or [], extensions=ext if ext else None, state=provider_state,
@@ -331,9 +354,31 @@ class RuntimeRunner:
                 id=evt.id, name=evt.name, arguments=json.dumps(evt.arguments),
               ))
         except Exception as exc:
-          yield ErrorEvent(message=str(exc))
-          action = sm.feed_timeout()
-          break
+          err_msg = str(exc).lower()
+          if (
+            ("413" in err_msg or "too long" in err_msg or "context length exceeded" in err_msg or "context_length_exceeded" in err_msg)
+            and not has_attempted_reactive_compact
+          ):
+            has_attempted_reactive_compact = True
+            compacted = sm.force_compact()
+            if compacted:
+              next_compressed_archive_start = await self._append_observations(
+                session_id, sm, next_compressed_archive_start,
+              )
+              should_retry = True
+          
+          if not should_retry:
+            yield ErrorEvent(message=str(exc))
+            action = sm.feed_timeout()
+            break
+
+        if should_retry:
+          action = SimpleNamespace(
+            kind="call_llm",
+            context=sm.render(),
+            tools=action.tools or [],
+          )
+          continue
 
         action = sm.feed_llm_response(Message(
           role="assistant", content=final_text, tool_calls=final_tool_calls,
@@ -341,16 +386,13 @@ class RuntimeRunner:
         ))
         from deepstrike.runtime.provider_replay import peek_provider_replay
         provider_replay = peek_provider_replay(self._opts.provider, final_text, final_tool_calls)
-        llm_event: dict = {
-          "kind": "llm_completed",
-          "turn": sm.turn(),
-          "content": final_text,
-          "token_count": turn_tokens or None,
-          "tool_calls": final_tool_calls,
-        }
-        if provider_replay:
-          llm_event["provider_replay"] = provider_replay
-        await self._opts.session_log.append(session_id, llm_event)
+        await self._opts.session_log.append(session_id, build_llm_completed_event(
+          turn=sm.turn(),
+          content=final_text,
+          tool_calls=final_tool_calls,
+          token_count=turn_tokens or None,
+          provider_replay=provider_replay,
+        ))
 
       elif action.kind == "execute_tools":
         all_calls = list(action.calls or [])
@@ -366,12 +408,26 @@ class RuntimeRunner:
           on_tool_suspend=self._opts.on_tool_suspend,
         )
         tool_results: list[ToolResult] = []
-        async for evt in self._plane.execute_all(all_calls, run_ctx):
-          yield evt
-          if isinstance(evt, ToolResultEvent):
-            tool_results.append(ToolResult(
-              call_id=evt.call_id, output=evt.content, is_error=evt.is_error,
-            ))
+        normal_calls = [c for c in all_calls if c.name != "update_plan"]
+        plan_calls = [c for c in all_calls if c.name == "update_plan"]
+
+        for call in plan_calls:
+          update = _parse_update_plan_args(call.arguments)
+          sm.update_task(update)
+          result = ToolResult(call_id=call.id, output="success", is_error=False)
+          tool_results.append(result)
+          yield ToolResultEvent(call_id=call.id, content="success", is_error=False)
+
+        if normal_calls:
+          async for evt in self._plane.execute_all(normal_calls, run_ctx):
+            yield evt
+            if isinstance(evt, ToolResultEvent):
+              tool_results.append(ToolResult(
+                call_id=evt.call_id, output=evt.content, is_error=evt.is_error,
+              ))
+          names = ", ".join(c.name for c in normal_calls)
+          sm.update_task(TaskUpdate(progress=f"Executed tools: {names}"))
+
         await self._opts.session_log.append(session_id, {
           "kind": "tool_completed", "turn": sm.turn(), "results": tool_results,
         })
@@ -388,12 +444,11 @@ class RuntimeRunner:
     next_compressed_archive_start = await self._append_observations(
       session_id, sm, next_compressed_archive_start,
     )
-    await self._opts.session_log.append(session_id, {
-      "kind": "run_terminal",
-      "reason": status,
-      "turns_used": turns_used,
-      "total_tokens": total_tokens,
-    })
+    await self._opts.session_log.append(session_id, build_run_terminal_event(
+      reason=status,
+      turns_used=turns_used,
+      total_tokens=total_tokens,
+    ))
 
     if self._opts.dream_store and self._opts.agent_id:
       new_msgs = list(sm.drain_new_messages())
@@ -426,10 +481,29 @@ class RuntimeRunner:
       if latest < next_archive_start:
         continue
       end = latest
+
+      archive_ref = None
+      archived = getattr(obs, "archived", None)
+      if self._opts.compression_store and archived:
+        try:
+          path_ref = await self._opts.compression_store.write(session_id, next_archive_start, archived)
+          if path_ref:
+            archive_ref = path_ref
+        except Exception:
+          pass
+
+      summary = getattr(obs, "summary", None)
+      summary_tokens = max(1, len(summary) // 4) if summary else None
+
       compressed_seq = await self._opts.session_log.append(session_id, {
         "kind": "compressed",
         "turn": sm.turn(),
         "archived_seq_range": (next_archive_start, end),
+        "action": getattr(obs, "action", "none"),
+        "summary": summary or "",
+        "summary_tokens": summary_tokens,
+        "archive_ref": archive_ref,
+        "preserved_refs": sm.preserved_refs(),
       })
       next_archive_start = compressed_seq + 1
     return next_archive_start
@@ -439,7 +513,7 @@ def _is_mid_run(events: list[SessionEntry]) -> bool:
   return bool(events) and not any(e.event.get("kind") == "run_terminal" for e in events)
 
 
-def _replay_messages(events: list[SessionEntry]) -> list[Message]:
+def _replay_messages(events: list[SessionEntry], max_bytes: int | None = None) -> list[Message]:
   messages: list[Message] = []
   for entry in events:
     e = entry.event
@@ -455,19 +529,31 @@ def _replay_messages(events: list[SessionEntry]) -> list[Message]:
         role="user", content=user_text, tool_calls=[],
         token_count=max(1, len(user_text) // 4),
       ))
+    elif kind == "compressed":
+      summary = e.get("summary")
+      if summary:
+        system_text = f"[Compressed context: turn {e.get('turn', 0)}]\n{summary}"
+        messages.append(Message(
+          role="system",
+          content=system_text,
+          tool_calls=[],
+          token_count=max(1, len(system_text) // 4),
+        ))
     elif kind == "llm_completed":
+      content = sanitize_replay_text(e.get("content", ""), max_bytes)
       messages.append(Message(
         role="assistant",
-        content=e.get("content", ""),
+        content=content,
         tool_calls=e.get("tool_calls", []),
         token_count=e.get("token_count"),
       ))
     elif kind == "tool_completed":
       for r in e.get("results", []):
+        output = sanitize_replay_text(r.output, max_bytes)
         part = ContentPartObj(
           type="tool_result",
           call_id=r.call_id,
-          output=r.output,
+          output=output,
           is_error=r.is_error,
         )
         messages.append(Message(role="tool", content="", tool_calls=[], content_parts=[part]))
@@ -510,3 +596,26 @@ async def collect_text(stream: AsyncIterator[StreamEvent]) -> str:
     if isinstance(evt, TextDelta):
       text += evt.delta
   return text
+
+
+def _parse_update_plan_args(args_str: str) -> TaskUpdate:
+  try:
+    parsed = json.loads(args_str)
+  except Exception:
+    parsed = {}
+  plan = parsed.get("plan")
+  current_step = parsed.get("current_step")
+  if current_step is None:
+    current_step = parsed.get("currentStep")
+  progress = parsed.get("progress")
+  scratchpad = parsed.get("scratchpad")
+  blocked_on = parsed.get("blocked_on")
+  if blocked_on is None:
+    blocked_on = parsed.get("blockedOn")
+  return TaskUpdate(
+    plan=plan,
+    current_step=current_step,
+    progress=progress,
+    scratchpad=scratchpad,
+    blocked_on=blocked_on,
+  )

@@ -1,7 +1,27 @@
+use deepstrike_core::runtime::repair::{
+    repair_events, repair_events_with_cap, repair_llm_completed, sanitize_recovery_text,
+    sanitize_recovery_text_bounded,
+};
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::types::message::{Content, ContentPart, Message, Role};
 
 use super::session_log::SessionEntry;
+
+pub fn repair_entries(entries: &[SessionEntry]) -> Vec<SessionEntry> {
+    repair_entries_with_cap(entries, 0)
+}
+
+pub fn repair_entries_with_cap(entries: &[SessionEntry], max_bytes: usize) -> Vec<SessionEntry> {
+    let events: Vec<SessionEvent> = entries.iter().map(|e| e.event.clone()).collect();
+    repair_events_with_cap(events, max_bytes)
+        .into_iter()
+        .zip(entries.iter())
+        .map(|(event, entry)| SessionEntry {
+            seq: entry.seq,
+            event,
+        })
+        .collect()
+}
 
 pub fn is_mid_run(entries: &[SessionEntry]) -> bool {
     !entries.is_empty()
@@ -11,14 +31,16 @@ pub fn is_mid_run(entries: &[SessionEntry]) -> bool {
 }
 
 pub fn replay_messages(entries: &[SessionEntry]) -> Vec<Message> {
+    replay_messages_with_cap(entries, 0)
+}
+
+pub fn replay_messages_with_cap(entries: &[SessionEntry], max_bytes: usize) -> Vec<Message> {
+    let events: Vec<SessionEvent> = entries.iter().map(|e| e.event.clone()).collect();
+    let repaired = repair_events_with_cap(events, max_bytes);
     let mut messages = Vec::new();
-    for entry in entries {
-        match &entry.event {
-            SessionEvent::RunStarted {
-                goal,
-                criteria,
-                ..
-            } => {
+    for event in repaired {
+        match event {
+            SessionEvent::RunStarted { goal, criteria, .. } => {
                 let user_text = if criteria.is_empty() {
                     goal.clone()
                 } else {
@@ -39,13 +61,16 @@ pub fn replay_messages(entries: &[SessionEntry]) -> Vec<Message> {
                     token_count: None,
                 });
             }
-            SessionEvent::LlmCompleted { message, .. } => {
-                messages.push(message.clone());
+            SessionEvent::LlmCompleted { mut message, .. } => {
+                if let Content::Text(text) = &mut message.content {
+                    *text = sanitize_recovery_text_bounded(text, max_bytes);
+                }
+                messages.push(message);
             }
             SessionEvent::ToolCompleted { results, .. } => {
                 for r in results {
                     let output = match &r.output {
-                        Content::Text(t) => t.clone(),
+                        Content::Text(t) => sanitize_recovery_text_bounded(t, max_bytes),
                         Content::Parts(_) => String::new(),
                     };
                     messages.push(Message {
@@ -57,6 +82,17 @@ pub fn replay_messages(entries: &[SessionEntry]) -> Vec<Message> {
                         }]),
                         tool_calls: vec![],
                         token_count: r.token_count,
+                    });
+                }
+            }
+            SessionEvent::Compressed { turn, summary, .. } => {
+                if let Some(sum) = summary {
+                    let system_text = format!("[Compressed context: turn {turn}]\n{sum}");
+                    messages.push(Message {
+                        role: Role::System,
+                        content: Content::Text(system_text),
+                        tool_calls: vec![],
+                        token_count: None,
                     });
                 }
             }

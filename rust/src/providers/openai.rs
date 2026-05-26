@@ -3,7 +3,7 @@ use deepstrike_core::context::renderer::RenderedContext;
 use deepstrike_core::types::message::{Content, ContentPart, Role, ToolSchema};
 use futures::{Stream, StreamExt};
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{LLMProvider, RuntimePolicy, StreamEvent};
 use crate::{Error, Result};
@@ -20,13 +20,26 @@ impl OpenAIProvider {
         Self::with_base_url(api_key, "gpt-4o", "https://api.openai.com/v1")
     }
 
-    pub fn with_base_url(api_key: impl Into<String>, model: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self { client: Client::new(), api_key: api_key.into(), model: model.into(), base_url: base_url.into() }
+    pub fn with_base_url(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        base_url: impl Into<String>,
+    ) -> Self {
+        Self {
+            client: Client::new(),
+            api_key: api_key.into(),
+            model: model.into(),
+            base_url: base_url.into(),
+        }
     }
 }
 
 pub fn qwen(api_key: impl Into<String>) -> OpenAIProvider {
-    OpenAIProvider::with_base_url(api_key, "qwen-max", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    OpenAIProvider::with_base_url(
+        api_key,
+        "qwen-max",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
 }
 
 pub fn deepseek(api_key: impl Into<String>) -> OpenAIProvider {
@@ -48,14 +61,24 @@ pub fn kimi(api_key: impl Into<String>) -> OpenAIProvider {
 fn content_part_to_openai(part: &ContentPart) -> Value {
     match part {
         ContentPart::Text { text } => json!({ "type": "text", "text": text }),
-        ContentPart::Image { url: Some(url), data: None, detail, .. } => {
+        ContentPart::Image {
+            url: Some(url),
+            data: None,
+            detail,
+            ..
+        } => {
             let image_url = match detail.as_deref() {
                 Some(d) => json!({ "url": url, "detail": d }),
                 None => json!({ "url": url }),
             };
             json!({ "type": "image_url", "image_url": image_url })
         }
-        ContentPart::Image { data: Some(data), media_type, detail, .. } => {
+        ContentPart::Image {
+            data: Some(data),
+            media_type,
+            detail,
+            ..
+        } => {
             let mt = media_type.as_deref().unwrap_or("image/png");
             let url = format!("data:{mt};base64,{data}");
             let image_url = match detail.as_deref() {
@@ -94,7 +117,10 @@ fn context_to_openai(context: &RenderedContext) -> Vec<Value> {
         if message.role == Role::Tool {
             if let Content::Parts(parts) = &message.content {
                 for part in parts {
-                    if let ContentPart::ToolResult { call_id, output, .. } = part {
+                    if let ContentPart::ToolResult {
+                        call_id, output, ..
+                    } = part
+                    {
                         messages.push(json!({
                             "role": "tool",
                             "tool_call_id": call_id.as_str(),
@@ -117,14 +143,20 @@ fn context_to_openai(context: &RenderedContext) -> Vec<Value> {
             "content": content_to_openai(&message.content),
         });
         if message.role == Role::Assistant && !message.tool_calls.is_empty() {
-            next["tool_calls"] = json!(message.tool_calls.iter().map(|tc| json!({
-                "id": tc.id.as_str(),
-                "type": "function",
-                "function": {
-                    "name": tc.name.as_str(),
-                    "arguments": tc.arguments.to_string(),
-                }
-            })).collect::<Vec<_>>());
+            next["tool_calls"] = json!(
+                message
+                    .tool_calls
+                    .iter()
+                    .map(|tc| json!({
+                        "id": tc.id.as_str(),
+                        "type": "function",
+                        "function": {
+                            "name": tc.name.as_str(),
+                            "arguments": tc.arguments.to_string(),
+                        }
+                    }))
+                    .collect::<Vec<_>>()
+            );
         }
         messages.push(next);
     }
@@ -136,40 +168,129 @@ impl LLMProvider for OpenAIProvider {
     fn runtime_policy(&self) -> RuntimePolicy {
         match self.model.as_str() {
             // OpenAI
-            "gpt-4o" => RuntimePolicy { max_turns: Some(25), timeout_ms: None },
-            "gpt-4o-mini" => RuntimePolicy { max_turns: Some(15), timeout_ms: None },
-            "gpt-4.1" => RuntimePolicy { max_turns: Some(35), timeout_ms: None },
-            "gpt-4.1-mini" => RuntimePolicy { max_turns: Some(20), timeout_ms: None },
-            "gpt-4.1-nano" => RuntimePolicy { max_turns: Some(15), timeout_ms: None },
-            "gpt-5" => RuntimePolicy { max_turns: Some(50), timeout_ms: None },
-            "gpt-5-mini" => RuntimePolicy { max_turns: Some(25), timeout_ms: None },
-            "o3" | "o3-mini" | "o4-mini" => RuntimePolicy { max_turns: Some(50), timeout_ms: None },
+            "gpt-4o" => RuntimePolicy {
+                max_turns: Some(25),
+                timeout_ms: None,
+            },
+            "gpt-4o-mini" => RuntimePolicy {
+                max_turns: Some(15),
+                timeout_ms: None,
+            },
+            "gpt-4.1" => RuntimePolicy {
+                max_turns: Some(35),
+                timeout_ms: None,
+            },
+            "gpt-4.1-mini" => RuntimePolicy {
+                max_turns: Some(20),
+                timeout_ms: None,
+            },
+            "gpt-4.1-nano" => RuntimePolicy {
+                max_turns: Some(15),
+                timeout_ms: None,
+            },
+            "gpt-5" => RuntimePolicy {
+                max_turns: Some(50),
+                timeout_ms: None,
+            },
+            "gpt-5-mini" => RuntimePolicy {
+                max_turns: Some(25),
+                timeout_ms: None,
+            },
+            "o3" | "o3-mini" | "o4-mini" => RuntimePolicy {
+                max_turns: Some(50),
+                timeout_ms: None,
+            },
             // DeepSeek
-            "deepseek-chat" | "deepseek-v4-flash" => RuntimePolicy { max_turns: Some(25), timeout_ms: None },
-            "deepseek-reasoner" | "deepseek-r1" => RuntimePolicy { max_turns: Some(50), timeout_ms: None },
-            "deepseek-v4-pro" => RuntimePolicy { max_turns: Some(35), timeout_ms: None },
+            "deepseek-chat" | "deepseek-v4-flash" => RuntimePolicy {
+                max_turns: Some(25),
+                timeout_ms: None,
+            },
+            "deepseek-reasoner" | "deepseek-r1" => RuntimePolicy {
+                max_turns: Some(50),
+                timeout_ms: None,
+            },
+            "deepseek-v4-pro" => RuntimePolicy {
+                max_turns: Some(35),
+                timeout_ms: None,
+            },
             // Qwen
-            "qwen-max" => RuntimePolicy { max_turns: Some(25), timeout_ms: None },
-            "qwen-plus" => RuntimePolicy { max_turns: Some(20), timeout_ms: None },
-            "qwq-plus" | "qwq-32b" => RuntimePolicy { max_turns: Some(40), timeout_ms: None },
-            "qwen3-235b-a22b" => RuntimePolicy { max_turns: Some(35), timeout_ms: None },
-            "qwen3-72b" => RuntimePolicy { max_turns: Some(25), timeout_ms: None },
-            "qwen3-32b" | "qwen3-14b" | "qwen3-8b" => RuntimePolicy { max_turns: Some(20), timeout_ms: None },
+            "qwen-max" => RuntimePolicy {
+                max_turns: Some(25),
+                timeout_ms: None,
+            },
+            "qwen-plus" => RuntimePolicy {
+                max_turns: Some(20),
+                timeout_ms: None,
+            },
+            "qwq-plus" | "qwq-32b" => RuntimePolicy {
+                max_turns: Some(40),
+                timeout_ms: None,
+            },
+            "qwen3-235b-a22b" => RuntimePolicy {
+                max_turns: Some(35),
+                timeout_ms: None,
+            },
+            "qwen3-72b" => RuntimePolicy {
+                max_turns: Some(25),
+                timeout_ms: None,
+            },
+            "qwen3-32b" | "qwen3-14b" | "qwen3-8b" => RuntimePolicy {
+                max_turns: Some(20),
+                timeout_ms: None,
+            },
             // Kimi (Moonshot)
-            "moonshot-v1-8k" => RuntimePolicy { max_turns: Some(15), timeout_ms: None },
-            "moonshot-v1-32k" => RuntimePolicy { max_turns: Some(20), timeout_ms: None },
-            "moonshot-v1-128k" | "kimi-k2.5" => RuntimePolicy { max_turns: Some(30), timeout_ms: None },
-            "kimi-k2.6" => RuntimePolicy { max_turns: Some(35), timeout_ms: None },
+            "moonshot-v1-8k" => RuntimePolicy {
+                max_turns: Some(15),
+                timeout_ms: None,
+            },
+            "moonshot-v1-32k" => RuntimePolicy {
+                max_turns: Some(20),
+                timeout_ms: None,
+            },
+            "moonshot-v1-128k" | "kimi-k2.5" => RuntimePolicy {
+                max_turns: Some(30),
+                timeout_ms: None,
+            },
+            "kimi-k2.6" => RuntimePolicy {
+                max_turns: Some(35),
+                timeout_ms: None,
+            },
             // MiniMax
-            "MiniMax-M2.7" => RuntimePolicy { max_turns: Some(35), timeout_ms: None },
-            "MiniMax-M2.5" | "MiniMax-M1" => RuntimePolicy { max_turns: Some(25), timeout_ms: None },
-            "MiniMax-Text-01" => RuntimePolicy { max_turns: Some(20), timeout_ms: None },
+            "MiniMax-M2.7" => RuntimePolicy {
+                max_turns: Some(35),
+                timeout_ms: None,
+            },
+            "MiniMax-M2.5" | "MiniMax-M1" => RuntimePolicy {
+                max_turns: Some(25),
+                timeout_ms: None,
+            },
+            "MiniMax-Text-01" => RuntimePolicy {
+                max_turns: Some(20),
+                timeout_ms: None,
+            },
             // Ollama prefix matching
-            m if m.starts_with("deepseek-r1") => RuntimePolicy { max_turns: Some(40), timeout_ms: None },
-            m if m.starts_with("qwq") => RuntimePolicy { max_turns: Some(35), timeout_ms: None },
-            m if m.starts_with("llama3") => RuntimePolicy { max_turns: Some(20), timeout_ms: None },
-            m if m.starts_with("mistral") || m.starts_with("gemma") || m.starts_with("phi") => RuntimePolicy { max_turns: Some(20), timeout_ms: None },
-            _ => RuntimePolicy { max_turns: Some(20), timeout_ms: None },
+            m if m.starts_with("deepseek-r1") => RuntimePolicy {
+                max_turns: Some(40),
+                timeout_ms: None,
+            },
+            m if m.starts_with("qwq") => RuntimePolicy {
+                max_turns: Some(35),
+                timeout_ms: None,
+            },
+            m if m.starts_with("llama3") => RuntimePolicy {
+                max_turns: Some(20),
+                timeout_ms: None,
+            },
+            m if m.starts_with("mistral") || m.starts_with("gemma") || m.starts_with("phi") => {
+                RuntimePolicy {
+                    max_turns: Some(20),
+                    timeout_ms: None,
+                }
+            }
+            _ => RuntimePolicy {
+                max_turns: Some(20),
+                timeout_ms: None,
+            },
         }
     }
 
@@ -205,7 +326,8 @@ impl LLMProvider for OpenAIProvider {
             }
         }
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(format!("{}/chat/completions", self.base_url))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("content-type", "application/json")
@@ -230,31 +352,43 @@ fn parse_openai_sse(
     byte_stream: impl Stream<Item = reqwest::Result<bytes::Bytes>> + Send + 'static,
     expose_reasoning: bool,
 ) -> impl Stream<Item = Result<StreamEvent>> + Send {
-    let tool_accum: std::collections::HashMap<usize, (String, String, String)> = std::collections::HashMap::new();
+    let tool_accum: std::collections::HashMap<usize, (String, String, String)> =
+        std::collections::HashMap::new();
 
     futures::stream::unfold(
         (Box::pin(byte_stream), String::new(), tool_accum, false),
         move |(mut stream, mut buf, mut tool_accum, mut flushed)| async move {
-            if flushed { return None; }
+            if flushed {
+                return None;
+            }
             loop {
                 if let Some(pos) = buf.find('\n') {
                     let line = buf[..pos].trim().to_string();
                     buf = buf[pos + 1..].to_string();
 
-                    if !line.starts_with("data: ") { continue; }
+                    if !line.starts_with("data: ") {
+                        continue;
+                    }
                     let data = &line[6..];
                     if data == "[DONE]" {
                         // flush accumulated tool calls
                         if let Some((_, (id, name, args_buf))) = tool_accum.iter().next() {
-                            let arguments: Value = serde_json::from_str(args_buf).unwrap_or(Value::Object(Default::default()));
-                            let evt = StreamEvent::ToolCall { id: id.clone(), name: name.clone(), arguments };
+                            let arguments: Value = serde_json::from_str(args_buf)
+                                .unwrap_or(Value::Object(Default::default()));
+                            let evt = StreamEvent::ToolCall {
+                                id: id.clone(),
+                                name: name.clone(),
+                                arguments,
+                            };
                             flushed = true;
                             return Some((Ok(evt), (stream, buf, tool_accum, flushed)));
                         }
                         return None;
                     }
 
-                    let Ok(chunk) = serde_json::from_str::<Value>(data) else { continue };
+                    let Ok(chunk) = serde_json::from_str::<Value>(data) else {
+                        continue;
+                    };
                     if let Some(total) = chunk["usage"]["total_tokens"].as_u64() {
                         return Some((
                             Ok(StreamEvent::Usage {
@@ -267,24 +401,38 @@ fn parse_openai_sse(
                     if expose_reasoning {
                         if let Some(reasoning) = delta["reasoning_content"].as_str() {
                             if !reasoning.is_empty() {
-                                return Some((Ok(StreamEvent::ThinkingDelta { delta: reasoning.to_string() }), (stream, buf, tool_accum, flushed)));
+                                return Some((
+                                    Ok(StreamEvent::ThinkingDelta {
+                                        delta: reasoning.to_string(),
+                                    }),
+                                    (stream, buf, tool_accum, flushed),
+                                ));
                             }
                         }
                     }
                     if let Some(content) = delta["content"].as_str() {
                         if !content.is_empty() {
-                            return Some((Ok(StreamEvent::TextDelta { delta: content.to_string() }), (stream, buf, tool_accum, flushed)));
+                            return Some((
+                                Ok(StreamEvent::TextDelta {
+                                    delta: content.to_string(),
+                                }),
+                                (stream, buf, tool_accum, flushed),
+                            ));
                         }
                     }
                     if let Some(tcs) = delta["tool_calls"].as_array() {
                         for tc in tcs {
                             let idx = tc["index"].as_u64().unwrap_or(0) as usize;
-                            let entry = tool_accum.entry(idx).or_insert_with(|| (
-                                tc["id"].as_str().unwrap_or("").to_string(),
-                                tc["function"]["name"].as_str().unwrap_or("").to_string(),
-                                String::new(),
-                            ));
-                            entry.2.push_str(tc["function"]["arguments"].as_str().unwrap_or(""));
+                            let entry = tool_accum.entry(idx).or_insert_with(|| {
+                                (
+                                    tc["id"].as_str().unwrap_or("").to_string(),
+                                    tc["function"]["name"].as_str().unwrap_or("").to_string(),
+                                    String::new(),
+                                )
+                            });
+                            entry
+                                .2
+                                .push_str(tc["function"]["arguments"].as_str().unwrap_or(""));
                         }
                     }
                     continue;
@@ -292,7 +440,12 @@ fn parse_openai_sse(
 
                 match stream.next().await {
                     Some(Ok(chunk)) => buf.push_str(&String::from_utf8_lossy(&chunk)),
-                    Some(Err(e)) => return Some((Err(Error::Provider(e.to_string())), (stream, buf, tool_accum, flushed))),
+                    Some(Err(e)) => {
+                        return Some((
+                            Err(Error::Provider(e.to_string())),
+                            (stream, buf, tool_accum, flushed),
+                        ));
+                    }
                     None => return None,
                 }
             }

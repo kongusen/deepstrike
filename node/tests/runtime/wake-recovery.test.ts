@@ -28,6 +28,40 @@ class ResumeAwareProvider implements LLMProvider {
 }
 
 describe("RuntimeRunner wake recovery", () => {
+  it("wake executes pending tools when stopped after llm_completed", async () => {
+    let pingExecutions = 0
+    const provider = new ResumeAwareProvider()
+    const { runner, sessionLog } = createRunner(
+      provider,
+      [tool("ping", "Ping", { type: "object", properties: {} }, () => {
+        pingExecutions += 1
+        return "pong"
+      })],
+      { maxTurns: 4 },
+    )
+
+    const sessionId = "pending-tools"
+    await sessionLog.append(sessionId, {
+      kind: "run_started",
+      run_id: "r1",
+      goal: "use ping",
+      criteria: [],
+    })
+    await sessionLog.append(sessionId, {
+      kind: "llm_completed",
+      turn: 0,
+      content: "checking",
+      tool_calls: [{ id: "call_ping", name: "ping", arguments: "{}" }],
+    })
+
+    const text = await collectText(runner.wake(sessionId))
+    expect(text).toBe("finished")
+    expect(pingExecutions).toBe(1)
+    const after = await sessionLog.read(sessionId)
+    expect(after.some(e => e.event.kind === "tool_completed")).toBe(true)
+    expect(after.some(e => e.event.kind === "run_terminal")).toBe(true)
+  })
+
   it("wake continues after tool_completed without re-running the tool", async () => {
     let pingExecutions = 0
     const provider = new ResumeAwareProvider()
@@ -196,5 +230,34 @@ describe("RuntimeRunner wake recovery", () => {
       archived_seq_range: expect.any(Array),
     }))
     expect((compressed!.event as { archived_seq_range: [number, number] }).archived_seq_range[0]).toBe(0)
+  })
+
+  it("reactively compacts and retries once when provider reports prompt too long", async () => {
+    class TooLongThenOkProvider implements LLMProvider {
+      streamCalls = 0
+      async complete() { return { role: "assistant" as const, content: "unused", toolCalls: [] } }
+      async *stream() {
+        this.streamCalls += 1
+        if (this.streamCalls === 1) throw new Error("413 prompt too long")
+        yield { type: "text_delta", delta: "recovered" } as StreamEvent
+      }
+    }
+
+    const provider = new TooLongThenOkProvider()
+    const { runner, sessionLog } = createRunner(provider, [], {
+      maxTokens: 1000,
+      maxTurns: 4,
+    })
+    const sessionId = "reactive-compact"
+
+    const text = await collectText(runner.run({
+      sessionId,
+      goal: "a".repeat(5000),
+    }))
+
+    expect(text).toBe("recovered")
+    expect(provider.streamCalls).toBe(2)
+    const events = await sessionLog.read(sessionId)
+    expect(events.some(e => e.event.kind === "compressed")).toBe(true)
   })
 })

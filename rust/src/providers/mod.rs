@@ -1,8 +1,8 @@
 use async_trait::async_trait;
+use compact_str::CompactString;
 use deepstrike_core::context::renderer::RenderedContext;
 use deepstrike_core::runtime::session::ProviderReplay;
 use deepstrike_core::types::message::{Content, Message, Role, ToolCall, ToolSchema};
-use compact_str::CompactString;
 use futures::{Stream, StreamExt};
 
 pub mod anthropic;
@@ -22,11 +22,21 @@ pub struct RuntimePolicy {
 /// Stream event emitted by providers.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
-    TextDelta { delta: String },
-    ThinkingDelta { delta: String },
-    ToolCall { id: String, name: String, arguments: serde_json::Value },
+    TextDelta {
+        delta: String,
+    },
+    ThinkingDelta {
+        delta: String,
+    },
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
     /// Token usage from the provider (e.g. OpenAI `stream_options.include_usage`).
-    Usage { total_tokens: u32 },
+    Usage {
+        total_tokens: u32,
+    },
     Done,
 }
 
@@ -42,11 +52,21 @@ pub trait LLMProvider: Send + Sync {
         RuntimePolicy::default()
     }
 
-    fn peek_provider_replay(&self, _content: &str, _tool_calls: &[ToolCall]) -> Option<ProviderReplay> {
+    fn peek_provider_replay(
+        &self,
+        _content: &str,
+        _tool_calls: &[ToolCall],
+    ) -> Option<ProviderReplay> {
         None
     }
 
-    fn seed_provider_replay(&self, _content: &str, _tool_calls: &[ToolCall], _replay: &ProviderReplay) {}
+    fn seed_provider_replay(
+        &self,
+        _content: &str,
+        _tool_calls: &[ToolCall],
+        _replay: &ProviderReplay,
+    ) {
+    }
 
     fn commit_stream_replay(&self, _content: &str, _tool_calls: &[ToolCall]) {}
 
@@ -79,7 +99,11 @@ pub async fn collect_message_from_stream(
         match evt? {
             StreamEvent::TextDelta { delta } => content.push_str(&delta),
             StreamEvent::ThinkingDelta { .. } => {}
-            StreamEvent::ToolCall { id, name, arguments } => {
+            StreamEvent::ToolCall {
+                id,
+                name,
+                arguments,
+            } => {
                 tool_calls.push(ToolCall {
                     id: CompactString::new(&id),
                     name: CompactString::new(&name),

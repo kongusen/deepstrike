@@ -213,3 +213,13 @@ export interface LLMProvider {
     state?: ProviderRunState,
   ): AsyncIterable<StreamEvent>
 }
+
+export interface TaskUpdate {
+  plan?: string[]
+  currentStep?: number
+  progress?: string
+  scratchpad?: string
+  blockedOn?: string[]
+  preservedRefs?: string[]
+}
+

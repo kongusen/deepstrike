@@ -1,5 +1,6 @@
 import type { LLMProvider, Message, ProviderReplay, ToolCall } from "../types.js"
 import type { SessionEvent } from "./session-log.js"
+import { effectiveProviderReplay } from "./session-repair.js"
 
 function sortObjectKeys(val: any): any {
   if (val === null || typeof val !== "object") {
@@ -43,10 +44,13 @@ export function seedProviderReplayFromEvents(
 ): void {
   if (!provider.seedProviderReplay) return
   for (const { event } of events) {
-    if (event.kind !== "llm_completed" || !event.provider_replay) continue
+    if (event.kind !== "llm_completed") continue
+    const toolCalls = event.tool_calls ?? []
+    const replay = effectiveProviderReplay(event.content, toolCalls, event.provider_replay)
+    if (!replay) continue
     provider.seedProviderReplay(
-      { content: event.content, toolCalls: event.tool_calls ?? [] },
-      event.provider_replay,
+      { content: event.content, toolCalls },
+      replay,
     )
   }
 }

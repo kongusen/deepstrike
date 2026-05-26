@@ -1,38 +1,51 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_stream::try_stream;
 use deepstrike_core::memory::idle_pipeline::{IdleAction, IdleEvent, IdlePipeline, IdlePolicy};
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::scheduler::policy::LoopPolicy;
-use deepstrike_core::scheduler::state_machine::{LoopAction, LoopEvent, LoopObservation, LoopStateMachine};
+use deepstrike_core::scheduler::state_machine::{
+    LoopAction, LoopEvent, LoopObservation, LoopStateMachine,
+};
 use deepstrike_core::signals::router::SignalRouter;
 use deepstrike_core::types::message::{Message, ToolCall};
-use deepstrike_core::types::signal::{RuntimeSignal as KernelSignal, SignalSource as KernelSignalSource, SignalType as KernelSignalType, Urgency};
 use deepstrike_core::types::policy::SignalDisposition;
+use deepstrike_core::types::signal::{
+    RuntimeSignal as KernelSignal, SignalSource as KernelSignalSource,
+    SignalType as KernelSignalType, Urgency,
+};
 use deepstrike_core::types::skill::SkillMetadata;
 use deepstrike_core::types::task::RuntimeTask;
 use futures::StreamExt;
 
+use crate::SignalSource;
 use crate::governance::Governance;
 use crate::knowledge::KnowledgeSource;
 use crate::memory::{DreamResult, DreamStore};
 use crate::providers::{LLMProvider, StreamEvent};
 use crate::run_event::RunEvent;
+use crate::runtime::archive::ArchiveStore;
 use crate::runtime::execution_plane::{
     ExecutionPlane, LocalExecutionPlane, RunContext, ToolSuspendHandler,
 };
-use crate::runtime::replay::{is_mid_run, replay_messages};
 use crate::runtime::provider_replay::{peek_provider_replay, seed_provider_replay_from_events};
+use crate::runtime::replay::{
+    is_mid_run, repair_entries, repair_entries_with_cap, replay_messages, replay_messages_with_cap,
+};
 use crate::runtime::session_log::{SessionEntry, SessionLog};
-use crate::signals::SignalSource;
 use crate::{Error, Result};
+use deepstrike_core::context::pressure::PressureAction;
+use deepstrike_core::context::task_state::TaskUpdate;
+use deepstrike_core::context::token_engine::ContextTokenEngine;
+use deepstrike_core::runtime::repair::{repair_llm_completed, repair_llm_completed_with_cap};
 
 /// Configuration for a `RuntimeRunner` (aligned with Node/Python `RuntimeOptions`).
 pub struct RuntimeOptions {
     pub provider: Box<dyn LLMProvider>,
     pub execution_plane: Option<Box<dyn ExecutionPlane>>,
     pub session_log: Option<Arc<dyn SessionLog>>,
+    pub compression_store: Option<Arc<dyn ArchiveStore>>,
     /// When set, `execute` reuses this session id.
     pub session_id: Option<String>,
     pub max_tokens: u32,
@@ -47,6 +60,8 @@ pub struct RuntimeOptions {
     pub knowledge_source: Option<Box<dyn KnowledgeSource>>,
     pub signal_source: Option<Box<dyn SignalSource>>,
     pub governance: Option<Arc<tokio::sync::Mutex<Governance>>>,
+    pub tokenizer: Option<String>,
+    pub enable_plan_tool: Option<bool>,
     pub on_tool_suspend: Option<ToolSuspendHandler>,
 }
 
@@ -190,7 +205,11 @@ impl RuntimeRunner {
         }) {
             IdleAction::SynthesizeInsights { messages } => messages,
             IdleAction::Noop => return Ok(DreamResult::default()),
-            _ => return Err(Error::Other("unexpected IdlePipeline::Trigger action".into())),
+            _ => {
+                return Err(Error::Other(
+                    "unexpected IdlePipeline::Trigger action".into(),
+                ));
+            }
         };
 
         let mut synthesis_text = String::new();
@@ -207,15 +226,18 @@ impl RuntimeRunner {
             }
         }
 
-        let (curation_result, run_result) =
-            match pipeline.feed(IdleEvent::SynthesisResult { content: synthesis_text }) {
-                IdleAction::CommitMemories { result, run_result, .. } => (result, run_result),
-                _ => {
-                    return Err(Error::Other(
-                        "unexpected IdlePipeline::SynthesisResult action".into(),
-                    ))
-                }
-            };
+        let (curation_result, run_result) = match pipeline.feed(IdleEvent::SynthesisResult {
+            content: synthesis_text,
+        }) {
+            IdleAction::CommitMemories {
+                result, run_result, ..
+            } => (result, run_result),
+            _ => {
+                return Err(Error::Other(
+                    "unexpected IdlePipeline::SynthesisResult action".into(),
+                ));
+            }
+        };
 
         let entries_added = curation_result.stats.entries_added;
         let entries_removed = curation_result.to_remove_indices.len();
@@ -259,6 +281,19 @@ impl RuntimeRunner {
             };
 
             let mut sm = LoopStateMachine::new(policy);
+
+            if let Some(tokenizer_name) = &self.opts.tokenizer {
+                let engine = match tokenizer_name.as_str() {
+                    "tiktoken_cl100k" | "cl100k" => ContextTokenEngine::cl100k(),
+                    "tiktoken_o200k" | "o200k" => ContextTokenEngine::o200k(),
+                    _ => ContextTokenEngine::char_approx(),
+                };
+                sm.ctx.engine = engine;
+            }
+            if let Some(enabled) = self.opts.enable_plan_tool {
+                sm.ctx.set_plan_tool_enabled(enabled);
+            }
+
             sm.tools = self.plane.schemas();
 
             if self.opts.dream_store.is_some() && self.opts.agent_id.is_some() {
@@ -298,15 +333,20 @@ impl RuntimeRunner {
                 }
             }
 
-            if let Some(events) = &prior_events {
-                seed_provider_replay_from_events(self.opts.provider.as_ref(), events);
-                sm.preload_history(replay_messages(events));
+            let recovery_tokens = sm.ctx.config.recovery_content_tokens(sm.ctx.max_tokens);
+            let max_bytes = sm.ctx.engine.token_budget_to_bytes(recovery_tokens);
+
+            if let Some(ref events) = prior_events {
+                let repaired = repair_entries_with_cap(events, max_bytes);
+                seed_provider_replay_from_events(self.opts.provider.as_ref(), &repaired);
+                sm.preload_history(replay_messages_with_cap(&repaired, max_bytes));
             }
 
             let ext = merge_extensions(self.opts.extensions.as_ref(), extensions.as_ref());
             let provider_state = self.opts.provider.create_run_state();
             let mut router = SignalRouter::new(256);
             let mut next_archive_start = next_archived_seq_start(prior_events.as_deref());
+            let mut has_attempted_reactive_compact = false;
             let session_start_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -384,6 +424,25 @@ impl RuntimeRunner {
                         {
                             Ok(s) => s,
                             Err(e) => {
+                                if is_prompt_too_long_error(&e)
+                                    && !has_attempted_reactive_compact
+                                {
+                                    has_attempted_reactive_compact = true;
+                                    if sm.force_compact() {
+                                        next_archive_start = self
+                                            .append_observations(
+                                                &session_id,
+                                                &mut sm,
+                                                next_archive_start,
+                                            )
+                                            .await;
+                                        action = LoopAction::CallLLM {
+                                            context: sm.ctx.render(),
+                                            tools: tools.clone(),
+                                        };
+                                        continue;
+                                    }
+                                }
                                 yield RunEvent::Error(e.to_string());
                                 let _ = sm.feed(LoopEvent::Timeout);
                                 break;
@@ -414,7 +473,7 @@ impl RuntimeRunner {
                             }
                         }
 
-                        let assistant = Message {
+                        let mut assistant = Message {
                             role: deepstrike_core::types::message::Role::Assistant,
                             content: deepstrike_core::types::message::Content::Text(final_text.clone()),
                             tool_calls: final_tool_calls.clone(),
@@ -422,11 +481,12 @@ impl RuntimeRunner {
                         };
 
                         self.opts.provider.commit_stream_replay(&final_text, &final_tool_calls);
-                        let provider_replay = peek_provider_replay(
+                        let mut provider_replay = peek_provider_replay(
                             self.opts.provider.as_ref(),
                             &final_text,
                             &final_tool_calls,
                         );
+                        repair_llm_completed(&mut assistant, &mut provider_replay);
 
                         action = sm.feed(LoopEvent::LLMResponse { message: assistant.clone() });
                         self.log(
@@ -466,21 +526,55 @@ impl RuntimeRunner {
                             on_tool_suspend: self.opts.on_tool_suspend.clone(),
                         };
 
-                        let plane_stream = self.plane.execute_all(&tool_calls, run_ctx);
                         let mut tool_results = Vec::new();
-                        let mut stream = plane_stream;
-                        while let Some(evt) = stream.next().await {
-                            match evt? {
-                                RunEvent::ToolResult { call_id, content, is_error } => {
-                                    tool_results.push(deepstrike_core::types::message::ToolResult {
-                                        call_id: compact_str::CompactString::new(&call_id),
-                                        output: deepstrike_core::types::message::Content::Text(content),
-                                        is_error,
-                                        token_count: None,
-                                    });
-                                }
-                                other => yield other,
+                        let mut normal_calls = Vec::new();
+                        let mut plan_calls = Vec::new();
+
+                        for call in &tool_calls {
+                            if call.name == "update_plan" {
+                                plan_calls.push(call);
+                            } else {
+                                normal_calls.push(call.clone());
                             }
+                        }
+
+                        for call in plan_calls {
+                            let update = parse_update_plan_args(&call.arguments);
+                            sm.ctx.update_task(update);
+                            tool_results.push(deepstrike_core::types::message::ToolResult {
+                                call_id: call.id.clone(),
+                                output: deepstrike_core::types::message::Content::Text("success".to_string()),
+                                is_error: false,
+                                token_count: None,
+                            });
+                            yield RunEvent::ToolResult {
+                                call_id: call.id.to_string(),
+                                content: "success".to_string(),
+                                is_error: false,
+                            };
+                        }
+
+                        if !normal_calls.is_empty() {
+                            let plane_stream = self.plane.execute_all(&normal_calls, run_ctx);
+                            let mut stream = plane_stream;
+                            while let Some(evt) = stream.next().await {
+                                match evt? {
+                                    RunEvent::ToolResult { call_id, content, is_error } => {
+                                        tool_results.push(deepstrike_core::types::message::ToolResult {
+                                            call_id: compact_str::CompactString::new(&call_id),
+                                            output: deepstrike_core::types::message::Content::Text(content),
+                                            is_error,
+                                            token_count: None,
+                                        });
+                                    }
+                                    other => yield other,
+                                }
+                            }
+                            let names: Vec<String> = normal_calls.iter().map(|c| c.name.to_string()).collect();
+                            sm.ctx.update_task(TaskUpdate {
+                                progress: Some(format!("Executed tools: {}", names.join(", "))),
+                                ..Default::default()
+                            });
                         }
 
                         self.log(
@@ -575,9 +669,15 @@ impl RuntimeRunner {
     ) -> u64 {
         let observations = sm.take_observations();
         for obs in observations {
-            if !matches!(obs, LoopObservation::Compressed { .. }) {
-                continue;
-            }
+            let (action, rho_after, summary, archived) = match obs {
+                LoopObservation::Compressed {
+                    action,
+                    rho_after,
+                    summary,
+                    archived,
+                } => (action, rho_after, summary, archived),
+                _ => continue,
+            };
             let Some(log) = &self.opts.session_log else {
                 continue;
             };
@@ -586,12 +686,38 @@ impl RuntimeRunner {
                 continue;
             }
             let end = latest;
+
+            let mut archive_ref = None;
+            if let Some(store) = &self.opts.compression_store {
+                if !archived.is_empty() {
+                    if let Ok(path_ref) = store.write(session_id, next_archive_start, &archived) {
+                        if !path_ref.is_empty() {
+                            archive_ref = Some(path_ref);
+                        }
+                    }
+                }
+            }
+
+            let summary_tokens = summary.as_ref().map(|s| sm.ctx.engine.count(s));
+            let action_str = match action {
+                PressureAction::None => "none".to_string(),
+                PressureAction::SnipCompact => "snip_compact".to_string(),
+                PressureAction::MicroCompact => "micro_compact".to_string(),
+                PressureAction::ContextCollapse => "context_collapse".to_string(),
+                PressureAction::AutoCompact => "auto_compact".to_string(),
+            };
+
             if let Ok(compressed_seq) = log
                 .append(
                     session_id,
                     SessionEvent::Compressed {
                         turn: sm.turn,
                         archived_seq_range: (next_archive_start, end),
+                        action: Some(action_str),
+                        summary: summary.clone(),
+                        summary_tokens,
+                        archive_ref,
+                        preserved_refs: sm.ctx.partitions.task_state.preserved_refs.clone(),
                     },
                 )
                 .await
@@ -649,12 +775,20 @@ fn merge_extensions(
     }
 }
 
+fn is_prompt_too_long_error(error: &Error) -> bool {
+    let msg = error.to_string().to_lowercase();
+    msg.contains("413")
+        || msg.contains("too long")
+        || msg.contains("prompt too long")
+        || msg.contains("context length exceeded")
+        || msg.contains("context_length_exceeded")
+}
+
 fn next_archived_seq_start(events: Option<&[SessionEntry]>) -> u64 {
     let mut next = 0u64;
     for entry in events.unwrap_or_default() {
         if let SessionEvent::Compressed {
-            archived_seq_range,
-            ..
+            archived_seq_range, ..
         } = &entry.event
         {
             next = next.max(archived_seq_range.1 + 1);
@@ -696,4 +830,52 @@ fn parse_frontmatter_description(content: &str) -> String {
         }
     }
     String::new()
+}
+
+fn parse_update_plan_args(val: &serde_json::Value) -> TaskUpdate {
+    let plan = val.get("plan").and_then(|v| {
+        v.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+    });
+    let current_step = val
+        .get("current_step")
+        .or_else(|| val.get("currentStep"))
+        .and_then(|v| v.as_u64().map(|x| x as usize));
+    let progress = val
+        .get("progress")
+        .and_then(|v| v.as_str().map(|s| s.to_string()));
+    let scratchpad = val
+        .get("scratchpad")
+        .and_then(|v| v.as_str().map(|s| s.to_string()));
+    let blocked_on = val
+        .get("blocked_on")
+        .or_else(|| val.get("blockedOn"))
+        .and_then(|v| {
+            v.as_array().map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+        });
+    let preserved_refs = val
+        .get("preserved_refs")
+        .or_else(|| val.get("preservedRefs"))
+        .and_then(|v| {
+            v.as_array().map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+        });
+    TaskUpdate {
+        plan,
+        current_step,
+        progress,
+        scratchpad,
+        blocked_on,
+        preserved_refs,
+    }
 }

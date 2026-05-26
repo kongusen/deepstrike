@@ -26,7 +26,9 @@ pub struct InMemoryCredentialVault {
 
 impl Default for InMemoryCredentialVault {
     fn default() -> Self {
-        Self { store: Arc::new(RwLock::new(HashMap::new())) }
+        Self {
+            store: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 }
 

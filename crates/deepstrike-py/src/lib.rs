@@ -37,6 +37,7 @@ use compact_str::CompactString;
 
 use deepstrike_core::context::manager::ContextManager;
 use deepstrike_core::context::pressure::PressureAction;
+use deepstrike_core::context::renderer::RenderedContext as RustRenderedContext;
 use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
 use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
@@ -53,7 +54,6 @@ use deepstrike_core::memory::idle_pipeline::{
     IdlePolicy as RustIdlePolicy,
 };
 use deepstrike_core::memory::semantic::MemoryEntry as RustMemoryEntry;
-use deepstrike_core::context::renderer::RenderedContext as RustRenderedContext;
 use deepstrike_core::scheduler::policy::LoopPolicy as RustLoopPolicy;
 use deepstrike_core::scheduler::state_machine::{
     LoopAction as RustLoopAction, LoopEvent as RustLoopEvent,
@@ -754,6 +754,59 @@ impl LoopResult {
     }
 }
 
+#[pyclass]
+#[derive(Clone, Default)]
+pub struct TaskUpdate {
+    #[pyo3(get, set)]
+    pub plan: Option<Vec<String>>,
+    #[pyo3(get, set)]
+    pub current_step: Option<u32>,
+    #[pyo3(get, set)]
+    pub progress: Option<String>,
+    #[pyo3(get, set)]
+    pub scratchpad: Option<String>,
+    #[pyo3(get, set)]
+    pub blocked_on: Option<Vec<String>>,
+    #[pyo3(get, set)]
+    pub preserved_refs: Option<Vec<String>>,
+}
+
+#[pymethods]
+impl TaskUpdate {
+    #[new]
+    #[pyo3(signature = (plan = None, current_step = None, progress = None, scratchpad = None, blocked_on = None, preserved_refs = None))]
+    fn new(
+        plan: Option<Vec<String>>,
+        current_step: Option<u32>,
+        progress: Option<String>,
+        scratchpad: Option<String>,
+        blocked_on: Option<Vec<String>>,
+        preserved_refs: Option<Vec<String>>,
+    ) -> Self {
+        Self {
+            plan,
+            current_step,
+            progress,
+            scratchpad,
+            blocked_on,
+            preserved_refs,
+        }
+    }
+}
+
+impl TaskUpdate {
+    fn to_rust(&self) -> deepstrike_core::context::task_state::TaskUpdate {
+        deepstrike_core::context::task_state::TaskUpdate {
+            plan: self.plan.clone(),
+            current_step: self.current_step.map(|s| s as usize),
+            progress: self.progress.clone(),
+            scratchpad: self.scratchpad.clone(),
+            blocked_on: self.blocked_on.clone(),
+            preserved_refs: self.preserved_refs.clone(),
+        }
+    }
+}
+
 // ───────────────────────────────────────── Skill types ─────────────────────────────────────────
 
 #[pyclass]
@@ -920,7 +973,7 @@ impl LoopAction {
 }
 
 /// Tagged union for `LoopObservation`. Inspect `kind`:
-/// - `kind == "compressed"` → `action`, `rho_after`
+/// - `kind == "compressed"` → `action`, `rho_after`, `summary`, `archived`
 /// - `kind == "renewed"`    → `sprint`
 #[pyclass]
 #[derive(Clone)]
@@ -934,12 +987,21 @@ struct LoopObservation {
     /// Sprint number after renewal. Set when `kind == "renewed"`.
     #[pyo3(get)]
     sprint: Option<u32>,
+    #[pyo3(get)]
+    pub summary: Option<String>,
+    #[pyo3(get)]
+    pub archived: Option<Vec<Message>>,
 }
 
 impl LoopObservation {
     fn from_rust(o: RustLoopObservation) -> Self {
         match o {
-            RustLoopObservation::Compressed { action, rho_after } => {
+            RustLoopObservation::Compressed {
+                action,
+                rho_after,
+                summary,
+                archived,
+            } => {
                 let action_str = match action {
                     PressureAction::None => "none",
                     PressureAction::SnipCompact => "snip_compact",
@@ -952,6 +1014,8 @@ impl LoopObservation {
                     action: Some(action_str.into()),
                     rho_after: Some(rho_after),
                     sprint: None,
+                    summary,
+                    archived: Some(archived.iter().map(Message::from_rust).collect()),
                 }
             }
             RustLoopObservation::Renewed { sprint } => Self {
@@ -959,6 +1023,8 @@ impl LoopObservation {
                 action: None,
                 rho_after: None,
                 sprint: Some(sprint),
+                summary: None,
+                archived: None,
             },
         }
     }
@@ -1001,7 +1067,7 @@ impl ContextEngine {
     }
 
     fn total_tokens(&self) -> u32 {
-        self.inner.partitions.total_tokens()
+        self.inner.partitions.total_tokens(&self.inner.engine)
     }
 
     /// Run compression at the level the current pressure recommends.
@@ -1011,9 +1077,9 @@ impl ContextEngine {
         if action == PressureAction::None {
             return 0;
         }
-        let before = self.inner.partitions.total_tokens();
+        let before = self.inner.partitions.total_tokens(&self.inner.engine);
         self.inner.compress(action);
-        let after = self.inner.partitions.total_tokens();
+        let after = self.inner.partitions.total_tokens(&self.inner.engine);
         before.saturating_sub(after)
     }
 
@@ -1026,6 +1092,39 @@ impl ContextEngine {
     fn set_available_skills(&mut self, skills: Vec<SkillMetadata>) {
         self.inner
             .set_available_skills(skills.iter().map(|s| s.to_rust()).collect());
+    }
+
+    fn init_task(&mut self, goal: String, criteria: Vec<String>) {
+        self.inner.init_task(goal, criteria);
+    }
+
+    fn update_task(&mut self, update: TaskUpdate) {
+        self.inner.update_task(update.to_rust());
+    }
+
+    fn recovery_content_bytes(&self) -> u32 {
+        let tokens = self
+            .inner
+            .config
+            .recovery_content_tokens(self.inner.max_tokens);
+        self.inner.engine.token_budget_to_bytes(tokens) as u32
+    }
+
+    fn set_tokenizer(&mut self, name: String) {
+        let engine = match name.as_str() {
+            "tiktoken_cl100k" | "cl100k" => {
+                deepstrike_core::context::token_engine::ContextTokenEngine::cl100k()
+            }
+            "tiktoken_o200k" | "o200k" => {
+                deepstrike_core::context::token_engine::ContextTokenEngine::o200k()
+            }
+            _ => deepstrike_core::context::token_engine::ContextTokenEngine::char_approx(),
+        };
+        self.inner.engine = engine;
+    }
+
+    fn set_plan_tool_enabled(&mut self, enabled: bool) {
+        self.inner.set_plan_tool_enabled(enabled);
     }
 }
 
@@ -1137,6 +1236,14 @@ impl LoopStateMachine {
         self.inner.ctx.rho()
     }
 
+    fn preserved_refs(&self) -> Vec<String> {
+        self.inner.ctx.partitions.task_state.preserved_refs.clone()
+    }
+
+    fn force_compact(&mut self) -> bool {
+        self.inner.force_compact()
+    }
+
     fn take_observations(&mut self) -> Vec<LoopObservation> {
         self.inner
             .take_observations()
@@ -1174,6 +1281,40 @@ impl LoopStateMachine {
     /// Read-only access to the rendered context for inspection / LLM call building.
     fn render(&self) -> RenderedContext {
         RenderedContext::from_rust(self.inner.ctx.render())
+    }
+
+    fn init_task(&mut self, goal: String, criteria: Vec<String>) {
+        self.inner.ctx.init_task(goal, criteria);
+    }
+
+    fn update_task(&mut self, update: TaskUpdate) {
+        self.inner.ctx.update_task(update.to_rust());
+    }
+
+    fn recovery_content_bytes(&self) -> u32 {
+        let tokens = self
+            .inner
+            .ctx
+            .config
+            .recovery_content_tokens(self.inner.ctx.max_tokens);
+        self.inner.ctx.engine.token_budget_to_bytes(tokens) as u32
+    }
+
+    fn set_tokenizer(&mut self, name: String) {
+        let engine = match name.as_str() {
+            "tiktoken_cl100k" | "cl100k" => {
+                deepstrike_core::context::token_engine::ContextTokenEngine::cl100k()
+            }
+            "tiktoken_o200k" | "o200k" => {
+                deepstrike_core::context::token_engine::ContextTokenEngine::o200k()
+            }
+            _ => deepstrike_core::context::token_engine::ContextTokenEngine::char_approx(),
+        };
+        self.inner.ctx.engine = engine;
+    }
+
+    fn set_plan_tool_enabled(&mut self, enabled: bool) {
+        self.inner.ctx.set_plan_tool_enabled(enabled);
     }
 }
 
@@ -1900,6 +2041,7 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RuntimeTask>()?;
     m.add_class::<LoopPolicy>()?;
     m.add_class::<LoopResult>()?;
+    m.add_class::<TaskUpdate>()?;
     // Skill types
     m.add_class::<SkillMetadata>()?;
     // Loop control

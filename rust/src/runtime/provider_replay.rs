@@ -1,3 +1,6 @@
+use deepstrike_core::runtime::repair::{
+    effective_provider_replay, repair_events, repair_llm_completed,
+};
 use deepstrike_core::runtime::session::{ProviderReplay, SessionEvent};
 use deepstrike_core::types::message::ToolCall;
 
@@ -10,12 +13,16 @@ pub fn seed_provider_replay_from_events(
     for entry in events {
         if let SessionEvent::LlmCompleted {
             message,
-            provider_replay: Some(replay),
+            provider_replay,
             ..
         } = &entry.event
         {
             let content = message.content.as_text().unwrap_or("").to_string();
-            provider.seed_provider_replay(&content, &message.tool_calls, replay);
+            let replay =
+                effective_provider_replay(&content, &message.tool_calls, provider_replay.as_ref());
+            if let Some(replay) = replay {
+                provider.seed_provider_replay(&content, &message.tool_calls, &replay);
+            }
         }
     }
 }

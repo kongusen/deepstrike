@@ -8,15 +8,15 @@ use async_stream::try_stream;
 use deepstrike_core::context::manager::{KNOWLEDGE_TOOL_NAME, MEMORY_TOOL_NAME};
 use deepstrike_core::context::skill_catalog::SKILL_TOOL_NAME;
 use deepstrike_core::types::message::{Content, ToolCall, ToolResult, ToolSchema};
-use futures::stream::{self, Stream, StreamExt};
 use futures::stream::FuturesUnordered;
+use futures::stream::{self, Stream, StreamExt};
 
+use crate::Result;
 use crate::governance::Governance;
 use crate::knowledge::KnowledgeSource;
 use crate::memory::DreamStore;
 use crate::run_event::RunEvent;
 use crate::tools::{RegisteredTool, ToolChunk, ToolStep, validate_tool_arguments};
-use crate::Result;
 
 #[derive(Clone)]
 pub struct ToolSuspendRequest {
@@ -70,11 +70,14 @@ pub struct LocalExecutionPlane {
 
 impl LocalExecutionPlane {
     pub fn new() -> Self {
-        Self { tools: HashMap::new() }
+        Self {
+            tools: HashMap::new(),
+        }
     }
 
     pub fn register(&mut self, tool: RegisteredTool) -> &mut Self {
-        self.tools.insert(tool.schema.name.to_string(), Arc::new(tool));
+        self.tools
+            .insert(tool.schema.name.to_string(), Arc::new(tool));
         self
     }
 
@@ -406,14 +409,15 @@ pub async fn collect_tool_results(
 ) -> Result<Vec<ToolResult>> {
     let mut by_id: HashMap<String, ToolResult> = HashMap::new();
     while let Some(evt) = stream.next().await {
-        if let RunEvent::ToolResult { call_id, content, is_error } = evt? {
+        if let RunEvent::ToolResult {
+            call_id,
+            content,
+            is_error,
+        } = evt?
+        {
             by_id.insert(
                 call_id.clone(),
-                make_result(
-                    compact_str::CompactString::new(&call_id),
-                    content,
-                    is_error,
-                ),
+                make_result(compact_str::CompactString::new(&call_id), content, is_error),
             );
         }
     }

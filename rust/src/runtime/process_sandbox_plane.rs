@@ -8,10 +8,10 @@ use futures::stream::Stream;
 use serde_json::json;
 use tokio::io::AsyncReadExt;
 
+use crate::Result;
 use crate::run_event::RunEvent;
 use crate::runtime::execution_plane::{ExecutionPlane, LocalExecutionPlane, RunContext};
 use crate::tools::RegisteredTool;
-use crate::Result;
 
 pub struct SandboxOptions {
     /// Working directory for all subprocesses; isolated from the host file system by convention.
@@ -124,21 +124,24 @@ async fn run_subprocess(
     let stderr_pipe = child.stderr.take().expect("stderr was piped");
     let read_out = tokio::spawn(async move {
         let mut buf = Vec::new();
-        tokio::io::BufReader::new(stdout_pipe).read_to_end(&mut buf).await.ok();
+        tokio::io::BufReader::new(stdout_pipe)
+            .read_to_end(&mut buf)
+            .await
+            .ok();
         buf
     });
     let read_err = tokio::spawn(async move {
         let mut buf = Vec::new();
-        tokio::io::BufReader::new(stderr_pipe).read_to_end(&mut buf).await.ok();
+        tokio::io::BufReader::new(stderr_pipe)
+            .read_to_end(&mut buf)
+            .await
+            .ok();
         buf
     });
 
     // wait() takes &mut self, so child remains usable if the timeout fires.
-    let timed_out = tokio::time::timeout(
-        tokio::time::Duration::from_millis(timeout_ms),
-        child.wait(),
-    )
-    .await;
+    let timed_out =
+        tokio::time::timeout(tokio::time::Duration::from_millis(timeout_ms), child.wait()).await;
 
     let is_error = match timed_out {
         Ok(Ok(status)) => !status.success(),
@@ -165,9 +168,19 @@ async fn run_subprocess(
     }
     let text = String::from_utf8_lossy(&combined).into_owned();
     if is_error && text.trim().is_empty() {
-        return ("Process exited with non-zero status and produced no output.".into(), true);
+        return (
+            "Process exited with non-zero status and produced no output.".into(),
+            true,
+        );
     }
-    (if text.is_empty() { "(no output)".into() } else { text }, is_error)
+    (
+        if text.is_empty() {
+            "(no output)".into()
+        } else {
+            text
+        },
+        is_error,
+    )
 }
 
 // ── Tool constructors ─────────────────────────────────────────────────────────

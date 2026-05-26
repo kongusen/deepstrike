@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use async_stream::try_stream;
 use deepstrike_core::types::message::{ToolCall, ToolSchema};
-use futures::stream::Stream;
 use futures::StreamExt;
+use futures::stream::Stream;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
@@ -58,22 +58,40 @@ async fn do_request(
     }
     let line = serde_json::to_string(&msg).map_err(|e| Error::Other(e.to_string()))? + "\n";
 
-    inner.stdin.write_all(line.as_bytes()).await.map_err(|e| Error::Other(e.to_string()))?;
-    inner.stdin.flush().await.map_err(|e| Error::Other(e.to_string()))?;
+    inner
+        .stdin
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?;
+    inner
+        .stdin
+        .flush()
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?;
 
     loop {
         let mut buf = String::new();
-        let n = inner.reader.read_line(&mut buf).await.map_err(|e| Error::Other(e.to_string()))?;
+        let n = inner
+            .reader
+            .read_line(&mut buf)
+            .await
+            .map_err(|e| Error::Other(e.to_string()))?;
         if n == 0 {
-            return Err(Error::Other(format!("MCP server '{server_name}' disconnected")));
+            return Err(Error::Other(format!(
+                "MCP server '{server_name}' disconnected"
+            )));
         }
         let trimmed = buf.trim();
         if trimmed.is_empty() {
             continue;
         }
-        let Ok(resp) = serde_json::from_str::<Value>(trimmed) else { continue };
+        let Ok(resp) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
         // Skip notifications (no numeric id)
-        let Some(resp_id) = resp.get("id").and_then(Value::as_u64) else { continue };
+        let Some(resp_id) = resp.get("id").and_then(Value::as_u64) else {
+            continue;
+        };
         if resp_id != id {
             continue;
         }
@@ -115,7 +133,9 @@ impl McpConnection {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
             .spawn()
-            .map_err(|e| Error::Other(format!("failed to spawn MCP server '{server_name}': {e}")))?;
+            .map_err(|e| {
+                Error::Other(format!("failed to spawn MCP server '{server_name}': {e}"))
+            })?;
 
         let stdin = child
             .stdin
@@ -126,7 +146,11 @@ impl McpConnection {
             .take()
             .ok_or_else(|| Error::Other(format!("MCP server '{server_name}': no stdout handle")))?;
 
-        let mut inner = Inner { stdin, reader: BufReader::new(stdout), next_id: 1 };
+        let mut inner = Inner {
+            stdin,
+            reader: BufReader::new(stdout),
+            next_id: 1,
+        };
 
         // MCP handshake
         do_request(
@@ -144,7 +168,11 @@ impl McpConnection {
 
         // Discover tool schemas
         let list = do_request(&mut inner, server_name, "tools/list", None).await?;
-        let raw_tools = list.get("tools").and_then(Value::as_array).cloned().unwrap_or_default();
+        let raw_tools = list
+            .get("tools")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
 
         let mut schemas = Vec::new();
         for t in &raw_tools {
@@ -191,8 +219,10 @@ impl McpConnection {
                             .join("\n")
                     })
                     .unwrap_or_default();
-                let is_error =
-                    result.get("isError").and_then(Value::as_bool).unwrap_or(false);
+                let is_error = result
+                    .get("isError")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let output = if text.is_empty() {
                     serde_json::to_string(&result).unwrap_or_default()
                 } else {
@@ -263,7 +293,8 @@ impl McpProxyPlane {
         for (name, config) in &self.server_configs {
             let conn = McpConnection::start(name, config, self.vault.as_ref()).await?;
             for schema in &conn.schemas {
-                self.tool_to_conn.insert(schema.name.to_string(), Arc::clone(&conn));
+                self.tool_to_conn
+                    .insert(schema.name.to_string(), Arc::clone(&conn));
             }
             self.connections.push(conn);
         }

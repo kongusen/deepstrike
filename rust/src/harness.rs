@@ -9,11 +9,19 @@ pub struct Criterion {
 
 impl Criterion {
     pub fn required(text: impl Into<String>) -> Self {
-        Self { text: text.into(), required: true, weight: 1.0 }
+        Self {
+            text: text.into(),
+            required: true,
+            weight: 1.0,
+        }
     }
 
     pub fn optional(text: impl Into<String>) -> Self {
-        Self { text: text.into(), required: false, weight: 1.0 }
+        Self {
+            text: text.into(),
+            required: false,
+            weight: 1.0,
+        }
     }
 
     pub fn with_weight(mut self, w: f32) -> Self {
@@ -39,7 +47,11 @@ pub struct HarnessRequest {
 
 impl HarnessRequest {
     pub fn new(goal: impl Into<String>) -> Self {
-        Self { goal: goal.into(), criteria: Vec::new(), extensions: None }
+        Self {
+            goal: goal.into(),
+            criteria: Vec::new(),
+            extensions: None,
+        }
     }
 }
 
@@ -66,17 +78,35 @@ pub struct Verdict {
 #[derive(Debug, Clone)]
 pub enum HarnessEvent {
     Token(String),
-    ToolCall { id: String, name: String },
-    ToolResult { call_id: String, content: String, is_error: bool },
+    ToolCall {
+        id: String,
+        name: String,
+    },
+    ToolResult {
+        call_id: String,
+        content: String,
+        is_error: bool,
+    },
     Supervising,
-    Revising { verdict: Verdict },
-    Done { verdict: Verdict, iterations: u32, total_tokens: u64, status: String },
+    Revising {
+        verdict: Verdict,
+    },
+    Done {
+        verdict: Verdict,
+        iterations: u32,
+        total_tokens: u64,
+        status: String,
+    },
     MaxAttemptsReached,
 }
 
 #[async_trait]
 pub trait QualityGate: Send + Sync {
-    async fn evaluate(&self, request: &HarnessRequest, outcome: &HarnessOutcome) -> crate::Result<bool>;
+    async fn evaluate(
+        &self,
+        request: &HarnessRequest,
+        outcome: &HarnessOutcome,
+    ) -> crate::Result<bool>;
 }
 
 #[async_trait]

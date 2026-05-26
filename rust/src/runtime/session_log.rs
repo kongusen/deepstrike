@@ -16,7 +16,11 @@ pub struct SessionEntry {
 #[async_trait]
 pub trait SessionLog: Send + Sync {
     async fn append(&self, session_id: &str, event: SessionEvent) -> Result<u64, std::io::Error>;
-    async fn read(&self, session_id: &str, from_seq: u64) -> Result<Vec<SessionEntry>, std::io::Error>;
+    async fn read(
+        &self,
+        session_id: &str,
+        from_seq: u64,
+    ) -> Result<Vec<SessionEntry>, std::io::Error>;
     async fn latest_seq(&self, session_id: &str) -> Result<i64, std::io::Error>;
 }
 
@@ -48,7 +52,11 @@ impl SessionLog for InMemorySessionLog {
         Ok(seq)
     }
 
-    async fn read(&self, session_id: &str, from_seq: u64) -> Result<Vec<SessionEntry>, std::io::Error> {
+    async fn read(
+        &self,
+        session_id: &str,
+        from_seq: u64,
+    ) -> Result<Vec<SessionEntry>, std::io::Error> {
         let store = self.store.lock().await;
         Ok(store
             .get(session_id)
@@ -116,7 +124,11 @@ impl SessionLog for FileSessionLog {
         Ok(seq)
     }
 
-    async fn read(&self, session_id: &str, from_seq: u64) -> Result<Vec<SessionEntry>, std::io::Error> {
+    async fn read(
+        &self,
+        session_id: &str,
+        from_seq: u64,
+    ) -> Result<Vec<SessionEntry>, std::io::Error> {
         let path = self.path(session_id);
         if !path.exists() {
             return Ok(Vec::new());

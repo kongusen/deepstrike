@@ -5,6 +5,7 @@ use wasm_bindgen::prelude::*;
 
 use deepstrike_core::context::manager::ContextManager;
 use deepstrike_core::context::pressure::PressureAction;
+use deepstrike_core::context::renderer::RenderedContext as RustRenderedContext;
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
 use deepstrike_core::harness::eval_pipeline::{
     Criterion as RustCriterion, EvalAction as RustEvalAction, EvalEvent as RustEvalEvent,
@@ -16,19 +17,18 @@ use deepstrike_core::scheduler::state_machine::{
     LoopObservation as RustLoopObservation, LoopStateMachine as RustLoopStateMachine,
 };
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
-use deepstrike_core::types::policy::SignalDisposition as RustSignalDisposition;
-use deepstrike_core::types::signal::{
-    RuntimeSignal as RustRuntimeSignal, SignalSource as RustSignalSource,
-    SignalType as RustSignalType, Urgency as RustUrgency,
-};
+use deepstrike_core::types::agent::AgentIdentity;
 use deepstrike_core::types::message::{
     Content, ContentPart, Message as RustMessage, Role, ToolCall as RustToolCall,
     ToolResult as RustToolResult, ToolSchema as RustToolSchema,
 };
-use deepstrike_core::context::renderer::RenderedContext as RustRenderedContext;
-use deepstrike_core::types::agent::AgentIdentity;
 use deepstrike_core::types::policy::GovernanceVerdict as RustGovernanceVerdict;
+use deepstrike_core::types::policy::SignalDisposition as RustSignalDisposition;
 use deepstrike_core::types::result::LoopResult as RustLoopResult;
+use deepstrike_core::types::signal::{
+    RuntimeSignal as RustRuntimeSignal, SignalSource as RustSignalSource,
+    SignalType as RustSignalType, Urgency as RustUrgency,
+};
 use deepstrike_core::types::skill::SkillMetadata as RustSkillMetadata;
 use deepstrike_core::types::task::{RuntimeTask as RustRuntimeTask, TaskLane as RustTaskLane};
 
@@ -116,6 +116,29 @@ pub struct RuntimeTask {
 #[derive(Tsify, Clone, Serialize, Deserialize)]
 #[tsify(into_wasm_abi, from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
+pub struct TaskUpdate {
+    pub plan: Option<Vec<String>>,
+    pub current_step: Option<u32>,
+    pub progress: Option<String>,
+    pub scratchpad: Option<String>,
+    pub blocked_on: Option<Vec<String>>,
+    pub preserved_refs: Option<Vec<String>>,
+}
+
+fn task_update_to_rust(u: TaskUpdate) -> deepstrike_core::context::task_state::TaskUpdate {
+    deepstrike_core::context::task_state::TaskUpdate {
+        plan: u.plan,
+        current_step: u.current_step.map(|s| s as usize),
+        progress: u.progress,
+        scratchpad: u.scratchpad,
+        blocked_on: u.blocked_on,
+        preserved_refs: u.preserved_refs,
+    }
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
 pub struct LoopPolicy {
     pub max_tokens: u32,
     #[serde(default = "default_max_turns")]
@@ -126,8 +149,12 @@ pub struct LoopPolicy {
     pub timeout_ms: Option<f64>,
 }
 
-fn default_max_turns() -> u32 { 25 }
-fn default_max_total_tokens() -> f64 { 1_000_000.0 }
+fn default_max_turns() -> u32 {
+    25
+}
+fn default_max_total_tokens() -> f64 {
+    1_000_000.0
+}
 
 #[derive(Tsify, Clone, Serialize, Deserialize)]
 #[tsify(into_wasm_abi)]
@@ -197,7 +224,8 @@ fn runtime_signal_to_rust(s: RuntimeSignal) -> RustRuntimeSignal {
         "low" => RustUrgency::Low,
         _ => RustUrgency::Normal,
     };
-    let payload: serde_json::Value = serde_json::from_str(&s.payload).unwrap_or(serde_json::Value::Null);
+    let payload: serde_json::Value =
+        serde_json::from_str(&s.payload).unwrap_or(serde_json::Value::Null);
     let mut sig = RustRuntimeSignal::new(source, signal_type, urgency, s.summary.as_str())
         .with_payload(payload)
         .with_timestamp(s.timestamp_ms as u64);
@@ -210,9 +238,26 @@ fn runtime_signal_to_rust(s: RuntimeSignal) -> RustRuntimeSignal {
 fn runtime_signal_from_rust(s: &RustRuntimeSignal) -> RuntimeSignal {
     RuntimeSignal {
         id: s.id.to_string(),
-        source: match s.source { RustSignalSource::Cron => "cron", RustSignalSource::Gateway => "gateway", RustSignalSource::Heartbeat => "heartbeat", RustSignalSource::Custom => "custom" }.into(),
-        signal_type: match s.signal_type { RustSignalType::Event => "event", RustSignalType::Job => "job", RustSignalType::Alert => "alert" }.into(),
-        urgency: match s.urgency { RustUrgency::Critical => "critical", RustUrgency::High => "high", RustUrgency::Normal => "normal", RustUrgency::Low => "low" }.into(),
+        source: match s.source {
+            RustSignalSource::Cron => "cron",
+            RustSignalSource::Gateway => "gateway",
+            RustSignalSource::Heartbeat => "heartbeat",
+            RustSignalSource::Custom => "custom",
+        }
+        .into(),
+        signal_type: match s.signal_type {
+            RustSignalType::Event => "event",
+            RustSignalType::Job => "job",
+            RustSignalType::Alert => "alert",
+        }
+        .into(),
+        urgency: match s.urgency {
+            RustUrgency::Critical => "critical",
+            RustUrgency::High => "high",
+            RustUrgency::Normal => "normal",
+            RustUrgency::Low => "low",
+        }
+        .into(),
         summary: s.summary.to_string(),
         payload: serde_json::to_string(&s.payload).unwrap_or_else(|_| "null".into()),
         dedupe_key: s.dedupe_key.as_ref().map(|k| k.to_string()),
@@ -263,7 +308,7 @@ pub struct LoopAction {
 }
 
 /// Discriminated union for runtime observations:
-/// - `"compressed"` → `action`, `rhoAfter`
+/// - `"compressed"` → `action`, `rhoAfter`, `summary`, `archived`
 #[derive(Tsify, Clone, Serialize, Deserialize)]
 #[tsify(into_wasm_abi)]
 #[serde(rename_all = "camelCase")]
@@ -275,6 +320,10 @@ pub struct LoopObservation {
     pub rho_after: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sprint: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived: Option<Vec<Message>>,
 }
 
 #[derive(Tsify, Clone, Serialize, Deserialize)]
@@ -369,7 +418,12 @@ fn role_to_str(role: Role) -> &'static str {
 
 fn content_part_to_rust(p: ContentPartObj) -> ContentPart {
     match p.r#type.as_str() {
-        "image" => ContentPart::Image { url: p.url, data: p.data, media_type: p.media_type, detail: p.detail },
+        "image" => ContentPart::Image {
+            url: p.url,
+            data: p.data,
+            media_type: p.media_type,
+            detail: p.detail,
+        },
         "audio" => ContentPart::Audio {
             data: p.data.unwrap_or_default(),
             media_type: p.media_type.unwrap_or_else(|| "audio/wav".into()),
@@ -379,81 +433,159 @@ fn content_part_to_rust(p: ContentPartObj) -> ContentPart {
             output: p.output.unwrap_or_default(),
             is_error: p.is_error.unwrap_or(false),
         },
-        _ => ContentPart::Text { text: p.text.unwrap_or_default() },
+        _ => ContentPart::Text {
+            text: p.text.unwrap_or_default(),
+        },
     }
 }
 
 fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
     match p {
         ContentPart::Text { text } => ContentPartObj {
-            r#type: "text".into(), text: Some(text.clone()),
-            url: None, data: None, media_type: None, detail: None,
-            call_id: None, output: None, is_error: None,
+            r#type: "text".into(),
+            text: Some(text.clone()),
+            url: None,
+            data: None,
+            media_type: None,
+            detail: None,
+            call_id: None,
+            output: None,
+            is_error: None,
         },
-        ContentPart::Image { url, data, media_type, detail } => ContentPartObj {
-            r#type: "image".into(), text: None,
-            url: url.clone(), data: data.clone(), media_type: media_type.clone(), detail: detail.clone(),
-            call_id: None, output: None, is_error: None,
+        ContentPart::Image {
+            url,
+            data,
+            media_type,
+            detail,
+        } => ContentPartObj {
+            r#type: "image".into(),
+            text: None,
+            url: url.clone(),
+            data: data.clone(),
+            media_type: media_type.clone(),
+            detail: detail.clone(),
+            call_id: None,
+            output: None,
+            is_error: None,
         },
         ContentPart::Audio { data, media_type } => ContentPartObj {
-            r#type: "audio".into(), text: None, url: None,
-            data: Some(data.clone()), media_type: Some(media_type.clone()), detail: None,
-            call_id: None, output: None, is_error: None,
+            r#type: "audio".into(),
+            text: None,
+            url: None,
+            data: Some(data.clone()),
+            media_type: Some(media_type.clone()),
+            detail: None,
+            call_id: None,
+            output: None,
+            is_error: None,
         },
-        ContentPart::ToolResult { call_id, output, is_error } => ContentPartObj {
-            r#type: "tool_result".into(), text: None, url: None, data: None, media_type: None, detail: None,
-            call_id: Some(call_id.to_string()), output: Some(output.clone()), is_error: Some(*is_error),
+        ContentPart::ToolResult {
+            call_id,
+            output,
+            is_error,
+        } => ContentPartObj {
+            r#type: "tool_result".into(),
+            text: None,
+            url: None,
+            data: None,
+            media_type: None,
+            detail: None,
+            call_id: Some(call_id.to_string()),
+            output: Some(output.clone()),
+            is_error: Some(*is_error),
         },
     }
 }
 
 fn message_to_rust(m: Message) -> Result<RustMessage, JsValue> {
     let role = role_str_to_rust(&m.role)?;
-    let tool_calls: Vec<RustToolCall> = m.tool_calls.into_iter().map(tool_call_to_rust).collect::<Result<_, _>>()?;
+    let tool_calls: Vec<RustToolCall> = m
+        .tool_calls
+        .into_iter()
+        .map(tool_call_to_rust)
+        .collect::<Result<_, _>>()?;
     let content = match m.content_parts {
-        Some(parts) if !parts.is_empty() => Content::Parts(parts.into_iter().map(content_part_to_rust).collect()),
+        Some(parts) if !parts.is_empty() => {
+            Content::Parts(parts.into_iter().map(content_part_to_rust).collect())
+        }
         _ => Content::Text(m.content),
     };
-    Ok(RustMessage { role, content, tool_calls, token_count: m.token_count })
+    Ok(RustMessage {
+        role,
+        content,
+        tool_calls,
+        token_count: m.token_count,
+    })
 }
 
 fn message_from_rust(m: &RustMessage) -> Message {
     let (content, content_parts) = match &m.content {
         Content::Text(s) => (s.clone(), None),
         Content::Parts(parts) => {
-            let text_only: String = parts.iter().filter_map(|p| match p {
-                ContentPart::Text { text } => Some(text.as_str()),
-                _ => None,
-            }).collect::<Vec<_>>().join("\n");
+            let text_only: String = parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             let objs: Vec<ContentPartObj> = parts.iter().map(content_part_from_rust).collect();
             (text_only, Some(objs))
         }
     };
-    Message { role: role_to_str(m.role).to_string(), content, content_parts, token_count: m.token_count, tool_calls: m.tool_calls.iter().map(tool_call_from_rust).collect() }
+    Message {
+        role: role_to_str(m.role).to_string(),
+        content,
+        content_parts,
+        token_count: m.token_count,
+        tool_calls: m.tool_calls.iter().map(tool_call_from_rust).collect(),
+    }
 }
 
 fn tool_call_to_rust(c: ToolCall) -> Result<RustToolCall, JsValue> {
     let args: serde_json::Value = serde_json::from_str(&c.arguments)
         .map_err(|e| JsValue::from_str(&format!("invalid JSON arguments: {e}")))?;
-    Ok(RustToolCall { id: CompactString::new(&c.id), name: CompactString::new(&c.name), arguments: args })
+    Ok(RustToolCall {
+        id: CompactString::new(&c.id),
+        name: CompactString::new(&c.name),
+        arguments: args,
+    })
 }
 
 fn tool_call_from_rust(c: &RustToolCall) -> ToolCall {
-    ToolCall { id: c.id.to_string(), name: c.name.to_string(), arguments: serde_json::to_string(&c.arguments).unwrap_or_else(|_| "null".into()) }
+    ToolCall {
+        id: c.id.to_string(),
+        name: c.name.to_string(),
+        arguments: serde_json::to_string(&c.arguments).unwrap_or_else(|_| "null".into()),
+    }
 }
 
 fn tool_result_to_rust(r: ToolResult) -> RustToolResult {
-    RustToolResult { call_id: CompactString::new(&r.call_id), output: Content::Text(r.output), is_error: r.is_error, token_count: r.token_count }
+    RustToolResult {
+        call_id: CompactString::new(&r.call_id),
+        output: Content::Text(r.output),
+        is_error: r.is_error,
+        token_count: r.token_count,
+    }
 }
 
 fn tool_schema_to_rust(t: ToolSchema) -> Result<RustToolSchema, JsValue> {
     let params: serde_json::Value = serde_json::from_str(&t.parameters)
         .map_err(|e| JsValue::from_str(&format!("invalid JSON parameters: {e}")))?;
-    Ok(RustToolSchema { name: CompactString::new(&t.name), description: t.description, parameters: params })
+    Ok(RustToolSchema {
+        name: CompactString::new(&t.name),
+        description: t.description,
+        parameters: params,
+    })
 }
 
 fn tool_schema_from_rust(t: &RustToolSchema) -> ToolSchema {
-    ToolSchema { name: t.name.to_string(), description: t.description.clone(), parameters: serde_json::to_string(&t.parameters).unwrap_or_else(|_| "null".into()) }
+    ToolSchema {
+        name: t.name.to_string(),
+        description: t.description.clone(),
+        parameters: serde_json::to_string(&t.parameters).unwrap_or_else(|_| "null".into()),
+    }
 }
 
 fn skill_metadata_to_rust(s: SkillMetadata) -> RustSkillMetadata {
@@ -486,7 +618,12 @@ fn task_to_rust(t: RuntimeTask) -> RustRuntimeTask {
 }
 
 fn policy_to_rust(p: LoopPolicy) -> RustLoopPolicy {
-    RustLoopPolicy { max_tokens: p.max_tokens, max_turns: p.max_turns, max_total_tokens: p.max_total_tokens as u64, timeout_ms: p.timeout_ms.map(|x| x as u64) }
+    RustLoopPolicy {
+        max_tokens: p.max_tokens,
+        max_turns: p.max_turns,
+        max_total_tokens: p.max_total_tokens as u64,
+        timeout_ms: p.timeout_ms.map(|x| x as u64),
+    }
 }
 
 fn pressure_action_str(a: PressureAction) -> &'static str {
@@ -508,7 +645,12 @@ fn loop_result_from_rust(r: &RustLoopResult) -> LoopResult {
         deepstrike_core::types::result::TerminationReason::UserAbort => "user_abort",
         deepstrike_core::types::result::TerminationReason::Error => "error",
     };
-    LoopResult { termination: termination.to_string(), final_message: r.final_message.as_ref().map(message_from_rust), turns_used: r.turns_used, total_tokens_used: r.total_tokens_used as f64 }
+    LoopResult {
+        termination: termination.to_string(),
+        final_message: r.final_message.as_ref().map(message_from_rust),
+        turns_used: r.turns_used,
+        total_tokens_used: r.total_tokens_used as f64,
+    }
 }
 
 fn loop_action_from_rust(a: RustLoopAction) -> LoopAction {
@@ -546,17 +688,26 @@ fn rendered_context_from_rust(rc: RustRenderedContext) -> RenderedContext {
 
 fn observation_from_rust(o: RustLoopObservation) -> LoopObservation {
     match o {
-        RustLoopObservation::Compressed { action, rho_after } => LoopObservation {
+        RustLoopObservation::Compressed {
+            action,
+            rho_after,
+            summary,
+            archived,
+        } => LoopObservation {
             kind: "compressed".into(),
             action: Some(pressure_action_str(action).into()),
             rho_after: Some(rho_after),
             sprint: None,
+            summary,
+            archived: Some(archived.iter().map(message_from_rust).collect()),
         },
         RustLoopObservation::Renewed { sprint } => LoopObservation {
             kind: "renewed".into(),
             action: None,
             rho_after: None,
             sprint: Some(sprint),
+            summary: None,
+            archived: None,
         },
     }
 }
@@ -568,12 +719,18 @@ fn eval_done_action(result: RustEvalResult) -> EvalPipelineAction {
         passed: Some(result.passed),
         overall_score: Some(result.overall_score as f64),
         feedback: Some(result.feedback),
-        details: Some(result.details.into_iter().map(|detail| CriterionResult {
-            criterion: detail.criterion,
-            passed: detail.passed,
-            score: detail.score as f64,
-            feedback: detail.feedback,
-        }).collect()),
+        details: Some(
+            result
+                .details
+                .into_iter()
+                .map(|detail| CriterionResult {
+                    criterion: detail.criterion,
+                    passed: detail.passed,
+                    score: detail.score as f64,
+                    feedback: detail.feedback,
+                })
+                .collect(),
+        ),
         skill_candidate: result.skill_candidate.map(|skill| SkillCandidate {
             name: skill.name,
             description: skill.description,
@@ -634,12 +791,17 @@ pub struct ContextEngine {
 impl ContextEngine {
     #[wasm_bindgen(constructor)]
     pub fn new(max_tokens: u32) -> Self {
-        Self { inner: ContextManager::new(max_tokens) }
+        Self {
+            inner: ContextManager::new(max_tokens),
+        }
     }
 
     #[wasm_bindgen(js_name = addSystemMessage)]
     pub fn add_system_message(&mut self, content: String, tokens: u32) {
-        self.inner.partitions.system.push(RustMessage::system(content), tokens);
+        self.inner
+            .partitions
+            .system
+            .push(RustMessage::system(content), tokens);
     }
 
     #[wasm_bindgen(js_name = addUserMessage)]
@@ -649,22 +811,30 @@ impl ContextEngine {
 
     #[wasm_bindgen(js_name = addAssistantMessage)]
     pub fn add_assistant_message(&mut self, content: String, tokens: u32) {
-        self.inner.push_history(RustMessage::assistant(content), tokens);
+        self.inner
+            .push_history(RustMessage::assistant(content), tokens);
     }
 
     #[wasm_bindgen]
-    pub fn pressure(&self) -> f64 { self.inner.rho() }
+    pub fn pressure(&self) -> f64 {
+        self.inner.rho()
+    }
 
     #[wasm_bindgen(js_name = totalTokens)]
-    pub fn total_tokens(&self) -> u32 { self.inner.partitions.total_tokens() }
+    pub fn total_tokens(&self) -> u32 {
+        self.inner.partitions.total_tokens(&self.inner.engine)
+    }
 
     #[wasm_bindgen]
     pub fn compress(&mut self) -> u32 {
         let action = self.inner.should_compress();
-        if action == PressureAction::None { return 0; }
-        let before = self.inner.partitions.total_tokens();
+        if action == PressureAction::None {
+            return 0;
+        }
+        let before = self.inner.partitions.total_tokens(&self.inner.engine);
         self.inner.compress(action);
-        before.saturating_sub(self.inner.partitions.total_tokens())
+        let after = self.inner.partitions.total_tokens(&self.inner.engine);
+        before.saturating_sub(after)
     }
 
     #[wasm_bindgen]
@@ -674,7 +844,46 @@ impl ContextEngine {
 
     #[wasm_bindgen(js_name = setAvailableSkills)]
     pub fn set_available_skills(&mut self, skills: Vec<SkillMetadata>) {
-        self.inner.set_available_skills(skills.into_iter().map(skill_metadata_to_rust).collect());
+        self.inner
+            .set_available_skills(skills.into_iter().map(skill_metadata_to_rust).collect());
+    }
+
+    #[wasm_bindgen(js_name = initTask)]
+    pub fn init_task(&mut self, goal: String, criteria: Vec<String>) {
+        self.inner.init_task(goal, criteria);
+    }
+
+    #[wasm_bindgen(js_name = updateTask)]
+    pub fn update_task(&mut self, update: TaskUpdate) {
+        self.inner.update_task(task_update_to_rust(update));
+    }
+
+    #[wasm_bindgen(js_name = recoveryContentBytes)]
+    pub fn recovery_content_bytes(&self) -> u32 {
+        let tokens = self
+            .inner
+            .config
+            .recovery_content_tokens(self.inner.max_tokens);
+        self.inner.engine.token_budget_to_bytes(tokens) as u32
+    }
+
+    #[wasm_bindgen(js_name = setTokenizer)]
+    pub fn set_tokenizer(&mut self, name: String) {
+        let engine = match name.as_str() {
+            "tiktoken_cl100k" | "cl100k" => {
+                deepstrike_core::context::token_engine::ContextTokenEngine::cl100k()
+            }
+            "tiktoken_o200k" | "o200k" => {
+                deepstrike_core::context::token_engine::ContextTokenEngine::o200k()
+            }
+            _ => deepstrike_core::context::token_engine::ContextTokenEngine::char_approx(),
+        };
+        self.inner.engine = engine;
+    }
+
+    #[wasm_bindgen(js_name = setPlanToolEnabled)]
+    pub fn set_plan_tool_enabled(&mut self, enabled: bool) {
+        self.inner.set_plan_tool_enabled(enabled);
     }
 }
 
@@ -689,12 +898,16 @@ pub struct LoopStateMachine {
 impl LoopStateMachine {
     #[wasm_bindgen(constructor)]
     pub fn new(policy: LoopPolicy) -> Self {
-        Self { inner: RustLoopStateMachine::new(policy_to_rust(policy)) }
+        Self {
+            inner: RustLoopStateMachine::new(policy_to_rust(policy)),
+        }
     }
 
     #[wasm_bindgen(js_name = setAvailableSkills)]
     pub fn set_available_skills(&mut self, skills: Vec<SkillMetadata>) {
-        self.inner.ctx.set_available_skills(skills.into_iter().map(skill_metadata_to_rust).collect());
+        self.inner
+            .ctx
+            .set_available_skills(skills.into_iter().map(skill_metadata_to_rust).collect());
     }
 
     #[wasm_bindgen(js_name = setMemoryEnabled)]
@@ -743,7 +956,10 @@ impl LoopStateMachine {
 
     #[wasm_bindgen(js_name = setTools)]
     pub fn set_tools(&mut self, tools: Vec<ToolSchema>) -> Result<(), JsValue> {
-        self.inner.tools = tools.into_iter().map(tool_schema_to_rust).collect::<Result<_, _>>()?;
+        self.inner.tools = tools
+            .into_iter()
+            .map(tool_schema_to_rust)
+            .collect::<Result<_, _>>()?;
         Ok(())
     }
 
@@ -755,7 +971,9 @@ impl LoopStateMachine {
     #[wasm_bindgen(js_name = feedLlmResponse)]
     pub fn feed_llm_response(&mut self, message: Message) -> Result<LoopAction, JsValue> {
         let msg = message_to_rust(message)?;
-        Ok(loop_action_from_rust(self.inner.feed(RustLoopEvent::LLMResponse { message: msg })))
+        Ok(loop_action_from_rust(
+            self.inner.feed(RustLoopEvent::LLMResponse { message: msg }),
+        ))
     }
 
     #[wasm_bindgen(js_name = feedToolResults)]
@@ -770,22 +988,105 @@ impl LoopStateMachine {
     }
 
     #[wasm_bindgen(js_name = isTerminal)]
-    pub fn is_terminal(&self) -> bool { self.inner.is_terminal() }
+    pub fn is_terminal(&self) -> bool {
+        self.inner.is_terminal()
+    }
 
     #[wasm_bindgen(getter)]
-    pub fn turn(&self) -> u32 { self.inner.turn }
+    pub fn turn(&self) -> u32 {
+        self.inner.turn
+    }
 
     #[wasm_bindgen]
-    pub fn pressure(&self) -> f64 { self.inner.ctx.rho() }
+    pub fn pressure(&self) -> f64 {
+        self.inner.ctx.rho()
+    }
+
+    #[wasm_bindgen(js_name = preservedRefs)]
+    pub fn preserved_refs(&self) -> Vec<String> {
+        self.inner.ctx.partitions.task_state.preserved_refs.clone()
+    }
+
+    #[wasm_bindgen(js_name = forceCompact)]
+    pub fn force_compact(&mut self) -> bool {
+        self.inner.force_compact()
+    }
 
     #[wasm_bindgen(js_name = takeObservations)]
     pub fn take_observations(&mut self) -> Vec<LoopObservation> {
-        self.inner.take_observations().into_iter().map(observation_from_rust).collect()
+        self.inner
+            .take_observations()
+            .into_iter()
+            .map(observation_from_rust)
+            .collect()
     }
 
     #[wasm_bindgen]
     pub fn render(&self) -> RenderedContext {
         rendered_context_from_rust(self.inner.ctx.render())
+    }
+
+    #[wasm_bindgen(js_name = initTask)]
+    pub fn init_task(&mut self, goal: String, criteria: Vec<String>) {
+        self.inner.ctx.init_task(goal, criteria);
+    }
+
+    #[wasm_bindgen(js_name = updateTask)]
+    pub fn update_task(&mut self, update: TaskUpdate) {
+        self.inner.ctx.update_task(task_update_to_rust(update));
+    }
+
+    #[wasm_bindgen(js_name = recoveryContentBytes)]
+    pub fn recovery_content_bytes(&self) -> u32 {
+        let tokens = self
+            .inner
+            .ctx
+            .config
+            .recovery_content_tokens(self.inner.ctx.max_tokens);
+        self.inner.ctx.engine.token_budget_to_bytes(tokens) as u32
+    }
+
+    #[wasm_bindgen(js_name = setTokenizer)]
+    pub fn set_tokenizer(&mut self, name: String) {
+        let engine = match name.as_str() {
+            "tiktoken_cl100k" | "cl100k" => {
+                deepstrike_core::context::token_engine::ContextTokenEngine::cl100k()
+            }
+            "tiktoken_o200k" | "o200k" => {
+                deepstrike_core::context::token_engine::ContextTokenEngine::o200k()
+            }
+            _ => deepstrike_core::context::token_engine::ContextTokenEngine::char_approx(),
+        };
+        self.inner.ctx.engine = engine;
+    }
+
+    #[wasm_bindgen(js_name = setPlanToolEnabled)]
+    pub fn set_plan_tool_enabled(&mut self, enabled: bool) {
+        self.inner.ctx.set_plan_tool_enabled(enabled);
+    }
+
+    #[wasm_bindgen(js_name = preloadHistory)]
+    pub fn preload_history(&mut self, messages: Vec<Message>) -> Result<(), JsValue> {
+        let rust_msgs: Vec<RustMessage> = messages
+            .into_iter()
+            .map(message_to_rust)
+            .collect::<Result<_, _>>()?;
+        self.inner.preload_history(rust_msgs);
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = resumeAfterPreload)]
+    pub fn resume_after_preload(&mut self) -> LoopAction {
+        loop_action_from_rust(self.inner.resume_after_preload())
+    }
+
+    #[wasm_bindgen(js_name = drainNewMessages)]
+    pub fn drain_new_messages(&self) -> Vec<Message> {
+        self.inner
+            .drain_new_messages()
+            .iter()
+            .map(message_from_rust)
+            .collect()
     }
 }
 
@@ -800,13 +1101,19 @@ pub struct SignalRouter {
 impl SignalRouter {
     #[wasm_bindgen(constructor)]
     pub fn new(max_queue_size: u32) -> Self {
-        Self { inner: RustSignalRouter::new(max_queue_size as usize) }
+        Self {
+            inner: RustSignalRouter::new(max_queue_size as usize),
+        }
     }
 
     /// Ingest a signal. Returns disposition: "ignore"|"observe"|"queue"|"run"|"interrupt"|"interrupt_now"|"dropped"
     #[wasm_bindgen]
     pub fn ingest(&mut self, signal: RuntimeSignal, is_running: bool) -> String {
-        disposition_str(self.inner.ingest(runtime_signal_to_rust(signal), is_running)).into()
+        disposition_str(
+            self.inner
+                .ingest(runtime_signal_to_rust(signal), is_running),
+        )
+        .into()
     }
 
     /// Pull the next queued signal (highest priority first).
@@ -816,10 +1123,14 @@ impl SignalRouter {
     }
 
     #[wasm_bindgen]
-    pub fn depth(&self) -> u32 { self.inner.depth() as u32 }
+    pub fn depth(&self) -> u32 {
+        self.inner.depth() as u32
+    }
 
     #[wasm_bindgen(js_name = clearDedup)]
-    pub fn clear_dedup(&mut self) { self.inner.clear_dedup(); }
+    pub fn clear_dedup(&mut self) {
+        self.inner.clear_dedup();
+    }
 }
 
 // ────────────────────────────────────────────── EvalPipeline ──────────────────────────────────────────────
@@ -848,11 +1159,14 @@ impl EvalPipeline {
         result: String,
         attempt: u32,
     ) -> EvalPipelineAction {
-        let criteria = criteria.into_iter().map(|criterion| RustCriterion {
-            text: criterion.text,
-            required: criterion.required,
-            weight: criterion.weight.map(|weight| weight as f32).unwrap_or(1.0),
-        }).collect();
+        let criteria = criteria
+            .into_iter()
+            .map(|criterion| RustCriterion {
+                text: criterion.text,
+                required: criterion.required,
+                weight: criterion.weight.map(|weight| weight as f32).unwrap_or(1.0),
+            })
+            .collect();
         eval_action_from_rust(self.inner.feed(RustEvalEvent::Outcome {
             goal,
             criteria,
@@ -888,7 +1202,9 @@ pub struct Governance {
 impl Governance {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
-        Self { inner: RustGovernancePipeline::default() }
+        Self {
+            inner: RustGovernancePipeline::default(),
+        }
     }
 
     #[wasm_bindgen(js_name = blockTool)]

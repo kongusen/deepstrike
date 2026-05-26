@@ -43,6 +43,10 @@ use compact_str::CompactString;
 
 use deepstrike_core::context::manager::ContextManager;
 use deepstrike_core::context::pressure::PressureAction;
+use deepstrike_core::context::renderer::RenderedContext as RustRenderedContext;
+use deepstrike_core::context::renewal::{
+    ContractCheckResult as RustContractCheckResult, HandoffArtifact as RustHandoffArtifact,
+};
 use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
 use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
@@ -58,7 +62,6 @@ use deepstrike_core::memory::idle_pipeline::{
     IdlePolicy as RustIdlePolicy,
 };
 use deepstrike_core::memory::semantic::MemoryEntry as RustMemoryEntry;
-use deepstrike_core::context::renderer::RenderedContext as RustRenderedContext;
 use deepstrike_core::scheduler::policy::LoopPolicy as RustLoopPolicy;
 use deepstrike_core::scheduler::state_machine::{
     LoopAction as RustLoopAction, LoopEvent as RustLoopEvent,
@@ -66,6 +69,10 @@ use deepstrike_core::scheduler::state_machine::{
 };
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
 use deepstrike_core::types::agent::AgentIdentity;
+use deepstrike_core::types::contract::{
+    AcceptanceCriterion as RustAcceptanceCriterion,
+    VerificationContract as RustVerificationContract,
+};
 use deepstrike_core::types::message::{
     Content, ContentPart, Message as RustMessage, Role, ToolCall as RustToolCall,
     ToolResult as RustToolResult, ToolSchema as RustToolSchema,
@@ -76,12 +83,6 @@ use deepstrike_core::types::result::LoopResult as RustLoopResult;
 use deepstrike_core::types::signal::{
     RuntimeSignal as RustRuntimeSignal, SignalSource as RustSignalSource,
     SignalType as RustSignalType, Urgency as RustUrgency,
-};
-use deepstrike_core::context::renewal::{
-    ContractCheckResult as RustContractCheckResult, HandoffArtifact as RustHandoffArtifact,
-};
-use deepstrike_core::types::contract::{
-    AcceptanceCriterion as RustAcceptanceCriterion, VerificationContract as RustVerificationContract,
 };
 use deepstrike_core::types::skill::SkillMetadata as RustSkillMetadata;
 use deepstrike_core::types::task::{RuntimeTask as RustRuntimeTask, TaskLane as RustTaskLane};
@@ -217,6 +218,28 @@ pub struct LoopResult {
 // ────────────────────────────────────── Skill types ──────────────────────────────────────
 
 // ────────────────────────────────────── Signal types ──────────────────────────────────────
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct TaskUpdate {
+    pub plan: Option<Vec<String>>,
+    pub current_step: Option<u32>,
+    pub progress: Option<String>,
+    pub scratchpad: Option<String>,
+    pub blocked_on: Option<Vec<String>>,
+    pub preserved_refs: Option<Vec<String>>,
+}
+
+fn task_update_to_rust(u: TaskUpdate) -> deepstrike_core::context::task_state::TaskUpdate {
+    deepstrike_core::context::task_state::TaskUpdate {
+        plan: u.plan,
+        current_step: u.current_step.map(|s| s as usize),
+        progress: u.progress,
+        scratchpad: u.scratchpad,
+        blocked_on: u.blocked_on,
+        preserved_refs: u.preserved_refs,
+    }
+}
 
 /// Unified RuntimeSignal exposed to Node.js — mirrors the kernel type.
 #[napi(object)]
@@ -360,6 +383,8 @@ pub struct LoopObservation {
     pub rho_after: Option<f64>,
     /// Sprint number after renewal. Set when `kind === "renewed"`.
     pub sprint: Option<u32>,
+    pub summary: Option<String>,
+    pub archived: Option<Vec<Message>>,
 }
 
 // ────────────────────────────────── conversion helpers ──────────────────────────────────
@@ -616,7 +641,11 @@ fn verification_contract_to_rust(v: VerificationContract) -> RustVerificationCon
     RustVerificationContract {
         id: v.id,
         goal: v.goal,
-        acceptance: v.acceptance.into_iter().map(acceptance_criterion_to_rust).collect(),
+        acceptance: v
+            .acceptance
+            .into_iter()
+            .map(acceptance_criterion_to_rust)
+            .collect(),
         anti_patterns: v.anti_patterns,
         evidence_required: v.evidence_required,
     }
@@ -636,8 +665,13 @@ fn handoff_artifact_from_rust(a: &RustHandoffArtifact) -> HandoffArtifact {
         sprint: a.sprint,
         progress_summary: a.progress_summary.clone(),
         open_tasks: a.open_tasks.clone(),
-        context_snapshot: serde_json::to_string(&a.context_snapshot).unwrap_or_else(|_| "null".into()),
-        contract_status: a.contract_status.iter().map(contract_check_result_from_rust).collect(),
+        context_snapshot: serde_json::to_string(&a.context_snapshot)
+            .unwrap_or_else(|_| "null".into()),
+        contract_status: a
+            .contract_status
+            .iter()
+            .map(contract_check_result_from_rust)
+            .collect(),
         drift_rate_24h: a.drift_rate_24h,
         blocked_on: a.blocked_on.clone(),
     }
@@ -717,17 +751,26 @@ fn loop_action_from_rust(a: RustLoopAction) -> LoopAction {
 
 fn observation_from_rust(o: RustLoopObservation) -> LoopObservation {
     match o {
-        RustLoopObservation::Compressed { action, rho_after } => LoopObservation {
+        RustLoopObservation::Compressed {
+            action,
+            rho_after,
+            summary,
+            archived,
+        } => LoopObservation {
             kind: "compressed".into(),
             action: Some(pressure_action_str(action).into()),
             rho_after: Some(rho_after),
             sprint: None,
+            summary,
+            archived: Some(archived.iter().map(message_from_rust).collect()),
         },
         RustLoopObservation::Renewed { sprint } => LoopObservation {
             kind: "renewed".into(),
             action: None,
             rho_after: None,
             sprint: Some(sprint),
+            summary: None,
+            archived: None,
         },
     }
 }
@@ -784,7 +827,7 @@ impl ContextEngine {
 
     #[napi]
     pub fn total_tokens(&self) -> u32 {
-        self.inner.partitions.total_tokens()
+        self.inner.partitions.total_tokens(&self.inner.engine)
     }
 
     /// Run compression at the level the current pressure recommends.
@@ -795,9 +838,9 @@ impl ContextEngine {
         if action == PressureAction::None {
             return 0;
         }
-        let before = self.inner.partitions.total_tokens();
+        let before = self.inner.partitions.total_tokens(&self.inner.engine);
         self.inner.compress(action);
-        let after = self.inner.partitions.total_tokens();
+        let after = self.inner.partitions.total_tokens(&self.inner.engine);
         before.saturating_sub(after)
     }
 
@@ -812,6 +855,44 @@ impl ContextEngine {
     pub fn set_available_skills(&mut self, skills: Vec<SkillMetadata>) {
         let rust_skills = skills.into_iter().map(skill_metadata_to_rust).collect();
         self.inner.set_available_skills(rust_skills);
+    }
+
+    #[napi]
+    pub fn init_task(&mut self, goal: String, criteria: Vec<String>) {
+        self.inner.init_task(goal, criteria);
+    }
+
+    #[napi]
+    pub fn update_task(&mut self, update: TaskUpdate) {
+        self.inner.update_task(task_update_to_rust(update));
+    }
+
+    #[napi]
+    pub fn recovery_content_bytes(&self) -> u32 {
+        let tokens = self
+            .inner
+            .config
+            .recovery_content_tokens(self.inner.max_tokens);
+        self.inner.engine.token_budget_to_bytes(tokens) as u32
+    }
+
+    #[napi]
+    pub fn set_tokenizer(&mut self, name: String) {
+        let engine = match name.as_str() {
+            "tiktoken_cl100k" | "cl100k" => {
+                deepstrike_core::context::token_engine::ContextTokenEngine::cl100k()
+            }
+            "tiktoken_o200k" | "o200k" => {
+                deepstrike_core::context::token_engine::ContextTokenEngine::o200k()
+            }
+            _ => deepstrike_core::context::token_engine::ContextTokenEngine::char_approx(),
+        };
+        self.inner.engine = engine;
+    }
+
+    #[napi]
+    pub fn set_plan_tool_enabled(&mut self, enabled: bool) {
+        self.inner.set_plan_tool_enabled(enabled);
     }
 }
 
@@ -829,6 +910,11 @@ impl LoopStateMachine {
         Self {
             inner: RustLoopStateMachine::new(policy_to_rust(policy)),
         }
+    }
+
+    #[napi]
+    pub fn force_compact(&mut self) -> bool {
+        self.inner.force_compact()
     }
 
     /// Convenience: register skills directly on the state machine without
@@ -994,6 +1080,45 @@ impl LoopStateMachine {
     #[napi]
     pub fn render(&self) -> RenderedContext {
         rendered_context_from_rust(self.inner.ctx.render())
+    }
+
+    #[napi]
+    pub fn init_task(&mut self, goal: String, criteria: Vec<String>) {
+        self.inner.ctx.init_task(goal, criteria);
+    }
+
+    #[napi]
+    pub fn update_task(&mut self, update: TaskUpdate) {
+        self.inner.ctx.update_task(task_update_to_rust(update));
+    }
+
+    #[napi]
+    pub fn recovery_content_bytes(&self) -> u32 {
+        let tokens = self
+            .inner
+            .ctx
+            .config
+            .recovery_content_tokens(self.inner.ctx.max_tokens);
+        self.inner.ctx.engine.token_budget_to_bytes(tokens) as u32
+    }
+
+    #[napi]
+    pub fn set_tokenizer(&mut self, name: String) {
+        let engine = match name.as_str() {
+            "tiktoken_cl100k" | "cl100k" => {
+                deepstrike_core::context::token_engine::ContextTokenEngine::cl100k()
+            }
+            "tiktoken_o200k" | "o200k" => {
+                deepstrike_core::context::token_engine::ContextTokenEngine::o200k()
+            }
+            _ => deepstrike_core::context::token_engine::ContextTokenEngine::char_approx(),
+        };
+        self.inner.ctx.engine = engine;
+    }
+
+    #[napi]
+    pub fn set_plan_tool_enabled(&mut self, enabled: bool) {
+        self.inner.ctx.set_plan_tool_enabled(enabled);
     }
 }
 

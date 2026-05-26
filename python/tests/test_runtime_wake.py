@@ -126,3 +126,36 @@ async def test_run_records_compressed_event():
   compressed = [e.event for e in events if e.event.get("kind") == "compressed"]
   assert compressed
   assert compressed[0]["archived_seq_range"][0] == 0
+
+
+@pytest.mark.asyncio
+async def test_run_reactive_compacts_and_retries_prompt_too_long():
+  class TooLongThenOkProvider:
+    def __init__(self) -> None:
+      self.stream_calls = 0
+
+    async def complete(self, context, tools, extensions=None):
+      raise NotImplementedError
+
+    async def stream(self, context, tools, extensions=None, state=None):
+      self.stream_calls += 1
+      if self.stream_calls == 1:
+        raise RuntimeError("413 prompt too long")
+      yield TextDelta(delta="recovered")
+
+  provider = TooLongThenOkProvider()
+  session_log = InMemorySessionLog()
+  runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=session_log,
+    execution_plane=LocalExecutionPlane(),
+    max_tokens=1000,
+    max_turns=4,
+  ))
+
+  text = await collect_text(runner.run(session_id="reactive-compact", goal="a" * 5000))
+
+  assert text == "recovered"
+  assert provider.stream_calls == 2
+  events = await session_log.read("reactive-compact")
+  assert any(e.event.get("kind") == "compressed" for e in events)

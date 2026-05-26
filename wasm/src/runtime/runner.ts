@@ -11,6 +11,8 @@ import type { ExecutionPlane, RunContext } from "./execution-plane.js"
 import type { Governance } from "../governance.js"
 import { getKernel } from "./kernel.js"
 import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
+import { sanitizeReplayText } from "./replay-sanitize.js"
+import { buildLlmCompletedEvent, buildRunTerminalEvent, repairEventsForRecovery } from "./session-repair.js"
 
 export interface RuntimeOptions {
   provider: LLMProvider
@@ -204,8 +206,9 @@ export class RuntimeRunner {
     if (this.opts.knowledgeSource) sm.setKnowledgeEnabled(true)
 
     if (priorEvents && priorEvents.length > 0) {
-      seedProviderReplayFromEvents(this.opts.provider, priorEvents)
-      sm.preloadHistory(replayMessages(priorEvents))
+      const repaired = repairEventsForRecovery(priorEvents)
+      seedProviderReplayFromEvents(this.opts.provider, repaired)
+      sm.preloadHistory(replayMessages(repaired))
     }
 
     const sessionStart = Date.now()
@@ -272,14 +275,13 @@ export class RuntimeRunner {
           tokenCount: turnTokens || undefined,
         })
         const providerReplay = peekProviderReplay(this.opts.provider, finalText, finalToolCalls)
-        await this.opts.sessionLog.append(sessionId, {
-          kind: "llm_completed",
+        await this.opts.sessionLog.append(sessionId, buildLlmCompletedEvent({
           turn: sm.turn,
           content: finalText,
-          token_count: turnTokens || undefined,
-          tool_calls: finalToolCalls,
-          ...(providerReplay ? { provider_replay: providerReplay } : {}),
-        })
+          tokenCount: turnTokens || undefined,
+          toolCalls: finalToolCalls,
+          providerReplay,
+        }))
 
       } else if (action.kind === "execute_tools") {
         const allCalls = (action.calls ?? []) as ToolCall[]
@@ -326,7 +328,11 @@ export class RuntimeRunner {
     const totalTokens = result?.totalTokensUsed ? Number(result.totalTokensUsed) : 0
 
     nextCompressedArchiveStart = await this.appendObservations(sessionId, sm, nextCompressedArchiveStart)
-    await this.opts.sessionLog.append(sessionId, { kind: "run_terminal", reason: status, turns_used: turnsUsed, total_tokens: totalTokens })
+    await this.opts.sessionLog.append(sessionId, buildRunTerminalEvent({
+      reason: status,
+      turnsUsed,
+      totalTokens,
+    }))
 
     if (this.opts.dreamStore && this.opts.agentId) {
       const newMsgs = (sm.drainNewMessages() as Message[]).map(m => ({
@@ -394,7 +400,7 @@ function replayMessages(events: Array<{ seq: number; event: SessionEvent }>): Me
     } else if (e.kind === "llm_completed") {
       messages.push({
         role: "assistant",
-        content: e.content,
+        content: sanitizeReplayText(e.content),
         toolCalls: e.tool_calls ?? [],
         tokenCount: e.token_count,
       })

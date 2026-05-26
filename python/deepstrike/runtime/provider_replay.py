@@ -4,6 +4,7 @@ from typing import Any, TypedDict
 
 from deepstrike._kernel import ToolCall
 from deepstrike.providers.replay import assistant_replay_key
+from deepstrike.runtime.session_repair import effective_provider_replay
 
 class ProviderReplay(TypedDict, total=False):
     native_blocks: list[dict[str, Any]]
@@ -18,12 +19,17 @@ def seed_provider_replay_from_events(provider: Any, events: list[Any]) -> None:
         event = entry.event if hasattr(entry, "event") else entry
         if event.get("kind") != "llm_completed":
             continue
-        replay = event.get("provider_replay")
+        tool_calls = event.get("tool_calls", [])
+        replay = effective_provider_replay(
+            event.get("content", ""),
+            tool_calls,
+            event.get("provider_replay"),
+        )
         if not replay:
             continue
         seed(
             event.get("content", ""),
-            event.get("tool_calls", []),
+            tool_calls,
             replay,
         )
 

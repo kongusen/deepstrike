@@ -2,11 +2,11 @@ use deepstrike_core::context::renderer::RenderedContext;
 use deepstrike_core::types::message::{Message, Role};
 use futures::StreamExt;
 
+use crate::Result;
 use crate::harness::{HarnessEvent, HarnessOutcome, HarnessRequest, QualityGate, Verdict};
 use crate::providers::{LLMProvider, StreamEvent};
 use crate::run_event::RunEvent;
 use crate::runtime::RuntimeRunner;
-use crate::Result;
 
 fn rendered_context_from_messages(messages: Vec<Message>) -> RenderedContext {
     let mut system_parts = Vec::new();
@@ -69,7 +69,8 @@ impl<'a> SinglePassHarness<'a> {
     }
 
     pub async fn run(&self, request: HarnessRequest) -> Result<HarnessOutcome> {
-        let (text, iterations, total_tokens, status) = collect_run_runtime(self.runner, &request).await?;
+        let (text, iterations, total_tokens, status) =
+            collect_run_runtime(self.runner, &request).await?;
         Ok(HarnessOutcome {
             result: text,
             passed: true,
@@ -159,7 +160,9 @@ impl<'a> HarnessLoop<'a> {
         &'b self,
         request: HarnessRequest,
     ) -> impl futures::Stream<Item = Result<HarnessEvent>> + 'b {
-        use deepstrike_core::harness::eval_pipeline::{EvalAction, EvalEvent, EvalPipeline, EvalPolicy};
+        use deepstrike_core::harness::eval_pipeline::{
+            EvalAction, EvalEvent, EvalPipeline, EvalPolicy,
+        };
 
         async_stream::stream! {
             let mut pipeline = EvalPipeline::new(EvalPolicy { extract_skill_on_pass: true });

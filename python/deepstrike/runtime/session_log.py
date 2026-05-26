@@ -42,6 +42,11 @@ class CompressedEvent(TypedDict, total=False):
     kind: Literal["compressed"]
     turn: int
     archived_seq_range: tuple[int, int]
+    action: str
+    summary: str
+    summary_tokens: int
+    archive_ref: str
+    preserved_refs: list[str]
 
 
 class RunTerminalEvent(TypedDict, total=False):

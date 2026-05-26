@@ -2,7 +2,7 @@ import { createRequire } from "module"
 import { existsSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { Message, RenderedContext, ToolCall, ToolResult, ToolSchema } from "./types.js"
+import type { Message, RenderedContext, ToolCall, ToolResult, ToolSchema, TaskUpdate } from "./types.js"
 import type { SkillMetadata } from "./skills/loader.js"
 
 export interface GovernanceVerdict {
@@ -47,9 +47,12 @@ export interface LoopAction {
 }
 
 interface LoopObservation {
-  kind: "compressed"
+  kind: "compressed" | "renewed"
   action?: string
   rhoAfter?: number
+  sprint?: number
+  summary?: string
+  archived?: Message[]
 }
 
 interface LoopStateMachineInstance {
@@ -71,6 +74,13 @@ interface LoopStateMachineInstance {
   readonly turn: number
   pressure(): number
   takeObservations(): LoopObservation[]
+  forceCompact(): boolean
+  force_compact?(): boolean
+  initTask(goal: string, criteria: string[]): void
+  updateTask(update: TaskUpdate): void
+  recoveryContentBytes(): number
+  setTokenizer(name: string): void
+  setPlanToolEnabled(enabled: boolean): void
 }
 
 interface SignalRouterInstance {
@@ -162,7 +172,7 @@ const cjsRequire = createRequire(import.meta.url)
 let cachedKernel: KernelModule | undefined
 
 function resolveCoreModule(): string {
-  const localCore = join(dirname(fileURLToPath(import.meta.url)), "../../../crates/deepstrike-node")
+  const localCore = join(dirname(fileURLToPath(import.meta.url)), "../../crates/deepstrike-node")
   if (existsSync(join(localCore, "index.js"))) return localCore
   return "@deepstrike/core"
 }
