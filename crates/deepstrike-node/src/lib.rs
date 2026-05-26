@@ -62,6 +62,9 @@ use deepstrike_core::memory::idle_pipeline::{
     IdlePolicy as RustIdlePolicy,
 };
 use deepstrike_core::memory::semantic::MemoryEntry as RustMemoryEntry;
+use deepstrike_core::runtime::{
+    KernelInput as RustKernelInput, KernelRuntime as RustKernelRuntime,
+};
 use deepstrike_core::scheduler::policy::LoopPolicy as RustLoopPolicy;
 use deepstrike_core::scheduler::state_machine::{
     LoopAction as RustLoopAction, LoopEvent as RustLoopEvent,
@@ -886,6 +889,46 @@ fn observation_from_rust(o: RustLoopObservation) -> LoopObservation {
 #[napi]
 pub fn format_contract_for_system_prompt(contract: VerificationContract) -> String {
     verification_contract_to_rust(contract).format_for_system_prompt()
+}
+
+// ─────────────────────────────────────────── KernelRuntime ───────────────────────────────────────────
+
+/// Versioned kernel ABI runtime. Accepts/returns JSON encoded
+/// `KernelInput`/`KernelStep` payloads from deepstrike-core.
+#[napi]
+pub struct KernelRuntime {
+    inner: RustKernelRuntime,
+}
+
+#[napi]
+impl KernelRuntime {
+    #[napi(constructor)]
+    pub fn new(policy: LoopPolicy) -> Self {
+        Self {
+            inner: RustKernelRuntime::new(policy_to_rust(policy)),
+        }
+    }
+
+    #[napi]
+    pub fn step(&mut self, input_json: String) -> Result<String> {
+        let input: RustKernelInput = serde_json::from_str(&input_json).map_err(|e| {
+            Error::new(
+                Status::InvalidArg,
+                format!("invalid KernelInput JSON: {e}"),
+            )
+        })?;
+        serde_json::to_string(&self.inner.step(input)).map_err(|e| {
+            Error::new(
+                Status::GenericFailure,
+                format!("failed to encode KernelStep: {e}"),
+            )
+        })
+    }
+
+    #[napi]
+    pub fn is_terminal(&self) -> bool {
+        self.inner.is_terminal()
+    }
 }
 
 // ─────────────────────────────────────────── DeepStrikeRuntime ───────────────────────────────────────────

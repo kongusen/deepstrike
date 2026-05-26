@@ -11,6 +11,9 @@ use deepstrike_core::harness::eval_pipeline::{
     Criterion as RustCriterion, EvalAction as RustEvalAction, EvalEvent as RustEvalEvent,
     EvalPipeline as RustEvalPipeline, EvalPolicy as RustEvalPolicy, EvalResult as RustEvalResult,
 };
+use deepstrike_core::runtime::{
+    KernelInput as RustKernelInput, KernelRuntime as RustKernelRuntime,
+};
 use deepstrike_core::scheduler::policy::LoopPolicy as RustLoopPolicy;
 use deepstrike_core::scheduler::state_machine::{
     LoopAction as RustLoopAction, LoopEvent as RustLoopEvent,
@@ -886,6 +889,37 @@ fn governance_verdict_from_rust(verdict: RustGovernanceVerdict) -> GovernanceVer
             reason: Some(reason),
             retry_after_ms: None,
         },
+    }
+}
+
+// ────────────────────────────────────────────── KernelRuntime ──────────────────────────────────────────────
+
+#[wasm_bindgen]
+pub struct KernelRuntime {
+    inner: RustKernelRuntime,
+}
+
+#[wasm_bindgen]
+impl KernelRuntime {
+    #[wasm_bindgen(constructor)]
+    pub fn new(policy: LoopPolicy) -> Self {
+        Self {
+            inner: RustKernelRuntime::new(policy_to_rust(policy)),
+        }
+    }
+
+    /// Feed a JSON-encoded KernelInput and return a JSON-encoded KernelStep.
+    #[wasm_bindgen(js_name = step)]
+    pub fn step(&mut self, input_json: String) -> Result<String, JsValue> {
+        let input: RustKernelInput = serde_json::from_str(&input_json)
+            .map_err(|e| JsValue::from_str(&format!("invalid KernelInput JSON: {e}")))?;
+        serde_json::to_string(&self.inner.step(input))
+            .map_err(|e| JsValue::from_str(&format!("failed to encode KernelStep: {e}")))
+    }
+
+    #[wasm_bindgen(js_name = isTerminal)]
+    pub fn is_terminal(&self) -> bool {
+        self.inner.is_terminal()
     }
 }
 

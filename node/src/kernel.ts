@@ -169,8 +169,19 @@ interface IdlePipelineInstance {
   feedSynthesisResult(content: string): IdlePipelineAction
 }
 
+interface KernelRuntimeInstance {
+  step(inputJson: string): string
+  isTerminal(): boolean
+}
+
 interface KernelModule {
   Governance: new (defaultAction?: "allow" | "deny" | "ask_user") => GovernanceInstance
+  KernelRuntime: new (policy: {
+    maxTokens: number
+    maxTurns?: number
+    maxTotalTokens?: bigint
+    timeoutMs?: bigint
+  }) => KernelRuntimeInstance
   DeepStrikeRuntime: new (policy: {
     maxTokens: number
     maxTurns?: number
