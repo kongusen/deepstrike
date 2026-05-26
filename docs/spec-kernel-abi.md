@@ -2,7 +2,14 @@
 
 ## Status
 
-Draft, Phase 1 in progress.
+Draft, Phase 1 close-out.
+
+Current implementation status:
+
+- Core exposes versioned `KernelInput`, `KernelAction`, `KernelObservation`, and `KernelStep`.
+- Rust, Node, Python, and WASM SDK runners are driven through `KernelRuntime.step()`.
+- Node, PyO3, and WASM FFI expose JSON `step(input_json) -> step_json` plus read-side helpers needed by host runners.
+- Legacy direct runtime facades still exist as compatibility or test surfaces and must be explicitly deprecated, hidden, or removed before G1 is marked complete.
 
 ## Goal
 
@@ -12,9 +19,11 @@ The kernel owns agent semantics. SDKs own host effects. SDKs should feed version
 
 ## Version
 
-Current ABI version: `1`
+Current ABI version: `1`.
 
 Every top-level ABI payload carries a `version` field. Consumers must reject newer major versions they do not understand.
+
+For Node, Python, and WASM FFI, Phase 1 currently uses JSON as the canonical transport shape. The next close-out decision is whether this JSON ABI remains the long-term cross-language boundary or becomes an internal bridge behind generated/strongly typed bindings.
 
 ## Types
 
@@ -94,15 +103,29 @@ impl KernelRuntime {
 
 `KernelStep` contains one or more actions plus observations emitted during the step.
 
-Current implementation is intentionally thin over `LoopStateMachine`. This preserves behavior while giving FFI bindings a stable target.
+Current implementation is intentionally thin over `LoopStateMachine`. This preserves behavior while giving FFI bindings a stable target. Host SDK runners should treat `KernelRuntime.step()` as the runtime control-plane boundary.
 
-## Migration Plan
+Read-side helpers exposed for SDK bookkeeping:
 
-1. Core defines ABI types and `KernelRuntime`.
-2. Configuration, preload, capability, and loop transitions are expressible as `KernelInputEvent` variants.
-3. FFI bindings expose `KernelRuntime` and ABI payloads.
-4. SDK runners migrate from direct `LoopStateMachine` calls to `KernelRuntime::step`.
-5. Direct `LoopStateMachine` / `ContextManager` access becomes internal or test-only.
+| Helper | Purpose |
+|---|---|
+| `turn()` | Audit/session event turn attribution |
+| `recoveryContentBytes()` | Replay repair and truncation budget |
+| `render()` | Reactive compact retry context |
+| `drainNewMessages()` | Dream/session persistence |
+| `preservedRefs()` | Compression audit metadata |
+
+## Migration Status
+
+1. [x] Core defines ABI types and `KernelRuntime`.
+2. [x] Configuration, preload, capability, task update, tokenizer, and loop transitions are expressible as `KernelInputEvent` variants.
+3. [x] FFI bindings expose `KernelRuntime.step()` and ABI payloads.
+4. [x] Rust SDK runner migrated from direct `LoopStateMachine` calls to `KernelRuntime::step`.
+5. [x] Node SDK runner migrated from direct runtime calls to `KernelRuntime.step()`.
+6. [x] Python SDK runner migrated from direct runtime calls to `KernelRuntime.step()`.
+7. [x] WASM SDK runner migrated from direct runtime calls to `KernelRuntime.step()`.
+8. [ ] Direct `LoopStateMachine` / `ContextManager` / legacy runtime access becomes internal, deprecated, or test-only.
+9. [ ] Golden ABI fixtures cover all four host bindings.
 
 ## Compatibility Rules
 

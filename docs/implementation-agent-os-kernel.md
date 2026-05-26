@@ -111,7 +111,7 @@ KernelOutput:
 | Capability | `CapabilityManifest`、`CapabilityChanged`、运行时 mount/unmount | 无 Pin/Lease 一等命令 |
 | Context VM | `ContextSectionRegistry`、6 分区、pin/cache policy | 缺 `ContextPage` / `ContextFault` / Artifacts 分区 |
 | LSM | `ToolDecisionPipeline`、monotonic veto、四端 `ToolDenied` audit/stream event | 未标准化全链路 stage vocabulary |
-| Kernel ABI | `LoopAction` / `LoopEvent` / `LoopObservation` 内聚在 core；PR 2 已开始抽 `KernelInput` / `KernelAction` / `KernelObservation`；Rust/Node/Python/WASM runner 已迁入 `KernelRuntime.step()` | FFI 仍暴露内部结构；默认入口和长期 JSON/强类型 ABI 策略待收口 |
+| Kernel ABI | `LoopAction` / `LoopEvent` / `LoopObservation` 内聚在 core；`KernelInput` / `KernelAction` / `KernelObservation` + `KernelRuntime.step()` 已落地；Rust/Node/Python/WASM runner 已迁入 step 驱动 | 默认入口和长期 JSON/强类型 ABI 策略待收口；旧 runtime facade 仍需降级为兼容层或 test-only |
 | Skill sandbox | Rust `sandboxed_skill`、watcher、Node/Python watcher、process sandbox 文案校正 | 资源策略仍是 hygiene，不是 OS-enforced sandbox |
 
 ---
@@ -123,9 +123,22 @@ KernelOutput:
 | Phase 0 / PR 1：V2 收口 | ✅ 已完成 | `68c7496 feat(kernel): add agent OS v2 runtime primitives` |
 | PR 1 文档规划 | ✅ 已完成 | `6e1fecd docs: plan agent OS kernel roadmap` |
 | G0 — V2 Mergeable | ✅ 已通过 | `cargo check --workspace`、`cargo test -p deepstrike-core`、`cargo test --manifest-path rust/Cargo.toml`、Node/WASM build + targeted tests、Python targeted tests |
-| Phase 1 / PR 2：Kernel ABI 固化 | 🟡 进行中 | Core ABI + Node/PyO3/WASM JSON ABI `KernelRuntime.step()` 已落地；Rust/Node/Python/WASM SDK Runner 已迁入 step 驱动；默认入口收口待最终清理 |
+| Phase 1 / PR 2：Kernel ABI 固化 | 🟡 收口中 | Core ABI + Node/PyO3/WASM JSON ABI `KernelRuntime.step()` 已落地；Rust/Node/Python/WASM SDK Runner 已迁入 step 驱动；默认入口/ABI 策略待最终清理 |
 
-**当前主线：** 继续 PR 2，先稳定 core ABI 合同，再逐端把 FFI / SDK runner 从直接操作 `LoopStateMachine` 迁移到 `KernelRuntime`。
+**当前主线：** PR 2 已完成四端 runner 迁移，下一步集中收口默认入口：把旧 `LoopStateMachine` / `DeepStrikeRuntime` 暴露面降为兼容层或 test-only，并决定 JSON ABI 是否作为长期 FFI 边界。
+
+**Phase 1 最新提交链：**
+
+| 提交 | 内容 |
+|---|---|
+| `e18c2cf` | 定义 versioned `KernelInput` / `KernelAction` / `KernelObservation` |
+| `808e4a8` | Node/PyO3/WASM 暴露 `KernelRuntime.step()` JSON ABI |
+| `9d1b0df` | setup/config 事件接入 kernel ABI |
+| `95412d2` | task update / tokenizer 等运行时更新接入 kernel ABI |
+| `736a5a8` | Rust SDK runner 迁入 `KernelRuntime.step()` |
+| `d087ca1` / `8695f35` | Node 读侧 helper + runner 迁移 |
+| `571d3f3` / `9f3d867` | Python 读侧 helper + runner 迁移 |
+| `d014065` | WASM 读侧 helper + runner 迁移，补 413 reactive compact retry |
 
 ## 阶段规划
 
@@ -175,7 +188,7 @@ cargo test --manifest-path rust/Cargo.toml
 
 ### 阶段 1：Kernel ABI 固化
 
-**状态：🟡 进行中。**
+**状态：🟡 收口中。**
 
 **目标：** SDK 不再直接操作 `LoopStateMachine` 细节。
 
@@ -197,8 +210,26 @@ cargo test --manifest-path rust/Cargo.toml
 5. [x] config / preload / capability / milestone setup 纳入 `KernelInputEvent`
 6. [x] tokenizer / task-state update 纳入 `KernelInputEvent`
 7. [x] `RuntimeRunner` 重构为 input/action 驱动，不再散落 `sm.feed(...)` 细节（Rust/Node/Python/WASM SDK 已完成）
-8. [~] FFI 默认入口收口到 `KernelRuntime`，隐藏 `LoopStateMachine` / `ContextManager`（Node/PyO3/WASM `KernelRuntime` 读侧 helper 已补齐）
+8. [~] FFI 默认入口收口到 `KernelRuntime`，隐藏 `LoopStateMachine` / `ContextManager`（Node/PyO3/WASM `KernelRuntime` 读侧 helper 已补齐，旧 facade 待降级）
 9. [ ] Node / Python / WASM 绑定从 JSON ABI 过渡到强类型 API（或确认 JSON ABI 作为长期 FFI 边界）
+
+**已验证：**
+
+```bash
+cargo check --workspace
+npm run build        # node
+npm test             # node
+npm run build        # wasm
+npm test             # wasm
+PYTHONPATH=/Users/shan/work/uploads/deepstrike/python poetry run pytest -q
+```
+
+**剩余收口任务：**
+
+1. [ ] 明确旧 `DeepStrikeRuntime` / `LoopStateMachine` FFI：删除、deprecated，或标记 test-only。
+2. [ ] 确认 JSON ABI 是否作为长期跨语言边界；若保留，冻结 schema 并补 contract tests。
+3. [ ] 为 `KernelInput` / `KernelAction` / `KernelObservation` 增加四端 golden fixture，防止字段漂移。
+4. [ ] 更新 SDK public docs，明确 SDK 是 host effect driver，不再持有 runtime semantics。
 
 **验收：**
 
