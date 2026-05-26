@@ -35,6 +35,7 @@ use crate::runtime::execution_plane::{
 use crate::runtime::provider_replay::{peek_provider_replay, seed_provider_replay_from_events};
 use crate::runtime::replay::{
     is_mid_run, repair_entries_with_cap, replay_messages_with_cap,
+    replay_messages_with_cap_and_loader,
 };
 use crate::runtime::session_log::{SessionEntry, SessionLog};
 use crate::{Error, Result};
@@ -389,11 +390,26 @@ impl RuntimeRunner {
             if let Some(ref events) = prior_events {
                 let repaired = repair_entries_with_cap(events, max_bytes);
                 seed_provider_replay_from_events(self.opts.provider.as_ref(), &repaired);
+
+                let messages = if let Some(ref store) = self.opts.compression_store {
+                    let store_clone = store.clone();
+                    replay_messages_with_cap_and_loader(&repaired, max_bytes, move |archive_ref| {
+                        store_clone.read(archive_ref).map_err(|_| {
+                            deepstrike_core::context::snapshot::ContextFault::MissingArchive {
+                                session_id: String::new(),
+                                seq: 0,
+                            }
+                        })
+                    })
+                } else {
+                    replay_messages_with_cap(&repaired, max_bytes)
+                };
+
                 kernel_apply(
                     &mut kernel,
                     &mut pending_observations,
                     KernelInputEvent::PreloadHistory {
-                        messages: replay_messages_with_cap(&repaired, max_bytes),
+                        messages,
                     },
                 );
             }
@@ -420,6 +436,7 @@ impl RuntimeRunner {
                     &mut pending_observations,
                     KernelInputEvent::StartRun {
                         task: RuntimeTask::new(&goal).with_criteria(criteria),
+                        run_spec: None,
                     },
                 )
             };
@@ -970,6 +987,9 @@ impl RuntimeRunner {
                     turn,
                     added,
                     removed,
+                    change_kind,
+                    capability_id,
+                    version,
                 } => {
                     self.log(
                         session_id,
@@ -977,6 +997,9 @@ impl RuntimeRunner {
                             turn,
                             added,
                             removed,
+                            change_kind,
+                            capability_id,
+                            version,
                         },
                     )
                     .await;

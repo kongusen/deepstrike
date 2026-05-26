@@ -296,9 +296,13 @@ export class RuntimeRunner {
     if (priorEvents && priorEvents.length > 0) {
       const repaired = repairEventsForRecovery(priorEvents, maxBytes)
       seedProviderReplayFromEvents(this.opts.provider, repaired)
+      const loadArchive = this.opts.compressionStore
+        ? (ref: string) => this.opts.compressionStore!.read(ref)
+        : undefined
+      const replayed = await replayMessagesAsync(repaired, maxBytes, loadArchive)
       kernelApply(runtime, this.pendingObservations, {
         kind: "preload_history",
-        messages: replayMessages(repaired, maxBytes).map(messageToKernelMessage),
+        messages: replayed.map(messageToKernelMessage),
       })
     }
 
@@ -667,6 +671,80 @@ export function replayMessages(events: Array<{ seq: number; event: SessionEvent 
           toolCalls: [],
           tokenCount: Math.max(1, Math.ceil(systemText.length / 4)),
         })
+      }
+    } else if (e.kind === "llm_completed") {
+      messages.push({
+        role: "assistant",
+        content: sanitizeReplayText(e.content, maxBytes),
+        toolCalls: e.tool_calls ?? [],
+        tokenCount: e.token_count,
+      })
+    } else if (e.kind === "tool_completed") {
+      for (const r of e.results) {
+        messages.push({
+          role: "tool",
+          content: "",
+          toolCalls: [],
+          contentParts: [{ type: "tool_result", callId: r.call_id, output: sanitizeReplayText(r.output, maxBytes), isError: r.is_error ?? false }],
+          tokenCount: r.token_count,
+        })
+      }
+    } else if (e.kind === "rollbacked") {
+      const len = e.checkpoint_history_len ?? 0
+      if (messages.length > len) {
+        messages.length = len
+      }
+    }
+  }
+  return messages
+}
+
+export async function replayMessagesAsync(
+  events: Array<{ seq: number; event: SessionEvent }>,
+  maxBytes?: number,
+  loadArchive?: (archiveRef: string) => Promise<Message[]>,
+): Promise<Message[]> {
+  const messages: Message[] = []
+  for (const { event: e } of events) {
+    if (e.kind === "run_started") {
+      const userText = e.criteria.length
+        ? `${e.goal}\n\nCriteria:\n${e.criteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
+        : e.goal
+      messages.push({
+        role: "user",
+        content: userText,
+        toolCalls: [],
+        tokenCount: Math.max(1, Math.ceil(userText.length / 4)),
+      })
+    } else if (e.kind === "compressed") {
+      let loadedSuccessfully = false
+      if (e.archive_ref && loadArchive) {
+        try {
+          const archivedMsgs = await loadArchive(e.archive_ref)
+          for (const msg of archivedMsgs) {
+            messages.push({
+              role: msg.role,
+              content: sanitizeReplayText(msg.content, maxBytes),
+              toolCalls: msg.toolCalls ?? [],
+              tokenCount: msg.tokenCount,
+            })
+          }
+          loadedSuccessfully = true
+        } catch (err) {
+          // Loader failed (e.g. MissingArchive). We degrade and fallback.
+        }
+      }
+
+      if (!loadedSuccessfully) {
+        if (e.summary) {
+          const systemText = `[Compressed context: turn ${e.turn}]\n${e.summary}`
+          messages.push({
+            role: "system",
+            content: systemText,
+            toolCalls: [],
+            tokenCount: Math.max(1, Math.ceil(systemText.length / 4)),
+          })
+        }
       }
     } else if (e.kind === "llm_completed") {
       messages.push({

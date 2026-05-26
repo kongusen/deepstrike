@@ -11,6 +11,11 @@ pub trait ArchiveStore: Send + Sync {
         seq: u64,
         messages: &[Message],
     ) -> Result<String, Box<dyn Error + Send + Sync>>;
+
+    fn read(
+        &self,
+        archive_ref: &str,
+    ) -> Result<Vec<Message>, Box<dyn Error + Send + Sync>>;
 }
 
 pub struct NullArchiveStore;
@@ -23,6 +28,16 @@ impl ArchiveStore for NullArchiveStore {
         _messages: &[Message],
     ) -> Result<String, Box<dyn Error + Send + Sync>> {
         Ok(String::new())
+    }
+
+    fn read(
+        &self,
+        _archive_ref: &str,
+    ) -> Result<Vec<Message>, Box<dyn Error + Send + Sync>> {
+        Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "NullArchiveStore does not store archives",
+        )))
     }
 }
 
@@ -54,5 +69,24 @@ impl ArchiveStore for FileArchiveStore {
         }
 
         Ok(file_path.to_string_lossy().to_string())
+    }
+
+    fn read(
+        &self,
+        archive_ref: &str,
+    ) -> Result<Vec<Message>, Box<dyn Error + Send + Sync>> {
+        let file = File::open(archive_ref)?;
+        let reader = std::io::BufReader::new(file);
+        let mut messages = Vec::new();
+        use std::io::BufRead;
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let msg: Message = serde_json::from_str(&line)?;
+            messages.push(msg);
+        }
+        Ok(messages)
     }
 }

@@ -370,9 +370,11 @@ class RuntimeRunner:
       from deepstrike.runtime.provider_replay import seed_provider_replay_from_events
       repaired = repair_events_for_recovery(prior_events, max_bytes)
       seed_provider_replay_from_events(self._opts.provider, repaired)
+      load_archive = self._opts.compression_store.read if self._opts.compression_store else None
+      replayed = await _replay_messages_async(repaired, max_bytes, load_archive)
       kernel_apply(runtime, self._pending_observations, {
         "kind": "preload_history",
-        "messages": [message_to_kernel(message) for message in _replay_messages(repaired, max_bytes)],
+        "messages": [message_to_kernel(message) for message in replayed],
       })
 
     session_start = int(time.time() * 1000)
@@ -690,6 +692,80 @@ def _replay_messages(events: list[SessionEntry], max_bytes: int | None = None) -
           tool_calls=[],
           token_count=max(1, len(system_text) // 4),
         ))
+    elif kind == "llm_completed":
+      content = sanitize_replay_text(e.get("content", ""), max_bytes)
+      messages.append(Message(
+        role="assistant",
+        content=content,
+        tool_calls=e.get("tool_calls", []),
+        token_count=e.get("token_count"),
+      ))
+    elif kind == "tool_completed":
+      for r in e.get("results", []):
+        output = sanitize_replay_text(r.output, max_bytes)
+        part = ContentPartObj(
+          type="tool_result",
+          call_id=r.call_id,
+          output=output,
+          is_error=r.is_error,
+        )
+        messages.append(Message(role="tool", content="", tool_calls=[], content_parts=[part]))
+    elif kind == "rollbacked":
+      len_val = e.get("checkpoint_history_len", 0)
+      if len(messages) > len_val:
+        messages = messages[:len_val]
+  return messages
+
+
+async def _replay_messages_async(
+  events: list[SessionEntry],
+  max_bytes: int | None = None,
+  load_archive: Callable[[str], Awaitable[list[Message]]] | None = None,
+) -> list[Message]:
+  messages: list[Message] = []
+  for entry in events:
+    e = entry.event
+    kind = e.get("kind")
+    if kind == "run_started":
+      criteria = e.get("criteria", [])
+      user_text = (
+        f"{e['goal']}\n\nCriteria:\n" + "\n".join(f"{i + 1}. {c}" for i, c in enumerate(criteria))
+        if criteria
+        else e["goal"]
+      )
+      messages.append(Message(
+        role="user", content=user_text, tool_calls=[],
+        token_count=max(1, len(user_text) // 4),
+      ))
+    elif kind == "compressed":
+      loaded_successfully = False
+      archive_ref = e.get("archive_ref")
+      if archive_ref and load_archive:
+        try:
+          archived_msgs = await load_archive(archive_ref)
+          for msg in archived_msgs:
+            content = sanitize_replay_text(msg.content, max_bytes)
+            messages.append(Message(
+              role=msg.role,
+              content=content,
+              tool_calls=msg.tool_calls,
+              token_count=msg.token_count,
+              content_parts=msg.content_parts,
+            ))
+          loaded_successfully = True
+        except Exception:
+          pass
+
+      if not loaded_successfully:
+        summary = e.get("summary")
+        if summary:
+          system_text = f"[Compressed context: turn {e.get('turn', 0)}]\n{summary}"
+          messages.append(Message(
+            role="system",
+            content=system_text,
+            tool_calls=[],
+            token_count=max(1, len(system_text) // 4),
+          ))
     elif kind == "llm_completed":
       content = sanitize_replay_text(e.get("content", ""), max_bytes)
       messages.append(Message(

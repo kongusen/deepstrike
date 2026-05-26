@@ -1,6 +1,6 @@
 use deepstrike_core::runtime::repair::{
-    repair_events, repair_events_with_cap, repair_llm_completed, sanitize_recovery_text,
-    sanitize_recovery_text_bounded,
+    reconstruct_messages_with_fallback, repair_events, repair_events_with_cap,
+    repair_llm_completed, sanitize_recovery_text, sanitize_recovery_text_bounded,
 };
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::types::message::{Content, ContentPart, Message, Role};
@@ -35,74 +35,24 @@ pub fn replay_messages(entries: &[SessionEntry]) -> Vec<Message> {
 }
 
 pub fn replay_messages_with_cap(entries: &[SessionEntry], max_bytes: usize) -> Vec<Message> {
+    replay_messages_with_cap_and_loader(entries, max_bytes, |_| {
+        Err(deepstrike_core::context::snapshot::ContextFault::MissingArchive {
+            session_id: String::new(),
+            seq: 0,
+        })
+    })
+}
+
+pub fn replay_messages_with_cap_and_loader<F>(
+    entries: &[SessionEntry],
+    max_bytes: usize,
+    load_archive: F,
+) -> Vec<Message>
+where
+    F: FnMut(&str) -> Result<Vec<Message>, deepstrike_core::context::snapshot::ContextFault>,
+{
     let events: Vec<SessionEvent> = entries.iter().map(|e| e.event.clone()).collect();
-    let repaired = repair_events_with_cap(events, max_bytes);
-    let mut messages = Vec::new();
-    for event in repaired {
-        match event {
-            SessionEvent::RunStarted { goal, criteria, .. } => {
-                let user_text = if criteria.is_empty() {
-                    goal.clone()
-                } else {
-                    format!(
-                        "{goal}\n\nCriteria:\n{}",
-                        criteria
-                            .iter()
-                            .enumerate()
-                            .map(|(i, c)| format!("{}. {c}", i + 1))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    )
-                };
-                messages.push(Message {
-                    role: Role::User,
-                    content: Content::Text(user_text),
-                    tool_calls: vec![],
-                    token_count: None,
-                });
-            }
-            SessionEvent::LlmCompleted { mut message, .. } => {
-                if let Content::Text(text) = &mut message.content {
-                    *text = sanitize_recovery_text_bounded(text, max_bytes);
-                }
-                messages.push(message);
-            }
-            SessionEvent::ToolCompleted { results, .. } => {
-                for r in results {
-                    let output = match &r.output {
-                        Content::Text(t) => sanitize_recovery_text_bounded(t, max_bytes),
-                        Content::Parts(_) => String::new(),
-                    };
-                    messages.push(Message {
-                        role: Role::Tool,
-                        content: Content::Parts(vec![ContentPart::ToolResult {
-                            call_id: r.call_id.clone(),
-                            output,
-                            is_error: r.is_error,
-                        }]),
-                        tool_calls: vec![],
-                        token_count: r.token_count,
-                    });
-                }
-            }
-            SessionEvent::Compressed { turn, summary, .. } => {
-                if let Some(sum) = summary {
-                    let system_text = format!("[Compressed context: turn {turn}]\n{sum}");
-                    messages.push(Message {
-                        role: Role::System,
-                        content: Content::Text(system_text),
-                        tool_calls: vec![],
-                        token_count: None,
-                    });
-                }
-            }
-            SessionEvent::Rollbacked { checkpoint_history_len, .. } => {
-                messages.truncate(checkpoint_history_len as usize);
-            }
-            _ => {}
-        }
-    }
-    messages
+    reconstruct_messages_with_fallback(&events, "", max_bytes, load_archive)
 }
 
 #[cfg(test)]
