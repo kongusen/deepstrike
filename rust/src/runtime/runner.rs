@@ -8,6 +8,7 @@ use deepstrike_core::scheduler::policy::LoopPolicy;
 use deepstrike_core::scheduler::state_machine::{
     LoopAction, LoopEvent, LoopObservation, LoopStateMachine,
 };
+use deepstrike_core::types::milestone::MilestoneCheckResult;
 use deepstrike_core::signals::router::SignalRouter;
 use deepstrike_core::types::message::{Message, ToolCall};
 use deepstrike_core::types::policy::SignalDisposition;
@@ -15,7 +16,8 @@ use deepstrike_core::types::signal::{
     RuntimeSignal as KernelSignal, SignalSource as KernelSignalSource,
     SignalType as KernelSignalType, Urgency,
 };
-use deepstrike_core::types::skill::SkillMetadata;
+use crate::runtime::sandboxed_skill::scan_skill_dir;
+use crate::runtime::skill_watcher::SkillWatcher;
 use deepstrike_core::types::task::RuntimeTask;
 use futures::StreamExt;
 
@@ -40,6 +42,21 @@ use deepstrike_core::context::task_state::TaskUpdate;
 use deepstrike_core::context::token_engine::ContextTokenEngine;
 use deepstrike_core::runtime::repair::{repair_llm_completed, repair_llm_completed_with_cap};
 
+/// Controls what the runner does when the state machine returns
+/// `EvaluateMilestone` — i.e., the LLM finished a turn but a milestone phase
+/// has not yet been evaluated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MilestonePolicy {
+    /// Terminate the run immediately with `status = "milestone_pending"`.
+    /// Callers that want real milestone evaluation must drive the SM themselves
+    /// or use `AutoPass` for testing.  This is the **default**.
+    #[default]
+    Terminate,
+    /// Unconditionally pass every milestone phase.  Useful in unit tests and
+    /// capability-unlock–only scenarios where the criteria check is a no-op.
+    AutoPass,
+}
+
 /// Configuration for a `RuntimeRunner` (aligned with Node/Python `RuntimeOptions`).
 pub struct RuntimeOptions {
     pub provider: Box<dyn LLMProvider>,
@@ -63,6 +80,8 @@ pub struct RuntimeOptions {
     pub tokenizer: Option<String>,
     pub enable_plan_tool: Option<bool>,
     pub on_tool_suspend: Option<ToolSuspendHandler>,
+    /// How to handle `EvaluateMilestone` actions. Default: `Terminate`.
+    pub milestone_policy: MilestonePolicy,
 }
 
 /// Orchestrates the agentic turn loop via `LoopStateMachine` + session event log.
@@ -312,25 +331,9 @@ impl RuntimeRunner {
                 sm.ctx.partitions.memory.push(Message::user(mem.clone()), tokens);
             }
 
+            let skill_watcher = self.opts.skill_dir.as_deref().and_then(SkillWatcher::start);
             if let Some(skill_dir) = &self.opts.skill_dir {
-                if let Ok(entries) = std::fs::read_dir(skill_dir) {
-                    let mut metas = Vec::new();
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().and_then(|e| e.to_str()) == Some("md") {
-                            if let Ok(content) = std::fs::read_to_string(&path) {
-                                let name = path
-                                    .file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let description = parse_frontmatter_description(&content);
-                                metas.push(SkillMetadata::new(name, description));
-                            }
-                        }
-                    }
-                    sm.ctx.set_available_skills(metas);
-                }
+                sm.ctx.set_available_skills(scan_skill_dir(skill_dir));
             }
 
             let recovery_tokens = sm.ctx.config.recovery_content_tokens(sm.ctx.max_tokens);
@@ -358,7 +361,20 @@ impl RuntimeRunner {
                 sm.start(RuntimeTask::new(&goal).with_criteria(criteria))
             };
 
+            let mut last_skill_version: u64 = skill_watcher.as_ref().map(|w| w.version()).unwrap_or(0);
+
             while !sm.is_terminal() {
+                // Hot-reload: refresh skill catalog if the watcher detected changes.
+                if let (Some(watcher), Some(skill_dir)) =
+                    (&skill_watcher, &self.opts.skill_dir)
+                {
+                    let cur = watcher.version();
+                    if cur != last_skill_version {
+                        last_skill_version = cur;
+                        sm.ctx.set_available_skills(scan_skill_dir(skill_dir));
+                    }
+                }
+
                 next_archive_start = self
                     .append_observations(&session_id, &mut sm, next_archive_start)
                     .await;
@@ -545,6 +561,7 @@ impl RuntimeRunner {
                                 call_id: call.id.clone(),
                                 output: deepstrike_core::types::message::Content::Text("success".to_string()),
                                 is_error: false,
+                                is_fatal: false,
                                 token_count: None,
                             });
                             yield RunEvent::ToolResult {
@@ -564,8 +581,40 @@ impl RuntimeRunner {
                                             call_id: compact_str::CompactString::new(&call_id),
                                             output: deepstrike_core::types::message::Content::Text(content),
                                             is_error,
+                                            is_fatal: false,
                                             token_count: None,
                                         });
+                                    }
+                                    RunEvent::ToolArgumentRepaired { call_id, name, original_arguments, repaired_arguments } => {
+                                        self.log(
+                                            &session_id,
+                                            SessionEvent::ToolArgumentRepaired {
+                                                turn: sm.turn,
+                                                tool: name.clone(),
+                                                original_arguments: original_arguments.clone(),
+                                                repaired_arguments: repaired_arguments.clone(),
+                                            },
+                                        )
+                                        .await;
+                                        yield RunEvent::ToolArgumentRepaired {
+                                            call_id,
+                                            name,
+                                            original_arguments,
+                                            repaired_arguments,
+                                        };
+                                    }
+                                    RunEvent::ToolDenied { call_id, tool_name, reason } => {
+                                        self.log(
+                                            &session_id,
+                                            SessionEvent::ToolDenied {
+                                                turn: sm.turn,
+                                                call_id: call_id.clone(),
+                                                tool_name: tool_name.clone(),
+                                                reason: reason.clone(),
+                                            },
+                                        )
+                                        .await;
+                                        yield RunEvent::ToolDenied { call_id, tool_name, reason };
                                     }
                                     other => yield other,
                                 }
@@ -587,6 +636,39 @@ impl RuntimeRunner {
                         .await;
 
                         action = sm.feed(LoopEvent::ToolResults { results: tool_results });
+                    }
+                    LoopAction::EvaluateMilestone { phase_id, criteria: _ } => {
+                        match self.opts.milestone_policy {
+                            MilestonePolicy::AutoPass => {
+                                let result = MilestoneCheckResult::pass(phase_id.clone());
+                                action = sm.feed(LoopEvent::MilestoneResult { result });
+                                next_archive_start = self
+                                    .append_observations(&session_id, &mut sm, next_archive_start)
+                                    .await;
+                            }
+                            MilestonePolicy::Terminate => {
+                                // No external verifier — terminate so the caller can drive
+                                // evaluation themselves via a custom run loop.
+                                next_archive_start = self
+                                    .append_observations(&session_id, &mut sm, next_archive_start)
+                                    .await;
+                                self.log(
+                                    &session_id,
+                                    SessionEvent::RunTerminal {
+                                        reason: "milestone_pending".to_string(),
+                                        turns_used: sm.turn.max(1),
+                                        total_tokens: 0,
+                                    },
+                                )
+                                .await;
+                                yield RunEvent::Done {
+                                    iterations: sm.turn.max(1),
+                                    total_tokens: 0,
+                                    status: "milestone_pending".to_string(),
+                                };
+                                return;
+                            }
+                        }
                     }
                     LoopAction::Done { result } => {
                         let status = format!("{:?}", result.termination).to_lowercase();
@@ -669,60 +751,119 @@ impl RuntimeRunner {
     ) -> u64 {
         let observations = sm.take_observations();
         for obs in observations {
-            let (action, rho_after, summary, archived) = match obs {
+            match obs {
                 LoopObservation::Compressed {
                     action,
-                    rho_after,
+                    rho_after: _,
                     summary,
                     archived,
-                } => (action, rho_after, summary, archived),
-                _ => continue,
-            };
-            let Some(log) = &self.opts.session_log else {
-                continue;
-            };
-            let latest = log.latest_seq(session_id).await.unwrap_or(-1) as u64;
-            if latest < next_archive_start {
-                continue;
-            }
-            let end = latest;
+                } => {
+                    let Some(log) = &self.opts.session_log else {
+                        continue;
+                    };
+                    let latest = log.latest_seq(session_id).await.unwrap_or(-1) as u64;
+                    if latest < next_archive_start {
+                        continue;
+                    }
+                    let end = latest;
 
-            let mut archive_ref = None;
-            if let Some(store) = &self.opts.compression_store {
-                if !archived.is_empty() {
-                    if let Ok(path_ref) = store.write(session_id, next_archive_start, &archived) {
-                        if !path_ref.is_empty() {
-                            archive_ref = Some(path_ref);
+                    let mut archive_ref = None;
+                    if let Some(store) = &self.opts.compression_store {
+                        if !archived.is_empty() {
+                            if let Ok(path_ref) = store.write(session_id, next_archive_start, &archived) {
+                                if !path_ref.is_empty() {
+                                    archive_ref = Some(path_ref);
+                                }
+                            }
                         }
                     }
+
+                    let summary_tokens = summary.as_ref().map(|s| sm.ctx.engine.count(s));
+                    let action_str = match action {
+                        PressureAction::None => "none".to_string(),
+                        PressureAction::SnipCompact => "snip_compact".to_string(),
+                        PressureAction::MicroCompact => "micro_compact".to_string(),
+                        PressureAction::ContextCollapse => "context_collapse".to_string(),
+                        PressureAction::AutoCompact => "auto_compact".to_string(),
+                    };
+
+                    if let Ok(compressed_seq) = log
+                        .append(
+                            session_id,
+                            SessionEvent::Compressed {
+                                turn: sm.turn,
+                                archived_seq_range: (next_archive_start, end),
+                                action: Some(action_str),
+                                summary: summary.clone(),
+                                summary_tokens,
+                                archive_ref,
+                                preserved_refs: sm.ctx.partitions.task_state.preserved_refs.clone(),
+                            },
+                        )
+                        .await
+                    {
+                        next_archive_start = compressed_seq + 1;
+                    }
                 }
-            }
-
-            let summary_tokens = summary.as_ref().map(|s| sm.ctx.engine.count(s));
-            let action_str = match action {
-                PressureAction::None => "none".to_string(),
-                PressureAction::SnipCompact => "snip_compact".to_string(),
-                PressureAction::MicroCompact => "micro_compact".to_string(),
-                PressureAction::ContextCollapse => "context_collapse".to_string(),
-                PressureAction::AutoCompact => "auto_compact".to_string(),
-            };
-
-            if let Ok(compressed_seq) = log
-                .append(
-                    session_id,
-                    SessionEvent::Compressed {
-                        turn: sm.turn,
-                        archived_seq_range: (next_archive_start, end),
-                        action: Some(action_str),
-                        summary: summary.clone(),
-                        summary_tokens,
-                        archive_ref,
-                        preserved_refs: sm.ctx.partitions.task_state.preserved_refs.clone(),
-                    },
-                )
-                .await
-            {
-                next_archive_start = compressed_seq + 1;
+                LoopObservation::Rollbacked {
+                    turn,
+                    checkpoint_history_len,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::Rollbacked {
+                            turn,
+                            checkpoint_history_len,
+                        },
+                    )
+                    .await;
+                }
+                LoopObservation::CapabilityChanged {
+                    turn,
+                    added,
+                    removed,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::CapabilityChanged {
+                            turn,
+                            added,
+                            removed,
+                        },
+                    )
+                    .await;
+                }
+                LoopObservation::MilestoneAdvanced {
+                    turn,
+                    phase_id,
+                    capabilities_unlocked,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::MilestoneAdvanced {
+                            turn,
+                            phase_id,
+                            capabilities_unlocked,
+                        },
+                    )
+                    .await;
+                }
+                LoopObservation::MilestoneBlocked {
+                    turn,
+                    phase_id,
+                    reason,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::MilestoneBlocked {
+                            turn,
+                            phase_id,
+                            reason,
+                        },
+                    )
+                    .await;
+                }
+                _ => {}
             }
         }
         next_archive_start
@@ -815,21 +956,6 @@ fn rendered_context_from_messages(
         system_text: system_parts.join("\n\n"),
         turns,
     }
-}
-
-fn parse_frontmatter_description(content: &str) -> String {
-    let body = content.trim_start();
-    if !body.starts_with("---") {
-        return String::new();
-    }
-    let rest = &body[3..];
-    let end = rest.find("\n---").unwrap_or(rest.len());
-    for line in rest[..end].lines() {
-        if let Some(val) = line.strip_prefix("description:") {
-            return val.trim().to_string();
-        }
-    }
-    String::new()
 }
 
 fn parse_update_plan_args(val: &serde_json::Value) -> TaskUpdate {

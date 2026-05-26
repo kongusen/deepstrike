@@ -593,6 +593,7 @@ impl ToolResult {
             call_id: CompactString::new(&self.call_id),
             output: Content::Text(self.output.clone()),
             is_error: self.is_error,
+            is_fatal: false,
             token_count: self.token_count,
         }
     }
@@ -909,9 +910,10 @@ impl RenderedContext {
 }
 
 /// Tagged union for `LoopAction`. Inspect `kind` then read the matching field:
-/// - `kind == "call_llm"`      → `context` (RenderedContext), `tools`
-/// - `kind == "execute_tools"` → `calls`
-/// - `kind == "done"`          → `result`
+/// - `kind == "call_llm"`           → `context` (RenderedContext), `tools`
+/// - `kind == "execute_tools"`      → `calls`
+/// - `kind == "done"`               → `result`
+/// - `kind == "evaluate_milestone"` → `phase_id`, `criteria`
 #[pyclass]
 #[derive(Clone)]
 struct LoopAction {
@@ -925,6 +927,10 @@ struct LoopAction {
     calls: Option<Vec<ToolCall>>,
     #[pyo3(get)]
     result: Option<LoopResult>,
+    #[pyo3(get)]
+    phase_id: Option<String>,
+    #[pyo3(get)]
+    criteria: Option<Vec<String>>,
 }
 
 #[pymethods]
@@ -953,6 +959,8 @@ impl LoopAction {
                 ),
                 calls: None,
                 result: None,
+                phase_id: None,
+                criteria: None,
             },
             RustLoopAction::ExecuteTools { calls } => Self {
                 kind: "execute_tools".to_string(),
@@ -960,6 +968,8 @@ impl LoopAction {
                 tools: None,
                 calls: Some(calls.iter().map(ToolCall::from_rust).collect()),
                 result: None,
+                phase_id: None,
+                criteria: None,
             },
             RustLoopAction::Done { result } => Self {
                 kind: "done".to_string(),
@@ -967,14 +977,28 @@ impl LoopAction {
                 tools: None,
                 calls: None,
                 result: Some(LoopResult::from_rust(&result)),
+                phase_id: None,
+                criteria: None,
+            },
+            RustLoopAction::EvaluateMilestone { phase_id, criteria } => Self {
+                kind: "evaluate_milestone".to_string(),
+                context: None,
+                tools: None,
+                calls: None,
+                result: None,
+                phase_id: Some(phase_id),
+                criteria: Some(criteria),
             },
         }
     }
 }
 
 /// Tagged union for `LoopObservation`. Inspect `kind`:
-/// - `kind == "compressed"` → `action`, `rho_after`, `summary`, `archived`
-/// - `kind == "renewed"`    → `sprint`
+/// - `kind == "compressed"`         → `action`, `rho_after`, `summary`, `archived`
+/// - `kind == "renewed"`            → `sprint`
+/// - `kind == "capability_changed"` → `turn`, `added`, `removed`
+/// - `kind == "milestone_advanced"` → `turn`, `phase_id`, `capabilities_unlocked`
+/// - `kind == "milestone_blocked"`  → `turn`, `phase_id`, `milestone_reason`
 #[pyclass]
 #[derive(Clone)]
 struct LoopObservation {
@@ -991,6 +1015,23 @@ struct LoopObservation {
     pub summary: Option<String>,
     #[pyo3(get)]
     pub archived: Option<Vec<Message>>,
+    #[pyo3(get)]
+    pub turn: Option<u32>,
+    #[pyo3(get)]
+    pub checkpoint_history_len: Option<u32>,
+    #[pyo3(get)]
+    pub added: Option<Vec<String>>,
+    #[pyo3(get)]
+    pub removed: Option<Vec<String>>,
+    /// Phase ID for milestone observations.
+    #[pyo3(get)]
+    pub phase_id: Option<String>,
+    /// Capabilities unlocked by a passed milestone phase.
+    #[pyo3(get)]
+    pub capabilities_unlocked: Option<Vec<String>>,
+    /// Failure reason for a blocked milestone phase.
+    #[pyo3(get)]
+    pub milestone_reason: Option<String>,
 }
 
 impl LoopObservation {
@@ -1016,6 +1057,13 @@ impl LoopObservation {
                     sprint: None,
                     summary,
                     archived: Some(archived.iter().map(Message::from_rust).collect()),
+                    turn: None,
+                    checkpoint_history_len: None,
+                    added: None,
+                    removed: None,
+                    phase_id: None,
+                    capabilities_unlocked: None,
+                    milestone_reason: None,
                 }
             }
             RustLoopObservation::Renewed { sprint } => Self {
@@ -1025,118 +1073,90 @@ impl LoopObservation {
                 sprint: Some(sprint),
                 summary: None,
                 archived: None,
+                turn: None,
+                checkpoint_history_len: None,
+                added: None,
+                removed: None,
+                phase_id: None,
+                capabilities_unlocked: None,
+                milestone_reason: None,
+            },
+            RustLoopObservation::Rollbacked {
+                turn,
+                checkpoint_history_len,
+            } => Self {
+                kind: "rollbacked".into(),
+                action: None,
+                rho_after: None,
+                sprint: None,
+                summary: None,
+                archived: None,
+                turn: Some(turn),
+                checkpoint_history_len: Some(checkpoint_history_len as u32),
+                added: None,
+                removed: None,
+                phase_id: None,
+                capabilities_unlocked: None,
+                milestone_reason: None,
+            },
+            RustLoopObservation::CapabilityChanged { turn, added, removed } => Self {
+                kind: "capability_changed".into(),
+                action: None,
+                rho_after: None,
+                sprint: None,
+                summary: None,
+                archived: None,
+                turn: Some(turn),
+                checkpoint_history_len: None,
+                added: Some(added),
+                removed: Some(removed),
+                phase_id: None,
+                capabilities_unlocked: None,
+                milestone_reason: None,
+            },
+            RustLoopObservation::MilestoneAdvanced { turn, phase_id, capabilities_unlocked } => Self {
+                kind: "milestone_advanced".into(),
+                action: None,
+                rho_after: None,
+                sprint: None,
+                summary: None,
+                archived: None,
+                turn: Some(turn),
+                checkpoint_history_len: None,
+                added: None,
+                removed: None,
+                phase_id: Some(phase_id),
+                capabilities_unlocked: Some(capabilities_unlocked),
+                milestone_reason: None,
+            },
+            RustLoopObservation::MilestoneBlocked { turn, phase_id, reason } => Self {
+                kind: "milestone_blocked".into(),
+                action: None,
+                rho_after: None,
+                sprint: None,
+                summary: None,
+                archived: None,
+                turn: Some(turn),
+                checkpoint_history_len: None,
+                added: None,
+                removed: None,
+                phase_id: Some(phase_id),
+                capabilities_unlocked: None,
+                milestone_reason: Some(reason),
             },
         }
     }
 }
 
-// ─────────────────────────────────── ContextEngine (manager) ───────────────────────────────────
+// ──────────────────────────────────────── DeepStrikeRuntime ────────────────────────────────────
 
 #[pyclass]
-struct ContextEngine {
-    inner: ContextManager,
-}
-
-#[pymethods]
-impl ContextEngine {
-    #[new]
-    fn new(max_tokens: u32) -> Self {
-        Self {
-            inner: ContextManager::new(max_tokens),
-        }
-    }
-
-    fn add_system_message(&mut self, content: String, tokens: u32) {
-        self.inner
-            .partitions
-            .system
-            .push(RustMessage::system(content), tokens);
-    }
-
-    fn add_user_message(&mut self, content: String, tokens: u32) {
-        self.inner.push_history(RustMessage::user(content), tokens);
-    }
-
-    fn add_assistant_message(&mut self, content: String, tokens: u32) {
-        self.inner
-            .push_history(RustMessage::assistant(content), tokens);
-    }
-
-    fn pressure(&self) -> f64 {
-        self.inner.rho()
-    }
-
-    fn total_tokens(&self) -> u32 {
-        self.inner.partitions.total_tokens(&self.inner.engine)
-    }
-
-    /// Run compression at the level the current pressure recommends.
-    /// Returns tokens saved.
-    fn compress(&mut self) -> u32 {
-        let action = self.inner.should_compress();
-        if action == PressureAction::None {
-            return 0;
-        }
-        let before = self.inner.partitions.total_tokens(&self.inner.engine);
-        self.inner.compress(action);
-        let after = self.inner.partitions.total_tokens(&self.inner.engine);
-        before.saturating_sub(after)
-    }
-
-    fn render(&self) -> RenderedContext {
-        RenderedContext::from_rust(self.inner.render())
-    }
-
-    /// Replace the available-skills set. The kernel auto-injects the `skill`
-    /// meta-tool into every `CallLLM` action when skills are registered.
-    fn set_available_skills(&mut self, skills: Vec<SkillMetadata>) {
-        self.inner
-            .set_available_skills(skills.iter().map(|s| s.to_rust()).collect());
-    }
-
-    fn init_task(&mut self, goal: String, criteria: Vec<String>) {
-        self.inner.init_task(goal, criteria);
-    }
-
-    fn update_task(&mut self, update: TaskUpdate) {
-        self.inner.update_task(update.to_rust());
-    }
-
-    fn recovery_content_bytes(&self) -> u32 {
-        let tokens = self
-            .inner
-            .config
-            .recovery_content_tokens(self.inner.max_tokens);
-        self.inner.engine.token_budget_to_bytes(tokens) as u32
-    }
-
-    fn set_tokenizer(&mut self, name: String) {
-        let engine = match name.as_str() {
-            "tiktoken_cl100k" | "cl100k" => {
-                deepstrike_core::context::token_engine::ContextTokenEngine::cl100k()
-            }
-            "tiktoken_o200k" | "o200k" => {
-                deepstrike_core::context::token_engine::ContextTokenEngine::o200k()
-            }
-            _ => deepstrike_core::context::token_engine::ContextTokenEngine::char_approx(),
-        };
-        self.inner.engine = engine;
-    }
-
-    fn set_plan_tool_enabled(&mut self, enabled: bool) {
-        self.inner.set_plan_tool_enabled(enabled);
-    }
-}
-
-// ──────────────────────────────────────── LoopStateMachine ────────────────────────────────────
-
-#[pyclass]
-struct LoopStateMachine {
+struct DeepStrikeRuntime {
     inner: RustLoopStateMachine,
 }
 
 #[pymethods]
-impl LoopStateMachine {
+impl DeepStrikeRuntime {
     #[new]
     fn new(policy: LoopPolicy) -> Self {
         Self {
@@ -2047,9 +2067,7 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Loop control
     m.add_class::<LoopAction>()?;
     m.add_class::<LoopObservation>()?;
-    m.add_class::<LoopStateMachine>()?;
-    // Engines
-    m.add_class::<ContextEngine>()?;
+    m.add_class::<DeepStrikeRuntime>()?;
     // Signal types
     m.add_class::<RuntimeSignal>()?;
     m.add_class::<SignalRouter>()?;

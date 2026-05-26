@@ -1,5 +1,5 @@
 import type {
-  ToolCall, ToolSchema, StreamEvent, ToolResultEvent, PermissionRequestEvent,
+  ToolCall, ToolSchema, StreamEvent, ToolResultEvent, PermissionRequestEvent, ToolDeniedEvent,
 } from "../types.js"
 import type { RegisteredTool } from "../tools/index.js"
 import type { DreamStore, MemoryEntry } from "../memory/index.js"
@@ -62,12 +62,12 @@ export class LocalExecutionPlane implements ExecutionPlane {
         ctx.governance.setTime(Date.now())
         const v = ctx.governance.evaluate(c.name, c.arguments)
         if (v.kind === "deny") {
-          yield { type: "error", message: `permission denied: ${c.name} — ${v.reason ?? ""}` } as StreamEvent
+          yield { type: "tool_denied", callId: c.id, toolName: c.name, reason: v.reason ?? "" } as ToolDeniedEvent
           yield { type: "tool_result", callId: c.id, name: c.name, content: `permission denied: ${v.reason ?? ""}`, isError: true } as ToolResultEvent
           continue
         }
         if (v.kind === "rate_limited") {
-          yield { type: "error", message: `rate limited: ${c.name}` } as StreamEvent
+          yield { type: "tool_denied", callId: c.id, toolName: c.name, reason: "rate limited" } as ToolDeniedEvent
           yield { type: "tool_result", callId: c.id, name: c.name, content: "rate limited", isError: true } as ToolResultEvent
           continue
         }

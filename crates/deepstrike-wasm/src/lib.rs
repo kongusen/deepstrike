@@ -289,9 +289,10 @@ pub struct RenderedContext {
 }
 
 /// Discriminated union; inspect `kind`:
-/// - `"call_llm"`      → `context`, `tools` (includes meta-tools when configured)
-/// - `"execute_tools"` → `calls`
-/// - `"done"`          → `result`
+/// - `"call_llm"`           → `context`, `tools`
+/// - `"execute_tools"`      → `calls`
+/// - `"done"`               → `result`
+/// - `"evaluate_milestone"` → `phase_id`, `criteria`
 #[derive(Tsify, Clone, Serialize, Deserialize)]
 #[tsify(into_wasm_abi)]
 #[serde(rename_all = "camelCase")]
@@ -305,10 +306,19 @@ pub struct LoopAction {
     pub calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<LoopResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub criteria: Option<Vec<String>>,
 }
 
 /// Discriminated union for runtime observations:
-/// - `"compressed"` → `action`, `rhoAfter`, `summary`, `archived`
+/// - `"compressed"`         → `action`, `rhoAfter`, `summary`, `archived`
+/// - `"renewed"`            → `sprint`
+/// - `"rollbacked"`         → `turn`, `checkpointHistoryLen`
+/// - `"capability_changed"` → `turn`, `added`, `removed`
+/// - `"milestone_advanced"` → `turn`, `phaseId`, `capabilitiesUnlocked`
+/// - `"milestone_blocked"`  → `turn`, `phaseId`, `milestoneReason`
 #[derive(Tsify, Clone, Serialize, Deserialize)]
 #[tsify(into_wasm_abi)]
 #[serde(rename_all = "camelCase")]
@@ -324,6 +334,20 @@ pub struct LoopObservation {
     pub summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archived: Option<Vec<Message>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_history_len: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub removed: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities_unlocked: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub milestone_reason: Option<String>,
 }
 
 #[derive(Tsify, Clone, Serialize, Deserialize)]
@@ -566,6 +590,7 @@ fn tool_result_to_rust(r: ToolResult) -> RustToolResult {
         call_id: CompactString::new(&r.call_id),
         output: Content::Text(r.output),
         is_error: r.is_error,
+        is_fatal: false,
         token_count: r.token_count,
     }
 }
@@ -661,6 +686,8 @@ fn loop_action_from_rust(a: RustLoopAction) -> LoopAction {
             tools: Some(tools.iter().map(tool_schema_from_rust).collect()),
             calls: None,
             result: None,
+            phase_id: None,
+            criteria: None,
         },
         RustLoopAction::ExecuteTools { calls } => LoopAction {
             kind: "execute_tools".into(),
@@ -668,6 +695,8 @@ fn loop_action_from_rust(a: RustLoopAction) -> LoopAction {
             tools: None,
             calls: Some(calls.iter().map(tool_call_from_rust).collect()),
             result: None,
+            phase_id: None,
+            criteria: None,
         },
         RustLoopAction::Done { result } => LoopAction {
             kind: "done".into(),
@@ -675,6 +704,17 @@ fn loop_action_from_rust(a: RustLoopAction) -> LoopAction {
             tools: None,
             calls: None,
             result: Some(loop_result_from_rust(&result)),
+            phase_id: None,
+            criteria: None,
+        },
+        RustLoopAction::EvaluateMilestone { phase_id, criteria } => LoopAction {
+            kind: "evaluate_milestone".into(),
+            context: None,
+            tools: None,
+            calls: None,
+            result: None,
+            phase_id: Some(phase_id),
+            criteria: Some(criteria),
         },
     }
 }
@@ -688,18 +728,20 @@ fn rendered_context_from_rust(rc: RustRenderedContext) -> RenderedContext {
 
 fn observation_from_rust(o: RustLoopObservation) -> LoopObservation {
     match o {
-        RustLoopObservation::Compressed {
-            action,
-            rho_after,
-            summary,
-            archived,
-        } => LoopObservation {
+        RustLoopObservation::Compressed { action, rho_after, summary, archived } => LoopObservation {
             kind: "compressed".into(),
             action: Some(pressure_action_str(action).into()),
             rho_after: Some(rho_after),
             sprint: None,
             summary,
             archived: Some(archived.iter().map(message_from_rust).collect()),
+            turn: None,
+            checkpoint_history_len: None,
+            added: None,
+            removed: None,
+            phase_id: None,
+            capabilities_unlocked: None,
+            milestone_reason: None,
         },
         RustLoopObservation::Renewed { sprint } => LoopObservation {
             kind: "renewed".into(),
@@ -708,6 +750,73 @@ fn observation_from_rust(o: RustLoopObservation) -> LoopObservation {
             sprint: Some(sprint),
             summary: None,
             archived: None,
+            turn: None,
+            checkpoint_history_len: None,
+            added: None,
+            removed: None,
+            phase_id: None,
+            capabilities_unlocked: None,
+            milestone_reason: None,
+        },
+        RustLoopObservation::Rollbacked { turn, checkpoint_history_len } => LoopObservation {
+            kind: "rollbacked".into(),
+            action: None,
+            rho_after: None,
+            sprint: None,
+            summary: None,
+            archived: None,
+            turn: Some(turn),
+            checkpoint_history_len: Some(checkpoint_history_len as u32),
+            added: None,
+            removed: None,
+            phase_id: None,
+            capabilities_unlocked: None,
+            milestone_reason: None,
+        },
+        RustLoopObservation::CapabilityChanged { turn, added, removed } => LoopObservation {
+            kind: "capability_changed".into(),
+            action: None,
+            rho_after: None,
+            sprint: None,
+            summary: None,
+            archived: None,
+            turn: Some(turn),
+            checkpoint_history_len: None,
+            added: Some(added),
+            removed: Some(removed),
+            phase_id: None,
+            capabilities_unlocked: None,
+            milestone_reason: None,
+        },
+        RustLoopObservation::MilestoneAdvanced { turn, phase_id, capabilities_unlocked } => LoopObservation {
+            kind: "milestone_advanced".into(),
+            action: None,
+            rho_after: None,
+            sprint: None,
+            summary: None,
+            archived: None,
+            turn: Some(turn),
+            checkpoint_history_len: None,
+            added: None,
+            removed: None,
+            phase_id: Some(phase_id),
+            capabilities_unlocked: Some(capabilities_unlocked),
+            milestone_reason: None,
+        },
+        RustLoopObservation::MilestoneBlocked { turn, phase_id, reason } => LoopObservation {
+            kind: "milestone_blocked".into(),
+            action: None,
+            rho_after: None,
+            sprint: None,
+            summary: None,
+            archived: None,
+            turn: Some(turn),
+            checkpoint_history_len: None,
+            added: None,
+            removed: None,
+            phase_id: Some(phase_id),
+            capabilities_unlocked: None,
+            milestone_reason: Some(reason),
         },
     }
 }
@@ -780,122 +889,15 @@ fn governance_verdict_from_rust(verdict: RustGovernanceVerdict) -> GovernanceVer
     }
 }
 
-// ────────────────────────────────────────────── ContextEngine ──────────────────────────────────────────────
+// ────────────────────────────────────────────── DeepStrikeRuntime ──────────────────────────────────────────────
 
 #[wasm_bindgen]
-pub struct ContextEngine {
-    inner: ContextManager,
-}
-
-#[wasm_bindgen]
-impl ContextEngine {
-    #[wasm_bindgen(constructor)]
-    pub fn new(max_tokens: u32) -> Self {
-        Self {
-            inner: ContextManager::new(max_tokens),
-        }
-    }
-
-    #[wasm_bindgen(js_name = addSystemMessage)]
-    pub fn add_system_message(&mut self, content: String, tokens: u32) {
-        self.inner
-            .partitions
-            .system
-            .push(RustMessage::system(content), tokens);
-    }
-
-    #[wasm_bindgen(js_name = addUserMessage)]
-    pub fn add_user_message(&mut self, content: String, tokens: u32) {
-        self.inner.push_history(RustMessage::user(content), tokens);
-    }
-
-    #[wasm_bindgen(js_name = addAssistantMessage)]
-    pub fn add_assistant_message(&mut self, content: String, tokens: u32) {
-        self.inner
-            .push_history(RustMessage::assistant(content), tokens);
-    }
-
-    #[wasm_bindgen]
-    pub fn pressure(&self) -> f64 {
-        self.inner.rho()
-    }
-
-    #[wasm_bindgen(js_name = totalTokens)]
-    pub fn total_tokens(&self) -> u32 {
-        self.inner.partitions.total_tokens(&self.inner.engine)
-    }
-
-    #[wasm_bindgen]
-    pub fn compress(&mut self) -> u32 {
-        let action = self.inner.should_compress();
-        if action == PressureAction::None {
-            return 0;
-        }
-        let before = self.inner.partitions.total_tokens(&self.inner.engine);
-        self.inner.compress(action);
-        let after = self.inner.partitions.total_tokens(&self.inner.engine);
-        before.saturating_sub(after)
-    }
-
-    #[wasm_bindgen]
-    pub fn render(&self) -> RenderedContext {
-        rendered_context_from_rust(self.inner.render())
-    }
-
-    #[wasm_bindgen(js_name = setAvailableSkills)]
-    pub fn set_available_skills(&mut self, skills: Vec<SkillMetadata>) {
-        self.inner
-            .set_available_skills(skills.into_iter().map(skill_metadata_to_rust).collect());
-    }
-
-    #[wasm_bindgen(js_name = initTask)]
-    pub fn init_task(&mut self, goal: String, criteria: Vec<String>) {
-        self.inner.init_task(goal, criteria);
-    }
-
-    #[wasm_bindgen(js_name = updateTask)]
-    pub fn update_task(&mut self, update: TaskUpdate) {
-        self.inner.update_task(task_update_to_rust(update));
-    }
-
-    #[wasm_bindgen(js_name = recoveryContentBytes)]
-    pub fn recovery_content_bytes(&self) -> u32 {
-        let tokens = self
-            .inner
-            .config
-            .recovery_content_tokens(self.inner.max_tokens);
-        self.inner.engine.token_budget_to_bytes(tokens) as u32
-    }
-
-    #[wasm_bindgen(js_name = setTokenizer)]
-    pub fn set_tokenizer(&mut self, name: String) {
-        let engine = match name.as_str() {
-            "tiktoken_cl100k" | "cl100k" => {
-                deepstrike_core::context::token_engine::ContextTokenEngine::cl100k()
-            }
-            "tiktoken_o200k" | "o200k" => {
-                deepstrike_core::context::token_engine::ContextTokenEngine::o200k()
-            }
-            _ => deepstrike_core::context::token_engine::ContextTokenEngine::char_approx(),
-        };
-        self.inner.engine = engine;
-    }
-
-    #[wasm_bindgen(js_name = setPlanToolEnabled)]
-    pub fn set_plan_tool_enabled(&mut self, enabled: bool) {
-        self.inner.set_plan_tool_enabled(enabled);
-    }
-}
-
-// ────────────────────────────────────────────── LoopStateMachine ──────────────────────────────────────────────
-
-#[wasm_bindgen]
-pub struct LoopStateMachine {
+pub struct DeepStrikeRuntime {
     inner: RustLoopStateMachine,
 }
 
 #[wasm_bindgen]
-impl LoopStateMachine {
+impl DeepStrikeRuntime {
     #[wasm_bindgen(constructor)]
     pub fn new(policy: LoopPolicy) -> Self {
         Self {

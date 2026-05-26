@@ -25,6 +25,21 @@ pub enum RunEvent {
         content: String,
         is_error: bool,
     },
+    ToolArgumentRepaired {
+        call_id: String,
+        name: String,
+        original_arguments: String,
+        repaired_arguments: String,
+    },
+    /// Governance pipeline denied a tool call before execution.
+    /// Emitted alongside `ToolResult { is_error: true }` so callers can
+    /// distinguish policy denials from tool-side errors and write the correct
+    /// `SessionEvent::ToolDenied` audit record.
+    ToolDenied {
+        call_id: String,
+        tool_name: String,
+        reason: String,
+    },
     Done {
         iterations: u32,
         total_tokens: u64,

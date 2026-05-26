@@ -5,7 +5,7 @@ import type { RegisteredTool } from "../tools/index.js"
 import { LocalExecutionPlane } from "./execution-plane.js"
 
 export interface SandboxOptions {
-  /** Working directory for all subprocesses. Isolated from the rest of the file system by convention. */
+  /** Working directory for all subprocesses. This is not an OS-enforced filesystem boundary. */
   sandboxDir: string
   /** Env var names from the host environment to forward into subprocesses. Default: none. */
   allowedEnvKeys?: string[]
@@ -16,14 +16,14 @@ export interface SandboxOptions {
 }
 
 /**
- * ExecutionPlane that confines subprocess execution to a sandbox directory.
+ * ExecutionPlane that runs subprocesses with a sandbox directory as cwd.
  * Extends LocalExecutionPlane with two built-in tools:
  *  - `run_bash`  — executes a bash command inside sandboxDir.
  *  - `run_node`  — evaluates a Node.js script inside sandboxDir.
  *
  * All registered JS tools continue to run in-process (identical to LocalExecutionPlane).
- * The sandboxing guarantee is: subprocesses spawned by the built-in tools cannot reach
- * files outside sandboxDir unless the host OS allows it.
+ * Subprocesses are launched with a stripped environment and sandboxDir as cwd;
+ * this is execution hygiene, not an OS-enforced filesystem sandbox.
  */
 export class ProcessSandboxPlane extends LocalExecutionPlane {
   private readonly sandboxDir: string
@@ -100,7 +100,7 @@ export class ProcessSandboxPlane extends LocalExecutionPlane {
   private makeBashTool(): RegisteredTool {
     return tool(
       "run_bash",
-      "Run a bash command confined to the sandbox directory. Paths outside the sandbox are not accessible.",
+      "Run a bash command with the sandbox directory as cwd and a stripped environment. This is not an OS-enforced filesystem sandbox.",
       {
         type: "object",
         properties: {
@@ -120,7 +120,7 @@ export class ProcessSandboxPlane extends LocalExecutionPlane {
   private makeNodeTool(): RegisteredTool {
     return tool(
       "run_node",
-      "Evaluate a Node.js script confined to the sandbox directory.",
+      "Evaluate a Node.js script with the sandbox directory as cwd and a stripped environment.",
       {
         type: "object",
         properties: {

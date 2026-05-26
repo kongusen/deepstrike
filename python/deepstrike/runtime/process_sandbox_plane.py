@@ -12,11 +12,12 @@ from deepstrike.runtime.execution_plane import LocalExecutionPlane
 
 class ProcessSandboxPlane(LocalExecutionPlane):
   """
-  LocalExecutionPlane extended with two built-in sandboxed tools:
+  LocalExecutionPlane extended with two subprocess tools:
     - run_bash  — executes a bash command inside sandboxDir.
     - run_python — evaluates a Python script inside sandboxDir.
 
-  Subprocesses are confined to sandboxDir via CWD and a stripped environment.
+  Subprocesses run with sandboxDir as cwd and a stripped environment.
+  This is execution hygiene, not an OS-enforced filesystem sandbox.
   JS-registered tools still run in-process (same as LocalExecutionPlane).
   """
 
@@ -81,7 +82,7 @@ class ProcessSandboxPlane(LocalExecutionPlane):
 
     schema = ToolSchema(
       name="run_bash",
-      description="Run a bash command confined to the sandbox directory.",
+      description="Run a bash command with the sandbox directory as cwd and a stripped environment.",
       parameters=json.dumps({
         "type": "object",
         "properties": {"command": {"type": "string", "description": "The bash command to execute."}},
@@ -101,7 +102,7 @@ class ProcessSandboxPlane(LocalExecutionPlane):
 
     schema = ToolSchema(
       name="run_python",
-      description="Evaluate a Python script confined to the sandbox directory.",
+      description="Evaluate a Python script with the sandbox directory as cwd and a stripped environment.",
       parameters=json.dumps({
         "type": "object",
         "properties": {"code": {"type": "string", "description": "The Python code to evaluate."}},

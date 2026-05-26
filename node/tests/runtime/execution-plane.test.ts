@@ -89,4 +89,53 @@ describe("LocalExecutionPlane", () => {
       isError: true,
     }))
   })
+
+  it("repairs tool arguments based on schema and yields repair event", async () => {
+    const plane = new LocalExecutionPlane()
+    plane.register(
+      tool(
+        "test_repair",
+        "Test repair",
+        {
+          type: "object",
+          properties: {
+            count: { type: "integer" },
+            enabled: { type: "boolean" },
+            ratio: { type: "number", default: 0.5 },
+          },
+          required: ["count"],
+        },
+        args => JSON.stringify(args),
+      ),
+    )
+
+    const events = []
+    for await (const evt of plane.executeAll(
+      [{
+        id: "c1",
+        name: "test_repair",
+        arguments: JSON.stringify({ count: "10", enabled: "true", extra_field: "remove_me" }),
+      }],
+      {},
+    )) {
+      events.push(evt)
+    }
+
+    // 验证投递了自愈事件
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "tool_argument_repaired",
+      callId: "c1",
+      name: "test_repair",
+      originalArguments: JSON.stringify({ count: "10", enabled: "true", extra_field: "remove_me" }),
+      repairedArguments: JSON.stringify({ count: 10, enabled: true, ratio: 0.5 }),
+    }))
+
+    // 验证执行结果
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "tool_result",
+      callId: "c1",
+      content: JSON.stringify({ count: 10, enabled: true, ratio: 0.5 }),
+      isError: false,
+    }))
+  })
 })

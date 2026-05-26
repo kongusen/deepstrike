@@ -19,6 +19,7 @@ futures = { workspace = true }
 async-stream = { workspace = true }
 bytes = { workspace = true }
 uuid = { workspace = true }
+notify = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

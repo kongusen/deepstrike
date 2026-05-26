@@ -7,13 +7,13 @@ from deepstrike import (
     Governance,
     RetryConfig,
 )
-from deepstrike.kernel import LoopStateMachine, LoopPolicy, RuntimeTask, SignalRouter
+from deepstrike.kernel import DeepStrikeRuntime, LoopPolicy, RuntimeTask, SignalRouter
 from deepstrike.providers.stream import TextDelta
 
 
 def test_kernel_import():
-    from deepstrike.kernel import LoopStateMachine, LoopPolicy
-    sm = LoopStateMachine(LoopPolicy())
+    from deepstrike.kernel import DeepStrikeRuntime, LoopPolicy
+    sm = DeepStrikeRuntime(LoopPolicy())
     assert not sm.is_terminal()
 
 
@@ -36,6 +36,89 @@ def test_read_file_tool():
     import asyncio
     result = asyncio.run(read_file(path=path))
     assert result == "hello"
+
+
+def test_validate_tool_arguments_repair():
+    from deepstrike.tools import validate_tool_arguments
+    import json
+
+    schema = json.dumps({
+        "type": "object",
+        "properties": {
+            "count": { "type": "integer" },
+            "enabled": { "type": "boolean" },
+            "ratio": { "type": "number", "default": 0.5 }
+        },
+        "required": ["count"]
+    })
+
+    # 1. 成功自愈
+    args = {
+        "count": "10",
+        "enabled": "true",
+        "extra_field": "remove_me"
+    }
+    validation = validate_tool_arguments(schema, args)
+    assert validation["error"] is None
+    assert validation["repaired"] is True
+    assert args["count"] == 10
+    assert args["enabled"] is True
+    assert args["ratio"] == 0.5
+    assert "extra_field" not in args
+
+    # 2. 无法自愈 (缺失 required)
+    args_invalid = {
+        "enabled": False
+    }
+    validation_invalid = validate_tool_arguments(schema, args_invalid)
+    assert validation_invalid["error"] is not None
+
+
+@pytest.mark.asyncio
+async def test_execution_plane_repairs_arguments():
+    import json
+    from deepstrike import LocalExecutionPlane, tool
+    from deepstrike.runtime.execution_plane import RunContext
+    from deepstrike.providers.stream import ToolArgumentRepairedEvent, ToolResultEvent
+
+    plane = LocalExecutionPlane()
+    @tool
+    def test_repair(count: int, enabled: bool, ratio: float = 0.5) -> str:
+        """Test repair"""
+        return json.dumps({"count": count, "enabled": enabled, "ratio": ratio})
+
+    test_repair.schema.parameters = json.dumps({
+        "type": "object",
+        "properties": {
+            "count": { "type": "integer" },
+            "enabled": { "type": "boolean" },
+            "ratio": { "type": "number", "default": 0.5 }
+        },
+        "required": ["count"]
+    })
+
+    plane.register(test_repair)
+
+    events = []
+    async for evt in plane.execute_all(
+        [ToolCall(id="c1", name="test_repair", arguments=json.dumps({"count": "10", "enabled": "true", "extra_field": "remove_me"}))],
+        RunContext()
+    ):
+        events.append(evt)
+
+    # 验证投递了自愈事件
+    repaired_events = [e for e in events if isinstance(e, ToolArgumentRepairedEvent)]
+    assert len(repaired_events) == 1
+    assert repaired_events[0].call_id == "c1"
+    assert repaired_events[0].name == "test_repair"
+    assert json.loads(repaired_events[0].repaired_arguments) == {"count": 10, "enabled": True, "ratio": 0.5}
+
+    # 验证最终执行正确
+    result_events = [e for e in events if isinstance(e, ToolResultEvent)]
+    assert len(result_events) == 1
+    assert result_events[0].call_id == "c1"
+    assert json.loads(result_events[0].content) == {"count": 10, "enabled": True, "ratio": 0.5}
+    assert not result_events[0].is_error
 
 
 def test_governance_block_tool():

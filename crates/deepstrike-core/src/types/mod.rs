@@ -3,6 +3,7 @@ pub mod capability;
 pub mod contract;
 pub mod error;
 pub mod message;
+pub mod milestone;
 pub mod model;
 pub mod policy;
 pub mod result;

@@ -2,6 +2,7 @@ use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
 use super::capability::{CapabilityDescriptor, CapabilityKind, CapabilityManifest};
+use super::milestone::MilestoneContract;
 
 /// Unified agent identity — shared across scheduler, memory, and governance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +83,11 @@ pub struct AgentRunSpec {
     pub verification_contract_id: Option<CompactString>,
     #[serde(default)]
     pub capability_filter: AgentCapabilityFilter,
+    /// Optional milestone contract defining phase-gated execution.
+    /// When set, the kernel evaluates each phase's criteria before advancing
+    /// and mounts the phase's `unlocks` capabilities on success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub milestones: Option<MilestoneContract>,
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub metadata: serde_json::Value,
 }
@@ -95,8 +101,14 @@ impl AgentRunSpec {
             goal: goal.into(),
             verification_contract_id: None,
             capability_filter: AgentCapabilityFilter::default(),
+            milestones: None,
             metadata: serde_json::Value::Null,
         }
+    }
+
+    pub fn with_milestones(mut self, contract: MilestoneContract) -> Self {
+        self.milestones = Some(contract);
+        self
     }
 
     pub fn with_isolation(mut self, isolation: AgentIsolation) -> Self {

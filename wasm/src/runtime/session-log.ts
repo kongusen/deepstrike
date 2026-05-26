@@ -5,7 +5,22 @@ export type SessionEvent =
   | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; provider_replay?: ProviderReplay }
   | { kind: "tool_requested"; turn: number; calls: ToolCall[] }
   | { kind: "tool_completed"; turn: number; results: Array<{ call_id: string; output: string; is_error?: boolean; token_count?: number }> }
-  | { kind: "compressed"; turn: number; archived_seq_range: [number, number] }
+  | { kind: "tool_argument_repaired"; turn: number; tool: string; original_arguments: string; repaired_arguments: string }
+  | { kind: "tool_denied"; turn: number; tool: string; reason: string }
+  | {
+      kind: "compressed"
+      turn: number
+      archived_seq_range: [number, number]
+      action?: "snip_compact" | "micro_compact" | "context_collapse" | "auto_compact"
+      summary?: string
+      summary_tokens?: number
+      archive_ref?: string
+      preserved_refs?: string[]
+    }
+  | { kind: "rollbacked"; turn: number; checkpoint_history_len: number }
+  | { kind: "capability_changed"; turn: number; added: string[]; removed: string[] }
+  | { kind: "milestone_advanced"; turn: number; phase_id: string; capabilities_unlocked: string[] }
+  | { kind: "milestone_blocked"; turn: number; phase_id: string; reason: string }
   | { kind: "run_terminal"; reason: string; turns_used: number; total_tokens: number }
 
 export interface SessionLog {

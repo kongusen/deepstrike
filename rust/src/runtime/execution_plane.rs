@@ -11,6 +11,7 @@ use deepstrike_core::types::message::{Content, ToolCall, ToolResult, ToolSchema}
 use futures::stream::FuturesUnordered;
 use futures::stream::{self, Stream, StreamExt};
 
+use crate::runtime::sandboxed_skill::{PythonSkillPolicy, SkillKind, execute_json_skill, execute_python_skill, resolve_skill_path};
 use crate::Result;
 use crate::governance::Governance;
 use crate::knowledge::KnowledgeSource;
@@ -47,6 +48,7 @@ fn make_result(call_id: compact_str::CompactString, output: String, is_error: bo
         call_id,
         output: Content::Text(output),
         is_error,
+        is_fatal: false,
         token_count: None,
     }
 }
@@ -128,10 +130,11 @@ fn execute_all_local<'a>(
                 match verdict.kind.as_str() {
                     "deny" => {
                         let reason = verdict.reason.unwrap_or_default();
-                        yield RunEvent::Error(format!(
-                            "permission denied: {} — {reason}",
-                            c.name
-                        ));
+                        yield RunEvent::ToolDenied {
+                            call_id: c.id.to_string(),
+                            tool_name: c.name.to_string(),
+                            reason: reason.clone(),
+                        };
                         yield RunEvent::ToolResult {
                             call_id: c.id.to_string(),
                             content: format!("permission denied: {reason}"),
@@ -140,20 +143,26 @@ fn execute_all_local<'a>(
                         continue;
                     }
                     "rate_limited" => {
-                        yield RunEvent::Error(format!("rate limited: {}", c.name));
+                        let reason = "rate limited".to_string();
+                        yield RunEvent::ToolDenied {
+                            call_id: c.id.to_string(),
+                            tool_name: c.name.to_string(),
+                            reason: reason.clone(),
+                        };
                         yield RunEvent::ToolResult {
                             call_id: c.id.to_string(),
-                            content: "rate limited".into(),
+                            content: reason,
                             is_error: true,
                         };
                         continue;
                     }
                     "ask_user" => {
                         let reason = verdict.reason.unwrap_or_default();
-                        yield RunEvent::Error(format!(
-                            "permission request: {} — {reason}",
-                            c.name
-                        ));
+                        yield RunEvent::ToolDenied {
+                            call_id: c.id.to_string(),
+                            tool_name: c.name.to_string(),
+                            reason: format!("awaiting user approval: {reason}"),
+                        };
                         yield RunEvent::ToolResult {
                             call_id: c.id.to_string(),
                             content: "awaiting user approval".into(),
@@ -195,11 +204,25 @@ fn execute_all_local<'a>(
 
         for c in skill_calls {
             let name = c.arguments.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let args: std::collections::HashMap<String, serde_json::Value> = c
+                .arguments
+                .as_object()
+                .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                .unwrap_or_default();
+
             let (content, is_error) = if let Some(dir) = ctx.skill_dir {
-                let path = dir.join(format!("{name}.md"));
-                match tokio::fs::read_to_string(&path).await {
-                    Ok(content) => (strip_frontmatter(&content).to_string(), false),
-                    Err(_) => (format!("Skill \"{name}\" not found."), true),
+                match resolve_skill_path(dir, &name) {
+                    Some((path, SkillKind::Prompt)) => {
+                        match tokio::fs::read_to_string(&path).await {
+                            Ok(content) => (strip_frontmatter(&content).to_string(), false),
+                            Err(e) => (format!("error reading skill \"{name}\": {e}"), true),
+                        }
+                    }
+                    Some((path, SkillKind::ComputeJson)) => execute_json_skill(&path, &args),
+                    Some((path, SkillKind::PythonScript)) => {
+                        execute_python_skill(&path, &args, None, &PythonSkillPolicy::default()).await
+                    }
+                    None => (format!("Skill \"{name}\" not found."), true),
                 }
             } else {
                 ("No skill directory configured.".into(), true)
@@ -271,7 +294,7 @@ fn execute_all_local<'a>(
             futures::future::BoxFuture<'_, (ActiveTool, crate::Result<ToolStep>)>,
         > = FuturesUnordered::new();
 
-        for call in regular_calls {
+        for mut call in regular_calls {
             let Some(tool) = plane.tools.get(call.name.as_str()) else {
                 let content = format!("unknown tool: {}", call.name);
                 yield RunEvent::ToolResult {
@@ -281,14 +304,28 @@ fn execute_all_local<'a>(
                 };
                 continue;
             };
-            if let Err(e) = validate_tool_arguments(&tool.schema.parameters, &call.arguments) {
-                let content = format!("invalid arguments: {e}");
-                yield RunEvent::ToolResult {
-                    call_id: call.id.to_string(),
-                    content: content.clone(),
-                    is_error: true,
-                };
-                continue;
+            let original_args_str = serde_json::to_string(&call.arguments).unwrap_or_default();
+            match validate_tool_arguments(&tool.schema.parameters, &mut call.arguments) {
+                Ok(repaired) => {
+                    if repaired {
+                        let repaired_args_str = serde_json::to_string(&call.arguments).unwrap_or_default();
+                        yield RunEvent::ToolArgumentRepaired {
+                            call_id: call.id.to_string(),
+                            name: call.name.to_string(),
+                            original_arguments: original_args_str,
+                            repaired_arguments: repaired_args_str,
+                        };
+                    }
+                }
+                Err(e) => {
+                    let content = format!("invalid arguments: {e}");
+                    yield RunEvent::ToolResult {
+                        call_id: call.id.to_string(),
+                        content: content.clone(),
+                        is_error: true,
+                    };
+                    continue;
+                }
             }
             let start = Arc::clone(&tool.start);
             let args = call.arguments.clone();

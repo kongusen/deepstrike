@@ -50,6 +50,9 @@ pub struct ContextSection {
     pub token_budget: Option<u32>,
     #[serde(default)]
     pub enabled: bool,
+    /// Pinned sections are exempt from GC/compression even under token pressure.
+    #[serde(default)]
+    pub is_pinned: bool,
 }
 
 impl ContextSection {
@@ -66,7 +69,13 @@ impl ContextSection {
             invalidation: SectionInvalidation::EveryTurn,
             token_budget: None,
             enabled: true,
+            is_pinned: false,
         }
+    }
+
+    pub fn pinned(mut self) -> Self {
+        self.is_pinned = true;
+        self
     }
 
     pub fn with_cache_policy(mut self, policy: SectionCachePolicy) -> Self {
@@ -187,6 +196,35 @@ impl ContextSectionRegistry {
         }
     }
 
+    /// Pin a section so its partition is exempt from GC compression.
+    /// Returns true if the section was found.
+    pub fn pin(&mut self, id: &str) -> bool {
+        if let Some(section) = self.sections.get_mut(id) {
+            section.is_pinned = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Unpin a section, allowing its partition to be compressed again.
+    /// Returns true if the section was found.
+    pub fn unpin(&mut self, id: &str) -> bool {
+        if let Some(section) = self.sections.get_mut(id) {
+            section.is_pinned = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns true if any enabled section mapped to `partition` is pinned.
+    pub fn is_partition_pinned(&self, partition: ContextSectionPartition) -> bool {
+        self.sections
+            .values()
+            .any(|s| s.partition == partition && s.is_pinned)
+    }
+
     /// Mark sections invalidated by an event as disabled and return their ids.
     pub fn invalidate(&mut self, event: SectionInvalidation) -> Vec<CompactString> {
         let mut invalidated = Vec::new();
@@ -264,6 +302,41 @@ mod tests {
             registry.get("same").unwrap().partition,
             ContextSectionPartition::Memory
         );
+    }
+
+    #[test]
+    fn pin_marks_section_and_is_detected_by_partition() {
+        let mut registry = ContextSectionRegistry::default_agent_sections();
+
+        assert!(!registry.is_partition_pinned(ContextSectionPartition::History));
+        let found = registry.pin("history.rolling");
+        assert!(found);
+        assert!(registry.is_partition_pinned(ContextSectionPartition::History));
+        // System partition unaffected
+        assert!(!registry.is_partition_pinned(ContextSectionPartition::System));
+    }
+
+    #[test]
+    fn unpin_restores_compressibility() {
+        let mut registry = ContextSectionRegistry::default_agent_sections();
+        registry.pin("history.rolling");
+        assert!(registry.is_partition_pinned(ContextSectionPartition::History));
+        let found = registry.unpin("history.rolling");
+        assert!(found);
+        assert!(!registry.is_partition_pinned(ContextSectionPartition::History));
+    }
+
+    #[test]
+    fn pin_returns_false_for_unknown_section() {
+        let mut registry = ContextSectionRegistry::new();
+        assert!(!registry.pin("nonexistent"));
+        assert!(!registry.unpin("nonexistent"));
+    }
+
+    #[test]
+    fn pinned_builder_sets_flag() {
+        let section = ContextSection::new("h", ContextSectionPartition::History, 10).pinned();
+        assert!(section.is_pinned);
     }
 
     #[test]

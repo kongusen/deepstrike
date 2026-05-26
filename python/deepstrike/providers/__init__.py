@@ -26,6 +26,7 @@ from .stream import (
     DoneEvent,
     ErrorEvent,
     PermissionRequestEvent,
+    ToolArgumentRepairedEvent,
 )
 from .replay import ReasoningReplayMixin, assistant_replay_key
 from .anthropic import AnthropicProvider
@@ -48,4 +49,5 @@ __all__ = [
     "ReasoningReplayMixin", "assistant_replay_key",
     "StreamEvent", "TextDelta", "ThinkingDelta",
     "ToolCallEvent", "ToolDeltaEvent", "ToolSuspendEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent", "PermissionRequestEvent",
+    "ToolArgumentRepairedEvent",
 ]

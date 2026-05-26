@@ -58,37 +58,102 @@ def tool_chunk_text(chunk: ToolChunk) -> str:
     return str(normalized.get("text", "")) if normalized.get("type") == "text" else ""
 
 
-def validate_tool_arguments(schema_json: str, args: dict[str, Any]) -> str | None:
+def validate_tool_arguments(schema_json: str, args: dict[str, Any]) -> dict[str, Any]:
     try:
         schema = json.loads(schema_json)
     except Exception:
-        return "invalid tool schema"
-    return _validate_value(schema, args, "$")
+        return {"error": "invalid tool schema", "repaired": False}
+    state = {"repaired": False}
+    wrapper = {"root": args}
+    error = _validate_value(schema, wrapper, "root", "$", state)
+    return {"error": error, "repaired": state["repaired"]}
 
 
-def _validate_value(schema: dict[str, Any], value: Any, path: str) -> str | None:
+def _validate_value(schema: dict[str, Any], parent: Any, key: Any, path: str, state: dict[str, bool]) -> str | None:
+    value = parent[key]
     expected = schema.get("type")
+
+    # 1. 类型自动规整 (Auto-cast)
+    if isinstance(expected, str):
+        if expected == "boolean":
+            if value == "true":
+                parent[key] = True
+                value = True
+                state["repaired"] = True
+            elif value == "false":
+                parent[key] = False
+                value = False
+                state["repaired"] = True
+        elif expected in ("number", "integer"):
+            if isinstance(value, str):
+                try:
+                    num = float(value)
+                    if expected == "integer":
+                        if num.is_integer():
+                            parent[key] = int(num)
+                            value = int(num)
+                            state["repaired"] = True
+                    else:
+                        parent[key] = num
+                        value = num
+                        state["repaired"] = True
+                except ValueError:
+                    pass
+
+    # 2. 补默认值 (Default Injection)
     if expected == "object":
         if not isinstance(value, dict):
             return f"{path} must be object"
-        for required in schema.get("required", []):
-            if required not in value:
-                return f"{path}.{required} is required"
-        for key, child_schema in schema.get("properties", {}).items():
-            if key in value:
-                err = _validate_value(child_schema, value[key], f"{path}.{key}")
-                if err:
-                    return err
-    elif expected == "array" and not isinstance(value, list):
-        return f"{path} must be array"
-    elif expected == "string" and not isinstance(value, str):
-        return f"{path} must be string"
-    elif expected == "number" and not isinstance(value, (int, float)):
-        return f"{path} must be number"
-    elif expected == "integer" and not isinstance(value, int):
-        return f"{path} must be integer"
-    elif expected == "boolean" and not isinstance(value, bool):
-        return f"{path} must be boolean"
+        properties = schema.get("properties", {})
+        for prop_key, child_schema in properties.items():
+            if prop_key not in value:
+                if "default" in child_schema:
+                    value[prop_key] = child_schema["default"]
+                    state["repaired"] = True
+
+    # 3. 校验并递归
+    if isinstance(expected, str):
+        if expected == "object":
+            if not isinstance(value, dict):
+                return f"{path} must be object"
+
+            # 3a. 裁剪多余字段
+            properties = schema.get("properties", {})
+            allowed_keys = set(properties.keys())
+            keys_to_remove = [k for k in value.keys() if k not in allowed_keys]
+            if keys_to_remove:
+                for k in keys_to_remove:
+                    del value[k]
+                state["repaired"] = True
+
+            for required in schema.get("required", []):
+                if required not in value:
+                    return f"{path}.{required} is required"
+            for prop_key, child_schema in properties.items():
+                if prop_key in value:
+                    err = _validate_value(child_schema, value, prop_key, f"{path}.{prop_key}", state)
+                    if err:
+                        return err
+        elif expected == "array":
+            if not isinstance(value, list):
+                return f"{path} must be array"
+            items_schema = schema.get("items")
+            if items_schema:
+                for i in range(len(value)):
+                    err = _validate_value(items_schema, value, i, f"{path}[{i}]", state)
+                    if err:
+                        return err
+        elif expected == "string" and not isinstance(value, str):
+            return f"{path} must be string"
+        elif expected == "number" and not isinstance(value, (int, float)):
+            return f"{path} must be number"
+        elif expected == "integer" and not isinstance(value, int):
+            return f"{path} must be integer"
+        elif expected == "boolean" and not isinstance(value, bool):
+            return f"{path} must be boolean"
+    elif path == "$" and not isinstance(value, dict):
+        return f"{path} must be object"
+
     enum_values = schema.get("enum")
     if enum_values is not None and value not in enum_values:
         return f"{path} must be one of enum values"

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from deepstrike._kernel import (
   ContentPartObj,
   LoopPolicy,
-  LoopStateMachine,
+  DeepStrikeRuntime,
   Message,
   RuntimeTask,
   SignalRouter,
@@ -28,8 +28,10 @@ from deepstrike.providers.stream import (
   StreamEvent,
   TextDelta,
   ToolCallEvent,
+  ToolDeniedEvent,
   ToolResultEvent,
   ToolSuspendEvent,
+  ToolArgumentRepairedEvent,
 )
 from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPlane, RunContext
 from deepstrike.runtime.replay_sanitize import sanitize_replay_text
@@ -76,9 +78,30 @@ class RuntimeRunner:
     self._opts = opts
     self._interrupted = False
     self._plane = opts.execution_plane or LocalExecutionPlane()
+    self._active_sm: DeepStrikeRuntime | None = None
 
   def interrupt(self) -> None:
     self._interrupted = True
+
+  def mount_tool(self, schema: dict) -> None:
+    """Mount a tool capability on the active run. No-op if not running."""
+    if self._active_sm is not None:
+      self._active_sm.mount_tool(schema)
+
+  def mount_skill(self, name: str, description: str) -> None:
+    """Mount a skill capability on the active run. No-op if not running."""
+    if self._active_sm is not None:
+      self._active_sm.mount_skill({"name": name, "description": description})
+
+  def mount_marker(self, kind: str, id: str, description: str) -> None:
+    """Mount a generic marker capability (e.g. MCP server) on the active run. No-op if not running."""
+    if self._active_sm is not None:
+      self._active_sm.mount_marker(kind, id, description)
+
+  def unmount_capability(self, kind: str, id: str) -> None:
+    """Unmount a capability by kind + id from the active run. No-op if not running."""
+    if self._active_sm is not None:
+      self._active_sm.unmount_capability(kind, id)
 
   @property
   def execution_plane(self) -> ExecutionPlane:
@@ -255,7 +278,8 @@ class RuntimeRunner:
       max_turns=effective_max_turns,
       timeout_ms=effective_timeout_ms,
     )
-    sm = LoopStateMachine(policy)
+    sm = DeepStrikeRuntime(policy)
+    self._active_sm = sm
     router = SignalRouter(max_queue_size=256)
 
     if self._opts.tokenizer:
@@ -425,6 +449,21 @@ class RuntimeRunner:
               tool_results.append(ToolResult(
                 call_id=evt.call_id, output=evt.content, is_error=evt.is_error,
               ))
+            elif isinstance(evt, ToolArgumentRepairedEvent):
+              await self._opts.session_log.append(session_id, {
+                "kind": "tool_argument_repaired",
+                "turn": sm.turn(),
+                "tool": evt.name,
+                "original_arguments": evt.original_arguments,
+                "repaired_arguments": evt.repaired_arguments,
+              })
+            elif isinstance(evt, ToolDeniedEvent):
+              await self._opts.session_log.append(session_id, {
+                "kind": "tool_denied",
+                "turn": sm.turn(),
+                "tool": evt.tool_name,
+                "reason": evt.reason,
+              })
           names = ", ".join(c.name for c in normal_calls)
           sm.update_task(TaskUpdate(progress=f"Executed tools: {names}"))
 
@@ -432,6 +471,20 @@ class RuntimeRunner:
           "kind": "tool_completed", "turn": sm.turn(), "results": tool_results,
         })
         action = sm.feed_tool_results(tool_results)
+
+      elif action.kind == "evaluate_milestone":
+        next_compressed_archive_start = await self._append_observations(
+          session_id, sm, next_compressed_archive_start,
+        )
+        turns_used = max(1, sm.turn())
+        await self._opts.session_log.append(session_id, build_run_terminal_event(
+          reason="milestone_pending",
+          turns_used=turns_used,
+          total_tokens=0,
+        ))
+        self._active_sm = None
+        yield DoneEvent(iterations=turns_used, total_tokens=0, status="milestone_pending")
+        return
 
       elif action.kind == "done":
         break
@@ -466,46 +519,74 @@ class RuntimeRunner:
         except Exception:
           pass
 
+    self._active_sm = None
     yield DoneEvent(iterations=turns_used, total_tokens=total_tokens, status=status)
 
   async def _append_observations(
     self,
     session_id: str,
-    sm: LoopStateMachine,
+    sm: DeepStrikeRuntime,
     next_archive_start: int,
   ) -> int:
     for obs in sm.take_observations():
-      if getattr(obs, "kind", None) != "compressed":
-        continue
-      latest = await self._opts.session_log.latest_seq(session_id)
-      if latest < next_archive_start:
-        continue
-      end = latest
+      kind = getattr(obs, "kind", None)
+      if kind == "compressed":
+        latest = await self._opts.session_log.latest_seq(session_id)
+        if latest < next_archive_start:
+          continue
+        end = latest
 
-      archive_ref = None
-      archived = getattr(obs, "archived", None)
-      if self._opts.compression_store and archived:
-        try:
-          path_ref = await self._opts.compression_store.write(session_id, next_archive_start, archived)
-          if path_ref:
-            archive_ref = path_ref
-        except Exception:
-          pass
+        archive_ref = None
+        archived = getattr(obs, "archived", None)
+        if self._opts.compression_store and archived:
+          try:
+            path_ref = await self._opts.compression_store.write(session_id, next_archive_start, archived)
+            if path_ref:
+              archive_ref = path_ref
+          except Exception:
+            pass
 
-      summary = getattr(obs, "summary", None)
-      summary_tokens = max(1, len(summary) // 4) if summary else None
+        summary = getattr(obs, "summary", None)
+        summary_tokens = max(1, len(summary) // 4) if summary else None
 
-      compressed_seq = await self._opts.session_log.append(session_id, {
-        "kind": "compressed",
-        "turn": sm.turn(),
-        "archived_seq_range": (next_archive_start, end),
-        "action": getattr(obs, "action", "none"),
-        "summary": summary or "",
-        "summary_tokens": summary_tokens,
-        "archive_ref": archive_ref,
-        "preserved_refs": sm.preserved_refs(),
-      })
-      next_archive_start = compressed_seq + 1
+        compressed_seq = await self._opts.session_log.append(session_id, {
+          "kind": "compressed",
+          "turn": sm.turn(),
+          "archived_seq_range": (next_archive_start, end),
+          "action": getattr(obs, "action", "none"),
+          "summary": summary or "",
+          "summary_tokens": summary_tokens,
+          "archive_ref": archive_ref,
+          "preserved_refs": sm.preserved_refs(),
+        })
+        next_archive_start = compressed_seq + 1
+      elif kind == "rollbacked":
+        await self._opts.session_log.append(session_id, {
+          "kind": "rollbacked",
+          "turn": getattr(obs, "turn", None) or sm.turn(),
+          "checkpoint_history_len": getattr(obs, "checkpoint_history_len", 0),
+        })
+      elif kind == "capability_changed":
+        await self._opts.session_log.append(session_id, {
+          "kind": "capability_changed",
+          "turn": getattr(obs, "turn", None) or sm.turn(),
+          "added": getattr(obs, "added", []) or [],
+          "removed": getattr(obs, "removed", []) or [],
+        })
+      elif kind == "milestone_advanced":
+        await self._opts.session_log.append(session_id, {
+          "kind": "milestone_advanced",
+          "turn": getattr(obs, "turn", None) or sm.turn(),
+          "phase_id": getattr(obs, "phase_id", "") or "",
+          "capabilities_unlocked": getattr(obs, "capabilities_unlocked", []) or [],
+        })
+      elif kind == "milestone_blocked":
+        await self._opts.session_log.append(session_id, {
+          "kind": "milestone_blocked",
+          "turn": getattr(obs, "turn", None) or sm.turn(),
+          "phase_id": getattr(obs, "phase_id", "") or "",
+          "reason": getattr(obs, "milestone_reason", "") or "",
+        })
     return next_archive_start
 
 
@@ -557,6 +638,10 @@ def _replay_messages(events: list[SessionEntry], max_bytes: int | None = None) -
           is_error=r.is_error,
         )
         messages.append(Message(role="tool", content="", tool_calls=[], content_parts=[part]))
+    elif kind == "rollbacked":
+      len_val = e.get("checkpoint_history_len", 0)
+      if len(messages) > len_val:
+        messages = messages[:len_val]
   return messages
 
 

@@ -260,4 +260,46 @@ describe("RuntimeRunner wake recovery", () => {
     const events = await sessionLog.read(sessionId)
     expect(events.some(e => e.event.kind === "compressed")).toBe(true)
   })
+
+  it("context rollback on tool failure and replay consistency", async () => {
+    let callCount = 0
+    const provider: LLMProvider = {
+      async complete() {
+        return { role: "assistant" as const, content: "unused", toolCalls: [] }
+      },
+      async *stream() {
+        callCount += 1
+        if (callCount === 1) {
+          yield { type: "tool_call", id: "call_1", name: "fail_tool", arguments: {} } as StreamEvent
+          return
+        }
+        yield { type: "text_delta", delta: "Recovered" } as StreamEvent
+      }
+    }
+
+    const { runner, sessionLog } = createRunner(
+      provider,
+      [tool("fail_tool", "Fails always", { type: "object", properties: {} }, () => {
+        throw new Error("Tool crashed!")
+      })],
+      { maxTurns: 4 }
+    )
+
+    const sessionId = "test-rollback"
+    const text = await collectText(runner.run({ sessionId, goal: "run" }))
+    expect(text).toBe("Recovered")
+
+    // 1. Verify rollbacked event was recorded.
+    const events = await sessionLog.read(sessionId)
+    const rollbacked = events.some(e => e.event.kind === "rollbacked")
+    expect(rollbacked).toBe(true)
+
+    // 2. Verify replay/recovery logic truncates the messages history appropriately.
+    const { replayMessages } = await import("../../src/runtime/runner.js")
+    const msgs = replayMessages(events)
+    expect(msgs).toHaveLength(2)
+    expect(msgs[0].role).toBe("user")
+    expect(msgs[1].role).toBe("assistant")
+    expect(msgs[1].content).toBe("Recovered")
+  })
 })

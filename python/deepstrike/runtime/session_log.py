@@ -38,6 +38,21 @@ class ToolCompletedEvent(TypedDict, total=False):
     results: list[ToolResult]
 
 
+class ToolArgumentRepairedEvent(TypedDict, total=False):
+    kind: Literal["tool_argument_repaired"]
+    turn: int
+    tool: str
+    original_arguments: str
+    repaired_arguments: str
+
+
+class ToolDeniedEvent(TypedDict, total=False):
+    kind: Literal["tool_denied"]
+    turn: int
+    tool: str
+    reason: str
+
+
 class CompressedEvent(TypedDict, total=False):
     kind: Literal["compressed"]
     turn: int
@@ -56,12 +71,45 @@ class RunTerminalEvent(TypedDict, total=False):
     total_tokens: int
 
 
+class RollbackedEvent(TypedDict, total=False):
+    kind: Literal["rollbacked"]
+    turn: int
+    checkpoint_history_len: int
+
+
+class CapabilityChangedEvent(TypedDict, total=False):
+    kind: Literal["capability_changed"]
+    turn: int
+    added: list[str]
+    removed: list[str]
+
+
+class MilestoneAdvancedEvent(TypedDict, total=False):
+    kind: Literal["milestone_advanced"]
+    turn: int
+    phase_id: str
+    capabilities_unlocked: list[str]
+
+
+class MilestoneBlockedEvent(TypedDict, total=False):
+    kind: Literal["milestone_blocked"]
+    turn: int
+    phase_id: str
+    reason: str
+
+
 SessionEvent = (
     RunStartedEvent
     | LlmCompletedEvent
     | ToolRequestedEvent
     | ToolCompletedEvent
+    | ToolArgumentRepairedEvent
+    | ToolDeniedEvent
     | CompressedEvent
+    | RollbackedEvent
+    | CapabilityChangedEvent
+    | MilestoneAdvancedEvent
+    | MilestoneBlockedEvent
     | RunTerminalEvent
 )
 

@@ -137,6 +137,7 @@ fn tool_result_fields() {
         call_id: CompactString::new("call-1"),
         output: Content::Text("3".into()),
         is_error: false,
+        is_fatal: false,
         token_count: Some(5),
     };
     assert_eq!(tr.output.as_text(), Some("3"));

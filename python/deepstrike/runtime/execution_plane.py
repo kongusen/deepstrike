@@ -12,8 +12,10 @@ from deepstrike.providers.stream import (
   PermissionRequestEvent,
   StreamEvent,
   ToolDeltaEvent,
+  ToolDeniedEvent,
   ToolResultEvent,
   ToolSuspendEvent,
+  ToolArgumentRepairedEvent,
 )
 from deepstrike.tools.registry import RegisteredTool, normalize_tool_chunk, tool_chunk_text, validate_tool_arguments
 
@@ -69,8 +71,8 @@ class LocalExecutionPlane:
         ctx.governance.set_time(int(time.time() * 1000))
         verdict = ctx.governance.evaluate(c.name, c.arguments)
         if verdict.kind == "deny":
-          msg = f"permission denied: {c.name} — {verdict.reason or ''}"
-          yield ToolResultEvent(call_id=c.id, name=c.name, content=msg, is_error=True)
+          yield ToolDeniedEvent(call_id=c.id, tool_name=c.name, reason=verdict.reason or "")
+          yield ToolResultEvent(call_id=c.id, name=c.name, content=f"permission denied: {verdict.reason or ''}", is_error=True)
           continue
         if verdict.kind == "rate_limited":
           msg = f"rate limited: {c.name}"
@@ -158,10 +160,18 @@ class LocalExecutionPlane:
       return
     try:
       kwargs = json.loads(call.arguments or "{}")
-      err = validate_tool_arguments(registered.schema.parameters, kwargs)
-      if err:
-        yield ToolResultEvent(call_id=call.id, name=call.name, content=f"invalid arguments: {err}", is_error=True)
+      original_args_str = json.dumps(kwargs)
+      validation = validate_tool_arguments(registered.schema.parameters, kwargs)
+      if validation.get("error"):
+        yield ToolResultEvent(call_id=call.id, name=call.name, content=f"invalid arguments: {validation['error']}", is_error=True)
         return
+      if validation.get("repaired"):
+        yield ToolArgumentRepairedEvent(
+          call_id=call.id,
+          name=call.name,
+          original_arguments=original_args_str,
+          repaired_arguments=json.dumps(kwargs),
+        )
       output = await registered(**kwargs)
       if isinstance(output, AsyncIterable):
         combined = ""

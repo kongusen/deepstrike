@@ -96,6 +96,9 @@ pub fn replay_messages_with_cap(entries: &[SessionEntry], max_bytes: usize) -> V
                     });
                 }
             }
+            SessionEvent::Rollbacked { checkpoint_history_len, .. } => {
+                messages.truncate(checkpoint_history_len as usize);
+            }
             _ => {}
         }
     }
@@ -167,6 +170,7 @@ mod tests {
                     call_id: call_id.clone(),
                     output: Content::Text("ok".into()),
                     is_error: false,
+                    is_fatal: false,
                     token_count: None,
                 }],
             },

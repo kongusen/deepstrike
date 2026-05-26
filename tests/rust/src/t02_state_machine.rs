@@ -97,6 +97,7 @@ fn tool_results_advance_turn_and_emit_call_llm() {
         call_id: CompactString::new("c1"),
         output: Content::Text("3".into()),
         is_error: false,
+        is_fatal: false,
         token_count: None,
     }];
     let action = sm.feed(LoopEvent::ToolResults { results });
@@ -371,6 +372,7 @@ fn full_tool_cycle_then_text_completes() {
         call_id: CompactString::new("c1"),
         output: Content::Text("3".into()),
         is_error: false,
+        is_fatal: false,
         token_count: Some(5),
     }];
     let action = sm.feed(LoopEvent::ToolResults { results });

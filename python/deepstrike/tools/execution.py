@@ -17,9 +17,9 @@ async def execute_tools(
             continue
         try:
             kwargs = json.loads(call.arguments)
-            validation_error = validate_tool_arguments(tool.schema.parameters, kwargs)
-            if validation_error:
-                results.append(ToolResult(call_id=call.id, output=f"invalid arguments: {validation_error}", is_error=True))
+            validation = validate_tool_arguments(tool.schema.parameters, kwargs)
+            if validation.get("error"):
+                results.append(ToolResult(call_id=call.id, output=f"invalid arguments: {validation['error']}", is_error=True))
                 continue
             output = await tool(**kwargs)
             if isinstance(output, AsyncIterable):

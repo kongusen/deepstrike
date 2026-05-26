@@ -73,6 +73,12 @@ pub struct ToolResult {
     pub call_id: CompactString,
     pub output: Content,
     pub is_error: bool,
+    /// When `true` the state machine rolls back the current turn on receipt.
+    /// Ordinary tool errors leave `is_fatal = false` so the run continues and
+    /// the LLM can self-correct. Only set this for writes that mutated shared
+    /// state and cannot safely proceed.
+    #[serde(default)]
+    pub is_fatal: bool,
     pub token_count: Option<u32>,
 }
 

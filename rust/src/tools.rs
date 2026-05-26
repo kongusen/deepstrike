@@ -131,22 +131,88 @@ impl RegisteredTool {
     }
 }
 
-pub fn validate_tool_arguments(schema: &Value, args: &Value) -> std::result::Result<(), String> {
-    validate_value(schema, args, "$", true)
+pub fn validate_tool_arguments(schema: &Value, args: &mut Value) -> std::result::Result<bool, String> {
+    let mut repaired = false;
+    validate_value(schema, args, "$", true, &mut repaired)?;
+    Ok(repaired)
 }
 
 fn validate_value(
     schema: &Value,
-    value: &Value,
+    value: &mut Value,
     path: &str,
     is_root: bool,
+    repaired: &mut bool,
 ) -> std::result::Result<(), String> {
+    // 1. 类型自动规整 (Auto-cast / Repair)
+    if let Some(expected) = schema.get("type").and_then(Value::as_str) {
+        match expected {
+            "boolean" => {
+                if let Some(s) = value.as_str() {
+                    if s == "true" {
+                        *value = Value::Bool(true);
+                        *repaired = true;
+                    } else if s == "false" {
+                        *value = Value::Bool(false);
+                        *repaired = true;
+                    }
+                }
+            }
+            "number" | "integer" => {
+                if let Some(s) = value.as_str() {
+                    if let Ok(num) = s.parse::<f64>() {
+                        if expected == "integer" {
+                            if num == num.round() {
+                                *value = Value::Number(serde_json::Number::from(num as i64));
+                                *repaired = true;
+                            }
+                        } else {
+                            if let Some(n) = serde_json::Number::from_f64(num) {
+                                *value = Value::Number(n);
+                                *repaired = true;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // 2. 补默认值 (Default Injection)
+    if let Some(obj) = value.as_object_mut() {
+        if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+            for (key, child_schema) in properties {
+                if !obj.contains_key(key) {
+                    if let Some(default_val) = child_schema.get("default") {
+                        obj.insert(key.clone(), default_val.clone());
+                        *repaired = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. 校验并递归
     if let Some(expected) = schema.get("type").and_then(Value::as_str) {
         match expected {
             "object" => {
-                let Some(obj) = value.as_object() else {
+                let Some(obj) = value.as_object_mut() else {
                     return Err(format!("{path} must be object"));
                 };
+
+                // 3a. 裁剪 schema 未声明的多余字段
+                if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+                    let allowed_keys: std::collections::HashSet<&str> = properties.keys().map(|s| s.as_str()).collect();
+                    let keys_to_remove: Vec<String> = obj.keys().filter(|k| !allowed_keys.contains(k.as_str())).cloned().collect();
+                    if !keys_to_remove.is_empty() {
+                        for k in keys_to_remove {
+                            obj.remove(&k);
+                        }
+                        *repaired = true;
+                    }
+                }
+
                 if let Some(required) = schema.get("required").and_then(Value::as_array) {
                     for key in required.iter().filter_map(Value::as_str) {
                         if !obj.contains_key(key) {
@@ -156,18 +222,34 @@ fn validate_value(
                 }
                 if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
                     for (key, child_schema) in properties {
-                        if let Some(child_value) = obj.get(key) {
+                        if let Some(child_value) = obj.get_mut(key) {
                             validate_value(
                                 child_schema,
                                 child_value,
                                 &format!("{path}.{key}"),
                                 false,
+                                repaired,
                             )?;
                         }
                     }
                 }
             }
-            "array" if !value.is_array() => return Err(format!("{path} must be array")),
+            "array" => {
+                let Some(arr) = value.as_array_mut() else {
+                    return Err(format!("{path} must be array"));
+                };
+                if let Some(items_schema) = schema.get("items") {
+                    for (i, child_value) in arr.iter_mut().enumerate() {
+                        validate_value(
+                            items_schema,
+                            child_value,
+                            &format!("{path}[{i}]"),
+                            false,
+                            repaired,
+                        )?;
+                    }
+                }
+            }
             "string" if !value.is_string() => return Err(format!("{path} must be string")),
             "number" if !value.is_number() => return Err(format!("{path} must be number")),
             "integer" if !value.is_i64() && !value.is_u64() => {
@@ -201,7 +283,8 @@ pub async fn execute_tools(
             ));
             continue;
         };
-        if let Err(e) = validate_tool_arguments(&tool.schema.parameters, &call.arguments) {
+        let mut call_args = call.arguments.clone();
+        if let Err(e) = validate_tool_arguments(&tool.schema.parameters, &mut call_args) {
             results.push(tool_result(
                 call.id.clone(),
                 format!("invalid arguments: {e}"),
@@ -209,7 +292,7 @@ pub async fn execute_tools(
             ));
             continue;
         }
-        let mut session = match (tool.start)(call.arguments.clone()).await {
+        let mut session = match (tool.start)(call_args).await {
             Ok(session) => session,
             Err(e) => {
                 results.push(tool_result(call.id.clone(), e.to_string(), true));
@@ -254,6 +337,7 @@ fn tool_result(
         call_id,
         output: deepstrike_core::types::message::Content::Text(output),
         is_error,
+        is_fatal: false,
         token_count: None,
     }
 }

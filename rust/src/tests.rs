@@ -106,7 +106,41 @@ mod tests {
             "properties": { "value": { "type": "string" } },
             "required": ["value"]
         });
-        assert!(validate_tool_arguments(&schema, &serde_json::json!({})).is_err());
+        let mut args = serde_json::json!({});
+        assert!(validate_tool_arguments(&schema, &mut args).is_err());
+    }
+
+    #[test]
+    fn validate_tool_arguments_repairs_white_listed_patterns() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "count": { "type": "integer" },
+                "enabled": { "type": "boolean" },
+                "ratio": { "type": "number", "default": 0.5 },
+                "name": { "type": "string" }
+            },
+            "required": ["count"]
+        });
+
+        // 1. 类型强转 (String to Int/Bool) + 补默认值 + 裁剪多余字段
+        let mut args = serde_json::json!({
+            "count": "10",
+            "enabled": "true",
+            "extra_field": "remove_me"
+        });
+        let repaired = validate_tool_arguments(&schema, &mut args).expect("should succeed");
+        assert!(repaired);
+        assert_eq!(args["count"], 10);
+        assert_eq!(args["enabled"], true);
+        assert_eq!(args["ratio"], 0.5); // Default value injected
+        assert!(args.get("extra_field").is_none()); // Trimmed extra field
+
+        // 2. 无法自愈 (缺失 required 字段)
+        let mut args_invalid = serde_json::json!({
+            "enabled": false
+        });
+        assert!(validate_tool_arguments(&schema, &mut args_invalid).is_err());
     }
 
     #[test]
@@ -217,6 +251,7 @@ mod tests {
             tokenizer: None,
             enable_plan_tool: None,
             on_tool_suspend: None,
+            milestone_policy: crate::runtime::MilestonePolicy::Terminate,
         });
 
         let mut stream = runner
@@ -295,6 +330,7 @@ mod tests {
             tokenizer: None,
             enable_plan_tool: None,
             on_tool_suspend: None,
+            milestone_policy: crate::runtime::MilestonePolicy::Terminate,
         });
 
         let session_id = "reactive-compact-rust";
@@ -323,5 +359,152 @@ mod tests {
                 deepstrike_core::runtime::session::SessionEvent::Compressed { .. }
             )
         }));
+    }
+
+    #[tokio::test]
+    async fn recoverable_tool_failure_preserves_replay_context() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use deepstrike_core::types::message::{Message, Role, Content, ToolCall};
+        use crate::runtime::session_log::{InMemorySessionLog, SessionLog};
+        use crate::runtime::runner::{RuntimeRunner, RuntimeOptions};
+        use crate::providers::LLMProvider;
+        use crate::providers::StreamEvent;
+        use crate::runtime::replay::replay_messages;
+
+        use futures::StreamExt;
+
+        // 1. 创建一个 LLMProvider。它在第一轮返回一个带有工具调用的 assistant 消息，第二轮返回 "done"。
+        #[derive(Clone)]
+        struct FakeProvider {
+            call_count: Arc<AtomicU32>,
+        }
+        #[async_trait::async_trait]
+        impl LLMProvider for FakeProvider {
+            async fn complete(
+                &self,
+                _context: &deepstrike_core::context::renderer::RenderedContext,
+                _tools: &[deepstrike_core::types::message::ToolSchema],
+                _extensions: Option<&serde_json::Value>,
+            ) -> crate::Result<Message> {
+                let count = self.call_count.fetch_add(1, Ordering::SeqCst);
+                if count == 0 {
+                    Ok(Message {
+                        role: Role::Assistant,
+                        content: Content::Text("Let's call tool".into()),
+                        tool_calls: vec![ToolCall {
+                            id: compact_str::CompactString::new("call_1"),
+                            name: compact_str::CompactString::new("fail_tool"),
+                            arguments: serde_json::json!({}),
+                        }],
+                        token_count: None,
+                    })
+                } else {
+                    Ok(Message {
+                        role: Role::Assistant,
+                        content: Content::Text("Recovered".into()),
+                        tool_calls: vec![],
+                        token_count: None,
+                    })
+                }
+            }
+            async fn stream(
+                &self,
+                context: &deepstrike_core::context::renderer::RenderedContext,
+                tools: &[deepstrike_core::types::message::ToolSchema],
+                extensions: Option<&serde_json::Value>,
+                _state: Option<&crate::providers::ProviderRunState>,
+            ) -> crate::Result<Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>> {
+                let msg = self.complete(context, tools, extensions).await?;
+                let mut stream = vec![];
+                if !msg.tool_calls.is_empty() {
+                    for tc in &msg.tool_calls {
+                        stream.push(Ok(StreamEvent::ToolCall {
+                            id: tc.id.to_string(),
+                            name: tc.name.to_string(),
+                            arguments: tc.arguments.clone(),
+                        }));
+                    }
+                } else {
+                    if let Content::Text(txt) = msg.content {
+                        stream.push(Ok(StreamEvent::TextDelta { delta: txt }));
+                    }
+                }
+                stream.push(Ok(StreamEvent::Done));
+                Ok(Box::new(futures::stream::iter(stream)))
+            }
+        }
+
+        // 2. 创建一个 ExecutionPlane。它执行 "fail_tool" 并且返回错误 (is_error: true)。
+        let mut plane = crate::runtime::execution_plane::LocalExecutionPlane::new();
+        plane.register(crate::tools::RegisteredTool::text(
+            "fail_tool",
+            "Fails always",
+            serde_json::json!({ "type": "object", "properties": {} }),
+            |_args| Box::pin(async {
+                Err(crate::Error::Tool("Tool crashed!".into()))
+            }),
+        ));
+
+        let session_log = Arc::new(InMemorySessionLog::new());
+        let call_count = Arc::new(AtomicU32::new(0));
+
+        let runner = RuntimeRunner::new(RuntimeOptions {
+            provider: Box::new(FakeProvider {
+                call_count: call_count.clone(),
+            }),
+            execution_plane: Some(Box::new(plane)),
+            session_log: Some(session_log.clone()),
+            compression_store: None,
+            session_id: None,
+            max_tokens: 1000,
+            max_turns: Some(3),
+            timeout_ms: None,
+            extensions: None,
+            agent_id: None,
+            system_prompt: None,
+            initial_memory: vec![],
+            skill_dir: None,
+            dream_store: None,
+            knowledge_source: None,
+            signal_source: None,
+            governance: None,
+            tokenizer: None,
+            enable_plan_tool: None,
+            on_tool_suspend: None,
+            milestone_policy: crate::runtime::MilestonePolicy::Terminate,
+        });
+
+        let session_id = "test-rollback";
+        let mut stream = runner
+            .run_streaming("run", &[], None, Some(session_id))
+            .await
+            .unwrap();
+        while let Some(evt) = stream.next().await {
+            let _ = evt.unwrap();
+        }
+
+        // 3. 普通 tool error 是 recoverable，不应该触发 rollback。
+        let entries = session_log.read(session_id, 0).await.unwrap();
+        assert!(!entries.iter().any(|entry| {
+            matches!(
+                entry.event,
+                deepstrike_core::runtime::session::SessionEvent::Rollbacked { .. }
+            )
+        }));
+
+        // 4. 重放整个事件流，错误结果应保留在 history 中，供模型自愈。
+        let messages = replay_messages(&entries);
+
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].role, Role::User);
+        assert_eq!(messages[1].role, Role::Assistant);
+        assert_eq!(messages[2].role, Role::Tool);
+        assert_eq!(messages[3].role, Role::Assistant);
+        if let Content::Text(ref txt) = messages[3].content {
+            assert_eq!(txt, "Recovered");
+        } else {
+            panic!("Expected text assistant response");
+        }
     }
 }

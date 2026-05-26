@@ -159,3 +159,55 @@ async def test_run_reactive_compacts_and_retries_prompt_too_long():
   assert provider.stream_calls == 2
   events = await session_log.read("reactive-compact")
   assert any(e.event.get("kind") == "compressed" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_context_rollback_on_tool_failure_and_replay_consistency():
+  class FakeProvider:
+    def __init__(self) -> None:
+      self.stream_calls = 0
+
+    async def complete(self, context, tools, extensions=None):
+      raise NotImplementedError
+
+    async def stream(self, context, tools, extensions=None, state=None):
+      self.stream_calls += 1
+      if self.stream_calls == 1:
+        yield ToolCallEvent(id="call_1", name="fail_tool", arguments={})
+        return
+      yield TextDelta(delta="Recovered")
+
+  @tool
+  def fail_tool() -> str:
+    """Fails always."""
+    raise ValueError("Tool crashed!")
+
+  provider = FakeProvider()
+  session_log = InMemorySessionLog()
+  plane = LocalExecutionPlane()
+  plane.register(fail_tool)
+
+  runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=session_log,
+    execution_plane=plane,
+    max_turns=4,
+    max_tokens=1000,
+  ))
+
+  session_id = "test-rollback"
+  text = await collect_text(runner.run(session_id=session_id, goal="run"))
+  assert text == "Recovered"
+
+  # 1. Verify rollbacked event was recorded.
+  events = await session_log.read(session_id)
+  rollbacked = any(e.event.get("kind") == "rollbacked" for e in events)
+  assert rollbacked
+
+  # 2. Verify replay/recovery logic truncates the messages history appropriately.
+  from deepstrike.runtime.runner import _replay_messages
+  msgs = _replay_messages(events)
+  assert len(msgs) == 2
+  assert msgs[0].role == "user"
+  assert msgs[1].role == "assistant"
+  assert msgs[1].content == "Recovered"

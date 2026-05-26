@@ -154,4 +154,58 @@ mod tests {
             }
         ));
     }
+
+    // ─── Monotonic Veto invariant ──────────────────────────────────────────
+    // Once VetoAuthority issues Deny, no other stage can flip it to Allow.
+
+    #[test]
+    fn veto_deny_overrides_explicit_permission_allow() {
+        // Permission has an explicit Allow rule for the tool (returns None = pass-through).
+        // Veto hard-blocks the same tool.
+        // The veto must win — permission Allow cannot suppress a veto Deny.
+        let mut pipeline = GovernancePipeline::new(PermissionAction::Deny);
+        pipeline.permission.add_rule(PermissionRule {
+            tool_pattern: "rm_rf".into(),
+            action: PermissionAction::Allow,
+        });
+        pipeline.veto.block_tool("rm_rf");
+
+        let v = pipeline.evaluate(&call("rm_rf"), &caller());
+        assert!(
+            matches!(v, GovernanceVerdict::Deny { stage: "veto", .. }),
+            "Veto must override explicit permission Allow: got {v:?}",
+        );
+    }
+
+    #[test]
+    fn veto_deny_is_monotonic_across_repeated_evaluations() {
+        // After a Veto Deny is issued, subsequent evaluations on the same pipeline
+        // continue to return Deny — the veto is not a one-shot effect.
+        let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
+        pipeline.veto.block_tool("nuke");
+
+        for _ in 0..3 {
+            let v = pipeline.evaluate(&call("nuke"), &caller());
+            assert!(
+                matches!(v, GovernanceVerdict::Deny { stage: "veto", .. }),
+                "Veto deny must persist monotonically: got {v:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn veto_deny_blocks_even_when_default_is_allow() {
+        // Sanity: the overall pipeline default of Allow does not prevent Veto.
+        // This ensures no Allow shortcut fires before the Veto stage.
+        let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
+        pipeline.veto.block_tool("exec_shell");
+
+        // Allowed tool passes through
+        let pass = pipeline.evaluate(&call("read_file"), &caller());
+        assert!(matches!(pass, GovernanceVerdict::Allow));
+
+        // Vetoed tool is denied regardless of the Allow default
+        let deny = pipeline.evaluate(&call("exec_shell"), &caller());
+        assert!(matches!(deny, GovernanceVerdict::Deny { stage: "veto", .. }));
+    }
 }

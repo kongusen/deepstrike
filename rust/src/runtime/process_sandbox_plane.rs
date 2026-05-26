@@ -35,13 +35,13 @@ impl Default for SandboxOptions {
     }
 }
 
-/// `LocalExecutionPlane` extended with two sandboxed built-in tools:
+/// `LocalExecutionPlane` extended with two subprocess built-in tools:
 ///   - `run_bash`   — executes a bash command inside `sandbox_dir`.
 ///   - `run_python` — evaluates a Python script inside `sandbox_dir`.
 ///
 /// All registered Rust tools still run in-process (identical to `LocalExecutionPlane`).
-/// Subprocesses spawned by the built-ins cannot reach files outside `sandbox_dir`
-/// unless the host OS allows it.
+/// Subprocesses are launched with `sandbox_dir` as cwd and a stripped environment.
+/// This is an execution hygiene boundary, not an OS-enforced filesystem sandbox.
 pub struct ProcessSandboxPlane {
     inner: LocalExecutionPlane,
 }
@@ -188,8 +188,8 @@ async fn run_subprocess(
 fn make_bash_tool(opts: Arc<SandboxOptions>) -> RegisteredTool {
     RegisteredTool::text(
         "run_bash",
-        "Run a bash command confined to the sandbox directory. \
-         Paths outside the sandbox are not accessible.",
+        "Run a bash command with the sandbox directory as cwd and a stripped environment. \
+         This is not an OS-enforced filesystem sandbox.",
         json!({
             "type": "object",
             "properties": {
@@ -219,7 +219,7 @@ fn make_bash_tool(opts: Arc<SandboxOptions>) -> RegisteredTool {
 fn make_python_tool(opts: Arc<SandboxOptions>) -> RegisteredTool {
     RegisteredTool::text(
         "run_python",
-        "Evaluate a Python script confined to the sandbox directory.",
+        "Evaluate a Python script with the sandbox directory as cwd and a stripped environment.",
         json!({
             "type": "object",
             "properties": {

@@ -1,5 +1,5 @@
 // Mock @deepstrike/wasm-kernel for tests (no .wasm binary needed)
-export class LoopStateMachine {
+export class DeepStrikeRuntime {
   private terminal = false
   turn = 0
   private phase = 0

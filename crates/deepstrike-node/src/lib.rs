@@ -359,9 +359,10 @@ pub struct RenderedContext {
 }
 
 /// Discriminated union. Inspect `kind`:
-/// - `"call_llm"`      → `context` (RenderedContext), `tools`
-/// - `"execute_tools"` → `calls`
-/// - `"done"`          → `result`
+/// - `"call_llm"`         → `context` (RenderedContext), `tools`
+/// - `"execute_tools"`    → `calls`
+/// - `"done"`             → `result`
+/// - `"evaluate_milestone"` → `phase_id`, `criteria`
 #[napi(object)]
 #[derive(Clone)]
 pub struct LoopAction {
@@ -370,21 +371,38 @@ pub struct LoopAction {
     pub tools: Option<Vec<ToolSchema>>,
     pub calls: Option<Vec<ToolCall>>,
     pub result: Option<LoopResult>,
+    /// Set when `kind === "evaluate_milestone"`.
+    pub phase_id: Option<String>,
+    /// Set when `kind === "evaluate_milestone"`.
+    pub criteria: Option<Vec<String>>,
 }
 
 /// Discriminated union for observations:
-/// - `"compressed"` → `action`, `rho_after`
-/// - `"renewed"`    → `sprint`
+/// - `"compressed"`         → `action`, `rho_after`, `summary`, `archived`
+/// - `"renewed"`            → `sprint`
+/// - `"rollbacked"`         → `turn`, `checkpoint_history_len`
+/// - `"capability_changed"` → `turn`, `added`, `removed`
+/// - `"milestone_advanced"` → `turn`, `phase_id`, `capabilities_unlocked`
+/// - `"milestone_blocked"`  → `turn`, `phase_id`, `milestone_reason`
 #[napi(object)]
 #[derive(Clone)]
 pub struct LoopObservation {
     pub kind: String,
     pub action: Option<String>,
     pub rho_after: Option<f64>,
-    /// Sprint number after renewal. Set when `kind === "renewed"`.
     pub sprint: Option<u32>,
     pub summary: Option<String>,
     pub archived: Option<Vec<Message>>,
+    pub turn: Option<u32>,
+    pub checkpoint_history_len: Option<u32>,
+    pub added: Option<Vec<String>>,
+    pub removed: Option<Vec<String>>,
+    /// Set when `kind === "milestone_advanced"` or `"milestone_blocked"`.
+    pub phase_id: Option<String>,
+    /// Set when `kind === "milestone_advanced"`.
+    pub capabilities_unlocked: Option<Vec<String>>,
+    /// Set when `kind === "milestone_blocked"`.
+    pub milestone_reason: Option<String>,
 }
 
 // ────────────────────────────────── conversion helpers ──────────────────────────────────
@@ -561,6 +579,7 @@ fn tool_result_to_rust(r: ToolResult) -> RustToolResult {
         call_id: CompactString::new(&r.call_id),
         output: Content::Text(r.output),
         is_error: r.is_error,
+        is_fatal: false,
         token_count: r.token_count,
     }
 }
@@ -731,6 +750,8 @@ fn loop_action_from_rust(a: RustLoopAction) -> LoopAction {
             tools: Some(tools.iter().map(tool_schema_from_rust).collect()),
             calls: None,
             result: None,
+            phase_id: None,
+            criteria: None,
         },
         RustLoopAction::ExecuteTools { calls } => LoopAction {
             kind: "execute_tools".into(),
@@ -738,6 +759,8 @@ fn loop_action_from_rust(a: RustLoopAction) -> LoopAction {
             tools: None,
             calls: Some(calls.iter().map(tool_call_from_rust).collect()),
             result: None,
+            phase_id: None,
+            criteria: None,
         },
         RustLoopAction::Done { result } => LoopAction {
             kind: "done".into(),
@@ -745,24 +768,37 @@ fn loop_action_from_rust(a: RustLoopAction) -> LoopAction {
             tools: None,
             calls: None,
             result: Some(loop_result_from_rust(&result)),
+            phase_id: None,
+            criteria: None,
+        },
+        RustLoopAction::EvaluateMilestone { phase_id, criteria } => LoopAction {
+            kind: "evaluate_milestone".into(),
+            context: None,
+            tools: None,
+            calls: None,
+            result: None,
+            phase_id: Some(phase_id),
+            criteria: Some(criteria),
         },
     }
 }
 
 fn observation_from_rust(o: RustLoopObservation) -> LoopObservation {
     match o {
-        RustLoopObservation::Compressed {
-            action,
-            rho_after,
-            summary,
-            archived,
-        } => LoopObservation {
+        RustLoopObservation::Compressed { action, rho_after, summary, archived } => LoopObservation {
             kind: "compressed".into(),
             action: Some(pressure_action_str(action).into()),
             rho_after: Some(rho_after),
             sprint: None,
             summary,
             archived: Some(archived.iter().map(message_from_rust).collect()),
+            turn: None,
+            checkpoint_history_len: None,
+            added: None,
+            removed: None,
+            phase_id: None,
+            capabilities_unlocked: None,
+            milestone_reason: None,
         },
         RustLoopObservation::Renewed { sprint } => LoopObservation {
             kind: "renewed".into(),
@@ -771,6 +807,73 @@ fn observation_from_rust(o: RustLoopObservation) -> LoopObservation {
             sprint: Some(sprint),
             summary: None,
             archived: None,
+            turn: None,
+            checkpoint_history_len: None,
+            added: None,
+            removed: None,
+            phase_id: None,
+            capabilities_unlocked: None,
+            milestone_reason: None,
+        },
+        RustLoopObservation::Rollbacked { turn, checkpoint_history_len } => LoopObservation {
+            kind: "rollbacked".into(),
+            action: None,
+            rho_after: None,
+            sprint: None,
+            summary: None,
+            archived: None,
+            turn: Some(turn),
+            checkpoint_history_len: Some(checkpoint_history_len as u32),
+            added: None,
+            removed: None,
+            phase_id: None,
+            capabilities_unlocked: None,
+            milestone_reason: None,
+        },
+        RustLoopObservation::CapabilityChanged { turn, added, removed } => LoopObservation {
+            kind: "capability_changed".into(),
+            action: None,
+            rho_after: None,
+            sprint: None,
+            summary: None,
+            archived: None,
+            turn: Some(turn),
+            checkpoint_history_len: None,
+            added: Some(added),
+            removed: Some(removed),
+            phase_id: None,
+            capabilities_unlocked: None,
+            milestone_reason: None,
+        },
+        RustLoopObservation::MilestoneAdvanced { turn, phase_id, capabilities_unlocked } => LoopObservation {
+            kind: "milestone_advanced".into(),
+            action: None,
+            rho_after: None,
+            sprint: None,
+            summary: None,
+            archived: None,
+            turn: Some(turn),
+            checkpoint_history_len: None,
+            added: None,
+            removed: None,
+            phase_id: Some(phase_id),
+            capabilities_unlocked: Some(capabilities_unlocked),
+            milestone_reason: None,
+        },
+        RustLoopObservation::MilestoneBlocked { turn, phase_id, reason } => LoopObservation {
+            kind: "milestone_blocked".into(),
+            action: None,
+            rho_after: None,
+            sprint: None,
+            summary: None,
+            archived: None,
+            turn: Some(turn),
+            checkpoint_history_len: None,
+            added: None,
+            removed: None,
+            phase_id: Some(phase_id),
+            capabilities_unlocked: None,
+            milestone_reason: Some(reason),
         },
     }
 }
@@ -785,126 +888,15 @@ pub fn format_contract_for_system_prompt(contract: VerificationContract) -> Stri
     verification_contract_to_rust(contract).format_for_system_prompt()
 }
 
-// ─────────────────────────────────────────── ContextEngine ───────────────────────────────────────────
+// ─────────────────────────────────────────── DeepStrikeRuntime ───────────────────────────────────────────
 
 #[napi]
-pub struct ContextEngine {
-    inner: ContextManager,
-}
-
-#[napi]
-impl ContextEngine {
-    #[napi(constructor)]
-    pub fn new(max_tokens: u32) -> Self {
-        Self {
-            inner: ContextManager::new(max_tokens),
-        }
-    }
-
-    #[napi]
-    pub fn add_system_message(&mut self, content: String, tokens: u32) {
-        self.inner
-            .partitions
-            .system
-            .push(RustMessage::system(content), tokens);
-    }
-
-    #[napi]
-    pub fn add_user_message(&mut self, content: String, tokens: u32) {
-        self.inner.push_history(RustMessage::user(content), tokens);
-    }
-
-    #[napi]
-    pub fn add_assistant_message(&mut self, content: String, tokens: u32) {
-        self.inner
-            .push_history(RustMessage::assistant(content), tokens);
-    }
-
-    #[napi]
-    pub fn pressure(&self) -> f64 {
-        self.inner.rho()
-    }
-
-    #[napi]
-    pub fn total_tokens(&self) -> u32 {
-        self.inner.partitions.total_tokens(&self.inner.engine)
-    }
-
-    /// Run compression at the level the current pressure recommends.
-    /// Returns tokens saved.
-    #[napi]
-    pub fn compress(&mut self) -> u32 {
-        let action = self.inner.should_compress();
-        if action == PressureAction::None {
-            return 0;
-        }
-        let before = self.inner.partitions.total_tokens(&self.inner.engine);
-        self.inner.compress(action);
-        let after = self.inner.partitions.total_tokens(&self.inner.engine);
-        before.saturating_sub(after)
-    }
-
-    #[napi]
-    pub fn render(&self) -> RenderedContext {
-        rendered_context_from_rust(self.inner.render())
-    }
-
-    /// Replace the available-skills set with frontmatter-only metadata.
-    /// The kernel will auto-inject the `skill` meta-tool into every `CallLLM` action.
-    #[napi]
-    pub fn set_available_skills(&mut self, skills: Vec<SkillMetadata>) {
-        let rust_skills = skills.into_iter().map(skill_metadata_to_rust).collect();
-        self.inner.set_available_skills(rust_skills);
-    }
-
-    #[napi]
-    pub fn init_task(&mut self, goal: String, criteria: Vec<String>) {
-        self.inner.init_task(goal, criteria);
-    }
-
-    #[napi]
-    pub fn update_task(&mut self, update: TaskUpdate) {
-        self.inner.update_task(task_update_to_rust(update));
-    }
-
-    #[napi]
-    pub fn recovery_content_bytes(&self) -> u32 {
-        let tokens = self
-            .inner
-            .config
-            .recovery_content_tokens(self.inner.max_tokens);
-        self.inner.engine.token_budget_to_bytes(tokens) as u32
-    }
-
-    #[napi]
-    pub fn set_tokenizer(&mut self, name: String) {
-        let engine = match name.as_str() {
-            "tiktoken_cl100k" | "cl100k" => {
-                deepstrike_core::context::token_engine::ContextTokenEngine::cl100k()
-            }
-            "tiktoken_o200k" | "o200k" => {
-                deepstrike_core::context::token_engine::ContextTokenEngine::o200k()
-            }
-            _ => deepstrike_core::context::token_engine::ContextTokenEngine::char_approx(),
-        };
-        self.inner.engine = engine;
-    }
-
-    #[napi]
-    pub fn set_plan_tool_enabled(&mut self, enabled: bool) {
-        self.inner.set_plan_tool_enabled(enabled);
-    }
-}
-
-// ─────────────────────────────────────────── LoopStateMachine ───────────────────────────────────────────
-
-#[napi]
-pub struct LoopStateMachine {
+pub struct DeepStrikeRuntime {
     inner: RustLoopStateMachine,
 }
 
 #[napi]
-impl LoopStateMachine {
+impl DeepStrikeRuntime {
     #[napi(constructor)]
     pub fn new(policy: LoopPolicy) -> Self {
         Self {
@@ -996,6 +988,53 @@ impl LoopStateMachine {
             .map(tool_schema_to_rust)
             .collect::<Result<_>>()?;
         self.inner.tools = rust_tools;
+        Ok(())
+    }
+
+    #[napi]
+    pub fn mount_tool(&mut self, schema: ToolSchema) -> Result<()> {
+        let rust_schema = tool_schema_to_rust(schema)?;
+        let desc = deepstrike_core::types::capability::CapabilityDescriptor::tool(rust_schema);
+        self.inner.mount_capability(desc);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn mount_skill(&mut self, skill: SkillMetadata) {
+        let desc = deepstrike_core::types::capability::CapabilityDescriptor::skill(skill_metadata_to_rust(skill));
+        self.inner.mount_capability(desc);
+    }
+
+    #[napi]
+    pub fn mount_marker(&mut self, kind: String, id: String, description: String) -> Result<()> {
+        let kind = match kind.as_str() {
+            "tool" => deepstrike_core::types::capability::CapabilityKind::Tool,
+            "skill" => deepstrike_core::types::capability::CapabilityKind::Skill,
+            "memory" => deepstrike_core::types::capability::CapabilityKind::Memory,
+            "knowledge" => deepstrike_core::types::capability::CapabilityKind::Knowledge,
+            "mcp_server" => deepstrike_core::types::capability::CapabilityKind::McpServer,
+            "command" => deepstrike_core::types::capability::CapabilityKind::Command,
+            "agent" => deepstrike_core::types::capability::CapabilityKind::Agent,
+            _ => return Err(Error::new(Status::InvalidArg, format!("Invalid capability kind: {kind}"))),
+        };
+        let desc = deepstrike_core::types::capability::CapabilityDescriptor::marker(kind, compact_str::CompactString::new(id), description);
+        self.inner.mount_capability(desc);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn unmount_capability(&mut self, kind: String, id: String) -> Result<()> {
+        let kind = match kind.as_str() {
+            "tool" => deepstrike_core::types::capability::CapabilityKind::Tool,
+            "skill" => deepstrike_core::types::capability::CapabilityKind::Skill,
+            "memory" => deepstrike_core::types::capability::CapabilityKind::Memory,
+            "knowledge" => deepstrike_core::types::capability::CapabilityKind::Knowledge,
+            "mcp_server" => deepstrike_core::types::capability::CapabilityKind::McpServer,
+            "command" => deepstrike_core::types::capability::CapabilityKind::Command,
+            "agent" => deepstrike_core::types::capability::CapabilityKind::Agent,
+            _ => return Err(Error::new(Status::InvalidArg, format!("Invalid capability kind: {kind}"))),
+        };
+        self.inner.unmount_capability(kind, &id);
         Ok(())
     }
 

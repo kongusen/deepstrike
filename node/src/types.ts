@@ -127,11 +127,26 @@ export interface ErrorEvent extends StreamEvent {
   message: string
 }
 
+export interface ToolArgumentRepairedEvent extends StreamEvent {
+  type: "tool_argument_repaired"
+  callId: string
+  name: string
+  originalArguments: string
+  repairedArguments: string
+}
+
 export interface PermissionRequestEvent extends StreamEvent {
   type: "permission_request"
   callId: string
   toolName: string
   arguments: string
+  reason: string
+}
+
+export interface ToolDeniedEvent extends StreamEvent {
+  type: "tool_denied"
+  callId: string
+  toolName: string
   reason: string
 }
 

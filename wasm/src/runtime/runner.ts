@@ -1,6 +1,7 @@
 import type {
   LLMProvider, Message, ToolCall, ToolResult, ToolSchema,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
+  ToolArgumentRepairedEvent, ToolDeniedEvent,
 } from "../types.js"
 import type { ToolSuspendEvent } from "./execution-plane.js"
 import type { DreamStore, DreamResult, MemoryEntry, CurationResult, SessionData } from "../memory/index.js"
@@ -174,7 +175,7 @@ export class RuntimeRunner {
     const effectiveMaxTurns = this.opts.maxTurns ?? providerPolicy.maxTurns ?? 25
     const effectiveTimeoutMs = this.opts.timeoutMs ?? providerPolicy.timeoutMs
 
-    const sm = new kernel.LoopStateMachine({
+    const sm = new kernel.DeepStrikeRuntime({
       maxTokens: this.opts.maxTokens,
       maxTurns: effectiveMaxTurns,
       timeoutMs: effectiveTimeoutMs !== undefined ? BigInt(effectiveTimeoutMs) : undefined,
@@ -302,6 +303,23 @@ export class RuntimeRunner {
           if (evt.type === "tool_result") {
             const tre = evt as ToolResultEvent
             toolResults.push({ callId: tre.callId, output: tre.content, isError: tre.isError })
+          } else if (evt.type === "tool_argument_repaired") {
+            const tare = evt as ToolArgumentRepairedEvent
+            await this.opts.sessionLog.append(sessionId, {
+              kind: "tool_argument_repaired",
+              turn: sm.turn,
+              tool: tare.name,
+              original_arguments: tare.originalArguments,
+              repaired_arguments: tare.repairedArguments,
+            })
+          } else if (evt.type === "tool_denied") {
+            const tde = evt as ToolDeniedEvent
+            await this.opts.sessionLog.append(sessionId, {
+              kind: "tool_denied",
+              turn: sm.turn,
+              tool: tde.toolName,
+              reason: tde.reason,
+            })
           }
         }
 
@@ -316,6 +334,17 @@ export class RuntimeRunner {
           })),
         })
         action = sm.feedToolResults(toolResults)
+
+      } else if (action.kind === "evaluate_milestone") {
+        nextCompressedArchiveStart = await this.appendObservations(sessionId, sm, nextCompressedArchiveStart)
+        const turnsUsed = Math.max(1, sm.turn)
+        await this.opts.sessionLog.append(sessionId, buildRunTerminalEvent({
+          reason: "milestone_pending",
+          turnsUsed,
+          totalTokens: 0,
+        }))
+        yield { type: "done", iterations: turnsUsed, totalTokens: 0, status: "milestone_pending" } as DoneEvent
+        return
 
       } else if (action.kind === "done") {
         break
@@ -365,16 +394,52 @@ export class RuntimeRunner {
   ): Promise<number> {
     const observations = sm.takeObservations()
     for (const obs of observations) {
-      if (obs.kind !== "compressed") continue
-      const latest = await this.opts.sessionLog.latestSeq(sessionId)
-      if (latest < nextArchiveStart) continue
-      const end = latest
-      const compressedSeq = await this.opts.sessionLog.append(sessionId, {
-        kind: "compressed",
-        turn: sm.turn,
-        archived_seq_range: [nextArchiveStart, end],
-      })
-      nextArchiveStart = compressedSeq + 1
+      if (obs.kind === "compressed") {
+        const latest = await this.opts.sessionLog.latestSeq(sessionId)
+        if (latest < nextArchiveStart) continue
+        const end = latest
+        const compressedSeq = await this.opts.sessionLog.append(sessionId, {
+          kind: "compressed",
+          turn: sm.turn,
+          archived_seq_range: [nextArchiveStart, end],
+          action: (obs as { action?: "snip_compact" | "micro_compact" | "context_collapse" | "auto_compact" }).action,
+          summary: (obs as { summary?: string }).summary,
+          summary_tokens: (obs as { summary?: string }).summary
+            ? Math.max(1, Math.ceil(((obs as { summary?: string }).summary ?? "").length / 4))
+            : undefined,
+          preserved_refs: [],
+        })
+        nextArchiveStart = compressedSeq + 1
+      } else if (obs.kind === "rollbacked") {
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "rollbacked",
+          turn: (obs as { turn?: number }).turn ?? sm.turn,
+          checkpoint_history_len: (obs as { checkpointHistoryLen?: number; checkpoint_history_len?: number }).checkpointHistoryLen
+            ?? (obs as { checkpoint_history_len?: number }).checkpoint_history_len
+            ?? 0,
+        })
+      } else if (obs.kind === "capability_changed") {
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "capability_changed",
+          turn: (obs as { turn?: number }).turn ?? sm.turn,
+          added: (obs as { added?: string[] }).added ?? [],
+          removed: (obs as { removed?: string[] }).removed ?? [],
+        })
+      } else if (obs.kind === "milestone_advanced") {
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "milestone_advanced",
+          turn: (obs as { turn?: number }).turn ?? sm.turn,
+          phase_id: (obs as { phase_id?: string }).phase_id ?? "",
+          capabilities_unlocked: (obs as { capabilities_unlocked?: string[] }).capabilities_unlocked ?? [],
+        })
+      } else if (obs.kind === "milestone_blocked") {
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "milestone_blocked",
+          turn: (obs as { turn?: number }).turn ?? sm.turn,
+          phase_id: (obs as { phase_id?: string }).phase_id ?? "",
+          reason: (obs as { milestone_reason?: string }).milestone_reason ?? "",
+        })
+      }
     }
     return nextArchiveStart
   }

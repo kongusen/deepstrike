@@ -1,5 +1,5 @@
 import type {
-  ToolCall, ToolResult, ToolSchema, StreamEvent, ToolSuspendEvent, ToolResultEvent, PermissionRequestEvent,
+  ToolCall, ToolResult, ToolSchema, StreamEvent, ToolSuspendEvent, ToolResultEvent, PermissionRequestEvent, ToolDeniedEvent,
 } from "../types.js"
 import type { RegisteredTool } from "../tools/index.js"
 import { isAsyncIterable, normalizeToolChunk, toolChunkText, validateToolArguments } from "../tools/index.js"
@@ -57,7 +57,7 @@ export class LocalExecutionPlane implements ExecutionPlane {
         ctx.governance.setTime?.(BigInt(Date.now()))
         const v = ctx.governance.evaluate(c.name, c.arguments)
         if (v.kind === "deny") {
-          yield { type: "error", message: `permission denied: ${c.name} — ${v.reason ?? ""}` } as StreamEvent
+          yield { type: "tool_denied", callId: c.id, toolName: c.name, reason: v.reason ?? "" } as ToolDeniedEvent
           yield { type: "tool_result", callId: c.id, name: c.name, content: `permission denied: ${v.reason ?? ""}`, isError: true } as ToolResultEvent
           continue
         }
@@ -143,8 +143,18 @@ export class LocalExecutionPlane implements ExecutionPlane {
     if (!registered) return { callId: call.id, output: `unknown tool: ${call.name}`, isError: true }
     try {
       const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>
-      const err = validateToolArguments(registered.schema.parameters, args)
-      if (err) return { callId: call.id, output: `invalid arguments: ${err}`, isError: true }
+      const originalArgsStr = JSON.stringify(args)
+      const validation = validateToolArguments(registered.schema.parameters, args)
+      if (validation.error) return { callId: call.id, output: `invalid arguments: ${validation.error}`, isError: true }
+      if (validation.repaired) {
+        yield {
+          type: "tool_argument_repaired",
+          callId: call.id,
+          name: call.name,
+          originalArguments: originalArgsStr,
+          repairedArguments: JSON.stringify(args),
+        } as StreamEvent
+      }
       const output = await registered.execute(args)
       if (isAsyncIterable(output)) {
         let combined = ""

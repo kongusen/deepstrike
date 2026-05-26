@@ -80,6 +80,23 @@ class PermissionRequestEvent:
     reason: str = ""
 
 
+@dataclass
+class ToolArgumentRepairedEvent:
+    type: str = "tool_argument_repaired"
+    call_id: str = ""
+    name: str = ""
+    original_arguments: str = ""
+    repaired_arguments: str = ""
+
+
+@dataclass
+class ToolDeniedEvent:
+    type: str = "tool_denied"
+    call_id: str = ""
+    tool_name: str = ""
+    reason: str = ""
+
+
 StreamEvent = Union[
     UsageEvent,
     ThinkingDelta,
@@ -91,4 +108,6 @@ StreamEvent = Union[
     DoneEvent,
     ErrorEvent,
     PermissionRequestEvent,
+    ToolArgumentRepairedEvent,
+    ToolDeniedEvent,
 ]

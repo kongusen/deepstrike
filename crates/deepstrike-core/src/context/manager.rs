@@ -4,7 +4,7 @@ use super::partitions::ContextPartitions;
 use super::pressure::{PressureAction, PressureMonitor};
 use super::renderer::RenderedContext;
 use super::renewal::{HandoffArtifact, RenewalPolicy};
-use super::sections::ContextSectionRegistry;
+use super::sections::{ContextSectionPartition, ContextSectionRegistry};
 use super::snapshot::ContextSnapshotHint;
 use super::skill_catalog::SkillCatalog;
 use super::task_state::{TaskState, TaskUpdate};
@@ -79,12 +79,28 @@ impl ContextManager {
     }
 
     pub fn compress(&mut self, action: PressureAction) -> (u32, Option<String>, Vec<Message>) {
+        if self.sections.is_partition_pinned(ContextSectionPartition::History) {
+            return (0, None, vec![]);
+        }
         let target = self.config.target_tokens(self.max_tokens);
         self.compression.compress(
             &mut self.partitions,
             action,
             self.max_tokens,
             target,
+            &self.engine,
+        )
+    }
+
+    pub fn force_compress(&mut self) -> (u32, Option<String>, Vec<Message>) {
+        if self.sections.is_partition_pinned(ContextSectionPartition::History) {
+            return (0, None, vec![]);
+        }
+        self.compression.compress(
+            &mut self.partitions,
+            PressureAction::AutoCompact,
+            self.max_tokens,
+            0,
             &self.engine,
         )
     }
@@ -142,6 +158,20 @@ impl ContextManager {
     /// completion or in response to an `update_plan` meta-tool call.
     pub fn update_task(&mut self, update: TaskUpdate) {
         self.partitions.task_state.apply(update);
+    }
+
+    // ── Section pinning ──────────────────────────────────────────────────────
+
+    /// Pin a section so its partition is exempt from GC even under token pressure.
+    /// Returns true if the section id was found in the registry.
+    pub fn pin_section(&mut self, id: &str) -> bool {
+        self.sections.pin(id)
+    }
+
+    /// Unpin a section, allowing its partition to be compressed again.
+    /// Returns true if the section id was found in the registry.
+    pub fn unpin_section(&mut self, id: &str) -> bool {
+        self.sections.unpin(id)
     }
 
     // ── Skills ────────────────────────────────────────────────────────────────
@@ -382,6 +412,44 @@ mod tests {
         mgr.renew();
         let artifact = mgr.last_handoff.as_ref().unwrap();
         assert_eq!(artifact.open_tasks, vec!["pending"]);
+    }
+
+    #[test]
+    fn pinned_history_section_skips_compression() {
+        let mut mgr = ContextManager::new(1_000);
+        // Fill history well past the pressure threshold
+        for _ in 0..30 {
+            mgr.push_history(Message::user("filler message for pinning test"), 50);
+        }
+        let tokens_before = mgr.partitions.history.token_count;
+        mgr.pin_section("history.rolling");
+        // compress() should be a no-op while the section is pinned
+        let (saved, _, _) = mgr.compress(PressureAction::AutoCompact);
+        assert_eq!(saved, 0, "compression must be skipped when history is pinned");
+        assert_eq!(mgr.partitions.history.token_count, tokens_before);
+    }
+
+    #[test]
+    fn unpinned_history_section_allows_compression() {
+        let mut mgr = ContextManager::new(1_000);
+        for _ in 0..30 {
+            mgr.push_history(Message::user("filler"), 50);
+        }
+        mgr.pin_section("history.rolling");
+        mgr.unpin_section("history.rolling");
+        let (saved, _, _) = mgr.compress(PressureAction::AutoCompact);
+        assert!(saved > 0, "compression should proceed after unpin");
+    }
+
+    #[test]
+    fn force_compress_also_skips_when_history_pinned() {
+        let mut mgr = ContextManager::new(1_000);
+        for _ in 0..10 {
+            mgr.push_history(Message::user("filler"), 50);
+        }
+        mgr.pin_section("history.rolling");
+        let (saved, _, _) = mgr.force_compress();
+        assert_eq!(saved, 0);
     }
 
     #[test]

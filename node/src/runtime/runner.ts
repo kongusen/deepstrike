@@ -1,7 +1,7 @@
 import type {
   LLMProvider, Message, ToolCall, ToolResult, ToolSchema,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
-  ToolSuspendEvent,
+  ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent,
 } from "../types.js"
 import type { DreamStore, DreamResult, MemoryEntry, CurationResult, SessionData } from "../memory/protocols.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
@@ -41,8 +41,18 @@ export interface RuntimeOptions {
 
 export class RuntimeRunner {
   private interrupted = false
+  private activeSm: any | null = null
 
   constructor(private readonly opts: RuntimeOptions) {}
+
+  /** Mount a tool capability on the currently-running kernel state machine. No-op if not running. */
+  mountTool(schema: ToolSchema): void { this.activeSm?.mountTool(schema) }
+  /** Mount a skill capability on the currently-running kernel state machine. No-op if not running. */
+  mountSkill(name: string, description: string): void { this.activeSm?.mountSkill({ name, description }) }
+  /** Mount a generic marker capability (e.g. MCP server, agent) on the active run. No-op if not running. */
+  mountMarker(kind: string, id: string, description: string): void { this.activeSm?.mountMarker(kind, id, description) }
+  /** Unmount a capability by kind + id from the active run. No-op if not running. */
+  unmountCapability(kind: string, id: string): void { this.activeSm?.unmountCapability(kind, id) }
 
   interrupt(): void { this.interrupted = true }
 
@@ -169,11 +179,12 @@ export class RuntimeRunner {
     const effectiveMaxTurns   = this.opts.maxTurns   ?? providerPolicy.maxTurns   ?? 25
     const effectiveTimeoutMs  = this.opts.timeoutMs  ?? providerPolicy.timeoutMs
 
-    const sm = new kernel.LoopStateMachine({
+    const sm = new kernel.DeepStrikeRuntime({
       maxTokens: this.opts.maxTokens,
       maxTurns: effectiveMaxTurns,
       timeoutMs: effectiveTimeoutMs !== undefined ? BigInt(effectiveTimeoutMs) : undefined,
     })
+    this.activeSm = sm
     const router = new kernel.SignalRouter(256)
 
     if (this.opts.tokenizer) {
@@ -339,6 +350,23 @@ export class RuntimeRunner {
             if (evt.type === "tool_result") {
               const tre = evt as ToolResultEvent
               toolResults.push({ callId: tre.callId, output: tre.content, isError: tre.isError })
+            } else if (evt.type === "tool_argument_repaired") {
+              const tare = evt as ToolArgumentRepairedEvent
+              await this.opts.sessionLog.append(sessionId, {
+                kind: "tool_argument_repaired",
+                turn: sm.turn,
+                tool: tare.name,
+                original_arguments: tare.originalArguments,
+                repaired_arguments: tare.repairedArguments,
+              })
+            } else if (evt.type === "tool_denied") {
+              const tde = evt as ToolDeniedEvent
+              await this.opts.sessionLog.append(sessionId, {
+                kind: "tool_denied",
+                turn: sm.turn,
+                tool: tde.toolName,
+                reason: tde.reason,
+              })
             }
           }
           const names = normalCalls.map(c => c.name).join(", ")
@@ -356,6 +384,18 @@ export class RuntimeRunner {
           })),
         })
         action = sm.feedToolResults(toolResults)
+
+      } else if (action.kind === "evaluate_milestone") {
+        nextCompressedArchiveStart = await this.appendObservations(sessionId, sm, nextCompressedArchiveStart)
+        const turnsUsed = Math.max(1, sm.turn)
+        await this.opts.sessionLog.append(sessionId, buildRunTerminalEvent({
+          reason: "milestone_pending",
+          turnsUsed,
+          totalTokens: 0,
+        }))
+        yield { type: "done", iterations: turnsUsed, totalTokens: 0, status: "milestone_pending" } as DoneEvent
+        this.activeSm = null
+        return
 
       } else if (action.kind === "done") {
         break
@@ -397,6 +437,7 @@ export class RuntimeRunner {
     }
 
     yield { type: "done", iterations: turnsUsed, totalTokens, status } as DoneEvent
+    this.activeSm = null
   }
 
   private async appendObservations(
@@ -406,33 +447,61 @@ export class RuntimeRunner {
   ): Promise<number> {
     const observations = sm.takeObservations()
     for (const obs of observations) {
-      if (obs.kind !== "compressed") continue
-      const latest = await this.opts.sessionLog.latestSeq(sessionId)
-      if (latest < nextArchiveStart) continue
-      const end = latest
+      if (obs.kind === "compressed") {
+        const latest = await this.opts.sessionLog.latestSeq(sessionId)
+        if (latest < nextArchiveStart) continue
+        const end = latest
 
-      let archiveRef: string | undefined = undefined
-      const archived = obs.archived
-      if (this.opts.compressionStore && archived && archived.length > 0) {
-        try {
-          const pathRef = await this.opts.compressionStore.write(sessionId, nextArchiveStart, archived)
-          if (pathRef) archiveRef = pathRef
-        } catch (err) {
-          // ignore or log
+        let archiveRef: string | undefined = undefined
+        const archived = obs.archived
+        if (this.opts.compressionStore && archived && archived.length > 0) {
+          try {
+            const pathRef = await this.opts.compressionStore.write(sessionId, nextArchiveStart, archived)
+            if (pathRef) archiveRef = pathRef
+          } catch (err) {
+            // ignore or log
+          }
         }
-      }
 
-      const compressedSeq = await this.opts.sessionLog.append(sessionId, {
-        kind: "compressed",
-        turn: sm.turn,
-        archived_seq_range: [nextArchiveStart, end],
-        action: obs.action,
-        summary: obs.summary,
-        summary_tokens: obs.summary ? Math.max(1, Math.ceil(obs.summary.length / 4)) : undefined,
-        archive_ref: archiveRef,
-        preserved_refs: (sm as any).ctx?.partitions?.task_state?.preserved_refs ?? [],
-      })
-      nextArchiveStart = compressedSeq + 1
+        const compressedSeq = await this.opts.sessionLog.append(sessionId, {
+          kind: "compressed",
+          turn: sm.turn,
+          archived_seq_range: [nextArchiveStart, end],
+          action: obs.action,
+          summary: obs.summary,
+          summary_tokens: obs.summary ? Math.max(1, Math.ceil(obs.summary.length / 4)) : undefined,
+          archive_ref: archiveRef,
+          preserved_refs: (sm as any).ctx?.partitions?.task_state?.preserved_refs ?? [],
+        })
+        nextArchiveStart = compressedSeq + 1
+      } else if (obs.kind === "rollbacked") {
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "rollbacked",
+          turn: obs.turn ?? sm.turn,
+          checkpoint_history_len: obs.checkpointHistoryLen ?? obs.checkpoint_history_len ?? 0,
+        })
+      } else if (obs.kind === "capability_changed") {
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "capability_changed",
+          turn: obs.turn ?? sm.turn,
+          added: obs.added ?? [],
+          removed: obs.removed ?? [],
+        })
+      } else if (obs.kind === "milestone_advanced") {
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "milestone_advanced",
+          turn: obs.turn ?? sm.turn,
+          phase_id: obs.phase_id ?? "",
+          capabilities_unlocked: obs.capabilities_unlocked ?? [],
+        })
+      } else if (obs.kind === "milestone_blocked") {
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "milestone_blocked",
+          turn: obs.turn ?? sm.turn,
+          phase_id: obs.phase_id ?? "",
+          reason: obs.milestone_reason ?? "",
+        })
+      }
     }
     return nextArchiveStart
   }
@@ -448,7 +517,7 @@ function forceCompact(sm: { forceCompact?: () => boolean; force_compact?: () => 
   throw new TypeError("LoopStateMachine forceCompact binding is unavailable")
 }
 
-function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, maxBytes?: number): Message[] {
+export function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, maxBytes?: number): Message[] {
   const messages: Message[] = []
   for (const { event: e } of events) {
     if (e.kind === "run_started") {
@@ -487,6 +556,11 @@ function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, max
           contentParts: [{ type: "tool_result", callId: r.call_id, output: sanitizeReplayText(r.output, maxBytes), isError: r.is_error ?? false }],
           tokenCount: r.token_count,
         })
+      }
+    } else if (e.kind === "rollbacked") {
+      const len = e.checkpoint_history_len ?? 0
+      if (messages.length > len) {
+        messages.length = len
       }
     }
   }
