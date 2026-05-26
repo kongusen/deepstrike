@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "event": {
+    "kind": "push_artifact",
+    "message": {
+      "role": "assistant",
+      "content": "Generated report content"
+    },
+    "tokens": 42
+  }
+}

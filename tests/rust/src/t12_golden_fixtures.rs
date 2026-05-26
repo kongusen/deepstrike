@@ -60,6 +60,11 @@ fn test_step_done_fixture() {
 }
 
 #[test]
+fn test_input_push_artifact_fixture() {
+    assert_roundtrip::<KernelInput>("input_push_artifact.json");
+}
+
+#[test]
 fn test_observation_compressed_fixture() {
     assert_roundtrip::<KernelObservation>("observation_compressed.json");
 }

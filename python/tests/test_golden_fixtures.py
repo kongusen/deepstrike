@@ -35,17 +35,32 @@ def test_golden_start_run():
 def test_golden_tool_results():
     fixtures_dir = get_fixtures_dir()
     kernel = KernelRuntime(LoopPolicy())
-    
+
     with open(os.path.join(fixtures_dir, "input_start_run.json"), "r") as f:
         start_json = f.read()
     kernel.step(start_json)
-    
+
     with open(os.path.join(fixtures_dir, "input_tool_results.json"), "r") as f:
         input_json = f.read()
-        
+
     step_json = kernel.step(input_json)
     assert step_json is not None
-    
+
     step = json.loads(step_json)
     assert step["version"] == 1
     assert "actions" in step
+
+def test_golden_push_artifact():
+    fixtures_dir = get_fixtures_dir()
+    kernel = KernelRuntime(LoopPolicy())
+
+    with open(os.path.join(fixtures_dir, "input_push_artifact.json"), "r") as f:
+        input_json = f.read()
+
+    step_json = kernel.step(input_json)
+    assert step_json is not None
+
+    step = json.loads(step_json)
+    assert step["version"] == 1
+    assert step["actions"] == []
+    assert step["observations"] == []

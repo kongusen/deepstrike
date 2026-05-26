@@ -47,4 +47,15 @@ describe("WASM Golden ABI Fixtures", () => {
     expect(step.version).toBe(1)
     expect(step.actions).toBeDefined()
   })
+
+  it("input_push_artifact.json produces no actions and no observations", () => {
+    const kernel = new KernelRuntime({ maxTokens: 2048 })
+    const inputJson = readFileSync(join(fixturesDir, "input_push_artifact.json"), "utf8")
+
+    const stepJson = kernel.step(inputJson)
+    const step = JSON.parse(stepJson)
+    expect(step.version).toBe(1)
+    expect(step.actions).toHaveLength(0)
+    expect(step.observations).toHaveLength(0)
+  })
 })

@@ -87,6 +87,11 @@ pub enum KernelInputEvent {
     LoadMilestoneContract {
         contract: MilestoneContract,
     },
+    PushArtifact {
+        message: Message,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tokens: Option<u32>,
+    },
     ForceCompact,
     UpdateTask {
         update: TaskUpdate,
@@ -381,6 +386,11 @@ impl KernelRuntime {
                 self.sm.load_milestone_contract(contract);
                 return KernelStep::empty(self.sm.take_observations());
             }
+            KernelInputEvent::PushArtifact { message, tokens } => {
+                let token_count = tokens.unwrap_or_else(|| self.sm.ctx.engine.count_message(&message));
+                self.sm.ctx.push_artifact(message, token_count.max(1));
+                return KernelStep::empty(self.sm.take_observations());
+            }
             KernelInputEvent::ForceCompact => {
                 self.sm.force_compact();
                 return KernelStep::empty(self.sm.take_observations());
@@ -479,6 +489,21 @@ mod tests {
         assert_eq!(
             runtime.state_machine().ctx.partitions.task_state.progress,
             "tools executed"
+        );
+    }
+
+    #[test]
+    fn push_artifact_enters_artifacts_partition() {
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let step = runtime.step(KernelInput::new(KernelInputEvent::PushArtifact {
+            message: Message::assistant("artifact content"),
+            tokens: Some(10),
+        }));
+
+        assert!(step.actions.is_empty());
+        assert_eq!(
+            runtime.state_machine().ctx.partitions.artifacts.messages.len(),
+            1
         );
     }
 
