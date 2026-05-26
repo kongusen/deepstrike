@@ -1178,6 +1178,39 @@ impl KernelRuntime {
     fn is_terminal(&self) -> bool {
         self.inner.is_terminal()
     }
+
+    fn turn(&self) -> u32 {
+        self.inner.state_machine().turn
+    }
+
+    fn recovery_content_bytes(&self) -> u32 {
+        let sm = self.inner.state_machine();
+        let tokens = sm.ctx.config.recovery_content_tokens(sm.ctx.max_tokens);
+        sm.ctx.engine.token_budget_to_bytes(tokens) as u32
+    }
+
+    fn render(&self) -> RenderedContext {
+        RenderedContext::from_rust(self.inner.state_machine().ctx.render())
+    }
+
+    fn drain_new_messages(&mut self) -> Vec<Message> {
+        self.inner
+            .state_machine_mut()
+            .drain_new_messages()
+            .iter()
+            .map(Message::from_rust)
+            .collect()
+    }
+
+    fn preserved_refs(&self) -> Vec<String> {
+        self.inner
+            .state_machine()
+            .ctx
+            .partitions
+            .task_state
+            .preserved_refs
+            .clone()
+    }
 }
 
 // ──────────────────────────────────────── DeepStrikeRuntime ────────────────────────────────────
