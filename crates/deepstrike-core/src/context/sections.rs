@@ -11,6 +11,7 @@ pub enum ContextSectionPartition {
     Memory,
     Working,
     History,
+    Artifacts,
 }
 
 /// Cache behavior for a section.
@@ -152,6 +153,11 @@ impl ContextSectionRegistry {
         );
         registry.upsert(
             ContextSection::new("working.signals", ContextSectionPartition::Working, 50)
+                .with_cache_policy(SectionCachePolicy::TurnDynamic)
+                .with_invalidation(SectionInvalidation::EveryTurn),
+        );
+        registry.upsert(
+            ContextSection::new("artifacts.references", ContextSectionPartition::Artifacts, 40)
                 .with_cache_policy(SectionCachePolicy::TurnDynamic)
                 .with_invalidation(SectionInvalidation::EveryTurn),
         );

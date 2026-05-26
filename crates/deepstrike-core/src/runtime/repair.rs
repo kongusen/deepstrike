@@ -152,6 +152,119 @@ pub fn pending_tool_calls_from_messages(messages: &[Message]) -> Vec<ToolCall> {
         .collect()
 }
 
+/// Reconstructs full messages from a sequence of events.
+/// For `SessionEvent::Compressed` events:
+/// 1. If `archive_ref` is present, it attempts to load the messages using `load_archive`.
+/// 2. If loading succeeds, the reconstructed messages are appended to the history.
+/// 3. If loading fails (returns a `ContextFault::MissingArchive` or another error),
+///    or if `archive_ref` is `None`, it falls back to the embedded `summary` in the `Compressed` event (if present)
+///    as a system message `[Compressed context: turn {turn}]\n{summary}`.
+pub fn reconstruct_messages_with_fallback<F>(
+    events: &[SessionEvent],
+    session_id: &str,
+    max_bytes: usize,
+    mut load_archive: F,
+) -> Vec<Message>
+where
+    F: FnMut(&str) -> Result<Vec<Message>, crate::context::snapshot::ContextFault>,
+{
+    let mut messages = Vec::new();
+    for event in events {
+        match event {
+            SessionEvent::RunStarted { goal, criteria, .. } => {
+                let user_text = if criteria.is_empty() {
+                    goal.clone()
+                } else {
+                    format!(
+                        "{}\n\nCriteria:\n{}",
+                        goal,
+                        criteria
+                            .iter()
+                            .enumerate()
+                            .map(|(i, c)| format!("{}. {}", i + 1, c))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                };
+                messages.push(Message {
+                    role: Role::User,
+                    content: Content::Text(user_text),
+                    tool_calls: vec![],
+                    token_count: None,
+                });
+            }
+            SessionEvent::LlmCompleted { message, .. } => {
+                let mut msg = message.clone();
+                if let Content::Text(text) = &mut msg.content {
+                    *text = sanitize_recovery_text_bounded(text, max_bytes);
+                }
+                messages.push(msg);
+            }
+            SessionEvent::ToolCompleted { results, .. } => {
+                for r in results {
+                    let output = match &r.output {
+                        Content::Text(t) => sanitize_recovery_text_bounded(t, max_bytes),
+                        Content::Parts(_) => String::new(),
+                    };
+                    messages.push(Message {
+                        role: Role::Tool,
+                        content: Content::Parts(vec![ContentPart::ToolResult {
+                            call_id: r.call_id.clone(),
+                            output,
+                            is_error: r.is_error,
+                        }]),
+                        tool_calls: vec![],
+                        token_count: r.token_count,
+                    });
+                }
+            }
+            SessionEvent::Compressed {
+                turn,
+                summary,
+                archive_ref,
+                ..
+            } => {
+                let mut loaded_successfully = false;
+                if let Some(ref_str) = archive_ref {
+                    if !ref_str.is_empty() {
+                        match load_archive(ref_str) {
+                            Ok(archived_msgs) => {
+                                for mut msg in archived_msgs {
+                                    if let Content::Text(text) = &mut msg.content {
+                                        *text = sanitize_recovery_text_bounded(text, max_bytes);
+                                    }
+                                    messages.push(msg);
+                                }
+                                loaded_successfully = true;
+                            }
+                            Err(_) => {
+                                // Loader failed (e.g. MissingArchive). We degrade and fallback.
+                            }
+                        }
+                    }
+                }
+
+                if !loaded_successfully {
+                    if let Some(sum) = summary {
+                        let system_text = format!("[Compressed context: turn {}]\n{}", turn, sum);
+                        messages.push(Message {
+                            role: Role::System,
+                            content: Content::Text(system_text),
+                            tool_calls: vec![],
+                            token_count: None,
+                        });
+                    }
+                }
+            }
+            SessionEvent::Rollbacked { checkpoint_history_len, .. } => {
+                messages.truncate(*checkpoint_history_len as usize);
+            }
+            _ => {}
+        }
+    }
+    messages
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

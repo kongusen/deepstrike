@@ -52,8 +52,8 @@ impl Partition {
     }
 }
 
-/// Five-partition context model plus structured task state:
-///   C = C_system + C_working + task_state + C_memory + C_skill + C_history
+/// Six-partition context model plus structured task state:
+///   C = C_system + C_working + task_state + C_memory + C_skill + C_artifacts + C_history
 pub struct ContextPartitions {
     pub system: Partition,
     pub working: Partition,
@@ -62,6 +62,7 @@ pub struct ContextPartitions {
     pub dashboard: Dashboard,
     pub memory: Partition,
     pub skill: Partition,
+    pub artifacts: Partition,
     pub history: Partition,
 }
 
@@ -74,6 +75,7 @@ impl ContextPartitions {
             dashboard: Dashboard::default(),
             memory: Partition::new(Priority::Medium, true),
             skill: Partition::new(Priority::MediumLow, true),
+            artifacts: Partition::new(Priority::Medium, false),
             history: Partition::new(Priority::Low, true),
         }
     }
@@ -88,6 +90,7 @@ impl ContextPartitions {
             + engine.count(&self.dashboard.format_compact())
             + self.memory.token_count
             + self.skill.token_count
+            + self.artifacts.token_count
             + self.history.token_count
     }
 }

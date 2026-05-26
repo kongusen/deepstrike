@@ -1,6 +1,57 @@
 use super::sections::{ContextSectionRegistry, SectionCachePolicy};
 use crate::types::capability::CapabilityManifest;
+use crate::types::message::Message;
+use crate::context::task_state::TaskState;
 use serde::{Deserialize, Serialize};
+
+/// A single page of context memory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextPage {
+    pub id: String,
+    pub content: String,
+    pub token_count: u32,
+}
+
+/// Frozen snapshot of all active context partitions at a given turn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextSnapshot {
+    pub turn: u32,
+    pub system_messages: Vec<Message>,
+    pub working_messages: Vec<Message>,
+    pub memory_messages: Vec<Message>,
+    pub skill_messages: Vec<Message>,
+    pub artifacts_messages: Vec<Message>,
+    pub history_messages: Vec<Message>,
+    pub task_state: TaskState,
+}
+
+/// Reference to an archived context segment in external storage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextArchiveRef {
+    pub seq: u64,
+    pub archive_ref: String,
+    pub summary: String,
+    pub token_count: u32,
+}
+
+/// Garbage collection and pressure policy ratios.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextGcPolicy {
+    pub target_tokens_ratio: f64,
+    pub auto_compact_ratio: f64,
+}
+
+/// Errors/Faults that can occur during Context VM execution or replay.
+#[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize)]
+pub enum ContextFault {
+    #[error("Prompt exceeds maximum token limit: budget={budget}, actual={actual}")]
+    PromptTooLong { budget: u32, actual: u32 },
+    #[error("Missing archive chunk {seq} for session {session_id}")]
+    MissingArchive { session_id: String, seq: u64 },
+    #[error("Invalid replay at turn {turn}: {reason}")]
+    InvalidReplay { turn: u32, reason: String },
+}
+
 
 /// Provider-cache hint derived from pure kernel metadata.
 ///

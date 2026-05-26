@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use super::compression::CompressionPipeline;
 use super::config::ContextConfig;
 use super::partitions::ContextPartitions;
@@ -5,7 +7,7 @@ use super::pressure::{PressureAction, PressureMonitor};
 use super::renderer::RenderedContext;
 use super::renewal::{HandoffArtifact, RenewalPolicy};
 use super::sections::{ContextSectionPartition, ContextSectionRegistry};
-use super::snapshot::ContextSnapshotHint;
+use super::snapshot::{ContextSnapshotHint, ContextSnapshot};
 use super::skill_catalog::SkillCatalog;
 use super::task_state::{TaskState, TaskUpdate};
 use super::token_engine::ContextTokenEngine;
@@ -17,6 +19,7 @@ use compact_str::CompactString;
 pub const MEMORY_TOOL_NAME: &str = "memory";
 pub const KNOWLEDGE_TOOL_NAME: &str = "knowledge";
 
+#[deprecated(since = "0.2.0", note = "Internal/test-only. Use KernelRuntime instead.")]
 pub struct ContextManager {
     pub partitions: ContextPartitions,
     pub max_tokens: u32,
@@ -132,7 +135,20 @@ impl ContextManager {
         ContextSnapshotHint::from_parts(&self.sections, &self.capabilities)
     }
 
-    // ── History / Memory ──────────────────────────────────────────────────────
+    pub fn take_snapshot(&self, turn: u32) -> ContextSnapshot {
+        ContextSnapshot {
+            turn,
+            system_messages: self.partitions.system.messages.clone(),
+            working_messages: self.partitions.working.messages.clone(),
+            memory_messages: self.partitions.memory.messages.clone(),
+            skill_messages: self.partitions.skill.messages.clone(),
+            artifacts_messages: self.partitions.artifacts.messages.clone(),
+            history_messages: self.partitions.history.messages.clone(),
+            task_state: self.partitions.task_state.clone(),
+        }
+    }
+
+    // ── History / Memory / Artifacts ──────────────────────────────────────────
 
     pub fn push_history(&mut self, msg: Message, tokens: u32) {
         self.partitions.history.push(msg, tokens);
@@ -140,6 +156,10 @@ impl ContextManager {
 
     pub fn push_memory(&mut self, msg: Message, tokens: u32) {
         self.partitions.memory.push(msg, tokens);
+    }
+
+    pub fn push_artifact(&mut self, msg: Message, tokens: u32) {
+        self.partitions.artifacts.push(msg, tokens);
     }
 
     // ── Task state (Phase B) ─────────────────────────────────────────────────

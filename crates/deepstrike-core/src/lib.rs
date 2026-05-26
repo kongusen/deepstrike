@@ -42,13 +42,15 @@ pub use governance::tool_decision::{
 };
 pub use runtime::session::SessionEvent;
 pub use runtime::{
-    KERNEL_ABI_VERSION, KernelAction, KernelInput, KernelInputEvent, KernelObservation,
-    KernelPressureAction, KernelRuntime, KernelStep,
+    reconstruct_messages_with_fallback, KERNEL_ABI_VERSION, KernelAction, KernelInput,
+    KernelInputEvent, KernelObservation, KernelPressureAction, KernelRuntime, KernelStep,
 };
 pub use types::agent::{
     AgentCapabilityFilter, AgentIdentity, AgentIsolation, AgentRole, AgentRunSpec,
 };
-pub use types::capability::{CapabilityDescriptor, CapabilityKind, CapabilityManifest};
+pub use types::capability::{
+    CapabilityCommand, CapabilityDescriptor, CapabilityKind, CapabilityLease, CapabilityManifest,
+};
 pub use types::contract::{AcceptanceCriterion, VerificationContract};
 pub use types::error::{DeepStrikeError, Result};
 pub use types::message::{Message, ToolCall, ToolResult};
