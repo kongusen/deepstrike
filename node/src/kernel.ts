@@ -2,8 +2,7 @@ import { createRequire } from "module"
 import { existsSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { Message, RenderedContext, ToolCall, ToolResult, ToolSchema, TaskUpdate } from "./types.js"
-import type { SkillMetadata } from "./skills/loader.js"
+import type { Message, RenderedContext } from "./types.js"
 
 export interface GovernanceVerdict {
   kind: "allow" | "deny" | "rate_limited" | "ask_user"
@@ -32,69 +31,6 @@ export interface RuntimeSignal {
   payload: string
   dedupeKey?: string
   timestampMs: number
-}
-
-export interface LoopAction {
-  kind: "call_llm" | "execute_tools" | "evaluate_milestone" | "done"
-  context?: RenderedContext
-  tools?: ToolSchema[]
-  calls?: ToolCall[]
-  phase_id?: string
-  criteria?: string[]
-  result?: {
-    termination: string
-    turnsUsed: number
-    totalTokensUsed: bigint
-  }
-}
-
-interface LoopObservation {
-  kind: "compressed" | "renewed" | "rollbacked" | "capability_changed" | "milestone_advanced" | "milestone_blocked"
-  action?: string
-  rhoAfter?: number
-  sprint?: number
-  summary?: string
-  archived?: Message[]
-  turn?: number
-  checkpointHistoryLen?: number
-  added?: string[]
-  removed?: string[]
-  phase_id?: string
-  capabilities_unlocked?: string[]
-  milestone_reason?: string
-}
-
-interface DeepStrikeRuntimeInstance {
-  setAvailableSkills(skills: SkillMetadata[]): void
-  setMemoryEnabled(enabled: boolean): void
-  setKnowledgeEnabled(enabled: boolean): void
-  addSystemMessage(content: string, tokens: number): void
-  addMemoryMessage(content: string, tokens: number): void
-  addHistoryMessage(message: Message, tokens: number): void
-  setTools(tools: ToolSchema[]): void
-  mountTool(schema: ToolSchema): void
-  mountSkill(skill: SkillMetadata): void
-  mountMarker(kind: string, id: string, description: string): void
-  unmountCapability(kind: string, id: string): void
-  start(task: { goal: string; criteria: string[] }): LoopAction
-  resumeAfterPreload(): LoopAction
-  feedLlmResponse(message: Message): LoopAction
-  feedToolResults(results: ToolResult[]): LoopAction
-  feedTimeout(): LoopAction
-  isTerminal(): boolean
-  preloadHistory(messages: Message[]): void
-  drainNewMessages(): Message[]
-  readonly turn: number
-  pressure(): number
-  takeObservations(): LoopObservation[]
-  forceCompact(): boolean
-  force_compact?(): boolean
-  render(): RenderedContext
-  initTask(goal: string, criteria: string[]): void
-  updateTask(update: TaskUpdate): void
-  recoveryContentBytes(): number
-  setTokenizer(name: string): void
-  setPlanToolEnabled(enabled: boolean): void
 }
 
 interface SignalRouterInstance {
@@ -187,12 +123,6 @@ interface KernelModule {
     maxTotalTokens?: bigint
     timeoutMs?: bigint
   }) => KernelRuntimeInstance
-  DeepStrikeRuntime: new (policy: {
-    maxTokens: number
-    maxTurns?: number
-    maxTotalTokens?: bigint
-    timeoutMs?: bigint
-  }) => DeepStrikeRuntimeInstance
   SignalRouter: new (maxQueueSize: number) => SignalRouterInstance
   EvalPipeline: new (options?: { extractSkillOnPass?: boolean }) => EvalPipelineInstance
   IdlePipeline: new (agentId: string) => IdlePipelineInstance

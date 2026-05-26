@@ -9,7 +9,8 @@ Current implementation status:
 - Core exposes versioned `KernelInput`, `KernelAction`, `KernelObservation`, and `KernelStep`.
 - Rust, Node, Python, and WASM SDK runners are driven through `KernelRuntime.step()`.
 - Node, PyO3, and WASM FFI expose JSON `step(input_json) -> step_json` plus read-side helpers needed by host runners.
-- Legacy direct runtime facades still exist as compatibility or test surfaces and must be explicitly deprecated, hidden, or removed before G1 is marked complete.
+- Node, PyO3, and WASM legacy direct runtime facades have been removed from the public binding surface.
+- Core `LoopStateMachine` and `ContextManager` remain internal implementation details and white-box test targets.
 
 ## Goal
 
@@ -124,7 +125,7 @@ Read-side helpers exposed for SDK bookkeeping:
 5. [x] Node SDK runner migrated from direct runtime calls to `KernelRuntime.step()`.
 6. [x] Python SDK runner migrated from direct runtime calls to `KernelRuntime.step()`.
 7. [x] WASM SDK runner migrated from direct runtime calls to `KernelRuntime.step()`.
-8. [ ] Direct `LoopStateMachine` / `ContextManager` / legacy runtime access becomes internal, deprecated, or test-only.
+8. [x] Direct `LoopStateMachine` / `ContextManager` / legacy runtime access becomes internal, deprecated, or test-only.
 9. [ ] Golden ABI fixtures cover all four host bindings.
 
 ## Compatibility Rules

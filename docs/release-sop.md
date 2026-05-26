@@ -192,7 +192,7 @@ git diff  # 确认哪些文件未对齐
 只有 3/8 平台运行 smoke（其余交叉编译，无法在 runner 上安装）。smoke 失败说明 PyO3 FFI 层有问题，检查：
 ```bash
 cd python && maturin build --release && pip install dist/*.whl
-python -c "from deepstrike.kernel import LoopStateMachine, LoopPolicy; LoopStateMachine(LoopPolicy())"
+python -c "from deepstrike.kernel import KernelRuntime, LoopPolicy; KernelRuntime(LoopPolicy())"
 ```
 
 ### npm publish 报 `403 Forbidden`

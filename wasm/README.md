@@ -74,7 +74,7 @@ src/
 ```
 
 The kernel (`@deepstrike/wasm-kernel`, Rust/wasm-bindgen) owns:
-- `LoopStateMachine` — drives `call_llm → execute_tools → load_skills → done`
+- `KernelRuntime.step()` — drives `call_provider → execute_tool → evaluate_milestone → done`
 - `ContextEngine` — 5-partition context with pressure-based compression
 - `Governance` — tool veto authority
 - `SignalRouter` — external interrupt queue

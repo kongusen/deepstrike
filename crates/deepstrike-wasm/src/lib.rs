@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
 
-use deepstrike_core::context::manager::ContextManager;
-use deepstrike_core::context::pressure::PressureAction;
 use deepstrike_core::context::renderer::RenderedContext as RustRenderedContext;
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
 use deepstrike_core::harness::eval_pipeline::{
@@ -15,25 +13,17 @@ use deepstrike_core::runtime::{
     KernelInput as RustKernelInput, KernelRuntime as RustKernelRuntime,
 };
 use deepstrike_core::scheduler::policy::LoopPolicy as RustLoopPolicy;
-use deepstrike_core::scheduler::state_machine::{
-    LoopAction as RustLoopAction, LoopEvent as RustLoopEvent,
-    LoopObservation as RustLoopObservation, LoopStateMachine as RustLoopStateMachine,
-};
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
 use deepstrike_core::types::agent::AgentIdentity;
 use deepstrike_core::types::message::{
     Content, ContentPart, Message as RustMessage, Role, ToolCall as RustToolCall,
-    ToolResult as RustToolResult, ToolSchema as RustToolSchema,
 };
 use deepstrike_core::types::policy::GovernanceVerdict as RustGovernanceVerdict;
 use deepstrike_core::types::policy::SignalDisposition as RustSignalDisposition;
-use deepstrike_core::types::result::LoopResult as RustLoopResult;
 use deepstrike_core::types::signal::{
     RuntimeSignal as RustRuntimeSignal, SignalSource as RustSignalSource,
     SignalType as RustSignalType, Urgency as RustUrgency,
 };
-use deepstrike_core::types::skill::SkillMetadata as RustSkillMetadata;
-use deepstrike_core::types::task::{RuntimeTask as RustRuntimeTask, TaskLane as RustTaskLane};
 
 // ────────────────────────────────────────────── POD types ──────────────────────────────────────────────
 
@@ -114,29 +104,6 @@ pub struct RuntimeTask {
     /// `"orchestrate"` | `"implement"` (default) | `"retrieve"` | `"verify"`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lane: Option<String>,
-}
-
-#[derive(Tsify, Clone, Serialize, Deserialize)]
-#[tsify(into_wasm_abi, from_wasm_abi)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskUpdate {
-    pub plan: Option<Vec<String>>,
-    pub current_step: Option<u32>,
-    pub progress: Option<String>,
-    pub scratchpad: Option<String>,
-    pub blocked_on: Option<Vec<String>>,
-    pub preserved_refs: Option<Vec<String>>,
-}
-
-fn task_update_to_rust(u: TaskUpdate) -> deepstrike_core::context::task_state::TaskUpdate {
-    deepstrike_core::context::task_state::TaskUpdate {
-        plan: u.plan,
-        current_step: u.current_step.map(|s| s as usize),
-        progress: u.progress,
-        scratchpad: u.scratchpad,
-        blocked_on: u.blocked_on,
-        preserved_refs: u.preserved_refs,
-    }
 }
 
 #[derive(Tsify, Clone, Serialize, Deserialize)]
@@ -280,7 +247,7 @@ fn disposition_str(d: RustSignalDisposition) -> &'static str {
     }
 }
 
-// ────────────────────────────── Tagged unions: LoopAction / LoopObservation ──────────────────────────────
+// ────────────────────────────── Provider context ──────────────────────────────
 
 /// Structured context for a provider call — emitted with `kind === "call_llm"`.
 #[derive(Tsify, Clone, Serialize, Deserialize)]
@@ -289,68 +256,6 @@ fn disposition_str(d: RustSignalDisposition) -> &'static str {
 pub struct RenderedContext {
     pub system_text: String,
     pub turns: Vec<Message>,
-}
-
-/// Discriminated union; inspect `kind`:
-/// - `"call_llm"`           → `context`, `tools`
-/// - `"execute_tools"`      → `calls`
-/// - `"done"`               → `result`
-/// - `"evaluate_milestone"` → `phase_id`, `criteria`
-#[derive(Tsify, Clone, Serialize, Deserialize)]
-#[tsify(into_wasm_abi)]
-#[serde(rename_all = "camelCase")]
-pub struct LoopAction {
-    pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub context: Option<RenderedContext>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<ToolSchema>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub calls: Option<Vec<ToolCall>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<LoopResult>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub phase_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub criteria: Option<Vec<String>>,
-}
-
-/// Discriminated union for runtime observations:
-/// - `"compressed"`         → `action`, `rhoAfter`, `summary`, `archived`
-/// - `"renewed"`            → `sprint`
-/// - `"rollbacked"`         → `turn`, `checkpointHistoryLen`
-/// - `"capability_changed"` → `turn`, `added`, `removed`
-/// - `"milestone_advanced"` → `turn`, `phaseId`, `capabilitiesUnlocked`
-/// - `"milestone_blocked"`  → `turn`, `phaseId`, `milestoneReason`
-#[derive(Tsify, Clone, Serialize, Deserialize)]
-#[tsify(into_wasm_abi)]
-#[serde(rename_all = "camelCase")]
-pub struct LoopObservation {
-    pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub action: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rho_after: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sprint: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub summary: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub archived: Option<Vec<Message>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub turn: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub checkpoint_history_len: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub added: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub removed: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub phase_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub capabilities_unlocked: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub milestone_reason: Option<String>,
 }
 
 #[derive(Tsify, Clone, Serialize, Deserialize)]
@@ -424,45 +329,12 @@ pub struct GovernanceVerdict {
 
 // ────────────────────────────────────── conversion helpers ──────────────────────────────────────
 
-fn role_str_to_rust(role: &str) -> Result<Role, JsValue> {
-    match role {
-        "system" => Ok(Role::System),
-        "user" => Ok(Role::User),
-        "assistant" => Ok(Role::Assistant),
-        "tool" => Ok(Role::Tool),
-        other => Err(JsValue::from_str(&format!("invalid role: {other}"))),
-    }
-}
-
 fn role_to_str(role: Role) -> &'static str {
     match role {
         Role::System => "system",
         Role::User => "user",
         Role::Assistant => "assistant",
         Role::Tool => "tool",
-    }
-}
-
-fn content_part_to_rust(p: ContentPartObj) -> ContentPart {
-    match p.r#type.as_str() {
-        "image" => ContentPart::Image {
-            url: p.url,
-            data: p.data,
-            media_type: p.media_type,
-            detail: p.detail,
-        },
-        "audio" => ContentPart::Audio {
-            data: p.data.unwrap_or_default(),
-            media_type: p.media_type.unwrap_or_else(|| "audio/wav".into()),
-        },
-        "tool_result" => ContentPart::ToolResult {
-            call_id: CompactString::new(&p.call_id.unwrap_or_default()),
-            output: p.output.unwrap_or_default(),
-            is_error: p.is_error.unwrap_or(false),
-        },
-        _ => ContentPart::Text {
-            text: p.text.unwrap_or_default(),
-        },
     }
 }
 
@@ -524,27 +396,6 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
     }
 }
 
-fn message_to_rust(m: Message) -> Result<RustMessage, JsValue> {
-    let role = role_str_to_rust(&m.role)?;
-    let tool_calls: Vec<RustToolCall> = m
-        .tool_calls
-        .into_iter()
-        .map(tool_call_to_rust)
-        .collect::<Result<_, _>>()?;
-    let content = match m.content_parts {
-        Some(parts) if !parts.is_empty() => {
-            Content::Parts(parts.into_iter().map(content_part_to_rust).collect())
-        }
-        _ => Content::Text(m.content),
-    };
-    Ok(RustMessage {
-        role,
-        content,
-        tool_calls,
-        token_count: m.token_count,
-    })
-}
-
 fn message_from_rust(m: &RustMessage) -> Message {
     let (content, content_parts) = match &m.content {
         Content::Text(s) => (s.clone(), None),
@@ -570,78 +421,11 @@ fn message_from_rust(m: &RustMessage) -> Message {
     }
 }
 
-fn tool_call_to_rust(c: ToolCall) -> Result<RustToolCall, JsValue> {
-    let args: serde_json::Value = serde_json::from_str(&c.arguments)
-        .map_err(|e| JsValue::from_str(&format!("invalid JSON arguments: {e}")))?;
-    Ok(RustToolCall {
-        id: CompactString::new(&c.id),
-        name: CompactString::new(&c.name),
-        arguments: args,
-    })
-}
-
 fn tool_call_from_rust(c: &RustToolCall) -> ToolCall {
     ToolCall {
         id: c.id.to_string(),
         name: c.name.to_string(),
         arguments: serde_json::to_string(&c.arguments).unwrap_or_else(|_| "null".into()),
-    }
-}
-
-fn tool_result_to_rust(r: ToolResult) -> RustToolResult {
-    RustToolResult {
-        call_id: CompactString::new(&r.call_id),
-        output: Content::Text(r.output),
-        is_error: r.is_error,
-        is_fatal: false,
-        token_count: r.token_count,
-    }
-}
-
-fn tool_schema_to_rust(t: ToolSchema) -> Result<RustToolSchema, JsValue> {
-    let params: serde_json::Value = serde_json::from_str(&t.parameters)
-        .map_err(|e| JsValue::from_str(&format!("invalid JSON parameters: {e}")))?;
-    Ok(RustToolSchema {
-        name: CompactString::new(&t.name),
-        description: t.description,
-        parameters: params,
-    })
-}
-
-fn tool_schema_from_rust(t: &RustToolSchema) -> ToolSchema {
-    ToolSchema {
-        name: t.name.to_string(),
-        description: t.description.clone(),
-        parameters: serde_json::to_string(&t.parameters).unwrap_or_else(|_| "null".into()),
-    }
-}
-
-fn skill_metadata_to_rust(s: SkillMetadata) -> RustSkillMetadata {
-    RustSkillMetadata {
-        name: CompactString::new(&s.name),
-        description: s.description,
-        when_to_use: s.when_to_use,
-        allowed_tools: s.allowed_tools.iter().map(CompactString::new).collect(),
-        effort: s.effort,
-        estimated_tokens: s.estimated_tokens,
-    }
-}
-
-fn task_lane_to_rust(lane: Option<String>) -> RustTaskLane {
-    match lane.as_deref() {
-        Some("orchestrate") => RustTaskLane::Orchestrate,
-        Some("retrieve") => RustTaskLane::Retrieve,
-        Some("verify") => RustTaskLane::Verify,
-        _ => RustTaskLane::Implement,
-    }
-}
-
-fn task_to_rust(t: RuntimeTask) -> RustRuntimeTask {
-    RustRuntimeTask {
-        goal: t.goal,
-        criteria: t.criteria,
-        metadata: serde_json::Value::Null,
-        lane: task_lane_to_rust(t.lane),
     }
 }
 
@@ -654,173 +438,10 @@ fn policy_to_rust(p: LoopPolicy) -> RustLoopPolicy {
     }
 }
 
-fn pressure_action_str(a: PressureAction) -> &'static str {
-    match a {
-        PressureAction::None => "none",
-        PressureAction::SnipCompact => "snip_compact",
-        PressureAction::MicroCompact => "micro_compact",
-        PressureAction::ContextCollapse => "context_collapse",
-        PressureAction::AutoCompact => "auto_compact",
-    }
-}
-
-fn loop_result_from_rust(r: &RustLoopResult) -> LoopResult {
-    let termination = match r.termination {
-        deepstrike_core::types::result::TerminationReason::Completed => "completed",
-        deepstrike_core::types::result::TerminationReason::MaxTurns => "max_turns",
-        deepstrike_core::types::result::TerminationReason::TokenBudget => "token_budget",
-        deepstrike_core::types::result::TerminationReason::Timeout => "timeout",
-        deepstrike_core::types::result::TerminationReason::UserAbort => "user_abort",
-        deepstrike_core::types::result::TerminationReason::Error => "error",
-    };
-    LoopResult {
-        termination: termination.to_string(),
-        final_message: r.final_message.as_ref().map(message_from_rust),
-        turns_used: r.turns_used,
-        total_tokens_used: r.total_tokens_used as f64,
-    }
-}
-
-fn loop_action_from_rust(a: RustLoopAction) -> LoopAction {
-    match a {
-        RustLoopAction::CallLLM { context, tools } => LoopAction {
-            kind: "call_llm".into(),
-            context: Some(rendered_context_from_rust(context)),
-            tools: Some(tools.iter().map(tool_schema_from_rust).collect()),
-            calls: None,
-            result: None,
-            phase_id: None,
-            criteria: None,
-        },
-        RustLoopAction::ExecuteTools { calls } => LoopAction {
-            kind: "execute_tools".into(),
-            context: None,
-            tools: None,
-            calls: Some(calls.iter().map(tool_call_from_rust).collect()),
-            result: None,
-            phase_id: None,
-            criteria: None,
-        },
-        RustLoopAction::Done { result } => LoopAction {
-            kind: "done".into(),
-            context: None,
-            tools: None,
-            calls: None,
-            result: Some(loop_result_from_rust(&result)),
-            phase_id: None,
-            criteria: None,
-        },
-        RustLoopAction::EvaluateMilestone { phase_id, criteria } => LoopAction {
-            kind: "evaluate_milestone".into(),
-            context: None,
-            tools: None,
-            calls: None,
-            result: None,
-            phase_id: Some(phase_id),
-            criteria: Some(criteria),
-        },
-    }
-}
-
 fn rendered_context_from_rust(rc: RustRenderedContext) -> RenderedContext {
     RenderedContext {
         system_text: rc.system_text,
         turns: rc.turns.iter().map(message_from_rust).collect(),
-    }
-}
-
-fn observation_from_rust(o: RustLoopObservation) -> LoopObservation {
-    match o {
-        RustLoopObservation::Compressed { action, rho_after, summary, archived } => LoopObservation {
-            kind: "compressed".into(),
-            action: Some(pressure_action_str(action).into()),
-            rho_after: Some(rho_after),
-            sprint: None,
-            summary,
-            archived: Some(archived.iter().map(message_from_rust).collect()),
-            turn: None,
-            checkpoint_history_len: None,
-            added: None,
-            removed: None,
-            phase_id: None,
-            capabilities_unlocked: None,
-            milestone_reason: None,
-        },
-        RustLoopObservation::Renewed { sprint } => LoopObservation {
-            kind: "renewed".into(),
-            action: None,
-            rho_after: None,
-            sprint: Some(sprint),
-            summary: None,
-            archived: None,
-            turn: None,
-            checkpoint_history_len: None,
-            added: None,
-            removed: None,
-            phase_id: None,
-            capabilities_unlocked: None,
-            milestone_reason: None,
-        },
-        RustLoopObservation::Rollbacked { turn, checkpoint_history_len } => LoopObservation {
-            kind: "rollbacked".into(),
-            action: None,
-            rho_after: None,
-            sprint: None,
-            summary: None,
-            archived: None,
-            turn: Some(turn),
-            checkpoint_history_len: Some(checkpoint_history_len as u32),
-            added: None,
-            removed: None,
-            phase_id: None,
-            capabilities_unlocked: None,
-            milestone_reason: None,
-        },
-        RustLoopObservation::CapabilityChanged { turn, added, removed } => LoopObservation {
-            kind: "capability_changed".into(),
-            action: None,
-            rho_after: None,
-            sprint: None,
-            summary: None,
-            archived: None,
-            turn: Some(turn),
-            checkpoint_history_len: None,
-            added: Some(added),
-            removed: Some(removed),
-            phase_id: None,
-            capabilities_unlocked: None,
-            milestone_reason: None,
-        },
-        RustLoopObservation::MilestoneAdvanced { turn, phase_id, capabilities_unlocked } => LoopObservation {
-            kind: "milestone_advanced".into(),
-            action: None,
-            rho_after: None,
-            sprint: None,
-            summary: None,
-            archived: None,
-            turn: Some(turn),
-            checkpoint_history_len: None,
-            added: None,
-            removed: None,
-            phase_id: Some(phase_id),
-            capabilities_unlocked: Some(capabilities_unlocked),
-            milestone_reason: None,
-        },
-        RustLoopObservation::MilestoneBlocked { turn, phase_id, reason } => LoopObservation {
-            kind: "milestone_blocked".into(),
-            action: None,
-            rho_after: None,
-            sprint: None,
-            summary: None,
-            archived: None,
-            turn: Some(turn),
-            checkpoint_history_len: None,
-            added: None,
-            removed: None,
-            phase_id: Some(phase_id),
-            capabilities_unlocked: None,
-            milestone_reason: Some(reason),
-        },
     }
 }
 
@@ -958,209 +579,6 @@ impl KernelRuntime {
             .task_state
             .preserved_refs
             .clone()
-    }
-}
-
-// ────────────────────────────────────────────── DeepStrikeRuntime ──────────────────────────────────────────────
-
-#[wasm_bindgen]
-pub struct DeepStrikeRuntime {
-    inner: RustLoopStateMachine,
-}
-
-#[wasm_bindgen]
-impl DeepStrikeRuntime {
-    #[wasm_bindgen(constructor)]
-    pub fn new(policy: LoopPolicy) -> Self {
-        Self {
-            inner: RustLoopStateMachine::new(policy_to_rust(policy)),
-        }
-    }
-
-    #[wasm_bindgen(js_name = setAvailableSkills)]
-    pub fn set_available_skills(&mut self, skills: Vec<SkillMetadata>) {
-        self.inner
-            .ctx
-            .set_available_skills(skills.into_iter().map(skill_metadata_to_rust).collect());
-    }
-
-    #[wasm_bindgen(js_name = setMemoryEnabled)]
-    pub fn set_memory_enabled(&mut self, enabled: bool) {
-        self.inner.ctx.set_memory_enabled(enabled);
-    }
-
-    #[wasm_bindgen(js_name = setKnowledgeEnabled)]
-    pub fn set_knowledge_enabled(&mut self, enabled: bool) {
-        self.inner.ctx.set_knowledge_enabled(enabled);
-    }
-
-    /// Prepend a system-level instruction to the context. Must be called before `start`.
-    /// `tokens` is a caller-supplied estimate (use `content.length / 4` if unsure).
-    /// The renderer skips messages with `tokens == 0`, so always pass at least 1.
-    #[wasm_bindgen(js_name = addSystemMessage)]
-    pub fn add_system_message(&mut self, content: String, tokens: u32) {
-        self.inner
-            .ctx
-            .partitions
-            .system
-            .push(RustMessage::system(content), tokens.max(1));
-    }
-
-    /// Pre-populate the memory partition with a long-term memory snippet.
-    /// Must be called before `start`. Use for seeding known context from past sessions.
-    /// `tokens` is a caller-supplied estimate; pass at least 1.
-    #[wasm_bindgen(js_name = addMemoryMessage)]
-    pub fn add_memory_message(&mut self, content: String, tokens: u32) {
-        self.inner
-            .ctx
-            .partitions
-            .memory
-            .push(RustMessage::user(content), tokens.max(1));
-    }
-
-    /// Pre-populate the history partition with a prior transcript message.
-    /// Must be called before `start`.
-    #[wasm_bindgen(js_name = addHistoryMessage)]
-    pub fn add_history_message(&mut self, message: Message, tokens: u32) -> Result<(), JsValue> {
-        self.inner
-            .ctx
-            .push_history(message_to_rust(message)?, tokens.max(1));
-        Ok(())
-    }
-
-    #[wasm_bindgen(js_name = setTools)]
-    pub fn set_tools(&mut self, tools: Vec<ToolSchema>) -> Result<(), JsValue> {
-        self.inner.tools = tools
-            .into_iter()
-            .map(tool_schema_to_rust)
-            .collect::<Result<_, _>>()?;
-        Ok(())
-    }
-
-    #[wasm_bindgen]
-    pub fn start(&mut self, task: RuntimeTask) -> LoopAction {
-        loop_action_from_rust(self.inner.start(task_to_rust(task)))
-    }
-
-    #[wasm_bindgen(js_name = feedLlmResponse)]
-    pub fn feed_llm_response(&mut self, message: Message) -> Result<LoopAction, JsValue> {
-        let msg = message_to_rust(message)?;
-        Ok(loop_action_from_rust(
-            self.inner.feed(RustLoopEvent::LLMResponse { message: msg }),
-        ))
-    }
-
-    #[wasm_bindgen(js_name = feedToolResults)]
-    pub fn feed_tool_results(&mut self, results: Vec<ToolResult>) -> LoopAction {
-        let results: Vec<RustToolResult> = results.into_iter().map(tool_result_to_rust).collect();
-        loop_action_from_rust(self.inner.feed(RustLoopEvent::ToolResults { results }))
-    }
-
-    #[wasm_bindgen(js_name = feedTimeout)]
-    pub fn feed_timeout(&mut self) -> LoopAction {
-        loop_action_from_rust(self.inner.feed(RustLoopEvent::Timeout))
-    }
-
-    #[wasm_bindgen(js_name = isTerminal)]
-    pub fn is_terminal(&self) -> bool {
-        self.inner.is_terminal()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn turn(&self) -> u32 {
-        self.inner.turn
-    }
-
-    #[wasm_bindgen]
-    pub fn pressure(&self) -> f64 {
-        self.inner.ctx.rho()
-    }
-
-    #[wasm_bindgen(js_name = preservedRefs)]
-    pub fn preserved_refs(&self) -> Vec<String> {
-        self.inner.ctx.partitions.task_state.preserved_refs.clone()
-    }
-
-    #[wasm_bindgen(js_name = forceCompact)]
-    pub fn force_compact(&mut self) -> bool {
-        self.inner.force_compact()
-    }
-
-    #[wasm_bindgen(js_name = takeObservations)]
-    pub fn take_observations(&mut self) -> Vec<LoopObservation> {
-        self.inner
-            .take_observations()
-            .into_iter()
-            .map(observation_from_rust)
-            .collect()
-    }
-
-    #[wasm_bindgen]
-    pub fn render(&self) -> RenderedContext {
-        rendered_context_from_rust(self.inner.ctx.render())
-    }
-
-    #[wasm_bindgen(js_name = initTask)]
-    pub fn init_task(&mut self, goal: String, criteria: Vec<String>) {
-        self.inner.ctx.init_task(goal, criteria);
-    }
-
-    #[wasm_bindgen(js_name = updateTask)]
-    pub fn update_task(&mut self, update: TaskUpdate) {
-        self.inner.ctx.update_task(task_update_to_rust(update));
-    }
-
-    #[wasm_bindgen(js_name = recoveryContentBytes)]
-    pub fn recovery_content_bytes(&self) -> u32 {
-        let tokens = self
-            .inner
-            .ctx
-            .config
-            .recovery_content_tokens(self.inner.ctx.max_tokens);
-        self.inner.ctx.engine.token_budget_to_bytes(tokens) as u32
-    }
-
-    #[wasm_bindgen(js_name = setTokenizer)]
-    pub fn set_tokenizer(&mut self, name: String) {
-        let engine = match name.as_str() {
-            "tiktoken_cl100k" | "cl100k" => {
-                deepstrike_core::context::token_engine::ContextTokenEngine::cl100k()
-            }
-            "tiktoken_o200k" | "o200k" => {
-                deepstrike_core::context::token_engine::ContextTokenEngine::o200k()
-            }
-            _ => deepstrike_core::context::token_engine::ContextTokenEngine::char_approx(),
-        };
-        self.inner.ctx.engine = engine;
-    }
-
-    #[wasm_bindgen(js_name = setPlanToolEnabled)]
-    pub fn set_plan_tool_enabled(&mut self, enabled: bool) {
-        self.inner.ctx.set_plan_tool_enabled(enabled);
-    }
-
-    #[wasm_bindgen(js_name = preloadHistory)]
-    pub fn preload_history(&mut self, messages: Vec<Message>) -> Result<(), JsValue> {
-        let rust_msgs: Vec<RustMessage> = messages
-            .into_iter()
-            .map(message_to_rust)
-            .collect::<Result<_, _>>()?;
-        self.inner.preload_history(rust_msgs);
-        Ok(())
-    }
-
-    #[wasm_bindgen(js_name = resumeAfterPreload)]
-    pub fn resume_after_preload(&mut self) -> LoopAction {
-        loop_action_from_rust(self.inner.resume_after_preload())
-    }
-
-    #[wasm_bindgen(js_name = drainNewMessages)]
-    pub fn drain_new_messages(&self) -> Vec<Message> {
-        self.inner
-            .drain_new_messages()
-            .iter()
-            .map(message_from_rust)
-            .collect()
     }
 }
 

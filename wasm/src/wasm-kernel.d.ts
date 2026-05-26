@@ -11,28 +11,6 @@ declare module "@deepstrike/wasm-kernel" {
     preservedRefs(): string[]
   }
 
-  export class DeepStrikeRuntime {
-    constructor(policy: { maxTokens: number; maxTurns?: number; timeoutMs?: bigint })
-    turn: number
-    setTools(tools: unknown[]): void
-    setAvailableSkills(skills: unknown[]): void
-    setMemoryEnabled(enabled: boolean): void
-    setKnowledgeEnabled(enabled: boolean): void
-    addSystemMessage(content: string, tokens: number): void
-    addMemoryMessage(content: string, tokens: number): void
-    addHistoryMessage(message: unknown, tokens: number): void
-    preloadHistory(messages: unknown[]): void
-    resumeAfterPreload(): { kind: string; context?: unknown; tools?: unknown[]; calls?: unknown[]; result?: unknown }
-    drainNewMessages(): unknown[]
-    takeObservations(): Array<{ kind: string }>
-    isTerminal(): boolean
-    start(task: { goal: string; criteria: string[] }): { kind: string; context?: unknown; tools?: unknown[]; calls?: unknown[]; result?: unknown }
-    feedLlmResponse(message: unknown): { kind: string; context?: unknown; tools?: unknown[]; calls?: unknown[]; result?: unknown }
-    feedToolResults(results: unknown[]): { kind: string; context?: unknown; tools?: unknown[]; calls?: unknown[]; result?: unknown }
-    feedTimeout(): { kind: string; context?: unknown; tools?: unknown[]; calls?: unknown[]; result?: unknown }
-    readonly result?: { termination: string; turnsUsed: number; totalTokensUsed: bigint }
-  }
-
   export class SignalRouter {
     constructor(maxQueueSize: number)
     ingest(signal: unknown, isRunning: boolean): string

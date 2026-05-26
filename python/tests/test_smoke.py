@@ -7,14 +7,14 @@ from deepstrike import (
     Governance,
     RetryConfig,
 )
-from deepstrike.kernel import DeepStrikeRuntime, LoopPolicy, RuntimeTask, SignalRouter
+from deepstrike.kernel import KernelRuntime, LoopPolicy, RuntimeTask, SignalRouter
 from deepstrike.providers.stream import TextDelta
 
 
 def test_kernel_import():
-    from deepstrike.kernel import DeepStrikeRuntime, LoopPolicy
-    sm = DeepStrikeRuntime(LoopPolicy())
-    assert not sm.is_terminal()
+    from deepstrike.kernel import KernelRuntime, LoopPolicy
+    runtime = KernelRuntime(LoopPolicy())
+    assert not runtime.is_terminal()
 
 
 def test_tool_decorator():

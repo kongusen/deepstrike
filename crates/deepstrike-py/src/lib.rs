@@ -35,8 +35,6 @@ use pyo3::prelude::*;
 
 use compact_str::CompactString;
 
-use deepstrike_core::context::manager::ContextManager;
-use deepstrike_core::context::pressure::PressureAction;
 use deepstrike_core::context::renderer::RenderedContext as RustRenderedContext;
 use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
 use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
@@ -58,26 +56,18 @@ use deepstrike_core::runtime::{
     KernelInput as RustKernelInput, KernelRuntime as RustKernelRuntime,
 };
 use deepstrike_core::scheduler::policy::LoopPolicy as RustLoopPolicy;
-use deepstrike_core::scheduler::state_machine::{
-    LoopAction as RustLoopAction, LoopEvent as RustLoopEvent,
-    LoopObservation as RustLoopObservation, LoopStateMachine as RustLoopStateMachine,
-};
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
 use deepstrike_core::types::agent::AgentIdentity;
 use deepstrike_core::types::message::{
     Content, ContentPart, Message as RustMessage, Role, ToolCall as RustToolCall,
-    ToolResult as RustToolResult, ToolSchema as RustToolSchema,
 };
 use deepstrike_core::types::policy::{
     GovernanceVerdict as RustGovernanceVerdict, SignalDisposition as RustSignalDisposition,
 };
-use deepstrike_core::types::result::LoopResult as RustLoopResult;
 use deepstrike_core::types::signal::{
     RuntimeSignal as RustRuntimeSignal, SignalSource as RustSignalSource,
     SignalType as RustSignalType, Urgency as RustUrgency,
 };
-use deepstrike_core::types::skill::SkillMetadata as RustSkillMetadata;
-use deepstrike_core::types::task::{RuntimeTask as RustRuntimeTask, TaskLane as RustTaskLane};
 
 // ───────────────────────────────────────── Signal types ──────────────────────────────────────
 
@@ -590,18 +580,6 @@ impl ToolResult {
     }
 }
 
-impl ToolResult {
-    fn to_rust(&self) -> RustToolResult {
-        RustToolResult {
-            call_id: CompactString::new(&self.call_id),
-            output: Content::Text(self.output.clone()),
-            is_error: self.is_error,
-            is_fatal: false,
-            token_count: self.token_count,
-        }
-    }
-}
-
 #[pyclass]
 #[derive(Clone)]
 struct ToolSchema {
@@ -626,27 +604,6 @@ impl ToolSchema {
     }
 }
 
-impl ToolSchema {
-    fn to_rust(&self) -> Result<RustToolSchema, PyErr> {
-        let params: serde_json::Value = serde_json::from_str(&self.parameters)
-            .map_err(|e| PyValueError::new_err(format!("invalid JSON parameters: {e}")))?;
-        Ok(RustToolSchema {
-            name: CompactString::new(&self.name),
-            description: self.description.clone(),
-            parameters: params,
-        })
-    }
-}
-
-fn task_lane_to_rust(lane: Option<&str>) -> RustTaskLane {
-    match lane {
-        Some("orchestrate") => RustTaskLane::Orchestrate,
-        Some("retrieve") => RustTaskLane::Retrieve,
-        Some("verify") => RustTaskLane::Verify,
-        _ => RustTaskLane::Implement,
-    }
-}
-
 #[pyclass]
 #[derive(Clone)]
 struct RuntimeTask {
@@ -668,17 +625,6 @@ impl RuntimeTask {
             goal,
             criteria: criteria.unwrap_or_default(),
             lane,
-        }
-    }
-}
-
-impl RuntimeTask {
-    fn to_rust(&self) -> RustRuntimeTask {
-        RustRuntimeTask {
-            goal: self.goal.clone(),
-            criteria: self.criteria.clone(),
-            metadata: serde_json::Value::Null,
-            lane: task_lane_to_rust(self.lane.as_deref()),
         }
     }
 }
@@ -739,25 +685,6 @@ struct LoopResult {
     total_tokens_used: u64,
 }
 
-impl LoopResult {
-    fn from_rust(r: &RustLoopResult) -> Self {
-        let termination = match r.termination {
-            deepstrike_core::types::result::TerminationReason::Completed => "completed",
-            deepstrike_core::types::result::TerminationReason::MaxTurns => "max_turns",
-            deepstrike_core::types::result::TerminationReason::TokenBudget => "token_budget",
-            deepstrike_core::types::result::TerminationReason::Timeout => "timeout",
-            deepstrike_core::types::result::TerminationReason::UserAbort => "user_abort",
-            deepstrike_core::types::result::TerminationReason::Error => "error",
-        };
-        Self {
-            termination: termination.to_string(),
-            final_message: r.final_message.as_ref().map(Message::from_rust),
-            turns_used: r.turns_used,
-            total_tokens_used: r.total_tokens_used,
-        }
-    }
-}
-
 #[pyclass]
 #[derive(Clone, Default)]
 pub struct TaskUpdate {
@@ -794,19 +721,6 @@ impl TaskUpdate {
             scratchpad,
             blocked_on,
             preserved_refs,
-        }
-    }
-}
-
-impl TaskUpdate {
-    fn to_rust(&self) -> deepstrike_core::context::task_state::TaskUpdate {
-        deepstrike_core::context::task_state::TaskUpdate {
-            plan: self.plan.clone(),
-            current_step: self.current_step.map(|s| s as usize),
-            progress: self.progress.clone(),
-            scratchpad: self.scratchpad.clone(),
-            blocked_on: self.blocked_on.clone(),
-            preserved_refs: self.preserved_refs.clone(),
         }
     }
 }
@@ -860,31 +774,7 @@ impl SkillMetadata {
     }
 }
 
-impl SkillMetadata {
-    fn to_rust(&self) -> RustSkillMetadata {
-        RustSkillMetadata {
-            name: CompactString::new(&self.name),
-            description: self.description.clone(),
-            when_to_use: self.when_to_use.clone(),
-            allowed_tools: self.allowed_tools.iter().map(CompactString::new).collect(),
-            effort: self.effort,
-            estimated_tokens: self.estimated_tokens,
-        }
-    }
-
-    fn from_rust(m: &RustSkillMetadata) -> Self {
-        Self {
-            name: m.name.to_string(),
-            description: m.description.clone(),
-            when_to_use: m.when_to_use.clone(),
-            allowed_tools: m.allowed_tools.iter().map(|s| s.to_string()).collect(),
-            effort: m.effort,
-            estimated_tokens: m.estimated_tokens,
-        }
-    }
-}
-
-// ─────────────────────────────── Tagged-union: LoopAction / Observation ────────────────────────
+// ─────────────────────────────── Provider context ────────────────────────
 
 /// Structured context for a provider call — present when `kind == "call_llm"`.
 #[pyclass]
@@ -908,245 +798,6 @@ impl RenderedContext {
         Self {
             system_text: rc.system_text,
             turns: rc.turns.iter().map(Message::from_rust).collect(),
-        }
-    }
-}
-
-/// Tagged union for `LoopAction`. Inspect `kind` then read the matching field:
-/// - `kind == "call_llm"`           → `context` (RenderedContext), `tools`
-/// - `kind == "execute_tools"`      → `calls`
-/// - `kind == "done"`               → `result`
-/// - `kind == "evaluate_milestone"` → `phase_id`, `criteria`
-#[pyclass]
-#[derive(Clone)]
-struct LoopAction {
-    #[pyo3(get)]
-    kind: String,
-    #[pyo3(get)]
-    context: Option<RenderedContext>,
-    #[pyo3(get)]
-    tools: Option<Vec<ToolSchema>>,
-    #[pyo3(get)]
-    calls: Option<Vec<ToolCall>>,
-    #[pyo3(get)]
-    result: Option<LoopResult>,
-    #[pyo3(get)]
-    phase_id: Option<String>,
-    #[pyo3(get)]
-    criteria: Option<Vec<String>>,
-}
-
-#[pymethods]
-impl LoopAction {
-    fn __repr__(&self) -> String {
-        format!("LoopAction(kind={:?})", self.kind)
-    }
-}
-
-impl LoopAction {
-    fn from_rust(a: RustLoopAction) -> Self {
-        match a {
-            RustLoopAction::CallLLM { context, tools } => Self {
-                kind: "call_llm".to_string(),
-                context: Some(RenderedContext::from_rust(context)),
-                tools: Some(
-                    tools
-                        .iter()
-                        .map(|t| ToolSchema {
-                            name: t.name.to_string(),
-                            description: t.description.clone(),
-                            parameters: serde_json::to_string(&t.parameters)
-                                .unwrap_or_else(|_| "null".into()),
-                        })
-                        .collect(),
-                ),
-                calls: None,
-                result: None,
-                phase_id: None,
-                criteria: None,
-            },
-            RustLoopAction::ExecuteTools { calls } => Self {
-                kind: "execute_tools".to_string(),
-                context: None,
-                tools: None,
-                calls: Some(calls.iter().map(ToolCall::from_rust).collect()),
-                result: None,
-                phase_id: None,
-                criteria: None,
-            },
-            RustLoopAction::Done { result } => Self {
-                kind: "done".to_string(),
-                context: None,
-                tools: None,
-                calls: None,
-                result: Some(LoopResult::from_rust(&result)),
-                phase_id: None,
-                criteria: None,
-            },
-            RustLoopAction::EvaluateMilestone { phase_id, criteria } => Self {
-                kind: "evaluate_milestone".to_string(),
-                context: None,
-                tools: None,
-                calls: None,
-                result: None,
-                phase_id: Some(phase_id),
-                criteria: Some(criteria),
-            },
-        }
-    }
-}
-
-/// Tagged union for `LoopObservation`. Inspect `kind`:
-/// - `kind == "compressed"`         → `action`, `rho_after`, `summary`, `archived`
-/// - `kind == "renewed"`            → `sprint`
-/// - `kind == "capability_changed"` → `turn`, `added`, `removed`
-/// - `kind == "milestone_advanced"` → `turn`, `phase_id`, `capabilities_unlocked`
-/// - `kind == "milestone_blocked"`  → `turn`, `phase_id`, `milestone_reason`
-#[pyclass]
-#[derive(Clone)]
-struct LoopObservation {
-    #[pyo3(get)]
-    kind: String,
-    #[pyo3(get)]
-    action: Option<String>,
-    #[pyo3(get)]
-    rho_after: Option<f64>,
-    /// Sprint number after renewal. Set when `kind == "renewed"`.
-    #[pyo3(get)]
-    sprint: Option<u32>,
-    #[pyo3(get)]
-    pub summary: Option<String>,
-    #[pyo3(get)]
-    pub archived: Option<Vec<Message>>,
-    #[pyo3(get)]
-    pub turn: Option<u32>,
-    #[pyo3(get)]
-    pub checkpoint_history_len: Option<u32>,
-    #[pyo3(get)]
-    pub added: Option<Vec<String>>,
-    #[pyo3(get)]
-    pub removed: Option<Vec<String>>,
-    /// Phase ID for milestone observations.
-    #[pyo3(get)]
-    pub phase_id: Option<String>,
-    /// Capabilities unlocked by a passed milestone phase.
-    #[pyo3(get)]
-    pub capabilities_unlocked: Option<Vec<String>>,
-    /// Failure reason for a blocked milestone phase.
-    #[pyo3(get)]
-    pub milestone_reason: Option<String>,
-}
-
-impl LoopObservation {
-    fn from_rust(o: RustLoopObservation) -> Self {
-        match o {
-            RustLoopObservation::Compressed {
-                action,
-                rho_after,
-                summary,
-                archived,
-            } => {
-                let action_str = match action {
-                    PressureAction::None => "none",
-                    PressureAction::SnipCompact => "snip_compact",
-                    PressureAction::MicroCompact => "micro_compact",
-                    PressureAction::ContextCollapse => "context_collapse",
-                    PressureAction::AutoCompact => "auto_compact",
-                };
-                Self {
-                    kind: "compressed".into(),
-                    action: Some(action_str.into()),
-                    rho_after: Some(rho_after),
-                    sprint: None,
-                    summary,
-                    archived: Some(archived.iter().map(Message::from_rust).collect()),
-                    turn: None,
-                    checkpoint_history_len: None,
-                    added: None,
-                    removed: None,
-                    phase_id: None,
-                    capabilities_unlocked: None,
-                    milestone_reason: None,
-                }
-            }
-            RustLoopObservation::Renewed { sprint } => Self {
-                kind: "renewed".into(),
-                action: None,
-                rho_after: None,
-                sprint: Some(sprint),
-                summary: None,
-                archived: None,
-                turn: None,
-                checkpoint_history_len: None,
-                added: None,
-                removed: None,
-                phase_id: None,
-                capabilities_unlocked: None,
-                milestone_reason: None,
-            },
-            RustLoopObservation::Rollbacked {
-                turn,
-                checkpoint_history_len,
-            } => Self {
-                kind: "rollbacked".into(),
-                action: None,
-                rho_after: None,
-                sprint: None,
-                summary: None,
-                archived: None,
-                turn: Some(turn),
-                checkpoint_history_len: Some(checkpoint_history_len as u32),
-                added: None,
-                removed: None,
-                phase_id: None,
-                capabilities_unlocked: None,
-                milestone_reason: None,
-            },
-            RustLoopObservation::CapabilityChanged { turn, added, removed } => Self {
-                kind: "capability_changed".into(),
-                action: None,
-                rho_after: None,
-                sprint: None,
-                summary: None,
-                archived: None,
-                turn: Some(turn),
-                checkpoint_history_len: None,
-                added: Some(added),
-                removed: Some(removed),
-                phase_id: None,
-                capabilities_unlocked: None,
-                milestone_reason: None,
-            },
-            RustLoopObservation::MilestoneAdvanced { turn, phase_id, capabilities_unlocked } => Self {
-                kind: "milestone_advanced".into(),
-                action: None,
-                rho_after: None,
-                sprint: None,
-                summary: None,
-                archived: None,
-                turn: Some(turn),
-                checkpoint_history_len: None,
-                added: None,
-                removed: None,
-                phase_id: Some(phase_id),
-                capabilities_unlocked: Some(capabilities_unlocked),
-                milestone_reason: None,
-            },
-            RustLoopObservation::MilestoneBlocked { turn, phase_id, reason } => Self {
-                kind: "milestone_blocked".into(),
-                action: None,
-                rho_after: None,
-                sprint: None,
-                summary: None,
-                archived: None,
-                turn: Some(turn),
-                checkpoint_history_len: None,
-                added: None,
-                removed: None,
-                phase_id: Some(phase_id),
-                capabilities_unlocked: None,
-                milestone_reason: Some(reason),
-            },
         }
     }
 }
@@ -1210,196 +861,6 @@ impl KernelRuntime {
             .task_state
             .preserved_refs
             .clone()
-    }
-}
-
-// ──────────────────────────────────────── DeepStrikeRuntime ────────────────────────────────────
-
-#[pyclass]
-struct DeepStrikeRuntime {
-    inner: RustLoopStateMachine,
-}
-
-#[pymethods]
-impl DeepStrikeRuntime {
-    #[new]
-    fn new(policy: LoopPolicy) -> Self {
-        Self {
-            inner: RustLoopStateMachine::new(policy.to_rust()),
-        }
-    }
-
-    /// Convenience: forward to inner ContextManager for skill registration
-    /// without making the user juggle two objects.
-    fn set_available_skills(&mut self, skills: Vec<SkillMetadata>) {
-        self.inner
-            .ctx
-            .set_available_skills(skills.iter().map(|s| s.to_rust()).collect());
-    }
-
-    /// Enable the `memory` meta-tool. Call with `True` when a DreamStore and agent_id
-    /// are configured — the SDK layer intercepts `memory` tool calls and runs the search.
-    fn set_memory_enabled(&mut self, enabled: bool) {
-        self.inner.ctx.set_memory_enabled(enabled);
-    }
-
-    /// Enable the `knowledge` meta-tool. Call with `True` when a KnowledgeSource
-    /// is configured — the SDK layer intercepts `knowledge` tool calls and runs retrieval.
-    fn set_knowledge_enabled(&mut self, enabled: bool) {
-        self.inner.ctx.set_knowledge_enabled(enabled);
-    }
-
-    /// Prepend a system-level instruction to the context. Must be called before `start`.
-    /// `tokens` is a caller-supplied estimate (use `len(content) // 4` if unsure).
-    /// The renderer skips messages with `tokens == 0`, so always pass at least 1.
-    fn add_system_message(&mut self, content: String, tokens: u32) {
-        self.inner
-            .ctx
-            .partitions
-            .system
-            .push(RustMessage::system(content), tokens.max(1));
-    }
-
-    /// Pre-populate the memory partition with a long-term memory snippet.
-    /// Must be called before `start`. Use for seeding known context from past sessions.
-    /// `tokens` is a caller-supplied estimate; pass at least 1.
-    fn add_memory_message(&mut self, content: String, tokens: u32) {
-        self.inner
-            .ctx
-            .partitions
-            .memory
-            .push(RustMessage::user(content), tokens.max(1));
-    }
-
-    /// Pre-populate the history partition with a prior transcript message.
-    /// Must be called before `start`.
-    fn add_history_message(&mut self, message: Message, tokens: u32) -> PyResult<()> {
-        self.inner
-            .ctx
-            .push_history(message.to_rust()?, tokens.max(1));
-        Ok(())
-    }
-
-    fn set_tools(&mut self, tools: Vec<ToolSchema>) -> PyResult<()> {
-        let rust_tools: Vec<RustToolSchema> = tools
-            .iter()
-            .map(|t| t.to_rust())
-            .collect::<Result<_, _>>()?;
-        self.inner.tools = rust_tools;
-        Ok(())
-    }
-
-    fn start(&mut self, task: RuntimeTask) -> LoopAction {
-        LoopAction::from_rust(self.inner.start(task.to_rust()))
-    }
-
-    fn feed_llm_response(&mut self, message: Message) -> PyResult<LoopAction> {
-        let msg = message.to_rust()?;
-        Ok(LoopAction::from_rust(
-            self.inner.feed(RustLoopEvent::LLMResponse { message: msg }),
-        ))
-    }
-
-    fn feed_tool_results(&mut self, results: Vec<ToolResult>) -> LoopAction {
-        let results: Vec<RustToolResult> = results.iter().map(|r| r.to_rust()).collect();
-        LoopAction::from_rust(self.inner.feed(RustLoopEvent::ToolResults { results }))
-    }
-
-    fn feed_timeout(&mut self) -> LoopAction {
-        LoopAction::from_rust(self.inner.feed(RustLoopEvent::Timeout))
-    }
-
-    fn is_terminal(&self) -> bool {
-        self.inner.is_terminal()
-    }
-
-    fn turn(&self) -> u32 {
-        self.inner.turn
-    }
-
-    fn pressure(&self) -> f64 {
-        self.inner.ctx.rho()
-    }
-
-    fn preserved_refs(&self) -> Vec<String> {
-        self.inner.ctx.partitions.task_state.preserved_refs.clone()
-    }
-
-    fn force_compact(&mut self) -> bool {
-        self.inner.force_compact()
-    }
-
-    fn take_observations(&mut self) -> Vec<LoopObservation> {
-        self.inner
-            .take_observations()
-            .into_iter()
-            .map(LoopObservation::from_rust)
-            .collect()
-    }
-
-    /// Pre-populate history with messages from a prior session.
-    /// Call before `start()` to restore conversational continuity across runs.
-    fn preload_history(&mut self, messages: Vec<Message>) -> PyResult<()> {
-        let rust_msgs: Vec<RustMessage> = messages
-            .iter()
-            .map(|m| m.to_rust())
-            .collect::<Result<_, _>>()?;
-        self.inner.preload_history(rust_msgs);
-        Ok(())
-    }
-
-    /// Continue from preloaded history without appending a new user turn (mid-run recovery).
-    fn resume_after_preload(&mut self) -> LoopAction {
-        LoopAction::from_rust(self.inner.resume_after_preload())
-    }
-
-    /// Return only messages added during the current run (since the last `preload_history`
-    /// or construction). Use this to persist the session delta to a SessionStore.
-    fn drain_new_messages(&self) -> Vec<Message> {
-        self.inner
-            .drain_new_messages()
-            .iter()
-            .map(Message::from_rust)
-            .collect()
-    }
-
-    /// Read-only access to the rendered context for inspection / LLM call building.
-    fn render(&self) -> RenderedContext {
-        RenderedContext::from_rust(self.inner.ctx.render())
-    }
-
-    fn init_task(&mut self, goal: String, criteria: Vec<String>) {
-        self.inner.ctx.init_task(goal, criteria);
-    }
-
-    fn update_task(&mut self, update: TaskUpdate) {
-        self.inner.ctx.update_task(update.to_rust());
-    }
-
-    fn recovery_content_bytes(&self) -> u32 {
-        let tokens = self
-            .inner
-            .ctx
-            .config
-            .recovery_content_tokens(self.inner.ctx.max_tokens);
-        self.inner.ctx.engine.token_budget_to_bytes(tokens) as u32
-    }
-
-    fn set_tokenizer(&mut self, name: String) {
-        let engine = match name.as_str() {
-            "tiktoken_cl100k" | "cl100k" => {
-                deepstrike_core::context::token_engine::ContextTokenEngine::cl100k()
-            }
-            "tiktoken_o200k" | "o200k" => {
-                deepstrike_core::context::token_engine::ContextTokenEngine::o200k()
-            }
-            _ => deepstrike_core::context::token_engine::ContextTokenEngine::char_approx(),
-        };
-        self.inner.ctx.engine = engine;
-    }
-
-    fn set_plan_tool_enabled(&mut self, enabled: bool) {
-        self.inner.ctx.set_plan_tool_enabled(enabled);
     }
 }
 
@@ -2130,10 +1591,7 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Skill types
     m.add_class::<SkillMetadata>()?;
     // Loop control
-    m.add_class::<LoopAction>()?;
-    m.add_class::<LoopObservation>()?;
     m.add_class::<KernelRuntime>()?;
-    m.add_class::<DeepStrikeRuntime>()?;
     // Signal types
     m.add_class::<RuntimeSignal>()?;
     m.add_class::<SignalRouter>()?;
