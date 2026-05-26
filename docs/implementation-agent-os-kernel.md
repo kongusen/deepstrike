@@ -123,7 +123,7 @@ KernelOutput:
 | Phase 0 / PR 1：V2 收口 | ✅ 已完成 | `68c7496 feat(kernel): add agent OS v2 runtime primitives` |
 | PR 1 文档规划 | ✅ 已完成 | `6e1fecd docs: plan agent OS kernel roadmap` |
 | G0 — V2 Mergeable | ✅ 已通过 | `cargo check --workspace`、`cargo test -p deepstrike-core`、`cargo test --manifest-path rust/Cargo.toml`、Node/WASM build + targeted tests、Python targeted tests |
-| Phase 1 / PR 2：Kernel ABI 固化 | 🟡 进行中 | Core ABI + Node/PyO3/WASM JSON ABI `KernelRuntime.step()` 已落地 |
+| Phase 1 / PR 2：Kernel ABI 固化 | 🟡 进行中 | Core ABI + Node/PyO3/WASM JSON ABI `KernelRuntime.step()` 已落地；config/preload/capability inputs 已纳入 ABI |
 
 **当前主线：** 继续 PR 2，先稳定 core ABI 合同，再逐端把 FFI / SDK runner 从直接操作 `LoopStateMachine` 迁移到 `KernelRuntime`。
 
@@ -194,9 +194,10 @@ cargo test --manifest-path rust/Cargo.toml
 2. [x] 增加 `KernelRuntime::step(KernelInput) -> KernelStep` 薄包装，保持现有行为不变
 3. [x] Node / Python / WASM 绑定暴露 `KernelRuntime.step(input_json) -> step_json`
 4. [x] 文档：`docs/spec-kernel-abi.md`
-5. [ ] `RuntimeRunner` 重构为 input/action 驱动，不再散落 `sm.feed(...)` 细节
-6. [ ] FFI 默认入口收口到 `KernelRuntime`，隐藏 `LoopStateMachine` / `ContextManager`
-7. [ ] Node / Python / WASM 绑定从 JSON ABI 过渡到强类型 API（或确认 JSON ABI 作为长期 FFI 边界）
+5. [x] config / preload / capability / milestone setup 纳入 `KernelInputEvent`
+6. [ ] `RuntimeRunner` 重构为 input/action 驱动，不再散落 `sm.feed(...)` 细节
+7. [ ] FFI 默认入口收口到 `KernelRuntime`，隐藏 `LoopStateMachine` / `ContextManager`
+8. [ ] Node / Python / WASM 绑定从 JSON ABI 过渡到强类型 API（或确认 JSON ABI 作为长期 FFI 边界）
 
 **验收：**
 

@@ -33,6 +33,19 @@ Events:
 
 | Event | Meaning |
 |---|---|
+| `set_tools` | Replace user tool schemas visible to the kernel |
+| `set_available_skills` | Replace skill metadata used by the skill meta-tool |
+| `set_memory_enabled` | Toggle the memory meta-tool |
+| `set_knowledge_enabled` | Toggle the knowledge meta-tool |
+| `set_plan_tool_enabled` | Toggle the plan/update meta-tool |
+| `add_system_message` | Add a system partition message before run start |
+| `add_memory_message` | Add a memory partition message before run start |
+| `add_history_message` | Add one history message |
+| `preload_history` | Preload restored transcript and set replay baseline |
+| `mount_capability` | Add a capability descriptor to the runtime graph |
+| `unmount_capability` | Remove a capability descriptor by `capability_kind`/id |
+| `load_milestone_contract` | Load milestone phases before run start |
+| `force_compact` | Force an immediate context compact attempt |
 | `start_run` | Start a new run from a `RuntimeTask` |
 | `resume` | Resume after preloaded history |
 | `provider_result` | Feed an assistant/provider message back to the kernel |
@@ -84,9 +97,10 @@ Current implementation is intentionally thin over `LoopStateMachine`. This prese
 ## Migration Plan
 
 1. Core defines ABI types and `KernelRuntime`.
-2. FFI bindings expose `KernelRuntime` and ABI payloads.
-3. SDK runners migrate from direct `LoopStateMachine` calls to `KernelRuntime::step`.
-4. Direct `LoopStateMachine` / `ContextManager` access becomes internal or test-only.
+2. Configuration, preload, capability, and loop transitions are expressible as `KernelInputEvent` variants.
+3. FFI bindings expose `KernelRuntime` and ABI payloads.
+4. SDK runners migrate from direct `LoopStateMachine` calls to `KernelRuntime::step`.
+5. Direct `LoopStateMachine` / `ContextManager` access becomes internal or test-only.
 
 ## Compatibility Rules
 

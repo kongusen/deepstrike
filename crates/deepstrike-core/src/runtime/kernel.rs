@@ -11,10 +11,12 @@ use crate::context::pressure::PressureAction;
 use crate::context::renderer::RenderedContext;
 use crate::scheduler::policy::LoopPolicy;
 use crate::scheduler::state_machine::{LoopAction, LoopEvent, LoopObservation, LoopStateMachine};
+use crate::types::capability::{CapabilityDescriptor, CapabilityKind};
 use crate::types::message::{Message, ToolCall, ToolResult, ToolSchema};
-use crate::types::milestone::MilestoneCheckResult;
+use crate::types::milestone::{MilestoneCheckResult, MilestoneContract};
 use crate::types::result::LoopResult;
 use crate::types::signal::RuntimeSignal;
+use crate::types::skill::SkillMetadata;
 use crate::types::task::RuntimeTask;
 
 pub const KERNEL_ABI_VERSION: u32 = 1;
@@ -37,6 +39,47 @@ impl KernelInput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum KernelInputEvent {
+    SetTools {
+        tools: Vec<ToolSchema>,
+    },
+    SetAvailableSkills {
+        skills: Vec<SkillMetadata>,
+    },
+    SetMemoryEnabled {
+        enabled: bool,
+    },
+    SetKnowledgeEnabled {
+        enabled: bool,
+    },
+    SetPlanToolEnabled {
+        enabled: bool,
+    },
+    AddSystemMessage {
+        content: String,
+        tokens: u32,
+    },
+    AddMemoryMessage {
+        content: String,
+        tokens: u32,
+    },
+    AddHistoryMessage {
+        message: Message,
+        tokens: Option<u32>,
+    },
+    PreloadHistory {
+        messages: Vec<Message>,
+    },
+    MountCapability {
+        capability: CapabilityDescriptor,
+    },
+    UnmountCapability {
+        capability_kind: CapabilityKind,
+        id: String,
+    },
+    LoadMilestoneContract {
+        contract: MilestoneContract,
+    },
+    ForceCompact,
     StartRun { task: RuntimeTask },
     Resume,
     ProviderResult { message: Message },
@@ -54,6 +97,14 @@ pub struct KernelStep {
 }
 
 impl KernelStep {
+    fn empty(observations: Vec<LoopObservation>) -> Self {
+        Self {
+            version: KERNEL_ABI_VERSION,
+            actions: Vec::new(),
+            observations: observations.into_iter().map(Into::into).collect(),
+        }
+    }
+
     fn single(action: LoopAction, observations: Vec<LoopObservation>) -> Self {
         Self {
             version: KERNEL_ABI_VERSION,
@@ -230,6 +281,70 @@ impl KernelRuntime {
 
     pub fn step(&mut self, input: KernelInput) -> KernelStep {
         let action = match input.event {
+            KernelInputEvent::SetTools { tools } => {
+                self.sm.tools = tools;
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::SetAvailableSkills { skills } => {
+                self.sm.ctx.set_available_skills(skills);
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::SetMemoryEnabled { enabled } => {
+                self.sm.ctx.set_memory_enabled(enabled);
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::SetKnowledgeEnabled { enabled } => {
+                self.sm.ctx.set_knowledge_enabled(enabled);
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::SetPlanToolEnabled { enabled } => {
+                self.sm.ctx.set_plan_tool_enabled(enabled);
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::AddSystemMessage { content, tokens } => {
+                self.sm
+                    .ctx
+                    .partitions
+                    .system
+                    .push(Message::system(content), tokens.max(1));
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::AddMemoryMessage { content, tokens } => {
+                self.sm
+                    .ctx
+                    .partitions
+                    .memory
+                    .push(Message::user(content), tokens.max(1));
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::AddHistoryMessage { message, tokens } => {
+                let tokens = tokens.unwrap_or_else(|| self.sm.ctx.engine.count_message(&message));
+                self.sm.ctx.push_history(message, tokens.max(1));
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::PreloadHistory { messages } => {
+                self.sm.preload_history(messages);
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::MountCapability { capability } => {
+                self.sm.mount_capability(capability);
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::UnmountCapability {
+                capability_kind,
+                id,
+            } => {
+                self.sm.unmount_capability(capability_kind, &id);
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::LoadMilestoneContract { contract } => {
+                self.sm.load_milestone_contract(contract);
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::ForceCompact => {
+                self.sm.force_compact();
+                return KernelStep::empty(self.sm.take_observations());
+            }
             KernelInputEvent::StartRun { task } => self.sm.start(task),
             KernelInputEvent::Resume => self.sm.resume_after_preload(),
             KernelInputEvent::ProviderResult { message } => {
@@ -279,6 +394,39 @@ mod tests {
         assert!(matches!(
             step.actions.as_slice(),
             [KernelAction::Done { .. }]
+        ));
+    }
+
+    #[test]
+    fn config_inputs_mutate_runtime_without_actions() {
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let step = runtime.step(KernelInput::new(KernelInputEvent::SetTools {
+            tools: vec![ToolSchema {
+                name: "echo".into(),
+                description: "Echo input".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+        }));
+
+        assert!(step.actions.is_empty());
+        assert_eq!(runtime.state_machine().tools.len(), 1);
+    }
+
+    #[test]
+    fn capability_mount_emits_observation() {
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let step = runtime.step(KernelInput::new(KernelInputEvent::MountCapability {
+            capability: CapabilityDescriptor::marker(
+                CapabilityKind::McpServer,
+                "docs",
+                "Documentation server",
+            ),
+        }));
+
+        assert!(step.actions.is_empty());
+        assert!(matches!(
+            step.observations.as_slice(),
+            [KernelObservation::CapabilityChanged { .. }]
         ));
     }
 }
