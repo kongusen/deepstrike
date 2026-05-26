@@ -1,9 +1,17 @@
 # Context Compression & Working Partition — v2 Spec
 
-**Status:** Draft  
+**Status:** Phase A + B + C complete (MVP shipped). Phase D deferred.  
 **Target version:** 0.2.0  
 **Scope:** `deepstrike-core` kernel + Node / Python / Rust / WASM SDKs  
 **Phases:** A (token engine) → B (working task state) → C (archive) → D (smart pipeline) → E (SDK alignment)
+
+| Phase | Status | Notes |
+|---|---|---|
+| A — Token Engine | ✅ Complete | `ContextConfig`, `ContextTokenEngine`, all `len/4` replaced |
+| B — Task State | ✅ Complete | `TaskState`, Artifacts (6th partition), `KernelInputEvent::PushArtifact` |
+| C — Archive | ✅ Complete | `ArchiveStore` read+write, async replay with fallback, Rust/Node/Python runners |
+| D — Smart Pipeline | ⏸ Deferred | Awaiting Phase A–C stabilization |
+| E — SDK Alignment | ⏸ Deferred | RuntimeOptions tokenizer/store fields pending |
 
 ---
 
@@ -38,12 +46,13 @@ Root causes:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  system   — safety rules / contract (never compressed)           │
-│  working  — TaskState: goal + plan + progress + scratchpad       │
-│             (never compressed; SSOT for task state)              │
-│  memory   — DreamStore results (lightly compressible)            │
-│  skill    — dynamic skill schemas (swappable)                    │
-│  history  — execution transcript (compressible with summary)     │
+│  system    — safety rules / contract (never compressed)          │
+│  working   — TaskState: goal + plan + progress + scratchpad      │
+│              (never compressed; SSOT for task state)             │
+│  memory    — DreamStore results (lightly compressible)           │
+│  skill     — dynamic skill schemas (swappable)                   │
+│  artifacts — referenced outputs / tool products (not inlined)    │
+│  history   — execution transcript (compressible with summary)    │
 └─────────────────────────────────────────────────────────────────┘
           │                                  │
           ▼                                  ▼
@@ -304,12 +313,12 @@ class RuntimeOptions:
     tokenizer: Literal["char_approx", "tiktoken_o200k", "tiktoken_cl100k"] = "char_approx"
 ```
 
-### A5. Acceptance criteria
+### A5. Acceptance criteria — ✅ MET
 
 - Same transcript: `rho` before and after switching from `char_approx` to `tiktoken_cl100k` stays within 15% for ASCII content, 40% for CJK (expected improvement, not regression).
-- CJK string `"你好世界".repeat(1000)` does not panic in `truncate`.
-- Render budget after compression equals `max_tokens - compressed_total_tokens` (no double-cut).
-- Unit: `engine.count(engine.0.truncate(text, n)) <= n` for all inputs.
+- CJK string `"你好世界".repeat(1000)` does not panic in `truncate`. ✅ tested
+- Render budget after compression equals `max_tokens - compressed_total_tokens` (no double-cut). ✅
+- Unit: `engine.count(engine.0.truncate(text, n)) <= n` for all inputs. ✅ 8 unit tests
 
 ---
 
@@ -517,12 +526,18 @@ When `RuntimeOptions.enable_plan_tool = true`, the kernel injects:
 
 The SDK intercepts `update_plan` tool calls (same interception pattern as `memory` and `knowledge`) and calls `ctx.update_task(...)`. The tool result is an empty success — the update writes to `task_state`, not history.
 
-### B7. Acceptance criteria
+### B7. Acceptance criteria — ✅ MET
 
-- After `AutoCompact` empties `history`, the rendered `system_text` still contains `[TASK STATE] goal:` and all plan steps.
-- `TaskState.scratchpad` is cleared on renewal; `goal`, `criteria`, and open `plan` steps are preserved.
-- `working.compressible` remains `false`; the compression pipeline's `compress()` does not touch `working` or `task_state`.
-- Round-trip: `TaskState::default().format_compact() == ""` (no noise when task not yet set).
+- After `AutoCompact` empties `history`, the rendered `system_text` still contains `[TASK STATE] goal:` and all plan steps. ✅
+- `TaskState.scratchpad` is cleared on renewal; `goal`, `criteria`, and open `plan` steps are preserved. ✅
+- `working.compressible` remains `false`; the compression pipeline's `compress()` does not touch `working` or `task_state`. ✅
+- Round-trip: `TaskState::default().format_compact() == ""` (no noise when task not yet set). ✅
+
+**Phase B additions beyond original spec:**
+
+- 6th context partition: `artifacts` (`compressible = false`, `Priority::Medium`). Push via `KernelInputEvent::PushArtifact`.
+- `ContextManager.push_artifact()` and `take_snapshot()` added.
+- `ContextSnapshot` captures all six partitions + `TaskState` at a given turn.
 
 ---
 
@@ -695,13 +710,20 @@ for each Compressed event in log:
 
 This gives the agent a textual record of what was compressed without requiring the full archive.
 
-### C7. Acceptance criteria
+### C7. Acceptance criteria — ✅ MET
 
-- Old logs with `{ kind: "compressed", turn: N, archived_seq_range: [A, B] }` deserialise without error (all new fields `None` / empty).
-- After `AutoCompact` with `RuleSummarizer`, `SessionEvent::Compressed.summary` contains the tool names and last assistant excerpt.
-- `wake()` on a session with a `summary`-bearing `Compressed` event injects the summary text before the first live history turn.
-- With `NullArchiveStore`, `archive_ref` is `None` and no files are written.
-- With `FileArchiveStore`, `{root}/{session_id}/{seq}.jsonl` exists after compression and contains the removed messages.
+- Old logs with `{ kind: "compressed", turn: N, archived_seq_range: [A, B] }` deserialise without error (all new fields `None` / empty). ✅
+- After `AutoCompact` with `RuleSummarizer`, `SessionEvent::Compressed.summary` contains the tool names and last assistant excerpt. ✅
+- `wake()` on a session with a `summary`-bearing `Compressed` event injects the summary text before the first live history turn. ✅ (t11 integration test)
+- With `NullArchiveStore`, `archive_ref` is `None` and no files are written. ✅
+- With `FileArchiveStore`, `{root}/{session_id}/{seq}.jsonl` exists after compression and contains the removed messages. ✅
+
+**Phase C additions beyond original spec:**
+
+- `ArchiveStore` gains a `read(archive_ref) -> Vec<Message>` method alongside `write()`.
+- Rust/Node/Python runners use `reconstruct_messages_with_fallback()` on wake: loads archived messages via `read()` when `archive_ref` is set, falls back to summary injection on `MissingArchive`.
+- New kernel types in `context/snapshot.rs`: `ContextPage`, `ContextSnapshot`, `ContextArchiveRef`, `ContextGcPolicy`, `ContextFault` (`PromptTooLong` / `MissingArchive` / `InvalidReplay`).
+- `ContextFault` is the error type for `load_archive` callbacks across all SDK runners.
 
 ---
 
@@ -877,22 +899,25 @@ if (event.kind === "compressed" && event.summary) {
 ## 11. Implementation Order
 
 ```
-Phase A (token engine)    — 1 PR, ~1 week
+Phase A (token engine)    ✅ SHIPPED
   A1 → A2 → A3 → A4 (config)
 
-Phase B (working task state) — 1 PR, ~1 week, can overlap with A
-  B1 → B2 → B3 → B4 (write timing) → B5 (renewal) → B6 (plan tool, optional)
+Phase B (working task state) ✅ SHIPPED
+  B1 → B2 → B3 → B4 (write timing) → B5 (renewal) → B6 (plan tool)
+  + Artifacts 6th partition + KernelInputEvent::PushArtifact
+  + ContextSnapshot / ContextPage / ContextArchiveRef types
 
-Phase C (archive) — 1 PR, ~1 week, depends on A+B
+Phase C (archive) ✅ SHIPPED
   C1 (schema) → C2 (summariser) → C3 (compressor trait) → C4 (store) → C5 (runner) → C6 (wake)
+  + ArchiveStore.read() + reconstruct_messages_with_fallback() + ContextFault
 
-Phase D (smart pipeline) — 1–2 PRs, ~2 weeks, depends on C
+Phase D (smart pipeline) ⏸ DEFERRED — depends on C stabilization
   D1 → D2/D3 (compactors) → D4/D5 (CollapseCompactor, AutoCompactor) → D6/D7 (tiering)
 
-Phase E (SDK + docs) — alongside D or after
+Phase E (SDK + docs) ⏸ DEFERRED
   E1 → E2 → E3 → E4
 ```
 
-**MVP (3 weeks):** Phase A + B + C with `RuleSummarizer` — resolves "compression destroys everything" and "plan is lost after AutoCompact".
+**MVP (3 weeks):** ✅ **SHIPPED** — Phase A + B + C with `RuleSummarizer`. Resolves "compression destroys everything" and "plan is lost after AutoCompact".
 
-**Full delivery (5–6 weeks):** + Phase D (LLM summariser) + Phase E (QuantStrike, docs cleanup).
+**Next:** Phase D (LLM summariser) or Phase 3 Capability Bus (already partially implemented).
