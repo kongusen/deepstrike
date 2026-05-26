@@ -99,6 +99,8 @@ pub enum LoopObservation {
         change_kind: Option<String>,
         capability_id: Option<String>,
         version: Option<String>,
+        mounted_by: Option<String>,
+        mount_reason: Option<String>,
     },
     /// Milestone phase satisfied — capabilities unlocked, phase advanced.
     MilestoneAdvanced {
@@ -510,8 +512,8 @@ impl LoopStateMachine {
     pub fn execute_capability_command(&mut self, cmd: crate::types::capability::CapabilityCommand) {
         use crate::types::capability::CapabilityCommand;
         match cmd {
-            CapabilityCommand::Mount { capability } => {
-                self.mount_capability(capability);
+            CapabilityCommand::Mount { capability, mounted_by, mount_reason } => {
+                self.mount_capability(capability, mounted_by, mount_reason);
             }
             CapabilityCommand::Unmount { kind, id } => {
                 self.unmount_capability(kind, &id);
@@ -536,6 +538,8 @@ impl LoopStateMachine {
                     change_kind: Some("replace".to_string()),
                     capability_id: Some(new_id),
                     version,
+                    mounted_by: None,
+                    mount_reason: None,
                 });
             }
             CapabilityCommand::Pin { kind, id } => {
@@ -549,13 +553,26 @@ impl LoopStateMachine {
                         change_kind: Some("pin".to_string()),
                         capability_id: Some(id),
                         version,
+                        mounted_by: None,
+                        mount_reason: None,
                     });
                 }
             }
         }
     }
 
-    pub fn mount_capability(&mut self, descriptor: crate::types::capability::CapabilityDescriptor) {
+    pub fn mount_capability(
+        &mut self,
+        mut descriptor: crate::types::capability::CapabilityDescriptor,
+        mounted_by: Option<String>,
+        mount_reason: Option<String>,
+    ) {
+        if mounted_by.is_some() {
+            descriptor.mounted_by = mounted_by.clone();
+        }
+        if mount_reason.is_some() {
+            descriptor.mount_reason = mount_reason.clone();
+        }
         let id = descriptor.id.to_string();
         let kind_str = format!("{:?}", descriptor.kind);
         let version = descriptor.version.clone();
@@ -567,6 +584,8 @@ impl LoopStateMachine {
             change_kind: Some("mount".to_string()),
             capability_id: Some(id),
             version,
+            mounted_by,
+            mount_reason,
         });
     }
 
@@ -581,6 +600,8 @@ impl LoopStateMachine {
             change_kind: Some("unmount".to_string()),
             capability_id: Some(id.to_string()),
             version,
+            mounted_by: None,
+            mount_reason: None,
         });
     }
 

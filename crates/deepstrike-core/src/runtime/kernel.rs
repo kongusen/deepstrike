@@ -197,6 +197,10 @@ pub enum KernelObservation {
         capability_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mounted_by: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mount_reason: Option<String>,
     },
     MilestoneAdvanced {
         turn: u32,
@@ -239,6 +243,8 @@ impl From<LoopObservation> for KernelObservation {
                 change_kind,
                 capability_id,
                 version,
+                mounted_by,
+                mount_reason,
             } => Self::CapabilityChanged {
                 turn,
                 added,
@@ -246,6 +252,8 @@ impl From<LoopObservation> for KernelObservation {
                 change_kind,
                 capability_id,
                 version,
+                mounted_by,
+                mount_reason,
             },
             LoopObservation::MilestoneAdvanced {
                 turn,
@@ -372,7 +380,7 @@ impl KernelRuntime {
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::MountCapability { capability } => {
-                self.sm.mount_capability(capability);
+                self.sm.mount_capability(capability, None, None);
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::UnmountCapability {

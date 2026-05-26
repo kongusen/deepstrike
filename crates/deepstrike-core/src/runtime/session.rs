@@ -94,8 +94,20 @@ pub enum SessionEvent {
     /// Model-visible capabilities dynamically updated (e.g., loading skills or mounting MCPs).
     CapabilityChanged {
         turn: u32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         added: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         removed: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        change_kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capability_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mounted_by: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mount_reason: Option<String>,
     },
     /// Context reset and sprint rotated after a context boundary handoff.
     ContextRenewed {

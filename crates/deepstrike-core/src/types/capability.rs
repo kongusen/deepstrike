@@ -4,8 +4,14 @@ use serde::{Deserialize, Serialize};
 use super::message::ToolSchema;
 use super::skill::SkillMetadata;
 
+/// Lease specification for temporary capabilities.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CapabilityLease {
+    pub expires_at_turn: u32,
+}
+
 /// Stable capability category used for model-visible capability manifests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityKind {
     Tool,
@@ -32,6 +38,18 @@ pub struct CapabilityDescriptor {
     pub skill: Option<SkillMetadata>,
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub metadata: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease: Option<CapabilityLease>,
+    #[serde(default)]
+    pub is_pinned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Who requested this capability to be mounted (e.g. "sdk", "milestone:phase_id", agent id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mounted_by: Option<String>,
+    /// Human-readable reason this capability was mounted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mount_reason: Option<String>,
 }
 
 impl CapabilityDescriptor {
@@ -43,6 +61,11 @@ impl CapabilityDescriptor {
             tool_schema: Some(schema),
             skill: None,
             metadata: serde_json::Value::Null,
+            lease: None,
+            is_pinned: false,
+            version: None,
+            mounted_by: None,
+            mount_reason: None,
         }
     }
 
@@ -54,6 +77,11 @@ impl CapabilityDescriptor {
             tool_schema: None,
             skill: Some(skill),
             metadata: serde_json::Value::Null,
+            lease: None,
+            is_pinned: false,
+            version: None,
+            mounted_by: None,
+            mount_reason: None,
         }
     }
 
@@ -69,11 +97,41 @@ impl CapabilityDescriptor {
             tool_schema: None,
             skill: None,
             metadata: serde_json::Value::Null,
+            lease: None,
+            is_pinned: false,
+            version: None,
+            mounted_by: None,
+            mount_reason: None,
         }
     }
 
     pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
         self.metadata = metadata;
+        self
+    }
+
+    pub fn with_lease(mut self, lease: CapabilityLease) -> Self {
+        self.lease = Some(lease);
+        self
+    }
+
+    pub fn pinned(mut self) -> Self {
+        self.is_pinned = true;
+        self
+    }
+
+    pub fn with_version(mut self, version: impl Into<String>) -> Self {
+        self.version = Some(version.into());
+        self
+    }
+
+    pub fn with_provenance(
+        mut self,
+        mounted_by: impl Into<String>,
+        mount_reason: impl Into<String>,
+    ) -> Self {
+        self.mounted_by = Some(mounted_by.into());
+        self.mount_reason = Some(mount_reason.into());
         self
     }
 }
@@ -150,6 +208,12 @@ impl CapabilityManifest {
 
     pub fn capabilities(&self) -> &[CapabilityDescriptor] {
         &self.capabilities
+    }
+
+    pub fn get_mut(&mut self, kind: CapabilityKind, id: &str) -> Option<&mut CapabilityDescriptor> {
+        self.capabilities
+            .iter_mut()
+            .find(|c| c.kind == kind && c.id.as_str() == id)
     }
 
     pub fn by_kind(&self, kind: CapabilityKind) -> Vec<&CapabilityDescriptor> {
@@ -291,4 +355,30 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered.by_kind(CapabilityKind::Skill)[0].id.as_str(), "debug");
     }
+}
+
+/// Commands representing direct actions on the capability bus.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum CapabilityCommand {
+    Mount {
+        capability: CapabilityDescriptor,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mounted_by: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mount_reason: Option<String>,
+    },
+    Unmount {
+        kind: CapabilityKind,
+        id: String,
+    },
+    Replace {
+        old_kind: CapabilityKind,
+        old_id: String,
+        new_capability: CapabilityDescriptor,
+    },
+    Pin {
+        kind: CapabilityKind,
+        id: String,
+    },
 }

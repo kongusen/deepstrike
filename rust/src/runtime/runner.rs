@@ -990,6 +990,8 @@ impl RuntimeRunner {
                     change_kind,
                     capability_id,
                     version,
+                    mounted_by,
+                    mount_reason,
                 } => {
                     self.log(
                         session_id,
@@ -1000,6 +1002,8 @@ impl RuntimeRunner {
                             change_kind,
                             capability_id,
                             version,
+                            mounted_by,
+                            mount_reason,
                         },
                     )
                     .await;

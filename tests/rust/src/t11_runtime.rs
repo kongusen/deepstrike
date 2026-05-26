@@ -516,7 +516,7 @@ async fn capability_mount_emits_capability_changed_session_event() {
         description: "A dynamically mounted test tool".to_string(),
         parameters: serde_json::json!({"type": "object", "properties": {}}),
     };
-    sm.mount_capability(CapabilityDescriptor::tool(schema));
+    sm.mount_capability(CapabilityDescriptor::tool(schema), None, None);
 
     let observations = sm.take_observations();
     assert_eq!(observations.len(), 1, "expected exactly one observation after mount");
@@ -527,7 +527,7 @@ async fn capability_mount_emits_capability_changed_session_event() {
     let mut saw_capability_changed = false;
 
     for obs in &observations {
-        if let LoopObservation::CapabilityChanged { turn, added, removed, change_kind, capability_id, version } = obs {
+        if let LoopObservation::CapabilityChanged { turn, added, removed, change_kind, capability_id, version, .. } = obs {
             session_log
                 .append(
                     session_id,
@@ -538,6 +538,8 @@ async fn capability_mount_emits_capability_changed_session_event() {
                         change_kind: change_kind.clone(),
                         capability_id: capability_id.clone(),
                         version: version.clone(),
+                        mounted_by: None,
+                        mount_reason: None,
                     },
                 )
                 .await
@@ -575,7 +577,7 @@ async fn capability_unmount_emits_capability_changed_session_event() {
         description: "Tool to be removed".to_string(),
         parameters: serde_json::json!({"type": "object", "properties": {}}),
     };
-    sm.mount_capability(CapabilityDescriptor::tool(schema));
+    sm.mount_capability(CapabilityDescriptor::tool(schema), None, None);
     sm.take_observations(); // clear mount observation
 
     sm.unmount_capability(CapabilityKind::Tool, "ephemeral_tool");
@@ -587,7 +589,7 @@ async fn capability_unmount_emits_capability_changed_session_event() {
     let session_id = "cap-unmount-test";
 
     for obs in &observations {
-        if let LoopObservation::CapabilityChanged { turn, added, removed, change_kind, capability_id, version } = obs {
+        if let LoopObservation::CapabilityChanged { turn, added, removed, change_kind, capability_id, version, .. } = obs {
             session_log
                 .append(
                     session_id,
@@ -598,6 +600,8 @@ async fn capability_unmount_emits_capability_changed_session_event() {
                         change_kind: change_kind.clone(),
                         capability_id: capability_id.clone(),
                         version: version.clone(),
+                        mounted_by: None,
+                        mount_reason: None,
                     },
                 )
                 .await

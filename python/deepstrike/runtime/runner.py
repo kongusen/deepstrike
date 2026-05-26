@@ -639,12 +639,16 @@ class RuntimeRunner:
           "checkpoint_history_len": obs.get("checkpoint_history_len", 0),
         })
       elif kind == "capability_changed":
-        await self._opts.session_log.append(session_id, {
+        ev: dict = {
           "kind": "capability_changed",
           "turn": obs.get("turn") or turn,
           "added": obs.get("added") or [],
           "removed": obs.get("removed") or [],
-        })
+        }
+        for key in ("change_kind", "capability_id", "version", "mounted_by", "mount_reason"):
+          if obs.get(key) is not None:
+            ev[key] = obs[key]
+        await self._opts.session_log.append(session_id, ev)
       elif kind == "milestone_advanced":
         await self._opts.session_log.append(session_id, {
           "kind": "milestone_advanced",

@@ -612,6 +612,11 @@ export class RuntimeRunner {
           turn: obs.turn ?? turn,
           added: obs.added ?? [],
           removed: obs.removed ?? [],
+          ...(obs.change_kind != null && { change_kind: obs.change_kind }),
+          ...(obs.capability_id != null && { capability_id: obs.capability_id }),
+          ...(obs.version != null && { version: obs.version }),
+          ...(obs.mounted_by != null && { mounted_by: obs.mounted_by }),
+          ...(obs.mount_reason != null && { mount_reason: obs.mount_reason }),
         })
       } else if (obs.kind === "milestone_advanced") {
         await this.opts.sessionLog.append(sessionId, {

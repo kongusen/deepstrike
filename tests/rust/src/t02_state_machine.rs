@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use compact_str::CompactString;
 use deepstrike_core::context::manager::{KNOWLEDGE_TOOL_NAME, MEMORY_TOOL_NAME};
 use deepstrike_core::context::skill_catalog::SKILL_TOOL_NAME;

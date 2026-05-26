@@ -309,6 +309,8 @@ fn execute_capability_command_mount_unmount_replace_pin() {
         .with_version("1.0.0");
     sm.execute_capability_command(CapabilityCommand::Mount {
         capability: desc.clone(),
+        mounted_by: None,
+        mount_reason: None,
     });
 
     assert_eq!(sm.ctx.capabilities.len(), 1);
@@ -385,6 +387,8 @@ fn capability_lease_auto_revokes() {
 
     sm.execute_capability_command(CapabilityCommand::Mount {
         capability: desc,
+        mounted_by: None,
+        mount_reason: None,
     });
     assert_eq!(sm.ctx.capabilities.len(), 1);
     sm.take_observations();
