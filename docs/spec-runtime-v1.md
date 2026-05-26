@@ -86,7 +86,22 @@ class RuntimeRunner {
 - `llm_completed.provider_replay` → restored into provider native replay cache on preload/wake (thinking blocks, `reasoning_content`, etc.)
 - `tool_completed` → `tool` messages with `contentParts`
 
+Before preload/wake, SDKs run **`repairEventsForRecovery`** on the event log:
+
+| Gap | Repair |
+|-----|--------|
+| Missing `tool_calls` on `llm_completed` | Default to `[]` |
+| Missing `token_count` | Estimate from content length |
+| Missing `provider_replay` on tool turns | Synthesize minimal `native_blocks` (text + tool_use) |
+| Invalid / oversized content | UTF-8-safe sanitize (see below) |
+
+On **write**, SDKs use `buildLlmCompletedEvent` / `buildRunTerminalEvent` so appended events already satisfy the recovery minimum set.
+
+**Wake resume:** After `preloadHistory`, `resumeAfterPreload()` checks whether the last assistant turn has tool calls without matching tool results. If so, it returns `ExecuteTools` (runs pending tools) instead of calling the LLM again.
+
 Context compression still happens inside the kernel; `compressed` events record that compression occurred and the archived session event seq range (summary body is not duplicated in the log).
+
+**UTF-8 safety:** All text truncation in render/compress paths must cut on `char` boundaries, not raw byte indices (see `docs/issues/utf8-truncation-renderer.md`). SDK replay may apply `sanitize_replay_text` on `llm_completed.content` before preload as defense-in-depth.
 
 ---
 
