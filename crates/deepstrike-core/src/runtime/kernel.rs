@@ -13,10 +13,11 @@ use crate::context::pressure::PressureAction;
 use crate::context::renderer::RenderedContext;
 use crate::context::task_state::TaskUpdate;
 use crate::context::token_engine::ContextTokenEngine;
+use crate::runtime::session::RollbackReason;
 use crate::scheduler::policy::LoopPolicy;
 use crate::scheduler::state_machine::{LoopAction, LoopEvent, LoopObservation, LoopStateMachine};
-use crate::types::capability::{CapabilityCommand, CapabilityDescriptor, CapabilityKind};
 use crate::types::agent::AgentRunSpec;
+use crate::types::capability::{CapabilityCommand, CapabilityDescriptor, CapabilityKind};
 use crate::types::message::{Message, ToolCall, ToolResult, ToolSchema};
 use crate::types::milestone::{MilestoneCheckResult, MilestoneContract};
 use crate::types::result::LoopResult;
@@ -105,10 +106,18 @@ pub enum KernelInputEvent {
         command: CapabilityCommand,
     },
     Resume,
-    ProviderResult { message: Message },
-    ToolResults { results: Vec<ToolResult> },
-    Signal { signal: RuntimeSignal },
-    MilestoneResult { result: MilestoneCheckResult },
+    ProviderResult {
+        message: Message,
+    },
+    ToolResults {
+        results: Vec<ToolResult>,
+    },
+    Signal {
+        signal: RuntimeSignal,
+    },
+    MilestoneResult {
+        result: MilestoneCheckResult,
+    },
     Timeout,
 }
 
@@ -184,6 +193,8 @@ pub enum KernelObservation {
     Rollbacked {
         turn: u32,
         checkpoint_history_len: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<RollbackReason>,
     },
     CapabilityChanged {
         turn: u32,
@@ -212,6 +223,11 @@ pub enum KernelObservation {
         phase_id: String,
         reason: String,
     },
+    /// Checkpoint taken at the start of a turn transaction (before LLM call).
+    CheckpointTaken {
+        turn: u32,
+        history_len: u32,
+    },
 }
 
 impl From<LoopObservation> for KernelObservation {
@@ -232,9 +248,11 @@ impl From<LoopObservation> for KernelObservation {
             LoopObservation::Rollbacked {
                 turn,
                 checkpoint_history_len,
+                reason,
             } => Self::Rollbacked {
                 turn,
                 checkpoint_history_len,
+                reason: Some(reason),
             },
             LoopObservation::CapabilityChanged {
                 turn,
@@ -273,8 +291,28 @@ impl From<LoopObservation> for KernelObservation {
                 phase_id,
                 reason,
             },
+            LoopObservation::CheckpointTaken { turn, history_len } => {
+                Self::CheckpointTaken { turn, history_len }
+            }
         }
     }
+}
+
+/// Transaction-boundary observations emitted by the kernel.
+///
+/// A turn transaction lifecycle looks like:
+///   `CheckpointTaken` (before LLM call) → … → `Rollbacked` (if fatal) or
+///   implicit commit (clean `ToolCompleted` + turn increment).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TransactionObservation {
+    CheckpointTaken { turn: u32, history_len: u32 },
+    Rollbacked {
+        turn: u32,
+        checkpoint_history_len: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<crate::runtime::session::RollbackReason>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -395,7 +433,8 @@ impl KernelRuntime {
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::PushArtifact { message, tokens } => {
-                let token_count = tokens.unwrap_or_else(|| self.sm.ctx.engine.count_message(&message));
+                let token_count =
+                    tokens.unwrap_or_else(|| self.sm.ctx.engine.count_message(&message));
                 self.sm.ctx.push_artifact(message, token_count.max(1));
                 return KernelStep::empty(self.sm.take_observations());
             }
@@ -510,7 +549,13 @@ mod tests {
 
         assert!(step.actions.is_empty());
         assert_eq!(
-            runtime.state_machine().ctx.partitions.artifacts.messages.len(),
+            runtime
+                .state_machine()
+                .ctx
+                .partitions
+                .artifacts
+                .messages
+                .len(),
             1
         );
     }

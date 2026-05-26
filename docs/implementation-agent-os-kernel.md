@@ -127,8 +127,9 @@ KernelOutput:
 | Phase 2 / PR 3：Virtual Context Memory | ✅ 已完成 | 6 分区 VM，ContextSnapshot，ArchiveStore，reconstruct_messages_with_fallback，PushArtifact，spec-context-compression-v2.md Phase A+B+C |
 | Phase 3 / PR 4：Capability Bus | ✅ 已完成 | `6be8003 feat(p3): add mounted_by/mount_reason provenance to capability bus` — CapabilityCommand::Mount provenance，lease 自动 revoke，四端 CapabilityChanged audit，unlocked_by_milestone_id 延至 Phase 6 |
 | Phase 4 / PR 5：Security LSM | ✅ 已完成 | `d0b95e1 feat(p4): implement Security LSM governance pipeline` — 8 阶段 GovernancePipeline，deny monotonic，PermissionRequested/Resolved audit 三元组，四端 ToolDenied schema 统一，WASM Governance 全功能对齐，182 Rust 测试 |
+| Phase 5 / PR 6：Transaction Runtime | ✅ 已完成 | `TurnCheckpoint` 公共类型，`TransactionObservation` enum，`SessionEvent::CheckpointTaken`，`LoopObservation::CheckpointTaken`，`SessionEvent::Rollbacked` + repair.rs 精确截断，`ToolErrorKind` + `RollbackReason` 全变体，G5 gate 通过，`t13_transaction.rs` 9 项专属测试，193 Rust 测试 |
 
-**当前主线：** Phase 4（Security LSM）已完成（`d0b95e1`）。8 阶段 GovernancePipeline，deny monotonic，PermissionRequested audit 三元组，四端 ToolDenied schema 统一。**下一步：Phase 5 — Transaction Runtime。**
+**当前主线：** Phase 5（Transaction Runtime）已完成。`TurnCheckpoint`，`TransactionObservation`，`CheckpointTaken` audit event，G5 gate 通过（recoverable error 不 rollback；replay 精确截断）。**下一步：Phase 6 — Milestone Contracts。**
 
 **Phase 1 最新提交链：**
 
@@ -558,7 +559,7 @@ PR 1 与 PR 3 有重叠（milestone/rollback），可按实际 diff 大小拆分
 | **G2 — Context VM** | ✅ 6 分区 + fault + replay repair 测试通过 |
 | **G3 — Capability Bus** | ✅ mount/unmount/lease audit 完整；provenance 四端透传；unlocked_by_milestone_id 延至 Phase 6 |
 | **G4 — LSM** | ✅ deny monotonic 测试 + 四端 ToolDenied 一致；PermissionRequested/Resolved audit 三元组；WASM Governance 全功能对齐 |
-| **G5 — Transaction** | recoverable error 不 rollback；replay 精确截断 |
+| **G5 — Transaction** | ✅ recoverable error 不 rollback；replay 精确截断；`CheckpointTaken` audit event；`TurnCheckpoint` + `TransactionObservation` 具名类型 |
 | **G6 — Milestone** | verifier 驱动 phase advance；blocked retry 可控 |
 | **G7 — Multi-Agent** | sub-agent isolation + lineage replay |
 

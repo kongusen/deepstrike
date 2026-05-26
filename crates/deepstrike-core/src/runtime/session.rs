@@ -11,6 +11,17 @@ pub struct ProviderReplay {
     pub reasoning_content: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RollbackReason {
+    FatalToolError { tool_name: String, error: String },
+    GovernanceDenied { tool_name: String, reason: String },
+    ProviderFailure { error: String },
+    Timeout,
+    UserInterrupt,
+    MalformedReplay { reason: String },
+}
+
 /// Append-only session event kinds for the unified Agent OS Runtime.
 ///
 /// Combines execution loop events with OS-level lifecycle control,
@@ -125,10 +136,17 @@ pub enum SessionEvent {
     Resumed {
         turn: u32,
     },
+    /// Checkpoint taken at the start of a turn transaction (before LLM call).
+    CheckpointTaken {
+        turn: u32,
+        history_len: u32,
+    },
     /// Transaction rollback indicating state was restored to a checkpoint.
     Rollbacked {
         turn: u32,
         checkpoint_history_len: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<RollbackReason>,
     },
     /// Host-level resources (temporary workspace trees, MCP child processes) garbage-collected.
     CleanupCompleted {

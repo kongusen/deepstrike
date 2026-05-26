@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::runtime::sandboxed_skill::scan_skill_dir;
+use crate::runtime::skill_watcher::SkillWatcher;
 use async_stream::try_stream;
 use deepstrike_core::memory::idle_pipeline::{IdleAction, IdleEvent, IdlePipeline, IdlePolicy};
 use deepstrike_core::runtime::kernel::{
@@ -9,16 +11,14 @@ use deepstrike_core::runtime::kernel::{
 };
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::scheduler::policy::LoopPolicy;
-use deepstrike_core::types::milestone::MilestoneCheckResult;
 use deepstrike_core::signals::router::SignalRouter;
 use deepstrike_core::types::message::{Message, ToolCall};
+use deepstrike_core::types::milestone::MilestoneCheckResult;
 use deepstrike_core::types::policy::SignalDisposition;
 use deepstrike_core::types::signal::{
     RuntimeSignal as KernelSignal, SignalSource as KernelSignalSource,
     SignalType as KernelSignalType, Urgency,
 };
-use crate::runtime::sandboxed_skill::scan_skill_dir;
-use crate::runtime::skill_watcher::SkillWatcher;
 use deepstrike_core::types::task::RuntimeTask;
 use futures::StreamExt;
 
@@ -687,6 +687,7 @@ impl RuntimeRunner {
                                 output: deepstrike_core::types::message::Content::Text("success".to_string()),
                                 is_error: false,
                                 is_fatal: false,
+                                error_kind: None,
                                 token_count: None,
                             });
                             yield RunEvent::ToolResult {
@@ -707,6 +708,7 @@ impl RuntimeRunner {
                                             output: deepstrike_core::types::message::Content::Text(content),
                                             is_error,
                                             is_fatal: false,
+                                            error_kind: None,
                                             token_count: None,
                                         });
                                     }
@@ -968,7 +970,9 @@ impl RuntimeRunner {
                     let mut archive_ref = None;
                     if let Some(store) = &self.opts.compression_store {
                         if !archived.is_empty() {
-                            if let Ok(path_ref) = store.write(session_id, next_archive_start, &archived) {
+                            if let Ok(path_ref) =
+                                store.write(session_id, next_archive_start, &archived)
+                            {
                                 if !path_ref.is_empty() {
                                     archive_ref = Some(path_ref);
                                 }
@@ -1006,12 +1010,14 @@ impl RuntimeRunner {
                 KernelObservation::Rollbacked {
                     turn,
                     checkpoint_history_len,
+                    reason,
                 } => {
                     self.log(
                         session_id,
                         SessionEvent::Rollbacked {
                             turn,
                             checkpoint_history_len,
+                            reason,
                         },
                     )
                     .await;
@@ -1072,6 +1078,13 @@ impl RuntimeRunner {
                     .await;
                 }
                 KernelObservation::Renewed { .. } => {}
+                KernelObservation::CheckpointTaken { turn, history_len } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::CheckpointTaken { turn, history_len },
+                    )
+                    .await;
+                }
             }
         }
         next_archive_start

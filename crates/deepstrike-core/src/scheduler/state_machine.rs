@@ -1,15 +1,18 @@
 #![allow(deprecated)]
 
 use super::policy::LoopPolicy;
+use crate::AgentRunSpec;
 use crate::context::manager::ContextManager;
 use crate::context::pressure::PressureAction;
 use crate::context::renderer::RenderedContext;
-use crate::types::message::{Content, ContentPart, Message, ToolCall, ToolResult, ToolSchema};
+use crate::runtime::session::RollbackReason;
+use crate::types::message::{
+    Content, ContentPart, Message, ToolCall, ToolErrorKind, ToolResult, ToolSchema,
+};
 use crate::types::milestone::{MilestoneCheckResult, MilestoneContract};
 use crate::types::result::{LoopResult, TerminationReason};
 use crate::types::signal::{RuntimeSignal, Urgency};
 use crate::types::task::RuntimeTask;
-use crate::AgentRunSpec;
 
 /// The phases of the L* execution loop.
 #[derive(Debug, Clone)]
@@ -74,6 +77,15 @@ pub enum LoopAction {
     },
 }
 
+/// Snapshot of context lengths captured just before each LLM call.
+/// Used internally to restore state on rollback.
+#[derive(Debug, Clone, Default)]
+pub struct TurnCheckpoint {
+    pub history_len: usize,
+    pub working_len: usize,
+    pub task_state: Option<crate::context::task_state::TaskState>,
+}
+
 /// One-shot observation emitted by the kernel during `feed`.
 /// SDK drains this between calls for telemetry/UI updates.
 #[derive(Debug, Clone)]
@@ -90,6 +102,7 @@ pub enum LoopObservation {
     Rollbacked {
         turn: u32,
         checkpoint_history_len: u32,
+        reason: RollbackReason,
     },
     /// Capabilities dynamically updated
     CapabilityChanged {
@@ -114,10 +127,18 @@ pub enum LoopObservation {
         phase_id: String,
         reason: String,
     },
+    /// Checkpoint taken at the start of a turn transaction (before LLM call).
+    CheckpointTaken {
+        turn: u32,
+        history_len: u32,
+    },
 }
 
 /// Pure state machine for the L* execution loop. No I/O — only state transitions.
-#[deprecated(since = "0.2.0", note = "Internal/test-only. Use KernelRuntime instead.")]
+#[deprecated(
+    since = "0.2.0",
+    note = "Internal/test-only. Use KernelRuntime instead."
+)]
 pub struct LoopStateMachine {
     pub phase: LoopPhase,
     pub turn: u32,
@@ -132,9 +153,7 @@ pub struct LoopStateMachine {
     /// Number of history messages present at session start (after preload_history).
     /// drain_new_messages() returns the slice from this offset onward.
     session_history_baseline: usize,
-    checkpoint_history_len: usize,
-    checkpoint_working_len: usize,
-    checkpoint_task_state: Option<crate::context::task_state::TaskState>,
+    checkpoint: TurnCheckpoint,
     /// Optional milestone contract loaded before the run starts.
     milestone_contract: Option<MilestoneContract>,
     /// Index of the current (not-yet-passed) phase within `milestone_contract`.
@@ -160,9 +179,7 @@ impl LoopStateMachine {
             total_tokens: 0,
             pending_termination: None,
             session_history_baseline: 0,
-            checkpoint_history_len: 0,
-            checkpoint_working_len: 0,
-            checkpoint_task_state: None,
+            checkpoint: TurnCheckpoint::default(),
             milestone_contract: None,
             current_milestone_phase: 0,
             run_spec: None,
@@ -289,10 +306,7 @@ impl LoopStateMachine {
                     // When a milestone contract is active and not yet complete,
                     // request evaluation instead of terminating.
                     if !self.is_milestone_complete() {
-                        let phase_id = self
-                            .current_milestone_phase_id()
-                            .unwrap_or("")
-                            .to_string();
+                        let phase_id = self.current_milestone_phase_id().unwrap_or("").to_string();
                         let criteria = self.current_milestone_criteria().to_vec();
                         let tokens = self.message_tokens(&message);
                         self.ctx.push_history(message, tokens);
@@ -310,27 +324,15 @@ impl LoopStateMachine {
             }
 
             LoopEvent::ToolResults { results } => {
-                let has_fatal = results.iter().any(|r| r.is_fatal);
-                if has_fatal {
-                    // A fatal (transactional) error mutated shared state; roll
-                    // back the turn so the LLM retries from a clean checkpoint.
-                    let errors: Vec<String> = results
-                        .iter()
-                        .filter(|r| r.is_fatal)
-                        .map(|r| match &r.output {
-                            Content::Text(s) => s.clone(),
-                            Content::Parts(parts) => {
-                                serde_json::to_string(parts).unwrap_or_default()
-                            }
-                        })
-                        .collect();
-                    let err_msg = format!(
-                        "[SYSTEM] A fatal tool error occurred; state was rolled back. Errors: {}",
-                        errors.join("; ")
-                    );
-                    self.rollback();
-
-                    let note = Message::user(err_msg);
+                if let Some(reason) = results
+                    .iter()
+                    .find_map(|result| self.rollback_reason_for_tool_result(result))
+                {
+                    let note = Message::user(format!(
+                        "[SYSTEM] Transaction rollback: {}",
+                        Self::rollback_reason_message(&reason)
+                    ));
+                    self.rollback(reason);
                     self.ctx.partitions.working.push(note, 0);
                     self.phase = LoopPhase::Reason;
                     return self.emit_call_llm();
@@ -418,7 +420,17 @@ impl LoopStateMachine {
 
             LoopEvent::MilestoneResult { result } => self.handle_milestone_result(result),
 
-            LoopEvent::Timeout => self.terminate(TerminationReason::Timeout, None),
+            LoopEvent::Timeout => {
+                let reason = RollbackReason::Timeout;
+                let note = Message::user(format!(
+                    "[SYSTEM] Transaction rollback: {}",
+                    Self::rollback_reason_message(&reason)
+                ));
+                self.rollback(reason);
+                self.ctx.partitions.working.push(note, 0);
+                self.phase = LoopPhase::Reason;
+                self.emit_call_llm()
+            }
         }
     }
 
@@ -459,9 +471,13 @@ impl LoopStateMachine {
     /// when configured. When `pending_termination` is set, tools are stripped
     /// to force a plain-text response before the loop terminates.
     fn emit_call_llm(&mut self) -> LoopAction {
-        self.checkpoint_history_len = self.ctx.partitions.history.messages.len();
-        self.checkpoint_working_len = self.ctx.partitions.working.messages.len();
-        self.checkpoint_task_state = Some(self.ctx.partitions.task_state.clone());
+        self.checkpoint.history_len = self.ctx.partitions.history.messages.len();
+        self.checkpoint.working_len = self.ctx.partitions.working.messages.len();
+        self.checkpoint.task_state = Some(self.ctx.partitions.task_state.clone());
+        self.observations.push(LoopObservation::CheckpointTaken {
+            turn: self.turn,
+            history_len: self.checkpoint.history_len as u32,
+        });
 
         let context = self.ctx.render();
         if self.pending_termination.is_some() {
@@ -497,22 +513,101 @@ impl LoopStateMachine {
         LoopAction::CallLLM { context, tools }
     }
 
-    pub fn rollback(&mut self) {
-        self.ctx.partitions.history.messages.truncate(self.checkpoint_history_len);
-        self.ctx.partitions.working.messages.truncate(self.checkpoint_working_len);
-        if let Some(ref state) = self.checkpoint_task_state {
+    pub fn rollback(&mut self, reason: RollbackReason) {
+        self.ctx
+            .partitions
+            .history
+            .messages
+            .truncate(self.checkpoint.history_len);
+        self.ctx
+            .partitions
+            .working
+            .messages
+            .truncate(self.checkpoint.working_len);
+        if let Some(ref state) = self.checkpoint.task_state {
             self.ctx.partitions.task_state = state.clone();
         }
         self.observations.push(LoopObservation::Rollbacked {
             turn: self.turn,
-            checkpoint_history_len: self.checkpoint_history_len as u32,
+            checkpoint_history_len: self.checkpoint.history_len as u32,
+            reason,
         });
+    }
+
+    fn rollback_reason_for_tool_result(&self, result: &ToolResult) -> Option<RollbackReason> {
+        let tool_name = self.tool_name_for_call(&result.call_id);
+        let output = Self::tool_result_output_text(result);
+
+        if result.is_fatal {
+            return Some(RollbackReason::FatalToolError {
+                tool_name,
+                error: output,
+            });
+        }
+
+        match result.error_kind {
+            Some(ToolErrorKind::Fatal) => Some(RollbackReason::FatalToolError {
+                tool_name,
+                error: output,
+            }),
+            Some(ToolErrorKind::GovernanceDenied) => Some(RollbackReason::GovernanceDenied {
+                tool_name,
+                reason: output,
+            }),
+            Some(ToolErrorKind::ProviderFailure) => {
+                Some(RollbackReason::ProviderFailure { error: output })
+            }
+            Some(ToolErrorKind::Timeout) => Some(RollbackReason::Timeout),
+            Some(ToolErrorKind::UserInterrupt) => Some(RollbackReason::UserInterrupt),
+            Some(ToolErrorKind::Recoverable) | None => None,
+        }
+    }
+
+    fn tool_name_for_call(&self, call_id: &compact_str::CompactString) -> String {
+        match &self.phase {
+            LoopPhase::Act { tool_calls } => tool_calls
+                .iter()
+                .find(|call| call.id == *call_id)
+                .map(|call| call.name.to_string())
+                .unwrap_or_else(|| call_id.to_string()),
+            _ => call_id.to_string(),
+        }
+    }
+
+    fn tool_result_output_text(result: &ToolResult) -> String {
+        match &result.output {
+            Content::Text(s) => s.clone(),
+            Content::Parts(parts) => serde_json::to_string(parts).unwrap_or_default(),
+        }
+    }
+
+    fn rollback_reason_message(reason: &RollbackReason) -> String {
+        match reason {
+            RollbackReason::FatalToolError { tool_name, error } => {
+                format!("fatal tool error in {tool_name}: {error}")
+            }
+            RollbackReason::GovernanceDenied { tool_name, reason } => {
+                format!("governance denied {tool_name}: {reason}")
+            }
+            RollbackReason::ProviderFailure { error } => {
+                format!("provider failure: {error}")
+            }
+            RollbackReason::Timeout => "timeout".to_string(),
+            RollbackReason::UserInterrupt => "user interrupt".to_string(),
+            RollbackReason::MalformedReplay { reason } => {
+                format!("malformed replay: {reason}")
+            }
+        }
     }
 
     pub fn execute_capability_command(&mut self, cmd: crate::types::capability::CapabilityCommand) {
         use crate::types::capability::CapabilityCommand;
         match cmd {
-            CapabilityCommand::Mount { capability, mounted_by, mount_reason } => {
+            CapabilityCommand::Mount {
+                capability,
+                mounted_by,
+                mount_reason,
+            } => {
                 self.mount_capability(capability, mounted_by, mount_reason);
             }
             CapabilityCommand::Unmount { kind, id } => {
@@ -543,7 +638,11 @@ impl LoopStateMachine {
                 });
             }
             CapabilityCommand::Pin { kind, id } => {
-                let version = self.ctx.capabilities.get_mut(kind, &id).and_then(|c| c.version.clone());
+                let version = self
+                    .ctx
+                    .capabilities
+                    .get_mut(kind, &id)
+                    .and_then(|c| c.version.clone());
                 if let Some(cap) = self.ctx.capabilities.get_mut(kind, &id) {
                     cap.is_pinned = true;
                     self.observations.push(LoopObservation::CapabilityChanged {
@@ -590,7 +689,11 @@ impl LoopStateMachine {
     }
 
     pub fn unmount_capability(&mut self, kind: crate::types::capability::CapabilityKind, id: &str) {
-        let version = self.ctx.capabilities.get_mut(kind, id).and_then(|c| c.version.clone());
+        let version = self
+            .ctx
+            .capabilities
+            .get_mut(kind, id)
+            .and_then(|c| c.version.clone());
         self.ctx.capabilities.remove(kind, id);
         let kind_str = format!("{:?}", kind);
         self.observations.push(LoopObservation::CapabilityChanged {
@@ -806,15 +909,22 @@ mod tests {
     }
 
     #[test]
-    fn timeout_terminates() {
+    fn timeout_rolls_back() {
         let mut sm = sm();
         sm.start(RuntimeTask::new("test"));
         match sm.feed(LoopEvent::Timeout) {
-            LoopAction::Done { result } => {
-                assert_eq!(result.termination, TerminationReason::Timeout)
-            }
-            _ => panic!("expected Done"),
+            LoopAction::CallLLM { .. } => {}
+            _ => panic!("expected CallLLM"),
         }
+        assert!(sm.observations.iter().any(|o| {
+            matches!(
+                o,
+                LoopObservation::Rollbacked {
+                    reason: RollbackReason::Timeout,
+                    ..
+                }
+            )
+        }));
     }
 
     #[test]
@@ -1012,6 +1122,7 @@ mod tests {
                 output: structured,
                 is_error: false,
                 is_fatal: false,
+                error_kind: None,
                 token_count: None,
             }],
         });
@@ -1049,14 +1160,19 @@ mod tests {
     fn milestone_contract_loads_and_reports_current_phase() {
         let mut sm = sm();
         let contract = crate::types::milestone::MilestoneContract::new()
-            .phase(crate::types::milestone::MilestonePhase::new("phase-a")
-                .with_criterion("Output contains 'hello'"))
+            .phase(
+                crate::types::milestone::MilestonePhase::new("phase-a")
+                    .with_criterion("Output contains 'hello'"),
+            )
             .phase(crate::types::milestone::MilestonePhase::new("phase-b"));
 
         sm.load_milestone_contract(contract);
         assert_eq!(sm.current_milestone_phase_id(), Some("phase-a"));
         assert!(!sm.is_milestone_complete());
-        assert_eq!(sm.current_milestone_criteria(), &["Output contains 'hello'"]);
+        assert_eq!(
+            sm.current_milestone_criteria(),
+            &["Output contains 'hello'"]
+        );
     }
 
     #[test]
@@ -1109,7 +1225,10 @@ mod tests {
         let action = sm.feed(LoopEvent::MilestoneResult {
             result: crate::types::milestone::MilestoneCheckResult::fail("plan", "missing evidence"),
         });
-        assert!(matches!(action, LoopAction::CallLLM { .. }), "blocked run must return CallLLM");
+        assert!(
+            matches!(action, LoopAction::CallLLM { .. }),
+            "blocked run must return CallLLM"
+        );
         // Phase index must NOT advance
         assert_eq!(sm.current_milestone_phase_id(), Some("plan"));
 
@@ -1128,25 +1247,30 @@ mod tests {
         let cap = crate::types::capability::CapabilityDescriptor::tool(schema);
 
         let contract = crate::types::milestone::MilestoneContract::new()
-            .phase(
-                crate::types::milestone::MilestonePhase::new("phase-a")
-                    .unlocking(cap),
-            );
+            .phase(crate::types::milestone::MilestonePhase::new("phase-a").unlocking(cap));
         sm.load_milestone_contract(contract);
         sm.start(RuntimeTask::new("build pipeline"));
 
         // Confirm tool not yet in manifest
-        assert!(sm.ctx.capabilities.by_kind(
-            crate::types::capability::CapabilityKind::Tool
-        ).is_empty());
+        assert!(
+            sm.ctx
+                .capabilities
+                .by_kind(crate::types::capability::CapabilityKind::Tool)
+                .is_empty()
+        );
 
-        sm.feed(LoopEvent::LLMResponse { message: Message::assistant("done") });
+        sm.feed(LoopEvent::LLMResponse {
+            message: Message::assistant("done"),
+        });
         sm.feed(LoopEvent::MilestoneResult {
             result: crate::types::milestone::MilestoneCheckResult::pass("phase-a"),
         });
 
         // Tool must now be in the capability manifest
-        let tools = sm.ctx.capabilities.by_kind(crate::types::capability::CapabilityKind::Tool);
+        let tools = sm
+            .ctx
+            .capabilities
+            .by_kind(crate::types::capability::CapabilityKind::Tool);
         assert!(
             tools.iter().any(|c| c.id.as_str() == "deploy_tool"),
             "deploy_tool should be unlocked after phase-a passes",
@@ -1155,7 +1279,11 @@ mod tests {
         // And capability_unlocked list in observation
         let obs = sm.take_observations();
         let advanced = obs.iter().find_map(|o| {
-            if let LoopObservation::MilestoneAdvanced { capabilities_unlocked, .. } = o {
+            if let LoopObservation::MilestoneAdvanced {
+                capabilities_unlocked,
+                ..
+            } = o
+            {
                 Some(capabilities_unlocked)
             } else {
                 None
@@ -1173,13 +1301,18 @@ mod tests {
         sm.load_milestone_contract(contract);
         sm.start(RuntimeTask::new("single milestone run"));
 
-        sm.feed(LoopEvent::LLMResponse { message: Message::assistant("ready") });
+        sm.feed(LoopEvent::LLMResponse {
+            message: Message::assistant("ready"),
+        });
         let done = sm.feed(LoopEvent::MilestoneResult {
             result: crate::types::milestone::MilestoneCheckResult::pass("only-phase"),
         });
 
         assert!(sm.is_milestone_complete());
-        assert!(matches!(done, LoopAction::Done { .. }), "all phases done must produce Done");
+        assert!(
+            matches!(done, LoopAction::Done { .. }),
+            "all phases done must produce Done"
+        );
     }
 
     #[test]
@@ -1205,14 +1338,23 @@ mod tests {
             description: "test description".to_string(),
             parameters: serde_json::json!({ "type": "object" }),
         };
-        let desc = crate::types::capability::CapabilityDescriptor::tool(schema)
-            .with_version("1.0.0");
+        let desc =
+            crate::types::capability::CapabilityDescriptor::tool(schema).with_version("1.0.0");
 
-        sm.mount_capability(desc);
+        sm.mount_capability(desc, None, None);
 
         let obs = sm.take_observations();
         assert_eq!(obs.len(), 1);
-        if let LoopObservation::CapabilityChanged { turn, added, removed, change_kind, capability_id, version } = &obs[0] {
+        if let LoopObservation::CapabilityChanged {
+            turn,
+            added,
+            removed,
+            change_kind,
+            capability_id,
+            version,
+            ..
+        } = &obs[0]
+        {
             assert_eq!(*turn, 0);
             assert_eq!(added, &vec!["Tool:test_tool".to_string()]);
             assert!(removed.is_empty());
@@ -1226,7 +1368,16 @@ mod tests {
         sm.unmount_capability(crate::types::capability::CapabilityKind::Tool, "test_tool");
         let obs2 = sm.take_observations();
         assert_eq!(obs2.len(), 1);
-        if let LoopObservation::CapabilityChanged { turn, added, removed, change_kind, capability_id, version } = &obs2[0] {
+        if let LoopObservation::CapabilityChanged {
+            turn,
+            added,
+            removed,
+            change_kind,
+            capability_id,
+            version,
+            ..
+        } = &obs2[0]
+        {
             assert_eq!(*turn, 0);
             assert!(added.is_empty());
             assert_eq!(removed, &vec!["Tool:test_tool".to_string()]);
