@@ -921,6 +921,44 @@ impl KernelRuntime {
     pub fn is_terminal(&self) -> bool {
         self.inner.is_terminal()
     }
+
+    #[wasm_bindgen(js_name = turn)]
+    pub fn turn(&self) -> u32 {
+        self.inner.state_machine().turn
+    }
+
+    #[wasm_bindgen(js_name = recoveryContentBytes)]
+    pub fn recovery_content_bytes(&self) -> u32 {
+        let sm = self.inner.state_machine();
+        let tokens = sm.ctx.config.recovery_content_tokens(sm.ctx.max_tokens);
+        sm.ctx.engine.token_budget_to_bytes(tokens) as u32
+    }
+
+    #[wasm_bindgen(js_name = render)]
+    pub fn render(&self) -> RenderedContext {
+        rendered_context_from_rust(self.inner.state_machine().ctx.render())
+    }
+
+    #[wasm_bindgen(js_name = drainNewMessages)]
+    pub fn drain_new_messages(&mut self) -> Vec<Message> {
+        self.inner
+            .state_machine_mut()
+            .drain_new_messages()
+            .iter()
+            .map(message_from_rust)
+            .collect()
+    }
+
+    #[wasm_bindgen(js_name = preservedRefs)]
+    pub fn preserved_refs(&self) -> Vec<String> {
+        self.inner
+            .state_machine()
+            .ctx
+            .partitions
+            .task_state
+            .preserved_refs
+            .clone()
+    }
 }
 
 // ────────────────────────────────────────────── DeepStrikeRuntime ──────────────────────────────────────────────

@@ -1,4 +1,74 @@
 // Mock @deepstrike/wasm-kernel for tests (no .wasm binary needed)
+export class KernelRuntime {
+  private terminal = false
+  private phase = 0
+  private maxTurns: number
+  private rendered = { systemText: "", turns: [] as unknown[] }
+  private messages: unknown[] = []
+
+  constructor(policy: { maxTokens: number; maxTurns?: number }) {
+    this.maxTurns = policy.maxTurns ?? 25
+  }
+
+  step(inputJson: string): string {
+    const input = JSON.parse(inputJson) as { event?: Record<string, unknown> }
+    const event = input.event ?? {}
+    const actions: Array<Record<string, unknown>> = []
+
+    switch (event.kind) {
+      case "start_run":
+        this.phase = 0
+        this.terminal = false
+        this.rendered = { systemText: "", turns: [{ role: "user", content: "test" }] }
+        actions.push({ kind: "call_provider", context: this.rendered, tools: [] })
+        break
+      case "resume":
+        this.rendered = { systemText: "", turns: [{ role: "user", content: "resume" }] }
+        actions.push({ kind: "call_provider", context: this.rendered, tools: [] })
+        break
+      case "provider_result": {
+        const message = (event.message as Record<string, unknown>) ?? {}
+        this.messages.push(message)
+        const toolCalls = (message.tool_calls as unknown[]) ?? []
+        if (this.phase === 0 && toolCalls.length > 0) {
+          this.phase = 1
+          actions.push({ kind: "execute_tool", calls: toolCalls })
+        } else {
+          this.terminal = true
+          actions.push({
+            kind: "done",
+            result: { turns_used: 2, total_tokens_used: 100, termination: "completed" },
+          })
+        }
+        break
+      }
+      case "tool_results":
+        actions.push({ kind: "call_provider", context: { systemText: "", turns: [] }, tools: [] })
+        break
+      case "timeout":
+        this.terminal = true
+        actions.push({
+          kind: "done",
+          result: { turns_used: this.turn(), total_tokens_used: 0, termination: "timeout" },
+        })
+        break
+      case "force_compact":
+        break
+      default:
+        break
+    }
+
+    return JSON.stringify({ version: 1, actions, observations: [] })
+  }
+
+  isTerminal(): boolean { return this.terminal }
+  turn(): number { return this.phase }
+  recoveryContentBytes(): number { return 32_768 }
+  render(): unknown { return this.rendered }
+  drainNewMessages(): unknown[] { return this.messages }
+  preservedRefs(): string[] { return [] }
+}
+
 export class DeepStrikeRuntime {
   private terminal = false
   turn = 0

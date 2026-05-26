@@ -43,8 +43,9 @@ export function effectiveProviderReplay(
 
 export function normalizeLlmCompleted(
   event: Extract<SessionEvent, { kind: "llm_completed" }>,
+  maxBytes?: number,
 ): Extract<SessionEvent, { kind: "llm_completed" }> {
-  const content = sanitizeReplayText(event.content ?? "")
+  const content = sanitizeReplayText(event.content ?? "", maxBytes)
   const toolCalls = event.tool_calls ?? []
   const providerReplay = effectiveProviderReplay(content, toolCalls, event.provider_replay)
   return {
@@ -59,10 +60,11 @@ export function normalizeLlmCompleted(
 
 export function repairEventsForRecovery(
   events: Array<{ seq: number; event: SessionEvent }>,
+  maxBytes?: number,
 ): Array<{ seq: number; event: SessionEvent }> {
   return events.map(entry => {
     if (entry.event.kind !== "llm_completed") return entry
-    return { ...entry, event: normalizeLlmCompleted(entry.event) }
+    return { ...entry, event: normalizeLlmCompleted(entry.event, maxBytes) }
   })
 }
 

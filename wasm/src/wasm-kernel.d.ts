@@ -4,6 +4,11 @@ declare module "@deepstrike/wasm-kernel" {
     constructor(policy: { maxTokens: number; maxTurns?: number; timeoutMs?: bigint })
     step(inputJson: string): string
     isTerminal(): boolean
+    turn(): number
+    recoveryContentBytes(): number
+    render(): import("./types.js").RenderedContext
+    drainNewMessages(): import("./types.js").Message[]
+    preservedRefs(): string[]
   }
 
   export class DeepStrikeRuntime {

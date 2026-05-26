@@ -14,6 +14,18 @@ import { getKernel } from "./kernel.js"
 import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
 import { buildLlmCompletedEvent, buildRunTerminalEvent, repairEventsForRecovery } from "./session-repair.js"
+import {
+  forceCompact,
+  kernelAction,
+  kernelApply,
+  messageToKernelMessage,
+  skillMetadataToKernel,
+  toolResultToKernel,
+  toolSchemaToKernel,
+  type KernelObservation,
+  type KernelRunnerAction,
+  type KernelRuntimeHandle,
+} from "./kernel-step.js"
 
 export interface RuntimeOptions {
   provider: LLMProvider
@@ -37,6 +49,7 @@ export interface RuntimeOptions {
 
 export class RuntimeRunner {
   private interrupted = false
+  private pendingObservations: KernelObservation[] = []
 
   constructor(private readonly opts: RuntimeOptions) {}
 
@@ -164,6 +177,7 @@ export class RuntimeRunner {
     resumeMidRun = false,
   ): AsyncIterable<StreamEvent> {
     this.interrupted = false
+    this.pendingObservations = []
     const kernel = await getKernel()
     this.opts.governance?._attach(kernel)
 
@@ -175,22 +189,33 @@ export class RuntimeRunner {
     const effectiveMaxTurns = this.opts.maxTurns ?? providerPolicy.maxTurns ?? 25
     const effectiveTimeoutMs = this.opts.timeoutMs ?? providerPolicy.timeoutMs
 
-    const sm = new kernel.DeepStrikeRuntime({
+    const runtime = new kernel.KernelRuntime({
       maxTokens: this.opts.maxTokens,
       maxTurns: effectiveMaxTurns,
       timeoutMs: effectiveTimeoutMs !== undefined ? BigInt(effectiveTimeoutMs) : undefined,
     })
     const router = new kernel.SignalRouter(256)
 
-    sm.setTools(this.opts.executionPlane.schemas())
+    kernelApply(runtime, this.pendingObservations, {
+      kind: "set_tools",
+      tools: this.opts.executionPlane.schemas().map(toolSchemaToKernel),
+    })
 
     if (this.opts.systemPrompt) {
-      sm.addSystemMessage(this.opts.systemPrompt, Math.max(1, Math.ceil(this.opts.systemPrompt.length / 4)))
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "add_system_message",
+        content: this.opts.systemPrompt,
+        tokens: Math.max(1, Math.ceil(this.opts.systemPrompt.length / 4)),
+      })
     }
 
     if (this.opts.initialMemory) {
       for (const mem of this.opts.initialMemory) {
-        sm.addMemoryMessage(mem, Math.max(1, Math.ceil(mem.length / 4)))
+        kernelApply(runtime, this.pendingObservations, {
+          kind: "add_memory_message",
+          content: mem,
+          tokens: Math.max(1, Math.ceil(mem.length / 4)),
+        })
       }
     }
 
@@ -200,26 +225,44 @@ export class RuntimeRunner {
         description: "",
         estimatedTokens: 0,
       }))
-      sm.setAvailableSkills(metas)
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_available_skills",
+        skills: metas.map(skillMetadataToKernel),
+      })
     }
 
-    if (this.opts.dreamStore && this.opts.agentId) sm.setMemoryEnabled(true)
-    if (this.opts.knowledgeSource) sm.setKnowledgeEnabled(true)
+    if (this.opts.dreamStore && this.opts.agentId) {
+      kernelApply(runtime, this.pendingObservations, { kind: "set_memory_enabled", enabled: true })
+    }
+    if (this.opts.knowledgeSource) {
+      kernelApply(runtime, this.pendingObservations, { kind: "set_knowledge_enabled", enabled: true })
+    }
 
+    const maxBytes = runtime.recoveryContentBytes()
     if (priorEvents && priorEvents.length > 0) {
-      const repaired = repairEventsForRecovery(priorEvents)
+      const repaired = repairEventsForRecovery(priorEvents, maxBytes)
       seedProviderReplayFromEvents(this.opts.provider, repaired)
-      sm.preloadHistory(replayMessages(repaired))
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "preload_history",
+        messages: replayMessages(repaired, maxBytes).map(messageToKernelMessage),
+      })
     }
 
     const sessionStart = Date.now()
-    let action = resumeMidRun
-      ? sm.resumeAfterPreload()
-      : sm.start({ goal, criteria })
+    let action: KernelRunnerAction = resumeMidRun
+      ? kernelAction(runtime, this.pendingObservations, { kind: "resume" })
+      : kernelAction(runtime, this.pendingObservations, {
+          kind: "start_run",
+          task: { goal, criteria },
+        })
+    let hasAttemptedReactiveCompact = false
 
-    while (!sm.isTerminal()) {
-      nextCompressedArchiveStart = await this.appendObservations(sessionId, sm, nextCompressedArchiveStart)
-      if (this.interrupted) { sm.feedTimeout(); break }
+    while (!runtime.isTerminal()) {
+      nextCompressedArchiveStart = await this.appendObservations(sessionId, runtime, nextCompressedArchiveStart)
+      if (this.interrupted) {
+        action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
+        break
+      }
 
       if (this.opts.signalSource) {
         const sig = await this.opts.signalSource.nextSignal()
@@ -234,24 +277,31 @@ export class RuntimeRunner {
             dedupeKey: sig.dedupeKey,
             timestampMs: Date.now(),
           }
-          const disposition = router.ingest(kernelSig as Parameters<typeof router.ingest>[0], action.kind === "execute_tools")
-          if (disposition === "interrupt_now") { sm.feedTimeout(); break }
+          const disposition = router.ingest(kernelSig as Parameters<typeof router.ingest>[0], action.kind === "execute_tool")
+          if (disposition === "interrupt_now") {
+            action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
+            break
+          }
         }
       }
 
       let queued = router.next()
       while (queued) {
-        if (queued.urgency === "critical") { sm.feedTimeout(); break }
+        if (queued.urgency === "critical") {
+          action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
+          break
+        }
         queued = router.next()
       }
-      if (sm.isTerminal()) break
+      if (runtime.isTerminal()) break
 
-      if (action.kind === "call_llm") {
+      if (action.kind === "call_provider") {
         const finalToolCalls: ToolCall[] = []
         let finalText = ""
-        const context = (action as { context: import("../types.js").RenderedContext }).context
-        const tools = (action.tools ?? []) as ToolSchema[]
+        const context = action.context
+        const tools = action.tools
         let turnTokens = 0
+        let shouldRetry = false
 
         try {
           for await (const evt of this.opts.provider.stream(context, tools, Object.keys(ext).length ? ext : undefined, providerState)) {
@@ -264,29 +314,55 @@ export class RuntimeRunner {
             }
           }
         } catch (err) {
-          yield { type: "error", message: String(err) } as ErrorEvent
-          sm.feedTimeout()
-          break
+          const errMsg = String(err).toLowerCase()
+          if (
+            (errMsg.includes("413") || errMsg.includes("too long") || errMsg.includes("context length exceeded") || errMsg.includes("context_length_exceeded")) &&
+            !hasAttemptedReactiveCompact
+          ) {
+            hasAttemptedReactiveCompact = true
+            if (forceCompact(runtime, this.pendingObservations)) {
+              nextCompressedArchiveStart = await this.appendObservations(sessionId, runtime, nextCompressedArchiveStart)
+              shouldRetry = true
+            }
+          }
+          if (!shouldRetry) {
+            yield { type: "error", message: String(err) } as ErrorEvent
+            action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
+            break
+          }
         }
 
-        action = sm.feedLlmResponse({
+        if (shouldRetry) {
+          action = {
+            kind: "call_provider",
+            context: runtime.render(),
+            tools,
+          }
+          continue
+        }
+
+        const assistantMessage: Message = {
           role: "assistant",
           content: finalText,
           toolCalls: finalToolCalls,
           tokenCount: turnTokens || undefined,
+        }
+        action = kernelAction(runtime, this.pendingObservations, {
+          kind: "provider_result",
+          message: messageToKernelMessage(assistantMessage),
         })
         const providerReplay = peekProviderReplay(this.opts.provider, finalText, finalToolCalls)
         await this.opts.sessionLog.append(sessionId, buildLlmCompletedEvent({
-          turn: sm.turn,
+          turn: runtime.turn(),
           content: finalText,
           tokenCount: turnTokens || undefined,
           toolCalls: finalToolCalls,
           providerReplay,
         }))
 
-      } else if (action.kind === "execute_tools") {
-        const allCalls = (action.calls ?? []) as ToolCall[]
-        await this.opts.sessionLog.append(sessionId, { kind: "tool_requested", turn: sm.turn, calls: allCalls })
+      } else if (action.kind === "execute_tool") {
+        const allCalls = action.calls
+        await this.opts.sessionLog.append(sessionId, { kind: "tool_requested", turn: runtime.turn(), calls: allCalls })
 
         const runCtx: RunContext = {
           agentId: this.opts.agentId,
@@ -307,7 +383,7 @@ export class RuntimeRunner {
             const tare = evt as ToolArgumentRepairedEvent
             await this.opts.sessionLog.append(sessionId, {
               kind: "tool_argument_repaired",
-              turn: sm.turn,
+              turn: runtime.turn(),
               tool: tare.name,
               original_arguments: tare.originalArguments,
               repaired_arguments: tare.repairedArguments,
@@ -316,7 +392,7 @@ export class RuntimeRunner {
             const tde = evt as ToolDeniedEvent
             await this.opts.sessionLog.append(sessionId, {
               kind: "tool_denied",
-              turn: sm.turn,
+              turn: runtime.turn(),
               tool: tde.toolName,
               reason: tde.reason,
             })
@@ -325,7 +401,7 @@ export class RuntimeRunner {
 
         await this.opts.sessionLog.append(sessionId, {
           kind: "tool_completed",
-          turn: sm.turn,
+          turn: runtime.turn(),
           results: toolResults.map(r => ({
             call_id: r.callId,
             output: r.output,
@@ -333,11 +409,14 @@ export class RuntimeRunner {
             token_count: r.tokenCount,
           })),
         })
-        action = sm.feedToolResults(toolResults)
+        action = kernelAction(runtime, this.pendingObservations, {
+          kind: "tool_results",
+          results: toolResults.map(toolResultToKernel),
+        })
 
       } else if (action.kind === "evaluate_milestone") {
-        nextCompressedArchiveStart = await this.appendObservations(sessionId, sm, nextCompressedArchiveStart)
-        const turnsUsed = Math.max(1, sm.turn)
+        nextCompressedArchiveStart = await this.appendObservations(sessionId, runtime, nextCompressedArchiveStart)
+        const turnsUsed = Math.max(1, runtime.turn())
         await this.opts.sessionLog.append(sessionId, buildRunTerminalEvent({
           reason: "milestone_pending",
           turnsUsed,
@@ -351,12 +430,12 @@ export class RuntimeRunner {
       }
     }
 
-    const result = action.result as { termination?: string; turnsUsed?: number; totalTokensUsed?: bigint } | undefined
+    const result = action.kind === "done" ? action.result : undefined
     const status = result?.termination ?? "error"
-    const turnsUsed = result ? Math.max(1, result.turnsUsed ?? 0) : 0
-    const totalTokens = result?.totalTokensUsed ? Number(result.totalTokensUsed) : 0
+    const turnsUsed = result ? Math.max(1, result.turnsUsed) : runtime.turn() || 0
+    const totalTokens = result?.totalTokensUsed ?? 0
 
-    nextCompressedArchiveStart = await this.appendObservations(sessionId, sm, nextCompressedArchiveStart)
+    nextCompressedArchiveStart = await this.appendObservations(sessionId, runtime, nextCompressedArchiveStart)
     await this.opts.sessionLog.append(sessionId, buildRunTerminalEvent({
       reason: status,
       turnsUsed,
@@ -364,7 +443,7 @@ export class RuntimeRunner {
     }))
 
     if (this.opts.dreamStore && this.opts.agentId) {
-      const newMsgs = (sm.drainNewMessages() as Message[]).map(m => ({
+      const newMsgs = runtime.drainNewMessages().map(m => ({
         role: m.role,
         content: m.content,
         tokenCount: m.tokenCount,
@@ -389,10 +468,12 @@ export class RuntimeRunner {
 
   private async appendObservations(
     sessionId: string,
-    sm: { turn: number; takeObservations(): Array<{ kind: string }> },
+    runtime: KernelRuntimeHandle,
     nextArchiveStart: number,
   ): Promise<number> {
-    const observations = sm.takeObservations()
+    const turn = runtime.turn()
+    const preservedRefs = runtime.preservedRefs()
+    const observations = this.pendingObservations.splice(0)
     for (const obs of observations) {
       if (obs.kind === "compressed") {
         const latest = await this.opts.sessionLog.latestSeq(sessionId)
@@ -400,44 +481,42 @@ export class RuntimeRunner {
         const end = latest
         const compressedSeq = await this.opts.sessionLog.append(sessionId, {
           kind: "compressed",
-          turn: sm.turn,
+          turn,
           archived_seq_range: [nextArchiveStart, end],
-          action: (obs as { action?: "snip_compact" | "micro_compact" | "context_collapse" | "auto_compact" }).action,
-          summary: (obs as { summary?: string }).summary,
-          summary_tokens: (obs as { summary?: string }).summary
-            ? Math.max(1, Math.ceil(((obs as { summary?: string }).summary ?? "").length / 4))
+          action: compressionAction(obs.action),
+          summary: obs.summary,
+          summary_tokens: obs.summary
+            ? Math.max(1, Math.ceil(obs.summary.length / 4))
             : undefined,
-          preserved_refs: [],
+          preserved_refs: preservedRefs,
         })
         nextArchiveStart = compressedSeq + 1
       } else if (obs.kind === "rollbacked") {
         await this.opts.sessionLog.append(sessionId, {
           kind: "rollbacked",
-          turn: (obs as { turn?: number }).turn ?? sm.turn,
-          checkpoint_history_len: (obs as { checkpointHistoryLen?: number; checkpoint_history_len?: number }).checkpointHistoryLen
-            ?? (obs as { checkpoint_history_len?: number }).checkpoint_history_len
-            ?? 0,
+          turn: obs.turn ?? turn,
+          checkpoint_history_len: obs.checkpoint_history_len ?? 0,
         })
       } else if (obs.kind === "capability_changed") {
         await this.opts.sessionLog.append(sessionId, {
           kind: "capability_changed",
-          turn: (obs as { turn?: number }).turn ?? sm.turn,
-          added: (obs as { added?: string[] }).added ?? [],
-          removed: (obs as { removed?: string[] }).removed ?? [],
+          turn: obs.turn ?? turn,
+          added: obs.added ?? [],
+          removed: obs.removed ?? [],
         })
       } else if (obs.kind === "milestone_advanced") {
         await this.opts.sessionLog.append(sessionId, {
           kind: "milestone_advanced",
-          turn: (obs as { turn?: number }).turn ?? sm.turn,
-          phase_id: (obs as { phase_id?: string }).phase_id ?? "",
-          capabilities_unlocked: (obs as { capabilities_unlocked?: string[] }).capabilities_unlocked ?? [],
+          turn: obs.turn ?? turn,
+          phase_id: obs.phase_id ?? "",
+          capabilities_unlocked: obs.capabilities_unlocked ?? [],
         })
       } else if (obs.kind === "milestone_blocked") {
         await this.opts.sessionLog.append(sessionId, {
           kind: "milestone_blocked",
-          turn: (obs as { turn?: number }).turn ?? sm.turn,
-          phase_id: (obs as { phase_id?: string }).phase_id ?? "",
-          reason: (obs as { milestone_reason?: string }).milestone_reason ?? "",
+          turn: obs.turn ?? turn,
+          phase_id: obs.phase_id ?? "",
+          reason: obs.reason ?? "",
         })
       }
     }
@@ -449,7 +528,19 @@ function isMidRun(events: Array<{ seq: number; event: SessionEvent }>): boolean 
   return events.length > 0 && !events.some(e => e.event.kind === "run_terminal")
 }
 
-function replayMessages(events: Array<{ seq: number; event: SessionEvent }>): Message[] {
+function compressionAction(action?: string): Extract<SessionEvent, { kind: "compressed" }>["action"] {
+  if (
+    action === "snip_compact" ||
+    action === "micro_compact" ||
+    action === "context_collapse" ||
+    action === "auto_compact"
+  ) {
+    return action
+  }
+  return undefined
+}
+
+function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, maxBytes?: number): Message[] {
   const messages: Message[] = []
   for (const { event: e } of events) {
     if (e.kind === "run_started") {
@@ -462,10 +553,20 @@ function replayMessages(events: Array<{ seq: number; event: SessionEvent }>): Me
         toolCalls: [],
         tokenCount: Math.max(1, Math.ceil(userText.length / 4)),
       })
+    } else if (e.kind === "compressed") {
+      if (e.summary) {
+        const systemText = `[Compressed context: turn ${e.turn}]\n${e.summary}`
+        messages.push({
+          role: "system",
+          content: systemText,
+          toolCalls: [],
+          tokenCount: Math.max(1, Math.ceil(systemText.length / 4)),
+        })
+      }
     } else if (e.kind === "llm_completed") {
       messages.push({
         role: "assistant",
-        content: sanitizeReplayText(e.content),
+        content: sanitizeReplayText(e.content, maxBytes),
         toolCalls: e.tool_calls ?? [],
         tokenCount: e.token_count,
       })
@@ -473,10 +574,15 @@ function replayMessages(events: Array<{ seq: number; event: SessionEvent }>): Me
       for (const r of e.results) {
         messages.push({
           role: "tool",
-          content: r.output,
+          content: sanitizeReplayText(r.output, maxBytes),
           toolCalls: [],
           tokenCount: r.token_count,
         })
+      }
+    } else if (e.kind === "rollbacked") {
+      const len = e.checkpoint_history_len ?? 0
+      if (messages.length > len) {
+        messages.length = len
       }
     }
   }
