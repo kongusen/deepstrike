@@ -41,13 +41,17 @@ pub use governance::tool_decision::{
     ToolDecision, ToolDecisionContext, ToolDecisionPipeline, ToolDecisionStage,
 };
 pub use runtime::session::SessionEvent;
+pub use runtime::{
+    KERNEL_ABI_VERSION, KernelAction, KernelInput, KernelInputEvent, KernelObservation,
+    KernelPressureAction, KernelRuntime, KernelStep,
+};
 pub use types::agent::{
     AgentCapabilityFilter, AgentIdentity, AgentIsolation, AgentRole, AgentRunSpec,
 };
 pub use types::capability::{CapabilityDescriptor, CapabilityKind, CapabilityManifest};
 pub use types::contract::{AcceptanceCriterion, VerificationContract};
 pub use types::error::{DeepStrikeError, Result};
-pub use types::milestone::{MilestoneCheckResult, MilestoneContract, MilestonePhase};
 pub use types::message::{Message, ToolCall, ToolResult};
+pub use types::milestone::{MilestoneCheckResult, MilestoneContract, MilestonePhase};
 pub use types::signal::RuntimeSignal;
 pub use types::task::{RuntimeTask, TaskLane};

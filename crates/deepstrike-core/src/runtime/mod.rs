@@ -1,8 +1,14 @@
 //! Runtime event types shared across SDK bindings.
 //! I/O (append/read) lives in each language SDK — the kernel stays pure.
 
+pub mod kernel;
 pub mod repair;
 pub mod session;
+
+pub use kernel::{
+    KERNEL_ABI_VERSION, KernelAction, KernelInput, KernelInputEvent, KernelObservation,
+    KernelPressureAction, KernelRuntime, KernelStep,
+};
 
 pub use repair::{
     effective_provider_replay, pending_tool_calls_from_messages, repair_events,

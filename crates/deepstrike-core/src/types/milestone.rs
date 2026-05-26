@@ -64,7 +64,7 @@ impl MilestoneContract {
 ///
 /// Created by a verifier (external LLM call, machine check, or explicit user
 /// decision) and fed back to the kernel via `LoopEvent::MilestoneResult`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MilestoneCheckResult {
     pub phase_id: String,
     pub passed: bool,

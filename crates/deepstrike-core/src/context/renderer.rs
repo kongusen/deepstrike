@@ -1,9 +1,10 @@
 use super::partitions::ContextPartitions;
 use super::token_engine::ContextTokenEngine;
 use crate::types::message::{Content, Message};
+use serde::{Deserialize, Serialize};
 
 /// Structured render output.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenderedContext {
     /// Combined system text: system partition + task_state + dashboard.
     pub system_text: String,

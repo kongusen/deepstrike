@@ -106,19 +106,32 @@ KernelOutput:
 
 | 领域 | 已有 | 缺口 |
 |---|---|---|
-| Milestone | `MilestoneContract`、state machine 集成、部分 audit 事件 | Rust runner **auto-pass**；Node/Python 未接 `EvaluateMilestone` |
-| Rollback | `LoopObservation::Rollbacked`、replay 截断雏形 | **任意 tool error 即 rollback**，需改为 fatal-only |
-| Capability | `CapabilityManifest`、`CapabilityChanged` | 无 Mount/Unmount/Pin/Lease 一等命令 |
+| Milestone | `MilestoneContract`、state machine 集成、`MilestonePolicy` 默认 pending、Node/Python/WASM 接 `EvaluateMilestone`、四端 audit 事件 | 缺外部 verifier hook 与 evidence audit |
+| Rollback | `LoopObservation::Rollbacked`、replay 截断、fatal-only rollback、recoverable error 保留 history | 缺 `ToolErrorKind` 一等分类与 transaction audit |
+| Capability | `CapabilityManifest`、`CapabilityChanged`、运行时 mount/unmount | 无 Pin/Lease 一等命令 |
 | Context VM | `ContextSectionRegistry`、6 分区、pin/cache policy | 缺 `ContextPage` / `ContextFault` / Artifacts 分区 |
-| LSM | `ToolDecisionPipeline` 雏形 | 未标准化全链路 stage + `ToolDenied` Rust SDK 事件 |
-| Kernel ABI | `LoopAction` / `LoopEvent` / `LoopObservation` 内聚在 core | 未抽成稳定 `KernelInput` / `KernelOutput`；FFI 仍暴露内部结构 |
-| Skill sandbox | Rust `sandboxed_skill`、watcher 进行中 | Python 降级命名 / timeout / workdir / resource policy 不完整 |
+| LSM | `ToolDecisionPipeline`、monotonic veto、四端 `ToolDenied` audit/stream event | 未标准化全链路 stage vocabulary |
+| Kernel ABI | `LoopAction` / `LoopEvent` / `LoopObservation` 内聚在 core；PR 2 已开始抽 `KernelInput` / `KernelAction` / `KernelObservation` | FFI 仍暴露内部结构；SDK runner 尚未全量迁移到 `KernelRuntime` |
+| Skill sandbox | Rust `sandboxed_skill`、watcher、Node/Python watcher、process sandbox 文案校正 | 资源策略仍是 hygiene，不是 OS-enforced sandbox |
 
 ---
+
+## 进度快照
+
+| 项 | 状态 | 提交 / 证据 |
+|---|---|---|
+| Phase 0 / PR 1：V2 收口 | ✅ 已完成 | `68c7496 feat(kernel): add agent OS v2 runtime primitives` |
+| PR 1 文档规划 | ✅ 已完成 | `6e1fecd docs: plan agent OS kernel roadmap` |
+| G0 — V2 Mergeable | ✅ 已通过 | `cargo check --workspace`、`cargo test -p deepstrike-core`、`cargo test --manifest-path rust/Cargo.toml`、Node/WASM build + targeted tests、Python targeted tests |
+| Phase 1 / PR 2：Kernel ABI 固化 | 🟡 进行中 | 已开始在 core 增加 versioned `KernelInput` / `KernelAction` / `KernelObservation` / `KernelRuntime` |
+
+**当前主线：** 继续 PR 2，先稳定 core ABI 合同，再逐端把 FFI / SDK runner 从直接操作 `LoopStateMachine` 迁移到 `KernelRuntime`。
 
 ## 阶段规划
 
 ### 阶段 0：V2 收口（可合并态）
+
+**状态：✅ 已完成。**
 
 **必须先做，不然上层规划会漂。**
 
@@ -156,11 +169,13 @@ cargo test --manifest-path rust/Cargo.toml
 # Node / Python targeted tests
 ```
 
-**交付物：** `fix: close V2 ABI gaps`
+**交付物：** `68c7496 feat(kernel): add agent OS v2 runtime primitives`
 
 ---
 
 ### 阶段 1：Kernel ABI 固化
+
+**状态：🟡 进行中。**
 
 **目标：** SDK 不再直接操作 `LoopStateMachine` 细节。
 
@@ -175,11 +190,12 @@ cargo test --manifest-path rust/Cargo.toml
 
 **任务：**
 
-1. 在 `deepstrike-core` 定义稳定 ABI 类型（serde + 版本字段）
-2. `RuntimeRunner` 重构为 input/action 驱动，不再散落 `sm.feed(...)` 细节
-3. FFI 只暴露 `KernelRuntime`，隐藏 `LoopStateMachine` / `ContextManager`
-4. Node / Python / WASM 绑定与 Rust API 一一对应
-5. 文档：`docs/spec-kernel-abi.md`
+1. [x] 在 `deepstrike-core` 定义稳定 ABI 类型（serde + 版本字段）
+2. [x] 增加 `KernelRuntime::step(KernelInput) -> KernelStep` 薄包装，保持现有行为不变
+3. [ ] `RuntimeRunner` 重构为 input/action 驱动，不再散落 `sm.feed(...)` 细节
+4. [ ] FFI 只暴露 `KernelRuntime`，隐藏 `LoopStateMachine` / `ContextManager`
+5. [ ] Node / Python / WASM 绑定与 Rust API 一一对应
+6. [ ] 文档：`docs/spec-kernel-abi.md`
 
 **验收：**
 
@@ -467,34 +483,36 @@ PR 1 与 PR 3 有重叠（milestone/rollback），可按实际 diff 大小拆分
 
 ### 1.1 FFI match 闭环
 
-- [ ] `crates/deepstrike-node/src/lib.rs` — 补 4 个 observation variant
-- [ ] `crates/deepstrike-wasm/src/lib.rs` — 同上
-- [ ] `crates/deepstrike-py/src/lib.rs` — 同上 + Python 类型导出
-- [ ] `node/src/runtime/runner.ts` — 处理 milestone/capability observations
-- [ ] `python/deepstrike/runtime/runner.py` — 同上
-- [ ] `wasm/src/runtime/runner.ts` — 同上
+- [x] `crates/deepstrike-node/src/lib.rs` — 补 4 个 observation variant
+- [x] `crates/deepstrike-wasm/src/lib.rs` — 同上
+- [x] `crates/deepstrike-py/src/lib.rs` — 同上 + Python 类型导出
+- [x] `node/src/runtime/runner.ts` — 处理 milestone/capability observations
+- [x] `python/deepstrike/runtime/runner.py` — 同上
+- [x] `wasm/src/runtime/runner.ts` — 同上
 
 ### 1.2 Rust ToolDenied
 
-- [ ] `rust/src/runtime/execution_plane.rs` — yield `ToolDeniedEvent`
-- [ ] `rust/src/run_event.rs` — 事件类型
-- [ ] `rust/src/runtime/runner.rs` — audit → `SessionEvent::ToolDenied`
+- [x] `rust/src/runtime/execution_plane.rs` — yield `ToolDeniedEvent`
+- [x] `rust/src/run_event.rs` — 事件类型
+- [x] `rust/src/runtime/runner.rs` — audit → `SessionEvent::ToolDenied`
 
 ### 1.3 Milestone 显式策略
 
-- [ ] 删除 `runner.rs` auto-pass
-- [ ] 新增 `MilestonePolicy`（core 或 runner opts）
-- [ ] Node/Python runner：`EvaluateMilestone` → 默认 suspend / 等待 verifier hook
-- [ ] 更新 `tests/rust/src/t11_runtime.rs`
+- [x] 删除 `runner.rs` auto-pass
+- [x] 新增 `MilestonePolicy`（core 或 runner opts）
+- [x] Node/Python/WASM runner：`EvaluateMilestone` → 默认 `milestone_pending`
+- [x] 更新 `tests/rust/src/t11_runtime.rs`
 
 ### 1.4 Rollback 收紧
 
-- [ ] `state_machine.rs` — `ToolResults` 分支按 `ToolErrorKind` 分流
-- [ ] 更新 rollback/replay 测试（Rust / Node / Python）
+- [x] `state_machine.rs` — `ToolResults` 分支仅 `is_fatal` rollback
+- [x] 更新 rollback/replay 测试（Rust / Node / Python）
+- [ ] 后续 PR 3：补 `ToolErrorKind` 与 transaction audit
 
 ### 1.5 Python sandbox
 
-- [ ] `python/deepstrike/skills/watcher.py` + execution — timeout / unique workdir / resource policy
+- [x] `python/deepstrike/skills/watcher.py` + execution — watcher / subprocess hygiene
+- [ ] 后续：明确 timeout / unique workdir / resource policy 是否升级为 OS sandbox
 
 ---
 
