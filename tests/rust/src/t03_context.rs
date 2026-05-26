@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use deepstrike_core::context::manager::ContextManager;
 use deepstrike_core::context::pressure::PressureAction;
 use deepstrike_core::types::message::Message;
@@ -203,4 +205,260 @@ fn push_memory_updates_token_count() {
     let mut mgr = ContextManager::new(10_000);
     mgr.push_memory(Message::user("fact"), 30);
     assert_eq!(mgr.partitions.memory.token_count, 30);
+}
+
+// ─── Virtual Context Memory & Replay (Phase 2) ───────────────────────────────
+
+#[test]
+fn take_snapshot_creates_valid_state() {
+    let mut mgr = ContextManager::new(10_000);
+    mgr.init_task("goal 1".to_string(), vec![]);
+    mgr.push_history(Message::user("hello history"), 20);
+    mgr.push_memory(Message::user("hello memory"), 30);
+    mgr.push_artifact(Message::user("hello artifact"), 40);
+
+    let snapshot = mgr.take_snapshot(2);
+    assert_eq!(snapshot.turn, 2);
+    assert_eq!(snapshot.history_messages.len(), 1);
+    assert_eq!(snapshot.memory_messages.len(), 1);
+    assert_eq!(snapshot.artifacts_messages.len(), 1);
+    assert_eq!(snapshot.task_state.goal, "goal 1");
+}
+
+#[test]
+fn context_fault_serialization_roundtrip() {
+    use deepstrike_core::context::snapshot::ContextFault;
+    let fault = ContextFault::MissingArchive {
+        session_id: "session-123".to_string(),
+        seq: 42,
+    };
+    let json_str = serde_json::to_string(&fault).unwrap();
+    let parsed: ContextFault = serde_json::from_str(&json_str).unwrap();
+    match parsed {
+        ContextFault::MissingArchive { session_id, seq } => {
+            assert_eq!(session_id, "session-123");
+            assert_eq!(seq, 42);
+        }
+        _ => panic!("Expected MissingArchive variant"),
+    }
+}
+
+#[test]
+fn reconstruct_messages_with_fallback_success_and_degrade() {
+    use deepstrike_core::runtime::session::SessionEvent;
+    use deepstrike_core::runtime::reconstruct_messages_with_fallback;
+    use deepstrike_core::context::snapshot::ContextFault;
+
+    let events = vec![
+        SessionEvent::RunStarted {
+            run_id: "r1".to_string(),
+            goal: "Task Goal".to_string(),
+            criteria: vec![],
+            agent_id: None,
+            system_prompt: None,
+        },
+        SessionEvent::Compressed {
+            turn: 1,
+            archived_seq_range: (0, 1),
+            action: Some("auto_compact".to_string()),
+            summary: Some("Compressed turn 1 summary".to_string()),
+            summary_tokens: Some(10),
+            archive_ref: Some("archive/success.jsonl".to_string()),
+            preserved_refs: vec![],
+        },
+        SessionEvent::Compressed {
+            turn: 2,
+            archived_seq_range: (2, 3),
+            action: Some("auto_compact".to_string()),
+            summary: Some("Compressed turn 2 summary".to_string()),
+            summary_tokens: Some(10),
+            archive_ref: Some("archive/missing.jsonl".to_string()),
+            preserved_refs: vec![],
+        },
+    ];
+
+    let messages = reconstruct_messages_with_fallback(&events, "s1", 1000, |ref_str| {
+        if ref_str == "archive/success.jsonl" {
+            Ok(vec![Message::user("Inside archive message")])
+        } else {
+            Err(ContextFault::MissingArchive {
+                session_id: "s1".to_string(),
+                seq: 2,
+            })
+        }
+    });
+
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[0].content.as_text().unwrap(), "Task Goal");
+    assert_eq!(messages[1].content.as_text().unwrap(), "Inside archive message");
+    assert!(messages[2].content.as_text().unwrap().contains("Compressed turn 2 summary"));
+}
+
+// ─── Capability Bus & Lease & Agent Run Spec (Phase 3) ───────────────────────
+
+#[test]
+fn execute_capability_command_mount_unmount_replace_pin() {
+    use deepstrike_core::scheduler::state_machine::LoopStateMachine;
+    use deepstrike_core::scheduler::policy::LoopPolicy;
+    use deepstrike_core::types::capability::{CapabilityCommand, CapabilityDescriptor, CapabilityKind};
+
+    let mut sm = LoopStateMachine::new(LoopPolicy::default());
+
+    // 1. Mount capability
+    let desc = CapabilityDescriptor::marker(CapabilityKind::Command, "doctor", "system doctor")
+        .with_version("1.0.0");
+    sm.execute_capability_command(CapabilityCommand::Mount {
+        capability: desc.clone(),
+    });
+
+    assert_eq!(sm.ctx.capabilities.len(), 1);
+    let obs = sm.take_observations();
+    assert_eq!(obs.len(), 1);
+    if let deepstrike_core::scheduler::state_machine::LoopObservation::CapabilityChanged {
+        change_kind,
+        capability_id,
+        version,
+        ..
+    } = &obs[0] {
+        assert_eq!(change_kind.as_deref(), Some("mount"));
+        assert_eq!(capability_id.as_deref(), Some("doctor"));
+        assert_eq!(version.as_deref(), Some("1.0.0"));
+    } else {
+        panic!("Expected CapabilityChanged observation");
+    }
+
+    // 2. Pin capability
+    sm.execute_capability_command(CapabilityCommand::Pin {
+        kind: CapabilityKind::Command,
+        id: "doctor".to_string(),
+    });
+    assert!(sm.ctx.capabilities.capabilities()[0].is_pinned);
+    let obs = sm.take_observations();
+    assert_eq!(obs.len(), 1);
+    if let deepstrike_core::scheduler::state_machine::LoopObservation::CapabilityChanged {
+        change_kind,
+        ..
+    } = &obs[0] {
+        assert_eq!(change_kind.as_deref(), Some("pin"));
+    }
+
+    // 3. Replace capability
+    let new_desc = CapabilityDescriptor::marker(CapabilityKind::Command, "doctor", "new system doctor")
+        .with_version("2.0.0");
+    sm.execute_capability_command(CapabilityCommand::Replace {
+        old_kind: CapabilityKind::Command,
+        old_id: "doctor".to_string(),
+        new_capability: new_desc,
+    });
+    assert_eq!(sm.ctx.capabilities.capabilities()[0].description, "new system doctor");
+    let obs = sm.take_observations();
+    assert_eq!(obs.len(), 1);
+    if let deepstrike_core::scheduler::state_machine::LoopObservation::CapabilityChanged {
+        change_kind,
+        capability_id,
+        version,
+        ..
+    } = &obs[0] {
+        assert_eq!(change_kind.as_deref(), Some("replace"));
+        assert_eq!(capability_id.as_deref(), Some("doctor"));
+        assert_eq!(version.as_deref(), Some("2.0.0"));
+    }
+
+    // 4. Unmount capability
+    sm.execute_capability_command(CapabilityCommand::Unmount {
+        kind: CapabilityKind::Command,
+        id: "doctor".to_string(),
+    });
+    assert_eq!(sm.ctx.capabilities.len(), 0);
+}
+
+#[test]
+fn capability_lease_auto_revokes() {
+    use deepstrike_core::scheduler::state_machine::{LoopStateMachine, LoopEvent};
+    use deepstrike_core::scheduler::policy::LoopPolicy;
+    use deepstrike_core::types::capability::{CapabilityCommand, CapabilityDescriptor, CapabilityKind, CapabilityLease};
+
+    let mut sm = LoopStateMachine::new(LoopPolicy::default());
+    let lease = CapabilityLease { expires_at_turn: 2 };
+    let desc = CapabilityDescriptor::marker(CapabilityKind::McpServer, "mcp1", "mcp 1 server")
+        .with_lease(lease);
+
+    sm.execute_capability_command(CapabilityCommand::Mount {
+        capability: desc,
+    });
+    assert_eq!(sm.ctx.capabilities.len(), 1);
+    sm.take_observations();
+
+    // Turn = 0: not expired
+    sm.feed(LoopEvent::ToolResults { results: vec![] });
+    assert_eq!(sm.ctx.capabilities.len(), 1);
+    assert_eq!(sm.turn, 1);
+    
+    // Turn = 1: not expired
+    sm.feed(LoopEvent::ToolResults { results: vec![] });
+    assert_eq!(sm.ctx.capabilities.len(), 1);
+    assert_eq!(sm.turn, 2);
+
+    // Turn = 2: expired, should auto revoke on feed
+    sm.feed(LoopEvent::ToolResults { results: vec![] });
+    assert_eq!(sm.ctx.capabilities.len(), 0);
+    let obs = sm.take_observations();
+    assert!(obs.iter().any(|o| {
+        if let deepstrike_core::scheduler::state_machine::LoopObservation::CapabilityChanged {
+            change_kind,
+            capability_id,
+            ..
+        } = o {
+            change_kind.as_deref() == Some("unmount") && capability_id.as_deref() == Some("mcp1")
+        } else {
+            false
+        }
+    }));
+}
+
+#[test]
+fn agent_run_spec_capability_filter_enforcement() {
+    use deepstrike_core::scheduler::state_machine::LoopStateMachine;
+    use deepstrike_core::scheduler::policy::LoopPolicy;
+    use deepstrike_core::types::agent::{AgentRunSpec, AgentIdentity, AgentRole, AgentCapabilityFilter};
+    use deepstrike_core::types::capability::{CapabilityDescriptor, CapabilityKind};
+    use deepstrike_core::types::message::ToolSchema;
+    use compact_str::CompactString;
+
+    let mut sm = LoopStateMachine::new(LoopPolicy::default());
+    sm.tools = vec![
+        ToolSchema {
+            name: CompactString::new("read_file"),
+            description: "read".to_string(),
+            parameters: serde_json::json!({}),
+        },
+        ToolSchema {
+            name: CompactString::new("write_file"),
+            description: "write".to_string(),
+            parameters: serde_json::json!({}),
+        },
+    ];
+
+    let filter = AgentCapabilityFilter {
+        allowed_kinds: vec![CapabilityKind::Tool],
+        allowed_ids: vec![CompactString::new("read_file")],
+    };
+    let spec = AgentRunSpec::new(
+        AgentIdentity::new("a1", "s1"),
+        AgentRole::Custom,
+        "goal",
+    ).with_capability_filter(filter);
+
+    sm.run_spec = Some(spec);
+
+    let action = sm.feed(deepstrike_core::scheduler::state_machine::LoopEvent::Start {
+        task: deepstrike_core::types::task::RuntimeTask::new("goal"),
+    });
+
+    if let deepstrike_core::scheduler::state_machine::LoopAction::CallLLM { tools, .. } = action {
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name.as_str(), "read_file");
+    } else {
+        panic!("Expected CallLLM action");
+    }
 }

@@ -291,6 +291,7 @@ dependencies = [
  "deepstrike-sdk",
  "dotenvy",
  "futures",
+ "serde",
  "serde_json",
  "tokio",
 ]

@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use super::policy::LoopPolicy;
 use crate::context::manager::ContextManager;
 use crate::context::pressure::PressureAction;
@@ -7,6 +9,7 @@ use crate::types::milestone::{MilestoneCheckResult, MilestoneContract};
 use crate::types::result::{LoopResult, TerminationReason};
 use crate::types::signal::{RuntimeSignal, Urgency};
 use crate::types::task::RuntimeTask;
+use crate::AgentRunSpec;
 
 /// The phases of the L* execution loop.
 #[derive(Debug, Clone)]
@@ -93,6 +96,9 @@ pub enum LoopObservation {
         turn: u32,
         added: Vec<String>,
         removed: Vec<String>,
+        change_kind: Option<String>,
+        capability_id: Option<String>,
+        version: Option<String>,
     },
     /// Milestone phase satisfied — capabilities unlocked, phase advanced.
     MilestoneAdvanced {
@@ -109,6 +115,7 @@ pub enum LoopObservation {
 }
 
 /// Pure state machine for the L* execution loop. No I/O — only state transitions.
+#[deprecated(since = "0.2.0", note = "Internal/test-only. Use KernelRuntime instead.")]
 pub struct LoopStateMachine {
     pub phase: LoopPhase,
     pub turn: u32,
@@ -130,6 +137,7 @@ pub struct LoopStateMachine {
     milestone_contract: Option<MilestoneContract>,
     /// Index of the current (not-yet-passed) phase within `milestone_contract`.
     current_milestone_phase: usize,
+    pub run_spec: Option<AgentRunSpec>,
 }
 
 impl LoopStateMachine {
@@ -155,6 +163,7 @@ impl LoopStateMachine {
             checkpoint_task_state: None,
             milestone_contract: None,
             current_milestone_phase: 0,
+            run_spec: None,
         }
     }
 
@@ -248,6 +257,21 @@ impl LoopStateMachine {
 
     pub fn feed(&mut self, event: LoopEvent) -> LoopAction {
         self.observations.clear();
+
+        // 检查并清理过期的 Lease
+        let current_turn = self.turn;
+        let mut to_remove = Vec::new();
+        for cap in self.ctx.capabilities.capabilities() {
+            if let Some(ref lease) = cap.lease {
+                if current_turn >= lease.expires_at_turn {
+                    to_remove.push((cap.kind, cap.id.to_string()));
+                }
+            }
+        }
+        for (kind, id) in to_remove {
+            self.unmount_capability(kind, &id);
+        }
+
         match event {
             LoopEvent::Start { task } => self.start(task),
 
@@ -446,6 +470,28 @@ impl LoopStateMachine {
         }
         let mut tools = self.tools.clone();
         tools.extend(self.ctx.meta_tool_schemas());
+
+        if let Some(ref spec) = self.run_spec {
+            use crate::types::agent::AgentRunSpec;
+            use crate::types::capability::{
+                CapabilityCommand, CapabilityDescriptor, CapabilityKind, CapabilityLease,
+            };
+            tools.retain(|tool| {
+                let kind = match tool.name.as_str() {
+                    "skill" => CapabilityKind::Skill,
+                    "memory" => CapabilityKind::Memory,
+                    "knowledge" => CapabilityKind::Knowledge,
+                    _ => CapabilityKind::Tool,
+                };
+                let desc = crate::types::capability::CapabilityDescriptor::marker(
+                    kind,
+                    tool.name.clone(),
+                    &tool.description,
+                );
+                spec.capability_filter.allows(&desc)
+            });
+        }
+
         LoopAction::CallLLM { context, tools }
     }
 
@@ -461,24 +507,80 @@ impl LoopStateMachine {
         });
     }
 
+    pub fn execute_capability_command(&mut self, cmd: crate::types::capability::CapabilityCommand) {
+        use crate::types::capability::CapabilityCommand;
+        match cmd {
+            CapabilityCommand::Mount { capability } => {
+                self.mount_capability(capability);
+            }
+            CapabilityCommand::Unmount { kind, id } => {
+                self.unmount_capability(kind, &id);
+            }
+            CapabilityCommand::Replace {
+                old_kind,
+                old_id,
+                new_capability,
+            } => {
+                let new_id = new_capability.id.to_string();
+                let version = new_capability.version.clone();
+                let old_kind_str = format!("{:?}", old_kind);
+                let new_kind_str = format!("{:?}", new_capability.kind);
+
+                self.ctx.capabilities.remove(old_kind, &old_id);
+                self.ctx.capabilities.upsert(new_capability);
+
+                self.observations.push(LoopObservation::CapabilityChanged {
+                    turn: self.turn,
+                    added: vec![format!("{}:{}", new_kind_str, new_id)],
+                    removed: vec![format!("{}:{}", old_kind_str, old_id)],
+                    change_kind: Some("replace".to_string()),
+                    capability_id: Some(new_id),
+                    version,
+                });
+            }
+            CapabilityCommand::Pin { kind, id } => {
+                let version = self.ctx.capabilities.get_mut(kind, &id).and_then(|c| c.version.clone());
+                if let Some(cap) = self.ctx.capabilities.get_mut(kind, &id) {
+                    cap.is_pinned = true;
+                    self.observations.push(LoopObservation::CapabilityChanged {
+                        turn: self.turn,
+                        added: vec![],
+                        removed: vec![],
+                        change_kind: Some("pin".to_string()),
+                        capability_id: Some(id),
+                        version,
+                    });
+                }
+            }
+        }
+    }
+
     pub fn mount_capability(&mut self, descriptor: crate::types::capability::CapabilityDescriptor) {
         let id = descriptor.id.to_string();
         let kind_str = format!("{:?}", descriptor.kind);
+        let version = descriptor.version.clone();
         self.ctx.capabilities.upsert(descriptor);
         self.observations.push(LoopObservation::CapabilityChanged {
             turn: self.turn,
             added: vec![format!("{}:{}", kind_str, id)],
             removed: vec![],
+            change_kind: Some("mount".to_string()),
+            capability_id: Some(id),
+            version,
         });
     }
 
     pub fn unmount_capability(&mut self, kind: crate::types::capability::CapabilityKind, id: &str) {
+        let version = self.ctx.capabilities.get_mut(kind, id).and_then(|c| c.version.clone());
         self.ctx.capabilities.remove(kind, id);
         let kind_str = format!("{:?}", kind);
         self.observations.push(LoopObservation::CapabilityChanged {
             turn: self.turn,
             added: vec![],
             removed: vec![format!("{}:{}", kind_str, id)],
+            change_kind: Some("unmount".to_string()),
+            capability_id: Some(id.to_string()),
+            version,
         });
     }
 
@@ -1082,16 +1184,20 @@ mod tests {
             description: "test description".to_string(),
             parameters: serde_json::json!({ "type": "object" }),
         };
-        let desc = crate::types::capability::CapabilityDescriptor::tool(schema);
+        let desc = crate::types::capability::CapabilityDescriptor::tool(schema)
+            .with_version("1.0.0");
 
         sm.mount_capability(desc);
 
         let obs = sm.take_observations();
         assert_eq!(obs.len(), 1);
-        if let LoopObservation::CapabilityChanged { turn, added, removed } = &obs[0] {
+        if let LoopObservation::CapabilityChanged { turn, added, removed, change_kind, capability_id, version } = &obs[0] {
             assert_eq!(*turn, 0);
             assert_eq!(added, &vec!["Tool:test_tool".to_string()]);
             assert!(removed.is_empty());
+            assert_eq!(change_kind.as_deref(), Some("mount"));
+            assert_eq!(capability_id.as_deref(), Some("test_tool"));
+            assert_eq!(version.as_deref(), Some("1.0.0"));
         } else {
             panic!("Expected CapabilityChanged observation");
         }
@@ -1099,10 +1205,13 @@ mod tests {
         sm.unmount_capability(crate::types::capability::CapabilityKind::Tool, "test_tool");
         let obs2 = sm.take_observations();
         assert_eq!(obs2.len(), 1);
-        if let LoopObservation::CapabilityChanged { turn, added, removed } = &obs2[0] {
+        if let LoopObservation::CapabilityChanged { turn, added, removed, change_kind, capability_id, version } = &obs2[0] {
             assert_eq!(*turn, 0);
             assert!(added.is_empty());
             assert_eq!(removed, &vec!["Tool:test_tool".to_string()]);
+            assert_eq!(change_kind.as_deref(), Some("unmount"));
+            assert_eq!(capability_id.as_deref(), Some("test_tool"));
+            assert_eq!(version.as_deref(), Some("1.0.0"));
         } else {
             panic!("Expected CapabilityChanged observation");
         }

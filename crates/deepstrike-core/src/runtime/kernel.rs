@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! Stable host/kernel ABI types.
 //!
 //! This module is the narrow contract SDKs should bind to over time. It wraps
@@ -13,7 +15,8 @@ use crate::context::task_state::TaskUpdate;
 use crate::context::token_engine::ContextTokenEngine;
 use crate::scheduler::policy::LoopPolicy;
 use crate::scheduler::state_machine::{LoopAction, LoopEvent, LoopObservation, LoopStateMachine};
-use crate::types::capability::{CapabilityDescriptor, CapabilityKind};
+use crate::types::capability::{CapabilityCommand, CapabilityDescriptor, CapabilityKind};
+use crate::types::agent::AgentRunSpec;
 use crate::types::message::{Message, ToolCall, ToolResult, ToolSchema};
 use crate::types::milestone::{MilestoneCheckResult, MilestoneContract};
 use crate::types::result::LoopResult;
@@ -88,7 +91,14 @@ pub enum KernelInputEvent {
     UpdateTask {
         update: TaskUpdate,
     },
-    StartRun { task: RuntimeTask },
+    StartRun {
+        task: RuntimeTask,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_spec: Option<AgentRunSpec>,
+    },
+    CapabilityCommand {
+        command: CapabilityCommand,
+    },
     Resume,
     ProviderResult { message: Message },
     ToolResults { results: Vec<ToolResult> },
@@ -172,8 +182,16 @@ pub enum KernelObservation {
     },
     CapabilityChanged {
         turn: u32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         added: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         removed: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        change_kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capability_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
     },
     MilestoneAdvanced {
         turn: u32,
@@ -213,10 +231,16 @@ impl From<LoopObservation> for KernelObservation {
                 turn,
                 added,
                 removed,
+                change_kind,
+                capability_id,
+                version,
             } => Self::CapabilityChanged {
                 turn,
                 added,
                 removed,
+                change_kind,
+                capability_id,
+                version,
             },
             LoopObservation::MilestoneAdvanced {
                 turn,
@@ -365,7 +389,14 @@ impl KernelRuntime {
                 self.sm.ctx.update_task(update);
                 return KernelStep::empty(self.sm.take_observations());
             }
-            KernelInputEvent::StartRun { task } => self.sm.start(task),
+            KernelInputEvent::StartRun { task, run_spec } => {
+                self.sm.run_spec = run_spec;
+                self.sm.start(task)
+            }
+            KernelInputEvent::CapabilityCommand { command } => {
+                self.sm.execute_capability_command(command);
+                return KernelStep::empty(self.sm.take_observations());
+            }
             KernelInputEvent::Resume => self.sm.resume_after_preload(),
             KernelInputEvent::ProviderResult { message } => {
                 self.sm.feed(LoopEvent::LLMResponse { message })
@@ -392,6 +423,7 @@ mod tests {
         let mut runtime = KernelRuntime::new(LoopPolicy::default());
         let step = runtime.step(KernelInput::new(KernelInputEvent::StartRun {
             task: RuntimeTask::new("ship it"),
+            run_spec: None,
         }));
 
         assert_eq!(step.version, KERNEL_ABI_VERSION);
@@ -406,6 +438,7 @@ mod tests {
         let mut runtime = KernelRuntime::new(LoopPolicy::default());
         runtime.step(KernelInput::new(KernelInputEvent::StartRun {
             task: RuntimeTask::new("ship it"),
+            run_spec: None,
         }));
         let step = runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
             message: Message::assistant("done"),

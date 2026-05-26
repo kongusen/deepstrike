@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 use tsify_next::Tsify;

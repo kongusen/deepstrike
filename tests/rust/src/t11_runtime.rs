@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -525,7 +527,7 @@ async fn capability_mount_emits_capability_changed_session_event() {
     let mut saw_capability_changed = false;
 
     for obs in &observations {
-        if let LoopObservation::CapabilityChanged { turn, added, removed } = obs {
+        if let LoopObservation::CapabilityChanged { turn, added, removed, change_kind, capability_id, version } = obs {
             session_log
                 .append(
                     session_id,
@@ -533,6 +535,9 @@ async fn capability_mount_emits_capability_changed_session_event() {
                         turn: *turn,
                         added: added.clone(),
                         removed: removed.clone(),
+                        change_kind: change_kind.clone(),
+                        capability_id: capability_id.clone(),
+                        version: version.clone(),
                     },
                 )
                 .await
@@ -582,7 +587,7 @@ async fn capability_unmount_emits_capability_changed_session_event() {
     let session_id = "cap-unmount-test";
 
     for obs in &observations {
-        if let LoopObservation::CapabilityChanged { turn, added, removed } = obs {
+        if let LoopObservation::CapabilityChanged { turn, added, removed, change_kind, capability_id, version } = obs {
             session_log
                 .append(
                     session_id,
@@ -590,6 +595,9 @@ async fn capability_unmount_emits_capability_changed_session_event() {
                         turn: *turn,
                         added: added.clone(),
                         removed: removed.clone(),
+                        change_kind: change_kind.clone(),
+                        capability_id: capability_id.clone(),
+                        version: version.clone(),
                     },
                 )
                 .await
