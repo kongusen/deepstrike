@@ -1,9 +1,9 @@
-use deepstrike_sdk::*;
-use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
+use deepstrike_core::memory::curator::CurationResult;
 use deepstrike_core::memory::durable::SessionData as CoreSessionData;
 use deepstrike_core::memory::semantic::MemoryEntry;
-use deepstrike_core::memory::curator::CurationResult;
+use deepstrike_sdk::*;
+use std::sync::{Arc, Mutex};
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -28,10 +28,28 @@ struct TrackingDreamStore {
 
 #[async_trait]
 impl DreamStore for TrackingDreamStore {
-    async fn load_sessions(&self, _agent_id: &str) -> Result<Vec<CoreSessionData>> { Ok(vec![]) }
-    async fn load_memories(&self, _agent_id: &str) -> Result<Vec<MemoryEntry>> { Ok(vec![]) }
-    async fn commit(&self, _agent_id: &str, _result: CurationResult, _existing: &[MemoryEntry]) -> Result<()> { Ok(()) }
-    async fn search(&self, _agent_id: &str, _query: &str, _top_k: usize) -> Result<Vec<MemoryEntry>> { Ok(vec![]) }
+    async fn load_sessions(&self, _agent_id: &str) -> Result<Vec<CoreSessionData>> {
+        Ok(vec![])
+    }
+    async fn load_memories(&self, _agent_id: &str) -> Result<Vec<MemoryEntry>> {
+        Ok(vec![])
+    }
+    async fn commit(
+        &self,
+        _agent_id: &str,
+        _result: CurationResult,
+        _existing: &[MemoryEntry],
+    ) -> Result<()> {
+        Ok(())
+    }
+    async fn search(
+        &self,
+        _agent_id: &str,
+        _query: &str,
+        _top_k: usize,
+    ) -> Result<Vec<MemoryEntry>> {
+        Ok(vec![])
+    }
     async fn save_session(&self, data: CoreSessionData) -> Result<()> {
         self.saved.lock().unwrap().push(data);
         Ok(())
@@ -41,11 +59,15 @@ impl DreamStore for TrackingDreamStore {
 fn make_provider() -> OpenAIProvider {
     use std::path::PathBuf;
     let env_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap().parent().unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
         .join(".env");
     let _ = dotenvy::from_path(&env_path);
     let key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
-    let url = std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
+    let url =
+        std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
     let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
     OpenAIProvider::with_base_url(key, model, url)
 }
@@ -59,6 +81,7 @@ where
         provider: Box::new(make_provider()),
         execution_plane: None,
         session_log: Some(Arc::new(InMemorySessionLog::new())),
+        compression_store: None,
         session_id: None,
         max_tokens: 4096,
         max_turns: Some(25),
@@ -72,6 +95,8 @@ where
         knowledge_source: None,
         signal_source: None,
         governance: None,
+        tokenizer: None,
+        enable_plan_tool: None,
         on_tool_suspend: None,
     };
     setup(&mut plane, &mut opts);
@@ -88,7 +113,10 @@ async fn system_prompt_is_followed() {
         opts.system_prompt = Some("You are a pirate. Always end every reply with 'Arrr!'".into());
     });
     let result = runner.execute("Say hello.").await.unwrap();
-    assert!(result.to_lowercase().contains("arrr"), "expected 'Arrr!' in: {result}");
+    assert!(
+        result.to_lowercase().contains("arrr"),
+        "expected 'Arrr!' in: {result}"
+    );
 }
 
 // ─── initial_memory ──────────────────────────────────────────────────────────
@@ -99,8 +127,14 @@ async fn initial_memory_is_recalled() {
     let runner = make_runner_with(|_, opts| {
         opts.initial_memory = vec!["The user's favourite colour is chartreuse.".into()];
     });
-    let result = runner.execute("What is the user's favourite colour? Answer in one word.").await.unwrap();
-    assert!(result.to_lowercase().contains("chartreuse"), "expected 'chartreuse' in: {result}");
+    let result = runner
+        .execute("What is the user's favourite colour? Answer in one word.")
+        .await
+        .unwrap();
+    assert!(
+        result.to_lowercase().contains("chartreuse"),
+        "expected 'chartreuse' in: {result}"
+    );
 }
 
 // ─── save_session ────────────────────────────────────────────────────────────
@@ -109,13 +143,18 @@ async fn initial_memory_is_recalled() {
 #[ignore = "requires OPENAI_API_KEY"]
 async fn save_session_called_after_run() {
     let saved = Arc::new(Mutex::new(vec![]));
-    let store = TrackingDreamStore { saved: saved.clone() };
+    let store = TrackingDreamStore {
+        saved: saved.clone(),
+    };
     let runner = make_runner_with(|_, opts| {
         opts.dream_store = Some(Box::new(store));
         opts.agent_id = Some("test-agent".into());
     });
     runner.execute("Reply \"ok\".").await.unwrap();
-    assert!(!saved.lock().unwrap().is_empty(), "save_session should have been called");
+    assert!(
+        !saved.lock().unwrap().is_empty(),
+        "save_session should have been called"
+    );
     assert_eq!(saved.lock().unwrap()[0].agent_id, "test-agent");
 }
 
@@ -125,19 +164,26 @@ async fn save_session_called_after_run() {
 #[ignore = "requires OPENAI_API_KEY"]
 async fn knowledge_init_called_before_run() {
     let init_count = Arc::new(Mutex::new(0u32));
-    let ks = TrackingKnowledgeSource { init_count: init_count.clone() };
+    let ks = TrackingKnowledgeSource {
+        init_count: init_count.clone(),
+    };
     let runner = make_runner_with(|_, opts| {
         opts.knowledge_source = Some(Box::new(ks));
     });
     runner.execute("Reply \"ok\".").await.unwrap();
-    assert!(*init_count.lock().unwrap() >= 1, "init() should have been called");
+    assert!(
+        *init_count.lock().unwrap() >= 1,
+        "init() should have been called"
+    );
 }
 
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
 async fn knowledge_init_called_once_per_run() {
     let init_count = Arc::new(Mutex::new(0u32));
-    let ks = TrackingKnowledgeSource { init_count: init_count.clone() };
+    let ks = TrackingKnowledgeSource {
+        init_count: init_count.clone(),
+    };
     let runner = make_runner_with(|_, opts| {
         opts.knowledge_source = Some(Box::new(ks));
     });
@@ -150,8 +196,8 @@ async fn knowledge_init_called_once_per_run() {
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
 async fn harness_loop_streaming_emits_events() {
+    use deepstrike_sdk::harness::{Criterion, HarnessEvent, HarnessRequest};
     use futures::StreamExt;
-    use deepstrike_sdk::harness::{HarnessEvent, HarnessRequest, Criterion};
 
     let runner = make_runner_with(|_, _| {});
     let harness = HarnessLoop::new(&runner, make_provider(), 2, None);
@@ -171,7 +217,10 @@ async fn harness_loop_streaming_emits_events() {
 
     while let Some(evt) = stream.next().await {
         match evt.unwrap() {
-            HarnessEvent::Token(t) => { result.push_str(&t); has_token = true; }
+            HarnessEvent::Token(t) => {
+                result.push_str(&t);
+                has_token = true;
+            }
             HarnessEvent::Supervising => has_supervising = true,
             HarnessEvent::Done { .. } | HarnessEvent::MaxAttemptsReached => has_terminal = true,
             _ => {}
@@ -187,8 +236,8 @@ async fn harness_loop_streaming_emits_events() {
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
 async fn harness_loop_done_verdict_has_details() {
+    use deepstrike_sdk::harness::{Criterion, HarnessEvent, HarnessRequest};
     use futures::StreamExt;
-    use deepstrike_sdk::harness::{HarnessEvent, HarnessRequest, Criterion};
 
     let runner = make_runner_with(|_, _| {});
     let harness = HarnessLoop::new(&runner, make_provider(), 2, None);

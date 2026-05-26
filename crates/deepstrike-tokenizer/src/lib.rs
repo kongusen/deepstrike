@@ -2,7 +2,7 @@
 //!
 //! Multi-model token counting engine.
 
-use tiktoken_rs::{cl100k_base, o200k_base, CoreBPE};
+use tiktoken_rs::{CoreBPE, cl100k_base, o200k_base};
 
 /// Supported tokenizer backends.
 pub enum TokenizerBackend {

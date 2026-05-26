@@ -21,7 +21,11 @@ pub struct SynthesisPolicy {
 
 impl Default for SynthesisPolicy {
     fn default() -> Self {
-        Self { max_session_chars: 8_000, max_insights: 10, include_seed_insights: true }
+        Self {
+            max_session_chars: 8_000,
+            max_insights: 10,
+            include_seed_insights: true,
+        }
     }
 }
 
@@ -66,8 +70,7 @@ impl SynthesisPromptBuilder {
 
         // --- seed insights (rule-based observations) -------------------------
         if self.policy.include_seed_insights && !seed_insights.is_empty() {
-            user_content
-                .push_str("## Rule-Based Observations (synthesize and elevate these)\n\n");
+            user_content.push_str("## Rule-Based Observations (synthesize and elevate these)\n\n");
             for insight in seed_insights {
                 user_content.push_str(&format!(
                     "- [{}] {}\n",
@@ -111,7 +114,9 @@ impl SynthesisResponseParser {
         }
         // Fallback: treat the entire response as a single synthesized insight.
         vec![TraceInsight {
-            kind: InsightKind::Synthesized { text: content.chars().take(300).collect() },
+            kind: InsightKind::Synthesized {
+                text: content.chars().take(300).collect(),
+            },
             confidence: 0.5,
             session_id: synthetic_session_id.to_string(),
         }]
@@ -150,15 +155,27 @@ fn format_message(msg: &Message, budget: usize) -> String {
 
 fn seed_hint(insight: &TraceInsight) -> String {
     match &insight.kind {
-        InsightKind::RepeatedToolError { tool_name, error_count, sample_error } => {
-            format!("'{}' errored {} times: {}", tool_name, error_count, sample_error)
+        InsightKind::RepeatedToolError {
+            tool_name,
+            error_count,
+            sample_error,
+        } => {
+            format!(
+                "'{}' errored {} times: {}",
+                tool_name, error_count, sample_error
+            )
         }
-        InsightKind::SuccessfulToolSequence { tools, context_hint } => {
-            format!("Sequence [{}] succeeded for: {}", tools.join("→"), context_hint)
+        InsightKind::SuccessfulToolSequence {
+            tools,
+            context_hint,
+        } => {
+            format!(
+                "Sequence [{}] succeeded for: {}",
+                tools.join("→"),
+                context_hint
+            )
         }
-        InsightKind::LongReasoning { summary_hint } => {
-            summary_hint.chars().take(100).collect()
-        }
+        InsightKind::LongReasoning { summary_hint } => summary_hint.chars().take(100).collect(),
         InsightKind::Synthesized { text } => text.chars().take(100).collect(),
     }
 }
@@ -190,8 +207,11 @@ fn try_parse_json(session_id: &str, content: &str) -> Option<Vec<TraceInsight>> 
             if text.is_empty() {
                 return None;
             }
-            let confidence =
-                item.get("confidence")?.as_f64().unwrap_or(0.5).clamp(0.0, 1.0);
+            let confidence = item
+                .get("confidence")?
+                .as_f64()
+                .unwrap_or(0.5)
+                .clamp(0.0, 1.0);
             Some(TraceInsight {
                 kind: InsightKind::Synthesized {
                     text: text.chars().take(300).collect(),
@@ -271,8 +291,10 @@ mod tests {
     #[test]
     fn build_prompt_includes_session_content_and_seeds() {
         let builder = SynthesisPromptBuilder::new(SynthesisPolicy::default());
-        let sessions =
-            vec![("s1".to_string(), vec![Message::user("fix the authentication bug")])];
+        let sessions = vec![(
+            "s1".to_string(),
+            vec![Message::user("fix the authentication bug")],
+        )];
         let seeds = vec![seed("bash")];
         let msgs = builder.build(&sessions, &seeds);
 
@@ -286,7 +308,10 @@ mod tests {
 
     #[test]
     fn build_prompt_respects_session_char_budget() {
-        let policy = SynthesisPolicy { max_session_chars: 20, ..Default::default() };
+        let policy = SynthesisPolicy {
+            max_session_chars: 20,
+            ..Default::default()
+        };
         let builder = SynthesisPromptBuilder::new(policy);
         let long_msg = Message::user("x".repeat(1000));
         let sessions = vec![("s1".to_string(), vec![long_msg])];

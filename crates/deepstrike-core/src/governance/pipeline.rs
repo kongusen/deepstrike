@@ -110,7 +110,13 @@ mod tests {
         });
 
         let v = pipeline.evaluate(&call("danger.delete"), &caller());
-        assert!(matches!(v, GovernanceVerdict::Deny { stage: "permission", .. }));
+        assert!(matches!(
+            v,
+            GovernanceVerdict::Deny {
+                stage: "permission",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -140,6 +146,12 @@ mod tests {
         let mut pipeline = GovernancePipeline::new(PermissionAction::Deny);
         pipeline.set_time(1000);
         let v = pipeline.evaluate(&call("anything"), &caller());
-        assert!(matches!(v, GovernanceVerdict::Deny { stage: "permission", .. }));
+        assert!(matches!(
+            v,
+            GovernanceVerdict::Deny {
+                stage: "permission",
+                ..
+            }
+        ));
     }
 }

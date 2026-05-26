@@ -9,7 +9,7 @@ use deepstrike_core::types::skill::SkillMetadata;
 fn context_manager_new_defaults() {
     let mgr = ContextManager::new(128_000);
     assert_eq!(mgr.max_tokens, 128_000);
-    assert!(mgr.current_goal.is_empty());
+    assert!(mgr.partitions.task_state.goal.is_empty());
     assert_eq!(mgr.sprint, 0);
     assert!(mgr.last_handoff.is_none());
     assert!(!mgr.memory_enabled);
@@ -71,20 +71,33 @@ fn render_empty_context_returns_structured_context() {
     let mgr = ContextManager::new(10_000);
     let rendered = mgr.render();
     assert!(rendered.system_text.is_empty());
-    assert!(rendered.turns.is_empty() || rendered.turns.iter().all(|m| m.content.text_len() < usize::MAX));
+    assert!(
+        rendered.turns.is_empty()
+            || rendered
+                .turns
+                .iter()
+                .all(|m| m.content.text_len() < usize::MAX)
+    );
 }
 
 #[test]
 fn render_includes_system_and_history() {
     let mut mgr = ContextManager::new(10_000);
-    mgr.partitions.system.push(Message::system("You are helpful."), 10);
+    mgr.partitions
+        .system
+        .push(Message::system("You are helpful."), 10);
     mgr.push_history(Message::user("Hello"), 5);
     mgr.push_history(Message::assistant("Hi!"), 5);
 
     let rendered = mgr.render();
     assert!(rendered.system_text.contains("You are helpful"));
     assert_eq!(rendered.turns.len(), 2);
-    assert!(rendered.turns.iter().any(|m| m.content.as_text() == Some("Hello")));
+    assert!(
+        rendered
+            .turns
+            .iter()
+            .any(|m| m.content.as_text() == Some("Hello"))
+    );
 }
 
 // ─── Renewal ────────────────────────────────────────────────────────────────
@@ -92,7 +105,7 @@ fn render_includes_system_and_history() {
 #[test]
 fn renew_produces_handoff_artifact() {
     let mut mgr = ContextManager::new(500);
-    mgr.current_goal = "test goal".to_string();
+    mgr.partitions.task_state.goal = "test goal".to_string();
     mgr.partitions.system.push(Message::system("rules"), 10);
     for i in 0..10 {
         mgr.push_history(Message::user(format!("msg {i}")), 50);

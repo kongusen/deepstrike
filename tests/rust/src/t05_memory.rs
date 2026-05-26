@@ -1,6 +1,6 @@
+use compact_str::CompactString;
 use deepstrike_core::memory::working::WorkingMemory;
 use deepstrike_core::types::signal::{RuntimeSignal, SignalSource, SignalType, Urgency};
-use compact_str::CompactString;
 
 // ─── SDK-level WorkingMemory (deepstrike_sdk) ───────────────────────────────
 
@@ -51,7 +51,12 @@ fn kernel_working_memory_cache_tool_result() {
 #[test]
 fn kernel_working_memory_add_and_drain_signals() {
     let mut wm = WorkingMemory::new();
-    let sig = RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Normal, "tick");
+    let sig = RuntimeSignal::new(
+        SignalSource::Cron,
+        SignalType::Event,
+        Urgency::Normal,
+        "tick",
+    );
     wm.add_signal(sig);
     assert_eq!(wm.pending_signals.len(), 1);
 
@@ -72,7 +77,12 @@ fn kernel_working_memory_clear() {
     let mut wm = WorkingMemory::new();
     wm.cache_tool_result(CompactString::new("c1"), CompactString::new("v"));
     wm.scratch.insert("key".into(), serde_json::json!("val"));
-    wm.add_signal(RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Normal, "s"));
+    wm.add_signal(RuntimeSignal::new(
+        SignalSource::Cron,
+        SignalType::Event,
+        Urgency::Normal,
+        "s",
+    ));
     wm.clear();
     assert!(wm.pending_signals.is_empty());
     assert!(wm.tool_cache.is_empty());

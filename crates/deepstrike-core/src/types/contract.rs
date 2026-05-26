@@ -90,11 +90,18 @@ impl VerificationContract {
 
     /// Renders the contract as a markdown block suitable for injection into the system partition.
     pub fn format_for_system_prompt(&self) -> String {
-        let mut out = format!("## Verification Contract: {}\n\nGoal: {}\n\n", self.id, self.goal);
+        let mut out = format!(
+            "## Verification Contract: {}\n\nGoal: {}\n\n",
+            self.id, self.goal
+        );
 
         out.push_str("### Acceptance Criteria\n");
         for (i, c) in self.acceptance.iter().enumerate() {
-            let req = if c.required { "[REQUIRED]" } else { "[OPTIONAL]" };
+            let req = if c.required {
+                "[REQUIRED]"
+            } else {
+                "[OPTIONAL]"
+            };
             out.push_str(&format!(
                 "{}. {} {} (id: `{}`, weight: {:.1})\n",
                 i + 1,

@@ -53,7 +53,9 @@ pub enum IdlePhase {
         now_ms: u64,
         sessions_processed: usize,
     },
-    Done { result: IdleResult },
+    Done {
+        result: IdleResult,
+    },
 }
 
 pub enum IdleEvent {
@@ -65,15 +67,23 @@ pub enum IdleEvent {
         now_ms: u64,
     },
     /// SDK feeds back the LLM's text response from the synthesis call.
-    SynthesisResult { content: String },
+    SynthesisResult {
+        content: String,
+    },
     Abort,
 }
 
 pub enum IdleAction {
     /// Call the LLM with `messages`, then feed `IdleEvent::SynthesisResult`.
-    SynthesizeInsights { messages: Vec<Message> },
+    SynthesizeInsights {
+        messages: Vec<Message>,
+    },
     /// Apply `result` delta to the SemanticMemory store, then call `reset()`.
-    CommitMemories { agent_id: String, result: CurationResult, run_result: IdleResult },
+    CommitMemories {
+        agent_id: String,
+        result: CurationResult,
+        run_result: IdleResult,
+    },
     /// No sessions to process this cycle.
     Noop,
     Aborted,
@@ -123,7 +133,13 @@ impl IdlePipeline {
         let analyzer = TraceAnalyzer::new(policy.analysis.clone());
         let curator = MemoryCurator::new(policy.curation.clone());
         let prompt_builder = SynthesisPromptBuilder::new(policy.synthesis.clone());
-        Self { phase: IdlePhase::Idle, policy, analyzer, curator, prompt_builder }
+        Self {
+            phase: IdlePhase::Idle,
+            policy,
+            analyzer,
+            curator,
+            prompt_builder,
+        }
     }
 
     pub fn is_idle(&self) -> bool {
@@ -139,7 +155,11 @@ impl IdlePipeline {
             }
 
             // -- Phase 1: rule-based analysis + prompt assembly ---------------
-            IdleEvent::Trigger { sessions, existing_memories, now_ms } => {
+            IdleEvent::Trigger {
+                sessions,
+                existing_memories,
+                now_ms,
+            } => {
                 if sessions.is_empty() {
                     return IdleAction::Noop;
                 }
@@ -194,11 +214,18 @@ impl IdlePipeline {
 
                 // Curate the combined set against the existing memory store.
                 let curation_result =
-                    self.curator.curate(&all_insights, &existing_memories, now_ms);
+                    self.curator
+                        .curate(&all_insights, &existing_memories, now_ms);
                 let stats = curation_result.stats.clone();
 
-                let run_result = IdleResult { sessions_processed, insights_extracted, stats };
-                self.phase = IdlePhase::Done { result: run_result.clone() };
+                let run_result = IdleResult {
+                    sessions_processed,
+                    insights_extracted,
+                    stats,
+                };
+                self.phase = IdlePhase::Done {
+                    result: run_result.clone(),
+                };
 
                 IdleAction::CommitMemories {
                     agent_id: self.policy.agent_id.clone(),
@@ -323,10 +350,15 @@ mod tests {
             existing_memories: vec![],
             now_ms: 5000,
         });
-        let action =
-            p.feed(IdleEvent::SynthesisResult { content: VALID_JSON.to_string() });
+        let action = p.feed(IdleEvent::SynthesisResult {
+            content: VALID_JSON.to_string(),
+        });
         match action {
-            IdleAction::CommitMemories { agent_id, result, run_result } => {
+            IdleAction::CommitMemories {
+                agent_id,
+                result,
+                run_result,
+            } => {
                 assert_eq!(agent_id, "agent-1");
                 assert_eq!(run_result.sessions_processed, 1);
                 assert!(run_result.insights_extracted > 0);
@@ -346,8 +378,9 @@ mod tests {
             existing_memories: vec![],
             now_ms: 0,
         });
-        let action =
-            p.feed(IdleEvent::SynthesisResult { content: VALID_JSON.to_string() });
+        let action = p.feed(IdleEvent::SynthesisResult {
+            content: VALID_JSON.to_string(),
+        });
         if let IdleAction::CommitMemories { result, .. } = action {
             let has_synthesized = result
                 .to_add
@@ -361,7 +394,9 @@ mod tests {
     fn synthesis_result_without_pending_state_returns_aborted() {
         let mut p = pipeline();
         // Feed SynthesisResult while still in Idle (no Trigger first).
-        let action = p.feed(IdleEvent::SynthesisResult { content: VALID_JSON.to_string() });
+        let action = p.feed(IdleEvent::SynthesisResult {
+            content: VALID_JSON.to_string(),
+        });
         assert!(matches!(action, IdleAction::Aborted));
     }
 
@@ -369,16 +404,24 @@ mod tests {
 
     #[test]
     fn respects_max_sessions_per_run() {
-        let policy = IdlePolicy { max_sessions_per_run: 1, ..IdlePolicy::new("agent-1") };
+        let policy = IdlePolicy {
+            max_sessions_per_run: 1,
+            ..IdlePolicy::new("agent-1")
+        };
         let mut p = IdlePipeline::new(policy);
         let sessions = vec![
             session_with_repeated_error("s1"),
             session_with_repeated_error("s2"),
             session_with_repeated_error("s3"),
         ];
-        p.feed(IdleEvent::Trigger { sessions, existing_memories: vec![], now_ms: 0 });
-        let action =
-            p.feed(IdleEvent::SynthesisResult { content: EMPTY_JSON.to_string() });
+        p.feed(IdleEvent::Trigger {
+            sessions,
+            existing_memories: vec![],
+            now_ms: 0,
+        });
+        let action = p.feed(IdleEvent::SynthesisResult {
+            content: EMPTY_JSON.to_string(),
+        });
         match action {
             IdleAction::CommitMemories { run_result, .. } => {
                 assert_eq!(run_result.sessions_processed, 1);
@@ -399,7 +442,9 @@ mod tests {
             existing_memories: vec![],
             now_ms: 0,
         });
-        p.feed(IdleEvent::SynthesisResult { content: EMPTY_JSON.to_string() });
+        p.feed(IdleEvent::SynthesisResult {
+            content: EMPTY_JSON.to_string(),
+        });
         assert!(matches!(p.phase, IdlePhase::Done { .. }));
 
         p.reset();

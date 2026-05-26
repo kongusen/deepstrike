@@ -28,7 +28,9 @@ impl Default for SkillCatalog {
 
 impl SkillCatalog {
     pub fn new() -> Self {
-        Self { available: HashMap::new() }
+        Self {
+            available: HashMap::new(),
+        }
     }
 
     /// Replace the full available-skills set in one shot.

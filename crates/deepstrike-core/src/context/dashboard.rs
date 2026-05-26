@@ -18,13 +18,16 @@ pub struct KnowledgeSurface {
 pub struct Dashboard {
     pub rho: f64,
     pub token_budget: u32,
+    #[deprecated(since = "0.2.0", note = "Use TaskState.progress instead")]
     pub goal_progress: String,
     pub error_count: u32,
     pub depth: u32,
     pub interrupt_requested: bool,
+    #[deprecated(since = "0.2.0", note = "Use TaskState.plan instead")]
     pub plan: Vec<String>,
     pub event_surface: EventSurface,
     pub knowledge_surface: KnowledgeSurface,
+    #[deprecated(since = "0.2.0", note = "Use TaskState.scratchpad instead")]
     pub scratchpad: String,
 }
 
@@ -46,16 +49,6 @@ impl Default for Dashboard {
 }
 
 impl Dashboard {
-    /// Cheap token estimate without full string rendering.
-    /// Used by total_tokens() hot path.
-    pub fn token_estimate(&self) -> u32 {
-        let base = 20u32; // fixed fields
-        let plan_chars: usize = self.plan.iter().map(|s| s.len()).sum();
-        let q_chars: usize = self.knowledge_surface.active_questions.iter().map(|s| s.len()).sum();
-        let dynamic = (self.goal_progress.len() + self.scratchpad.len() + plan_chars + q_chars) / 4;
-        base + dynamic as u32
-    }
-
     /// Compact single-block representation for embedding in system_text.
     /// Returns an empty string when all fields are at their default/empty values
     /// so the renderer can skip it entirely on fresh agents.
@@ -79,14 +72,20 @@ impl Dashboard {
             parts.push(format!("goal_progress: {}", self.goal_progress));
         }
         if has_plan {
-            let plan = self.plan.iter().enumerate()
+            let plan = self
+                .plan
+                .iter()
+                .enumerate()
                 .map(|(i, s)| format!("  {}. {}", i + 1, s))
                 .collect::<Vec<_>>()
                 .join("\n");
             parts.push(format!("plan:\n{plan}"));
         }
         if has_questions {
-            parts.push(format!("active_questions: {}", self.knowledge_surface.active_questions.join(", ")));
+            parts.push(format!(
+                "active_questions: {}",
+                self.knowledge_surface.active_questions.join(", ")
+            ));
         }
         if has_scratchpad {
             parts.push(format!("scratchpad: {}", self.scratchpad));
@@ -98,7 +97,9 @@ impl Dashboard {
         let plan_str = if self.plan.is_empty() {
             "(none)".to_string()
         } else {
-            self.plan.iter().enumerate()
+            self.plan
+                .iter()
+                .enumerate()
                 .map(|(i, s)| format!("  {}. {}", i + 1, s))
                 .collect::<Vec<_>>()
                 .join("\n")

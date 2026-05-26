@@ -21,12 +21,21 @@ pub struct RestoreConfig {
 
 impl Default for RestoreConfig {
     fn default() -> Self {
-        Self { max_messages: 20, max_chars: 8000, include_context: true, include_events: false }
+        Self {
+            max_messages: 20,
+            max_chars: 8000,
+            include_context: true,
+            include_events: false,
+        }
     }
 }
 
 /// Apply `policy` to `messages` and return the subset to inject at run start.
-pub fn restore(policy: &RestorePolicy, config: &RestoreConfig, messages: &[Message]) -> Vec<Message> {
+pub fn restore(
+    policy: &RestorePolicy,
+    config: &RestoreConfig,
+    messages: &[Message],
+) -> Vec<Message> {
     match policy {
         RestorePolicy::None => vec![],
         RestorePolicy::TranscriptOnly => messages.to_vec(),
@@ -65,7 +74,12 @@ impl Default for SessionMemory {
 
 impl SessionMemory {
     pub fn new(max_messages: usize, max_tokens: u32) -> Self {
-        Self { messages: VecDeque::new(), max_messages, max_tokens, current_tokens: 0 }
+        Self {
+            messages: VecDeque::new(),
+            max_messages,
+            max_tokens,
+            current_tokens: 0,
+        }
     }
 
     pub fn push(&mut self, msg: Message) {
@@ -76,11 +90,15 @@ impl SessionMemory {
             && !self.messages.is_empty()
         {
             let removed = self.messages.pop_front().unwrap();
-            self.current_tokens = self.current_tokens.saturating_sub(removed.token_count.unwrap_or(0));
+            self.current_tokens = self
+                .current_tokens
+                .saturating_sub(removed.token_count.unwrap_or(0));
         }
     }
 
-    pub fn token_count(&self) -> u32 { self.current_tokens }
+    pub fn token_count(&self) -> u32 {
+        self.current_tokens
+    }
 
     /// Returns messages as a slice for read-only access.
     pub fn as_slice(&self) -> Vec<&Message> {
@@ -96,8 +114,12 @@ impl SessionMemory {
         self.messages.iter().cloned().collect()
     }
 
-    pub fn len(&self) -> usize { self.messages.len() }
-    pub fn is_empty(&self) -> bool { self.messages.is_empty() }
+    pub fn len(&self) -> usize {
+        self.messages.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
 
     pub fn clear(&mut self) {
         self.messages.clear();

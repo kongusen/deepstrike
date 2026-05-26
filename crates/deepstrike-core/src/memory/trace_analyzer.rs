@@ -59,7 +59,11 @@ pub struct AnalysisPolicy {
 
 impl Default for AnalysisPolicy {
     fn default() -> Self {
-        Self { min_error_count: 2, min_success_sequence_len: 2, min_reasoning_chars: 500 }
+        Self {
+            min_error_count: 2,
+            min_success_sequence_len: 2,
+            min_reasoning_chars: 500,
+        }
     }
 }
 
@@ -74,7 +78,10 @@ impl TraceAnalyzer {
 
     /// Analyze all sessions in one pass. Sessions are `(session_id, messages)` tuples.
     pub fn analyze_batch(&self, sessions: &[(String, Vec<Message>)]) -> Vec<TraceInsight> {
-        sessions.iter().flat_map(|(id, msgs)| self.analyze(id, msgs)).collect()
+        sessions
+            .iter()
+            .flat_map(|(id, msgs)| self.analyze(id, msgs))
+            .collect()
     }
 
     pub fn analyze(&self, session_id: &str, messages: &[Message]) -> Vec<TraceInsight> {
@@ -106,7 +113,12 @@ impl TraceAnalyzer {
             }
             if let Content::Parts(parts) = &msg.content {
                 for part in parts {
-                    if let ContentPart::ToolResult { call_id, output, is_error } = part {
+                    if let ContentPart::ToolResult {
+                        call_id,
+                        output,
+                        is_error,
+                    } = part
+                    {
                         if *is_error {
                             if let Some(name) = call_id_to_name.get(call_id.as_str()) {
                                 let entry = error_counts
@@ -124,7 +136,11 @@ impl TraceAnalyzer {
             .into_iter()
             .filter(|(_, (count, _))| *count >= self.policy.min_error_count)
             .map(|(tool_name, (error_count, sample_error))| TraceInsight {
-                kind: InsightKind::RepeatedToolError { tool_name, error_count, sample_error },
+                kind: InsightKind::RepeatedToolError {
+                    tool_name,
+                    error_count,
+                    sample_error,
+                },
                 // Confidence scales with frequency, saturating at 1.0 after 5 errors.
                 confidence: (error_count as f64 / 5.0).min(1.0),
                 session_id: session_id.to_string(),
@@ -192,11 +208,7 @@ impl TraceAnalyzer {
         insights
     }
 
-    fn detect_long_reasoning(
-        &self,
-        session_id: &str,
-        messages: &[Message],
-    ) -> Vec<TraceInsight> {
+    fn detect_long_reasoning(&self, session_id: &str, messages: &[Message]) -> Vec<TraceInsight> {
         messages
             .iter()
             .filter(|m| m.role == Role::Assistant)
@@ -267,7 +279,12 @@ mod tests {
             .filter(|i| matches!(i.kind, InsightKind::RepeatedToolError { .. }))
             .collect();
         assert_eq!(errors.len(), 1);
-        if let InsightKind::RepeatedToolError { tool_name, error_count, .. } = &errors[0].kind {
+        if let InsightKind::RepeatedToolError {
+            tool_name,
+            error_count,
+            ..
+        } = &errors[0].kind
+        {
             assert_eq!(tool_name, "bash");
             assert_eq!(*error_count, 2);
         }
@@ -275,13 +292,12 @@ mod tests {
 
     #[test]
     fn skips_single_error_below_threshold() {
-        let messages = vec![
-            assistant_with_tool("c1", "bash"),
-            tool_error("c1", "oops"),
-        ];
+        let messages = vec![assistant_with_tool("c1", "bash"), tool_error("c1", "oops")];
         let insights = analyzer().analyze("s1", &messages);
         assert!(
-            insights.iter().all(|i| !matches!(i.kind, InsightKind::RepeatedToolError { .. }))
+            insights
+                .iter()
+                .all(|i| !matches!(i.kind, InsightKind::RepeatedToolError { .. }))
         );
     }
 
@@ -301,7 +317,11 @@ mod tests {
             .filter(|i| matches!(i.kind, InsightKind::SuccessfulToolSequence { .. }))
             .collect();
         assert_eq!(seqs.len(), 1);
-        if let InsightKind::SuccessfulToolSequence { tools, context_hint } = &seqs[0].kind {
+        if let InsightKind::SuccessfulToolSequence {
+            tools,
+            context_hint,
+        } = &seqs[0].kind
+        {
             assert_eq!(tools, &["read_file", "edit_file"]);
             assert!(context_hint.contains("fix the bug"));
         }
@@ -320,7 +340,9 @@ mod tests {
         let insights = analyzer().analyze("s1", &messages);
         // Sequence only has 1 clean tool call after the error, below min_success_sequence_len=2.
         assert!(
-            insights.iter().all(|i| !matches!(i.kind, InsightKind::SuccessfulToolSequence { .. }))
+            insights
+                .iter()
+                .all(|i| !matches!(i.kind, InsightKind::SuccessfulToolSequence { .. }))
         );
     }
 
@@ -329,6 +351,10 @@ mod tests {
         let long_text = "a".repeat(600);
         let messages = vec![Message::assistant(long_text)];
         let insights = analyzer().analyze("s1", &messages);
-        assert!(insights.iter().any(|i| matches!(i.kind, InsightKind::LongReasoning { .. })));
+        assert!(
+            insights
+                .iter()
+                .any(|i| matches!(i.kind, InsightKind::LongReasoning { .. }))
+        );
     }
 }

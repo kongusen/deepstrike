@@ -45,14 +45,19 @@ impl ConstraintValidator {
             if c.tool_name != call.name.as_str() {
                 continue;
             }
-            let value = call.arguments.pointer(&format!("/{}", c.param_path.replace('.', "/")));
+            let value = call
+                .arguments
+                .pointer(&format!("/{}", c.param_path.replace('.', "/")));
 
             match &c.rule {
                 ConstraintRule::Required => {
                     if value.is_none() || value == Some(&serde_json::Value::Null) {
                         return Some(GovernanceVerdict::Deny {
                             stage: "constraint",
-                            reason: format!("parameter '{}' is required for '{}'", c.param_path, c.tool_name),
+                            reason: format!(
+                                "parameter '{}' is required for '{}'",
+                                c.param_path, c.tool_name
+                            ),
                         });
                     }
                 }
@@ -75,7 +80,10 @@ impl ConstraintValidator {
                             if val < *lo {
                                 return Some(GovernanceVerdict::Deny {
                                     stage: "constraint",
-                                    reason: format!("parameter '{}' value {} below minimum {}", c.param_path, val, lo),
+                                    reason: format!(
+                                        "parameter '{}' value {} below minimum {}",
+                                        c.param_path, val, lo
+                                    ),
                                 });
                             }
                         }
@@ -83,7 +91,10 @@ impl ConstraintValidator {
                             if val > *hi {
                                 return Some(GovernanceVerdict::Deny {
                                     stage: "constraint",
-                                    reason: format!("parameter '{}' value {} above maximum {}", c.param_path, val, hi),
+                                    reason: format!(
+                                        "parameter '{}' value {} above maximum {}",
+                                        c.param_path, val, hi
+                                    ),
                                 });
                             }
                         }
@@ -123,7 +134,13 @@ mod tests {
             rule: ConstraintRule::Required,
         });
         let verdict = v.validate(&call("writefile", serde_json::json!({})));
-        assert!(matches!(verdict, Some(GovernanceVerdict::Deny { stage: "constraint", .. })));
+        assert!(matches!(
+            verdict,
+            Some(GovernanceVerdict::Deny {
+                stage: "constraint",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -144,9 +161,18 @@ mod tests {
         v.add(ParamConstraint {
             tool_name: "sleep".into(),
             param_path: "seconds".into(),
-            rule: ConstraintRule::Range { min: Some(0.0), max: Some(10.0) },
+            rule: ConstraintRule::Range {
+                min: Some(0.0),
+                max: Some(10.0),
+            },
         });
-        assert!(v.validate(&call("sleep", serde_json::json!({"seconds": 5}))).is_none());
-        assert!(v.validate(&call("sleep", serde_json::json!({"seconds": 100}))).is_some());
+        assert!(
+            v.validate(&call("sleep", serde_json::json!({"seconds": 5})))
+                .is_none()
+        );
+        assert!(
+            v.validate(&call("sleep", serde_json::json!({"seconds": 100})))
+                .is_some()
+        );
     }
 }

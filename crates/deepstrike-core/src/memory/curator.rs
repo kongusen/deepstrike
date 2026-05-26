@@ -69,7 +69,10 @@ impl MemoryCurator {
         existing: &[MemoryEntry],
         now_ms: u64,
     ) -> CurationResult {
-        let mut stats = CurationStats { insights_processed: insights.len(), ..Default::default() };
+        let mut stats = CurationStats {
+            insights_processed: insights.len(),
+            ..Default::default()
+        };
         let mut to_add: Vec<MemoryEntry> = Vec::new();
         let mut to_remove_indices: Vec<usize> = Vec::new();
 
@@ -86,7 +89,8 @@ impl MemoryCurator {
                 if to_remove_indices.contains(&idx) {
                     continue; // already evicted this run
                 }
-                if jaccard(&candidate.text, &existing_entry.text) >= self.policy.similarity_threshold
+                if jaccard(&candidate.text, &existing_entry.text)
+                    >= self.policy.similarity_threshold
                 {
                     conflict_idx = Some(idx);
                     break;
@@ -132,7 +136,11 @@ impl MemoryCurator {
         to_add.truncate(headroom);
         stats.entries_added = to_add.len();
 
-        CurationResult { to_add, to_remove_indices, stats }
+        CurationResult {
+            to_add,
+            to_remove_indices,
+            stats,
+        }
     }
 }
 
@@ -140,11 +148,25 @@ impl MemoryCurator {
 
 fn insight_to_entry(insight: &TraceInsight, now_ms: u64) -> MemoryEntry {
     let text = match &insight.kind {
-        InsightKind::RepeatedToolError { tool_name, error_count, sample_error } => {
-            format!("Tool '{}' failed {} times; pattern: {}", tool_name, error_count, sample_error)
+        InsightKind::RepeatedToolError {
+            tool_name,
+            error_count,
+            sample_error,
+        } => {
+            format!(
+                "Tool '{}' failed {} times; pattern: {}",
+                tool_name, error_count, sample_error
+            )
         }
-        InsightKind::SuccessfulToolSequence { tools, context_hint } => {
-            format!("Successful sequence [{}] for: {}", tools.join(" → "), context_hint)
+        InsightKind::SuccessfulToolSequence {
+            tools,
+            context_hint,
+        } => {
+            format!(
+                "Successful sequence [{}] for: {}",
+                tools.join(" → "),
+                context_hint
+            )
         }
         InsightKind::LongReasoning { summary_hint } => summary_hint.clone(),
         InsightKind::Synthesized { text } => text.clone(),
@@ -155,7 +177,11 @@ fn insight_to_entry(insight: &TraceInsight, now_ms: u64) -> MemoryEntry {
         "session_id": insight.session_id,
         "extracted_at_ms": now_ms,
     });
-    MemoryEntry { text, score: insight.confidence, metadata }
+    MemoryEntry {
+        text,
+        score: insight.confidence,
+        metadata,
+    }
 }
 
 fn jaccard(a: &str, b: &str) -> f64 {
@@ -163,7 +189,11 @@ fn jaccard(a: &str, b: &str) -> f64 {
     let sb: HashSet<&str> = b.split_whitespace().collect();
     let inter = sa.intersection(&sb).count();
     let union = sa.union(&sb).count();
-    if union == 0 { 0.0 } else { inter as f64 / union as f64 }
+    if union == 0 {
+        0.0
+    } else {
+        inter as f64 / union as f64
+    }
 }
 
 #[cfg(test)]
@@ -189,7 +219,11 @@ mod tests {
     }
 
     fn existing_entry(text: &str, score: f64) -> MemoryEntry {
-        MemoryEntry { text: text.to_string(), score, metadata: serde_json::Value::Null }
+        MemoryEntry {
+            text: text.to_string(),
+            score,
+            metadata: serde_json::Value::Null,
+        }
     }
 
     #[test]
@@ -227,8 +261,10 @@ mod tests {
             ..Default::default()
         };
         let curator = MemoryCurator::new(policy);
-        let existing =
-            vec![existing_entry("Tool 'bash' failed 3 times; pattern: permission denied", 0.95)];
+        let existing = vec![existing_entry(
+            "Tool 'bash' failed 3 times; pattern: permission denied",
+            0.95,
+        )];
         // New insight has lower confidence → existing wins.
         let result = curator.curate(&[error_insight("bash", 0.5)], &existing, 0);
         assert!(result.to_add.is_empty());
@@ -247,7 +283,10 @@ mod tests {
 
     #[test]
     fn respects_max_entries_headroom() {
-        let policy = CurationPolicy { max_entries: 2, ..Default::default() };
+        let policy = CurationPolicy {
+            max_entries: 2,
+            ..Default::default()
+        };
         let curator = MemoryCurator::new(policy);
         let existing = vec![
             existing_entry("unrelated entry one", 0.5),

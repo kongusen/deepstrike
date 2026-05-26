@@ -1,10 +1,10 @@
-use deepstrike_core::governance::pipeline::GovernancePipeline;
+use compact_str::CompactString;
+use deepstrike_core::AgentIdentity;
 use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
+use deepstrike_core::governance::pipeline::GovernancePipeline;
 use deepstrike_core::governance::rate_limit::RateLimit;
 use deepstrike_core::types::message::ToolCall;
 use deepstrike_core::types::policy::{CallerContext, GovernanceVerdict, VetoCheck};
-use deepstrike_core::AgentIdentity;
-use compact_str::CompactString;
 
 fn call(name: &str) -> ToolCall {
     ToolCall {
@@ -48,7 +48,13 @@ fn deny_rule_blocks_matching_tool() {
     pipeline.set_time(1000);
 
     let v = pipeline.evaluate(&call("danger.delete"), &caller());
-    assert!(matches!(v, GovernanceVerdict::Deny { stage: "permission", .. }));
+    assert!(matches!(
+        v,
+        GovernanceVerdict::Deny {
+            stage: "permission",
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -69,7 +75,13 @@ fn deny_default_blocks_all_tools() {
     let mut pipeline = GovernancePipeline::new(PermissionAction::Deny);
     pipeline.set_time(1000);
     let v = pipeline.evaluate(&call("anything"), &caller());
-    assert!(matches!(v, GovernanceVerdict::Deny { stage: "permission", .. }));
+    assert!(matches!(
+        v,
+        GovernanceVerdict::Deny {
+            stage: "permission",
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -111,7 +123,10 @@ fn veto_closure_check() {
 
     let v = pipeline.evaluate(&call("danger_exec"), &caller());
     assert!(matches!(v, GovernanceVerdict::Deny { stage: "veto", .. }));
-    assert!(matches!(pipeline.evaluate(&call("safe_read"), &caller()), GovernanceVerdict::Allow));
+    assert!(matches!(
+        pipeline.evaluate(&call("safe_read"), &caller()),
+        GovernanceVerdict::Allow
+    ));
 }
 
 #[test]
@@ -146,25 +161,55 @@ fn veto_trait_impl_check() {
 #[test]
 fn rate_limiter_allows_within_limit() {
     let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
-    pipeline.rate_limiter.set_limit("api_call", RateLimit { max_calls: 2, window_ms: 1000 });
+    pipeline.rate_limiter.set_limit(
+        "api_call",
+        RateLimit {
+            max_calls: 2,
+            window_ms: 1000,
+        },
+    );
     pipeline.set_time(100);
 
-    assert!(matches!(pipeline.evaluate(&call("api_call"), &caller()), GovernanceVerdict::Allow));
-    assert!(matches!(pipeline.evaluate(&call("api_call"), &caller()), GovernanceVerdict::Allow));
-    assert!(matches!(pipeline.evaluate(&call("api_call"), &caller()), GovernanceVerdict::RateLimited { .. }));
+    assert!(matches!(
+        pipeline.evaluate(&call("api_call"), &caller()),
+        GovernanceVerdict::Allow
+    ));
+    assert!(matches!(
+        pipeline.evaluate(&call("api_call"), &caller()),
+        GovernanceVerdict::Allow
+    ));
+    assert!(matches!(
+        pipeline.evaluate(&call("api_call"), &caller()),
+        GovernanceVerdict::RateLimited { .. }
+    ));
 }
 
 #[test]
 fn rate_limiter_window_expires() {
     let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
-    pipeline.rate_limiter.set_limit("api", RateLimit { max_calls: 1, window_ms: 100 });
+    pipeline.rate_limiter.set_limit(
+        "api",
+        RateLimit {
+            max_calls: 1,
+            window_ms: 100,
+        },
+    );
 
     pipeline.set_time(0);
-    assert!(matches!(pipeline.evaluate(&call("api"), &caller()), GovernanceVerdict::Allow));
-    assert!(matches!(pipeline.evaluate(&call("api"), &caller()), GovernanceVerdict::RateLimited { .. }));
+    assert!(matches!(
+        pipeline.evaluate(&call("api"), &caller()),
+        GovernanceVerdict::Allow
+    ));
+    assert!(matches!(
+        pipeline.evaluate(&call("api"), &caller()),
+        GovernanceVerdict::RateLimited { .. }
+    ));
 
     pipeline.set_time(200);
-    assert!(matches!(pipeline.evaluate(&call("api"), &caller()), GovernanceVerdict::Allow));
+    assert!(matches!(
+        pipeline.evaluate(&call("api"), &caller()),
+        GovernanceVerdict::Allow
+    ));
 }
 
 // ─── Pipeline order: permission → veto → rate_limit ─────────────────────────
@@ -190,7 +235,13 @@ fn permission_deny_stops_before_veto() {
 fn veto_stops_before_rate_limit() {
     let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
     pipeline.veto.block_tool("vetoed");
-    pipeline.rate_limiter.set_limit("vetoed", RateLimit { max_calls: 0, window_ms: 1000 });
+    pipeline.rate_limiter.set_limit(
+        "vetoed",
+        RateLimit {
+            max_calls: 0,
+            window_ms: 1000,
+        },
+    );
     pipeline.set_time(1000);
 
     let v = pipeline.evaluate(&call("vetoed"), &caller());
@@ -246,9 +297,18 @@ fn suffix_wildcard_matches() {
     });
     pipeline.set_time(1000);
 
-    assert!(matches!(pipeline.evaluate(&call("db.drop"), &caller()), GovernanceVerdict::Deny { .. }));
-    assert!(matches!(pipeline.evaluate(&call("db.query"), &caller()), GovernanceVerdict::Deny { .. }));
-    assert!(matches!(pipeline.evaluate(&call("file.read"), &caller()), GovernanceVerdict::Allow));
+    assert!(matches!(
+        pipeline.evaluate(&call("db.drop"), &caller()),
+        GovernanceVerdict::Deny { .. }
+    ));
+    assert!(matches!(
+        pipeline.evaluate(&call("db.query"), &caller()),
+        GovernanceVerdict::Deny { .. }
+    ));
+    assert!(matches!(
+        pipeline.evaluate(&call("file.read"), &caller()),
+        GovernanceVerdict::Allow
+    ));
 }
 
 #[test]
@@ -260,6 +320,12 @@ fn prefix_wildcard_matches() {
     });
     pipeline.set_time(1000);
 
-    assert!(matches!(pipeline.evaluate(&call("fs.delete"), &caller()), GovernanceVerdict::Deny { .. }));
-    assert!(matches!(pipeline.evaluate(&call("fs.read"), &caller()), GovernanceVerdict::Allow));
+    assert!(matches!(
+        pipeline.evaluate(&call("fs.delete"), &caller()),
+        GovernanceVerdict::Deny { .. }
+    ));
+    assert!(matches!(
+        pipeline.evaluate(&call("fs.read"), &caller()),
+        GovernanceVerdict::Allow
+    ));
 }

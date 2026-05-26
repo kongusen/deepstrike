@@ -25,7 +25,9 @@ pub struct InMemorySemanticStore {
 
 impl InMemorySemanticStore {
     pub fn new() -> Self {
-        Self { entries: Mutex::new(VecDeque::new()) }
+        Self {
+            entries: Mutex::new(VecDeque::new()),
+        }
     }
 
     fn jaccard(a: &str, b: &str) -> f64 {
@@ -33,7 +35,11 @@ impl InMemorySemanticStore {
         let sb: HashSet<&str> = b.split_whitespace().collect();
         let inter = sa.intersection(&sb).count();
         let union = sa.union(&sb).count();
-        if union == 0 { 0.0 } else { inter as f64 / union as f64 }
+        if union == 0 {
+            0.0
+        } else {
+            inter as f64 / union as f64
+        }
     }
 }
 
@@ -60,7 +66,11 @@ impl SemanticMemory for InMemorySemanticStore {
             .map(|e| (Self::jaccard(text, &e.text), e))
             .collect();
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-        Ok(scored.into_iter().take(top_k).map(|(score, e)| MemoryEntry { score, ..e.clone() }).collect())
+        Ok(scored
+            .into_iter()
+            .take(top_k)
+            .map(|(score, e)| MemoryEntry { score, ..e.clone() })
+            .collect())
     }
 }
 
@@ -71,8 +81,20 @@ mod tests {
     #[test]
     fn query_returns_top_k_by_jaccard() {
         let store = InMemorySemanticStore::new();
-        store.store(MemoryEntry { text: "foo bar baz".into(), score: 0.0, metadata: serde_json::Value::Null }).unwrap();
-        store.store(MemoryEntry { text: "hello world".into(), score: 0.0, metadata: serde_json::Value::Null }).unwrap();
+        store
+            .store(MemoryEntry {
+                text: "foo bar baz".into(),
+                score: 0.0,
+                metadata: serde_json::Value::Null,
+            })
+            .unwrap();
+        store
+            .store(MemoryEntry {
+                text: "hello world".into(),
+                score: 0.0,
+                metadata: serde_json::Value::Null,
+            })
+            .unwrap();
         let results = store.query("foo bar", 1).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].text.contains("foo"));

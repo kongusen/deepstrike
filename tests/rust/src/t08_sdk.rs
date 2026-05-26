@@ -1,6 +1,6 @@
-use deepstrike_sdk::*;
-use deepstrike_core::types::message::ToolCall;
 use compact_str::CompactString;
+use deepstrike_core::types::message::ToolCall;
+use deepstrike_sdk::*;
 use std::collections::HashMap;
 
 // ─── RegisteredTool ─────────────────────────────────────────────────────────
@@ -18,11 +18,13 @@ fn registered_tool_schema() {
             },
             "required": ["x", "y"]
         }),
-        |args| Box::pin(async move {
-            let x = args["x"].as_i64().unwrap_or(0);
-            let y = args["y"].as_i64().unwrap_or(0);
-            Ok(format!("{}", x + y))
-        }),
+        |args| {
+            Box::pin(async move {
+                let x = args["x"].as_i64().unwrap_or(0);
+                let y = args["y"].as_i64().unwrap_or(0);
+                Ok(format!("{}", x + y))
+            })
+        },
     );
     assert_eq!(tool.schema.name.as_str(), "add");
     assert_eq!(tool.schema.description, "Add two numbers");
@@ -44,11 +46,13 @@ async fn execute_tools_success() {
         "multiply",
         "Multiply two numbers.",
         serde_json::json!({"type": "object"}),
-        |args| Box::pin(async move {
-            let x = args["x"].as_i64().unwrap_or(0);
-            let y = args["y"].as_i64().unwrap_or(0);
-            Ok(format!("{}", x * y))
-        }),
+        |args| {
+            Box::pin(async move {
+                let x = args["x"].as_i64().unwrap_or(0);
+                let y = args["y"].as_i64().unwrap_or(0);
+                Ok(format!("{}", x * y))
+            })
+        },
     );
     let mut registry = HashMap::new();
     registry.insert("multiply".to_string(), tool);
@@ -78,14 +82,9 @@ async fn execute_tools_unknown_tool() {
 
 #[tokio::test]
 async fn execute_tools_error_propagation() {
-    let tool = RegisteredTool::text(
-        "fail",
-        "Always fails.",
-        serde_json::json!({}),
-        |_| Box::pin(async move {
-            Err(deepstrike_sdk::Error::Tool("intentional error".into()))
-        }),
-    );
+    let tool = RegisteredTool::text("fail", "Always fails.", serde_json::json!({}), |_| {
+        Box::pin(async move { Err(deepstrike_sdk::Error::Tool("intentional error".into())) })
+    });
     let mut registry = HashMap::new();
     registry.insert("fail".to_string(), tool);
 
@@ -102,30 +101,36 @@ async fn execute_tools_error_propagation() {
 
 #[tokio::test]
 async fn execute_multiple_tools_parallel() {
-    let add = RegisteredTool::text(
-        "add", "Add.", serde_json::json!({}),
-        |args| Box::pin(async move {
+    let add = RegisteredTool::text("add", "Add.", serde_json::json!({}), |args| {
+        Box::pin(async move {
             let x = args["x"].as_i64().unwrap_or(0);
             let y = args["y"].as_i64().unwrap_or(0);
             Ok(format!("{}", x + y))
-        }),
-    );
-    let sub = RegisteredTool::text(
-        "sub", "Subtract.", serde_json::json!({}),
-        |args| Box::pin(async move {
+        })
+    });
+    let sub = RegisteredTool::text("sub", "Subtract.", serde_json::json!({}), |args| {
+        Box::pin(async move {
             let x = args["x"].as_i64().unwrap_or(0);
             let y = args["y"].as_i64().unwrap_or(0);
             Ok(format!("{}", x - y))
-        }),
-    );
+        })
+    });
 
     let mut registry = HashMap::new();
     registry.insert("add".to_string(), add);
     registry.insert("sub".to_string(), sub);
 
     let calls = vec![
-        ToolCall { id: CompactString::new("c1"), name: CompactString::new("add"), arguments: serde_json::json!({"x": 10, "y": 5}) },
-        ToolCall { id: CompactString::new("c2"), name: CompactString::new("sub"), arguments: serde_json::json!({"x": 10, "y": 5}) },
+        ToolCall {
+            id: CompactString::new("c1"),
+            name: CompactString::new("add"),
+            arguments: serde_json::json!({"x": 10, "y": 5}),
+        },
+        ToolCall {
+            id: CompactString::new("c2"),
+            name: CompactString::new("sub"),
+            arguments: serde_json::json!({"x": 10, "y": 5}),
+        },
     ];
     let results = execute_tools(&calls, &registry).await;
     assert_eq!(results.len(), 2);
@@ -137,13 +142,16 @@ async fn execute_multiple_tools_parallel() {
 
 #[test]
 fn runtime_options_can_be_constructed() {
-    use deepstrike_sdk::{InMemorySessionLog, LocalExecutionPlane, OpenAIProvider, RuntimeOptions, RuntimeRunner};
+    use deepstrike_sdk::{
+        InMemorySessionLog, LocalExecutionPlane, OpenAIProvider, RuntimeOptions, RuntimeRunner,
+    };
     use std::sync::Arc;
 
     let runner = RuntimeRunner::new(RuntimeOptions {
         provider: Box::new(OpenAIProvider::new("sk-test")),
         execution_plane: Some(Box::new(LocalExecutionPlane::new())),
         session_log: Some(Arc::new(InMemorySessionLog::new())),
+        compression_store: None,
         session_id: None,
         max_tokens: 4096,
         max_turns: Some(25),
@@ -157,6 +165,8 @@ fn runtime_options_can_be_constructed() {
         knowledge_source: None,
         signal_source: None,
         governance: None,
+        tokenizer: None,
+        enable_plan_tool: None,
         on_tool_suspend: None,
     });
     assert_eq!(runner.execution_plane().schemas().len(), 0);
@@ -216,9 +226,20 @@ fn permission_manager_grant_with_approval() {
 fn run_event_variants() {
     let _td = RunEvent::TextDelta("hello".into());
     let _thd = RunEvent::ThinkingDelta("thought".into());
-    let _tc = RunEvent::ToolCall { id: "c1".into(), name: "add".into() };
-    let _tr = RunEvent::ToolResult { call_id: "c1".into(), content: "3".into(), is_error: false };
-    let _done = RunEvent::Done { iterations: 1, total_tokens: 100, status: "completed".into() };
+    let _tc = RunEvent::ToolCall {
+        id: "c1".into(),
+        name: "add".into(),
+    };
+    let _tr = RunEvent::ToolResult {
+        call_id: "c1".into(),
+        content: "3".into(),
+        is_error: false,
+    };
+    let _done = RunEvent::Done {
+        iterations: 1,
+        total_tokens: 100,
+        status: "completed".into(),
+    };
     let _err = RunEvent::Error("boom".into());
 }
 

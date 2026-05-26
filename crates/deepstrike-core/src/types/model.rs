@@ -25,6 +25,10 @@ fn default_temperature() -> f64 {
 
 impl Default for GenerationParams {
     fn default() -> Self {
-        Self { temperature: default_temperature(), top_p: None, stop_sequences: Vec::new() }
+        Self {
+            temperature: default_temperature(),
+            top_p: None,
+            stop_sequences: Vec::new(),
+        }
     }
 }

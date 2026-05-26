@@ -1,23 +1,20 @@
+use super::config::ContextConfig;
 use super::dashboard::Dashboard;
+use super::task_state::TaskState;
+use super::token_engine::ContextTokenEngine;
 use crate::types::message::Message;
 
 /// Priority level for context partitions.
-/// Higher priority partitions are compressed last.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Priority {
-    /// History — first to compress
     Low = 0,
-    /// Skills — dynamic, can shed unused
     MediumLow = 1,
-    /// Memory — durable but compressible
     Medium = 2,
-    /// Working — dashboard, active events
     High = 3,
-    /// System — safety rules, never compress
     Critical = 4,
 }
 
-/// A single context partition with its messages and metadata.
+/// A single context partition.
 #[derive(Debug, Clone)]
 pub struct Partition {
     pub messages: Vec<Message>,
@@ -50,34 +47,30 @@ impl Partition {
     pub fn len(&self) -> usize {
         self.messages.len()
     }
-
     pub fn is_empty(&self) -> bool {
         self.messages.is_empty()
     }
 }
 
-/// Five-partition context model:
-///   C = C_system + C_working + C_memory + C_skill + C_history
+/// Five-partition context model plus structured task state:
+///   C = C_system + C_working + task_state + C_memory + C_skill + C_history
 pub struct ContextPartitions {
-    /// Safety rules, system instructions — never compressed
     pub system: Partition,
-    /// Working messages (goal, signals, interrupts) — high priority
     pub working: Partition,
-    /// Structured dashboard state — rendered as a system message overlay
+    /// Structured task state — rendered into system_text, never compressed.
+    pub task_state: TaskState,
     pub dashboard: Dashboard,
-    /// Long-term memory entries — compressible
     pub memory: Partition,
-    /// Tool/skill declarations — dynamically compressible
     pub skill: Partition,
-    /// Execution transcript — lowest priority, compress first
     pub history: Partition,
 }
 
 impl ContextPartitions {
-    pub fn new() -> Self {
+    pub fn new(_config: &ContextConfig) -> Self {
         Self {
             system: Partition::new(Priority::Critical, false),
             working: Partition::new(Priority::High, false),
+            task_state: TaskState::default(),
             dashboard: Dashboard::default(),
             memory: Partition::new(Priority::Medium, true),
             skill: Partition::new(Priority::MediumLow, true),
@@ -86,48 +79,61 @@ impl ContextPartitions {
     }
 
     /// Total token count across all partitions.
-    /// Dashboard tokens are estimated once from cached text_len.
-    pub fn total_tokens(&self) -> u32 {
+    /// Dashboard tokens are measured by the engine on each call; TaskState
+    /// tokens are measured from the rendered compact form.
+    pub fn total_tokens(&self, engine: &ContextTokenEngine) -> u32 {
         self.system.token_count
             + self.working.token_count
-            + self.dashboard.token_estimate()
+            + engine.count(&self.task_state.format_compact())
+            + engine.count(&self.dashboard.format_compact())
             + self.memory.token_count
             + self.skill.token_count
             + self.history.token_count
     }
-
-    /// Partitions in priority order (lowest first), excluding working and dashboard.
-    pub fn partitions_by_priority(&self) -> [&Partition; 4] {
-        [&self.history, &self.skill, &self.memory, &self.system]
-    }
-
 }
 
 impl Default for ContextPartitions {
     fn default() -> Self {
-        Self::new()
+        Self::new(&ContextConfig::default())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::config::ContextConfig;
+    use crate::context::token_engine::ContextTokenEngine;
     use crate::types::message::Message;
 
-    #[test]
-    fn push_message_updates_token_count() {
-        let mut ctx = ContextPartitions::new();
-        let base = ctx.total_tokens();
-        ctx.system.push(Message::system("You are helpful."), 10);
-        ctx.history.push(Message::user("Hello"), 5);
-        assert_eq!(ctx.total_tokens(), base + 15);
+    fn engine() -> ContextTokenEngine {
+        ContextTokenEngine::char_approx()
+    }
+    fn config() -> ContextConfig {
+        ContextConfig::default()
     }
 
     #[test]
-    fn priority_ordering() {
-        let parts = ContextPartitions::new();
-        let ordered = parts.partitions_by_priority();
-        assert_eq!(ordered[0].priority, Priority::Low);
-        assert_eq!(ordered[3].priority, Priority::Critical);
+    fn push_updates_token_count() {
+        let mut ctx = ContextPartitions::new(&config());
+        let base = ctx.total_tokens(&engine());
+        ctx.system.push(Message::system("rules"), 10);
+        ctx.history.push(Message::user("hello"), 5);
+        assert_eq!(ctx.total_tokens(&engine()), base + 15);
+    }
+
+    #[test]
+    fn task_state_tokens_included_in_total() {
+        use crate::context::task_state::TaskState;
+        let mut ctx = ContextPartitions::new(&config());
+        let before = ctx.total_tokens(&engine());
+        ctx.task_state = TaskState {
+            goal: "do something important".to_string(),
+            ..Default::default()
+        };
+        let after = ctx.total_tokens(&engine());
+        assert!(
+            after > before,
+            "task_state should contribute to total_tokens"
+        );
     }
 }

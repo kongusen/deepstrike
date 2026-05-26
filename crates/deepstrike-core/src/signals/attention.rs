@@ -35,14 +35,23 @@ mod tests {
     #[test]
     fn critical_signal_interrupts_running() {
         let policy = UrgencyBasedPolicy;
-        let signal = RuntimeSignal::new(SignalSource::Gateway, SignalType::Alert, Urgency::Critical, "fire");
-        assert_eq!(policy.evaluate(&signal, true), SignalDisposition::InterruptNow);
+        let signal = RuntimeSignal::new(
+            SignalSource::Gateway,
+            SignalType::Alert,
+            Urgency::Critical,
+            "fire",
+        );
+        assert_eq!(
+            policy.evaluate(&signal, true),
+            SignalDisposition::InterruptNow
+        );
     }
 
     #[test]
     fn low_signal_observed() {
         let policy = UrgencyBasedPolicy;
-        let signal = RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Low, "tick");
+        let signal =
+            RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Low, "tick");
         assert_eq!(policy.evaluate(&signal, false), SignalDisposition::Observe);
     }
 }

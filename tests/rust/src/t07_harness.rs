@@ -32,7 +32,8 @@ fn evaluate_messages_contain_goal_and_criteria() {
     });
     match action {
         EvalAction::Evaluate { messages } => {
-            let all_text: String = messages.iter()
+            let all_text: String = messages
+                .iter()
                 .filter_map(|m| m.content.as_text())
                 .collect::<Vec<_>>()
                 .join(" ");
@@ -50,7 +51,10 @@ fn evaluate_messages_contain_goal_and_criteria() {
 fn eval_result_passed() {
     let mut p = EvalPipeline::new(EvalPolicy::default());
     p.feed(EvalEvent::Outcome {
-        goal: "g".into(), criteria: vec![], result: "r".into(), attempt: 1,
+        goal: "g".into(),
+        criteria: vec![],
+        result: "r".into(),
+        attempt: 1,
     });
     let action = p.feed(EvalEvent::EvalResult {
         content: r#"{"passed": true, "feedback": "All criteria met"}"#.into(),
@@ -69,7 +73,10 @@ fn eval_result_passed() {
 fn eval_result_failed() {
     let mut p = EvalPipeline::new(EvalPolicy::default());
     p.feed(EvalEvent::Outcome {
-        goal: "g".into(), criteria: vec![], result: "r".into(), attempt: 1,
+        goal: "g".into(),
+        criteria: vec![],
+        result: "r".into(),
+        attempt: 1,
     });
     let action = p.feed(EvalEvent::EvalResult {
         content: r#"{"passed": false, "feedback": "Missing error handling"}"#.into(),
@@ -85,12 +92,19 @@ fn eval_result_failed() {
 
 #[test]
 fn eval_result_with_skill_candidate() {
-    let mut p = EvalPipeline::new(EvalPolicy { extract_skill_on_pass: true });
+    let mut p = EvalPipeline::new(EvalPolicy {
+        extract_skill_on_pass: true,
+    });
     p.feed(EvalEvent::Outcome {
-        goal: "g".into(), criteria: vec![], result: "r".into(), attempt: 1,
+        goal: "g".into(),
+        criteria: vec![],
+        result: "r".into(),
+        attempt: 1,
     });
     let json = r#"{"passed":true,"feedback":"Good","skill":{"name":"robust_api","description":"API with retries","content":"Always retry on 5xx."}}"#;
-    let action = p.feed(EvalEvent::EvalResult { content: json.into() });
+    let action = p.feed(EvalEvent::EvalResult {
+        content: json.into(),
+    });
     match action {
         EvalAction::Done { result } => {
             assert!(result.passed);
@@ -105,16 +119,26 @@ fn eval_result_with_skill_candidate() {
 
 #[test]
 fn eval_result_skill_with_when_to_use() {
-    let mut p = EvalPipeline::new(EvalPolicy { extract_skill_on_pass: true });
+    let mut p = EvalPipeline::new(EvalPolicy {
+        extract_skill_on_pass: true,
+    });
     p.feed(EvalEvent::Outcome {
-        goal: "g".into(), criteria: vec![], result: "r".into(), attempt: 1,
+        goal: "g".into(),
+        criteria: vec![],
+        result: "r".into(),
+        attempt: 1,
     });
     let json = r#"{"passed":true,"feedback":"ok","skill":{"name":"retry","description":"retry logic","when_to_use":"When calling external APIs","content":"body"}}"#;
-    let action = p.feed(EvalEvent::EvalResult { content: json.into() });
+    let action = p.feed(EvalEvent::EvalResult {
+        content: json.into(),
+    });
     match action {
         EvalAction::Done { result } => {
             let skill = result.skill_candidate.unwrap();
-            assert_eq!(skill.when_to_use.as_deref(), Some("When calling external APIs"));
+            assert_eq!(
+                skill.when_to_use.as_deref(),
+                Some("When calling external APIs")
+            );
         }
         _ => panic!("expected Done"),
     }
@@ -126,7 +150,10 @@ fn eval_result_skill_with_when_to_use() {
 fn strips_markdown_json_fences() {
     let mut p = EvalPipeline::new(EvalPolicy::default());
     p.feed(EvalEvent::Outcome {
-        goal: "g".into(), criteria: vec![], result: "r".into(), attempt: 1,
+        goal: "g".into(),
+        criteria: vec![],
+        result: "r".into(),
+        attempt: 1,
     });
     let action = p.feed(EvalEvent::EvalResult {
         content: "```json\n{\"passed\":true,\"feedback\":\"good\"}\n```".into(),
@@ -141,7 +168,10 @@ fn strips_markdown_json_fences() {
 fn handles_malformed_json() {
     let mut p = EvalPipeline::new(EvalPolicy::default());
     p.feed(EvalEvent::Outcome {
-        goal: "g".into(), criteria: vec![], result: "r".into(), attempt: 1,
+        goal: "g".into(),
+        criteria: vec![],
+        result: "r".into(),
+        attempt: 1,
     });
     let action = p.feed(EvalEvent::EvalResult {
         content: "not json at all".into(),
@@ -160,7 +190,10 @@ fn handles_malformed_json() {
 fn reset_returns_to_idle() {
     let mut p = EvalPipeline::new(EvalPolicy::default());
     p.feed(EvalEvent::Outcome {
-        goal: "g".into(), criteria: vec![], result: "r".into(), attempt: 1,
+        goal: "g".into(),
+        criteria: vec![],
+        result: "r".into(),
+        attempt: 1,
     });
     p.feed(EvalEvent::EvalResult {
         content: r#"{"passed":true,"feedback":"ok"}"#.into(),
@@ -174,7 +207,10 @@ fn reset_returns_to_idle() {
 fn reset_allows_reuse() {
     let mut p = EvalPipeline::new(EvalPolicy::default());
     p.feed(EvalEvent::Outcome {
-        goal: "g".into(), criteria: vec![], result: "r".into(), attempt: 1,
+        goal: "g".into(),
+        criteria: vec![],
+        result: "r".into(),
+        attempt: 1,
     });
     p.feed(EvalEvent::EvalResult {
         content: r#"{"passed":false,"feedback":"fail"}"#.into(),
@@ -182,7 +218,10 @@ fn reset_allows_reuse() {
     p.reset();
 
     let action = p.feed(EvalEvent::Outcome {
-        goal: "g2".into(), criteria: vec!["c1".into()], result: "r2".into(), attempt: 2,
+        goal: "g2".into(),
+        criteria: vec!["c1".into()],
+        result: "r2".into(),
+        attempt: 2,
     });
     assert!(matches!(action, EvalAction::Evaluate { .. }));
 }
@@ -197,9 +236,14 @@ fn eval_policy_default() {
 
 #[test]
 fn eval_policy_no_skill_extraction() {
-    let mut p = EvalPipeline::new(EvalPolicy { extract_skill_on_pass: false });
+    let mut p = EvalPipeline::new(EvalPolicy {
+        extract_skill_on_pass: false,
+    });
     p.feed(EvalEvent::Outcome {
-        goal: "g".into(), criteria: vec![], result: "r".into(), attempt: 1,
+        goal: "g".into(),
+        criteria: vec![],
+        result: "r".into(),
+        attempt: 1,
     });
     let action = p.feed(EvalEvent::EvalResult {
         content: r#"{"passed":true,"feedback":"ok"}"#.into(),

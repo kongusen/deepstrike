@@ -1,8 +1,8 @@
-use crate::types::message::Message;
 use crate::memory::durable::{SessionData, SessionStore};
-use crate::memory::semantic::SemanticMemory;
 use crate::memory::extractor::MemoryExtractor;
-use crate::memory::session::{RestorePolicy, RestoreConfig, restore};
+use crate::memory::semantic::SemanticMemory;
+use crate::memory::session::{RestoreConfig, RestorePolicy, restore};
+use crate::types::message::Message;
 
 pub struct MemoryRuntime {
     pub session_store: Box<dyn SessionStore>,
@@ -43,7 +43,10 @@ impl MemoryRuntime {
     /// Extract memories from the current turn and store in semantic memory.
     pub fn on_turn_end(&mut self, user_msg: &Message, assistant_msg: &Message) {
         if let Some(sem) = &self.semantic_store {
-            for entry in self.extractor.extract(&[user_msg.clone(), assistant_msg.clone()]) {
+            for entry in self
+                .extractor
+                .extract(&[user_msg.clone(), assistant_msg.clone()])
+            {
                 let _ = sem.store(entry);
             }
         }

@@ -36,11 +36,19 @@ pub struct Criterion {
 
 impl Criterion {
     pub fn required(text: impl Into<String>) -> Self {
-        Self { text: text.into(), required: true, weight: 1.0 }
+        Self {
+            text: text.into(),
+            required: true,
+            weight: 1.0,
+        }
     }
 
     pub fn optional(text: impl Into<String>) -> Self {
-        Self { text: text.into(), required: false, weight: 1.0 }
+        Self {
+            text: text.into(),
+            required: false,
+            weight: 1.0,
+        }
     }
 
     pub fn with_weight(mut self, w: f32) -> Self {
@@ -50,11 +58,15 @@ impl Criterion {
 }
 
 impl From<String> for Criterion {
-    fn from(s: String) -> Self { Self::required(s) }
+    fn from(s: String) -> Self {
+        Self::required(s)
+    }
 }
 
 impl From<&str> for Criterion {
-    fn from(s: &str) -> Self { Self::required(s) }
+    fn from(s: &str) -> Self {
+        Self::required(s)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -111,7 +123,9 @@ pub enum EvalEvent {
         result: String,
         attempt: u32,
     },
-    EvalResult { content: String },
+    EvalResult {
+        content: String,
+    },
 }
 
 pub enum EvalAction {
@@ -133,7 +147,9 @@ pub struct EvalPolicy {
 
 impl Default for EvalPolicy {
     fn default() -> Self {
-        Self { extract_skill_on_pass: true }
+        Self {
+            extract_skill_on_pass: true,
+        }
     }
 }
 
@@ -148,7 +164,10 @@ pub struct EvalPipeline {
 
 impl EvalPipeline {
     pub fn new(policy: EvalPolicy) -> Self {
-        Self { phase: EvalPhase::Idle, policy }
+        Self {
+            phase: EvalPhase::Idle,
+            policy,
+        }
     }
 
     pub fn is_idle(&self) -> bool {
@@ -157,7 +176,12 @@ impl EvalPipeline {
 
     pub fn feed(&mut self, event: EvalEvent) -> EvalAction {
         match event {
-            EvalEvent::Outcome { goal, criteria, result, attempt } => {
+            EvalEvent::Outcome {
+                goal,
+                criteria,
+                result,
+                attempt,
+            } => {
                 let messages = build_eval_prompt(&goal, &criteria, &result, attempt, &self.policy);
                 self.phase = EvalPhase::EvalPending { goal, attempt };
                 EvalAction::Evaluate { messages }
@@ -165,7 +189,9 @@ impl EvalPipeline {
 
             EvalEvent::EvalResult { content } => {
                 self.phase = EvalPhase::Done;
-                EvalAction::Done { result: parse_eval_response(&content) }
+                EvalAction::Done {
+                    result: parse_eval_response(&content),
+                }
             }
         }
     }
@@ -189,11 +215,24 @@ fn build_eval_prompt(
     let criteria_text = if criteria.is_empty() {
         "No explicit criteria — use general quality judgement.".to_string()
     } else {
-        criteria.iter().enumerate().map(|(i, c)| {
-            let tag = if c.required { "[required]" } else { "[optional]" };
-            let weight = if (c.weight - 1.0).abs() > 0.01 { format!(" weight={:.1}", c.weight) } else { String::new() };
-            format!("{}. {}{}{}", i + 1, tag, weight, c.text)
-        }).collect::<Vec<_>>().join("\n")
+        criteria
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let tag = if c.required {
+                    "[required]"
+                } else {
+                    "[optional]"
+                };
+                let weight = if (c.weight - 1.0).abs() > 0.01 {
+                    format!(" weight={:.1}", c.weight)
+                } else {
+                    String::new()
+                };
+                format!("{}. {}{}{}", i + 1, tag, weight, c.text)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     };
 
     let details_schema = r#"[{"criterion":"...","passed":bool,"score":0.0-1.0,"feedback":"..."}]"#;
@@ -240,30 +279,76 @@ fn parse_eval_response(content: &str) -> EvalResult {
     let v: serde_json::Value = serde_json::from_str(json_str).unwrap_or(serde_json::Value::Null);
 
     let passed = v.get("passed").and_then(|x| x.as_bool()).unwrap_or(false);
-    let overall_score = v.get("overall_score").and_then(|x| x.as_f64()).map(|f| f as f32).unwrap_or(if passed { 1.0 } else { 0.0 });
-    let feedback = v.get("feedback").and_then(|x| x.as_str()).unwrap_or("No feedback provided.").to_string();
+    let overall_score = v
+        .get("overall_score")
+        .and_then(|x| x.as_f64())
+        .map(|f| f as f32)
+        .unwrap_or(if passed { 1.0 } else { 0.0 });
+    let feedback = v
+        .get("feedback")
+        .and_then(|x| x.as_str())
+        .unwrap_or("No feedback provided.")
+        .to_string();
 
-    let details = v.get("details")
+    let details = v
+        .get("details")
         .and_then(|d| d.as_array())
-        .map(|arr| arr.iter().filter_map(|item| {
-            let criterion = item.get("criterion")?.as_str()?.to_string();
-            let item_passed = item.get("passed").and_then(|x| x.as_bool()).unwrap_or(false);
-            let score = item.get("score").and_then(|x| x.as_f64()).map(|f| f as f32).unwrap_or(if item_passed { 1.0 } else { 0.0 });
-            let item_feedback = item.get("feedback").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            Some(CriterionResult { criterion, passed: item_passed, score, feedback: item_feedback })
-        }).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let criterion = item.get("criterion")?.as_str()?.to_string();
+                    let item_passed = item
+                        .get("passed")
+                        .and_then(|x| x.as_bool())
+                        .unwrap_or(false);
+                    let score = item
+                        .get("score")
+                        .and_then(|x| x.as_f64())
+                        .map(|f| f as f32)
+                        .unwrap_or(if item_passed { 1.0 } else { 0.0 });
+                    let item_feedback = item
+                        .get("feedback")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    Some(CriterionResult {
+                        criterion,
+                        passed: item_passed,
+                        score,
+                        feedback: item_feedback,
+                    })
+                })
+                .collect()
+        })
         .unwrap_or_default();
 
     let skill_candidate = v.get("skill").and_then(|s| {
         let name = s.get("name")?.as_str()?.to_string();
         let description = s.get("description")?.as_str()?.to_string();
         let content = s.get("content")?.as_str()?.to_string();
-        if name.is_empty() { return None; }
-        let when_to_use = s.get("when_to_use").and_then(|x| x.as_str()).filter(|x| !x.is_empty()).map(|x| x.to_string());
-        Some(SkillCandidate { name, description, when_to_use, content })
+        if name.is_empty() {
+            return None;
+        }
+        let when_to_use = s
+            .get("when_to_use")
+            .and_then(|x| x.as_str())
+            .filter(|x| !x.is_empty())
+            .map(|x| x.to_string());
+        Some(SkillCandidate {
+            name,
+            description,
+            when_to_use,
+            content,
+        })
     });
 
-    EvalResult { passed, overall_score, feedback, details, skill_candidate }
+    EvalResult {
+        passed,
+        overall_score,
+        feedback,
+        details,
+        skill_candidate,
+    }
 }
 
 fn extract_json(s: &str) -> &str {
@@ -310,7 +395,10 @@ mod tests {
     fn eval_result_failed_no_skill() {
         let mut p = pipeline();
         p.feed(EvalEvent::Outcome {
-            goal: "g".into(), criteria: vec![], result: "r".into(), attempt: 1,
+            goal: "g".into(),
+            criteria: vec![],
+            result: "r".into(),
+            attempt: 1,
         });
         let action = p.feed(EvalEvent::EvalResult {
             content: r#"{"passed":false,"overall_score":0.2,"feedback":"Missing error handling","details":[{"criterion":"Must handle errors","passed":false,"score":0.2,"feedback":"No error handling found"}]}"#.into(),
@@ -331,10 +419,15 @@ mod tests {
     fn eval_result_passed_with_skill_and_details() {
         let mut p = pipeline();
         p.feed(EvalEvent::Outcome {
-            goal: "g".into(), criteria: vec![], result: "r".into(), attempt: 1,
+            goal: "g".into(),
+            criteria: vec![],
+            result: "r".into(),
+            attempt: 1,
         });
         let json = r#"{"passed":true,"overall_score":0.95,"feedback":"All criteria met","details":[{"criterion":"Must handle errors","passed":true,"score":1.0,"feedback":"Good error handling"}],"skill":{"name":"robust_api_call","description":"How to call APIs with retries","content":"Robust API Call - Always retry on 5xx."}}"#;
-        let action = p.feed(EvalEvent::EvalResult { content: json.into() });
+        let action = p.feed(EvalEvent::EvalResult {
+            content: json.into(),
+        });
         match action {
             EvalAction::Done { result } => {
                 assert!(result.passed);
@@ -367,9 +460,14 @@ mod tests {
     fn reset_allows_reuse() {
         let mut p = pipeline();
         p.feed(EvalEvent::Outcome {
-            goal: "g".into(), criteria: vec![], result: "r".into(), attempt: 1,
+            goal: "g".into(),
+            criteria: vec![],
+            result: "r".into(),
+            attempt: 1,
         });
-        p.feed(EvalEvent::EvalResult { content: r#"{"passed":true,"feedback":"ok"}"#.into() });
+        p.feed(EvalEvent::EvalResult {
+            content: r#"{"passed":true,"feedback":"ok"}"#.into(),
+        });
         p.reset();
         assert!(p.is_idle());
     }
@@ -378,7 +476,10 @@ mod tests {
     fn strips_markdown_fences() {
         let mut p = pipeline();
         p.feed(EvalEvent::Outcome {
-            goal: "g".into(), criteria: vec![], result: "r".into(), attempt: 1,
+            goal: "g".into(),
+            criteria: vec![],
+            result: "r".into(),
+            attempt: 1,
         });
         let action = p.feed(EvalEvent::EvalResult {
             content: "```json\n{\"passed\":true,\"feedback\":\"good\"}\n```".into(),

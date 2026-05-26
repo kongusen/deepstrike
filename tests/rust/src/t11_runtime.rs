@@ -7,11 +7,11 @@ use deepstrike_core::context::renderer::RenderedContext;
 use deepstrike_core::governance::permission::PermissionAction;
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::types::message::{Content, Message, Role, ToolCall, ToolResult, ToolSchema};
-use deepstrike_sdk::{
-    Governance, InMemorySessionLog, LocalExecutionPlane, LLMProvider, RegisteredTool, RunContext,
-    RuntimeOptions, RuntimeRunner, RunEvent, SessionLog, StreamEvent,
-};
 use deepstrike_sdk::ExecutionPlane;
+use deepstrike_sdk::{
+    Governance, InMemorySessionLog, LLMProvider, LocalExecutionPlane, RegisteredTool, RunContext,
+    RunEvent, RuntimeOptions, RuntimeRunner, SessionLog, StreamEvent,
+};
 use futures::StreamExt;
 
 struct ResumeAwareProvider {
@@ -38,9 +38,11 @@ impl LLMProvider for ResumeAwareProvider {
         _tools: &[ToolSchema],
         _extensions: Option<&serde_json::Value>,
         _state: Option<&deepstrike_sdk::ProviderRunState>,
-    ) -> deepstrike_sdk::Result<Box<dyn futures::Stream<Item = deepstrike_sdk::Result<StreamEvent>> + Send + Unpin>>
-    {
-        self.stream_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    ) -> deepstrike_sdk::Result<
+        Box<dyn futures::Stream<Item = deepstrike_sdk::Result<StreamEvent>> + Send + Unpin>,
+    > {
+        self.stream_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let has_tool = context.turns.iter().any(|m| m.role == Role::Tool);
         let events: Vec<_> = if has_tool {
             vec![Ok(StreamEvent::TextDelta {
@@ -66,6 +68,7 @@ fn default_runtime_opts(
         provider,
         execution_plane: Some(Box::new(plane)),
         session_log: Some(session_log),
+        compression_store: None,
         session_id: None,
         max_tokens: 2048,
         max_turns: Some(4),
@@ -79,6 +82,8 @@ fn default_runtime_opts(
         knowledge_source: None,
         signal_source: None,
         governance: None,
+        tokenizer: None,
+        enable_plan_tool: None,
         on_tool_suspend: None,
     }
 }
@@ -271,9 +276,9 @@ async fn execute_collects_text_via_helper() {
         ) -> deepstrike_sdk::Result<
             Box<dyn futures::Stream<Item = deepstrike_sdk::Result<StreamEvent>> + Send + Unpin>,
         > {
-            Ok(Box::new(futures::stream::iter(vec![Ok(StreamEvent::TextDelta {
-                delta: "ok".into(),
-            })])))
+            Ok(Box::new(futures::stream::iter(vec![Ok(
+                StreamEvent::TextDelta { delta: "ok".into() },
+            )])))
         }
     }
 

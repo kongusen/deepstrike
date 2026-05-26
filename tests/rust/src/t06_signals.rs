@@ -1,13 +1,23 @@
 use deepstrike_core::signals::router::SignalRouter;
-use deepstrike_core::types::signal::{RuntimeSignal, SignalSource, SignalType, Urgency};
 use deepstrike_core::types::policy::SignalDisposition;
+use deepstrike_core::types::signal::{RuntimeSignal, SignalSource, SignalType, Urgency};
 
 fn normal_signal(summary: &str) -> RuntimeSignal {
-    RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Normal, summary)
+    RuntimeSignal::new(
+        SignalSource::Cron,
+        SignalType::Event,
+        Urgency::Normal,
+        summary,
+    )
 }
 
 fn critical_signal(summary: &str) -> RuntimeSignal {
-    RuntimeSignal::new(SignalSource::Gateway, SignalType::Alert, Urgency::Critical, summary)
+    RuntimeSignal::new(
+        SignalSource::Gateway,
+        SignalType::Alert,
+        Urgency::Critical,
+        summary,
+    )
 }
 
 // ─── Basic routing ──────────────────────────────────────────────────────────
@@ -96,8 +106,14 @@ fn clear_dedup_allows_reingest() {
 #[test]
 fn full_queue_drops_signal() {
     let mut router = SignalRouter::new(1);
-    assert_eq!(router.ingest(normal_signal("first"), false), SignalDisposition::Queue);
-    assert_eq!(router.ingest(normal_signal("second"), false), SignalDisposition::Dropped);
+    assert_eq!(
+        router.ingest(normal_signal("first"), false),
+        SignalDisposition::Queue
+    );
+    assert_eq!(
+        router.ingest(normal_signal("second"), false),
+        SignalDisposition::Dropped
+    );
     assert_eq!(router.depth(), 1);
 }
 
@@ -106,7 +122,10 @@ fn drain_queue_makes_room() {
     let mut router = SignalRouter::new(1);
     router.ingest(normal_signal("first"), false);
     router.next(); // drain
-    assert_eq!(router.ingest(normal_signal("second"), false), SignalDisposition::Queue);
+    assert_eq!(
+        router.ingest(normal_signal("second"), false),
+        SignalDisposition::Queue
+    );
 }
 
 // ─── Urgency-based policy ───────────────────────────────────────────────────
@@ -115,7 +134,10 @@ fn drain_queue_makes_room() {
 fn high_urgency_when_running_interrupts() {
     let mut router = SignalRouter::new(100);
     let sig = RuntimeSignal::new(
-        SignalSource::Gateway, SignalType::Alert, Urgency::High, "warn"
+        SignalSource::Gateway,
+        SignalType::Alert,
+        Urgency::High,
+        "warn",
     );
     let d = router.ingest(sig, true);
     assert!(d == SignalDisposition::Interrupt || d == SignalDisposition::InterruptNow);
@@ -124,9 +146,7 @@ fn high_urgency_when_running_interrupts() {
 #[test]
 fn low_urgency_observed_or_queued() {
     let mut router = SignalRouter::new(100);
-    let sig = RuntimeSignal::new(
-        SignalSource::Cron, SignalType::Event, Urgency::Low, "bg"
-    );
+    let sig = RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Low, "bg");
     let d = router.ingest(sig, false);
     assert!(d == SignalDisposition::Queue || d == SignalDisposition::Observe);
 }
@@ -135,10 +155,15 @@ fn low_urgency_observed_or_queued() {
 
 #[test]
 fn signal_builder_chain() {
-    let sig = RuntimeSignal::new(SignalSource::Custom, SignalType::Job, Urgency::Normal, "deploy")
-        .with_payload(serde_json::json!({"env": "prod"}))
-        .with_dedupe("deploy-1")
-        .with_timestamp(1234567890);
+    let sig = RuntimeSignal::new(
+        SignalSource::Custom,
+        SignalType::Job,
+        Urgency::Normal,
+        "deploy",
+    )
+    .with_payload(serde_json::json!({"env": "prod"}))
+    .with_dedupe("deploy-1")
+    .with_timestamp(1234567890);
 
     assert_eq!(sig.summary.as_str(), "deploy");
     assert_eq!(sig.payload["env"], "prod");

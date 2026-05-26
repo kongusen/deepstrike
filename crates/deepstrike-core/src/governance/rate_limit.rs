@@ -94,7 +94,10 @@ mod tests {
 
     #[test]
     fn allows_within_limit() {
-        let mut rl = RateLimiter::new(RateLimit { max_calls: 3, window_ms: 1000 });
+        let mut rl = RateLimiter::new(RateLimit {
+            max_calls: 3,
+            window_ms: 1000,
+        });
         rl.set_time(100);
         assert!(rl.check(&make_call("foo")).is_none());
         assert!(rl.check(&make_call("foo")).is_none());
@@ -105,7 +108,10 @@ mod tests {
 
     #[test]
     fn expires_old_entries() {
-        let mut rl = RateLimiter::new(RateLimit { max_calls: 1, window_ms: 100 });
+        let mut rl = RateLimiter::new(RateLimit {
+            max_calls: 1,
+            window_ms: 100,
+        });
         rl.set_time(0);
         assert!(rl.check(&make_call("bar")).is_none());
         assert!(rl.check(&make_call("bar")).is_some());

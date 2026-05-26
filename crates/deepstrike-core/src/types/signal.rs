@@ -42,7 +42,12 @@ pub enum Urgency {
 }
 
 impl RuntimeSignal {
-    pub fn new(source: SignalSource, signal_type: SignalType, urgency: Urgency, summary: impl Into<CompactString>) -> Self {
+    pub fn new(
+        source: SignalSource,
+        signal_type: SignalType,
+        urgency: Urgency,
+        summary: impl Into<CompactString>,
+    ) -> Self {
         Self {
             id: Uuid::new_v4(),
             source,

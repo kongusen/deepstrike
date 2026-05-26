@@ -21,7 +21,9 @@ pub struct PermissionRule {
 impl PermissionRule {
     fn matches(&self, tool_name: &str) -> bool {
         let p = self.tool_pattern.as_str();
-        if p == "*" { return true; }
+        if p == "*" {
+            return true;
+        }
         if let Some(prefix) = p.strip_suffix('*') {
             return tool_name.starts_with(prefix);
         }
@@ -57,7 +59,10 @@ impl PermissionManager {
                     PermissionAction::Allow => None,
                     PermissionAction::Deny => Some(GovernanceVerdict::Deny {
                         stage: "permission",
-                        reason: format!("tool '{}' denied by rule '{}'", call.name, rule.tool_pattern),
+                        reason: format!(
+                            "tool '{}' denied by rule '{}'",
+                            call.name, rule.tool_pattern
+                        ),
                     }),
                     PermissionAction::AskUser => Some(GovernanceVerdict::AskUser {
                         reason: format!("tool '{}' requires user approval", call.name),

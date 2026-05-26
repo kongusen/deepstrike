@@ -46,9 +46,10 @@ impl AuditLog {
     pub fn record_deny(&mut self, call: &ToolCall, verdict: &GovernanceVerdict) {
         let (stage, reason) = match verdict {
             GovernanceVerdict::Deny { stage, reason } => (Some(*stage), Some(reason.clone())),
-            GovernanceVerdict::RateLimited { retry_after_ms } => {
-                (Some("rate_limit"), Some(format!("retry after {}ms", retry_after_ms)))
-            }
+            GovernanceVerdict::RateLimited { retry_after_ms } => (
+                Some("rate_limit"),
+                Some(format!("retry after {}ms", retry_after_ms)),
+            ),
             GovernanceVerdict::AskUser { reason } => (Some("permission"), Some(reason.clone())),
             GovernanceVerdict::Allow => (None, None),
         };

@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod capability;
 pub mod contract;
 pub mod error;
 pub mod message;

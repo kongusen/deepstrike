@@ -30,7 +30,10 @@ pub struct TaskGraph {
 
 impl TaskGraph {
     pub fn new() -> Self {
-        Self { nodes: Vec::new(), in_degree: Vec::new() }
+        Self {
+            nodes: Vec::new(),
+            in_degree: Vec::new(),
+        }
     }
 
     /// Add a task, returns its ID.
@@ -40,7 +43,11 @@ impl TaskGraph {
         self.nodes.push(TaskNode {
             id,
             task,
-            status: if deg == 0 { TaskStatus::Ready } else { TaskStatus::Pending },
+            status: if deg == 0 {
+                TaskStatus::Ready
+            } else {
+                TaskStatus::Pending
+            },
             result: None,
             dependencies,
         });
@@ -140,7 +147,9 @@ impl TaskGraph {
     }
 
     pub fn all_done(&self) -> bool {
-        self.nodes.iter().all(|n| matches!(n.status, TaskStatus::Completed | TaskStatus::Failed))
+        self.nodes
+            .iter()
+            .all(|n| matches!(n.status, TaskStatus::Completed | TaskStatus::Failed))
     }
 }
 
@@ -206,12 +215,15 @@ mod tests {
         let b = g.add(RuntimeTask::new("B"), vec![a]);
 
         assert_eq!(g.nodes[b].status, TaskStatus::Pending);
-        g.complete(a, LoopResult {
-            termination: TerminationReason::Completed,
-            final_message: None,
-            turns_used: 1,
-            total_tokens_used: 0,
-        });
+        g.complete(
+            a,
+            LoopResult {
+                termination: TerminationReason::Completed,
+                final_message: None,
+                turns_used: 1,
+                total_tokens_used: 0,
+            },
+        );
         assert_eq!(g.nodes[b].status, TaskStatus::Ready);
     }
 }

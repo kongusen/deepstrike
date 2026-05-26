@@ -31,7 +31,9 @@ pub enum Content {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPart {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     Image {
         /// Remote URL (mutually exclusive with `data`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -52,7 +54,11 @@ pub enum ContentPart {
         /// MIME type, e.g. `"audio/wav"`, `"audio/mp3"`.
         media_type: String,
     },
-    ToolResult { call_id: CompactString, output: String, is_error: bool },
+    ToolResult {
+        call_id: CompactString,
+        output: String,
+        is_error: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,18 +94,21 @@ impl Content {
     pub fn text_len(&self) -> usize {
         match self {
             Content::Text(s) => s.len(),
-            Content::Parts(parts) => parts.iter().map(|p| match p {
-                ContentPart::Text { text } => text.len(),
-                ContentPart::Image { detail, .. } => {
-                    match detail.as_deref() {
-                        Some("low") => 340,   // 85 tokens
-                        Some("high") => 2720, // 680 tokens (4x4 tiles)
-                        _ => 1020,             // ~255 tokens (auto / unspecified)
+            Content::Parts(parts) => parts
+                .iter()
+                .map(|p| match p {
+                    ContentPart::Text { text } => text.len(),
+                    ContentPart::Image { detail, .. } => {
+                        match detail.as_deref() {
+                            Some("low") => 340,   // 85 tokens
+                            Some("high") => 2720, // 680 tokens (4x4 tiles)
+                            _ => 1020,            // ~255 tokens (auto / unspecified)
+                        }
                     }
-                }
-                ContentPart::Audio { data, .. } => data.len() / 4, // rough estimate
-                ContentPart::ToolResult { output, .. } => output.len(),
-            }).sum(),
+                    ContentPart::Audio { data, .. } => data.len() / 4, // rough estimate
+                    ContentPart::ToolResult { output, .. } => output.len(),
+                })
+                .sum(),
         }
     }
 }
@@ -157,14 +166,27 @@ impl ContentPart {
     }
 
     pub fn image_url(url: impl Into<String>) -> Self {
-        ContentPart::Image { url: Some(url.into()), data: None, media_type: None, detail: None }
+        ContentPart::Image {
+            url: Some(url.into()),
+            data: None,
+            media_type: None,
+            detail: None,
+        }
     }
 
     pub fn image_base64(data: impl Into<String>, media_type: impl Into<String>) -> Self {
-        ContentPart::Image { url: None, data: Some(data.into()), media_type: Some(media_type.into()), detail: None }
+        ContentPart::Image {
+            url: None,
+            data: Some(data.into()),
+            media_type: Some(media_type.into()),
+            detail: None,
+        }
     }
 
     pub fn audio(data: impl Into<String>, media_type: impl Into<String>) -> Self {
-        ContentPart::Audio { data: data.into(), media_type: media_type.into() }
+        ContentPart::Audio {
+            data: data.into(),
+            media_type: media_type.into(),
+        }
     }
 }

@@ -40,7 +40,10 @@ pub(super) struct SignalQueue {
 
 impl SignalQueue {
     pub(super) fn new(max_size: usize) -> Self {
-        Self { heap: BinaryHeap::new(), max_size }
+        Self {
+            heap: BinaryHeap::new(),
+            max_size,
+        }
     }
 
     /// Returns false if the queue is full (signal is dropped).
@@ -50,7 +53,11 @@ impl SignalQueue {
         }
         let urgency = signal.urgency;
         let timestamp_ms = signal.timestamp_ms;
-        self.heap.push(PrioritizedSignal { urgency, timestamp_ms, signal });
+        self.heap.push(PrioritizedSignal {
+            urgency,
+            timestamp_ms,
+            signal,
+        });
         true
     }
 
@@ -76,9 +83,28 @@ mod tests {
     #[test]
     fn higher_urgency_dequeued_first() {
         let mut q = SignalQueue::new(10);
-        q.push(RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Low, "low").with_timestamp(1));
-        q.push(RuntimeSignal::new(SignalSource::Gateway, SignalType::Alert, Urgency::Critical, "crit").with_timestamp(2));
-        q.push(RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Normal, "norm").with_timestamp(3));
+        q.push(
+            RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Low, "low")
+                .with_timestamp(1),
+        );
+        q.push(
+            RuntimeSignal::new(
+                SignalSource::Gateway,
+                SignalType::Alert,
+                Urgency::Critical,
+                "crit",
+            )
+            .with_timestamp(2),
+        );
+        q.push(
+            RuntimeSignal::new(
+                SignalSource::Cron,
+                SignalType::Event,
+                Urgency::Normal,
+                "norm",
+            )
+            .with_timestamp(3),
+        );
 
         assert_eq!(q.pop().unwrap().urgency, Urgency::Critical);
         assert_eq!(q.pop().unwrap().urgency, Urgency::Normal);
@@ -88,15 +114,41 @@ mod tests {
     #[test]
     fn respects_max_size() {
         let mut q = SignalQueue::new(1);
-        assert!(q.push(RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Low, "a").with_timestamp(1)));
-        assert!(!q.push(RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Low, "b").with_timestamp(2)));
+        assert!(
+            q.push(
+                RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Low, "a")
+                    .with_timestamp(1)
+            )
+        );
+        assert!(
+            !q.push(
+                RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Low, "b")
+                    .with_timestamp(2)
+            )
+        );
     }
 
     #[test]
     fn same_urgency_older_first() {
         let mut q = SignalQueue::new(10);
-        q.push(RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Normal, "newer").with_timestamp(100));
-        q.push(RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Normal, "older").with_timestamp(1));
+        q.push(
+            RuntimeSignal::new(
+                SignalSource::Cron,
+                SignalType::Event,
+                Urgency::Normal,
+                "newer",
+            )
+            .with_timestamp(100),
+        );
+        q.push(
+            RuntimeSignal::new(
+                SignalSource::Cron,
+                SignalType::Event,
+                Urgency::Normal,
+                "older",
+            )
+            .with_timestamp(1),
+        );
 
         assert_eq!(q.pop().unwrap().summary.as_str(), "older");
     }

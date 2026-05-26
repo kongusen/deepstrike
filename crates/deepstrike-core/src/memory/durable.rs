@@ -37,7 +37,9 @@ pub struct InMemoryStore {
 
 impl InMemoryStore {
     pub fn new() -> Self {
-        Self { data: std::sync::Mutex::new(HashMap::new()) }
+        Self {
+            data: std::sync::Mutex::new(HashMap::new()),
+        }
     }
 }
 

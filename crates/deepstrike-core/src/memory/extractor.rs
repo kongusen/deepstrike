@@ -1,5 +1,5 @@
-use crate::types::message::{Content, ContentPart, Message, Role};
 use crate::memory::semantic::MemoryEntry;
+use crate::types::message::{Content, ContentPart, Message, Role};
 
 pub struct ExtractionPolicy {
     pub min_length: usize,
@@ -9,7 +9,11 @@ pub struct ExtractionPolicy {
 
 impl Default for ExtractionPolicy {
     fn default() -> Self {
-        Self { min_length: 100, include_tool_results: true, include_questions: true }
+        Self {
+            min_length: 100,
+            include_tool_results: true,
+            include_questions: true,
+        }
     }
 }
 
@@ -43,7 +47,10 @@ impl MemoryExtractor {
                 Role::Tool if self.policy.include_tool_results => {
                     if let Content::Parts(parts) = &msg.content {
                         for part in parts {
-                            if let ContentPart::ToolResult { output, is_error, .. } = part {
+                            if let ContentPart::ToolResult {
+                                output, is_error, ..
+                            } = part
+                            {
                                 if !is_error && output.len() >= self.policy.min_length {
                                     entries.push(entry(output));
                                 }
@@ -59,7 +66,11 @@ impl MemoryExtractor {
 }
 
 fn entry(text: &str) -> MemoryEntry {
-    MemoryEntry { text: text.to_string(), score: 0.0, metadata: serde_json::Value::Null }
+    MemoryEntry {
+        text: text.to_string(),
+        score: 0.0,
+        metadata: serde_json::Value::Null,
+    }
 }
 
 #[cfg(test)]

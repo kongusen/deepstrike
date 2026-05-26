@@ -73,8 +73,13 @@ mod tests {
     #[test]
     fn deduplicates_signals() {
         let mut router = SignalRouter::new(100);
-        let sig = RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Normal, "tick")
-            .with_dedupe("cron-tick-1");
+        let sig = RuntimeSignal::new(
+            SignalSource::Cron,
+            SignalType::Event,
+            Urgency::Normal,
+            "tick",
+        )
+        .with_dedupe("cron-tick-1");
 
         let d1 = router.ingest(sig.clone(), false);
         assert_ne!(d1, SignalDisposition::Ignore);
@@ -86,7 +91,12 @@ mod tests {
     #[test]
     fn normal_signal_queued() {
         let mut router = SignalRouter::new(100);
-        let sig = RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Normal, "job");
+        let sig = RuntimeSignal::new(
+            SignalSource::Cron,
+            SignalType::Event,
+            Urgency::Normal,
+            "job",
+        );
 
         let d = router.ingest(sig, false);
         assert_eq!(d, SignalDisposition::Queue);
@@ -97,7 +107,12 @@ mod tests {
     #[test]
     fn interrupt_signals_not_queued() {
         let mut router = SignalRouter::new(100);
-        let sig = RuntimeSignal::new(SignalSource::Gateway, SignalType::Alert, Urgency::Critical, "fire");
+        let sig = RuntimeSignal::new(
+            SignalSource::Gateway,
+            SignalType::Alert,
+            Urgency::Critical,
+            "fire",
+        );
 
         let d = router.ingest(sig, true);
         assert_eq!(d, SignalDisposition::InterruptNow);
@@ -107,8 +122,18 @@ mod tests {
     #[test]
     fn full_queue_drops_signal() {
         let mut router = SignalRouter::new(1);
-        let s1 = RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Normal, "first");
-        let s2 = RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Normal, "second");
+        let s1 = RuntimeSignal::new(
+            SignalSource::Cron,
+            SignalType::Event,
+            Urgency::Normal,
+            "first",
+        );
+        let s2 = RuntimeSignal::new(
+            SignalSource::Cron,
+            SignalType::Event,
+            Urgency::Normal,
+            "second",
+        );
 
         assert_eq!(router.ingest(s1, false), SignalDisposition::Queue);
         assert_eq!(router.ingest(s2, false), SignalDisposition::Dropped);
@@ -117,8 +142,13 @@ mod tests {
     #[test]
     fn clear_dedup_allows_reingest() {
         let mut router = SignalRouter::new(100);
-        let sig = RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Normal, "tick")
-            .with_dedupe("key-1");
+        let sig = RuntimeSignal::new(
+            SignalSource::Cron,
+            SignalType::Event,
+            Urgency::Normal,
+            "tick",
+        )
+        .with_dedupe("key-1");
 
         router.ingest(sig.clone(), false);
         assert_eq!(router.ingest(sig.clone(), false), SignalDisposition::Ignore);

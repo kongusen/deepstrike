@@ -1,12 +1,12 @@
-use deepstrike_core::scheduler::state_machine::*;
+use compact_str::CompactString;
+use deepstrike_core::context::manager::{KNOWLEDGE_TOOL_NAME, MEMORY_TOOL_NAME};
+use deepstrike_core::context::skill_catalog::SKILL_TOOL_NAME;
 use deepstrike_core::scheduler::policy::LoopPolicy;
+use deepstrike_core::scheduler::state_machine::*;
 use deepstrike_core::types::message::*;
-use deepstrike_core::types::task::RuntimeTask;
 use deepstrike_core::types::result::TerminationReason;
 use deepstrike_core::types::skill::SkillMetadata;
-use deepstrike_core::context::skill_catalog::SKILL_TOOL_NAME;
-use deepstrike_core::context::manager::{MEMORY_TOOL_NAME, KNOWLEDGE_TOOL_NAME};
-use compact_str::CompactString;
+use deepstrike_core::types::task::RuntimeTask;
 
 fn default_sm() -> LoopStateMachine {
     LoopStateMachine::new(LoopPolicy {
@@ -158,7 +158,9 @@ fn criteria_injected_into_user_message() {
 
     match action {
         LoopAction::CallLLM { context, .. } => {
-            let user_msgs: Vec<_> = context.turns.iter()
+            let user_msgs: Vec<_> = context
+                .turns
+                .iter()
                 .filter(|m| m.role == Role::User)
                 .collect();
             assert!(!user_msgs.is_empty());
@@ -178,11 +180,15 @@ fn no_criteria_means_plain_goal() {
     let action = sm.start(RuntimeTask::new("Say hello"));
     match action {
         LoopAction::CallLLM { context, .. } => {
-            let user_text = context.turns.iter()
+            let user_text = context
+                .turns
+                .iter()
                 .filter(|m| m.role == Role::User)
                 .last()
                 .unwrap()
-                .content.as_text().unwrap();
+                .content
+                .as_text()
+                .unwrap();
             assert_eq!(user_text, "Say hello");
             assert!(!user_text.contains("Criteria:"));
         }
@@ -200,13 +206,19 @@ fn critical_signal_injects_interrupt_and_re_reasons() {
     sm.start(RuntimeTask::new("test"));
 
     let sig = deepstrike_core::RuntimeSignal::new(
-        SignalSource::Gateway, SignalType::Alert, Urgency::Critical, "fire"
+        SignalSource::Gateway,
+        SignalType::Alert,
+        Urgency::Critical,
+        "fire",
     );
     let action = sm.feed(LoopEvent::Signal { signal: sig });
     assert!(matches!(action, LoopAction::CallLLM { .. }));
 
     let has_interrupt = sm.ctx.partitions.working.messages.iter().any(|m| {
-        m.content.as_text().map(|t| t.contains("[INTERRUPT]")).unwrap_or(false)
+        m.content
+            .as_text()
+            .map(|t| t.contains("[INTERRUPT]"))
+            .unwrap_or(false)
     });
     assert!(has_interrupt);
 }
@@ -219,13 +231,19 @@ fn high_urgency_signal_injects_note() {
     sm.start(RuntimeTask::new("test"));
 
     let sig = deepstrike_core::RuntimeSignal::new(
-        SignalSource::Custom, SignalType::Event, Urgency::High, "alert"
+        SignalSource::Custom,
+        SignalType::Event,
+        Urgency::High,
+        "alert",
     );
     let action = sm.feed(LoopEvent::Signal { signal: sig });
     assert!(matches!(action, LoopAction::CallLLM { .. }));
 
     let has_signal = sm.ctx.partitions.working.messages.iter().any(|m| {
-        m.content.as_text().map(|t| t.contains("[SIGNAL]")).unwrap_or(false)
+        m.content
+            .as_text()
+            .map(|t| t.contains("[SIGNAL]"))
+            .unwrap_or(false)
     });
     assert!(has_signal);
 }
@@ -235,7 +253,8 @@ fn high_urgency_signal_injects_note() {
 #[test]
 fn skill_tool_injected_when_skills_registered() {
     let mut sm = default_sm();
-    sm.ctx.set_available_skills(vec![SkillMetadata::new("debug", "Debug helper")]);
+    sm.ctx
+        .set_available_skills(vec![SkillMetadata::new("debug", "Debug helper")]);
     let action = sm.start(RuntimeTask::new("Fix the bug"));
     match action {
         LoopAction::CallLLM { tools, .. } => {
@@ -315,11 +334,15 @@ fn compression_emits_compressed_observation() {
     });
     sm.start(RuntimeTask::new("test"));
     for i in 0..10 {
-        sm.ctx.push_history(Message::user(format!("filler message {i}")), 50);
+        sm.ctx
+            .push_history(Message::user(format!("filler message {i}")), 50);
     }
     sm.feed(LoopEvent::ToolResults { results: vec![] });
     let obs = sm.take_observations();
-    assert!(obs.iter().any(|o| matches!(o, LoopObservation::Compressed { .. })));
+    assert!(
+        obs.iter()
+            .any(|o| matches!(o, LoopObservation::Compressed { .. }))
+    );
 }
 
 // ─── Multi-turn loop ────────────────────────────────────────────────────────
@@ -394,7 +417,8 @@ fn user_tools_plus_skill_tool() {
         description: "Search.".into(),
         parameters: serde_json::json!({}),
     }];
-    sm.ctx.set_available_skills(vec![SkillMetadata::new("debug", "D")]);
+    sm.ctx
+        .set_available_skills(vec![SkillMetadata::new("debug", "D")]);
 
     let action = sm.start(RuntimeTask::new("Debug"));
     match action {

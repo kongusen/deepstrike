@@ -1,9 +1,9 @@
-use deepstrike_core::types::message::*;
-use deepstrike_core::types::task::RuntimeTask;
-use deepstrike_core::types::skill::SkillMetadata;
-use deepstrike_core::types::result::TerminationReason;
-use deepstrike_core::AgentIdentity;
 use compact_str::CompactString;
+use deepstrike_core::AgentIdentity;
+use deepstrike_core::types::message::*;
+use deepstrike_core::types::result::TerminationReason;
+use deepstrike_core::types::skill::SkillMetadata;
+use deepstrike_core::types::task::RuntimeTask;
 
 // ─── Message constructors ───────────────────────────────────────────────────
 
@@ -58,10 +58,7 @@ fn content_parts_as_text_returns_none() {
 
 #[test]
 fn content_parts_text_len_sums_parts() {
-    let c = Content::Parts(vec![
-        ContentPart::text("hello"),
-        ContentPart::text("world"),
-    ]);
+    let c = Content::Parts(vec![ContentPart::text("hello"), ContentPart::text("world")]);
     assert_eq!(c.text_len(), 10);
 }
 
@@ -89,7 +86,9 @@ fn content_part_image_url_constructor() {
 fn content_part_image_base64_constructor() {
     let p = ContentPart::image_base64("abc123", "image/png");
     match p {
-        ContentPart::Image { data, media_type, .. } => {
+        ContentPart::Image {
+            data, media_type, ..
+        } => {
             assert_eq!(data.as_deref(), Some("abc123"));
             assert_eq!(media_type.as_deref(), Some("image/png"));
         }
@@ -170,7 +169,10 @@ fn message_json_roundtrip() {
 fn role_serialization() {
     assert_eq!(serde_json::to_string(&Role::System).unwrap(), "\"system\"");
     assert_eq!(serde_json::to_string(&Role::User).unwrap(), "\"user\"");
-    assert_eq!(serde_json::to_string(&Role::Assistant).unwrap(), "\"assistant\"");
+    assert_eq!(
+        serde_json::to_string(&Role::Assistant).unwrap(),
+        "\"assistant\""
+    );
     assert_eq!(serde_json::to_string(&Role::Tool).unwrap(), "\"tool\"");
 }
 

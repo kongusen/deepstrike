@@ -12,7 +12,9 @@ pub enum SignalDisposition {
     Ignore,
     Observe,
     Queue,
-    Run { priority: u8 },
+    Run {
+        priority: u8,
+    },
     Interrupt,
     InterruptNow,
     /// Router accepted the signal but the queue is full; signal was dropped.

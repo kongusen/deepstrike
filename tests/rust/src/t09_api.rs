@@ -8,12 +8,16 @@ use std::sync::{Arc, Mutex};
 
 fn load_env() -> (String, String, String) {
     let env_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap().parent().unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
         .join(".env");
     let _ = dotenvy::from_path(&env_path);
 
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY required");
-    let base_url = std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
+    let base_url =
+        std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
     let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-5-mini".into());
     (api_key, base_url, model)
 }
@@ -36,6 +40,7 @@ where
         provider: Box::new(make_provider()),
         execution_plane: None,
         session_log: Some(Arc::new(InMemorySessionLog::new())),
+        compression_store: None,
         session_id: None,
         max_tokens: 4096,
         max_turns: Some(25),
@@ -49,6 +54,8 @@ where
         knowledge_source: None,
         signal_source: None,
         governance: None,
+        tokenizer: None,
+        enable_plan_tool: None,
         on_tool_suspend: None,
     };
     setup(&mut plane, &mut opts);
@@ -85,7 +92,9 @@ impl KnowledgeSource for MockKnowledgeSource {
     async fn retrieve(&self, _goal: &str, top_k: usize) -> deepstrike_sdk::Result<Vec<String>> {
         Ok(self.snippets.iter().take(top_k).cloned().collect())
     }
-    async fn init(&self) -> deepstrike_sdk::Result<()> { Ok(()) }
+    async fn init(&self) -> deepstrike_sdk::Result<()> {
+        Ok(())
+    }
 }
 
 struct MockDreamStore {
@@ -125,10 +134,16 @@ impl MockDreamStore {
 
 #[async_trait]
 impl DreamStore for MockDreamStore {
-    async fn load_sessions(&self, _agent_id: &str) -> deepstrike_sdk::Result<Vec<deepstrike_core::memory::durable::SessionData>> {
+    async fn load_sessions(
+        &self,
+        _agent_id: &str,
+    ) -> deepstrike_sdk::Result<Vec<deepstrike_core::memory::durable::SessionData>> {
         Ok(self.sessions.clone())
     }
-    async fn load_memories(&self, _agent_id: &str) -> deepstrike_sdk::Result<Vec<deepstrike_core::memory::semantic::MemoryEntry>> {
+    async fn load_memories(
+        &self,
+        _agent_id: &str,
+    ) -> deepstrike_sdk::Result<Vec<deepstrike_core::memory::semantic::MemoryEntry>> {
         Ok(self.memories.clone())
     }
     async fn commit(
@@ -152,7 +167,10 @@ impl DreamStore for MockDreamStore {
             metadata: serde_json::Value::Null,
         }])
     }
-    async fn save_session(&self, _data: deepstrike_core::memory::durable::SessionData) -> deepstrike_sdk::Result<()> {
+    async fn save_session(
+        &self,
+        _data: deepstrike_core::memory::durable::SessionData,
+    ) -> deepstrike_sdk::Result<()> {
         Ok(())
     }
 }
@@ -186,7 +204,9 @@ async fn runner_streaming_done_has_iterations() {
     let (_, events) = collect_text(&runner, "Say hi.").await;
     let done = events.iter().find(|e| matches!(e, RunEvent::Done { .. }));
     match done.unwrap() {
-        RunEvent::Done { iterations, status, .. } => {
+        RunEvent::Done {
+            iterations, status, ..
+        } => {
             assert!(*iterations >= 0);
             assert!(!status.is_empty());
         }
@@ -201,9 +221,10 @@ async fn runner_streaming_done_has_iterations() {
 async fn runner_with_criteria() {
     let runner = make_runner();
     let criteria = vec!["Must contain the word 'hello'".to_string()];
-    let mut stream = runner.run_streaming(
-        "Greet the user.", &criteria, None, None,
-    ).await.unwrap();
+    let mut stream = runner
+        .run_streaming("Greet the user.", &criteria, None, None)
+        .await
+        .unwrap();
 
     let mut text = String::new();
     while let Some(evt) = stream.next().await {
@@ -232,18 +253,28 @@ async fn runner_calls_tool() {
                 },
                 "required": ["x", "y"]
             }),
-            |args| Box::pin(async move {
-                let x = args["x"].as_i64().unwrap_or(0);
-                let y = args["y"].as_i64().unwrap_or(0);
-                Ok(format!("{}", x + y))
-            }),
+            |args| {
+                Box::pin(async move {
+                    let x = args["x"].as_i64().unwrap_or(0);
+                    let y = args["y"].as_i64().unwrap_or(0);
+                    Ok(format!("{}", x + y))
+                })
+            },
         ));
     });
 
-    let (text, events) = collect_text(&runner, "Use the add tool to compute 17 + 28. Report the result.").await;
+    let (text, events) = collect_text(
+        &runner,
+        "Use the add tool to compute 17 + 28. Report the result.",
+    )
+    .await;
 
-    let has_tool_call = events.iter().any(|e| matches!(e, RunEvent::ToolCall { name, .. } if name == "add"));
-    let has_tool_result = events.iter().any(|e| matches!(e, RunEvent::ToolResult { is_error, .. } if !is_error));
+    let has_tool_call = events
+        .iter()
+        .any(|e| matches!(e, RunEvent::ToolCall { name, .. } if name == "add"));
+    let has_tool_result = events
+        .iter()
+        .any(|e| matches!(e, RunEvent::ToolResult { is_error, .. } if !is_error));
     assert!(has_tool_call, "expected add tool call");
     assert!(has_tool_result, "expected tool result");
     assert!(text.contains("45"), "expected result 45 in output: {text}");
@@ -264,9 +295,16 @@ async fn runner_with_skill_dir() {
         "Use the summarize skill to learn how to summarize, then summarize: 'Rust is a systems programming language focused on safety, speed, and concurrency.'",
     ).await;
 
-    let has_skill_call = events.iter().any(|e| matches!(e, RunEvent::ToolCall { name, .. } if name == "skill"));
-    let has_skill_result = events.iter().any(|e| matches!(e, RunEvent::ToolResult { is_error, .. } if !is_error));
-    assert!(has_skill_call || !text.is_empty(), "expected skill call or text output");
+    let has_skill_call = events
+        .iter()
+        .any(|e| matches!(e, RunEvent::ToolCall { name, .. } if name == "skill"));
+    let has_skill_result = events
+        .iter()
+        .any(|e| matches!(e, RunEvent::ToolResult { is_error, .. } if !is_error));
+    assert!(
+        has_skill_call || !text.is_empty(),
+        "expected skill call or text output"
+    );
     if has_skill_call {
         assert!(has_skill_result, "expected skill result");
     }
@@ -289,11 +327,16 @@ async fn runner_with_knowledge_source() {
     let (text, events) = collect_text(
         &runner,
         "Use the knowledge tool to find out what DeepStrike is, then explain it.",
-    ).await;
+    )
+    .await;
 
-    let has_knowledge_call = events.iter().any(|e| matches!(e, RunEvent::ToolCall { name, .. } if name == "knowledge"));
-    assert!(has_knowledge_call || text.to_lowercase().contains("deepstrike"),
-        "expected knowledge call or DeepStrike mention in: {text}");
+    let has_knowledge_call = events
+        .iter()
+        .any(|e| matches!(e, RunEvent::ToolCall { name, .. } if name == "knowledge"));
+    assert!(
+        has_knowledge_call || text.to_lowercase().contains("deepstrike"),
+        "expected knowledge call or DeepStrike mention in: {text}"
+    );
 }
 
 // ─── 07. Governance — blocked tool ──────────────────────────────────────────
@@ -313,10 +356,7 @@ async fn blocked_tool_yields_error_event() {
         opts.governance = Some(gov);
     });
 
-    let (_, events) = collect_text(
-        &runner,
-        "Call the forbidden_action tool.",
-    ).await;
+    let (_, events) = collect_text(&runner, "Call the forbidden_action tool.").await;
 
     let has_error = events.iter().any(|e| matches!(e, RunEvent::Error(_)));
     let has_done = events.iter().any(|e| matches!(e, RunEvent::Done { .. }));
@@ -333,7 +373,9 @@ async fn runner_interrupt() {
     let runner = make_runner();
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     runner.interrupt();
-    let result = runner.execute("Write a very long essay about the history of computing.").await;
+    let result = runner
+        .execute("Write a very long essay about the history of computing.")
+        .await;
     assert!(result.is_ok());
 }
 
@@ -375,7 +417,10 @@ async fn dream_processes_session() {
 async fn single_pass_harness_always_passes() {
     let runner = make_runner();
     let harness = SinglePassHarness::new(&runner);
-    let outcome = harness.run(HarnessRequest::new("Say hello.")).await.unwrap();
+    let outcome = harness
+        .run(HarnessRequest::new("Say hello."))
+        .await
+        .unwrap();
     assert!(outcome.passed);
     assert!(!outcome.result.is_empty());
     assert!(!outcome.status.is_empty());
@@ -387,7 +432,11 @@ struct AlwaysPass;
 
 #[async_trait]
 impl QualityGate for AlwaysPass {
-    async fn evaluate(&self, _req: &HarnessRequest, _out: &HarnessOutcome) -> deepstrike_sdk::Result<bool> {
+    async fn evaluate(
+        &self,
+        _req: &HarnessRequest,
+        _out: &HarnessOutcome,
+    ) -> deepstrike_sdk::Result<bool> {
         Ok(true)
     }
 }
@@ -417,10 +466,12 @@ async fn tools_plus_governance_allowed_tool_works() {
                 "properties": { "name": { "type": "string" } },
                 "required": ["name"]
             }),
-            |args| Box::pin(async move {
-                let name = args["name"].as_str().unwrap_or("World");
-                Ok(format!("Hello, {name}!"))
-            }),
+            |args| {
+                Box::pin(async move {
+                    let name = args["name"].as_str().unwrap_or("World");
+                    Ok(format!("Hello, {name}!"))
+                })
+            },
         ));
         plane.register(RegisteredTool::text(
             "dangerous",
@@ -434,10 +485,16 @@ async fn tools_plus_governance_allowed_tool_works() {
     let (text, events) = collect_text(
         &runner,
         "Use the greet tool with name='Rust'. Do NOT call dangerous.",
-    ).await;
+    )
+    .await;
 
-    let has_greet = events.iter().any(|e| matches!(e, RunEvent::ToolCall { name, .. } if name == "greet"));
-    assert!(has_greet || text.contains("Hello"), "expected greet tool call or greeting text");
+    let has_greet = events
+        .iter()
+        .any(|e| matches!(e, RunEvent::ToolCall { name, .. } if name == "greet"));
+    assert!(
+        has_greet || text.contains("Hello"),
+        "expected greet tool call or greeting text"
+    );
 }
 
 // ─── 13. Memory + Agent combo ───────────────────────────────────────────────
@@ -454,11 +511,16 @@ async fn agent_with_dream_store_enables_memory_tool() {
     let (text, events) = collect_text(
         &runner,
         "Use the memory tool to search for 'Rust history'. Report what you found.",
-    ).await;
+    )
+    .await;
 
-    let has_memory_call = events.iter().any(|e| matches!(e, RunEvent::ToolCall { name, .. } if name == "memory"));
-    assert!(has_memory_call || !text.is_empty(),
-        "expected memory tool call or text output");
+    let has_memory_call = events
+        .iter()
+        .any(|e| matches!(e, RunEvent::ToolCall { name, .. } if name == "memory"));
+    assert!(
+        has_memory_call || !text.is_empty(),
+        "expected memory tool call or text output"
+    );
 }
 
 // ─── 14. HarnessLoop (LLM-as-judge) ────────────────────────────────────────
@@ -471,7 +533,9 @@ async fn harness_loop_llm_judge() {
     let harness = HarnessLoop::new(&runner, eval_provider, 2, None);
 
     let mut req = HarnessRequest::new("Write a haiku about the ocean.");
-    req.criteria = vec![deepstrike_sdk::harness::Criterion::required("Must be exactly 3 lines.")];
+    req.criteria = vec![deepstrike_sdk::harness::Criterion::required(
+        "Must be exactly 3 lines.",
+    )];
 
     let stream = harness.run_streaming(req);
     futures::pin_mut!(stream);
@@ -481,7 +545,9 @@ async fn harness_loop_llm_judge() {
         match evt.unwrap() {
             deepstrike_sdk::harness::HarnessEvent::Token(t) => result.push_str(&t),
             deepstrike_sdk::harness::HarnessEvent::Done { status: s, .. } => status = s,
-            deepstrike_sdk::harness::HarnessEvent::MaxAttemptsReached => status = "max_attempts".into(),
+            deepstrike_sdk::harness::HarnessEvent::MaxAttemptsReached => {
+                status = "max_attempts".into()
+            }
             _ => {}
         }
     }
@@ -509,42 +575,58 @@ async fn agent_with_extensions() {
 async fn runner_multiple_tools() {
     let runner = make_runner_with(|plane, _| {
         plane.register(RegisteredTool::text(
-            "add", "Add two numbers.", serde_json::json!({
+            "add",
+            "Add two numbers.",
+            serde_json::json!({
                 "type": "object",
                 "properties": { "x": {"type":"integer"}, "y": {"type":"integer"} },
                 "required": ["x","y"]
             }),
-            |args| Box::pin(async move {
-                let x = args["x"].as_i64().unwrap_or(0);
-                let y = args["y"].as_i64().unwrap_or(0);
-                Ok(format!("{}", x + y))
-            }),
+            |args| {
+                Box::pin(async move {
+                    let x = args["x"].as_i64().unwrap_or(0);
+                    let y = args["y"].as_i64().unwrap_or(0);
+                    Ok(format!("{}", x + y))
+                })
+            },
         ));
         plane.register(RegisteredTool::text(
-            "multiply", "Multiply two numbers.", serde_json::json!({
+            "multiply",
+            "Multiply two numbers.",
+            serde_json::json!({
                 "type": "object",
                 "properties": { "x": {"type":"integer"}, "y": {"type":"integer"} },
                 "required": ["x","y"]
             }),
-            |args| Box::pin(async move {
-                let x = args["x"].as_i64().unwrap_or(0);
-                let y = args["y"].as_i64().unwrap_or(0);
-                Ok(format!("{}", x * y))
-            }),
+            |args| {
+                Box::pin(async move {
+                    let x = args["x"].as_i64().unwrap_or(0);
+                    let y = args["y"].as_i64().unwrap_or(0);
+                    Ok(format!("{}", x * y))
+                })
+            },
         ));
     });
 
     let (text, events) = collect_text(
         &runner,
         "Compute add(3,4) and multiply(5,6). Report both results.",
-    ).await;
+    )
+    .await;
 
-    let tool_calls: Vec<_> = events.iter()
+    let tool_calls: Vec<_> = events
+        .iter()
         .filter(|e| matches!(e, RunEvent::ToolCall { .. }))
         .collect();
-    assert!(tool_calls.len() >= 2, "expected at least 2 tool calls, got {}", tool_calls.len());
-    assert!(text.contains("7") && text.contains("30"),
-        "expected 7 and 30 in output: {text}");
+    assert!(
+        tool_calls.len() >= 2,
+        "expected at least 2 tool calls, got {}",
+        tool_calls.len()
+    );
+    assert!(
+        text.contains("7") && text.contains("30"),
+        "expected 7 and 30 in output: {text}"
+    );
 }
 
 // ─── 17. SignalGateway + Agent integration ──────────────────────────────────
@@ -590,9 +672,16 @@ async fn done_event_has_telemetry() {
     let runner = make_runner();
     let (_, events) = collect_text(&runner, "Say one word.").await;
 
-    let done = events.iter().find(|e| matches!(e, RunEvent::Done { .. })).unwrap();
+    let done = events
+        .iter()
+        .find(|e| matches!(e, RunEvent::Done { .. }))
+        .unwrap();
     match done {
-        RunEvent::Done { iterations, total_tokens, status } => {
+        RunEvent::Done {
+            iterations,
+            total_tokens,
+            status,
+        } => {
             assert!(*iterations >= 0);
             assert!(*total_tokens >= 0);
             assert!(!status.is_empty());

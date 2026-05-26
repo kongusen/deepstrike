@@ -25,9 +25,18 @@ mod tests {
     #[test]
     fn builds_graph_from_decomposition() {
         let tasks = vec![
-            DecomposedTask { task: RuntimeTask::new("Setup DB"), depends_on: vec![] },
-            DecomposedTask { task: RuntimeTask::new("Run migrations"), depends_on: vec![0] },
-            DecomposedTask { task: RuntimeTask::new("Seed data"), depends_on: vec![1] },
+            DecomposedTask {
+                task: RuntimeTask::new("Setup DB"),
+                depends_on: vec![],
+            },
+            DecomposedTask {
+                task: RuntimeTask::new("Run migrations"),
+                depends_on: vec![0],
+            },
+            DecomposedTask {
+                task: RuntimeTask::new("Seed data"),
+                depends_on: vec![1],
+            },
         ];
 
         let graph = build_graph(tasks);

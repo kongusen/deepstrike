@@ -40,6 +40,16 @@ pub enum SessionEvent {
     Compressed {
         turn: u32,
         archived_seq_range: (u64, u64),
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        archive_ref: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        preserved_refs: Vec<String>,
     },
     RunTerminal {
         reason: String,

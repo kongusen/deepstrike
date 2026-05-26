@@ -1,84 +1,114 @@
+use super::config::ContextConfig;
 use super::partitions::ContextPartitions;
+use super::token_engine::ContextTokenEngine;
 
 /// Action recommended by the pressure monitor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PressureAction {
-    /// No compression needed
     None,
-    /// rho > 0.70: truncate long text segments
     SnipCompact,
-    /// rho > 0.80: cache tool results by call_id
     MicroCompact,
-    /// rho > 0.90: fold inactive regions
     ContextCollapse,
-    /// rho > 0.95: full compression pass
     AutoCompact,
 }
 
-/// Monitors context pressure rho = used_tokens / max_tokens
-/// and recommends compression actions.
+/// Monitors rho = used_tokens / max_tokens and recommends compression actions.
+/// All thresholds come from `ContextConfig` — no hardcoded constants.
 pub struct PressureMonitor {
     max_tokens: u32,
+    config: ContextConfig,
 }
 
 impl PressureMonitor {
-    pub fn new(max_tokens: u32) -> Self {
-        Self { max_tokens }
-    }
-
-    /// Current pressure value rho in [0.0, +inf).
-    pub fn pressure(&self, partitions: &ContextPartitions) -> f64 {
-        if self.max_tokens == 0 {
-            return 0.0;
-        }
-        partitions.total_tokens() as f64 / self.max_tokens as f64
-    }
-
-    /// Recommend a compression action based on current pressure.
-    pub fn recommend(&self, rho: f64) -> PressureAction {
-        if rho > 0.95 {
-            PressureAction::AutoCompact
-        } else if rho > 0.90 {
-            PressureAction::ContextCollapse
-        } else if rho > 0.80 {
-            PressureAction::MicroCompact
-        } else if rho > 0.70 {
-            PressureAction::SnipCompact
-        } else {
-            PressureAction::None
-        }
+    pub fn new(max_tokens: u32, config: ContextConfig) -> Self {
+        Self { max_tokens, config }
     }
 
     pub fn max_tokens(&self) -> u32 {
         self.max_tokens
+    }
+
+    /// Current pressure rho ∈ [0, +∞).
+    pub fn pressure(&self, partitions: &ContextPartitions, engine: &ContextTokenEngine) -> f64 {
+        if self.max_tokens == 0 {
+            return 0.0;
+        }
+        partitions.total_tokens(engine) as f64 / self.max_tokens as f64
+    }
+
+    pub fn recommend(&self, rho: f64) -> PressureAction {
+        if rho > self.config.auto_threshold {
+            PressureAction::AutoCompact
+        } else if rho > self.config.collapse_threshold {
+            PressureAction::ContextCollapse
+        } else if rho > self.config.micro_threshold {
+            PressureAction::MicroCompact
+        } else if rho > self.config.snip_threshold {
+            PressureAction::SnipCompact
+        } else {
+            PressureAction::None
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::config::ContextConfig;
     use crate::context::partitions::ContextPartitions;
+    use crate::context::token_engine::ContextTokenEngine;
     use crate::types::message::Message;
 
-    #[test]
-    fn pressure_thresholds() {
-        let monitor = PressureMonitor::new(100);
-        assert_eq!(monitor.recommend(0.50), PressureAction::None);
-        assert_eq!(monitor.recommend(0.71), PressureAction::SnipCompact);
-        assert_eq!(monitor.recommend(0.81), PressureAction::MicroCompact);
-        assert_eq!(monitor.recommend(0.91), PressureAction::ContextCollapse);
-        assert_eq!(monitor.recommend(0.96), PressureAction::AutoCompact);
+    fn engine() -> ContextTokenEngine {
+        ContextTokenEngine::char_approx()
+    }
+    fn config() -> ContextConfig {
+        ContextConfig::default()
     }
 
     #[test]
-    fn pressure_calculation() {
-        let monitor = PressureMonitor::new(1000);
-        let mut ctx = ContextPartitions::new();
-        // Capture the empty-context baseline (dashboard has a fixed-field token estimate).
-        let baseline = ctx.total_tokens() as f64;
+    fn thresholds_follow_config() {
+        let cfg = config();
+        let monitor = PressureMonitor::new(100, cfg.clone());
+        assert_eq!(monitor.recommend(0.50), PressureAction::None);
+        assert_eq!(
+            monitor.recommend(cfg.snip_threshold + 0.01),
+            PressureAction::SnipCompact
+        );
+        assert_eq!(
+            monitor.recommend(cfg.micro_threshold + 0.01),
+            PressureAction::MicroCompact
+        );
+        assert_eq!(
+            monitor.recommend(cfg.collapse_threshold + 0.01),
+            PressureAction::ContextCollapse
+        );
+        assert_eq!(
+            monitor.recommend(cfg.auto_threshold + 0.01),
+            PressureAction::AutoCompact
+        );
+    }
+
+    #[test]
+    fn custom_thresholds_respected() {
+        let cfg = ContextConfig {
+            snip_threshold: 0.50,
+            ..Default::default()
+        };
+        let monitor = PressureMonitor::new(100, cfg);
+        assert_eq!(monitor.recommend(0.51), PressureAction::SnipCompact);
+        assert_eq!(monitor.recommend(0.49), PressureAction::None);
+    }
+
+    #[test]
+    fn pressure_calculation_uses_engine() {
+        let cfg = config();
+        let monitor = PressureMonitor::new(1_000, cfg.clone());
+        let mut ctx = ContextPartitions::new(&cfg);
+        let baseline = ctx.total_tokens(&engine()) as f64;
         ctx.history.push(Message::user("test"), 500);
-        let rho = monitor.pressure(&ctx);
-        let expected = (baseline + 500.0) / 1000.0;
+        let rho = monitor.pressure(&ctx, &engine());
+        let expected = (baseline + 500.0) / 1_000.0;
         assert!((rho - expected).abs() < f64::EPSILON);
     }
 }

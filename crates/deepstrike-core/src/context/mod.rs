@@ -1,8 +1,15 @@
 pub mod compression;
+pub mod config;
 pub mod dashboard;
 pub mod manager;
 pub mod partitions;
 pub mod pressure;
 pub mod renderer;
 pub mod renewal;
+pub mod sections;
 pub mod skill_catalog;
+pub mod snapshot;
+pub mod summarizer;
+pub mod task_state;
+pub mod text;
+pub mod token_engine;
