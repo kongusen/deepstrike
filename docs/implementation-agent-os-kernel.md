@@ -126,8 +126,9 @@ KernelOutput:
 | Phase 1 / PR 2：Kernel ABI 固化 | ✅ 已完成 | `b84af51 test(abi): add golden fixtures and confirm JSON ABI as long-term FFI boundary` — JSON ABI 冻结，四端 golden fixture CI 全绿，spec-kernel-abi.md 更新完毕 |
 | Phase 2 / PR 3：Virtual Context Memory | ✅ 已完成 | 6 分区 VM，ContextSnapshot，ArchiveStore，reconstruct_messages_with_fallback，PushArtifact，spec-context-compression-v2.md Phase A+B+C |
 | Phase 3 / PR 4：Capability Bus | ✅ 已完成 | `6be8003 feat(p3): add mounted_by/mount_reason provenance to capability bus` — CapabilityCommand::Mount provenance，lease 自动 revoke，四端 CapabilityChanged audit，unlocked_by_milestone_id 延至 Phase 6 |
+| Phase 4 / PR 5：Security LSM | ✅ 已完成 | `d0b95e1 feat(p4): implement Security LSM governance pipeline` — 8 阶段 GovernancePipeline，deny monotonic，PermissionRequested/Resolved audit 三元组，四端 ToolDenied schema 统一，WASM Governance 全功能对齐，182 Rust 测试 |
 
-**当前主线：** Phase 3（Capability Bus）已完成（`6be8003`）。Capability provenance（mounted_by / mount_reason）全链路，lease 自动 revoke，四端 audit 一致。**下一步：Phase 4 — Security LSM。**
+**当前主线：** Phase 4（Security LSM）已完成（`d0b95e1`）。8 阶段 GovernancePipeline，deny monotonic，PermissionRequested audit 三元组，四端 ToolDenied schema 统一。**下一步：Phase 5 — Transaction Runtime。**
 
 **Phase 1 最新提交链：**
 
@@ -339,44 +340,38 @@ CapabilityCommand::Pin     ✅
 
 ### 阶段 4：Security LSM
 
+**状态：✅ 已完成（`d0b95e1`）。**
+
 **目标：** 工具调用 = syscall，必须过 LSM。
 
 **治理链路：**
 
-```
-Classify
-  -> CapabilityCheck
-  -> ConstraintCheck
-  -> PermissionCheck
-  -> VetoCheck
-  -> RateLimit
-  -> SandboxPolicy
-  -> Audit
+```text
+Classify → CapabilityCheck → ConstraintCheck → PermissionCheck
+  → VetoCheck → RateLimit → SandboxPolicy → Audit
 ```
 
 **不变量：**
 
-- deny monotonic
-- permission allow 不能绕过 veto
-- hook 只能收紧，不能放宽
-- 所有 denial 必须写审计日志
-- 所有 ask-user 必须可恢复
+- [x] deny monotonic — `ToolDecisionPipeline::reduce()` + 8+ 专项测试
+- [x] permission allow 不能绕过 veto — `veto_deny_overrides_explicit_permission_allow` 测试
+- [x] 所有 denial 必须写审计日志 — `AuditLog` 每次 evaluate 均写入
+- [x] 所有 ask-user 必须可恢复 — `PermissionRequested` + `PermissionResolved { approved: false, responder: "policy_gate" }` + `ToolDenied` 三事件 audit 三元组，四端一致
 
 **交付物：**
 
-- `ToolDecisionPipeline`
-- `ToolDecisionStage`
-- `ToolDenied`
-- `PermissionRequested`
-- `PermissionResolved`
-- `SandboxProfile`
-- `SecurityPolicySnapshot`
+- [x] `ToolDecisionPipeline` + `ToolDecisionStage` (8 stages)
+- [x] `ToolDenied` — 四端 session log 字段统一（`call_id` + `tool_name` + `reason`）
+- [x] `PermissionRequested` + `PermissionResolved` — ask_user 产生完整 audit 三元组
+- [x] `SandboxProfile` + `SandboxPolicy` — network + filesystem allowlist
+- [x] `SecurityPolicySnapshot`
+- [x] `Governance` facade — Rust / Node / Python WASM 全功能对齐（`addPermissionRule`、`setRateLimit`、`requireParam`、`allowParamValues`、`limitParamRange`、`setIdentity`）
 
 **验收：**
 
-- 任一 stage deny 后后续 stage 不可 overwrite
-- 四端 `ToolDenied` audit 一致
-- replay 可恢复 pending permission 流
+- ✅ 任一 stage deny 后后续 stage 不可 overwrite（182 Rust 测试全绿）
+- ✅ 四端 `ToolDenied` audit 字段一致（`call_id`、`tool_name`、`reason`）
+- ✅ replay 可恢复 pending permission 流（`PermissionRequested` → `PermissionResolved` → `ToolDenied` 三事件序列写入 session log）
 
 **依赖：** 阶段 3（capability check 需要 bus）
 
@@ -562,7 +557,7 @@ PR 1 与 PR 3 有重叠（milestone/rollback），可按实际 diff 大小拆分
 | **G1 — ABI Stable** | ✅ 四端仅 KernelInput/Output；FFI 无内部结构泄漏；golden fixture 四端 CI 通过；JSON ABI schema 已冻结 |
 | **G2 — Context VM** | ✅ 6 分区 + fault + replay repair 测试通过 |
 | **G3 — Capability Bus** | ✅ mount/unmount/lease audit 完整；provenance 四端透传；unlocked_by_milestone_id 延至 Phase 6 |
-| **G4 — LSM** | deny monotonic 测试 + 四端 ToolDenied 一致 |
+| **G4 — LSM** | ✅ deny monotonic 测试 + 四端 ToolDenied 一致；PermissionRequested/Resolved audit 三元组；WASM Governance 全功能对齐 |
 | **G5 — Transaction** | recoverable error 不 rollback；replay 精确截断 |
 | **G6 — Milestone** | verifier 驱动 phase advance；blocked retry 可控 |
 | **G7 — Multi-Agent** | sub-agent isolation + lineage replay |
