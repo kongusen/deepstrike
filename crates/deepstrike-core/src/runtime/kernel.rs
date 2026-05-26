@@ -247,6 +247,17 @@ pub enum KernelObservation {
         turn: u32,
         history_len: u32,
     },
+    /// Sub-agent spawned — carries lineage and isolation details for the audit log.
+    AgentSpawned {
+        turn: u32,
+        agent_id: String,
+        parent_session_id: String,
+        role: String,
+        isolation: String,
+        context_inheritance: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        permitted_capability_ids: Vec<String>,
+    },
 }
 
 impl From<LoopObservation> for KernelObservation {
@@ -322,6 +333,19 @@ impl From<LoopObservation> for KernelObservation {
             LoopObservation::CheckpointTaken { turn, history_len } => {
                 Self::CheckpointTaken { turn, history_len }
             }
+            LoopObservation::AgentSpawned { turn, manifest } => Self::AgentSpawned {
+                turn,
+                agent_id: manifest.agent_id.to_string(),
+                parent_session_id: manifest.parent_session_id.to_string(),
+                role: format!("{:?}", manifest.role).to_lowercase(),
+                isolation: format!("{:?}", manifest.isolation).to_lowercase(),
+                context_inheritance: format!("{:?}", manifest.context_inheritance).to_lowercase(),
+                permitted_capability_ids: manifest
+                    .permitted_capability_ids
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect(),
+            },
         }
     }
 }

@@ -109,6 +109,7 @@ mod tests {
             agent_id: "test".into(),
             session_id: "s1".into(),
             is_sub_agent: false,
+            parent_session_id: None,
         }
     }
 

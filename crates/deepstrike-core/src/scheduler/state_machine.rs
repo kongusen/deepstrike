@@ -3,6 +3,8 @@
 use super::policy::LoopPolicy;
 use crate::AgentRunSpec;
 use crate::context::manager::ContextManager;
+use crate::types::agent::IsolationManifest;
+use crate::types::result::SubAgentResult;
 use crate::context::pressure::PressureAction;
 use crate::context::renderer::RenderedContext;
 use crate::runtime::session::RollbackReason;
@@ -45,6 +47,10 @@ pub enum LoopEvent {
     /// Feed this back after handling `LoopAction::EvaluateMilestone`.
     MilestoneResult {
         result: MilestoneCheckResult,
+    },
+    /// Sub-agent run completed — result is injected into the loop as context.
+    SubAgentCompleted {
+        result: SubAgentResult,
     },
     Timeout,
 }
@@ -138,6 +144,11 @@ pub enum LoopObservation {
     CheckpointTaken {
         turn: u32,
         history_len: u32,
+    },
+    /// Sub-agent spawned — carries the auto-generated isolation manifest.
+    AgentSpawned {
+        turn: u32,
+        manifest: IsolationManifest,
     },
 }
 
@@ -441,6 +452,20 @@ impl LoopStateMachine {
 
             LoopEvent::MilestoneResult { result } => self.handle_milestone_result(result),
 
+            LoopEvent::SubAgentCompleted { result } => {
+                let summary = result
+                    .result
+                    .final_message
+                    .as_ref()
+                    .and_then(|m| m.content.as_text())
+                    .unwrap_or_default();
+                let msg =
+                    Message::user(format!("[sub-agent {}] {}", result.agent_id, summary));
+                self.ctx.partitions.working.push(msg, 0);
+                self.phase = LoopPhase::Reason;
+                self.emit_call_llm()
+            }
+
             LoopEvent::Timeout => {
                 let reason = RollbackReason::Timeout;
                 let note = Message::user(format!(
@@ -462,6 +487,26 @@ impl LoopStateMachine {
     /// Drain observations emitted during the last `start`/`feed` call.
     pub fn take_observations(&mut self) -> Vec<LoopObservation> {
         std::mem::take(&mut self.observations)
+    }
+
+    /// Spawn a sub-agent: generates an isolation manifest from `spec` against
+    /// the current capability snapshot and emits an `AgentSpawned` observation.
+    ///
+    /// The caller (SDK runner) reads the observation, records the lineage in the
+    /// audit log, and drives the sub-agent loop. Feed the result back via
+    /// `LoopEvent::SubAgentCompleted`.
+    pub fn spawn_sub_agent(
+        &mut self,
+        spec: AgentRunSpec,
+        parent_session_id: &str,
+    ) -> IsolationManifest {
+        let manifest =
+            IsolationManifest::from_spec(&spec, parent_session_id, &self.ctx.capabilities);
+        self.observations.push(LoopObservation::AgentSpawned {
+            turn: self.turn,
+            manifest: manifest.clone(),
+        });
+        manifest
     }
 
     fn terminate(

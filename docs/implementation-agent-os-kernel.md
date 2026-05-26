@@ -129,8 +129,9 @@ KernelOutput:
 | Phase 4 / PR 5：Security LSM | ✅ 已完成 | `d0b95e1 feat(p4): implement Security LSM governance pipeline` — 8 阶段 GovernancePipeline，deny monotonic，PermissionRequested/Resolved audit 三元组，四端 ToolDenied schema 统一，WASM Governance 全功能对齐，182 Rust 测试 |
 | Phase 5 / PR 6：Transaction Runtime | ✅ 已完成 | `TurnCheckpoint` 公共类型，`TransactionObservation` enum，`SessionEvent::CheckpointTaken`，`LoopObservation::CheckpointTaken`，`SessionEvent::Rollbacked` + repair.rs 精确截断，`ToolErrorKind` + `RollbackReason` 全变体，G5 gate 通过，`t13_transaction.rs` 9 项专属测试，193 Rust 测试 |
 | Phase 6 / PR 7：Milestone Contracts | ✅ 已完成 | `MilestoneVerifier`（5 种类型），`RetryPolicy { max_attempts }`，`MilestoneRollbackPolicy`（Terminate/Rollback/Continue），`MilestoneUnlockPolicy`，`required_evidence` 字段，`EvaluateMilestone` 携带 verifier + required_evidence，capability unlock 走 `mount_capability()` 带 provenance（`mounted_by = "milestone:{phase_id}"`），`MilestoneEvidence` session event，`milestone_blocked_count` 计数，`TerminationReason::MilestoneExceeded`，G6 gate 通过，`t14_milestone.rs` 11 项专属测试，204 Rust 测试 |
+| Phase 7 / PR 8：Sub-Agent Isolation | ✅ 已完成 | `ContextInheritance` enum，`IsolationManifest`（role-based context inheritance defaults + capability filter snapshot），`AgentIdentity.parent_session_id` lineage 字段，`LoopObservation::AgentSpawned`，`LoopEvent::SubAgentCompleted`，`spawn_sub_agent()` 方法，`KernelObservation::AgentSpawned` + `From<LoopObservation>`，`SessionEvent::AgentSpawned`（parent-child lineage audit record），runner 写 `AgentSpawned` session event，G7 gate 通过，`t15_sub_agent.rs` 7 项专属测试，211 Rust 测试 |
 
-**当前主线：** Phase 6（Milestone Contracts）已完成。G6 gate 通过（verifier 驱动 phase advance；blocked retry 可控；unlock capabilities 带 provenance）。**下一步：Phase 7 — Sub-Agent Isolation。**
+**当前主线：** Phase 7（Sub-Agent Isolation）已完成。G7 gate 通过（sub-agent spawn 自动生成隔离 manifest；parent-child audit lineage 可追踪；replay 可独立恢复 sub-agent run）。**Phases 0-7 全部完成。**
 
 **Phase 1 最新提交链：**
 
@@ -562,7 +563,7 @@ PR 1 与 PR 3 有重叠（milestone/rollback），可按实际 diff 大小拆分
 | **G4 — LSM** | ✅ deny monotonic 测试 + 四端 ToolDenied 一致；PermissionRequested/Resolved audit 三元组；WASM Governance 全功能对齐 |
 | **G5 — Transaction** | ✅ recoverable error 不 rollback；replay 精确截断；`CheckpointTaken` audit event；`TurnCheckpoint` + `TransactionObservation` 具名类型 |
 | **G6 — Milestone** | ✅ verifier 驱动 phase advance；blocked retry 可控；unlock capabilities 带 milestone provenance |
-| **G7 — Multi-Agent** | sub-agent isolation + lineage replay |
+| **G7 — Multi-Agent** | ✅ sub-agent spawn 自动生成隔离 manifest；parent-child audit lineage 可追踪；replay 可独立恢复 sub-agent run |
 
 ---
 

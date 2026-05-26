@@ -154,7 +154,20 @@ pub enum SessionEvent {
         freed_resources: Vec<String>,
     },
 
-    // ─── 4. Milestone Contracts ───
+    // ─── 4. Sub-Agent Isolation ───
+    /// Sub-agent spawned — records parent-child lineage in the audit log.
+    AgentSpawned {
+        turn: u32,
+        agent_id: String,
+        parent_session_id: String,
+        role: String,
+        isolation: String,
+        context_inheritance: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        permitted_capability_ids: Vec<String>,
+    },
+
+    // ─── 5. Milestone Contracts ───
     /// Milestone phase criteria passed — capabilities unlocked, phase advanced.
     MilestoneAdvanced {
         turn: u32,

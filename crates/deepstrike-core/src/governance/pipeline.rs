@@ -234,6 +234,7 @@ mod tests {
             agent_id: "a".into(),
             session_id: "s".into(),
             is_sub_agent: false,
+            parent_session_id: None,
         }
     }
 

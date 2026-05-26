@@ -1100,6 +1100,29 @@ impl RuntimeRunner {
                     )
                     .await;
                 }
+                KernelObservation::AgentSpawned {
+                    turn,
+                    agent_id,
+                    parent_session_id,
+                    role,
+                    isolation,
+                    context_inheritance,
+                    permitted_capability_ids,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::AgentSpawned {
+                            turn,
+                            agent_id,
+                            parent_session_id,
+                            role,
+                            isolation,
+                            context_inheritance,
+                            permitted_capability_ids,
+                        },
+                    )
+                    .await;
+                }
             }
         }
         next_archive_start

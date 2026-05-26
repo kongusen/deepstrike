@@ -10,6 +10,10 @@ pub struct AgentIdentity {
     pub agent_id: CompactString,
     pub session_id: CompactString,
     pub is_sub_agent: bool,
+    /// Session ID of the parent agent that spawned this one.
+    /// `None` for top-level agents; set for any sub-agent to enable lineage replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<CompactString>,
 }
 
 impl AgentIdentity {
@@ -18,6 +22,7 @@ impl AgentIdentity {
             agent_id: agent_id.into(),
             session_id: session_id.into(),
             is_sub_agent: false,
+            parent_session_id: None,
         }
     }
 
@@ -29,7 +34,13 @@ impl AgentIdentity {
             agent_id: agent_id.into(),
             session_id: session_id.into(),
             is_sub_agent: true,
+            parent_session_id: None,
         }
+    }
+
+    pub fn with_parent(mut self, parent_session_id: impl Into<CompactString>) -> Self {
+        self.parent_session_id = Some(parent_session_id.into());
+        self
     }
 }
 
@@ -69,6 +80,63 @@ impl AgentCapabilityFilter {
             self.allowed_kinds.is_empty() || self.allowed_kinds.contains(&capability.kind);
         let id_allowed = self.allowed_ids.is_empty() || self.allowed_ids.contains(&capability.id);
         kind_allowed && id_allowed
+    }
+}
+
+/// Context a sub-agent inherits from its parent at spawn time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextInheritance {
+    /// Sub-agent starts with a clean slate (no parent context).
+    #[default]
+    None,
+    /// Sub-agent receives only the system prompt from the parent.
+    SystemOnly,
+    /// Sub-agent inherits the full conversation history from the parent.
+    Full,
+}
+
+/// Auto-generated isolation contract for a spawned sub-agent.
+/// Derived from `AgentRunSpec` + the current capability snapshot at spawn time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IsolationManifest {
+    pub agent_id: CompactString,
+    pub parent_session_id: CompactString,
+    pub role: AgentRole,
+    pub isolation: AgentIsolation,
+    pub context_inheritance: ContextInheritance,
+    /// Capability IDs visible to the sub-agent after applying the capability filter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permitted_capability_ids: Vec<CompactString>,
+}
+
+impl IsolationManifest {
+    /// Build an isolation manifest from a spawn spec and the parent's live capability snapshot.
+    pub fn from_spec(
+        spec: &AgentRunSpec,
+        parent_session_id: &str,
+        available: &CapabilityManifest,
+    ) -> Self {
+        let context_inheritance = Self::role_default_context_inheritance(spec.role);
+        let filtered = spec.filter_manifest(available);
+        let permitted_capability_ids =
+            filtered.capabilities().iter().map(|c| c.id.clone()).collect();
+        Self {
+            agent_id: spec.identity.agent_id.clone(),
+            parent_session_id: parent_session_id.into(),
+            role: spec.role,
+            isolation: spec.isolation,
+            context_inheritance,
+            permitted_capability_ids,
+        }
+    }
+
+    fn role_default_context_inheritance(role: AgentRole) -> ContextInheritance {
+        match role {
+            AgentRole::Explore | AgentRole::Verify => ContextInheritance::SystemOnly,
+            AgentRole::Plan | AgentRole::Implement => ContextInheritance::Full,
+            AgentRole::Custom => ContextInheritance::None,
+        }
     }
 }
 

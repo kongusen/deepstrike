@@ -88,6 +88,7 @@ mod tests {
             agent_id: "a".into(),
             session_id: "s".into(),
             is_sub_agent: false,
+            parent_session_id: None,
         };
 
         assert!(veto.check(&call, &caller).is_some());
@@ -113,6 +114,7 @@ mod tests {
             agent_id: "a".into(),
             session_id: "s".into(),
             is_sub_agent: false,
+            parent_session_id: None,
         };
         assert!(veto.check(&call, &caller).is_some());
     }
@@ -142,6 +144,7 @@ mod tests {
             agent_id: "a".into(),
             session_id: "s".into(),
             is_sub_agent: false,
+            parent_session_id: None,
         };
         assert!(veto.check(&call, &caller).is_some());
     }
