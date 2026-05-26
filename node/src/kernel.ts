@@ -172,6 +172,11 @@ interface IdlePipelineInstance {
 interface KernelRuntimeInstance {
   step(inputJson: string): string
   isTerminal(): boolean
+  turn(): number
+  recoveryContentBytes(): number
+  render(): RenderedContext
+  drainNewMessages(): Message[]
+  preservedRefs(): string[]
 }
 
 interface KernelModule {
