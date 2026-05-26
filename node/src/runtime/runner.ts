@@ -9,10 +9,25 @@ import type { SignalSource, RuntimeSignal } from "../signals/types.js"
 import type { SessionLog, SessionEvent } from "./session-log.js"
 import type { ArchiveStore } from "./archive.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
-import { getKernel } from "../kernel.js"
+import { getKernel, type KernelRuntimeInstance } from "../kernel.js"
 import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
 import { buildLlmCompletedEvent, buildRunTerminalEvent, repairEventsForRecovery } from "./session-repair.js"
+import {
+  capabilityMarker,
+  capabilitySkill,
+  capabilityTool,
+  kernelAction,
+  kernelApply,
+  forceCompact,
+  messageToKernelMessage,
+  skillMetadataToKernel,
+  taskUpdateToKernel,
+  toolResultToKernel,
+  toolSchemaToKernel,
+  type KernelObservation,
+  type KernelRunnerAction,
+} from "./kernel-step.js"
 
 export interface RuntimeOptions {
   provider: LLMProvider
@@ -41,18 +56,47 @@ export interface RuntimeOptions {
 
 export class RuntimeRunner {
   private interrupted = false
-  private activeSm: any | null = null
+  private activeKernel: KernelRuntimeInstance | null = null
+  private pendingObservations: KernelObservation[] = []
 
   constructor(private readonly opts: RuntimeOptions) {}
 
-  /** Mount a tool capability on the currently-running kernel state machine. No-op if not running. */
-  mountTool(schema: ToolSchema): void { this.activeSm?.mountTool(schema) }
-  /** Mount a skill capability on the currently-running kernel state machine. No-op if not running. */
-  mountSkill(name: string, description: string): void { this.activeSm?.mountSkill({ name, description }) }
+  /** Mount a tool capability on the currently-running kernel runtime. No-op if not running. */
+  mountTool(schema: ToolSchema): void {
+    if (!this.activeKernel) return
+    kernelApply(this.activeKernel, this.pendingObservations, {
+      kind: "mount_capability",
+      capability: capabilityTool(schema),
+    })
+  }
+
+  /** Mount a skill capability on the currently-running kernel runtime. No-op if not running. */
+  mountSkill(name: string, description: string): void {
+    if (!this.activeKernel) return
+    kernelApply(this.activeKernel, this.pendingObservations, {
+      kind: "mount_capability",
+      capability: capabilitySkill({ name, description }),
+    })
+  }
+
   /** Mount a generic marker capability (e.g. MCP server, agent) on the active run. No-op if not running. */
-  mountMarker(kind: string, id: string, description: string): void { this.activeSm?.mountMarker(kind, id, description) }
+  mountMarker(kind: string, id: string, description: string): void {
+    if (!this.activeKernel) return
+    kernelApply(this.activeKernel, this.pendingObservations, {
+      kind: "mount_capability",
+      capability: capabilityMarker(kind, id, description),
+    })
+  }
+
   /** Unmount a capability by kind + id from the active run. No-op if not running. */
-  unmountCapability(kind: string, id: string): void { this.activeSm?.unmountCapability(kind, id) }
+  unmountCapability(kind: string, id: string): void {
+    if (!this.activeKernel) return
+    kernelApply(this.activeKernel, this.pendingObservations, {
+      kind: "unmount_capability",
+      capability_kind: kind,
+      id,
+    })
+  }
 
   interrupt(): void { this.interrupted = true }
 
@@ -169,72 +213,114 @@ export class RuntimeRunner {
     resumeMidRun = false,
   ): AsyncIterable<StreamEvent> {
     this.interrupted = false
+    this.pendingObservations = []
     const kernel = getKernel()
     const ext = { ...this.opts.extensions, ...(extensions ?? {}) }
     const providerState = this.opts.provider.createRunState?.()
     let nextCompressedArchiveStart = nextArchivedSeqStart(priorEvents)
 
-    // Three-layer policy merge: explicit RuntimeOptions > provider.runtimePolicy() > defaults
     const providerPolicy = this.opts.provider.runtimePolicy?.() ?? {}
-    const effectiveMaxTurns   = this.opts.maxTurns   ?? providerPolicy.maxTurns   ?? 25
-    const effectiveTimeoutMs  = this.opts.timeoutMs  ?? providerPolicy.timeoutMs
+    const effectiveMaxTurns = this.opts.maxTurns ?? providerPolicy.maxTurns ?? 25
+    const effectiveTimeoutMs = this.opts.timeoutMs ?? providerPolicy.timeoutMs
 
-    const sm = new kernel.DeepStrikeRuntime({
+    const runtime = new kernel.KernelRuntime({
       maxTokens: this.opts.maxTokens,
       maxTurns: effectiveMaxTurns,
       timeoutMs: effectiveTimeoutMs !== undefined ? BigInt(effectiveTimeoutMs) : undefined,
     })
-    this.activeSm = sm
+    this.activeKernel = runtime
     const router = new kernel.SignalRouter(256)
 
     if (this.opts.tokenizer) {
-      sm.setTokenizer(this.opts.tokenizer)
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_tokenizer",
+        name: this.opts.tokenizer,
+      })
     }
     if (this.opts.enablePlanTool !== undefined) {
-      sm.setPlanToolEnabled(this.opts.enablePlanTool)
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_plan_tool_enabled",
+        enabled: this.opts.enablePlanTool,
+      })
     }
 
-    sm.setTools(this.opts.executionPlane.schemas())
+    kernelApply(runtime, this.pendingObservations, {
+      kind: "set_tools",
+      tools: this.opts.executionPlane.schemas().map(toolSchemaToKernel),
+    })
 
     if (this.opts.systemPrompt) {
-      sm.addSystemMessage(this.opts.systemPrompt, Math.max(1, Math.ceil(this.opts.systemPrompt.length / 4)))
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "add_system_message",
+        content: this.opts.systemPrompt,
+        tokens: Math.max(1, Math.ceil(this.opts.systemPrompt.length / 4)),
+      })
     }
 
     if (this.opts.initialMemory) {
       for (const mem of this.opts.initialMemory) {
-        sm.addMemoryMessage(mem, Math.max(1, Math.ceil(mem.length / 4)))
+        kernelApply(runtime, this.pendingObservations, {
+          kind: "add_memory_message",
+          content: mem,
+          tokens: Math.max(1, Math.ceil(mem.length / 4)),
+        })
       }
     }
 
     if (this.opts.skillDir) {
       const { scanSkillDir } = await import("../skills/loader.js")
       const metas = await scanSkillDir(this.opts.skillDir)
-      sm.setAvailableSkills(metas.map((m: { name: string; description: string; whenToUse?: string; effort?: number; estimatedTokens?: number }) => ({
-        name: m.name, description: m.description, whenToUse: m.whenToUse,
-        effort: m.effort, estimatedTokens: m.estimatedTokens ?? 0,
-      })))
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_available_skills",
+        skills: metas.map((m: { name: string; description: string; whenToUse?: string; effort?: number; estimatedTokens?: number }) =>
+          skillMetadataToKernel({
+            name: m.name,
+            description: m.description,
+            whenToUse: m.whenToUse,
+            effort: m.effort,
+            estimatedTokens: m.estimatedTokens ?? 0,
+          }),
+        ),
+      })
     }
 
-    if (this.opts.dreamStore && this.opts.agentId) sm.setMemoryEnabled(true)
-    if (this.opts.knowledgeSource) sm.setKnowledgeEnabled(true)
+    if (this.opts.dreamStore && this.opts.agentId) {
+      kernelApply(runtime, this.pendingObservations, { kind: "set_memory_enabled", enabled: true })
+    }
+    if (this.opts.knowledgeSource) {
+      kernelApply(runtime, this.pendingObservations, { kind: "set_knowledge_enabled", enabled: true })
+    }
 
-    const maxBytes = sm.recoveryContentBytes()
+    const maxBytes = runtime.recoveryContentBytes()
 
     if (priorEvents && priorEvents.length > 0) {
       const repaired = repairEventsForRecovery(priorEvents, maxBytes)
       seedProviderReplayFromEvents(this.opts.provider, repaired)
-      sm.preloadHistory(replayMessages(repaired, maxBytes))
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "preload_history",
+        messages: replayMessages(repaired, maxBytes).map(messageToKernelMessage),
+      })
     }
 
     const sessionStart = Date.now()
-    let action = resumeMidRun
-      ? sm.resumeAfterPreload()
-      : sm.start({ goal, criteria })
+    let action: KernelRunnerAction = resumeMidRun
+      ? kernelAction(runtime, this.pendingObservations, { kind: "resume" })
+      : kernelAction(runtime, this.pendingObservations, {
+          kind: "start_run",
+          task: { goal, criteria },
+        })
     let hasAttemptedReactiveCompact = false
 
-    while (!sm.isTerminal()) {
-      nextCompressedArchiveStart = await this.appendObservations(sessionId, sm, nextCompressedArchiveStart)
-      if (this.interrupted) { action = sm.feedTimeout(); break }
+    while (!runtime.isTerminal()) {
+      nextCompressedArchiveStart = await this.appendObservations(
+        sessionId,
+        runtime,
+        nextCompressedArchiveStart,
+      )
+      if (this.interrupted) {
+        action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
+        break
+      }
 
       if (this.opts.signalSource) {
         const sig = await this.opts.signalSource.nextSignal()
@@ -249,23 +335,29 @@ export class RuntimeRunner {
             dedupeKey: sig.dedupeKey,
             timestampMs: Date.now(),
           }
-          const disposition = router.ingest(kernelSig as unknown as Parameters<typeof router.ingest>[0], action.kind === "execute_tools")
-          if (disposition === "interrupt_now") { action = sm.feedTimeout(); break }
+          const disposition = router.ingest(kernelSig as unknown as Parameters<typeof router.ingest>[0], action.kind === "execute_tool")
+          if (disposition === "interrupt_now") {
+            action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
+            break
+          }
         }
       }
 
       let queued = router.next()
       while (queued) {
-        if (queued.urgency === "critical") { action = sm.feedTimeout(); break }
+        if (queued.urgency === "critical") {
+          action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
+          break
+        }
         queued = router.next()
       }
-      if (sm.isTerminal()) break
+      if (runtime.isTerminal()) break
 
-      if (action.kind === "call_llm") {
+      if (action.kind === "call_provider") {
         const finalToolCalls: ToolCall[] = []
         let finalText = ""
-        let context = (action as unknown as { context: import("../types.js").RenderedContext }).context
-        const tools = (action.tools ?? []) as ToolSchema[]
+        const context = action.context
+        const tools = action.tools
         let turnTokens = 0
         let shouldRetry = false
 
@@ -286,42 +378,53 @@ export class RuntimeRunner {
             !hasAttemptedReactiveCompact
           ) {
             hasAttemptedReactiveCompact = true
-            const compacted = forceCompact(sm)
-            if (compacted) {
-              nextCompressedArchiveStart = await this.appendObservations(sessionId, sm, nextCompressedArchiveStart)
+            if (forceCompact(runtime, this.pendingObservations)) {
+              nextCompressedArchiveStart = await this.appendObservations(
+                sessionId,
+                runtime,
+                nextCompressedArchiveStart,
+              )
               shouldRetry = true
             }
           }
           if (!shouldRetry) {
             yield { type: "error", message: String(err) } as ErrorEvent
-            action = sm.feedTimeout()
+            action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
             break
           }
         }
 
         if (shouldRetry) {
-          (action as any).context = sm.render()
+          action = {
+            kind: "call_provider",
+            context: runtime.render(),
+            tools,
+          }
           continue
         }
 
-        action = sm.feedLlmResponse({
+        const assistantMessage: Message = {
           role: "assistant",
           content: finalText,
           toolCalls: finalToolCalls,
           tokenCount: turnTokens || undefined,
+        }
+        action = kernelAction(runtime, this.pendingObservations, {
+          kind: "provider_result",
+          message: messageToKernelMessage(assistantMessage),
         })
         const providerReplay = peekProviderReplay(this.opts.provider, finalText, finalToolCalls)
         await this.opts.sessionLog.append(sessionId, buildLlmCompletedEvent({
-          turn: sm.turn,
+          turn: runtime.turn(),
           content: finalText,
           tokenCount: turnTokens || undefined,
           toolCalls: finalToolCalls,
           providerReplay,
         }))
 
-      } else if (action.kind === "execute_tools") {
-        const allCalls: ToolCall[] = action.calls ?? []
-        await this.opts.sessionLog.append(sessionId, { kind: "tool_requested", turn: sm.turn, calls: allCalls })
+      } else if (action.kind === "execute_tool") {
+        const allCalls: ToolCall[] = action.calls
+        await this.opts.sessionLog.append(sessionId, { kind: "tool_requested", turn: runtime.turn(), calls: allCalls })
 
         const runCtx: RunContext = {
           agentId: this.opts.agentId,
@@ -338,7 +441,10 @@ export class RuntimeRunner {
 
         for (const call of planCalls) {
           const update = parseUpdatePlanArgs(call.arguments)
-          sm.updateTask(update)
+          kernelApply(runtime, this.pendingObservations, {
+            kind: "update_task",
+            update: taskUpdateToKernel(update),
+          })
           const result = { callId: call.id, output: "success", isError: false }
           toolResults.push(result)
           yield { type: "tool_result", callId: call.id, content: "success", isError: false } as ToolResultEvent
@@ -354,7 +460,7 @@ export class RuntimeRunner {
               const tare = evt as ToolArgumentRepairedEvent
               await this.opts.sessionLog.append(sessionId, {
                 kind: "tool_argument_repaired",
-                turn: sm.turn,
+                turn: runtime.turn(),
                 tool: tare.name,
                 original_arguments: tare.originalArguments,
                 repaired_arguments: tare.repairedArguments,
@@ -363,19 +469,22 @@ export class RuntimeRunner {
               const tde = evt as ToolDeniedEvent
               await this.opts.sessionLog.append(sessionId, {
                 kind: "tool_denied",
-                turn: sm.turn,
+                turn: runtime.turn(),
                 tool: tde.toolName,
                 reason: tde.reason,
               })
             }
           }
           const names = normalCalls.map(c => c.name).join(", ")
-          sm.updateTask({ progress: `Executed tools: ${names}` })
+          kernelApply(runtime, this.pendingObservations, {
+            kind: "update_task",
+            update: taskUpdateToKernel({ progress: `Executed tools: ${names}` }),
+          })
         }
 
         await this.opts.sessionLog.append(sessionId, {
           kind: "tool_completed",
-          turn: sm.turn,
+          turn: runtime.turn(),
           results: toolResults.map(r => ({
             call_id: r.callId,
             output: r.output,
@@ -383,18 +492,25 @@ export class RuntimeRunner {
             token_count: r.tokenCount,
           })),
         })
-        action = sm.feedToolResults(toolResults)
+        action = kernelAction(runtime, this.pendingObservations, {
+          kind: "tool_results",
+          results: toolResults.map(toolResultToKernel),
+        })
 
       } else if (action.kind === "evaluate_milestone") {
-        nextCompressedArchiveStart = await this.appendObservations(sessionId, sm, nextCompressedArchiveStart)
-        const turnsUsed = Math.max(1, sm.turn)
+        nextCompressedArchiveStart = await this.appendObservations(
+          sessionId,
+          runtime,
+          nextCompressedArchiveStart,
+        )
+        const turnsUsed = Math.max(1, runtime.turn())
         await this.opts.sessionLog.append(sessionId, buildRunTerminalEvent({
           reason: "milestone_pending",
           turnsUsed,
           totalTokens: 0,
         }))
         yield { type: "done", iterations: turnsUsed, totalTokens: 0, status: "milestone_pending" } as DoneEvent
-        this.activeSm = null
+        this.activeKernel = null
         return
 
       } else if (action.kind === "done") {
@@ -402,12 +518,16 @@ export class RuntimeRunner {
       }
     }
 
-    const result = action.result
+    const result = action.kind === "done" ? action.result : undefined
     const status = result?.termination ?? "error"
-    const turnsUsed = result ? Math.max(1, result.turnsUsed) : 0
-    const totalTokens = result?.totalTokensUsed ? Number(result.totalTokensUsed) : 0
+    const turnsUsed = result ? Math.max(1, result.turnsUsed) : runtime.turn() || 0
+    const totalTokens = result?.totalTokensUsed ?? 0
 
-    nextCompressedArchiveStart = await this.appendObservations(sessionId, sm, nextCompressedArchiveStart)
+    nextCompressedArchiveStart = await this.appendObservations(
+      sessionId,
+      runtime,
+      nextCompressedArchiveStart,
+    )
     await this.opts.sessionLog.append(sessionId, buildRunTerminalEvent({
       reason: status,
       turnsUsed,
@@ -415,7 +535,7 @@ export class RuntimeRunner {
     }))
 
     if (this.opts.dreamStore && this.opts.agentId) {
-      const newMsgs = (sm.drainNewMessages() as Message[]).map(m => ({
+      const newMsgs = runtime.drainNewMessages().map(m => ({
         role: m.role,
         content: m.content,
         contentParts: m.contentParts,
@@ -437,15 +557,17 @@ export class RuntimeRunner {
     }
 
     yield { type: "done", iterations: turnsUsed, totalTokens, status } as DoneEvent
-    this.activeSm = null
+    this.activeKernel = null
   }
 
   private async appendObservations(
     sessionId: string,
-    sm: { turn: number; takeObservations(): Array<any> },
+    runtime: KernelRuntimeInstance,
     nextArchiveStart: number,
   ): Promise<number> {
-    const observations = sm.takeObservations()
+    const turn = runtime.turn()
+    const preservedRefs = runtime.preservedRefs()
+    const observations = this.pendingObservations.splice(0)
     for (const obs of observations) {
       if (obs.kind === "compressed") {
         const latest = await this.opts.sessionLog.latestSeq(sessionId)
@@ -458,48 +580,48 @@ export class RuntimeRunner {
           try {
             const pathRef = await this.opts.compressionStore.write(sessionId, nextArchiveStart, archived)
             if (pathRef) archiveRef = pathRef
-          } catch (err) {
-            // ignore or log
+          } catch {
+            // non-fatal
           }
         }
 
         const compressedSeq = await this.opts.sessionLog.append(sessionId, {
           kind: "compressed",
-          turn: sm.turn,
+          turn,
           archived_seq_range: [nextArchiveStart, end],
-          action: obs.action,
+          action: compressionAction(obs.action),
           summary: obs.summary,
           summary_tokens: obs.summary ? Math.max(1, Math.ceil(obs.summary.length / 4)) : undefined,
           archive_ref: archiveRef,
-          preserved_refs: (sm as any).ctx?.partitions?.task_state?.preserved_refs ?? [],
+          preserved_refs: preservedRefs,
         })
         nextArchiveStart = compressedSeq + 1
       } else if (obs.kind === "rollbacked") {
         await this.opts.sessionLog.append(sessionId, {
           kind: "rollbacked",
-          turn: obs.turn ?? sm.turn,
-          checkpoint_history_len: obs.checkpointHistoryLen ?? obs.checkpoint_history_len ?? 0,
+          turn: obs.turn ?? turn,
+          checkpoint_history_len: obs.checkpoint_history_len ?? 0,
         })
       } else if (obs.kind === "capability_changed") {
         await this.opts.sessionLog.append(sessionId, {
           kind: "capability_changed",
-          turn: obs.turn ?? sm.turn,
+          turn: obs.turn ?? turn,
           added: obs.added ?? [],
           removed: obs.removed ?? [],
         })
       } else if (obs.kind === "milestone_advanced") {
         await this.opts.sessionLog.append(sessionId, {
           kind: "milestone_advanced",
-          turn: obs.turn ?? sm.turn,
+          turn: obs.turn ?? turn,
           phase_id: obs.phase_id ?? "",
           capabilities_unlocked: obs.capabilities_unlocked ?? [],
         })
       } else if (obs.kind === "milestone_blocked") {
         await this.opts.sessionLog.append(sessionId, {
           kind: "milestone_blocked",
-          turn: obs.turn ?? sm.turn,
+          turn: obs.turn ?? turn,
           phase_id: obs.phase_id ?? "",
-          reason: obs.milestone_reason ?? "",
+          reason: obs.reason ?? "",
         })
       }
     }
@@ -511,10 +633,16 @@ function isMidRun(events: Array<{ seq: number; event: SessionEvent }>): boolean 
   return events.length > 0 && !events.some(e => e.event.kind === "run_terminal")
 }
 
-function forceCompact(sm: { forceCompact?: () => boolean; force_compact?: () => boolean }): boolean {
-  if (typeof sm.forceCompact === "function") return sm.forceCompact()
-  if (typeof sm.force_compact === "function") return sm.force_compact()
-  throw new TypeError("LoopStateMachine forceCompact binding is unavailable")
+function compressionAction(action?: string): Extract<SessionEvent, { kind: "compressed" }>["action"] {
+  if (
+    action === "snip_compact" ||
+    action === "micro_compact" ||
+    action === "context_collapse" ||
+    action === "auto_compact"
+  ) {
+    return action
+  }
+  return undefined
 }
 
 export function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, maxBytes?: number): Message[] {
@@ -588,18 +716,20 @@ export async function collectText(stream: AsyncIterable<StreamEvent>): Promise<s
   return text
 }
 
-function parseUpdatePlanArgs(argsStr: string): any {
-  let parsed: any = {}
+function parseUpdatePlanArgs(argsStr: string): import("../types.js").TaskUpdate {
+  let parsed: Record<string, unknown> = {}
   try {
-    parsed = JSON.parse(argsStr)
+    parsed = JSON.parse(argsStr) as Record<string, unknown>
   } catch {
     // Ignore parse error
   }
   return {
-    plan: parsed.plan,
-    currentStep: parsed.currentStep !== undefined ? parsed.currentStep : parsed.current_step,
-    progress: parsed.progress,
-    scratchpad: parsed.scratchpad,
-    blockedOn: parsed.blockedOn !== undefined ? parsed.blockedOn : parsed.blocked_on,
+    plan: parsed.plan as string[] | undefined,
+    currentStep: parsed.currentStep !== undefined ? Number(parsed.currentStep) : parsed.current_step !== undefined ? Number(parsed.current_step) : undefined,
+    progress: parsed.progress as string | undefined,
+    scratchpad: parsed.scratchpad as string | undefined,
+    blockedOn: parsed.blockedOn !== undefined
+      ? parsed.blockedOn as string[]
+      : parsed.blocked_on as string[] | undefined,
   }
 }

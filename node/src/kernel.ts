@@ -169,7 +169,7 @@ interface IdlePipelineInstance {
   feedSynthesisResult(content: string): IdlePipelineAction
 }
 
-interface KernelRuntimeInstance {
+export interface KernelRuntimeInstance {
   step(inputJson: string): string
   isTerminal(): boolean
   turn(): number
