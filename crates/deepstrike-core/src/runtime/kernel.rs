@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::pressure::PressureAction;
 use crate::context::renderer::RenderedContext;
+use crate::context::task_state::TaskUpdate;
+use crate::context::token_engine::ContextTokenEngine;
 use crate::scheduler::policy::LoopPolicy;
 use crate::scheduler::state_machine::{LoopAction, LoopEvent, LoopObservation, LoopStateMachine};
 use crate::types::capability::{CapabilityDescriptor, CapabilityKind};
@@ -54,6 +56,9 @@ pub enum KernelInputEvent {
     SetPlanToolEnabled {
         enabled: bool,
     },
+    SetTokenizer {
+        name: String,
+    },
     AddSystemMessage {
         content: String,
         tokens: u32,
@@ -80,6 +85,9 @@ pub enum KernelInputEvent {
         contract: MilestoneContract,
     },
     ForceCompact,
+    UpdateTask {
+        update: TaskUpdate,
+    },
     StartRun { task: RuntimeTask },
     Resume,
     ProviderResult { message: Message },
@@ -301,6 +309,14 @@ impl KernelRuntime {
                 self.sm.ctx.set_plan_tool_enabled(enabled);
                 return KernelStep::empty(self.sm.take_observations());
             }
+            KernelInputEvent::SetTokenizer { name } => {
+                self.sm.ctx.engine = match name.as_str() {
+                    "tiktoken_cl100k" | "cl100k" => ContextTokenEngine::cl100k(),
+                    "tiktoken_o200k" | "o200k" => ContextTokenEngine::o200k(),
+                    _ => ContextTokenEngine::char_approx(),
+                };
+                return KernelStep::empty(self.sm.take_observations());
+            }
             KernelInputEvent::AddSystemMessage { content, tokens } => {
                 self.sm
                     .ctx
@@ -343,6 +359,10 @@ impl KernelRuntime {
             }
             KernelInputEvent::ForceCompact => {
                 self.sm.force_compact();
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::UpdateTask { update } => {
+                self.sm.ctx.update_task(update);
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::StartRun { task } => self.sm.start(task),
@@ -410,6 +430,23 @@ mod tests {
 
         assert!(step.actions.is_empty());
         assert_eq!(runtime.state_machine().tools.len(), 1);
+    }
+
+    #[test]
+    fn update_task_input_mutates_task_state() {
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let step = runtime.step(KernelInput::new(KernelInputEvent::UpdateTask {
+            update: TaskUpdate {
+                progress: Some("tools executed".to_string()),
+                ..Default::default()
+            },
+        }));
+
+        assert!(step.actions.is_empty());
+        assert_eq!(
+            runtime.state_machine().ctx.partitions.task_state.progress,
+            "tools executed"
+        );
     }
 
     #[test]

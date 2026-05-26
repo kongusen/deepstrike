@@ -40,7 +40,7 @@ impl PlanStep {
 }
 
 /// Partial update applied by the SDK or via `update_plan` meta-tool.
-#[derive(Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TaskUpdate {
     pub plan: Option<Vec<String>>,
     pub current_step: Option<usize>,

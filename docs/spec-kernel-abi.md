@@ -38,6 +38,7 @@ Events:
 | `set_memory_enabled` | Toggle the memory meta-tool |
 | `set_knowledge_enabled` | Toggle the knowledge meta-tool |
 | `set_plan_tool_enabled` | Toggle the plan/update meta-tool |
+| `set_tokenizer` | Select the tokenizer used by kernel token accounting |
 | `add_system_message` | Add a system partition message before run start |
 | `add_memory_message` | Add a memory partition message before run start |
 | `add_history_message` | Add one history message |
@@ -46,6 +47,7 @@ Events:
 | `unmount_capability` | Remove a capability descriptor by `capability_kind`/id |
 | `load_milestone_contract` | Load milestone phases before run start |
 | `force_compact` | Force an immediate context compact attempt |
+| `update_task` | Apply a task-state update, typically from the plan meta-tool |
 | `start_run` | Start a new run from a `RuntimeTask` |
 | `resume` | Resume after preloaded history |
 | `provider_result` | Feed an assistant/provider message back to the kernel |
