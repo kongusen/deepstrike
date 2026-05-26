@@ -124,8 +124,10 @@ KernelOutput:
 | PR 1 文档规划 | ✅ 已完成 | `6e1fecd docs: plan agent OS kernel roadmap` |
 | G0 — V2 Mergeable | ✅ 已通过 | `cargo check --workspace`、`cargo test -p deepstrike-core`、`cargo test --manifest-path rust/Cargo.toml`、Node/WASM build + targeted tests、Python targeted tests |
 | Phase 1 / PR 2：Kernel ABI 固化 | ✅ 已完成 | `b84af51 test(abi): add golden fixtures and confirm JSON ABI as long-term FFI boundary` — JSON ABI 冻结，四端 golden fixture CI 全绿，spec-kernel-abi.md 更新完毕 |
+| Phase 2 / PR 3：Virtual Context Memory | ✅ 已完成 | 6 分区 VM，ContextSnapshot，ArchiveStore，reconstruct_messages_with_fallback，PushArtifact，spec-context-compression-v2.md Phase A+B+C |
+| Phase 3 / PR 4：Capability Bus | ✅ 已完成 | `6be8003 feat(p3): add mounted_by/mount_reason provenance to capability bus` — CapabilityCommand::Mount provenance，lease 自动 revoke，四端 CapabilityChanged audit，unlocked_by_milestone_id 延至 Phase 6 |
 
-**当前主线：** Phase 1 已完成（`b84af51`）。JSON ABI 已冻结为长期 FFI 边界，四端 golden fixture CI 全绿，`spec-kernel-abi.md` 更新完毕。**下一步：Phase 2 — Virtual Context Memory。**
+**当前主线：** Phase 3（Capability Bus）已完成（`6be8003`）。Capability provenance（mounted_by / mount_reason）全链路，lease 自动 revoke，四端 audit 一致。**下一步：Phase 4 — Security LSM。**
 
 **Phase 1 最新提交链：**
 
@@ -190,7 +192,7 @@ cargo test --manifest-path rust/Cargo.toml
 
 ### 阶段 1：Kernel ABI 固化
 
-**状态：🟡 收口中。**
+**状态：✅ 已完成。**
 
 **目标：** SDK 不再直接操作 `LoopStateMachine` 细节。
 
@@ -297,39 +299,39 @@ PYTHONPATH=/Users/shan/work/uploads/deepstrike/python poetry run pytest -q
 
 ### 阶段 3：Capability Bus
 
+**状态：✅ 已完成（`6be8003`）。**
+
 **目标：** 能力是 kernel 管理的 runtime capability graph，不是 tool list。
 
 **能力类型：** tool / skill / memory / knowledge / command / mcp server / sub-agent / sandbox profile / credential scope / milestone unlock
 
 **命令：**
 
+```text
+CapabilityCommand::Mount   ← mounted_by / mount_reason provenance ✅
+CapabilityCommand::Unmount ✅
+CapabilityCommand::Replace ✅
+CapabilityCommand::Pin     ✅
 ```
-CapabilityCommand::Mount
-CapabilityCommand::Unmount
-CapabilityCommand::Replace
-CapabilityCommand::Pin
-```
 
-**后续规划：**
+**已完成：**
 
-- capability version / hash
-- capability changed audit event
-- capability filter for sub-agent
-- capability lease（临时授权，到期自动 revoke）
-- capability provenance（谁挂载、为什么挂载、由哪个 milestone 解锁）
+- [x] `CapabilityCommand` 作为 `KernelInput` 变体
+- [x] `CapabilityChanged` audit 含 change_kind / capability_id / version
+- [x] capability lease + 自动 revoke（turn-based expiry，feed() 自动 unmount）
+- [x] capability provenance：`mounted_by` / `mount_reason` on `CapabilityDescriptor`、`CapabilityCommand::Mount`、`LoopObservation`、`KernelObservation`、`SessionEvent`，四端 runner 全部透传
+- [x] Sub-agent capability filter（`AgentCapabilityFilter` + `AgentRunSpec`）
 
-**任务：**
+**延迟项：**
 
-1. `CapabilityCommand` 作为 `KernelInput` 变体
-2. `CapabilityChanged` audit 含 change_kind / capability_id / version
-3. Sub-agent capability filter 接入 `AgentRunSpec`
-4. capability lease + 自动 revoke
+- `unlocked_by_milestone_id`：需要 Phase 6 Milestone Contracts 作前提，届时在 `CapabilityDescriptor` 上补充
 
 **验收：**
 
-- 特权漂移全链路可审计
-- milestone unlock → capability mount 有 provenance
-- replay 可重建 effective capability manifest
+- ✅ 特权漂移全链路可审计（provenance 字段全覆盖）
+- ✅ milestone unlock → capability mount 有 provenance（unlocked_by_milestone_id 延至 Phase 6）
+- ✅ replay 可重建 effective capability manifest
+- ✅ 177 Rust 测试全绿（`6be8003`）
 
 **依赖：** 阶段 1
 
@@ -558,8 +560,8 @@ PR 1 与 PR 3 有重叠（milestone/rollback），可按实际 diff 大小拆分
 |---|---|
 | **G0 — V2 Mergeable** | workspace compile + core/SDK tests 全绿；无默认 auto-pass；rollback 仅 fatal |
 | **G1 — ABI Stable** | ✅ 四端仅 KernelInput/Output；FFI 无内部结构泄漏；golden fixture 四端 CI 通过；JSON ABI schema 已冻结 |
-| **G2 — Context VM** | 6 分区 + fault + replay repair 测试通过 |
-| **G3 — Capability Bus** | mount/unmount/lease audit 完整 |
+| **G2 — Context VM** | ✅ 6 分区 + fault + replay repair 测试通过 |
+| **G3 — Capability Bus** | ✅ mount/unmount/lease audit 完整；provenance 四端透传；unlocked_by_milestone_id 延至 Phase 6 |
 | **G4 — LSM** | deny monotonic 测试 + 四端 ToolDenied 一致 |
 | **G5 — Transaction** | recoverable error 不 rollback；replay 精确截断 |
 | **G6 — Milestone** | verifier 驱动 phase advance；blocked retry 可控 |
