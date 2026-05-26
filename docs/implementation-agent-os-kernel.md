@@ -1,132 +1,578 @@
-# Implementation Plan: Agent OS Kernel Abstractions
+# DeepStrike Agent OS Kernel — 实施规划
 
-## Overview
+## 北极星
 
-This plan turns the Claude Code architecture takeaways into DeepStrike kernel primitives. The goal is not to copy a CLI product surface, but to strengthen the pure Rust core so SDKs can expose richer agent operating-system behavior without each language inventing its own rules.
+**DeepStrike Kernel = Agent OS 微内核**
 
-The first implementation slice is intentionally narrow: add typed capability and context-section registries in `deepstrike-core`, keep them pure and serializable, and connect them to the existing context manager where that can be done without changing SDK contracts.
+| 层 | 职责 | 不做 |
+|---|---|---|
+| **Kernel** | 状态机、context VM、capability bus、syscall 治理、transaction/rollback、checkpoint/replay/recovery、milestone contract、audit 语义、multi-agent 隔离契约、Host SDK ABI | 直接 I/O |
+| **SDK** | Provider、文件系统、进程、网络、UI、人类审批；执行 kernel 发出的 action，把外部事件喂回 kernel | 发明 runtime 行为 |
 
-## Architecture Decisions
+**不变原则：** Kernel owns agent semantics. SDK owns host effects.
 
-- Capability awareness becomes a first-class kernel concept. Tools, skills, memory, knowledge, MCP servers, commands, and agents are represented in one `CapabilityManifest` so the model can be told what it can do from one stable source.
-- Context rendering is split from context-section lifecycle policy. `ContextSectionRegistry` records cache policy, priority, token budget, and invalidation rules; renderer changes can then evolve without hard-coding every section.
-- The kernel remains zero-I/O. SDKs still load files, call MCP, execute tools, and talk to providers; the kernel only stores metadata, sorts, filters, and emits schemas or render plans.
-- Existing public behavior stays additive. Runtime v1 event schema and SDK APIs are not changed in the first slice.
+Kernel 不直接做 I/O，但要定义并维护：
 
-## Phase 1: Foundation
+- agent 的运行状态机
+- context 虚拟内存管理
+- capability bus
+- syscall/tool governance
+- transaction / rollback
+- checkpoint / replay / recovery
+- milestone contract
+- audit log semantics
+- multi-agent isolation contract
+- host SDK ABI
 
-### Task 1: Add `CapabilityManifest`
+SDK 不再「发明 runtime 行为」，SDK 只执行 kernel 发出的 action，并把外部事件喂回 kernel。
 
-**Description:** Define a serializable manifest for model-visible capabilities and helper methods for deterministic tool-schema aggregation.
+---
 
-**Acceptance criteria:**
-- Manifest can register user tools, skills, built-in meta-tools, MCP tools, commands, and agent capabilities.
-- Tool schemas are emitted in deterministic order.
-- Skill / memory / knowledge behavior remains compatible with the existing `ContextManager`.
+## 架构演进
 
-**Verification:**
-- `cargo test -p deepstrike-core capability`
+```
++-----------------------------------------------------------------------------------+
+| V1 模式 (已废弃): 外部工具库                                                       |
+|   - SDK 自行调度 Loop, 自己渲染上下文                                             |
+|   - Hook/拦截器散落在 SDK 层，执行流缺乏确定性                                    |
+|   - SessionLog 仅作为聊天记录归档                                                  |
++-----------------------------------------------------------------------------------+
+                                         │
+                                         ▼
++-----------------------------------------------------------------------------------+
+| V2 模式: Agent OS 微内核                                                          |
+|   - Runtime 成为唯一的总控制核心 (Core Control Plane)                              |
+|   - Loop, Context, Governance, 权限审批, GC 都在内核中自治                         |
+|   - SDK 弱化为「宿主 I/O 设备驱动器」，通过 Kernel ABI 交互                        |
++-----------------------------------------------------------------------------------+
+```
 
-**Files likely touched:**
-- `crates/deepstrike-core/src/types/capability.rs`
-- `crates/deepstrike-core/src/types/mod.rs`
-- `crates/deepstrike-core/src/lib.rs`
-- `crates/deepstrike-core/src/context/manager.rs`
+### 架构总览
 
-### Task 2: Add `ContextSectionRegistry`
+```mermaid
+flowchart TB
+  subgraph Host["Host SDK (Node / Python / Rust / WASM)"]
+    IO["I/O: Provider / FS / Process / Network / UI"]
+    EP["ExecutionPlane"]
+  end
 
-**Description:** Define typed context sections with cache and invalidation policy, independent of actual message storage.
+  subgraph Kernel["DeepStrike Kernel (deepstrike-core)"]
+    SM["Agent State Machine"]
+    VM["Context Virtual Memory"]
+    CB["Capability Bus"]
+    LSM["Security LSM"]
+    TX["Transaction Runtime"]
+    MS["Milestone Contracts"]
+    ISO["Sub-Agent Isolation"]
+    AUD["Audit Log Semantics"]
+  end
 
-**Acceptance criteria:**
-- Sections have id, partition, priority, cache policy, invalidation policy, and optional token budget.
-- Registry renders deterministic section plans ordered by priority then id.
-- Registry can invalidate sections by event.
+  IO <-->|KernelInput / KernelOutput| SM
+  EP <-->|ExecuteTool / ToolResult| SM
+  SM --> VM
+  SM --> CB
+  SM --> LSM
+  SM --> TX
+  SM --> MS
+  SM --> ISO
+  SM --> AUD
+```
 
-**Verification:**
-- `cargo test -p deepstrike-core section`
+### Kernel ABI（目标形态）
 
-**Files likely touched:**
-- `crates/deepstrike-core/src/context/sections.rs`
-- `crates/deepstrike-core/src/context/mod.rs`
-- `crates/deepstrike-core/src/context/manager.rs`
+```
+KernelInput:
+  StartRun
+  ProviderResult
+  ToolResult
+  Signal
+  PermissionDecision
+  MilestoneResult
+  CapabilityCommand
+  Timeout
 
-### Checkpoint: Foundation
+KernelOutput:
+  CallProvider
+  ExecuteTool
+  RequestPermission
+  EvaluateMilestone
+  EmitAuditEvent
+  Done
+```
 
-- `cargo test -p deepstrike-core capability section`
-- No SDK API changes required.
-- New types are additive and do not modify Runtime v1 event schema.
+---
 
-## Phase 2: Governance and Tool Lifecycle
+## 当前基线 vs 目标差距
 
-### Task 3: Add `ToolDecisionPipeline` contract
+| 领域 | 已有 | 缺口 |
+|---|---|---|
+| Milestone | `MilestoneContract`、state machine 集成、部分 audit 事件 | Rust runner **auto-pass**；Node/Python 未接 `EvaluateMilestone` |
+| Rollback | `LoopObservation::Rollbacked`、replay 截断雏形 | **任意 tool error 即 rollback**，需改为 fatal-only |
+| Capability | `CapabilityManifest`、`CapabilityChanged` | 无 Mount/Unmount/Pin/Lease 一等命令 |
+| Context VM | `ContextSectionRegistry`、6 分区、pin/cache policy | 缺 `ContextPage` / `ContextFault` / Artifacts 分区 |
+| LSM | `ToolDecisionPipeline` 雏形 | 未标准化全链路 stage + `ToolDenied` Rust SDK 事件 |
+| Kernel ABI | `LoopAction` / `LoopEvent` / `LoopObservation` 内聚在 core | 未抽成稳定 `KernelInput` / `KernelOutput`；FFI 仍暴露内部结构 |
+| Skill sandbox | Rust `sandboxed_skill`、watcher 进行中 | Python 降级命名 / timeout / workdir / resource policy 不完整 |
 
-**Description:** Generalize current governance into explicit stages that can model classifiers, hook decisions, permission gates, and post-observers while preserving the rule that permissive hooks cannot bypass deny rules.
+---
 
-**Acceptance criteria:**
-- Pipeline verdict records the responsible stage.
-- Deny decisions remain monotonic across layers.
-- Existing `GovernancePipeline` can be adapted without breaking current tests.
+## 阶段规划
 
-**Verification:**
-- Governance tests cover hook allow plus permission deny.
+### 阶段 0：V2 收口（可合并态）
 
-**Dependencies:** Phase 1.
+**必须先做，不然上层规划会漂。**
 
-## Phase 3: Agent Runtime Spec
+**目标：** 全端编译闭环 + 策略语义正确 + 测试全绿。
 
-### Task 4: Add `AgentRunSpec`
+**范围：**
 
-**Description:** Promote sub-agent role, isolation, inherited context, capability filters, and permission profile into a typed kernel contract.
+1. **FFI exhaustive match 闭环**
+   - `EvaluateMilestone`、`CapabilityChanged`、`MilestoneAdvanced`、`MilestoneBlocked` 在 Node / WASM / PyO3 全端 match
+   - `cargo check --workspace` 零遗漏
 
-**Acceptance criteria:**
-- Explore, implement, verify, and plan roles are representable.
-- Specs can derive a filtered `CapabilityManifest`.
-- `VerificationContract` can be linked to a verify role.
+2. **Rust SDK 审计链补齐**
+   - 补 `ToolDenied` streaming event，与 Node/Python `execution_plane` 一致
 
-**Verification:**
-- Unit tests for capability filtering by agent role.
+3. **Milestone 策略显式化**
+   - 去掉 Rust runner 中 `MilestoneCheckResult::pass()` 默认 auto-advance
+   - 引入 `MilestonePolicy`（或等价配置）：`RequireVerifier`（默认）/ `AutoPass`（显式 opt-in）
+   - SDK 收到 `EvaluateMilestone` → 执行 verifier → 回传 `MilestoneResult`
 
-**Dependencies:** Task 1.
+4. **Rollback 语义收紧**
+   - `LoopEvent::ToolResults`：仅 `fatal` / `transactional` error 触发 rollback
+   - 普通 recoverable tool error 写入 history，供模型修正
+   - 引入 `ToolErrorKind { Recoverable, Fatal, GovernanceDenied, ... }`
+   - 同步更新 `test_context_rollback_on_tool_failure_*` 测试预期
 
-## Phase 4: Prompt Cache and Lifecycle Events
+5. **Python skill sandbox 收口**
+   - 降级命名（或补 timeout / unique workdir / resource policy）
 
-### Task 5: Add context snapshot cache hints
+**验收：**
 
-**Description:** Emit stable hashes for static system prefix and capability manifest so SDKs can preserve provider prompt-cache boundaries.
+```bash
+cargo check --workspace
+cargo test -p deepstrike-core
+cargo test --manifest-path rust/Cargo.toml
+# Node / Python targeted tests
+```
 
-**Acceptance criteria:**
-- Snapshot hashes are deterministic for equivalent section plans.
-- Dynamic sections do not alter static prefix hash.
+**交付物：** `fix: close V2 ABI gaps`
 
-**Dependencies:** Task 2.
+---
 
-### Task 6: Draft Runtime v2 lifecycle event vocabulary
+### 阶段 1：Kernel ABI 固化
 
-**Description:** Document additive event variants for agent lifecycle, permission decisions, capability changes, and cleanup completion.
+**目标：** SDK 不再直接操作 `LoopStateMachine` 细节。
 
-**Acceptance criteria:**
-- Runtime v1 remains frozen.
-- Runtime v2 proposal maps each event to recovery or telemetry purpose.
+**设计：**
 
-**Dependencies:** Phase 1.
+| 类型 | 职责 |
+|---|---|
+| `KernelInput` | SDK → Kernel 的所有观测 |
+| `KernelAction` | Kernel → SDK 的所有副作用请求 |
+| `KernelObservation` | Kernel 内部状态变化（audit 源） |
+| `KernelRuntime` | 唯一入口：`step(input) -> Vec<KernelAction>` |
 
-## Risks and Mitigations
+**任务：**
 
-| Risk | Impact | Mitigation |
-| --- | --- | --- |
-| Abstractions become too broad | High | First slice only stores metadata and deterministic ordering. |
-| SDK bindings need immediate updates | Medium | Keep Phase 1 internal to `deepstrike-core` and additive. |
-| Existing dirty worktree conflicts | Medium | Add new files where possible and make minimal edits to module exports. |
-| Prompt cache semantics become provider-specific | Medium | Kernel emits generic cache policy and stable ordering; SDKs map to provider APIs. |
+1. 在 `deepstrike-core` 定义稳定 ABI 类型（serde + 版本字段）
+2. `RuntimeRunner` 重构为 input/action 驱动，不再散落 `sm.feed(...)` 细节
+3. FFI 只暴露 `KernelRuntime`，隐藏 `LoopStateMachine` / `ContextManager`
+4. Node / Python / WASM 绑定与 Rust API 一一对应
+5. 文档：`docs/spec-kernel-abi.md`
 
-## Execution Scope for This Session
+**验收：**
 
-This session implements the kernel-facing portion of Phases 1-4:
+- 四个 SDK 仅通过 `KernelInput` / `KernelAction` 交互
+- 无 breaking 内部类型泄漏到 public FFI
+- 现有 integration tests 迁移后仍绿
 
-- `CapabilityManifest`
-- `ContextSectionRegistry`
+**交付物：** `refactor: introduce kernel input/output contract`
+
+**依赖：** 阶段 0
+
+---
+
+### 阶段 2：Virtual Context Memory
+
+**目标：** Context 是虚拟内存，不是字符串拼接器。
+
+**核心能力：**
+
+- section registry
+- pinned sections
+- compression policy
+- renewal / handoff
+- provider prompt cache hint
+- replay recovery repair
+- archive store contract
+
+**分区 VM Contract：**
+
+| 分区 | 策略 | 失效 |
+|---|---|---|
+| System | immutable / static cache | Never |
+| Skill | session cached | OnSkillChange |
+| Memory | dynamic retrieved / bounded | OnMemoryRefresh |
+| Working | volatile signal buffer | EveryTurn |
+| History | compressible / archival | OnCompact |
+| Artifacts | referenced, not inlined | — |
+
+**新增类型：**
+
+- `ContextPage`
+- `ContextSnapshot`
+- `ContextArchiveRef`
+- `ContextGcPolicy`
+- `ContextFault`（prompt too long、missing archive、invalid replay）
+
+**任务：**
+
+1. 补 `Artifacts` 分区到 registry
+2. `ContextSnapshot` + provider prompt cache hint 确定性 hash
+3. replay recovery repair：archive 缺失 / 截断修复路径
+4. `ContextFault` → kernel 可恢复错误，写入 audit
+
+**验收：**
+
+- 压缩/GC 按 section policy 执行，pinned section 豁免
+- replay 可从 snapshot + archive ref 重建 context
+- `spec-context-compression-v2.md` 与实现一致
+
+**依赖：** 阶段 1（ABI 承载 context 事件）
+
+---
+
+### 阶段 3：Capability Bus
+
+**目标：** 能力是 kernel 管理的 runtime capability graph，不是 tool list。
+
+**能力类型：** tool / skill / memory / knowledge / command / mcp server / sub-agent / sandbox profile / credential scope / milestone unlock
+
+**命令：**
+
+```
+CapabilityCommand::Mount
+CapabilityCommand::Unmount
+CapabilityCommand::Replace
+CapabilityCommand::Pin
+```
+
+**后续规划：**
+
+- capability version / hash
+- capability changed audit event
+- capability filter for sub-agent
+- capability lease（临时授权，到期自动 revoke）
+- capability provenance（谁挂载、为什么挂载、由哪个 milestone 解锁）
+
+**任务：**
+
+1. `CapabilityCommand` 作为 `KernelInput` 变体
+2. `CapabilityChanged` audit 含 change_kind / capability_id / version
+3. Sub-agent capability filter 接入 `AgentRunSpec`
+4. capability lease + 自动 revoke
+
+**验收：**
+
+- 特权漂移全链路可审计
+- milestone unlock → capability mount 有 provenance
+- replay 可重建 effective capability manifest
+
+**依赖：** 阶段 1
+
+---
+
+### 阶段 4：Security LSM
+
+**目标：** 工具调用 = syscall，必须过 LSM。
+
+**治理链路：**
+
+```
+Classify
+  -> CapabilityCheck
+  -> ConstraintCheck
+  -> PermissionCheck
+  -> VetoCheck
+  -> RateLimit
+  -> SandboxPolicy
+  -> Audit
+```
+
+**不变量：**
+
+- deny monotonic
+- permission allow 不能绕过 veto
+- hook 只能收紧，不能放宽
+- 所有 denial 必须写审计日志
+- 所有 ask-user 必须可恢复
+
+**交付物：**
+
 - `ToolDecisionPipeline`
-- `AgentRunSpec`
-- `ContextSnapshotHint`
-- Runtime v2 lifecycle event vocabulary draft
-- focused Rust tests
+- `ToolDecisionStage`
+- `ToolDenied`
+- `PermissionRequested`
+- `PermissionResolved`
+- `SandboxProfile`
+- `SecurityPolicySnapshot`
+
+**验收：**
+
+- 任一 stage deny 后后续 stage 不可 overwrite
+- 四端 `ToolDenied` audit 一致
+- replay 可恢复 pending permission 流
+
+**依赖：** 阶段 3（capability check 需要 bus）
+
+---
+
+### 阶段 5：Transaction Runtime
+
+**目标：** Turn 级原子事务，rollback 精确可控。这块会决定 DeepStrike 是否真的像 OS。
+
+**TurnTransaction API：**
+
+```
+checkpoint()
+apply_llm_message()
+apply_tool_results()
+commit()
+rollback(reason)
+```
+
+**Rollback 触发（仅 fatal / inconsistent）：**
+
+| 原因 | Rollback? |
+|---|---|
+| recoverable tool error | 否 — 保留 history |
+| fatal tool error | 是 |
+| governance denied | 视策略 |
+| provider failure | 是 |
+| malformed replay | 是 |
+| timeout / user interrupt | 是 |
+
+只有 fatal / inconsistent state 才 rollback。普通 tool error 应保留在历史里，让模型修正。
+
+**交付物：**
+
+- `TurnCheckpoint`
+- `RollbackReason`
+- `ToolErrorKind`
+- `TransactionObservation`
+- replay 按 rollback event 精确截断
+
+**验收：**
+
+- 普通 tool error 不丢 turn 上下文
+- fatal error 恢复到 checkpoint
+- audit log 可完整 replay transaction 边界
+
+**依赖：** 阶段 0（rollback 语义）+ 阶段 4（governance denied 分类）
+
+**交付物 PR：** `feat: make milestone and rollback policy explicit`（与阶段 0 第 3–4 项合并）
+
+---
+
+### 阶段 6：Milestone Contracts
+
+**目标：** 从「聊天 agent」升级为「工程 agent」。Milestone 是 DeepStrike 的关键差异化。
+
+**MilestoneContract 完整形态：**
+
+```
+phase_id
+criteria
+verifier
+required_evidence
+unlock_capabilities
+rollback_policy
+retry_policy
+```
+
+**Verifier 类型（显式配置，默认无 auto-pass）：**
+
+- machine check
+- harness eval
+- LLM judge
+- human approval
+- external CI/test command
+
+**KernelOutput：** `EvaluateMilestone`
+
+**Audit：** `MilestoneAdvanced` / `MilestoneBlocked` / `MilestoneEvidence`
+
+**交付物：**
+
+- `MilestoneVerifier`
+- `EvaluateMilestone`
+- `MilestoneAdvanced`
+- `MilestoneBlocked`
+- `MilestoneEvidence`
+- `MilestoneUnlockPolicy`
+
+**验收：**
+
+- 默认 milestone 必须经 verifier 才能 advance
+- blocked → retry policy 可控
+- unlock capabilities 带 provenance（接阶段 3）
+
+**依赖：** 阶段 0 + 阶段 3 + 阶段 5
+
+---
+
+### 阶段 7：Sub-Agent Isolation
+
+**目标：** 多 agent 差异是 kernel contract，不是 prompt 建议。
+
+**一等抽象 `AgentRunSpec`：**
+
+- role
+- isolation mode
+- capability filter
+- context inheritance
+- memory scope
+- permission profile
+- workspace / sandbox profile
+- parent-child audit lineage
+
+**典型角色：** explore / implement / verify / plan — 各走不同 isolation + capability filter
+
+**验收：**
+
+- sub-agent spawn 自动生成隔离 manifest
+- parent-child audit lineage 可追踪
+- replay 可独立恢复 sub-agent run
+
+**依赖：** 阶段 3 + 阶段 4 + 阶段 6
+
+---
+
+## 近期执行顺序（3 个 PR 栈）
+
+| 顺序 | PR | 核心内容 | 解锁 |
+|---|---|---|---|
+| **1** | `fix: close V2 ABI gaps` | FFI match、Rust ToolDenied、milestone 去 auto-pass、rollback fatal-only、Python sandbox | 可合并 V2 |
+| **2** | `refactor: introduce kernel input/output contract` | KernelInput/Action/Observation、KernelRuntime、FFI 收口 | SDK 边界清晰 |
+| **3** | `feat: make milestone and rollback policy explicit` | MilestonePolicy、ToolErrorKind、TurnTransaction 雏形、transaction audit | 工程 agent 语义 |
+
+PR 1 与 PR 3 有重叠（milestone/rollback），可按实际 diff 大小拆分或合并为一个 stack 的两个 commit。
+
+三步做完，DeepStrike 的主线会非常清晰：**Kernel owns agent semantics. SDK owns host effects.**
+
+---
+
+## PR 1 任务清单（阶段 0 细化）
+
+### 1.1 FFI match 闭环
+
+- [ ] `crates/deepstrike-node/src/lib.rs` — 补 4 个 observation variant
+- [ ] `crates/deepstrike-wasm/src/lib.rs` — 同上
+- [ ] `crates/deepstrike-py/src/lib.rs` — 同上 + Python 类型导出
+- [ ] `node/src/runtime/runner.ts` — 处理 milestone/capability observations
+- [ ] `python/deepstrike/runtime/runner.py` — 同上
+- [ ] `wasm/src/runtime/runner.ts` — 同上
+
+### 1.2 Rust ToolDenied
+
+- [ ] `rust/src/runtime/execution_plane.rs` — yield `ToolDeniedEvent`
+- [ ] `rust/src/run_event.rs` — 事件类型
+- [ ] `rust/src/runtime/runner.rs` — audit → `SessionEvent::ToolDenied`
+
+### 1.3 Milestone 显式策略
+
+- [ ] 删除 `runner.rs` auto-pass
+- [ ] 新增 `MilestonePolicy`（core 或 runner opts）
+- [ ] Node/Python runner：`EvaluateMilestone` → 默认 suspend / 等待 verifier hook
+- [ ] 更新 `tests/rust/src/t11_runtime.rs`
+
+### 1.4 Rollback 收紧
+
+- [ ] `state_machine.rs` — `ToolResults` 分支按 `ToolErrorKind` 分流
+- [ ] 更新 rollback/replay 测试（Rust / Node / Python）
+
+### 1.5 Python sandbox
+
+- [ ] `python/deepstrike/skills/watcher.py` + execution — timeout / unique workdir / resource policy
+
+---
+
+## 成功指标（各阶段 Gate）
+
+| Gate | 条件 |
+|---|---|
+| **G0 — V2 Mergeable** | workspace compile + core/SDK tests 全绿；无默认 auto-pass；rollback 仅 fatal |
+| **G1 — ABI Stable** | 四端仅 KernelInput/Output；FFI 无内部结构泄漏 |
+| **G2 — Context VM** | 6 分区 + fault + replay repair 测试通过 |
+| **G3 — Capability Bus** | mount/unmount/lease audit 完整 |
+| **G4 — LSM** | deny monotonic 测试 + 四端 ToolDenied 一致 |
+| **G5 — Transaction** | recoverable error 不 rollback；replay 精确截断 |
+| **G6 — Milestone** | verifier 驱动 phase advance；blocked retry 可控 |
+| **G7 — Multi-Agent** | sub-agent isolation + lineage replay |
+
+---
+
+## 文档同步
+
+| 文档 | 动作 |
+|---|---|
+| `docs/implementation-agent-os-kernel.md` | 本文档 — 主规划 |
+| `docs/spec-kernel-abi.md` | 阶段 1 新建 |
+| `docs/spec-runtime-v2-lifecycle.md` | 补 milestone / rollback / capability 事件 |
+| `docs/spec-context-compression-v2.md` | 阶段 2 对齐 VM contract |
+
+---
+
+## 风险与消减
+
+| 风险 | 消减 |
+|---|---|
+| 去 auto-pass 破坏现有 demo/测试 | 测试显式传 `MilestonePolicy::AutoPass` 或 mock verifier |
+| rollback 语义变更影响 replay | 先加 `ToolErrorKind`，replay 按新 event 截断，保留 migration note |
+| ABI 重构 diff 大 | PR 2 只做类型抽取 + runner 薄封装，不改行为 |
+| 四端不同步 | 每个 PR 要求四端同 PR 或同 stack 合并 |
+| 不再向后兼容导致已有测试失效 | 在 `crates/deepstrike-core` 中直接开辟 V2 内核，SDK 端全面适配，删除历史废代码 |
+| 宿主资源管理泄漏 | Runtime 退出时严格调用 `CleanupCompleted` 事件并执行系统级清理钩子 |
+
+---
+
+## 核心内核抽象（长期沉淀）
+
+为支撑 Agent OS Runtime 控制流，内核沉淀以下一等公民抽象：
+
+### 1. CapabilityManifest（能力清单）
+
+**定位：** OS 能力特权表 (Capability Table)。
+
+**职责：** 将工具、Skills、Memory、Knowledge、MCP Server、内置指令、子 Agent 能力统一注册到一个单一的 Manifest 中。模型能干什么不再散落在各处，而是由 Kernel 进行严格审计、过滤和排序的唯一 SSOT。
+
+### 2. ContextSectionRegistry（虚拟内存段表）
+
+**定位：** 内存虚拟地址空间表 (VMM Segment Table)。
+
+**职责：** 上下文被拆分为具有独立生存策略的虚拟 Section（system, skill, memory, history, working, artifacts 等）。每个 section 包含优先级、缓存策略、失效规则和 Token 预算。
+
+### 3. ToolDecisionPipeline（内核安全系统调用过滤管线）
+
+**定位：** 内核安全过滤模块 (SELinux / Linux Security Module)。
+
+**职责：** 所有工具调用本质上是「系统调用 (System Call)」。Runtime 强制通过 classifier, hook, permission, veto, rate limit, constraint, audit 管线。遵循**单调性原则**：一旦被前置安全策略 Deny，任何后置 Hook 均无权 Overwrite。
+
+### 4. AgentRunSpec（进程运行规格）
+
+**定位：** 进程运行规格 (Process Run Spec)。
+
+**职责：** 子 Agent 的角色（explore / implement / verify / plan）、隔离度、目标（goal）、验证契约（verification contract）、动态能力过滤器均封装成一等进程规范，支持多级 Agent 的生命周期追踪。
+
+### 5. ContextSnapshotHint（缓存哈希指示器）
+
+**定位：** OS 提示页缓存 (Prompt Cache Hint)。
+
+**职责：** 为 LLM 缓存页提供确定性 Hash 策略（如静态系统前缀、活动能力清单指纹）。宿主 SDK 基于此 Hash 稳定维护 LLM API 的 prompt cache 边界。
+
+### 6. Unified SessionEvent Vocabulary（内核事件审计日志）
+
+**定位：** 内核审计事件总线 (Kernel Audit Event Log)。
+
+**职责：** 将整个 Runtime 周期内的推理执行、权限审批挂起、动态能力变化、处理挂起与垃圾回收 (GC) 统一为一个结构化、可重放的事件流。
