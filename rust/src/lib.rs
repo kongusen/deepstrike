@@ -34,7 +34,10 @@ pub use runtime::{McpProxyPlane, McpServerConfig};
 pub use runtime::{ProcessSandboxPlane, SandboxOptions};
 pub use runtime::{RemoteVpcOptions, RemoteVpcPlane};
 pub use runtime::{RunContext, ToolSuspendHandler, ToolSuspendRequest};
-pub use runtime::{RuntimeOptions, RuntimeRunner, collect_text};
+pub use runtime::{
+    MilestoneEvaluationContext, MilestoneEvaluationHandler, MilestonePolicy, RuntimeOptions,
+    RuntimeRunner, collect_text,
+};
 pub use safety::{Permission, PermissionDecision, PermissionManager, PermissionMode};
 pub use signals::{GatewayReceiver, RuntimeSignal, ScheduledPrompt, SignalGateway, SignalSource};
 pub use tools::{
@@ -50,6 +53,12 @@ pub enum Error {
     Tool(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("tool execution failed: {output}")]
+    ToolExecutionFailed {
+        output: String,
+        is_fatal: bool,
+        error_kind: Option<deepstrike_core::types::message::ToolErrorKind>,
+    },
     #[error("{0}")]
     Other(String),
 }

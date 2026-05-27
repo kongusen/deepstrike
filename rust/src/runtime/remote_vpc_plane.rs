@@ -147,6 +147,8 @@ impl ExecutionPlane for RemoteVpcPlane {
                         call_id: call.id.to_string(),
                         content,
                         is_error,
+                        is_fatal: false,
+                        error_kind: None,
                     };
                 }
             }

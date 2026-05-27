@@ -54,6 +54,23 @@ export class KernelRuntime {
         break
       case "force_compact":
         break
+      case "spawn_sub_agent":
+        return JSON.stringify({
+          version: 1,
+          actions: [],
+          observations: [
+            {
+              kind: "agent_spawned",
+              turn: 1,
+              agent_id: "worker",
+              parent_session_id: "parent-session-001",
+              role: "implement",
+              isolation: "shared",
+              context_inheritance: "full",
+              permitted_capability_ids: ["read_file"],
+            },
+          ],
+        })
       default:
         break
     }

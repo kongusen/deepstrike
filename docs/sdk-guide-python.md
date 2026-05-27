@@ -587,3 +587,79 @@ note = HandoffBus.to_context_note(handoff)
 if HandoffBus.requires_escalation(handoff, drift_threshold=0.05):
     ...
 ```
+
+---
+
+## 12. 进阶特性 (Milestones, Sub-agents, Artifacts)
+
+### 12.1 里程碑合约 (Milestones)
+
+里程碑合约可以将 Agent 的运行划分为多个阶段（Phases），并且每个阶段需要显式验证。
+
+```python
+from deepstrike import (
+    RuntimeRunner, MilestoneContract, MilestonePhase,
+    milestone_check_pass
+)
+
+runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=session_log,
+    execution_plane=execution_plane,
+    max_tokens=4096,
+    milestone_policy="require_verifier", # 策略可选 "require_verifier" | "auto_pass" | "terminate"
+    milestone_contract=MilestoneContract(
+        phases=[
+            MilestonePhase(
+                id="phase-1",
+                criteria=["生成符合规范的方案草案"],
+                required_evidence=["draft_design.md"],
+                unlocks=[{"kind": "tool", "name": "write_file"}], # 这一阶段通过后解锁 write_file 能力
+            )
+        ]
+    ),
+    on_milestone_evaluate=lambda ctx: milestone_check_pass(ctx["phaseId"])
+))
+```
+
+如果未配置 `on_milestone_evaluate` 并且策略是 `require_verifier`，当运行到达里程碑需要验证时，runner 运行会挂起并返回 `milestone_pending` 状态：
+```python
+async for evt in runner.run(goal="write a design", session_id="s1"):
+    if evt.type == "done" and evt.status == "milestone_pending":
+        # 运行挂起，可通过 wake 恢复
+        pass
+```
+
+### 12.2 子智能体隔离与生成 (Sub-agents)
+
+Python SDK 支持完全隔离的子智能体生成，并遵循内核 Isolation Manifest 过滤其拥有的能力：
+
+```python
+from deepstrike import AgentIdentity, AgentRunSpec
+
+spec = AgentRunSpec(
+    identity=AgentIdentity(agent_id="sub-worker-1", session_id="sub-session-001"),
+    role="implement",
+    goal="写一份文件",
+    isolation="read_only", # 隔离级别
+)
+
+# 必须在父智能体运行的 context 中调用
+child_events = await runner.spawn_sub_agent(spec)
+async for evt in child_events:
+    if evt.type == "done":
+        print(evt.status)
+```
+
+### 12.3 产物推送 (Artifacts)
+
+为了防止模型将极大的文本/文件输出直接作为 prompt 历史上下文传回导致膨胀，可以在 active run 期间将大文件输出以“产物”形式推送：
+
+```python
+from deepstrike import Message
+
+runner.push_artifact(
+    message=Message(role="assistant", content="这里是极长的大文件内容/代码/报告..."),
+    tokens=1000 # 可选指定 token 数
+)
+```

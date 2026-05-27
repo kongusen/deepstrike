@@ -57,15 +57,17 @@ async def test_gemini_keeps_duplicate_function_names_distinct(monkeypatch):
         def __init__(self, parts): self.content = Content(parts)
     class Chunk:
         def __init__(self, parts): self.candidates = [Candidate(parts)]
-    class Response:
-        usage_metadata = None
-    class FakeModel:
-        async def generate_content_async(self, contents, stream=False):
+    class FakeModels:
+        async def generate_content_stream(self, **kwargs):
             async def chunks():
                 yield Chunk([Part(FunctionCall("lookup", {"q": "a"}))])
                 yield Chunk([Part(FunctionCall("lookup", {"q": "b"}))])
             return chunks()
-    provider._model = FakeModel()
+    class FakeAio:
+        models = FakeModels()
+    class FakeClient:
+        aio = FakeAio()
+    provider._client = FakeClient()
 
     gen = provider.stream(RenderedContext(turns=[Message(role="user", content="hi")]), [])
     events = [event async for event in gen]

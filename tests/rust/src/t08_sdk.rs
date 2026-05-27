@@ -169,6 +169,9 @@ fn runtime_options_can_be_constructed() {
         enable_plan_tool: None,
         on_tool_suspend: None,
         milestone_policy: deepstrike_sdk::runtime::MilestonePolicy::default(),
+        milestone_contract: None,
+        run_spec: None,
+        on_milestone_evaluate: None,
     });
     assert_eq!(runner.execution_plane().schemas().len(), 0);
 }
@@ -235,6 +238,8 @@ fn run_event_variants() {
         call_id: "c1".into(),
         content: "3".into(),
         is_error: false,
+        is_fatal: false,
+        error_kind: None,
     };
     let _done = RunEvent::Done {
         iterations: 1,

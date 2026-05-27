@@ -128,7 +128,15 @@ export class LocalExecutionPlane implements ExecutionPlane {
         const task = active[index]
         if (result.done) {
           const r = result.value
-          yield { type: "tool_result", callId: r.callId, name: task.call.name, content: r.output, isError: r.isError } as ToolResultEvent
+          yield {
+            type: "tool_result",
+            callId: r.callId,
+            name: task.call.name,
+            content: r.output,
+            isError: r.isError,
+            isFatal: r.isFatal,
+            errorKind: r.errorKind,
+          } as ToolResultEvent
           active.splice(index, 1)
           continue
         }
@@ -186,7 +194,13 @@ export class LocalExecutionPlane implements ExecutionPlane {
       }
       return { callId: call.id, output, isError: false }
     } catch (err) {
-      return { callId: call.id, output: String(err), isError: true }
+      return {
+        callId: call.id,
+        output: String(err),
+        isError: true,
+        isFatal: Boolean((err as any)?.isFatal),
+        errorKind: (err as any)?.errorKind,
+      }
     }
   }
 }

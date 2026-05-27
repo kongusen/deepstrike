@@ -58,6 +58,9 @@ where
         enable_plan_tool: None,
         on_tool_suspend: None,
         milestone_policy: deepstrike_sdk::runtime::MilestonePolicy::default(),
+        milestone_contract: None,
+        run_spec: None,
+        on_milestone_evaluate: None,
     };
     setup(&mut plane, &mut opts);
     opts.execution_plane = Some(Box::new(plane));

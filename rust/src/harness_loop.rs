@@ -191,7 +191,7 @@ impl<'a> HarnessLoop<'a> {
                             yield Ok(HarnessEvent::Token(d));
                         }
                         Ok(RunEvent::ToolCall { id, name }) => yield Ok(HarnessEvent::ToolCall { id, name }),
-                        Ok(RunEvent::ToolResult { call_id, content, is_error }) => {
+                        Ok(RunEvent::ToolResult { call_id, content, is_error, .. }) => {
                             yield Ok(HarnessEvent::ToolResult { call_id, content, is_error });
                         }
                         Ok(RunEvent::Done { iterations, total_tokens, status }) => {

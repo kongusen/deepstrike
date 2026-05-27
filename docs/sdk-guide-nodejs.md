@@ -560,5 +560,84 @@ const handoff = HandoffBus.fromDream({ goal, dreamResult })
 const note = HandoffBus.toContextNote(handoff)
 
 // 检查是否需要升级
-if (HandoffBus.requiresEscalation(handoff, { driftThreshold: 0.05 })) { ... }
+if (HandoffBus.requiresEscalation(handoff, { driftThreshold: 0.05 })) {
+  // ...
+}
+```
+
+---
+
+## 12. 进阶特性 (Milestones, Sub-agents, Artifacts)
+
+### 12.1 里程碑合约 (Milestones)
+
+里程碑合约可以将 Agent 的运行划分为多个阶段（Phases），并且每个阶段需要显式验证。
+
+```typescript
+import { RuntimeRunner, milestoneCheckPass } from "@deepstrike/sdk"
+
+const runner = new RuntimeRunner({
+  provider,
+  sessionLog,
+  executionPlane,
+  maxTokens: 4096,
+  milestonePolicy: "require_verifier", // 策略可选 "require_verifier" | "auto_pass" | "terminate"
+  milestoneContract: {
+    phases: [
+      {
+        id: "phase-1",
+        criteria: ["生成符合规范的方案草案"],
+        requiredEvidence: ["draft_design.md"],
+        unlocks: ["write_file"], // 这一阶段通过后解锁 write_file 能力
+      }
+    ]
+  },
+  onMilestoneEvaluate: async (ctx) => {
+    console.log(`正在验证阶段 ${ctx.phaseId}:`, ctx.criteria)
+    // 返回评估结果
+    return milestoneCheckPass(ctx.phaseId)
+  }
+})
+```
+
+如果未配置 `onMilestoneEvaluate` 并且策略是 `require_verifier`，当运行到达里程碑需要验证时，runner 运行会挂起并返回 `milestone_pending` 状态：
+```typescript
+for await (const evt of runner.run({ sessionId: "s1", goal: "write a design" })) {
+  if (evt.type === "done" && evt.status === "milestone_pending") {
+    // 运行挂起，可通过 wake 恢复
+  }
+}
+```
+
+### 12.2 子智能体隔离与生成 (Sub-agents)
+
+Node.js SDK 支持完全隔离的子智能体生成，并遵循内核 Isolation Manifest 过滤其拥有的能力：
+
+```typescript
+const spec = {
+  identity: { agentId: "sub-worker-1", sessionId: "sub-session-001" },
+  role: "implement",
+  goal: "写一份文件",
+  isolation: "read_only", // 隔离级别
+}
+
+// 必须在父智能体运行的 context 中调用
+for await (const evt of runner.spawnSubAgent(spec)) {
+  if (evt.type === "done") {
+    console.log(evt.status)
+  }
+}
+```
+
+### 12.3 产物推送 (Artifacts)
+
+为了防止模型将极大的文本/文件输出直接作为 prompt 历史上下文传回导致膨胀，可以在 active run 期间将大文件输出以“产物”形式推送：
+
+```typescript
+runner.pushArtifact({
+  role: "assistant",
+  content: "这里是极长的大文件内容/代码/报告...",
+}, 1000) // 第二个参数可选指定 token 数
+```
+
 ```

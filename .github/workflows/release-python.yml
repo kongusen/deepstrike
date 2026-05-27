@@ -116,9 +116,9 @@ jobs:
           python -c "
           import deepstrike
           from deepstrike import Governance
-          from deepstrike.kernel import LoopStateMachine, LoopPolicy
+          from deepstrike.kernel import KernelRuntime, LoopPolicy
           assert Governance().evaluate('x', '{}').kind == 'allow'
-          sm = LoopStateMachine(LoopPolicy())
+          sm = KernelRuntime(LoopPolicy())
           assert not sm.is_terminal()
           "
 

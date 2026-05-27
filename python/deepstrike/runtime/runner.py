@@ -61,7 +61,7 @@ if TYPE_CHECKING:
   from deepstrike.knowledge.source import KnowledgeSource
   from deepstrike.memory.protocols import DreamResult, DreamStore
   from deepstrike.signals.types import SignalSource
-  from deepstrike.types.agent import AgentRunSpec, SubAgentResult
+  from deepstrike.types.agent import AgentRunSpec, SubAgentResult, MilestonePolicy, MilestoneContract, MilestoneCheckResult
 
 
 @dataclass
@@ -87,6 +87,10 @@ class RuntimeOptions:
   on_tool_suspend: Callable[[ToolSuspendEvent], Awaitable[Any] | Any] | None = None
   sub_agent_orchestrator: Any | None = None
   dream_system_prompt: str | None = None
+  milestone_policy: "MilestonePolicy | None" = None
+  on_milestone_evaluate: Callable[[dict[str, Any]], Awaitable[Any] | Any] | None = None
+  milestone_contract: "MilestoneContract | None" = None
+  run_spec: "AgentRunSpec | None" = None
 
 
 class RuntimeRunner:
@@ -174,34 +178,63 @@ class RuntimeRunner:
     """Mount a tool capability on the active run. No-op if not running."""
     if self._active_kernel is not None:
       kernel_apply(self._active_kernel, self._pending_observations, {
-        "kind": "mount_capability",
-        "capability": capability_tool(schema),
+        "kind": "capability_command",
+        "command": {
+          "action": "mount",
+          "capability": capability_tool(schema),
+          "mounted_by": "sdk:runtime",
+          "mount_reason": "dynamic_register",
+        },
       })
 
   def mount_skill(self, name: str, description: str) -> None:
     """Mount a skill capability on the active run. No-op if not running."""
     if self._active_kernel is not None:
       kernel_apply(self._active_kernel, self._pending_observations, {
-        "kind": "mount_capability",
-        "capability": capability_skill(name, description),
+        "kind": "capability_command",
+        "command": {
+          "action": "mount",
+          "capability": capability_skill(name, description),
+          "mounted_by": "sdk:runtime",
+          "mount_reason": "dynamic_register",
+        },
       })
 
   def mount_marker(self, kind: str, id: str, description: str) -> None:
     """Mount a generic marker capability (e.g. MCP server) on the active run. No-op if not running."""
     if self._active_kernel is not None:
       kernel_apply(self._active_kernel, self._pending_observations, {
-        "kind": "mount_capability",
-        "capability": capability_marker(kind, id, description),
+        "kind": "capability_command",
+        "command": {
+          "action": "mount",
+          "capability": capability_marker(kind, id, description),
+          "mounted_by": "sdk:runtime",
+          "mount_reason": "dynamic_register",
+        },
       })
 
   def unmount_capability(self, kind: str, id: str) -> None:
     """Unmount a capability by kind + id from the active run. No-op if not running."""
     if self._active_kernel is not None:
       kernel_apply(self._active_kernel, self._pending_observations, {
-        "kind": "unmount_capability",
-        "capability_kind": kind,
-        "id": id,
+        "kind": "capability_command",
+        "command": {
+          "action": "unmount",
+          "kind": kind,
+          "id": id,
+        },
       })
+
+  def push_artifact(self, message: Message, tokens: int | None = None) -> None:
+    """Push a large artifact into the kernel artifacts partition (not inlined in history)."""
+    if self._active_kernel is not None:
+      event = {
+        "kind": "push_artifact",
+        "message": message_to_kernel(message),
+      }
+      if tokens is not None:
+        event["tokens"] = tokens
+      kernel_apply(self._active_kernel, self._pending_observations, event)
 
   @property
   def execution_plane(self) -> ExecutionPlane:
@@ -436,6 +469,22 @@ class RuntimeRunner:
       kernel_apply(runtime, self._pending_observations, {"kind": "set_memory_enabled", "enabled": True})
     if self._opts.knowledge_source:
       kernel_apply(runtime, self._pending_observations, {"kind": "set_knowledge_enabled", "enabled": True})
+    if self._opts.milestone_contract:
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "load_milestone_contract",
+        "contract": {
+          "phases": [
+            {
+              "id": p.id,
+              "criteria": p.criteria or [],
+              "unlocks": p.unlocks or [],
+              "required_evidence": p.required_evidence or [],
+              **({"verifier": p.verifier} if p.verifier else {}),
+            }
+            for p in self._opts.milestone_contract.phases
+          ]
+        }
+      })
 
     max_bytes = runtime.recovery_content_bytes()
 
@@ -451,13 +500,18 @@ class RuntimeRunner:
       })
 
     session_start = int(time.time() * 1000)
+    start_payload = {
+      "kind": "start_run",
+      "task": {"goal": goal, "criteria": criteria},
+    }
+    if self._opts.run_spec:
+      from deepstrike.types.agent import agent_run_spec_to_kernel
+      start_payload["run_spec"] = agent_run_spec_to_kernel(self._opts.run_spec)
+
     action = (
       kernel_action(runtime, self._pending_observations, {"kind": "resume"})
       if resume_mid_run
-      else kernel_action(runtime, self._pending_observations, {
-        "kind": "start_run",
-        "task": {"goal": goal, "criteria": criteria},
-      })
+      else kernel_action(runtime, self._pending_observations, start_payload)
     )
     has_attempted_reactive_compact = False
 
@@ -642,19 +696,47 @@ class RuntimeRunner:
         })
 
       elif action.kind == "evaluate_milestone":
-        next_compressed_archive_start = await self._append_observations(
-          session_id, runtime, next_compressed_archive_start,
-        )
-        turns_used = max(1, runtime.turn())
-        await self._opts.session_log.append(session_id, build_run_terminal_event(
-          reason="milestone_pending",
-          turns_used=turns_used,
-          total_tokens=0,
-        ))
-        self._active_kernel = None
-        self._current_session_id = None
-        yield DoneEvent(iterations=turns_used, total_tokens=0, status="milestone_pending")
-        return
+        milestone_policy = self._opts.milestone_policy or "require_verifier"
+        if milestone_policy == "auto_pass":
+          from deepstrike.types.agent import milestone_check_result_to_kernel, milestone_check_pass
+          action = kernel_action(runtime, self._pending_observations, {
+            "kind": "milestone_result",
+            "result": milestone_check_result_to_kernel(milestone_check_pass(action.phase_id)),
+          })
+          next_compressed_archive_start = await self._append_observations(
+            session_id, runtime, next_compressed_archive_start,
+          )
+        elif self._opts.on_milestone_evaluate is not None:
+          import inspect
+          from deepstrike.types.agent import milestone_check_result_to_kernel
+          check = self._opts.on_milestone_evaluate({
+            "phaseId": action.phase_id,
+            "criteria": action.criteria or [],
+            "requiredEvidence": action.required_evidence or [],
+          })
+          if inspect.isawaitable(check):
+            check = await check
+          action = kernel_action(runtime, self._pending_observations, {
+            "kind": "milestone_result",
+            "result": milestone_check_result_to_kernel(check),
+          })
+          next_compressed_archive_start = await self._append_observations(
+            session_id, runtime, next_compressed_archive_start,
+          )
+        else:
+          next_compressed_archive_start = await self._append_observations(
+            session_id, runtime, next_compressed_archive_start,
+          )
+          turns_used = max(1, runtime.turn())
+          await self._opts.session_log.append(session_id, build_run_terminal_event(
+            reason="milestone_pending",
+            turns_used=turns_used,
+            total_tokens=0,
+          ))
+          self._active_kernel = None
+          self._current_session_id = None
+          yield DoneEvent(iterations=turns_used, total_tokens=0, status="milestone_pending")
+          return
 
       elif action.kind == "done":
         break

@@ -9,6 +9,14 @@
         "is_error": false,
         "is_fatal": false,
         "token_count": 45
+      },
+      {
+        "call_id": "call_456",
+        "output": "Recoverable tool error",
+        "is_error": true,
+        "is_fatal": false,
+        "error_kind": "recoverable",
+        "token_count": 10
       }
     ]
   }

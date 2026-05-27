@@ -12,6 +12,7 @@ DeepStrike is a cross-language agent runtime built around a pure-Rust kernel. Th
 | [Architecture](./architecture.md) | Layer overview (0–4), kernel design, SDK layer, binding architecture |
 | [Core Concepts](./core-concepts.md) | Skills, Memory, Knowledge, Harness, Signals, Collaboration, Safety |
 | [Collaboration](./collaboration.md) | VerificationContract, AgentPool, ContractDrivenHarness, Modes, HandoffBus |
+| [SDK Kernel Driver Parity](./sdk-kernel-driver-parity.md) | Cross-SDK plan for aligning Node, Python, Rust, and WASM around the kernel-driver contract |
 | [Providers](./providers.md) | All LLM providers, configuration, thinking/reasoning flags, multimodal support |
 | [Release Runbook](./release-runbook.md) | Version propagation, verification, release flow, and recovery |
 
@@ -51,7 +52,7 @@ Every SDK yields the same typed event stream from `RuntimeRunner.run()` / `run_s
 | `done` | `iterations`, `total_tokens`, `status` | Session complete |
 | `error` | `message: string` | Unrecoverable error |
 
-**`done.status` values:** `completed` · `max_turns` · `token_budget` · `timeout` · `user_abort` · `error`
+**`done.status` values:** `completed` · `max_turns` · `token_budget` · `timeout` · `user_abort` · `milestone_pending` · `error`
 
 ---
 

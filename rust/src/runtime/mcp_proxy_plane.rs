@@ -387,6 +387,8 @@ impl ExecutionPlane for McpProxyPlane {
                     call_id: call.id.to_string(),
                     content: format!("unknown MCP tool: {}", call.name),
                     is_error: true,
+                    is_fatal: false,
+                    error_kind: None,
                 };
             }
 
@@ -405,7 +407,13 @@ impl ExecutionPlane for McpProxyPlane {
             let all_results = futures::future::join_all(futs).await;
             for group in all_results {
                 for (call_id, content, is_error) in group {
-                    yield RunEvent::ToolResult { call_id, content, is_error };
+                    yield RunEvent::ToolResult {
+                        call_id,
+                        content,
+                        is_error,
+                        is_fatal: false,
+                        error_kind: None,
+                    };
                 }
             }
         })

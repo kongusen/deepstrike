@@ -24,6 +24,8 @@ pub enum RunEvent {
         call_id: String,
         content: String,
         is_error: bool,
+        is_fatal: bool,
+        error_kind: Option<deepstrike_core::types::message::ToolErrorKind>,
     },
     ToolArgumentRepaired {
         call_id: String,

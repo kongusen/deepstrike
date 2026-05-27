@@ -2,7 +2,10 @@ from __future__ import annotations
 import json
 import logging
 from typing import AsyncIterator
-import google.generativeai as genai
+try:
+    from google import genai as google_genai
+except ImportError:  # pragma: no cover - exercised only when optional provider dep is absent.
+    google_genai = None
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent
 from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call
@@ -34,8 +37,23 @@ class GeminiProvider:
         self._retry = retry_config or RetryConfig()
         self._circuit = CircuitBreaker(self._retry)
         self._base_url = base_url.rstrip("/")
-        genai.configure(api_key=api_key, client_options={"api_endpoint": self._base_url})
-        self._model = genai.GenerativeModel(model)
+        self._api_key = api_key
+        self._client = None
+        self._model = None
+
+    def _create_client(self, api_key: str):
+        if google_genai is None:
+            return None
+        if self._base_url == "https://generativelanguage.googleapis.com":
+            return google_genai.Client(api_key=api_key)
+        return google_genai.Client(api_key=api_key, http_options={"base_url": self._base_url})
+
+    def _require_client(self):
+        if self._client is None:
+            self._client = self._create_client(self._api_key)
+        if self._client is None:
+            raise RuntimeError("GeminiProvider requires the google-genai package. Install with: pip install google-genai")
+        return self._client
 
     def runtime_policy(self) -> RuntimePolicy:
         return _GEMINI_POLICIES.get(self._model_name, RuntimePolicy())
@@ -82,14 +100,58 @@ class GeminiProvider:
     def _build_tools(self, tools: list[ToolSchema]) -> list[dict] | None:
         if not tools:
             return None
-        return [
+        declarations = [
             {
                 "name": t.name,
                 "description": t.description,
-                "parameters": json.loads(t.parameters),
+                "parameters_json_schema": json.loads(t.parameters),
             }
             for t in tools
         ]
+        return [{"function_declarations": declarations}]
+
+    def _build_config(self, system: str | None, tools: list[ToolSchema]) -> dict | None:
+        config: dict = {}
+        if system:
+            config["system_instruction"] = system
+        tool_defs = self._build_tools(tools)
+        if tool_defs:
+            config["tools"] = tool_defs
+            config["automatic_function_calling"] = {"disable": True}
+        return config or None
+
+    def _response_parts(self, response) -> list:
+        if getattr(response, "parts", None):
+            return list(response.parts)
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            return []
+        return list(getattr(candidates[0].content, "parts", []) or [])
+
+    def _part_text(self, part) -> str | None:
+        text = getattr(part, "text", None)
+        if text is not None:
+            return text
+        if isinstance(part, dict):
+            return part.get("text")
+        return None
+
+    def _part_function_call(self, part):
+        fc = getattr(part, "function_call", None)
+        if fc is not None:
+            return fc
+        if isinstance(part, dict):
+            return part.get("function_call")
+        return None
+
+    def _function_call_name_args(self, function_call) -> tuple[str, dict]:
+        if isinstance(function_call, dict):
+            return str(function_call.get("name") or ""), dict(function_call.get("args") or {})
+        return str(getattr(function_call, "name", "") or ""), dict(getattr(function_call, "args", {}) or {})
+
+    def _usage_tokens(self, response) -> int | None:
+        usage = getattr(response, "usage_metadata", None)
+        return getattr(usage, "total_token_count", None) if usage else None
 
     async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
         if self._circuit.is_open():
@@ -97,35 +159,40 @@ class GeminiProvider:
 
         system = context.system_text or None
         contents = self._build_contents(context.turns)
-        tool_defs = self._build_tools(tools)
-
-        if system:
-            self._model = genai.GenerativeModel(self._model_name, system_instruction=system)
-        if tool_defs:
-            self._model = genai.GenerativeModel(self._model_name, tools=tool_defs)
+        config = self._build_config(system, tools)
 
         last_exc = None
         for attempt in range(self._retry.max_retries):
             try:
-                resp = await self._model.generate_content_async(contents)
+                if self._model is not None:
+                    resp = await self._model.generate_content_async(contents)
+                else:
+                    resp = await self._require_client().aio.models.generate_content(
+                        model=self._model_name,
+                        contents=contents,
+                        config=config,
+                    )
                 self._circuit.record_success()
 
                 content = ""
                 tool_calls: list[ToolCall] = []
 
-                for part in resp.candidates[0].content.parts:
-                    if hasattr(part, "text"):
-                        content += part.text
-                    elif hasattr(part, "function_call"):
-                        fc = part.function_call
-                        tc = normalize_tool_call(fc.name, fc.name, dict(fc.args))
+                for part in self._response_parts(resp):
+                    text = self._part_text(part)
+                    if text:
+                        content += text
+                        continue
+                    fc = self._part_function_call(part)
+                    if fc:
+                        name, args = self._function_call_name_args(fc)
+                        tc = normalize_tool_call(name, name, args)
                         if tc:
                             tool_calls.append(tc)
 
                 return Message(
                     role="assistant",
                     content=content,
-                    token_count=resp.usage_metadata.total_token_count if resp.usage_metadata else None,
+                    token_count=self._usage_tokens(resp),
                     tool_calls=tool_calls or None,
                 )
             except Exception as exc:
@@ -141,22 +208,29 @@ class GeminiProvider:
     async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
         system = context.system_text or None
         contents = self._build_contents(context.turns)
-        tool_defs = self._build_tools(tools)
-
-        if system:
-            self._model = genai.GenerativeModel(self._model_name, system_instruction=system)
-        if tool_defs:
-            self._model = genai.GenerativeModel(self._model_name, tools=tool_defs)
+        config = self._build_config(system, tools)
 
         tool_calls: list[dict] = []
 
-        async for chunk in await self._model.generate_content_async(contents, stream=True):
-            for part in chunk.candidates[0].content.parts if chunk.candidates else []:
-                if hasattr(part, "text"):
-                    yield TextDelta(delta=part.text)
-                elif hasattr(part, "function_call"):
-                    fc = part.function_call
-                    tool_calls.append({"id": f"call_{len(tool_calls) + 1}", "name": fc.name, "args": dict(fc.args)})
+        if self._model is not None:
+            stream = await self._model.generate_content_async(contents, stream=True)
+        else:
+            stream = await self._require_client().aio.models.generate_content_stream(
+                model=self._model_name,
+                contents=contents,
+                config=config,
+            )
+
+        async for chunk in stream:
+            for part in self._response_parts(chunk):
+                text = self._part_text(part)
+                if text:
+                    yield TextDelta(delta=text)
+                    continue
+                fc = self._part_function_call(part)
+                if fc:
+                    name, args = self._function_call_name_args(fc)
+                    tool_calls.append({"id": f"call_{len(tool_calls) + 1}", "name": name, "args": args})
 
         for tc in tool_calls:
             yield ToolCallEvent(id=tc["id"], name=tc["name"], arguments=tc["args"])

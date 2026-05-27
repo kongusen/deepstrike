@@ -761,3 +761,78 @@ match runner.execute("...").await {
     Err(Error::Other(msg)) => eprintln!("其他: {msg}"),
 }
 ```
+
+---
+
+## 12. 进阶特性 (Milestones, Sub-agents, Artifacts)
+
+### 12.1 里程碑合约 (Milestones)
+
+里程碑合约可以将 Agent 的运行划分为多个阶段（Phases），并且每个阶段需要显式验证。
+
+```rust
+use std::sync::Arc;
+use deepstrike_sdk::{
+    RuntimeRunner, RuntimeOptions, MilestonePolicy,
+    MilestoneEvaluationContext
+};
+use deepstrike_core::types::milestone::{
+    MilestoneCheckResult, MilestoneContract, MilestonePhase,
+};
+
+let milestone_contract = MilestoneContract::new().phase(
+    MilestonePhase::new("phase-1")
+        .with_criterion("生成符合规范的方案草案")
+        .requiring_evidence("draft_design.md")
+);
+
+let runner = RuntimeRunner::new(RuntimeOptions {
+    provider: Box::new(provider),
+    milestone_policy: MilestonePolicy::RequireVerifier,
+    milestone_contract: Some(milestone_contract),
+    on_milestone_evaluate: Some(Arc::new(|ctx: MilestoneEvaluationContext| {
+        Box::pin(async move {
+            println!("正在验证阶段 {}: {:?}", ctx.phase_id, ctx.criteria);
+            Ok(MilestoneCheckResult {
+                phase_id: ctx.phase_id,
+                passed: true,
+                reason: None,
+            })
+        })
+    })),
+    // ... 其他参数
+});
+```
+
+如果未配置 `on_milestone_evaluate` 并且策略是 `RequireVerifier`，当运行到达里程碑需要验证时，runner 运行会挂起并返回 `milestone_pending` 状态：
+```rust
+use deepstrike_sdk::RunEvent;
+use futures::StreamExt;
+
+let mut stream = runner.run_streaming("write a design", &[], None, None).await.unwrap();
+while let Some(evt) = stream.next().await {
+    if let Ok(RunEvent::Done { status, .. }) = evt {
+        if status == "milestone_pending" {
+            // 运行挂起，可通过 wake_streaming 恢复
+        }
+    }
+}
+```
+
+### 12.2 子智能体隔离与生成 (Sub-agents)
+
+> [!NOTE]
+> Rust SDK 目前仅在底层内核支持 Isolation Manifest 与子智能体生命周期，**v0.2.x 版本暂不直接提供 SDK 层的子智能体运行编排 API (SubAgentOrchestrator)**。该功能已规划在 v0.3.0 中推出。
+
+### 12.3 产物推送 (Artifacts)
+
+为了防止模型将极大的文本/文件输出直接作为 prompt 历史上下文传回导致膨胀，可以在 active run 期间将大文件输出以“产物”形式推送：
+
+```rust
+use deepstrike_core::types::message::Message;
+
+runner.push_artifact(
+    Message::assistant("这里是极长的大文件内容/代码/报告..."),
+    Some(1000) // 可选指定 token 数，如为 None 则使用内核 tokenizer 自动估算
+);
+```

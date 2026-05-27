@@ -72,17 +72,38 @@ class LocalExecutionPlane:
         verdict = ctx.governance.evaluate(c.name, c.arguments)
         if verdict.kind == "deny":
           yield ToolDeniedEvent(call_id=c.id, tool_name=c.name, reason=verdict.reason or "")
-          yield ToolResultEvent(call_id=c.id, name=c.name, content=f"permission denied: {verdict.reason or ''}", is_error=True)
+          yield ToolResultEvent(
+            call_id=c.id,
+            name=c.name,
+            content=f"permission denied: {verdict.reason or ''}",
+            is_error=True,
+            is_fatal=False,
+            error_kind="governance_denied",
+          )
           continue
         if verdict.kind == "rate_limited":
           msg = f"rate limited: {c.name}"
-          yield ToolResultEvent(call_id=c.id, name=c.name, content=msg, is_error=True)
+          yield ToolResultEvent(
+            call_id=c.id,
+            name=c.name,
+            content=msg,
+            is_error=True,
+            is_fatal=False,
+            error_kind="recoverable",
+          )
           continue
         if verdict.kind == "ask_user":
           yield PermissionRequestEvent(
             call_id=c.id, tool_name=c.name, arguments=c.arguments, reason=verdict.reason or "",
           )
-          yield ToolResultEvent(call_id=c.id, name=c.name, content="awaiting user approval", is_error=True)
+          yield ToolResultEvent(
+            call_id=c.id,
+            name=c.name,
+            content="awaiting user approval",
+            is_error=True,
+            is_fatal=False,
+            error_kind="recoverable",
+          )
           continue
       permitted.append(c)
 
@@ -156,14 +177,28 @@ class LocalExecutionPlane:
   async def _execute_single(self, call: ToolCall, ctx: RunContext) -> AsyncIterator[StreamEvent]:
     registered = self._tools.get(call.name)
     if registered is None:
-      yield ToolResultEvent(call_id=call.id, name=call.name, content=f"unknown tool: {call.name}", is_error=True)
+      yield ToolResultEvent(
+        call_id=call.id,
+        name=call.name,
+        content=f"unknown tool: {call.name}",
+        is_error=True,
+        is_fatal=False,
+        error_kind="recoverable",
+      )
       return
     try:
       kwargs = json.loads(call.arguments or "{}")
       original_args_str = json.dumps(kwargs)
       validation = validate_tool_arguments(registered.schema.parameters, kwargs)
       if validation.get("error"):
-        yield ToolResultEvent(call_id=call.id, name=call.name, content=f"invalid arguments: {validation['error']}", is_error=True)
+        yield ToolResultEvent(
+          call_id=call.id,
+          name=call.name,
+          content=f"invalid arguments: {validation['error']}",
+          is_error=True,
+          is_fatal=False,
+          error_kind="recoverable",
+        )
         return
       if validation.get("repaired"):
         yield ToolArgumentRepairedEvent(
@@ -196,9 +231,12 @@ class LocalExecutionPlane:
             yield event
             if ctx.on_tool_suspend is None:
               yield ToolResultEvent(
-                call_id=call.id, name=call.name,
+                call_id=call.id,
+                name=call.name,
                 content=f"tool suspended without resume handler: {suspension_id}",
                 is_error=True,
+                is_fatal=False,
+                error_kind="recoverable",
               )
               return
             resume_value = ctx.on_tool_suspend(event)
@@ -215,7 +253,18 @@ class LocalExecutionPlane:
         return
       yield ToolResultEvent(call_id=call.id, name=call.name, content=str(output), is_error=False)
     except Exception as exc:
-      yield ToolResultEvent(call_id=call.id, name=call.name, content=str(exc), is_error=True)
+      is_fatal = getattr(exc, "is_fatal", False)
+      error_kind = getattr(exc, "error_kind", None)
+      if error_kind is None:
+        error_kind = "fatal" if is_fatal else "recoverable"
+      yield ToolResultEvent(
+        call_id=call.id,
+        name=call.name,
+        content=str(exc),
+        is_error=True,
+        is_fatal=is_fatal,
+        error_kind=error_kind,
+      )
 
 
 def _parse_json(s: str) -> dict:

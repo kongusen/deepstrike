@@ -51,6 +51,8 @@ from deepstrike.types.agent import (
     AgentIdentity, AgentCapabilityFilter, AgentRunSpec,
     AgentSpawnedObservation, SubAgentResult, LoopResult,
     KernelAgentRole, AgentIsolation, ContextInheritance,
+    MilestoneContract, MilestonePhase, MilestoneCheckResult, MilestonePolicy,
+    milestone_check_pass, milestone_check_fail,
 )
 from deepstrike.collaboration import (
     AcceptanceCriterion, VerificationContract, ContractCheckResult,
@@ -93,6 +95,8 @@ __all__ = [
     "AgentIdentity", "AgentCapabilityFilter", "AgentRunSpec",
     "AgentSpawnedObservation", "SubAgentResult", "LoopResult",
     "KernelAgentRole", "AgentIsolation", "ContextInheritance",
+    "MilestoneContract", "MilestonePhase", "MilestoneCheckResult", "MilestonePolicy",
+    "milestone_check_pass", "milestone_check_fail",
     "FilteredExecutionPlane",
     "SubAgentOrchestrator", "spawn_standalone", "default_sub_agent_orchestrator",
     # Collaboration layer

@@ -63,17 +63,17 @@ export class LocalExecutionPlane implements ExecutionPlane {
         const v = ctx.governance.evaluate(c.name, c.arguments)
         if (v.kind === "deny") {
           yield { type: "tool_denied", callId: c.id, toolName: c.name, reason: v.reason ?? "" } as ToolDeniedEvent
-          yield { type: "tool_result", callId: c.id, name: c.name, content: `permission denied: ${v.reason ?? ""}`, isError: true } as ToolResultEvent
+          yield { type: "tool_result", callId: c.id, name: c.name, content: `permission denied: ${v.reason ?? ""}`, isError: true, isFatal: false, errorKind: "governance_denied" } as ToolResultEvent
           continue
         }
         if (v.kind === "rate_limited") {
           yield { type: "tool_denied", callId: c.id, toolName: c.name, reason: "rate limited" } as ToolDeniedEvent
-          yield { type: "tool_result", callId: c.id, name: c.name, content: "rate limited", isError: true } as ToolResultEvent
+          yield { type: "tool_result", callId: c.id, name: c.name, content: "rate limited", isError: true, isFatal: false, errorKind: "recoverable" } as ToolResultEvent
           continue
         }
         if (v.kind === "ask_user") {
           yield { type: "permission_request", callId: c.id, toolName: c.name, arguments: c.arguments, reason: v.reason ?? "" } as PermissionRequestEvent
-          yield { type: "tool_result", callId: c.id, name: c.name, content: "awaiting user approval", isError: true } as ToolResultEvent
+          yield { type: "tool_result", callId: c.id, name: c.name, content: "awaiting user approval", isError: true, isFatal: false, errorKind: "recoverable" } as ToolResultEvent
           continue
         }
       }
@@ -124,7 +124,7 @@ export class LocalExecutionPlane implements ExecutionPlane {
     for (const call of regularCalls) {
       const registered = this.tools.get(call.name)
       if (!registered) {
-        yield { type: "tool_result", callId: call.id, name: call.name, content: `unknown tool: ${call.name}`, isError: true } as ToolResultEvent
+        yield { type: "tool_result", callId: call.id, name: call.name, content: `unknown tool: ${call.name}`, isError: true, isFatal: false, errorKind: "recoverable" } as ToolResultEvent
         continue
       }
       try {
@@ -132,7 +132,15 @@ export class LocalExecutionPlane implements ExecutionPlane {
         const output = await registered.execute(args)
         yield { type: "tool_result", callId: call.id, name: call.name, content: String(output), isError: false } as ToolResultEvent
       } catch (err) {
-        yield { type: "tool_result", callId: call.id, name: call.name, content: String(err), isError: true } as ToolResultEvent
+        yield {
+          type: "tool_result",
+          callId: call.id,
+          name: call.name,
+          content: String(err),
+          isError: true,
+          isFatal: Boolean((err as any)?.isFatal),
+          errorKind: (err as any)?.errorKind,
+        } as ToolResultEvent
       }
     }
   }

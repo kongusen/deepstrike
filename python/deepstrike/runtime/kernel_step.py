@@ -20,6 +20,7 @@ class KernelRunnerAction:
   calls: list[ToolCall] | None = None
   phase_id: str | None = None
   criteria: list[str] | None = None
+  required_evidence: list[str] | None = None
   result: Any | None = None
 
 
@@ -235,6 +236,7 @@ def _action_from_kernel(raw: dict[str, Any]) -> KernelRunnerAction:
       kind="evaluate_milestone",
       phase_id=str(raw.get("phase_id") or ""),
       criteria=list(raw.get("criteria") or []),
+      required_evidence=list(raw.get("required_evidence") or []),
     )
   if kind == "done":
     result = raw.get("result") or {}

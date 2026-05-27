@@ -301,7 +301,7 @@ All providers share `RetryConfig` (exponential backoff) and `CircuitBreaker`.
 | `done` | `iterations`, `totalTokens`, `status` |
 | `error` | `message` |
 
-`status`: `completed` / `max_turns` / `token_budget` / `timeout` / `user_abort` / `error`
+`status`: `completed` / `max_turns` / `token_budget` / `timeout` / `user_abort` / `milestone_pending` / `error`
 
 Session log also records kernel audit events: `compressed`, `rollbacked`, `checkpoint_taken`, `capability_changed`, `milestone_*`, `agent_spawned`, `tool_denied`, etc.
 
@@ -314,6 +314,7 @@ Session log also records kernel audit events: `compressed`, `rollbacked`, `check
 | [implementation-agent-os-kernel.md](docs/implementation-agent-os-kernel.md) | Kernel roadmap, phase gates, architecture |
 | [spec-kernel-abi.md](docs/spec-kernel-abi.md) | `KernelInput` / `KernelAction` / `KernelObservation` contract |
 | [spec-context-compression-v2.md](docs/spec-context-compression-v2.md) | Context VM, compaction, archive store |
+| [sdk-kernel-driver-parity.md](docs/sdk-kernel-driver-parity.md) | Cross-SDK plan for aligning Node, Python, Rust, and WASM around the kernel-driver contract |
 | [sdk-guide-nodejs.md](docs/sdk-guide-nodejs.md) | Node SDK guide |
 | [sdk-guide-python.md](docs/sdk-guide-python.md) | Python SDK guide |
 

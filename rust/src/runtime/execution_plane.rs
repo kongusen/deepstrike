@@ -45,13 +45,19 @@ pub struct RunContext<'a> {
     pub on_tool_suspend: Option<ToolSuspendHandler>,
 }
 
-fn make_result(call_id: compact_str::CompactString, output: String, is_error: bool) -> ToolResult {
+fn make_result(
+    call_id: compact_str::CompactString,
+    output: String,
+    is_error: bool,
+    is_fatal: bool,
+    error_kind: Option<deepstrike_core::types::message::ToolErrorKind>,
+) -> ToolResult {
     ToolResult {
         call_id,
         output: Content::Text(output),
         is_error,
-        is_fatal: false,
-        error_kind: None,
+        is_fatal,
+        error_kind,
         token_count: None,
     }
 }
@@ -142,6 +148,8 @@ fn execute_all_local<'a>(
                             call_id: c.id.to_string(),
                             content: format!("permission denied: {reason}"),
                             is_error: true,
+                            is_fatal: false,
+                            error_kind: Some(deepstrike_core::types::message::ToolErrorKind::GovernanceDenied),
                         };
                         continue;
                     }
@@ -156,6 +164,8 @@ fn execute_all_local<'a>(
                             call_id: c.id.to_string(),
                             content: reason,
                             is_error: true,
+                            is_fatal: false,
+                            error_kind: Some(deepstrike_core::types::message::ToolErrorKind::Recoverable),
                         };
                         continue;
                     }
@@ -173,6 +183,8 @@ fn execute_all_local<'a>(
                             call_id: c.id.to_string(),
                             content: format!("permission denied: awaiting user approval: {reason}"),
                             is_error: true,
+                            is_fatal: false,
+                            error_kind: Some(deepstrike_core::types::message::ToolErrorKind::Recoverable),
                         };
                         continue;
                     }
@@ -233,10 +245,17 @@ fn execute_all_local<'a>(
             } else {
                 ("No skill directory configured.".into(), true)
             };
+            let error_kind = if is_error {
+                Some(deepstrike_core::types::message::ToolErrorKind::Recoverable)
+            } else {
+                None
+            };
             yield RunEvent::ToolResult {
                 call_id: c.id.to_string(),
                 content,
                 is_error,
+                is_fatal: false,
+                error_kind,
             };
         }
 
@@ -258,10 +277,17 @@ fn execute_all_local<'a>(
                 },
                 _ => ("Memory retrieval not configured.".into(), true),
             };
+            let error_kind = if is_error {
+                Some(deepstrike_core::types::message::ToolErrorKind::Recoverable)
+            } else {
+                None
+            };
             yield RunEvent::ToolResult {
                 call_id: c.id.to_string(),
                 content,
                 is_error,
+                is_fatal: false,
+                error_kind,
             };
         }
 
@@ -277,10 +303,17 @@ fn execute_all_local<'a>(
             } else {
                 ("Knowledge source not configured.".into(), true)
             };
+            let error_kind = if is_error {
+                Some(deepstrike_core::types::message::ToolErrorKind::Recoverable)
+            } else {
+                None
+            };
             yield RunEvent::ToolResult {
                 call_id: c.id.to_string(),
                 content,
                 is_error,
+                is_fatal: false,
+                error_kind,
             };
         }
 
@@ -307,6 +340,8 @@ fn execute_all_local<'a>(
                     call_id: call.id.to_string(),
                     content: content.clone(),
                     is_error: true,
+                    is_fatal: false,
+                    error_kind: Some(deepstrike_core::types::message::ToolErrorKind::Recoverable),
                 };
                 continue;
             };
@@ -329,6 +364,8 @@ fn execute_all_local<'a>(
                         call_id: call.id.to_string(),
                         content: content.clone(),
                         is_error: true,
+                        is_fatal: false,
+                        error_kind: Some(deepstrike_core::types::message::ToolErrorKind::Recoverable),
                     };
                     continue;
                 }
@@ -353,10 +390,16 @@ fn execute_all_local<'a>(
                     }));
                 }
                 Err(e) => {
+                    let (is_fatal, error_kind) = match &e {
+                        crate::Error::ToolExecutionFailed { is_fatal, error_kind, .. } => (*is_fatal, *error_kind),
+                        _ => (false, Some(deepstrike_core::types::message::ToolErrorKind::Recoverable)),
+                    };
                     yield RunEvent::ToolResult {
                         call_id: call_id.to_string(),
                         content: e.to_string(),
                         is_error: true,
+                        is_fatal,
+                        error_kind,
                     };
                 }
             }
@@ -393,6 +436,8 @@ fn execute_all_local<'a>(
                                         call_id: tool.call_id.to_string(),
                                         content: content.clone(),
                                         is_error: true,
+                                        is_fatal: false,
+                                        error_kind: Some(deepstrike_core::types::message::ToolErrorKind::Recoverable),
                                     };
                                     continue;
                                 }
@@ -418,13 +463,21 @@ fn execute_all_local<'a>(
                         call_id: tool.call_id.to_string(),
                         content: tool.combined.clone(),
                         is_error: false,
+                        is_fatal: false,
+                        error_kind: None,
                     };
                 }
                 Err(e) => {
+                    let (is_fatal, error_kind) = match &e {
+                        crate::Error::ToolExecutionFailed { is_fatal, error_kind, .. } => (*is_fatal, *error_kind),
+                        _ => (false, Some(deepstrike_core::types::message::ToolErrorKind::Recoverable)),
+                    };
                     yield RunEvent::ToolResult {
                         call_id: tool.call_id.to_string(),
                         content: e.to_string(),
                         is_error: true,
+                        is_fatal,
+                        error_kind,
                     };
                 }
             }
@@ -456,11 +509,13 @@ pub async fn collect_tool_results(
             call_id,
             content,
             is_error,
+            is_fatal,
+            error_kind,
         } = evt?
         {
             by_id.insert(
                 call_id.clone(),
-                make_result(compact_str::CompactString::new(&call_id), content, is_error),
+                make_result(compact_str::CompactString::new(&call_id), content, is_error, is_fatal, error_kind),
             );
         }
     }

@@ -91,6 +91,9 @@ fn default_runtime_opts(
         enable_plan_tool: None,
         on_tool_suspend: None,
         milestone_policy: deepstrike_sdk::runtime::MilestonePolicy::AutoPass,
+        milestone_contract: None,
+        run_spec: None,
+        on_milestone_evaluate: None,
     }
 }
 

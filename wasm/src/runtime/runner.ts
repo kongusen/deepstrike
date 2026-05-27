@@ -26,8 +26,8 @@ import {
   type KernelRunnerAction,
   type KernelRuntimeHandle,
 } from "./kernel-step.js"
-import type { AgentRunSpec, AgentSpawnedObservation, SubAgentResult } from "./types/agent.js"
-import { agentRunSpecToKernel, subAgentResultToKernel } from "./types/agent.js"
+import type { AgentRunSpec, AgentSpawnedObservation, SubAgentResult, MilestonePolicy, MilestoneContract, MilestoneCheckResult } from "./types/agent.js"
+import { agentRunSpecToKernel, subAgentResultToKernel, milestoneCheckPass, milestoneCheckResultToKernel } from "./types/agent.js"
 import { defaultSubAgentOrchestrator, type SubAgentOrchestrator } from "./sub-agent-orchestrator.js"
 
 export interface RuntimeOptions {
@@ -49,6 +49,10 @@ export interface RuntimeOptions {
   governance?: Governance
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
   subAgentOrchestrator?: SubAgentOrchestrator
+  milestonePolicy?: MilestonePolicy
+  milestoneContract?: MilestoneContract
+  onMilestoneEvaluate?: (ctx: { phaseId: string; criteria: string[]; requiredEvidence: string[] }) => Promise<MilestoneCheckResult> | MilestoneCheckResult
+  runSpec?: AgentRunSpec
 }
 
 export class RuntimeRunner {
@@ -102,6 +106,16 @@ export class RuntimeRunner {
     const start = startEntry.event as Extract<SessionEvent, { kind: "run_started" }>
 
     yield* this.execute(sessionId, start.goal, start.criteria, extensions, events, true)
+  }
+
+  /** Push a large artifact into the kernel artifacts partition (not inlined in history). */
+  pushArtifact(message: Message, tokens?: number): void {
+    if (!this.activeKernel) return
+    kernelApply(this.activeKernel, this.pendingObservations, {
+      kind: "push_artifact",
+      message: messageToKernelMessage(message),
+      ...(tokens !== undefined ? { tokens } : {}),
+    })
   }
 
   async dream(agentId: string, nowMs = Date.now()): Promise<DreamResult> {
@@ -250,6 +264,21 @@ export class RuntimeRunner {
       kernelApply(runtime, this.pendingObservations, { kind: "set_knowledge_enabled", enabled: true })
     }
 
+    if (this.opts.milestoneContract) {
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "load_milestone_contract",
+        contract: {
+          phases: this.opts.milestoneContract.phases.map(p => ({
+            id: p.id,
+            criteria: p.criteria ?? [],
+            unlocks: p.unlocks ?? [],
+            verifier: p.verifier ?? null,
+            required_evidence: p.requiredEvidence ?? [],
+          })),
+        },
+      })
+    }
+
     const maxBytes = runtime.recoveryContentBytes()
     if (priorEvents && priorEvents.length > 0) {
       const repaired = repairEventsForRecovery(priorEvents, maxBytes)
@@ -261,12 +290,17 @@ export class RuntimeRunner {
     }
 
     const sessionStart = Date.now()
+    const startPayload: Record<string, unknown> = {
+      kind: "start_run",
+      task: { goal, criteria },
+    }
+    if (this.opts.runSpec) {
+      startPayload.run_spec = agentRunSpecToKernel(this.opts.runSpec)
+    }
+
     let action: KernelRunnerAction = resumeMidRun
       ? kernelAction(runtime, this.pendingObservations, { kind: "resume" })
-      : kernelAction(runtime, this.pendingObservations, {
-          kind: "start_run",
-          task: { goal, criteria },
-        })
+      : kernelAction(runtime, this.pendingObservations, startPayload)
     let hasAttemptedReactiveCompact = false
 
     while (!runtime.isTerminal()) {
@@ -457,15 +491,37 @@ export class RuntimeRunner {
         })
 
       } else if (action.kind === "evaluate_milestone") {
-        nextCompressedArchiveStart = await this.appendObservations(sessionId, runtime, nextCompressedArchiveStart)
-        const turnsUsed = Math.max(1, runtime.turn())
-        await this.opts.sessionLog.append(sessionId, buildRunTerminalEvent({
-          reason: "milestone_pending",
-          turnsUsed,
-          totalTokens: 0,
-        }))
-        yield { type: "done", iterations: turnsUsed, totalTokens: 0, status: "milestone_pending" } as DoneEvent
-        return
+        const milestonePolicy = this.opts.milestonePolicy ?? "require_verifier"
+        if (milestonePolicy === "auto_pass") {
+          action = kernelAction(runtime, this.pendingObservations, {
+            kind: "milestone_result",
+            result: milestoneCheckResultToKernel(milestoneCheckPass(action.phaseId)),
+          })
+          nextCompressedArchiveStart = await this.appendObservations(sessionId, runtime, nextCompressedArchiveStart)
+        } else if (this.opts.onMilestoneEvaluate) {
+          const check = await this.opts.onMilestoneEvaluate({
+            phaseId: action.phaseId,
+            criteria: action.criteria ?? [],
+            requiredEvidence: action.requiredEvidence ?? [],
+          })
+          action = kernelAction(runtime, this.pendingObservations, {
+            kind: "milestone_result",
+            result: milestoneCheckResultToKernel(check),
+          })
+          nextCompressedArchiveStart = await this.appendObservations(sessionId, runtime, nextCompressedArchiveStart)
+        } else {
+          nextCompressedArchiveStart = await this.appendObservations(sessionId, runtime, nextCompressedArchiveStart)
+          const turnsUsed = Math.max(1, runtime.turn())
+          await this.opts.sessionLog.append(sessionId, buildRunTerminalEvent({
+            reason: "milestone_pending",
+            turnsUsed,
+            totalTokens: 0,
+          }))
+          yield { type: "done", iterations: turnsUsed, totalTokens: 0, status: "milestone_pending" } as DoneEvent
+          this.activeKernel = null
+          this.currentSessionId = null
+          return
+        }
 
       } else if (action.kind === "done") {
         break

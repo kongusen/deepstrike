@@ -45,7 +45,7 @@ export interface KernelLoopResult {
 export type KernelRunnerAction =
   | { kind: "call_provider"; context: RenderedContext; tools: ToolSchema[] }
   | { kind: "execute_tool"; calls: ToolCall[] }
-  | { kind: "evaluate_milestone"; phaseId: string; criteria: string[] }
+  | { kind: "evaluate_milestone"; phaseId: string; criteria: string[]; requiredEvidence?: string[] }
   | { kind: "done"; result: KernelLoopResult }
 
 export interface KernelObservation {
@@ -236,6 +236,7 @@ function mapKernelAction(raw: Record<string, unknown>): KernelRunnerAction {
         kind: "evaluate_milestone",
         phaseId: String(raw.phase_id ?? ""),
         criteria: (raw.criteria as string[]) ?? [],
+        requiredEvidence: (raw.required_evidence as string[]) ?? [],
       }
     case "done": {
       const result = (raw.result as Record<string, unknown>) ?? {}

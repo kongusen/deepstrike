@@ -12,7 +12,7 @@ export type TerminationReason =
   | "error"
   | "milestone_exceeded"
 
-export type MilestonePolicy = "terminate" | "auto_pass"
+export type MilestonePolicy = "require_verifier" | "terminate" | "auto_pass"
 
 export interface AgentIdentity {
   agentId: string

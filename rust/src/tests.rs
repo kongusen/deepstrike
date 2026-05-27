@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
+    use crate::RunEvent;
     use crate::memory::WorkingMemory;
     use crate::safety::{PermissionManager, PermissionMode};
     use crate::signals::ScheduledPrompt;
@@ -252,6 +254,9 @@ mod tests {
             enable_plan_tool: None,
             on_tool_suspend: None,
             milestone_policy: crate::runtime::MilestonePolicy::Terminate,
+            milestone_contract: None,
+            run_spec: None,
+            on_milestone_evaluate: None,
         });
 
         let mut stream = runner
@@ -331,6 +336,9 @@ mod tests {
             enable_plan_tool: None,
             on_tool_suspend: None,
             milestone_policy: crate::runtime::MilestonePolicy::Terminate,
+            milestone_contract: None,
+            run_spec: None,
+            on_milestone_evaluate: None,
         });
 
         let session_id = "reactive-compact-rust";
@@ -473,6 +481,9 @@ mod tests {
             enable_plan_tool: None,
             on_tool_suspend: None,
             milestone_policy: crate::runtime::MilestonePolicy::Terminate,
+            milestone_contract: None,
+            run_spec: None,
+            on_milestone_evaluate: None,
         });
 
         let session_id = "test-rollback";
@@ -506,5 +517,221 @@ mod tests {
         } else {
             panic!("Expected text assistant response");
         }
+    }
+
+    #[tokio::test]
+    async fn runner_milestone_auto_pass() {
+        use std::sync::Arc;
+        use deepstrike_core::types::milestone::{MilestoneContract, MilestonePhase};
+        use crate::runtime::session_log::{InMemorySessionLog, SessionLog};
+        use crate::runtime::runner::{RuntimeRunner, RuntimeOptions, MilestonePolicy};
+        use crate::providers::LLMProvider;
+        use crate::providers::StreamEvent;
+        use crate::runtime::execution_plane::LocalExecutionPlane;
+
+        #[derive(Clone)]
+        struct FakeProvider;
+        #[async_trait::async_trait]
+        impl LLMProvider for FakeProvider {
+            async fn stream(
+                &self,
+                _context: &deepstrike_core::context::renderer::RenderedContext,
+                _tools: &[deepstrike_core::types::message::ToolSchema],
+                _extensions: Option<&serde_json::Value>,
+                _state: Option<&crate::providers::ProviderRunState>,
+            ) -> crate::Result<Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>> {
+                Ok(Box::new(futures::stream::iter(vec![
+                    Ok(StreamEvent::TextDelta { delta: "done".into() }),
+                    Ok(StreamEvent::Done),
+                ])))
+            }
+        }
+
+        let contract = MilestoneContract::new().phase(MilestonePhase::new("phase1").with_criterion("test"));
+        let runner = RuntimeRunner::new(RuntimeOptions {
+            provider: Box::new(FakeProvider),
+            execution_plane: Some(Box::new(LocalExecutionPlane::new())),
+            session_log: Some(Arc::new(InMemorySessionLog::new())),
+            compression_store: None,
+            session_id: None,
+            max_tokens: 1000,
+            max_turns: Some(3),
+            timeout_ms: None,
+            extensions: None,
+            agent_id: None,
+            system_prompt: None,
+            initial_memory: vec![],
+            skill_dir: None,
+            dream_store: None,
+            knowledge_source: None,
+            signal_source: None,
+            governance: None,
+            tokenizer: None,
+            enable_plan_tool: None,
+            on_tool_suspend: None,
+            milestone_policy: MilestonePolicy::AutoPass,
+            milestone_contract: Some(contract),
+            run_spec: None,
+            on_milestone_evaluate: None,
+        });
+
+        let mut stream = runner.run_streaming("test", &[], None, Some("s_auto_rust")).await.unwrap();
+        let mut done_seen = false;
+        while let Some(evt) = stream.next().await {
+            if let RunEvent::Done { status, .. } = evt.unwrap() {
+                assert_eq!(status, "completed");
+                done_seen = true;
+            }
+        }
+        assert!(done_seen);
+    }
+
+    #[tokio::test]
+    async fn runner_milestone_pending_by_default() {
+        use std::sync::Arc;
+        use deepstrike_core::types::milestone::{MilestoneContract, MilestonePhase};
+        use crate::runtime::session_log::{InMemorySessionLog, SessionLog};
+        use crate::runtime::runner::{RuntimeRunner, RuntimeOptions, MilestonePolicy};
+        use crate::providers::LLMProvider;
+        use crate::providers::StreamEvent;
+        use crate::runtime::execution_plane::LocalExecutionPlane;
+
+        #[derive(Clone)]
+        struct FakeProvider;
+        #[async_trait::async_trait]
+        impl LLMProvider for FakeProvider {
+            async fn stream(
+                &self,
+                _context: &deepstrike_core::context::renderer::RenderedContext,
+                _tools: &[deepstrike_core::types::message::ToolSchema],
+                _extensions: Option<&serde_json::Value>,
+                _state: Option<&crate::providers::ProviderRunState>,
+            ) -> crate::Result<Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>> {
+                Ok(Box::new(futures::stream::iter(vec![
+                    Ok(StreamEvent::TextDelta { delta: "done".into() }),
+                    Ok(StreamEvent::Done),
+                ])))
+            }
+        }
+
+        let contract = MilestoneContract::new().phase(MilestonePhase::new("phase1").with_criterion("test"));
+        let runner = RuntimeRunner::new(RuntimeOptions {
+            provider: Box::new(FakeProvider),
+            execution_plane: Some(Box::new(LocalExecutionPlane::new())),
+            session_log: Some(Arc::new(InMemorySessionLog::new())),
+            compression_store: None,
+            session_id: None,
+            max_tokens: 1000,
+            max_turns: Some(3),
+            timeout_ms: None,
+            extensions: None,
+            agent_id: None,
+            system_prompt: None,
+            initial_memory: vec![],
+            skill_dir: None,
+            dream_store: None,
+            knowledge_source: None,
+            signal_source: None,
+            governance: None,
+            tokenizer: None,
+            enable_plan_tool: None,
+            on_tool_suspend: None,
+            milestone_policy: MilestonePolicy::RequireVerifier,
+            milestone_contract: Some(contract),
+            run_spec: None,
+            on_milestone_evaluate: None,
+        });
+
+        let mut stream = runner.run_streaming("test", &[], None, Some("s_pending_rust")).await.unwrap();
+        let mut done_seen = false;
+        while let Some(evt) = stream.next().await {
+            if let RunEvent::Done { status, .. } = evt.unwrap() {
+                assert_eq!(status, "milestone_pending");
+                done_seen = true;
+            }
+        }
+        assert!(done_seen);
+    }
+
+    #[tokio::test]
+    async fn runner_milestone_verifier_callback() {
+        use std::sync::Arc;
+        use std::sync::Mutex;
+        use deepstrike_core::types::milestone::{MilestoneContract, MilestonePhase, MilestoneCheckResult};
+        use crate::runtime::session_log::{InMemorySessionLog, SessionLog};
+        use crate::runtime::runner::{RuntimeRunner, RuntimeOptions, MilestonePolicy};
+        use crate::providers::LLMProvider;
+        use crate::providers::StreamEvent;
+        use crate::runtime::execution_plane::LocalExecutionPlane;
+
+        #[derive(Clone)]
+        struct FakeProvider;
+        #[async_trait::async_trait]
+        impl LLMProvider for FakeProvider {
+            async fn stream(
+                &self,
+                _context: &deepstrike_core::context::renderer::RenderedContext,
+                _tools: &[deepstrike_core::types::message::ToolSchema],
+                _extensions: Option<&serde_json::Value>,
+                _state: Option<&crate::providers::ProviderRunState>,
+            ) -> crate::Result<Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>> {
+                Ok(Box::new(futures::stream::iter(vec![
+                    Ok(StreamEvent::TextDelta { delta: "done".into() }),
+                    Ok(StreamEvent::Done),
+                ])))
+            }
+        }
+
+        let contract = MilestoneContract::new().phase(MilestonePhase::new("phase1").with_criterion("test"));
+        let called = Arc::new(Mutex::new(false));
+        let called_clone = called.clone();
+
+        let verifier = Arc::new(move |ctx: crate::runtime::MilestoneEvaluationContext| {
+            let called_clone = called_clone.clone();
+            Box::pin(async move {
+                assert_eq!(ctx.phase_id, "phase1");
+                assert_eq!(ctx.criteria, vec!["test".to_string()]);
+                *called_clone.lock().unwrap() = true;
+                Ok(MilestoneCheckResult::pass(ctx.phase_id))
+            }) as futures::future::BoxFuture<'static, crate::Result<MilestoneCheckResult>>
+        });
+
+        let runner = RuntimeRunner::new(RuntimeOptions {
+            provider: Box::new(FakeProvider),
+            execution_plane: Some(Box::new(LocalExecutionPlane::new())),
+            session_log: Some(Arc::new(InMemorySessionLog::new())),
+            compression_store: None,
+            session_id: None,
+            max_tokens: 1000,
+            max_turns: Some(3),
+            timeout_ms: None,
+            extensions: None,
+            agent_id: None,
+            system_prompt: None,
+            initial_memory: vec![],
+            skill_dir: None,
+            dream_store: None,
+            knowledge_source: None,
+            signal_source: None,
+            governance: None,
+            tokenizer: None,
+            enable_plan_tool: None,
+            on_tool_suspend: None,
+            milestone_policy: MilestonePolicy::RequireVerifier,
+            milestone_contract: Some(contract),
+            run_spec: None,
+            on_milestone_evaluate: Some(verifier),
+        });
+
+        let mut stream = runner.run_streaming("test", &[], None, Some("s_callback_rust")).await.unwrap();
+        let mut done_seen = false;
+        while let Some(evt) = stream.next().await {
+            if let RunEvent::Done { status, .. } = evt.unwrap() {
+                assert_eq!(status, "completed");
+                done_seen = true;
+            }
+        }
+        assert!(done_seen);
+        assert!(*called.lock().unwrap());
     }
 }
