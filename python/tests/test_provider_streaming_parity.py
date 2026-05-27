@@ -5,7 +5,7 @@ from deepstrike.providers.gemini import GeminiProvider
 from deepstrike.providers.ollama import OllamaProvider
 from deepstrike.providers.base import RenderedContext
 from deepstrike._kernel import Message
-from deepstrike.providers.stream import ToolCallEvent
+from deepstrike.providers.stream import TextDelta, ThinkingDelta, ToolCallEvent
 
 
 @pytest.mark.asyncio
@@ -41,6 +41,50 @@ async def test_openai_flushes_tool_calls_when_stream_ends_without_tool_finish_re
     gen = provider.stream(RenderedContext(turns=[Message(role="user", content="hi")]), [])
     events = [event async for event in gen]
     assert any(isinstance(e, ToolCallEvent) and e.name == "lookup" and e.arguments == {"q": "x"} for e in events)
+
+
+@pytest.mark.asyncio
+async def test_openai_skips_streaming_choices_without_delta(monkeypatch):
+    provider = OpenAIProvider("test-key")
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            async def gen():
+                class Delta: pass
+                class Choice: pass
+                class Chunk: pass
+
+                empty_choice = Choice()
+                empty_choice.finish_reason = None
+                empty_chunk = Chunk()
+                empty_chunk.choices = [empty_choice]
+                empty_chunk.usage = None
+                yield empty_chunk
+
+                delta = Delta()
+                delta.reasoning_content = "plan"
+                delta.content = "done"
+                delta.tool_calls = []
+                choice = Choice()
+                choice.delta = delta
+                choice.finish_reason = "stop"
+                chunk = Chunk()
+                chunk.choices = [choice]
+                chunk.usage = None
+                yield chunk
+            return gen()
+
+    class FakeChat: completions = FakeCompletions()
+    class FakeClient: chat = FakeChat()
+    provider._client = FakeClient()
+
+    gen = provider.stream(RenderedContext(turns=[Message(role="user", content="hi")]), [])
+    events = [event async for event in gen]
+
+    assert [(type(e), e.delta) for e in events] == [
+        (ThinkingDelta, "plan"),
+        (TextDelta, "done"),
+    ]
 
 
 @pytest.mark.asyncio

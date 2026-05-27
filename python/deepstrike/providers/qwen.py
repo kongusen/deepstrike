@@ -170,7 +170,9 @@ class QwenProvider(ReasoningReplayMixin):
             if not choice:
                 continue
 
-            delta = choice.message
+            delta = getattr(choice, "message", None)
+            if not delta:
+                continue
             if hasattr(delta, "reasoning_content") and delta.reasoning_content:
                 reasoning_content += str(delta.reasoning_content)
                 yield ThinkingDelta(delta=delta.reasoning_content)

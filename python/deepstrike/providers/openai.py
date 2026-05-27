@@ -169,7 +169,9 @@ class OpenAIProvider(ReasoningReplayMixin):
             if not choice:
                 continue
 
-            delta = choice.delta
+            delta = getattr(choice, "delta", None)
+            if not delta:
+                continue
 
             native_reasoning = getattr(delta, "reasoning_content", None)
             if native_reasoning:

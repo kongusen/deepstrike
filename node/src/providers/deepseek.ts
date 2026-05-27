@@ -64,6 +64,7 @@ export class DeepSeekProvider extends OpenAIChatProvider {
       const choice = chunk.choices[0]
       if (!choice) continue
       const delta = choice.delta as Record<string, unknown>
+      if (!delta) continue
       if (exposeReasoning && delta.reasoning_content) {
         yield { type: "thinking_delta", delta: delta.reasoning_content } as ThinkingDelta
       }

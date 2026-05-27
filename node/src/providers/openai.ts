@@ -112,6 +112,7 @@ export class OpenAIChatProvider implements LLMProvider {
       const choice = chunk.choices[0]
       if (!choice) continue
       const delta = choice.delta as any
+      if (!delta) continue
 
       if (delta.reasoning_content) {
         accumulatedReasoning += delta.reasoning_content

@@ -1,6 +1,32 @@
 import { DeepSeekProvider } from "../src/providers/deepseek.js"
 import { KimiProvider } from "../src/providers/kimi.js"
 import { MiniMaxProvider } from "../src/providers/minimax.js"
+import { OpenAIChatProvider } from "../src/providers/openai.js"
+import { QwenProvider } from "../src/providers/qwen.js"
+
+function installChatStream(provider: unknown, chunks: Record<string, unknown>[]) {
+  ;(provider as {
+    client: {
+      chat: {
+        completions: {
+          create(req: Record<string, unknown>): Promise<AsyncIterable<Record<string, unknown>>>
+        }
+      }
+    }
+  }).client = {
+    chat: {
+      completions: {
+        async create() {
+          return {
+            async *[Symbol.asyncIterator]() {
+              for (const chunk of chunks) yield chunk
+            },
+          }
+        },
+      },
+    },
+  }
+}
 
 describe("current provider runtime behavior", () => {
   it("uses MiniMax's Anthropic endpoint by default", () => {
@@ -141,5 +167,36 @@ describe("current provider runtime behavior", () => {
     })
     expect(request?.tools).toBeDefined()
     expect(events).toEqual([{ type: "text_delta", delta: "done" }])
+  })
+
+  it.each([
+    ["OpenAI", () => new OpenAIChatProvider("test-key")],
+    ["Qwen", () => new QwenProvider("test-key")],
+    ["DeepSeek", () => new DeepSeekProvider("test-key")],
+  ])("skips %s streaming choices that do not include delta", async (_name, makeProvider) => {
+    const provider = makeProvider()
+    installChatStream(provider, [
+      { choices: [{ finish_reason: null }] },
+      {
+        choices: [{
+          delta: { reasoning_content: "plan", content: "done" },
+          finish_reason: "stop",
+        }],
+      },
+    ])
+
+    const events = []
+    for await (const event of provider.stream(
+      { systemText: "", turns: [{ role: "user", content: "hi" }] },
+      [],
+      { exposeReasoning: true, enableThinking: true },
+    )) {
+      events.push(event)
+    }
+
+    expect(events).toEqual([
+      { type: "thinking_delta", delta: "plan" },
+      { type: "text_delta", delta: "done" },
+    ])
   })
 })
