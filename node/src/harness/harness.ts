@@ -1,6 +1,6 @@
 import type { RuntimeRunner } from "../runtime/runner.js"
 import { collectText } from "../runtime/runner.js"
-import type { DoneEvent, TextDelta } from "../types.js"
+import type { DoneEvent, StreamEvent, TextDelta } from "../types.js"
 import { writeFile } from "fs/promises"
 import path from "path"
 import { getKernel } from "../kernel.js"
