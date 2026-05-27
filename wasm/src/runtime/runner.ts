@@ -69,8 +69,9 @@ export class RuntimeRunner {
     goal: string
     criteria?: string[]
     extensions?: Record<string, unknown>
+    inheritEvents?: Array<{ seq: number; event: SessionEvent }>
   }): AsyncIterable<StreamEvent> {
-    const prior = await this.opts.sessionLog.read(req.sessionId)
+    const prior = req.inheritEvents ?? await this.opts.sessionLog.read(req.sessionId)
     const midRun = isMidRun(prior)
     if (!midRun) {
       await this.opts.sessionLog.append(req.sessionId, {
@@ -635,6 +636,8 @@ export class RuntimeRunner {
           context_inheritance: obs.context_inheritance ?? "",
           permitted_capability_ids: obs.permitted_capability_ids ?? [],
         })
+      } else if (obs.kind !== "renewed") {
+        console.warn(`[deepstrike] unhandled KernelObservation kind: ${obs.kind}`)
       }
     }
     return nextArchiveStart

@@ -2,13 +2,21 @@ import { createWriteStream, createReadStream } from "node:fs"
 import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { createInterface } from "node:readline"
-import type { ProviderReplay, ToolCall } from "../types.js"
+import type { ProviderReplay, ToolCall, ToolErrorKind } from "../types.js"
+
+export type RollbackReason =
+  | { kind: "fatal_tool_error"; tool_name: string; error: string }
+  | { kind: "governance_denied"; tool_name: string; reason: string }
+  | { kind: "provider_failure"; error: string }
+  | { kind: "timeout" }
+  | { kind: "user_interrupt" }
+  | { kind: "malformed_replay"; reason: string }
 
 export type SessionEvent =
   | { kind: "run_started"; run_id: string; goal: string; criteria: string[]; agent_id?: string; system_prompt?: string }
   | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; provider_replay?: ProviderReplay }
   | { kind: "tool_requested"; turn: number; calls: ToolCall[] }
-  | { kind: "tool_completed"; turn: number; results: Array<{ call_id: string; output: string; is_error?: boolean; token_count?: number }> }
+  | { kind: "tool_completed"; turn: number; results: Array<{ call_id: string; output: string; is_error?: boolean; is_fatal?: boolean; error_kind?: ToolErrorKind; token_count?: number }> }
   | { kind: "tool_argument_repaired"; turn: number; tool: string; original_arguments: string; repaired_arguments: string }
   | { kind: "tool_denied"; turn: number; call_id: string; tool_name: string; reason: string }
   | { kind: "permission_requested"; turn: number; tool: string; arguments: string; reason?: string }
@@ -23,10 +31,22 @@ export type SessionEvent =
       archive_ref?: string
       preserved_refs?: string[]
     }
-  | { kind: "rollbacked"; turn: number; checkpoint_history_len: number }
-  | { kind: "capability_changed"; turn: number; added: string[]; removed: string[] }
+  | { kind: "rollbacked"; turn: number; checkpoint_history_len: number; reason?: RollbackReason }
+  | { kind: "capability_changed"; turn: number; added: string[]; removed: string[]; change_kind?: string; capability_id?: string; version?: string; mounted_by?: string; mount_reason?: string }
   | { kind: "milestone_advanced"; turn: number; phase_id: string; capabilities_unlocked: string[] }
   | { kind: "milestone_blocked"; turn: number; phase_id: string; reason: string }
+  | { kind: "milestone_evidence"; turn: number; phase_id: string; evidence: string[] }
+  | { kind: "checkpoint_taken"; turn: number; history_len: number }
+  | {
+      kind: "agent_spawned"
+      turn: number
+      agent_id: string
+      parent_session_id: string
+      role: string
+      isolation: string
+      context_inheritance: string
+      permitted_capability_ids: string[]
+    }
   | { kind: "run_terminal"; reason: string; turns_used: number; total_tokens: number }
 
 export interface SessionLog {

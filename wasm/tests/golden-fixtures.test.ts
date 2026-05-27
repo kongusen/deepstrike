@@ -58,4 +58,32 @@ describe("WASM Golden ABI Fixtures", () => {
     expect(step.actions).toHaveLength(0)
     expect(step.observations).toHaveLength(0)
   })
+
+  it("input_spawn_sub_agent.json emits agent_spawned after start_run", () => {
+    const kernel = new KernelRuntime({ maxTokens: 2048 })
+    kernel.step(readFileSync(join(fixturesDir, "input_start_run.json"), "utf8"))
+
+    const step = JSON.parse(kernel.step(readFileSync(join(fixturesDir, "input_spawn_sub_agent.json"), "utf8")))
+    expect(step.version).toBe(1)
+    expect(step.actions).toHaveLength(0)
+    const spawned = step.observations.find((o: { kind: string }) => o.kind === "agent_spawned")
+    expect(spawned).toBeDefined()
+    expect(spawned.agent_id).toBe("worker")
+  })
+
+  it.each([
+    ["observation_agent_spawned.json",       { kind: "agent_spawned",       agent_id: "worker" }],
+    ["observation_checkpoint_taken.json",    { kind: "checkpoint_taken",    turn: 2, history_len: 4 }],
+    ["observation_renewed.json",             { kind: "renewed",             sprint: 2 }],
+    ["observation_rollbacked.json",          { kind: "rollbacked",          turn: 2, checkpoint_history_len: 3 }],
+    ["observation_capability_changed.json",  { kind: "capability_changed",  turn: 1, capability_id: "write_file" }],
+    ["observation_milestone_advanced.json",  { kind: "milestone_advanced",  turn: 3, phase_id: "phase-1" }],
+    ["observation_milestone_blocked.json",   { kind: "milestone_blocked",   turn: 3, phase_id: "phase-1" }],
+    ["observation_milestone_evidence.json",  { kind: "milestone_evidence",  turn: 3, phase_id: "phase-1" }],
+  ])("%s round-trips required fields", (filename, expected) => {
+    const raw = JSON.parse(readFileSync(join(fixturesDir, filename as string), "utf8"))
+    for (const [k, v] of Object.entries(expected as Record<string, unknown>)) {
+      expect(raw[k]).toEqual(v)
+    }
+  })
 })

@@ -86,6 +86,8 @@ class ToolResultEvent:
     call_id: str | None = None
     content: str | None = None
     is_error: bool | None = None
+    is_fatal: bool | None = None
+    error_kind: str | None = None
     type: str = "tool_result"
 
 
@@ -128,7 +130,7 @@ class QualityGate(Protocol):
 async def _run_once(runner: "RuntimeRunner", goal: str, request: HarnessRequest) -> HarnessOutcome:
     done: _ProviderDoneEvent | None = None
     text = ""
-    async for evt in runner.run_streaming(goal, criteria=[c.text for c in (request.criteria or [])], extensions=request.extensions):
+    async for evt in runner.run(goal=goal, criteria=[c.text for c in (request.criteria or [])], extensions=request.extensions):
         if isinstance(evt, TextDelta):
             text += evt.delta
         elif isinstance(evt, _ProviderDoneEvent):
@@ -151,6 +153,9 @@ class SinglePassHarness:
         outcome.passed = True
         return outcome
 
+    async def stream(self, request: HarnessRequest) -> "AsyncIterator[StreamEvent]":
+        return self._runner.run(goal=request.goal, criteria=[c.text for c in (request.criteria or [])], extensions=request.extensions)
+
 
 class EvalLoopHarness:
     def __init__(self, runner: "RuntimeRunner", gate: "QualityGate", max_attempts: int = 3):
@@ -167,6 +172,9 @@ class EvalLoopHarness:
                 return outcome
         return outcome
 
+    async def stream(self, request: HarnessRequest) -> "AsyncIterator[StreamEvent]":
+        return self._runner.run(goal=request.goal, criteria=[c.text for c in (request.criteria or [])], extensions=request.extensions)
+
 
 class HarnessLoop:
     def __init__(
@@ -182,7 +190,23 @@ class HarnessLoop:
         self._max_attempts = max_attempts
         self._skill_dir = pathlib.Path(skill_dir) if skill_dir else None
 
-    def run_streaming(self, request: HarnessRequest) -> AsyncIterator[HarnessEvent]:
+    async def run(self, request: HarnessRequest) -> HarnessOutcome:
+        last: "HarnessEvent | None" = None
+        async for evt in self.stream(request):
+            last = evt
+        done = last if last and getattr(last, "type", None) == "done" else None
+        return HarnessOutcome(
+            result="",
+            passed=done.verdict.passed if done else False,
+            iterations=done.iterations if done else 0,
+            total_tokens=done.total_tokens if done else 0,
+            status=done.status if done else "error",
+            overall_score=done.verdict.overall_score if done else None,
+            feedback=done.verdict.feedback if done else None,
+            details=done.verdict.details if done else None,
+        )
+
+    def stream(self, request: HarnessRequest) -> "AsyncIterator[HarnessEvent]":
         return self._run_streaming_impl(request)
 
     async def _run_streaming_impl(self, request: HarnessRequest) -> AsyncIterator[HarnessEvent]:
@@ -196,7 +220,7 @@ class HarnessLoop:
         last_result = ""
 
         for attempt in range(1, self._max_attempts + 1):
-            async for evt in self._runner.run_streaming(current_goal, criteria=[c.text for c in criteria], extensions=request.extensions):
+            async for evt in self._runner.run(goal=current_goal, criteria=[c.text for c in criteria], extensions=request.extensions):
                 if isinstance(evt, TextDelta):
                     last_result += evt.delta
                     yield TokenEvent(text=evt.delta)

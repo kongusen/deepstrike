@@ -7,6 +7,7 @@ import type {
   ToolSchema,
 } from "../types.js"
 import type { SkillMetadata } from "../skills/loader.js"
+import type { RollbackReason } from "./session-log.js"
 
 export const KERNEL_ABI_VERSION = 1
 
@@ -26,10 +27,23 @@ export interface KernelLoopResult {
   totalTokensUsed: number
 }
 
+export type MilestoneVerifierKind =
+  | { kind: "machine_check" }
+  | { kind: "harness_eval" }
+  | { kind: "llm_judge" }
+  | { kind: "human_approval" }
+  | { kind: "external_command"; cmd: string }
+
 export type KernelRunnerAction =
   | { kind: "call_provider"; context: RenderedContext; tools: ToolSchema[] }
   | { kind: "execute_tool"; calls: ToolCall[] }
-  | { kind: "evaluate_milestone"; phaseId: string; criteria: string[] }
+  | {
+      kind: "evaluate_milestone"
+      phaseId: string
+      criteria: string[]
+      verifier?: MilestoneVerifierKind
+      requiredEvidence: string[]
+    }
   | { kind: "done"; result: KernelLoopResult }
 
 export interface KernelObservation {
@@ -41,11 +55,24 @@ export interface KernelObservation {
   archived?: Message[]
   turn?: number
   checkpoint_history_len?: number
+  history_len?: number
   added?: string[]
   removed?: string[]
+  change_kind?: string
+  capability_id?: string
+  version?: string
+  mounted_by?: string
+  mount_reason?: string
   phase_id?: string
   capabilities_unlocked?: string[]
-  reason?: string
+  evidence?: string[]
+  reason?: RollbackReason
+  agent_id?: string
+  parent_session_id?: string
+  role?: string
+  isolation?: string
+  context_inheritance?: string
+  permitted_capability_ids?: string[]
 }
 
 interface KernelStepJson {
@@ -125,13 +152,17 @@ export function messageToKernelMessage(message: Message): Record<string, unknown
 }
 
 export function toolResultToKernel(result: ToolResult): Record<string, unknown> {
-  return {
+  const out: Record<string, unknown> = {
     call_id: result.callId,
     output: result.output,
     is_error: result.isError,
-    is_fatal: false,
+    is_fatal: result.isFatal ?? false,
     token_count: result.tokenCount ?? null,
   }
+  if (result.errorKind !== undefined) {
+    out.error_kind = result.errorKind
+  }
+  return out
 }
 
 export function taskUpdateToKernel(update: TaskUpdate): Record<string, unknown> {
@@ -165,6 +196,29 @@ export function capabilitySkill(skill: SkillMetadata): Record<string, unknown> {
 
 export function capabilityMarker(kind: string, id: string, description: string): Record<string, unknown> {
   return { id, kind, description }
+}
+
+export function capabilityCommandMount(
+  capability: Record<string, unknown>,
+  mountedBy = "sdk:runtime",
+  mountReason = "dynamic_register",
+): Record<string, unknown> {
+  return {
+    kind: "capability_command",
+    command: {
+      action: "mount",
+      capability,
+      mounted_by: mountedBy,
+      mount_reason: mountReason,
+    },
+  }
+}
+
+export function capabilityCommandUnmount(capabilityKind: string, id: string): Record<string, unknown> {
+  return {
+    kind: "capability_command",
+    command: { action: "unmount", kind: capabilityKind, id },
+  }
 }
 
 function parseStep(raw: string): KernelStepJson {
@@ -264,6 +318,8 @@ function mapKernelAction(raw: Record<string, unknown>): KernelRunnerAction {
         kind: "evaluate_milestone",
         phaseId: String(raw.phase_id ?? ""),
         criteria: (raw.criteria as string[]) ?? [],
+        verifier: raw.verifier as MilestoneVerifierKind | undefined,
+        requiredEvidence: (raw.required_evidence as string[]) ?? [],
       }
     case "done": {
       const result = (raw.result as Record<string, unknown>) ?? {}

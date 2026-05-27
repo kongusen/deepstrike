@@ -6,7 +6,7 @@ from deepstrike.collaboration.contract import (
     format_contract_for_system_prompt,
     contract_to_criteria_strings,
 )
-from deepstrike.collaboration.pool import AgentPool, AgentRole, IsolatedVerifierContext
+from deepstrike.collaboration.pool import AgentPool, AgentRole, IsolatedVerifierContext, CoordinatorConfig, KERNEL_ROLE_MAP
 from deepstrike.collaboration.harness import (
     ContractDrivenHarness,
     ContractOutcome,
@@ -25,7 +25,7 @@ __all__ = [
     "AcceptanceCriterion", "VerificationContract", "ContractCheckResult",
     "ContractBuilder", "format_contract_for_system_prompt", "contract_to_criteria_strings",
     # Pool
-    "AgentPool", "AgentRole", "IsolatedVerifierContext",
+    "AgentPool", "AgentRole", "IsolatedVerifierContext", "CoordinatorConfig", "KERNEL_ROLE_MAP",
     # Harness
     "ContractDrivenHarness", "ContractOutcome", "ContractHarnessOptions", "Violation",
     # Handoff

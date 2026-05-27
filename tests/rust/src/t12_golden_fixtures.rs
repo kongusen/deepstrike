@@ -68,3 +68,79 @@ fn test_input_push_artifact_fixture() {
 fn test_observation_compressed_fixture() {
     assert_roundtrip::<KernelObservation>("observation_compressed.json");
 }
+
+#[test]
+fn test_input_spawn_sub_agent_fixture() {
+    assert_roundtrip::<KernelInput>("input_spawn_sub_agent.json");
+}
+
+#[test]
+fn test_observation_agent_spawned_fixture() {
+    assert_roundtrip::<KernelObservation>("observation_agent_spawned.json");
+}
+
+#[test]
+fn test_observation_checkpoint_taken_fixture() {
+    assert_roundtrip::<KernelObservation>("observation_checkpoint_taken.json");
+}
+
+#[test]
+fn test_observation_renewed_fixture() {
+    assert_roundtrip::<KernelObservation>("observation_renewed.json");
+}
+
+#[test]
+fn test_observation_rollbacked_fixture() {
+    assert_roundtrip::<KernelObservation>("observation_rollbacked.json");
+}
+
+#[test]
+fn test_observation_capability_changed_fixture() {
+    assert_roundtrip::<KernelObservation>("observation_capability_changed.json");
+}
+
+#[test]
+fn test_observation_milestone_advanced_fixture() {
+    assert_roundtrip::<KernelObservation>("observation_milestone_advanced.json");
+}
+
+#[test]
+fn test_observation_milestone_blocked_fixture() {
+    assert_roundtrip::<KernelObservation>("observation_milestone_blocked.json");
+}
+
+#[test]
+fn test_observation_milestone_evidence_fixture() {
+    assert_roundtrip::<KernelObservation>("observation_milestone_evidence.json");
+}
+
+#[test]
+fn spawn_sub_agent_fixture_emits_agent_spawned_via_kernel() {
+    use deepstrike_core::runtime::{KernelInput, KernelInputEvent, KernelObservation, KernelRuntime};
+    use deepstrike_core::scheduler::policy::LoopPolicy;
+    use deepstrike_core::types::task::RuntimeTask;
+
+    let raw = load_fixture("input_spawn_sub_agent.json");
+    let input: KernelInput = serde_json::from_str(&raw).expect("deserialize spawn input");
+
+    let mut runtime = KernelRuntime::new(LoopPolicy::default());
+    runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("parent"),
+        run_spec: None,
+    }));
+    runtime.state_machine_mut().take_observations();
+
+    let KernelInputEvent::SpawnSubAgent { spec, parent_session_id } = input.event else {
+        panic!("expected spawn_sub_agent event");
+    };
+    let step = runtime.step(KernelInput::new(KernelInputEvent::SpawnSubAgent {
+        spec,
+        parent_session_id,
+    }));
+
+    assert!(step.actions.is_empty());
+    assert!(step.observations.iter().any(|o| matches!(
+        o,
+        KernelObservation::AgentSpawned { agent_id, .. } if agent_id == "worker"
+    )));
+}

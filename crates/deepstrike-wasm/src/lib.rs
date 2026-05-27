@@ -87,6 +87,10 @@ pub struct ToolResult {
     #[serde(default)]
     pub is_error: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_fatal: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_count: Option<u32>,
 }
 
@@ -758,7 +762,12 @@ impl Governance {
     }
 
     #[wasm_bindgen(js_name = allowParamValues)]
-    pub fn allow_param_values(&mut self, tool_name: String, param_path: String, allowed_values: Vec<String>) {
+    pub fn allow_param_values(
+        &mut self,
+        tool_name: String,
+        param_path: String,
+        allowed_values: Vec<String>,
+    ) {
         self.inner.constraints.add(ParamConstraint {
             tool_name,
             param_path,
@@ -767,7 +776,13 @@ impl Governance {
     }
 
     #[wasm_bindgen(js_name = limitParamRange)]
-    pub fn limit_param_range(&mut self, tool_name: String, param_path: String, min: Option<f64>, max: Option<f64>) {
+    pub fn limit_param_range(
+        &mut self,
+        tool_name: String,
+        param_path: String,
+        min: Option<f64>,
+        max: Option<f64>,
+    ) {
         self.inner.constraints.add(ParamConstraint {
             tool_name,
             param_path,

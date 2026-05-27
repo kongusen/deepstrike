@@ -48,10 +48,20 @@ export interface ToolCall {
   arguments: string // JSON-encoded
 }
 
+export type ToolErrorKind =
+  | "recoverable"
+  | "fatal"
+  | "governance_denied"
+  | "provider_failure"
+  | "timeout"
+  | "user_interrupt"
+
 export interface ToolResult {
   callId: string
   output: string
   isError: boolean
+  isFatal?: boolean
+  errorKind?: ToolErrorKind
   tokenCount?: number
 }
 
@@ -113,6 +123,8 @@ export interface ToolResultEvent extends StreamEvent {
   name: string
   content: string
   isError: boolean
+  isFatal?: boolean
+  errorKind?: ToolErrorKind
 }
 
 export interface DoneEvent extends StreamEvent {
@@ -120,6 +132,7 @@ export interface DoneEvent extends StreamEvent {
   iterations: number
   totalTokens: number
   status: string
+  dreamResult?: import("./memory/protocols.js").DreamResult
 }
 
 export interface ErrorEvent extends StreamEvent {
@@ -237,4 +250,3 @@ export interface TaskUpdate {
   blockedOn?: string[]
   preservedRefs?: string[]
 }
-

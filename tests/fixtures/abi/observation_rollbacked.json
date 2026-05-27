@@ -1,0 +1,6 @@
+{
+  "kind": "rollbacked",
+  "turn": 2,
+  "checkpoint_history_len": 3,
+  "reason": { "kind": "fatal_tool_error", "tool_name": "bash", "error": "exit code 1" }
+}

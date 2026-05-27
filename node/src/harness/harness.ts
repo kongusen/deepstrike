@@ -73,6 +73,9 @@ export class SinglePassHarness {
   async run(request: HarnessRequest): Promise<HarnessOutcome> {
     return { ...await runOnce(this.runner, request), passed: true }
   }
+  async *stream(request: HarnessRequest): AsyncIterable<StreamEvent> {
+    yield* this.runner.run({ sessionId: crypto.randomUUID(), goal: request.goal, criteria: request.criteria?.map(c => c.text), extensions: request.extensions })
+  }
 }
 
 export class EvalLoopHarness {
@@ -85,6 +88,9 @@ export class EvalLoopHarness {
       if (await this.gate.evaluate(request, outcome)) return { ...outcome, passed: true }
     }
     return outcome
+  }
+  async *stream(request: HarnessRequest): AsyncIterable<StreamEvent> {
+    yield* this.runner.run({ sessionId: crypto.randomUUID(), goal: request.goal, criteria: request.criteria?.map(c => c.text), extensions: request.extensions })
   }
 }
 
@@ -106,7 +112,23 @@ export class HarnessLoop {
     this.skillDir = options.skillDir
   }
 
-  async *runStreaming(request: HarnessRequest): AsyncIterable<HarnessEvent> {
+  async run(request: HarnessRequest): Promise<HarnessOutcome> {
+    let last: HarnessEvent | undefined
+    for await (const evt of this.stream(request)) last = evt
+    const done = last?.type === "done" ? last as Extract<HarnessEvent, { type: "done" }> : undefined
+    return {
+      result: "",
+      passed: done?.verdict.passed ?? false,
+      iterations: done?.iterations ?? 0,
+      totalTokens: done?.totalTokens ?? 0,
+      status: done?.status ?? "error",
+      overallScore: done?.verdict.overallScore,
+      feedback: done?.verdict.feedback,
+      details: done?.verdict.details,
+    }
+  }
+
+  async *stream(request: HarnessRequest): AsyncIterable<HarnessEvent> {
     const kernel = getKernel()
     const pipeline = new kernel.EvalPipeline({ extractSkillOnPass: true })
     const criteria = request.criteria ?? []

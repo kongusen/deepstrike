@@ -131,7 +131,10 @@ impl RegisteredTool {
     }
 }
 
-pub fn validate_tool_arguments(schema: &Value, args: &mut Value) -> std::result::Result<bool, String> {
+pub fn validate_tool_arguments(
+    schema: &Value,
+    args: &mut Value,
+) -> std::result::Result<bool, String> {
     let mut repaired = false;
     validate_value(schema, args, "$", true, &mut repaired)?;
     Ok(repaired)
@@ -203,8 +206,13 @@ fn validate_value(
 
                 // 3a. 裁剪 schema 未声明的多余字段
                 if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
-                    let allowed_keys: std::collections::HashSet<&str> = properties.keys().map(|s| s.as_str()).collect();
-                    let keys_to_remove: Vec<String> = obj.keys().filter(|k| !allowed_keys.contains(k.as_str())).cloned().collect();
+                    let allowed_keys: std::collections::HashSet<&str> =
+                        properties.keys().map(|s| s.as_str()).collect();
+                    let keys_to_remove: Vec<String> = obj
+                        .keys()
+                        .filter(|k| !allowed_keys.contains(k.as_str()))
+                        .cloned()
+                        .collect();
                     if !keys_to_remove.is_empty() {
                         for k in keys_to_remove {
                             obj.remove(&k);
@@ -338,6 +346,7 @@ fn tool_result(
         output: deepstrike_core::types::message::Content::Text(output),
         is_error,
         is_fatal: false,
+        error_kind: None,
         token_count: None,
     }
 }

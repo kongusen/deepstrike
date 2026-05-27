@@ -138,6 +138,7 @@ fn tool_result_fields() {
         output: Content::Text("3".into()),
         is_error: false,
         is_fatal: false,
+        error_kind: None,
         token_count: Some(5),
     };
     assert_eq!(tr.output.as_text(), Some("3"));

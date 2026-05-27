@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 1 complete.
+Phase 7 complete (Sub-Agent Isolation).
 
 Current implementation status:
 
@@ -11,7 +11,8 @@ Current implementation status:
 - Node, PyO3, and WASM FFI expose JSON `step(input_json) -> step_json` plus read-side helpers needed by host runners.
 - Node, PyO3, and WASM legacy direct runtime facades have been removed from the public binding surface.
 - Core `LoopStateMachine` and `ContextManager` remain internal implementation details and white-box test targets.
-- Golden ABI fixtures cover all four host bindings (`tests/fixtures/abi/`). Rust, Node, Python, and WASM each run round-trip deserialization tests against the same fixture set.
+- Golden ABI fixtures cover all four host bindings (`tests/fixtures/abi/`). Rust, Node, Python, and WASM each run round-trip / step tests against the same fixture set.
+- SDK collaboration layer (`AgentPool`, `ContractDrivenHarness`) supports kernel spawn path via `configureCoordinator()` / `spawnStandalone()`.
 
 ## Goal
 
@@ -71,17 +72,21 @@ Events:
 | `add_memory_message` | Add a memory partition message before run start |
 | `add_history_message` | Add one history message |
 | `preload_history` | Preload restored transcript and set replay baseline |
-| `mount_capability` | Add a capability descriptor to the runtime graph |
-| `unmount_capability` | Remove a capability descriptor by `capability_kind`/id |
+| `mount_capability` | **Deprecated.** Add a capability descriptor to the runtime graph. Use `capability_command { action: "mount" }` instead — only `capability_command` carries `mounted_by`/`mount_reason` provenance. |
+| `unmount_capability` | **Deprecated.** Remove a capability descriptor by `capability_kind`/id. Use `capability_command { action: "unmount" }` instead. |
+| `capability_command` | Mount / unmount / replace / pin with provenance (`action` tag) |
 | `load_milestone_contract` | Load milestone phases before run start |
+| `push_artifact` | Push a large artifact into the Artifacts partition |
 | `force_compact` | Force an immediate context compact attempt |
 | `update_task` | Apply a task-state update, typically from the plan meta-tool |
-| `start_run` | Start a new run from a `RuntimeTask` |
+| `start_run` | Start a new run from a `RuntimeTask`; optional `run_spec: AgentRunSpec` |
 | `resume` | Resume after preloaded history |
 | `provider_result` | Feed an assistant/provider message back to the kernel |
 | `tool_results` | Feed completed tool results back to the kernel |
 | `signal` | Feed an external runtime signal |
 | `milestone_result` | Feed verifier output for the current milestone |
+| `spawn_sub_agent` | Spawn a sub-agent; emits `AgentSpawned` with isolation manifest |
+| `sub_agent_completed` | Feed completed sub-agent result back into parent loop |
 | `timeout` | Terminate or interrupt by timeout |
 
 ### KernelAction
@@ -92,7 +97,7 @@ Kernel to SDK:
 |---|---|
 | `call_provider` | Call the configured LLM provider with rendered context and tools |
 | `execute_tool` | Execute requested tool calls through the host execution plane |
-| `evaluate_milestone` | Run a verifier and return `milestone_result` |
+| `evaluate_milestone` | Run a verifier and return `milestone_result` (includes `verifier`, `required_evidence`) |
 | `done` | Persist terminal state and stop the run |
 
 ### KernelObservation
@@ -104,13 +109,32 @@ Kernel audit source:
 | `compressed` | Context compression occurred |
 | `renewed` | Context renewal started a new sprint |
 | `rollbacked` | Fatal turn rollback restored checkpoint state |
-| `capability_changed` | Runtime capability graph changed |
+| `checkpoint_taken` | Turn transaction checkpoint before LLM call |
+| `capability_changed` | Runtime capability graph changed (includes provenance fields) |
 | `milestone_advanced` | Milestone passed and unlocked capabilities |
 | `milestone_blocked` | Milestone failed and run should continue or retry |
+| `milestone_evidence` | Verifier-collected evidence for current phase |
+| `agent_spawned` | Sub-agent spawned with isolation manifest and lineage |
+
+## Sub-Agent Host Contract (Phase 7)
+
+Sub-agent isolation is a **kernel contract**, not a prompt convention.
+
+1. Host calls `spawn_sub_agent` with `AgentRunSpec` + `parent_session_id`.
+2. Kernel emits `AgentSpawned` observation (role, isolation, context_inheritance, permitted_capability_ids).
+3. Host SDK runs the child via `SubAgentOrchestrator` / `FilteredExecutionPlane` (capability filter enforced).
+4. Host feeds `sub_agent_completed` with `SubAgentResult` back to the parent kernel.
+
+**SDK entry points:**
+
+| SDK | Active parent run | Standalone (harness) |
+|---|---|---|
+| Node | `RuntimeRunner.spawnSubAgent(spec)` | `spawnStandalone(opts, sessionId, spec)` |
+| Python | `RuntimeRunner.spawn_sub_agent(spec)` | `spawn_standalone(opts, session_id, spec)` |
+
+**Collaboration layer:** `AgentPool.ensureCoordinator()` (default in `CreatorVerifierMode` / `OrchestrationMode`). Pass `useLegacyRunners: true` / `use_legacy_runners=True` to opt out.
 
 ## KernelRuntime
-
-Phase 1 introduces a pure wrapper:
 
 ```rust
 pub struct KernelRuntime;
@@ -122,7 +146,7 @@ impl KernelRuntime {
 
 `KernelStep` contains one or more actions plus observations emitted during the step.
 
-Current implementation is intentionally thin over `LoopStateMachine`. This preserves behavior while giving FFI bindings a stable target. Host SDK runners should treat `KernelRuntime.step()` as the runtime control-plane boundary.
+Host SDK runners should treat `KernelRuntime.step()` as the runtime control-plane boundary.
 
 Read-side helpers exposed for SDK bookkeeping:
 
@@ -145,10 +169,26 @@ Read-side helpers exposed for SDK bookkeeping:
 7. [x] WASM SDK runner migrated from direct runtime calls to `KernelRuntime.step()`.
 8. [x] Direct `LoopStateMachine` / `ContextManager` / legacy runtime access becomes internal, deprecated, or test-only.
 9. [x] Golden ABI fixtures cover all four host bindings (`tests/fixtures/abi/`).
+10. [x] Sub-agent spawn/complete inputs + `AgentSpawned` observation fixtures.
+11. [x] Node/Python SDK sub-agent orchestrator + collaboration spawn path.
 
 ## Compatibility Rules
 
 - Add optional fields rather than changing existing field meaning.
-- Add new enum variants only with exhaustive match updates across Rust, Node, Python, and WASM in the same PR stack.
+- Add new enum variants only with exhaustive match updates across Rust, Node, Python, and WASM in one PR stack.
 - Keep old behavior behind the ABI wrapper until all SDKs are migrated.
 - Audit semantics come from kernel observations, not SDK-invented event names.
+
+## Fixture Index
+
+| File | Type |
+|---|---|
+| `input_start_run.json` | `KernelInput` |
+| `input_tool_results.json` | `KernelInput` |
+| `input_push_artifact.json` | `KernelInput` |
+| `input_spawn_sub_agent.json` | `KernelInput` |
+| `step_call_provider.json` | `KernelStep` |
+| `step_execute_tool.json` | `KernelStep` |
+| `step_done.json` | `KernelStep` |
+| `observation_compressed.json` | `KernelObservation` |
+| `observation_agent_spawned.json` | `KernelObservation` |

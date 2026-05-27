@@ -15,7 +15,7 @@ from deepstrike.runtime import collect_text
 import uuid
 
 if TYPE_CHECKING:
-    from deepstrike.collaboration.pool import AgentPool
+    from deepstrike.collaboration.pool import AgentPool, CoordinatorConfig
 
 
 @dataclass
@@ -39,6 +39,7 @@ class ContractOutcome:
 class ContractHarnessOptions:
     max_attempts: int = 3
     on_violation: Optional[Callable[[list[Violation]], None]] = None
+    coordinator: Optional["CoordinatorConfig"] = None
 
 
 class ContractDrivenHarness:
@@ -67,6 +68,14 @@ class ContractDrivenHarness:
         self._pool = pool
         self._contract = contract
         self._opts = options or ContractHarnessOptions()
+        if self._opts.coordinator is not None:
+            self._pool.configure_coordinator(
+                self._opts.coordinator.opts,
+                self._opts.coordinator.session_id,
+            )
+
+    async def stream(self):
+        yield await self.run()
 
     async def run(self) -> ContractOutcome:
         from deepstrike.collaboration.pool import IsolatedVerifierContext
@@ -90,11 +99,20 @@ class ContractDrivenHarness:
                 )
             executor_goal = f"{contract_block}\n\n---\n\n{current_goal}{violation_note}"
 
-            artifact = await collect_text(self._pool.get("executor").run(
-                session_id=str(uuid.uuid4()),
-                goal=executor_goal,
-                criteria=contract_to_criteria_strings(self._contract),
-            ))
+            if self._pool.uses_spawn_path():
+                exec_result = await self._pool.spawn(
+                    "executor",
+                    executor_goal,
+                    verification_contract_id=self._contract.id,
+                )
+                final = exec_result.result.final_message
+                artifact = getattr(final, "content", "") if final else ""
+            else:
+                artifact = await collect_text(self._pool.get("executor").run(
+                    session_id=str(uuid.uuid4()),
+                    goal=executor_goal,
+                    criteria=contract_to_criteria_strings(self._contract),
+                ))
 
             # Phase 2: Verifier — isolated context, no executor history
             audit_text = await self._pool.run_verifier(

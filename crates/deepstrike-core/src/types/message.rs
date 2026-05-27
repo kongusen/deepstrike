@@ -61,6 +61,17 @@ pub enum ContentPart {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolErrorKind {
+    Recoverable,
+    Fatal,
+    GovernanceDenied,
+    ProviderFailure,
+    Timeout,
+    UserInterrupt,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: CompactString,
@@ -79,6 +90,8 @@ pub struct ToolResult {
     /// state and cannot safely proceed.
     #[serde(default)]
     pub is_fatal: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<ToolErrorKind>,
     pub token_count: Option<u32>,
 }
 

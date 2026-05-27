@@ -191,4 +191,4 @@ async def test_agent_run_returns_model_text():
         max_tokens=1000,
         max_turns=3,
     ))
-    assert await collect_text(runner.run_streaming("ping")) == "pong"
+    assert await collect_text(runner.run(goal="ping")) == "pong"

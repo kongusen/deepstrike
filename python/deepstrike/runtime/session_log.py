@@ -8,6 +8,20 @@ from typing import Literal, Protocol, TypedDict
 from deepstrike._kernel import ToolCall, ToolResult
 
 
+class RollbackReason(TypedDict, total=False):
+    kind: Literal[
+        "fatal_tool_error",
+        "governance_denied",
+        "provider_failure",
+        "timeout",
+        "user_interrupt",
+        "malformed_replay",
+    ]
+    tool_name: str
+    error: str
+    reason: str
+
+
 class RunStartedEvent(TypedDict, total=False):
     kind: Literal["run_started"]
     run_id: str
@@ -91,6 +105,7 @@ class RollbackedEvent(TypedDict, total=False):
     kind: Literal["rollbacked"]
     turn: int
     checkpoint_history_len: int
+    reason: RollbackReason
 
 
 class CapabilityChangedEvent(TypedDict, total=False):
@@ -114,6 +129,30 @@ class MilestoneBlockedEvent(TypedDict, total=False):
     reason: str
 
 
+class MilestoneEvidenceEvent(TypedDict, total=False):
+    kind: Literal["milestone_evidence"]
+    turn: int
+    phase_id: str
+    evidence: list[str]
+
+
+class CheckpointTakenEvent(TypedDict, total=False):
+    kind: Literal["checkpoint_taken"]
+    turn: int
+    history_len: int
+
+
+class AgentSpawnedEvent(TypedDict, total=False):
+    kind: Literal["agent_spawned"]
+    turn: int
+    agent_id: str
+    parent_session_id: str
+    role: str
+    isolation: str
+    context_inheritance: str
+    permitted_capability_ids: list[str]
+
+
 SessionEvent = (
     RunStartedEvent
     | LlmCompletedEvent
@@ -128,6 +167,9 @@ SessionEvent = (
     | CapabilityChangedEvent
     | MilestoneAdvancedEvent
     | MilestoneBlockedEvent
+    | MilestoneEvidenceEvent
+    | CheckpointTakenEvent
+    | AgentSpawnedEvent
     | RunTerminalEvent
 )
 
@@ -230,7 +272,14 @@ def _event_to_json(event: SessionEvent) -> dict:
     return {
       **event,
       "results": [
-        {"call_id": r.call_id, "output": r.output, "is_error": r.is_error}
+        {
+          "call_id": r.call_id,
+          "output": r.output,
+          "is_error": r.is_error,
+          "is_fatal": getattr(r, "is_fatal", False),
+          "error_kind": getattr(r, "error_kind", None),
+          "token_count": r.token_count,
+        }
         for r in event["results"]
       ],
     }
@@ -258,12 +307,22 @@ def _event_from_json(raw: dict) -> SessionEvent:
       "calls": [ToolCall(id=c["id"], name=c["name"], arguments=c["arguments"]) for c in raw["calls"]],
     }
   if kind == "tool_completed":
+    results = []
+    for r in raw["results"]:
+      result = ToolResult(
+        call_id=r["call_id"],
+        output=r["output"],
+        is_error=r.get("is_error", False),
+        token_count=r.get("token_count"),
+      )
+      if hasattr(result, "is_fatal"):
+        result.is_fatal = r.get("is_fatal", False)
+      if hasattr(result, "error_kind"):
+        result.error_kind = r.get("error_kind")
+      results.append(result)
     return {
       "kind": "tool_completed",
       "turn": raw["turn"],
-      "results": [
-        ToolResult(call_id=r["call_id"], output=r["output"], is_error=r.get("is_error", False))
-        for r in raw["results"]
-      ],
+      "results": results,
     }
   return raw  # type: ignore[return-value]

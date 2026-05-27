@@ -22,6 +22,8 @@ from deepstrike.runtime.credential_vault import (
 from deepstrike.runtime.process_sandbox_plane import ProcessSandboxPlane
 from deepstrike.runtime.mcp_proxy_plane import McpProxyPlane, McpServerConfig
 from deepstrike.runtime.remote_vpc_plane import RemoteVpcPlane
+from deepstrike.runtime.filtered_plane import FilteredExecutionPlane
+from deepstrike.runtime.sub_agent_orchestrator import SubAgentOrchestrator, spawn_standalone, default_sub_agent_orchestrator
 
 __all__ = [
   "RuntimeRunner",
@@ -47,4 +49,8 @@ __all__ = [
   "McpProxyPlane",
   "McpServerConfig",
   "RemoteVpcPlane",
+  "SubAgentOrchestrator",
+  "spawn_standalone",
+  "default_sub_agent_orchestrator",
+  "FilteredExecutionPlane",
 ]

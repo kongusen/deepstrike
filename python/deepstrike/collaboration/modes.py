@@ -28,31 +28,29 @@ class CreatorVerifierMode:
     """
     The simplest multi-agent collaboration pattern.
 
-    Wires an executor + verifier from an AgentPool into a ContractDrivenHarness.
-    Contexts are fully isolated: the verifier never sees the executor's history.
-
-    Usage::
-
-        pool = (AgentPool()
-            .add("executor", executor_runner)
-            .add("verifier", verifier_runner))
-
-        mode = CreatorVerifierMode(pool)
-        result = await mode.run(contract)
-
-        if HandoffBus.requires_escalation(result.handoff):
-            # drift > 5% or blocked_on — pause autonomous delegation
-            pass
+    By default uses the kernel spawn path (``AgentPool.ensure_coordinator``).
+    Pass ``use_legacy_runners=True`` to fall back to independent ``runner.run()`` sessions.
     """
 
-    def __init__(self, pool: "AgentPool", *, max_attempts: int = 3) -> None:
+    def __init__(
+        self,
+        pool: "AgentPool",
+        *,
+        max_attempts: int = 3,
+        coordinator_session_id: str | None = None,
+        use_legacy_runners: bool = False,
+    ) -> None:
         self._pool = pool
         self._max_attempts = max_attempts
+        self._coordinator_session_id = coordinator_session_id
+        self._use_legacy_runners = use_legacy_runners
         self._total = 0
         self._failed = 0
 
     async def run(self, contract: VerificationContract) -> ContractOutcome:
         self._total += 1
+        if not self._use_legacy_runners:
+            self._pool.ensure_coordinator(self._coordinator_session_id)
         harness = ContractDrivenHarness(
             self._pool,
             contract,
@@ -87,11 +85,25 @@ class OrchestrationMode:
     CreatorVerifierMode executes it. Requires all three roles in the pool.
     """
 
-    def __init__(self, pool: "AgentPool", *, max_attempts: int = 3) -> None:
+    def __init__(
+        self,
+        pool: "AgentPool",
+        *,
+        max_attempts: int = 3,
+        coordinator_session_id: str | None = None,
+        use_legacy_runners: bool = False,
+    ) -> None:
         self._pool = pool
-        self._inner = CreatorVerifierMode(pool, max_attempts=max_attempts)
+        self._inner = CreatorVerifierMode(
+            pool,
+            max_attempts=max_attempts,
+            coordinator_session_id=coordinator_session_id,
+            use_legacy_runners=use_legacy_runners,
+        )
 
     async def run(self, goal: str) -> tuple[ContractOutcome, VerificationContract]:
+        if not self._inner._use_legacy_runners:
+            self._pool.ensure_coordinator(self._inner._coordinator_session_id)
         contract_json = await self._pool.run_orchestrator(goal)
         contract = self._parse_contract(contract_json, goal)
         outcome = await self._inner.run(contract)

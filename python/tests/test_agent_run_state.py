@@ -46,7 +46,7 @@ async def test_agent_threads_provider_run_state_through_turns():
         max_turns=4,
     ))
 
-    async for _ in runner.run_streaming("Use ping once, then finish."):
+    async for _ in runner.run(goal="Use ping once, then finish."):
         pass
 
     assert len(provider.states) == 2

@@ -1,6 +1,9 @@
 // ── Runtime (Layer 1.5) ────────────────────────────────────────────────────
 export { RuntimeRunner, collectText } from "./runtime/runner.js"
 export type { RuntimeOptions } from "./runtime/runner.js"
+export { FilteredExecutionPlane } from "./runtime/filtered-plane.js"
+export { SubAgentOrchestrator, defaultSubAgentOrchestrator, spawnStandalone } from "./runtime/sub-agent-orchestrator.js"
+export type { SubAgentRunContext } from "./runtime/sub-agent-orchestrator.js"
 export { LocalExecutionPlane } from "./runtime/execution-plane.js"
 export type { ExecutionPlane, RunContext } from "./runtime/execution-plane.js"
 export { InMemorySessionLog, FileSessionLog } from "./runtime/session-log.js"
@@ -71,6 +74,30 @@ export type {
   LLMProvider, RetryConfig, TokenUsage, ProviderToolSpec, ProviderRunState, ProviderReplay,
   RenderedContext,
 } from "./types.js"
+export type {
+  AgentCapabilityFilter,
+  AgentIdentity,
+  AgentIsolation,
+  AgentRunSpec,
+  AgentSpawnedObservation,
+  ContextInheritance,
+  KernelAgentRole,
+  LoopResult,
+  MilestoneCheckResult,
+  MilestoneContract,
+  MilestonePhase,
+  MilestonePolicy,
+  SubAgentResult,
+  TerminationReason,
+} from "./types/agent.js"
+export {
+  agentIdentitySub,
+  agentRunSpecToKernel,
+  milestoneCheckFail,
+  milestoneCheckPass,
+  milestoneCheckResultToKernel,
+  subAgentResultToKernel,
+} from "./types/agent.js"
 
 // ── Collaboration layer (Layer 2 + Layer 3) ────────────────────────────────
 export type {
@@ -84,7 +111,8 @@ export {
   contractToCriteriaStrings,
 } from "./collaboration/contract.js"
 export { AgentPool } from "./collaboration/pool.js"
-export type { AgentRole, IsolatedVerifierContext } from "./collaboration/pool.js"
+export type { AgentRole, IsolatedVerifierContext, CoordinatorConfig } from "./collaboration/pool.js"
+export { KERNEL_ROLE_MAP } from "./collaboration/pool.js"
 export { ContractDrivenHarness } from "./collaboration/harness.js"
 export type { ContractOutcome, ContractHarnessOptions, Violation } from "./collaboration/harness.js"
 export { HandoffBus } from "./collaboration/handoff.js"

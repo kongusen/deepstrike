@@ -36,10 +36,12 @@ pub fn replay_messages(entries: &[SessionEntry]) -> Vec<Message> {
 
 pub fn replay_messages_with_cap(entries: &[SessionEntry], max_bytes: usize) -> Vec<Message> {
     replay_messages_with_cap_and_loader(entries, max_bytes, |_| {
-        Err(deepstrike_core::context::snapshot::ContextFault::MissingArchive {
-            session_id: String::new(),
-            seq: 0,
-        })
+        Err(
+            deepstrike_core::context::snapshot::ContextFault::MissingArchive {
+                session_id: String::new(),
+                seq: 0,
+            },
+        )
     })
 }
 
@@ -121,6 +123,7 @@ mod tests {
                     output: Content::Text("ok".into()),
                     is_error: false,
                     is_fatal: false,
+                    error_kind: None,
                     token_count: None,
                 }],
             },

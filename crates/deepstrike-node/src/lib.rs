@@ -123,6 +123,8 @@ pub struct ToolResult {
     pub call_id: String,
     pub output: String,
     pub is_error: bool,
+    pub is_fatal: Option<bool>,
+    pub error_kind: Option<String>,
     pub token_count: Option<u32>,
 }
 
@@ -570,10 +572,7 @@ impl KernelRuntime {
     #[napi]
     pub fn step(&mut self, input_json: String) -> Result<String> {
         let input: RustKernelInput = serde_json::from_str(&input_json).map_err(|e| {
-            Error::new(
-                Status::InvalidArg,
-                format!("invalid KernelInput JSON: {e}"),
-            )
+            Error::new(Status::InvalidArg, format!("invalid KernelInput JSON: {e}"))
         })?;
         serde_json::to_string(&self.inner.step(input)).map_err(|e| {
             Error::new(

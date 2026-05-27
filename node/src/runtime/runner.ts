@@ -3,7 +3,7 @@ import type {
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
   ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
 } from "../types.js"
-import type { DreamStore, DreamResult, MemoryEntry, CurationResult, SessionData } from "../memory/protocols.js"
+import type { DreamStore, MemoryEntry, CurationResult, SessionData } from "../memory/protocols.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
 import type { SignalSource, RuntimeSignal } from "../signals/types.js"
 import type { SessionLog, SessionEvent } from "./session-log.js"
@@ -17,6 +17,8 @@ import {
   capabilityMarker,
   capabilitySkill,
   capabilityTool,
+  capabilityCommandMount,
+  capabilityCommandUnmount,
   kernelAction,
   kernelApply,
   forceCompact,
@@ -28,6 +30,11 @@ import {
   type KernelObservation,
   type KernelRunnerAction,
 } from "./kernel-step.js"
+import type {
+  AgentRunSpec, AgentSpawnedObservation, MilestoneCheckResult, MilestoneContract, MilestonePolicy, SubAgentResult,
+} from "../types/agent.js"
+import { agentRunSpecToKernel, milestoneCheckPass, milestoneCheckResultToKernel, subAgentResultToKernel } from "../types/agent.js"
+import { defaultSubAgentOrchestrator, type SubAgentOrchestrator } from "./sub-agent-orchestrator.js"
 
 export interface RuntimeOptions {
   provider: LLMProvider
@@ -52,50 +59,124 @@ export interface RuntimeOptions {
   enablePlanTool?: boolean
   compressionStore?: ArchiveStore
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
+  /** Default: terminate — stop with milestone_pending when a phase needs evaluation. */
+  milestonePolicy?: MilestonePolicy
+  /** Optional external verifier when milestonePolicy is not auto_pass. */
+  onMilestoneEvaluate?: (ctx: {
+    phaseId: string
+    criteria: string[]
+    requiredEvidence: string[]
+  }) => Promise<MilestoneCheckResult> | MilestoneCheckResult
+  /** Passed to kernel start_run for role/isolation metadata. */
+  runSpec?: AgentRunSpec
+  /** Loaded via load_milestone_contract before run start. */
+  milestoneContract?: MilestoneContract
+  /** Custom sub-agent host driver; defaults to SubAgentOrchestrator. */
+  subAgentOrchestrator?: SubAgentOrchestrator
+  /** Optional system prompt injected into the dream synthesis call. */
+  dreamSystemPrompt?: string
 }
 
 export class RuntimeRunner {
   private interrupted = false
   private activeKernel: KernelRuntimeInstance | null = null
   private pendingObservations: KernelObservation[] = []
+  private currentSessionId: string | null = null
+  private nextArchiveStart = 0
 
   constructor(private readonly opts: RuntimeOptions) {}
+
+  /** Host configuration (for coordinator / sub-agent spawn). */
+  get hostOptions(): RuntimeOptions {
+    return this.opts
+  }
 
   /** Mount a tool capability on the currently-running kernel runtime. No-op if not running. */
   mountTool(schema: ToolSchema): void {
     if (!this.activeKernel) return
-    kernelApply(this.activeKernel, this.pendingObservations, {
-      kind: "mount_capability",
-      capability: capabilityTool(schema),
-    })
+    kernelApply(this.activeKernel, this.pendingObservations, capabilityCommandMount(capabilityTool(schema)))
   }
 
   /** Mount a skill capability on the currently-running kernel runtime. No-op if not running. */
   mountSkill(name: string, description: string): void {
     if (!this.activeKernel) return
-    kernelApply(this.activeKernel, this.pendingObservations, {
-      kind: "mount_capability",
-      capability: capabilitySkill({ name, description }),
-    })
+    kernelApply(this.activeKernel, this.pendingObservations, capabilityCommandMount(
+      capabilitySkill({ name, description, estimatedTokens: 0 }),
+    ))
   }
 
   /** Mount a generic marker capability (e.g. MCP server, agent) on the active run. No-op if not running. */
   mountMarker(kind: string, id: string, description: string): void {
     if (!this.activeKernel) return
-    kernelApply(this.activeKernel, this.pendingObservations, {
-      kind: "mount_capability",
-      capability: capabilityMarker(kind, id, description),
-    })
+    kernelApply(this.activeKernel, this.pendingObservations, capabilityCommandMount(
+      capabilityMarker(kind, id, description),
+    ))
   }
 
   /** Unmount a capability by kind + id from the active run. No-op if not running. */
   unmountCapability(kind: string, id: string): void {
     if (!this.activeKernel) return
+    kernelApply(this.activeKernel, this.pendingObservations, capabilityCommandUnmount(kind, id))
+  }
+
+  /** Push a large artifact into the kernel artifacts partition (not inlined in history). */
+  pushArtifact(message: Message, tokens?: number): void {
+    if (!this.activeKernel) return
     kernelApply(this.activeKernel, this.pendingObservations, {
-      kind: "unmount_capability",
-      capability_kind: kind,
-      id,
+      kind: "push_artifact",
+      message: messageToKernelMessage(message),
+      ...(tokens !== undefined ? { tokens } : {}),
     })
+  }
+
+  /**
+   * Spawn an isolated sub-agent via the kernel, run it on the host, and feed the result back.
+   * Requires an active parent run (`run()` / `wake()` in progress or paused at milestone).
+   */
+  async *spawnSubAgent(spec: AgentRunSpec): AsyncIterable<StreamEvent> {
+    if (!this.activeKernel || !this.currentSessionId) {
+      throw new Error("spawnSubAgent requires an active parent run")
+    }
+    const parentSessionId = this.currentSessionId
+    const runtime = this.activeKernel
+
+    const observations = kernelApply(runtime, this.pendingObservations, {
+      kind: "spawn_sub_agent",
+      spec: agentRunSpecToKernel(spec),
+      parent_session_id: parentSessionId,
+    })
+    this.nextArchiveStart = await this.appendObservations(parentSessionId, runtime, this.nextArchiveStart)
+
+    const spawned = observations.find((o): o is AgentSpawnedObservation & KernelObservation =>
+      o.kind === "agent_spawned" && typeof o.agent_id === "string",
+    )
+    if (!spawned) throw new Error("spawn_sub_agent did not emit agent_spawned")
+
+    const manifest: AgentSpawnedObservation = {
+      kind: "agent_spawned",
+      turn: spawned.turn,
+      agent_id: spawned.agent_id!,
+      parent_session_id: spawned.parent_session_id ?? parentSessionId,
+      role: spawned.role ?? spec.role,
+      isolation: spawned.isolation ?? spec.isolation ?? "shared",
+      context_inheritance: spawned.context_inheritance ?? "none",
+      permitted_capability_ids: spawned.permitted_capability_ids ?? [],
+    }
+
+    const orchestrator = this.opts.subAgentOrchestrator ?? defaultSubAgentOrchestrator
+    const result = await orchestrator.run({
+      parentOpts: this.opts,
+      parentSessionId,
+      spec,
+      manifest,
+      sessionLog: this.opts.sessionLog,
+    })
+
+    kernelApply(runtime, this.pendingObservations, {
+      kind: "sub_agent_completed",
+      result: subAgentResultToKernel(result),
+    })
+    yield { type: "done", iterations: result.result.turnsUsed, totalTokens: result.result.totalTokensUsed, status: result.result.termination } as DoneEvent
   }
 
   interrupt(): void { this.interrupted = true }
@@ -105,8 +186,10 @@ export class RuntimeRunner {
     goal: string
     criteria?: string[]
     extensions?: Record<string, unknown>
+    /** Parent transcript to preload (e.g. sub-agent full context inheritance). */
+    inheritEvents?: Array<{ seq: number; event: SessionEvent }>
   }): AsyncIterable<StreamEvent> {
-    const prior = await this.opts.sessionLog.read(req.sessionId)
+    const prior = req.inheritEvents ?? await this.opts.sessionLog.read(req.sessionId)
     const midRun = isMidRun(prior)
     if (!midRun) {
       await this.opts.sessionLog.append(req.sessionId, {
@@ -139,13 +222,16 @@ export class RuntimeRunner {
     yield* this.execute(sessionId, start.goal, start.criteria, extensions, events, true)
   }
 
-  async dream(agentId: string, nowMs = Date.now()): Promise<DreamResult> {
+  async *dream(agentId: string, nowMs = Date.now()): AsyncIterable<StreamEvent> {
     if (!this.opts.dreamStore) throw new Error("dreamStore not configured")
     const kernel = getKernel()
 
     const sessions = await this.opts.dreamStore.loadSessions(agentId)
     const existingMemories = await this.opts.dreamStore.loadMemories(agentId)
-    if (!sessions.length) return { sessionsProcessed: 0, insightsExtracted: 0, entriesAdded: 0, entriesRemoved: 0 }
+    if (!sessions.length) {
+      yield { type: "done", iterations: 0, totalTokens: 0, status: "completed", dreamResult: { sessionsProcessed: 0, insightsExtracted: 0, entriesAdded: 0, entriesRemoved: 0 } } as DoneEvent
+      return
+    }
 
     const pipeline = new kernel.IdlePipeline(agentId)
     const action1 = pipeline.feedTrigger(
@@ -162,19 +248,23 @@ export class RuntimeRunner {
       nowMs,
     )
     if (action1.kind === "noop" || action1.kind === "aborted") {
-      return { sessionsProcessed: 0, insightsExtracted: 0, entriesAdded: 0, entriesRemoved: 0 }
+      yield { type: "done", iterations: 0, totalTokens: 0, status: "completed", dreamResult: { sessionsProcessed: 0, insightsExtracted: 0, entriesAdded: 0, entriesRemoved: 0 } } as DoneEvent
+      return
     }
     if (action1.kind !== "synthesize_insights") throw new Error(`unexpected: ${action1.kind}`)
 
     let synthesisText = ""
     const providerState = this.opts.provider.createRunState?.()
     const synthMsgs = (action1.messages ?? []) as Message[]
+    const kernelSystemText = synthMsgs.filter(m => m.role === "system").map(m => m.content).join("\n\n")
     const synthContext = {
-      systemText: synthMsgs.filter(m => m.role === "system").map(m => m.content).join("\n\n"),
+      systemText: [kernelSystemText, this.opts.dreamSystemPrompt].filter(Boolean).join("\n\n"),
       turns: synthMsgs.filter(m => m.role !== "system"),
     }
+    let totalTokens = 0
     for await (const evt of this.opts.provider.stream(synthContext, [], undefined, providerState)) {
-      if (evt.type === "text_delta") synthesisText += (evt as TextDelta).delta
+      if (evt.type === "text_delta") { synthesisText += (evt as TextDelta).delta; yield evt }
+      else if (evt.type === "usage") totalTokens = (evt as { type: string; totalTokens: number }).totalTokens
     }
 
     const action2 = pipeline.feedSynthesisResult(synthesisText)
@@ -196,12 +286,15 @@ export class RuntimeRunner {
     }
     await this.opts.dreamStore.commit(agentId, dsResult, existingMemories)
 
-    return {
-      sessionsProcessed: rr.sessionsProcessed,
-      insightsExtracted: rr.insightsExtracted,
-      entriesAdded: cr.stats?.entriesAdded ?? 0,
-      entriesRemoved: (cr.toRemoveIndices ?? []).length,
-    }
+    yield {
+      type: "done", iterations: 1, totalTokens, status: "completed",
+      dreamResult: {
+        sessionsProcessed: rr.sessionsProcessed,
+        insightsExtracted: rr.insightsExtracted,
+        entriesAdded: cr.stats?.entriesAdded ?? 0,
+        entriesRemoved: (cr.toRemoveIndices ?? []).length,
+      },
+    } as DoneEvent
   }
 
   private async *execute(
@@ -214,6 +307,7 @@ export class RuntimeRunner {
   ): AsyncIterable<StreamEvent> {
     this.interrupted = false
     this.pendingObservations = []
+    this.currentSessionId = sessionId
     const kernel = getKernel()
     const ext = { ...this.opts.extensions, ...(extensions ?? {}) }
     const providerState = this.opts.provider.createRunState?.()
@@ -229,6 +323,7 @@ export class RuntimeRunner {
       timeoutMs: effectiveTimeoutMs !== undefined ? BigInt(effectiveTimeoutMs) : undefined,
     })
     this.activeKernel = runtime
+    this.nextArchiveStart = nextCompressedArchiveStart
     const router = new kernel.SignalRouter(256)
 
     if (this.opts.tokenizer) {
@@ -291,6 +386,21 @@ export class RuntimeRunner {
       kernelApply(runtime, this.pendingObservations, { kind: "set_knowledge_enabled", enabled: true })
     }
 
+    if (this.opts.milestoneContract) {
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "load_milestone_contract",
+        contract: {
+          phases: this.opts.milestoneContract.phases.map(p => ({
+            id: p.id,
+            criteria: p.criteria ?? [],
+            unlocks: p.unlocks ?? [],
+            required_evidence: p.requiredEvidence ?? [],
+            ...(p.verifier ? { verifier: p.verifier } : {}),
+          })),
+        },
+      })
+    }
+
     const maxBytes = runtime.recoveryContentBytes()
 
     if (priorEvents && priorEvents.length > 0) {
@@ -307,12 +417,16 @@ export class RuntimeRunner {
     }
 
     const sessionStart = Date.now()
+    const startPayload: Record<string, unknown> = {
+      kind: "start_run",
+      task: { goal, criteria },
+    }
+    if (this.opts.runSpec) {
+      startPayload.run_spec = agentRunSpecToKernel(this.opts.runSpec)
+    }
     let action: KernelRunnerAction = resumeMidRun
       ? kernelAction(runtime, this.pendingObservations, { kind: "resume" })
-      : kernelAction(runtime, this.pendingObservations, {
-          kind: "start_run",
-          task: { goal, criteria },
-        })
+      : kernelAction(runtime, this.pendingObservations, startPayload)
     let hasAttemptedReactiveCompact = false
 
     while (!runtime.isTerminal()) {
@@ -321,6 +435,7 @@ export class RuntimeRunner {
         runtime,
         nextCompressedArchiveStart,
       )
+      this.nextArchiveStart = nextCompressedArchiveStart
       if (this.interrupted) {
         action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
         break
@@ -459,7 +574,13 @@ export class RuntimeRunner {
             yield evt
             if (evt.type === "tool_result") {
               const tre = evt as ToolResultEvent
-              toolResults.push({ callId: tre.callId, output: tre.content, isError: tre.isError })
+              toolResults.push({
+                callId: tre.callId,
+                output: tre.content,
+                isError: tre.isError,
+                isFatal: tre.isFatal,
+                errorKind: tre.errorKind,
+              })
             } else if (evt.type === "tool_argument_repaired") {
               const tare = evt as ToolArgumentRepairedEvent
               await this.opts.sessionLog.append(sessionId, {
@@ -526,20 +647,49 @@ export class RuntimeRunner {
         })
 
       } else if (action.kind === "evaluate_milestone") {
-        nextCompressedArchiveStart = await this.appendObservations(
-          sessionId,
-          runtime,
-          nextCompressedArchiveStart,
-        )
-        const turnsUsed = Math.max(1, runtime.turn())
-        await this.opts.sessionLog.append(sessionId, buildRunTerminalEvent({
-          reason: "milestone_pending",
-          turnsUsed,
-          totalTokens: 0,
-        }))
-        yield { type: "done", iterations: turnsUsed, totalTokens: 0, status: "milestone_pending" } as DoneEvent
-        this.activeKernel = null
-        return
+        const milestonePolicy = this.opts.milestonePolicy ?? "require_verifier"
+        if (milestonePolicy === "auto_pass") {
+          action = kernelAction(runtime, this.pendingObservations, {
+            kind: "milestone_result",
+            result: milestoneCheckResultToKernel(milestoneCheckPass(action.phaseId)),
+          })
+          this.nextArchiveStart = await this.appendObservations(
+            sessionId,
+            runtime,
+            this.nextArchiveStart,
+          )
+        } else if (this.opts.onMilestoneEvaluate) {
+          const check = await this.opts.onMilestoneEvaluate({
+            phaseId: action.phaseId,
+            criteria: action.criteria,
+            requiredEvidence: action.requiredEvidence,
+          })
+          action = kernelAction(runtime, this.pendingObservations, {
+            kind: "milestone_result",
+            result: milestoneCheckResultToKernel(check),
+          })
+          this.nextArchiveStart = await this.appendObservations(
+            sessionId,
+            runtime,
+            this.nextArchiveStart,
+          )
+        } else {
+          this.nextArchiveStart = await this.appendObservations(
+            sessionId,
+            runtime,
+            this.nextArchiveStart,
+          )
+          const turnsUsed = Math.max(1, runtime.turn())
+          await this.opts.sessionLog.append(sessionId, buildRunTerminalEvent({
+            reason: "milestone_pending",
+            turnsUsed,
+            totalTokens: 0,
+          }))
+          yield { type: "done", iterations: turnsUsed, totalTokens: 0, status: "milestone_pending" } as DoneEvent
+          this.activeKernel = null
+          this.currentSessionId = null
+          return
+        }
 
       } else if (action.kind === "done") {
         break
@@ -586,6 +736,7 @@ export class RuntimeRunner {
 
     yield { type: "done", iterations: turnsUsed, totalTokens, status } as DoneEvent
     this.activeKernel = null
+    this.currentSessionId = null
   }
 
   private async appendObservations(
@@ -629,6 +780,7 @@ export class RuntimeRunner {
           kind: "rollbacked",
           turn: obs.turn ?? turn,
           checkpoint_history_len: obs.checkpoint_history_len ?? 0,
+          reason: obs.reason,
         })
       } else if (obs.kind === "capability_changed") {
         await this.opts.sessionLog.append(sessionId, {
@@ -654,8 +806,34 @@ export class RuntimeRunner {
           kind: "milestone_blocked",
           turn: obs.turn ?? turn,
           phase_id: obs.phase_id ?? "",
-          reason: obs.reason ?? "",
+          reason: typeof obs.reason === "string" ? obs.reason : "",
         })
+      } else if (obs.kind === "milestone_evidence") {
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "milestone_evidence",
+          turn: obs.turn ?? turn,
+          phase_id: obs.phase_id ?? "",
+          evidence: obs.evidence ?? [],
+        })
+      } else if (obs.kind === "checkpoint_taken") {
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "checkpoint_taken",
+          turn: obs.turn ?? turn,
+          history_len: obs.history_len ?? 0,
+        })
+      } else if (obs.kind === "agent_spawned") {
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "agent_spawned",
+          turn: obs.turn ?? turn,
+          agent_id: obs.agent_id ?? "",
+          parent_session_id: obs.parent_session_id ?? "",
+          role: obs.role ?? "",
+          isolation: obs.isolation ?? "",
+          context_inheritance: obs.context_inheritance ?? "",
+          permitted_capability_ids: obs.permitted_capability_ids ?? [],
+        })
+      } else if (obs.kind !== "renewed") {
+        console.warn(`[deepstrike] unhandled KernelObservation kind: ${obs.kind}`)
       }
     }
     return nextArchiveStart

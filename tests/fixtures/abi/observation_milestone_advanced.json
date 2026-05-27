@@ -1,0 +1,6 @@
+{
+  "kind": "milestone_advanced",
+  "turn": 3,
+  "phase_id": "phase-1",
+  "capabilities_unlocked": ["write_file"]
+}

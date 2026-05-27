@@ -13,10 +13,20 @@ export interface ToolCall {
   arguments: string // JSON-encoded
 }
 
+export type ToolErrorKind =
+  | "recoverable"
+  | "fatal"
+  | "governance_denied"
+  | "provider_failure"
+  | "timeout"
+  | "user_interrupt"
+
 export interface ToolResult {
   callId: string
   output: string
   isError: boolean
+  isFatal?: boolean
+  errorKind?: ToolErrorKind
   tokenCount?: number
 }
 
@@ -37,7 +47,7 @@ export interface TextDelta extends StreamEvent { type: "text_delta"; delta: stri
 export interface UsageEvent extends StreamEvent { type: "usage"; totalTokens: number }
 export interface ThinkingDelta extends StreamEvent { type: "thinking_delta"; delta: string }
 export interface ToolCallEvent extends StreamEvent { type: "tool_call"; id: string; name: string; arguments: Record<string, unknown> }
-export interface ToolResultEvent extends StreamEvent { type: "tool_result"; callId: string; name: string; content: string; isError: boolean }
+export interface ToolResultEvent extends StreamEvent { type: "tool_result"; callId: string; name: string; content: string; isError: boolean; isFatal?: boolean; errorKind?: ToolErrorKind }
 export interface DoneEvent extends StreamEvent { type: "done"; iterations: number; totalTokens: number; status: string }
 export interface ErrorEvent extends StreamEvent { type: "error"; message: string }
 export interface PermissionRequestEvent extends StreamEvent { type: "permission_request"; callId: string; toolName: string; arguments: string; reason: string }

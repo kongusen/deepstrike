@@ -61,6 +61,7 @@ if TYPE_CHECKING:
   from deepstrike.knowledge.source import KnowledgeSource
   from deepstrike.memory.protocols import DreamResult, DreamStore
   from deepstrike.signals.types import SignalSource
+  from deepstrike.types.agent import AgentRunSpec, SubAgentResult
 
 
 @dataclass
@@ -84,6 +85,8 @@ class RuntimeOptions:
   tokenizer: str | None = None
   enable_plan_tool: bool | None = None
   on_tool_suspend: Callable[[ToolSuspendEvent], Awaitable[Any] | Any] | None = None
+  sub_agent_orchestrator: Any | None = None
+  dream_system_prompt: str | None = None
 
 
 class RuntimeRunner:
@@ -93,6 +96,76 @@ class RuntimeRunner:
     self._plane = opts.execution_plane or LocalExecutionPlane()
     self._active_kernel: KernelRuntime | None = None
     self._pending_observations: list[dict] = []
+    self._current_session_id: str | None = None
+    self._next_archive_start: int = 0
+
+  @property
+  def host_options(self) -> RuntimeOptions:
+    """Host configuration (for coordinator / sub-agent spawn)."""
+    return self._opts
+
+  async def spawn_sub_agent(self, spec: "AgentRunSpec") -> "AsyncIterator[StreamEvent]":
+    return self._spawn_sub_agent_impl(spec)
+
+  async def _spawn_sub_agent_impl(self, spec: "AgentRunSpec") -> "AsyncIterator[StreamEvent]":
+    """Spawn a sub-agent during an active parent run and feed the result back."""
+    from deepstrike.runtime.sub_agent_orchestrator import (
+      SubAgentRunContext,
+      default_sub_agent_orchestrator,
+    )
+    from deepstrike.types.agent import (
+      AgentSpawnedObservation,
+      agent_run_spec_to_kernel,
+      sub_agent_result_to_kernel,
+    )
+
+    if self._active_kernel is None or self._current_session_id is None:
+      raise RuntimeError("spawn_sub_agent requires an active parent run")
+
+    parent_session_id = self._current_session_id
+    runtime = self._active_kernel
+
+    observations = kernel_apply(runtime, self._pending_observations, {
+      "kind": "spawn_sub_agent",
+      "spec": agent_run_spec_to_kernel(spec),
+      "parent_session_id": parent_session_id,
+    })
+    self._next_archive_start = await self._append_observations(
+      parent_session_id, runtime, self._next_archive_start,
+    )
+
+    spawned_obs = next((o for o in observations if o.get("kind") == "agent_spawned"), None)
+    if spawned_obs is None:
+      raise RuntimeError("spawn_sub_agent did not emit agent_spawned")
+
+    manifest = AgentSpawnedObservation(
+      agent_id=str(spawned_obs.get("agent_id") or spec.identity.agent_id),
+      parent_session_id=str(spawned_obs.get("parent_session_id") or parent_session_id),
+      role=str(spawned_obs.get("role") or spec.role),
+      isolation=str(spawned_obs.get("isolation") or spec.isolation),
+      context_inheritance=str(spawned_obs.get("context_inheritance") or "none"),
+      permitted_capability_ids=list(spawned_obs.get("permitted_capability_ids") or []),
+      turn=spawned_obs.get("turn"),
+    )
+
+    orchestrator = self._opts.sub_agent_orchestrator or default_sub_agent_orchestrator
+    result = await orchestrator.run(SubAgentRunContext(
+      parent_opts=self._opts,
+      parent_session_id=parent_session_id,
+      spec=spec,
+      manifest=manifest,
+      session_log=self._opts.session_log,
+    ))
+
+    kernel_apply(runtime, self._pending_observations, {
+      "kind": "sub_agent_completed",
+      "result": sub_agent_result_to_kernel(result),
+    })
+    yield DoneEvent(
+      iterations=result.result.turns_used,
+      total_tokens=result.result.total_tokens_used,
+      status=result.result.termination,
+    )
 
   def interrupt(self) -> None:
     self._interrupted = True
@@ -134,36 +207,20 @@ class RuntimeRunner:
   def execution_plane(self) -> ExecutionPlane:
     return self._plane
 
-  async def run_streaming(
-    self,
-    goal: str,
-    *,
-    criteria: list[str] | None = None,
-    extensions: dict | None = None,
-    session_id: str | None = None,
-  ) -> AsyncIterator[StreamEvent]:
-    """Streaming convenience entry; allocates a session id when omitted."""
-    sid = session_id or str(uuid.uuid4())
-    async for evt in self.run(
-      session_id=sid,
-      goal=goal,
-      criteria=criteria,
-      extensions=extensions,
-    ):
-      yield evt
-
   async def run(
     self,
     *,
-    session_id: str,
     goal: str,
+    session_id: str | None = None,
     criteria: list[str] | None = None,
     extensions: dict | None = None,
+    inherit_events: list | None = None,
   ) -> AsyncIterator[StreamEvent]:
-    prior = await self._opts.session_log.read(session_id)
+    sid = session_id or str(uuid.uuid4())
+    prior = inherit_events if inherit_events is not None else await self._opts.session_log.read(sid)
     mid_run = _is_mid_run(prior)
     if not mid_run:
-      await self._opts.session_log.append(session_id, {
+      await self._opts.session_log.append(sid, {
         "kind": "run_started",
         "run_id": str(uuid.uuid4()),
         "goal": goal,
@@ -172,7 +229,7 @@ class RuntimeRunner:
         **({"system_prompt": self._opts.system_prompt} if self._opts.system_prompt else {}),
       })
     async for evt in self._execute(
-      session_id, goal, criteria or [], extensions,
+      sid, goal, criteria or [], extensions,
       prior if prior else None, mid_run,
     ):
       yield evt
@@ -199,7 +256,10 @@ class RuntimeRunner:
     ):
       yield evt
 
-  async def dream(self, agent_id: str, now_ms: int | None = None) -> "DreamResult":
+  async def dream(self, agent_id: str, now_ms: int | None = None) -> "AsyncIterator[StreamEvent]":
+    return self._dream_impl(agent_id, now_ms)
+
+  async def _dream_impl(self, agent_id: str, now_ms: int | None = None) -> "AsyncIterator[StreamEvent]":
     from deepstrike._kernel import IdlePipeline, MemoryEntry as KernelMemoryEntry, SessionData as KernelSessionData
     from deepstrike.memory.protocols import (
       CurationResult,
@@ -217,7 +277,8 @@ class RuntimeRunner:
     sessions = await self._opts.dream_store.load_sessions(agent_id)
     existing = await self._opts.dream_store.load_memories(agent_id)
     if not sessions:
-      return DreamResult()
+      yield DoneEvent(iterations=0, total_tokens=0, status="completed", dream_result=DreamResult())
+      return
 
     pipeline = IdlePipeline(agent_id)
     action1 = pipeline.feed_trigger(
@@ -239,21 +300,27 @@ class RuntimeRunner:
       now_ms,
     )
     if action1.kind in ("noop", "aborted"):
-      return DreamResult()
+      yield DoneEvent(iterations=0, total_tokens=0, status="completed", dream_result=DreamResult())
+      return
     if action1.kind != "synthesize_insights":
       raise RuntimeError(f"unexpected idle action: {action1.kind}")
 
     synthesis_text = ""
+    total_tokens = 0
     create_run_state = getattr(self._opts.provider, "create_run_state", None)
     provider_state = create_run_state() if callable(create_run_state) else None
     synth_msgs = list(action1.messages or [])
+    kernel_system_text = "\n\n".join(m.content for m in synth_msgs if m.role == "system")
     synth_context = RenderedContext(
-      system_text="\n\n".join(m.content for m in synth_msgs if m.role == "system"),
+      system_text="\n\n".join(filter(None, [kernel_system_text, self._opts.dream_system_prompt])),
       turns=[m for m in synth_msgs if m.role != "system"],
     )
     async for evt in self._opts.provider.stream(synth_context, [], extensions=None, state=provider_state):
       if isinstance(evt, TextDelta):
         synthesis_text += evt.delta
+        yield evt
+      elif getattr(evt, "type", None) == "usage":
+        total_tokens = getattr(evt, "total_tokens", 0)
 
     action2 = pipeline.feed_synthesis_result(synthesis_text)
     if action2.kind != "commit_memories":
@@ -272,11 +339,14 @@ class RuntimeRunner:
       ),
     )
     await self._opts.dream_store.commit(agent_id, ds_result, existing)
-    return DreamResult(
-      sessions_processed=rr.sessions_processed if rr else 0,
-      insights_extracted=rr.insights_extracted if rr else 0,
-      entries_added=ds_result.stats.entries_added,
-      entries_removed=len(ds_result.to_remove_indices),
+    yield DoneEvent(
+      iterations=1, total_tokens=total_tokens, status="completed",
+      dream_result=DreamResult(
+        sessions_processed=rr.sessions_processed if rr else 0,
+        insights_extracted=rr.insights_extracted if rr else 0,
+        entries_added=ds_result.stats.entries_added,
+        entries_removed=len(ds_result.to_remove_indices),
+      ),
     )
 
   async def _execute(
@@ -290,10 +360,12 @@ class RuntimeRunner:
   ) -> AsyncIterator[StreamEvent]:
     self._interrupted = False
     self._pending_observations = []
+    self._current_session_id = session_id
     ext = {**(self._opts.extensions or {}), **(extensions or {})}
     create_run_state = getattr(self._opts.provider, "create_run_state", None)
     provider_state = create_run_state() if callable(create_run_state) else None
     next_compressed_archive_start = _next_archived_seq_start(prior_events)
+    self._next_archive_start = next_compressed_archive_start
 
     # Three-layer policy merge: explicit RuntimeOptions > provider.runtime_policy() > defaults
     _get_policy = getattr(self._opts.provider, "runtime_policy", None)
@@ -393,6 +465,7 @@ class RuntimeRunner:
       next_compressed_archive_start = await self._append_observations(
         session_id, runtime, next_compressed_archive_start,
       )
+      self._next_archive_start = next_compressed_archive_start
       if self._interrupted:
         action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
         break
@@ -509,9 +582,12 @@ class RuntimeRunner:
           async for evt in self._plane.execute_all(normal_calls, run_ctx):
             yield evt
             if isinstance(evt, ToolResultEvent):
-              tool_results.append(ToolResult(
-                call_id=evt.call_id, output=evt.content, is_error=evt.is_error,
-              ))
+              result = ToolResult(call_id=evt.call_id, output=evt.content, is_error=evt.is_error)
+              if hasattr(result, "is_fatal"):
+                result.is_fatal = getattr(evt, "is_fatal", False)
+              if hasattr(result, "error_kind"):
+                result.error_kind = getattr(evt, "error_kind", None)
+              tool_results.append(result)
             elif isinstance(evt, ToolArgumentRepairedEvent):
               await self._opts.session_log.append(session_id, {
                 "kind": "tool_argument_repaired",
@@ -576,6 +652,7 @@ class RuntimeRunner:
           total_tokens=0,
         ))
         self._active_kernel = None
+        self._current_session_id = None
         yield DoneEvent(iterations=turns_used, total_tokens=0, status="milestone_pending")
         return
 
@@ -613,6 +690,7 @@ class RuntimeRunner:
           pass
 
     self._active_kernel = None
+    self._current_session_id = None
     yield DoneEvent(iterations=turns_used, total_tokens=total_tokens, status=status)
 
   async def _append_observations(
@@ -662,6 +740,7 @@ class RuntimeRunner:
           "kind": "rollbacked",
           "turn": obs.get("turn") or turn,
           "checkpoint_history_len": obs.get("checkpoint_history_len", 0),
+          "reason": obs.get("reason"),
         })
       elif kind == "capability_changed":
         ev: dict = {
@@ -688,6 +767,33 @@ class RuntimeRunner:
           "phase_id": obs.get("phase_id") or "",
           "reason": obs.get("reason") or "",
         })
+      elif kind == "milestone_evidence":
+        await self._opts.session_log.append(session_id, {
+          "kind": "milestone_evidence",
+          "turn": obs.get("turn") or turn,
+          "phase_id": obs.get("phase_id") or "",
+          "evidence": obs.get("evidence") or [],
+        })
+      elif kind == "checkpoint_taken":
+        await self._opts.session_log.append(session_id, {
+          "kind": "checkpoint_taken",
+          "turn": obs.get("turn") or turn,
+          "history_len": obs.get("history_len") or 0,
+        })
+      elif kind == "agent_spawned":
+        await self._opts.session_log.append(session_id, {
+          "kind": "agent_spawned",
+          "turn": obs.get("turn") or turn,
+          "agent_id": obs.get("agent_id") or "",
+          "parent_session_id": obs.get("parent_session_id") or "",
+          "role": obs.get("role") or "",
+          "isolation": obs.get("isolation") or "",
+          "context_inheritance": obs.get("context_inheritance") or "",
+          "permitted_capability_ids": obs.get("permitted_capability_ids") or [],
+        })
+      elif kind != "renewed":
+        import warnings
+        warnings.warn(f"[deepstrike] unhandled KernelObservation kind: {kind}", stacklevel=2)
     return next_archive_start
 
 

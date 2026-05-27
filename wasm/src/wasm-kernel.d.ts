@@ -18,7 +18,14 @@ declare module "@deepstrike/wasm-kernel" {
   }
 
   export class Governance {
+    constructor(defaultAction?: string)
+    setIdentity(agentId: string, sessionId: string): void
+    addPermissionRule(pattern: string, action: string): void
     blockTool(name: string): void
+    setRateLimit(toolName: string, maxCalls: number, windowMs: number): void
+    requireParam(toolName: string, paramPath: string): void
+    allowParamValues(toolName: string, paramPath: string, allowedValues: string[]): void
+    limitParamRange(toolName: string, paramPath: string, min?: number, max?: number): void
     setTime(nowMs: number): void
     evaluate(toolName: string, argsJson: string): { kind: string; reason?: string; retryAfterMs?: number }
   }

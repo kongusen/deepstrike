@@ -1,21 +1,64 @@
-import type { RuntimeRunner } from "../runtime/runner.js"
+import type { RuntimeOptions, RuntimeRunner } from "../runtime/runner.js"
 import { collectText } from "../runtime/runner.js"
+import { spawnStandalone } from "../runtime/sub-agent-orchestrator.js"
 import type { VerificationContract } from "./contract.js"
 import { formatContractForSystemPrompt } from "./contract.js"
+import type { AgentRunSpec, KernelAgentRole, SubAgentResult } from "../types/agent.js"
+import { agentIdentitySub } from "../types/agent.js"
 
+/** Legacy pool roles — mapped to kernel AgentRole when using spawn path. */
 export type AgentRole = "orchestrator" | "executor" | "verifier"
+
+export const KERNEL_ROLE_MAP: Record<AgentRole, KernelAgentRole> = {
+  orchestrator: "plan",
+  executor: "implement",
+  verifier: "verify",
+}
 
 export interface IsolatedVerifierContext {
   contract: VerificationContract
   artifact: string
 }
 
+export interface CoordinatorConfig {
+  opts: RuntimeOptions
+  sessionId: string
+}
+
 export class AgentPool {
   private runners = new Map<AgentRole, RuntimeRunner>()
+  private coordinator?: CoordinatorConfig
 
   add(role: AgentRole, runner: RuntimeRunner): this {
     this.runners.set(role, runner)
     return this
+  }
+
+  /** Enable kernel spawn path with lineage recorded under `sessionId`. */
+  configureCoordinator(opts: RuntimeOptions, sessionId: string): this {
+    this.coordinator = { opts, sessionId }
+    return this
+  }
+
+  /**
+   * Infer coordinator from a registered runner (executor → orchestrator → verifier).
+   * Idempotent when coordinator is already configured.
+   */
+  ensureCoordinator(sessionId?: string): this {
+    if (this.coordinator) return this
+    const source: AgentRole = this.has("executor")
+      ? "executor"
+      : this.has("orchestrator")
+        ? "orchestrator"
+        : "verifier"
+    return this.configureCoordinator(
+      this.get(source).hostOptions,
+      sessionId ?? crypto.randomUUID(),
+    )
+  }
+
+  usesSpawnPath(): boolean {
+    return this.coordinator !== undefined
   }
 
   has(role: AgentRole): boolean {
@@ -28,10 +71,35 @@ export class AgentPool {
     return runner
   }
 
-  async runVerifier(ctx: IsolatedVerifierContext): Promise<string> {
-    const runner = this.get("verifier")
-    const contractBlock = formatContractForSystemPrompt(ctx.contract)
+  /**
+   * Spawn a kernel-isolated sub-agent. Requires `configureCoordinator()`.
+   * Maps legacy pool roles to kernel roles (executor → implement, etc.).
+   */
+  async spawn(
+    role: AgentRole | KernelAgentRole,
+    goal: string,
+    extra?: Partial<Omit<AgentRunSpec, "identity" | "role" | "goal">>,
+  ): Promise<SubAgentResult> {
+    if (!this.coordinator) {
+      throw new Error("AgentPool.configureCoordinator() required for kernel spawn path")
+    }
+    const kernelRole: KernelAgentRole =
+      role in KERNEL_ROLE_MAP ? KERNEL_ROLE_MAP[role as AgentRole] : (role as KernelAgentRole)
+    const spec: AgentRunSpec = {
+      identity: agentIdentitySub(
+        `${kernelRole}-${crypto.randomUUID()}`,
+        crypto.randomUUID(),
+        this.coordinator.sessionId,
+      ),
+      role: kernelRole,
+      goal,
+      ...extra,
+    }
+    return spawnStandalone(this.coordinator.opts, this.coordinator.sessionId, spec)
+  }
 
+  async verify(ctx: IsolatedVerifierContext): Promise<string> {
+    const contractBlock = formatContractForSystemPrompt(ctx.contract)
     const auditGoal = [
       contractBlock, "",
       "---", "",
@@ -44,11 +112,19 @@ export class AgentPool {
       "Conclude with an overall PASS or FAIL verdict.",
     ].join("\n")
 
+    if (this.coordinator) {
+      const result = await this.spawn("verify", auditGoal, {
+        verificationContractId: ctx.contract.id,
+        isolation: "read_only",
+      })
+      return result.result.finalMessage?.content ?? ""
+    }
+
+    const runner = this.get("verifier")
     return collectText(runner.run({ sessionId: crypto.randomUUID(), goal: auditGoal }))
   }
 
-  async runOrchestrator(goal: string): Promise<string> {
-    const runner = this.get("orchestrator")
+  async orchestrate(goal: string): Promise<string> {
     const orchestratorGoal = [
       `You are a planning orchestrator. Decompose the following goal into a VerificationContract.`,
       ``,
@@ -66,6 +142,14 @@ export class AgentPool {
       `Output ONLY the JSON object, no prose.`,
     ].join("\n")
 
-    return collectText(runner.run({ sessionId: crypto.randomUUID(), goal: orchestratorGoal }))
+    if (this.coordinator) {
+      const result = await this.spawn("plan", orchestratorGoal)
+      return result.result.finalMessage?.content ?? ""
+    }
+
+    return collectText(this.get("orchestrator").run({
+      sessionId: crypto.randomUUID(),
+      goal: orchestratorGoal,
+    }))
   }
 }

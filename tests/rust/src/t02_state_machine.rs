@@ -3,6 +3,7 @@
 use compact_str::CompactString;
 use deepstrike_core::context::manager::{KNOWLEDGE_TOOL_NAME, MEMORY_TOOL_NAME};
 use deepstrike_core::context::skill_catalog::SKILL_TOOL_NAME;
+use deepstrike_core::runtime::session::RollbackReason;
 use deepstrike_core::scheduler::policy::LoopPolicy;
 use deepstrike_core::scheduler::state_machine::*;
 use deepstrike_core::types::message::*;
@@ -100,6 +101,7 @@ fn tool_results_advance_turn_and_emit_call_llm() {
         output: Content::Text("3".into()),
         is_error: false,
         is_fatal: false,
+        error_kind: None,
         token_count: None,
     }];
     let action = sm.feed(LoopEvent::ToolResults { results });
@@ -139,15 +141,117 @@ fn max_turns_triggers_pending_termination_then_done() {
 }
 
 #[test]
-fn timeout_terminates_immediately() {
+fn timeout_triggers_rollback_with_reason() {
     let mut sm = default_sm();
     sm.start(RuntimeTask::new("test"));
-    match sm.feed(LoopEvent::Timeout) {
-        LoopAction::Done { result } => {
-            assert_eq!(result.termination, TerminationReason::Timeout);
-        }
-        _ => panic!("expected Done"),
-    }
+    let action = sm.feed(LoopEvent::Timeout);
+
+    assert!(matches!(action, LoopAction::CallLLM { .. }));
+    assert!(!sm.is_terminal());
+
+    let obs = sm.take_observations();
+    assert!(obs.iter().any(|o| {
+        matches!(
+            o,
+            LoopObservation::Rollbacked {
+                checkpoint_history_len: 1,
+                reason: RollbackReason::Timeout,
+                ..
+            }
+        )
+    }));
+}
+
+#[test]
+fn recoverable_tool_error_does_not_rollback() {
+    let mut sm = default_sm();
+    sm.start(RuntimeTask::new("test"));
+
+    sm.feed(LoopEvent::LLMResponse {
+        message: Message {
+            role: Role::Assistant,
+            content: Content::Text(String::new()),
+            tool_calls: vec![ToolCall {
+                id: CompactString::new("c1"),
+                name: CompactString::new("write_file"),
+                arguments: serde_json::json!({}),
+            }],
+            token_count: None,
+        },
+    });
+
+    let action = sm.feed(LoopEvent::ToolResults {
+        results: vec![ToolResult {
+            call_id: CompactString::new("c1"),
+            output: Content::Text("permission hint".into()),
+            is_error: true,
+            is_fatal: false,
+            error_kind: Some(ToolErrorKind::Recoverable),
+            token_count: None,
+        }],
+    });
+
+    assert!(matches!(action, LoopAction::CallLLM { .. }));
+    assert_eq!(sm.turn, 1);
+    assert!(
+        !sm.take_observations()
+            .iter()
+            .any(|o| matches!(o, LoopObservation::Rollbacked { .. }))
+    );
+    assert!(
+        sm.ctx
+            .partitions
+            .history
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool)
+    );
+}
+
+#[test]
+fn fatal_tool_error_triggers_rollback_with_reason() {
+    let mut sm = default_sm();
+    sm.start(RuntimeTask::new("test"));
+
+    sm.feed(LoopEvent::LLMResponse {
+        message: Message {
+            role: Role::Assistant,
+            content: Content::Text(String::new()),
+            tool_calls: vec![ToolCall {
+                id: CompactString::new("c1"),
+                name: CompactString::new("write_file"),
+                arguments: serde_json::json!({}),
+            }],
+            token_count: None,
+        },
+    });
+    assert_eq!(sm.ctx.partitions.history.messages.len(), 2);
+
+    let action = sm.feed(LoopEvent::ToolResults {
+        results: vec![ToolResult {
+            call_id: CompactString::new("c1"),
+            output: Content::Text("disk corrupt".into()),
+            is_error: true,
+            is_fatal: false,
+            error_kind: Some(ToolErrorKind::Fatal),
+            token_count: None,
+        }],
+    });
+
+    assert!(matches!(action, LoopAction::CallLLM { .. }));
+    assert_eq!(sm.ctx.partitions.history.messages.len(), 1);
+
+    let obs = sm.take_observations();
+    assert!(obs.iter().any(|o| {
+        matches!(
+            o,
+            LoopObservation::Rollbacked {
+                checkpoint_history_len: 1,
+                reason: RollbackReason::FatalToolError { tool_name, error },
+                ..
+            } if tool_name == "write_file" && error == "disk corrupt"
+        )
+    }));
 }
 
 // ─── Criteria injection ─────────────────────────────────────────────────────
@@ -375,6 +479,7 @@ fn full_tool_cycle_then_text_completes() {
         output: Content::Text("3".into()),
         is_error: false,
         is_fatal: false,
+        error_kind: None,
         token_count: Some(5),
     }];
     let action = sm.feed(LoopEvent::ToolResults { results });

@@ -14,8 +14,8 @@ export interface CreatorVerifierMetrics {
 /**
  * CreatorVerifierMode — the simplest multi-agent collaboration pattern.
  *
- * Wires an executor + verifier from an AgentPool into a ContractDrivenHarness.
- * The executor creates, the verifier audits. Contexts are fully isolated.
+ * By default uses the kernel spawn path via `pool.ensureCoordinator()`.
+ * Pass `useLegacyRunners: true` to fall back to independent runner sessions.
  *
  * Usage:
  * ```ts
@@ -37,11 +37,21 @@ export class CreatorVerifierMode {
 
   constructor(
     private pool: AgentPool,
-    private options: { maxAttempts?: number } = {},
+    private options: {
+      maxAttempts?: number
+      /** Stable orchestration session for kernel lineage audit. */
+      coordinatorSessionId?: string
+      /** Opt out of kernel spawn path and use legacy independent runner sessions. */
+      useLegacyRunners?: boolean
+    } = {},
   ) {}
 
   async run(contract: VerificationContract): Promise<ContractOutcome> {
     this._total++
+
+    if (!this.options.useLegacyRunners) {
+      this.pool.ensureCoordinator(this.options.coordinatorSessionId)
+    }
 
     const harness = new ContractDrivenHarness(this.pool, contract, {
       maxAttempts: this.options.maxAttempts ?? 3,
@@ -93,14 +103,17 @@ export class OrchestrationMode {
 
   constructor(
     private pool: AgentPool,
-    private options: { maxAttempts?: number } = {},
+    private options: { maxAttempts?: number; coordinatorSessionId?: string; useLegacyRunners?: boolean } = {},
   ) {
     this.inner = new CreatorVerifierMode(pool, options)
   }
 
   async run(goal: string): Promise<ContractOutcome & { contract: VerificationContract }> {
+    if (!this.options.useLegacyRunners) {
+      this.pool.ensureCoordinator(this.options.coordinatorSessionId)
+    }
     // Step 1: orchestrator produces a VerificationContract
-    const contractJson = await this.pool.runOrchestrator(goal)
+    const contractJson = await this.pool.orchestrate(goal)
     const contract = this._parseContract(contractJson, goal)
 
     // Step 2: CreatorVerifierMode executes against the contract

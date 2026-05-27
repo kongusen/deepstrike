@@ -11,12 +11,14 @@ use deepstrike_core::types::message::{Content, ToolCall, ToolResult, ToolSchema}
 use futures::stream::FuturesUnordered;
 use futures::stream::{self, Stream, StreamExt};
 
-use crate::runtime::sandboxed_skill::{PythonSkillPolicy, SkillKind, execute_json_skill, execute_python_skill, resolve_skill_path};
 use crate::Result;
 use crate::governance::Governance;
 use crate::knowledge::KnowledgeSource;
 use crate::memory::DreamStore;
 use crate::run_event::RunEvent;
+use crate::runtime::sandboxed_skill::{
+    PythonSkillPolicy, SkillKind, execute_json_skill, execute_python_skill, resolve_skill_path,
+};
 use crate::tools::{RegisteredTool, ToolChunk, ToolStep, validate_tool_arguments};
 
 #[derive(Clone)]
@@ -49,6 +51,7 @@ fn make_result(call_id: compact_str::CompactString, output: String, is_error: bo
         output: Content::Text(output),
         is_error,
         is_fatal: false,
+        error_kind: None,
         token_count: None,
     }
 }

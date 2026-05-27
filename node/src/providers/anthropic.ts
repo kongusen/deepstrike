@@ -34,7 +34,9 @@ export class AnthropicProvider implements LLMProvider {
     options: AnthropicProviderOptions = {},
   ) {
     this.client = withServerRuntimeGuard(() => new Anthropic({
-      ...(options.authMode === "bearer" ? { authToken: apiKey } : { apiKey }),
+      ...(options.authMode === "bearer"
+        ? { authToken: apiKey, apiKey: null as unknown as string }
+        : { apiKey, authToken: null as unknown as string }),
       ...(options.baseURL ? { baseURL: options.baseURL } : {}),
     }))
     this.circuit = new CircuitBreaker()

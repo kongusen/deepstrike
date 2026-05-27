@@ -1,0 +1,6 @@
+{
+  "kind": "milestone_evidence",
+  "turn": 3,
+  "phase_id": "phase-1",
+  "evidence": ["all tests pass", "coverage > 80%"]
+}

@@ -20,7 +20,7 @@ use crate::types::agent::AgentRunSpec;
 use crate::types::capability::{CapabilityCommand, CapabilityDescriptor, CapabilityKind};
 use crate::types::message::{Message, ToolCall, ToolResult, ToolSchema};
 use crate::types::milestone::{MilestoneCheckResult, MilestoneContract};
-use crate::types::result::LoopResult;
+use crate::types::result::{LoopResult, SubAgentResult};
 use crate::types::signal::RuntimeSignal;
 use crate::types::skill::SkillMetadata;
 use crate::types::task::RuntimeTask;
@@ -117,6 +117,15 @@ pub enum KernelInputEvent {
     },
     MilestoneResult {
         result: MilestoneCheckResult,
+    },
+    /// Spawn a sub-agent: emits `AgentSpawned` with an isolation manifest.
+    SpawnSubAgent {
+        spec: AgentRunSpec,
+        parent_session_id: String,
+    },
+    /// Feed a completed sub-agent result back into the parent loop.
+    SubAgentCompleted {
+        result: SubAgentResult,
     },
     Timeout,
 }
@@ -517,6 +526,16 @@ impl KernelRuntime {
             KernelInputEvent::MilestoneResult { result } => {
                 self.sm.feed(LoopEvent::MilestoneResult { result })
             }
+            KernelInputEvent::SpawnSubAgent {
+                spec,
+                parent_session_id,
+            } => {
+                self.sm.spawn_sub_agent(spec, &parent_session_id);
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::SubAgentCompleted { result } => {
+                self.sm.feed(LoopEvent::SubAgentCompleted { result })
+            }
             KernelInputEvent::Timeout => self.sm.feed(LoopEvent::Timeout),
         };
         KernelStep::single(action, self.sm.take_observations())
@@ -628,5 +647,37 @@ mod tests {
             step.observations.as_slice(),
             [KernelObservation::CapabilityChanged { .. }]
         ));
+    }
+
+    #[test]
+    fn spawn_sub_agent_input_emits_agent_spawned() {
+        use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+            task: RuntimeTask::new("parent task"),
+            run_spec: None,
+        }));
+        runtime.state_machine_mut().take_observations();
+
+        let spec = AgentRunSpec::new(
+            AgentIdentity::sub_agent("worker", "worker-session"),
+            AgentRole::Implement,
+            "do work",
+        );
+        let step = runtime.step(KernelInput::new(KernelInputEvent::SpawnSubAgent {
+            spec,
+            parent_session_id: "parent-session".to_string(),
+        }));
+
+        assert!(step.actions.is_empty());
+        assert!(step.observations.iter().any(|o| matches!(
+            o,
+            KernelObservation::AgentSpawned {
+                agent_id,
+                parent_session_id,
+                ..
+            } if agent_id == "worker" && parent_session_id == "parent-session"
+        )));
     }
 }

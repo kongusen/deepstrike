@@ -1,4 +1,4 @@
-import type { AgentPool } from "./pool.js"
+import type { AgentPool, CoordinatorConfig } from "./pool.js"
 import { collectText } from "../runtime/runner.js"
 import type { VerificationContract, ContractCheckResult } from "./contract.js"
 import { formatContractForSystemPrompt, contractToCriteriaStrings } from "./contract.js"
@@ -23,6 +23,8 @@ export interface ContractOutcome {
 export interface ContractHarnessOptions {
   maxAttempts?: number
   onViolation?: (violations: Violation[]) => void
+  /** When set with pool.configureCoordinator(), enables kernel spawn path. */
+  coordinator?: CoordinatorConfig
 }
 
 /**
@@ -53,6 +55,13 @@ export class ContractDrivenHarness {
   ) {
     this.maxAttempts = options.maxAttempts ?? 3
     this.onViolation = options.onViolation
+    if (options.coordinator) {
+      this.pool.configureCoordinator(options.coordinator.opts, options.coordinator.sessionId)
+    }
+  }
+
+  async *stream(): AsyncIterable<ContractOutcome> {
+    yield await this.run()
   }
 
   async run(): Promise<ContractOutcome> {
@@ -72,17 +81,24 @@ export class ContractDrivenHarness {
         : ""
       const executorGoal = `${contractBlock}\n\n---\n\n${currentGoal}${violationNote}`
 
-      artifact = await collectText(
-        this.pool.get("executor").run({
-          sessionId: crypto.randomUUID(),
-          goal: executorGoal,
-          criteria: contractToCriteriaStrings(this.contract),
-        }),
-      )
+      if (this.pool.usesSpawnPath()) {
+        const execResult = await this.pool.spawn("executor", executorGoal, {
+          verificationContractId: this.contract.id,
+        })
+        artifact = execResult.result.finalMessage?.content ?? ""
+      } else {
+        artifact = await collectText(
+          this.pool.get("executor").run({
+            sessionId: crypto.randomUUID(),
+            goal: executorGoal,
+            criteria: contractToCriteriaStrings(this.contract),
+          }),
+        )
+      }
 
       // ── Phase 2: Verifier ──────────────────────────────────────────────────
       // Verifier sees: artifact + contract only. No executor history.
-      const auditText = await this.pool.runVerifier({ contract: this.contract, artifact })
+      const auditText = await this.pool.verify({ contract: this.contract, artifact })
 
       // ── Phase 3: Parse audit → ContractCheckResult[] ──────────────────────
       checkResults = this._parseAuditText(auditText)

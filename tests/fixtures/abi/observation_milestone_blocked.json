@@ -1,0 +1,6 @@
+{
+  "kind": "milestone_blocked",
+  "turn": 3,
+  "phase_id": "phase-1",
+  "reason": "criterion not met: tests must pass"
+}

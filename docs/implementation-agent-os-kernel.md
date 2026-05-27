@@ -219,7 +219,7 @@ cargo test --manifest-path rust/Cargo.toml
 6. [x] tokenizer / task-state update 纳入 `KernelInputEvent`
 7. [x] `RuntimeRunner` 重构为 input/action 驱动，不再散落 `sm.feed(...)` 细节（Rust/Node/Python/WASM SDK 已完成）
 8. [x] FFI 默认入口收口到 `KernelRuntime`，隐藏 `LoopStateMachine` / `ContextManager`（Node/PyO3/WASM `KernelRuntime` 读侧 helper 已补齐，旧 facade 已移除）
-9. [ ] Node / Python / WASM 绑定从 JSON ABI 过渡到强类型 API（或确认 JSON ABI 作为长期 FFI 边界）
+9. [x] Node / Python / WASM 绑定确认 JSON ABI 作为长期 FFI 边界（`step(String) -> String`，`version: 1` 冻结，schema 版本策略已写入 `spec-kernel-abi.md`）
 
 **已验证：**
 
@@ -235,9 +235,9 @@ PYTHONPATH=/Users/shan/work/uploads/deepstrike/python poetry run pytest -q
 **剩余收口任务：**
 
 1. [x] 明确旧 `DeepStrikeRuntime` / `LoopStateMachine` FFI：Node/PyO3/WASM public facade 删除（`91e0fc5`），core 白盒测试继续直接测内部状态机。
-2. [ ] 确认 JSON ABI 作为长期跨语言边界（当前三端 FFI 均已 `step(String) -> String`，建议直接冻结），更新 `spec-kernel-abi.md` 中 schema 版本策略。
-3. [x] 为 `KernelInput` / `KernelAction` / `KernelObservation` 增加四端 golden fixture（`tests/fixtures/abi/` 6 文件 + Rust t12 + Node/Python/WASM 测试文件已写，**untracked，待提交并跑通四端 CI**）。
-4. [ ] 更新 SDK public docs，明确 SDK 是 host effect driver，不再持有 runtime semantics。
+2. [x] 确认 JSON ABI 作为长期跨语言边界（`step(String) -> String`，`version: 1` 冻结，schema 版本策略已写入 `spec-kernel-abi.md`）。
+3. [x] 为 `KernelInput` / `KernelAction` / `KernelObservation` 增加四端 golden fixture（`tests/fixtures/abi/` 9 observation + 5 input/step 文件，Rust t12 + Node/Python/WASM 测试全绿）。
+4. [x] SDK public docs 已明确 SDK 是 host effect driver（`spec-kernel-abi.md` Collaboration 章节，`docs/architecture.md`）。
 
 **验收：**
 

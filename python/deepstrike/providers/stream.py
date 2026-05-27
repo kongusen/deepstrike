@@ -49,6 +49,8 @@ class ToolResultEvent:
     name: str = ""
     content: str = ""
     is_error: bool = False
+    is_fatal: bool = False
+    error_kind: str | None = None
 
 
 @dataclass
@@ -63,6 +65,7 @@ class DoneEvent:
     iterations: int = 0
     total_tokens: int = 0
     status: str = "success"  # mirrors LoopResult.termination: completed/max_turns/token_budget/timeout/user_abort/error
+    dream_result: "Any | None" = None
 
 
 @dataclass

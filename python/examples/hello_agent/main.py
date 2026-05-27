@@ -34,7 +34,7 @@ async def main(goal: str):
         max_turns=10,
     ))
 
-    async for event in runner.run_streaming(goal):
+    async for event in runner.run(goal):
         if isinstance(event, TextDelta):
             print(event.delta, end="", flush=True)
         elif isinstance(event, ToolCallEvent):

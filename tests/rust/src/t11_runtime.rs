@@ -133,8 +133,14 @@ async fn governance_denies_tool_on_plane() {
             _ => {}
         }
     }
-    assert!(saw_denied_event, "expected ToolDenied event from governance");
-    assert!(saw_denied_result, "expected error ToolResult from governance denial");
+    assert!(
+        saw_denied_event,
+        "expected ToolDenied event from governance"
+    );
+    assert!(
+        saw_denied_result,
+        "expected error ToolResult from governance denial"
+    );
 }
 
 #[tokio::test]
@@ -173,12 +179,20 @@ async fn governance_ask_user_emits_permission_request_event() {
         match evt.unwrap() {
             RunEvent::PermissionRequest { .. } => saw_permission_request = true,
             RunEvent::ToolResult { is_error: true, .. } => saw_denied_result = true,
-            RunEvent::ToolDenied { .. } => panic!("ask_user must not emit ToolDenied from the plane"),
+            RunEvent::ToolDenied { .. } => {
+                panic!("ask_user must not emit ToolDenied from the plane")
+            }
             _ => {}
         }
     }
-    assert!(saw_permission_request, "expected PermissionRequest event for ask_user verdict");
-    assert!(saw_denied_result, "expected error ToolResult when no resume handler");
+    assert!(
+        saw_permission_request,
+        "expected PermissionRequest event for ask_user verdict"
+    );
+    assert!(
+        saw_denied_result,
+        "expected error ToolResult when no resume handler"
+    );
 }
 
 #[tokio::test]
@@ -231,6 +245,7 @@ async fn wake_continues_after_tool_completed() {
                     output: Content::Text("pong".into()),
                     is_error: false,
                     is_fatal: false,
+                    error_kind: None,
                     token_count: None,
                 }],
             },
@@ -369,7 +384,9 @@ async fn reactive_compact_on_413_retry() {
                 ));
             }
             Ok(Box::new(futures::stream::iter(vec![Ok(
-                StreamEvent::TextDelta { delta: "recovered".into() },
+                StreamEvent::TextDelta {
+                    delta: "recovered".into(),
+                },
             )])))
         }
     }
@@ -378,30 +395,50 @@ async fn reactive_compact_on_413_retry() {
     let session_log = Arc::new(InMemorySessionLog::new());
     let session_id = "test-session".to_string();
 
-    session_log.append(&session_id, SessionEvent::RunStarted {
-        run_id: "r1".to_string(),
-        goal: "hi".to_string(),
-        criteria: vec![],
-        agent_id: None,
-        system_prompt: None,
-    }).await.unwrap();
+    session_log
+        .append(
+            &session_id,
+            SessionEvent::RunStarted {
+                run_id: "r1".to_string(),
+                goal: "hi".to_string(),
+                criteria: vec![],
+                agent_id: None,
+                system_prompt: None,
+            },
+        )
+        .await
+        .unwrap();
 
     for i in 0..3 {
-        session_log.append(&session_id, SessionEvent::LlmCompleted {
-            turn: i * 2,
-            message: Message::assistant("a".repeat(200)),
-            provider_replay: None,
-        }).await.unwrap();
+        session_log
+            .append(
+                &session_id,
+                SessionEvent::LlmCompleted {
+                    turn: i * 2,
+                    message: Message::assistant("a".repeat(200)),
+                    provider_replay: None,
+                },
+            )
+            .await
+            .unwrap();
 
-        session_log.append(&session_id, SessionEvent::LlmCompleted {
-            turn: i * 2 + 1,
-            message: Message::user("q".repeat(200)),
-            provider_replay: None,
-        }).await.unwrap();
+        session_log
+            .append(
+                &session_id,
+                SessionEvent::LlmCompleted {
+                    turn: i * 2 + 1,
+                    message: Message::user("q".repeat(200)),
+                    provider_replay: None,
+                },
+            )
+            .await
+            .unwrap();
     }
 
     let mut opts = default_runtime_opts(
-        Box::new(TooLongThenOkProvider { calls: calls.clone() }),
+        Box::new(TooLongThenOkProvider {
+            calls: calls.clone(),
+        }),
         LocalExecutionPlane::new(),
         session_log.clone(),
     );
@@ -415,7 +452,11 @@ async fn reactive_compact_on_413_retry() {
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 
     let events = session_log.read(&session_id, 0).await.unwrap();
-    assert!(events.iter().any(|e| matches!(e.event, SessionEvent::Compressed { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e.event, SessionEvent::Compressed { .. }))
+    );
 }
 
 // ─── Milestone contract: SM-level cascade → SessionEvent chain ───────────
@@ -426,7 +467,9 @@ async fn reactive_compact_on_413_retry() {
 /// `SessionEvent::MilestoneAdvanced` written to audit log.
 #[tokio::test]
 async fn milestone_pass_writes_session_event() {
-    use deepstrike_core::types::milestone::{MilestoneCheckResult, MilestoneContract, MilestonePhase};
+    use deepstrike_core::types::milestone::{
+        MilestoneCheckResult, MilestoneContract, MilestonePhase,
+    };
 
     let mut sm = LoopStateMachine::new(LoopPolicy {
         max_tokens: 128_000,
@@ -438,9 +481,9 @@ async fn milestone_pass_writes_session_event() {
         .phase(MilestonePhase::new("implement"));
     sm.load_milestone_contract(contract);
 
+    use deepstrike_core::scheduler::state_machine::{LoopAction, LoopEvent};
     use deepstrike_core::types::message::Role;
     use deepstrike_core::types::task::RuntimeTask;
-    use deepstrike_core::scheduler::state_machine::{LoopAction, LoopEvent};
 
     sm.start(RuntimeTask::new("build feature"));
 
@@ -463,7 +506,12 @@ async fn milestone_pass_writes_session_event() {
     let session_id = "milestone-chain-test";
 
     for obs in &observations {
-        if let LoopObservation::MilestoneAdvanced { turn, phase_id, capabilities_unlocked } = obs {
+        if let LoopObservation::MilestoneAdvanced {
+            turn,
+            phase_id,
+            capabilities_unlocked,
+        } = obs
+        {
             session_log
                 .append(
                     session_id,
@@ -489,18 +537,18 @@ async fn milestone_pass_writes_session_event() {
 
 #[tokio::test]
 async fn milestone_block_writes_session_event() {
-    use deepstrike_core::types::milestone::{MilestoneCheckResult, MilestoneContract, MilestonePhase};
-    use deepstrike_core::types::task::RuntimeTask;
     use deepstrike_core::scheduler::state_machine::{LoopAction, LoopEvent};
+    use deepstrike_core::types::milestone::{
+        MilestoneCheckResult, MilestoneContract, MilestonePhase,
+    };
+    use deepstrike_core::types::task::RuntimeTask;
 
     let mut sm = LoopStateMachine::new(LoopPolicy {
         max_tokens: 128_000,
         ..LoopPolicy::default()
     });
 
-    sm.load_milestone_contract(
-        MilestoneContract::new().phase(MilestonePhase::new("verify")),
-    );
+    sm.load_milestone_contract(MilestoneContract::new().phase(MilestonePhase::new("verify")));
     sm.start(RuntimeTask::new("verify task"));
 
     sm.feed(LoopEvent::LLMResponse {
@@ -516,7 +564,12 @@ async fn milestone_block_writes_session_event() {
     let session_id = "milestone-block-test";
 
     for obs in &observations {
-        if let LoopObservation::MilestoneBlocked { turn, phase_id, reason } = obs {
+        if let LoopObservation::MilestoneBlocked {
+            turn,
+            phase_id,
+            reason,
+        } = obs
+        {
             session_log
                 .append(
                     session_id,
@@ -563,7 +616,11 @@ async fn capability_mount_emits_capability_changed_session_event() {
     sm.mount_capability(CapabilityDescriptor::tool(schema), None, None);
 
     let observations = sm.take_observations();
-    assert_eq!(observations.len(), 1, "expected exactly one observation after mount");
+    assert_eq!(
+        observations.len(),
+        1,
+        "expected exactly one observation after mount"
+    );
 
     // Simulate what RuntimeRunner does: convert each observation to a SessionEvent.
     let session_log = Arc::new(InMemorySessionLog::new());
@@ -571,7 +628,16 @@ async fn capability_mount_emits_capability_changed_session_event() {
     let mut saw_capability_changed = false;
 
     for obs in &observations {
-        if let LoopObservation::CapabilityChanged { turn, added, removed, change_kind, capability_id, version, .. } = obs {
+        if let LoopObservation::CapabilityChanged {
+            turn,
+            added,
+            removed,
+            change_kind,
+            capability_id,
+            version,
+            ..
+        } = obs
+        {
             session_log
                 .append(
                     session_id,
@@ -598,12 +664,17 @@ async fn capability_mount_emits_capability_changed_session_event() {
             saw_capability_changed = true;
         }
     }
-    assert!(saw_capability_changed, "no CapabilityChanged observation emitted");
+    assert!(
+        saw_capability_changed,
+        "no CapabilityChanged observation emitted"
+    );
 
     // Confirm the event was written to the session log.
     let entries = session_log.read(session_id, 0).await.unwrap();
     assert!(
-        entries.iter().any(|e| matches!(e.event, SessionEvent::CapabilityChanged { .. })),
+        entries
+            .iter()
+            .any(|e| matches!(e.event, SessionEvent::CapabilityChanged { .. })),
         "SessionEvent::CapabilityChanged must be present in audit log after mount",
     );
 }
@@ -627,13 +698,26 @@ async fn capability_unmount_emits_capability_changed_session_event() {
     sm.unmount_capability(CapabilityKind::Tool, "ephemeral_tool");
 
     let observations = sm.take_observations();
-    assert_eq!(observations.len(), 1, "expected exactly one observation after unmount");
+    assert_eq!(
+        observations.len(),
+        1,
+        "expected exactly one observation after unmount"
+    );
 
     let session_log = Arc::new(InMemorySessionLog::new());
     let session_id = "cap-unmount-test";
 
     for obs in &observations {
-        if let LoopObservation::CapabilityChanged { turn, added, removed, change_kind, capability_id, version, .. } = obs {
+        if let LoopObservation::CapabilityChanged {
+            turn,
+            added,
+            removed,
+            change_kind,
+            capability_id,
+            version,
+            ..
+        } = obs
+        {
             session_log
                 .append(
                     session_id,
@@ -662,7 +746,9 @@ async fn capability_unmount_emits_capability_changed_session_event() {
 
     let entries = session_log.read(session_id, 0).await.unwrap();
     assert!(
-        entries.iter().any(|e| matches!(e.event, SessionEvent::CapabilityChanged { .. })),
+        entries
+            .iter()
+            .any(|e| matches!(e.event, SessionEvent::CapabilityChanged { .. })),
         "SessionEvent::CapabilityChanged must be present in audit log after unmount",
     );
 }

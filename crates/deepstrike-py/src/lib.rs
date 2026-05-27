@@ -565,18 +565,31 @@ struct ToolResult {
     #[pyo3(get, set)]
     is_error: bool,
     #[pyo3(get, set)]
+    is_fatal: bool,
+    #[pyo3(get, set)]
+    error_kind: Option<String>,
+    #[pyo3(get, set)]
     token_count: Option<u32>,
 }
 
 #[pymethods]
 impl ToolResult {
     #[new]
-    #[pyo3(signature = (call_id, output, is_error = false, token_count = None))]
-    fn new(call_id: String, output: String, is_error: bool, token_count: Option<u32>) -> Self {
+    #[pyo3(signature = (call_id, output, is_error = false, token_count = None, is_fatal = false, error_kind = None))]
+    fn new(
+        call_id: String,
+        output: String,
+        is_error: bool,
+        token_count: Option<u32>,
+        is_fatal: bool,
+        error_kind: Option<String>,
+    ) -> Self {
         Self {
             call_id,
             output,
             is_error,
+            is_fatal,
+            error_kind,
             token_count,
         }
     }

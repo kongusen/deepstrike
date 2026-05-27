@@ -1,0 +1,9 @@
+{
+  "kind": "capability_changed",
+  "turn": 1,
+  "added": ["write_file"],
+  "change_kind": "mount",
+  "capability_id": "write_file",
+  "mounted_by": "milestone:phase-1",
+  "mount_reason": "milestone_unlock"
+}

@@ -37,7 +37,7 @@ async def test_streaming_tool_chunks_are_forwarded_and_aggregated():
         max_turns=4,
     ))
 
-    events = [event async for event in runner.run_streaming("compose once")]
+    events = [event async for event in runner.run(goal="compose once")]
 
     assert any(isinstance(e, ToolDeltaEvent) and e.delta == "hello" for e in events)
     assert any(isinstance(e, ToolDeltaEvent) and e.delta == " " for e in events)

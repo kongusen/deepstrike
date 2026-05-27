@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "event": {
+    "kind": "spawn_sub_agent",
+    "parent_session_id": "parent-session-001",
+    "spec": {
+      "identity": {
+        "agent_id": "worker",
+        "session_id": "worker-session",
+        "is_sub_agent": true,
+        "parent_session_id": "parent-session-001"
+      },
+      "role": "implement",
+      "isolation": "shared",
+      "goal": "implement the API endpoint",
+      "capability_filter": {}
+    }
+  }
+}

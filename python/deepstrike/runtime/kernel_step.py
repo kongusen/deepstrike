@@ -39,13 +39,17 @@ def tool_schema_to_kernel(schema: ToolSchema) -> dict[str, Any]:
 
 
 def tool_result_to_kernel(result: ToolResult) -> dict[str, Any]:
-  return {
+  out = {
     "call_id": result.call_id,
     "output": result.output,
     "is_error": result.is_error,
-    "is_fatal": False,
+    "is_fatal": getattr(result, "is_fatal", False),
     "token_count": result.token_count,
   }
+  error_kind = getattr(result, "error_kind", None)
+  if error_kind is not None:
+    out["error_kind"] = error_kind
+  return out
 
 
 def task_update_to_kernel(update: TaskUpdate) -> dict[str, Any]:
