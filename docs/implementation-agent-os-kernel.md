@@ -109,7 +109,7 @@ KernelOutput:
 | Milestone | `MilestoneContract`、state machine 集成、`MilestonePolicy` 默认 pending、Node/Python/WASM 接 `EvaluateMilestone`、四端 audit 事件 | 缺外部 verifier hook 与 evidence audit |
 | Rollback | `LoopObservation::Rollbacked`、replay 截断、fatal-only rollback、recoverable error 保留 history | 缺 `ToolErrorKind` 一等分类与 transaction audit |
 | Capability | `CapabilityManifest`、`CapabilityChanged`、运行时 mount/unmount | 无 Pin/Lease 一等命令 |
-| Context VM | `ContextSectionRegistry`、6 分区、pin/cache policy | 缺 `ContextPage` / `ContextFault` / Artifacts 分区 |
+| Context VM | 四槽模型（`system` / `knowledge` / `task_state`+`signals` / `history`），prompt cache 断点，compression_log | 见 [context-partition-compression.md](./context-partition-compression.md) |
 | LSM | `ToolDecisionPipeline`、monotonic veto、四端 `ToolDenied` audit/stream event | 未标准化全链路 stage vocabulary |
 | Kernel ABI | `LoopAction` / `LoopEvent` / `LoopObservation` 内聚在 core；`KernelInput` / `KernelAction` / `KernelObservation` + `KernelRuntime.step()` 已落地；Rust/Node/Python/WASM runner 已迁入 step 驱动；Node/PyO3/WASM 旧 runtime facade 已移除 | 长期 JSON/强类型 ABI 策略待收口；仍需补 golden fixture 防字段漂移 |
 | Skill sandbox | Rust `sandboxed_skill`、watcher、Node/Python watcher、process sandbox 文案校正 | 资源策略仍是 hygiene，不是 OS-enforced sandbox |
@@ -124,14 +124,14 @@ KernelOutput:
 | PR 1 文档规划 | ✅ 已完成 | `6e1fecd docs: plan agent OS kernel roadmap` |
 | G0 — V2 Mergeable | ✅ 已通过 | `cargo check --workspace`、`cargo test -p deepstrike-core`、`cargo test --manifest-path rust/Cargo.toml`、Node/WASM build + targeted tests、Python targeted tests |
 | Phase 1 / PR 2：Kernel ABI 固化 | ✅ 已完成 | `b84af51 test(abi): add golden fixtures and confirm JSON ABI as long-term FFI boundary` — JSON ABI 冻结，四端 golden fixture CI 全绿，spec-kernel-abi.md 更新完毕 |
-| Phase 2 / PR 3：Virtual Context Memory | ✅ 已完成 | 6 分区 VM，ContextSnapshot，ArchiveStore，reconstruct_messages_with_fallback，PushArtifact，spec-context-compression-v2.md Phase A+B+C |
+| Phase 2 / PR 3：Virtual Context Memory | ✅ 已完成 → **四槽重构** | v2 六分区已 supersede；当前见 context-partition-compression.md |
 | Phase 3 / PR 4：Capability Bus | ✅ 已完成 | `6be8003 feat(p3): add mounted_by/mount_reason provenance to capability bus` — CapabilityCommand::Mount provenance，lease 自动 revoke，四端 CapabilityChanged audit，unlocked_by_milestone_id 延至 Phase 6 |
 | Phase 4 / PR 5：Security LSM | ✅ 已完成 | `d0b95e1 feat(p4): implement Security LSM governance pipeline` — 8 阶段 GovernancePipeline，deny monotonic，PermissionRequested/Resolved audit 三元组，四端 ToolDenied schema 统一，WASM Governance 全功能对齐，182 Rust 测试 |
 | Phase 5 / PR 6：Transaction Runtime | ✅ 已完成 | `TurnCheckpoint` 公共类型，`TransactionObservation` enum，`SessionEvent::CheckpointTaken`，`LoopObservation::CheckpointTaken`，`SessionEvent::Rollbacked` + repair.rs 精确截断，`ToolErrorKind` + `RollbackReason` 全变体，G5 gate 通过，`t13_transaction.rs` 9 项专属测试，193 Rust 测试 |
 | Phase 6 / PR 7：Milestone Contracts | ✅ 已完成 | `MilestoneVerifier`（5 种类型），`RetryPolicy { max_attempts }`，`MilestoneRollbackPolicy`（Terminate/Rollback/Continue），`MilestoneUnlockPolicy`，`required_evidence` 字段，`EvaluateMilestone` 携带 verifier + required_evidence，capability unlock 走 `mount_capability()` 带 provenance（`mounted_by = "milestone:{phase_id}"`），`MilestoneEvidence` session event，`milestone_blocked_count` 计数，`TerminationReason::MilestoneExceeded`，G6 gate 通过，`t14_milestone.rs` 11 项专属测试，204 Rust 测试 |
 | Phase 7 / PR 8：Sub-Agent Isolation | ✅ 已完成 | `ContextInheritance` enum，`IsolationManifest`（role-based context inheritance defaults + capability filter snapshot），`AgentIdentity.parent_session_id` lineage 字段，`LoopObservation::AgentSpawned`，`LoopEvent::SubAgentCompleted`，`spawn_sub_agent()` 方法，`KernelObservation::AgentSpawned` + `From<LoopObservation>`，`SessionEvent::AgentSpawned`（parent-child lineage audit record），runner 写 `AgentSpawned` session event，G7 gate 通过，`t15_sub_agent.rs` 7 项专属测试，211 Rust 测试 |
 
-**当前主线：** Phase 7（Sub-Agent Isolation）已完成。G7 gate 通过（sub-agent spawn 自动生成隔离 manifest；parent-child audit lineage 可追踪；replay 可独立恢复 sub-agent run）。**Phases 0-7 全部完成。**
+**当前主线：** Phase 7（Sub-Agent Isolation）已完成。**Phases 0–7 全部完成。** 后续：四槽 Context 重构（prompt caching、compression_log、sub-agent harness）已落地 — 见 [context-partition-compression.md](./context-partition-compression.md) 与 [spec-context-optimization-v3.md](./spec-context-optimization-v3.md)。
 
 **Phase 1 最新提交链：**
 
@@ -558,7 +558,7 @@ PR 1 与 PR 3 有重叠（milestone/rollback），可按实际 diff 大小拆分
 |---|---|
 | **G0 — V2 Mergeable** | workspace compile + core/SDK tests 全绿；无默认 auto-pass；rollback 仅 fatal |
 | **G1 — ABI Stable** | ✅ 四端仅 KernelInput/Output；FFI 无内部结构泄漏；golden fixture 四端 CI 通过；JSON ABI schema 已冻结 |
-| **G2 — Context VM** | ✅ 6 分区 + fault + replay repair 测试通过 |
+| **G2 — Context VM** | ✅ 四槽模型 + history 压缩 + compression_log + replay repair 测试通过 |
 | **G3 — Capability Bus** | ✅ mount/unmount/lease audit 完整；provenance 四端透传；unlocked_by_milestone_id 延至 Phase 6 |
 | **G4 — LSM** | ✅ deny monotonic 测试 + 四端 ToolDenied 一致；PermissionRequested/Resolved audit 三元组；WASM Governance 全功能对齐 |
 | **G5 — Transaction** | ✅ recoverable error 不 rollback；replay 精确截断；`CheckpointTaken` audit event；`TurnCheckpoint` + `TransactionObservation` 具名类型 |
@@ -574,7 +574,9 @@ PR 1 与 PR 3 有重叠（milestone/rollback），可按实际 diff 大小拆分
 | `docs/implementation-agent-os-kernel.md` | 本文档 — 主规划 |
 | `docs/spec-kernel-abi.md` | 阶段 1 新建 |
 | `docs/spec-runtime-v2-lifecycle.md` | 补 milestone / rollback / capability 事件 |
-| `docs/spec-context-compression-v2.md` | 阶段 2 对齐 VM contract |
+| `docs/context-partition-compression.md` | **当前** — 四槽模型、压缩 tier、Renderer、Renewal |
+| `docs/spec-context-compression-v2.md` | *(superseded)* 六分区 v2 设计 |
+| `docs/spec-context-optimization-v3.md` | P0/P1 性能优化（token 计数、prompt caching） |
 
 ---
 

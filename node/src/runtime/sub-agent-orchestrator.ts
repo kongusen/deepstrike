@@ -15,6 +15,10 @@ export interface SubAgentRunContext {
   spec: AgentRunSpec
   manifest: AgentSpawnedObservation
   sessionLog: SessionLog
+  harness?: {
+    evalProvider: import("../types.js").LLMProvider
+    maxAttempts?: number
+  }
 }
 
 function terminationFromStatus(status: string): TerminationReason | string {
@@ -69,6 +73,37 @@ export class SubAgentOrchestrator {
   }
 
   async run(ctx: SubAgentRunContext): Promise<SubAgentResult> {
+    if (ctx.harness) {
+      const { RuntimeRunner } = await import("./runner.js")
+      const { HarnessLoop } = await import("../harness/harness.js")
+      const permitted = new Set(ctx.manifest.permitted_capability_ids ?? [])
+      const filteredPlane = new FilteredExecutionPlane(ctx.parentOpts.executionPlane, permitted)
+      const childRunner = new RuntimeRunner({
+        ...ctx.parentOpts,
+        executionPlane: filteredPlane,
+        agentId: ctx.spec.identity.agentId,
+        sessionLog: ctx.sessionLog,
+      })
+      const loop = new HarnessLoop(childRunner, ctx.harness.evalProvider, {
+        maxAttempts: ctx.harness.maxAttempts ?? 3,
+      })
+      const outcome = await loop.run({
+        goal: ctx.spec.goal,
+        criteria: (ctx.spec.milestones?.phases.flatMap(p => p.criteria) ?? [])
+          .filter((t): t is string => typeof t === "string")
+          .map(text => ({ text, required: true })),
+      })
+      return {
+        agentId: ctx.spec.identity.agentId,
+        result: {
+          termination: outcome.passed ? "completed" : "error",
+          turnsUsed: outcome.iterations,
+          totalTokensUsed: outcome.totalTokens,
+          ...(outcome.result ? { finalMessage: { role: "assistant" as const, content: outcome.result, toolCalls: [] } } : {}),
+        },
+      }
+    }
+
     let done: DoneEvent | undefined
     let finalText = ""
     for await (const evt of this.stream(ctx)) {

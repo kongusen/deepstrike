@@ -97,11 +97,12 @@ export function toAnthropicMessages(
     if (msg.role === "assistant" && msg.toolCalls?.length) {
       const replay = nativeReplay?.(msg)
       if (replay) {
-        result.push({ role: "assistant", content: replay })
+        result.push({ role: "assistant", content: ensureAssistantToolText(replay) })
         continue
       }
       const blocks: Array<Record<string, unknown>> = []
       if (msg.content) blocks.push({ type: "text", text: msg.content })
+      else blocks.push({ type: "text", text: "Tool call requested." })
       blocks.push(...msg.toolCalls.map(tc => ({
         type: "tool_use",
         id: tc.id,
@@ -116,6 +117,13 @@ export function toAnthropicMessages(
   }
 
   return result
+}
+
+function ensureAssistantToolText(blocks: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  if (!blocks.some(b => b.type === "tool_use")) return blocks
+  if (blocks.some(b => b.type === "text" && String(b.text ?? "").trim())) return blocks
+  if (blocks.some(b => b.type === "thinking")) return blocks
+  return [{ type: "text", text: "Tool call requested." }, ...blocks]
 }
 
 // ─── OpenAI-compatible message conversion ────────────────────────────────────

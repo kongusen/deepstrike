@@ -272,10 +272,12 @@ fn criteria_injected_into_user_message() {
                 .collect();
             assert!(!user_msgs.is_empty());
             let text = user_msgs.last().unwrap().content.as_text().unwrap();
-            assert!(text.contains("Write code"));
-            assert!(text.contains("Criteria:"));
-            assert!(text.contains("1. Must handle errors"));
-            assert!(text.contains("2. Must be fast"));
+            assert_eq!(text, "Proceed with the task described in [TASK STATE].");
+            let state_text = context.turns.first().and_then(|m| m.content.as_text()).unwrap_or("");
+            assert!(state_text.contains("Write code"));
+            assert!(state_text.contains("criteria:"));
+            assert!(state_text.contains("Must handle errors"));
+            assert!(state_text.contains("Must be fast"));
         }
         _ => panic!("expected CallLLM"),
     }
@@ -296,8 +298,10 @@ fn no_criteria_means_plain_goal() {
                 .content
                 .as_text()
                 .unwrap();
-            assert_eq!(user_text, "Say hello");
+            assert_eq!(user_text, "Proceed with the task described in [TASK STATE].");
             assert!(!user_text.contains("Criteria:"));
+            let state_text = context.turns.first().and_then(|m| m.content.as_text()).unwrap_or("");
+            assert!(state_text.contains("Say hello"));
         }
         _ => panic!("expected CallLLM"),
     }
@@ -321,12 +325,7 @@ fn critical_signal_injects_interrupt_and_re_reasons() {
     let action = sm.feed(LoopEvent::Signal { signal: sig });
     assert!(matches!(action, LoopAction::CallLLM { .. }));
 
-    let has_interrupt = sm.ctx.partitions.working.messages.iter().any(|m| {
-        m.content
-            .as_text()
-            .map(|t| t.contains("[INTERRUPT]"))
-            .unwrap_or(false)
-    });
+    let has_interrupt = sm.ctx.partitions.signals.iter().any(|t| t.contains("[INTERRUPT]"));
     assert!(has_interrupt);
 }
 
@@ -346,12 +345,7 @@ fn high_urgency_signal_injects_note() {
     let action = sm.feed(LoopEvent::Signal { signal: sig });
     assert!(matches!(action, LoopAction::CallLLM { .. }));
 
-    let has_signal = sm.ctx.partitions.working.messages.iter().any(|m| {
-        m.content
-            .as_text()
-            .map(|t| t.contains("[SIGNAL]"))
-            .unwrap_or(false)
-    });
+    let has_signal = sm.ctx.partitions.signals.iter().any(|t| t.contains("[SIGNAL]"));
     assert!(has_signal);
 }
 

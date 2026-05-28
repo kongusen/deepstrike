@@ -130,19 +130,6 @@ impl RuntimeRunner {
         self.plane.as_ref()
     }
 
-    pub fn push_artifact(
-        &self,
-        message: deepstrike_core::types::message::Message,
-        tokens: Option<u32>,
-    ) {
-        let active = self.active_kernel.lock().unwrap();
-        if let Some(kernel_arc) = &*active {
-            let mut kernel = kernel_arc.lock().unwrap();
-            let token_count = tokens.unwrap_or_else(|| kernel.state_machine().ctx.engine.count_message(&message));
-            kernel.state_machine_mut().ctx.push_artifact(message, token_count.max(1));
-        }
-    }
-
     pub async fn execute(&self, goal: &str) -> Result<String> {
         collect_text(self.run_streaming(goal, &[], None, None).await?).await
     }
@@ -413,7 +400,7 @@ impl RuntimeRunner {
                 kernel_apply(
                     &mut kernel,
                     &mut pending_observations,
-                    KernelInputEvent::AddMemoryMessage {
+                    KernelInputEvent::AddKnowledgeMessage {
                         content: mem.clone(),
                         tokens,
                     },
@@ -691,6 +678,8 @@ impl RuntimeRunner {
                             &mut pending_observations,
                             KernelInputEvent::ProviderResult {
                                 message: assistant.clone(),
+                                observed_input_tokens: None,
+                                observed_output_tokens: None,
                             },
                         );
                         self.log(
@@ -1384,8 +1373,11 @@ fn rendered_context_from_messages(
             turns.push(message);
         }
     }
+    let system_text = system_parts.join("\n\n");
     deepstrike_core::context::renderer::RenderedContext {
-        system_text: system_parts.join("\n\n"),
+        system_text: system_text.clone(),
+        system_stable: system_text,
+        system_knowledge: String::new(),
         turns,
     }
 }

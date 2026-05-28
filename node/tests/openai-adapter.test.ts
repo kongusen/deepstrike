@@ -20,6 +20,7 @@ describe("OpenAIChatAdapter", () => {
   it("normalizes chat tool calls", () => {
     const adapter = new OpenAIChatAdapter()
     expect(adapter.normalizeToolCalls([{
+      type: "function",
       id: "call_1",
       function: { name: "lookup", arguments: '{"q":"x"}' },
     }])).toEqual([{ id: "call_1", name: "lookup", arguments: '{"q":"x"}' }])

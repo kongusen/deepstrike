@@ -67,7 +67,7 @@ pub enum KernelInputEvent {
         content: String,
         tokens: u32,
     },
-    AddMemoryMessage {
+    AddKnowledgeMessage {
         content: String,
         tokens: u32,
     },
@@ -88,11 +88,6 @@ pub enum KernelInputEvent {
     LoadMilestoneContract {
         contract: MilestoneContract,
     },
-    PushArtifact {
-        message: Message,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tokens: Option<u32>,
-    },
     ForceCompact,
     UpdateTask {
         update: TaskUpdate,
@@ -108,6 +103,10 @@ pub enum KernelInputEvent {
     Resume,
     ProviderResult {
         message: Message,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        observed_input_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        observed_output_tokens: Option<u32>,
     },
     ToolResults {
         results: Vec<ToolResult>,
@@ -445,12 +444,11 @@ impl KernelRuntime {
                 self.sm.ctx.set_plan_tool_enabled(enabled);
                 return KernelStep::empty(self.sm.take_observations());
             }
-            KernelInputEvent::SetTokenizer { name } => {
-                self.sm.ctx.engine = match name.as_str() {
-                    "tiktoken_cl100k" | "cl100k" => ContextTokenEngine::cl100k(),
-                    "tiktoken_o200k" | "o200k" => ContextTokenEngine::o200k(),
-                    _ => ContextTokenEngine::char_approx(),
-                };
+            KernelInputEvent::SetTokenizer { .. } => {
+                // Local BPE tokenisers are no longer used — accuracy comes from
+                // observed_input_tokens reported by the provider API (P0-1 Step 2).
+                // char_approx is always used for pre-flight truncation estimates.
+                self.sm.ctx.engine = ContextTokenEngine::char_approx();
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::AddSystemMessage { content, tokens } => {
@@ -461,12 +459,8 @@ impl KernelRuntime {
                     .push(Message::system(content), tokens.max(1));
                 return KernelStep::empty(self.sm.take_observations());
             }
-            KernelInputEvent::AddMemoryMessage { content, tokens } => {
-                self.sm
-                    .ctx
-                    .partitions
-                    .memory
-                    .push(Message::user(content), tokens.max(1));
+            KernelInputEvent::AddKnowledgeMessage { content, tokens } => {
+                self.sm.ctx.partitions.knowledge.push(Message::system(content), tokens.max(1));
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::AddHistoryMessage { message, tokens } => {
@@ -493,12 +487,6 @@ impl KernelRuntime {
                 self.sm.load_milestone_contract(contract);
                 return KernelStep::empty(self.sm.take_observations());
             }
-            KernelInputEvent::PushArtifact { message, tokens } => {
-                let token_count =
-                    tokens.unwrap_or_else(|| self.sm.ctx.engine.count_message(&message));
-                self.sm.ctx.push_artifact(message, token_count.max(1));
-                return KernelStep::empty(self.sm.take_observations());
-            }
             KernelInputEvent::ForceCompact => {
                 self.sm.force_compact();
                 return KernelStep::empty(self.sm.take_observations());
@@ -516,7 +504,14 @@ impl KernelRuntime {
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::Resume => self.sm.resume_after_preload(),
-            KernelInputEvent::ProviderResult { message } => {
+            KernelInputEvent::ProviderResult {
+                message,
+                observed_input_tokens,
+                observed_output_tokens: _,
+            } => {
+                if let Some(tokens) = observed_input_tokens {
+                    self.sm.ctx.set_observed_prompt_tokens(tokens);
+                }
                 self.sm.feed(LoopEvent::LLMResponse { message })
             }
             KernelInputEvent::ToolResults { results } => {
@@ -570,6 +565,8 @@ mod tests {
         }));
         let step = runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
             message: Message::assistant("done"),
+            observed_input_tokens: None,
+            observed_output_tokens: None,
         }));
 
         assert!(matches!(
@@ -611,22 +608,16 @@ mod tests {
     }
 
     #[test]
-    fn push_artifact_enters_artifacts_partition() {
+    fn add_knowledge_message_enters_knowledge_partition() {
         let mut runtime = KernelRuntime::new(LoopPolicy::default());
-        let step = runtime.step(KernelInput::new(KernelInputEvent::PushArtifact {
-            message: Message::assistant("artifact content"),
-            tokens: Some(10),
+        let step = runtime.step(KernelInput::new(KernelInputEvent::AddKnowledgeMessage {
+            content: "skill: debug".to_string(),
+            tokens: 10,
         }));
 
         assert!(step.actions.is_empty());
         assert_eq!(
-            runtime
-                .state_machine()
-                .ctx
-                .partitions
-                .artifacts
-                .messages
-                .len(),
+            runtime.state_machine().ctx.partitions.knowledge.messages.len(),
             1
         );
     }

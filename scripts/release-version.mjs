@@ -7,7 +7,6 @@ const cargoWorkspacePackages = [
   "deepstrike-node",
   "deepstrike-py",
   "deepstrike-sdk",
-  "deepstrike-tokenizer",
   "deepstrike-wasm",
 ]
 
@@ -111,12 +110,11 @@ function updateCargoToml(text, version) {
     `$1${version}$2`,
     "Cargo.toml deepstrike-core workspace dependency",
   )
-  return replaceRequired(
-    next,
-    /(deepstrike-tokenizer = \{ path = "crates\/deepstrike-tokenizer", version = ")[^"]+(" \})/,
-    `$1${version}$2`,
-    "Cargo.toml deepstrike-tokenizer workspace dependency",
-  )
+  const tokenizerPattern = /(deepstrike-tokenizer = \{ path = "crates\/deepstrike-tokenizer", version = ")[^"]+(" \})/
+  if (tokenizerPattern.test(next)) {
+    next = next.replace(tokenizerPattern, `$1${version}$2`)
+  }
+  return next
 }
 
 function updateCargoLock(text, version) {
@@ -142,12 +140,17 @@ function updatePythonProject(text, version) {
 }
 
 function updateReadme(text, version) {
-  return replaceRequired(
+  let next = replaceRequired(
     text,
     /(deepstrike-sdk = ")[^"]+(")/,
     `$1${version}$2`,
     "README.md deepstrike-sdk example version",
   )
+  next = next.replace(/Version \*\*[^*]+\*\*/, `Version **${version}**`)
+  next = next.replace(/npm install @deepstrike\/sdk@[^\s\n]+/, `npm install @deepstrike/sdk@${version}`)
+  next = next.replace(/pip install deepstrike==[^\s\n]+/, `pip install deepstrike==${version}`)
+  next = next.replace(/## Kernel \(v[^)]+\)/, `## Kernel (v${version})`)
+  return next
 }
 
 function updateNodeLock(lock, version, platformNames) {

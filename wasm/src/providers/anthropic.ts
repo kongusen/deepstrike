@@ -2,7 +2,12 @@ import type { RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta
 import { assistantReplayKey, collectStreamMessage, toAnthropicMessages } from "./base.js"
 
 function buildAnthropicTools(tools: ToolSchema[]) {
-  return tools.map(t => ({ name: t.name, description: t.description, input_schema: JSON.parse(t.parameters) }))
+  return tools.map((t, i) => ({
+    name: t.name,
+    description: t.description,
+    input_schema: JSON.parse(t.parameters),
+    ...(i === tools.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {}),
+  }))
 }
 
 export class AnthropicProvider implements LLMProvider {
@@ -30,7 +35,14 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
-    const system = context.systemText || undefined
+    const systemBlocks: Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }> = []
+    if (context.systemStable) {
+      systemBlocks.push({ type: "text", text: context.systemStable, cache_control: { type: "ephemeral" } })
+    }
+    if (context.systemKnowledge) {
+      systemBlocks.push({ type: "text", text: context.systemKnowledge, cache_control: { type: "ephemeral" } })
+    }
+    const system = systemBlocks.length ? systemBlocks : (context.systemText || undefined)
     const msgs = toAnthropicMessages(context, message =>
       this.nativeAssistantBlocks.get(assistantReplayKey(message))
     )
@@ -53,6 +65,7 @@ export class AnthropicProvider implements LLMProvider {
         "x-api-key": this.apiKey,
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
+        "anthropic-beta": "prompt-caching-2024-07-31",
       },
       body: JSON.stringify(body),
     })
@@ -83,9 +96,13 @@ export class AnthropicProvider implements LLMProvider {
               | { input_tokens?: number; output_tokens?: number }
               | undefined
             if (usage?.input_tokens != null) {
+              const inputTokens = usage.input_tokens ?? 0
+              const outputTokens = usage.output_tokens ?? 0
               yield {
                 type: "usage",
-                totalTokens: usage.input_tokens + (usage.output_tokens ?? 0),
+                totalTokens: inputTokens + outputTokens,
+                inputTokens,
+                outputTokens,
               } as UsageEvent
             }
           } else if (evt.type === "content_block_start") {

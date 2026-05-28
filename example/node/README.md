@@ -20,7 +20,7 @@ FlashNote 是**常驻守护进程**，同时支持三条输入路径，产出汇
 | `02_runtime` | `RuntimeRunner.run`、`FileSessionLog` | `src/runtime.ts` | 个人/社区捕获 `maxTurns=5` 短回路；`/research` 后切 `maxTurns=20`；每次运行写入事件日志，可用 `wake(sessionId)` 恢复 |
 | `03_tools` | `tool()`、`executeTools()` | `src/tools/*.ts` | 注册 8 个工具（详见下表） |
 | `04_skills` | `scanSkillDir()`、`skillDir` | `skills/*.md` | LLM 在不同阶段自动挑套路，不硬编码 prompt |
-| `05_memory` | `WorkingMemory`、`DreamStore`、`RuntimeRunner.dream()` | `src/memory/{working,dream_store}.ts` | 当批上下文用 WorkingMemory；session 结束调 `dream()` 沉淀主题图谱，下次召回 |
+| `05_memory` | `WorkingMemory`、`DreamStore`、`initialMemory`、`RuntimeRunner.dream()` | `src/memory/{working,dream_store}.ts` | SDK WorkingMemory 辅助当批状态；`initialMemory` → Slot 2；session 结束调 `dream()` 沉淀 |
 | `06_knowledge` | `KnowledgeSource.retrieve()` | `src/knowledge/archive_source.ts` | archive 同时作为个人知识库和社区语料库，检索时按来源权重区分 |
 | `07_harness` | `HarnessLoop`（LLM-as-judge） | `src/harness/{note,contribution,report}_judge.ts` | 三套 criteria（见下），未达标重处理 ≤2 次 |
 | `08_signals` | `SignalGateway`、`ScheduledPrompt` | `src/signals/{inbox_watcher,cli_bridge}.ts` | 定时扫 inbox + stdin 接 `/dump` `/interview` `/research` `/export` `/export-dataset` `/stop` |

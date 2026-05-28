@@ -269,6 +269,13 @@ console.log(skills) // [{ name: "summarize", description: "..." }, ...]
 
 ## 6. 知识检索 (Knowledge)
 
+内核采用**四槽模型**（见 [context-partition-compression.md](./context-partition-compression.md)）。知识有两条路径：
+
+| 路径 | 落地位置 |
+|------|----------|
+| `knowledge(query)` meta-tool | **history**（tool result，模型需在对话流中看到） |
+| `initialMemory` / `add_knowledge_message` | **Slot 2**（`systemKnowledge`，Anthropic 可 cache） |
+
 ```typescript
 import type { KnowledgeSource } from "deepstrike"
 
@@ -294,6 +301,8 @@ const runner = new RuntimeRunner({
 ## 7. 记忆系统 (Memory)
 
 ### 7.1 WorkingMemory
+
+SDK 侧临时键值存储。**不是**内核已删除的 `working` 分区。结构化任务状态在 `task_state` 中，渲染进 Slot 3（`turns[0]`）。
 
 ```typescript
 import { WorkingMemory } from "deepstrike"
@@ -323,8 +332,10 @@ const runner = new RuntimeRunner({
   maxTokens: 4096,
   dreamStore: new MyDreamStore(),
   agentId: "my-agent-1",
+  initialMemory: ["Prior session: user prefers JWT with RS256."],  // Slot 2
 })
 
+// memory(query) 检索结果 → history；initialMemory → Slot 2
 // 触发记忆整合
 const result = await runner.dream("my-agent-1", Date.now())
 console.log(`${result.sessionsProcessed} sessions, ${result.insightsExtracted} insights`)
@@ -444,6 +455,20 @@ const outcome = await harness.run({
 console.log(outcome.passed, outcome.feedback)
 ```
 
+### 10.4 子 Agent × HarnessLoop
+
+配置 `subAgentHarness` 后，`spawnSubAgent()` 会自动通过 `HarnessLoop` + `EvalPipeline` 评估子 agent 输出；criteria 来自 `AgentRunSpec.milestones.phases[].criteria`。未配置时走原有直接运行路径。
+
+```typescript
+const runner = new RuntimeRunner({
+  provider,
+  sessionLog,
+  executionPlane,
+  maxTokens: 4096,
+  subAgentHarness: { evalProvider, maxAttempts: 3 },
+})
+```
+
 ---
 
 ## 流式事件类型
@@ -521,7 +546,7 @@ if (HandoffBus.requiresEscalation(outcome.handoff)) {
   console.log("Blocked on:", outcome.handoff.blockedOn)
 }
 const note = HandoffBus.toContextNote(outcome.handoff)
-// 注入下一轮 Agent 的 working 分区
+// 注入下一轮 Agent 的 State turn（Slot 3 / turns[0]）
 ```
 
 ### 11.4 OrchestrationMode — 三角色完整流
@@ -614,11 +639,21 @@ for await (const evt of runner.run({ sessionId: "s1", goal: "write a design" }))
 Node.js SDK 支持完全隔离的子智能体生成，并遵循内核 Isolation Manifest 过滤其拥有的能力：
 
 ```typescript
+const runner = new RuntimeRunner({
+  provider,
+  sessionLog,
+  executionPlane,
+  maxTokens: 4096,
+  // 可选：子 agent 自动走 HarnessLoop 评估
+  subAgentHarness: { evalProvider, maxAttempts: 3 },
+})
+
 const spec = {
   identity: { agentId: "sub-worker-1", sessionId: "sub-session-001" },
   role: "implement",
   goal: "写一份文件",
   isolation: "read_only", // 隔离级别
+  milestones: { phases: [{ id: "p1", criteria: ["文件包含完整章节"] }] },
 }
 
 // 必须在父智能体运行的 context 中调用
@@ -631,13 +666,4 @@ for await (const evt of runner.spawnSubAgent(spec)) {
 
 ### 12.3 产物推送 (Artifacts)
 
-为了防止模型将极大的文本/文件输出直接作为 prompt 历史上下文传回导致膨胀，可以在 active run 期间将大文件输出以“产物”形式推送：
-
-```typescript
-runner.pushArtifact({
-  role: "assistant",
-  content: "这里是极长的大文件内容/代码/报告...",
-}, 1000) // 第二个参数可选指定 token 数
-```
-
-```
+> **已移除。** 四槽重构后 artifacts 分区已移除。请使用 `initialMemory` → Slot 2，或依赖 history 压缩 tier 处理大输出。

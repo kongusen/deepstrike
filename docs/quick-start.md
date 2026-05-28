@@ -246,6 +246,7 @@ Pass an array of content parts instead of a plain string to include images along
 // or by building RenderedContext turns before calling the provider directly.
 // RuntimeRunner goals are plain strings; attach images in a custom provider
 // or pre-seed context via system_prompt / initial_memory for simple cases.
+// initial_memory → Slot 2 (system_knowledge); system_prompt → Slot 1 (system_stable).
 ```
 
 ### Python

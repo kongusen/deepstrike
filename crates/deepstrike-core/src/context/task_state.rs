@@ -1,5 +1,16 @@
 use serde::{Deserialize, Serialize};
 
+/// One entry in the compression log — records what happened at each compression event.
+/// All tiers write here; the log is append-only and never overwritten.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionEntry {
+    /// Compression tier label: snip_compact | micro_compact | context_collapse | auto_compact
+    pub action: String,
+    /// Human-readable summary (tool names, message counts, token counts).
+    /// Empty for Snip/Micro which only record truncation stats.
+    pub summary: String,
+}
+
 /// Persistent task state that lives in the working partition.
 /// Survives compression, renewal, and wake/resume cycles because the working
 /// partition is `compressible = false`.
@@ -15,13 +26,18 @@ pub struct TaskState {
     pub current_step: Option<usize>,
     /// Free-text progress note updated after each significant action.
     pub progress: String,
-    /// Ephemeral scratch space. Cleared on renewal.
+    /// Ephemeral scratch space for model use. Cleared on renewal. NOT used by the
+    /// compression pipeline (use compression_log instead).
     pub scratchpad: String,
     /// Reasons the current step cannot proceed.
     pub blocked_on: Vec<String>,
     /// Call IDs or artifact hashes that must be preserved from compression.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preserved_refs: Vec<String>,
+    /// Append-only log of all compression events. Never overwritten.
+    /// Rendered into systemVolatile so the model always sees compression history.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compression_log: Vec<CompressionEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,7 +107,28 @@ impl TaskState {
             lines.push(format!("scratchpad: {}", self.scratchpad));
         }
 
+        // Render the most recent compression events (cap at 3 to limit token cost).
+        if !self.compression_log.is_empty() {
+            lines.push("compression_history:".to_string());
+            let start = self.compression_log.len().saturating_sub(3);
+            for entry in &self.compression_log[start..] {
+                if entry.summary.is_empty() {
+                    lines.push(format!("  [{}]", entry.action));
+                } else {
+                    lines.push(format!("  [{}] {}", entry.action, entry.summary));
+                }
+            }
+        }
+
         lines.join("\n")
+    }
+
+    /// Append a compression event to the log. Never overwrites existing entries.
+    pub fn log_compression(&mut self, action: &str, summary: String) {
+        self.compression_log.push(CompressionEntry {
+            action: action.to_string(),
+            summary,
+        });
     }
 
     pub fn apply(&mut self, update: TaskUpdate) {

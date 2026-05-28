@@ -60,16 +60,17 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   private buildTools(tools: ToolSchema[]) {
-    return tools.map(t => ({
+    return tools.map((t, i) => ({
       name: t.name,
       description: t.description,
       input_schema: JSON.parse(t.parameters),
+      ...(i === tools.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {}),
     }))
   }
 
   async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
-    const system = context.systemText || undefined
+    const system = this.buildSystem(context)
     const msgs = this.buildMessages(context)
     const requestExtensions = this.requestExtensions(extensions)
 
@@ -94,7 +95,7 @@ export class AnthropicProvider implements LLMProvider {
             if (tc) toolCalls.push(tc)
           }
         }
-        const message = { role: "assistant" as const, content, tokenCount: resp.usage.input_tokens + resp.usage.output_tokens, toolCalls }
+        const message = { role: "assistant" as const, content, tokenCount: resp.usage.output_tokens, toolCalls }
         this.rememberNativeBlocks(message, resp.content as unknown as Array<Record<string, unknown>>)
         return message
       } catch (err) {
@@ -107,7 +108,7 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
-    const system = context.systemText || undefined
+    const system = this.buildSystem(context)
     const msgs = this.buildMessages(context)
     const requestExtensions = this.requestExtensions(extensions)
     const toolBlocks: Record<number, { id: string; name: string; argsBuf: string }> = {}
@@ -129,8 +130,10 @@ export class AnthropicProvider implements LLMProvider {
       if (evt.type === "message_start" || evt.type === "message_delta") {
         const usage = evt.usage ?? evt.message?.usage
         if (usage) {
-          totalTokens = usage.input_tokens + (usage.output_tokens ?? 0)
-          yield { type: "usage", totalTokens } as StreamEvent
+          const inputTokens = usage.input_tokens ?? 0
+          const outputTokens = usage.output_tokens ?? 0
+          totalTokens = inputTokens + outputTokens
+          yield { type: "usage", totalTokens, inputTokens, outputTokens } as StreamEvent
         }
       } else if (evt.type === "content_block_start") {
         nativeBlocks[evt.index] = { ...(evt.content_block as unknown as Record<string, unknown>) }
@@ -196,10 +199,30 @@ export class AnthropicProvider implements LLMProvider {
     ) as unknown as AsyncIterable<any>
   }
 
+  private buildSystem(context: RenderedContext): Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }> | string | undefined {
+    if (!context.systemStable && !context.systemKnowledge) {
+      return context.systemText || undefined
+    }
+    const blocks: Array<{ type: "text"; text: string; cache_control: { type: "ephemeral" } }> = []
+    if (context.systemStable) {
+      blocks.push({ type: "text", text: context.systemStable, cache_control: { type: "ephemeral" } })
+    }
+    if (context.systemKnowledge) {
+      blocks.push({ type: "text", text: context.systemKnowledge, cache_control: { type: "ephemeral" } })
+    }
+    return blocks.length ? blocks : undefined
+  }
+
   private buildMessages(context: RenderedContext): Anthropic.MessageParam[] {
-    return toAnthropicMessages(context.turns, message =>
+    const msgs = toAnthropicMessages(context.turns, message =>
       this.nativeAssistantBlocks.get(assistantReplayKey(message))
     ) as unknown as Anthropic.MessageParam[]
+
+    if (msgs.length === 0) {
+      msgs.push({ role: "user", content: "Proceed." })
+    }
+
+    return msgs
   }
 
   private rememberNativeBlocks(

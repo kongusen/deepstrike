@@ -22,6 +22,7 @@ pub trait Compressor: Send + Sync {
         partitions: &mut ContextPartitions,
         target_tokens: u32,
         max_tokens: u32,
+        preserve_k: usize,
         summarizer: &dyn Summarizer,
         engine: &ContextTokenEngine,
     ) -> CompressResult;
@@ -38,6 +39,7 @@ impl Compressor for SnipCompactor {
         partitions: &mut ContextPartitions,
         _target_tokens: u32,
         max_tokens: u32,
+        _preserve_k: usize,
         _summarizer: &dyn Summarizer,
         engine: &ContextTokenEngine,
     ) -> CompressResult {
@@ -93,6 +95,14 @@ impl Compressor for SnipCompactor {
         }
 
         partition.token_count = partition.token_count.saturating_sub(saved);
+
+        if saved > 0 {
+            partitions.task_state.log_compression(
+                "snip_compact",
+                format!("{saved} tokens truncated from oversized messages"),
+            );
+        }
+
         CompressResult {
             tokens_saved: saved,
             summary: None,
@@ -195,6 +205,7 @@ impl Compressor for MicroCompactor {
         partitions: &mut ContextPartitions,
         _target_tokens: u32,
         _max_tokens: u32,
+        _preserve_k: usize,
         _summarizer: &dyn Summarizer,
         engine: &ContextTokenEngine,
     ) -> CompressResult {
@@ -269,6 +280,14 @@ impl Compressor for MicroCompactor {
         }
 
         partition.token_count = partition.token_count.saturating_sub(saved);
+
+        if saved > 0 {
+            partitions.task_state.log_compression(
+                "micro_compact",
+                format!("{saved} tokens excerpted from tool results"),
+            );
+        }
+
         CompressResult {
             tokens_saved: saved,
             summary: None,
@@ -286,6 +305,7 @@ impl Compressor for CollapseCompactor {
         partitions: &mut ContextPartitions,
         target_tokens: u32,
         _max_tokens: u32,
+        preserve_k: usize,
         summarizer: &dyn Summarizer,
         engine: &ContextTokenEngine,
     ) -> CompressResult {
@@ -293,8 +313,8 @@ impl Compressor for CollapseCompactor {
         let mut saved = 0u32;
         let mut n = 0usize;
 
-        // Preserve last K = 2 turns (4 messages) to maintain conversational context
-        let limit = partition.messages.len().saturating_sub(4);
+        let keep = preserve_k * 2; // turns → messages (user + assistant per turn)
+        let limit = partition.messages.len().saturating_sub(keep);
         for i in 0..limit {
             if partition.token_count.saturating_sub(saved) <= target_tokens {
                 break;
@@ -315,27 +335,20 @@ impl Compressor for CollapseCompactor {
         let archived: Vec<Message> = partition.messages.drain(..n).collect();
         let summary_text =
             summarizer.summarize(&archived, PressureAction::ContextCollapse, target_tokens);
-        let summary_tokens = engine.count(&summary_text);
 
-        let mut summary_msg = Message::assistant(summary_text.clone());
-        summary_msg.token_count = Some(summary_tokens);
+        partition.token_count = partition.token_count.saturating_sub(saved);
 
-        partition.messages.insert(0, summary_msg);
-
-        partition.token_count = partition
-            .token_count
-            .saturating_sub(saved)
-            .saturating_add(summary_tokens);
+        partitions.task_state.log_compression("context_collapse", summary_text.clone());
 
         CompressResult {
-            tokens_saved: saved.saturating_sub(summary_tokens),
+            tokens_saved: saved,
             summary: Some(summary_text),
             archived,
         }
     }
 }
 
-/// rho > auto_threshold: collapse history entirely except last K turns, updating scratchpad.
+/// rho > auto_threshold: collapse history entirely except last K turns, updating compression log.
 pub struct AutoCompactor;
 
 impl Compressor for AutoCompactor {
@@ -344,6 +357,7 @@ impl Compressor for AutoCompactor {
         partitions: &mut ContextPartitions,
         _target_tokens: u32,
         _max_tokens: u32,
+        preserve_k: usize,
         summarizer: &dyn Summarizer,
         engine: &ContextTokenEngine,
     ) -> CompressResult {
@@ -357,9 +371,8 @@ impl Compressor for AutoCompactor {
         }
 
         let original_tokens = partition.token_count;
-
-        // Preserve last K = 2 turns (4 messages)
-        let limit = partition.messages.len().saturating_sub(4);
+        let keep = preserve_k * 2;
+        let limit = partition.messages.len().saturating_sub(keep);
         let (archived, kept): (Vec<Message>, Vec<Message>) = if limit > 0 {
             let archived_msgs = partition.messages.drain(..limit).collect();
             let kept_msgs = partition.messages.drain(..).collect();
@@ -381,12 +394,6 @@ impl Compressor for AutoCompactor {
 
         let summary_text =
             summarizer.summarize(&archived, PressureAction::AutoCompact, _max_tokens);
-        let summary_tokens = engine.count(&summary_text);
-
-        partitions.task_state.scratchpad = summary_text.clone();
-
-        let working_msg = Message::system(summary_text.clone());
-        partitions.working.push(working_msg, summary_tokens);
 
         let kept_tokens: u32 = partition
             .messages
@@ -394,6 +401,8 @@ impl Compressor for AutoCompactor {
             .map(|m| m.token_count.unwrap_or_else(|| engine.count_message(m)))
             .sum();
         partition.token_count = kept_tokens;
+
+        partitions.task_state.log_compression("auto_compact", summary_text.clone());
 
         CompressResult {
             tokens_saved: original_tokens.saturating_sub(kept_tokens),
@@ -406,11 +415,13 @@ impl Compressor for AutoCompactor {
 /// Compression pipeline — operates on history partition but can reference full partitions.
 pub struct CompressionPipeline {
     stages: Vec<(PressureAction, Box<dyn Compressor>)>,
+    preserve_recent_turns: usize,
 }
 
 impl CompressionPipeline {
     pub fn new(config: &ContextConfig) -> Self {
         Self {
+            preserve_recent_turns: config.preserve_recent_turns,
             stages: vec![
                 (
                     PressureAction::SnipCompact,
@@ -444,12 +455,17 @@ impl CompressionPipeline {
 
         for (stage_action, compressor) in &self.stages {
             if *stage_action <= action {
-                // 如果当前总 token 已经满足预算目标，则无需继续进行更重级别的压缩
                 if partitions.total_tokens(engine) <= target_tokens {
                     break;
                 }
-                let res =
-                    compressor.compress(partitions, target_tokens, max_tokens, &summarizer, engine);
+                let res = compressor.compress(
+                    partitions,
+                    target_tokens,
+                    max_tokens,
+                    self.preserve_recent_turns,
+                    &summarizer,
+                    engine,
+                );
                 total_saved += res.tokens_saved;
                 if let Some(s) = res.summary {
                     if !s.is_empty() {
@@ -507,7 +523,7 @@ mod tests {
         };
         let mut ctx = ContextPartitions::new(&cfg);
         ctx.history.push(Message::user("a".repeat(800)), 200);
-        let result = compactor.compress(&mut ctx, 0, MAX, &summarizer(), &engine());
+        let result = compactor.compress(&mut ctx, 0, MAX, 2, &summarizer(), &engine());
         assert!(result.tokens_saved > 0);
         if let Content::Text(ref t) = ctx.history.messages[0].content {
             assert!(t.contains("… [… 100 tokens omitted …] …"), "got: {t}");
@@ -525,7 +541,7 @@ mod tests {
         };
         let mut ctx = ContextPartitions::new(&cfg);
         ctx.history.push(Message::user("short"), 5);
-        let result = compactor.compress(&mut ctx, 0, MAX, &summarizer(), &engine());
+        let result = compactor.compress(&mut ctx, 0, MAX, 2, &summarizer(), &engine());
         assert_eq!(result.tokens_saved, 0);
     }
 
@@ -550,7 +566,7 @@ mod tests {
         ctx.history.messages.push(msg);
         ctx.history.token_count = 300;
 
-        let result = compactor.compress(&mut ctx, 0, MAX, &summarizer(), &engine());
+        let result = compactor.compress(&mut ctx, 0, MAX, 2, &summarizer(), &engine());
         assert!(result.tokens_saved > 0);
         let text = ctx.history.messages[0].content.as_text().unwrap();
         assert!(
@@ -566,9 +582,10 @@ mod tests {
         for _ in 0..8 {
             ctx.history.push(Message::user("msg"), 50);
         }
-        let result = compactor.compress(&mut ctx, 250, MAX, &summarizer(), &engine());
+        let result = compactor.compress(&mut ctx, 250, MAX, 2, &summarizer(), &engine());
         assert!(result.tokens_saved > 0);
         assert!(ctx.history.messages.len() < 8);
+        assert!(ctx.task_state.compression_log.iter().any(|e| e.action == "context_collapse"));
     }
 
     #[test]
@@ -618,7 +635,7 @@ mod tests {
         ctx.history.messages.push(msg);
         ctx.history.token_count = 300;
 
-        let result = compactor.compress(&mut ctx, 0, MAX, &summarizer(), &engine());
+        let result = compactor.compress(&mut ctx, 0, MAX, 2, &summarizer(), &engine());
         // Since call_id "keep_me" is in preserved_refs, it should not be replaced!
         assert_eq!(result.tokens_saved, 0);
         let text_opt = ctx.history.messages[0].content.as_text();
@@ -635,12 +652,12 @@ mod tests {
         for i in 0..10 {
             ctx.history.push(Message::user(format!("msg {i}")), 10);
         }
-        let result = compactor.compress(&mut ctx, 0, MAX, &summarizer(), &engine());
+        let result = compactor.compress(&mut ctx, 0, MAX, 2, &summarizer(), &engine());
         assert!(result.tokens_saved > 0);
         assert_eq!(ctx.history.messages.len(), 4); // kept last 2 turns = 4 messages
         assert!(result.summary.is_some());
-        assert!(!ctx.task_state.scratchpad.is_empty());
-        assert_eq!(ctx.working.messages.len(), 1); // summary pushed to working partition
+        // Summary now routes through compression_log → systemVolatile
+        assert!(ctx.task_state.compression_log.iter().any(|e| e.action == "auto_compact"));
     }
 
     #[test]

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from deepstrike._kernel import KernelRuntime, LoopPolicy
 from deepstrike.providers.stream import DoneEvent, TextDelta
 from deepstrike.runtime.filtered_plane import FilteredExecutionPlane
 from deepstrike.runtime.kernel_step import kernel_apply
-from deepstrike.runtime.runner import RuntimeOptions, RuntimeRunner
+from deepstrike.runtime.runner import RuntimeOptions, RuntimeRunner, SubAgentHarnessConfig
 from deepstrike.runtime.session_log import SessionLog
 from deepstrike.types.agent import (
   AgentRunSpec,
@@ -16,6 +17,9 @@ from deepstrike.types.agent import (
   agent_run_spec_to_kernel as spec_to_kernel,
 )
 
+if TYPE_CHECKING:
+  from deepstrike.harness.harness import HarnessLoop
+
 
 @dataclass
 class SubAgentRunContext:
@@ -24,6 +28,7 @@ class SubAgentRunContext:
   spec: AgentRunSpec
   manifest: AgentSpawnedObservation
   session_log: SessionLog
+  harness: SubAgentHarnessConfig | None = None
 
 
 def _termination_from_status(status: str) -> str:
@@ -61,50 +66,120 @@ async def _log_agent_spawned(session_log: SessionLog, parent_session_id: str, ob
   })
 
 
+def _harness_criteria(spec: AgentRunSpec) -> list:
+  from deepstrike.harness.harness import Criterion
+
+  phases = spec.milestones.phases if spec.milestones else []
+  return [
+    Criterion(text=text, required=True)
+    for phase in phases
+    for text in phase.criteria
+    if isinstance(text, str)
+  ]
+
+
+def _build_child_opts(
+  ctx: SubAgentRunContext,
+  *,
+  system_prompt: str | None,
+  filtered_plane,
+) -> RuntimeOptions:
+  return RuntimeOptions(
+    provider=ctx.parent_opts.provider,
+    session_log=ctx.session_log,
+    execution_plane=filtered_plane,
+    max_tokens=ctx.parent_opts.max_tokens,
+    max_turns=ctx.parent_opts.max_turns,
+    timeout_ms=ctx.parent_opts.timeout_ms,
+    agent_id=ctx.spec.identity.agent_id,
+    system_prompt=system_prompt,
+    initial_memory=ctx.parent_opts.initial_memory,
+    skill_dir=ctx.parent_opts.skill_dir,
+    dream_store=ctx.parent_opts.dream_store,
+    knowledge_source=ctx.parent_opts.knowledge_source,
+    signal_source=ctx.parent_opts.signal_source,
+    extensions=ctx.parent_opts.extensions,
+    governance=ctx.parent_opts.governance,
+    tokenizer=ctx.parent_opts.tokenizer,
+    enable_plan_tool=ctx.parent_opts.enable_plan_tool,
+    compression_store=ctx.parent_opts.compression_store,
+    on_tool_suspend=ctx.parent_opts.on_tool_suspend,
+  )
+
+
+async def _resolve_inheritance(ctx: SubAgentRunContext) -> tuple[str | None, list | None]:
+  system_prompt = ctx.parent_opts.system_prompt
+  inherit_events = None
+
+  if ctx.manifest.context_inheritance == "full":
+    inherit_events = await ctx.session_log.read(ctx.parent_session_id)
+  elif ctx.manifest.context_inheritance == "system_only":
+    parent_events = await ctx.session_log.read(ctx.parent_session_id)
+    for entry in parent_events:
+      ev = entry.event
+      if ev.get("kind") == "run_started" and ev.get("system_prompt"):
+        system_prompt = ev["system_prompt"]
+        break
+
+  return system_prompt, inherit_events
+
+
 class SubAgentOrchestrator:
   async def run(self, ctx: SubAgentRunContext) -> SubAgentResult:
+    if ctx.harness:
+      return await self._run_with_harness(ctx)
+    return await self._run_direct(ctx)
+
+  async def _run_with_harness(self, ctx: SubAgentRunContext) -> SubAgentResult:
+    from deepstrike.harness.harness import HarnessLoop, HarnessRequest
+
     permitted = set(ctx.manifest.permitted_capability_ids)
+    from deepstrike.runtime.execution_plane import LocalExecutionPlane
 
-    system_prompt = ctx.parent_opts.system_prompt
-    inherit_events = None
+    plane = ctx.parent_opts.execution_plane or LocalExecutionPlane()
+    filtered = FilteredExecutionPlane(plane, permitted)
+    child_runner = RuntimeRunner(_build_child_opts(
+      ctx,
+      system_prompt=ctx.parent_opts.system_prompt,
+      filtered_plane=filtered,
+    ))
+    loop = HarnessLoop(
+      child_runner,
+      ctx.harness.eval_provider,
+      max_attempts=ctx.harness.max_attempts,
+    )
+    outcome = await loop.run(HarnessRequest(
+      goal=ctx.spec.goal,
+      criteria=_harness_criteria(ctx.spec),
+    ))
 
-    if ctx.manifest.context_inheritance == "full":
-      inherit_events = await ctx.session_log.read(ctx.parent_session_id)
-    elif ctx.manifest.context_inheritance == "system_only":
-      parent_events = await ctx.session_log.read(ctx.parent_session_id)
-      for entry in parent_events:
-        ev = entry.event
-        if ev.get("kind") == "run_started" and ev.get("system_prompt"):
-          system_prompt = ev["system_prompt"]
-          break
+    from deepstrike._kernel import Message
+
+    final_message = None
+    if outcome.result:
+      final_message = Message(role="assistant", content=outcome.result)
+
+    loop_result = LoopResult(
+      termination="completed" if outcome.passed else "error",
+      turns_used=outcome.iterations,
+      total_tokens_used=outcome.total_tokens,
+      final_message=final_message,
+    )
+    return SubAgentResult(agent_id=ctx.spec.identity.agent_id, result=loop_result)
+
+  async def _run_direct(self, ctx: SubAgentRunContext) -> SubAgentResult:
+    permitted = set(ctx.manifest.permitted_capability_ids)
+    system_prompt, inherit_events = await _resolve_inheritance(ctx)
 
     from deepstrike.runtime.execution_plane import LocalExecutionPlane
 
     plane = ctx.parent_opts.execution_plane or LocalExecutionPlane()
     filtered = FilteredExecutionPlane(plane, permitted)
-
-    child_opts = RuntimeOptions(
-      provider=ctx.parent_opts.provider,
-      session_log=ctx.session_log,
-      execution_plane=filtered,
-      max_tokens=ctx.parent_opts.max_tokens,
-      max_turns=ctx.parent_opts.max_turns,
-      timeout_ms=ctx.parent_opts.timeout_ms,
-      agent_id=ctx.spec.identity.agent_id,
+    child_runner = RuntimeRunner(_build_child_opts(
+      ctx,
       system_prompt=system_prompt,
-      initial_memory=ctx.parent_opts.initial_memory,
-      skill_dir=ctx.parent_opts.skill_dir,
-      dream_store=ctx.parent_opts.dream_store,
-      knowledge_source=ctx.parent_opts.knowledge_source,
-      signal_source=ctx.parent_opts.signal_source,
-      extensions=ctx.parent_opts.extensions,
-      governance=ctx.parent_opts.governance,
-      tokenizer=ctx.parent_opts.tokenizer,
-      enable_plan_tool=ctx.parent_opts.enable_plan_tool,
-      compression_store=ctx.parent_opts.compression_store,
-      on_tool_suspend=ctx.parent_opts.on_tool_suspend,
-    )
-    child_runner = RuntimeRunner(child_opts)
+      filtered_plane=filtered,
+    ))
 
     done: DoneEvent | None = None
     final_text = ""
@@ -166,4 +241,5 @@ async def spawn_standalone(
     spec=spec,
     manifest=manifest,
     session_log=parent_opts.session_log,
+    harness=parent_opts.sub_agent_harness,
   ))

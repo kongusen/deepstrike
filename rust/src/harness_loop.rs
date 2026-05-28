@@ -22,8 +22,11 @@ fn rendered_context_from_messages(messages: Vec<Message>) -> RenderedContext {
         }
     }
 
+    let system_text = system_parts.join("\n\n");
     RenderedContext {
-        system_text: system_parts.join("\n\n"),
+        system_text: system_text.clone(),
+        system_stable: system_text,
+        system_knowledge: String::new(),
         turns,
     }
 }

@@ -29,11 +29,24 @@ impl PressureMonitor {
     }
 
     /// Current pressure rho ∈ [0, +∞).
-    pub fn pressure(&self, partitions: &ContextPartitions, engine: &ContextTokenEngine) -> f64 {
+    /// Uses provider-reported prompt tokens when available; otherwise estimates from partitions.
+    pub fn pressure(
+        &self,
+        partitions: &ContextPartitions,
+        engine: &ContextTokenEngine,
+        observed_prompt_tokens: Option<u32>,
+    ) -> f64 {
         if self.max_tokens == 0 {
             return 0.0;
         }
-        partitions.total_tokens(engine) as f64 / self.max_tokens as f64
+        match observed_prompt_tokens {
+            Some(tokens) => tokens as f64 / self.max_tokens as f64,
+            None => partitions.total_tokens(engine) as f64 / self.max_tokens as f64,
+        }
+    }
+
+    pub fn estimated_rho(&self, partitions: &ContextPartitions, engine: &ContextTokenEngine) -> f64 {
+        self.pressure(partitions, engine, None)
     }
 
     pub fn recommend(&self, rho: f64) -> PressureAction {
@@ -107,7 +120,7 @@ mod tests {
         let mut ctx = ContextPartitions::new(&cfg);
         let baseline = ctx.total_tokens(&engine()) as f64;
         ctx.history.push(Message::user("test"), 500);
-        let rho = monitor.pressure(&ctx, &engine());
+        let rho = monitor.pressure(&ctx, &engine(), None);
         let expected = (baseline + 500.0) / 1_000.0;
         assert!((rho - expected).abs() < f64::EPSILON);
     }

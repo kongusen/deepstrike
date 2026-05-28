@@ -206,6 +206,8 @@ function kernelMessageToSdk(raw: Record<string, unknown>): Message {
 function renderedContextToSdk(raw: Record<string, unknown>): RenderedContext {
   return {
     systemText: String(raw.system_text ?? raw.systemText ?? ""),
+    systemStable: String(raw.system_stable ?? raw.systemStable ?? ""),
+    systemKnowledge: String(raw.system_knowledge ?? raw.systemKnowledge ?? ""),
     turns: ((raw.turns as Array<Record<string, unknown>>) ?? []).map(kernelMessageToSdk),
   }
 }

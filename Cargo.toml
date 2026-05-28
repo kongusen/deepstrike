@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "crates/deepstrike-core",
-    "crates/deepstrike-tokenizer",
     "crates/deepstrike-py",
     "crates/deepstrike-node",
     "crates/deepstrike-wasm",
@@ -11,14 +10,13 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/anthropics/deepstrike"
 
 [workspace.dependencies]
-deepstrike-core = { path = "crates/deepstrike-core", version = "0.2.2" }
-deepstrike-tokenizer = { path = "crates/deepstrike-tokenizer", version = "0.2.2" }
+deepstrike-core = { path = "crates/deepstrike-core", version = "0.2.3" }
 notify = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

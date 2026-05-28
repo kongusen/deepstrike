@@ -1,5 +1,5 @@
 from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPlane, RunContext
-from deepstrike.runtime.runner import RuntimeOptions, RuntimeRunner, collect_text
+from deepstrike.runtime.runner import RuntimeOptions, RuntimeRunner, SubAgentHarnessConfig, collect_text
 from deepstrike.runtime.session_log import (
   FileSessionLog,
   InMemorySessionLog,
@@ -28,6 +28,7 @@ from deepstrike.runtime.sub_agent_orchestrator import SubAgentOrchestrator, spaw
 __all__ = [
   "RuntimeRunner",
   "RuntimeOptions",
+  "SubAgentHarnessConfig",
   "collect_text",
   "LocalExecutionPlane",
   "ExecutionPlane",

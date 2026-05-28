@@ -798,6 +798,10 @@ struct RenderedContext {
     #[pyo3(get)]
     system_text: String,
     #[pyo3(get)]
+    system_stable: String,
+    #[pyo3(get)]
+    system_knowledge: String,
+    #[pyo3(get)]
     turns: Vec<Message>,
 }
 
@@ -812,6 +816,8 @@ impl RenderedContext {
     fn from_rust(rc: RustRenderedContext) -> Self {
         Self {
             system_text: rc.system_text,
+            system_stable: rc.system_stable,
+            system_knowledge: rc.system_knowledge,
             turns: rc.turns.iter().map(Message::from_rust).collect(),
         }
     }

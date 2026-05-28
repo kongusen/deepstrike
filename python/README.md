@@ -74,6 +74,29 @@ All providers accept `RetryConfig` for exponential backoff and share a `CircuitB
 
 ---
 
+## Context model (four slots)
+
+The kernel renders context as four LLM API slots — only **history** is compressed.
+
+| Slot | Source | Role |
+|------|--------|------|
+| `system_stable` | system partition | Identity, rules — never changes within a run |
+| `system_knowledge` | knowledge partition | Preloaded memory, skill defs — low frequency |
+| `turns[0]` | `task_state` + signals | Goal, plan, progress, compression log, runtime signals |
+| `turns[1..N]` | history | Conversation transcript |
+
+```python
+runner = RuntimeRunner(RuntimeOptions(
+    initial_memory=["User prefers chartreuse."],  # → Slot 2
+    system_prompt="You are a helpful assistant.",  # → Slot 1
+    # ...
+))
+```
+
+Full reference: [docs/context-partition-compression.md](../docs/context-partition-compression.md)
+
+---
+
 ## Runtime options
 
 ```python
@@ -91,6 +114,11 @@ runner = RuntimeRunner(RuntimeOptions(
     signal_source=gateway,      # SignalGateway or any SignalSource
     dream_store=my_store,       # DreamStore for long-term memory
     agent_id="my-agent",        # required with dream_store for memory meta-tool
+    initial_memory=["..."],     # preloaded blocks → Slot 2 (system_knowledge)
+    sub_agent_harness=SubAgentHarnessConfig(  # optional: HarnessLoop for spawned sub-agents
+        eval_provider=eval_provider,
+        max_attempts=3,
+    ),
 ))
 ```
 
@@ -138,7 +166,7 @@ effort: 1
 
 ## Knowledge
 
-Implement `KnowledgeSource` — the kernel injects a `knowledge` meta-tool.
+Implement `KnowledgeSource` — the kernel injects a `knowledge` meta-tool. **Runtime retrieval results land in history** as tool results. Use `initial_memory` for durable preload into Slot 2.
 
 ```python
 from deepstrike import KnowledgeSource
@@ -164,7 +192,9 @@ runner = RuntimeRunner(RuntimeOptions(
 
 ## Memory
 
-### WorkingMemory (in-session scratch pad)
+### WorkingMemory (SDK-side scratch pad)
+
+`WorkingMemory` is an SDK helper — not the kernel `working` partition (removed). Kernel task state renders into Slot 3 (`turns[0]`).
 
 ```python
 from deepstrike import WorkingMemory
@@ -197,7 +227,8 @@ runner = RuntimeRunner(RuntimeOptions(
     agent_id="my-agent",
 ))
 
-# In-session: LLM calls memory(query) → DreamStore.search()
+# In-session: LLM calls memory(query) → DreamStore.search() → history tool result
+# Preload:    initial_memory → Slot 2 (system_knowledge)
 # Post-session: trigger memory consolidation
 result = await runner.dream("my-agent", now_ms=int(time.time() * 1000))
 ```
@@ -282,6 +313,16 @@ outcome = await EvalLoopHarness(runner, gate=ContainsHello(), max_attempts=3).ru
 
 # 3. HarnessLoop — LLM-as-judge with feedback injection + skill extraction
 loop = HarnessLoop(runner, eval_provider=eval_provider, max_attempts=3, skill_dir="./skills")
+
+# Sub-agents: pass sub_agent_harness on RuntimeOptions to auto-evaluate spawned children
+from deepstrike import SubAgentHarnessConfig
+runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=InMemorySessionLog(),
+    execution_plane=plane,
+    sub_agent_harness=SubAgentHarnessConfig(eval_provider=eval_provider, max_attempts=3),
+    # ...
+))
 async for event in loop.run_streaming(HarnessRequest(goal="Write a haiku")):
     if event.type == "done":
         print(event.verdict.passed, event.verdict.feedback)

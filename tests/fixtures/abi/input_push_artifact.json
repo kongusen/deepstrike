@@ -1,11 +1,8 @@
 {
   "version": 1,
   "event": {
-    "kind": "push_artifact",
-    "message": {
-      "role": "assistant",
-      "content": "Generated report content"
-    },
+    "kind": "add_knowledge_message",
+    "content": "Generated report content",
     "tokens": 42
   }
 }

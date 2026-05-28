@@ -62,6 +62,13 @@ export function toAnthropicMessages(
     result.push({ role: msg.role, content: msg.content })
   }
 
+  if (context.systemVolatile && result.length > 0) {
+    const last = result[result.length - 1]
+    if (last.role === "user") {
+      last.content = `${String(last.content ?? "")}\n\n[SYSTEM REMINDER]\n${context.systemVolatile}`
+    }
+  }
+
   return result
 }
 
@@ -71,13 +78,16 @@ export async function collectStreamMessage(
 ): Promise<Message> {
   let content = ""
   const toolCalls: Message["toolCalls"] = []
+  let outputTokens: number | undefined
   for await (const evt of stream) {
     if (evt.type === "text_delta" && evt.delta) content += evt.delta
     else if (evt.type === "tool_call" && evt.id && evt.name) {
       toolCalls.push({ id: evt.id, name: evt.name, arguments: JSON.stringify(evt.arguments ?? {}) })
+    } else if (evt.type === "usage") {
+      outputTokens = (evt as { outputTokens?: number; totalTokens?: number }).outputTokens ?? (evt as { totalTokens?: number }).totalTokens
     }
   }
-  return { role: "assistant", content, ...(toolCalls.length ? { toolCalls } : {}) }
+  return { role: "assistant", content, ...(outputTokens ? { tokenCount: outputTokens } : {}), ...(toolCalls.length ? { toolCalls } : {}) }
 }
 
 export { assistantReplayKey }

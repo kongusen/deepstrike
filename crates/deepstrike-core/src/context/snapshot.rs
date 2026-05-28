@@ -17,10 +17,7 @@ pub struct ContextPage {
 pub struct ContextSnapshot {
     pub turn: u32,
     pub system_messages: Vec<Message>,
-    pub working_messages: Vec<Message>,
-    pub memory_messages: Vec<Message>,
-    pub skill_messages: Vec<Message>,
-    pub artifacts_messages: Vec<Message>,
+    pub knowledge_messages: Vec<Message>,
     pub history_messages: Vec<Message>,
     pub task_state: TaskState,
 }

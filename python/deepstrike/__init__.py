@@ -12,6 +12,7 @@ from deepstrike._kernel import (
 from deepstrike.runtime import (
     RuntimeRunner,
     RuntimeOptions,
+    SubAgentHarnessConfig,
     collect_text,
     LocalExecutionPlane,
     InMemorySessionLog,
@@ -65,6 +66,7 @@ from deepstrike.collaboration import (
 __all__ = [
     "RuntimeRunner",
     "RuntimeOptions",
+    "SubAgentHarnessConfig",
     "collect_text",
     "LocalExecutionPlane",
     "InMemorySessionLog",

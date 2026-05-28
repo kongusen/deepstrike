@@ -41,7 +41,7 @@ A single runner re-using its own context to retry a failed task is vulnerable to
 
 A `VerificationContract` is the central coordination object. It defines *what correct looks like* before execution starts — decoupling the definition of success from its implementation.
 
-Contracts live in the executor's `system` partition (Priority::Critical), which the kernel never compresses or discards on context renewal. The verifier receives the same contract alongside the artifact.
+Contracts live in the executor's **Slot 1** (`system_stable` / system partition), which the kernel never compresses. The verifier receives the same contract alongside the artifact.
 
 ### Structure
 
@@ -95,7 +95,7 @@ contract = (ContractBuilder("report-v1", "Write a research report on X")
 
 ### Injecting a contract into the kernel
 
-The `LoopStateMachine.setContract()` method formats the contract as Markdown and pushes it to the `system` partition:
+The `LoopStateMachine.setContract()` method formats the contract as Markdown and pushes it to the **system partition** (Slot 1):
 
 ```typescript
 // @deepstrike/core (low-level FFI)

@@ -2,7 +2,7 @@ import { RuntimeRunner } from "../../src/runtime/runner.js"
 import { InMemorySessionLog } from "../../src/runtime/session-log.js"
 import { LocalExecutionPlane } from "../../src/runtime/execution-plane.js"
 import type { RegisteredTool } from "../../src/tools/index.js"
-import type { LLMProvider } from "../../src/types.js"
+import type { AsyncSummarizer, LLMProvider } from "../../src/types.js"
 import type { ToolSuspendEvent } from "../../src/types.js"
 
 export function createRunner(
@@ -17,6 +17,7 @@ export function createRunner(
       setTime?(nowMs: bigint): void
       evaluate(name: string, argsJson: string): { kind: string; reason?: string; retryAfterMs?: number }
     }
+    asyncSummarizer?: AsyncSummarizer
   } = {},
 ): { runner: RuntimeRunner; sessionLog: InMemorySessionLog; plane: LocalExecutionPlane } {
   const sessionLog = opts.sessionLog ?? new InMemorySessionLog()
@@ -30,6 +31,7 @@ export function createRunner(
     maxTurns: opts.maxTurns ?? 25,
     onToolSuspend: opts.onToolSuspend,
     governance: opts.governance,
+    asyncSummarizer: opts.asyncSummarizer,
   })
   return { runner, sessionLog, plane }
 }

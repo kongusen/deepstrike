@@ -75,7 +75,7 @@ src/
 
 The kernel (`@deepstrike/wasm-kernel`, Rust/wasm-bindgen) owns:
 - `KernelRuntime.step()` — drives `call_provider → execute_tool → evaluate_milestone → done`
-- `ContextEngine` — 5-partition context with pressure-based compression
+- `ContextEngine` — 4-slot context with tiered history compression
 - `Governance` — tool veto authority
 - `SignalRouter` — external interrupt queue
 
@@ -146,6 +146,27 @@ plane.register(fetchUrl)
 
 ---
 
+## Context model (four slots)
+
+Same as Node/Python — only **history** is compressed. WASM exposes `systemStable`, `systemKnowledge`, and `turns` on `call_provider.context`.
+
+```typescript
+const runner = new RuntimeRunner({
+  provider,
+  sessionLog: new InMemorySessionLog(),
+  executionPlane: plane,
+  maxTokens: 32_000,
+  initialMemory: ["User prefers concise answers."],  // → Slot 2
+  systemPrompt: "You are a helpful assistant.",       // → Slot 1
+})
+```
+
+IndexedDB / KV can back `DreamStore` for cross-session memory. Meta-tool retrieval still lands in **history**.
+
+See [docs/context-partition-compression.md](../docs/context-partition-compression.md).
+
+---
+
 ## Governance
 
 ```typescript
@@ -167,7 +188,7 @@ const runner = new RuntimeRunner({
 
 ## Memory
 
-`WorkingMemory` is an in-process scratch pad for within-run state:
+`WorkingMemory` is an SDK-side scratch pad — not the removed kernel `working` partition. Structured task state renders into Slot 3 (`turns[0]`).
 
 ```typescript
 import { WorkingMemory } from "@deepstrike/wasm"
@@ -177,9 +198,13 @@ mem.set("step", 1)
 mem.get("step")   // 1
 ```
 
+For cross-session recall, implement `DreamStore` and set `agentId` on `RuntimeRunner`. In-session `memory(query)` results appear in **history**; preload durable blocks with `initialMemory` → Slot 2.
+
 ---
 
 ## Knowledge
+
+Runtime `knowledge(query)` results → **history** (tool results). Durable preload → Slot 2 via `initialMemory`.
 
 ```typescript
 import type { KnowledgeSource } from "@deepstrike/wasm"
@@ -229,6 +254,8 @@ for await (const event of loop.runStreaming({
 ---
 
 ## Signals & interrupts
+
+Delivered signals fold into Slot 3 (`turns[0]`) and are cleared after each render — they do not survive renewal.
 
 ```typescript
 import { ScheduledPrompt } from "@deepstrike/wasm"

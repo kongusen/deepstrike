@@ -101,6 +101,27 @@ Custom providers: implement the `LLMProvider` trait.
 
 ---
 
+## Context model (four slots)
+
+| Slot | Source | Role |
+|------|--------|------|
+| `system_stable` | system partition | Identity — never changes within a run |
+| `system_knowledge` | knowledge partition | Preloaded memory — low frequency |
+| `turns[0]` | `task_state` + signals | Goal, plan, compression log, runtime signals |
+| `turns[1..N]` | history | Conversation — **sole compression target** |
+
+```rust
+RuntimeOptions {
+    system_prompt: Some("You are helpful.".into()),           // Slot 1
+    initial_memory: vec!["User prefers chartreuse.".into()], // Slot 2
+    // ...
+}
+```
+
+See [docs/context-partition-compression.md](../docs/context-partition-compression.md).
+
+---
+
 ## RuntimeOptions
 
 ```rust
@@ -117,6 +138,7 @@ RuntimeOptions {
     signal_source: Some(Box::new(rx)),
     dream_store: Some(Box::new(my_store)),
     agent_id: Some("my-agent".into()),
+    initial_memory: vec![],     // preloaded blocks → Slot 2
     governance: None,
     on_tool_suspend: None,
     // ...
@@ -157,7 +179,7 @@ let runner = RuntimeRunner::new(RuntimeOptions {
 
 ## Knowledge
 
-Implement `KnowledgeSource` — the kernel injects a `knowledge` meta-tool.
+Implement `KnowledgeSource` — the kernel injects a `knowledge` meta-tool. Runtime retrieval → **history**; durable preload → Slot 2 via `initial_memory`.
 
 ```rust
 use async_trait::async_trait;
@@ -176,7 +198,9 @@ impl KnowledgeSource for VectorSearch {
 
 ## Memory
 
-### WorkingMemory (in-session scratch pad)
+### WorkingMemory (SDK-side scratch pad)
+
+SDK helper — not the removed kernel `working` partition.
 
 ```rust
 use deepstrike_sdk::WorkingMemory;
@@ -198,7 +222,8 @@ impl DreamStore for MyStore {
     async fn search(&self, agent_id: &str, query: &str, top_k: usize) -> Result<Vec<MemoryEntry>> { ... }
 }
 
-// In-session: LLM calls memory(query) → DreamStore.search()
+// In-session: memory(query) → history tool result
+// Preload:    initial_memory → Slot 2
 // Post-session:
 let result = runner.dream("my-agent", now_ms).await?;
 ```

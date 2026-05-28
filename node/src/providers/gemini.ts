@@ -125,7 +125,7 @@ export class GeminiProvider implements LLMProvider {
         return {
           role: "assistant",
           content,
-          tokenCount: usage?.totalTokenCount,
+          tokenCount: usage?.candidatesTokenCount ?? usage?.totalTokenCount,
           toolCalls,
         }
       } catch (err) {
@@ -167,7 +167,14 @@ export class GeminiProvider implements LLMProvider {
     }
 
     const usage = (await result.response).usageMetadata
-    if (usage?.totalTokenCount) yield { type: "usage", totalTokens: usage.totalTokenCount } as StreamEvent
+    if (usage?.totalTokenCount) {
+      yield {
+        type: "usage",
+        totalTokens: usage.totalTokenCount,
+        inputTokens: usage.promptTokenCount ?? 0,
+        outputTokens: usage.candidatesTokenCount ?? 0,
+      } as StreamEvent
+    }
   }
 
   private modelExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {

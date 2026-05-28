@@ -34,11 +34,9 @@ export class OpenAIChatAdapter {
     return serialized as unknown as OpenAI.ChatCompletionMessageParam[]
   }
 
-  normalizeToolCalls(toolCalls: Array<{
-    id: string
-    function: { name: string; arguments: string }
-  }> = []) {
+  normalizeToolCalls(toolCalls: OpenAI.ChatCompletionMessageToolCall[] = []) {
     return toolCalls
+      .filter((tc): tc is OpenAI.ChatCompletionMessageFunctionToolCall => tc.type === "function")
       .map(tc => normalizeToolCall(tc.id, tc.function.name, tc.function.arguments))
       .filter(Boolean) as Array<{ id: string; name: string; arguments: string }>
   }

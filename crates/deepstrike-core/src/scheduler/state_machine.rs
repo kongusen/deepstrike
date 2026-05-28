@@ -89,7 +89,7 @@ pub enum LoopAction {
 #[derive(Debug, Clone, Default)]
 pub struct TurnCheckpoint {
     pub history_len: usize,
-    pub working_len: usize,
+    pub signals_len: usize,
     pub task_state: Option<crate::context::task_state::TaskState>,
 }
 
@@ -271,18 +271,7 @@ impl LoopStateMachine {
         self.observations.clear();
         self.ctx.init_task(task.goal.clone(), task.criteria.clone());
 
-        let user_msg = if task.criteria.is_empty() {
-            task.goal
-        } else {
-            let criteria_text = task
-                .criteria
-                .iter()
-                .enumerate()
-                .map(|(i, c)| format!("{}. {}", i + 1, c))
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!("{}\n\nCriteria:\n{}", task.goal, criteria_text)
-        };
+        let user_msg = "Proceed with the task described in [TASK STATE].".to_string();
 
         // User message goes into history so it appears at the correct chronological
         // position: [prior turns...] → [current user message] — LLM reads left-to-right
@@ -360,12 +349,12 @@ impl LoopStateMachine {
                     .iter()
                     .find_map(|result| self.rollback_reason_for_tool_result(result))
                 {
-                    let note = Message::user(format!(
-                        "[SYSTEM] Transaction rollback: {}",
-                        Self::rollback_reason_message(&reason)
+                    let note = Message::user(Self::build_rollback_note(
+                        &reason,
+                        self.ctx.config.verbose_control_notes,
                     ));
                     self.rollback(reason);
-                    self.ctx.partitions.working.push(note, 0);
+                    self.ctx.push_signal(note.content.as_text().unwrap_or_default().to_string());
                     self.phase = LoopPhase::Reason;
                     return self.emit_call_llm();
                 }
@@ -436,14 +425,12 @@ impl LoopStateMachine {
                 // not part of the conversation transcript.
                 match signal.urgency {
                     Urgency::Critical => {
-                        let note = Message::user(format!("[INTERRUPT] {}", signal.summary));
-                        self.ctx.partitions.working.push(note, 0);
+                        self.ctx.push_signal(format!("[INTERRUPT] {}", signal.summary));
                         self.phase = LoopPhase::Reason;
                         self.emit_call_llm()
                     }
                     Urgency::High => {
-                        let note = Message::user(format!("[SIGNAL] {}", signal.summary));
-                        self.ctx.partitions.working.push(note, 0);
+                        self.ctx.push_signal(format!("[SIGNAL] {}", signal.summary));
                         self.emit_call_llm()
                     }
                     _ => self.emit_call_llm(),
@@ -459,21 +446,19 @@ impl LoopStateMachine {
                     .as_ref()
                     .and_then(|m| m.content.as_text())
                     .unwrap_or_default();
-                let msg =
-                    Message::user(format!("[sub-agent {}] {}", result.agent_id, summary));
-                self.ctx.partitions.working.push(msg, 0);
+                self.ctx.push_signal(format!("[sub-agent {}] {}", result.agent_id, summary));
                 self.phase = LoopPhase::Reason;
                 self.emit_call_llm()
             }
 
             LoopEvent::Timeout => {
                 let reason = RollbackReason::Timeout;
-                let note = Message::user(format!(
-                    "[SYSTEM] Transaction rollback: {}",
-                    Self::rollback_reason_message(&reason)
+                let note = Message::user(Self::build_rollback_note(
+                    &reason,
+                    self.ctx.config.verbose_control_notes,
                 ));
                 self.rollback(reason);
-                self.ctx.partitions.working.push(note, 0);
+                self.ctx.push_signal(note.content.as_text().unwrap_or_default().to_string());
                 self.phase = LoopPhase::Reason;
                 self.emit_call_llm()
             }
@@ -538,7 +523,7 @@ impl LoopStateMachine {
     /// to force a plain-text response before the loop terminates.
     fn emit_call_llm(&mut self) -> LoopAction {
         self.checkpoint.history_len = self.ctx.partitions.history.messages.len();
-        self.checkpoint.working_len = self.ctx.partitions.working.messages.len();
+        self.checkpoint.signals_len = self.ctx.partitions.signals.len();
         self.checkpoint.task_state = Some(self.ctx.partitions.task_state.clone());
         self.observations.push(LoopObservation::CheckpointTaken {
             turn: self.turn,
@@ -580,16 +565,8 @@ impl LoopStateMachine {
     }
 
     pub fn rollback(&mut self, reason: RollbackReason) {
-        self.ctx
-            .partitions
-            .history
-            .messages
-            .truncate(self.checkpoint.history_len);
-        self.ctx
-            .partitions
-            .working
-            .messages
-            .truncate(self.checkpoint.working_len);
+        self.ctx.partitions.history.messages.truncate(self.checkpoint.history_len);
+        self.ctx.partitions.signals.truncate(self.checkpoint.signals_len);
         if let Some(ref state) = self.checkpoint.task_state {
             self.ctx.partitions.task_state = state.clone();
         }
@@ -662,6 +639,34 @@ impl LoopStateMachine {
             RollbackReason::UserInterrupt => "user interrupt".to_string(),
             RollbackReason::MalformedReplay { reason } => {
                 format!("malformed replay: {reason}")
+            }
+        }
+    }
+
+    fn build_rollback_note(reason: &RollbackReason, verbose: bool) -> String {
+        if verbose {
+            format!(
+                "[SYSTEM] Transaction rollback: {}",
+                Self::rollback_reason_message(reason)
+            )
+        } else {
+            match reason {
+                RollbackReason::FatalToolError { tool_name, error } => {
+                    format!("The previous step failed (`{tool_name}`: {error}). Please try a different approach.")
+                }
+                RollbackReason::GovernanceDenied { tool_name, reason } => {
+                    format!("Action `{tool_name}` was not allowed ({reason}). Please choose a different approach.")
+                }
+                RollbackReason::ProviderFailure { .. } => {
+                    "The previous attempt failed. Please try again.".to_string()
+                }
+                RollbackReason::Timeout => {
+                    "The previous step timed out. Please try a faster approach.".to_string()
+                }
+                RollbackReason::UserInterrupt => "Interrupted. Please continue.".to_string(),
+                RollbackReason::MalformedReplay { .. } => {
+                    "Context inconsistency detected. Please continue.".to_string()
+                }
             }
         }
     }
@@ -859,7 +864,7 @@ impl LoopStateMachine {
                     }
                 })
             {
-                self.ctx.partitions.working.push(Message::user(criteria), 0);
+                self.ctx.push_signal(criteria);
             }
             self.phase = LoopPhase::Reason;
             self.emit_call_llm()
@@ -922,7 +927,10 @@ impl LoopStateMachine {
                 "[MILESTONE BLOCKED: {} — {}. Address the criteria and try again.]",
                 result.phase_id, reason
             );
-            self.ctx.partitions.working.push(Message::user(msg), 0);
+            self.ctx.push_signal(format!(
+                "[MILESTONE BLOCKED: {} — {}. Address the criteria and try again.]",
+                result.phase_id, reason
+            ));
             self.observations.push(LoopObservation::MilestoneBlocked {
                 turn: self.turn,
                 phase_id: result.phase_id,
@@ -995,18 +1003,11 @@ mod tests {
     }
 
     #[test]
-    fn start_places_user_message_in_history_not_working() {
+    fn start_places_user_message_in_history_not_signals() {
         let mut sm = sm();
         sm.start(RuntimeTask::new("Say hello"));
-        // User message goes to history so it appears in the correct chronological position
-        assert!(
-            !sm.ctx.partitions.history.is_empty(),
-            "history should have user message"
-        );
-        assert!(
-            sm.ctx.partitions.working.is_empty(),
-            "working should stay empty — signals only"
-        );
+        assert!(!sm.ctx.partitions.history.is_empty(), "history should have user message");
+        assert!(sm.ctx.partitions.signals.is_empty(), "signals should stay empty at start");
     }
 
     #[test]
@@ -1047,29 +1048,17 @@ mod tests {
     }
 
     #[test]
-    fn critical_signal_goes_to_working_not_history() {
+    fn critical_signal_goes_to_signals_not_history() {
         use crate::types::signal::{SignalSource, SignalType, Urgency};
         let mut sm = sm();
         sm.start(RuntimeTask::new("test"));
         let history_len_before = sm.ctx.partitions.history.messages.len();
 
-        let sig = RuntimeSignal::new(
-            SignalSource::Gateway,
-            SignalType::Alert,
-            Urgency::Critical,
-            "fire",
-        );
+        let sig = RuntimeSignal::new(SignalSource::Gateway, SignalType::Alert, Urgency::Critical, "fire");
         let action = sm.feed(LoopEvent::Signal { signal: sig });
         assert!(matches!(action, LoopAction::CallLLM { .. }));
         assert!(matches!(sm.phase, LoopPhase::Reason));
-        // Signal injected into working
-        assert!(sm.ctx.partitions.working.messages.iter().any(|m| {
-            m.content
-                .as_text()
-                .map(|t| t.contains("[INTERRUPT]"))
-                .unwrap_or(false)
-        }));
-        // History did not grow from the signal
+        assert!(sm.ctx.partitions.signals.iter().any(|s| s.contains("[INTERRUPT]")));
         assert_eq!(sm.ctx.partitions.history.messages.len(), history_len_before);
     }
 
@@ -1202,9 +1191,10 @@ mod tests {
         assert!(new_msgs.iter().any(|m| {
             m.content
                 .as_text()
-                .map(|t| t.contains("What did I say before"))
+                .map(|t| t == "Proceed with the task described in [TASK STATE].")
                 .unwrap_or(false)
         }));
+        assert_eq!(sm.ctx.partitions.task_state.goal, "What did I say before?");
         // Prior session messages are NOT in drain_new_messages
         assert!(!new_msgs.iter().any(|m| {
             m.content
@@ -1506,5 +1496,32 @@ mod tests {
         } else {
             panic!("Expected CapabilityChanged observation");
         }
+    }
+
+    #[test]
+    fn rollback_note_is_concise_by_default() {
+        let reason = RollbackReason::FatalToolError {
+            tool_name: "run_tests".to_string(),
+            error: "exit code 1".to_string(),
+        };
+        let note = LoopStateMachine::build_rollback_note(&reason, false);
+        assert!(
+            !note.contains("[SYSTEM]"),
+            "default note must not contain [SYSTEM]: {note}"
+        );
+        assert!(
+            note.contains("run_tests"),
+            "note should name the tool: {note}"
+        );
+    }
+
+    #[test]
+    fn rollback_note_is_verbose_when_opted_in() {
+        let reason = RollbackReason::Timeout;
+        let note = LoopStateMachine::build_rollback_note(&reason, true);
+        assert!(
+            note.starts_with("[SYSTEM] Transaction rollback:"),
+            "verbose note must use internal format: {note}"
+        );
     }
 }

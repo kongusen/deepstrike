@@ -275,6 +275,13 @@ To summarize text effectively:
 
 ## 6. 知识检索 (Knowledge)
 
+内核采用**四槽模型**（见 [context-partition-compression.md](./context-partition-compression.md)）。知识有两条路径：
+
+| 路径 | 落地位置 |
+|------|----------|
+| `knowledge(query)` meta-tool | **history**（tool result） |
+| `initial_memory` / `add_knowledge_message` | **Slot 2**（`system_knowledge`） |
+
 ```python
 from deepstrike import KnowledgeSource
 
@@ -299,6 +306,8 @@ runner = RuntimeRunner(RuntimeOptions(
 ## 7. 记忆系统 (Memory)
 
 ### 7.1 WorkingMemory
+
+SDK 侧临时键值存储。**不是**内核已删除的 `working` 分区。结构化任务状态在 `task_state` 中，渲染进 Slot 3（`turns[0]`）。
 
 ```python
 from deepstrike import WorkingMemory
@@ -333,8 +342,10 @@ runner = RuntimeRunner(RuntimeOptions(
     max_turns=25,
     dream_store=MyStore(),
     agent_id="my-agent-1",
+    initial_memory=["Prior session: user prefers JWT with RS256."],  # Slot 2
 ))
 
+# memory(query) 检索结果 → history；initial_memory → Slot 2
 # 触发记忆整合
 result = await runner.dream("my-agent-1", now_ms=int(time.time() * 1000))
 print(f"{result.sessions_processed} sessions, {result.insights_extracted} insights")
@@ -540,7 +551,7 @@ if mode.is_drifting(0.05):
 if HandoffBus.requires_escalation(outcome.handoff):
     print("Blocked on:", outcome.handoff.blocked_on)
 note = HandoffBus.to_context_note(outcome.handoff)
-# 注入下一轮 Agent 的 working 分区
+# 注入下一轮 Agent 的 State turn（Slot 3 / turns[0]）
 ```
 
 ### 11.4 OrchestrationMode — 三角色完整流
@@ -635,31 +646,36 @@ async for evt in runner.run(goal="write a design", session_id="s1"):
 Python SDK 支持完全隔离的子智能体生成，并遵循内核 Isolation Manifest 过滤其拥有的能力：
 
 ```python
-from deepstrike import AgentIdentity, AgentRunSpec
+from deepstrike import AgentIdentity, AgentRunSpec, SubAgentHarnessConfig, MilestoneContract, MilestonePhase
+
+runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=session_log,
+    execution_plane=execution_plane,
+    max_tokens=4096,
+    # 可选：子 agent 自动走 HarnessLoop 评估（与 Node subAgentHarness 对齐）
+    sub_agent_harness=SubAgentHarnessConfig(
+        eval_provider=eval_provider,
+        max_attempts=3,
+    ),
+))
 
 spec = AgentRunSpec(
     identity=AgentIdentity(agent_id="sub-worker-1", session_id="sub-session-001"),
     role="implement",
     goal="写一份文件",
-    isolation="read_only", # 隔离级别
+    isolation="read_only",
+    milestones=MilestoneContract(phases=[
+        MilestonePhase(id="p1", criteria=["文件包含完整章节"]),
+    ]),
 )
 
 # 必须在父智能体运行的 context 中调用
-child_events = await runner.spawn_sub_agent(spec)
-async for evt in child_events:
+async for evt in runner.spawn_sub_agent(spec):
     if evt.type == "done":
         print(evt.status)
 ```
 
 ### 12.3 产物推送 (Artifacts)
 
-为了防止模型将极大的文本/文件输出直接作为 prompt 历史上下文传回导致膨胀，可以在 active run 期间将大文件输出以“产物”形式推送：
-
-```python
-from deepstrike import Message
-
-runner.push_artifact(
-    message=Message(role="assistant", content="这里是极长的大文件内容/代码/报告..."),
-    tokens=1000 # 可选指定 token 数
-)
-```
+> **已移除（Python SDK 0.3+）。** 四槽重构后 artifacts 分区已移除。请使用 `initial_memory` → Slot 2，或依赖 history 压缩 tier 处理大输出。

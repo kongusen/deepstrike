@@ -326,6 +326,8 @@ RunEvent::ToolResult { call_id, content, .. }     // 技能内容返回
 
 ## 6. 知识检索 (Knowledge)
 
+内核采用**四槽模型**（见 [context-partition-compression.md](./context-partition-compression.md)）。`knowledge(query)` 结果进入 history；`initial_memory` 预加载到 Slot 2。
+
 ### 6.1 实现 KnowledgeSource
 
 ```rust
@@ -362,7 +364,9 @@ let runner = RuntimeRunner::new(RuntimeOptions {
 
 ## 7. 记忆系统 (Memory)
 
-### 7.1 WorkingMemory（会话内临时存储）
+### 7.1 WorkingMemory（SDK 侧临时存储）
+
+SDK 辅助类型，**不是**内核已删除的 `working` 分区。
 
 ```rust
 use deepstrike_sdk::WorkingMemory;
@@ -400,11 +404,12 @@ impl DreamStore for PostgresStore {
 let runner = RuntimeRunner::new(RuntimeOptions {
     dream_store: Some(Box::new(my_store)),
     agent_id: Some("my-agent-1".into()),
+    initial_memory: vec!["Prior: user prefers RS256.".into()],  // Slot 2
     max_tokens: 4096,
     /* ... */
 });
 
-// 会话中：内核自动注入 `memory` meta-tool，LLM 可搜索长期记忆
+// 会话中：memory(query) → history tool result；initial_memory → Slot 2
 // 空闲时：触发记忆整合
 let dream_result = runner.dream("my-agent-1", now_ms).await?;
 println!("处理 {} 个 session，提取 {} 条洞察",
@@ -666,37 +671,30 @@ loop {
 }
 ```
 
-### 11.2 ContextManager
+### 11.2 ContextManager（四槽模型）
 
 ```rust
 use deepstrike_core::context::manager::ContextManager;
-use deepstrike_core::types::skill::SkillMetadata;
 
 let mut ctx = ContextManager::new(128_000);
 
-// 压力监控
-println!("Pressure: {:.2}", ctx.rho()); // 0.0 ~ 1.0
+// 四槽：system / knowledge / task_state+signals / history
+// 仅 history 被压缩；渲染输出 RenderedContext { system_stable, system_knowledge, turns }
+println!("Pressure: {:.2}", ctx.rho());
 
-// 推送历史
+ctx.push_knowledge(Message::system("domain facts"), 100);
+ctx.push_signal("[INTERRUPT] priority changed".into());
 ctx.push_history(Message::user("Hello"), 5);
-ctx.push_history(Message::assistant("Hi!"), 5);
 
-// 压缩（当压力过高时）
 let action = ctx.should_compress();
 if action != PressureAction::None {
-    ctx.compress(action);
+    ctx.compress(action);  // 摘要写入 task_state.compression_log
 }
 
-// 注册技能 → 自动注入 skill meta-tool
-ctx.set_available_skills(vec![SkillMetadata::new("debug", "Debug helper")]);
-
-// 启用 memory/knowledge meta-tool
-ctx.set_memory_enabled(true);
-ctx.set_knowledge_enabled(true);
-
-// 渲染完整上下文（发送给 LLM 的消息列表）
-let messages = ctx.render();
+let rendered = ctx.render();  // RenderedContext — 映射到 provider API
 ```
+
+详见 [context-partition-compression.md](./context-partition-compression.md)。
 
 ### 11.3 EvalPipeline
 
@@ -826,13 +824,4 @@ while let Some(evt) = stream.next().await {
 
 ### 12.3 产物推送 (Artifacts)
 
-为了防止模型将极大的文本/文件输出直接作为 prompt 历史上下文传回导致膨胀，可以在 active run 期间将大文件输出以“产物”形式推送：
-
-```rust
-use deepstrike_core::types::message::Message;
-
-runner.push_artifact(
-    Message::assistant("这里是极长的大文件内容/代码/报告..."),
-    Some(1000) // 可选指定 token 数，如为 None 则使用内核 tokenizer 自动估算
-);
-```
+> **已移除（Rust/Python SDK 0.3+）。** 四槽重构后 artifacts 分区已移除。请使用 `initial_memory` → Slot 2，或依赖 history 压缩 tier 处理大输出。

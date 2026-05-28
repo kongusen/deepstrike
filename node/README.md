@@ -118,6 +118,33 @@ const provider = createProvider({
 
 ---
 
+## Context model (four slots)
+
+The kernel renders context as four LLM API slots — only **history** is compressed.
+
+| Slot | Source | Role |
+|------|--------|------|
+| `systemStable` | system partition | Identity, rules — never changes within a run |
+| `systemKnowledge` | knowledge partition | Preloaded memory, skill defs — low frequency |
+| `turns[0]` | `task_state` + signals | Goal, plan, progress, compression log, runtime signals |
+| `turns[1..N]` | history | Conversation transcript |
+
+```typescript
+const runner = new RuntimeRunner({
+  // ...
+  initialMemory: ["User prefers chartreuse."],  // → Slot 2 (systemKnowledge)
+  systemPrompt: "You are a helpful assistant.", // → Slot 1 (systemStable)
+})
+```
+
+- `memory(query)` / `knowledge(query)` meta-tool results → **history** (tool results)
+- External signals → **Slot 3** via `push_signal()`, cleared after each render
+- Anthropic: Slots 1–2 get separate `cache_control` breakpoints
+
+Full reference: [docs/context-partition-compression.md](../docs/context-partition-compression.md)
+
+---
+
 ## Runtime options
 
 ```typescript
@@ -135,6 +162,11 @@ const runner = new RuntimeRunner({
   signalSource: rx,           // SignalSource for external signals
   dreamStore: myStore,        // DreamStore for long-term memory
   agentId: "my-agent",        // required with dreamStore for memory meta-tool
+  initialMemory: ["..."],     // preloaded blocks → Slot 2 (systemKnowledge)
+  subAgentHarness: {          // optional: sub-agents run through HarnessLoop
+    evalProvider,
+    maxAttempts: 3,
+  },
   governance: gov,            // Governance pipeline instance
 })
 ```
@@ -182,7 +214,9 @@ effort: 1
 
 ## Knowledge
 
-Implement `KnowledgeSource` to connect any RAG system. The kernel injects a `knowledge` meta-tool that the LLM calls on demand.
+Implement `KnowledgeSource` to connect any RAG system. The kernel injects a `knowledge` meta-tool that the LLM calls on demand. **Runtime retrieval results land in history** as tool results.
+
+To inject durable knowledge at startup (Slot 2, cacheable on Anthropic), use `initialMemory` or kernel `add_knowledge_message`.
 
 ```typescript
 const runner = new RuntimeRunner({
@@ -202,7 +236,9 @@ const runner = new RuntimeRunner({
 
 ## Memory
 
-### WorkingMemory (in-session scratch pad)
+### WorkingMemory (SDK-side scratch pad)
+
+`WorkingMemory` is an SDK helper — not the kernel `working` partition (removed). Kernel task state lives in `task_state` and renders into Slot 3 (`turns[0]`).
 
 ```typescript
 import { WorkingMemory } from "@deepstrike/sdk"
@@ -233,7 +269,8 @@ const runner = new RuntimeRunner({
   agentId: "my-agent",  // enables `memory` meta-tool
 })
 
-// In-session: LLM calls memory(query) → DreamStore.search()
+// In-session: LLM calls memory(query) → DreamStore.search() → history tool result
+// Preload:    initialMemory → Slot 2 (systemKnowledge)
 // Post-session: trigger memory consolidation
 const result = await runner.dream("my-agent", Date.now())
 ```
@@ -318,6 +355,14 @@ const harness = new EvalLoopHarness(runner, {
 
 // 3. HarnessLoop — LLM-as-judge with feedback injection + skill extraction
 const loop = new HarnessLoop(runner, evalProvider, { maxAttempts: 3, skillDir: "./skills" })
+
+// Sub-agents: pass subAgentHarness on RuntimeRunner to auto-evaluate spawned children
+const runnerWithHarness = new RuntimeRunner({
+  provider,
+  executionPlane: plane,
+  sessionLog,
+  subAgentHarness: { evalProvider, maxAttempts: 3 },
+})
 for await (const event of loop.runStreaming({
   goal: "Write a haiku",
   criteria: [{ text: "Must be 3 lines", required: true }],

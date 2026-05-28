@@ -11,10 +11,30 @@ DeepStrike is a cross-language agent runtime built around a pure-Rust kernel. Th
 | [Quick Start](./quick-start.md) | Install, run your first agent, stream output, add tools, use images |
 | [Architecture](./architecture.md) | Layer overview (0–4), kernel design, SDK layer, binding architecture |
 | [Core Concepts](./core-concepts.md) | Skills, Memory, Knowledge, Harness, Signals, Collaboration, Safety |
+| [Context Slots & Compression](./context-partition-compression.md) | **Current:** four-slot model, compression tiers, renderer, renewal |
 | [Collaboration](./collaboration.md) | VerificationContract, AgentPool, ContractDrivenHarness, Modes, HandoffBus |
 | [SDK Kernel Driver Parity](./sdk-kernel-driver-parity.md) | Cross-SDK plan for aligning Node, Python, Rust, and WASM around the kernel-driver contract |
-| [Providers](./providers.md) | All LLM providers, configuration, thinking/reasoning flags, multimodal support |
+| [Providers](./providers.md) | All LLM providers, RenderedContext slots, Anthropic prompt caching, multimodal |
 | [Release Runbook](./release-runbook.md) | Version propagation, verification, release flow, and recovery |
+
+## SDK guides
+
+| Guide | Description |
+| --- | --- |
+| [sdk-guide-nodejs.md](./sdk-guide-nodejs.md) | Node.js SDK API 使用指南 |
+| [sdk-guide-python.md](./sdk-guide-python.md) | Python SDK API 使用指南 |
+| [sdk-guide-rust.md](./sdk-guide-rust.md) | Rust SDK API 使用指南 |
+
+## Specifications
+
+| Spec | Description |
+| --- | --- |
+| [spec-kernel-abi.md](./spec-kernel-abi.md) | `KernelInput` / `KernelAction` / `KernelObservation` JSON ABI |
+| [spec-context-optimization-v3.md](./spec-context-optimization-v3.md) | P0/P1 context performance (token counting, prompt caching, renderer) |
+| [spec-context-compression-v2.md](./spec-context-compression-v2.md) | *(superseded)* six-partition v2 design |
+| [implementation-agent-os-kernel.md](./implementation-agent-os-kernel.md) | Agent OS kernel roadmap and phase gates |
+
+See also [CHANGELOG.md](../CHANGELOG.md).
 
 ---
 
@@ -26,6 +46,8 @@ DeepStrike is a cross-language agent runtime built around a pure-Rust kernel. Th
 | `deepstrike` | Python | `pip install deepstrike` |
 | `deepstrike-sdk` | Rust | `cargo add deepstrike-sdk` |
 | `@deepstrike/wasm` | TypeScript / Browser | `npm install @deepstrike/wasm` |
+
+Package READMEs: [node/README.md](../node/README.md) · [python/README.md](../python/README.md) · [rust/README.md](../rust/README.md) · [wasm/README.md](../wasm/README.md)
 
 ---
 

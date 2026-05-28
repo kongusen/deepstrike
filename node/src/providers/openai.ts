@@ -79,7 +79,7 @@ export class OpenAIChatProvider implements LLMProvider {
         this.circuit.recordSuccess()
         const choice = resp.choices[0].message
         const toolCalls = this.chat.normalizeToolCalls(choice.tool_calls ?? [])
-        return { role: "assistant", content: choice.content ?? "", tokenCount: resp.usage?.total_tokens, toolCalls }
+        return { role: "assistant", content: choice.content ?? "", tokenCount: resp.usage?.completion_tokens ?? resp.usage?.total_tokens, toolCalls }
       } catch (err) {
         lastErr = err
         this.circuit.recordFailure()
@@ -107,8 +107,15 @@ export class OpenAIChatProvider implements LLMProvider {
     })
 
     let totalTokens = 0
+    let inputTokens = 0
+    let outputTokens = 0
     for await (const chunk of stream) {
-      if (chunk.usage) { totalTokens = chunk.usage.total_tokens; continue }
+      if (chunk.usage) {
+        totalTokens = chunk.usage.total_tokens
+        inputTokens = chunk.usage.prompt_tokens ?? 0
+        outputTokens = chunk.usage.completion_tokens ?? 0
+        continue
+      }
       const choice = chunk.choices[0]
       if (!choice) continue
       const delta = choice.delta as any
@@ -179,7 +186,7 @@ export class OpenAIChatProvider implements LLMProvider {
       emittedToolCallIndexes.add(idx)
       yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
     }
-    if (totalTokens > 0) yield { type: "usage", totalTokens } as StreamEvent
+    if (totalTokens > 0) yield { type: "usage", totalTokens, inputTokens, outputTokens } as StreamEvent
   }
 
   protected requestExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {

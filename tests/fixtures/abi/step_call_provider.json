@@ -5,6 +5,8 @@
       "kind": "call_provider",
       "context": {
         "system_text": "System prompt",
+        "system_stable": "System prompt",
+        "system_knowledge": "",
         "turns": [
           {
             "role": "user",

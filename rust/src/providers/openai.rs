@@ -463,6 +463,8 @@ mod tests {
     fn context_replays_tool_calls_and_results_natively() {
         let context = RenderedContext {
             system_text: "system rules".into(),
+            system_stable: "system rules".into(),
+            system_knowledge: String::new(),
             turns: vec![
                 Message::user("What is the weather?"),
                 Message {

@@ -266,6 +266,6 @@ fn replay_without_rollback_keeps_full_history() {
 fn turn_checkpoint_default_is_zero() {
     let cp = TurnCheckpoint::default();
     assert_eq!(cp.history_len, 0);
-    assert_eq!(cp.working_len, 0);
+    assert_eq!(cp.signals_len, 0);
     assert!(cp.task_state.is_none());
 }

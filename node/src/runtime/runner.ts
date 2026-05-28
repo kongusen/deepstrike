@@ -2,6 +2,7 @@ import type {
   LLMProvider, Message, ToolCall, ToolResult, ToolSchema,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
   ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
+  AsyncSummarizer,
 } from "../types.js"
 import type { DreamStore, MemoryEntry, CurationResult, SessionData } from "../memory/protocols.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
@@ -73,8 +74,24 @@ export interface RuntimeOptions {
   milestoneContract?: MilestoneContract
   /** Custom sub-agent host driver; defaults to SubAgentOrchestrator. */
   subAgentOrchestrator?: SubAgentOrchestrator
+  /**
+   * When set, sub-agents run through a HarnessLoop with this config.
+   * The eval provider evaluates the sub-agent's output against the criteria
+   * from the AgentRunSpec, retrying up to maxAttempts times.
+   */
+  subAgentHarness?: {
+    evalProvider: LLMProvider
+    maxAttempts?: number
+  }
   /** Optional system prompt injected into the dream synthesis call. */
   dreamSystemPrompt?: string
+  /**
+   * Optional async LLM summarizer. When provided, a background call is fired
+   * after each compression event to produce a richer semantic summary.
+   * The result is written back to SessionLog as `summary_upgraded` and used
+   * on the next wake() in place of the rule-based summary.
+   */
+  asyncSummarizer?: AsyncSummarizer
 }
 
 export class RuntimeRunner {
@@ -119,13 +136,13 @@ export class RuntimeRunner {
     kernelApply(this.activeKernel, this.pendingObservations, capabilityCommandUnmount(kind, id))
   }
 
-  /** Push a large artifact into the kernel artifacts partition (not inlined in history). */
-  pushArtifact(message: Message, tokens?: number): void {
+  /** Push content into the Knowledge slot (memory retrievals, skill definitions, artifacts). */
+  pushKnowledge(message: Message, tokens?: number): void {
     if (!this.activeKernel) return
     kernelApply(this.activeKernel, this.pendingObservations, {
-      kind: "push_artifact",
-      message: messageToKernelMessage(message),
-      ...(tokens !== undefined ? { tokens } : {}),
+      kind: "add_knowledge_message",
+      content: message.content ?? "",
+      tokens: tokens ?? Math.max(1, Math.ceil((message.content?.length ?? 0) / 4)),
     })
   }
 
@@ -170,6 +187,7 @@ export class RuntimeRunner {
       spec,
       manifest,
       sessionLog: this.opts.sessionLog,
+      ...(this.opts.subAgentHarness ? { harness: this.opts.subAgentHarness } : {}),
     })
 
     kernelApply(runtime, this.pendingObservations, {
@@ -355,7 +373,7 @@ export class RuntimeRunner {
     if (this.opts.initialMemory) {
       for (const mem of this.opts.initialMemory) {
         kernelApply(runtime, this.pendingObservations, {
-          kind: "add_memory_message",
+          kind: "add_knowledge_message",
           content: mem,
           tokens: Math.max(1, Math.ceil(mem.length / 4)),
         })
@@ -478,11 +496,19 @@ export class RuntimeRunner {
         const context = action.context
         const tools = action.tools
         let turnTokens = 0
+        let turnInputTokens = 0
+        let turnOutputTokens = 0
         let shouldRetry = false
 
         try {
           for await (const evt of this.opts.provider.stream(context, tools, Object.keys(ext).length ? ext : undefined, providerState)) {
-            if (evt.type === "usage") { turnTokens = (evt as { type: string; totalTokens: number }).totalTokens; continue }
+            if (evt.type === "usage") {
+              const usageEvt = evt as { type: string; totalTokens: number; inputTokens?: number; outputTokens?: number }
+              turnTokens = usageEvt.totalTokens
+              turnInputTokens = usageEvt.inputTokens ?? 0
+              turnOutputTokens = usageEvt.outputTokens ?? 0
+              continue
+            }
             yield evt
             if (evt.type === "text_delta") finalText += (evt as TextDelta).delta
             else if (evt.type === "tool_call") {
@@ -526,17 +552,19 @@ export class RuntimeRunner {
           role: "assistant",
           content: finalText,
           toolCalls: finalToolCalls,
-          tokenCount: turnTokens || undefined,
+          tokenCount: turnOutputTokens || turnTokens || undefined,
         }
         action = kernelAction(runtime, this.pendingObservations, {
           kind: "provider_result",
           message: messageToKernelMessage(assistantMessage),
+          ...(turnInputTokens > 0 ? { observed_input_tokens: turnInputTokens } : {}),
+          ...(turnOutputTokens > 0 ? { observed_output_tokens: turnOutputTokens } : {}),
         })
         const providerReplay = peekProviderReplay(this.opts.provider, finalText, finalToolCalls)
         await this.opts.sessionLog.append(sessionId, buildLlmCompletedEvent({
           turn: runtime.turn(),
           content: finalText,
-          tokenCount: turnTokens || undefined,
+          tokenCount: turnOutputTokens || turnTokens || undefined,
           toolCalls: finalToolCalls,
           providerReplay,
         }))
@@ -775,6 +803,15 @@ export class RuntimeRunner {
           preserved_refs: preservedRefs,
         })
         nextArchiveStart = compressedSeq + 1
+
+        if (this.opts.asyncSummarizer && archived && archived.length > 0) {
+          void this.upgradeCompressedSummary(
+            sessionId,
+            compressedSeq,
+            archived as Message[],
+            compressionAction(obs.action) ?? "auto_compact",
+          )
+        }
       } else if (obs.kind === "rollbacked") {
         await this.opts.sessionLog.append(sessionId, {
           kind: "rollbacked",
@@ -838,6 +875,24 @@ export class RuntimeRunner {
     }
     return nextArchiveStart
   }
+
+  private async upgradeCompressedSummary(
+    sessionId: string,
+    compressedSeq: number,
+    archived: Message[],
+    action: string,
+  ): Promise<void> {
+    try {
+      const summary = await this.opts.asyncSummarizer!.summarize(archived, action)
+      await this.opts.sessionLog.append(sessionId, {
+        kind: "summary_upgraded",
+        compressed_seq: compressedSeq,
+        summary,
+      })
+    } catch {
+      // non-fatal: rule-based summary stays in place
+    }
+  }
 }
 
 function isMidRun(events: Array<{ seq: number; event: SessionEvent }>): boolean {
@@ -857,8 +912,14 @@ function compressionAction(action?: string): Extract<SessionEvent, { kind: "comp
 }
 
 export function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, maxBytes?: number): Message[] {
-  const messages: Message[] = []
+  // Build upgraded-summary index: compressed_seq -> upgraded summary
+  const upgradedSummaries = new Map<number, string>()
   for (const { event: e } of events) {
+    if (e.kind === "summary_upgraded") upgradedSummaries.set(e.compressed_seq, e.summary)
+  }
+
+  const messages: Message[] = []
+  for (const { seq, event: e } of events) {
     if (e.kind === "run_started") {
       const userText = e.criteria.length
         ? `${e.goal}\n\nCriteria:\n${e.criteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
@@ -870,8 +931,9 @@ export function replayMessages(events: Array<{ seq: number; event: SessionEvent 
         tokenCount: Math.max(1, Math.ceil(userText.length / 4)),
       })
     } else if (e.kind === "compressed") {
-      if (e.summary) {
-        const systemText = `[Compressed context: turn ${e.turn}]\n${e.summary}`
+      const summary = upgradedSummaries.get(seq) ?? e.summary
+      if (summary) {
+        const systemText = `[Compressed context: turn ${e.turn}]\n${summary}`
         messages.push({
           role: "system",
           content: systemText,
@@ -911,8 +973,14 @@ export async function replayMessagesAsync(
   maxBytes?: number,
   loadArchive?: (archiveRef: string) => Promise<Message[]>,
 ): Promise<Message[]> {
-  const messages: Message[] = []
+  // Build upgraded-summary index: compressed_seq -> upgraded summary
+  const upgradedSummaries = new Map<number, string>()
   for (const { event: e } of events) {
+    if (e.kind === "summary_upgraded") upgradedSummaries.set(e.compressed_seq, e.summary)
+  }
+
+  const messages: Message[] = []
+  for (const { seq, event: e } of events) {
     if (e.kind === "run_started") {
       const userText = e.criteria.length
         ? `${e.goal}\n\nCriteria:\n${e.criteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
@@ -943,8 +1011,9 @@ export async function replayMessagesAsync(
       }
 
       if (!loadedSuccessfully) {
-        if (e.summary) {
-          const systemText = `[Compressed context: turn ${e.turn}]\n${e.summary}`
+        const summary = upgradedSummaries.get(seq) ?? e.summary
+        if (summary) {
+          const systemText = `[Compressed context: turn ${e.turn}]\n${summary}`
           messages.push({
             role: "system",
             content: systemText,

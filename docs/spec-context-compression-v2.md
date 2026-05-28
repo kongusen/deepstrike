@@ -1,6 +1,8 @@
 # Context Compression & Working Partition — v2 Spec
 
-**Status:** Phase A + B + C complete (MVP shipped). Phase D deferred.  
+> **⚠️ Superseded.** This document describes the six-partition model shipped in v0.2.0. The current architecture uses a **four-slot model** aligned with LLM APIs. See [context-partition-compression.md](./context-partition-compression.md) for the current design.
+
+**Status:** Phase A + B + C complete (MVP shipped). **Architecture superseded by four-slot refactor.**  
 **Target version:** 0.2.0  
 **Scope:** `deepstrike-core` kernel + Node / Python / Rust / WASM SDKs  
 **Phases:** A (token engine) → B (working task state) → C (archive) → D (smart pipeline) → E (SDK alignment)

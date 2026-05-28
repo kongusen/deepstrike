@@ -39,12 +39,14 @@ export interface ToolSchema {
 /** Structured provider context from the kernel (`call_llm` action). */
 export interface RenderedContext {
   systemText: string
+  systemStable?: string
+  systemKnowledge?: string
   turns: Message[]
 }
 
 export interface StreamEvent { type: string }
 export interface TextDelta extends StreamEvent { type: "text_delta"; delta: string }
-export interface UsageEvent extends StreamEvent { type: "usage"; totalTokens: number }
+export interface UsageEvent extends StreamEvent { type: "usage"; totalTokens: number; inputTokens?: number; outputTokens?: number }
 export interface ThinkingDelta extends StreamEvent { type: "thinking_delta"; delta: string }
 export interface ToolCallEvent extends StreamEvent { type: "tool_call"; id: string; name: string; arguments: Record<string, unknown> }
 export interface ToolResultEvent extends StreamEvent { type: "tool_result"; callId: string; name: string; content: string; isError: boolean; isFatal?: boolean; errorKind?: ToolErrorKind }

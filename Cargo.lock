@@ -64,30 +64,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "base64"
-version = "0.21.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
-
-[[package]]
-name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
-
-[[package]]
-name = "bit-set"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0700ddab506f33b20a03b13996eccd309a48e5ff77d0d95926aa0210fb4e95f1"
-dependencies = [
- "bit-vec",
-]
-
-[[package]]
-name = "bit-vec"
-version = "0.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "349f9b6a179ed607305526ca489b34ad0a41aed5f7980fa90eb03160b69598fb"
 
 [[package]]
 name = "bitflags"
@@ -100,17 +79,6 @@ name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
-
-[[package]]
-name = "bstr"
-version = "1.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63044e1ae8e69f3b5a92c736ca6269b8d12fa7efe39bf34ddb06d102cf0e2cab"
-dependencies = [
- "memchr",
- "regex-automata",
- "serde",
-]
 
 [[package]]
 name = "bumpalo"
@@ -226,10 +194,9 @@ dependencies = [
 
 [[package]]
 name = "deepstrike-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "compact_str",
- "deepstrike-tokenizer",
  "pretty_assertions",
  "serde",
  "serde_json",
@@ -239,11 +206,10 @@ dependencies = [
 
 [[package]]
 name = "deepstrike-node"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "compact_str",
  "deepstrike-core",
- "deepstrike-tokenizer",
  "napi",
  "napi-build",
  "napi-derive",
@@ -252,11 +218,10 @@ dependencies = [
 
 [[package]]
 name = "deepstrike-py"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "compact_str",
  "deepstrike-core",
- "deepstrike-tokenizer",
  "pyo3",
  "serde_json",
  "uuid",
@@ -264,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "deepstrike-sdk"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -297,20 +262,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "deepstrike-tokenizer"
-version = "0.2.2"
-dependencies = [
- "pretty_assertions",
- "tiktoken-rs",
-]
-
-[[package]]
 name = "deepstrike-wasm"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "compact_str",
  "deepstrike-core",
- "deepstrike-tokenizer",
  "js-sys",
  "serde",
  "serde-wasm-bindgen",
@@ -366,17 +322,6 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "fancy-regex"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "531e46835a22af56d1e3b66f04844bed63158bc094a628bec1d321d9b4c44bf2"
-dependencies = [
- "bit-set",
- "regex-automata",
- "regex-syntax",
 ]
 
 [[package]]
@@ -708,7 +653,7 @@ version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "bytes",
  "futures-channel",
  "futures-util",
@@ -920,12 +865,6 @@ dependencies = [
  "bitflags 2.11.1",
  "libc",
 ]
-
-[[package]]
-name = "lazy_static"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "leb128fmt"
@@ -1379,7 +1318,7 @@ version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "bytes",
  "encoding_rs",
  "futures-core",
@@ -1429,12 +1368,6 @@ dependencies = [
  "untrusted",
  "windows-sys 0.52.0",
 ]
-
-[[package]]
-name = "rustc-hash"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
 name = "rustix"
@@ -1769,22 +1702,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "tiktoken-rs"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44075987ee2486402f0808505dd65692163d243a337fc54363d49afac41087f6"
-dependencies = [
- "anyhow",
- "base64 0.21.7",
- "bstr",
- "fancy-regex",
- "lazy_static",
- "parking_lot",
- "regex",
- "rustc-hash",
 ]
 
 [[package]]

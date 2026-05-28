@@ -192,8 +192,8 @@ describe("RuntimeRunner wake recovery", () => {
     expect(provider.calls[1].turns).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user", content: "My name is Ada." }),
       expect.objectContaining({ role: "assistant", content: "answer-1" }),
-      expect.objectContaining({ role: "user", content: "What is my name?" }),
     ]))
+    expect(provider.calls[1].turns[0].content).toContain("What is my name?")
   })
 
   it("records compressed events when kernel compresses context", async () => {
@@ -249,6 +249,24 @@ describe("RuntimeRunner wake recovery", () => {
       maxTurns: 4,
     })
     const sessionId = "reactive-compact"
+    await sessionLog.append(sessionId, {
+      kind: "run_started",
+      run_id: "seed",
+      goal: "seed ".repeat(1200),
+      criteria: [],
+    })
+    await sessionLog.append(sessionId, {
+      kind: "llm_completed",
+      turn: 0,
+      content: "prior answer ".repeat(400),
+      tool_calls: [],
+    })
+    await sessionLog.append(sessionId, {
+      kind: "run_terminal",
+      reason: "completed",
+      turns_used: 1,
+      total_tokens: 0,
+    })
 
     const text = await collectText(runner.run({
       sessionId,

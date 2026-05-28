@@ -47,7 +47,7 @@ DeepStrike separates computation from I/O at the language boundary. A pure-Rust 
 │  Layer 0: deepstrike-core  (pure Rust, zero I/O)                  │
 │                                                                   │
 │  LoopStateMachine   — turn-by-turn control, termination policy    │
-│  ContextEngine      — 5-partition context + pressure compression  │
+│  ContextEngine      — 4-slot context + tiered history compression     │
 │  GovernancePipeline — Permission → Veto → RateLimit → Audit       │
 │  SignalRouter       — priority queue, dedup, dispositions         │
 │  EvalPipeline       — LLM-as-judge, skill candidate extraction    │
@@ -78,25 +78,28 @@ The kernel never touches the network, filesystem, or clock. All time-dependent b
 | Subsystem | Responsibility |
 | --- | --- |
 | `LoopStateMachine` | Turn-by-turn control; enforces `max_turns`, `token_budget`, and `timeout` termination policy |
-| `ContextEngine` | Manages a 5-partition context window (system / working / memory / history / skill); compresses under pressure |
+| `ContextEngine` | Manages a four-slot context window aligned with LLM APIs; compresses **history only** under pressure |
 | `GovernancePipeline` | Evaluates every tool call: Permission → Veto → RateLimit → Constraint → Audit |
 | `SignalRouter` | Priority dedup queue; maps incoming signals to dispositions (`interrupt_now`, `interrupt`, `queue`, `observe`, `dropped`) |
 | `EvalPipeline` | LLM-as-judge scoring; extracts `SkillCandidate` objects from passing runs |
 | `IdlePipeline` | Post-session: analyses `SessionData`, synthesises insights via LLM, deduplicates, commits to `DreamStore` |
 
-### Context partitions
+### Context slots (four-slot model)
 
 ```text
-┌─────────────────────────────────────────────────────┐
-│ system       — base instructions, governance rules   │  fixed
-│ skill        — active skill guide (loaded on demand) │  swappable
-│ memory       — retrieved DreamStore entries          │  per-turn
-│ working      — scratchpad, in-progress output        │  per-turn
-│ history      — past turns (compressed under pressure)│  rolling
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│ Slot 1 — system_stable     Identity: rules, role, constraints        │  never changes
+│ Slot 2 — system_knowledge  Knowledge: memory blocks, skill defs      │  low frequency
+│ Slot 3 — turns[0]          State: task_state + ephemeral signals     │  every turn
+│ Slot 4 — turns[1..N]       History: conversation transcript          │  compressed
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-When total token usage approaches `max_tokens`, the kernel triggers compression: history entries are summarised by the LLM and replaced with a condensed block, freeing space for new turns.
+On Anthropic, Slots 1–2 map to separate `system[]` blocks with `cache_control`. Slot 3 is rebuilt each call from `task_state.format_compact()` plus runtime `signals`. Slot 4 is the sole target of the four-tier compression pipeline (Snip → Micro → Collapse → Auto).
+
+When total token usage approaches `max_tokens`, the kernel runs compression tiers on history only. Summaries append to `task_state.compression_log` and render back into Slot 3 so the model always sees recent compression history.
+
+See [Context Slots & Compression](./context-partition-compression.md) for tier thresholds, renewal carryover, and renderer behavior.
 
 ---
 

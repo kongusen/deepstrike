@@ -65,6 +65,13 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class SubAgentHarnessConfig:
+  """When set on RuntimeOptions, spawned sub-agents run through HarnessLoop."""
+  eval_provider: LLMProvider
+  max_attempts: int = 3
+
+
+@dataclass
 class RuntimeOptions:
   provider: LLMProvider
   session_log: SessionLog
@@ -86,6 +93,7 @@ class RuntimeOptions:
   enable_plan_tool: bool | None = None
   on_tool_suspend: Callable[[ToolSuspendEvent], Awaitable[Any] | Any] | None = None
   sub_agent_orchestrator: Any | None = None
+  sub_agent_harness: SubAgentHarnessConfig | None = None
   dream_system_prompt: str | None = None
   milestone_policy: "MilestonePolicy | None" = None
   on_milestone_evaluate: Callable[[dict[str, Any]], Awaitable[Any] | Any] | None = None
@@ -159,6 +167,7 @@ class RuntimeRunner:
       spec=spec,
       manifest=manifest,
       session_log=self._opts.session_log,
+      harness=self._opts.sub_agent_harness,
     ))
 
     kernel_apply(runtime, self._pending_observations, {
@@ -224,17 +233,6 @@ class RuntimeRunner:
           "id": id,
         },
       })
-
-  def push_artifact(self, message: Message, tokens: int | None = None) -> None:
-    """Push a large artifact into the kernel artifacts partition (not inlined in history)."""
-    if self._active_kernel is not None:
-      event = {
-        "kind": "push_artifact",
-        "message": message_to_kernel(message),
-      }
-      if tokens is not None:
-        event["tokens"] = tokens
-      kernel_apply(self._active_kernel, self._pending_observations, event)
 
   @property
   def execution_plane(self) -> ExecutionPlane:

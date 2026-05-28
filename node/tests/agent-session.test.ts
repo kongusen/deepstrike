@@ -26,8 +26,9 @@ describe("RuntimeRunner session continuity", () => {
     expect(provider.calls[1].turns).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user", content: "My name is Ada." }),
       expect.objectContaining({ role: "assistant", content: "answer-1" }),
-      expect.objectContaining({ role: "user", content: "What is my name?" }),
     ]))
+    // goal is now in turns[0] (State slot), not systemVolatile
+    expect(provider.calls[1].turns[0].content).toContain("What is my name?")
   })
 
   it("keeps different session ids isolated", async () => {

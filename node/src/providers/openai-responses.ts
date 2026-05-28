@@ -188,7 +188,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
           role: "assistant",
           content: decoded.content,
           toolCalls: decoded.toolCalls,
-          tokenCount: resp.usage?.total_tokens,
+          tokenCount: resp.usage?.output_tokens ?? resp.usage?.total_tokens,
         }
       } catch (err) {
         lastErr = err
@@ -248,7 +248,12 @@ export class OpenAIResponsesProvider implements LLMProvider {
         runState.previousResponseId = evt.response.id
         runState.coveredMessageCount = context.turns.length + 1
         if (evt.response.usage?.total_tokens) {
-          yield { type: "usage", totalTokens: evt.response.usage.total_tokens } as StreamEvent
+          yield {
+            type: "usage",
+            totalTokens: evt.response.usage.total_tokens,
+            ...(evt.response.usage.input_tokens ? { inputTokens: evt.response.usage.input_tokens } : {}),
+            ...(evt.response.usage.output_tokens ? { outputTokens: evt.response.usage.output_tokens } : {}),
+          } as StreamEvent
         }
       }
     }

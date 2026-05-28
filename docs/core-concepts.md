@@ -60,13 +60,24 @@ Session continuity is a separate concern from memory. Reuse the same `sessionId`
 
 ### Phase 1 — In-session retrieval
 
-When the model needs context from prior sessions, it calls `memory(query)`. The SDK calls `DreamStore.search(query)` and injects the returned entries into the context window.
+When the model needs context from prior sessions, it calls `memory(query)`. The SDK calls `DreamStore.search(query)` and injects the returned entries into the context window **as a tool result in history** — the model sees them in the conversation flow.
 
 ```text
 model → tool call: memory(query="how did we handle auth last time?")
 SDK  → dream_store.search("how did we handle auth last time?")
      → [MemoryEntry { content: "Used JWT with RS256 ...", relevance: 0.91 }, ...]
-     → injected into context as tool result
+     → injected into history as tool result
+```
+
+### Preloaded session memory (Slot 2)
+
+To seed durable memory at run start without a tool call, pass `initialMemory` on `RuntimeRunner`. The SDK maps this to `add_knowledge_message` → **Slot 2 (`system_knowledge`)**, which carries Anthropic `cache_control` on the second system block. This replaces the removed `add_memory_message` path.
+
+```typescript
+const runner = new RuntimeRunner({
+  // ...
+  initialMemory: ["Prior decision: use RS256 for JWT signing."],
+})
 ```
 
 ### Phase 2 — Post-session consolidation ("dreaming")
@@ -114,13 +125,22 @@ class MyVectorStore(DreamStore):
 
 ### WorkingMemory
 
-`WorkingMemory` is an in-session scratchpad for the current run only. It is not persisted to `DreamStore` and is not searchable across sessions. Use it for intermediate state within a single conversation.
+`WorkingMemory` is an SDK-side in-session scratchpad for the current run only. It is not persisted to `DreamStore` and is not searchable across sessions.
+
+In the kernel, structured task state lives in `task_state` (goal, plan, progress) and renders into **Slot 3** (`turns[0]`). Ephemeral runtime events (rollback notes, interrupts) use `push_signal()` and fold into the same State turn — they are cleared after each render. The old `working` partition has been removed.
 
 ---
 
 ## Knowledge — *external facts*
 
 Knowledge is read-only external information the agent can query but never modify. Implement `KnowledgeSource` to connect any RAG backend, vector DB, API, or document store.
+
+**Two paths:**
+
+| Path | When | Lands in |
+| --- | --- | --- |
+| `knowledge(query)` meta-tool | Model queries at runtime | **History** (tool result — model needs conversation context) |
+| `push_knowledge()` / `AddKnowledgeMessage` / `initialMemory` | Host injects durable blocks | **Slot 2** (`system_knowledge`, cacheable on Anthropic) |
 
 ```typescript
 // Node.js
@@ -148,14 +168,16 @@ class CompanyWiki(KnowledgeSource):
 # RuntimeOptions(knowledge_source=CompanyWiki())
 ```
 
-When the model calls `knowledge(query="...")`, the SDK calls `retrieve()` and injects the result as a tool result. The agent cannot write to knowledge — it is a one-directional source of truth.
+When the model calls `knowledge(query="...")`, the SDK calls `retrieve()` and injects the result as a tool result in history. The agent cannot write to knowledge — it is a one-directional source of truth.
 
 **Memory vs Knowledge:**
 
 | | Memory | Knowledge |
 | --- | --- | --- |
-| Updated by the agent | Yes (post-session) | No |
+| Updated by the agent | Yes (post-session via `dream()`) | No |
 | Query mechanism | Semantic search over `DreamStore` | `KnowledgeSource.retrieve()` |
+| Runtime retrieval lands in | History (tool result) | History (tool result) |
+| Durable preload lands in | Slot 2 via `initialMemory` | Slot 2 via `push_knowledge()` |
 | Scope | Agent-specific, accumulated over time | Shared, externally managed |
 
 ---
@@ -188,6 +210,17 @@ attempt 2 → runner.run(goal + "\n\nPrevious feedback: " + feedback)
           → SkillCandidate extracted → written to skills/sort_function.md
 ```
 
+When `RuntimeOptions.subAgentHarness` (Node) or `sub_agent_harness` (Python) is set, spawned sub-agents automatically run through the same `HarnessLoop` path. Criteria come from `AgentRunSpec.milestones.phases[].criteria`. Without `subAgentHarness`, sub-agents use the direct run path (backward compatible).
+
+```typescript
+const runner = new RuntimeRunner({
+  provider,
+  executionPlane: plane,
+  sessionLog,
+  subAgentHarness: { evalProvider, maxAttempts: 3 },
+})
+```
+
 ```typescript
 // Node.js
 import { HarnessLoop, HarnessRequest } from "@deepstrike/sdk"
@@ -216,6 +249,8 @@ class MyEval(EvalLoopHarness):
 ## Signals — *external interrupts*
 
 `SignalGateway` is the entry point for all external events during a running session. Signals flow through the kernel's `SignalRouter`, which assigns a disposition based on urgency.
+
+Internally, delivered signals become `push_signal()` text and fold into **Slot 3** (`turns[0]`) alongside `task_state`. They are ephemeral — cleared after each render — and are **not** carried across renewal sprints.
 
 ### Dispositions
 

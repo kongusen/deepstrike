@@ -108,13 +108,13 @@ export class RuntimeRunner {
     yield* this.execute(sessionId, start.goal, start.criteria, extensions, events, true)
   }
 
-  /** Push a large artifact into the kernel artifacts partition (not inlined in history). */
-  pushArtifact(message: Message, tokens?: number): void {
+  /** Push content into Slot 2 (system_knowledge) via add_knowledge_message. */
+  pushKnowledge(message: Message, tokens?: number): void {
     if (!this.activeKernel) return
     kernelApply(this.activeKernel, this.pendingObservations, {
-      kind: "push_artifact",
-      message: messageToKernelMessage(message),
-      ...(tokens !== undefined ? { tokens } : {}),
+      kind: "add_knowledge_message",
+      content: message.content ?? "",
+      tokens: tokens ?? Math.max(1, Math.ceil((message.content?.length ?? 0) / 4)),
     })
   }
 
@@ -347,11 +347,19 @@ export class RuntimeRunner {
         const context = action.context
         const tools = action.tools
         let turnTokens = 0
+        let turnInputTokens = 0
+        let turnOutputTokens = 0
         let shouldRetry = false
 
         try {
           for await (const evt of this.opts.provider.stream(context, tools, Object.keys(ext).length ? ext : undefined, providerState)) {
-            if (evt.type === "usage") { turnTokens = (evt as { type: string; totalTokens: number }).totalTokens; continue }
+            if (evt.type === "usage") {
+              const usageEvt = evt as { type: string; totalTokens: number; inputTokens?: number; outputTokens?: number }
+              turnTokens = usageEvt.totalTokens
+              turnInputTokens = usageEvt.inputTokens ?? 0
+              turnOutputTokens = usageEvt.outputTokens ?? 0
+              continue
+            }
             yield evt
             if (evt.type === "text_delta") finalText += (evt as TextDelta).delta
             else if (evt.type === "tool_call") {
@@ -391,17 +399,19 @@ export class RuntimeRunner {
           role: "assistant",
           content: finalText,
           toolCalls: finalToolCalls,
-          tokenCount: turnTokens || undefined,
+          tokenCount: turnOutputTokens || turnTokens || undefined,
         }
         action = kernelAction(runtime, this.pendingObservations, {
           kind: "provider_result",
           message: messageToKernelMessage(assistantMessage),
+          ...(turnInputTokens > 0 ? { observed_input_tokens: turnInputTokens } : {}),
+          ...(turnOutputTokens > 0 ? { observed_output_tokens: turnOutputTokens } : {}),
         })
         const providerReplay = peekProviderReplay(this.opts.provider, finalText, finalToolCalls)
         await this.opts.sessionLog.append(sessionId, buildLlmCompletedEvent({
           turn: runtime.turn(),
           content: finalText,
-          tokenCount: turnTokens || undefined,
+          tokenCount: turnOutputTokens || turnTokens || undefined,
           toolCalls: finalToolCalls,
           providerReplay,
         }))
@@ -717,8 +727,14 @@ function compressionAction(action?: string): Extract<SessionEvent, { kind: "comp
 }
 
 function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, maxBytes?: number): Message[] {
-  const messages: Message[] = []
+  // Build upgraded-summary index: compressed_seq -> upgraded summary
+  const upgradedSummaries = new Map<number, string>()
   for (const { event: e } of events) {
+    if (e.kind === "summary_upgraded") upgradedSummaries.set(e.compressed_seq, e.summary)
+  }
+
+  const messages: Message[] = []
+  for (const { seq, event: e } of events) {
     if (e.kind === "run_started") {
       const userText = e.criteria.length
         ? `${e.goal}\n\nCriteria:\n${e.criteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
@@ -730,8 +746,9 @@ function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, max
         tokenCount: Math.max(1, Math.ceil(userText.length / 4)),
       })
     } else if (e.kind === "compressed") {
-      if (e.summary) {
-        const systemText = `[Compressed context: turn ${e.turn}]\n${e.summary}`
+      const summary = upgradedSummaries.get(seq) ?? e.summary
+      if (summary) {
+        const systemText = `[Compressed context: turn ${e.turn}]\n${summary}`
         messages.push({
           role: "system",
           content: systemText,

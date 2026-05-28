@@ -45,13 +45,15 @@ This plan also incorporates the external SDK adjustment analysis from `sdk_adjus
 | Milestone contract loading | Present | Present | Present | Present | Aligned |
 | `runSpec` / `AgentRunSpec` on `start_run` | Present | Present | Present | Present | Aligned |
 | Dynamic capability mount via `capability_command` | Present | Present | Not exposed | Not exposed | Aligned where helpers exist |
-| Public `push_artifact` helper | Present | Present | Present | Present | Active-run only |
+| Public `push_artifact` helper | Removed | Removed | Removed | — | **Removed** — use Slot 2 / history compression |
+| `initialMemory` / `initial_memory` → Slot 2 | Present | Present | Present | Present | Aligned |
 | `ArchiveStore` integration for compressed history | Present | Present | Present | Present | Verified by replay tests |
 | `ToolErrorKind` / fatal rollback inputs | Present | Present | Present | Present | Verified by tests |
 | Rollback observation repair / log truncation | Present | Present | Present | Present | Verify tests across SDKs |
 | Permission request / human approval events | Present | Present | Present | Present | Verify host UX docs and tests |
 | Sandbox profile enforcement | Partial host enforcement | Partial host enforcement | Partial host enforcement | Host-limited | Document limits; harden incrementally |
 | Active parent sub-agent spawn | Present | Present | Planned v0.3.0 | Present | Rust deferred |
+| Sub-agent harness (`subAgentHarness` / `sub_agent_harness`) | Present | Present | — | — | Aligned (Node + Python) |
 | Standalone sub-agent spawn | Present | Present | Planned v0.3.0 | Present | Rust deferred |
 | Observation persistence for kernel audit | Present | Present | Present | Present | Keep aligned |
 | Golden ABI fixture round-trip | Present | Present | Present | Present | Keep as CI gate |
@@ -73,7 +75,9 @@ SDKs must not independently decide loop termination, context layout, capability 
 
 ### Context VM and Archive Store
 
-SDKs should treat the six kernel partitions as internal VM state. Host APIs may send `add_system_message`, `add_memory_message`, `preload_history`, and `push_artifact`, but should not reconstruct provider prompts outside `call_provider.context`.
+SDKs should treat the four kernel slots as internal VM state (`system`, `knowledge`, `task_state` + `signals`, `history`). Host APIs may send `add_system_message`, `add_knowledge_message`, `preload_history`, and `update_task`, but should not reconstruct provider prompts outside `call_provider.context`.
+
+`call_provider.context` exposes `system_stable`, `system_knowledge`, and `turns` — map these to provider-specific layouts (Anthropic: two cached system blocks + messages; OpenAI: `system_text` + messages).
 
 Compressed history is a host storage responsibility. When the kernel emits `compressed`, SDKs should persist archived messages through `ArchiveStore`; replay should restore archive references without re-inlining large blobs.
 
@@ -210,20 +214,20 @@ Verify that tool errors, permission requests, sandbox metadata, and rollback obs
 
 ## Phase 4: Artifact API Parity
 
-### Objective
+> **Superseded by four-slot refactor.** The artifacts partition was removed. Large outputs stay in history (Snip/Micro compression tiers) or preload into Slot 2 via `add_knowledge_message` / `initial_memory`. The `push_artifact` ABI event is no longer handled by the kernel.
+
+### Objective (historical)
 
 Expose a cross-SDK way to push large host artifacts into the kernel artifacts partition instead of inlining them into history.
 
-### Work
+### Work (cancelled — cleanup done)
 
-- Python: add `RuntimeRunner.push_artifact(message, tokens=None)`.
-- WASM: add `RuntimeRunner.pushArtifact(message, tokens?)`.
-- Rust: design either:
-  - `RuntimeRunner::push_artifact(...)` if an active kernel handle can be safely exposed, or
-  - a scoped `RunHandle` returned by streaming runs.
-- Verify replay and compression continue to reference artifacts rather than inline them.
+Phase 4 is cancelled. SDK `push_artifact` helpers removed from Python and Rust (Node/WASM never exposed a public helper). Replacement guidance:
 
-### Acceptance Criteria
+- Durable preload → `add_knowledge_message` / `initialMemory` / `initial_memory` (Slot 2)
+- Large in-run outputs → history with Snip/Micro compression tiers
+
+### Acceptance Criteria (historical — not pursued)
 
 - Each supported SDK can emit `push_artifact`.
 - Artifact references survive replay.

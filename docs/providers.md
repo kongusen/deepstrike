@@ -388,6 +388,25 @@ The provider serialises `ContentPart` to the correct wire format automatically:
 
 ---
 
+## Context rendering & prompt caching
+
+The kernel renders `RenderedContext` with four slots before each provider call:
+
+| Field | Slot | Notes |
+|-------|------|-------|
+| `systemStable` / `system_stable` | 1 | Identity, rules — stable within a run |
+| `systemKnowledge` / `system_knowledge` | 2 | Preloaded memory, skill defs — low frequency |
+| `turns[0]` | 3 | `task_state` + ephemeral signals |
+| `turns[1..N]` | 4 | History — sole compression target |
+
+**Anthropic:** Slots 1–2 map to separate `system[]` blocks with `cache_control: { type: "ephemeral" }`. Slot 3 is rebuilt every turn as the first user message, so it does not invalidate the cached prefix.
+
+**OpenAI / others:** Adapters concatenate `systemStable + systemKnowledge` into a single system message and pass `turns` as the messages array.
+
+See [Context Slots & Compression](./context-partition-compression.md) for compression tiers and renewal behavior.
+
+---
+
 ## Custom / OpenAI-compatible endpoint
 
 Use `OpenAIProvider` with a custom `baseUrl` for any OpenAI-compatible gateway:

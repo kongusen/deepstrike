@@ -16,7 +16,6 @@ serde-wasm-bindgen = "0.6"
 tsify-next = { version = "0.5", features = ["js"] }
 js-sys = "0.3"
 deepstrike-core = { workspace = true }
-deepstrike-tokenizer = { workspace = true }
 uuid = { version = "1", features = ["v4", "serde", "js"] }
 compact_str = { workspace = true }
 serde = { workspace = true }

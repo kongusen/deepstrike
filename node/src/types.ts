@@ -201,12 +201,13 @@ export interface ProviderReplay {
 
 /** Structured render output produced by the kernel for each LLM call. */
 export interface RenderedContext {
-  /** Combined system text: system partition + dashboard (when non-empty).
-   *  Anthropic → `system` param · OpenAI → messages[0] system role ·
-   *  Gemini → `systemInstruction`. */
+  /** Identity + Knowledge combined — for providers with a single system slot (OpenAI). */
   systemText: string
-  /** Strictly alternating user / assistant / tool turns.
-   *  Working-partition signals are already folded into the first user turn. */
+  /** Identity only (system partition). Anthropic system[0] with cache_control. */
+  systemStable?: string
+  /** Knowledge (memory retrievals, skill definitions, artifacts). Anthropic system[1] with cache_control. */
+  systemKnowledge?: string
+  /** Turns: [0] = State (task_state + signals), [1..N] = History. */
   turns: Message[]
 }
 
@@ -240,6 +241,14 @@ export interface LLMProvider {
     extensions?: Record<string, unknown>,
     state?: ProviderRunState,
   ): AsyncIterable<StreamEvent>
+}
+
+/**
+ * Optional async summarizer called after context compression.
+ * Produces a richer LLM-generated summary that replaces the rule-based one on next wake.
+ */
+export interface AsyncSummarizer {
+  summarize(archived: Message[], action: string): Promise<string>
 }
 
 export interface TaskUpdate {

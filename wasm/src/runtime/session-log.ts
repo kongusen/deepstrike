@@ -44,6 +44,7 @@ export type SessionEvent =
       permitted_capability_ids: string[]
     }
   | { kind: "run_terminal"; reason: string; turns_used: number; total_tokens: number }
+  | { kind: "summary_upgraded"; compressed_seq: number; summary: string }
 
 export interface SessionLog {
   append(sessionId: string, event: SessionEvent): Promise<number>

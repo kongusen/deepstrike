@@ -68,20 +68,19 @@ Events:
 | `set_knowledge_enabled` | Toggle the knowledge meta-tool |
 | `set_plan_tool_enabled` | Toggle the plan/update meta-tool |
 | `set_tokenizer` | Select the tokenizer used by kernel token accounting |
-| `add_system_message` | Add a system partition message before run start |
-| `add_memory_message` | Add a memory partition message before run start |
+| `add_system_message` | Add a message to Slot 1 (`system_stable`) before run start |
+| `add_knowledge_message` | Add a message to Slot 2 (`system_knowledge`) before run start — replaces removed `add_memory_message` |
 | `add_history_message` | Add one history message |
 | `preload_history` | Preload restored transcript and set replay baseline |
 | `mount_capability` | **Deprecated.** Add a capability descriptor to the runtime graph. Use `capability_command { action: "mount" }` instead — only `capability_command` carries `mounted_by`/`mount_reason` provenance. |
 | `unmount_capability` | **Deprecated.** Remove a capability descriptor by `capability_kind`/id. Use `capability_command { action: "unmount" }` instead. |
 | `capability_command` | Mount / unmount / replace / pin with provenance (`action` tag) |
 | `load_milestone_contract` | Load milestone phases before run start |
-| `push_artifact` | Push a large artifact into the Artifacts partition |
 | `force_compact` | Force an immediate context compact attempt |
 | `update_task` | Apply a task-state update, typically from the plan meta-tool |
 | `start_run` | Start a new run from a `RuntimeTask`; optional `run_spec: AgentRunSpec` |
 | `resume` | Resume after preloaded history |
-| `provider_result` | Feed an assistant/provider message back to the kernel |
+| `provider_result` | Feed an assistant/provider message back to the kernel; optional `observed_input_tokens` / `observed_output_tokens` for authoritative rho |
 | `tool_results` | Feed completed tool results back to the kernel |
 | `signal` | Feed an external runtime signal |
 | `milestone_result` | Feed verifier output for the current milestone |
@@ -95,7 +94,7 @@ Kernel to SDK:
 
 | Action | Host responsibility |
 |---|---|
-| `call_provider` | Call the configured LLM provider with rendered context and tools |
+| `call_provider` | Call the configured LLM provider with `RenderedContext`: `system_stable`, `system_knowledge`, `turns` (Slot 3 State + Slot 4 history) |
 | `execute_tool` | Execute requested tool calls through the host execution plane |
 | `evaluate_milestone` | Run a verifier and return `milestone_result` (includes `verifier`, `required_evidence`) |
 | `done` | Persist terminal state and stop the run |
@@ -124,6 +123,8 @@ Sub-agent isolation is a **kernel contract**, not a prompt convention.
 2. Kernel emits `AgentSpawned` observation (role, isolation, context_inheritance, permitted_capability_ids).
 3. Host SDK runs the child via `SubAgentOrchestrator` / `FilteredExecutionPlane` (capability filter enforced).
 4. Host feeds `sub_agent_completed` with `SubAgentResult` back to the parent kernel.
+
+When `RuntimeOptions.subAgentHarness` is configured, the host runs the child through `HarnessLoop` + `EvalPipeline` (criteria from `AgentRunSpec.milestones.phases[].criteria`) before feeding the result back. Without it, the direct run path is used.
 
 **SDK entry points:**
 
@@ -185,7 +186,7 @@ Read-side helpers exposed for SDK bookkeeping:
 |---|---|
 | `input_start_run.json` | `KernelInput` |
 | `input_tool_results.json` | `KernelInput` |
-| `input_push_artifact.json` | `KernelInput` |
+| `input_push_artifact.json` | `KernelInput` *(legacy fixture — event no longer handled)* |
 | `input_spawn_sub_agent.json` | `KernelInput` |
 | `step_call_provider.json` | `KernelStep` |
 | `step_execute_tool.json` | `KernelStep` |

@@ -49,15 +49,15 @@ fn compress_reduces_history_token_count() {
 }
 
 #[test]
-fn compress_does_not_touch_memory_partition() {
+fn compress_does_not_touch_knowledge_partition() {
     let mut mgr = ContextManager::new(500);
-    mgr.push_memory(Message::user("important memory"), 100);
+    mgr.push_knowledge(Message::user("important knowledge"), 100);
     for _ in 0..10 {
         mgr.push_history(Message::user("filler"), 50);
     }
-    let memory_before = mgr.partitions.memory.token_count;
+    let knowledge_before = mgr.partitions.knowledge.token_count;
     mgr.compress(PressureAction::AutoCompact);
-    assert_eq!(mgr.partitions.memory.token_count, memory_before);
+    assert_eq!(mgr.partitions.knowledge.token_count, knowledge_before);
 }
 
 #[test]
@@ -201,10 +201,10 @@ fn push_history_updates_token_count() {
 }
 
 #[test]
-fn push_memory_updates_token_count() {
+fn push_knowledge_updates_token_count() {
     let mut mgr = ContextManager::new(10_000);
-    mgr.push_memory(Message::user("fact"), 30);
-    assert_eq!(mgr.partitions.memory.token_count, 30);
+    mgr.push_knowledge(Message::user("fact"), 30);
+    assert_eq!(mgr.partitions.knowledge.token_count, 30);
 }
 
 // ─── Virtual Context Memory & Replay (Phase 2) ───────────────────────────────
@@ -214,14 +214,12 @@ fn take_snapshot_creates_valid_state() {
     let mut mgr = ContextManager::new(10_000);
     mgr.init_task("goal 1".to_string(), vec![]);
     mgr.push_history(Message::user("hello history"), 20);
-    mgr.push_memory(Message::user("hello memory"), 30);
-    mgr.push_artifact(Message::user("hello artifact"), 40);
+    mgr.push_knowledge(Message::user("hello knowledge"), 30);
 
     let snapshot = mgr.take_snapshot(2);
     assert_eq!(snapshot.turn, 2);
     assert_eq!(snapshot.history_messages.len(), 1);
-    assert_eq!(snapshot.memory_messages.len(), 1);
-    assert_eq!(snapshot.artifacts_messages.len(), 1);
+    assert_eq!(snapshot.knowledge_messages.len(), 1);
     assert_eq!(snapshot.task_state.goal, "goal 1");
 }
 

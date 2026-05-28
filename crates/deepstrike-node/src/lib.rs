@@ -320,12 +320,13 @@ pub struct SkillMetadata {
 #[napi(object)]
 #[derive(Clone)]
 pub struct RenderedContext {
-    /// Combined system text: system partition + dashboard (when non-empty).
-    /// Anthropic → `system` param · OpenAI → `messages[0]` system role ·
-    /// Gemini → `systemInstruction`.
+    /// Identity + Knowledge combined — for providers with a single system slot (OpenAI).
     pub system_text: String,
-    /// Strictly alternating user / assistant / tool turns.
-    /// Working-partition signals are already folded into the first user turn.
+    /// Identity only (system partition). Anthropic system[0] with cache_control.
+    pub system_stable: String,
+    /// Knowledge (memory retrievals, skill definitions, artifacts). Anthropic system[1] with cache_control.
+    pub system_knowledge: String,
+    /// Turns: [0] = State (task_state + signals), [1..N] = History.
     pub turns: Vec<Message>,
 }
 
@@ -537,6 +538,8 @@ fn policy_to_rust(p: LoopPolicy) -> RustLoopPolicy {
 fn rendered_context_from_rust(rc: RustRenderedContext) -> RenderedContext {
     RenderedContext {
         system_text: rc.system_text,
+        system_stable: rc.system_stable,
+        system_knowledge: rc.system_knowledge,
         turns: rc.turns.iter().map(message_from_rust).collect(),
     }
 }

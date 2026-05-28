@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use deepstrike_tokenizer::{Tokenizer, TokenizerBackend};
-
 use crate::types::message::{Content, ContentPart, Message};
 
 /// Token counting and truncation interface. Implementations must be
@@ -40,19 +38,6 @@ impl TokenCounter for CharApproxCounter {
     }
 }
 
-/// Real BPE tokeniser backed by tiktoken.
-struct TiktokenCounter(Tokenizer);
-
-impl TokenCounter for TiktokenCounter {
-    fn count(&self, text: &str) -> u32 {
-        self.0.count(text)
-    }
-
-    fn truncate<'a>(&self, text: &'a str, max_tokens: u32) -> &'a str {
-        self.0.truncate(text, max_tokens)
-    }
-}
-
 /// Cheaply cloneable token engine shared across the context subsystem.
 /// All token counting and truncation goes through this single object —
 /// pressure, compression, and render use the same backend.
@@ -62,18 +47,6 @@ pub struct ContextTokenEngine(Arc<dyn TokenCounter>);
 impl ContextTokenEngine {
     pub fn char_approx() -> Self {
         Self(Arc::new(CharApproxCounter))
-    }
-
-    pub fn cl100k() -> Self {
-        Self(Arc::new(TiktokenCounter(Tokenizer::new(
-            TokenizerBackend::Cl100k,
-        ))))
-    }
-
-    pub fn o200k() -> Self {
-        Self(Arc::new(TiktokenCounter(Tokenizer::new(
-            TokenizerBackend::O200k,
-        ))))
     }
 
     pub fn count(&self, text: &str) -> u32 {

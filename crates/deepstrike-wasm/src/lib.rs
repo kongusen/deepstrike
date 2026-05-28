@@ -264,6 +264,8 @@ fn disposition_str(d: RustSignalDisposition) -> &'static str {
 #[serde(rename_all = "camelCase")]
 pub struct RenderedContext {
     pub system_text: String,
+    pub system_stable: String,
+    pub system_knowledge: String,
     pub turns: Vec<Message>,
 }
 
@@ -450,6 +452,8 @@ fn policy_to_rust(p: LoopPolicy) -> RustLoopPolicy {
 fn rendered_context_from_rust(rc: RustRenderedContext) -> RenderedContext {
     RenderedContext {
         system_text: rc.system_text,
+        system_stable: rc.system_stable,
+        system_knowledge: rc.system_knowledge,
         turns: rc.turns.iter().map(message_from_rust).collect(),
     }
 }

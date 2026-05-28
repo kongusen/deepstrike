@@ -30,6 +30,24 @@ pub struct ContextConfig {
     // ── Recovery / repair ────────────────────────────────────────────────────
     /// Maximum fraction of max_tokens a recovery/replay payload may occupy.
     pub recovery_content_ratio: f64,
+
+    /// Recent history messages always kept during render.
+    pub preserve_recent_msgs: usize,
+
+    /// Number of most-recent turns (user+assistant pairs) preserved by
+    /// CollapseCompactor and AutoCompactor. Each turn = 2 messages, so
+    /// the actual message count kept is `preserve_recent_turns * 2`.
+    /// Must be ≥ 1. Default: 2 (= 4 messages).
+    pub preserve_recent_turns: usize,
+
+    // ── Noise reduction ──────────────────────────────────────────────────────
+    /// Include the dashboard block in the rendered system context.
+    /// Defaults to false; enable only in explicit agent-os mode.
+    pub render_dashboard: bool,
+
+    /// Use verbose internal control notes (e.g. "[SYSTEM] Transaction rollback: …").
+    /// Defaults to false; uses concise natural-language notes instead.
+    pub verbose_control_notes: bool,
 }
 
 impl Default for ContextConfig {
@@ -44,6 +62,10 @@ impl Default for ContextConfig {
             snip_per_msg_ratio: 0.05,
             carryover_ratio: 0.05,
             recovery_content_ratio: 0.25,
+            preserve_recent_msgs: 4,
+            preserve_recent_turns: 2,
+            render_dashboard: false,
+            verbose_control_notes: false,
         }
     }
 }
@@ -74,6 +96,13 @@ impl ContextConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn noise_reduction_defaults_to_quiet() {
+        let c = ContextConfig::default();
+        assert!(!c.render_dashboard, "dashboard should be off by default");
+        assert!(!c.verbose_control_notes, "verbose notes should be off by default");
+    }
 
     #[test]
     fn default_thresholds_strictly_increasing() {

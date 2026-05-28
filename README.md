@@ -1,7 +1,7 @@
 # DeepStrike
 
 **Agent OS microkernel for cross-language agent runtimes.**  
-Version **0.2.0**
+Version **0.2.3**
 
 DeepStrike splits agent runtime into two layers with a hard boundary:
 
@@ -24,7 +24,7 @@ The SDK feeds versioned `KernelInput` into `KernelRuntime.step()` and executes t
                     │   deepstrike-core     │
                     │   KernelRuntime       │
                     │   Agent State Machine │
-                    │   Context VM (6 sect) │
+                    │   Context VM (4 slots)│
                     │   Capability Bus      │
                     │   Security LSM        │
                     │   Transaction Runtime │
@@ -54,7 +54,7 @@ The SDK feeds versioned `KernelInput` into `KernelRuntime.step()` and executes t
 **Node.js**
 
 ```bash
-npm install @deepstrike/sdk@0.2.0
+npm install @deepstrike/sdk@0.2.3
 ```
 
 ```typescript
@@ -82,7 +82,7 @@ await collectText(runner.run({ sessionId: "demo", goal: "What is 2 + 3?" }))
 **Python**
 
 ```bash
-pip install deepstrike==0.2.0
+pip install deepstrike==0.2.3
 ```
 
 ```python
@@ -116,7 +116,7 @@ await collect_text(runner.run(goal="What is 2 + 3?"))
 
 ```toml
 [dependencies]
-deepstrike-sdk = "0.2.2"
+deepstrike-sdk = "0.2.3"
 ```
 
 ```rust
@@ -142,9 +142,9 @@ Public host surface: `RuntimeRunner` + `SessionLog` + `ExecutionPlane`. Internal
 
 ---
 
-## Kernel (v0.2.0)
+## Kernel (v0.2.3)
 
-v0.2.0 replaces the v1 pattern where SDKs owned the loop and stitched context by hand. The kernel is now the **single control plane**; SDKs are **host I/O drivers**.
+Since v0.2.0, the kernel replaces the v1 pattern where SDKs owned the loop and stitched context by hand. The kernel is now the **single control plane**; SDKs are **host I/O drivers**.
 
 ### Control flow
 
@@ -166,7 +166,7 @@ ABI version `1` is frozen as JSON across Node, Python, and WASM FFI. Canonical s
 | Subsystem | Role |
 |-----------|------|
 | **Kernel ABI** | `KernelInput` / `KernelAction` / `KernelObservation` / `KernelRuntime::step()` — the only public kernel boundary |
-| **Context VM** | Six partitions (`system`, `skill`, `memory`, `working`, `history`, `artifacts`) with per-section cache, pin, and compaction policy |
+| **Context VM** | Four LLM API slots (`system_stable`, `system_knowledge`, State turn, `history`) with prompt-cache breakpoints and tiered compression on history only |
 | **Capability Bus** | Runtime capability graph (tools, skills, MCP, sub-agents, …) with mount/unmount/replace/pin and provenance audit |
 | **Security LSM** | Eight-stage `ToolDecisionPipeline` — classify → capability → constraint → permission → veto → rate limit → sandbox → audit; deny is monotonic |
 | **Transaction Runtime** | Turn checkpoints, fatal-only rollback, `ToolErrorKind`, replay truncation at rollback events |
@@ -176,18 +176,34 @@ ABI version `1` is frozen as JSON across Node, Python, and WASM FFI. Canonical s
 | **EvalPipeline** | LLM-as-judge; extracts reusable skill candidates |
 | **IdlePipeline** | Post-session memory consolidation ("dreaming") |
 
-### Context partitions
+### Context slots (four-slot model)
 
-| Partition | Policy | Invalidation |
-|-----------|--------|--------------|
-| System | Immutable / static cache | Never |
-| Skill | Session cached | On skill change |
-| Memory | Dynamic retrieved, bounded | On memory refresh |
-| Working | Volatile signal buffer | Every turn |
-| History | Compressible / archival | On compact |
-| Artifacts | Referenced, not inlined | — |
+Context is aligned with LLM API layout — not six narrative partitions. Only `history` is compressed.
 
-Large outputs go through `push_artifact`; the kernel keeps references, not full inline blobs.
+| Slot | Kernel source | Change rate | Provider mapping |
+|------|---------------|-------------|------------------|
+| **Slot 1 — `system_stable`** | `system` partition | Never within a run | Anthropic `system[0]` + `cache_control` |
+| **Slot 2 — `system_knowledge`** | `knowledge` partition | Low frequency | Anthropic `system[1]` + `cache_control` |
+| **Slot 3 — `turns[0]`** | `task_state` + `signals` | Every turn | State layer (goal, plan, progress, compression log, runtime signals) |
+| **Slot 4 — `turns[1..N]`** | `history` partition | High frequency | Conversation turns — **sole compression target** |
+
+Removed from the old six-partition model: `working`, `memory`, `skill`, `artifacts`, `dashboard`. Skills and memory/knowledge retrievals now route through Slot 2 or land in history as tool results.
+
+**Kernel APIs:** `push_knowledge()` / `AddKnowledgeMessage` → Slot 2; `push_signal()` → ephemeral signals folded into Slot 3 (cleared after render).
+
+### Compression (history only)
+
+Four tiers, triggered by pressure ratio `rho = tokens / max_tokens`. All tiers append to `task_state.compression_log` (never overwrite); summaries render via `format_compact()` into Slot 3.
+
+| Tier | Trigger `rho` | Action |
+|------|---------------|--------|
+| SnipCompact | > 0.70 | Truncate large assistant text in history |
+| MicroCompact | > 0.80 | Excerpt large tool results in history |
+| ContextCollapse | > 0.90 | Drop oldest messages; summary → `compression_log` |
+| AutoCompact | > 0.95 | Keep last K turns (`preserve_recent_turns` from config); summary → `compression_log` |
+| Renewal | > 0.98 | New sprint: carry Slots 1–2 + `task_state`; clear history and signals |
+
+See [Context Partition Compression](docs/context-partition-compression.md) for renderer behavior, renewal carryover, and log routing.
 
 ### Milestones
 
@@ -224,7 +240,14 @@ Multi-agent behavior is a **kernel contract**, not a prompt suggestion:
 3. Host runs the child through `FilteredExecutionPlane` / `SubAgentOrchestrator`.
 4. Host feeds `sub_agent_completed` back to the parent.
 
+When `RuntimeOptions.subAgentHarness` (Node) or `sub_agent_harness` (Python) is set, the child run goes through `HarnessLoop` + `EvalPipeline` (criteria from `AgentRunSpec.milestones.phases[].criteria`); without it, the original direct-run path is used (backward compatible).
+
 ```typescript
+const runner = new RuntimeRunner({
+  // ...
+  subAgentHarness: { evalProvider, maxAttempts: 3 },
+})
+
 // Active parent run — streams child events back to caller
 for await (const evt of runner.spawnSubAgent(spec)) { /* handle StreamEvent */ }
 // or collect final text only
@@ -260,9 +283,9 @@ RuntimeRunner.wake(sessionId)            ← resume after milestone_pending
 
 **Skills** — `.md` files with YAML frontmatter; kernel injects a `skill` meta-tool; model loads instructions on demand.
 
-**Memory** — in-session `memory(query)` via `DreamStore`; post-session `runner.dream(agentId)` runs `IdlePipeline`.
+**Memory** — in-session `memory(query)` via `DreamStore`; results appear in **history** as tool results. Preloaded session memory uses `initialMemory` → `add_knowledge_message` → **Slot 2** (`system_knowledge`, cacheable). Post-session `runner.dream(agentId)` runs `IdlePipeline`.
 
-**Knowledge** — read-only `knowledge(query)` through `KnowledgeSource` (RAG, APIs, docs).
+**Knowledge** — read-only `knowledge(query)` through `KnowledgeSource` (RAG, APIs, docs); retrieval results land in history; durable knowledge blocks go to Slot 2 via `push_knowledge()`.
 
 **Harness** — `HarnessLoop` / `ContractDrivenHarness` wrap sessions with eval gates; successful runs can materialize skill candidates. All harness types expose both `run()` (collect outcome) and `stream()` (forward `StreamEvent`s).
 
@@ -311,12 +334,20 @@ Session log also records kernel audit events: `compressed`, `rollbacked`, `check
 
 | Document | Contents |
 |----------|----------|
+| [index.md](docs/index.md) | Documentation hub — guides, packages, build |
+| [architecture.md](docs/architecture.md) | Layer overview, kernel subsystems, SDK loop |
+| [core-concepts.md](docs/core-concepts.md) | Skills, Memory, Knowledge, Harness, Signals, Safety |
+| [context-partition-compression.md](docs/context-partition-compression.md) | **Current:** four-slot model, compression tiers, renderer, renewal |
+| [spec-context-optimization-v3.md](docs/spec-context-optimization-v3.md) | P0/P1 optimization spec (token counting, prompt caching, renderer) |
 | [implementation-agent-os-kernel.md](docs/implementation-agent-os-kernel.md) | Kernel roadmap, phase gates, architecture |
 | [spec-kernel-abi.md](docs/spec-kernel-abi.md) | `KernelInput` / `KernelAction` / `KernelObservation` contract |
-| [spec-context-compression-v2.md](docs/spec-context-compression-v2.md) | Context VM, compaction, archive store |
-| [sdk-kernel-driver-parity.md](docs/sdk-kernel-driver-parity.md) | Cross-SDK plan for aligning Node, Python, Rust, and WASM around the kernel-driver contract |
+| [spec-context-compression-v2.md](docs/spec-context-compression-v2.md) | *(superseded)* six-partition v2 design — see four-slot doc above |
+| [sdk-kernel-driver-parity.md](docs/sdk-kernel-driver-parity.md) | Cross-SDK kernel-driver parity plan |
 | [sdk-guide-nodejs.md](docs/sdk-guide-nodejs.md) | Node SDK guide |
 | [sdk-guide-python.md](docs/sdk-guide-python.md) | Python SDK guide |
+| [sdk-guide-rust.md](docs/sdk-guide-rust.md) | Rust SDK guide |
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ---
 
