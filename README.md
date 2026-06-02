@@ -45,6 +45,43 @@ deepstrike-core: pure Rust kernel · zero I/O · replayable state machine
 Context VM · governance pipeline · capability bus · transactions · milestones
 ```
 
+**0.2.5 — Agent OS release.** The kernel now mediates scheduling, compression, governance, signals, paging, and memory through unified syscall / TCB / MM primitives. Host SDKs own I/O; the kernel owns *when* and *whether*. See [CHANGELOG 0.2.5](./CHANGELOG.md#025---2026-06-02) for the full mechanism list.
+
+## What Agent OS Gives You
+
+These are not internal refactors — they change what you can build without custom runner glue in every host SDK.
+
+| Before (≤ 0.2.4) | After (0.2.5) |
+| :--- | :--- |
+| Scheduling, compression, and permission logic scattered per SDK | Unified syscall trap, TCB lifecycle, and MM eviction funnel — same semantics in Node, Python, and Rust |
+| Large tool outputs and long sessions hit token walls | Layer-1 spool (preview + `.spool/` ref) and semantic page-out → long-term memory |
+| Governance and signal routing were optional SDK plugins | OS native profile: declarative governance and in-kernel signal routing on by default |
+| Long-term memory mostly via meta-tools and idle pipelines | `writeMemory` / `queryMemory` kernel syscalls with validation and audit events |
+| Session logs skewed toward chat + tools | Full OS event stream and rebuildable OS snapshots |
+
+**Kernel-mediated runtime (M0–M4)** — Tool calls, spawns, compression, and signals pass through one kernel gate with an explicit lifecycle (Ready / Running / Blocked / Suspended). You implement I/O; the kernel decides *when* and *whether*. `wake(sessionId)` and cross-language tooling see consistent behavior.
+
+**Longer, sturdier sessions** — Oversized tool results stay in context as a preview plus a spool reference; the model reads the full payload on demand. Semantic page-out archives summaries into long-term memory and satisfies page-in requests on the way back in.
+
+**Safety and governance by default** — Every run loads declarative governance (deny / ask_user / rate-limit / param rules) and in-kernel signal disposition (Interrupt / Queue / Observe / Dropped). Policy, not ad-hoc handler checks.
+
+**Long-term memory as syscalls (Phase-7)** — Write and query memory outside the main tool loop: kernel validation before commit, search → selection → retrieval closure. Failed writes are auditable; good memory is durable without polluting history.
+
+**Multi-agent and multi-signal orchestration** — Sub-agents register in the kernel process table; parent runs suspend until join. External signals compose with the main loop instead of racing it.
+
+**Observable like an OS log** — Spool, page-out, signals, processes, budgets, and memory events land in session logs with categories (`syscall` · `sched` · `mm` · `proc` · `ipc`). Rebuild OS snapshots from one event stream; replay strips audit events when reconstructing LLM messages.
+
+| You need… | Mechanism |
+| :--- | :--- |
+| Policy before tools run | Declarative governance policy (default: allow-all native profile) |
+| External interrupts | Signal source + in-kernel attention policy |
+| Huge tool output | Layer-1 spool; host SDK writes `.spool/` refs |
+| Durable recall across runs | Long-term memory store + semantic page-out summarization |
+| Programmatic memory I/O | Kernel `writeMemory` / `queryMemory` syscalls |
+| Debug / compliance | Session log events + OS snapshot rebuild |
+
+SDK-specific APIs and examples: [Node.js](./node/README.md#what-agent-os-gives-you) · [Python](./python/README.md#what-agent-os-gives-you) · [Rust](./docs/guides/sdk-rust.md)
+
 ## Documentation System
 
 DeepStrike's documentation is organized as a modern VitePress reading system with a stable project header, navigation by reader intent, SDK-specific guides, and community entry points.
@@ -169,11 +206,13 @@ See the [SDK guides](./docs/guides/index.md) for full examples, provider configu
 
 ## Core Capabilities
 
+- **Agent OS runtime (0.2.5+)**: kernel-mediated syscall trap, scheduler lifecycle, memory paging, process table, and IPC — host SDKs own all side effects.
 - **Replayable kernel semantics**: loop control, context layout, rollback, milestones, signals, and audit behavior live behind a versioned ABI.
 - **Host-owned effects**: SDKs handle I/O, providers, tools, persistence, processes, and network boundaries.
 - **Provider portability**: Anthropic, OpenAI, Qwen, DeepSeek, MiniMax, Kimi, Ollama, and OpenAI-compatible gateways share a unified event stream.
-- **Governed execution**: tool calls flow through capability checks, constraints, permission gates, vetoes, rate limits, sandbox policy, and audit logging.
-- **Long-run context control**: a four-slot Context VM compresses history while preserving stable system and knowledge blocks.
+- **Governed execution**: tool calls flow through in-kernel policy, capability checks, permission gates, vetoes, rate limits, and audit logging.
+- **Long-run context control**: four-slot Context VM, Layer-1 large-result spool, semantic page-out, and compression funnel for durable long sessions.
+- **Memory syscalls**: validated long-term write/query outside the tool loop, with session-log and OS snapshot counters.
 - **Collaboration primitives**: sub-agents, milestone gates, verifier harnesses, and handoff artifacts are runtime primitives.
 
 ## Repository Layout
