@@ -271,6 +271,36 @@
         assert!(obs.iter().any(|o| matches!(o, LoopObservation::PageOut { .. })));
     }
 
+    // ---- Layer 5: AutoCompact → semantic page-out (SDK does the LLM summary) ----
+    //
+    // Contract: AutoCompact keeps a structural summary in-context (sync, zero-I/O) and pages the
+    // archived messages out to the *semantic* tier. The SDK's dream/idle pipeline LLM-summarizes
+    // that tier into long-term memory (configurable LLM, default = the runtime provider). The
+    // kernel never calls an LLM — it only decides WHEN/WHAT to page out.
+    #[test]
+    fn autocompact_pages_out_to_semantic_tier_for_llm_summary() {
+        let mut sm = LoopStateMachine::new(LoopPolicy {
+            max_tokens: 100,
+            max_turns: 100,
+            ..LoopPolicy::default()
+        });
+        sm.start(RuntimeTask::new("test"));
+        for i in 0..10 {
+            sm.ctx.push_history(Message::user(format!("filler {i}")), 50);
+        }
+        assert!(sm.force_compact()); // force_compact runs an AutoCompact pass
+        let obs = sm.take_observations();
+        let semantic_pageout = obs.iter().any(|o| matches!(
+            o,
+            LoopObservation::PageOut { tier_hint, archived, action: PressureAction::AutoCompact, .. }
+                if tier_hint == "semantic" && !archived.is_empty()
+        ));
+        assert!(
+            semantic_pageout,
+            "AutoCompact must page archived messages to the semantic tier for SDK LLM summary"
+        );
+    }
+
     #[test]
     fn memory_tool_proposal_emits_page_in_requested() {
         let mut sm = sm();
