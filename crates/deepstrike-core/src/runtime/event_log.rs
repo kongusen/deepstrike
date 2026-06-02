@@ -89,7 +89,7 @@ pub fn category_for_kind(kind: &str) -> KernelEventCategory {
         | "large_result_spooled" => KernelEventCategory::Mm,
         "agent_process_changed" | "agent_spawned" => KernelEventCategory::Proc,
         "signal_disposed" => KernelEventCategory::Ipc,
-        "memory_written" | "memory_queried" => KernelEventCategory::Mm,
+        "memory_written" | "memory_queried" | "memory_validation_failed" => KernelEventCategory::Mm,
         _ => KernelEventCategory::Sched,
     }
 }
@@ -114,6 +114,7 @@ pub const KERNEL_OBSERVATION_KINDS: &[&str] = &[
     "resumed",
     "memory_written",
     "memory_queried",
+    "memory_validation_failed",
 ];
 
 #[cfg(test)]

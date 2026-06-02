@@ -16,6 +16,9 @@ def category_for_kind(kind: str) -> KernelEventCategory:
         "renewed",
         "context_renewed",
         "large_result_spooled",
+        "memory_written",
+        "memory_queried",
+        "memory_validation_failed",
     ):
         return "mm"
     if kind == "agent_process_changed":
@@ -25,8 +28,28 @@ def category_for_kind(kind: str) -> KernelEventCategory:
     return "sched"
 
 
+KernelPrimitive = Literal["syscall", "sched", "mm"]
+
+
+def primitive_for_category(category: KernelEventCategory) -> KernelPrimitive:
+    if category == "syscall":
+        return "syscall"
+    if category == "mm":
+        return "mm"
+    return "sched"
+
+
+def primitive_for_kind(kind: str) -> KernelPrimitive:
+    return primitive_for_category(category_for_kind(kind))
+
+
 def with_category(event: dict[str, Any]) -> dict[str, Any]:
-    return {**event, "category": category_for_kind(event["kind"])}
+    category = category_for_kind(event["kind"])
+    return {
+        **event,
+        "category": category,
+        "primitive": primitive_for_category(category),
+    }
 
 
 def kernel_observation_to_session_event(
@@ -183,5 +206,28 @@ def kernel_observation_to_session_event(
             "original_size": obs.get("original_size") or 0,
             "preview_size": obs.get("preview_size") or 0,
             "spool_ref": spool_ref,
+        })
+    if kind == "memory_written":
+        return with_category({
+            "kind": "memory_written",
+            "turn": t,
+            "memory_id": obs.get("memory_id") or "",
+            "memory_kind": obs.get("memory_kind") or "",
+            "size_bytes": obs.get("size_bytes") or 0,
+        })
+    if kind == "memory_queried":
+        return with_category({
+            "kind": "memory_queried",
+            "turn": t,
+            "query_context": obs.get("query_context") or "",
+            "requested_k": obs.get("requested_k") or 0,
+            "requires_async_response": obs.get("requires_async_response") or False,
+        })
+    if kind == "memory_validation_failed":
+        return with_category({
+            "kind": "memory_validation_failed",
+            "turn": t,
+            "memory_id": obs.get("memory_id") or "",
+            "error": obs.get("error") or "",
         })
     return None

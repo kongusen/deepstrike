@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use deepstrike_core::runtime::event_log::{Primitive, primitive_for_kind};
 use deepstrike_core::runtime::session::SessionEvent;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
@@ -20,6 +21,7 @@ pub trait SessionLog: Send + Sync {
         &self,
         session_id: &str,
         from_seq: u64,
+        primitive_filter: Option<Primitive>,
     ) -> Result<Vec<SessionEntry>, std::io::Error>;
     async fn latest_seq(&self, session_id: &str) -> Result<i64, std::io::Error>;
 }
@@ -56,6 +58,7 @@ impl SessionLog for InMemorySessionLog {
         &self,
         session_id: &str,
         from_seq: u64,
+        primitive_filter: Option<Primitive>,
     ) -> Result<Vec<SessionEntry>, std::io::Error> {
         let store = self.store.lock().await;
         Ok(store
@@ -63,7 +66,17 @@ impl SessionLog for InMemorySessionLog {
             .map(|entries| {
                 entries
                     .iter()
-                    .filter(|e| e.seq >= from_seq)
+                    .filter(|e| {
+                        if e.seq < from_seq {
+                            return false;
+                        }
+                        if let Some(pf) = primitive_filter {
+                            if primitive_for_kind(e.event.kind_str()) != pf {
+                                return false;
+                            }
+                        }
+                        true
+                    })
                     .cloned()
                     .collect()
             })
@@ -100,7 +113,7 @@ impl FileSessionLog {
     async fn next_seq(&self, session_id: &str) -> Result<u64, std::io::Error> {
         let mut counters = self.seq_counters.lock().await;
         if !counters.contains_key(session_id) {
-            let existing = self.read(session_id, 0).await?;
+            let existing = self.read(session_id, 0, None).await?;
             counters.insert(session_id.to_string(), existing.len() as u64);
         }
         let seq = counters.get(session_id).copied().unwrap_or(0);
@@ -128,6 +141,7 @@ impl SessionLog for FileSessionLog {
         &self,
         session_id: &str,
         from_seq: u64,
+        primitive_filter: Option<Primitive>,
     ) -> Result<Vec<SessionEntry>, std::io::Error> {
         let path = self.path(session_id);
         if !path.exists() {
@@ -145,13 +159,18 @@ impl SessionLog for FileSessionLog {
                 continue;
             }
             let event: SessionEvent = serde_json::from_value(raw["event"].clone())?;
+            if let Some(pf) = primitive_filter {
+                if primitive_for_kind(event.kind_str()) != pf {
+                    continue;
+                }
+            }
             results.push(SessionEntry { seq, event });
         }
         Ok(results)
     }
 
     async fn latest_seq(&self, session_id: &str) -> Result<i64, std::io::Error> {
-        let entries = self.read(session_id, 0).await?;
+        let entries = self.read(session_id, 0, None).await?;
         Ok(entries.len() as i64 - 1)
     }
 }

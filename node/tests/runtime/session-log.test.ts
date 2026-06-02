@@ -30,6 +30,26 @@ describe("InMemorySessionLog", () => {
     expect(tail[1].event.kind).toBe("run_terminal")
   })
 
+  it("read filters by primitiveFilter", async () => {
+    const log = new InMemorySessionLog()
+    await log.append("s1", { kind: "run_started", run_id: "r1", goal: "a", criteria: [] })
+    await log.append("s1", { kind: "page_out", turn: 0, category: "mm", primitive: "mm", summary: "po" })
+    await log.append("s1", { kind: "suspended", turn: 1, category: "sched", primitive: "sched", reason: "sus" })
+    await log.append("s1", { kind: "tool_gated", turn: 2, category: "syscall", primitive: "syscall", call_id: "c1", tool: "t1", reason: "gated" })
+
+    const mmEvents = await log.read("s1", 0, "mm")
+    expect(mmEvents).toHaveLength(1)
+    expect(mmEvents[0].event.kind).toBe("page_out")
+
+    const schedEvents = await log.read("s1", 1, "sched")
+    expect(schedEvents).toHaveLength(1)
+    expect(schedEvents[0].event.kind).toBe("suspended")
+
+    const syscallEvents = await log.read("s1", 0, "syscall")
+    expect(syscallEvents).toHaveLength(1)
+    expect(syscallEvents[0].event.kind).toBe("tool_gated")
+  })
+
   it("isolates sessions", async () => {
     const log = new InMemorySessionLog()
     await log.append("a", { kind: "run_started", run_id: "r1", goal: "a", criteria: [] })

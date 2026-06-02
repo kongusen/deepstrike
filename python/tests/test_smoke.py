@@ -287,3 +287,25 @@ async def test_ask_user_gated_tool_is_denied_after_host_rejection():
     assert executed is False
     assert any(isinstance(event, PermissionResolvedEvent) and not event.approved and event.reason == "user declined" for event in events)
     assert any(isinstance(event, ToolDeniedEvent) and event.tool_name == "needs_approval" and event.reason == "user declined" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_session_log_primitive_filter():
+    from deepstrike.runtime.session_log import InMemorySessionLog
+    log = InMemorySessionLog()
+    await log.append("s1", {"kind": "run_started", "run_id": "r1", "goal": "hi"})
+    await log.append("s1", {"kind": "page_out", "turn": 0, "category": "mm", "primitive": "mm", "summary": "po"})
+    await log.append("s1", {"kind": "suspended", "turn": 1, "category": "sched", "primitive": "sched", "reason": "sus"})
+    await log.append("s1", {"kind": "tool_gated", "turn": 2, "category": "syscall", "primitive": "syscall", "call_id": "c1", "tool": "t1", "reason": "gated"})
+
+    mm_events = await log.read("s1", 0, "mm")
+    assert len(mm_events) == 1
+    assert mm_events[0].event["kind"] == "page_out"
+
+    sched_events = await log.read("s1", 1, "sched")
+    assert len(sched_events) == 1
+    assert sched_events[0].event["kind"] == "suspended"
+
+    syscall_events = await log.read("s1", 0, "syscall")
+    assert len(syscall_events) == 1
+    assert syscall_events[0].event["kind"] == "tool_gated"

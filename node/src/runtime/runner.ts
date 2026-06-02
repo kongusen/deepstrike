@@ -4,7 +4,16 @@ import type {
   ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
   PermissionResponse, PermissionResolvedEvent, AsyncSummarizer, DreamSummarizer,
 } from "../types.js"
-import type { DreamStore, MemoryEntry, CurationResult, SessionData } from "../memory/protocols.js"
+import type {
+  DreamStore,
+  MemoryEntry,
+  CurationResult,
+  SessionData,
+  MemoryQuery,
+  MemoryWriteRequest,
+  MemoryRetrieval,
+} from "../memory/protocols.js"
+import { memoriesToIndex, selectMemories } from "../memory/agent.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
 import type { SignalSource, RuntimeSignal } from "../signals/types.js"
 import type { SessionLog, SessionEvent, RollbackReason } from "./session-log.js"
@@ -167,6 +176,126 @@ export class RuntimeRunner {
   /** Host configuration (for coordinator / sub-agent spawn). */
   get hostOptions(): RuntimeOptions {
     return this.opts
+  }
+
+  async writeMemory(
+    memory: MemoryWriteRequest,
+    opts: { sessionId?: string; agentId?: string } = {},
+  ): Promise<void> {
+    const sessionId = opts.sessionId ?? this.currentSessionId
+    const agentId = opts.agentId ?? this.opts.agentId
+    if (!this.opts.dreamStore || !agentId) return
+
+    const observations: KernelObservation[] = []
+    const runtime = this.activeKernel ?? this.createSyscallRuntime()
+    kernelApply(runtime, observations, { kind: "write_memory", memory })
+
+    const event = observations.find(o => o.kind === "memory_written")
+    if (!event) {
+      await this.appendMemorySyscallObservations(sessionId, observations)
+      return
+    }
+
+    const existing = await this.opts.dreamStore.loadMemories(agentId)
+    await this.opts.dreamStore.commit(agentId, {
+      toAdd: [{
+        text: memory.content,
+        score: 1.0,
+        metadata: {
+          ...memory.metadata,
+          source: "write_memory_syscall",
+        },
+      }],
+      toRemoveIndices: [],
+      stats: {
+        insightsProcessed: 1,
+        duplicatesRemoved: 0,
+        conflictsResolved: 0,
+        entriesAdded: 1,
+      },
+    }, existing)
+    await this.appendMemorySyscallObservations(sessionId, observations)
+  }
+
+  async queryMemory(
+    query: MemoryQuery,
+    opts: { sessionId?: string; agentId?: string } = {},
+  ): Promise<MemoryEntry[]> {
+    const sessionId = opts.sessionId ?? this.currentSessionId
+    const agentId = opts.agentId ?? this.opts.agentId
+    if (!this.opts.dreamStore || !agentId) return []
+
+    const observations: KernelObservation[] = []
+    const runtime = this.activeKernel ?? this.createSyscallRuntime()
+    kernelApply(runtime, observations, { kind: "query_memory", query })
+
+    const allMemories = await this.opts.dreamStore.loadMemories(agentId)
+    const retrieval = await selectMemories(query, memoriesToIndex(allMemories))
+    let hits: MemoryEntry[]
+    if (retrieval.selected_memory_ids.length > 0) {
+      const selected = new Set(retrieval.selected_memory_ids)
+      hits = allMemories
+        .filter(m => selected.has(String((m.metadata as Record<string, unknown>)?.name ?? "")))
+        .slice(0, query.top_k)
+    } else {
+      hits = await this.opts.dreamStore.search(agentId, query.current_context, query.top_k)
+      if (hits.length > 0 && retrieval.selection_rationale === "No candidates after filtering") {
+        retrieval.selected_memory_ids = hits.map(h =>
+          String((h.metadata as Record<string, unknown>)?.name ?? h.text.slice(0, 32)),
+        )
+        retrieval.selection_rationale = `DreamStore.search returned ${hits.length} hit(s)`
+      }
+    }
+
+    await this.appendMemorySyscallObservations(sessionId, observations)
+    await this.logMemoryRetrievalResult(sessionId, runtime, retrieval)
+    return hits
+  }
+
+  private async logMemoryRetrievalResult(
+    sessionId: string | null | undefined,
+    runtime: KernelRuntimeInstance,
+    retrieval: MemoryRetrieval,
+  ): Promise<void> {
+    if (!sessionId) return
+    await this.opts.sessionLog.append(sessionId, {
+      kind: "memory_retrieval_result",
+      selected_memory_ids: retrieval.selected_memory_ids,
+      selection_rationale: retrieval.selection_rationale,
+    })
+    kernelApply(runtime, [], {
+      kind: "memory_retrieval_result",
+      retrieval: {
+        selected_memory_ids: retrieval.selected_memory_ids,
+        selection_rationale: retrieval.selection_rationale,
+      },
+    })
+  }
+
+  private createSyscallRuntime(): KernelRuntimeInstance {
+    const { KernelRuntime } = getKernel()
+    return new KernelRuntime({
+      maxTokens: this.opts.maxTokens,
+      maxTurns: this.opts.maxTurns,
+      timeoutMs: this.opts.timeoutMs !== undefined ? BigInt(this.opts.timeoutMs) : undefined,
+    })
+  }
+
+  private async appendMemorySyscallObservations(
+    sessionId: string | null | undefined,
+    observations: KernelObservation[],
+  ): Promise<void> {
+    if (!sessionId) return
+    const turn = this.activeKernel?.turn() ?? 0
+    for (const obs of observations) {
+      if (
+        obs.kind !== "memory_written"
+        && obs.kind !== "memory_queried"
+        && obs.kind !== "memory_validation_failed"
+      ) continue
+      const event = kernelObservationToSessionEvent(obs, turn)
+      if (event) await this.opts.sessionLog.append(sessionId, event)
+    }
   }
 
   /** Mount a tool capability on the currently-running kernel runtime. No-op if not running. */
@@ -1165,7 +1294,7 @@ async function summarizeForLongTermMemory(
   let text = ""
   const state = provider.createRunState?.()
   for await (const evt of provider.stream(context, [], undefined, state)) {
-    if (evt.type === "text_delta") text += evt.delta
+    if (evt.type === "text_delta" && "delta" in evt) text += evt.delta
   }
   return text.trim() || transcript.slice(0, 2000)
 }

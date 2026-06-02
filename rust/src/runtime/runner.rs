@@ -5,11 +5,12 @@ use crate::runtime::sandboxed_skill::scan_skill_dir;
 use crate::runtime::skill_watcher::SkillWatcher;
 use async_stream::try_stream;
 use deepstrike_core::memory::idle_pipeline::{IdleAction, IdleEvent, IdlePipeline, IdlePolicy};
+use deepstrike_core::mm::memory::{MemoryQuery, MemoryRetrieval, MemoryWriteRequest};
 use deepstrike_core::runtime::kernel::{
     KernelAction, KernelInput, KernelInputEvent, KernelObservation, KernelPressureAction,
     KernelRuntime, KernelStep,
 };
-use deepstrike_core::runtime::event_log::category_for_kind;
+use deepstrike_core::runtime::event_log::{category_for_kind, primitive_for_kind};
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::scheduler::policy::LoopPolicy;
 use deepstrike_core::signals::router::SignalRouter;
@@ -110,6 +111,7 @@ pub struct RuntimeRunner {
     plane: Box<dyn ExecutionPlane>,
     interrupted: AtomicBool,
     active_kernel: std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<KernelRuntime>>>>,
+    local_page_out_cache: std::sync::Mutex<Vec<Message>>,
 }
 
 impl RuntimeRunner {
@@ -123,6 +125,7 @@ impl RuntimeRunner {
             plane,
             interrupted: AtomicBool::new(false),
             active_kernel: std::sync::Mutex::new(None),
+            local_page_out_cache: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -132,6 +135,223 @@ impl RuntimeRunner {
 
     pub fn execution_plane(&self) -> &dyn ExecutionPlane {
         self.plane.as_ref()
+    }
+
+    pub async fn write_memory(
+        &self,
+        memory: MemoryWriteRequest,
+        session_id: Option<&str>,
+        agent_id: Option<&str>,
+    ) -> Result<()> {
+        let Some(store) = &self.opts.dream_store else {
+            return Ok(());
+        };
+        let Some(agent_id) = agent_id.or(self.opts.agent_id.as_deref()) else {
+            return Ok(());
+        };
+
+        let observations = self.apply_memory_syscall(KernelInputEvent::WriteMemory {
+            memory: memory.clone(),
+        });
+        if observations
+            .iter()
+            .any(|obs| matches!(obs, KernelObservation::MemoryWritten { .. }))
+        {
+            let existing = store.load_memories(agent_id).await?;
+            let mut metadata =
+                serde_json::to_value(&memory.metadata).unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(obj) = metadata.as_object_mut() {
+                obj.insert(
+                    "source".to_string(),
+                    serde_json::Value::String("write_memory_syscall".to_string()),
+                );
+            }
+            let result = deepstrike_core::memory::curator::CurationResult {
+                to_add: vec![deepstrike_core::memory::semantic::MemoryEntry {
+                    text: memory.content,
+                    score: 1.0,
+                    metadata,
+                }],
+                to_remove_indices: vec![],
+                stats: deepstrike_core::memory::curator::CurationStats {
+                    insights_processed: 1,
+                    duplicates_removed: 0,
+                    conflicts_resolved: 0,
+                    entries_added: 1,
+                },
+            };
+            store.commit(agent_id, result, &existing).await?;
+        }
+        self.append_memory_syscall_observations(session_id, observations)
+            .await;
+        Ok(())
+    }
+
+    pub async fn query_memory(
+        &self,
+        query: MemoryQuery,
+        session_id: Option<&str>,
+        agent_id: Option<&str>,
+    ) -> Result<Vec<deepstrike_core::memory::semantic::MemoryEntry>> {
+        let Some(store) = &self.opts.dream_store else {
+            return Ok(Vec::new());
+        };
+        let Some(agent_id) = agent_id.or(self.opts.agent_id.as_deref()) else {
+            return Ok(Vec::new());
+        };
+
+        let observations = self.apply_memory_syscall(KernelInputEvent::QueryMemory {
+            query: query.clone(),
+        });
+
+        let all_memories = store.load_memories(agent_id).await?;
+        let mut retrieval = select_memories(&query, &all_memories);
+        let hits = if !retrieval.selected_memory_ids.is_empty() {
+            let selected: std::collections::HashSet<_> =
+                retrieval.selected_memory_ids.iter().cloned().collect();
+            all_memories
+                .into_iter()
+                .filter(|entry| {
+                    entry
+                        .metadata
+                        .get("name")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|name| selected.contains(name))
+                })
+                .take(query.top_k)
+                .collect()
+        } else {
+            let hits = store
+                .search(agent_id, &query.current_context, query.top_k)
+                .await?;
+            if !hits.is_empty()
+                && retrieval.selection_rationale == "No candidates after filtering"
+            {
+                retrieval.selected_memory_ids = hits
+                    .iter()
+                    .filter_map(|entry| {
+                        entry
+                            .metadata
+                            .get("name")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_string)
+                    })
+                    .collect();
+                retrieval.selection_rationale =
+                    format!("DreamStore.search returned {} hit(s)", hits.len());
+            }
+            hits
+        };
+
+        self.append_memory_syscall_observations(session_id, observations)
+            .await;
+        self.log_memory_retrieval_result(session_id, retrieval).await;
+        Ok(hits)
+    }
+
+    async fn log_memory_retrieval_result(
+        &self,
+        session_id: Option<&str>,
+        retrieval: MemoryRetrieval,
+    ) {
+        let Some(session_id) = session_id.or(self.opts.session_id.as_deref()) else {
+            return;
+        };
+        self.log(
+            session_id,
+            SessionEvent::MemoryRetrievalResult {
+                retrieval: retrieval.clone(),
+            },
+        )
+        .await;
+        self.apply_memory_syscall(KernelInputEvent::MemoryRetrievalResult { retrieval });
+    }
+
+    fn apply_memory_syscall(&self, event: KernelInputEvent) -> Vec<KernelObservation> {
+        if let Some(active) = self.active_kernel.lock().unwrap().clone() {
+            let mut kernel = active.lock().unwrap();
+            let step = kernel.step(KernelInput::new(event));
+            return step.observations;
+        }
+
+        let mut kernel = KernelRuntime::new(LoopPolicy {
+            max_tokens: self.opts.max_tokens,
+            max_turns: self.opts.max_turns.unwrap_or(25),
+            max_wall_ms: self.opts.timeout_ms,
+            ..Default::default()
+        });
+        let step = kernel.step(KernelInput::new(event));
+        step.observations
+    }
+
+    async fn append_memory_syscall_observations(
+        &self,
+        session_id: Option<&str>,
+        observations: Vec<KernelObservation>,
+    ) {
+        let Some(session_id) = session_id.or(self.opts.session_id.as_deref()) else {
+            return;
+        };
+        for obs in observations {
+            match obs {
+                KernelObservation::MemoryWritten {
+                    turn,
+                    memory_id,
+                    memory_kind,
+                    size_bytes,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::MemoryWritten {
+                            turn,
+                            category: Some(category_for_kind("memory_written")),
+                            primitive: Some(primitive_for_kind("memory_written")),
+                            memory_id,
+                            memory_kind,
+                            size_bytes,
+                        },
+                    )
+                    .await;
+                }
+                KernelObservation::MemoryQueried {
+                    turn,
+                    query_context,
+                    requested_k,
+                    requires_async_response,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::MemoryQueried {
+                            turn,
+                            category: Some(category_for_kind("memory_queried")),
+                            primitive: Some(primitive_for_kind("memory_queried")),
+                            query_context,
+                            requested_k,
+                            requires_async_response,
+                        },
+                    )
+                    .await;
+                }
+                KernelObservation::MemoryValidationFailed {
+                    turn,
+                    memory_id,
+                    error,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::MemoryValidationFailed {
+                            turn,
+                            category: Some(category_for_kind("memory_validation_failed")),
+                            primitive: Some(primitive_for_kind("memory_validation_failed")),
+                            memory_id,
+                            error,
+                        },
+                    )
+                    .await;
+                }
+                _ => {}
+            }
+        }
     }
 
     pub async fn execute(&self, goal: &str) -> Result<String> {
@@ -507,6 +727,15 @@ impl RuntimeRunner {
             let mut last_skill_version: u64 = skill_watcher.as_ref().map(|w| w.version()).unwrap_or(0);
 
             while !kernel.lock().unwrap().is_terminal() {
+                if let KernelAction::ExecuteTool { .. } = &action {
+                    self.apply_kernel_page_in(
+                        &session_id,
+                        &kernel,
+                        &mut pending_observations,
+                    )
+                    .await;
+                }
+
                 // Hot-reload: refresh skill catalog if the watcher detected changes.
                 if let (Some(watcher), Some(skill_dir)) =
                     (&skill_watcher, &self.opts.skill_dir)
@@ -1092,7 +1321,7 @@ impl RuntimeRunner {
         }
     }
 
-    async fn append_observations(
+    pub(crate) async fn append_observations(
         &self,
         session_id: &str,
         kernel_mutex: &std::sync::Mutex<KernelRuntime>,
@@ -1166,6 +1395,7 @@ impl RuntimeRunner {
                                 turn,
                                 archived_seq_range: (next_archive_start, end),
                                 category: Some(category_for_kind("compressed")),
+                                primitive: Some(primitive_for_kind("compressed")),
                                 action: Some(action_str),
                                 summary: summary.clone(),
                                 summary_tokens,
@@ -1188,6 +1418,7 @@ impl RuntimeRunner {
                         SessionEvent::Rollbacked {
                             turn,
                             category: Some(category_for_kind("rollbacked")),
+                            primitive: Some(primitive_for_kind("rollbacked")),
                             checkpoint_history_len,
                             reason,
                         },
@@ -1209,6 +1440,7 @@ impl RuntimeRunner {
                         SessionEvent::CapabilityChanged {
                             turn,
                             category: Some(category_for_kind("capability_changed")),
+                            primitive: Some(primitive_for_kind("capability_changed")),
                             added,
                             removed,
                             change_kind,
@@ -1230,6 +1462,7 @@ impl RuntimeRunner {
                         SessionEvent::MilestoneAdvanced {
                             turn,
                             category: Some(category_for_kind("milestone_advanced")),
+                            primitive: Some(primitive_for_kind("milestone_advanced")),
                             phase_id,
                             capabilities_unlocked,
                         },
@@ -1246,6 +1479,7 @@ impl RuntimeRunner {
                         SessionEvent::MilestoneBlocked {
                             turn,
                             category: Some(category_for_kind("milestone_blocked")),
+                            primitive: Some(primitive_for_kind("milestone_blocked")),
                             phase_id,
                             reason,
                         },
@@ -1262,6 +1496,7 @@ impl RuntimeRunner {
                         SessionEvent::MilestoneEvidence {
                             turn,
                             category: Some(category_for_kind("milestone_evidence")),
+                            primitive: Some(primitive_for_kind("milestone_evidence")),
                             phase_id,
                             evidence,
                         },
@@ -1275,6 +1510,7 @@ impl RuntimeRunner {
                         SessionEvent::CheckpointTaken {
                             turn,
                             category: Some(category_for_kind("checkpoint_taken")),
+                            primitive: Some(primitive_for_kind("checkpoint_taken")),
                             history_len,
                         },
                     )
@@ -1291,7 +1527,48 @@ impl RuntimeRunner {
                 KernelObservation::BudgetExceeded { .. } => {}
                 KernelObservation::Suspended { .. } => {}
                 KernelObservation::Resumed { .. } => {}
-                KernelObservation::PageOut { .. } => {}
+                KernelObservation::PageOut {
+                    turn,
+                    action,
+                    rho_after: _,
+                    summary,
+                    archived,
+                    tier_hint,
+                } => {
+                    if !archived.is_empty() {
+                        self.local_page_out_cache
+                            .lock()
+                            .unwrap()
+                            .extend(archived.clone());
+                    }
+
+                    let action_str = match action {
+                        KernelPressureAction::None => "none".to_string(),
+                        KernelPressureAction::SnipCompact => "snip_compact".to_string(),
+                        KernelPressureAction::MicroCompact => "micro_compact".to_string(),
+                        KernelPressureAction::ContextCollapse => "context_collapse".to_string(),
+                        KernelPressureAction::AutoCompact => "auto_compact".to_string(),
+                    };
+
+                    self.log(
+                        session_id,
+                        SessionEvent::PageOut {
+                            turn,
+                            category: Some(category_for_kind("page_out")),
+                            primitive: Some(primitive_for_kind("page_out")),
+                            action: Some(action_str.clone()),
+                            summary: summary.clone(),
+                            tier_hint: Some(tier_hint.clone()),
+                            message_count: archived.len() as u32,
+                        },
+                    )
+                    .await;
+
+                    if tier_hint == "semantic" && !archived.is_empty() {
+                        self.archive_semantic_page_out(archived, Some(action_str))
+                            .await;
+                    }
+                }
                 KernelObservation::PageInRequested { .. } => {}
                 KernelObservation::MemoryWritten {
                     turn,
@@ -1304,6 +1581,7 @@ impl RuntimeRunner {
                         SessionEvent::MemoryWritten {
                             turn,
                             category: Some(category_for_kind("memory_written")),
+                            primitive: Some(primitive_for_kind("memory_written")),
                             memory_id,
                             memory_kind,
                             size_bytes,
@@ -1322,6 +1600,7 @@ impl RuntimeRunner {
                         SessionEvent::MemoryQueried {
                             turn,
                             category: Some(category_for_kind("memory_queried")),
+                            primitive: Some(primitive_for_kind("memory_queried")),
                             query_context,
                             requested_k,
                             requires_async_response,
@@ -1330,7 +1609,23 @@ impl RuntimeRunner {
                     .await;
                 }
                 // Phase 7 / M3: no dedicated session kinds yet in rust SDK.
-                KernelObservation::MemoryValidationFailed { .. } => {}
+                KernelObservation::MemoryValidationFailed {
+                    turn,
+                    memory_id,
+                    error,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::MemoryValidationFailed {
+                            turn,
+                            category: Some(category_for_kind("memory_validation_failed")),
+                            primitive: Some(primitive_for_kind("memory_validation_failed")),
+                            memory_id,
+                            error,
+                        },
+                    )
+                    .await;
+                }
                 KernelObservation::LargeResultSpooled {
                     turn,
                     call_id,
@@ -1356,6 +1651,7 @@ impl RuntimeRunner {
                         SessionEvent::LargeResultSpooled {
                             turn,
                             category: Some(category_for_kind("large_result_spooled")),
+                            primitive: Some(primitive_for_kind("large_result_spooled")),
                             call_id,
                             tool: tool_name,
                             original_size,
@@ -1372,7 +1668,7 @@ impl RuntimeRunner {
 
     async fn read_entries(&self, session_id: &str) -> Result<Vec<SessionEntry>> {
         if let Some(log) = &self.opts.session_log {
-            log.read(session_id, 0).await.map_err(Error::Io)
+            log.read(session_id, 0, None).await.map_err(Error::Io)
         } else {
             Ok(Vec::new())
         }
@@ -1382,6 +1678,223 @@ impl RuntimeRunner {
         if let Some(log) = &self.opts.session_log {
             let _ = log.append(session_id, event).await;
         }
+    }
+
+    async fn apply_kernel_page_in(
+        &self,
+        session_id: &str,
+        kernel_mutex: &std::sync::Mutex<KernelRuntime>,
+        observations: &mut Vec<KernelObservation>,
+    ) {
+        let requests: Vec<_> = observations
+            .iter()
+            .filter_map(|obs| match obs {
+                KernelObservation::PageInRequested {
+                    turn: _,
+                    call_id,
+                    tool,
+                    query,
+                    top_k,
+                } => Some((call_id.clone(), tool.clone(), query.clone(), *top_k)),
+                _ => None,
+            })
+            .collect();
+
+        if requests.is_empty() {
+            return;
+        }
+
+        let mut entries = Vec::new();
+        for (_call_id, tool, query, top_k) in requests {
+            let top_k = top_k as usize;
+            if tool == "memory" {
+                // Priority 1: Local Page-Out Cache (keyword matching)
+                let local_hits = {
+                    let cache = self.local_page_out_cache.lock().unwrap();
+                    cache
+                        .iter()
+                        .filter(|m| {
+                            let content_str = message_content_as_text(&m.content);
+                            content_str.to_lowercase().contains(&query.to_lowercase())
+                        })
+                        .cloned()
+                        .take(top_k)
+                        .collect::<Vec<_>>()
+                };
+
+                for hit in &local_hits {
+                    let role_str = match hit.role {
+                        deepstrike_core::types::message::Role::System => "system",
+                        deepstrike_core::types::message::Role::User => "user",
+                        deepstrike_core::types::message::Role::Assistant => "assistant",
+                        deepstrike_core::types::message::Role::Tool => "tool",
+                    };
+                    let content_str = message_content_as_text(&hit.content);
+                    entries.push(deepstrike_core::mm::PageInEntry {
+                        content: format!("[local semantic cache] {}: {}", role_str, content_str),
+                        tokens: None,
+                        source: Some("semantic_cache".to_string()),
+                    });
+                }
+
+                let remaining_k = top_k.saturating_sub(local_hits.len());
+                if remaining_k > 0 {
+                    if let (Some(store), Some(agent_id)) = (&self.opts.dream_store, &self.opts.agent_id) {
+                        if let Ok(hits) = store.search(agent_id, &query, remaining_k).await {
+                            for hit in hits {
+                                entries.push(deepstrike_core::mm::PageInEntry {
+                                    content: format!("[memory score={:.3}] {}", hit.score, hit.text),
+                                    tokens: None,
+                                    source: Some("memory".to_string()),
+                                });
+                            }
+                        }
+                    }
+                }
+            } else if tool == "knowledge" {
+                if let Some(source) = &self.opts.knowledge_source {
+                    if let Ok(snippets) = source.retrieve(&query, top_k).await {
+                        for snippet in snippets {
+                            entries.push(deepstrike_core::mm::PageInEntry {
+                                content: snippet,
+                                tokens: None,
+                                source: Some("knowledge".to_string()),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        if entries.is_empty() {
+            return;
+        }
+
+        // Apply back to the kernel
+        let mut kernel = kernel_mutex.lock().unwrap();
+        let turn = kernel.state_machine().turn;
+        let step = kernel.step(KernelInput::new(KernelInputEvent::PageIn {
+            entries: entries.clone(),
+        }));
+        observations.extend(step.observations);
+
+        // Append PageIn event to session log
+        self.log(
+            session_id,
+            SessionEvent::PageIn {
+                turn,
+                category: Some(category_for_kind("page_in")),
+                primitive: Some(primitive_for_kind("page_in")),
+                entry_count: entries.len() as u32,
+            },
+        )
+        .await;
+    }
+
+    async fn archive_semantic_page_out(&self, archived: Vec<Message>, action: Option<String>) {
+        let (Some(store), Some(agent_id)) = (&self.opts.dream_store, &self.opts.agent_id) else {
+            return;
+        };
+
+        let summary = match self.summarize_for_long_term_memory(&archived).await {
+            Ok(s) => s,
+            Err(_) => return, // non-fatal
+        };
+
+        if let Ok(existing) = store.load_memories(agent_id).await {
+            let curation_result = deepstrike_core::memory::curator::CurationResult {
+                to_add: vec![deepstrike_core::memory::semantic::MemoryEntry {
+                    text: summary,
+                    score: 1.0,
+                    metadata: serde_json::json!({
+                        "source": "semantic_page_out",
+                        "action": action,
+                    }),
+                }],
+                to_remove_indices: vec![],
+                stats: deepstrike_core::memory::curator::CurationStats {
+                    insights_processed: 1,
+                    duplicates_removed: 0,
+                    conflicts_resolved: 0,
+                    entries_added: 1,
+                },
+            };
+            let _ = store.commit(agent_id, curation_result, &existing).await;
+        }
+    }
+
+    async fn summarize_for_long_term_memory(&self, archived: &[Message]) -> crate::Result<String> {
+        let transcript = archived
+            .iter()
+            .map(|m| {
+                let role_str = match m.role {
+                    deepstrike_core::types::message::Role::System => "system",
+                    deepstrike_core::types::message::Role::User => "user",
+                    deepstrike_core::types::message::Role::Assistant => "assistant",
+                    deepstrike_core::types::message::Role::Tool => "tool",
+                };
+                let content_str = message_content_as_text(&m.content);
+                format!("{}: {}", role_str, content_str)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let system_prompt_opt = self.opts.system_prompt.as_deref();
+        let system_text = match system_prompt_opt {
+            Some(sp) => format!(
+                "{}\n\nSummarize the following conversation for long-term memory. Preserve key facts, decisions, and open questions.",
+                sp
+            ),
+            None => "Summarize the following conversation for long-term memory. Preserve key facts, decisions, and open questions.".to_string(),
+        };
+
+        let context = deepstrike_core::context::renderer::RenderedContext {
+            system_text,
+            system_stable: String::new(),
+            system_knowledge: String::new(),
+            turns: vec![deepstrike_core::types::message::Message {
+                role: deepstrike_core::types::message::Role::User,
+                content: deepstrike_core::types::message::Content::Text(transcript.clone()),
+                tool_calls: vec![],
+                token_count: None,
+            }],
+        };
+
+        let synth_state = self.opts.provider.create_run_state();
+        let mut stream = self
+            .opts
+            .provider
+            .stream(&context, &[], None, synth_state.as_ref())
+            .await?;
+
+        let mut synthesis_text = String::new();
+        while let Some(evt) = stream.next().await {
+            if let Ok(StreamEvent::TextDelta { delta }) = evt {
+                synthesis_text.push_str(&delta);
+            }
+        }
+
+        let text = synthesis_text.trim();
+        if text.is_empty() {
+            Ok(transcript.chars().take(2000).collect())
+        } else {
+            Ok(text.to_string())
+        }
+    }
+}
+
+fn message_content_as_text(content: &deepstrike_core::types::message::Content) -> String {
+    match content {
+        deepstrike_core::types::message::Content::Text(s) => s.clone(),
+        deepstrike_core::types::message::Content::Parts(parts) => parts
+            .iter()
+            .filter_map(|p| match p {
+                deepstrike_core::types::message::ContentPart::Text { text } => Some(text.as_str()),
+                deepstrike_core::types::message::ContentPart::ToolResult { output, .. } => Some(output.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
     }
 }
 
@@ -1532,5 +2045,47 @@ fn parse_update_plan_args(val: &serde_json::Value) -> TaskUpdate {
         scratchpad,
         blocked_on,
         preserved_refs,
+    }
+}
+
+fn select_memories(
+    query: &MemoryQuery,
+    entries: &[deepstrike_core::memory::semantic::MemoryEntry],
+) -> MemoryRetrieval {
+    let filter_out: std::collections::HashSet<String> = query
+        .already_surfaced
+        .iter()
+        .chain(query.active_tools.iter())
+        .cloned()
+        .collect();
+    let candidates: Vec<_> = entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .metadata
+                .get("name")
+                .and_then(|value| value.as_str())
+                .is_none_or(|name| !filter_out.contains(name))
+        })
+        .collect();
+    if candidates.is_empty() {
+        return MemoryRetrieval {
+            selected_memory_ids: vec![],
+            selection_rationale: "No candidates after filtering".to_string(),
+        };
+    }
+    MemoryRetrieval {
+        selected_memory_ids: candidates
+            .iter()
+            .take(query.top_k)
+            .filter_map(|entry| {
+                entry
+                    .metadata
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            })
+            .collect(),
+        selection_rationale: "Stub selector ranked index entries".to_string(),
     }
 }

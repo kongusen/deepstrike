@@ -133,6 +133,139 @@ class RuntimeRunner:
     """Host configuration (for coordinator / sub-agent spawn)."""
     return self._opts
 
+  async def write_memory(
+    self,
+    memory: dict[str, Any],
+    *,
+    session_id: str | None = None,
+    agent_id: str | None = None,
+  ) -> None:
+    resolved_session_id = session_id or self._current_session_id
+    resolved_agent_id = agent_id or self._opts.agent_id
+    if not self._opts.dream_store or not resolved_agent_id:
+      return
+
+    observations: list[dict[str, Any]] = []
+    runtime = self._active_kernel or self._create_syscall_runtime()
+    kernel_apply(runtime, observations, {"kind": "write_memory", "memory": memory})
+
+    if any(o.get("kind") == "memory_written" for o in observations):
+      from deepstrike.memory.protocols import CurationResult, CurationStats, MemoryEntry
+      existing = await self._opts.dream_store.load_memories(resolved_agent_id)
+      await self._opts.dream_store.commit(
+        resolved_agent_id,
+        CurationResult(
+          to_add=[
+            MemoryEntry(
+              text=str(memory.get("content") or ""),
+              score=1.0,
+              metadata={
+                **(memory.get("metadata") if isinstance(memory.get("metadata"), dict) else {}),
+                "source": "write_memory_syscall",
+              },
+            )
+          ],
+          to_remove_indices=[],
+          stats=CurationStats(insights_processed=1, entries_added=1),
+        ),
+        existing,
+      )
+    await self._append_memory_syscall_observations(resolved_session_id, observations)
+
+  async def query_memory(
+    self,
+    query: dict[str, Any],
+    *,
+    session_id: str | None = None,
+    agent_id: str | None = None,
+  ) -> list[Any]:
+    from deepstrike.memory.agent import memories_to_index, select_memories
+
+    resolved_session_id = session_id or self._current_session_id
+    resolved_agent_id = agent_id or self._opts.agent_id
+    if not self._opts.dream_store or not resolved_agent_id:
+      return []
+
+    observations: list[dict[str, Any]] = []
+    runtime = self._active_kernel or self._create_syscall_runtime()
+    kernel_apply(runtime, observations, {"kind": "query_memory", "query": query})
+
+    all_memories = await self._opts.dream_store.load_memories(resolved_agent_id)
+    retrieval = await select_memories(query, memories_to_index(all_memories))
+    selected_ids = set(retrieval.get("selected_memory_ids") or [])
+    hits: list[Any] = []
+    if selected_ids:
+      for entry in all_memories:
+        meta = entry.metadata if hasattr(entry, "metadata") else {}
+        name = meta.get("name") if isinstance(meta, dict) else None
+        if name in selected_ids:
+          hits.append(entry)
+      hits = hits[: int(query.get("top_k") or 5)]
+    else:
+      hits = await self._opts.dream_store.search(
+        resolved_agent_id,
+        str(query.get("current_context") or ""),
+        int(query.get("top_k") or 5),
+      )
+      if hits and retrieval.get("selection_rationale") == "No candidates after filtering":
+        retrieval["selected_memory_ids"] = [
+          (entry.metadata.get("name") if hasattr(entry, "metadata") and isinstance(entry.metadata, dict) else None)
+          or getattr(entry, "text", "")[:32]
+          for entry in hits
+        ]
+        retrieval["selection_rationale"] = f"DreamStore.search returned {len(hits)} hit(s)"
+
+    await self._append_memory_syscall_observations(resolved_session_id, observations)
+    await self._log_memory_retrieval_result(resolved_session_id, runtime, retrieval)
+    return hits
+
+  async def _log_memory_retrieval_result(
+    self,
+    session_id: str | None,
+    runtime: KernelRuntime,
+    retrieval: dict[str, Any],
+  ) -> None:
+    if not session_id:
+      return
+    await self._opts.session_log.append(session_id, {
+      "kind": "memory_retrieval_result",
+      "selected_memory_ids": list(retrieval.get("selected_memory_ids") or []),
+      "selection_rationale": str(retrieval.get("selection_rationale") or ""),
+    })
+    try:
+      kernel_apply(runtime, [], {
+        "kind": "memory_retrieval_result",
+        "retrieval": {
+          "selected_memory_ids": list(retrieval.get("selected_memory_ids") or []),
+          "selection_rationale": str(retrieval.get("selection_rationale") or ""),
+        },
+      })
+    except ValueError:
+      # Native extension may lag core ABI; session log is the audit source of truth.
+      pass
+
+  def _create_syscall_runtime(self) -> KernelRuntime:
+    return KernelRuntime(LoopPolicy(
+      max_tokens=self._opts.max_tokens,
+      max_turns=self._opts.max_turns,
+      timeout_ms=self._opts.timeout_ms,
+    ))
+
+  async def _append_memory_syscall_observations(
+    self,
+    session_id: str | None,
+    observations: list[dict[str, Any]],
+  ) -> None:
+    if not session_id:
+      return
+    turn = self._active_kernel.turn() if self._active_kernel else 0
+    for obs in observations:
+      if obs.get("kind") not in ("memory_written", "memory_queried", "memory_validation_failed"):
+        continue
+      event = kernel_observation_to_session_event(obs, turn)
+      if event:
+        await self._opts.session_log.append(session_id, event)
+
   async def spawn_sub_agent(self, spec: "AgentRunSpec") -> "AsyncIterator[StreamEvent]":
     return self._spawn_sub_agent_impl(spec)
 

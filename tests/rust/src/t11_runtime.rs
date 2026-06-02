@@ -370,7 +370,7 @@ async fn wake_continues_after_tool_completed() {
     let text = runner.wake(session_id).await.unwrap();
     assert_eq!(text, "finished");
 
-    let entries = session_log.read(session_id, 0).await.unwrap();
+    let entries = session_log.read(session_id, 0, None).await.unwrap();
     assert!(
         entries
             .iter()
@@ -550,7 +550,7 @@ async fn reactive_compact_on_413_retry() {
     assert_eq!(text, "recovered");
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 
-    let events = session_log.read(&session_id, 0).await.unwrap();
+    let events = session_log.read(&session_id, 0, None).await.unwrap();
     assert!(
         events
             .iter()
@@ -617,6 +617,7 @@ async fn milestone_pass_writes_session_event() {
                     SessionEvent::MilestoneAdvanced {
                         turn: *turn,
                         category: None,
+                        primitive: None,
                         phase_id: phase_id.clone(),
                         capabilities_unlocked: capabilities_unlocked.clone(),
                     },
@@ -626,7 +627,7 @@ async fn milestone_pass_writes_session_event() {
         }
     }
 
-    let entries = session_log.read(session_id, 0).await.unwrap();
+    let entries = session_log.read(session_id, 0, None).await.unwrap();
     assert!(
         entries.iter().any(|e| matches!(&e.event,
             SessionEvent::MilestoneAdvanced { phase_id, .. } if phase_id == "plan"
@@ -676,6 +677,7 @@ async fn milestone_block_writes_session_event() {
                     SessionEvent::MilestoneBlocked {
                         turn: *turn,
                         category: None,
+                        primitive: None,
                         phase_id: phase_id.clone(),
                         reason: reason.clone(),
                     },
@@ -685,7 +687,7 @@ async fn milestone_block_writes_session_event() {
         }
     }
 
-    let entries = session_log.read(session_id, 0).await.unwrap();
+    let entries = session_log.read(session_id, 0, None).await.unwrap();
     assert!(
         entries.iter().any(|e| matches!(&e.event,
             SessionEvent::MilestoneBlocked { phase_id, reason, .. }
@@ -745,6 +747,7 @@ async fn capability_mount_emits_capability_changed_session_event() {
                     SessionEvent::CapabilityChanged {
                         turn: *turn,
                         category: None,
+                        primitive: None,
                         added: added.clone(),
                         removed: removed.clone(),
                         change_kind: change_kind.clone(),
@@ -772,7 +775,7 @@ async fn capability_mount_emits_capability_changed_session_event() {
     );
 
     // Confirm the event was written to the session log.
-    let entries = session_log.read(session_id, 0).await.unwrap();
+    let entries = session_log.read(session_id, 0, None).await.unwrap();
     assert!(
         entries
             .iter()
@@ -826,6 +829,7 @@ async fn capability_unmount_emits_capability_changed_session_event() {
                     SessionEvent::CapabilityChanged {
                         turn: *turn,
                         category: None,
+                        primitive: None,
                         added: added.clone(),
                         removed: removed.clone(),
                         change_kind: change_kind.clone(),
@@ -847,7 +851,7 @@ async fn capability_unmount_emits_capability_changed_session_event() {
         }
     }
 
-    let entries = session_log.read(session_id, 0).await.unwrap();
+    let entries = session_log.read(session_id, 0, None).await.unwrap();
     assert!(
         entries
             .iter()

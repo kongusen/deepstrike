@@ -47,6 +47,14 @@ pub struct OsSnapshot {
     pub page_out_count: u32,
     pub page_in_count: u32,
     pub tool_gated_count: u32,
+    #[serde(default)]
+    pub memory_written_count: u32,
+    #[serde(default)]
+    pub memory_queried_count: u32,
+    #[serde(default)]
+    pub memory_validation_failed_count: u32,
+    #[serde(default)]
+    pub memory_retrieval_result_count: u32,
 }
 
 /// Rebuild an OS audit snapshot from session events (newest process state wins per agent).
@@ -134,6 +142,18 @@ pub fn rebuild_os_snapshot_from_events(events: &[SessionEvent]) -> OsSnapshot {
             SessionEvent::PageIn { .. } => {
                 snap.page_in_count += 1;
             }
+            SessionEvent::MemoryWritten { .. } => {
+                snap.memory_written_count += 1;
+            }
+            SessionEvent::MemoryQueried { .. } => {
+                snap.memory_queried_count += 1;
+            }
+            SessionEvent::MemoryValidationFailed { .. } => {
+                snap.memory_validation_failed_count += 1;
+            }
+            SessionEvent::MemoryRetrievalResult { .. } => {
+                snap.memory_retrieval_result_count += 1;
+            }
             _ => {}
         }
     }
@@ -180,6 +200,7 @@ mod tests {
             SessionEvent::AgentProcessChanged {
                 turn: 1,
                 category: Some(KernelEventCategory::Proc),
+                primitive: None,
                 agent_id: "child-1".into(),
                 parent_session_id: "parent".into(),
                 role: "worker".into(),
@@ -192,6 +213,7 @@ mod tests {
             SessionEvent::SignalDisposed {
                 turn: 2,
                 category: Some(KernelEventCategory::Ipc),
+                primitive: None,
                 signal_id: "sig-a".into(),
                 disposition: "queue".into(),
                 queue_depth: 1,
@@ -199,12 +221,14 @@ mod tests {
             SessionEvent::Suspended {
                 turn: 3,
                 category: Some(KernelEventCategory::Sched),
+                primitive: None,
                 reason: "ask_user".into(),
                 pending_calls: vec!["c1".into()],
             },
             SessionEvent::AgentProcessChanged {
                 turn: 4,
                 category: Some(KernelEventCategory::Proc),
+                primitive: None,
                 agent_id: "child-1".into(),
                 parent_session_id: "parent".into(),
                 role: "worker".into(),

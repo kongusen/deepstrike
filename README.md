@@ -81,7 +81,7 @@ npm run docs:build
 | Rust | `deepstrike-sdk` | `cargo add deepstrike-sdk` |
 | Browser / Edge / WASM | `@deepstrike/wasm` | `npm install @deepstrike/wasm` |
 
-Current workspace version: `0.2.4`.
+Current workspace version: `0.2.5`.
 
 ## Quick Start
 
@@ -162,7 +162,7 @@ answer = await collect_text(runner.run_streaming("What is 2 + 3?"))
 
 ```toml
 [dependencies]
-deepstrike-sdk = "0.2.4"
+deepstrike-sdk = "0.2.5"
 ```
 
 See the [SDK guides](./docs/guides/index.md) for full examples, provider configuration, streaming events, governance hooks, and collaboration patterns.

@@ -63,7 +63,7 @@ export class KernelPrimitivesDashboard {
    */
   ingest(event: SessionEvent): void {
     const prim = primitiveForKind(event.kind)
-    if (event.turn !== undefined) {
+    if ("turn" in event && event.turn !== undefined) {
       this.stats.sched.turnCount = Math.max(this.stats.sched.turnCount, event.turn)
     }
 

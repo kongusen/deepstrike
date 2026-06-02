@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::runtime::event_log::{category_for_kind, KernelEventCategory};
+use crate::runtime::event_log::{category_for_kind, KernelEventCategory, Primitive};
 use crate::types::message::{Message, ToolCall, ToolResult};
 
 /// Provider-native replay payload persisted in `llm_completed` for wake/preload recovery.
@@ -59,6 +59,8 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         action: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
@@ -75,6 +77,8 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         action: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
@@ -88,6 +92,8 @@ pub enum SessionEvent {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
         entry_count: u32,
     },
     /// Large tool result spooled to disk by the SDK (kernel Layer 1).
@@ -95,6 +101,8 @@ pub enum SessionEvent {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
         call_id: String,
         tool: String,
         original_size: u32,
@@ -143,6 +151,8 @@ pub enum SessionEvent {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         added: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -163,6 +173,8 @@ pub enum SessionEvent {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
         sprint: u32,
         handoff_ref: String,
     },
@@ -172,6 +184,8 @@ pub enum SessionEvent {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
         reason: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         pending_calls: Vec<String>,
@@ -181,6 +195,8 @@ pub enum SessionEvent {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         approved: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -191,6 +207,8 @@ pub enum SessionEvent {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
         call_id: String,
         tool: String,
         reason: String,
@@ -200,6 +218,8 @@ pub enum SessionEvent {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
         signal_id: String,
         disposition: String,
         queue_depth: u32,
@@ -209,6 +229,8 @@ pub enum SessionEvent {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
         budget: String,
     },
     /// Checkpoint taken at the start of a turn transaction (before LLM call).
@@ -216,6 +238,8 @@ pub enum SessionEvent {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
         history_len: u32,
     },
     /// Transaction rollback indicating state was restored to a checkpoint.
@@ -223,6 +247,8 @@ pub enum SessionEvent {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
         checkpoint_history_len: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<RollbackReason>,
@@ -239,6 +265,8 @@ pub enum SessionEvent {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
         agent_id: String,
         parent_session_id: String,
         role: String,
@@ -257,6 +285,8 @@ pub enum SessionEvent {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
         phase_id: String,
         #[serde(default)]
         capabilities_unlocked: Vec<String>,
@@ -266,6 +296,8 @@ pub enum SessionEvent {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
         phase_id: String,
         reason: String,
     },
@@ -274,6 +306,8 @@ pub enum SessionEvent {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
         phase_id: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         evidence: Vec<String>,
@@ -285,6 +319,8 @@ pub enum SessionEvent {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
         memory_id: String,
         memory_kind: String,
         size_bytes: u32,
@@ -294,9 +330,21 @@ pub enum SessionEvent {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
         query_context: String,
         requested_k: usize,
         requires_async_response: bool,
+    },
+    /// Memory validation failed (kernel rejected a write request).
+    MemoryValidationFailed {
+        turn: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<KernelEventCategory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primitive: Option<Primitive>,
+        memory_id: String,
+        error: String,
     },
     /// Memory retrieval result (SDK → kernel via Resume or other async mechanism).
     MemoryRetrievalResult {
@@ -337,6 +385,7 @@ impl SessionEvent {
             Self::MilestoneEvidence { .. } => "milestone_evidence",
             Self::MemoryWritten { .. } => "memory_written",
             Self::MemoryQueried { .. } => "memory_queried",
+            Self::MemoryValidationFailed { .. } => "memory_validation_failed",
             Self::MemoryRetrievalResult { .. } => "memory_retrieval_result",
         }
     }
@@ -362,7 +411,8 @@ impl SessionEvent {
             | Self::MilestoneBlocked { category, .. }
             | Self::MilestoneEvidence { category, .. }
             | Self::MemoryWritten { category, .. }
-            | Self::MemoryQueried { category, .. } => *category,
+            | Self::MemoryQueried { category, .. }
+            | Self::MemoryValidationFailed { category, .. } => *category,
             _ => None,
         };
         embedded.unwrap_or_else(|| category_for_kind(self.kind_str()))
@@ -391,6 +441,7 @@ impl SessionEvent {
                 | Self::MilestoneEvidence { .. }
                 | Self::MemoryWritten { .. }
                 | Self::MemoryQueried { .. }
+                | Self::MemoryValidationFailed { .. }
         )
     }
 }

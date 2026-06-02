@@ -1,5 +1,5 @@
 import type { SessionEvent } from "./session-log.js"
-import { categoryForKind, type KernelEventCategory } from "./kernel-event-log.js"
+import { categoryForKind, type KernelEventCategory, type KernelPrimitive, primitiveForKind } from "./kernel-event-log.js"
 
 const KERNEL_KINDS = new Set([
   "compressed",
@@ -19,6 +19,9 @@ const KERNEL_KINDS = new Set([
   "milestone_advanced",
   "milestone_blocked",
   "milestone_evidence",
+  "memory_written",
+  "memory_queried",
+  "memory_validation_failed",
 ])
 
 export interface OsSnapshot {
@@ -31,6 +34,10 @@ export interface OsSnapshot {
   pageInCount: number
   spoolCount: number
   toolGatedCount: number
+  memoryWrittenCount: number
+  memoryQueriedCount: number
+  memoryValidationFailedCount: number
+  memoryRetrievalResultCount: number
 }
 
 export function rebuildOsSnapshotFromSessionEvents(
@@ -44,10 +51,18 @@ export function rebuildOsSnapshotFromSessionEvents(
     pageInCount: 0,
     spoolCount: 0,
     toolGatedCount: 0,
+    memoryWrittenCount: 0,
+    memoryQueriedCount: 0,
+    memoryValidationFailedCount: 0,
+    memoryRetrievalResultCount: 0,
   }
   const index = new Map<string, number>()
 
   for (const event of events) {
+    if (event.kind === "memory_retrieval_result") {
+      snap.memoryRetrievalResultCount += 1
+      continue
+    }
     if (!KERNEL_KINDS.has(event.kind) && event.kind !== "suspended" && event.kind !== "resumed") {
       continue
     }
@@ -100,6 +115,15 @@ export function rebuildOsSnapshotFromSessionEvents(
       case "large_result_spooled":
         snap.spoolCount += 1
         break
+      case "memory_written":
+        snap.memoryWrittenCount += 1
+        break
+      case "memory_queried":
+        snap.memoryQueriedCount += 1
+        break
+      case "memory_validation_failed":
+        snap.memoryValidationFailedCount += 1
+        break
       default:
         break
     }
@@ -113,6 +137,11 @@ export function sessionLogHasRequiredCategories(events: SessionEvent[]): boolean
     const cat = (event as { category?: KernelEventCategory }).category
     if (!cat) return false
     if (cat !== categoryForKind(event.kind)) return false
+
+    const prim = (event as { primitive?: KernelPrimitive }).primitive
+    if (prim !== undefined) {
+      if (prim !== primitiveForKind(event.kind)) return false
+    }
   }
   return true
 }

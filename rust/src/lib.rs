@@ -15,6 +15,9 @@ mod tests;
 
 pub use deepstrike_core::context::renderer::RenderedContext;
 pub use deepstrike_core::governance::permission::PermissionAction;
+pub use deepstrike_core::mm::memory::{
+    MemoryKind, MemoryMetadata, MemoryQuery, MemoryRetrieval, MemoryWriteRequest,
+};
 pub use governance::{Governance, GovernanceVerdict};
 pub use harness::{Harness, HarnessOutcome, HarnessRequest, QualityGate};
 pub use harness_loop::{EvalLoopHarness, HarnessLoop, SinglePassHarness};

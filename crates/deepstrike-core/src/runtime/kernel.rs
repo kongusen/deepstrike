@@ -258,6 +258,10 @@ pub enum KernelInputEvent {
     QueryMemory {
         query: crate::mm::memory::MemoryQuery,
     },
+    /// Feed memory selection results back after `QueryMemory` (SDK → kernel acknowledgment).
+    MemoryRetrievalResult {
+        retrieval: crate::mm::memory::MemoryRetrieval,
+    },
     Timeout,
 }
 
@@ -1008,6 +1012,10 @@ impl KernelRuntime {
                     requested_k: query.top_k,
                     requires_async_response: true,
                 });
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::MemoryRetrievalResult { .. } => {
+                // SDK acknowledgment after async retrieval; no further kernel action.
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::Timeout => self.sm.feed(LoopEvent::Timeout),

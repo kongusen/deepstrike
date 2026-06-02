@@ -1,5 +1,5 @@
 import type { SessionEvent } from "./session-log.js"
-import { categoryForKind, type KernelEventCategory } from "./kernel-event-log.js"
+import { categoryForKind, type KernelEventCategory, type KernelPrimitive, primitiveForKind } from "./kernel-event-log.js"
 
 const KERNEL_KINDS = new Set([
   "compressed",
@@ -113,6 +113,11 @@ export function sessionLogHasRequiredCategories(events: SessionEvent[]): boolean
     const cat = (event as { category?: KernelEventCategory }).category
     if (!cat) return false
     if (cat !== categoryForKind(event.kind)) return false
+
+    const prim = (event as { primitive?: KernelPrimitive }).primitive
+    if (prim !== undefined) {
+      if (prim !== primitiveForKind(event.kind)) return false
+    }
   }
   return true
 }

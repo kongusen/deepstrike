@@ -3,12 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from deepstrike.runtime.kernel_event_log import KernelEventCategory, category_for_kind
+from deepstrike.runtime.kernel_event_log import (
+    KernelEventCategory,
+    category_for_kind,
+    primitive_for_kind,
+)
 
 _KERNEL_KINDS = frozenset({
     "compressed",
     "page_out",
     "page_in",
+    "large_result_spooled",
     "capability_changed",
     "context_renewed",
     "suspended",
@@ -22,6 +27,9 @@ _KERNEL_KINDS = frozenset({
     "milestone_advanced",
     "milestone_blocked",
     "milestone_evidence",
+    "memory_written",
+    "memory_queried",
+    "memory_validation_failed",
 })
 
 
@@ -34,7 +42,12 @@ class OsSnapshot:
     signals: list[dict[str, Any]] = field(default_factory=list)
     page_out_count: int = 0
     page_in_count: int = 0
+    spool_count: int = 0
     tool_gated_count: int = 0
+    memory_written_count: int = 0
+    memory_queried_count: int = 0
+    memory_validation_failed_count: int = 0
+    memory_retrieval_result_count: int = 0
 
 
 def rebuild_os_snapshot_from_session_events(events: list[dict[str, Any]]) -> OsSnapshot:
@@ -42,6 +55,9 @@ def rebuild_os_snapshot_from_session_events(events: list[dict[str, Any]]) -> OsS
     index: dict[str, int] = {}
     for event in events:
         kind = event.get("kind")
+        if kind == "memory_retrieval_result":
+            snap.memory_retrieval_result_count += 1
+            continue
         if kind not in _KERNEL_KINDS and kind not in ("suspended", "resumed"):
             continue
         if kind == "suspended":
@@ -84,6 +100,14 @@ def rebuild_os_snapshot_from_session_events(events: list[dict[str, Any]]) -> OsS
             snap.page_out_count += 1
         elif kind == "page_in":
             snap.page_in_count += 1
+        elif kind == "large_result_spooled":
+            snap.spool_count += 1
+        elif kind == "memory_written":
+            snap.memory_written_count += 1
+        elif kind == "memory_queried":
+            snap.memory_queried_count += 1
+        elif kind == "memory_validation_failed":
+            snap.memory_validation_failed_count += 1
     return snap
 
 
@@ -97,4 +121,8 @@ def session_log_has_required_categories(events: list[dict[str, Any]]) -> bool:
             return False
         if cat != category_for_kind(kind):
             return False
+        prim = event.get("primitive")
+        if prim is not None:
+            if prim != primitive_for_kind(kind):
+                return False
     return True

@@ -228,3 +228,17 @@ export function inferMemoryKind(metadata: MemoryMetadata): MemoryKind {
   // Default: feedback (most common)
   return "feedback"
 }
+
+/** Build a memory index from DreamStore entries for {@link selectMemories}. */
+export function memoriesToIndex(entries: MemoryEntry[]): MemoryIndexEntry[] {
+  return entries.map(entry => {
+    const meta = (entry.metadata ?? {}) as Record<string, unknown>
+    return {
+      name: String(meta.name ?? entry.text.slice(0, 40)),
+      description: String(meta.description ?? entry.text.slice(0, 120)),
+      kind: meta.kind as MemoryKind | undefined,
+      file: String(meta.file ?? ""),
+      updated_at: Number(meta.updated_at ?? 0),
+    }
+  })
+}

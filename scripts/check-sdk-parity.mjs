@@ -10,6 +10,24 @@ const root = new URL("..", import.meta.url).pathname
 
 const CHECKS = [
   {
+    id: "node-memory-syscall",
+    lang: "node",
+    path: "node/src/runtime/runner.ts",
+    patterns: ["writeMemory", "queryMemory", "memory_validation_failed"],
+  },
+  {
+    id: "python-memory-syscall",
+    lang: "python",
+    path: "python/deepstrike/runtime/runner.py",
+    patterns: ["write_memory", "query_memory", "memory_validation_failed"],
+  },
+  {
+    id: "core-memory-session-events",
+    lang: "core",
+    path: "crates/deepstrike-core/src/runtime/session.rs",
+    patterns: ["MemoryValidationFailed", "MemoryRetrievalResult"],
+  },
+  {
     id: "node-os-profile",
     lang: "node",
     path: "node/src/runtime/os-profile.ts",

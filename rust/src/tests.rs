@@ -385,7 +385,7 @@ mod tests {
             2
         );
 
-        let entries = session_log.read(session_id, 0).await.unwrap();
+        let entries = session_log.read(session_id, 0, None).await.unwrap();
         assert!(entries.iter().any(|entry| {
             matches!(
                 entry.event,
@@ -522,7 +522,7 @@ mod tests {
         }
 
         // 3. 普通 tool error 是 recoverable，不应该触发 rollback。
-        let entries = session_log.read(session_id, 0).await.unwrap();
+        let entries = session_log.read(session_id, 0, None).await.unwrap();
         assert!(!entries.iter().any(|entry| {
             matches!(
                 entry.event,
@@ -813,5 +813,433 @@ mod tests {
         } else {
             panic!("Expected RunEvent::ToolResult");
         }
+    }
+
+    use crate::memory::DreamStore;
+    use deepstrike_core::memory::semantic::MemoryEntry;
+    use crate::runtime::InMemorySessionLog;
+
+
+    struct MockLLMProvider;
+
+    #[async_trait::async_trait]
+    impl crate::providers::LLMProvider for MockLLMProvider {
+        async fn stream(
+            &self,
+            _context: &deepstrike_core::context::renderer::RenderedContext,
+            _tools: &[deepstrike_core::types::message::ToolSchema],
+            _extensions: Option<&serde_json::Value>,
+            _state: Option<&crate::providers::ProviderRunState>,
+        ) -> crate::Result<
+            Box<
+                dyn futures::Stream<Item = crate::Result<crate::providers::StreamEvent>>
+                    + Send
+                    + Unpin,
+            >,
+        > {
+            let events = vec![Ok(crate::providers::StreamEvent::TextDelta {
+                delta: "Summary of page out conversation".to_string(),
+            })];
+            Ok(Box::new(futures::stream::iter(events)))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_semantic_page_out_archives_to_dream_store() {
+        use crate::runtime::runner::{RuntimeRunner, RuntimeOptions, MilestonePolicy};
+        use deepstrike_core::runtime::kernel::{KernelObservation, KernelPressureAction};
+        use deepstrike_core::types::message::{Message, Role};
+        use std::sync::Arc;
+
+        let memories = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sessions = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        struct SharedMockDreamStore {
+            memories: Arc<std::sync::Mutex<Vec<MemoryEntry>>>,
+            sessions: Arc<std::sync::Mutex<Vec<deepstrike_core::memory::durable::SessionData>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl DreamStore for SharedMockDreamStore {
+            async fn load_sessions(&self, _agent_id: &str) -> crate::Result<Vec<deepstrike_core::memory::durable::SessionData>> {
+                Ok(self.sessions.lock().unwrap().clone())
+            }
+            async fn load_memories(&self, _agent_id: &str) -> crate::Result<Vec<MemoryEntry>> {
+                Ok(self.memories.lock().unwrap().clone())
+            }
+            async fn commit(
+                &self,
+                _agent_id: &str,
+                result: deepstrike_core::memory::curator::CurationResult,
+                _existing: &[MemoryEntry],
+            ) -> crate::Result<()> {
+                let mut mems = self.memories.lock().unwrap();
+                for idx in result.to_remove_indices.iter().rev() {
+                    if *idx < mems.len() {
+                        mems.remove(*idx);
+                    }
+                }
+                mems.extend(result.to_add);
+                Ok(())
+            }
+            async fn search(
+                &self,
+                _agent_id: &str,
+                _query: &str,
+                _top_k: usize,
+            ) -> crate::Result<Vec<MemoryEntry>> {
+                Ok(self.memories.lock().unwrap().clone())
+            }
+            async fn save_session(
+                &self,
+                data: deepstrike_core::memory::durable::SessionData,
+            ) -> crate::Result<()> {
+                self.sessions.lock().unwrap().push(data);
+                Ok(())
+            }
+        }
+
+        let store = SharedMockDreamStore {
+            memories: memories.clone(),
+            sessions: sessions.clone(),
+        };
+
+        let runner = RuntimeRunner::new(RuntimeOptions {
+            provider: Box::new(MockLLMProvider),
+            execution_plane: None,
+            session_log: Some(Arc::new(InMemorySessionLog::new())),
+            compression_store: None,
+            session_id: None,
+            max_tokens: 1000,
+            max_turns: Some(3),
+            timeout_ms: None,
+            extensions: None,
+            agent_id: Some("test-agent".to_string()),
+            system_prompt: None,
+            initial_memory: vec![],
+            skill_dir: None,
+            dream_store: Some(Box::new(store)),
+            knowledge_source: None,
+            signal_source: None,
+            governance: None,
+            tokenizer: None,
+            enable_plan_tool: None,
+            on_tool_suspend: None,
+            on_permission_request: None,
+            milestone_policy: MilestonePolicy::AutoPass,
+            milestone_contract: None,
+            run_spec: None,
+            on_milestone_evaluate: None,
+        });
+
+        let mut obs = vec![KernelObservation::PageOut {
+            turn: 1,
+            action: KernelPressureAction::AutoCompact,
+            rho_after: 0.5,
+            summary: Some("PageOut summary".to_string()),
+            archived: vec![Message::user("Hello memory")],
+            tier_hint: "semantic".to_string(),
+        }];
+
+        let kernel = std::sync::Mutex::new(deepstrike_core::runtime::kernel::KernelRuntime::new(
+            deepstrike_core::scheduler::policy::LoopPolicy::default(),
+        ));
+        let mut pending_spools = std::collections::HashMap::new();
+
+        runner.append_observations(
+            "test-session",
+            &kernel,
+            &mut obs,
+            &mut pending_spools,
+            0,
+        ).await;
+
+        let mems = memories.lock().unwrap();
+        assert_eq!(mems.len(), 1);
+        assert_eq!(mems[0].text, "Summary of page out conversation");
+    }
+
+    #[tokio::test]
+    async fn test_write_memory_syscall_commits_to_dream_store() {
+        use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
+        use crate::runtime::session_log::SessionLog;
+        use deepstrike_core::mm::memory::{MemoryKind, MemoryMetadata, MemoryWriteRequest};
+        use std::sync::Arc;
+
+        let memories = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sessions = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        struct Store {
+            memories: Arc<std::sync::Mutex<Vec<MemoryEntry>>>,
+            sessions: Arc<std::sync::Mutex<Vec<deepstrike_core::memory::durable::SessionData>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl DreamStore for Store {
+            async fn load_sessions(&self, _agent_id: &str) -> crate::Result<Vec<deepstrike_core::memory::durable::SessionData>> {
+                Ok(self.sessions.lock().unwrap().clone())
+            }
+            async fn load_memories(&self, _agent_id: &str) -> crate::Result<Vec<MemoryEntry>> {
+                Ok(self.memories.lock().unwrap().clone())
+            }
+            async fn commit(
+                &self,
+                _agent_id: &str,
+                result: deepstrike_core::memory::curator::CurationResult,
+                _existing: &[MemoryEntry],
+            ) -> crate::Result<()> {
+                self.memories.lock().unwrap().extend(result.to_add);
+                Ok(())
+            }
+            async fn search(
+                &self,
+                _agent_id: &str,
+                _query: &str,
+                _top_k: usize,
+            ) -> crate::Result<Vec<MemoryEntry>> {
+                Ok(self.memories.lock().unwrap().clone())
+            }
+            async fn save_session(
+                &self,
+                data: deepstrike_core::memory::durable::SessionData,
+            ) -> crate::Result<()> {
+                self.sessions.lock().unwrap().push(data);
+                Ok(())
+            }
+        }
+
+        let session_log = Arc::new(InMemorySessionLog::new());
+        let runner = RuntimeRunner::new(RuntimeOptions {
+            provider: Box::new(MockLLMProvider),
+            execution_plane: None,
+            session_log: Some(session_log.clone()),
+            compression_store: None,
+            session_id: None,
+            max_tokens: 1000,
+            max_turns: Some(3),
+            timeout_ms: None,
+            extensions: None,
+            agent_id: Some("agent-memory".to_string()),
+            system_prompt: None,
+            initial_memory: vec![],
+            skill_dir: None,
+            dream_store: Some(Box::new(Store { memories: memories.clone(), sessions })),
+            knowledge_source: None,
+            signal_source: None,
+            governance: None,
+            tokenizer: None,
+            enable_plan_tool: None,
+            on_tool_suspend: None,
+            on_permission_request: None,
+            milestone_policy: MilestonePolicy::AutoPass,
+            milestone_contract: None,
+            run_spec: None,
+            on_milestone_evaluate: None,
+        });
+
+        runner.write_memory(
+            MemoryWriteRequest {
+                metadata: MemoryMetadata {
+                    name: "prefers-small-tests".to_string(),
+                    description: "User prefers small focused tests".to_string(),
+                    kind: Some(MemoryKind::BehaviorPreference),
+                    created_at: 1,
+                    updated_at: 1,
+                    ..Default::default()
+                },
+                content: "User prefers focused unit tests for SDK behavior.".to_string(),
+            },
+            Some("memory-syscall-rs"),
+            None,
+        ).await.unwrap();
+
+        assert_eq!(memories.lock().unwrap()[0].text, "User prefers focused unit tests for SDK behavior.");
+        let events = session_log.read("memory-syscall-rs", 0, None).await.unwrap();
+        assert!(events.iter().any(|e| e.event.kind_str() == "memory_written"));
+    }
+
+    #[tokio::test]
+    async fn test_query_memory_syscall_returns_dream_store_hits() {
+        use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
+        use crate::runtime::session_log::SessionLog;
+        use deepstrike_core::mm::memory::MemoryQuery;
+        use std::sync::Arc;
+
+        let memories = Arc::new(std::sync::Mutex::new(vec![MemoryEntry {
+            text: "Use small focused tests.".to_string(),
+            score: 0.9,
+            metadata: serde_json::json!({"name": "testing"}),
+        }]));
+        let sessions = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        struct Store {
+            memories: Arc<std::sync::Mutex<Vec<MemoryEntry>>>,
+            sessions: Arc<std::sync::Mutex<Vec<deepstrike_core::memory::durable::SessionData>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl DreamStore for Store {
+            async fn load_sessions(&self, _agent_id: &str) -> crate::Result<Vec<deepstrike_core::memory::durable::SessionData>> {
+                Ok(self.sessions.lock().unwrap().clone())
+            }
+            async fn load_memories(&self, _agent_id: &str) -> crate::Result<Vec<MemoryEntry>> {
+                Ok(self.memories.lock().unwrap().clone())
+            }
+            async fn commit(
+                &self,
+                _agent_id: &str,
+                _result: deepstrike_core::memory::curator::CurationResult,
+                _existing: &[MemoryEntry],
+            ) -> crate::Result<()> {
+                Ok(())
+            }
+            async fn search(
+                &self,
+                _agent_id: &str,
+                query: &str,
+                top_k: usize,
+            ) -> crate::Result<Vec<MemoryEntry>> {
+                if query.contains("tests") && top_k == 1 {
+                    Ok(self.memories.lock().unwrap().clone())
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            async fn save_session(
+                &self,
+                data: deepstrike_core::memory::durable::SessionData,
+            ) -> crate::Result<()> {
+                self.sessions.lock().unwrap().push(data);
+                Ok(())
+            }
+        }
+
+        let session_log = Arc::new(InMemorySessionLog::new());
+        let runner = RuntimeRunner::new(RuntimeOptions {
+            provider: Box::new(MockLLMProvider),
+            execution_plane: None,
+            session_log: Some(session_log.clone()),
+            compression_store: None,
+            session_id: None,
+            max_tokens: 1000,
+            max_turns: Some(3),
+            timeout_ms: None,
+            extensions: None,
+            agent_id: Some("agent-memory".to_string()),
+            system_prompt: None,
+            initial_memory: vec![],
+            skill_dir: None,
+            dream_store: Some(Box::new(Store { memories, sessions })),
+            knowledge_source: None,
+            signal_source: None,
+            governance: None,
+            tokenizer: None,
+            enable_plan_tool: None,
+            on_tool_suspend: None,
+            on_permission_request: None,
+            milestone_policy: MilestonePolicy::AutoPass,
+            milestone_contract: None,
+            run_spec: None,
+            on_milestone_evaluate: None,
+        });
+
+        let hits = runner.query_memory(
+            MemoryQuery {
+                current_context: "Need memory about tests".to_string(),
+                active_tools: vec![],
+                already_surfaced: vec![],
+                top_k: 1,
+            },
+            Some("memory-query-syscall-rs"),
+            None,
+        ).await.unwrap();
+
+        assert_eq!(hits[0].text, "Use small focused tests.");
+        let events = session_log.read("memory-query-syscall-rs", 0, None).await.unwrap();
+        assert!(events.iter().any(|e| e.event.kind_str() == "memory_queried"));
+        assert!(events.iter().any(|e| e.event.kind_str() == "memory_retrieval_result"));
+    }
+
+    #[tokio::test]
+    async fn test_write_memory_validation_failure_is_logged() {
+        use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
+        use crate::runtime::session_log::SessionLog;
+        use deepstrike_core::memory::semantic::MemoryEntry;
+        use deepstrike_core::mm::memory::{MemoryKind, MemoryMetadata, MemoryWriteRequest};
+        use std::sync::Arc;
+
+        struct Store;
+        #[async_trait::async_trait]
+        impl DreamStore for Store {
+            async fn load_sessions(&self, _agent_id: &str) -> crate::Result<Vec<deepstrike_core::memory::durable::SessionData>> {
+                Ok(vec![])
+            }
+            async fn load_memories(&self, _agent_id: &str) -> crate::Result<Vec<MemoryEntry>> {
+                Ok(vec![])
+            }
+            async fn commit(
+                &self,
+                _agent_id: &str,
+                _result: deepstrike_core::memory::curator::CurationResult,
+                _existing: &[MemoryEntry],
+            ) -> crate::Result<()> {
+                Ok(())
+            }
+            async fn search(&self, _agent_id: &str, _query: &str, _top_k: usize) -> crate::Result<Vec<MemoryEntry>> {
+                Ok(vec![])
+            }
+            async fn save_session(&self, _data: deepstrike_core::memory::durable::SessionData) -> crate::Result<()> {
+                Ok(())
+            }
+        }
+
+        let session_log = Arc::new(InMemorySessionLog::new());
+        let runner = RuntimeRunner::new(RuntimeOptions {
+            provider: Box::new(MockLLMProvider),
+            execution_plane: None,
+            session_log: Some(session_log.clone()),
+            compression_store: None,
+            session_id: None,
+            max_tokens: 1000,
+            max_turns: Some(3),
+            timeout_ms: None,
+            extensions: None,
+            agent_id: Some("agent-memory".to_string()),
+            system_prompt: None,
+            initial_memory: vec![],
+            skill_dir: None,
+            dream_store: Some(Box::new(Store)),
+            knowledge_source: None,
+            signal_source: None,
+            governance: None,
+            tokenizer: None,
+            enable_plan_tool: None,
+            on_tool_suspend: None,
+            on_permission_request: None,
+            milestone_policy: MilestonePolicy::AutoPass,
+            milestone_contract: None,
+            run_spec: None,
+            on_milestone_evaluate: None,
+        });
+
+        runner.write_memory(
+            MemoryWriteRequest {
+                metadata: MemoryMetadata {
+                    name: String::new(),
+                    description: "missing name".to_string(),
+                    kind: Some(MemoryKind::BehaviorPreference),
+                    created_at: 1,
+                    updated_at: 1,
+                    ..Default::default()
+                },
+                content: "invalid write".to_string(),
+            },
+            Some("memory-validation-fail-rs"),
+            None,
+        ).await.unwrap();
+
+        let events = session_log.read("memory-validation-fail-rs", 0, None).await.unwrap();
+        assert!(events.iter().any(|e| e.event.kind_str() == "memory_validation_failed"));
+        assert!(!events.iter().any(|e| e.event.kind_str() == "memory_written"));
     }
 }

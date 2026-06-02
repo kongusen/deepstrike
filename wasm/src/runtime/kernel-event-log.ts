@@ -16,6 +16,8 @@ export function categoryForKind(kind: string): KernelEventCategory {
     case "renewed":
     case "context_renewed":
     case "large_result_spooled":
+    case "memory_written":
+    case "memory_queried":
       return "mm"
     case "agent_process_changed":
       return "proc"
@@ -28,8 +30,13 @@ export function categoryForKind(kind: string): KernelEventCategory {
 
 export function withCategory<T extends { kind: string }>(
   event: T,
-): T & { category: KernelEventCategory } {
-  return { ...event, category: categoryForKind(event.kind) }
+): T & { category: KernelEventCategory; primitive: KernelPrimitive } {
+  const category = categoryForKind(event.kind)
+  return {
+    ...event,
+    category,
+    primitive: primitiveForCategory(category),
+  }
 }
 
 type CompressionAction = Extract<SessionEvent, { kind: "compressed" }>["action"]
@@ -190,7 +197,43 @@ export function kernelObservationToSessionEvent(
         preview_size: obs.preview_size ?? 0,
         spool_ref: opts.spoolRef,
       })
+    case "memory_written":
+      return withCategory({
+        kind: "memory_written" as const,
+        turn: t,
+        memory_id: obs.memory_id ?? "",
+        memory_kind: obs.memory_kind ?? "",
+        size_bytes: obs.size_bytes ?? 0,
+      })
+    case "memory_queried":
+      return withCategory({
+        kind: "memory_queried" as const,
+        turn: t,
+        query_context: obs.query_context ?? "",
+        requested_k: obs.requested_k ?? 0,
+        requires_async_response: obs.requires_async_response ?? false,
+      })
     default:
       return null
   }
+}
+
+export type KernelPrimitive = "syscall" | "sched" | "mm"
+
+export function primitiveForCategory(category: KernelEventCategory): KernelPrimitive {
+  switch (category) {
+    case "syscall":
+      return "syscall"
+    case "mm":
+      return "mm"
+    case "proc":
+    case "ipc":
+    case "sched":
+    default:
+      return "sched"
+  }
+}
+
+export function primitiveForKind(kind: string): KernelPrimitive {
+  return primitiveForCategory(categoryForKind(kind))
 }

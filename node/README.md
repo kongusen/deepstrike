@@ -1,6 +1,8 @@
 # DeepStrike Node.js SDK
 
-Runtime framework built on a Rust kernel. The kernel handles loop control, context compression, skill routing, governance, signal prioritization — the SDK handles all I/O.
+Runtime framework built on a Rust kernel. The kernel owns loop control, context compression, governance, signal routing, and memory paging — the SDK owns all I/O (LLM calls, tool execution, disk, long-term memory).
+
+Node.js is the reference SDK for the **Agent OS native profile**: declarative governance and in-kernel signal routing are enabled by default on every run.
 
 ## Install
 
@@ -24,9 +26,9 @@ Pre-built native addons are available for the following platforms:
 | Linux ARM64 (musl / Alpine) | `@deepstrike/core-linux-arm64-musl` |
 | Windows x64 | `@deepstrike/core-win32-x64-msvc` |
 
-The correct platform package is selected and installed automatically via `optionalDependencies`. No postinstall download is required.
+The correct platform package is selected automatically via `optionalDependencies`.
 
-> **Note:** `@deepstrike/core` is the low-level native addon package and is not intended for direct use. It is an internal dependency automatically managed by `@deepstrike/sdk`. Direct installation is only relevant when building from Rust source.
+> **Note:** `@deepstrike/core` is the low-level N-API binding and is managed as an internal dependency of `@deepstrike/sdk`. When developing against a local kernel build, run `npm run test:local-core` from this directory to rebuild the native module from `../crates/deepstrike-node`.
 
 ---
 
@@ -65,14 +67,14 @@ const result = await collectText(runner.run({
 console.log(result)
 ```
 
-Same-session conversation continuity is explicit via `sessionId`:
+Same-session continuity is explicit via `sessionId`:
 
 ```typescript
 await collectText(runner.run({ sessionId: "chat-1", goal: "My name is Ada." }))
 const reply = await collectText(runner.run({ sessionId: "chat-1", goal: "What is my name?" }))
 ```
 
-Use `InMemorySessionLog` for process-local sessions or `FileSessionLog` when event replay should survive restarts. `wake(sessionId)` resumes from the event log without inserting a duplicate user start event.
+Use `InMemorySessionLog` for process-local sessions or `FileSessionLog` when replay should survive restarts. `wake(sessionId)` resumes from the event log without inserting a duplicate `run_started` event.
 
 Streaming:
 
@@ -84,6 +86,31 @@ for await (const event of runner.run({ sessionId: "readme-1", goal: "Summarize R
   else if (event.type === "done") console.log(`\ndone in ${event.iterations} turns (${event.status})`)
 }
 ```
+
+---
+
+## Architecture
+
+```text
+┌─────────────────────────────────────────────────────────┐
+│  RuntimeRunner (Layer 1.5)                              │
+│  LLMProvider · ExecutionPlane · SessionLog · DreamStore │
+└───────────────────────────┬─────────────────────────────┘
+                            │ step(JSON event) ↔ actions / observations
+┌───────────────────────────▼─────────────────────────────┐
+│  @deepstrike/core KernelRuntime                         │
+│  P1 Syscall · P2 Sched · P3 MM · Proc · IPC             │
+└─────────────────────────────────────────────────────────┘
+```
+
+The runner drives a single loop:
+
+1. Kernel returns an **action** — `call_provider`, `execute_tool`, `evaluate_milestone`, or `done`.
+2. SDK executes the action (stream LLM, run tools, call milestone verifier).
+3. SDK feeds the result back as a kernel **event** (`provider_result`, `tool_results`, …).
+4. Kernel **observations** (compression, page-out, spool, signals, …) are drained into `SessionLog`.
+
+Kernel session events carry an optional `category` tag (`syscall` · `sched` · `mm` · `proc` · `ipc`) for diagnostics and OS snapshot rebuilds.
 
 ---
 
@@ -103,7 +130,7 @@ for await (const event of runner.run({ sessionId: "readme-1", goal: "Summarize R
 
 All providers accept `RetryConfig` for exponential backoff and share a `CircuitBreaker`.
 
-`extensions` are forwarded by every provider in both `complete()` and `stream()` while SDK-owned structural fields such as `model`, `messages`, `tools`, and streaming flags remain protected. Provider-specific controls still keep their native spellings: for example Anthropic `thinking` / `betas`, OpenAI Responses `reasoning`, Gemini `generationConfig`, Ollama `think` / `options`, DeepSeek `thinking` + `reasoningEffort`, and Qwen `enableThinking` + `thinkingBudget`.
+`extensions` are forwarded by every provider in both `complete()` and `stream()` while SDK-owned structural fields such as `model`, `messages`, `tools`, and streaming flags remain protected.
 
 OpenAI can also be selected through the provider catalog:
 
@@ -138,7 +165,7 @@ const runner = new RuntimeRunner({
 ```
 
 - `memory(query)` / `knowledge(query)` meta-tool results → **history** (tool results)
-- External signals → **Slot 3** via `push_signal()`, cleared after each render
+- Inbound signals are routed by the in-kernel attention policy and rendered into **Slot 3**
 - Anthropic: Slots 1–2 get separate `cache_control` breakpoints
 
 Full reference: [docs/concepts/context-slots-compression.md](../docs/concepts/context-slots-compression.md)
@@ -148,28 +175,90 @@ Full reference: [docs/concepts/context-slots-compression.md](../docs/concepts/co
 ## Runtime options
 
 ```typescript
-const plane = new LocalExecutionPlane()
+import {
+  DEFAULT_NATIVE_GOVERNANCE_POLICY,
+  DEFAULT_NATIVE_ATTENTION_POLICY,
+} from "@deepstrike/sdk"
+
 const runner = new RuntimeRunner({
   provider,
   executionPlane: plane,
   sessionLog: new FileSessionLog(".deepstrike/sessions"),
-  maxTokens: 4096,            // context window size
-  maxTurns: 25,               // max turns (default 25)
-  timeoutMs: 60_000,          // timeout in ms
-  extensions: { temperature: 0.1 },  // provider-native controls, passed through to the LLM
-  skillDir: "./skills",       // skill .md files directory
-  knowledgeSource: myKS,      // KnowledgeSource implementation
-  signalSource: rx,           // SignalSource for external signals
-  dreamStore: myStore,        // DreamStore for long-term memory
-  agentId: "my-agent",        // required with dreamStore for memory meta-tool
-  initialMemory: ["..."],     // preloaded blocks → Slot 2 (systemKnowledge)
-  subAgentHarness: {          // optional: sub-agents run through HarnessLoop
-    evalProvider,
-    maxAttempts: 3,
-  },
-  governance: gov,            // Governance pipeline instance
+
+  // Scheduler budget
+  maxTokens: 128_000,
+  maxTurns: 25,
+  timeoutMs: 60_000,
+  schedulerBudget: { maxWallMs: 300_000 },
+
+  // Agent OS native profile (defaults shown)
+  governancePolicy: DEFAULT_NATIVE_GOVERNANCE_POLICY,
+  attentionPolicy: DEFAULT_NATIVE_ATTENTION_POLICY, // SignalRouter queue size 64
+
+  // Host I/O
+  extensions: { temperature: 0.1 },
+  skillDir: "./skills",
+  knowledgeSource: myKS,
+  signalSource: gw,
+  dreamStore: myStore,
+  agentId: "my-agent",
+  initialMemory: ["..."],
+
+  // Memory paging & compression (SDK-side I/O)
+  compressionStore: archiveStore,       // persist compressed transcript slices
+  asyncSummarizer: mySummarizer,        // upgrade rule-based compression summaries
+  dreamProvider: dreamLlm,              // LLM for idle dream() synthesis
+  dreamSummarizer: myDreamSummarizer,   // LLM for semantic page_out → DreamStore
+
+  // Sub-agents
+  runSpec: { role: "orchestrator", isolation: "process" },
+  milestoneContract: myContract,
+  milestonePolicy: "require_verifier",
+  onMilestoneEvaluate: async ({ phaseId, criteria }) => ({ passed: true, phaseId }),
+  subAgentHarness: { evalProvider, maxAttempts: 3 },
+
+  // Governance UX (AskUser path)
+  onPermissionRequest: async (req) => ({ approved: true }),
+
+  // Diagnostics
+  enableDiagnosticsDashboard: true,     // CLI view grouped by Syscall / Sched / MM
 })
 ```
+
+| Option | Purpose |
+|--------|---------|
+| `governancePolicy` | Declarative deny / ask_user / rate-limit / param rules loaded into the kernel before `start_run` |
+| `attentionPolicy` | In-kernel signal router queue size (default 64) |
+| `onPermissionRequest` | Resolves `tool_gated` + `suspended` → kernel `resume` with approved/denied call IDs |
+| `compressionStore` | Writes archived messages on `compressed` observations |
+| `asyncSummarizer` | Background LLM summary after compression; stored as `summary_upgraded` |
+| `dreamSummarizer` | Summarizes `page_out { tier_hint: "semantic" }` into `DreamStore` during a run |
+| `dreamProvider` | Separate LLM for `dream()` idle consolidation (falls back to `provider`) |
+
+Rebuild an OS diagnostics snapshot from session events:
+
+```typescript
+import { rebuildOsSnapshotFromSessionEvents } from "@deepstrike/sdk"
+
+const events = (await sessionLog.read(sessionId)).map(e => e.event)
+const snap = rebuildOsSnapshotFromSessionEvents(events)
+// snap.pageOutCount, snap.spoolCount, snap.signals, snap.processByAgent, …
+```
+
+---
+
+## Large result spool (Layer 1)
+
+When a single tool result exceeds **50 KB**, the kernel keeps a short preview in context and emits `large_result_spooled`. The SDK writes the full payload to `.spool/` under the process cwd (SHA-256 keyed files) and logs `spool_ref` in the session.
+
+The model can retrieve full content via ordinary read tools — `LocalExecutionPlane` transparently resolves paths under `.spool/`:
+
+```typescript
+// Kernel context shows a preview + spool reference.
+// LLM calls read_file({ path: ".spool/abc123…" }) → full content returned.
+```
+
+No configuration is required; customize the directory by passing a `resultSpool` instance when constructing `RuntimeRunner` (see tests under `tests/runtime/large-result-spool.test.ts`).
 
 ---
 
@@ -179,8 +268,26 @@ const runner = new RuntimeRunner({
 import { tool, readFile } from "@deepstrike/sdk"
 
 plane.register(tool("search", "Search.", schema, async (args) => ...))
-plane.register(readFile)     // built-in: read files from disk
+plane.register(readFile)     // built-in: read files from disk (also resolves .spool/ refs)
 plane.unregister("search")
+```
+
+Execution planes:
+
+| Plane | Use case |
+|-------|----------|
+| `LocalExecutionPlane` | In-process tools (default) |
+| `FilteredExecutionPlane` | Capability-filtered sub-agent tools |
+| `ProcessSandboxPlane` | OS subprocess isolation |
+| `McpProxyPlane` | MCP server tools |
+| `RemoteVpcPlane` | Remote execution |
+
+Mount capabilities on an active run:
+
+```typescript
+runner.mountTool(schema)
+runner.mountSkill("summarize", "Summarize text")
+runner.unmountCapability("tool", "search")
 ```
 
 ---
@@ -214,9 +321,11 @@ effort: 1
 
 ## Knowledge
 
-Implement `KnowledgeSource` to connect any RAG system. The kernel injects a `knowledge` meta-tool that the LLM calls on demand. **Runtime retrieval results land in history** as tool results.
+Implement `KnowledgeSource` to connect any RAG system. The kernel injects a `knowledge` meta-tool that the LLM calls on demand. Runtime retrieval results land in **history** as tool results.
 
-To inject durable knowledge at startup (Slot 2, cacheable on Anthropic), use `initialMemory` or kernel `add_knowledge_message`.
+To inject durable knowledge at startup (Slot 2, cacheable on Anthropic), use `initialMemory` or `runner.pushKnowledge()`.
+
+Before tool execution the kernel may emit `page_in_requested`; the SDK satisfies it from `DreamStore`, `KnowledgeSource`, and a local semantic page-out cache, then feeds `page_in` back to the kernel.
 
 ```typescript
 const runner = new RuntimeRunner({
@@ -238,7 +347,7 @@ const runner = new RuntimeRunner({
 
 ### WorkingMemory (SDK-side scratch pad)
 
-`WorkingMemory` is an SDK helper — not the kernel `working` partition (removed). Kernel task state lives in `task_state` and renders into Slot 3 (`turns[0]`).
+`WorkingMemory` is an SDK helper — not the kernel working partition. Kernel task state lives in `task_state` and renders into Slot 3 (`turns[0]`).
 
 ```typescript
 import { WorkingMemory } from "@deepstrike/sdk"
@@ -248,7 +357,7 @@ mem.get("step")  // 1
 mem.clear()
 ```
 
-### DreamStore (long-term memory + dreaming pipeline)
+### DreamStore (long-term memory)
 
 ```typescript
 import type { DreamStore } from "@deepstrike/sdk"
@@ -266,32 +375,91 @@ const runner = new RuntimeRunner({
   sessionLog: new FileSessionLog(".deepstrike/sessions"),
   maxTokens: 4096,
   dreamStore: new MyStore(),
-  agentId: "my-agent",  // enables `memory` meta-tool
+  agentId: "my-agent",  // enables `memory` meta-tool + semantic page-out archival
 })
+```
 
-// In-session: LLM calls memory(query) → DreamStore.search() → history tool result
-// Preload:    initialMemory → Slot 2 (systemKnowledge)
-// Post-session: trigger memory consolidation
+Three memory paths:
+
+| Path | When | What happens |
+|------|------|--------------|
+| In-session `memory(query)` | LLM calls meta-tool | `DreamStore.search()` → history tool result |
+| `initialMemory` | Run start | Injected into Slot 2 (`systemKnowledge`) |
+| Semantic `page_out` | Kernel evicts with `tier_hint: "semantic"` | SDK summarizes via `dreamSummarizer` / `dreamProvider` → `DreamStore.commit()` |
+| `dream(agentId)` | Explicit idle call | `IdlePipeline` batch-consolidates past sessions |
+
+```typescript
+// Post-session batch consolidation
 const result = await runner.dream("my-agent", Date.now())
 ```
+
+### Phase-7 memory syscalls (`writeMemory` / `queryMemory`)
+
+Kernel-validated long-term memory I/O outside the main tool loop:
+
+```typescript
+await runner.writeMemory({
+  metadata: {
+    name: "prefers-small-tests",
+    description: "User prefers focused unit tests",
+    kind: "feedback",
+    created_at: Date.now(),
+    updated_at: Date.now(),
+  },
+  content: "User prefers focused unit tests for SDK behavior.",
+}, { sessionId: "my-session" })
+
+const hits = await runner.queryMemory({
+  current_context: "Need testing preferences",
+  active_tools: [],
+  already_surfaced: [],
+  top_k: 5,
+}, { sessionId: "my-session" })
+```
+
+Session events: `memory_written`, `memory_queried`, `memory_validation_failed`, `memory_retrieval_result`.
 
 ---
 
 ## Governance
 
-### SDK PermissionManager
+### In-kernel declarative policy (preferred)
+
+Every run loads `governancePolicy` into the kernel via `load_governance_policy`. The kernel enforces rules **before** tools execute:
 
 ```typescript
-import { PermissionManager, PermissionMode } from "@deepstrike/sdk"
+import type { GovernancePolicy } from "@deepstrike/sdk"
 
-const pm = new PermissionManager(PermissionMode.DEFAULT)
-pm.grant("fs", "read")
-pm.grantWithApproval("db", "write", "Needs DBA approval")
-pm.revoke("db", "drop")
-pm.evaluate("fs", "read")  // { allowed: true, ... }
+const policy: GovernancePolicy = {
+  rules: [
+    { pattern: "read_file", action: "allow" },
+    { pattern: "write_file", action: "ask_user" },
+    { pattern: "run_command", action: "ask_user" },
+    { pattern: "*", action: "deny" },
+  ],
+  rateLimits: [{ tool: "api_call", maxCalls: 10, windowMs: 60_000 }],
+}
+
+const runner = new RuntimeRunner({
+  provider,
+  executionPlane: plane,
+  sessionLog,
+  governancePolicy: policy,
+  onPermissionRequest: async (req) => {
+    console.log(`Approve ${req.toolName}?`, req.arguments)
+    return { approved: true }
+  },
+})
 ```
 
-### Kernel Governance (full pipeline)
+- `deny` → tool rejected with `tool_denied`
+- `ask_user` → `tool_gated` + `suspended`; resolve via `onPermissionRequest`, then kernel `resume`
+
+Default when omitted: allow-all (`DEFAULT_NATIVE_GOVERNANCE_POLICY`).
+
+### Standalone Governance class
+
+`Governance` wraps the native governance evaluator for SDK-side use (tests, custom gates). It is **not** wired automatically into `RuntimeRunner` — use `governancePolicy` for run-time enforcement.
 
 ```typescript
 import { Governance } from "@deepstrike/sdk"
@@ -299,44 +467,64 @@ import { Governance } from "@deepstrike/sdk"
 const gov = new Governance("allow")
 gov.addPermissionRule("danger.*", "deny")
 gov.blockTool("rm_rf")
-gov.setRateLimit("api_call", 10, 60_000)
-gov.requireParam("write_file", "path")
-gov.allowParamValues("set_mode", "mode", ["read", "write"])
-gov.limitParamRange("sleep", "seconds", 0, 10)
-
-const runner = new RuntimeRunner({
-  provider,
-  executionPlane: plane,
-  sessionLog: new FileSessionLog(".deepstrike/sessions"),
-  maxTokens: 4096,
-  governance: gov,
-})
-// Every tool call goes through: Permission → Veto → RateLimit → Constraint → Audit
+gov.evaluate("read_file", '{"path":"x"}')
 ```
+
+### SDK PermissionManager
+
+`PermissionManager` is a separate SDK-side permission layer for apps that manage their own approval UX outside the kernel loop.
 
 ---
 
 ## Signals
+
+Inbound signals are routed by the in-kernel attention policy (default queue size 64):
+
+| Urgency | Typical disposition |
+|---------|-------------------|
+| `critical` / `high` | `interrupt_now` — may yield a new `call_provider` action |
+| `normal` / `low` | `queue` — buffered; no action until dequeued |
+| queue full | `dropped` |
 
 ```typescript
 import { SignalGateway, ScheduledPrompt } from "@deepstrike/sdk"
 
 const gw = new SignalGateway()
 gw.schedule(new ScheduledPrompt("standup", Date.now() + 3600_000))
-gw.ingest({ kind: "interrupt", urgency: "critical", payload: {} })
+gw.ingest({ kind: "alert", urgency: "normal", payload: { goal: "Check deploy" } })
 
 const runner = new RuntimeRunner({
   provider,
   executionPlane: plane,
-  sessionLog: new FileSessionLog(".deepstrike/sessions"),
-  maxTokens: 4096,
+  sessionLog,
   signalSource: gw,
+  attentionPolicy: { maxQueueSize: 64 },
 })
-// kind="interrupt" → immediately stops the running runner
 
-runner.interrupt() // also works directly
+runner.interrupt() // cooperative abort → kernel timeout path
 gw.destroy()
 ```
+
+Each routed signal produces a `signal_disposed` session event (`category: "ipc"`).
+
+---
+
+## Sub-agents
+
+Spawn isolated child agents through the kernel process table:
+
+```typescript
+for await (const evt of runner.spawnSubAgent({
+  role: "researcher",
+  isolation: "process",
+  goal: "Find three sources on topic X",
+  criteria: ["At least 3 URLs"],
+})) {
+  if (evt.type === "done") console.log(evt.status)
+}
+```
+
+Requires an active parent run (`run()` / `wake()` in progress). The kernel emits `agent_process_changed`; the default `SubAgentOrchestrator` runs the child with a filtered execution plane and feeds `sub_agent_completed` back.
 
 ---
 
@@ -345,30 +533,20 @@ gw.destroy()
 ```typescript
 import { SinglePassHarness, EvalLoopHarness, HarnessLoop } from "@deepstrike/sdk"
 
-// 1. SinglePass — run once, always passes
 const outcome = await new SinglePassHarness(runner).run({ goal: "Say hello" })
 
-// 2. EvalLoop — retry until QualityGate passes
 const harness = new EvalLoopHarness(runner, {
   async evaluate(_req, out) { return out.result.includes("hello") },
 }, 3)
 
-// 3. HarnessLoop — LLM-as-judge with feedback injection + skill extraction
 const loop = new HarnessLoop(runner, evalProvider, { maxAttempts: 3, skillDir: "./skills" })
 
-// Sub-agents: pass subAgentHarness on RuntimeRunner to auto-evaluate spawned children
 const runnerWithHarness = new RuntimeRunner({
   provider,
   executionPlane: plane,
   sessionLog,
   subAgentHarness: { evalProvider, maxAttempts: 3 },
 })
-for await (const event of loop.runStreaming({
-  goal: "Write a haiku",
-  criteria: [{ text: "Must be 3 lines", required: true }],
-})) {
-  if (event.type === "done") console.log(event.verdict.passed, event.verdict.feedback)
-}
 ```
 
 ---
@@ -387,4 +565,12 @@ for await (const event of loop.runStreaming({
 | `done` | `iterations`, `totalTokens`, `status` |
 | `error` | `message` |
 
-`status`: `completed` · `max_turns` · `token_budget` · `timeout` · `user_abort` · `error`
+`status`: `completed` · `max_turns` · `token_budget` · `timeout` · `user_abort` · `error` · `milestone_pending`
+
+---
+
+## Further reading
+
+- [SDK OS parity matrix](../docs/sdk-os-parity.md)
+- [Kernel ABI reference](../docs/reference/kernel-abi.md)
+- [Context slots & compression](../docs/concepts/context-slots-compression.md)

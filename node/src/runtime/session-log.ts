@@ -27,6 +27,7 @@ export type SessionEvent =
       kind: "compressed"
       turn: number
       category?: KernelEventCategory
+      primitive?: KernelPrimitive
       archived_seq_range: [number, number]
       action?: "snip_compact" | "micro_compact" | "context_collapse" | "auto_compact"
       summary?: string
@@ -38,38 +39,41 @@ export type SessionEvent =
       kind: "page_out"
       turn: number
       category?: KernelEventCategory
+      primitive?: KernelPrimitive
       action?: "snip_compact" | "micro_compact" | "context_collapse" | "auto_compact"
       summary?: string
       tier_hint?: string
       message_count?: number
     }
-  | { kind: "page_in"; turn: number; category?: KernelEventCategory; entry_count: number }
+  | { kind: "page_in"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; entry_count: number }
   | {
       kind: "large_result_spooled"
       turn: number
       category?: KernelEventCategory
+      primitive?: KernelPrimitive
       call_id: string
       tool: string
       original_size: number
       preview_size: number
       spool_ref?: string
     }
-  | { kind: "rollbacked"; turn: number; category?: KernelEventCategory; checkpoint_history_len: number; reason?: RollbackReason }
-  | { kind: "capability_changed"; turn: number; category?: KernelEventCategory; added: string[]; removed: string[]; change_kind?: string; capability_id?: string; version?: string; mounted_by?: string; mount_reason?: string }
-  | { kind: "context_renewed"; turn: number; category?: KernelEventCategory; sprint: number; handoff_ref: string }
-  | { kind: "suspended"; turn: number; category?: KernelEventCategory; reason: string; pending_calls?: string[] }
-  | { kind: "resumed"; turn: number; category?: KernelEventCategory; approved?: string[]; denied?: string[] }
-  | { kind: "tool_gated"; turn: number; category?: KernelEventCategory; call_id: string; tool: string; reason: string }
-  | { kind: "signal_disposed"; turn: number; category?: KernelEventCategory; signal_id: string; disposition: string; queue_depth: number }
-  | { kind: "budget_exceeded"; turn: number; category?: KernelEventCategory; budget: string }
-  | { kind: "milestone_advanced"; turn: number; category?: KernelEventCategory; phase_id: string; capabilities_unlocked: string[] }
-  | { kind: "milestone_blocked"; turn: number; category?: KernelEventCategory; phase_id: string; reason: string }
-  | { kind: "milestone_evidence"; turn: number; category?: KernelEventCategory; phase_id: string; evidence: string[] }
-  | { kind: "checkpoint_taken"; turn: number; category?: KernelEventCategory; history_len: number }
+  | { kind: "rollbacked"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; checkpoint_history_len: number; reason?: RollbackReason }
+  | { kind: "capability_changed"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; added: string[]; removed: string[]; change_kind?: string; capability_id?: string; version?: string; mounted_by?: string; mount_reason?: string }
+  | { kind: "context_renewed"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; sprint: number; handoff_ref: string }
+  | { kind: "suspended"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; reason: string; pending_calls?: string[] }
+  | { kind: "resumed"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; approved?: string[]; denied?: string[] }
+  | { kind: "tool_gated"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; call_id: string; tool: string; reason: string }
+  | { kind: "signal_disposed"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; signal_id: string; disposition: string; queue_depth: number }
+  | { kind: "budget_exceeded"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; budget: string }
+  | { kind: "milestone_advanced"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; phase_id: string; capabilities_unlocked: string[] }
+  | { kind: "milestone_blocked"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; phase_id: string; reason: string }
+  | { kind: "milestone_evidence"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; phase_id: string; evidence: string[] }
+  | { kind: "checkpoint_taken"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; history_len: number }
   | {
       kind: "agent_process_changed"
       turn: number
       category?: KernelEventCategory
+      primitive?: KernelPrimitive
       agent_id: string
       parent_session_id: string
       role: string
@@ -79,6 +83,10 @@ export type SessionEvent =
       permitted_capability_ids: string[]
       result_termination?: string
     }
+  | { kind: "memory_written"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; memory_id: string; memory_kind: string; size_bytes: number }
+  | { kind: "memory_queried"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; query_context: string; requested_k: number; requires_async_response: boolean }
+  | { kind: "memory_validation_failed"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; memory_id: string; error: string }
+  | { kind: "memory_retrieval_result"; selected_memory_ids: string[]; selection_rationale: string }
   | { kind: "run_terminal"; reason: string; turns_used: number; total_tokens: number }
   | { kind: "summary_upgraded"; compressed_seq: number; summary: string }
 

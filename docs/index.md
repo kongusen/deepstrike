@@ -54,7 +54,7 @@ pip install deepstrike
 ```toml [Rust]
 # Cargo.toml
 [dependencies]
-deepstrike-sdk = "0.2.4"
+deepstrike-sdk = "0.2.5"
 ```
 
 ```bash [WASM]

@@ -309,6 +309,7 @@ mod tests {
             SessionEvent::PageOut {
                 turn: 1,
                 category: Some(KernelEventCategory::Mm),
+                primitive: None,
                 action: Some("auto_compact".into()),
                 summary: Some("sum".into()),
                 tier_hint: Some("durable".into()),
@@ -317,6 +318,7 @@ mod tests {
             SessionEvent::SignalDisposed {
                 turn: 1,
                 category: Some(KernelEventCategory::Ipc),
+                primitive: None,
                 signal_id: "sig-1".into(),
                 disposition: "queue".into(),
                 queue_depth: 1,

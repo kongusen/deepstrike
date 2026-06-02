@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Literal, Protocol, TypedDict
 
 from deepstrike._kernel import ToolCall, ToolResult
+from deepstrike.runtime.kernel_event_log import (
+    KernelEventCategory,
+    KernelPrimitive,
+    primitive_for_kind,
+)
 
 
 class RollbackReason(TypedDict, total=False):
@@ -86,6 +91,8 @@ class PermissionResolvedEvent(TypedDict, total=False):
 class CompressedEvent(TypedDict, total=False):
     kind: Literal["compressed"]
     turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
     archived_seq_range: tuple[int, int]
     action: str
     summary: str
@@ -104,6 +111,8 @@ class RunTerminalEvent(TypedDict, total=False):
 class RollbackedEvent(TypedDict, total=False):
     kind: Literal["rollbacked"]
     turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
     checkpoint_history_len: int
     reason: RollbackReason
 
@@ -111,13 +120,22 @@ class RollbackedEvent(TypedDict, total=False):
 class CapabilityChangedEvent(TypedDict, total=False):
     kind: Literal["capability_changed"]
     turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
     added: list[str]
     removed: list[str]
+    change_kind: str
+    capability_id: str
+    version: str
+    mounted_by: str
+    mount_reason: str
 
 
 class MilestoneAdvancedEvent(TypedDict, total=False):
     kind: Literal["milestone_advanced"]
     turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
     phase_id: str
     capabilities_unlocked: list[str]
 
@@ -125,6 +143,8 @@ class MilestoneAdvancedEvent(TypedDict, total=False):
 class MilestoneBlockedEvent(TypedDict, total=False):
     kind: Literal["milestone_blocked"]
     turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
     phase_id: str
     reason: str
 
@@ -132,6 +152,8 @@ class MilestoneBlockedEvent(TypedDict, total=False):
 class MilestoneEvidenceEvent(TypedDict, total=False):
     kind: Literal["milestone_evidence"]
     turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
     phase_id: str
     evidence: list[str]
 
@@ -139,12 +161,16 @@ class MilestoneEvidenceEvent(TypedDict, total=False):
 class CheckpointTakenEvent(TypedDict, total=False):
     kind: Literal["checkpoint_taken"]
     turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
     history_len: int
 
 
 class AgentProcessChangedEvent(TypedDict, total=False):
     kind: Literal["agent_process_changed"]
     turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
     agent_id: str
     parent_session_id: str
     role: str
@@ -153,6 +179,127 @@ class AgentProcessChangedEvent(TypedDict, total=False):
     state: str
     permitted_capability_ids: list[str]
     result_termination: str
+
+
+class PageOutEvent(TypedDict, total=False):
+    kind: Literal["page_out"]
+    turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
+    action: str
+    summary: str
+    tier_hint: str
+    message_count: int
+
+
+class PageInEvent(TypedDict, total=False):
+    kind: Literal["page_in"]
+    turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
+    entry_count: int
+
+
+class LargeResultSpooledEvent(TypedDict, total=False):
+    kind: Literal["large_result_spooled"]
+    turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
+    call_id: str
+    tool: str
+    original_size: int
+    preview_size: int
+    spool_ref: str
+
+
+class SuspendedEvent(TypedDict, total=False):
+    kind: Literal["suspended"]
+    turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
+    reason: str
+    pending_calls: list[str]
+
+
+class ResumedEvent(TypedDict, total=False):
+    kind: Literal["resumed"]
+    turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
+    approved: list[str]
+    denied: list[str]
+
+
+class ToolGatedEvent(TypedDict, total=False):
+    kind: Literal["tool_gated"]
+    turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
+    call_id: str
+    tool: str
+    reason: str
+
+
+class SignalDisposedEvent(TypedDict, total=False):
+    kind: Literal["signal_disposed"]
+    turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
+    signal_id: str
+    disposition: str
+    queue_depth: int
+
+
+class BudgetExceededEvent(TypedDict, total=False):
+    kind: Literal["budget_exceeded"]
+    turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
+    budget: str
+
+
+class ContextRenewedEvent(TypedDict, total=False):
+    kind: Literal["context_renewed"]
+    turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
+    sprint: int
+    handoff_ref: str
+
+
+class MemoryWrittenEvent(TypedDict, total=False):
+    kind: Literal["memory_written"]
+    turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
+    memory_id: str
+    memory_kind: str
+    size_bytes: int
+
+
+class MemoryQueriedEvent(TypedDict, total=False):
+    kind: Literal["memory_queried"]
+    turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
+    query_context: str
+    requested_k: int
+    requires_async_response: bool
+
+
+class MemoryValidationFailedEvent(TypedDict, total=False):
+    kind: Literal["memory_validation_failed"]
+    turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
+    memory_id: str
+    error: str
+
+
+class MemoryRetrievalResultEvent(TypedDict, total=False):
+    kind: Literal["memory_retrieval_result"]
+    selected_memory_ids: list[str]
+    selection_rationale: str
 
 
 SessionEvent = (
@@ -172,6 +319,19 @@ SessionEvent = (
     | MilestoneEvidenceEvent
     | CheckpointTakenEvent
     | AgentProcessChangedEvent
+    | PageOutEvent
+    | PageInEvent
+    | LargeResultSpooledEvent
+    | SuspendedEvent
+    | ResumedEvent
+    | ToolGatedEvent
+    | SignalDisposedEvent
+    | BudgetExceededEvent
+    | ContextRenewedEvent
+    | MemoryWrittenEvent
+    | MemoryQueriedEvent
+    | MemoryValidationFailedEvent
+    | MemoryRetrievalResultEvent
     | RunTerminalEvent
 )
 
@@ -184,7 +344,12 @@ class SessionEntry:
 
 class SessionLog(Protocol):
     async def append(self, session_id: str, event: SessionEvent) -> int: ...
-    async def read(self, session_id: str, from_seq: int = 0) -> list[SessionEntry]: ...
+    async def read(
+        self,
+        session_id: str,
+        from_seq: int = 0,
+        primitive_filter: KernelPrimitive | None = None,
+    ) -> list[SessionEntry]: ...
     async def latest_seq(self, session_id: str) -> int: ...
 
 
@@ -199,8 +364,18 @@ class InMemorySessionLog:
         self._store[session_id].append(SessionEntry(seq=seq, event=event))
         return seq
 
-    async def read(self, session_id: str, from_seq: int = 0) -> list[SessionEntry]:
-        return [e for e in self._store.get(session_id, []) if e.seq >= from_seq]
+    async def read(
+        self,
+        session_id: str,
+        from_seq: int = 0,
+        primitive_filter: KernelPrimitive | None = None,
+    ) -> list[SessionEntry]:
+        entries = self._store.get(session_id, [])
+        return [
+            e for e in entries
+            if e.seq >= from_seq
+            and (primitive_filter is None or primitive_for_kind(e.event["kind"]) == primitive_filter)
+        ]
 
     async def latest_seq(self, session_id: str) -> int:
         entries = self._store.get(session_id)
@@ -235,7 +410,12 @@ class FileSessionLog:
             f.write(line + "\n")
         return seq
 
-    async def read(self, session_id: str, from_seq: int = 0) -> list[SessionEntry]:
+    async def read(
+        self,
+        session_id: str,
+        from_seq: int = 0,
+        primitive_filter: KernelPrimitive | None = None,
+    ) -> list[SessionEntry]:
         path = self._path(session_id)
         if not path.exists():
             return []
@@ -247,6 +427,8 @@ class FileSessionLog:
                 raw = json.loads(line)
                 entry = SessionEntry(seq=int(raw["seq"]), event=_event_from_json(raw["event"]))
                 if entry.seq >= from_seq:
+                    if primitive_filter is not None and primitive_for_kind(entry.event["kind"]) != primitive_filter:
+                        continue
                     results.append(entry)
         return results
 

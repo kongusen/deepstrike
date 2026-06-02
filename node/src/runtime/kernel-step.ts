@@ -90,6 +90,13 @@ export interface KernelObservation {
   approved?: string[]
   denied?: string[]
   tier_hint?: string
+  // Phase 7 / M3: Memory observations
+  memory_id?: string
+  memory_kind?: string
+  size_bytes?: number
+  query_context?: string
+  requested_k?: number
+  requires_async_response?: boolean
 }
 
 interface KernelStepJson {

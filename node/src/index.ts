@@ -59,6 +59,7 @@ export type { SkillMetadata } from "./skills/loader.js"
 export { WorkingMemory } from "./memory/working.js"
 export type {
   DreamStore, DreamResult, SessionData, SessionMessage, MemoryEntry, CurationResult, CurationStats,
+  MemoryWriteRequest, MemoryQuery, MemoryRetrieval, MemoryMetadata, MemoryKind,
 } from "./memory/protocols.js"
 
 // ── Knowledge & Signals ────────────────────────────────────────────────────

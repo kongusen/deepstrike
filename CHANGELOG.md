@@ -4,6 +4,19 @@ All notable changes to DeepStrike are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.5] - 2026-06-02
+
+### Added
+
+- **Phase-7 memory syscalls (Node / Python / Rust):** `writeMemory` / `write_memory` and `queryMemory` / `query_memory` route through kernel `WriteMemory` / `QueryMemory` validation, then commit to or search `DreamStore`.
+- **Core ABI:** `SessionEvent::MemoryValidationFailed`; `KernelInputEvent::MemoryRetrievalResult` closes the query loop after `selectMemories`.
+- **Session log:** `memory_written`, `memory_queried`, `memory_validation_failed`, and `memory_retrieval_result` events across SDKs; OS snapshot memory counters in Node and Python.
+- **Tests:** `node/tests/runtime/memory-syscall.test.ts`, `python/tests/test_memory_syscall.py`, and Rust runner memory syscall coverage.
+
+### Changed
+
+- **Documentation:** Node and Python READMEs expanded with memory syscall usage; SDK parity script marks memory syscall surface.
+
 ## [0.2.4] - 2026-05-29
 
 ### Fixed
