@@ -987,9 +987,30 @@ impl LoopStateMachine {
                     self.total_tokens += r.token_count.unwrap_or(0) as u64;
                     // Preserve Content::Parts (structured / multimodal tool output).
                     // Parts are serialised to JSON so the text can be restored faithfully.
-                    let output = match &r.output {
+                    let raw_output = match &r.output {
                         Content::Text(s) => s.clone(),
                         Content::Parts(parts) => serde_json::to_string(parts).unwrap_or_default(),
+                    };
+                    // Layer 1 spool: oversized results keep only a preview in context; the kernel
+                    // emits `LargeResultSpooled` so the SDK persists the full output it still holds.
+                    let (output, spooled) = match crate::mm::plan_spool(
+                        &raw_output,
+                        self.ctx.config.spool_threshold_bytes,
+                        self.ctx.config.spool_preview_bytes,
+                    ) {
+                        Some(decision) => {
+                            self.observations.push(LoopObservation::LargeResultSpooled {
+                                turn: self.turn,
+                                call_id: r.call_id.to_string(),
+                                // ToolResult carries no tool name; the SDK maps call_id -> tool.
+                                tool: String::new(),
+                                original_size: decision.original_size,
+                                preview_size: decision.preview.len() as u32,
+                                spool_ref: None,
+                            });
+                            (decision.preview, true)
+                        }
+                        None => (raw_output, false),
                     };
                     let parts = vec![ContentPart::ToolResult {
                         call_id: r.call_id.clone(),
@@ -997,9 +1018,13 @@ impl LoopStateMachine {
                         is_error: r.is_error,
                     }];
                     let tool_msg = Message::tool(parts);
-                    let tokens = r
-                        .token_count
-                        .unwrap_or_else(|| self.ctx.engine.count_message(&tool_msg));
+                    // When spooled, `r.token_count` reflects the full output — recount the preview.
+                    let tokens = if spooled {
+                        self.ctx.engine.count_message(&tool_msg)
+                    } else {
+                        r.token_count
+                            .unwrap_or_else(|| self.ctx.engine.count_message(&tool_msg))
+                    };
                     self.ctx.push_history(tool_msg, tokens);
                 }
                 self.turn += 1;

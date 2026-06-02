@@ -172,6 +172,35 @@ impl EvictionPlan {
     }
 }
 
+/// Layer-1 spool decision for a single tool result (kernel decides; SDK writes to disk).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpoolDecision {
+    /// Byte size of the full (un-spooled) output.
+    pub original_size: u32,
+    /// The preview text the kernel keeps in working context in place of the full output.
+    pub preview: String,
+}
+
+/// Pure Layer-1 spool planner: if `output` exceeds `threshold_bytes` (and threshold > 0), return a
+/// [`SpoolDecision`] whose `preview` is the first `preview_bytes` (truncated at a char boundary)
+/// plus a marker. `None` means keep the output inline. The kernel keeps `preview` in context and
+/// emits `LargeResultSpooled`; the SDK persists the full content to disk. No I/O here.
+pub fn plan_spool(output: &str, threshold_bytes: u32, preview_bytes: u32) -> Option<SpoolDecision> {
+    let size = output.len();
+    if threshold_bytes == 0 || size <= threshold_bytes as usize {
+        return None;
+    }
+    let mut end = (preview_bytes as usize).min(size);
+    while end > 0 && !output.is_char_boundary(end) {
+        end -= 1;
+    }
+    let preview = format!(
+        "{}\n[…tool result spooled: {} bytes total, {} byte preview shown; full content persisted to disk by the SDK…]",
+        &output[..end], size, end
+    );
+    Some(SpoolDecision { original_size: size as u32, preview })
+}
+
 /// Pure eviction planner (M3): the **single decision point** for the per-turn compression
 /// checkpoint. Packages the two previously-scattered decisions — Layer-3 idle/time-decay and the
 /// rho-driven pressure recommendation — into one ordered [`EvictionPlan`], in execution order
@@ -259,6 +288,32 @@ mod tests {
     fn plan_eviction_time_decay_only() {
         let plan = plan_eviction(PressureAction::None, true);
         assert_eq!(plan.ops, vec![EvictionOp::TimeDecayMicro]);
+    }
+
+    #[test]
+    fn plan_spool_keeps_small_output_inline() {
+        assert_eq!(plan_spool("small", 50, 16), None);
+        // threshold 0 disables spooling.
+        assert_eq!(plan_spool(&"x".repeat(1000), 0, 16), None);
+    }
+
+    #[test]
+    fn plan_spool_previews_large_output() {
+        let output = "y".repeat(1000);
+        let d = plan_spool(&output, 100, 32).expect("should spool");
+        assert_eq!(d.original_size, 1000);
+        assert!(d.preview.starts_with(&"y".repeat(32)));
+        assert!(d.preview.contains("1000 bytes total"));
+        assert!(d.preview.len() < output.len());
+    }
+
+    #[test]
+    fn plan_spool_truncates_on_char_boundary() {
+        // multi-byte chars: preview cut must not split a char.
+        let output = "🚀".repeat(100); // 4 bytes each = 400 bytes
+        let d = plan_spool(&output, 50, 10).expect("should spool");
+        // No panic / valid UTF-8 preview is the assertion.
+        assert!(d.preview.contains("400 bytes total"));
     }
 
     #[test]

@@ -890,6 +890,76 @@
         assert_eq!(sm.wait_reason(), None);
     }
 
+    // ---- Layer 1: large tool result spool ----------------------------------
+
+    #[test]
+    fn large_tool_result_is_spooled_with_preview_and_observation() {
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("task"));
+        sm.take_observations();
+
+        let huge = "Z".repeat(60 * 1024); // > 50 KiB default threshold
+        sm.feed(LoopEvent::ToolResults {
+            results: vec![ToolResult {
+                call_id: compact_str::CompactString::new("big"),
+                output: Content::Text(huge.clone()),
+                is_error: false,
+                is_fatal: false,
+                error_kind: None,
+                token_count: None,
+            }],
+        });
+
+        // Kernel emitted the spool signal for the SDK to persist.
+        let obs = sm.take_observations();
+        assert!(obs.iter().any(|o| matches!(
+            o,
+            LoopObservation::LargeResultSpooled { call_id, original_size, spool_ref: None, .. }
+                if call_id == "big" && *original_size == (60 * 1024)
+        )));
+
+        // Context holds only the preview, not the full 60 KiB.
+        let stored: usize = sm
+            .ctx
+            .partitions
+            .history
+            .messages
+            .iter()
+            .filter_map(|m| match &m.content {
+                Content::Parts(parts) => Some(parts),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|p| match p {
+                ContentPart::ToolResult { output, .. } => Some(output.len()),
+                _ => None,
+            })
+            .sum();
+        assert!(stored < huge.len(), "spooled output should be a small preview");
+        assert!(stored < 8 * 1024, "preview should be near the 2 KiB budget");
+    }
+
+    #[test]
+    fn small_tool_result_is_not_spooled() {
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("task"));
+        sm.take_observations();
+        sm.feed(LoopEvent::ToolResults {
+            results: vec![ToolResult {
+                call_id: compact_str::CompactString::new("ok"),
+                output: Content::Text("small output".into()),
+                is_error: false,
+                is_fatal: false,
+                error_kind: None,
+                token_count: None,
+            }],
+        });
+        let obs = sm.take_observations();
+        assert!(!obs
+            .iter()
+            .any(|o| matches!(o, LoopObservation::LargeResultSpooled { .. })));
+    }
+
     // ---- M1c: canonical TaskTable mirrors ProcessTable ----------------------
 
     #[test]

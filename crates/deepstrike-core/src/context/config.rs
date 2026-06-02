@@ -64,6 +64,16 @@ pub struct ContextConfig {
     /// Trigger threshold = max_tokens - autocompact_buffer.
     /// Defaults to 13K tokens (p99.99 of summarizer output length + safety margin).
     pub autocompact_buffer: u32,
+
+    // ── Layer 1: Large-result spool ──────────────────────────────────────
+
+    /// Byte size above which a single tool result is spooled (Layer 1): the kernel
+    /// keeps only a preview in context and emits `LargeResultSpooled` for the SDK to
+    /// persist the full content to disk. Default: 50 KiB. `0` disables spooling.
+    pub spool_threshold_bytes: u32,
+
+    /// Preview byte budget kept in context when a tool result is spooled. Default: 2 KiB.
+    pub spool_preview_bytes: u32,
 }
 
 fn default_micro_compact_idle_minutes() -> u32 {
@@ -97,6 +107,8 @@ impl Default for ContextConfig {
             micro_compact_idle_minutes: 60,
             preserved_tool_results: 5,
             autocompact_buffer: 13_000,
+            spool_threshold_bytes: 50 * 1024,
+            spool_preview_bytes: 2 * 1024,
         }
     }
 }
