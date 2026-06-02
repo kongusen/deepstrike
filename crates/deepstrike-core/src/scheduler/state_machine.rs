@@ -388,7 +388,7 @@ impl LoopStateMachine {
             processes: ProcessTable::new(),
             tasks,
             governance: None,
-            signal_router: None,
+            signal_router: Some(SignalRouter::new(64)),
             started_at_ms: None,
             last_now_ms: None,
             suspend_state: None,
@@ -487,78 +487,51 @@ impl LoopStateMachine {
     /// has already cleared observations / swept leases (see `feed` and `signal_event`).
     fn dispatch_signal(&mut self, signal: RuntimeSignal) -> Option<LoopAction> {
         let is_running = !matches!(self.lifecycle(), TaskState::Ready | TaskState::Done(_));
-        match self.signal_router.as_mut() {
-            Some(router) => {
-                let signal_id = signal.id.to_string();
-                let summary = signal.summary.to_string();
-                let disposition = router.ingest(signal, is_running);
-                let queue_depth = router.depth() as u32;
-                self.observations.push(LoopObservation::SignalDisposed {
-                    turn: self.turn,
-                    signal_id,
-                    disposition: disposition_label(&disposition).to_string(),
-                    queue_depth,
-                });
-                match disposition {
-                    SignalDisposition::InterruptNow | SignalDisposition::Interrupt => {
-                        self.ctx.push_signal(format!("[INTERRUPT] {summary}"));
-                        self.phase = LoopPhase::Reason;
-                        Some(self.emit_call_llm())
-                    }
-                    SignalDisposition::Run { .. } => {
-                        self.ctx.push_signal(format!("[SIGNAL] {summary}"));
-                        self.phase = LoopPhase::Reason;
-                        Some(self.emit_call_llm())
-                    }
-                    // Observe: note it in context but don't force a turn.
-                    SignalDisposition::Observe => {
-                        self.ctx.push_signal(format!("[SIGNAL] {summary}"));
-                        None
-                    }
-                    // Queued in the kernel (drained at the next turn boundary), or
-                    // deduped / dropped — no provider call this step.
-                    SignalDisposition::Queue
-                    | SignalDisposition::Ignore
-                    | SignalDisposition::Dropped => None,
-                }
+        let router = self.signal_router.as_mut().expect("signal_router is always initialized");
+        let signal_id = signal.id.to_string();
+        let summary = signal.summary.to_string();
+        let disposition = router.ingest(signal, is_running);
+        let queue_depth = router.depth() as u32;
+        self.observations.push(LoopObservation::SignalDisposed {
+            turn: self.turn,
+            signal_id,
+            disposition: disposition_label(&disposition).to_string(),
+            queue_depth,
+        });
+        match disposition {
+            SignalDisposition::InterruptNow | SignalDisposition::Interrupt => {
+                self.ctx.push_signal(format!("[INTERRUPT] {summary}"));
+                self.phase = LoopPhase::Reason;
+                Some(self.emit_call_llm())
             }
-            // COMPAT(signal-legacy): hardcoded urgency handling, pre-attention-policy.
-            // Active only when no SetAttentionPolicy was issued. Removable once all
-            // SDKs drive signals through the in-kernel router.
-            None => Some(self.legacy_signal(signal)),
+            SignalDisposition::Run { .. } => {
+                self.ctx.push_signal(format!("[SIGNAL] {summary}"));
+                self.phase = LoopPhase::Reason;
+                Some(self.emit_call_llm())
+            }
+            // Observe: note it in context but don't force a turn.
+            SignalDisposition::Observe => {
+                self.ctx.push_signal(format!("[SIGNAL] {summary}"));
+                None
+            }
+            // Queued in the kernel (drained at the next turn boundary), or
+            // deduped / dropped — no provider call this step.
+            SignalDisposition::Queue
+            | SignalDisposition::Ignore
+            | SignalDisposition::Dropped => None,
         }
     }
 
     /// Drain all kernel-queued signals into the current context as runtime notes.
-    /// No-op when no router is configured. Called at turn boundaries.
+    /// Called at turn boundaries.
     fn drain_queued_signals(&mut self) {
-        let drained: Vec<String> = match self.signal_router.as_mut() {
-            Some(router) => {
-                let mut out = Vec::new();
-                while let Some(sig) = router.next() {
-                    out.push(sig.summary.to_string());
-                }
-                out
-            }
-            None => Vec::new(),
-        };
-        for summary in drained {
-            self.ctx.push_signal(format!("[SIGNAL] {summary}"));
+        let mut out = Vec::new();
+        let router = self.signal_router.as_mut().expect("signal_router is always initialized");
+        while let Some(sig) = router.next() {
+            out.push(sig.summary.to_string());
         }
-    }
-
-    fn legacy_signal(&mut self, signal: RuntimeSignal) -> LoopAction {
-        match signal.urgency {
-            Urgency::Critical => {
-                self.ctx.push_signal(format!("[INTERRUPT] {}", signal.summary));
-                self.phase = LoopPhase::Reason;
-                self.emit_call_llm()
-            }
-            Urgency::High => {
-                self.ctx.push_signal(format!("[SIGNAL] {}", signal.summary));
-                self.emit_call_llm()
-            }
-            _ => self.emit_call_llm(),
+        for summary in out {
+            self.ctx.push_signal(format!("[SIGNAL] {summary}"));
         }
     }
 

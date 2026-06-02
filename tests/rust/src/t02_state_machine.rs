@@ -6,6 +6,7 @@ use deepstrike_core::context::skill_catalog::SKILL_TOOL_NAME;
 use deepstrike_core::runtime::session::RollbackReason;
 use deepstrike_core::scheduler::policy::LoopPolicy;
 use deepstrike_core::scheduler::state_machine::*;
+use deepstrike_core::scheduler::tcb::TaskState;
 use deepstrike_core::types::message::*;
 use deepstrike_core::types::result::TerminationReason;
 use deepstrike_core::types::skill::SkillMetadata;
@@ -21,9 +22,9 @@ fn default_sm() -> LoopStateMachine {
 // ─── Basic lifecycle ────────────────────────────────────────────────────────
 
 #[test]
-fn starts_in_idle_phase() {
+fn starts_ready_before_run() {
     let sm = default_sm();
-    assert!(matches!(sm.phase, LoopPhase::Idle));
+    assert_eq!(sm.lifecycle(), TaskState::Ready);
     assert_eq!(sm.turn, 0);
 }
 
@@ -345,8 +346,9 @@ fn high_urgency_signal_injects_note() {
     let action = sm.feed(LoopEvent::Signal { signal: sig });
     assert!(matches!(action, LoopAction::CallLLM { .. }));
 
-    let has_signal = sm.ctx.partitions.signals.iter().any(|t| t.contains("[SIGNAL]"));
-    assert!(has_signal);
+    // With the in-kernel router, High urgency while running maps to Interrupt (not legacy [SIGNAL]).
+    let has_interrupt = sm.ctx.partitions.signals.iter().any(|t| t.contains("[INTERRUPT]"));
+    assert!(has_interrupt);
 }
 
 // ─── Meta-tool injection ────────────────────────────────────────────────────

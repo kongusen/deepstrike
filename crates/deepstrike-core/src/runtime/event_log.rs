@@ -84,8 +84,9 @@ pub fn category_for_kind(kind: &str) -> KernelEventCategory {
         | "page_out"
         | "page_in"
         | "page_in_requested"
-        | "renewed"
-        | "context_renewed" => KernelEventCategory::Mm,
+        |         "renewed"
+        | "context_renewed"
+        | "large_result_spooled" => KernelEventCategory::Mm,
         "agent_process_changed" | "agent_spawned" => KernelEventCategory::Proc,
         "signal_disposed" => KernelEventCategory::Ipc,
         "memory_written" | "memory_queried" => KernelEventCategory::Mm,

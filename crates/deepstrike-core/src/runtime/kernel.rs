@@ -1599,24 +1599,4 @@ mod tests {
             KernelObservation::PageInRequested { tool, .. } if tool == "memory"
         )));
     }
-
-    fn no_attention_policy_keeps_legacy_signal_behavior() {
-        use crate::types::signal::Urgency;
-        // Without SetAttentionPolicy, even a Normal signal drives a provider call
-        // (legacy hardcoded handling) and emits no SignalDisposed observation.
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
-        runtime.step(KernelInput::new(KernelInputEvent::StartRun {
-            task: RuntimeTask::new("legacy"),
-            run_spec: None,
-        }));
-        runtime.state_machine_mut().take_observations();
-        let step = runtime.step(KernelInput::new(KernelInputEvent::Signal {
-            signal: signal(Urgency::Normal, "tick"),
-        }));
-        assert!(matches!(step.actions.as_slice(), [KernelAction::CallProvider { .. }]));
-        assert!(!step
-            .observations
-            .iter()
-            .any(|o| matches!(o, KernelObservation::SignalDisposed { .. })));
-    }
 }
