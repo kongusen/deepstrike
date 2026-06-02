@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::context::pressure::PressureAction;
 use crate::mm::MemoryTierHint;
 
 /// Opaque handle id. M3 assigns these as tool results / knowledge / memory pages enter context.
@@ -115,36 +116,35 @@ impl HandleTable {
     }
 }
 
-/// One eviction action. The 5-layer pyramid maps onto these four ops:
-/// L1 → [`EvictionOp::Spool`], L2/L3 → [`EvictionOp::Snip`], L4 → [`EvictionOp::Collapse`],
-/// L5 → [`EvictionOp::Summarize`] (the only LLM-backed op, issued as a syscall).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// One ordered eviction action in an [`EvictionPlan`]. The 5-layer pyramid maps onto these,
+/// preserving the distinct compactors the engine already has:
+/// L1 → [`EvictionOp::Spool`]; L3 time-decay → [`EvictionOp::TimeDecayMicro`];
+/// L2/L4/L5 (and rho-driven micro) → [`EvictionOp::Pressure`] carrying the exact [`PressureAction`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvictionOp {
     /// Layer 1: spool a large handle to disk, keep a preview reference.
     Spool(HandleId),
-    /// Layer 2/3: drop early / re-fetchable resident handles.
-    Snip(Vec<HandleId>),
-    /// Layer 4: project handles out of the rendered view without deleting originals.
-    Collapse(Vec<HandleId>),
-    /// Layer 5: full LLM summary of the conversation (issued via a syscall in M3).
-    Summarize,
+    /// Layer 3: idle/time-decay micro-compact (`MicroCompact`), independent of rho. Distinct from a
+    /// rho-driven action because it stamps `last_compact_ms` and uses the non-time compress path.
+    TimeDecayMicro,
+    /// Layers 2/4/5 (+ rho-driven micro): the pressure-recommended compaction action. `None` is
+    /// never emitted (the planner omits the op entirely when no compaction is needed).
+    Pressure(PressureAction),
 }
 
 impl EvictionOp {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Spool(_) => "spool",
-            Self::Snip(_) => "snip",
-            Self::Collapse(_) => "collapse",
-            Self::Summarize => "summarize",
+            Self::TimeDecayMicro => "time_decay_micro",
+            Self::Pressure(_) => "pressure",
         }
     }
 }
 
 /// An ordered set of eviction actions returned by the planner. Empty = no compression needed
-/// ("能不压就不压").
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// ("能不压就不压"). The order is the execution order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EvictionPlan {
     pub ops: Vec<EvictionOp>,
 }
@@ -157,18 +157,38 @@ impl EvictionPlan {
     pub fn is_empty(&self) -> bool {
         self.ops.is_empty()
     }
+
+    /// Whether the plan includes the Layer-3 idle/time-decay micro op.
+    pub fn has_time_decay(&self) -> bool {
+        self.ops.iter().any(|op| matches!(op, EvictionOp::TimeDecayMicro))
+    }
+
+    /// The pressure-driven compaction action in the plan, if any (Layers 2/4/5 + rho micro).
+    pub fn pressure_action(&self) -> Option<PressureAction> {
+        self.ops.iter().find_map(|op| match op {
+            EvictionOp::Pressure(a) => Some(*a),
+            _ => None,
+        })
+    }
 }
 
-/// Pure eviction planner — M0 stub returning an empty plan (no compression), preserving today's
-/// behavior. M3 fills in the 5-layer policy here as the single decision point.
+/// Pure eviction planner (M3): the **single decision point** for the per-turn compression
+/// checkpoint. Packages the two previously-scattered decisions — Layer-3 idle/time-decay and the
+/// rho-driven pressure recommendation — into one ordered [`EvictionPlan`], in execution order
+/// (time-decay micro first, then the pressure action). Behavior-preserving: the inputs are exactly
+/// what the state machine already computed (`ContextManager::should_time_decay_compact` and
+/// `PressureMonitor::recommend`); this only centralizes their ordering and makes the plan testable.
 ///
-/// `pressure` is ρ (resident/limit), `idle_ms` drives Layer 3 time decay.
-pub fn plan_eviction(
-    _pressure: f64,
-    _idle_ms: u64,
-    _table: &HandleTable,
-) -> EvictionPlan {
-    EvictionPlan::empty()
+/// Layer-1 spool is decided at tool-result ingestion (handle size), not here.
+pub fn plan_eviction(recommended: PressureAction, idle_decay: bool) -> EvictionPlan {
+    let mut ops = Vec::new();
+    if idle_decay {
+        ops.push(EvictionOp::TimeDecayMicro);
+    }
+    if recommended != PressureAction::None {
+        ops.push(EvictionOp::Pressure(recommended));
+    }
+    EvictionPlan { ops }
 }
 
 #[cfg(test)]
@@ -211,15 +231,40 @@ mod tests {
     }
 
     #[test]
-    fn plan_eviction_stub_is_empty() {
-        let table = HandleTable::new();
-        assert!(plan_eviction(0.99, 3_600_000, &table).is_empty());
+    fn plan_eviction_empty_when_no_pressure_and_no_idle() {
+        assert!(plan_eviction(PressureAction::None, false).is_empty());
+    }
+
+    #[test]
+    fn plan_eviction_emits_pressure_op_for_recommended_action() {
+        let plan = plan_eviction(PressureAction::AutoCompact, false);
+        assert_eq!(plan.ops, vec![EvictionOp::Pressure(PressureAction::AutoCompact)]);
+    }
+
+    #[test]
+    fn plan_eviction_orders_time_decay_before_pressure() {
+        // Idle + rho both fire: time-decay micro runs first, then the pressure action — matching
+        // the legacy checkpoint order exactly.
+        let plan = plan_eviction(PressureAction::ContextCollapse, true);
+        assert_eq!(
+            plan.ops,
+            vec![
+                EvictionOp::TimeDecayMicro,
+                EvictionOp::Pressure(PressureAction::ContextCollapse),
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_eviction_time_decay_only() {
+        let plan = plan_eviction(PressureAction::None, true);
+        assert_eq!(plan.ops, vec![EvictionOp::TimeDecayMicro]);
     }
 
     #[test]
     fn eviction_op_labels() {
         assert_eq!(EvictionOp::Spool(1).label(), "spool");
-        assert_eq!(EvictionOp::Snip(vec![1, 2]).label(), "snip");
-        assert_eq!(EvictionOp::Summarize.label(), "summarize");
+        assert_eq!(EvictionOp::TimeDecayMicro.label(), "time_decay_micro");
+        assert_eq!(EvictionOp::Pressure(PressureAction::AutoCompact).label(), "pressure");
     }
 }

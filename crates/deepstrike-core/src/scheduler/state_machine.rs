@@ -795,6 +795,28 @@ impl LoopStateMachine {
         });
     }
 
+    /// Execute one [`EvictionOp`] from an [`EvictionPlan`] — the single compaction execution
+    /// funnel (M3). `TimeDecayMicro` uses the non-time compress path and stamps `last_compact_ms`
+    /// (Layer 3); `Pressure` uses the time-aware path (Layers 2/4/5). `Spool` (Layer 1) is handled
+    /// at tool-result ingestion, not here.
+    fn execute_eviction_op(&mut self, op: &crate::mm::EvictionOp) {
+        use crate::mm::EvictionOp;
+        match op {
+            EvictionOp::TimeDecayMicro => {
+                let (_, summary, archived) = self.ctx.compress(PressureAction::MicroCompact);
+                self.push_compression_observations(PressureAction::MicroCompact, summary, archived);
+                if let Some(now_ms) = self.last_now_ms {
+                    self.ctx.last_compact_ms = Some(now_ms);
+                }
+            }
+            EvictionOp::Pressure(action) => {
+                let (_, summary, archived) = self.ctx.compress_with_time(*action, self.last_now_ms);
+                self.push_compression_observations(*action, summary, archived);
+            }
+            EvictionOp::Spool(_) => {}
+        }
+    }
+
     fn emit_page_in_requested(&mut self, calls: &[ToolCall]) {
         for req in page_in_requests_from_calls(calls) {
             self.observations.push(LoopObservation::PageInRequested {
@@ -1018,29 +1040,28 @@ impl LoopStateMachine {
                     "M1b schedule() should Run when should_terminate returned None"
                 );
 
-                // ━━ Layer 3: 时间衰减检查（独立于rho）
-                if let Some(now_ms) = self.last_now_ms {
-                    if self.ctx.should_time_decay_compact(now_ms) {
-                        // 强制MicroCompact，无论rho值
-                        let (saved, summary, archived) = self.ctx.compress(PressureAction::MicroCompact);
-                        self.push_compression_observations(PressureAction::MicroCompact, summary, archived);
-
-                        // 记录压缩时间
-                        self.ctx.last_compact_ms = Some(now_ms);
-                    }
+                // ━━ Eviction checkpoint (M3): one decision model (`plan_eviction`), one
+                // execution funnel (`execute_eviction_op`). Layer 3 (idle/time-decay) must run
+                // before the rho recommendation is read, since it mutates token usage — so the
+                // plan is built in that interleaved order and the ops are executed in plan order.
+                let idle_decay = self
+                    .last_now_ms
+                    .is_some_and(|now_ms| self.ctx.should_time_decay_compact(now_ms));
+                if idle_decay {
+                    self.execute_eviction_op(&crate::mm::EvictionOp::TimeDecayMicro);
                 }
 
-                // ━━ 更新CollapseMode（Layer 4读时投影策略）
+                // Layer 4 read-time projection mode tracks the post-time-decay rho.
                 self.ctx.update_collapse_mode();
-
-                // ━━ 原有rho检查（Layer 2/4/5触发）
-                let action = self.ctx.should_compress();
                 self.phase = LoopPhase::Delta {
                     pressure: self.ctx.rho(),
                 };
-                if action != PressureAction::None {
-                    let (saved, summary, archived) = self.ctx.compress_with_time(action, self.last_now_ms);
-                    self.push_compression_observations(action, summary, archived);
+
+                // Layers 2/4/5: pressure recommendation on the (possibly reduced) rho.
+                let plan = crate::mm::plan_eviction(self.ctx.should_compress(), idle_decay);
+                debug_assert_eq!(plan.has_time_decay(), idle_decay);
+                if let Some(action) = plan.pressure_action() {
+                    self.execute_eviction_op(&crate::mm::EvictionOp::Pressure(action));
                 }
 
                 // Renewal: when compression alone cannot recover enough headroom,

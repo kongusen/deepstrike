@@ -213,11 +213,20 @@ mod tests {
 
         let result = summarizer.preprocess_messages(&[msg]);
         assert_eq!(result.len(), 1);
+        // preprocess_messages rebuilds a `Parts` message, replacing the bulky tool result with a
+        // placeholder text part (it does not flatten to `Content::Text`).
         match &result[0].content {
-            crate::types::message::Content::Text(text) => {
-                assert!(text.contains("content omitted"));
+            crate::types::message::Content::Parts(parts) => {
+                let placeholder = parts.iter().find_map(|p| match p {
+                    crate::types::message::ContentPart::Text { text } => Some(text),
+                    _ => None,
+                });
+                assert!(
+                    placeholder.is_some_and(|t| t.contains("content omitted")),
+                    "expected a placeholder text part with 'content omitted'"
+                );
             }
-            _ => panic!("Expected text content"),
+            other => panic!("Expected Parts content, got {other:?}"),
         }
     }
 
