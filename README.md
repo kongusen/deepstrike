@@ -1,76 +1,97 @@
-# DeepStrike
+<p align="center">
+  <a href="https://github.com/kongusen/deepstrike">
+    <img src="docs/public/banner.png" alt="DeepStrike" width="100%" />
+  </a>
+</p>
+
+<h1 align="center">DeepStrike</h1>
 
 <p align="center">
-  <strong>Agent OS microkernel for cross-language agent runtimes.</strong>
+  <strong>Agent OS microkernel for replayable, governed, cross-language AI agent runtimes.</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/kongusen/deepstrike/releases"><img alt="Release" src="https://img.shields.io/github/v/release/kongusen/deepstrike?sort=semver"></a>
-  <a href="https://www.npmjs.com/package/@deepstrike/sdk"><img alt="npm" src="https://img.shields.io/npm/v/@deepstrike/sdk?label=npm"></a>
-  <a href="https://pypi.org/project/deepstrike/"><img alt="PyPI" src="https://img.shields.io/pypi/v/deepstrike?label=pypi"></a>
-  <a href="https://crates.io/crates/deepstrike-sdk"><img alt="crates.io" src="https://img.shields.io/crates/v/deepstrike-sdk?label=crates.io"></a>
-  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
-  <a href="https://discord.gg/cwS3RBYCv"><img alt="Discord" src="https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white"></a>
+  <a href="https://github.com/kongusen/deepstrike/releases"><img alt="Release" src="https://img.shields.io/github/v/release/kongusen/deepstrike?sort=semver&style=for-the-badge&label=release&labelColor=111827&color=374151"></a>
+  <a href="https://www.npmjs.com/package/@deepstrike/sdk"><img alt="npm" src="https://img.shields.io/npm/v/@deepstrike/sdk?style=for-the-badge&logo=npm&logoColor=white&label=npm&labelColor=111827&color=374151"></a>
+  <a href="https://pypi.org/project/deepstrike/"><img alt="PyPI" src="https://img.shields.io/pypi/v/deepstrike?style=for-the-badge&logo=pypi&logoColor=white&label=pypi&labelColor=111827&color=374151"></a>
+  <a href="https://crates.io/crates/deepstrike-sdk"><img alt="crates.io" src="https://img.shields.io/crates/v/deepstrike-sdk?style=for-the-badge&logo=rust&logoColor=white&label=crates&labelColor=111827&color=374151"></a>
+  <a href="https://discord.gg/cwS3RBYCv"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=for-the-badge&logo=discord&logoColor=white&labelColor=111827"></a>
+  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-374151?style=for-the-badge&labelColor=111827"></a>
 </p>
 
 <p align="center">
-  <a href="./docs/getting-started/quick-start.md">Quick Start</a>
-  · <a href="./docs/index.md">Docs</a>
-  · <a href="./docs/architecture/">Architecture</a>
-  · <a href="./docs/guides/providers.md">Providers</a>
-  · <a href="./CHANGELOG.md">Changelog</a>
+  <a href="./docs/index.md">Documentation</a>
+  · <a href="./docs/getting-started/quick-start.md">Quick Start</a>
+  · <a href="./docs/guides/index.md">SDK Guides</a>
+  · <a href="./docs/architecture/index.md">Architecture</a>
   · <a href="https://discord.gg/cwS3RBYCv">Discord</a>
 </p>
 
-DeepStrike is a runtime kernel and SDK family for building AI agents that need replayable state, governed tools, context compression, provider portability, and host-language control. The Rust kernel owns the agent semantics; the SDKs own effects such as LLM calls, tools, storage, processes, network, and UI.
+---
+
+DeepStrike is a runtime kernel and SDK family for building AI agents that need durable state, governed tools, provider portability, long-context control, and host-language ownership of side effects.
+
+The core kernel is a pure Rust state machine. Host SDKs for Node.js, Python, Rust, and WASM own provider calls, tools, storage, processes, network, UI, and deployment concerns.
 
 ```text
-┌──────────────────────────────────────────────────────────────────────┐
-│ Host SDKs: Node.js · Python · Rust · WASM                            │
-│ Providers · tools · permissions · storage · signals · orchestration  │
-└───────────────────────────────┬──────────────────────────────────────┘
-                                │ KernelInput / KernelAction (JSON ABI)
-                    ┌───────────▼───────────┐
-                    │   deepstrike-core     │
-                    │   pure Rust, zero I/O │
-                    │   state machine       │
-                    │   context VM          │
-                    │   capability bus      │
-                    │   security pipeline   │
-                    │   transactions        │
-                    │   milestones          │
-                    └───────────────────────┘
+Host SDKs: Node.js / TypeScript · Python · Rust · WASM
+Providers · tools · permissions · storage · signals · orchestration
+                               │
+                               ▼
+                    KernelInput / KernelAction
+                               │
+                               ▼
+deepstrike-core: pure Rust kernel · zero I/O · replayable state machine
+Context VM · governance pipeline · capability bus · transactions · milestones
 ```
 
-## Why DeepStrike
+## Documentation System
 
-- **Kernel-owned agent semantics**: loop control, context layout, rollback, milestones, signals, and audit behavior live behind one ABI.
-- **Host-owned effects**: SDKs perform all I/O, so runtime behavior is portable across Node.js, Python, Rust, and WASM.
-- **Provider portability**: Anthropic, OpenAI, Qwen, DeepSeek, MiniMax, Kimi, Ollama, and OpenAI-compatible gateways share one event stream.
-- **Governed execution**: every tool call flows through capability checks, constraints, permission gates, vetoes, rate limits, sandbox policy, and audit logging.
-- **Long-run context control**: the kernel uses a four-slot context model and compresses history only, preserving stable system and knowledge blocks.
-- **Multi-agent contracts**: sub-agents, milestone gates, verifier harnesses, and handoff artifacts are runtime primitives instead of prompt conventions.
+DeepStrike's documentation is organized as a modern VitePress reading system with a stable project header, navigation by reader intent, SDK-specific guides, and community entry points.
 
-## Packages
+| Reader path | Start here |
+| :--- | :--- |
+| New users | [Quick Start](./docs/getting-started/quick-start.md) |
+| SDK users | [Node.js](./docs/guides/sdk-nodejs.md), [Python](./docs/guides/sdk-python.md), [Rust](./docs/guides/sdk-rust.md), [WASM](./docs/guides/index.md) |
+| Runtime designers | [Core Concepts](./docs/concepts/core-concepts.md) |
+| Architecture reviewers | [Architecture Overview](./docs/architecture/overview.md) |
+| Integrators | [Provider Guide](./docs/guides/providers.md) and [Kernel ABI](./docs/reference/kernel-abi.md) |
+| Operators | [Release Runbook](./docs/operations/release-runbook.md) |
+| Contributors | [Contributing Guide](./CONTRIBUTING.md) |
 
-| Package | Runtime | Install |
-| --- | --- | --- |
-| `@deepstrike/sdk` | Node.js / TypeScript | `npm install @deepstrike/sdk` |
-| `deepstrike` | Python | `pip install deepstrike` |
-| `deepstrike-sdk` | Rust | `cargo add deepstrike-sdk` |
-| `@deepstrike/wasm` | Browser / edge / WASM | `npm install @deepstrike/wasm` |
+Run the local docs site:
 
-Current workspace version: **0.2.4**.
+```bash
+npm install
+npm run docs:dev
+```
+
+Build the static docs:
+
+```bash
+npm run docs:build
+```
+
+## Language And Runtime Support
+
+| Runtime | Package | Install |
+| :--- | :--- | :--- |
+| Node.js / TypeScript | `@deepstrike/sdk` | `npm install @deepstrike/sdk` |
+| Python | `deepstrike` | `pip install deepstrike` |
+| Rust | `deepstrike-sdk` | `cargo add deepstrike-sdk` |
+| Browser / Edge / WASM | `@deepstrike/wasm` | `npm install @deepstrike/wasm` |
+
+Current workspace version: `0.2.4`.
 
 ## Quick Start
 
-### Node.js
+### Node.js / TypeScript
 
 ```bash
 npm install @deepstrike/sdk
 ```
 
-```typescript
+```ts
 import {
   AnthropicProvider,
   InMemorySessionLog,
@@ -111,7 +132,7 @@ const answer = await collectText(
 pip install deepstrike
 ```
 
-```python
+```py
 from deepstrike import (
     AnthropicProvider,
     InMemorySessionLog,
@@ -144,91 +165,75 @@ answer = await collect_text(runner.run_streaming("What is 2 + 3?"))
 deepstrike-sdk = "0.2.4"
 ```
 
-See the full language guides for complete setup, streaming, tools, images, governance, memory, and provider examples.
+See the [SDK guides](./docs/guides/index.md) for full examples, provider configuration, streaming events, governance hooks, and collaboration patterns.
 
-## Core Concepts
+## Core Capabilities
 
-| Concept | What it does | Read more |
-| --- | --- | --- |
-| Kernel ABI | Versioned `KernelInput`, `KernelAction`, and `KernelObservation` contract used by every SDK | [Kernel ABI](./docs/reference/kernel-abi.md) |
-| Context VM | Four LLM API slots: stable system, knowledge, live task state, and compressible history | [Context Slots](./docs/concepts/context-slots-compression.md) |
-| ExecutionPlane | Host-side tool registry and dispatcher | [Quick Start](./docs/getting-started/quick-start.md) |
-| Governance | Capability, permission, constraint, veto, sandbox, and audit pipeline for tool calls | [Core Concepts](./docs/concepts/core-concepts.md) |
-| Providers | Shared provider abstraction and typed event stream | [Providers](./docs/guides/providers.md) |
-| Collaboration | Verifier contracts, harnesses, agent pools, handoffs, and sub-agent isolation | [Collaboration](./docs/guides/collaboration.md) |
-
-## Documentation
-
-| Start here | Use when you need |
-| --- | --- |
-| [Documentation hub](./docs/index.md) | The full map of guides, references, and runbooks |
-| [Getting Started](./docs/getting-started/) | Install and run your first agent |
-| [Guides](./docs/guides/) | SDK, provider, and collaboration workflows |
-| [Concepts](./docs/concepts/) | Runtime mental model and core terminology |
-| [Architecture](./docs/architecture/) | Kernel, SDK, binding, and runtime-loop design |
-| [Reference](./docs/reference/) | ABI and lifecycle contracts |
-| [Operations](./docs/operations/) | Versioning and release workflows |
-
-Package-specific READMEs are available in [`node/`](./node/README.md), [`python/`](./python/README.md), [`rust/`](./rust/README.md), and [`wasm/`](./wasm/README.md).
+- **Replayable kernel semantics**: loop control, context layout, rollback, milestones, signals, and audit behavior live behind a versioned ABI.
+- **Host-owned effects**: SDKs handle I/O, providers, tools, persistence, processes, and network boundaries.
+- **Provider portability**: Anthropic, OpenAI, Qwen, DeepSeek, MiniMax, Kimi, Ollama, and OpenAI-compatible gateways share a unified event stream.
+- **Governed execution**: tool calls flow through capability checks, constraints, permission gates, vetoes, rate limits, sandbox policy, and audit logging.
+- **Long-run context control**: a four-slot Context VM compresses history while preserving stable system and knowledge blocks.
+- **Collaboration primitives**: sub-agents, milestone gates, verifier harnesses, and handoff artifacts are runtime primitives.
 
 ## Repository Layout
 
 ```text
-crates/deepstrike-core/   Pure Rust kernel
-crates/deepstrike-node/   Node.js native binding
-crates/deepstrike-py/     Python native binding
-crates/deepstrike-wasm/   WASM binding
+crates/deepstrike-core/   Pure Rust kernel state machine
+crates/deepstrike-node/   Node.js native bindings
+crates/deepstrike-py/     Python native bindings
+crates/deepstrike-wasm/   WASM bindings
 node/                     TypeScript host SDK
 python/                   Python host SDK
 rust/                     Rust host SDK
-wasm/                     Browser / edge SDK
-docs/                     Organized documentation system
-docs/getting-started/     Install and first-run material
-docs/guides/              SDK, provider, and collaboration guides
-docs/concepts/            Runtime concepts and context model
-docs/architecture/        Kernel and SDK architecture
-docs/reference/           ABI and lifecycle reference
-docs/operations/          Release and maintenance runbooks
-tests/                    Cross-language SDK tests
-scripts/                  Release, smoke, and verification scripts
+wasm/                     Browser and edge SDK
+docs/                     VitePress documentation source
+tests/                    Cross-language integration tests
+scripts/                  Release and verification automation
 ```
 
-## Development
+## Local Development
 
-Requirements: Rust 1.85+, Node.js 18+, Python 3.10+.
+Requirements:
+
+- Rust 1.85+
+- Node.js 18+
+- Python 3.10+
 
 ```bash
-# Rust workspace
 cargo build
 cargo test
+```
 
-# Node.js SDK
+```bash
 cd node
 npm install
 npm run build
 npm test
+```
 
-# Python SDK
+```bash
 cd python
 python3 -m venv .venv
 source .venv/bin/activate
 pip install maturin pytest pytest-asyncio
 maturin develop --release
 pytest
+```
 
-# WASM SDK
+```bash
 cd wasm
 npm install
 npm run build
 npm test
 ```
 
-## Community and Support
+## Community
 
-- Join the community on [Discord](https://discord.gg/cwS3RBYCv).
-- Open bugs and feature requests in [GitHub Issues](https://github.com/kongusen/deepstrike/issues).
-- Read [CONTRIBUTING.md](./CONTRIBUTING.md) before sending a pull request.
-- Report security issues using [SECURITY.md](./SECURITY.md).
+- Join the developer community on [Discord](https://discord.gg/cwS3RBYCv).
+- Report issues or request features in [GitHub Issues](https://github.com/kongusen/deepstrike/issues).
+- Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request.
+- Report security issues through the process in [SECURITY.md](./SECURITY.md).
 
 ## License
 
