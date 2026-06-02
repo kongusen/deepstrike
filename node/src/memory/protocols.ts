@@ -96,11 +96,11 @@ export interface MemoryRetrieval {
 
 /** Memory validation error (mirroring kernel MemoryValidationError). */
 export type MemoryValidationError =
-  | { kind: "missing_required_field"; field: string }
-  | { kind: "content_too_large"; size: number; limit: number }
-  | { kind: "forbidden_pattern"; pattern: string; reason: string }
-  | { kind: "invalid_kind"; kind: string }
-  | { kind: "name_too_long"; length: number; limit: number }
+  | { error_kind: "missing_required_field"; field: string }
+  | { error_kind: "content_too_large"; size: number; limit: number }
+  | { error_kind: "forbidden_pattern"; pattern: string; reason: string }
+  | { error_kind: "invalid_kind"; kind: string }
+  | { error_kind: "name_too_long"; length: number; limit: number }
 
 /** Durable transcript storage for same-session conversational continuity. */
 

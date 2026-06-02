@@ -64,16 +64,6 @@ export type SessionEvent =
       permitted_capability_ids: string[]
       result_termination?: string
     }
-  | {
-      kind: "agent_spawned"
-      turn: number
-      agent_id: string
-      parent_session_id: string
-      role: string
-      isolation: string
-      context_inheritance: string
-      permitted_capability_ids: string[]
-    }
   | { kind: "run_terminal"; reason: string; turns_used: number; total_tokens: number }
   | { kind: "summary_upgraded"; compressed_seq: number; summary: string }
 

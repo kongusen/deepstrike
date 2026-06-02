@@ -33,11 +33,20 @@ export class KernelRuntime {
         this.rendered = { systemText: "", turns: [{ role: "user", content: "test" }] }
         actions.push({ kind: "call_provider", context: this.rendered, tools: [] })
         break
-      case "resume":
+      case "resume": {
         this.resumedAfterAsk = true
-        this.rendered = { systemText: "", turns: [{ role: "user", content: "resume" }] }
-        actions.push({ kind: "call_provider", context: this.rendered, tools: [] })
+        const approved = (event.approved_calls as string[]) ?? []
+        if (approved.length > 0) {
+          actions.push({
+            kind: "execute_tool",
+            calls: [{ id: approved[0], name: "needs_approval", arguments: "{}" }],
+          })
+        } else {
+          this.rendered = { systemText: "", turns: [{ role: "user", content: "resume" }] }
+          actions.push({ kind: "call_provider", context: this.rendered, tools: [] })
+        }
         break
+      }
       case "provider_result": {
         const message = (event.message as Record<string, unknown>) ?? {}
         this.messages.push(message)

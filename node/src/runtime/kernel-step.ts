@@ -89,6 +89,7 @@ export interface KernelObservation {
   // Phase 2: resumed observation — loop resumed with approved/denied calls.
   approved?: string[]
   denied?: string[]
+  tier_hint?: string
 }
 
 interface KernelStepJson {

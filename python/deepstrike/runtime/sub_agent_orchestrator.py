@@ -11,7 +11,7 @@ from deepstrike.runtime.runner import RuntimeOptions, RuntimeRunner, SubAgentHar
 from deepstrike.runtime.session_log import SessionLog
 from deepstrike.types.agent import (
   AgentRunSpec,
-  AgentSpawnedObservation,
+  AgentProcessChangedObservation,
   LoopResult,
   SubAgentResult,
   agent_run_spec_to_kernel as spec_to_kernel,
@@ -26,7 +26,7 @@ class SubAgentRunContext:
   parent_opts: RuntimeOptions
   parent_session_id: str
   spec: AgentRunSpec
-  manifest: AgentSpawnedObservation
+  manifest: AgentProcessChangedObservation
   session_log: SessionLog
   harness: SubAgentHarnessConfig | None = None
 
@@ -40,8 +40,8 @@ def _termination_from_status(status: str) -> str:
   return normalized if normalized in known else status
 
 
-def _manifest_from_obs(obs: dict, parent_session_id: str, spec: AgentRunSpec) -> AgentSpawnedObservation:
-  return AgentSpawnedObservation(
+def _manifest_from_obs(obs: dict, parent_session_id: str, spec: AgentRunSpec) -> AgentProcessChangedObservation:
+  return AgentProcessChangedObservation(
     agent_id=str(obs.get("agent_id") or spec.identity.agent_id),
     parent_session_id=str(obs.get("parent_session_id") or parent_session_id),
     role=str(obs.get("role") or spec.role),
@@ -49,6 +49,8 @@ def _manifest_from_obs(obs: dict, parent_session_id: str, spec: AgentRunSpec) ->
     context_inheritance=str(obs.get("context_inheritance") or "none"),
     permitted_capability_ids=list(obs.get("permitted_capability_ids") or []),
     turn=obs.get("turn"),
+    state=str(obs.get("state") or "running"),
+    result_termination=obs.get("result_termination"),
   )
 
 

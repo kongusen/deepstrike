@@ -1,6 +1,6 @@
 import type { DoneEvent, StreamEvent, TextDelta } from "../types.js"
 import type {
-  AgentRunSpec, AgentSpawnedObservation, LoopResult, SubAgentResult, TerminationReason,
+  AgentRunSpec, AgentProcessChangedObservation, LoopResult, SubAgentResult, TerminationReason,
   KernelAgentRole,
 } from "../types/agent.js"
 import { agentRunSpecToKernel, findSpawnProcessObservation, spawnObservationToManifest } from "../types/agent.js"
@@ -13,7 +13,7 @@ export interface SubAgentRunContext {
   parentOpts: RuntimeOptions
   parentSessionId: string
   spec: AgentRunSpec
-  manifest: AgentSpawnedObservation
+  manifest: AgentProcessChangedObservation
   sessionLog: SessionLog
   harness?: {
     evalProvider: import("../types.js").LLMProvider
@@ -159,7 +159,7 @@ export async function spawnStandalone(
     isolation: manifest.isolation,
     context_inheritance: manifest.context_inheritance,
     state: "running",
-    permitted_capability_ids: manifest.permitted_capability_ids,
+    permitted_capability_ids: manifest.permitted_capability_ids ?? [],
   })
 
   return orchestrator.run({

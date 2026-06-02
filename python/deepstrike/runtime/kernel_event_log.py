@@ -15,9 +15,10 @@ def category_for_kind(kind: str) -> KernelEventCategory:
         "page_in_requested",
         "renewed",
         "context_renewed",
+        "large_result_spooled",
     ):
         return "mm"
-    if kind in ("agent_process_changed", "agent_spawned"):
+    if kind == "agent_process_changed":
         return "proc"
     if kind == "signal_disposed":
         return "ipc"
@@ -37,6 +38,7 @@ def kernel_observation_to_session_event(
     archive_ref: str | None = None,
     preserved_refs: list[str] | None = None,
     compression_action: Callable[[str | None], str | None] | None = None,
+    spool_ref: str | None = None,
 ) -> dict[str, Any] | None:
     t = obs.get("turn") or turn
     to_action = compression_action or (lambda _a: None)
@@ -119,7 +121,7 @@ def kernel_observation_to_session_event(
             "turn": t,
             "history_len": obs.get("history_len") or 0,
         })
-    if kind in ("agent_spawned", "agent_process_changed"):
+    if kind == "agent_process_changed":
         ev = with_category({
             "kind": "agent_process_changed",
             "turn": t,
@@ -172,4 +174,14 @@ def kernel_observation_to_session_event(
         })
     if kind == "page_in_requested":
         return None
+    if kind == "large_result_spooled":
+        return with_category({
+            "kind": "large_result_spooled",
+            "turn": t,
+            "call_id": obs.get("call_id") or "",
+            "tool": obs.get("tool") or "",
+            "original_size": obs.get("original_size") or 0,
+            "preview_size": obs.get("preview_size") or 0,
+            "spool_ref": spool_ref,
+        })
     return None

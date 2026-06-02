@@ -5,7 +5,6 @@ import type {
 import type { RegisteredTool } from "../tools/index.js"
 import type { DreamStore, MemoryEntry } from "../memory/index.js"
 import type { KnowledgeSource } from "../knowledge/index.js"
-import type { Governance } from "../governance.js"
 
 export interface ToolSuspendEvent {
   type: "tool_suspend"
@@ -20,7 +19,6 @@ export interface RunContext {
   skillContentMap?: Map<string, string>
   dreamStore?: DreamStore
   knowledgeSource?: KnowledgeSource
-  governance?: Governance
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
   onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
 }
@@ -58,62 +56,7 @@ export class LocalExecutionPlane implements ExecutionPlane {
   }
 
   async *executeAll(calls: ToolCall[], ctx: RunContext): AsyncIterable<StreamEvent> {
-    const permitted: ToolCall[] = []
-    for (const c of calls) {
-      if (ctx.governance) {
-        ctx.governance.setTime(Date.now())
-        const v = ctx.governance.evaluate(c.name, c.arguments)
-        if (v.kind === "deny") {
-          yield { type: "tool_denied", callId: c.id, toolName: c.name, reason: v.reason ?? "" } as ToolDeniedEvent
-          yield { type: "tool_result", callId: c.id, name: c.name, content: `permission denied: ${v.reason ?? ""}`, isError: true, isFatal: false, errorKind: "governance_denied" } as ToolResultEvent
-          continue
-        }
-        if (v.kind === "rate_limited") {
-          yield { type: "tool_denied", callId: c.id, toolName: c.name, reason: "rate limited" } as ToolDeniedEvent
-          yield { type: "tool_result", callId: c.id, name: c.name, content: "rate limited", isError: true, isFatal: false, errorKind: "recoverable" } as ToolResultEvent
-          continue
-        }
-        if (v.kind === "ask_user") {
-          const request: PermissionRequestEvent = {
-            type: "permission_request",
-            callId: c.id,
-            toolName: c.name,
-            arguments: c.arguments,
-            reason: v.reason ?? "",
-          }
-          yield request
-
-          const decision = await resolvePermissionRequest(request, ctx)
-          yield {
-            type: "permission_resolved",
-            callId: c.id,
-            toolName: c.name,
-            approved: decision.approved,
-            responder: decision.responder ?? "host",
-            ...(decision.reason ? { reason: decision.reason } : {}),
-          } as PermissionResolvedEvent
-
-          if (decision.approved) {
-            permitted.push(c)
-            continue
-          }
-
-          const reason = decision.reason ?? v.reason ?? "permission denied"
-          yield { type: "tool_denied", callId: c.id, toolName: c.name, reason } as ToolDeniedEvent
-          yield {
-            type: "tool_result",
-            callId: c.id,
-            name: c.name,
-            content: `permission denied: ${reason}`,
-            isError: true,
-            isFatal: false,
-            errorKind: "governance_denied",
-          } as ToolResultEvent
-          continue
-        }
-      }
-      permitted.push(c)
-    }
+    const permitted = calls
 
     const skillCalls = permitted.filter(c => c.name === "skill")
     const memoryCalls = permitted.filter(c => c.name === "memory")

@@ -15,9 +15,9 @@ export function categoryForKind(kind: string): KernelEventCategory {
     case "page_in_requested":
     case "renewed":
     case "context_renewed":
+    case "large_result_spooled":
       return "mm"
     case "agent_process_changed":
-    case "agent_spawned":
       return "proc"
     case "signal_disposed":
       return "ipc"
@@ -43,6 +43,7 @@ export function kernelObservationToSessionEvent(
     archiveRef?: string
     preservedRefs?: string[]
     compressionAction?: (action?: string) => CompressionAction
+    spoolRef?: string
   } = {},
 ): SessionEvent | null {
   const t = obs.turn ?? turn
@@ -51,7 +52,7 @@ export function kernelObservationToSessionEvent(
   switch (obs.kind) {
     case "page_out":
       return withCategory({
-        kind: "page_out",
+        kind: "page_out" as const,
         turn: t,
         action: compressionAction(obs.action),
         summary: obs.summary,
@@ -63,7 +64,7 @@ export function kernelObservationToSessionEvent(
       const start = opts.nextArchiveStart ?? 0
       if (latest < start) return null
       return withCategory({
-        kind: "compressed",
+        kind: "compressed" as const,
         turn: t,
         archived_seq_range: [start, latest] as [number, number],
         action: compressionAction(obs.action),
@@ -75,21 +76,21 @@ export function kernelObservationToSessionEvent(
     }
     case "renewed":
       return withCategory({
-        kind: "context_renewed",
+        kind: "context_renewed" as const,
         turn: t,
         sprint: obs.sprint ?? 0,
         handoff_ref: "",
       })
     case "rollbacked":
       return withCategory({
-        kind: "rollbacked",
+        kind: "rollbacked" as const,
         turn: t,
         checkpoint_history_len: obs.checkpoint_history_len ?? 0,
         reason: obs.reason as RollbackReason | undefined,
       })
     case "capability_changed":
       return withCategory({
-        kind: "capability_changed",
+        kind: "capability_changed" as const,
         turn: t,
         added: obs.added ?? [],
         removed: obs.removed ?? [],
@@ -101,35 +102,34 @@ export function kernelObservationToSessionEvent(
       })
     case "milestone_advanced":
       return withCategory({
-        kind: "milestone_advanced",
+        kind: "milestone_advanced" as const,
         turn: t,
         phase_id: obs.phase_id ?? "",
         capabilities_unlocked: obs.capabilities_unlocked ?? [],
       })
     case "milestone_blocked":
       return withCategory({
-        kind: "milestone_blocked",
+        kind: "milestone_blocked" as const,
         turn: t,
         phase_id: obs.phase_id ?? "",
         reason: typeof obs.reason === "string" ? obs.reason : "",
       })
     case "milestone_evidence":
       return withCategory({
-        kind: "milestone_evidence",
+        kind: "milestone_evidence" as const,
         turn: t,
         phase_id: obs.phase_id ?? "",
         evidence: obs.evidence ?? [],
       })
     case "checkpoint_taken":
       return withCategory({
-        kind: "checkpoint_taken",
+        kind: "checkpoint_taken" as const,
         turn: t,
         history_len: obs.history_len ?? 0,
       })
-    case "agent_spawned":
     case "agent_process_changed":
       return withCategory({
-        kind: "agent_process_changed",
+        kind: "agent_process_changed" as const,
         turn: t,
         agent_id: obs.agent_id ?? "",
         parent_session_id: obs.parent_session_id ?? "",
@@ -144,15 +144,15 @@ export function kernelObservationToSessionEvent(
       })
     case "tool_gated":
       return withCategory({
-        kind: "tool_gated",
+        kind: "tool_gated" as const,
         turn: t,
         call_id: obs.call_id ?? "",
         tool: obs.tool ?? "",
-        reason: obs.reason ?? "",
+        reason: typeof obs.reason === "string" ? obs.reason : "",
       })
     case "signal_disposed":
       return withCategory({
-        kind: "signal_disposed",
+        kind: "signal_disposed" as const,
         turn: t,
         signal_id: obs.signal_id ?? "",
         disposition: obs.disposition ?? "",
@@ -160,26 +160,36 @@ export function kernelObservationToSessionEvent(
       })
     case "budget_exceeded":
       return withCategory({
-        kind: "budget_exceeded",
+        kind: "budget_exceeded" as const,
         turn: t,
         budget: obs.budget ?? "",
       })
     case "suspended":
       return withCategory({
-        kind: "suspended",
+        kind: "suspended" as const,
         turn: t,
-        reason: obs.reason ?? "",
+        reason: typeof obs.reason === "string" ? obs.reason : "",
         pending_calls: obs.pending_calls ?? [],
       })
     case "resumed":
       return withCategory({
-        kind: "resumed",
+        kind: "resumed" as const,
         turn: t,
         approved: obs.approved ?? [],
         denied: obs.denied ?? [],
       })
     case "page_in_requested":
       return null
+    case "large_result_spooled":
+      return withCategory({
+        kind: "large_result_spooled" as const,
+        turn: t,
+        call_id: obs.call_id ?? "",
+        tool: obs.tool ?? "",
+        original_size: (obs as any).original_size ?? 0,
+        preview_size: (obs as any).preview_size ?? 0,
+        spool_ref: opts.spoolRef,
+      })
     default:
       return null
   }

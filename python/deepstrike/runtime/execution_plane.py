@@ -38,7 +38,6 @@ class RunContext:
   skill_dir: Path | None = None
   dream_store: "DreamStore | None" = None
   knowledge_source: "KnowledgeSource | None" = None
-  governance: "Governance | None" = None
   on_tool_suspend: Callable[[ToolSuspendEvent], Awaitable[Any] | Any] | None = None
   on_permission_request: Callable[[PermissionRequestEvent], Awaitable[PermissionResponse | bool | dict[str, Any]] | PermissionResponse | bool | dict[str, Any]] | None = None
 
@@ -67,64 +66,7 @@ class LocalExecutionPlane:
     return [t.schema for t in self._tools.values()]
 
   async def execute_all(self, calls: list[ToolCall], ctx: RunContext) -> AsyncIterator[StreamEvent]:
-    permitted: list[ToolCall] = []
-    for c in calls:
-      if ctx.governance:
-        import time
-        ctx.governance.set_time(int(time.time() * 1000))
-        verdict = ctx.governance.evaluate(c.name, c.arguments)
-        if verdict.kind == "deny":
-          yield ToolDeniedEvent(call_id=c.id, tool_name=c.name, reason=verdict.reason or "")
-          yield ToolResultEvent(
-            call_id=c.id,
-            name=c.name,
-            content=f"permission denied: {verdict.reason or ''}",
-            is_error=True,
-            is_fatal=False,
-            error_kind="governance_denied",
-          )
-          continue
-        if verdict.kind == "rate_limited":
-          msg = f"rate limited: {c.name}"
-          yield ToolResultEvent(
-            call_id=c.id,
-            name=c.name,
-            content=msg,
-            is_error=True,
-            is_fatal=False,
-            error_kind="recoverable",
-          )
-          continue
-        if verdict.kind == "ask_user":
-          request = PermissionRequestEvent(
-            call_id=c.id, tool_name=c.name, arguments=c.arguments, reason=verdict.reason or "",
-          )
-          yield request
-
-          decision = await _resolve_permission_request(request, ctx)
-          yield PermissionResolvedEvent(
-            call_id=c.id,
-            tool_name=c.name,
-            approved=decision.approved,
-            responder=decision.responder or "host",
-            reason=decision.reason,
-          )
-          if decision.approved:
-            permitted.append(c)
-            continue
-
-          reason = decision.reason or verdict.reason or "permission denied"
-          yield ToolDeniedEvent(call_id=c.id, tool_name=c.name, reason=reason)
-          yield ToolResultEvent(
-            call_id=c.id,
-            name=c.name,
-            content=f"permission denied: {reason}",
-            is_error=True,
-            is_fatal=False,
-            error_kind="governance_denied",
-          )
-          continue
-      permitted.append(c)
+    permitted = calls
 
     skill_calls = [c for c in permitted if c.name == "skill"]
     memory_calls = [c for c in permitted if c.name == "memory"]

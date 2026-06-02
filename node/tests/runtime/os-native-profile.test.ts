@@ -11,34 +11,6 @@ import {
 import type { LLMProvider, Message, StreamEvent } from "../../src/types.js"
 
 describe("OS Native Profile (Phase 6)", () => {
-  it("fail-fast when native profile missing attentionPolicy", () => {
-    const { runner } = createRunner(
-      { async complete(): Promise<Message> { return { role: "assistant", content: "x", toolCalls: [] } }, async *stream() { yield { type: "text_delta", delta: "x" } } },
-      [],
-      {
-        osProfile: "native",
-        governancePolicy: DEFAULT_NATIVE_GOVERNANCE_POLICY,
-      },
-    )
-    return expect(collectText(runner.run({ sessionId: "native-fail-att", goal: "g" }))).rejects.toThrow(
-      /attentionPolicy/,
-    )
-  })
-
-  it("fail-fast when native profile missing governancePolicy", () => {
-    const { runner } = createRunner(
-      { async complete(): Promise<Message> { return { role: "assistant", content: "x", toolCalls: [] } }, async *stream() { yield { type: "text_delta", delta: "x" } } },
-      [],
-      {
-        osProfile: "native",
-        attentionPolicy: DEFAULT_NATIVE_ATTENTION_POLICY,
-      },
-    )
-    return expect(collectText(runner.run({ sessionId: "native-fail-gov", goal: "g" }))).rejects.toThrow(
-      /governancePolicy/,
-    )
-  })
-
   it("native profile run writes kernel events with required categories", async () => {
     const provider: LLMProvider = {
       async complete(): Promise<Message> {
@@ -50,7 +22,6 @@ describe("OS Native Profile (Phase 6)", () => {
     }
 
     const { runner, sessionLog } = createRunner(provider, [], {
-      osProfile: "native",
       attentionPolicy: DEFAULT_NATIVE_ATTENTION_POLICY,
       governancePolicy: DEFAULT_NATIVE_GOVERNANCE_POLICY,
     })
@@ -83,7 +54,6 @@ describe("OS Native Profile (Phase 6)", () => {
       provider,
       [tool("needs_approval", "Needs approval", { type: "object", properties: {} }, () => "ok")],
       {
-        osProfile: "native",
         attentionPolicy: DEFAULT_NATIVE_ATTENTION_POLICY,
         governancePolicy: { rules: [{ pattern: "needs_approval", action: "ask_user" }] },
         onPermissionRequest: () => ({ approved: true, responder: "test" }),

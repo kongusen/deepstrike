@@ -14,7 +14,6 @@ function createRunner(
   provider: LLMProvider,
   tools: ReturnType<typeof tool>[] = [],
   opts: {
-    osProfile?: "legacy" | "native"
     governancePolicy?: typeof DEFAULT_NATIVE_GOVERNANCE_POLICY
     attentionPolicy?: { maxQueueSize?: number }
     onPermissionRequest?: (req: { type: string; callId: string; toolName: string }) => Promise<{ approved: boolean; responder: string }>
@@ -30,7 +29,6 @@ function createRunner(
     executionPlane: plane,
     maxTokens: 2048,
     maxTurns: opts.maxTurns ?? 25,
-    osProfile: opts.osProfile,
     governancePolicy: opts.governancePolicy,
     attentionPolicy: opts.attentionPolicy,
     onPermissionRequest: opts.onPermissionRequest,
@@ -39,27 +37,12 @@ function createRunner(
 }
 
 describe("OS Native Profile (Phase 6)", () => {
-  it("fail-fast when native profile missing attentionPolicy", () => {
-    const provider: LLMProvider = {
-      async complete(): Promise<Message> { return { role: "assistant", content: "x", toolCalls: [] } },
-      async *stream(): AsyncIterable<StreamEvent> { yield { type: "text_delta", delta: "x" } },
-    }
-    const { runner } = createRunner(provider, [], {
-      osProfile: "native",
-      governancePolicy: DEFAULT_NATIVE_GOVERNANCE_POLICY,
-    })
-    return expect(collectText(runner.run({ sessionId: "native-fail-att", goal: "g" }))).rejects.toThrow(
-      /attentionPolicy/,
-    )
-  })
-
   it("native profile run writes kernel events with required categories", async () => {
     const provider: LLMProvider = {
       async complete(): Promise<Message> { return { role: "assistant", content: "done", toolCalls: [] } },
       async *stream(): AsyncIterable<StreamEvent> { yield { type: "text_delta", delta: "ok" } },
     }
     const { runner, sessionLog } = createRunner(provider, [], {
-      osProfile: "native",
       attentionPolicy: DEFAULT_NATIVE_ATTENTION_POLICY,
       governancePolicy: DEFAULT_NATIVE_GOVERNANCE_POLICY,
     })
@@ -86,7 +69,6 @@ describe("OS Native Profile (Phase 6)", () => {
       provider,
       [tool("needs_approval", "Needs approval", { type: "object", properties: {} }, () => "ok")],
       {
-        osProfile: "native",
         attentionPolicy: DEFAULT_NATIVE_ATTENTION_POLICY,
         governancePolicy: { rules: [{ pattern: "needs_approval", action: "ask_user" }] },
         onPermissionRequest: async () => ({ approved: true, responder: "test" }),

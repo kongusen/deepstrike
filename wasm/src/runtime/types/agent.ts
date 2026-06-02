@@ -37,41 +37,46 @@ export interface AgentRunSpec {
   metadata?: Record<string, unknown>
 }
 
-export interface AgentSpawnedObservation {
-  kind: "agent_spawned"
+/** Kernel process-table observation (Phase 3 canonical spawn signal). */
+export interface AgentProcessChangedObservation {
+  kind: "agent_process_changed"
   turn?: number
   agent_id: string
   parent_session_id: string
   role: string
   isolation: string
   context_inheritance: string
-  permitted_capability_ids: string[]
+  state?: string
+  permitted_capability_ids?: string[]
+  result_termination?: string
+}
+
+/** Map kernel spawn observation → host manifest. */
+export function spawnObservationToManifest(
+  obs: AgentProcessChangedObservation | Record<string, unknown>,
+  spec: AgentRunSpec,
+  parentSessionId: string,
+): AgentProcessChangedObservation {
+  const o = obs as AgentProcessChangedObservation
+  return {
+    kind: "agent_process_changed",
+    turn: o.turn,
+    agent_id: String(o.agent_id ?? spec.identity.agentId),
+    parent_session_id: String(o.parent_session_id ?? parentSessionId),
+    role: String(o.role ?? spec.role),
+    isolation: String(o.isolation ?? spec.isolation ?? "shared"),
+    context_inheritance: String(o.context_inheritance ?? "none"),
+    permitted_capability_ids: o.permitted_capability_ids ?? [],
+  }
 }
 
 export function findSpawnProcessObservation(
   observations: Array<{ kind: string; agent_id?: string }>,
-): Record<string, unknown> | undefined {
-  return observations.find(
-    o => (o.kind === "agent_process_changed" || o.kind === "agent_spawned")
-      && typeof o.agent_id === "string",
-  ) as Record<string, unknown> | undefined
-}
-
-export function spawnObservationToManifest(
-  obs: Record<string, unknown>,
-  spec: AgentRunSpec,
-  parentSessionId: string,
-): AgentSpawnedObservation {
-  return {
-    kind: "agent_spawned",
-    turn: obs.turn as number | undefined,
-    agent_id: String(obs.agent_id ?? spec.identity.agentId),
-    parent_session_id: String(obs.parent_session_id ?? parentSessionId),
-    role: String(obs.role ?? spec.role),
-    isolation: String(obs.isolation ?? spec.isolation ?? "shared"),
-    context_inheritance: String(obs.context_inheritance ?? "none"),
-    permitted_capability_ids: (obs.permitted_capability_ids as string[]) ?? [],
-  }
+): AgentProcessChangedObservation | undefined {
+  const hit = observations.find(
+    o => o.kind === "agent_process_changed" && typeof o.agent_id === "string",
+  )
+  return hit as AgentProcessChangedObservation | undefined
 }
 
 export interface LoopResult {

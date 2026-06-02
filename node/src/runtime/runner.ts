@@ -34,7 +34,7 @@ import {
   type KernelRunnerAction,
 } from "./kernel-step.js"
 import type {
-  AgentRunSpec, AgentSpawnedObservation, MilestoneCheckResult, MilestoneContract, MilestonePolicy, SubAgentResult,
+  AgentRunSpec, AgentProcessChangedObservation, MilestoneCheckResult, MilestoneContract, MilestonePolicy, SubAgentResult,
 } from "../types/agent.js"
 import {
   agentRunSpecToKernel,
@@ -47,15 +47,10 @@ import {
 import { defaultSubAgentOrchestrator, type SubAgentOrchestrator } from "./sub-agent-orchestrator.js"
 import { governancePolicyToKernelEvent, type GovernancePolicy } from "../governance.js"
 import { kernelObservationToSessionEvent, withCategory } from "./kernel-event-log.js"
-import { assertNativeProfile, isNativeProfile, type OsProfile } from "./os-profile.js"
+import { DEFAULT_NATIVE_ATTENTION_POLICY, DEFAULT_NATIVE_GOVERNANCE_POLICY } from "./os-profile.js"
+import { LargeResultSpool } from "./large-result-spool.js"
 
 export interface RuntimeOptions {
-  /**
-   * SDK runtime profile. `native` enables Phase 6 OS contract: in-kernel signal +
-   * governance only, mandatory event categories on kernel session events.
-   * @default "legacy"
-   */
-  osProfile?: OsProfile
   provider: LLMProvider
   sessionLog: SessionLog
   executionPlane: ExecutionPlane
@@ -70,13 +65,6 @@ export interface RuntimeOptions {
   knowledgeSource?: KnowledgeSource
   signalSource?: SignalSource
   extensions?: Record<string, unknown>
-  // COMPAT(gov-sdk-gate): legacy SDK-side governance instance. Prefer the declarative
-  // `governancePolicy` below, which drives the in-kernel gate. When both are set,
-  // `governancePolicy` wins and this instance is ignored. Removable after migration.
-  governance?: {
-    setTime?(nowMs: bigint): void
-    evaluate(name: string, argsJson: string): { kind: string; reason?: string; retryAfterMs?: number }
-  }
   /**
    * Declarative governance policy loaded into the kernel (`load_governance_policy`).
    * The kernel enforces deny/veto/rate-limit/param-constraint before tools execute;
@@ -98,6 +86,11 @@ export interface RuntimeOptions {
   schedulerBudget?: { maxWallMs?: number }
   tokenizer?: string
   enablePlanTool?: boolean
+  /**
+   * Persist full tool outputs when the kernel emits `large_result_spooled`.
+   * Defaults to `.spool/` under the process cwd.
+   */
+  resultSpool?: LargeResultSpool
   compressionStore?: ArchiveStore
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
   onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
@@ -141,6 +134,8 @@ export class RuntimeRunner {
   private pendingObservations: KernelObservation[] = []
   private currentSessionId: string | null = null
   private nextArchiveStart = 0
+  /** Full tool outputs keyed by call_id until Layer-1 spool observations are logged. */
+  private pendingSpoolOutputs = new Map<string, { tool: string; output: string }>()
 
   constructor(private readonly opts: RuntimeOptions) {}
 
@@ -429,8 +424,43 @@ export class RuntimeRunner {
         approved: decision.approved,
         responder: decision.responder ?? "host",
       })
-      if (decision.approved) approved.push(g.call_id)
-      else denied.push(g.call_id)
+      if (decision.approved) {
+        approved.push(g.call_id)
+      } else {
+        denied.push(g.call_id)
+        const denyReason = decision.reason ?? "permission denied"
+        events.push({
+          type: "tool_denied",
+          callId: g.call_id,
+          toolName: g.tool,
+          reason: denyReason,
+        } as ToolDeniedEvent)
+        events.push({
+          type: "tool_result",
+          callId: g.call_id,
+          name: g.tool,
+          content: `permission denied: ${denyReason}`,
+          isError: true,
+          errorKind: "governance_denied",
+        } as ToolResultEvent)
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "tool_denied",
+          turn: runtime.turn(),
+          call_id: g.call_id,
+          tool_name: g.tool,
+          reason: denyReason,
+        })
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "tool_completed",
+          turn: runtime.turn(),
+          results: [{
+            call_id: g.call_id,
+            output: `permission denied: ${denyReason}`,
+            is_error: true,
+            error_kind: "governance_denied",
+          }],
+        })
+      }
     }
 
     return { approved, denied, events }
@@ -444,9 +474,9 @@ export class RuntimeRunner {
     priorEvents?: Array<{ seq: number; event: SessionEvent }>,
     resumeMidRun = false,
   ): AsyncIterable<StreamEvent> {
-    assertNativeProfile(this.opts)
     this.interrupted = false
     this.pendingObservations = []
+    this.pendingSpoolOutputs.clear()
     this.currentSessionId = sessionId
     const kernel = getKernel()
     const ext = { ...this.opts.extensions, ...(extensions ?? {}) }
@@ -464,7 +494,6 @@ export class RuntimeRunner {
     })
     this.activeKernel = runtime
     this.nextArchiveStart = nextCompressedArchiveStart
-    const router = new kernel.SignalRouter(256)
 
     if (this.opts.tokenizer) {
       kernelApply(runtime, this.pendingObservations, {
@@ -564,20 +593,19 @@ export class RuntimeRunner {
     if (this.opts.runSpec) {
       startPayload.run_spec = agentRunSpecToKernel(this.opts.runSpec)
     }
+    const attentionPolicy = this.opts.attentionPolicy ?? DEFAULT_NATIVE_ATTENTION_POLICY
+    const governancePolicy = this.opts.governancePolicy ?? DEFAULT_NATIVE_GOVERNANCE_POLICY
+
     // Load the declarative governance policy into the kernel before the run starts,
     // so the in-kernel gate enforces deny/veto/rate-limit/param before any tool runs.
-    if (this.opts.governancePolicy) {
-      kernelApply(runtime, this.pendingObservations, governancePolicyToKernelEvent(this.opts.governancePolicy))
-    }
+    kernelApply(runtime, this.pendingObservations, governancePolicyToKernelEvent(governancePolicy))
     // Enable in-kernel signal routing so the kernel owns disposition + queuing.
-    if (this.opts.attentionPolicy) {
-      kernelApply(runtime, this.pendingObservations, {
-        kind: "set_attention_policy",
-        ...(this.opts.attentionPolicy.maxQueueSize !== undefined
-          ? { max_queue_size: this.opts.attentionPolicy.maxQueueSize }
-          : {}),
-      })
-    }
+    kernelApply(runtime, this.pendingObservations, {
+      kind: "set_attention_policy",
+      ...(attentionPolicy.maxQueueSize !== undefined
+        ? { max_queue_size: attentionPolicy.maxQueueSize }
+        : {}),
+    })
     // Set optional wall-clock budget override.
     if (this.opts.schedulerBudget) {
       kernelApply(runtime, this.pendingObservations, {
@@ -616,67 +644,24 @@ export class RuntimeRunner {
           const signalType = sig.signalType ?? "event"
           const urgency = sig.urgency ?? "normal"
           const summary = String((sig.payload as Record<string, unknown>)?.goal ?? sig.kind ?? "signal")
-          if (this.opts.attentionPolicy) {
-            // Kernel-routed: the kernel decides disposition (dedup/queue/interrupt)
-            // and emits `signal_disposed`. An actionable disposition yields a new
-            // action to adopt; queued/observed/ignored yields none (kernel buffers).
-            // Wire shape is snake_case RuntimeSignal with an object payload.
-            const sigAction = kernelMaybeAction(runtime, this.pendingObservations, {
-              kind: "signal",
-              signal: {
-                id,
-                source,
-                signal_type: signalType,
-                urgency,
-                summary,
-                payload: sig.payload ?? {},
-                ...(sig.dedupeKey ? { dedupe_key: sig.dedupeKey } : {}),
-                timestamp_ms: Date.now(),
-              },
-            })
-            if (sigAction) action = sigAction
-          } else if (isNativeProfile(this.opts)) {
-            throw new Error(
-              "COMPAT(signal-legacy): osProfile \"native\" requires attentionPolicy",
-            )
-          } else {
-            // COMPAT(signal-legacy): SDK-side napi router (camelCase shape, string
-            // payload). Used when no attentionPolicy is configured. Removable once all
-            // callers drive signals through the kernel.
-            const kernelSig = {
+          // Kernel-routed: the kernel decides disposition (dedup/queue/interrupt)
+          // and emits `signal_disposed`. An actionable disposition yields a new
+          // action to adopt; queued/observed/ignored yields none (kernel buffers).
+          // Wire shape is snake_case RuntimeSignal with an object payload.
+          const sigAction = kernelMaybeAction(runtime, this.pendingObservations, {
+            kind: "signal",
+            signal: {
               id,
               source,
-              signalType,
+              signal_type: signalType,
               urgency,
               summary,
-              payload: JSON.stringify(sig.payload ?? {}),
-              dedupeKey: sig.dedupeKey,
-              timestampMs: Date.now(),
-            }
-            const disposition = router.ingest(kernelSig as unknown as Parameters<typeof router.ingest>[0], action.kind === "execute_tool")
-            if (disposition === "interrupt_now") {
-              action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
-              break
-            }
-          }
-        }
-      }
-
-      // COMPAT(signal-legacy): SDK-side queue drain. In kernel-routed mode the kernel
-      // drains its own queue at turn boundaries, so this only runs in legacy mode.
-      if (!this.opts.attentionPolicy) {
-        if (isNativeProfile(this.opts)) {
-          throw new Error(
-            "COMPAT(signal-legacy): osProfile \"native\" forbids SDK signal queue drain",
-          )
-        }
-        let queued = router.next()
-        while (queued) {
-          if (queued.urgency === "critical") {
-            action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
-            break
-          }
-          queued = router.next()
+              payload: sig.payload ?? {},
+              ...(sig.dedupeKey ? { dedupe_key: sig.dedupeKey } : {}),
+              timestamp_ms: Date.now(),
+            },
+          })
+          if (sigAction) action = sigAction
         }
       }
       if (runtime.isTerminal()) break
@@ -750,7 +735,7 @@ export class RuntimeRunner {
           message: messageToKernelMessage(assistantMessage),
           ...(turnInputTokens > 0 ? { observed_input_tokens: turnInputTokens } : {}),
           ...(turnOutputTokens > 0 ? { observed_output_tokens: turnOutputTokens } : {}),
-          ...(this.opts.governancePolicy ? { now_ms: Date.now() } : {}),
+          now_ms: Date.now(),
         }
         let nextAction = kernelMaybeAction(runtime, this.pendingObservations, providerEvent)
         if (!nextAction && this.pendingObservations.some(o => o.kind === "suspended")) {
@@ -776,19 +761,11 @@ export class RuntimeRunner {
         const allCalls: ToolCall[] = action.calls
         await this.opts.sessionLog.append(sessionId, { kind: "tool_requested", turn: runtime.turn(), calls: allCalls })
 
-        // In-kernel gate mode: AskUser is resolved via kernel suspend/resume before
-        // execute_tool; only legacy SDK-side governance uses kernelGatedCalls here.
-        const kernelGated = undefined
-
         const runCtx: RunContext = {
           agentId: this.opts.agentId,
           skillDir: this.opts.skillDir,
           dreamStore: this.opts.dreamStore,
           knowledgeSource: this.opts.knowledgeSource,
-          // COMPAT(gov-sdk-gate): only pass the legacy instance when NOT in kernel-gate
-          // mode, so the two gates never both run (double-gating). Remove with the field.
-          governance: this.opts.governancePolicy ? undefined : this.opts.governance,
-          kernelGatedCalls: kernelGated,
           onToolSuspend: this.opts.onToolSuspend,
           onPermissionRequest: this.opts.onPermissionRequest,
         }
@@ -876,6 +853,12 @@ export class RuntimeRunner {
             token_count: r.tokenCount,
           })),
         })
+        for (const call of normalCalls) {
+          const result = toolResults.find(r => r.callId === call.id)
+          if (result) {
+            this.pendingSpoolOutputs.set(call.id, { tool: call.name, output: result.output })
+          }
+        }
         action = kernelAction(runtime, this.pendingObservations, {
           kind: "tool_results",
           results: toolResults.map(toolResultToKernel),
@@ -982,10 +965,11 @@ export class RuntimeRunner {
     const turn = runtime.turn()
     const preservedRefs = runtime.preservedRefs()
     const observations = this.pendingObservations.splice(0)
-    for (const obs of observations) {
+    for (let obs of observations) {
       if (obs.kind === "page_in_requested") continue
 
       let archiveRef: string | undefined
+      let spoolRef: string | undefined
       if (obs.kind === "compressed") {
         const archived = obs.archived
         if (this.opts.compressionStore && archived && archived.length > 0) {
@@ -998,12 +982,29 @@ export class RuntimeRunner {
         }
       }
 
+      if (obs.kind === "large_result_spooled") {
+        const pending = this.pendingSpoolOutputs.get(obs.call_id ?? "")
+        if (pending) {
+          const spool = this.opts.resultSpool ?? new LargeResultSpool()
+          try {
+            spoolRef = await spool.persistOutput(obs.call_id ?? "", pending.output)
+          } catch {
+            // non-fatal: preview remains in kernel context; full output still in tool_completed log
+          }
+          if (!obs.tool && pending.tool) {
+            obs = { ...obs, tool: pending.tool }
+          }
+          this.pendingSpoolOutputs.delete(obs.call_id ?? "")
+        }
+      }
+
       const latest =
         obs.kind === "compressed" ? await this.opts.sessionLog.latestSeq(sessionId) : undefined
       const event = kernelObservationToSessionEvent(obs, turn, {
         nextArchiveStart,
         latestSeq: latest,
         archiveRef,
+        spoolRef,
         preservedRefs,
         compressionAction,
       })

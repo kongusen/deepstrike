@@ -9,12 +9,9 @@ export type { ExecutionPlane, RunContext } from "./runtime/execution-plane.js"
 export { InMemorySessionLog, FileSessionLog } from "./runtime/session-log.js"
 export type { SessionLog, SessionEvent } from "./runtime/session-log.js"
 export {
-  assertNativeProfile,
   DEFAULT_NATIVE_ATTENTION_POLICY,
   DEFAULT_NATIVE_GOVERNANCE_POLICY,
-  isNativeProfile,
 } from "./runtime/os-profile.js"
-export type { OsProfile } from "./runtime/os-profile.js"
 export {
   rebuildOsSnapshotFromSessionEvents,
   sessionLogHasRequiredCategories,
@@ -94,7 +91,7 @@ export type {
   AgentIdentity,
   AgentIsolation,
   AgentRunSpec,
-  AgentSpawnedObservation,
+  AgentProcessChangedObservation,
   ContextInheritance,
   KernelAgentRole,
   LoopResult,

@@ -10,7 +10,7 @@ import type { SignalSource } from "../signals/index.js"
 import type { SessionLog, SessionEvent } from "./session-log.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
 import { resolvePermissionRequest } from "./execution-plane.js"
-import { governancePolicyToKernelEvent, type Governance, type GovernancePolicy } from "../governance.js"
+import { governancePolicyToKernelEvent, type GovernancePolicy } from "../governance.js"
 import { getKernel } from "./kernel.js"
 import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
@@ -28,7 +28,7 @@ import {
   type KernelRunnerAction,
   type KernelRuntimeHandle,
 } from "./kernel-step.js"
-import type { AgentRunSpec, AgentSpawnedObservation, SubAgentResult, MilestonePolicy, MilestoneContract, MilestoneCheckResult } from "./types/agent.js"
+import type { AgentRunSpec, AgentProcessChangedObservation, SubAgentResult, MilestonePolicy, MilestoneContract, MilestoneCheckResult } from "./types/agent.js"
 import {
   agentRunSpecToKernel,
   findSpawnProcessObservation,
@@ -39,11 +39,9 @@ import {
 } from "./types/agent.js"
 import { defaultSubAgentOrchestrator, type SubAgentOrchestrator } from "./sub-agent-orchestrator.js"
 import { kernelObservationToSessionEvent, withCategory } from "./kernel-event-log.js"
-import { assertNativeProfile, isNativeProfile, type OsProfile } from "./os-profile.js"
+import { DEFAULT_NATIVE_ATTENTION_POLICY, DEFAULT_NATIVE_GOVERNANCE_POLICY } from "./os-profile.js"
 
 export interface RuntimeOptions {
-  /** @default "legacy" */
-  osProfile?: OsProfile
   provider: LLMProvider
   sessionLog: SessionLog
   executionPlane: ExecutionPlane
@@ -59,7 +57,6 @@ export interface RuntimeOptions {
   knowledgeSource?: KnowledgeSource
   signalSource?: SignalSource
   extensions?: Record<string, unknown>
-  governance?: Governance
   governancePolicy?: GovernancePolicy
   attentionPolicy?: { maxQueueSize?: number }
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
@@ -217,8 +214,43 @@ export class RuntimeRunner {
         approved: decision.approved,
         responder: decision.responder ?? "host",
       })
-      if (decision.approved) approved.push(g.call_id)
-      else denied.push(g.call_id)
+      if (decision.approved) {
+        approved.push(g.call_id)
+      } else {
+        denied.push(g.call_id)
+        const denyReason = decision.reason ?? "permission denied"
+        events.push({
+          type: "tool_denied",
+          callId: g.call_id,
+          toolName: g.tool,
+          reason: denyReason,
+        } as ToolDeniedEvent)
+        events.push({
+          type: "tool_result",
+          callId: g.call_id,
+          name: g.tool,
+          content: `permission denied: ${denyReason}`,
+          isError: true,
+          errorKind: "governance_denied",
+        } as ToolResultEvent)
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "tool_denied",
+          turn: runtime.turn(),
+          call_id: g.call_id,
+          tool_name: g.tool,
+          reason: denyReason,
+        })
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "tool_completed",
+          turn: runtime.turn(),
+          results: [{
+            call_id: g.call_id,
+            output: `permission denied: ${denyReason}`,
+            is_error: true,
+            error_kind: "governance_denied",
+          }],
+        })
+      }
     }
 
     return { approved, denied, events }
@@ -227,7 +259,6 @@ export class RuntimeRunner {
   async dream(agentId: string, nowMs = Date.now()): Promise<DreamResult> {
     if (!this.opts.dreamStore) throw new Error("dreamStore not configured")
     const kernel = await getKernel()
-    this.opts.governance?._attach(kernel)
 
     const sessions = await this.opts.dreamStore.loadSessions(agentId)
     const existingMemories = await this.opts.dreamStore.loadMemories(agentId)
@@ -306,12 +337,10 @@ export class RuntimeRunner {
     priorEvents?: Array<{ seq: number; event: SessionEvent }>,
     resumeMidRun = false,
   ): AsyncIterable<StreamEvent> {
-    assertNativeProfile(this.opts)
     this.interrupted = false
     this.pendingObservations = []
     this.currentSessionId = sessionId
     const kernel = await getKernel()
-    this.opts.governance?._attach(kernel)
 
     const ext = { ...this.opts.extensions, ...(extensions ?? {}) }
     const providerState = this.opts.provider.createRunState?.()
@@ -327,7 +356,6 @@ export class RuntimeRunner {
       timeoutMs: effectiveTimeoutMs !== undefined ? BigInt(effectiveTimeoutMs) : undefined,
     })
     this.activeKernel = runtime
-    const router = new kernel.SignalRouter(256)
 
     kernelApply(runtime, this.pendingObservations, {
       kind: "set_tools",
@@ -404,17 +432,16 @@ export class RuntimeRunner {
     if (this.opts.runSpec) {
       startPayload.run_spec = agentRunSpecToKernel(this.opts.runSpec)
     }
-    if (this.opts.governancePolicy) {
-      kernelApply(runtime, this.pendingObservations, governancePolicyToKernelEvent(this.opts.governancePolicy))
-    }
-    if (this.opts.attentionPolicy) {
-      kernelApply(runtime, this.pendingObservations, {
-        kind: "set_attention_policy",
-        ...(this.opts.attentionPolicy.maxQueueSize !== undefined
-          ? { max_queue_size: this.opts.attentionPolicy.maxQueueSize }
-          : {}),
-      })
-    }
+    const attentionPolicy = this.opts.attentionPolicy ?? DEFAULT_NATIVE_ATTENTION_POLICY
+    const governancePolicy = this.opts.governancePolicy ?? DEFAULT_NATIVE_GOVERNANCE_POLICY
+
+    kernelApply(runtime, this.pendingObservations, governancePolicyToKernelEvent(governancePolicy))
+    kernelApply(runtime, this.pendingObservations, {
+      kind: "set_attention_policy",
+      ...(attentionPolicy.maxQueueSize !== undefined
+        ? { max_queue_size: attentionPolicy.maxQueueSize }
+        : {}),
+    })
 
     let action: KernelRunnerAction = resumeMidRun
       ? kernelAction(runtime, this.pendingObservations, { kind: "resume" })
@@ -439,58 +466,20 @@ export class RuntimeRunner {
           const signalType = sig.signalType ?? "event"
           const urgency = sig.urgency ?? "normal"
           const summary = String((sig.payload as Record<string, unknown>)?.goal ?? "signal")
-          if (this.opts.attentionPolicy) {
-            const sigAction = kernelMaybeAction(runtime, this.pendingObservations, {
-              kind: "signal",
-              signal: {
-                id,
-                source,
-                signal_type: signalType,
-                urgency,
-                summary,
-                payload: sig.payload ?? {},
-                ...(sig.dedupeKey ? { dedupe_key: sig.dedupeKey } : {}),
-                timestamp_ms: Date.now(),
-              },
-            })
-            if (sigAction) action = sigAction
-          } else if (isNativeProfile(this.opts)) {
-            throw new Error(
-              'COMPAT(signal-legacy): osProfile "native" requires attentionPolicy',
-            )
-          } else {
-            const kernelSig = {
+          const sigAction = kernelMaybeAction(runtime, this.pendingObservations, {
+            kind: "signal",
+            signal: {
               id,
               source,
-              signalType,
+              signal_type: signalType,
               urgency,
               summary,
-              payload: JSON.stringify(sig.payload ?? {}),
-              dedupeKey: sig.dedupeKey,
-              timestampMs: Date.now(),
-            }
-            const disposition = router.ingest(kernelSig as Parameters<typeof router.ingest>[0], action.kind === "execute_tool")
-            if (disposition === "interrupt_now") {
-              action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
-              break
-            }
-          }
-        }
-      }
-
-      if (!this.opts.attentionPolicy) {
-        if (isNativeProfile(this.opts)) {
-          throw new Error(
-            'COMPAT(signal-legacy): osProfile "native" forbids SDK signal queue drain',
-          )
-        }
-        let queued = router.next()
-        while (queued) {
-          if (queued.urgency === "critical") {
-            action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
-            break
-          }
-          queued = router.next()
+              payload: sig.payload ?? {},
+              ...(sig.dedupeKey ? { dedupe_key: sig.dedupeKey } : {}),
+              timestamp_ms: Date.now(),
+            },
+          })
+          if (sigAction) action = sigAction
         }
       }
       if (runtime.isTerminal()) break
@@ -592,7 +581,6 @@ export class RuntimeRunner {
           skillContentMap: this.opts.skillContentMap,
           dreamStore: this.opts.dreamStore,
           knowledgeSource: this.opts.knowledgeSource,
-          governance: this.opts.governancePolicy ? undefined : this.opts.governance,
           onToolSuspend: this.opts.onToolSuspend,
           onPermissionRequest: this.opts.onPermissionRequest,
         }

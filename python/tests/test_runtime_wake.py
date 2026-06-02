@@ -98,7 +98,7 @@ async def test_run_session_continuity():
 
   assert any(m.content == "My name is Ada." for m in provider.calls[1].turns)
   assert any(m.content == "answer-1" for m in provider.calls[1].turns)
-  assert any(m.content == "What is my name?" for m in provider.calls[1].turns)
+  assert any("What is my name?" in m.content for m in provider.calls[1].turns)
 
 
 @pytest.mark.asyncio
@@ -153,11 +153,31 @@ async def test_run_reactive_compacts_and_retries_prompt_too_long():
     max_turns=4,
   ))
 
-  text = await collect_text(runner.run(session_id="reactive-compact", goal="a" * 5000))
+  session_id = "reactive-compact"
+  await session_log.append(session_id, {
+    "kind": "run_started",
+    "run_id": "seed",
+    "goal": "seed " * 1200,
+    "criteria": [],
+  })
+  await session_log.append(session_id, {
+    "kind": "llm_completed",
+    "turn": 0,
+    "content": "prior answer " * 400,
+    "tool_calls": [],
+  })
+  await session_log.append(session_id, {
+    "kind": "run_terminal",
+    "reason": "completed",
+    "turns_used": 1,
+    "total_tokens": 0,
+  })
+
+  text = await collect_text(runner.run(session_id=session_id, goal="a" * 5000))
 
   assert text == "recovered"
   assert provider.stream_calls == 2
-  events = await session_log.read("reactive-compact")
+  events = await session_log.read(session_id)
   assert any(e.event.get("kind") == "compressed" for e in events)
 
 

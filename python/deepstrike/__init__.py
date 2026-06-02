@@ -50,7 +50,7 @@ from deepstrike.knowledge import KnowledgeSource
 from deepstrike.signals import RuntimeSignal, SignalSource, ScheduledPrompt, SignalGateway
 from deepstrike.types.agent import (
     AgentIdentity, AgentCapabilityFilter, AgentRunSpec,
-    AgentSpawnedObservation, SubAgentResult, LoopResult,
+    AgentProcessChangedObservation, SubAgentResult, LoopResult,
     KernelAgentRole, AgentIsolation, ContextInheritance,
     MilestoneContract, MilestonePhase, MilestoneCheckResult, MilestonePolicy,
     milestone_check_pass, milestone_check_fail,
@@ -95,7 +95,7 @@ __all__ = [
     "Governance", "GovernanceVerdict",
     # Sub-agent isolation
     "AgentIdentity", "AgentCapabilityFilter", "AgentRunSpec",
-    "AgentSpawnedObservation", "SubAgentResult", "LoopResult",
+    "AgentProcessChangedObservation", "SubAgentResult", "LoopResult",
     "KernelAgentRole", "AgentIsolation", "ContextInheritance",
     "MilestoneContract", "MilestonePhase", "MilestoneCheckResult", "MilestonePolicy",
     "milestone_check_pass", "milestone_check_fail",

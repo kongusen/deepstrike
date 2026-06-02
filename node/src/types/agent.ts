@@ -37,18 +37,6 @@ export interface AgentRunSpec {
   metadata?: Record<string, unknown>
 }
 
-/** @deprecated Prefer `agent_process_changed`; kept for session-log replay compat. */
-export interface AgentSpawnedObservation {
-  kind: "agent_spawned"
-  turn?: number
-  agent_id: string
-  parent_session_id: string
-  role: string
-  isolation: string
-  context_inheritance: string
-  permitted_capability_ids: string[]
-}
-
 /** Kernel process-table observation (Phase 3 canonical spawn signal). */
 export interface AgentProcessChangedObservation {
   kind: "agent_process_changed"
@@ -63,15 +51,15 @@ export interface AgentProcessChangedObservation {
   result_termination?: string
 }
 
-/** Map kernel spawn observation → host manifest (accepts legacy `agent_spawned`). */
+/** Map kernel spawn observation → host manifest. */
 export function spawnObservationToManifest(
-  obs: AgentProcessChangedObservation | AgentSpawnedObservation | Record<string, unknown>,
+  obs: AgentProcessChangedObservation | Record<string, unknown>,
   spec: AgentRunSpec,
   parentSessionId: string,
-): AgentSpawnedObservation {
+): AgentProcessChangedObservation {
   const o = obs as AgentProcessChangedObservation
   return {
-    kind: "agent_spawned",
+    kind: "agent_process_changed",
     turn: o.turn,
     agent_id: String(o.agent_id ?? spec.identity.agentId),
     parent_session_id: String(o.parent_session_id ?? parentSessionId),
@@ -84,12 +72,11 @@ export function spawnObservationToManifest(
 
 export function findSpawnProcessObservation(
   observations: Array<{ kind: string; agent_id?: string }>,
-): (AgentProcessChangedObservation | AgentSpawnedObservation) | undefined {
+): AgentProcessChangedObservation | undefined {
   const hit = observations.find(
-    o => (o.kind === "agent_process_changed" || o.kind === "agent_spawned")
-      && typeof o.agent_id === "string",
+    o => o.kind === "agent_process_changed" && typeof o.agent_id === "string",
   )
-  return hit as (AgentProcessChangedObservation | AgentSpawnedObservation) | undefined
+  return hit as AgentProcessChangedObservation | undefined
 }
 
 export interface LoopResult {

@@ -11,7 +11,7 @@ from deepstrike.runtime.sub_agent_orchestrator import SubAgentOrchestrator, SubA
 from deepstrike.types.agent import (
   AgentIdentity,
   AgentRunSpec,
-  AgentSpawnedObservation,
+  AgentProcessChangedObservation,
   MilestoneContract,
   MilestonePhase,
 )
@@ -26,7 +26,7 @@ def _ctx(*, with_harness: bool) -> SubAgentRunContext:
       MilestonePhase(id="p1", criteria=["Output contains hello"]),
     ]),
   )
-  manifest = AgentSpawnedObservation(
+  manifest = AgentProcessChangedObservation(
     agent_id="child-1",
     parent_session_id="parent-session",
     role="implement",

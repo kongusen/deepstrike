@@ -9,6 +9,7 @@ use deepstrike_core::runtime::kernel::{
     KernelAction, KernelInput, KernelInputEvent, KernelObservation, KernelPressureAction,
     KernelRuntime, KernelStep,
 };
+use deepstrike_core::runtime::event_log::category_for_kind;
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::scheduler::policy::LoopPolicy;
 use deepstrike_core::signals::router::SignalRouter;
@@ -1136,6 +1137,7 @@ impl RuntimeRunner {
                             SessionEvent::Compressed {
                                 turn,
                                 archived_seq_range: (next_archive_start, end),
+                                category: Some(category_for_kind("compressed")),
                                 action: Some(action_str),
                                 summary: summary.clone(),
                                 summary_tokens,
@@ -1157,6 +1159,7 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::Rollbacked {
                             turn,
+                            category: Some(category_for_kind("rollbacked")),
                             checkpoint_history_len,
                             reason,
                         },
@@ -1177,6 +1180,7 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::CapabilityChanged {
                             turn,
+                            category: Some(category_for_kind("capability_changed")),
                             added,
                             removed,
                             change_kind,
@@ -1197,6 +1201,7 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::MilestoneAdvanced {
                             turn,
+                            category: Some(category_for_kind("milestone_advanced")),
                             phase_id,
                             capabilities_unlocked,
                         },
@@ -1212,6 +1217,7 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::MilestoneBlocked {
                             turn,
+                            category: Some(category_for_kind("milestone_blocked")),
                             phase_id,
                             reason,
                         },
@@ -1227,6 +1233,7 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::MilestoneEvidence {
                             turn,
+                            category: Some(category_for_kind("milestone_evidence")),
                             phase_id,
                             evidence,
                         },
@@ -1237,7 +1244,11 @@ impl RuntimeRunner {
                 KernelObservation::CheckpointTaken { turn, history_len } => {
                     self.log(
                         session_id,
-                        SessionEvent::CheckpointTaken { turn, history_len },
+                        SessionEvent::CheckpointTaken {
+                            turn,
+                            category: Some(category_for_kind("checkpoint_taken")),
+                            history_len,
+                        },
                     )
                     .await;
                 }
@@ -1254,6 +1265,45 @@ impl RuntimeRunner {
                 KernelObservation::Resumed { .. } => {}
                 KernelObservation::PageOut { .. } => {}
                 KernelObservation::PageInRequested { .. } => {}
+                KernelObservation::MemoryWritten {
+                    turn,
+                    memory_id,
+                    memory_kind,
+                    size_bytes,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::MemoryWritten {
+                            turn,
+                            category: Some(category_for_kind("memory_written")),
+                            memory_id,
+                            memory_kind,
+                            size_bytes,
+                        },
+                    )
+                    .await;
+                }
+                KernelObservation::MemoryQueried {
+                    turn,
+                    query_context,
+                    requested_k,
+                    requires_async_response,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::MemoryQueried {
+                            turn,
+                            category: Some(category_for_kind("memory_queried")),
+                            query_context,
+                            requested_k,
+                            requires_async_response,
+                        },
+                    )
+                    .await;
+                }
+                // Phase 7 / M3: no dedicated session kinds yet in rust SDK.
+                KernelObservation::MemoryValidationFailed { .. }
+                | KernelObservation::LargeResultSpooled { .. } => {}
             }
         }
         next_archive_start

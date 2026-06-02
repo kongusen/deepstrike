@@ -38,35 +38,10 @@ class _StaticProvider:
 
 
 @pytest.mark.asyncio
-async def test_native_profile_requires_attention_policy():
-    runner = RuntimeRunner(RuntimeOptions(
-        provider=_StaticProvider(),
-        session_log=InMemorySessionLog(),
-        governance_policy=DEFAULT_NATIVE_GOVERNANCE_POLICY,
-        os_profile="native",
-    ))
-    with pytest.raises(ValueError, match="attention_policy"):
-        await collect_text(runner.run(session_id="native-fail-att", goal="g"))
-
-
-@pytest.mark.asyncio
-async def test_native_profile_requires_governance_policy():
-    runner = RuntimeRunner(RuntimeOptions(
-        provider=_StaticProvider(),
-        session_log=InMemorySessionLog(),
-        attention_policy=DEFAULT_NATIVE_ATTENTION_POLICY,
-        os_profile="native",
-    ))
-    with pytest.raises(ValueError, match="governance_policy"):
-        await collect_text(runner.run(session_id="native-fail-gov", goal="g"))
-
-
-@pytest.mark.asyncio
 async def test_native_profile_writes_categorized_kernel_events():
     runner = RuntimeRunner(RuntimeOptions(
         provider=_StaticProvider(),
         session_log=InMemorySessionLog(),
-        os_profile="native",
         attention_policy=DEFAULT_NATIVE_ATTENTION_POLICY,
         governance_policy=DEFAULT_NATIVE_GOVERNANCE_POLICY,
     ))

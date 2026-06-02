@@ -115,7 +115,9 @@ describe("tool runtime control plane", () => {
       {
         maxTurns: 2,
         sessionLog,
-        governance: { evaluate: () => ({ kind: "ask_user", reason: "confirm execution" }) },
+        governancePolicy: {
+          rules: [{ pattern: "needs_approval", action: "ask_user" }],
+        },
         onPermissionRequest: request => ({
           approved: request.toolName === "needs_approval",
           responder: "test-host",
@@ -173,7 +175,9 @@ describe("tool runtime control plane", () => {
       })],
       {
         maxTurns: 2,
-        governance: { evaluate: () => ({ kind: "ask_user", reason: "confirm execution" }) },
+        governancePolicy: {
+          rules: [{ pattern: "needs_approval", action: "ask_user" }],
+        },
         onPermissionRequest: () => ({ approved: false, responder: "test-host", reason: "user declined" }),
       },
     )

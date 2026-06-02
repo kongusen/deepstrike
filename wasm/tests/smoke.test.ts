@@ -4,9 +4,8 @@ import { ScheduledPrompt } from "../src/signals/index.js"
 import { PermissionManager, PermissionMode } from "../src/safety/index.js"
 import { AnthropicProvider } from "../src/providers/anthropic.js"
 import { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider } from "../src/providers/openai.js"
-import { Governance } from "../src/governance.js"
 import { RuntimeRunner, collectText, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
-import { tool } from "../src/tools/index.js"
+import { Governance } from "../src/governance.js"
 import type { LLMProvider, Message, ProviderRunState, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 
 describe("tool + executeTools", () => {
@@ -206,7 +205,7 @@ describe("RuntimeRunner", () => {
       executionPlane: plane,
       maxTokens: 2048,
       maxTurns: 2,
-      governance: { _attach: () => undefined, setTime: () => undefined, evaluate: () => ({ kind: "ask_user" as const, reason: "confirm execution" }) } as unknown as Governance,
+      governancePolicy: { rules: [{ pattern: "needs_approval", action: "ask_user" }] },
       onPermissionRequest: request => ({
         approved: request.toolName === "needs_approval",
         responder: "test-host",
@@ -270,7 +269,7 @@ describe("RuntimeRunner", () => {
       executionPlane: plane,
       maxTokens: 2048,
       maxTurns: 2,
-      governance: { _attach: () => undefined, setTime: () => undefined, evaluate: () => ({ kind: "ask_user" as const, reason: "confirm execution" }) } as unknown as Governance,
+      governancePolicy: { rules: [{ pattern: "needs_approval", action: "ask_user" }] },
       onPermissionRequest: () => ({ approved: false, responder: "test-host", reason: "user declined" }),
     })
 

@@ -19,7 +19,7 @@ export type {
   AgentIdentity,
   AgentIsolation,
   AgentRunSpec,
-  AgentSpawnedObservation,
+  AgentProcessChangedObservation,
   ContextInheritance,
   KernelAgentRole,
   LoopResult,

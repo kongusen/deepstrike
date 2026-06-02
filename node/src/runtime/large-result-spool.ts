@@ -144,6 +144,17 @@ omitted: ${omitted} chars
   }
 
   /**
+   * Persist a kernel-spooled tool output to disk. Returns the on-disk path ref.
+   */
+  async persistOutput(callId: string, content: string): Promise<string> {
+    const hash = this.hashContent(content)
+    const spoolPath = this.getSpoolPath(`${callId}-${hash.slice(0, 16)}`)
+    await fs.mkdir(this.spoolDir, { recursive: true })
+    await fs.writeFile(spoolPath, content, "utf-8")
+    return spoolPath
+  }
+
+  /**
    * Read a spooled result back from disk.
    */
   async readSpooledResult(spoolRef: string): Promise<string> {

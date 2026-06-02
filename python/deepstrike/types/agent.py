@@ -54,7 +54,7 @@ class AgentRunSpec:
 
 
 @dataclass
-class AgentSpawnedObservation:
+class AgentProcessChangedObservation:
   agent_id: str
   parent_session_id: str
   role: str
@@ -62,7 +62,9 @@ class AgentSpawnedObservation:
   context_inheritance: str
   permitted_capability_ids: list[str]
   turn: int | None = None
-  kind: str = "agent_spawned"
+  state: str = "running"
+  result_termination: str | None = None
+  kind: str = "agent_process_changed"
 
 
 @dataclass

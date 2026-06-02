@@ -207,6 +207,7 @@ fn replay_truncates_to_checkpoint_on_rollback() {
         // Rollback brings history back to 1 message (the assistant turn before tool call)
         SessionEvent::Rollbacked {
             turn: 0,
+            category: None,
             checkpoint_history_len: 1,
             reason: Some(RollbackReason::FatalToolError {
                 tool_name: "write_file".into(),

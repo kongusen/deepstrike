@@ -52,7 +52,7 @@ from deepstrike.runtime.kernel_step import (
   tool_result_to_kernel,
   tool_schema_to_kernel,
 )
-from deepstrike.runtime.os_profile import assert_native_profile, is_native_profile
+from deepstrike.runtime.os_profile import DEFAULT_NATIVE_ATTENTION_POLICY, DEFAULT_NATIVE_GOVERNANCE_POLICY
 from deepstrike.runtime.replay_sanitize import sanitize_replay_text
 from deepstrike.runtime.session_repair import (
   build_llm_completed_event,
@@ -121,6 +121,7 @@ class RuntimeRunner:
     self._pending_observations: list[dict] = []
     self._current_session_id: str | None = None
     self._next_archive_start: int = 0
+    self._pending_spool_outputs: dict[str, dict[str, str]] = {}
 
   @property
   def host_options(self) -> RuntimeOptions:
@@ -137,7 +138,7 @@ class RuntimeRunner:
       default_sub_agent_orchestrator,
     )
     from deepstrike.types.agent import (
-      AgentSpawnedObservation,
+      AgentProcessChangedObservation,
       agent_run_spec_to_kernel,
       sub_agent_result_to_kernel,
     )
@@ -163,7 +164,7 @@ class RuntimeRunner:
     if spawned_obs is None:
       raise RuntimeError("spawn_sub_agent did not emit agent_process_changed")
 
-    manifest = AgentSpawnedObservation(
+    manifest = AgentProcessChangedObservation(
       agent_id=str(spawned_obs.get("agent_id") or spec.identity.agent_id),
       parent_session_id=str(spawned_obs.get("parent_session_id") or parent_session_id),
       role=str(spawned_obs.get("role") or spec.role),
@@ -171,6 +172,8 @@ class RuntimeRunner:
       context_inheritance=str(spawned_obs.get("context_inheritance") or "none"),
       permitted_capability_ids=list(spawned_obs.get("permitted_capability_ids") or []),
       turn=spawned_obs.get("turn"),
+      state=str(spawned_obs.get("state") or "running"),
+      result_termination=spawned_obs.get("result_termination"),
     )
 
     orchestrator = self._opts.sub_agent_orchestrator or default_sub_agent_orchestrator
@@ -442,6 +445,36 @@ class RuntimeRunner:
         approved.append(g["call_id"])
       else:
         denied.append(g["call_id"])
+        deny_reason = getattr(decision, "reason", None) or "permission denied"
+        events.append(ToolDeniedEvent(
+          call_id=g["call_id"],
+          tool_name=g["tool"],
+          reason=deny_reason,
+        ))
+        events.append(ToolResultEvent(
+          call_id=g["call_id"],
+          name=g["tool"],
+          content=f"permission denied: {deny_reason}",
+          is_error=True,
+          error_kind="governance_denied",
+        ))
+        await self._opts.session_log.append(session_id, {
+          "kind": "tool_denied",
+          "turn": runtime.turn(),
+          "call_id": g["call_id"],
+          "tool_name": g["tool"],
+          "reason": deny_reason,
+        })
+        await self._opts.session_log.append(session_id, {
+          "kind": "tool_completed",
+          "turn": runtime.turn(),
+          "results": [{
+            "call_id": g["call_id"],
+            "output": f"permission denied: {deny_reason}",
+            "is_error": True,
+            "error_kind": "governance_denied",
+          }],
+        })
 
     return approved, denied, events
 
@@ -454,9 +487,9 @@ class RuntimeRunner:
     prior_events: list[SessionEntry] | None,
     resume_mid_run: bool,
   ) -> AsyncIterator[StreamEvent]:
-    assert_native_profile(self._opts)
     self._interrupted = False
     self._pending_observations = []
+    self._pending_spool_outputs.clear()
     self._current_session_id = session_id
     ext = {**(self._opts.extensions or {}), **(extensions or {})}
     create_run_state = getattr(self._opts.provider, "create_run_state", None)
@@ -477,7 +510,6 @@ class RuntimeRunner:
     )
     runtime = KernelRuntime(policy)
     self._active_kernel = runtime
-    router = SignalRouter(max_queue_size=256)
 
     if self._opts.tokenizer:
       kernel_apply(runtime, self._pending_observations, {
@@ -572,19 +604,19 @@ class RuntimeRunner:
       from deepstrike.types.agent import agent_run_spec_to_kernel
       start_payload["run_spec"] = agent_run_spec_to_kernel(self._opts.run_spec)
 
-    if self._opts.governance_policy:
-      kernel_apply(
-        runtime,
-        self._pending_observations,
-        governance_policy_to_kernel_event(self._opts.governance_policy),
-      )
-    if self._opts.attention_policy:
-      ap = self._opts.attention_policy
-      max_q = ap.get("max_queue_size") if isinstance(ap, dict) else getattr(ap, "max_queue_size", None)
-      kernel_apply(runtime, self._pending_observations, {
-        "kind": "set_attention_policy",
-        **({"max_queue_size": max_q} if max_q is not None else {}),
-      })
+    gov_policy = self._opts.governance_policy or DEFAULT_NATIVE_GOVERNANCE_POLICY
+    kernel_apply(
+      runtime,
+      self._pending_observations,
+      governance_policy_to_kernel_event(gov_policy),
+    )
+
+    ap = self._opts.attention_policy or DEFAULT_NATIVE_ATTENTION_POLICY
+    max_q = ap.get("max_queue_size") if isinstance(ap, dict) else getattr(ap, "max_queue_size", None)
+    kernel_apply(runtime, self._pending_observations, {
+      "kind": "set_attention_policy",
+      **({"max_queue_size": max_q} if max_q is not None else {}),
+    })
 
     action = (
       kernel_action(runtime, self._pending_observations, {"kind": "resume"})
@@ -607,43 +639,21 @@ class RuntimeRunner:
       if self._opts.signal_source:
         sig = await self._opts.signal_source.next_signal()
         if sig:
-          if self._opts.attention_policy:
-            sig_action = kernel_maybe_action(runtime, self._pending_observations, {
-              "kind": "signal",
-              "signal": {
-                "id": str(uuid.uuid4()),
-                "source": sig.source,
-                "signal_type": sig.signal_type,
-                "urgency": sig.urgency,
-                "summary": str(sig.payload.get("goal") or sig.kind),
-                "payload": sig.payload,
-                **({"dedupe_key": sig.dedupe_key} if sig.dedupe_key else {}),
-                "timestamp_ms": int(time.time() * 1000),
-              },
-            })
-            if sig_action:
-              action = sig_action
-          elif is_native_profile(self._opts):
-            raise ValueError(
-              'COMPAT(signal-legacy): os_profile "native" requires attention_policy',
-            )
-          else:
-            disposition = router.ingest(sig.to_kernel_signal(), action.kind == "execute_tool")
-            if disposition == "interrupt_now":
-              action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
-              break
-
-      if not self._opts.attention_policy:
-        if is_native_profile(self._opts):
-          raise ValueError(
-            'COMPAT(signal-legacy): os_profile "native" forbids SDK signal queue drain',
-          )
-        queued = router.next()
-        while queued:
-          if queued.urgency == "critical":
-            action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
-            break
-          queued = router.next()
+          sig_action = kernel_maybe_action(runtime, self._pending_observations, {
+            "kind": "signal",
+            "signal": {
+              "id": str(uuid.uuid4()),
+              "source": sig.source,
+              "signal_type": sig.signal_type,
+              "urgency": sig.urgency,
+              "summary": str(sig.payload.get("goal") or sig.kind),
+              "payload": sig.payload,
+              **({"dedupe_key": sig.dedupe_key} if sig.dedupe_key else {}),
+              "timestamp_ms": int(time.time() * 1000),
+            },
+          })
+          if sig_action:
+            action = sig_action
       if runtime.is_terminal():
         break
 
@@ -700,9 +710,8 @@ class RuntimeRunner:
         provider_event: dict[str, Any] = {
           "kind": "provider_result",
           "message": message_to_kernel(assistant_message),
+          "now_ms": int(time.time() * 1000),
         }
-        if self._opts.governance_policy:
-          provider_event["now_ms"] = int(time.time() * 1000)
         next_action = kernel_maybe_action(runtime, self._pending_observations, provider_event)
         if not next_action and any(o.get("kind") == "suspended" for o in self._pending_observations):
           approved, denied, suspend_events = await self._resolve_kernel_suspend(runtime, session_id)
@@ -734,7 +743,6 @@ class RuntimeRunner:
           skill_dir=skill_dir,
           dream_store=self._opts.dream_store,
           knowledge_source=self._opts.knowledge_source,
-          governance=None if self._opts.governance_policy else self._opts.governance,
           on_tool_suspend=self._opts.on_tool_suspend,
           on_permission_request=self._opts.on_permission_request,
         )
@@ -805,6 +813,10 @@ class RuntimeRunner:
         await self._opts.session_log.append(session_id, {
           "kind": "tool_completed", "turn": runtime.turn(), "results": tool_results,
         })
+        for call in normal_calls:
+          result = next((r for r in tool_results if r.call_id == call.id), None)
+          if result is not None:
+            self._pending_spool_outputs[call.id] = {"tool": call.name, "output": result.output}
         action = kernel_action(runtime, self._pending_observations, {
           "kind": "tool_results",
           "results": [tool_result_to_kernel(result) for result in tool_results],
@@ -938,6 +950,7 @@ class RuntimeRunner:
         continue
 
       archive_ref = None
+      spool_ref = None
       if obs.get("kind") == "compressed":
         archived = obs.get("archived")
         if self._opts.compression_store and archived:
@@ -947,6 +960,18 @@ class RuntimeRunner:
               archive_ref = path_ref
           except Exception:
             pass
+
+      if obs.get("kind") == "large_result_spooled":
+        call_id = obs.get("call_id") if isinstance(obs.get("call_id"), str) else ""
+        pending = self._pending_spool_outputs.pop(call_id, None)
+        if pending:
+          try:
+            from deepstrike.runtime.large_result_spool import LargeResultSpool
+            spool_ref = await LargeResultSpool().persist_output(call_id, pending["output"])
+          except Exception:
+            pass
+          if not obs.get("tool") and pending.get("tool"):
+            obs = {**obs, "tool": pending["tool"]}
 
       latest = (
         await self._opts.session_log.latest_seq(session_id)
@@ -961,6 +986,7 @@ class RuntimeRunner:
         archive_ref=archive_ref,
         preserved_refs=preserved_refs,
         compression_action=_compression_action,
+        spool_ref=spool_ref,
       )
       if not event:
         continue

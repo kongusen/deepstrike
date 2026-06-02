@@ -13,21 +13,6 @@ export interface RunContext {
   skillDir?: string
   dreamStore?: DreamStore
   knowledgeSource?: KnowledgeSource
-  // COMPAT(gov-sdk-gate): legacy SDK-side governance instance, used only when the
-  // caller passes the old `governance` option instead of declarative `governancePolicy`.
-  // When `kernelGatedCalls` is set (in-kernel gate mode) this field is left undefined.
-  // Removable once all callers migrate to the in-kernel gate.
-  governance?: {
-    setTime?(nowMs: bigint): void
-    evaluate(name: string, argsJson: string): { kind: string; reason?: string; retryAfterMs?: number }
-  }
-  /**
-   * In-kernel governance gate mode. When defined (even if empty), the kernel has
-   * already decided deny/rate-limit/param-constraint before dispatching these calls,
-   * so executeAll skips its own evaluate() pass. Entries are the calls the kernel
-   * flagged AskUser (callId → reason); executeAll runs human approval only for those.
-   */
-  kernelGatedCalls?: Map<string, string>
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
   onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
 }
@@ -62,107 +47,7 @@ export class LocalExecutionPlane implements ExecutionPlane {
   }
 
   async *executeAll(calls: ToolCall[], ctx: RunContext): AsyncIterable<StreamEvent> {
-    // Governance pass — denied calls get an immediate tool_result so the kernel always
-    // receives a result for every call it dispatched.
-    const permitted: ToolCall[] = []
-    for (const c of calls) {
-      // In-kernel gate mode: the kernel already enforced deny / rate-limit / param
-      // constraints before dispatch, so we skip the SDK-side evaluate() entirely.
-      // Only calls the kernel flagged AskUser arrive here needing human approval.
-      if (ctx.kernelGatedCalls) {
-        const reason = ctx.kernelGatedCalls.get(c.id)
-        if (reason !== undefined) {
-          const request: PermissionRequestEvent = {
-            type: "permission_request",
-            callId: c.id,
-            toolName: c.name,
-            arguments: c.arguments,
-            reason,
-          }
-          yield request
-          const decision = await resolvePermissionRequest(request, ctx)
-          yield {
-            type: "permission_resolved",
-            callId: c.id,
-            toolName: c.name,
-            approved: decision.approved,
-            responder: decision.responder ?? "host",
-            ...(decision.reason ? { reason: decision.reason } : {}),
-          } as PermissionResolvedEvent
-          if (decision.approved) {
-            permitted.push(c)
-            continue
-          }
-          const denyReason = decision.reason ?? reason ?? "permission denied"
-          yield { type: "tool_denied", callId: c.id, toolName: c.name, reason: denyReason } as ToolDeniedEvent
-          yield {
-            type: "tool_result",
-            callId: c.id,
-            name: c.name,
-            content: `permission denied: ${denyReason}`,
-            isError: true,
-            errorKind: "governance_denied",
-          } as ToolResultEvent
-          continue
-        }
-        permitted.push(c)
-        continue
-      }
-      // COMPAT(gov-sdk-gate): legacy full SDK-side gate, active only when no
-      // declarative governancePolicy was provided. Removable after migration.
-      if (ctx.governance) {
-        ctx.governance.setTime?.(BigInt(Date.now()))
-        const v = ctx.governance.evaluate(c.name, c.arguments)
-        if (v.kind === "deny") {
-          yield { type: "tool_denied", callId: c.id, toolName: c.name, reason: v.reason ?? "" } as ToolDeniedEvent
-          yield { type: "tool_result", callId: c.id, name: c.name, content: `permission denied: ${v.reason ?? ""}`, isError: true } as ToolResultEvent
-          continue
-        }
-        if (v.kind === "rate_limited") {
-          yield { type: "error", message: `rate limited: ${c.name}` } as StreamEvent
-          yield { type: "tool_result", callId: c.id, name: c.name, content: "rate limited", isError: true } as ToolResultEvent
-          continue
-        }
-        if (v.kind === "ask_user") {
-          const request: PermissionRequestEvent = {
-            type: "permission_request",
-            callId: c.id,
-            toolName: c.name,
-            arguments: c.arguments,
-            reason: v.reason ?? "",
-          }
-          yield request
-
-          const decision = await resolvePermissionRequest(request, ctx)
-          yield {
-            type: "permission_resolved",
-            callId: c.id,
-            toolName: c.name,
-            approved: decision.approved,
-            responder: decision.responder ?? "host",
-            ...(decision.reason ? { reason: decision.reason } : {}),
-          } as PermissionResolvedEvent
-
-          if (decision.approved) {
-            permitted.push(c)
-            continue
-          }
-
-          const reason = decision.reason ?? v.reason ?? "permission denied"
-          yield { type: "tool_denied", callId: c.id, toolName: c.name, reason } as ToolDeniedEvent
-          yield {
-            type: "tool_result",
-            callId: c.id,
-            name: c.name,
-            content: `permission denied: ${reason}`,
-            isError: true,
-            errorKind: "governance_denied",
-          } as ToolResultEvent
-          continue
-        }
-      }
-      permitted.push(c)
-    }
+    const permitted = calls
 
     const skillCalls     = permitted.filter(c => c.name === "skill")
     const memoryCalls    = permitted.filter(c => c.name === "memory")

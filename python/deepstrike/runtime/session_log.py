@@ -142,15 +142,17 @@ class CheckpointTakenEvent(TypedDict, total=False):
     history_len: int
 
 
-class AgentSpawnedEvent(TypedDict, total=False):
-    kind: Literal["agent_spawned"]
+class AgentProcessChangedEvent(TypedDict, total=False):
+    kind: Literal["agent_process_changed"]
     turn: int
     agent_id: str
     parent_session_id: str
     role: str
     isolation: str
     context_inheritance: str
+    state: str
     permitted_capability_ids: list[str]
+    result_termination: str
 
 
 SessionEvent = (
@@ -169,7 +171,7 @@ SessionEvent = (
     | MilestoneBlockedEvent
     | MilestoneEvidenceEvent
     | CheckpointTakenEvent
-    | AgentSpawnedEvent
+    | AgentProcessChangedEvent
     | RunTerminalEvent
 )
 

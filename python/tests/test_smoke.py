@@ -8,6 +8,7 @@ from deepstrike import (
     RetryConfig,
 )
 from deepstrike.kernel import KernelRuntime, LoopPolicy, RuntimeTask, SignalRouter
+from deepstrike.governance import GovernancePolicy, GovernancePolicyRule
 from deepstrike.providers.stream import (
     PermissionResolvedEvent,
     TextDelta,
@@ -215,16 +216,9 @@ class AskUserProvider:
         yield TextDelta(delta="done")
 
 
-class AskUserGovernance:
-    def set_time(self, now_ms: int) -> None:
-        pass
-
-    def evaluate(self, tool_name: str, args_json: str):
-        return type("Verdict", (), {"kind": "ask_user", "reason": "confirm execution"})()
-
-
 @pytest.mark.asyncio
 async def test_ask_user_gated_tool_runs_after_host_approval():
+    from deepstrike.governance import GovernancePolicy, GovernancePolicyRule
     executed = False
 
     @tool
@@ -241,7 +235,9 @@ async def test_ask_user_gated_tool_runs_after_host_approval():
         execution_plane=plane,
         max_tokens=1000,
         max_turns=2,
-        governance=AskUserGovernance(),
+        governance_policy=GovernancePolicy(
+            rules=[GovernancePolicyRule(pattern="needs_approval", action="ask_user")],
+        ),
         on_permission_request=lambda request: {
             "approved": request.tool_name == "needs_approval",
             "responder": "test-host",
@@ -259,6 +255,8 @@ async def test_ask_user_gated_tool_runs_after_host_approval():
 
 @pytest.mark.asyncio
 async def test_ask_user_gated_tool_is_denied_after_host_rejection():
+    from deepstrike.governance import GovernancePolicy, GovernancePolicyRule
+
     executed = False
 
     @tool
@@ -274,7 +272,9 @@ async def test_ask_user_gated_tool_is_denied_after_host_rejection():
         execution_plane=plane,
         max_tokens=1000,
         max_turns=2,
-        governance=AskUserGovernance(),
+        governance_policy=GovernancePolicy(
+            rules=[GovernancePolicyRule(pattern="needs_approval", action="ask_user")],
+        ),
         on_permission_request=lambda request: {
             "approved": False,
             "responder": "test-host",
