@@ -8,6 +8,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Agent OS release: kernel three-primitives refactor (M0–M4), OS native profile defaults, Layer-1 large-result spool, semantic page-out pipeline, and Phase-7 memory syscalls — across core, Node, Python, Rust, and Wasm event mapping.
 
+### What this release enables
+
+These mechanisms move the SDK from “agent loop library” to an **Agent OS runtime** — kernel-mediated decisions, SDK-owned I/O. Practical capability gains:
+
+| Before (≤ 0.2.4) | After (0.2.5) |
+|---|---|
+| Scheduling, compression, and permission logic scattered in each SDK | Unified syscall trap, TCB lifecycle, and MM eviction funnel — same semantics in Node, Python, and Rust |
+| Large tool outputs and long sessions hit token walls | Layer-1 spool (preview + `.spool/` ref) and semantic page-out → `DreamStore` keep runs going without hard truncation |
+| Governance and signal routing were optional SDK plugins | OS native profile: declarative `governancePolicy` and in-kernel `attentionPolicy` on by default |
+| Long-term memory mostly via meta-tools and idle pipelines | `writeMemory` / `queryMemory` kernel syscalls with validation, audit events, and retrieval closure |
+| Session logs skewed toward chat + tools | Full OS event stream (`syscall` · `sched` · `mm` · `proc` · `ipc`) and rebuildable OS snapshots |
+
+**For application developers:**
+
+1. **Less runner glue** — feed events, execute I/O, drain observations; avoid reimplementing sched/compress/govern/signal logic per product.
+2. **Heavier workloads** — multi-hour runs, large diffs, batched tools, and sub-agents have explicit kernel + SDK paths (spool, page-in/out, process table, suspend/resume).
+3. **Enterprise-ready defaults** — policy gates, signal disposition, memory validation, and audit counters are first-class, not fork-the-kernel add-ons.
+4. **Cross-language parity** — one session-log contract and replay semantics across Node, Python, and Rust.
+
 ### Added
 
 #### Core — Agent OS primitives (M0–M4)

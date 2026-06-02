@@ -112,6 +112,37 @@ The runner drives a single loop:
 
 Kernel session events carry an optional `category` tag (`syscall` · `sched` · `mm` · `proc` · `ipc`) for diagnostics and OS snapshot rebuilds.
 
+### What Agent OS gives you
+
+The mechanisms above are not internal refactors — they change what you can build without custom runner code:
+
+**Kernel-mediated runtime (M0–M4)**  
+Tool calls, spawns, compression, and signals pass through one kernel gate with an explicit lifecycle (Ready / Running / Blocked / Suspended). You implement I/O; the kernel decides *when* and *whether*. Node, Python, and Rust share the same decision path, so `wake(sessionId)` and cross-language tooling see consistent behavior.
+
+**Longer, sturdier sessions (Layer-1 spool + semantic page-out)**  
+Oversized tool results (> 50 KB) stay in context as a preview plus a `.spool/` reference — the model reads the full payload on demand via ordinary file tools. When pressure triggers semantic eviction, the SDK summarizes archived content into `DreamStore` and satisfies `page_in_requested` on the way back in. Long tasks survive token pressure instead of failing mid-run.
+
+**Safety and governance by default (OS native profile)**  
+Every run loads declarative `governancePolicy` (deny / ask_user / rate-limit / param rules) and in-kernel signal routing (`attentionPolicy`, default queue 64). Dangerous tools, external interrupts, and approval flows are policy — not ad-hoc `if` checks in your handlers.
+
+**Long-term memory as syscalls (Phase-7)**  
+`writeMemory` and `queryMemory` run outside the main tool loop: kernel validation before `DreamStore.commit`, search → `selectMemories` → `memory_retrieval_result` on query. Failed writes emit `memory_validation_failed` for audit; good memory is durable without polluting history.
+
+**Multi-agent and multi-signal orchestration**  
+Sub-agents register in the kernel process table (`agent_process_changed`); parent runs suspend explicitly until `sub_agent_completed`. Signals get disposition (Interrupt / Queue / Observe / Dropped) in-kernel, so gateways, cron, and heartbeats compose with the main loop instead of racing it.
+
+**Observable like an OS log**  
+Spool, page-out, signals, processes, budgets, and memory events land in `SessionLog` with categories. Rebuild an OS snapshot (`pageOutCount`, `spoolCount`, `processByAgent`, memory counters) from one event stream — replay still strips audit events when reconstructing LLM messages.
+
+| You need… | Use… |
+|---|---|
+| Policy before tools run | `governancePolicy` (default: allow-all native profile) |
+| External interrupts | `signalSource` + in-kernel `attentionPolicy` |
+| Huge tool output | Automatic Layer-1 spool; optional custom `resultSpool` |
+| Durable recall across runs | `DreamStore` + semantic `page_out` via `dreamSummarizer` |
+| Programmatic memory I/O | `runner.writeMemory()` / `runner.queryMemory()` |
+| Debug / compliance | `SessionLog` events + OS snapshot helpers |
+
 ---
 
 ## Providers
