@@ -13,7 +13,7 @@ members = [
 version = "0.2.4"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/anthropics/deepstrike"
+repository = "https://github.com/kongusen/deepstrike"
 
 [workspace.dependencies]
 deepstrike-core = { path = "crates/deepstrike-core", version = "0.2.4" }

@@ -93,7 +93,7 @@ runner = RuntimeRunner(RuntimeOptions(
 ))
 ```
 
-Full reference: [docs/context-partition-compression.md](../docs/context-partition-compression.md)
+Full reference: [docs/concepts/context-slots-compression.md](../docs/concepts/context-slots-compression.md)
 
 ---
 

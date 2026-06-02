@@ -294,7 +294,7 @@ gateway.ingest({
 
 ## Collaboration — *multi-agent coordination*
 
-The collaboration layer lets you run multiple agents in coordinated roles without sharing their conversation histories. It builds on the primitives described in the [Collaboration guide](./collaboration.md).
+The collaboration layer lets you run multiple agents in coordinated roles without sharing their conversation histories. It builds on the primitives described in the [Collaboration guide](../guides/collaboration.md).
 
 ### VerificationContract — *what correct looks like*
 
@@ -353,7 +353,7 @@ Every transition between sprints or agent instances produces a `HandoffArtifact`
 | `retrieve` | Parallel — web search, knowledge queries |
 | `verify` | Parallel, context-isolated |
 
-See the full [Collaboration guide](./collaboration.md) for API details and model selection recommendations.
+See the full [Collaboration guide](../guides/collaboration.md) for API details and model selection recommendations.
 
 ---
 

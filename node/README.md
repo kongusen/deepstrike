@@ -141,7 +141,7 @@ const runner = new RuntimeRunner({
 - External signals → **Slot 3** via `push_signal()`, cleared after each render
 - Anthropic: Slots 1–2 get separate `cache_control` breakpoints
 
-Full reference: [docs/context-partition-compression.md](../docs/context-partition-compression.md)
+Full reference: [docs/concepts/context-slots-compression.md](../docs/concepts/context-slots-compression.md)
 
 ---
 

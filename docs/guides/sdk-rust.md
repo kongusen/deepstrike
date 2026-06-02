@@ -326,7 +326,7 @@ RunEvent::ToolResult { call_id, content, .. }     // 技能内容返回
 
 ## 6. 知识检索 (Knowledge)
 
-内核采用**四槽模型**（见 [context-partition-compression.md](./context-partition-compression.md)）。`knowledge(query)` 结果进入 history；`initial_memory` 预加载到 Slot 2。
+内核采用**四槽模型**（见 [context-slots-compression.md](../concepts/context-slots-compression.md)）。`knowledge(query)` 结果进入 history；`initial_memory` 预加载到 Slot 2。
 
 ### 6.1 实现 KnowledgeSource
 
@@ -694,7 +694,7 @@ if action != PressureAction::None {
 let rendered = ctx.render();  // RenderedContext — 映射到 provider API
 ```
 
-详见 [context-partition-compression.md](./context-partition-compression.md)。
+详见 [context-slots-compression.md](../concepts/context-slots-compression.md)。
 
 ### 11.3 EvalPipeline
 

@@ -21,7 +21,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Python SDK:** `RuntimeOptions.sub_agent_harness` — spawned sub-agents run through `HarnessLoop` + `EvalPipeline`, with criteria from `AgentRunSpec.milestones.phases[].criteria` (parity with Node `subAgentHarness`).
 - **Python SDK:** `SubAgentHarnessConfig` exported from `deepstrike`.
-- **Documentation:** Four-slot context model across README, guides, providers, WASM/Python/Node/Rust package READMEs, and [docs/context-partition-compression.md](docs/context-partition-compression.md).
+- **Documentation:** Four-slot context model across README, guides, providers, WASM/Python/Node/Rust package READMEs, and [docs/concepts/context-slots-compression.md](./docs/concepts/context-slots-compression.md).
 
 ### Changed
 
@@ -37,4 +37,4 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Deprecated
 
 - **`push_artifact` ABI event** — fixture retained for compatibility tests only; not processed by current kernel.
-- **`docs/spec-context-compression-v2.md`** — superseded by four-slot documentation.
+- **Context compression v2 design notes** — superseded by four-slot documentation and moved out of the public docs set.

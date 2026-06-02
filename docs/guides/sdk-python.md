@@ -1,6 +1,6 @@
 # DeepStrike Python SDK — API 使用指南
 
-> Runtime v1：公共入口为 `RuntimeRunner` + `SessionLog` + `ExecutionPlane`。详见 `python/README.md` 与 `docs/spec-runtime-v1.md`。
+> Runtime v1：公共入口为 `RuntimeRunner` + `SessionLog` + `ExecutionPlane`。详见 `python/README.md` 与 `docs/reference/runtime-v2-lifecycle.md`。
 
 ## 目录
 
@@ -275,7 +275,7 @@ To summarize text effectively:
 
 ## 6. 知识检索 (Knowledge)
 
-内核采用**四槽模型**（见 [context-partition-compression.md](./context-partition-compression.md)）。知识有两条路径：
+内核采用**四槽模型**（见 [context-slots-compression.md](../concepts/context-slots-compression.md)）。知识有两条路径：
 
 | 路径 | 落地位置 |
 |------|----------|

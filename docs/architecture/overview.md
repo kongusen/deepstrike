@@ -99,7 +99,7 @@ On Anthropic, Slots 1–2 map to separate `system[]` blocks with `cache_control`
 
 When total token usage approaches `max_tokens`, the kernel runs compression tiers on history only. Summaries append to `task_state.compression_log` and render back into Slot 3 so the model always sees recent compression history.
 
-See [Context Slots & Compression](./context-partition-compression.md) for tier thresholds, renewal carryover, and renderer behavior.
+See [Context Slots & Compression](../concepts/context-slots-compression.md) for tier thresholds, renewal carryover, and renderer behavior.
 
 ---
 

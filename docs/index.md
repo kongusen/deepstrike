@@ -1,112 +1,91 @@
 # DeepStrike Documentation
 
-DeepStrike is a cross-language agent runtime built around a pure-Rust kernel. The kernel handles all decision logic — loop control, context compression, governance, signal routing — while language SDKs handle I/O: LLM calls, tool execution, file access, and storage.
+DeepStrike documentation is organized by user intent: start quickly, learn the model, build with an SDK, understand internals, then use references and runbooks when you need exact contracts.
 
----
+## Start Here
 
-## Guides
-
-| Guide | Description |
+| Path | Use for |
 | --- | --- |
-| [Quick Start](./quick-start.md) | Install, run your first agent, stream output, add tools, use images |
-| [Architecture](./architecture.md) | Layer overview (0–4), kernel design, SDK layer, binding architecture |
-| [Core Concepts](./core-concepts.md) | Skills, Memory, Knowledge, Harness, Signals, Collaboration, Safety |
-| [Context Slots & Compression](./context-partition-compression.md) | **Current:** four-slot model, compression tiers, renderer, renewal |
-| [Collaboration](./collaboration.md) | VerificationContract, AgentPool, ContractDrivenHarness, Modes, HandoffBus |
-| [SDK Kernel Driver Parity](./sdk-kernel-driver-parity.md) | Cross-SDK plan for aligning Node, Python, Rust, and WASM around the kernel-driver contract |
-| [Providers](./providers.md) | All LLM providers, RenderedContext slots, Anthropic prompt caching, multimodal |
-| [Release Runbook](./release-runbook.md) | Version propagation, verification, release flow, and recovery |
+| [Getting Started](./getting-started/) | Install packages and run your first agent |
+| [Guides](./guides/) | Build agents with SDKs, providers, tools, and collaboration APIs |
+| [Concepts](./concepts/) | Understand the runtime vocabulary and mental model |
+| [Architecture](./architecture/) | Read about the kernel / host split and runtime design |
+| [Reference](./reference/) | Look up stable runtime and ABI contracts |
+| [Operations](./operations/) | Release, verification, and publishing workflows |
 
-## SDK guides
+## Recommended Reading Paths
 
-| Guide | Description |
-| --- | --- |
-| [sdk-guide-nodejs.md](./sdk-guide-nodejs.md) | Node.js SDK API 使用指南 |
-| [sdk-guide-python.md](./sdk-guide-python.md) | Python SDK API 使用指南 |
-| [sdk-guide-rust.md](./sdk-guide-rust.md) | Rust SDK API 使用指南 |
+### I want to run an agent
 
-## Specifications
+1. [Quick Start](./getting-started/quick-start.md)
+2. [Providers](./guides/providers.md)
+3. [Node.js SDK](./guides/sdk-nodejs.md), [Python SDK](./guides/sdk-python.md), or [Rust SDK](./guides/sdk-rust.md)
 
-| Spec | Description |
-| --- | --- |
-| [spec-kernel-abi.md](./spec-kernel-abi.md) | `KernelInput` / `KernelAction` / `KernelObservation` JSON ABI |
-| [spec-context-optimization-v3.md](./spec-context-optimization-v3.md) | P0/P1 context performance (token counting, prompt caching, renderer) |
-| [spec-context-compression-v2.md](./spec-context-compression-v2.md) | *(superseded)* six-partition v2 design |
-| [implementation-agent-os-kernel.md](./implementation-agent-os-kernel.md) | Agent OS kernel roadmap and phase gates |
+### I want to understand the runtime
 
-See also [CHANGELOG.md](../CHANGELOG.md).
+1. [Core Concepts](./concepts/core-concepts.md)
+2. [Context Slots and Compression](./concepts/context-slots-compression.md)
+3. [Architecture Overview](./architecture/overview.md)
+4. [Kernel ABI Reference](./reference/kernel-abi.md)
 
----
+### I want to contribute
 
-## Packages
+1. [CONTRIBUTING.md](../CONTRIBUTING.md)
+2. [Architecture Overview](./architecture/overview.md)
+3. [Kernel ABI Reference](./reference/kernel-abi.md)
+4. [Release Runbook](./operations/release-runbook.md)
 
-| Package | Language | Install |
+## SDKs and Packages
+
+| SDK | Package | Guide |
 | --- | --- | --- |
-| `@deepstrike/sdk` | TypeScript / Node.js | `npm install @deepstrike/sdk` |
-| `deepstrike` | Python | `pip install deepstrike` |
-| `deepstrike-sdk` | Rust | `cargo add deepstrike-sdk` |
-| `@deepstrike/wasm` | TypeScript / Browser | `npm install @deepstrike/wasm` |
+| Node.js / TypeScript | `@deepstrike/sdk` | [guides/sdk-nodejs.md](./guides/sdk-nodejs.md) |
+| Python | `deepstrike` | [guides/sdk-python.md](./guides/sdk-python.md) |
+| Rust | `deepstrike-sdk` | [guides/sdk-rust.md](./guides/sdk-rust.md) |
+| WASM / browser / edge | `@deepstrike/wasm` | [wasm/README.md](../wasm/README.md) |
 
-Package READMEs: [node/README.md](../node/README.md) · [python/README.md](../python/README.md) · [rust/README.md](../rust/README.md) · [wasm/README.md](../wasm/README.md)
+Package READMEs: [node](../node/README.md) · [python](../python/README.md) · [rust](../rust/README.md) · [wasm](../wasm/README.md)
 
----
+## API Surface
 
-## API Reference
+All SDKs expose the same runtime shape:
 
-- **Node.js** — `node/src/` — TypeScript source with JSDoc
-- **Python** — `python/deepstrike/` — type-annotated Python source
-- **Rust** — run `cargo doc --open -p deepstrike-sdk` for rendered crate docs
-- **Kernel internals** — `crates/deepstrike-core/` — Rust source
+- `RuntimeRunner` starts, resumes, and streams sessions.
+- `ExecutionPlane` registers and executes host tools.
+- `SessionLog` records replayable runtime history.
+- `LLMProvider` streams model output into a shared event model.
+- `Governance` configures permissions and tool-call policy.
 
----
+The public event stream includes `text_delta`, `thinking_delta`, `tool_call`, `tool_result`, `permission_request`, `done`, and `error`. See [Providers](./guides/providers.md) and the SDK guides for language-specific examples.
 
-## Stream event reference
+## Build From Source
 
-Every SDK yields the same typed event stream from `RuntimeRunner.run()` / `run_streaming()`:
-
-| Event | Key fields | Description |
-| --- | --- | --- |
-| `text_delta` | `delta: string` | Incremental text from the model |
-| `thinking_delta` | `delta: string` | Incremental reasoning/thinking trace |
-| `tool_call` | `id`, `name`, `arguments` | Model requested a tool call |
-| `tool_result` | `call_id`, `name`, `content`, `is_error` | Tool execution result |
-| `permission_request` | `call_id`, `tool_name`, `arguments`, `reason` | Governance blocked; awaiting user approval |
-| `done` | `iterations`, `total_tokens`, `status` | Session complete |
-| `error` | `message: string` | Unrecoverable error |
-
-**`done.status` values:** `completed` · `max_turns` · `token_budget` · `timeout` · `user_abort` · `milestone_pending` · `error`
-
----
-
-## Building from source
+Requirements: Rust 1.85+, Node.js 18+, Python 3.10+.
 
 ```bash
-# Rust kernel + all native bindings
 cargo build
-
-# Node.js SDK
-cd node && npm install && npm run build
-
-# Python SDK  (requires maturin)
-cd python && maturin develop
-
-# WASM SDK
-cd wasm && npm install && npm run build
-
-# Tests
 cargo test
-cd node && npm test
-cd python && pytest
+
+cd node
+npm install
+npm run build
+npm test
+
+cd ../python
+python3 -m venv .venv
+source .venv/bin/activate
+pip install maturin pytest pytest-asyncio
+maturin develop --release
+pytest
+
+cd ../wasm
+npm install
+npm run build
+npm test
 ```
 
-**Requirements:** Rust 1.85+ · Node.js 18+ · Python 3.10+
+## Community
 
----
-
-## Contributing
-
-See [CONTRIBUTING.md](../CONTRIBUTING.md).
-
-## License
-
-Apache-2.0 OR MIT
+- Discord: <https://discord.gg/cwS3RBYCv>
+- Issues: <https://github.com/kongusen/deepstrike/issues>
+- Releases: <https://github.com/kongusen/deepstrike/releases>

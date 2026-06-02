@@ -163,7 +163,7 @@ const runner = new RuntimeRunner({
 
 IndexedDB / KV can back `DreamStore` for cross-session memory. Meta-tool retrieval still lands in **history**.
 
-See [docs/context-partition-compression.md](../docs/context-partition-compression.md).
+See [docs/concepts/context-slots-compression.md](../docs/concepts/context-slots-compression.md).
 
 ---
 

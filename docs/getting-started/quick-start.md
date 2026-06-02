@@ -24,7 +24,7 @@ Requires Python 3.10+.
 
 ```toml
 [dependencies]
-deepstrike-sdk = "0.1"
+deepstrike-sdk = "0.2.4"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -275,12 +275,12 @@ const provider = new AnthropicProvider(process.env.ANTHROPIC_API_KEY!, "claude-o
 // const provider = new KimiProvider(process.env.MOONSHOT_API_KEY!, "moonshot-v1-32k")
 ```
 
-See [Providers](./providers.md) for full configuration options and thinking/reasoning flags.
+See [Providers](../guides/providers.md) for full configuration options and thinking/reasoning flags.
 
 ---
 
 ## Next steps
 
-- [Architecture](./architecture.md) — how the Rust kernel and SDK layer interact
-- [Core Concepts](./core-concepts.md) — skills, memory, knowledge, harness, signals, safety
-- [Providers](./providers.md) — all LLM providers and their configuration options
+- [Architecture](../architecture/overview.md) — how the Rust kernel and SDK layer interact
+- [Core Concepts](../concepts/core-concepts.md) — skills, memory, knowledge, harness, signals, safety
+- [Providers](../guides/providers.md) — all LLM providers and their configuration options

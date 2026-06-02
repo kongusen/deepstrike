@@ -403,7 +403,7 @@ The kernel renders `RenderedContext` with four slots before each provider call:
 
 **OpenAI / others:** Adapters concatenate `systemStable + systemKnowledge` into a single system message and pass `turns` as the messages array.
 
-See [Context Slots & Compression](./context-partition-compression.md) for compression tiers and renewal behavior.
+See [Context Slots & Compression](../concepts/context-slots-compression.md) for compression tiers and renewal behavior.
 
 ---
 

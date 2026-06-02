@@ -1,8 +1,8 @@
 # Context Slots & Compression
 
 **Status:** Current (four-slot model)  
-**Supersedes:** [spec-context-compression-v2.md](./spec-context-compression-v2.md) six-partition narrative  
-**Related:** [spec-context-optimization-v3.md](./spec-context-optimization-v3.md) (P0/P1 performance work)
+**Supersedes:** the earlier six-partition context design.  
+**Related:** runtime performance work for token counting, prompt caching, and renderer behavior.
 
 ---
 
@@ -174,4 +174,4 @@ Signals are cleared after render; they are per-turn ephemeral.
 
 Slot 1 and Slot 2 map to separate Anthropic system blocks with `cache_control: ephemeral`. Because `task_state` and `signals` render into `turns[0]` — not the system prefix — the cacheable prefix stays stable across turns.
 
-See [spec-context-optimization-v3.md](./spec-context-optimization-v3.md) § P0-2 for provider adapter details and acceptance criteria.
+See the provider guide for adapter behavior and prompt-caching notes.
