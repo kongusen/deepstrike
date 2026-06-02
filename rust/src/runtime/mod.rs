@@ -7,6 +7,7 @@ pub mod mcp_proxy_plane;
 pub mod process_sandbox_plane;
 pub mod provider_replay;
 pub mod remote_vpc_plane;
+pub mod large_result_spool;
 pub mod replay;
 pub mod runner;
 pub mod sandboxed_skill;

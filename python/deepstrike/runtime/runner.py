@@ -69,6 +69,7 @@ if TYPE_CHECKING:
   from deepstrike.memory.protocols import DreamResult, DreamStore
   from deepstrike.signals.types import SignalSource
   from deepstrike.types.agent import AgentRunSpec, SubAgentResult, MilestonePolicy, MilestoneContract, MilestoneCheckResult
+  from deepstrike.runtime.large_result_spool import LargeResultSpool
 
 
 @dataclass
@@ -110,6 +111,9 @@ class RuntimeOptions:
   on_milestone_evaluate: Callable[[dict[str, Any]], Awaitable[Any] | Any] | None = None
   milestone_contract: "MilestoneContract | None" = None
   run_spec: "AgentRunSpec | None" = None
+  result_spool: "LargeResultSpool | None" = None
+  dream_provider: LLMProvider | None = None
+  dream_summarizer: Callable[[list[Any], dict[str, Any]], Awaitable[str] | str] | None = None
 
 
 class RuntimeRunner:
@@ -122,6 +126,7 @@ class RuntimeRunner:
     self._current_session_id: str | None = None
     self._next_archive_start: int = 0
     self._pending_spool_outputs: dict[str, dict[str, str]] = {}
+    self._local_page_out_cache: list[Any] = []
 
   @property
   def host_options(self) -> RuntimeOptions:
@@ -354,7 +359,8 @@ class RuntimeRunner:
 
     synthesis_text = ""
     total_tokens = 0
-    create_run_state = getattr(self._opts.provider, "create_run_state", None)
+    dream_provider = self._opts.dream_provider or self._opts.provider
+    create_run_state = getattr(dream_provider, "create_run_state", None)
     provider_state = create_run_state() if callable(create_run_state) else None
     synth_msgs = list(action1.messages or [])
     kernel_system_text = "\n\n".join(m.content for m in synth_msgs if m.role == "system")
@@ -362,7 +368,7 @@ class RuntimeRunner:
       system_text="\n\n".join(filter(None, [kernel_system_text, self._opts.dream_system_prompt])),
       turns=[m for m in synth_msgs if m.role != "system"],
     )
-    async for evt in self._opts.provider.stream(synth_context, [], extensions=None, state=provider_state):
+    async for evt in dream_provider.stream(synth_context, [], extensions=None, state=provider_state):
       if isinstance(evt, TextDelta):
         synthesis_text += evt.delta
         yield evt
@@ -738,6 +744,7 @@ class RuntimeRunner:
         await self._opts.session_log.append(session_id, {
           "kind": "tool_requested", "turn": runtime.turn(), "calls": all_calls,
         })
+        from deepstrike.runtime.large_result_spool import LargeResultSpool
         run_ctx = RunContext(
           agent_id=self._opts.agent_id,
           skill_dir=skill_dir,
@@ -745,6 +752,7 @@ class RuntimeRunner:
           knowledge_source=self._opts.knowledge_source,
           on_tool_suspend=self._opts.on_tool_suspend,
           on_permission_request=self._opts.on_permission_request,
+          result_spool=self._opts.result_spool or LargeResultSpool(),
         )
         tool_results: list[ToolResult] = []
         normal_calls = [c for c in all_calls if c.name != "update_plan"]
@@ -915,13 +923,34 @@ class RuntimeRunner:
       query = req.get("query") if isinstance(req.get("query"), str) else ""
       top_k = req.get("top_k") if isinstance(req.get("top_k"), int) else 5
       tool = req.get("tool")
-      if tool == "memory" and self._opts.dream_store and self._opts.agent_id:
-        hits = await self._opts.dream_store.search(self._opts.agent_id, query, top_k)
-        for hit in hits:
+      if tool == "memory":
+        local_hits = []
+        for m in self._local_page_out_cache:
+          content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+          if isinstance(content, str) and query.lower() in content.lower():
+            local_hits.append(m)
+        local_hits = local_hits[:top_k]
+
+        for hit in local_hits:
+          if isinstance(hit, dict):
+            role = hit.get("role") or "system"
+            content = hit.get("content") or ""
+          else:
+            role = getattr(hit, "role", "system") or "system"
+            content = getattr(hit, "content", "") or ""
           entries.append({
-            "content": f"[memory score={hit.score:.3f}] {hit.text}",
-            "source": "memory",
+            "content": f"[local semantic cache] {role}: {content}",
+            "source": "semantic_cache",
           })
+
+        remaining_k = top_k - len(entries)
+        if remaining_k > 0 and self._opts.dream_store and self._opts.agent_id:
+          hits = await self._opts.dream_store.search(self._opts.agent_id, query, remaining_k)
+          for hit in hits:
+            entries.append({
+              "content": f"[memory score={hit.score:.3f}] {hit.text}",
+              "source": "memory",
+            })
       elif tool == "knowledge" and self._opts.knowledge_source:
         snippets = await self._opts.knowledge_source.retrieve(query, top_k)
         for snippet in snippets:
@@ -961,13 +990,17 @@ class RuntimeRunner:
           except Exception:
             pass
 
+      if obs.get("kind") == "page_out" and obs.get("archived"):
+        self._local_page_out_cache.extend(obs["archived"])
+
       if obs.get("kind") == "large_result_spooled":
         call_id = obs.get("call_id") if isinstance(obs.get("call_id"), str) else ""
         pending = self._pending_spool_outputs.pop(call_id, None)
         if pending:
           try:
             from deepstrike.runtime.large_result_spool import LargeResultSpool
-            spool_ref = await LargeResultSpool().persist_output(call_id, pending["output"])
+            spool = self._opts.result_spool or LargeResultSpool()
+            spool_ref = await spool.persist_output(call_id, pending["output"])
           except Exception:
             pass
           if not obs.get("tool") and pending.get("tool"):
@@ -993,7 +1026,61 @@ class RuntimeRunner:
       compressed_seq = await self._opts.session_log.append(session_id, event)
       if event.get("kind") == "compressed":
         next_archive_start = compressed_seq + 1
+      if (
+        obs.get("kind") == "page_out"
+        and obs.get("tier_hint") == "semantic"
+        and isinstance(obs.get("archived"), list)
+        and obs["archived"]
+      ):
+        import asyncio
+        asyncio.create_task(self._archive_semantic_page_out(list(obs["archived"]), _compression_action(obs.get("action"))))
     return next_archive_start
+
+  async def _archive_semantic_page_out(self, archived: list[Any], action: str | None = None) -> None:
+    if not self._opts.dream_store or not self._opts.agent_id:
+      return
+    try:
+      if self._opts.dream_summarizer:
+        import inspect
+        result = self._opts.dream_summarizer(archived, {"action": action})
+        summary = await result if inspect.isawaitable(result) else result
+      else:
+        summary = await self._summarize_for_long_term_memory(archived)
+      existing = await self._opts.dream_store.load_memories(self._opts.agent_id)
+      from deepstrike.memory.protocols import CurationResult, CurationStats, MemoryEntry
+      await self._opts.dream_store.commit(
+        self._opts.agent_id,
+        CurationResult(
+          to_add=[MemoryEntry(text=summary, score=1.0, metadata={"source": "semantic_page_out", "action": action})],
+          to_remove_indices=[],
+          stats=CurationStats(insights_processed=1, entries_added=1),
+        ),
+        existing,
+      )
+    except Exception:
+      pass
+
+  async def _summarize_for_long_term_memory(self, archived: list[Any]) -> str:
+    provider = self._opts.dream_provider or self._opts.provider
+    transcript = "\n".join(
+      f"{getattr(m, 'role', m.get('role') if isinstance(m, dict) else 'unknown')}: "
+      f"{getattr(m, 'content', m.get('content') if isinstance(m, dict) else '')}"
+      for m in archived
+    )
+    system_text = "\n\n".join(filter(None, [
+      self._opts.dream_system_prompt,
+      "Summarize the following conversation for long-term memory. Preserve key facts, decisions, and open questions.",
+    ]))
+    context = RenderedContext(system_text=system_text, turns=[
+      Message(role="user", content=transcript, tool_calls=[]),
+    ])
+    text = ""
+    create_state = getattr(provider, "create_run_state", None)
+    state = create_state() if callable(create_state) else None
+    async for evt in provider.stream(context, [], state=state):
+      if isinstance(evt, TextDelta):
+        text += evt.delta
+    return text.strip() or transcript[:2000]
 
 
 def _compression_action(action: str | None) -> str | None:

@@ -347,6 +347,8 @@ impl RuntimeRunner {
             };
 
             let mut pending_observations = Vec::new();
+            let mut pending_spool_outputs: std::collections::HashMap<String, (String, String)> =
+                std::collections::HashMap::new();
 
             if let Some(tokenizer_name) = &self.opts.tokenizer {
                 kernel_apply(
@@ -527,6 +529,7 @@ impl RuntimeRunner {
                         &session_id,
                         &kernel,
                         &mut pending_observations,
+                        &mut pending_spool_outputs,
                         next_archive_start,
                     )
                     .await;
@@ -621,6 +624,7 @@ impl RuntimeRunner {
                                                 &session_id,
                                                 &kernel,
                                                 &mut pending_observations,
+                                                &mut pending_spool_outputs,
                                                 next_archive_start,
                                             )
                                             .await;
@@ -870,6 +874,24 @@ impl RuntimeRunner {
                         )
                         .await;
 
+                        for call in &normal_calls {
+                            if let Some(result) = tool_results
+                                .iter()
+                                .find(|r| r.call_id.as_str() == call.id.as_str())
+                            {
+                                let output = match &result.output {
+                                    deepstrike_core::types::message::Content::Text(s) => s.to_string(),
+                                    deepstrike_core::types::message::Content::Parts(parts) => {
+                                        serde_json::to_string(parts).unwrap_or_default()
+                                    }
+                                };
+                                pending_spool_outputs.insert(
+                                    call.id.to_string(),
+                                    (call.name.to_string(), output),
+                                );
+                            }
+                        }
+
                         action = kernel_action(
                             &mut kernel,
                             &mut pending_observations,
@@ -897,6 +919,7 @@ impl RuntimeRunner {
                                     &session_id,
                                     &kernel,
                                     &mut pending_observations,
+                                    &mut pending_spool_outputs,
                                     next_archive_start,
                                 )
                                 .await;
@@ -918,6 +941,7 @@ impl RuntimeRunner {
                                     &session_id,
                                     &kernel,
                                     &mut pending_observations,
+                                    &mut pending_spool_outputs,
                                     next_archive_start,
                                 )
                                 .await;
@@ -927,6 +951,7 @@ impl RuntimeRunner {
                                     &session_id,
                                     &kernel,
                                     &mut pending_observations,
+                                    &mut pending_spool_outputs,
                                     next_archive_start,
                                 )
                                 .await;
@@ -957,6 +982,7 @@ impl RuntimeRunner {
                                 &session_id,
                                 &kernel,
                                 &mut pending_observations,
+                                &mut pending_spool_outputs,
                                 next_archive_start,
                             )
                             .await;
@@ -1007,6 +1033,7 @@ impl RuntimeRunner {
                     &session_id,
                     &kernel,
                     &mut pending_observations,
+                    &mut pending_spool_outputs,
                     next_archive_start,
                 )
                 .await;
@@ -1070,6 +1097,7 @@ impl RuntimeRunner {
         session_id: &str,
         kernel_mutex: &std::sync::Mutex<KernelRuntime>,
         observations: &mut Vec<KernelObservation>,
+        pending_spool_outputs: &mut std::collections::HashMap<String, (String, String)>,
         mut next_archive_start: u64,
     ) -> u64 {
         let drained = std::mem::take(observations);
@@ -1302,8 +1330,41 @@ impl RuntimeRunner {
                     .await;
                 }
                 // Phase 7 / M3: no dedicated session kinds yet in rust SDK.
-                KernelObservation::MemoryValidationFailed { .. }
-                | KernelObservation::LargeResultSpooled { .. } => {}
+                KernelObservation::MemoryValidationFailed { .. } => {}
+                KernelObservation::LargeResultSpooled {
+                    turn,
+                    call_id,
+                    tool,
+                    original_size,
+                    preview_size,
+                    spool_ref: _,
+                } => {
+                    let mut spool_ref = None;
+                    let mut tool_name = tool;
+                    if let Some((stored_tool, output)) = pending_spool_outputs.remove(&call_id) {
+                        if tool_name.is_empty() {
+                            tool_name = stored_tool;
+                        }
+                        if let Ok(path) =
+                            crate::runtime::large_result_spool::persist_output(&call_id, &output)
+                        {
+                            spool_ref = Some(path);
+                        }
+                    }
+                    self.log(
+                        session_id,
+                        SessionEvent::LargeResultSpooled {
+                            turn,
+                            category: Some(category_for_kind("large_result_spooled")),
+                            call_id,
+                            tool: tool_name,
+                            original_size,
+                            preview_size,
+                            spool_ref,
+                        },
+                    )
+                    .await;
+                }
             }
         }
         next_archive_start

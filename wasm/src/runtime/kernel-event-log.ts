@@ -15,6 +15,7 @@ export function categoryForKind(kind: string): KernelEventCategory {
     case "page_in_requested":
     case "renewed":
     case "context_renewed":
+    case "large_result_spooled":
       return "mm"
     case "agent_process_changed":
       return "proc"
@@ -42,6 +43,7 @@ export function kernelObservationToSessionEvent(
     archiveRef?: string
     preservedRefs?: string[]
     compressionAction?: (action?: string) => CompressionAction
+    spoolRef?: string
   } = {},
 ): SessionEvent | null {
   const t = obs.turn ?? turn
@@ -178,6 +180,16 @@ export function kernelObservationToSessionEvent(
       })
     case "page_in_requested":
       return null
+    case "large_result_spooled":
+      return withCategory({
+        kind: "large_result_spooled" as const,
+        turn: t,
+        call_id: obs.call_id ?? "",
+        tool: obs.tool ?? "",
+        original_size: obs.original_size ?? 0,
+        preview_size: obs.preview_size ?? 0,
+        spool_ref: opts.spoolRef,
+      })
     default:
       return null
   }

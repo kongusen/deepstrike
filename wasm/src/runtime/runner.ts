@@ -2,6 +2,7 @@ import type {
   LLMProvider, Message, ToolCall, ToolResult, ToolSchema,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
   ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
+  DreamSummarizer,
 } from "../types.js"
 import type { ToolSuspendEvent } from "./execution-plane.js"
 import type { DreamStore, DreamResult, MemoryEntry, CurationResult, SessionData } from "../memory/index.js"
@@ -40,6 +41,7 @@ import {
 import { defaultSubAgentOrchestrator, type SubAgentOrchestrator } from "./sub-agent-orchestrator.js"
 import { kernelObservationToSessionEvent, withCategory } from "./kernel-event-log.js"
 import { DEFAULT_NATIVE_ATTENTION_POLICY, DEFAULT_NATIVE_GOVERNANCE_POLICY } from "./os-profile.js"
+import { LargeResultSpool } from "./large-result-spool.js"
 
 export interface RuntimeOptions {
   provider: LLMProvider
@@ -66,6 +68,10 @@ export interface RuntimeOptions {
   milestoneContract?: MilestoneContract
   onMilestoneEvaluate?: (ctx: { phaseId: string; criteria: string[]; requiredEvidence: string[] }) => Promise<MilestoneCheckResult> | MilestoneCheckResult
   runSpec?: AgentRunSpec
+  dreamProvider?: LLMProvider
+  dreamSummarizer?: DreamSummarizer
+  dreamSystemPrompt?: string
+  resultSpool?: LargeResultSpool
 }
 
 export class RuntimeRunner {
@@ -74,6 +80,8 @@ export class RuntimeRunner {
   private activeKernel: KernelRuntimeHandle | null = null
   private currentSessionId: string | null = null
   private nextArchiveStart = 0
+  private localPageOutCache: Message[] = []
+  private pendingSpoolOutputs = new Map<string, { tool: string; output: string }>()
 
   constructor(private readonly opts: RuntimeOptions) {}
 
@@ -146,13 +154,27 @@ export class RuntimeRunner {
     for (const req of requests) {
       const query = typeof req.query === "string" ? req.query : ""
       const topK = typeof req.top_k === "number" ? req.top_k : 5
-      if (req.tool === "memory" && this.opts.dreamStore && this.opts.agentId) {
-        const hits = await this.opts.dreamStore.search(this.opts.agentId, query, topK)
-        for (const hit of hits) {
+      if (req.tool === "memory") {
+        const localHits = this.localPageOutCache.filter(m =>
+          typeof m.content === "string" && m.content.toLowerCase().includes(query.toLowerCase())
+        ).slice(0, topK)
+
+        for (const hit of localHits) {
           entries.push({
-            content: `[memory score=${hit.score.toFixed(3)}] ${hit.text}`,
-            source: "memory",
+            content: `[local semantic cache] ${hit.role}: ${hit.content}`,
+            source: "semantic_cache",
           })
+        }
+
+        const remainingK = topK - entries.length
+        if (remainingK > 0 && this.opts.dreamStore && this.opts.agentId) {
+          const hits = await this.opts.dreamStore.search(this.opts.agentId, query, remainingK)
+          for (const hit of hits) {
+            entries.push({
+              content: `[memory score=${hit.score.toFixed(3)}] ${hit.text}`,
+              source: "memory",
+            })
+          }
         }
       } else if (req.tool === "knowledge" && this.opts.knowledgeSource) {
         const snippets = await this.opts.knowledgeSource.retrieve(query, topK)
@@ -284,13 +306,14 @@ export class RuntimeRunner {
     if (action1.kind !== "synthesize_insights") throw new Error(`unexpected: ${action1.kind}`)
 
     let synthesisText = ""
-    const providerState = this.opts.provider.createRunState?.()
+    const dreamProvider = this.opts.dreamProvider ?? this.opts.provider
+    const providerState = dreamProvider.createRunState?.()
     const synthMsgs = (action1.messages ?? []) as Message[]
     const synthContext = {
       systemText: synthMsgs.filter(m => m.role === "system").map(m => m.content).join("\n\n"),
       turns: synthMsgs.filter(m => m.role !== "system"),
     }
-    for await (const evt of this.opts.provider.stream(synthContext, [], undefined, providerState)) {
+    for await (const evt of dreamProvider.stream(synthContext, [], undefined, providerState)) {
       if (evt.type === "text_delta") synthesisText += (evt as TextDelta).delta
     }
 
@@ -339,6 +362,7 @@ export class RuntimeRunner {
   ): AsyncIterable<StreamEvent> {
     this.interrupted = false
     this.pendingObservations = []
+    this.pendingSpoolOutputs.clear()
     this.currentSessionId = sessionId
     const kernel = await getKernel()
 
@@ -549,7 +573,7 @@ export class RuntimeRunner {
           message: messageToKernelMessage(assistantMessage),
           ...(turnInputTokens > 0 ? { observed_input_tokens: turnInputTokens } : {}),
           ...(turnOutputTokens > 0 ? { observed_output_tokens: turnOutputTokens } : {}),
-          ...(this.opts.governancePolicy ? { now_ms: Date.now() } : {}),
+          now_ms: Date.now(),
         }
         let nextAction = kernelMaybeAction(runtime, this.pendingObservations, providerEvent)
         const hasSuspended = this.pendingObservations.some(o => o.kind === "suspended")
@@ -647,6 +671,12 @@ export class RuntimeRunner {
             token_count: r.tokenCount,
           })),
         })
+        for (const call of allCalls) {
+          const result = toolResults.find(r => r.callId === call.id)
+          if (result) {
+            this.pendingSpoolOutputs.set(call.id, { tool: call.name, output: result.output })
+          }
+        }
         action = kernelAction(runtime, this.pendingObservations, {
           kind: "tool_results",
           results: toolResults.map(toolResultToKernel),
@@ -771,8 +801,25 @@ export class RuntimeRunner {
     const turn = runtime.turn()
     const preservedRefs = runtime.preservedRefs()
     const observations = this.pendingObservations.splice(0)
-    for (const obs of observations) {
+    for (let obs of observations) {
       if (obs.kind === "page_in_requested") continue
+
+      let spoolRef: string | undefined
+      if (obs.kind === "large_result_spooled") {
+        const pending = this.pendingSpoolOutputs.get(obs.call_id ?? "")
+        if (pending) {
+          const spool = this.opts.resultSpool ?? new LargeResultSpool()
+          try {
+            spoolRef = await spool.persistOutput(obs.call_id ?? "", pending.output)
+          } catch {
+            // non-fatal
+          }
+          if (!obs.tool && pending.tool) {
+            obs = { ...obs, tool: pending.tool }
+          }
+          this.pendingSpoolOutputs.delete(obs.call_id ?? "")
+        }
+      }
 
       const latest =
         obs.kind === "compressed" ? await this.opts.sessionLog.latestSeq(sessionId) : undefined
@@ -780,17 +827,79 @@ export class RuntimeRunner {
         nextArchiveStart,
         latestSeq: latest,
         preservedRefs,
+        spoolRef,
         compressionAction,
       })
       if (!event) continue
+
+      if (obs.kind === "page_out" && obs.archived) {
+        this.localPageOutCache.push(...(obs.archived as Message[]))
+      }
 
       const compressedSeq = await this.opts.sessionLog.append(sessionId, event)
       if (event.kind === "compressed") {
         nextArchiveStart = compressedSeq + 1
       }
+      if (
+        obs.kind === "page_out"
+        && obs.tier_hint === "semantic"
+        && Array.isArray(obs.archived)
+        && obs.archived.length > 0
+      ) {
+        void this.archiveSemanticPageOut(obs.archived as Message[], compressionAction(obs.action))
+      }
     }
     return nextArchiveStart
   }
+
+  private async archiveSemanticPageOut(archived: Message[], action?: string): Promise<void> {
+    if (!this.opts.dreamStore || !this.opts.agentId) return
+    try {
+      const summary = this.opts.dreamSummarizer
+        ? await this.opts.dreamSummarizer.summarize(archived, { action })
+        : await summarizeForLongTermMemory(
+          this.opts.dreamProvider ?? this.opts.provider,
+          archived,
+          this.opts.dreamSystemPrompt,
+        )
+      const existing = await this.opts.dreamStore.loadMemories(this.opts.agentId)
+      await this.opts.dreamStore.commit(this.opts.agentId, {
+        toAdd: [{ text: summary, score: 1.0, metadata: { source: "semantic_page_out", action } }],
+        toRemoveIndices: [],
+        stats: {
+          insightsProcessed: 1,
+          duplicatesRemoved: 0,
+          conflictsResolved: 0,
+          entriesAdded: 1,
+        },
+      }, existing)
+    } catch {
+      // non-fatal
+    }
+  }
+}
+
+async function summarizeForLongTermMemory(
+  provider: LLMProvider,
+  archived: Message[],
+  systemPrompt?: string,
+): Promise<string> {
+  const transcript = archived
+    .map(m => `${m.role}: ${m.content}`)
+    .join("\n")
+  const context = {
+    systemText: [
+      systemPrompt,
+      "Summarize the following conversation for long-term memory. Preserve key facts, decisions, and open questions.",
+    ].filter(Boolean).join("\n\n"),
+    turns: [{ role: "user" as const, content: transcript, toolCalls: [] }],
+  }
+  let text = ""
+  const state = provider.createRunState?.()
+  for await (const evt of provider.stream(context, [], undefined, state)) {
+    if (evt.type === "text_delta") text += (evt as TextDelta).delta
+  }
+  return text.trim() || transcript.slice(0, 2000)
 }
 
 function isMidRun(events: Array<{ seq: number; event: SessionEvent }>): boolean {

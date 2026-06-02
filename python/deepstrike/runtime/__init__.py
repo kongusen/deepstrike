@@ -24,6 +24,13 @@ from deepstrike.runtime.mcp_proxy_plane import McpProxyPlane, McpServerConfig
 from deepstrike.runtime.remote_vpc_plane import RemoteVpcPlane
 from deepstrike.runtime.filtered_plane import FilteredExecutionPlane
 from deepstrike.runtime.sub_agent_orchestrator import SubAgentOrchestrator, spawn_standalone, default_sub_agent_orchestrator
+from deepstrike.runtime.os_profile import (
+  AttentionPolicy,
+  DEFAULT_NATIVE_ATTENTION_POLICY,
+  DEFAULT_NATIVE_GOVERNANCE_POLICY,
+  DEFAULT_SANDBOX_POLICY,
+  validate_declarative_policy,
+)
 
 __all__ = [
   "RuntimeRunner",
@@ -54,4 +61,9 @@ __all__ = [
   "spawn_standalone",
   "default_sub_agent_orchestrator",
   "FilteredExecutionPlane",
+  "AttentionPolicy",
+  "DEFAULT_NATIVE_ATTENTION_POLICY",
+  "DEFAULT_NATIVE_GOVERNANCE_POLICY",
+  "DEFAULT_SANDBOX_POLICY",
+  "validate_declarative_policy",
 ]

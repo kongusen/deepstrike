@@ -5,6 +5,7 @@ const KERNEL_KINDS = new Set([
   "compressed",
   "page_out",
   "page_in",
+  "large_result_spooled",
   "capability_changed",
   "context_renewed",
   "suspended",
@@ -28,6 +29,7 @@ export interface OsSnapshot {
   signals: Array<{ turn: number; signal_id: string; disposition: string; queue_depth: number }>
   pageOutCount: number
   pageInCount: number
+  spoolCount: number
   toolGatedCount: number
 }
 
@@ -40,6 +42,7 @@ export function rebuildOsSnapshotFromSessionEvents(
     signals: [],
     pageOutCount: 0,
     pageInCount: 0,
+    spoolCount: 0,
     toolGatedCount: 0,
   }
   const index = new Map<string, number>()
@@ -93,6 +96,9 @@ export function rebuildOsSnapshotFromSessionEvents(
         break
       case "page_in":
         snap.pageInCount += 1
+        break
+      case "large_result_spooled":
+        snap.spoolCount += 1
         break
       default:
         break

@@ -23,6 +23,8 @@ from deepstrike.runtime import (
     SubAgentOrchestrator,
     spawn_standalone,
     default_sub_agent_orchestrator,
+    DEFAULT_SANDBOX_POLICY,
+    validate_declarative_policy,
 )
 from deepstrike.governance import Governance, GovernanceVerdict
 from deepstrike.providers import (
@@ -101,6 +103,7 @@ __all__ = [
     "milestone_check_pass", "milestone_check_fail",
     "FilteredExecutionPlane",
     "SubAgentOrchestrator", "spawn_standalone", "default_sub_agent_orchestrator",
+    "DEFAULT_SANDBOX_POLICY", "validate_declarative_policy",
     # Collaboration layer
     "AcceptanceCriterion", "VerificationContract", "ContractCheckResult",
     "ContractBuilder", "format_contract_for_system_prompt", "contract_to_criteria_strings",

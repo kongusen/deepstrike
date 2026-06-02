@@ -3,7 +3,8 @@ import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { createInterface } from "node:readline"
 import type { ProviderReplay, ToolCall, ToolErrorKind } from "../types.js"
-import type { KernelEventCategory } from "./kernel-event-log.js"
+import type { KernelEventCategory, KernelPrimitive } from "./kernel-event-log.js"
+import { primitiveForKind } from "./kernel-event-log.js"
 
 export type RollbackReason =
   | { kind: "fatal_tool_error"; tool_name: string; error: string }
@@ -83,7 +84,7 @@ export type SessionEvent =
 
 export interface SessionLog {
   append(sessionId: string, event: SessionEvent): Promise<number>
-  read(sessionId: string, fromSeq?: number): Promise<Array<{ seq: number; event: SessionEvent }>>
+  read(sessionId: string, fromSeq?: number, primitiveFilter?: KernelPrimitive): Promise<Array<{ seq: number; event: SessionEvent }>>
   latestSeq(sessionId: string): Promise<number>
 }
 
@@ -98,8 +99,13 @@ export class InMemorySessionLog implements SessionLog {
     return seq
   }
 
-  async read(sessionId: string, fromSeq = 0): Promise<Array<{ seq: number; event: SessionEvent }>> {
-    return (this.store.get(sessionId) ?? []).filter(e => e.seq >= fromSeq)
+  async read(sessionId: string, fromSeq = 0, primitiveFilter?: KernelPrimitive): Promise<Array<{ seq: number; event: SessionEvent }>> {
+    const entries = this.store.get(sessionId) ?? []
+    return entries.filter(e => {
+      if (e.seq < fromSeq) return false
+      if (primitiveFilter && primitiveForKind(e.event.kind) !== primitiveFilter) return false
+      return true
+    })
   }
 
   async latestSeq(sessionId: string): Promise<number> {
@@ -144,7 +150,7 @@ export class FileSessionLog implements SessionLog {
     return seq
   }
 
-  async read(sessionId: string, fromSeq = 0): Promise<Array<{ seq: number; event: SessionEvent }>> {
+  async read(sessionId: string, fromSeq = 0, primitiveFilter?: KernelPrimitive): Promise<Array<{ seq: number; event: SessionEvent }>> {
     const results: Array<{ seq: number; event: SessionEvent }> = []
     try {
       const rl = createInterface({
@@ -154,7 +160,10 @@ export class FileSessionLog implements SessionLog {
       for await (const line of rl) {
         if (!line.trim()) continue
         const entry = JSON.parse(line) as { seq: number; event: SessionEvent }
-        if (entry.seq >= fromSeq) results.push(entry)
+        if (entry.seq >= fromSeq) {
+          if (primitiveFilter && primitiveForKind(entry.event.kind) !== primitiveFilter) continue
+          results.push(entry)
+        }
       }
     } catch (err: unknown) {
       if ((err as { code?: string }).code !== "ENOENT") throw err

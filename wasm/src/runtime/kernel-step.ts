@@ -85,6 +85,8 @@ export interface KernelObservation {
   pending_calls?: string[]
   approved?: string[]
   denied?: string[]
+  original_size?: number
+  preview_size?: number
 }
 
 interface KernelStepJson {

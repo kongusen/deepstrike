@@ -39,6 +39,16 @@ export type SessionEvent =
       message_count?: number
     }
   | { kind: "page_in"; turn: number; category?: KernelEventCategory; entry_count: number }
+  | {
+      kind: "large_result_spooled"
+      turn: number
+      category?: KernelEventCategory
+      call_id: string
+      tool: string
+      original_size: number
+      preview_size: number
+      spool_ref?: string
+    }
   | { kind: "rollbacked"; turn: number; category?: KernelEventCategory; checkpoint_history_len: number; reason?: RollbackReason }
   | { kind: "capability_changed"; turn: number; category?: KernelEventCategory; added: string[]; removed: string[]; change_kind?: string; capability_id?: string; version?: string; mounted_by?: string; mount_reason?: string }
   | { kind: "context_renewed"; turn: number; category?: KernelEventCategory; sprint: number; handoff_ref: string }

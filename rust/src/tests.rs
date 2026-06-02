@@ -344,6 +344,29 @@ mod tests {
         });
 
         let session_id = "reactive-compact-rust";
+        session_log.append(session_id, deepstrike_core::runtime::session::SessionEvent::RunStarted {
+            run_id: "seed".to_string(),
+            goal: "seed ".repeat(1200),
+            criteria: vec![],
+            agent_id: None,
+            system_prompt: None,
+        }).await;
+        session_log.append(session_id, deepstrike_core::runtime::session::SessionEvent::LlmCompleted {
+            turn: 0,
+            message: deepstrike_core::types::message::Message {
+                role: deepstrike_core::types::message::Role::Assistant,
+                content: deepstrike_core::types::message::Content::Text("prior answer ".repeat(400)),
+                tool_calls: vec![],
+                token_count: None,
+            },
+            provider_replay: None,
+        }).await;
+        session_log.append(session_id, deepstrike_core::runtime::session::SessionEvent::RunTerminal {
+            reason: "completed".to_string(),
+            turns_used: 1,
+            total_tokens: 0,
+        }).await;
+
         let goal = "a".repeat(5000);
         let mut stream = runner
             .run_streaming(&goal, &[], None, Some(session_id))
@@ -739,5 +762,56 @@ mod tests {
         }
         assert!(done_seen);
         assert!(*called.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_local_execution_plane_spool_read_intercept() {
+        use crate::runtime::execution_plane::{ExecutionPlane, LocalExecutionPlane, RunContext};
+        use deepstrike_core::types::message::ToolCall;
+        
+        // 1. Create a dummy spool file
+        let spool_dir = std::path::Path::new(".spool");
+        let _ = std::fs::create_dir_all(spool_dir);
+        let spool_file = spool_dir.join("test-spool-intercept.txt");
+        let expected_content = "This is the spooled output content that should be transparently read!";
+        std::fs::write(&spool_file, expected_content).unwrap();
+        
+        // 2. Create local execution plane
+        let plane = LocalExecutionPlane::new();
+        let call = ToolCall {
+            id: compact_str::CompactString::new("call_read"),
+            name: compact_str::CompactString::new("read_file"),
+            arguments: serde_json::json!({
+                "path": spool_file.to_string_lossy().to_string()
+            }),
+        };
+        
+        let ctx = RunContext {
+            agent_id: None,
+            skill_dir: None,
+            dream_store: None,
+            knowledge_source: None,
+            governance: None,
+            on_tool_suspend: None,
+            on_permission_request: None,
+        };
+        
+        let events: Vec<RunEvent> = plane.execute_all(&[call], ctx)
+            .map(|r| r.unwrap())
+            .collect()
+            .await;
+            
+        // 3. Clean up the spool file
+        let _ = std::fs::remove_file(spool_file);
+        
+        // 4. Assert transparent intercept worked
+        assert_eq!(events.len(), 1);
+        if let RunEvent::ToolResult { call_id, content, is_error, .. } = &events[0] {
+            assert_eq!(call_id, "call_read");
+            assert_eq!(content, expected_content);
+            assert!(!is_error);
+        } else {
+            panic!("Expected RunEvent::ToolResult");
+        }
     }
 }

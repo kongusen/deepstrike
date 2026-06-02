@@ -2,7 +2,7 @@ import type {
   LLMProvider, Message, ToolCall, ToolResult, ToolSchema,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
   ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
-  PermissionResponse, PermissionResolvedEvent, AsyncSummarizer,
+  PermissionResponse, PermissionResolvedEvent, AsyncSummarizer, DreamSummarizer,
 } from "../types.js"
 import type { DreamStore, MemoryEntry, CurationResult, SessionData } from "../memory/protocols.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
@@ -15,6 +15,7 @@ import { getKernel, type KernelRuntimeInstance } from "../kernel.js"
 import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
 import { buildLlmCompletedEvent, buildRunTerminalEvent, repairEventsForRecovery } from "./session-repair.js"
+import { KernelPrimitivesDashboard } from "./kernel-primitives-dashboard.js"
 import {
   capabilityMarker,
   capabilitySkill,
@@ -119,6 +120,13 @@ export interface RuntimeOptions {
   }
   /** Optional system prompt injected into the dream synthesis call. */
   dreamSystemPrompt?: string
+  /** Custom LLM provider used for background memory consolidation (dream loop). */
+  dreamProvider?: LLMProvider
+  /**
+   * Optional LLM summarizer for semantic page_out events. When unset, `dreamProvider`
+   * (or the runtime provider) is used to produce long-term summaries for DreamStore.
+   */
+  dreamSummarizer?: DreamSummarizer
   /**
    * Optional async LLM summarizer. When provided, a background call is fired
    * after each compression event to produce a richer semantic summary.
@@ -126,6 +134,8 @@ export interface RuntimeOptions {
    * on the next wake() in place of the rule-based summary.
    */
   asyncSummarizer?: AsyncSummarizer
+  /** Enable real-time CLI diagnostics dashboard grouped by the three kernel primitives (Syscall, Sched, Mm) */
+  enableDiagnosticsDashboard?: boolean
 }
 
 export class RuntimeRunner {
@@ -136,8 +146,23 @@ export class RuntimeRunner {
   private nextArchiveStart = 0
   /** Full tool outputs keyed by call_id until Layer-1 spool observations are logged. */
   private pendingSpoolOutputs = new Map<string, { tool: string; output: string }>()
+  /** Local cache of paged-out/archived messages for priority memory retrieval. */
+  private localPageOutCache: Message[] = []
+  private dashboard: KernelPrimitivesDashboard | null = null
 
-  constructor(private readonly opts: RuntimeOptions) {}
+  constructor(private readonly opts: RuntimeOptions) {
+    if (opts.enableDiagnosticsDashboard) {
+      const originalAppend = opts.sessionLog.append.bind(opts.sessionLog)
+      opts.sessionLog.append = async (sessionId, event) => {
+        const seq = await originalAppend(sessionId, event)
+        if (this.dashboard) {
+          this.dashboard.ingest(event)
+          this.dashboard.print()
+        }
+        return seq
+      }
+    }
+  }
 
   /** Host configuration (for coordinator / sub-agent spawn). */
   get hostOptions(): RuntimeOptions {
@@ -187,13 +212,29 @@ export class RuntimeRunner {
     for (const req of requests) {
       const query = typeof req.query === "string" ? req.query : ""
       const topK = typeof req.top_k === "number" ? req.top_k : 5
-      if (req.tool === "memory" && this.opts.dreamStore && this.opts.agentId) {
-        const hits = await this.opts.dreamStore.search(this.opts.agentId, query, topK)
-        for (const hit of hits) {
+      if (req.tool === "memory") {
+        // Priority search: Local Page-Out Cache (lexical/keyword filter)
+        const localHits = this.localPageOutCache.filter(m =>
+          typeof m.content === "string" && m.content.toLowerCase().includes(query.toLowerCase())
+        ).slice(0, topK)
+
+        for (const hit of localHits) {
           entries.push({
-            content: `[memory score=${hit.score.toFixed(3)}] ${hit.text}`,
-            source: "memory",
+            content: `[local semantic cache] ${hit.role}: ${hit.content}`,
+            source: "semantic_cache",
           })
+        }
+
+        // Fall back to dreamStore for the remainder if needed
+        const remainingK = topK - entries.length
+        if (remainingK > 0 && this.opts.dreamStore && this.opts.agentId) {
+          const hits = await this.opts.dreamStore.search(this.opts.agentId, query, remainingK)
+          for (const hit of hits) {
+            entries.push({
+              content: `[memory score=${hit.score.toFixed(3)}] ${hit.text}`,
+              source: "memory",
+            })
+          }
         }
       } else if (req.tool === "knowledge" && this.opts.knowledgeSource) {
         const snippets = await this.opts.knowledgeSource.retrieve(query, topK)
@@ -336,7 +377,8 @@ export class RuntimeRunner {
     if (action1.kind !== "synthesize_insights") throw new Error(`unexpected: ${action1.kind}`)
 
     let synthesisText = ""
-    const providerState = this.opts.provider.createRunState?.()
+    const dreamProvider = this.opts.dreamProvider ?? this.opts.provider
+    const providerState = dreamProvider.createRunState?.()
     const synthMsgs = (action1.messages ?? []) as Message[]
     const kernelSystemText = synthMsgs.filter(m => m.role === "system").map(m => m.content).join("\n\n")
     const synthContext = {
@@ -344,7 +386,7 @@ export class RuntimeRunner {
       turns: synthMsgs.filter(m => m.role !== "system"),
     }
     let totalTokens = 0
-    for await (const evt of this.opts.provider.stream(synthContext, [], undefined, providerState)) {
+    for await (const evt of dreamProvider.stream(synthContext, [], undefined, providerState)) {
       if (evt.type === "text_delta") { synthesisText += (evt as TextDelta).delta; yield evt }
       else if (evt.type === "usage") totalTokens = (evt as { type: string; totalTokens: number }).totalTokens
     }
@@ -478,6 +520,9 @@ export class RuntimeRunner {
     this.pendingObservations = []
     this.pendingSpoolOutputs.clear()
     this.currentSessionId = sessionId
+    if (this.opts.enableDiagnosticsDashboard) {
+      this.dashboard = new KernelPrimitivesDashboard(sessionId)
+    }
     const kernel = getKernel()
     const ext = { ...this.opts.extensions, ...(extensions ?? {}) }
     const providerState = this.opts.provider.createRunState?.()
@@ -768,6 +813,7 @@ export class RuntimeRunner {
           knowledgeSource: this.opts.knowledgeSource,
           onToolSuspend: this.opts.onToolSuspend,
           onPermissionRequest: this.opts.onPermissionRequest,
+          resultSpool: this.opts.resultSpool ?? new LargeResultSpool(),
         }
 
         const toolResults: ToolResult[] = []
@@ -955,6 +1001,7 @@ export class RuntimeRunner {
     yield { type: "done", iterations: turnsUsed, totalTokens, status } as DoneEvent
     this.activeKernel = null
     this.currentSessionId = null
+    this.dashboard = null
   }
 
   private async appendObservations(
@@ -980,6 +1027,10 @@ export class RuntimeRunner {
             // non-fatal
           }
         }
+      }
+
+      if (obs.kind === "page_out" && obs.archived) {
+        this.localPageOutCache.push(...(obs.archived as Message[]))
       }
 
       if (obs.kind === "large_result_spooled") {
@@ -1023,8 +1074,42 @@ export class RuntimeRunner {
           )
         }
       }
+      if (
+        obs.kind === "page_out"
+        && obs.tier_hint === "semantic"
+        && Array.isArray(obs.archived)
+        && obs.archived.length > 0
+      ) {
+        void this.archiveSemanticPageOut(obs.archived as Message[], compressionAction(obs.action))
+      }
     }
     return nextArchiveStart
+  }
+
+  private async archiveSemanticPageOut(archived: Message[], action?: string): Promise<void> {
+    if (!this.opts.dreamStore || !this.opts.agentId) return
+    try {
+      const summary = this.opts.dreamSummarizer
+        ? await this.opts.dreamSummarizer.summarize(archived, { action })
+        : await summarizeForLongTermMemory(
+          this.opts.dreamProvider ?? this.opts.provider,
+          archived,
+          this.opts.dreamSystemPrompt,
+        )
+      const existing = await this.opts.dreamStore.loadMemories(this.opts.agentId)
+      await this.opts.dreamStore.commit(this.opts.agentId, {
+        toAdd: [{ text: summary, score: 1.0, metadata: { source: "semantic_page_out", action } }],
+        toRemoveIndices: [],
+        stats: {
+          insightsProcessed: 1,
+          duplicatesRemoved: 0,
+          conflictsResolved: 0,
+          entriesAdded: 1,
+        },
+      }, existing)
+    } catch {
+      // non-fatal: in-context compression summary remains; long-term layer is best-effort
+    }
   }
 
   private async upgradeCompressedSummary(
@@ -1060,6 +1145,29 @@ function compressionAction(action?: string): Extract<SessionEvent, { kind: "comp
     return action
   }
   return undefined
+}
+
+async function summarizeForLongTermMemory(
+  provider: LLMProvider,
+  archived: Message[],
+  systemPrompt?: string,
+): Promise<string> {
+  const transcript = archived
+    .map(m => `${m.role}: ${m.content}`)
+    .join("\n")
+  const context = {
+    systemText: [
+      systemPrompt,
+      "Summarize the following conversation for long-term memory. Preserve key facts, decisions, and open questions.",
+    ].filter(Boolean).join("\n\n"),
+    turns: [{ role: "user" as const, content: transcript, toolCalls: [] }],
+  }
+  let text = ""
+  const state = provider.createRunState?.()
+  for await (const evt of provider.stream(context, [], undefined, state)) {
+    if (evt.type === "text_delta") text += evt.delta
+  }
+  return text.trim() || transcript.slice(0, 2000)
 }
 
 export function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, maxBytes?: number): Message[] {

@@ -384,6 +384,17 @@ fn execute_all_local<'a>(
         > = FuturesUnordered::new();
 
         for mut call in regular_calls {
+            if let Some(content) = try_read_spooled_argument(&call).await {
+                yield RunEvent::ToolResult {
+                    call_id: call.id.to_string(),
+                    content,
+                    is_error: false,
+                    is_fatal: false,
+                    error_kind: None,
+                };
+                continue;
+            }
+
             let Some(tool) = plane.tools.get(call.name.as_str()) else {
                 let content = format!("unknown tool: {}", call.name);
                 yield RunEvent::ToolResult {
@@ -576,6 +587,28 @@ async fn resolve_permission_request(
             reason: Some(format!("permission handler failed: {err}")),
         },
     }
+}
+
+
+async fn try_read_spooled_argument(call: &ToolCall) -> Option<String> {
+    let is_read_tool = matches!(
+        call.name.as_str(),
+        "read" | "read_file" | "view_file" | "read_spooled_result"
+    );
+    if !is_read_tool {
+        return None;
+    }
+    let obj = call.arguments.as_object()?;
+    for val in obj.values() {
+        if let Some(s) = val.as_str() {
+            if s.starts_with(".spool/") || s.contains("/.spool/") {
+                if let Ok(content) = tokio::fs::read_to_string(s).await {
+                    return Some(content);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Collect tool results from a plane stream (one result per initial call).

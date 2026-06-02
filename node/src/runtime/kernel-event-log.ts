@@ -194,3 +194,23 @@ export function kernelObservationToSessionEvent(
       return null
   }
 }
+
+export type KernelPrimitive = "syscall" | "sched" | "mm"
+
+export function primitiveForCategory(category: KernelEventCategory): KernelPrimitive {
+  switch (category) {
+    case "syscall":
+      return "syscall"
+    case "mm":
+      return "mm"
+    case "proc":
+    case "ipc":
+    case "sched":
+    default:
+      return "sched"
+  }
+}
+
+export function primitiveForKind(kind: string): KernelPrimitive {
+  return primitiveForCategory(categoryForKind(kind))
+}

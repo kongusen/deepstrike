@@ -54,11 +54,11 @@ describe("in-kernel attention policy", () => {
     expect(s.observations.some(o => o.kind === "signal_disposed" && o.disposition === "dropped")).toBe(true)
   })
 
-  it("without set_attention_policy keeps legacy behavior (no signal_disposed)", () => {
+  it("without set_attention_policy uses the default SignalRouter queue (64)", () => {
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    step(rt, { kind: "start_run", task: { goal: "legacy", criteria: [] } })
+    step(rt, { kind: "start_run", task: { goal: "watch", criteria: [] } })
     const s = step(rt, { kind: "signal", signal: makeSignal("normal", "tick") })
-    expect(s.actions).toHaveLength(1)
-    expect(s.observations.some(o => o.kind === "signal_disposed")).toBe(false)
+    expect(s.actions).toHaveLength(0)
+    expect(s.observations.some(o => o.kind === "signal_disposed" && o.disposition === "queue" && o.queue_depth === 1)).toBe(true)
   })
 })

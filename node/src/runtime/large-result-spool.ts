@@ -38,6 +38,10 @@ export interface SpoolConfig {
   previewTokens: number
   /** Total message limit (bytes) */
   totalMessageLimitBytes: number
+  /** Custom spool directory path */
+  spoolDir?: string
+  /** Maximum age of spooled files (default 7 days) */
+  maxAgeMs?: number
 }
 
 export const DEFAULT_SPOOL_CONFIG: SpoolConfig = {
@@ -52,10 +56,11 @@ export const DEFAULT_SPOOL_CONFIG: SpoolConfig = {
 export class LargeResultSpool {
   private config: SpoolConfig
   private spoolDir: string
+  private activeWrites = new Map<string, Promise<string>>()
 
   constructor(config: Partial<SpoolConfig> = {}) {
     this.config = { ...DEFAULT_SPOOL_CONFIG, ...config }
-    this.spoolDir = '.spool'
+    this.spoolDir = config.spoolDir ?? '.spool'
   }
 
   /**
@@ -88,13 +93,20 @@ export class LargeResultSpool {
   ): Promise<string> {
     const spoolPath = this.getSpoolPath(hash)
 
-    // Ensure spool directory exists
-    await fs.mkdir(this.spoolDir, { recursive: true })
-
-    // Write full content to disk
-    await fs.writeFile(spoolPath, content, 'utf-8')
-
-    return spoolPath
+    let promise = this.activeWrites.get(spoolPath)
+    if (!promise) {
+      promise = (async () => {
+        try {
+          await fs.mkdir(this.spoolDir, { recursive: true })
+          await fs.writeFile(spoolPath, content, 'utf-8')
+          return spoolPath
+        } finally {
+          this.activeWrites.delete(spoolPath)
+        }
+      })()
+      this.activeWrites.set(spoolPath, promise)
+    }
+    return promise
   }
 
   /**
@@ -149,9 +161,21 @@ omitted: ${omitted} chars
   async persistOutput(callId: string, content: string): Promise<string> {
     const hash = this.hashContent(content)
     const spoolPath = this.getSpoolPath(`${callId}-${hash.slice(0, 16)}`)
-    await fs.mkdir(this.spoolDir, { recursive: true })
-    await fs.writeFile(spoolPath, content, "utf-8")
-    return spoolPath
+
+    let promise = this.activeWrites.get(spoolPath)
+    if (!promise) {
+      promise = (async () => {
+        try {
+          await fs.mkdir(this.spoolDir, { recursive: true })
+          await fs.writeFile(spoolPath, content, 'utf-8')
+          return spoolPath
+        } finally {
+          this.activeWrites.delete(spoolPath)
+        }
+      })()
+      this.activeWrites.set(spoolPath, promise)
+    }
+    return promise
   }
 
   /**
@@ -169,8 +193,24 @@ omitted: ${omitted} chars
   /**
    * Clean up old spool files (optional maintenance).
    */
-  async cleanup(maxAgeMs: number = 7 * 24 * 60 * 60 * 1000): Promise<number> {
-    // Not implemented for now - future enhancement
-    return 0
+  async cleanup(maxAgeMs?: number): Promise<number> {
+    const limit = maxAgeMs ?? this.config.maxAgeMs ?? 7 * 24 * 60 * 60 * 1000
+    try {
+      const files = await fs.readdir(this.spoolDir)
+      let count = 0
+      const now = Date.now()
+      for (const file of files) {
+        const filePath = path.join(this.spoolDir, file)
+        const stats = await fs.stat(filePath)
+        if (now - stats.mtimeMs > limit) {
+          await fs.unlink(filePath)
+          count++
+        }
+      }
+      return count
+    } catch (error) {
+      // Ignore if directory doesn't exist or other file error
+      return 0
+    }
   }
 }

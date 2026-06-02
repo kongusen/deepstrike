@@ -5,6 +5,7 @@ import type {
 import type { RegisteredTool } from "../tools/index.js"
 import type { DreamStore, MemoryEntry } from "../memory/index.js"
 import type { KnowledgeSource } from "../knowledge/index.js"
+import { LargeResultSpool } from "./large-result-spool.js"
 
 export interface ToolSuspendEvent {
   type: "tool_suspend"
@@ -21,6 +22,7 @@ export interface RunContext {
   knowledgeSource?: KnowledgeSource
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
   onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
+  resultSpool?: LargeResultSpool
 }
 
 export interface ExecutionPlane {
@@ -100,6 +102,12 @@ export class LocalExecutionPlane implements ExecutionPlane {
     }
 
     for (const call of regularCalls) {
+      const spooledContent = await this.tryReadSpooledArgument(call, ctx)
+      if (spooledContent !== null) {
+        yield { type: "tool_result", callId: call.id, name: call.name, content: spooledContent, isError: false } as ToolResultEvent
+        continue
+      }
+
       const registered = this.tools.get(call.name)
       if (!registered) {
         yield { type: "tool_result", callId: call.id, name: call.name, content: `unknown tool: ${call.name}`, isError: true, isFatal: false, errorKind: "recoverable" } as ToolResultEvent
@@ -121,6 +129,25 @@ export class LocalExecutionPlane implements ExecutionPlane {
         } as ToolResultEvent
       }
     }
+  }
+
+  private async tryReadSpooledArgument(call: ToolCall, ctx: RunContext): Promise<string | null> {
+    const isReadTool = ["read", "read_file", "view_file", "read_spooled_result"].includes(call.name)
+    if (!isReadTool) return null
+
+    try {
+      const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>
+      for (const val of Object.values(args)) {
+        if (typeof val === "string" && (val.startsWith(".spool/") || val.includes("/.spool/"))) {
+          const spool = ctx.resultSpool ?? new LargeResultSpool()
+          const content = await spool.readSpooledResult(val)
+          return content
+        }
+      }
+    } catch {
+      // Ignore errors
+    }
+    return null
   }
 }
 
