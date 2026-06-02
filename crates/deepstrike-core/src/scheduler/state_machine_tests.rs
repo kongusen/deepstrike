@@ -688,7 +688,7 @@
         });
         let action = sm.feed(LoopEvent::LLMResponse { message: msg });
         assert!(matches!(action, LoopAction::AwaitingResume));
-        assert!(matches!(sm.phase, LoopPhase::Suspended { .. }));
+        assert!(sm.is_suspended());
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(o, LoopObservation::Suspended { .. })));
         assert!(obs.iter().any(|o| matches!(o, LoopObservation::ToolGated { .. })));
@@ -749,11 +749,10 @@
         );
         let action = sm.spawn_sub_agent(spec, "parent-sess");
         assert!(matches!(action, LoopAction::AwaitingResume));
+        assert!(sm.is_suspended());
         assert!(matches!(
-            sm.phase,
-            LoopPhase::Suspended {
-                reason: SuspendReason::SubAgentAwait
-            }
+            sm.wait_reason(),
+            Some(WaitReason::SubAgentJoin(_))
         ));
 
         let result = SubAgentResult {
@@ -808,9 +807,10 @@
     #[test]
     fn lifecycle_idle_before_start_is_ready() {
         let sm = sm();
-        assert!(matches!(sm.phase, LoopPhase::Idle));
-        assert_eq!(sm.phase.lifecycle(), TaskState::Ready);
-        assert_eq!(sm.phase.wait_reason(), None);
+        // M1d: schedulability lives on the root task; before start it is `Ready` and the
+        // turn-step `phase` is an inert placeholder.
+        assert_eq!(sm.lifecycle(), TaskState::Ready);
+        assert_eq!(sm.wait_reason(), None);
     }
 
     #[test]
@@ -818,8 +818,8 @@
         let mut sm = sm();
         sm.start(RuntimeTask::new("hi"));
         assert!(matches!(sm.phase, LoopPhase::Reason));
-        assert_eq!(sm.phase.lifecycle(), TaskState::Running);
-        assert_eq!(sm.phase.wait_reason(), None);
+        assert_eq!(sm.lifecycle(), TaskState::Running);
+        assert_eq!(sm.wait_reason(), None);
     }
 
     #[test]
@@ -833,9 +833,9 @@
             arguments: serde_json::json!({}),
         });
         sm.feed(LoopEvent::LLMResponse { message: msg });
-        assert!(matches!(sm.phase, LoopPhase::Suspended { .. }));
-        assert_eq!(sm.phase.lifecycle(), TaskState::Suspended);
-        assert_eq!(sm.phase.wait_reason(), Some(WaitReason::Approval));
+        assert!(sm.is_suspended());
+        assert_eq!(sm.lifecycle(), TaskState::Suspended);
+        assert_eq!(sm.wait_reason(), Some(WaitReason::Approval));
     }
 
     #[test]
@@ -850,10 +850,10 @@
             "child task",
         );
         sm.spawn_sub_agent(spec, "parent-sess");
-        assert!(matches!(sm.phase, LoopPhase::Suspended { .. }));
-        assert_eq!(sm.phase.lifecycle(), TaskState::Suspended);
+        assert!(sm.is_suspended());
+        assert_eq!(sm.lifecycle(), TaskState::Suspended);
         assert!(matches!(
-            sm.phase.wait_reason(),
+            sm.wait_reason(),
             Some(WaitReason::SubAgentJoin(_))
         ));
     }
@@ -866,9 +866,9 @@
             message: Message::assistant("final answer"),
         });
         assert!(matches!(done, LoopAction::Done { .. }));
-        assert!(matches!(sm.phase, LoopPhase::Terminal { .. }));
-        assert!(sm.phase.lifecycle().is_terminal());
-        assert_eq!(sm.phase.wait_reason(), None);
+        assert!(sm.is_terminal());
+        assert!(sm.lifecycle().is_terminal());
+        assert_eq!(sm.wait_reason(), None);
     }
 
     #[test]
@@ -882,12 +882,12 @@
             arguments: serde_json::json!({}),
         });
         sm.feed(LoopEvent::LLMResponse { message: msg });
-        assert_eq!(sm.phase.lifecycle(), TaskState::Suspended);
+        assert_eq!(sm.lifecycle(), TaskState::Suspended);
 
         sm.resume_from_suspend(vec!["call_a".to_string()], vec![]);
         // After resume the loop is driving a turn again — back to a runnable lifecycle.
-        assert_eq!(sm.phase.lifecycle(), TaskState::Running);
-        assert_eq!(sm.phase.wait_reason(), None);
+        assert_eq!(sm.lifecycle(), TaskState::Running);
+        assert_eq!(sm.wait_reason(), None);
     }
 
     // ---- M1c: canonical TaskTable mirrors ProcessTable ----------------------
@@ -895,7 +895,9 @@
     #[test]
     fn task_table_holds_root_after_start() {
         let mut sm = sm();
-        assert_eq!(sm.task_table().all().len(), 0);
+        // M1d: the root task is seeded `Ready` at construction.
+        assert_eq!(sm.task_table().all().len(), 1);
+        assert_eq!(sm.task_table().get("root").unwrap().state, TaskState::Ready);
         sm.start(RuntimeTask::new("hi"));
         let root = sm.task_table().get("root").expect("root task");
         assert_eq!(root.state, TaskState::Running);

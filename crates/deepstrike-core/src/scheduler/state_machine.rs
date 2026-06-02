@@ -23,52 +23,19 @@ use crate::types::result::{LoopResult, TerminationReason};
 use crate::types::signal::{RuntimeSignal, Urgency};
 use crate::types::task::RuntimeTask;
 
-/// The phases of the L* execution loop.
+/// The *turn step* of the L* execution loop (M1d).
+///
+/// Schedulability (`Ready/Running/Blocked/Suspended/Done`) is no longer carried here — it lives
+/// on the root task's [`TaskState`] in the kernel's `TaskTable`, queried via
+/// [`LoopStateMachine::lifecycle`]. `LoopPhase` is now orthogonal: it only records *which step of a
+/// running turn* the loop is in. When the task is `Ready/Suspended/Done`, the phase value is
+/// inert (left at its last step) and ignored.
 #[derive(Debug, Clone)]
 pub enum LoopPhase {
-    Idle,
     Reason,
     Act { tool_calls: Vec<ToolCall> },
     Observe { results: Vec<ToolResult> },
     Delta { pressure: f64 },
-    /// Loop is suspended awaiting external resolution (human approval, sub-agent join).
-    /// The kernel will not call the provider until `Resume` is received.
-    Suspended { reason: SuspendReason },
-    /// Loop is blocked awaiting a tool continuation (e.g. tool suspend / milestone eval).
-    /// Reserved for future use — wired as a variant but not yet driven.
-    Blocked { awaiting: BlockReason },
-    Terminal { result: LoopResult },
-}
-
-impl LoopPhase {
-    /// Canonical projection of the running phase onto the P2 schedulability lifecycle
-    /// ([`TaskState`]). The intra-turn steps (`Reason/Act/Observe/Delta`) all map to
-    /// `Running`; only `Idle/Blocked/Suspended/Terminal` carry distinct lifecycle meaning.
-    ///
-    /// This is the bridge contract that M1d preserves when `LoopPhase` is split so that
-    /// schedulability moves onto the TCB and `LoopPhase` keeps only the turn step.
-    pub fn lifecycle(&self) -> TaskState {
-        match self {
-            LoopPhase::Idle => TaskState::Ready,
-            LoopPhase::Reason
-            | LoopPhase::Act { .. }
-            | LoopPhase::Observe { .. }
-            | LoopPhase::Delta { .. } => TaskState::Running,
-            LoopPhase::Blocked { .. } => TaskState::Blocked,
-            LoopPhase::Suspended { .. } => TaskState::Suspended,
-            LoopPhase::Terminal { result } => TaskState::Done(result.termination),
-        }
-    }
-
-    /// The wait reason when the phase is non-runnable (`Suspended`/`Blocked`), using the
-    /// M0 [`WaitReason`] conversions. `None` for runnable / terminal phases.
-    pub fn wait_reason(&self) -> Option<WaitReason> {
-        match self {
-            LoopPhase::Suspended { reason } => Some((*reason).into()),
-            LoopPhase::Blocked { awaiting } => Some((*awaiting).into()),
-            _ => None,
-        }
-    }
 }
 
 /// Why the loop entered `Suspended` state.
@@ -398,8 +365,14 @@ impl LoopStateMachine {
     }
 
     pub fn new(policy: LoopPolicy) -> Self {
+        let mut tasks = TaskTable::new();
+        // M1d: the root task carries the authoritative schedulability lifecycle. It starts
+        // `Ready`; `start()`/`resume_*` flip it to `Running`, suspends set `Suspended`, and
+        // `terminate()` sets `Done`. `phase` is now only the intra-turn step.
+        tasks.insert(Tcb::root("root", policy.clone()));
         Self {
-            phase: LoopPhase::Idle,
+            // Inert placeholder step; meaningful only while the root task is `Running`.
+            phase: LoopPhase::Reason,
             turn: 0,
             ctx: ContextManager::new(policy.max_tokens),
             tools: Vec::new(),
@@ -412,13 +385,47 @@ impl LoopStateMachine {
             milestone: MilestoneTracker::new(),
             run_spec: None,
             processes: ProcessTable::new(),
-            tasks: TaskTable::new(),
+            tasks,
             governance: None,
             signal_router: None,
             started_at_ms: None,
             last_now_ms: None,
             suspend_state: None,
             pending_denied_results: Vec::new(),
+        }
+    }
+
+    /// The authoritative schedulability lifecycle of the loop (root task state). Replaces the
+    /// removed `LoopPhase::{Idle,Suspended,Blocked,Terminal}` reads.
+    pub fn lifecycle(&self) -> TaskState {
+        self.tasks.get("root").map(|t| t.state).unwrap_or(TaskState::Ready)
+    }
+
+    /// The wait reason while suspended/blocked, if any.
+    pub fn wait_reason(&self) -> Option<WaitReason> {
+        self.tasks.get("root").and_then(|t| t.wait.clone())
+    }
+
+    /// Whether the loop has terminated.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self.lifecycle(), TaskState::Done(_))
+    }
+
+    /// Whether the loop is suspended awaiting external resolution.
+    pub fn is_suspended(&self) -> bool {
+        matches!(self.lifecycle(), TaskState::Suspended)
+    }
+
+    /// Set the root task's lifecycle (and wait reason). Single mutation point for schedulability.
+    fn set_lifecycle(&mut self, state: TaskState, wait: Option<WaitReason>) {
+        if let Some(root) = self.tasks.get_mut("root") {
+            root.state = state;
+            root.wait = wait;
+        } else {
+            let mut root = Tcb::root("root", self.policy.clone());
+            root.state = state;
+            root.wait = wait;
+            self.tasks.insert(root);
         }
     }
 
@@ -430,7 +437,7 @@ impl LoopStateMachine {
         tcb.budget.turns = self.turn;
         tcb.budget.total_tokens = self.total_tokens;
         tcb.budget.started_at_ms = self.started_at_ms;
-        tcb.state = self.phase.lifecycle();
+        tcb.state = self.lifecycle();
         tcb
     }
 
@@ -478,7 +485,7 @@ impl LoopStateMachine {
     /// Route a signal and decide whether it drives a turn now. Assumes the caller
     /// has already cleared observations / swept leases (see `feed` and `signal_event`).
     fn dispatch_signal(&mut self, signal: RuntimeSignal) -> Option<LoopAction> {
-        let is_running = !matches!(self.phase, LoopPhase::Idle | LoopPhase::Terminal { .. });
+        let is_running = !matches!(self.lifecycle(), TaskState::Ready | TaskState::Done(_));
         match self.signal_router.as_mut() {
             Some(router) => {
                 let signal_id = signal.id.to_string();
@@ -641,9 +648,7 @@ impl LoopStateMachine {
             calls: calls.to_vec(),
             gated_reasons,
         });
-        self.phase = LoopPhase::Suspended {
-            reason: SuspendReason::AskUser,
-        };
+        self.set_lifecycle(TaskState::Suspended, Some(WaitReason::Approval));
         self.observations.push(LoopObservation::Suspended {
             turn: self.turn,
             reason: "ask_user".to_string(),
@@ -671,7 +676,7 @@ impl LoopStateMachine {
             return LoopAction::AwaitingResume;
         };
 
-        if !matches!(self.phase, LoopPhase::Suspended { .. }) {
+        if !self.is_suspended() {
             return LoopAction::AwaitingResume;
         }
 
@@ -716,12 +721,14 @@ impl LoopStateMachine {
         if to_execute.is_empty() {
             let results = std::mem::take(&mut self.pending_denied_results);
             self.phase = LoopPhase::Reason;
+            self.set_lifecycle(TaskState::Running, None);
             return self.feed(LoopEvent::ToolResults { results });
         }
 
         self.phase = LoopPhase::Act {
             tool_calls: to_execute.clone(),
         };
+        self.set_lifecycle(TaskState::Running, None);
         LoopAction::ExecuteTools {
             calls: to_execute,
         }
@@ -815,6 +822,7 @@ impl LoopStateMachine {
             self.phase = LoopPhase::Act {
                 tool_calls: calls.clone(),
             };
+            self.set_lifecycle(TaskState::Running, None);
             return LoopAction::ExecuteTools { calls };
         }
         self.phase = LoopPhase::Reason;
@@ -846,10 +854,7 @@ impl LoopStateMachine {
         let user_tokens = self.ctx.engine.count(&user_msg).max(1);
         self.ctx.push_history(Message::user(user_msg), user_tokens);
         self.phase = LoopPhase::Reason;
-        // M1c: register the root task (task 0) so the TaskTable holds the full task set.
-        let mut root = Tcb::root("root", self.policy.clone());
-        root.state = self.phase.lifecycle();
-        self.tasks.insert(root);
+        // Root task (seeded `Ready` in `new()`) becomes `Running`; `emit_call_llm` sets it.
         self.emit_call_llm()
     }
 
@@ -910,6 +915,7 @@ impl LoopStateMachine {
                 self.phase = LoopPhase::Act {
                     tool_calls: calls.clone(),
                 };
+                self.set_lifecycle(TaskState::Running, None);
                 LoopAction::ExecuteTools { calls }
             }
 
@@ -1058,9 +1064,6 @@ impl LoopStateMachine {
         }
     }
 
-    pub fn is_terminal(&self) -> bool {
-        matches!(self.phase, LoopPhase::Terminal { .. })
-    }
 
     /// Drain observations emitted during the last `start`/`feed` call.
     pub fn take_observations(&mut self) -> Vec<LoopObservation> {
@@ -1092,9 +1095,10 @@ impl LoopStateMachine {
         self.suspend_state = Some(SuspendState::SubAgentAwait {
             agent_ids: vec![agent_id.clone()],
         });
-        self.phase = LoopPhase::Suspended {
-            reason: SuspendReason::SubAgentAwait,
-        };
+        self.set_lifecycle(
+            TaskState::Suspended,
+            Some(WaitReason::SubAgentJoin(manifest.agent_id.clone())),
+        );
         self.observations.push(LoopObservation::Suspended {
             turn: self.turn,
             reason: "sub_agent_await".to_string(),
@@ -1123,16 +1127,11 @@ impl LoopStateMachine {
             .push_signal(format!("[sub-agent {}] {}", result.agent_id, summary));
 
         let agent_id = result.agent_id.to_string();
-        let resume_parent = match (
-            &self.phase,
-            self.suspend_state.as_mut(),
-        ) {
-            (
-                LoopPhase::Suspended {
-                    reason: SuspendReason::SubAgentAwait,
-                },
-                Some(SuspendState::SubAgentAwait { agent_ids }),
-            ) => {
+        // Suspended awaiting a sub-agent join (lifecycle on the root task, M1d).
+        let awaiting_sub_agent =
+            self.is_suspended() && matches!(self.wait_reason(), Some(WaitReason::SubAgentJoin(_)));
+        let resume_parent = match self.suspend_state.as_mut() {
+            Some(SuspendState::SubAgentAwait { agent_ids }) if awaiting_sub_agent => {
                 agent_ids.retain(|id| id != &agent_id);
                 if agent_ids.is_empty() {
                     self.suspend_state = None;
@@ -1236,9 +1235,7 @@ impl LoopStateMachine {
             turns_used: self.turn,
             total_tokens_used: self.total_tokens,
         };
-        self.phase = LoopPhase::Terminal {
-            result: result.clone(),
-        };
+        self.set_lifecycle(TaskState::Done(termination), None);
         LoopAction::Done { result }
     }
 
@@ -1247,6 +1244,9 @@ impl LoopStateMachine {
     /// when configured. When `pending_termination` is set, tools are stripped
     /// to force a plain-text response before the loop terminates.
     fn emit_call_llm(&mut self) -> LoopAction {
+        // Calling the provider is definitionally "running" — the single funnel for entering the
+        // Running lifecycle (covers start, resume, signal-driven turns, budget final-call).
+        self.set_lifecycle(TaskState::Running, None);
         self.checkpoint.history_len = self.ctx.partitions.history.messages.len();
         self.checkpoint.signals_len = self.ctx.partitions.signals.len();
         self.checkpoint.task_state = Some(self.ctx.partitions.task_state.clone());

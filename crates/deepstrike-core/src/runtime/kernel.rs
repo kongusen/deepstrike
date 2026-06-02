@@ -1168,11 +1168,10 @@ mod tests {
             o,
             KernelObservation::Suspended { reason, .. } if reason == "sub_agent_await"
         )));
+        assert!(runtime.state_machine().is_suspended());
         assert!(matches!(
-            runtime.state_machine().phase,
-            crate::scheduler::state_machine::LoopPhase::Suspended {
-                reason: crate::scheduler::state_machine::SuspendReason::SubAgentAwait
-            }
+            runtime.state_machine().wait_reason(),
+            Some(crate::scheduler::tcb::WaitReason::SubAgentJoin(_))
         ));
     }
 
