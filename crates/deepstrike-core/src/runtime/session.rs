@@ -90,6 +90,18 @@ pub enum SessionEvent {
         category: Option<KernelEventCategory>,
         entry_count: u32,
     },
+    /// Large tool result spooled to disk by the SDK (kernel Layer 1).
+    LargeResultSpooled {
+        turn: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<KernelEventCategory>,
+        call_id: String,
+        tool: String,
+        original_size: u32,
+        preview_size: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spool_ref: Option<String>,
+    },
     RunTerminal {
         reason: String,
         turns_used: u32,
@@ -303,6 +315,7 @@ impl SessionEvent {
             Self::Compressed { .. } => "compressed",
             Self::PageOut { .. } => "page_out",
             Self::PageIn { .. } => "page_in",
+            Self::LargeResultSpooled { .. } => "large_result_spooled",
             Self::RunTerminal { .. } => "run_terminal",
             Self::ToolArgumentRepaired { .. } => "tool_argument_repaired",
             Self::PermissionRequested { .. } => "permission_requested",
@@ -334,6 +347,7 @@ impl SessionEvent {
             Self::Compressed { category, .. }
             | Self::PageOut { category, .. }
             | Self::PageIn { category, .. }
+            | Self::LargeResultSpooled { category, .. }
             | Self::CapabilityChanged { category, .. }
             | Self::ContextRenewed { category, .. }
             | Self::Suspended { category, .. }
@@ -361,6 +375,7 @@ impl SessionEvent {
             Self::Compressed { .. }
                 | Self::PageOut { .. }
                 | Self::PageIn { .. }
+                | Self::LargeResultSpooled { .. }
                 | Self::CapabilityChanged { .. }
                 | Self::ContextRenewed { .. }
                 | Self::Suspended { .. }

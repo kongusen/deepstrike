@@ -169,9 +169,8 @@ pub enum KernelInputEvent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         constraints: Vec<ConstraintSpec>,
     },
-    /// Enable in-kernel signal routing (interrupt/disposition + queue) with the
-    /// default urgency-based attention policy. Omitting this event keeps the
-    /// legacy hardcoded signal handling.
+    /// Override the default in-kernel signal router queue size (default 64).
+    /// The router is always active; this only adjusts capacity.
     SetAttentionPolicy {
         #[serde(default = "default_signal_queue_size")]
         max_queue_size: u32,
