@@ -60,7 +60,8 @@ pub enum Disposition {
     /// Reject. `stage` names the gate stage that vetoed.
     Deny { stage: &'static str, reason: String },
     /// Suspend the calling task until an external party resolves it (e.g. human approval).
-    Gate(WaitReason),
+    /// `reason` carries the human-readable justification (e.g. the governance `AskUser` reason).
+    Gate { wait: WaitReason, reason: String },
     /// Accept but queue for later scheduling (backpressure).
     Defer { slot: u32 },
     /// Rejected by a rate limiter; retry permitted after the delay.
@@ -73,7 +74,7 @@ impl Disposition {
             Self::Allow => "allow",
             Self::Transform(_) => "transform",
             Self::Deny { .. } => "deny",
-            Self::Gate(_) => "gate",
+            Self::Gate { .. } => "gate",
             Self::Defer { .. } => "defer",
             Self::RateLimited { .. } => "rate_limited",
         }
@@ -95,7 +96,10 @@ impl From<GovernanceVerdict> for Disposition {
             GovernanceVerdict::RateLimited { retry_after_ms } => {
                 Disposition::RateLimited { retry_after_ms }
             }
-            GovernanceVerdict::AskUser { .. } => Disposition::Gate(WaitReason::Approval),
+            GovernanceVerdict::AskUser { reason } => Disposition::Gate {
+                wait: WaitReason::Approval,
+                reason,
+            },
         }
     }
 }
@@ -134,7 +138,10 @@ mod tests {
             reason: "confirm".into(),
         }
         .into();
-        assert!(matches!(d, Disposition::Gate(WaitReason::Approval)));
+        assert!(matches!(
+            &d,
+            Disposition::Gate { wait: WaitReason::Approval, reason } if reason == "confirm"
+        ));
         assert!(!d.is_allowed());
     }
 

@@ -7,10 +7,11 @@ use crate::mm::{page_in_requests_from_calls, tier_hint_for_compress};
 use crate::AgentRunSpec;
 use crate::context::manager::ContextManager;
 use crate::governance::pipeline::GovernancePipeline;
+use crate::syscall::{Disposition, Syscall};
 use crate::proc::{AgentProcess, ProcessState, ProcessTable};
 use crate::signals::router::SignalRouter;
 use crate::types::agent::AgentIdentity;
-use crate::types::policy::{GovernanceVerdict, SignalDisposition};
+use crate::types::policy::SignalDisposition;
 use crate::types::result::SubAgentResult;
 use crate::context::pressure::PressureAction;
 use crate::context::renderer::RenderedContext;
@@ -578,32 +579,51 @@ impl LoopStateMachine {
         }
     }
 
-    /// Evaluate proposed tool calls against the governance pipeline.
-    fn gate_tool_calls(&mut self, calls: &[ToolCall]) -> GateToolOutcome {
-        let caller = self
-            .run_spec
-            .as_ref()
-            .map(|s| s.identity.clone())
-            .unwrap_or_else(|| AgentIdentity::new("agent", "session"));
+    /// P1 (M2): the single syscall trap. Every effectful request the SDK proposes is adjudicated
+    /// here, returning a unified [`Disposition`]. Tool calls run the governance pipeline (mapping
+    /// its verdict via `GovernanceVerdict -> Disposition`); `Spawn`/`PageIn`/memory carry no policy
+    /// stages yet and default to `Allow` — the chokepoint exists so quotas/rules can attach later
+    /// without a new ABI.
+    fn evaluate_syscall(&mut self, sys: &Syscall) -> Disposition {
+        match sys {
+            Syscall::Invoke(call) => {
+                let caller = self
+                    .run_spec
+                    .as_ref()
+                    .map(|s| s.identity.clone())
+                    .unwrap_or_else(|| AgentIdentity::new("agent", "session"));
+                match self.governance.as_mut() {
+                    Some(pipeline) => pipeline.evaluate(call, &caller).into(),
+                    None => Disposition::Allow,
+                }
+            }
+            Syscall::Spawn(_)
+            | Syscall::PageIn(_)
+            | Syscall::WriteMemory(_)
+            | Syscall::QueryMemory(_) => Disposition::Allow,
+        }
+    }
 
-        let Some(pipeline) = self.governance.as_mut() else {
+    /// Evaluate proposed tool calls through the syscall trap (governance gate).
+    fn gate_tool_calls(&mut self, calls: &[ToolCall]) -> GateToolOutcome {
+        if self.governance.is_none() {
             return GateToolOutcome::Proceed;
-        };
+        }
 
         let mut gated: Vec<(String, String, String)> = Vec::new();
         let mut hard_block: Option<(String, String)> = None;
         for call in calls {
-            match pipeline.evaluate(call, &caller) {
-                GovernanceVerdict::Allow => {}
-                GovernanceVerdict::AskUser { reason } => {
+            match self.evaluate_syscall(&Syscall::Invoke(call.clone())) {
+                Disposition::Allow | Disposition::Transform(_) => {}
+                Disposition::Gate { reason, .. } => {
                     gated.push((call.id.to_string(), call.name.to_string(), reason));
                 }
-                GovernanceVerdict::Deny { reason, .. } => {
+                Disposition::Deny { reason, .. } => {
                     if hard_block.is_none() {
                         hard_block = Some((call.name.to_string(), reason));
                     }
                 }
-                GovernanceVerdict::RateLimited { retry_after_ms } => {
+                Disposition::RateLimited { retry_after_ms } => {
                     if hard_block.is_none() {
                         hard_block = Some((
                             call.name.to_string(),
@@ -611,6 +631,8 @@ impl LoopStateMachine {
                         ));
                     }
                 }
+                // Backpressure deferral is not produced by the governance gate today.
+                Disposition::Defer { .. } => {}
             }
         }
 
@@ -1082,6 +1104,27 @@ impl LoopStateMachine {
             parent_session_id,
             &self.ctx.capabilities,
         );
+        // M2b: spawning is an effectful request — route it through the same syscall trap as tool
+        // calls. No spawn policy stages exist yet, so this defaults to `Allow`; a `Deny` rolls the
+        // turn back exactly like a denied tool call. Establishing the chokepoint now means quotas /
+        // spawn rules can attach later without a new code path.
+        if let Disposition::Deny { reason, .. } =
+            self.evaluate_syscall(&Syscall::Spawn(manifest.clone()))
+        {
+            let rb = RollbackReason::GovernanceDenied {
+                tool_name: format!("spawn:{}", manifest.agent_id),
+                reason,
+            };
+            let note = Message::user(super::rollback::build_rollback_note(
+                &rb,
+                self.ctx.config.verbose_control_notes,
+            ));
+            self.rollback(rb);
+            self.ctx
+                .push_signal(note.content.as_text().unwrap_or_default().to_string());
+            self.phase = LoopPhase::Reason;
+            return self.emit_call_llm();
+        }
         let agent_id = manifest.agent_id.to_string();
         let process = self.processes.register_spawn(&manifest);
         // M1c: mirror the spawn as a child task under the root.
