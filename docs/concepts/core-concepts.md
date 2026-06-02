@@ -129,6 +129,48 @@ class MyVectorStore(DreamStore):
 
 In the kernel, structured task state lives in `task_state` (goal, plan, progress) and renders into **Slot 3** (`turns[0]`). Ephemeral runtime events (rollback notes, interrupts) use `push_signal()` and fold into the same State turn — they are cleared after each render. The old `working` partition has been removed.
 
+### Semantic page-out (in-run archival)
+
+When context pressure triggers kernel `page_out { tier_hint: "semantic" }`, the SDK summarizes archived content via `dreamSummarizer` / `dreamProvider` and commits to `DreamStore`. On later `page_in_requested` (before `memory` / `knowledge` meta-tools), the SDK satisfies retrieval from `DreamStore`, `KnowledgeSource`, and a local semantic page-out cache, then feeds `page_in` back to the kernel.
+
+Configure `dreamSummarizer` on `RuntimeRunner` (Node) or `dream_summarizer` (Python). Requires `dreamStore` + `agentId`.
+
+### Phase-7 memory syscalls
+
+Programmatic long-term memory **outside** the main tool loop — kernel validation before storage:
+
+```typescript
+// Node.js
+await runner.writeMemory({
+  kind: "user",
+  content: "User prefers chartreuse for UI accents.",
+  metadata: { source: "onboarding" },
+})
+
+const hits = await runner.queryMemory("UI color preferences")
+```
+
+```python
+# Python
+await runner.write_memory(
+  kind="user",
+  content="User prefers chartreuse for UI accents.",
+  metadata={"source": "onboarding"},
+)
+
+hits = await runner.query_memory("UI color preferences")
+```
+
+| Step | `writeMemory` | `queryMemory` |
+| --- | --- | --- |
+| 1 | Kernel `WriteMemory` validation | Kernel `QueryMemory` |
+| 2 | SDK `DreamStore.commit()` on success | SDK search + `selectMemories` |
+| 3 | Session: `memory_written` or `memory_validation_failed` | Session: `memory_queried` → `memory_retrieval_result` |
+
+Memory kinds: `user`, `feedback`, `project`, `reference`. Kernel rejects forbidden patterns (e.g. raw code snippets) before commit.
+
+See [Agent OS](../concepts/agent-os.md#long-term-memory-as-syscalls-phase-7) and package READMEs for full API detail.
+
 ---
 
 ## Knowledge — *external facts*
@@ -248,7 +290,7 @@ class MyEval(EvalLoopHarness):
 
 ## Signals — *external interrupts*
 
-`SignalGateway` is the entry point for all external events during a running session. Signals flow through the kernel's `SignalRouter`, which assigns a disposition based on urgency.
+`SignalGateway` is the entry point for all external events during a running session. **0.2.5 default:** signals flow through the **in-kernel** `SignalRouter` (configured via `set_attention_policy` / `attentionPolicy`, default queue size 64). The kernel assigns disposition and emits `signal_disposed` observations with `category: ipc`.
 
 Internally, delivered signals become `push_signal()` text and fold into **Slot 3** (`turns[0]`) alongside `task_state`. They are ephemeral — cleared after each render — and are **not** carried across renewal sprints.
 
@@ -359,7 +401,9 @@ See the full [Collaboration guide](../guides/collaboration.md) for API details a
 
 ## Safety — *permission boundaries*
 
-Every tool call passes through the `GovernancePipeline` before execution. This happens inside the kernel — the SDK cannot bypass it.
+Every tool call passes through the **in-kernel governance gate** before execution (loaded via `load_governance_policy` / `governancePolicy`). **0.2.5 default:** `DEFAULT_NATIVE_GOVERNANCE_POLICY` (allow-all) is loaded on every run unless you override it. The SDK cannot bypass kernel denial or ask_user suspension.
+
+For SDK-local checks (tests, custom gates), use the standalone `Governance` class or `PermissionManager` — these are **not** wired automatically into `RuntimeRunner`; use `governancePolicy` for run-time enforcement.
 
 ### Pipeline stages
 

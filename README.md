@@ -90,7 +90,7 @@ DeepStrike's documentation is organized as a modern VitePress reading system wit
 | :--- | :--- |
 | New users | [Quick Start](./docs/getting-started/quick-start.md) |
 | SDK users | [Node.js](./docs/guides/sdk-nodejs.md), [Python](./docs/guides/sdk-python.md), [Rust](./docs/guides/sdk-rust.md), [WASM](./docs/guides/index.md) |
-| Runtime designers | [Core Concepts](./docs/concepts/core-concepts.md) |
+| Runtime designers | [Agent OS](./docs/concepts/agent-os.md) · [Core Concepts](./docs/concepts/core-concepts.md) |
 | Architecture reviewers | [Architecture Overview](./docs/architecture/overview.md) |
 | Integrators | [Provider Guide](./docs/guides/providers.md) and [Kernel ABI](./docs/reference/kernel-abi.md) |
 | Operators | [Release Runbook](./docs/operations/release-runbook.md) |

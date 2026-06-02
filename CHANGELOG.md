@@ -92,8 +92,7 @@ These mechanisms move the SDK from “agent loop library” to an **Agent OS run
 ### Changed
 
 - **Breaking (behavioral):** New runs use the in-kernel signal router and native governance profile by default; SDKs that relied on legacy signal disposition or implicit allow-all governance should set explicit policies or opt out via configuration.
-- **Node / Python READMEs:** Major expansion — architecture, four-slot context model, OS native profile options, Layer-1 spool, semantic page-out, governance, signals, sub-agents, and Phase-7 memory syscalls.
-- **Root README and docs:** Version references updated to `0.2.5`; quick-start and index aligned with Agent OS terminology.
+- **Documentation:** Node and Python READMEs expanded; VitePress docs add [Agent OS](docs/concepts/agent-os.md), updated architecture, kernel ABI, SDK parity matrix, and SDK guides for 0.2.5.
 - **Python `session_log`:** Extended event kinds and category tagging for kernel OS events (parity with Node).
 
 ### Notes

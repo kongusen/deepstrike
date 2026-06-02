@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 7 complete (Sub-Agent Isolation).
+Agent OS 0.2.5 — kernel three-primitives (M0–M4), native profile defaults, Layer-1 spool, semantic page-out, Phase-7 memory syscalls.
 
 Current implementation status:
 
@@ -86,6 +86,14 @@ Events:
 | `milestone_result` | Feed verifier output for the current milestone |
 | `spawn_sub_agent` | Spawn a sub-agent; registers process, emits `agent_process_changed`, suspends parent (`sub_agent_await`) until `sub_agent_completed` |
 | `sub_agent_completed` | Feed completed sub-agent result back into parent loop |
+| `load_governance_policy` | Load declarative governance rules (deny / ask_user / rate-limit / param) before run |
+| `set_attention_policy` | Configure in-kernel signal router queue (`max_queue_size`) |
+| `set_scheduler_budget` | Optional wall-clock / turn / token budget overrides |
+| `set_memory_policy` | Configure memory validation rules (`MemoryKind`, forbidden patterns, size limits) |
+| `write_memory` | Request validated long-term memory write; emits `memory_written` or `memory_validation_failed` |
+| `query_memory` | Request memory retrieval; emits `memory_queried`; host feeds `memory_retrieval_result` |
+| `memory_retrieval_result` | Close query loop after SDK search + selection |
+| `page_in` | Feed retrieved entries into Slot 2 after `page_in_requested` |
 | `timeout` | Terminate or interrupt by timeout |
 
 ### KernelAction
@@ -105,9 +113,9 @@ Kernel audit source. Each observation maps to an OS event **category** for unifi
 
 | Category | Observations |
 |---|---|
-| `syscall` | `tool_gated`, `capability_changed` |
+| `syscall` | `tool_gated`, `capability_changed`, `memory_written`, `memory_validation_failed`, `memory_queried` |
 | `sched` | `suspended`, `resumed`, `budget_exceeded`, `checkpoint_taken`, `rollbacked`, `milestone_*` |
-| `mm` | `compressed`, `page_out`, `page_in_requested`, `renewed` (+ SDK `page_in` session event) |
+| `mm` | `compressed`, `page_out`, `page_in_requested`, `large_result_spooled`, `renewed` (+ SDK `page_in` session event) |
 | `proc` | `agent_process_changed` |
 | `ipc` | `signal_disposed` |
 
@@ -116,6 +124,10 @@ Kernel audit source. Each observation maps to an OS event **category** for unifi
 | `compressed` | Context compression occurred (legacy; see also `page_out`) |
 | `page_out` | Working memory archived for long-term (`tier_hint`: `durable` or `semantic`) |
 | `page_in_requested` | Kernel requests SDK fetch before `memory` / `knowledge` meta-tools |
+| `large_result_spooled` | Single tool result exceeded size threshold; context keeps preview + spool ref |
+| `memory_written` | Validated memory write accepted (host commits to `DreamStore`) |
+| `memory_validation_failed` | Memory write rejected by kernel validation rules |
+| `memory_queried` | Memory query issued; host runs search + selection |
 | `renewed` | Context renewal started a new sprint |
 | `rollbacked` | Fatal turn rollback restored checkpoint state |
 | `checkpoint_taken` | Turn transaction checkpoint before LLM call |
@@ -126,22 +138,37 @@ Kernel audit source. Each observation maps to an OS event **category** for unifi
 | `agent_process_changed` | Process table entry changed (spawn: `running`; join: `joined` / `failed`) |
 | `suspended` / `resumed` | Parent loop suspended awaiting approval or sub-agent join |
 
-## OS Native Profile (Phase 6, Node / WASM / Python SDK)
+## OS Native Profile (Phase 6, 0.2.5 default behavior)
 
-Opt-in SDK profile: `osProfile` / `os_profile: "native"` (default `"legacy"`).
+**0.2.5 runs** load `DEFAULT_NATIVE_GOVERNANCE_POLICY` and `DEFAULT_NATIVE_ATTENTION_POLICY` on every `RuntimeRunner` start unless you override them. In-kernel signal routing and governance enforcement are the default path; legacy SDK-side signal disposition is removed.
 
-| Requirement | Native | Legacy |
+Optional explicit profile: `osProfile` / `os_profile: "native"` adds **fail-fast static validation** (policies required, legacy `governance` instance forbidden).
+
+| Requirement | Default (0.2.5) | Explicit `native` profile |
 |---|---|---|
-| `attentionPolicy` | **required** (in-kernel `signal_disposed`) | optional (`COMPAT(signal-legacy)`) |
-| `governancePolicy` | **required** (in-kernel `tool_gated` / `suspended` / `resume`) | optional (SDK execution-plane gate) |
-| `governance` instance | **forbidden** | allowed |
-| Session kernel events | `category` required (`syscall` / `sched` / `mm` / `proc` / `ipc`) | `category` optional |
+| `attentionPolicy` | loaded (queue 64) | **required** (fail-fast if missing) |
+| `governancePolicy` | loaded (allow-all default) | **required** (fail-fast if missing) |
+| Legacy `governance` instance on runner | discouraged | **forbidden** |
+| Session kernel events | `category` on OS events | `category` required on all kernel kinds |
 
 Helpers: `assertNativeProfile`, `DEFAULT_NATIVE_ATTENTION_POLICY`, `DEFAULT_NATIVE_GOVERNANCE_POLICY`.
 
 Audit: `rebuildOsSnapshotFromSessionEvents(sessionEvents)` rebuilds a read-only `OsSnapshot` (process table view, signal timeline, last suspend) without re-instantiating the kernel.
 
 Parity CI: `node scripts/check-sdk-parity.mjs`. Matrix: [sdk-os-parity.md](../sdk-os-parity.md).
+
+## Memory Syscalls (Phase-7, 0.2.5)
+
+Long-term memory I/O outside the main tool loop:
+
+1. Host calls `write_memory` or `query_memory` via `KernelInput`.
+2. Kernel validates (`validate_memory_write`) or records query intent.
+3. Kernel emits `memory_written`, `memory_validation_failed`, or `memory_queried`.
+4. Host SDK performs `DreamStore` I/O and, for queries, feeds `memory_retrieval_result`.
+
+Session events: `memory_written`, `memory_queried`, `memory_validation_failed`, `memory_retrieval_result`. Replay counters: `memory_written_count`, etc.
+
+See [Agent OS — Memory syscalls](../concepts/agent-os.md#long-term-memory-as-syscalls-phase-7).
 
 Golden OS snapshots: `tests/fixtures/session/events_*.json` → `os_snapshot_*.json` (core `golden_os_snapshot_*_fixture` tests + node/python integration tests).
 

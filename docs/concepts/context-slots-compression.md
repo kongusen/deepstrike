@@ -53,6 +53,34 @@ Meta-tool retrieval (`memory(query)`, `knowledge(query)`) returns land in **hist
 
 ---
 
+## Layer-1 large-result spool
+
+Before the rho-based compression ladder runs, oversized **single tool results** are handled at ingest time:
+
+1. Kernel detects result above the size threshold during `tool_results` processing.
+2. Context keeps a short preview plus a spool reference.
+3. SDK writes the full payload to `.spool/` (SHA-256 keyed files under cwd by default).
+4. Session log records `large_result_spooled` and `spool_ref`.
+5. The model retrieves full content on demand via ordinary read tools (`LocalExecutionPlane` resolves `.spool/` paths in Node).
+
+This is **Layer 1** of the compression pyramid — zero LLM cost, preserves referential access without filling history.
+
+Custom directory: pass `resultSpool` / `result_spool` on `RuntimeRunner`.
+
+---
+
+## Semantic page-out and page-in
+
+| Event | Direction | SDK action |
+| --- | --- | --- |
+| `page_out { tier_hint: "semantic" }` | Working → long-term | Summarize via `dreamSummarizer`; commit to `DreamStore` |
+| `page_out { tier_hint: "durable" }` | Working → archive | SDK archive store / compression metadata |
+| `page_in_requested` | Long-term → Slot 2 | Search `DreamStore` + `KnowledgeSource`; feed `page_in` before meta-tools |
+
+AutoCompact (rho > 0.95) may emit semantic `page_out` as part of the unified eviction funnel (`plan_eviction`).
+
+---
+
 ## Pressure & compression ladder
 
 Thresholds are fractions of `max_tokens`:

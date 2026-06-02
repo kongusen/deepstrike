@@ -46,13 +46,12 @@ DeepStrike separates computation from I/O at the language boundary. A pure-Rust 
 ┌──────────────────────────────▼───────────────────────────────────┐
 │  Layer 0: deepstrike-core  (pure Rust, zero I/O)                  │
 │                                                                   │
-│  LoopStateMachine   — turn-by-turn control, termination policy    │
-│  ContextEngine      — 4-slot context + tiered history compression     │
-│  GovernancePipeline — Permission → Veto → RateLimit → Audit       │
-│  SignalRouter       — priority queue, dedup, dispositions         │
-│  EvalPipeline       — LLM-as-judge, skill candidate extraction    │
-│  IdlePipeline       — post-session dreaming, memory curation      │
-│  VerificationContract / TaskLane / HandoffArtifact (kernel types) │
+│  P1 Syscall  — governance gate, tool/spawn/memory validation    │
+│  P2 Sched    — TCB lifecycle, budgets, suspend/resume             │
+│  P3 MM       — compression funnel, spool, page-out/in, memory     │
+│  Proc        — sub-agent process table                            │
+│  IPC         — in-kernel SignalRouter (default)                   │
+│  ContextEngine · EvalPipeline · IdlePipeline · collaboration types│
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -77,12 +76,17 @@ The kernel never touches the network, filesystem, or clock. All time-dependent b
 
 | Subsystem | Responsibility |
 | --- | --- |
-| `LoopStateMachine` | Turn-by-turn control; enforces `max_turns`, `token_budget`, and `timeout` termination policy |
-| `ContextEngine` | Manages a four-slot context window aligned with LLM APIs; compresses **history only** under pressure |
-| `GovernancePipeline` | Evaluates every tool call: Permission → Veto → RateLimit → Constraint → Audit |
-| `SignalRouter` | Priority dedup queue; maps incoming signals to dispositions (`interrupt_now`, `interrupt`, `queue`, `observe`, `dropped`) |
+| **Syscall / governance** | Declarative policy loaded via `load_governance_policy`; deny / ask_user / rate-limit / param rules before tool execution |
+| **Scheduler / TCB** | Turn lifecycle (Ready / Running / Blocked / Suspended); `max_turns`, token and wall-clock budgets; suspend for approval or sub-agent await |
+| **MM** | Four-tier history compression funnel; Layer-1 large-result spool decisions; `page_out` / `page_in_requested`; memory write validation (`WriteMemory` / `QueryMemory`) |
+| **Proc** | Process table for spawned sub-agents; `agent_process_changed` observations |
+| **IPC / signals** | In-kernel `SignalRouter` (default): dedup, attention queue, disposition → `signal_disposed` |
+| `ContextEngine` | Four-slot context window; compresses **history only** under pressure |
 | `EvalPipeline` | LLM-as-judge scoring; extracts `SkillCandidate` objects from passing runs |
-| `IdlePipeline` | Post-session: analyses `SessionData`, synthesises insights via LLM, deduplicates, commits to `DreamStore` |
+| `IdlePipeline` | Post-session: analyses `SessionData`, synthesises insights, commits to `DreamStore` |
+| **Event log** | Observations tagged `syscall` · `sched` · `mm` · `proc` · `ipc` for session log and OS snapshot rebuild |
+
+See [Agent OS](../concepts/agent-os.md) for capability-oriented overview.
 
 ### Context slots (four-slot model)
 
@@ -121,37 +125,40 @@ Each SDK wraps the kernel over a language-native FFI bridge and adds all I/O.
 ```text
 RuntimeRunner.run({ sessionId, goal })  /  run_streaming (Rust)
 │
-├─ Startup
-│   ├─ scan  skills/*.md          → sm.set_available_skills([...])
-│   ├─ sm.set_memory_enabled(true)
-│   └─ sm.set_knowledge_enabled(true)
+├─ Startup (native profile defaults)
+│   ├─ load_governance_policy(governancePolicy)     → in-kernel syscall gate
+│   ├─ set_attention_policy(attentionPolicy)        → in-kernel signal router
+│   ├─ scan skills/*.md          → set_available_skills([...])
+│   └─ set_memory_enabled / set_knowledge_enabled
 │
 ├─ Loop (each turn)
 │   │
 │   ├─ Signal ingestion
-│   │   └─ signal_source.next_signal()  → router.ingest(signal)
-│   │       → disposition: interrupt_now / interrupt / queue / observe / dropped
+│   │   └─ signal_source → kernel feed(signal)
+│   │       → signal_disposed { disposition, queue_depth }
 │   │
 │   ├─ Action::CallLLM
-│   │   └─ provider.stream(messages, tools)
-│   │       ├─ TextDelta         → yield to caller
-│   │       ├─ ThinkingDelta     → yield to caller
-│   │       └─ ToolCallEvent     → buffer
+│   │   └─ provider.stream(messages, tools) → yield stream events
 │   │
 │   └─ Action::ExecTools
-│       ├─ governance.evaluate()
-│       │     allow  → proceed
-│       │     deny   → ToolResult { is_error: true, content: "denied" }
-│       │     ask    → yield PermissionRequestEvent; pause until resolved
-│       │
+│       ├─ page_in_requested?  → DreamStore / KnowledgeSource → page_in
+│       ├─ governance (in-kernel) → allow | deny | ask_user (suspend/resume)
 │       ├─ meta tool "skill"      → read skills/<name>.md
 │       ├─ meta tool "memory"     → dream_store.search(query)
 │       ├─ meta tool "knowledge"  → knowledge_source.retrieve(query)
-│       └─ user tools             → execute_tools(calls)
+│       ├─ user tools             → execute_tools(calls)
+│       └─ large_result_spooled?  → write .spool/ ref; preview in context
+│
+├─ MM observations (any step)
+│   ├─ compressed / page_out { tier_hint }  → semantic → dreamSummarizer → DreamStore
+│   └─ appendObservations → SessionLog (category: mm | syscall | …)
+│
+├─ Side-channel memory syscalls (outside tool loop)
+│   ├─ writeMemory  → WriteMemory validation → DreamStore.commit
+│   └─ queryMemory  → QueryMemory → search → memory_retrieval_result
 │
 └─ After session
-    └─ runner.dream(agent_id)
-        └─ idle_pipeline.run(session_data) → dream_store.commit(entries)
+    └─ runner.dream(agent_id) → IdlePipeline → dream_store.commit(entries)
 ```
 
 ### Message content model

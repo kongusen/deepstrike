@@ -21,6 +21,7 @@ export default defineConfig({
 
     nav: [
       { text: 'Home', link: '/' },
+      { text: 'Agent OS', link: '/concepts/agent-os' },
       { text: 'Quick Start', link: '/getting-started/quick-start' },
       { text: 'Concepts', link: '/concepts/core-concepts' },
       { text: 'Guides', link: '/guides/sdk-nodejs' }
@@ -38,6 +39,7 @@ export default defineConfig({
         text: '🧠 Concepts',
         items: [
           { text: 'Overview', link: '/concepts/' },
+          { text: 'Agent OS (0.2.5+)', link: '/concepts/agent-os' },
           { text: 'Core Concepts', link: '/concepts/core-concepts' },
           { text: 'Context Slots & Compression', link: '/concepts/context-slots-compression' }
         ]
@@ -65,7 +67,8 @@ export default defineConfig({
         items: [
           { text: 'Overview', link: '/reference/' },
           { text: 'Kernel ABI', link: '/reference/kernel-abi' },
-          { text: 'Runtime V2 Lifecycle', link: '/reference/runtime-v2-lifecycle' }
+          { text: 'Runtime V2 Lifecycle', link: '/reference/runtime-v2-lifecycle' },
+          { text: 'SDK OS Parity', link: '/sdk-os-parity' }
         ]
       },
       {

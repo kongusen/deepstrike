@@ -1,6 +1,7 @@
 # DeepStrike Node.js SDK — API 使用指南
 
-> Runtime v1：公共入口为 `RuntimeRunner` + `SessionLog` + `ExecutionPlane`。详见 `node/README.md` 与 `docs/reference/runtime-v2-lifecycle.md`。
+> Runtime v1：公共入口为 `RuntimeRunner` + `SessionLog` + `ExecutionPlane`。  
+> **0.2.5 Agent OS：** 默认加载 `governancePolicy` + in-kernel `attentionPolicy`；支持 Layer-1 spool、semantic page-out、`writeMemory` / `queryMemory`。概念总览见 [Agent OS](../concepts/agent-os.md) 与 `node/README.md`。
 
 ## 目录
 
@@ -341,6 +342,26 @@ const result = await runner.dream("my-agent-1", Date.now())
 console.log(`${result.sessionsProcessed} sessions, ${result.insightsExtracted} insights`)
 ```
 
+### 7.3 Phase-7 记忆 syscall（`writeMemory` / `queryMemory`）
+
+主 tool loop 之外的长期记忆 I/O，经内核校验后写入 `DreamStore`：
+
+```typescript
+await runner.writeMemory({
+  kind: "user",
+  content: "User prefers chartreuse.",
+  metadata: { source: "onboarding" },
+})
+
+const entries = await runner.queryMemory("color preferences")
+```
+
+Session 事件：`memory_written`、`memory_queried`、`memory_validation_failed`、`memory_retrieval_result`。
+
+### 7.4 Layer-1 大结果 spool
+
+单条 tool result 超过阈值时，内核保留预览 + spool 引用，完整内容写入 `.spool/`。`LocalExecutionPlane` 的 `read_file` 可透明读取 spool 路径。可选 `resultSpool` 自定义目录。
+
 ---
 
 ## 8. 治理管线 (Governance)
@@ -359,25 +380,34 @@ pm.evaluate("fs", "read")    // { allowed: true, ... }
 pm.evaluate("fs", "write")   // { allowed: false, reason: "not granted" }
 ```
 
-### 8.2 内核 Governance
+### 8.2 内核 Governance（推荐：`governancePolicy`）
+
+**0.2.5 默认：** 每次 `run()` 加载 `DEFAULT_NATIVE_GOVERNANCE_POLICY`（allow-all）到内核，工具执行前经 in-kernel gate 裁决。
 
 ```typescript
-import { Governance } from "deepstrike"
+import {
+  DEFAULT_NATIVE_GOVERNANCE_POLICY,
+  type GovernancePolicy,
+} from "@deepstrike/sdk"
 
-const gov = new Governance("allow")  // 默认策略: "allow" | "deny"
-gov.addPermissionRule("danger.*", "deny")
-gov.blockTool("rm_rf")
-gov.setRateLimit("api_call", 10, 60_000)
+const policy: GovernancePolicy = {
+  rules: [
+    { pattern: "read_file", action: "allow" },
+    { pattern: "write_file", action: "ask_user" },
+    { pattern: "*", action: "deny" },
+  ],
+}
 
 const runner = new RuntimeRunner({
   provider,
   sessionLog: new InMemorySessionLog(),
   executionPlane: new LocalExecutionPlane(),
   maxTokens: 4096,
-  governance: gov,
+  governancePolicy: policy,  // 省略时使用 DEFAULT_NATIVE_GOVERNANCE_POLICY
 })
-// 每次 LLM 调用工具前，自动经过 Permission → Veto → RateLimit → Constraint 管线
 ```
+
+`Governance` 类用于 SDK 侧独立评估（测试/自定义门），**不会**自动接入 `RuntimeRunner` — 运行时使用 `governancePolicy`。
 
 ---
 

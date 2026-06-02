@@ -1,6 +1,7 @@
 # DeepStrike Python SDK — API 使用指南
 
-> Runtime v1：公共入口为 `RuntimeRunner` + `SessionLog` + `ExecutionPlane`。详见 `python/README.md` 与 `docs/reference/runtime-v2-lifecycle.md`。
+> Runtime v1：公共入口为 `RuntimeRunner` + `SessionLog` + `ExecutionPlane`。  
+> **0.2.5 Agent OS：** 默认加载 `governance_policy` + in-kernel `attention_policy`；支持 Layer-1 spool、semantic page-out、`write_memory` / `query_memory`。概念总览见 [Agent OS](../concepts/agent-os.md) 与 `python/README.md`。
 
 ## 目录
 
@@ -350,6 +351,24 @@ runner = RuntimeRunner(RuntimeOptions(
 result = await runner.dream("my-agent-1", now_ms=int(time.time() * 1000))
 print(f"{result.sessions_processed} sessions, {result.insights_extracted} insights")
 ```
+
+### 7.3 Phase-7 记忆 syscall（`write_memory` / `query_memory`）
+
+```python
+await runner.write_memory(
+    kind="user",
+    content="User prefers chartreuse.",
+    metadata={"source": "onboarding"},
+)
+
+entries = await runner.query_memory("color preferences")
+```
+
+Session 事件：`memory_written`、`memory_queried`、`memory_validation_failed`、`memory_retrieval_result`。
+
+### 7.4 Layer-1 大结果 spool
+
+单条 tool result 超过阈值时，内核保留预览 + spool 引用，完整内容写入 `.spool/`。可选 `result_spool` 自定义目录。
 
 ---
 
