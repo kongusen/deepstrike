@@ -17,7 +17,9 @@ pub use repair::{
     repair_events, repair_events_with_cap, repair_llm_completed, repair_llm_completed_with_cap,
     sanitize_recovery_text, sanitize_recovery_text_bounded, synthesize_provider_replay,
 };
-pub use event_log::{category_for_kind, KernelEventCategory, KERNEL_OBSERVATION_KINDS};
+pub use event_log::{
+    category_for_kind, primitive_for_kind, KernelEventCategory, Primitive, KERNEL_OBSERVATION_KINDS,
+};
 pub use replay::{
     rebuild_os_snapshot_from_events, session_log_has_required_categories, BudgetExceededRecord,
     OsSnapshot, ProcessRecord, SignalDisposedRecord, SuspendRecord,
