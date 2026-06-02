@@ -4,6 +4,17 @@ All notable changes to DeepStrike are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.4] - 2026-05-29
+
+### Fixed
+
+- **Node SDK:** `DeepSeekProvider.stream()` now requests `stream_options.include_usage` and emits `usage` events — fixes token accounting and compression pressure (`rho`) when using DeepSeek.
+- **E2E harness:** Correct kernel-turn ↔ LLM-turn correlation for post-compression State turn snapshots; record metrics even when the provider stream throws.
+
+### Changed
+
+- **E2E scenarios (K01/K03):** Relaxed rho validation for batched tool calls; K03 uses sequential fill pressure and multi-path compression_log checks.
+
 ## [0.2.3] - 2026-05-28
 
 ### Added
@@ -27,5 +38,3 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`push_artifact` ABI event** — fixture retained for compatibility tests only; not processed by current kernel.
 - **`docs/spec-context-compression-v2.md`** — superseded by four-slot documentation.
-
-## [Unreleased]

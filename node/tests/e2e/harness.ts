@@ -33,6 +33,12 @@ export interface TurnMetrics {
     systemKnowledge: string
     stateTurnContent: string
   }
+  /** State turn snapshot from the next LLM call after compression on this turn. */
+  postCompressionSnapshot?: {
+    turnsCount: number
+    systemKnowledge: string
+    stateTurnContent: string
+  }
 }
 
 // ── scenario definition ───────────────────────────────────────────────────────
@@ -93,16 +99,19 @@ export class MetricCapturingProvider implements LLMProvider {
       stateTurnContent: ctx.turns[0]?.content ?? "",
     }
 
-    for await (const event of this.inner.stream(ctx, tools)) {
-      if (event.type === "usage") {
-        const u = event as { type: string; inputTokens?: number; outputTokens?: number }
-        inputTokens = u.inputTokens ?? inputTokens
-        outputTokens = u.outputTokens ?? outputTokens
+    try {
+      for await (const event of this.inner.stream(ctx, tools)) {
+        if (event.type === "usage") {
+          const u = event as { type: string; inputTokens?: number; outputTokens?: number }
+          inputTokens = u.inputTokens ?? inputTokens
+          outputTokens = u.outputTokens ?? outputTokens
+        }
+        yield event
       }
-      yield event
+    } finally {
+      // Record even when the provider throws — snapshot reflects post-compression context.
+      this.turnMetrics.push({ turn, inputTokens, outputTokens, contextSnapshot: snapshot })
     }
-
-    this.turnMetrics.push({ turn, inputTokens, outputTokens, contextSnapshot: snapshot })
   }
 }
 
@@ -146,12 +155,24 @@ export async function runScenario(
 
   const events = await sessionLog.read(sid)
 
-  // Correlate compression events back to turn metrics
+  // Correlate compression events back to turn metrics.
+  // Kernel turn increments after each tool batch; compression fires before the next LLM call.
+  // Session event turn = kernel turn at compression time = next LLM metric turn.
+  // Preceding LLM call is metric turn (kernelTurn - 1); post-compression snapshot is metric turn kernelTurn.
   for (const { event: e } of events) {
-    if (e.kind === "compressed") {
-      const turn = e.turn ?? 0
-      const metric = capturing.turnMetrics.find(m => m.turn === turn)
-      if (metric) metric.compressionAction = e.action ?? "unknown"
+    if (e.kind !== "compressed") continue
+    const kernelTurn = e.turn ?? 0
+    const precedingLlmTurn = Math.max(0, kernelTurn - 1)
+    const followingLlmTurn = kernelTurn
+    const preceding = capturing.turnMetrics.find(m => m.turn === precedingLlmTurn)
+    const following = capturing.turnMetrics.find(m => m.turn === followingLlmTurn)
+    if (preceding) {
+      preceding.compressionAction = e.action ?? "unknown"
+      if (following?.contextSnapshot) preceding.postCompressionSnapshot = following.contextSnapshot
+    } else if (following?.contextSnapshot) {
+      // Provider errored before the preceding metric was recorded — attach to following turn.
+      following.compressionAction = e.action ?? "unknown"
+      following.postCompressionSnapshot = following.contextSnapshot
     }
   }
 

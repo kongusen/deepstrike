@@ -1,7 +1,7 @@
 # DeepStrike
 
 **Agent OS microkernel for cross-language agent runtimes.**  
-Version **0.2.3**
+Version **0.2.4**
 
 DeepStrike splits agent runtime into two layers with a hard boundary:
 
@@ -54,7 +54,7 @@ The SDK feeds versioned `KernelInput` into `KernelRuntime.step()` and executes t
 **Node.js**
 
 ```bash
-npm install @deepstrike/sdk@0.2.3
+npm install @deepstrike/sdk@0.2.4
 ```
 
 ```typescript
@@ -82,7 +82,7 @@ await collectText(runner.run({ sessionId: "demo", goal: "What is 2 + 3?" }))
 **Python**
 
 ```bash
-pip install deepstrike==0.2.3
+pip install deepstrike==0.2.4
 ```
 
 ```python
@@ -116,7 +116,7 @@ await collect_text(runner.run(goal="What is 2 + 3?"))
 
 ```toml
 [dependencies]
-deepstrike-sdk = "0.2.3"
+deepstrike-sdk = "0.2.4"
 ```
 
 ```rust
@@ -142,7 +142,7 @@ Public host surface: `RuntimeRunner` + `SessionLog` + `ExecutionPlane`. Internal
 
 ---
 
-## Kernel (v0.2.3)
+## Kernel (v0.2.4)
 
 Since v0.2.0, the kernel replaces the v1 pattern where SDKs owned the loop and stitched context by hand. The kernel is now the **single control plane**; SDKs are **host I/O drivers**.
 

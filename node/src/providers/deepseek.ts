@@ -49,18 +49,28 @@ export class DeepSeekProvider extends OpenAIChatProvider {
 
     const stream = await this.client.chat.completions.create({
       ...omitExtensionKeys(extensions, [
-        "model", "messages", "tools", "stream", "extra_body", "reasoning_effort",
+        "model", "messages", "tools", "stream", "stream_options", "extra_body", "reasoning_effort",
         "exposeReasoning", "thinking", "reasoningEffort",
       ]),
       model: this.model,
       messages: msgs,
       ...(tools.length ? { tools: this.chat.buildTools(tools) } : {}),
       stream: true,
+      stream_options: { include_usage: true },
       reasoning_effort: reasoningEffort,
       extra_body: { thinking: { type: thinking } },
     } as OpenAI.ChatCompletionCreateParamsStreaming)
 
+    let totalTokens = 0
+    let inputTokens = 0
+    let outputTokens = 0
     for await (const chunk of stream) {
+      if (chunk.usage) {
+        totalTokens = chunk.usage.total_tokens
+        inputTokens = chunk.usage.prompt_tokens ?? 0
+        outputTokens = chunk.usage.completion_tokens ?? 0
+        continue
+      }
       const choice = chunk.choices[0]
       if (!choice) continue
       const delta = choice.delta as Record<string, unknown>
@@ -109,5 +119,6 @@ export class DeepSeekProvider extends OpenAIChatProvider {
       emittedToolCallIndexes.add(idx)
       yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
     }
+    if (totalTokens > 0) yield { type: "usage", totalTokens, inputTokens, outputTokens } as StreamEvent
   }
 }
