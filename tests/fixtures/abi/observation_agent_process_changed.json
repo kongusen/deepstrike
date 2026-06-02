@@ -1,10 +1,11 @@
 {
-  "kind": "agent_spawned",
+  "kind": "agent_process_changed",
   "turn": 1,
   "agent_id": "worker",
   "parent_session_id": "parent-session-001",
   "role": "implement",
   "isolation": "shared",
   "context_inheritance": "full",
+  "state": "running",
   "permitted_capability_ids": ["read_file"]
 }

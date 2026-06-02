@@ -1,5 +1,6 @@
 import type {
   ToolCall, ToolResult, ToolSchema, StreamEvent, ToolSuspendEvent, ToolResultEvent, PermissionRequestEvent, ToolDeniedEvent,
+  PermissionResponse, PermissionResolvedEvent,
 } from "../types.js"
 import type { RegisteredTool } from "../tools/index.js"
 import { isAsyncIterable, normalizeToolChunk, toolChunkText, validateToolArguments } from "../tools/index.js"
@@ -12,11 +13,23 @@ export interface RunContext {
   skillDir?: string
   dreamStore?: DreamStore
   knowledgeSource?: KnowledgeSource
+  // COMPAT(gov-sdk-gate): legacy SDK-side governance instance, used only when the
+  // caller passes the old `governance` option instead of declarative `governancePolicy`.
+  // When `kernelGatedCalls` is set (in-kernel gate mode) this field is left undefined.
+  // Removable once all callers migrate to the in-kernel gate.
   governance?: {
     setTime?(nowMs: bigint): void
     evaluate(name: string, argsJson: string): { kind: string; reason?: string; retryAfterMs?: number }
   }
+  /**
+   * In-kernel governance gate mode. When defined (even if empty), the kernel has
+   * already decided deny/rate-limit/param-constraint before dispatching these calls,
+   * so executeAll skips its own evaluate() pass. Entries are the calls the kernel
+   * flagged AskUser (callId → reason); executeAll runs human approval only for those.
+   */
+  kernelGatedCalls?: Map<string, string>
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
+  onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
 }
 
 export interface ExecutionPlane {
@@ -53,6 +66,50 @@ export class LocalExecutionPlane implements ExecutionPlane {
     // receives a result for every call it dispatched.
     const permitted: ToolCall[] = []
     for (const c of calls) {
+      // In-kernel gate mode: the kernel already enforced deny / rate-limit / param
+      // constraints before dispatch, so we skip the SDK-side evaluate() entirely.
+      // Only calls the kernel flagged AskUser arrive here needing human approval.
+      if (ctx.kernelGatedCalls) {
+        const reason = ctx.kernelGatedCalls.get(c.id)
+        if (reason !== undefined) {
+          const request: PermissionRequestEvent = {
+            type: "permission_request",
+            callId: c.id,
+            toolName: c.name,
+            arguments: c.arguments,
+            reason,
+          }
+          yield request
+          const decision = await resolvePermissionRequest(request, ctx)
+          yield {
+            type: "permission_resolved",
+            callId: c.id,
+            toolName: c.name,
+            approved: decision.approved,
+            responder: decision.responder ?? "host",
+            ...(decision.reason ? { reason: decision.reason } : {}),
+          } as PermissionResolvedEvent
+          if (decision.approved) {
+            permitted.push(c)
+            continue
+          }
+          const denyReason = decision.reason ?? reason ?? "permission denied"
+          yield { type: "tool_denied", callId: c.id, toolName: c.name, reason: denyReason } as ToolDeniedEvent
+          yield {
+            type: "tool_result",
+            callId: c.id,
+            name: c.name,
+            content: `permission denied: ${denyReason}`,
+            isError: true,
+            errorKind: "governance_denied",
+          } as ToolResultEvent
+          continue
+        }
+        permitted.push(c)
+        continue
+      }
+      // COMPAT(gov-sdk-gate): legacy full SDK-side gate, active only when no
+      // declarative governancePolicy was provided. Removable after migration.
       if (ctx.governance) {
         ctx.governance.setTime?.(BigInt(Date.now()))
         const v = ctx.governance.evaluate(c.name, c.arguments)
@@ -67,8 +124,40 @@ export class LocalExecutionPlane implements ExecutionPlane {
           continue
         }
         if (v.kind === "ask_user") {
-          yield { type: "permission_request", callId: c.id, toolName: c.name, arguments: c.arguments, reason: v.reason ?? "" } as PermissionRequestEvent
-          yield { type: "tool_result", callId: c.id, name: c.name, content: "awaiting user approval", isError: true } as ToolResultEvent
+          const request: PermissionRequestEvent = {
+            type: "permission_request",
+            callId: c.id,
+            toolName: c.name,
+            arguments: c.arguments,
+            reason: v.reason ?? "",
+          }
+          yield request
+
+          const decision = await resolvePermissionRequest(request, ctx)
+          yield {
+            type: "permission_resolved",
+            callId: c.id,
+            toolName: c.name,
+            approved: decision.approved,
+            responder: decision.responder ?? "host",
+            ...(decision.reason ? { reason: decision.reason } : {}),
+          } as PermissionResolvedEvent
+
+          if (decision.approved) {
+            permitted.push(c)
+            continue
+          }
+
+          const reason = decision.reason ?? v.reason ?? "permission denied"
+          yield { type: "tool_denied", callId: c.id, toolName: c.name, reason } as ToolDeniedEvent
+          yield {
+            type: "tool_result",
+            callId: c.id,
+            name: c.name,
+            content: `permission denied: ${reason}`,
+            isError: true,
+            errorKind: "governance_denied",
+          } as ToolResultEvent
           continue
         }
       }
@@ -207,4 +296,33 @@ export class LocalExecutionPlane implements ExecutionPlane {
 
 function tryParseJson(s: string): unknown {
   try { return JSON.parse(s) } catch { return null }
+}
+
+export async function resolvePermissionRequest(request: PermissionRequestEvent, ctx: RunContext): Promise<PermissionResponse> {
+  if (!ctx.onPermissionRequest) {
+    return {
+      approved: false,
+      responder: "policy_gate",
+      reason: "no permission handler configured",
+    }
+  }
+
+  try {
+    return normalizePermissionDecision(await ctx.onPermissionRequest(request))
+  } catch (err) {
+    return {
+      approved: false,
+      responder: "permission_handler",
+      reason: `permission handler failed: ${String(err)}`,
+    }
+  }
+}
+
+function normalizePermissionDecision(value: PermissionResponse | boolean): PermissionResponse {
+  if (typeof value === "boolean") return { approved: value, responder: "host" }
+  return {
+    approved: Boolean(value.approved),
+    responder: value.responder ?? "host",
+    ...(value.reason ? { reason: value.reason } : {}),
+  }
 }

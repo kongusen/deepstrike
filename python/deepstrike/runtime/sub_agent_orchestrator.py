@@ -52,18 +52,30 @@ def _manifest_from_obs(obs: dict, parent_session_id: str, spec: AgentRunSpec) ->
   )
 
 
-async def _log_agent_spawned(session_log: SessionLog, parent_session_id: str, obs: dict) -> None:
+def _find_spawn_obs(observations: list[dict]) -> dict | None:
+  for o in observations:
+    kind = o.get("kind")
+    if kind in ("agent_process_changed", "agent_spawned") and o.get("agent_id"):
+      return o
+  return None
+
+
+async def _log_agent_process_changed(session_log: SessionLog, parent_session_id: str, obs: dict) -> None:
   turn = obs.get("turn") or 0
-  await session_log.append(parent_session_id, {
-    "kind": "agent_spawned",
+  entry: dict = {
+    "kind": "agent_process_changed",
     "turn": turn,
     "agent_id": obs.get("agent_id") or "",
     "parent_session_id": obs.get("parent_session_id") or parent_session_id,
     "role": obs.get("role") or "",
     "isolation": obs.get("isolation") or "",
     "context_inheritance": obs.get("context_inheritance") or "",
+    "state": obs.get("state") or "running",
     "permitted_capability_ids": obs.get("permitted_capability_ids") or [],
-  })
+  }
+  if obs.get("result_termination"):
+    entry["result_termination"] = obs["result_termination"]
+  await session_log.append(parent_session_id, entry)
 
 
 def _harness_criteria(spec: AgentRunSpec) -> list:
@@ -104,6 +116,7 @@ def _build_child_opts(
     enable_plan_tool=ctx.parent_opts.enable_plan_tool,
     compression_store=ctx.parent_opts.compression_store,
     on_tool_suspend=ctx.parent_opts.on_tool_suspend,
+    on_permission_request=ctx.parent_opts.on_permission_request,
   )
 
 
@@ -227,11 +240,11 @@ async def spawn_standalone(
     "parent_session_id": parent_session_id,
   })
 
-  spawned_obs = next((o for o in observations if o.get("kind") == "agent_spawned"), None)
+  spawned_obs = _find_spawn_obs(observations)
   if spawned_obs is None:
-    raise RuntimeError("spawn_sub_agent did not emit agent_spawned")
+    raise RuntimeError("spawn_sub_agent did not emit agent_process_changed")
 
-  await _log_agent_spawned(parent_opts.session_log, parent_session_id, spawned_obs)
+  await _log_agent_process_changed(parent_opts.session_log, parent_session_id, spawned_obs)
   manifest = _manifest_from_obs(spawned_obs, parent_session_id, spec)
 
   orch = orchestrator or default_sub_agent_orchestrator

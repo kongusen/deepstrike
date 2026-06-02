@@ -8,7 +8,13 @@ from deepstrike import (
     RetryConfig,
 )
 from deepstrike.kernel import KernelRuntime, LoopPolicy, RuntimeTask, SignalRouter
-from deepstrike.providers.stream import TextDelta
+from deepstrike.providers.stream import (
+    PermissionResolvedEvent,
+    TextDelta,
+    ToolCallEvent,
+    ToolDeniedEvent,
+    ToolResultEvent,
+)
 
 
 def test_kernel_import():
@@ -192,3 +198,92 @@ async def test_agent_run_returns_model_text():
         max_turns=3,
     ))
     assert await collect_text(runner.run(goal="ping")) == "pong"
+
+
+class AskUserProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(self, context, tools, extensions=None):
+        raise NotImplementedError
+
+    async def stream(self, context, tools, extensions=None, state=None):
+        self.calls += 1
+        if self.calls == 1:
+            yield ToolCallEvent(id="call_approval", name="needs_approval", arguments={})
+            return
+        yield TextDelta(delta="done")
+
+
+class AskUserGovernance:
+    def set_time(self, now_ms: int) -> None:
+        pass
+
+    def evaluate(self, tool_name: str, args_json: str):
+        return type("Verdict", (), {"kind": "ask_user", "reason": "confirm execution"})()
+
+
+@pytest.mark.asyncio
+async def test_ask_user_gated_tool_runs_after_host_approval():
+    executed = False
+
+    @tool
+    def needs_approval() -> str:
+        nonlocal executed
+        executed = True
+        return "approved-result"
+
+    plane = LocalExecutionPlane().register(needs_approval)
+    log = InMemorySessionLog()
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=AskUserProvider(),
+        session_log=log,
+        execution_plane=plane,
+        max_tokens=1000,
+        max_turns=2,
+        governance=AskUserGovernance(),
+        on_permission_request=lambda request: {
+            "approved": request.tool_name == "needs_approval",
+            "responder": "test-host",
+        },
+    ))
+
+    events = [event async for event in runner.run(session_id="ask-user-approved", goal="run approved tool")]
+
+    assert executed is True
+    assert any(isinstance(event, PermissionResolvedEvent) and event.approved and event.responder == "test-host" for event in events)
+    assert any(isinstance(event, ToolResultEvent) and event.call_id == "call_approval" and event.content == "approved-result" and not event.is_error for event in events)
+    log_events = [entry.event for entry in await log.read("ask-user-approved")]
+    assert any(event.get("kind") == "permission_resolved" and event.get("approved") is True for event in log_events)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_gated_tool_is_denied_after_host_rejection():
+    executed = False
+
+    @tool
+    def needs_approval() -> str:
+        nonlocal executed
+        executed = True
+        return "should-not-run"
+
+    plane = LocalExecutionPlane().register(needs_approval)
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=AskUserProvider(),
+        session_log=InMemorySessionLog(),
+        execution_plane=plane,
+        max_tokens=1000,
+        max_turns=2,
+        governance=AskUserGovernance(),
+        on_permission_request=lambda request: {
+            "approved": False,
+            "responder": "test-host",
+            "reason": "user declined",
+        },
+    ))
+
+    events = [event async for event in runner.run(session_id="ask-user-denied", goal="run rejected tool")]
+
+    assert executed is False
+    assert any(isinstance(event, PermissionResolvedEvent) and not event.approved and event.reason == "user declined" for event in events)
+    assert any(isinstance(event, ToolDeniedEvent) and event.tool_name == "needs_approval" and event.reason == "user declined" for event in events)

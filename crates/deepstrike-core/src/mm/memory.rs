@@ -1,0 +1,375 @@
+//! Long-term memory management (Phase 7).
+//!
+//! Kernel defines memory types and validation rules; SDKs perform I/O and selection.
+//! No I/O in this module — pure classification and validation logic.
+
+use serde::{Deserialize, Serialize};
+
+/// Memory kind (4 types, mirroring Claude Code's taxonomy).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryKind {
+    /// User profile: who they are, expertise level, role.
+    User,
+    /// Behavior preference: what they like/dislike, approved patterns.
+    #[serde(rename = "feedback")]
+    BehaviorPreference,
+    /// Project context: what's happening, milestones, phases.
+    Project,
+    /// External pointer: where to find things (tickets, docs).
+    Reference,
+}
+
+impl MemoryKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::BehaviorPreference => "feedback",
+            Self::Project => "project",
+            Self::Reference => "reference",
+        }
+    }
+
+    /// Infer memory kind from metadata fields (heuristic classifier).
+    pub fn infer_from_metadata(metadata: &MemoryMetadata) -> Self {
+        if metadata.user_role.is_some() || metadata.expertise_level.is_some() {
+            return MemoryKind::User;
+        }
+        if metadata.preference_rule.is_some() || metadata.approved_pattern.is_some() {
+            return MemoryKind::BehaviorPreference;
+        }
+        if metadata.project_phase.is_some() || metadata.relative_date.is_some() {
+            return MemoryKind::Project;
+        }
+        if metadata.external_url.is_some() || metadata.ticket_ref.is_some() {
+            return MemoryKind::Reference;
+        }
+        // Default: behavior preference (most common)
+        MemoryKind::BehaviorPreference
+    }
+}
+
+/// Lightweight memory metadata (kernel stores, SDK provides full content).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MemoryMetadata {
+    /// Memory slug (unique identifier).
+    pub name: String,
+
+    /// One-line description (for index display).
+    pub description: String,
+
+    /// Memory kind (optional; kernel infers if omitted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<MemoryKind>,
+
+    /// Creation timestamp (for stale warnings).
+    #[serde(default)]
+    pub created_at: u64,
+
+    /// Last update timestamp.
+    #[serde(default)]
+    pub updated_at: u64,
+
+    /// Associated session ID (for provenance).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+
+    // --- Heuristic inference fields ---
+
+    /// User profile: role/title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_role: Option<String>,
+
+    /// User profile: expertise level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expertise_level: Option<String>,
+
+    /// Behavior preference: rule/pattern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preference_rule: Option<String>,
+
+    /// Behavior preference: approved pattern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_pattern: Option<String>,
+
+    /// Project context: phase/milestone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_phase: Option<String>,
+
+    /// Project context: relative date (SDK must convert to absolute).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relative_date: Option<String>,
+
+    /// External pointer: URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_url: Option<String>,
+
+    /// External pointer: ticket reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket_ref: Option<String>,
+}
+
+/// Memory write request (SDK → kernel).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryWriteRequest {
+    pub metadata: MemoryMetadata,
+    pub content: String,
+}
+
+/// Memory query request (kernel → SDK).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryQuery {
+    /// Current context summary (for selection).
+    pub current_context: String,
+
+    /// Active tools (filter recentTools).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_tools: Vec<String>,
+
+    /// Recently surfaced memory IDs (filter alreadySurfaced).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub already_surfaced: Vec<String>,
+
+    /// Return count limit (default: 5).
+    #[serde(default = "default_top_k")]
+    pub top_k: usize,
+}
+
+fn default_top_k() -> usize { 5 }
+
+impl Default for MemoryQuery {
+    fn default() -> Self {
+        Self {
+            current_context: String::new(),
+            active_tools: Vec::new(),
+            already_surfaced: Vec::new(),
+            top_k: 5,
+        }
+    }
+}
+
+/// Memory retrieval response (SDK → kernel).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryRetrieval {
+    /// Selected memory IDs.
+    pub selected_memory_ids: Vec<String>,
+
+    /// Selection rationale (for kernel logging).
+    pub selection_rationale: String,
+}
+
+/// Memory validation error.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "error_kind", rename_all = "snake_case")]
+pub enum MemoryValidationError {
+    MissingRequiredField { field: String },
+    ContentTooLarge { size: u32, limit: u32 },
+    ForbiddenPattern { pattern: String, reason: String },
+    InvalidKind { kind: String },
+    NameTooLong { length: usize, limit: usize },
+}
+
+/// Memory validation rules (kernel-enforced).
+#[derive(Debug, Clone)]
+pub struct MemoryValidation {
+    pub max_size_bytes: u32,
+    pub max_name_length: usize,
+    pub required_fields: Vec<String>,
+    pub forbidden_patterns: Vec<(String, &'static str)>,
+}
+
+impl MemoryValidation {
+    /// Validate a memory write request.
+    pub fn validate(&self, request: &MemoryWriteRequest) -> Result<(), MemoryValidationError> {
+        // Check required fields
+        for field in &self.required_fields {
+            match field.as_str() {
+                "name" if request.metadata.name.is_empty() => {
+                    return Err(MemoryValidationError::MissingRequiredField { field: "name".into() });
+                }
+                "description" if request.metadata.description.is_empty() => {
+                    return Err(MemoryValidationError::MissingRequiredField { field: "description".into() });
+                }
+                _ => {}
+            }
+        }
+
+        // Check name length
+        if request.metadata.name.len() > self.max_name_length {
+            return Err(MemoryValidationError::NameTooLong {
+                length: request.metadata.name.len(),
+                limit: self.max_name_length,
+            });
+        }
+
+        // Check content size
+        if request.content.len() > self.max_size_bytes as usize {
+            return Err(MemoryValidationError::ContentTooLarge {
+                size: request.content.len() as u32,
+                limit: self.max_size_bytes,
+            });
+        }
+
+        // Check forbidden patterns
+        for (pattern, reason) in &self.forbidden_patterns {
+            if request.content.contains(pattern) {
+                return Err(MemoryValidationError::ForbiddenPattern {
+                    pattern: pattern.clone(),
+                    reason: reason.to_string(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Validate a memory write request with default validation rules.
+pub fn validate_memory_write(request: &MemoryWriteRequest) -> Result<(), MemoryValidationError> {
+    MemoryValidation::default().validate(request)
+}
+
+/// Default validation rules (aligned with Claude Code's "what NOT to store").
+impl Default for MemoryValidation {
+    fn default() -> Self {
+        Self {
+            max_size_bytes: 10_000,
+            max_name_length: 100,
+            required_fields: vec!["name".into(), "description".into()],
+            forbidden_patterns: vec![
+                ("代码模式:".into(), "应从代码推，不应存储"),
+                ("文件路径:".into(), "应从git推，不应存储"),
+                ("架构:".into(), "应从实际代码推"),
+                ("git历史:".into(), "git log是权威"),
+                ("CLAUDE.md:".into(), "已在文档中"),
+                ("TODO:".into(), "临时任务不应进记忆"),
+            ],
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_kind_labels_correct() {
+        assert_eq!(MemoryKind::User.label(), "user");
+        assert_eq!(MemoryKind::BehaviorPreference.label(), "feedback");
+        assert_eq!(MemoryKind::Project.label(), "project");
+        assert_eq!(MemoryKind::Reference.label(), "reference");
+    }
+
+    #[test]
+    fn infer_kind_from_user_profile_fields() {
+        let metadata = MemoryMetadata {
+            user_role: Some("Senior Engineer".into()),
+            ..Default::default()
+        };
+        assert_eq!(MemoryKind::infer_from_metadata(&metadata), MemoryKind::User);
+    }
+
+    #[test]
+    fn infer_kind_from_preference_fields() {
+        let metadata = MemoryMetadata {
+            preference_rule: Some("Always use TypeScript".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            MemoryKind::infer_from_metadata(&metadata),
+            MemoryKind::BehaviorPreference
+        );
+    }
+
+    #[test]
+    fn infer_kind_from_project_fields() {
+        let metadata = MemoryMetadata {
+            project_phase: Some("MVP".into()),
+            ..Default::default()
+        };
+        assert_eq!(MemoryKind::infer_from_metadata(&metadata), MemoryKind::Project);
+    }
+
+    #[test]
+    fn infer_kind_defaults_to_behavior_preference() {
+        let metadata = MemoryMetadata::default();
+        assert_eq!(
+            MemoryKind::infer_from_metadata(&metadata),
+            MemoryKind::BehaviorPreference
+        );
+    }
+
+    #[test]
+    fn validation_passes_for_valid_request() {
+        let validation = MemoryValidation::default();
+        let request = MemoryWriteRequest {
+            metadata: MemoryMetadata {
+                name: "test-memory".into(),
+                description: "A valid memory".into(),
+                ..Default::default()
+            },
+            content: "This is fine".to_string(),
+        };
+        assert!(validation.validate(&request).is_ok());
+    }
+
+    #[test]
+    fn validation_rejects_missing_name() {
+        let validation = MemoryValidation::default();
+        let request = MemoryWriteRequest {
+            metadata: MemoryMetadata {
+                name: "".into(),
+                description: "Missing name".into(),
+                ..Default::default()
+            },
+            content: "content".to_string(),
+        };
+        assert!(matches!(
+            validation.validate(&request),
+            Err(MemoryValidationError::MissingRequiredField { field }) if field == "name"
+        ));
+    }
+
+    #[test]
+    fn validation_rejects_forbidden_pattern() {
+        let validation = MemoryValidation::default();
+        let request = MemoryWriteRequest {
+            metadata: MemoryMetadata {
+                name: "bad-memory".into(),
+                description: "Contains forbidden pattern".into(),
+                ..Default::default()
+            },
+            content: "代码模式: 应该从代码推".to_string(),
+        };
+        assert!(matches!(
+            validation.validate(&request),
+            Err(MemoryValidationError::ForbiddenPattern { .. })
+        ));
+    }
+
+    #[test]
+    fn validation_rejects_oversized_content() {
+        let validation = MemoryValidation::default();
+        let request = MemoryWriteRequest {
+            metadata: MemoryMetadata {
+                name: "huge-memory".into(),
+                description: "Too large".into(),
+                ..Default::default()
+            },
+            content: "x".repeat(20_000),
+        };
+        assert!(matches!(
+            validation.validate(&request),
+            Err(MemoryValidationError::ContentTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn memory_query_defaults_top_k_to_5() {
+        let query = MemoryQuery {
+            current_context: "test".into(),
+            ..Default::default()
+        };
+        assert_eq!(query.top_k, 5);
+    }
+}

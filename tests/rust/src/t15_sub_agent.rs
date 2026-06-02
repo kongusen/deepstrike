@@ -6,6 +6,7 @@
 use compact_str::CompactString;
 use deepstrike_core::scheduler::policy::LoopPolicy;
 use deepstrike_core::scheduler::state_machine::*;
+use deepstrike_core::proc::ProcessState;
 use deepstrike_core::types::agent::{
     AgentCapabilityFilter, AgentIdentity, AgentIsolation, AgentRole, AgentRunSpec,
     ContextInheritance, IsolationManifest,
@@ -114,7 +115,7 @@ fn sub_agent_identity_carries_parent_session_id() {
 }
 
 #[test]
-fn spawn_sub_agent_emits_agent_spawned_observation() {
+fn spawn_sub_agent_emits_process_observation() {
     let mut sm = default_sm();
     sm.start(RuntimeTask::new("test"));
     sm.take_observations(); // drain start observations
@@ -124,17 +125,66 @@ fn spawn_sub_agent_emits_agent_spawned_observation() {
         AgentRole::Implement,
         "do work",
     );
-    sm.spawn_sub_agent(spec, "parent-session-001");
+    let action = sm.spawn_sub_agent(spec, "parent-session-001");
+    assert!(matches!(action, LoopAction::AwaitingResume));
+    assert!(matches!(
+        sm.phase,
+        LoopPhase::Suspended {
+            reason: SuspendReason::SubAgentAwait
+        }
+    ));
 
     let obs = sm.take_observations();
-    let spawned = obs.iter().find(|o| matches!(o, LoopObservation::AgentSpawned { .. }));
-    assert!(spawned.is_some(), "AgentSpawned observation should be emitted");
+    assert!(obs.iter().any(|o| matches!(
+        o,
+        LoopObservation::AgentProcessChanged {
+            agent_id,
+            parent_session_id,
+            role,
+            state,
+            ..
+        } if agent_id == "worker"
+            && parent_session_id == "parent-session-001"
+            && *role == AgentRole::Implement
+            && *state == ProcessState::Running
+    )));
+}
 
-    if let Some(LoopObservation::AgentSpawned { manifest, .. }) = spawned {
-        assert_eq!(manifest.agent_id.as_str(), "worker");
-        assert_eq!(manifest.parent_session_id.as_str(), "parent-session-001");
-        assert_eq!(manifest.role, AgentRole::Implement);
-    }
+#[test]
+fn spawn_sub_agent_registers_kernel_process() {
+    let mut sm = default_sm();
+    sm.start(RuntimeTask::new("test"));
+    sm.take_observations();
+
+    let spec = AgentRunSpec::new(
+        AgentIdentity::sub_agent("worker", "worker-session"),
+        AgentRole::Implement,
+        "do work",
+    );
+    sm.spawn_sub_agent(spec, "parent-session-001");
+    let obs = sm.take_observations();
+
+    let process = sm.agent_process("worker").expect("process should be registered");
+    assert_eq!(process.agent_id.as_str(), "worker");
+    assert_eq!(process.parent_session_id.as_str(), "parent-session-001");
+    assert_eq!(process.role, AgentRole::Implement);
+    assert_eq!(process.context_inheritance, ContextInheritance::Full);
+    assert_eq!(process.state, ProcessState::Running);
+    assert!(process.permitted_capability_ids.is_empty());
+    assert!(obs.iter().any(|o| {
+        matches!(
+            o,
+            LoopObservation::AgentProcessChanged {
+                agent_id,
+                state,
+                ..
+            } if agent_id == "worker" && *state == ProcessState::Running
+        )
+    }));
+    assert!(obs.iter().any(|o| matches!(
+        o,
+        LoopObservation::Suspended { reason, .. } if reason == "sub_agent_await"
+    )));
 }
 
 #[test]
@@ -159,9 +209,13 @@ fn spawn_sub_agent_manifest_permits_filtered_capabilities() {
         AgentRole::Implement,
         "full access",
     );
-    let manifest = sm.spawn_sub_agent(spec, "parent");
+    let _action = sm.spawn_sub_agent(spec, "parent");
+    sm.take_observations();
+    let process = sm.agent_process("full-agent").expect("process");
     assert!(
-        manifest.permitted_capability_ids.contains(&CompactString::new("deploy")),
+        process
+            .permitted_capability_ids
+            .contains(&CompactString::new("deploy")),
         "unfiltered sub-agent should see deploy capability"
     );
 }
@@ -190,6 +244,57 @@ fn sub_agent_completed_resumes_loop_with_call_llm() {
         matches!(action, LoopAction::CallLLM { .. }),
         "SubAgentCompleted should resume loop with CallLLM, got: {action:?}"
     );
+}
+
+#[test]
+fn sub_agent_completed_updates_kernel_process() {
+    let mut sm = default_sm();
+    sm.start(RuntimeTask::new("test"));
+    sm.take_observations();
+
+    let spec = AgentRunSpec::new(
+        AgentIdentity::sub_agent("worker", "worker-session"),
+        AgentRole::Implement,
+        "do work",
+    );
+    sm.spawn_sub_agent(spec, "parent-session-001");
+    sm.take_observations();
+
+    assert!(matches!(
+        sm.phase,
+        LoopPhase::Suspended {
+            reason: SuspendReason::SubAgentAwait
+        }
+    ));
+
+    let result = SubAgentResult {
+        agent_id: CompactString::new("worker"),
+        result: LoopResult {
+            termination: TerminationReason::Completed,
+            final_message: Some(Message::assistant("task complete")),
+            turns_used: 3,
+            total_tokens_used: 500,
+        },
+    };
+
+    sm.feed(LoopEvent::SubAgentCompleted { result });
+
+    let process = sm.agent_process("worker").expect("process should remain registered");
+    assert_eq!(process.state, ProcessState::Joined);
+    assert!(process.result.is_some());
+    assert!(sm.take_observations().iter().any(|o| {
+        matches!(
+            o,
+            LoopObservation::AgentProcessChanged {
+                agent_id,
+                state,
+                result_termination,
+                ..
+            } if agent_id == "worker"
+                && *state == ProcessState::Joined
+                && result_termination.as_deref() == Some("completed")
+        )
+    }));
 }
 
 // ─── G7 gate: serialization ─────────────────────────────────────────────────

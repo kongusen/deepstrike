@@ -67,3 +67,41 @@ export class Governance {
     return this._inner.evaluate(toolName, argsJson) as GovernanceVerdict
   }
 }
+
+// ─── Declarative policy (in-kernel gate) ──────────────────────────────────────
+
+type GovernancePolicyAction = "allow" | "deny" | "ask_user"
+
+export interface GovernancePolicy {
+  defaultAction?: GovernancePolicyAction
+  rules?: { pattern: string; action: GovernancePolicyAction }[]
+  vetoes?: string[]
+  rateLimits?: { tool: string; maxCalls: number; windowMs: number }[]
+  constraints?: GovernanceConstraint[]
+}
+
+export type GovernanceConstraint =
+  | { kind: "required"; tool: string; path: string }
+  | { kind: "enum"; tool: string; path: string; values: string[] }
+  | { kind: "range"; tool: string; path: string; min?: number; max?: number }
+
+export function governancePolicyToKernelEvent(policy: GovernancePolicy): Record<string, unknown> {
+  return {
+    kind: "load_governance_policy",
+    ...(policy.defaultAction ? { default_action: policy.defaultAction } : {}),
+    rules: (policy.rules ?? []).map(r => ({ tool_pattern: r.pattern, action: r.action })),
+    vetoed_tools: policy.vetoes ?? [],
+    rate_limits: (policy.rateLimits ?? []).map(rl => ({
+      tool: rl.tool,
+      max_calls: rl.maxCalls,
+      window_ms: rl.windowMs,
+    })),
+    constraints: (policy.constraints ?? []).map(c =>
+      c.kind === "enum"
+        ? { kind: "enum", tool: c.tool, path: c.path, values: c.values }
+        : c.kind === "range"
+          ? { kind: "range", tool: c.tool, path: c.path, ...(c.min !== undefined ? { min: c.min } : {}), ...(c.max !== undefined ? { max: c.max } : {}) }
+          : { kind: "required", tool: c.tool, path: c.path },
+    ),
+  }
+}

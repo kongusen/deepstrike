@@ -28,10 +28,13 @@ pub mod context;
 pub mod governance;
 pub mod harness;
 pub mod memory;
+pub mod mm;
 pub mod orchestration;
+pub mod proc;
 pub mod runtime;
 pub mod scheduler;
 pub mod signals;
+pub mod syscall;
 pub mod types;
 
 // Re-export key types at crate root for convenience
@@ -42,9 +45,20 @@ pub use governance::tool_decision::{
 };
 pub use governance::sandbox::SandboxProfile;
 pub use governance::pipeline::SecurityPolicySnapshot;
+pub use mm::{
+    plan_eviction, EvictionOp, EvictionPlan, Handle, HandleId, HandleKind, HandleTable,
+    MemoryTierHint, PageInEntry, PageInRequest, Residency,
+};
+pub use proc::{AgentProcess, ProcessState, ProcessTable};
+pub use scheduler::tcb::{
+    BudgetLedger, BudgetSlice, ScheduleDecision, TaskId, TaskState, TaskTable, Tcb, WaitReason,
+};
+pub use syscall::{Disposition, Syscall};
 pub use runtime::session::SessionEvent;
 pub use runtime::{
-    reconstruct_messages_with_fallback, KERNEL_ABI_VERSION, KernelAction, KernelInput,
+    category_for_kind, reconstruct_messages_with_fallback, rebuild_os_snapshot_from_events,
+    session_log_has_required_categories, KernelEventCategory, KERNEL_ABI_VERSION,
+    KERNEL_OBSERVATION_KINDS, KernelAction, KernelInput, OsSnapshot,
     KernelInputEvent, KernelObservation, KernelPressureAction, KernelRuntime, KernelStep,
 };
 pub use types::agent::{

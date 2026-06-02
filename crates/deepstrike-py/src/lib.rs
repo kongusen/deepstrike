@@ -682,7 +682,7 @@ impl LoopPolicy {
             max_tokens: self.max_tokens,
             max_turns: self.max_turns,
             max_total_tokens: self.max_total_tokens,
-            timeout_ms: self.timeout_ms,
+            max_wall_ms: self.timeout_ms,
         }
     }
 }

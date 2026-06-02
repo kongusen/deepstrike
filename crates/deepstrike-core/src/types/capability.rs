@@ -23,6 +23,28 @@ pub enum CapabilityKind {
     Agent,
 }
 
+impl CapabilityKind {
+    /// Stable PascalCase label used in capability-change observations
+    /// (e.g. `"Tool:read_file"`). This is part of the observation wire format.
+    pub fn label(self) -> &'static str {
+        match self {
+            CapabilityKind::Tool => "Tool",
+            CapabilityKind::Skill => "Skill",
+            CapabilityKind::Memory => "Memory",
+            CapabilityKind::Knowledge => "Knowledge",
+            CapabilityKind::McpServer => "McpServer",
+            CapabilityKind::Command => "Command",
+            CapabilityKind::Agent => "Agent",
+        }
+    }
+}
+
+impl std::fmt::Display for CapabilityKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
 /// One model-visible capability.
 ///
 /// The kernel stores metadata only. SDKs still perform all I/O: loading skill

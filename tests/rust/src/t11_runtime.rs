@@ -14,8 +14,8 @@ use deepstrike_core::types::capability::{CapabilityDescriptor, CapabilityKind};
 use deepstrike_core::types::message::{Content, Message, Role, ToolCall, ToolResult, ToolSchema};
 use deepstrike_sdk::ExecutionPlane;
 use deepstrike_sdk::{
-    Governance, InMemorySessionLog, LLMProvider, LocalExecutionPlane, RegisteredTool, RunContext,
-    RunEvent, RuntimeOptions, RuntimeRunner, SessionLog, StreamEvent,
+    Governance, InMemorySessionLog, LLMProvider, LocalExecutionPlane, PermissionResponse,
+    RegisteredTool, RunContext, RunEvent, RuntimeOptions, RuntimeRunner, SessionLog, StreamEvent,
 };
 use futures::StreamExt;
 
@@ -90,6 +90,7 @@ fn default_runtime_opts(
         tokenizer: None,
         enable_plan_tool: None,
         on_tool_suspend: None,
+        on_permission_request: None,
         milestone_policy: deepstrike_sdk::runtime::MilestonePolicy::AutoPass,
         milestone_contract: None,
         run_spec: None,
@@ -123,6 +124,7 @@ async fn governance_denies_tool_on_plane() {
         knowledge_source: None,
         governance: Some(Arc::new(Mutex::new(gov))),
         on_tool_suspend: None,
+        on_permission_request: None,
     };
 
     let calls = [call];
@@ -147,7 +149,7 @@ async fn governance_denies_tool_on_plane() {
 }
 
 #[tokio::test]
-async fn governance_ask_user_emits_permission_request_event() {
+async fn governance_ask_user_without_handler_resolves_denied() {
     let mut plane = LocalExecutionPlane::new();
     plane.register(RegisteredTool::text(
         "sensitive_op",
@@ -172,19 +174,27 @@ async fn governance_ask_user_emits_permission_request_event() {
         knowledge_source: None,
         governance: Some(Arc::new(Mutex::new(gov))),
         on_tool_suspend: None,
+        on_permission_request: None,
     };
 
     let calls = [call];
     let mut stream = plane.execute_all(&calls, ctx);
     let mut saw_permission_request = false;
+    let mut saw_permission_resolved = false;
+    let mut saw_tool_denied = false;
     let mut saw_denied_result = false;
     while let Some(evt) = stream.next().await {
         match evt.unwrap() {
             RunEvent::PermissionRequest { .. } => saw_permission_request = true,
-            RunEvent::ToolResult { is_error: true, .. } => saw_denied_result = true,
-            RunEvent::ToolDenied { .. } => {
-                panic!("ask_user must not emit ToolDenied from the plane")
+            RunEvent::PermissionResolved {
+                approved,
+                responder,
+                ..
+            } => {
+                saw_permission_resolved = !approved && responder == "policy_gate";
             }
+            RunEvent::ToolDenied { .. } => saw_tool_denied = true,
+            RunEvent::ToolResult { is_error: true, .. } => saw_denied_result = true,
             _ => {}
         }
     }
@@ -193,9 +203,95 @@ async fn governance_ask_user_emits_permission_request_event() {
         "expected PermissionRequest event for ask_user verdict"
     );
     assert!(
-        saw_denied_result,
-        "expected error ToolResult when no resume handler"
+        saw_permission_resolved,
+        "expected denied PermissionResolved event without handler"
     );
+    assert!(
+        saw_tool_denied,
+        "expected ToolDenied event when approval is rejected"
+    );
+    assert!(
+        saw_denied_result,
+        "expected error ToolResult when no permission handler"
+    );
+}
+
+#[tokio::test]
+async fn governance_ask_user_runs_tool_after_handler_approval() {
+    let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let executed_for_tool = executed.clone();
+    let mut plane = LocalExecutionPlane::new();
+    plane.register(RegisteredTool::text(
+        "sensitive_op",
+        "Needs user approval",
+        serde_json::json!({"type": "object", "properties": {}}),
+        move |_| {
+            let executed_for_tool = executed_for_tool.clone();
+            Box::pin(async move {
+                executed_for_tool.store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok("approved-result".into())
+            })
+        },
+    ));
+
+    let mut gov = Governance::allow();
+    gov.add_permission_rule("sensitive_op", PermissionAction::AskUser);
+
+    let call = ToolCall {
+        id: CompactString::new("c1"),
+        name: CompactString::new("sensitive_op"),
+        arguments: serde_json::json!({}),
+    };
+
+    let ctx = RunContext {
+        agent_id: None,
+        skill_dir: None,
+        dream_store: None,
+        knowledge_source: None,
+        governance: Some(Arc::new(Mutex::new(gov))),
+        on_tool_suspend: None,
+        on_permission_request: Some(Arc::new(|request| {
+            Box::pin(async move {
+                Ok(PermissionResponse {
+                    approved: request.tool_name == "sensitive_op",
+                    responder: "test-host".to_string(),
+                    reason: None,
+                })
+            })
+        })),
+    };
+
+    let calls = [call];
+    let mut stream = plane.execute_all(&calls, ctx);
+    let mut saw_permission_resolved = false;
+    let mut saw_success_result = false;
+    while let Some(evt) = stream.next().await {
+        match evt.unwrap() {
+            RunEvent::PermissionResolved {
+                approved,
+                responder,
+                ..
+            } => {
+                saw_permission_resolved = approved && responder == "test-host";
+            }
+            RunEvent::ToolResult {
+                is_error: false,
+                content,
+                ..
+            } => {
+                saw_success_result = content == "approved-result";
+            }
+            RunEvent::ToolDenied { .. } => panic!("approved ask_user must not emit ToolDenied"),
+            _ => {}
+        }
+    }
+
+    assert!(executed.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(
+        saw_permission_resolved,
+        "expected approved PermissionResolved event"
+    );
+    assert!(saw_success_result, "expected successful tool result");
 }
 
 #[tokio::test]

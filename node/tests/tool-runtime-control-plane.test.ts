@@ -1,4 +1,5 @@
 import { streamingTool, tool } from "../src/tools/index.js"
+import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import type { LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 import { createRunner } from "./runtime/helpers.js"
 
@@ -91,6 +92,115 @@ describe("tool runtime control plane", () => {
       content: "resumed:ticket_1",
       isError: false,
     })
+  })
+
+  it("continues an ask_user-gated tool after host approval", async () => {
+    let providerCalls = 0
+    let executed = false
+    const provider: LLMProvider = {
+      async complete(_context, _tools) { return { role: "assistant", content: "unused", toolCalls: [] } },
+      async *stream() {
+        providerCalls += 1
+        if (providerCalls === 1) yield { type: "tool_call", id: "call_approval", name: "needs_approval", arguments: {} }
+        else yield { type: "text_delta", delta: "done" }
+      },
+    }
+    const sessionLog = new InMemorySessionLog()
+    const { runner } = createRunner(
+      provider,
+      [tool("needs_approval", "Requires approval", { type: "object", properties: {} }, () => {
+        executed = true
+        return "approved-result"
+      })],
+      {
+        maxTurns: 2,
+        sessionLog,
+        governance: { evaluate: () => ({ kind: "ask_user", reason: "confirm execution" }) },
+        onPermissionRequest: request => ({
+          approved: request.toolName === "needs_approval",
+          responder: "test-host",
+        }),
+      },
+    )
+
+    const events = []
+    for await (const event of runner.run({ sessionId: "ask-user-approved", goal: "run approved tool" })) events.push(event)
+
+    expect(executed).toBe(true)
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "permission_request",
+      callId: "call_approval",
+      toolName: "needs_approval",
+    }))
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "permission_resolved",
+      callId: "call_approval",
+      approved: true,
+      responder: "test-host",
+    }))
+    expect(events).toContainEqual({
+      type: "tool_result",
+      callId: "call_approval",
+      name: "needs_approval",
+      content: "approved-result",
+      isError: false,
+    })
+
+    const logEvents = (await sessionLog.read("ask-user-approved")).map(entry => entry.event)
+    expect(logEvents).toContainEqual(expect.objectContaining({
+      kind: "permission_resolved",
+      approved: true,
+      responder: "test-host",
+    }))
+  })
+
+  it("denies an ask_user-gated tool when the host rejects it", async () => {
+    let providerCalls = 0
+    let executed = false
+    const provider: LLMProvider = {
+      async complete(_context, _tools) { return { role: "assistant", content: "unused", toolCalls: [] } },
+      async *stream() {
+        providerCalls += 1
+        if (providerCalls === 1) yield { type: "tool_call", id: "call_rejected", name: "needs_approval", arguments: {} }
+        else yield { type: "text_delta", delta: "done" }
+      },
+    }
+    const { runner } = createRunner(
+      provider,
+      [tool("needs_approval", "Requires approval", { type: "object", properties: {} }, () => {
+        executed = true
+        return "should-not-run"
+      })],
+      {
+        maxTurns: 2,
+        governance: { evaluate: () => ({ kind: "ask_user", reason: "confirm execution" }) },
+        onPermissionRequest: () => ({ approved: false, responder: "test-host", reason: "user declined" }),
+      },
+    )
+
+    const events = []
+    for await (const event of runner.run({ sessionId: "ask-user-denied", goal: "run rejected tool" })) events.push(event)
+
+    expect(executed).toBe(false)
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "permission_resolved",
+      callId: "call_rejected",
+      approved: false,
+      responder: "test-host",
+      reason: "user declined",
+    }))
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "tool_denied",
+      callId: "call_rejected",
+      toolName: "needs_approval",
+      reason: "user declined",
+    }))
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "tool_result",
+      callId: "call_rejected",
+      name: "needs_approval",
+      isError: true,
+    }))
   })
 
   it("multiplexes concurrent tool streams by call id and emits structured chunks", async () => {

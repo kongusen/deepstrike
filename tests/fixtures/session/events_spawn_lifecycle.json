@@ -1,0 +1,49 @@
+[
+  {
+    "kind": "agent_process_changed",
+    "turn": 1,
+    "category": "proc",
+    "agent_id": "child-1",
+    "parent_session_id": "parent",
+    "role": "worker",
+    "isolation": "shared",
+    "context_inheritance": "none",
+    "state": "running",
+    "permitted_capability_ids": []
+  },
+  {
+    "kind": "signal_disposed",
+    "turn": 2,
+    "category": "ipc",
+    "signal_id": "sig-a",
+    "disposition": "queue",
+    "queue_depth": 1
+  },
+  {
+    "kind": "suspended",
+    "turn": 3,
+    "category": "sched",
+    "reason": "sub_agent_await",
+    "pending_calls": ["child-1"]
+  },
+  {
+    "kind": "agent_process_changed",
+    "turn": 4,
+    "category": "proc",
+    "agent_id": "child-1",
+    "parent_session_id": "parent",
+    "role": "worker",
+    "isolation": "shared",
+    "context_inheritance": "none",
+    "state": "joined",
+    "permitted_capability_ids": [],
+    "result_termination": "completed"
+  },
+  {
+    "kind": "resumed",
+    "turn": 5,
+    "category": "sched",
+    "approved": ["child-1"],
+    "denied": []
+  }
+]

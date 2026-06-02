@@ -37,6 +37,7 @@ export interface AgentRunSpec {
   metadata?: Record<string, unknown>
 }
 
+/** @deprecated Prefer `agent_process_changed`; kept for session-log replay compat. */
 export interface AgentSpawnedObservation {
   kind: "agent_spawned"
   turn?: number
@@ -46,6 +47,49 @@ export interface AgentSpawnedObservation {
   isolation: string
   context_inheritance: string
   permitted_capability_ids: string[]
+}
+
+/** Kernel process-table observation (Phase 3 canonical spawn signal). */
+export interface AgentProcessChangedObservation {
+  kind: "agent_process_changed"
+  turn?: number
+  agent_id: string
+  parent_session_id: string
+  role: string
+  isolation: string
+  context_inheritance: string
+  state?: string
+  permitted_capability_ids?: string[]
+  result_termination?: string
+}
+
+/** Map kernel spawn observation → host manifest (accepts legacy `agent_spawned`). */
+export function spawnObservationToManifest(
+  obs: AgentProcessChangedObservation | AgentSpawnedObservation | Record<string, unknown>,
+  spec: AgentRunSpec,
+  parentSessionId: string,
+): AgentSpawnedObservation {
+  const o = obs as AgentProcessChangedObservation
+  return {
+    kind: "agent_spawned",
+    turn: o.turn,
+    agent_id: String(o.agent_id ?? spec.identity.agentId),
+    parent_session_id: String(o.parent_session_id ?? parentSessionId),
+    role: String(o.role ?? spec.role),
+    isolation: String(o.isolation ?? spec.isolation ?? "shared"),
+    context_inheritance: String(o.context_inheritance ?? "none"),
+    permitted_capability_ids: o.permitted_capability_ids ?? [],
+  }
+}
+
+export function findSpawnProcessObservation(
+  observations: Array<{ kind: string; agent_id?: string }>,
+): (AgentProcessChangedObservation | AgentSpawnedObservation) | undefined {
+  const hit = observations.find(
+    o => (o.kind === "agent_process_changed" || o.kind === "agent_spawned")
+      && typeof o.agent_id === "string",
+  )
+  return hit as (AgentProcessChangedObservation | AgentSpawnedObservation) | undefined
 }
 
 export interface LoopResult {

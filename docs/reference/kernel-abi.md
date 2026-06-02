@@ -84,7 +84,7 @@ Events:
 | `tool_results` | Feed completed tool results back to the kernel |
 | `signal` | Feed an external runtime signal |
 | `milestone_result` | Feed verifier output for the current milestone |
-| `spawn_sub_agent` | Spawn a sub-agent; emits `AgentSpawned` with isolation manifest |
+| `spawn_sub_agent` | Spawn a sub-agent; registers process, emits `agent_process_changed`, suspends parent (`sub_agent_await`) until `sub_agent_completed` |
 | `sub_agent_completed` | Feed completed sub-agent result back into parent loop |
 | `timeout` | Terminate or interrupt by timeout |
 
@@ -101,11 +101,21 @@ Kernel to SDK:
 
 ### KernelObservation
 
-Kernel audit source:
+Kernel audit source. Each observation maps to an OS event **category** for unified session logging (Phase 5):
+
+| Category | Observations |
+|---|---|
+| `syscall` | `tool_gated`, `capability_changed` |
+| `sched` | `suspended`, `resumed`, `budget_exceeded`, `checkpoint_taken`, `rollbacked`, `milestone_*` |
+| `mm` | `compressed`, `page_out`, `page_in_requested`, `renewed` (+ SDK `page_in` session event) |
+| `proc` | `agent_process_changed` |
+| `ipc` | `signal_disposed` |
 
 | Observation | Meaning |
 |---|---|
-| `compressed` | Context compression occurred |
+| `compressed` | Context compression occurred (legacy; see also `page_out`) |
+| `page_out` | Working memory archived for long-term (`tier_hint`: `durable` or `semantic`) |
+| `page_in_requested` | Kernel requests SDK fetch before `memory` / `knowledge` meta-tools |
 | `renewed` | Context renewal started a new sprint |
 | `rollbacked` | Fatal turn rollback restored checkpoint state |
 | `checkpoint_taken` | Turn transaction checkpoint before LLM call |
@@ -113,14 +123,34 @@ Kernel audit source:
 | `milestone_advanced` | Milestone passed and unlocked capabilities |
 | `milestone_blocked` | Milestone failed and run should continue or retry |
 | `milestone_evidence` | Verifier-collected evidence for current phase |
-| `agent_spawned` | Sub-agent spawned with isolation manifest and lineage |
+| `agent_process_changed` | Process table entry changed (spawn: `running`; join: `joined` / `failed`) |
+| `suspended` / `resumed` | Parent loop suspended awaiting approval or sub-agent join |
+
+## OS Native Profile (Phase 6, Node / WASM / Python SDK)
+
+Opt-in SDK profile: `osProfile` / `os_profile: "native"` (default `"legacy"`).
+
+| Requirement | Native | Legacy |
+|---|---|---|
+| `attentionPolicy` | **required** (in-kernel `signal_disposed`) | optional (`COMPAT(signal-legacy)`) |
+| `governancePolicy` | **required** (in-kernel `tool_gated` / `suspended` / `resume`) | optional (SDK execution-plane gate) |
+| `governance` instance | **forbidden** | allowed |
+| Session kernel events | `category` required (`syscall` / `sched` / `mm` / `proc` / `ipc`) | `category` optional |
+
+Helpers: `assertNativeProfile`, `DEFAULT_NATIVE_ATTENTION_POLICY`, `DEFAULT_NATIVE_GOVERNANCE_POLICY`.
+
+Audit: `rebuildOsSnapshotFromSessionEvents(sessionEvents)` rebuilds a read-only `OsSnapshot` (process table view, signal timeline, last suspend) without re-instantiating the kernel.
+
+Parity CI: `node scripts/check-sdk-parity.mjs`. Matrix: [sdk-os-parity.md](../sdk-os-parity.md).
+
+Golden OS snapshots: `tests/fixtures/session/events_*.json` → `os_snapshot_*.json` (core `golden_os_snapshot_*_fixture` tests + node/python integration tests).
 
 ## Sub-Agent Host Contract (Phase 7)
 
 Sub-agent isolation is a **kernel contract**, not a prompt convention.
 
 1. Host calls `spawn_sub_agent` with `AgentRunSpec` + `parent_session_id`.
-2. Kernel emits `AgentSpawned` observation (role, isolation, context_inheritance, permitted_capability_ids).
+2. Kernel emits `agent_process_changed` and suspends parent until `sub_agent_completed`.
 3. Host SDK runs the child via `SubAgentOrchestrator` / `FilteredExecutionPlane` (capability filter enforced).
 4. Host feeds `sub_agent_completed` with `SubAgentResult` back to the parent kernel.
 
@@ -192,4 +222,4 @@ Read-side helpers exposed for SDK bookkeeping:
 | `step_execute_tool.json` | `KernelStep` |
 | `step_done.json` | `KernelStep` |
 | `observation_compressed.json` | `KernelObservation` |
-| `observation_agent_spawned.json` | `KernelObservation` |
+| `observation_agent_process_changed.json` | `KernelObservation` |

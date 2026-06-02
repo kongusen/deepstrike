@@ -1,0 +1,14 @@
+{
+  "last_suspend": {
+    "turn": 2,
+    "reason": "ask_user",
+    "pending_calls": ["c1"]
+  },
+  "last_resumed_turn": 3,
+  "process_by_agent": [],
+  "budget_exceeded": [],
+  "signals": [],
+  "page_out_count": 0,
+  "page_in_count": 0,
+  "tool_gated_count": 1
+}

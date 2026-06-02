@@ -66,13 +66,29 @@ export interface KernelObservation {
   phase_id?: string
   capabilities_unlocked?: string[]
   evidence?: string[]
-  reason?: RollbackReason
+  // `reason` is a RollbackReason for rollback observations, but a plain string
+  // for `tool_gated` (governance AskUser) — consumers narrow by `kind`.
+  reason?: RollbackReason | string
   agent_id?: string
   parent_session_id?: string
   role?: string
   isolation?: string
   context_inheritance?: string
   permitted_capability_ids?: string[]
+  // tool_gated (governance AskUser): the call needing user approval.
+  call_id?: string
+  tool?: string
+  // signal_disposed (in-kernel attention policy): the routing decision.
+  signal_id?: string
+  disposition?: string
+  queue_depth?: number
+  // Phase 2: budget_exceeded observation — which budget axis fired.
+  budget?: string
+  // Phase 2: suspended observation — loop suspended awaiting external resolution.
+  pending_calls?: string[]
+  // Phase 2: resumed observation — loop resumed with approved/denied calls.
+  approved?: string[]
+  denied?: string[]
 }
 
 interface KernelStepJson {
@@ -358,11 +374,25 @@ export function kernelAction(
   pending: KernelObservation[],
   event: Record<string, unknown>,
 ): KernelRunnerAction {
+  const action = kernelMaybeAction(runtime, pending, event)
+  if (!action) throw new Error("kernel transition must return one action")
+  return action
+}
+
+/**
+ * Like {@link kernelAction} but tolerates a zero-action step. Used for events
+ * whose outcome may not drive a provider call — e.g. a signal the kernel queues
+ * or ignores returns no action. Returns `null` in that case.
+ */
+export function kernelMaybeAction(
+  runtime: KernelRuntimeHandle,
+  pending: KernelObservation[],
+  event: Record<string, unknown>,
+): KernelRunnerAction | null {
   const step = parseStep(runtime.step(stepInput(event)))
   pending.push(...step.observations)
   const raw = step.actions[0]
-  if (!raw) throw new Error("kernel transition must return one action")
-  return mapKernelAction(raw)
+  return raw ? mapKernelAction(raw) : null
 }
 
 export function forceCompact(

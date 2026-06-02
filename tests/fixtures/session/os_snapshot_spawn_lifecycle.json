@@ -1,0 +1,28 @@
+{
+  "last_suspend": {
+    "turn": 3,
+    "reason": "sub_agent_await",
+    "pending_calls": ["child-1"]
+  },
+  "last_resumed_turn": 5,
+  "process_by_agent": [
+    {
+      "turn": 4,
+      "agent_id": "child-1",
+      "parent_session_id": "parent",
+      "state": "joined"
+    }
+  ],
+  "budget_exceeded": [],
+  "signals": [
+    {
+      "turn": 2,
+      "signal_id": "sig-a",
+      "disposition": "queue",
+      "queue_depth": 1
+    }
+  ],
+  "page_out_count": 0,
+  "page_in_count": 0,
+  "tool_gated_count": 0
+}

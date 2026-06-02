@@ -1,0 +1,15 @@
+{
+  "name": "deepstrike-workspace",
+  "version": "0.2.4",
+  "private": true,
+  "description": "Agent OS microkernel for cross-language agent runtimes - workspace toolchain",
+  "scripts": {
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
+  },
+  "devDependencies": {
+    "vitepress": "^1.5.0",
+    "vue": "^3.4.21"
+  }
+}

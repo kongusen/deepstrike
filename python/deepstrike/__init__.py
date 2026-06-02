@@ -31,7 +31,7 @@ from deepstrike.providers import (
     QwenProvider, DeepSeekProvider, MiniMaxProvider, OllamaProvider, KimiProvider,
     StreamEvent, TextDelta, ThinkingDelta,
     ToolCallEvent, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, DoneEvent, ErrorEvent,
-    PermissionRequestEvent, ToolArgumentRepairedEvent,
+    PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse, ToolArgumentRepairedEvent,
     RetryConfig, CircuitBreaker, TokenUsage, ProviderToolSpec,
 )
 from deepstrike.tools import RegisteredTool, tool, streaming_tool, validate_tool_arguments, execute_tools, read_file
@@ -79,7 +79,7 @@ __all__ = [
     "QwenProvider", "DeepSeekProvider", "MiniMaxProvider", "OllamaProvider", "KimiProvider",
     "StreamEvent", "TextDelta", "ThinkingDelta",
     "ToolCallEvent", "ToolDeltaEvent", "ToolSuspendEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent",
-    "PermissionRequestEvent", "ToolArgumentRepairedEvent",
+    "PermissionRequestEvent", "PermissionResolvedEvent", "PermissionResponse", "ToolArgumentRepairedEvent",
     "RetryConfig", "CircuitBreaker", "TokenUsage", "ProviderToolSpec",
     "RegisteredTool", "tool", "streaming_tool", "validate_tool_arguments", "execute_tools", "read_file",
     "WorkingMemory",

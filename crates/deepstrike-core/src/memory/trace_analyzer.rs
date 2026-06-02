@@ -231,7 +231,7 @@ impl TraceAnalyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::message::{Content, ContentPart, ToolCall};
+    use crate::types::message::{ContentPart, ToolCall};
     use compact_str::CompactString;
     use pretty_assertions::assert_eq;
 

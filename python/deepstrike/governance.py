@@ -1,8 +1,65 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 from deepstrike._kernel import Governance as KernelGovernance
+
+GovernancePolicyAction = Literal["allow", "deny", "ask_user"]
+
+
+@dataclass
+class GovernancePolicyRule:
+    pattern: str
+    action: GovernancePolicyAction
+
+
+@dataclass
+class GovernanceRateLimit:
+    tool: str
+    max_calls: int
+    window_ms: int
+
+
+@dataclass
+class GovernancePolicy:
+    default_action: GovernancePolicyAction | None = None
+    rules: list[GovernancePolicyRule] = field(default_factory=list)
+    vetoes: list[str] = field(default_factory=list)
+    rate_limits: list[GovernanceRateLimit] = field(default_factory=list)
+    constraints: list[dict[str, Any]] = field(default_factory=list)
+
+
+def governance_policy_to_kernel_event(policy: GovernancePolicy) -> dict[str, Any]:
+    constraints: list[dict[str, Any]] = []
+    for c in policy.constraints:
+        if c.get("kind") == "enum":
+            constraints.append({
+                "kind": "enum",
+                "tool": c["tool"],
+                "path": c["path"],
+                "values": c["values"],
+            })
+        elif c.get("kind") == "range":
+            entry: dict[str, Any] = {"kind": "range", "tool": c["tool"], "path": c["path"]}
+            if "min" in c:
+                entry["min"] = c["min"]
+            if "max" in c:
+                entry["max"] = c["max"]
+            constraints.append(entry)
+        else:
+            constraints.append({"kind": "required", "tool": c["tool"], "path": c["path"]})
+    return {
+        "kind": "load_governance_policy",
+        **({"default_action": policy.default_action} if policy.default_action else {}),
+        "rules": [{"tool_pattern": r.pattern, "action": r.action} for r in policy.rules],
+        "vetoed_tools": list(policy.vetoes),
+        "rate_limits": [
+            {"tool": rl.tool, "max_calls": rl.max_calls, "window_ms": rl.window_ms}
+            for rl in policy.rate_limits
+        ],
+        "constraints": constraints,
+    }
 
 
 @dataclass(frozen=True)

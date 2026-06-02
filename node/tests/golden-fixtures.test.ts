@@ -61,22 +61,23 @@ describe("Golden ABI Fixtures", () => {
     expect(step.observations).toHaveLength(0)
   })
 
-  it("input_spawn_sub_agent.json emits agent_spawned after start_run", () => {
+  it("input_spawn_sub_agent.json emits agent_process_changed after start_run", () => {
     const kernel = new KernelRuntime({ maxTokens: 2048 })
     kernel.step(readFileSync(join(fixturesDir, "input_start_run.json"), "utf8"))
 
     const step = JSON.parse(kernel.step(readFileSync(join(fixturesDir, "input_spawn_sub_agent.json"), "utf8")))
     expect(step.version).toBe(1)
     expect(step.actions).toHaveLength(0)
-    const spawned = step.observations.find((o: { kind: string }) => o.kind === "agent_spawned")
-    expect(spawned).toBeDefined()
-    expect(spawned.agent_id).toBe("worker")
-    expect(spawned.parent_session_id).toBe("parent-session-001")
+    const process = step.observations.find((o: { kind: string }) => o.kind === "agent_process_changed")
+    expect(process).toBeDefined()
+    expect(process.agent_id).toBe("worker")
+    expect(process.parent_session_id).toBe("parent-session-001")
+    expect(process.state).toBe("running")
   })
 
-  it("observation_agent_spawned.json round-trips fields", () => {
-    const raw = JSON.parse(readFileSync(join(fixturesDir, "observation_agent_spawned.json"), "utf8"))
-    expect(raw.kind).toBe("agent_spawned")
+  it("observation_agent_process_changed.json round-trips fields", () => {
+    const raw = JSON.parse(readFileSync(join(fixturesDir, "observation_agent_process_changed.json"), "utf8"))
+    expect(raw.kind).toBe("agent_process_changed")
     expect(raw.permitted_capability_ids).toContain("read_file")
   })
 
@@ -93,5 +94,16 @@ describe("Golden ABI Fixtures", () => {
     for (const [k, v] of Object.entries(expected as Record<string, unknown>)) {
       expect(raw[k]).toEqual(v)
     }
+  })
+
+  it("set_scheduler_budget event configures wall-clock budget", () => {
+    const kernel = new KernelRuntime({ maxTokens: 2048 })
+    // Start a run with proper task structure
+    kernel.step('{"version":1,"event":{"kind":"start_run","task":{"goal":"test","criteria":[]}}}')
+    // Set wall-clock budget
+    const budgetStep = JSON.parse(kernel.step('{"version":1,"event":{"kind":"set_scheduler_budget","max_wall_ms":10000}}'))
+    expect(budgetStep.version).toBe(1)
+    expect(budgetStep.actions).toHaveLength(0)
+    expect(budgetStep.observations).toHaveLength(0)
   })
 })

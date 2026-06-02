@@ -271,5 +271,18 @@ def kernel_action(runtime: Any, pending: list[dict[str, Any]], event: dict[str, 
   return _action_from_kernel(actions[0])
 
 
+def kernel_maybe_action(
+  runtime: Any,
+  pending: list[dict[str, Any]],
+  event: dict[str, Any],
+) -> KernelRunnerAction | None:
+  step = json.loads(runtime.step(_step_input(event)))
+  pending.extend(step.get("observations") or [])
+  actions = step.get("actions") or []
+  if not actions:
+    return None
+  return _action_from_kernel(actions[0])
+
+
 def force_compact(runtime: Any, pending: list[dict[str, Any]]) -> bool:
   return any(o.get("kind") == "compressed" for o in kernel_apply(runtime, pending, {"kind": "force_compact"}))

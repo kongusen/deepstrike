@@ -67,7 +67,7 @@ export interface KernelObservation {
   phase_id?: string
   capabilities_unlocked?: string[]
   evidence?: string[]
-  reason?: RollbackReason
+  reason?: RollbackReason | string
   agent_id?: string
   parent_session_id?: string
   role?: string
@@ -75,6 +75,16 @@ export interface KernelObservation {
   context_inheritance?: string
   permitted_capability_ids?: string[]
   history_len?: number
+  tier_hint?: string
+  call_id?: string
+  tool?: string
+  signal_id?: string
+  disposition?: string
+  queue_depth?: number
+  budget?: string
+  pending_calls?: string[]
+  approved?: string[]
+  denied?: string[]
 }
 
 interface KernelStepJson {
@@ -280,6 +290,18 @@ export function kernelAction(
   const raw = step.actions[0]
   if (!raw) throw new Error("kernel transition must return one action")
   return mapKernelAction(raw)
+}
+
+/** Like kernelAction but tolerates zero-action steps (e.g. queued signals). */
+export function kernelMaybeAction(
+  runtime: KernelRuntimeHandle,
+  pending: KernelObservation[],
+  event: Record<string, unknown>,
+): KernelRunnerAction | null {
+  const step = parseStep(runtime.step(stepInput(event)))
+  pending.push(...step.observations)
+  const raw = step.actions[0]
+  return raw ? mapKernelAction(raw) : null
 }
 
 export function forceCompact(

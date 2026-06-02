@@ -32,8 +32,12 @@ from deepstrike.providers.stream import (
   ToolSuspendEvent,
   ToolArgumentRepairedEvent,
   PermissionRequestEvent,
+  PermissionResolvedEvent,
+  PermissionResponse,
 )
 from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPlane, RunContext
+from deepstrike.governance import governance_policy_to_kernel_event
+from deepstrike.runtime.kernel_event_log import kernel_observation_to_session_event, with_category
 from deepstrike.runtime.kernel_step import (
   capability_marker,
   capability_skill,
@@ -41,12 +45,14 @@ from deepstrike.runtime.kernel_step import (
   force_compact,
   kernel_action,
   kernel_apply,
+  kernel_maybe_action,
   message_to_kernel,
   skill_metadata_to_kernel,
   task_update_to_kernel,
   tool_result_to_kernel,
   tool_schema_to_kernel,
 )
+from deepstrike.runtime.os_profile import assert_native_profile, is_native_profile
 from deepstrike.runtime.replay_sanitize import sanitize_replay_text
 from deepstrike.runtime.session_repair import (
   build_llm_completed_event,
@@ -57,7 +63,8 @@ from deepstrike.runtime.session_log import SessionEntry, SessionEvent, SessionLo
 from deepstrike.runtime.archive import ArchiveStore
 
 if TYPE_CHECKING:
-  from deepstrike.governance import Governance
+  from deepstrike.governance import Governance, GovernancePolicy
+  from deepstrike.runtime.os_profile import AttentionPolicy, OsProfile
   from deepstrike.knowledge.source import KnowledgeSource
   from deepstrike.memory.protocols import DreamResult, DreamStore
   from deepstrike.signals.types import SignalSource
@@ -89,9 +96,13 @@ class RuntimeOptions:
   signal_source: "SignalSource | None" = None
   extensions: dict | None = None
   governance: "Governance | None" = None
+  governance_policy: "GovernancePolicy | None" = None
+  attention_policy: "AttentionPolicy | dict | None" = None
+  os_profile: "OsProfile | None" = None
   tokenizer: str | None = None
   enable_plan_tool: bool | None = None
   on_tool_suspend: Callable[[ToolSuspendEvent], Awaitable[Any] | Any] | None = None
+  on_permission_request: Callable[[PermissionRequestEvent], Awaitable[PermissionResponse | bool | dict[str, Any]] | PermissionResponse | bool | dict[str, Any]] | None = None
   sub_agent_orchestrator: Any | None = None
   sub_agent_harness: SubAgentHarnessConfig | None = None
   dream_system_prompt: str | None = None
@@ -146,9 +157,11 @@ class RuntimeRunner:
       parent_session_id, runtime, self._next_archive_start,
     )
 
-    spawned_obs = next((o for o in observations if o.get("kind") == "agent_spawned"), None)
+    from deepstrike.runtime.sub_agent_orchestrator import _find_spawn_obs
+
+    spawned_obs = _find_spawn_obs(observations)
     if spawned_obs is None:
-      raise RuntimeError("spawn_sub_agent did not emit agent_spawned")
+      raise RuntimeError("spawn_sub_agent did not emit agent_process_changed")
 
     manifest = AgentSpawnedObservation(
       agent_id=str(spawned_obs.get("agent_id") or spec.identity.agent_id),
@@ -380,6 +393,58 @@ class RuntimeRunner:
       ),
     )
 
+  async def _resolve_kernel_suspend(
+    self,
+    runtime: KernelRuntime,
+    session_id: str,
+  ) -> tuple[list[str], list[str], list[StreamEvent]]:
+    from deepstrike.runtime.execution_plane import resolve_permission_request
+
+    gated = [
+      o for o in self._pending_observations
+      if o.get("kind") == "tool_gated" and isinstance(o.get("call_id"), str) and isinstance(o.get("tool"), str)
+    ]
+    approved: list[str] = []
+    denied: list[str] = []
+    events: list[StreamEvent] = []
+    run_ctx = RunContext(on_permission_request=self._opts.on_permission_request)
+
+    for g in gated:
+      request = PermissionRequestEvent(
+        call_id=g["call_id"],
+        tool_name=g["tool"],
+        arguments="{}",
+        reason=g.get("reason") if isinstance(g.get("reason"), str) else "",
+      )
+      events.append(request)
+      decision = await resolve_permission_request(request, run_ctx)
+      events.append(PermissionResolvedEvent(
+        call_id=g["call_id"],
+        tool_name=g["tool"],
+        approved=decision.approved,
+        responder=decision.responder or "host",
+        reason=getattr(decision, "reason", None),
+      ))
+      await self._opts.session_log.append(session_id, {
+        "kind": "permission_requested",
+        "turn": runtime.turn(),
+        "tool": g["tool"],
+        "arguments": "{}",
+        "reason": request.reason,
+      })
+      await self._opts.session_log.append(session_id, {
+        "kind": "permission_resolved",
+        "turn": runtime.turn(),
+        "approved": decision.approved,
+        "responder": decision.responder or "host",
+      })
+      if decision.approved:
+        approved.append(g["call_id"])
+      else:
+        denied.append(g["call_id"])
+
+    return approved, denied, events
+
   async def _execute(
     self,
     session_id: str,
@@ -389,6 +454,7 @@ class RuntimeRunner:
     prior_events: list[SessionEntry] | None,
     resume_mid_run: bool,
   ) -> AsyncIterator[StreamEvent]:
+    assert_native_profile(self._opts)
     self._interrupted = False
     self._pending_observations = []
     self._current_session_id = session_id
@@ -506,6 +572,20 @@ class RuntimeRunner:
       from deepstrike.types.agent import agent_run_spec_to_kernel
       start_payload["run_spec"] = agent_run_spec_to_kernel(self._opts.run_spec)
 
+    if self._opts.governance_policy:
+      kernel_apply(
+        runtime,
+        self._pending_observations,
+        governance_policy_to_kernel_event(self._opts.governance_policy),
+      )
+    if self._opts.attention_policy:
+      ap = self._opts.attention_policy
+      max_q = ap.get("max_queue_size") if isinstance(ap, dict) else getattr(ap, "max_queue_size", None)
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "set_attention_policy",
+        **({"max_queue_size": max_q} if max_q is not None else {}),
+      })
+
     action = (
       kernel_action(runtime, self._pending_observations, {"kind": "resume"})
       if resume_mid_run
@@ -514,6 +594,8 @@ class RuntimeRunner:
     has_attempted_reactive_compact = False
 
     while not runtime.is_terminal():
+      if action.kind == "execute_tool":
+        await self._apply_kernel_page_in(runtime, session_id)
       next_compressed_archive_start = await self._append_observations(
         session_id, runtime, next_compressed_archive_start,
       )
@@ -525,17 +607,43 @@ class RuntimeRunner:
       if self._opts.signal_source:
         sig = await self._opts.signal_source.next_signal()
         if sig:
-          disposition = router.ingest(sig.to_kernel_signal(), action.kind == "execute_tool")
-          if disposition == "interrupt_now":
+          if self._opts.attention_policy:
+            sig_action = kernel_maybe_action(runtime, self._pending_observations, {
+              "kind": "signal",
+              "signal": {
+                "id": str(uuid.uuid4()),
+                "source": sig.source,
+                "signal_type": sig.signal_type,
+                "urgency": sig.urgency,
+                "summary": str(sig.payload.get("goal") or sig.kind),
+                "payload": sig.payload,
+                **({"dedupe_key": sig.dedupe_key} if sig.dedupe_key else {}),
+                "timestamp_ms": int(time.time() * 1000),
+              },
+            })
+            if sig_action:
+              action = sig_action
+          elif is_native_profile(self._opts):
+            raise ValueError(
+              'COMPAT(signal-legacy): os_profile "native" requires attention_policy',
+            )
+          else:
+            disposition = router.ingest(sig.to_kernel_signal(), action.kind == "execute_tool")
+            if disposition == "interrupt_now":
+              action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
+              break
+
+      if not self._opts.attention_policy:
+        if is_native_profile(self._opts):
+          raise ValueError(
+            'COMPAT(signal-legacy): os_profile "native" forbids SDK signal queue drain',
+          )
+        queued = router.next()
+        while queued:
+          if queued.urgency == "critical":
             action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
             break
-
-      queued = router.next()
-      while queued:
-        if queued.urgency == "critical":
-          action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
-          break
-        queued = router.next()
+          queued = router.next()
       if runtime.is_terminal():
         break
 
@@ -589,10 +697,23 @@ class RuntimeRunner:
           role="assistant", content=final_text, tool_calls=final_tool_calls,
           token_count=turn_tokens or None,
         )
-        action = kernel_action(runtime, self._pending_observations, {
+        provider_event: dict[str, Any] = {
           "kind": "provider_result",
           "message": message_to_kernel(assistant_message),
-        })
+        }
+        if self._opts.governance_policy:
+          provider_event["now_ms"] = int(time.time() * 1000)
+        next_action = kernel_maybe_action(runtime, self._pending_observations, provider_event)
+        if not next_action and any(o.get("kind") == "suspended" for o in self._pending_observations):
+          approved, denied, suspend_events = await self._resolve_kernel_suspend(runtime, session_id)
+          for evt in suspend_events:
+            yield evt
+          next_action = kernel_action(runtime, self._pending_observations, {
+            "kind": "resume",
+            "approved_calls": approved,
+            "denied_calls": denied,
+          })
+        action = next_action or kernel_action(runtime, self._pending_observations, provider_event)
         from deepstrike.runtime.provider_replay import peek_provider_replay
         provider_replay = peek_provider_replay(self._opts.provider, final_text, final_tool_calls)
         await self._opts.session_log.append(session_id, build_llm_completed_event(
@@ -613,8 +734,9 @@ class RuntimeRunner:
           skill_dir=skill_dir,
           dream_store=self._opts.dream_store,
           knowledge_source=self._opts.knowledge_source,
-          governance=self._opts.governance,
+          governance=None if self._opts.governance_policy else self._opts.governance,
           on_tool_suspend=self._opts.on_tool_suspend,
+          on_permission_request=self._opts.on_permission_request,
         )
         tool_results: list[ToolResult] = []
         normal_calls = [c for c in all_calls if c.name != "update_plan"]
@@ -666,18 +788,13 @@ class RuntimeRunner:
                 "arguments": _json.dumps(evt.arguments) if not isinstance(evt.arguments, str) else evt.arguments,
                 "reason": evt.reason,
               })
+            elif isinstance(evt, PermissionResolvedEvent):
+              turn = runtime.turn()
               await self._opts.session_log.append(session_id, {
                 "kind": "permission_resolved",
                 "turn": turn,
-                "approved": False,
-                "responder": "policy_gate",
-              })
-              await self._opts.session_log.append(session_id, {
-                "kind": "tool_denied",
-                "turn": turn,
-                "call_id": evt.call_id,
-                "tool_name": evt.tool_name,
-                "reason": f"permission denied by policy gate: {evt.reason}",
+                "approved": evt.approved,
+                "responder": evt.responder,
               })
           names = ", ".join(c.name for c in normal_calls)
           kernel_apply(runtime, self._pending_observations, {
@@ -773,6 +890,39 @@ class RuntimeRunner:
     self._current_session_id = None
     yield DoneEvent(iterations=turns_used, total_tokens=total_tokens, status=status)
 
+  async def _apply_kernel_page_in(self, runtime: KernelRuntime, session_id: str) -> None:
+    """Phase 4: satisfy kernel page-in requests before meta-tool execution."""
+    requests = [
+      o for o in self._pending_observations
+      if o.get("kind") == "page_in_requested" and isinstance(o.get("tool"), str)
+    ]
+    if not requests:
+      return
+    entries: list[dict[str, Any]] = []
+    for req in requests:
+      query = req.get("query") if isinstance(req.get("query"), str) else ""
+      top_k = req.get("top_k") if isinstance(req.get("top_k"), int) else 5
+      tool = req.get("tool")
+      if tool == "memory" and self._opts.dream_store and self._opts.agent_id:
+        hits = await self._opts.dream_store.search(self._opts.agent_id, query, top_k)
+        for hit in hits:
+          entries.append({
+            "content": f"[memory score={hit.score:.3f}] {hit.text}",
+            "source": "memory",
+          })
+      elif tool == "knowledge" and self._opts.knowledge_source:
+        snippets = await self._opts.knowledge_source.retrieve(query, top_k)
+        for snippet in snippets:
+          entries.append({"content": snippet, "source": "knowledge"})
+    if not entries:
+      return
+    kernel_apply(runtime, self._pending_observations, {"kind": "page_in", "entries": entries})
+    await self._opts.session_log.append(session_id, with_category({
+      "kind": "page_in",
+      "turn": runtime.turn(),
+      "entry_count": len(entries),
+    }))
+
   async def _append_observations(
     self,
     session_id: str,
@@ -784,14 +934,11 @@ class RuntimeRunner:
     observations = self._pending_observations
     self._pending_observations = []
     for obs in observations:
-      kind = obs.get("kind")
-      if kind == "compressed":
-        latest = await self._opts.session_log.latest_seq(session_id)
-        if latest < next_archive_start:
-          continue
-        end = latest
+      if obs.get("kind") == "page_in_requested":
+        continue
 
-        archive_ref = None
+      archive_ref = None
+      if obs.get("kind") == "compressed":
         archived = obs.get("archived")
         if self._opts.compression_store and archived:
           try:
@@ -801,80 +948,32 @@ class RuntimeRunner:
           except Exception:
             pass
 
-        summary = obs.get("summary")
-        summary_tokens = max(1, len(summary) // 4) if summary else None
-
-        compressed_seq = await self._opts.session_log.append(session_id, {
-          "kind": "compressed",
-          "turn": turn,
-          "archived_seq_range": (next_archive_start, end),
-          "action": obs.get("action") or "none",
-          "summary": summary or "",
-          "summary_tokens": summary_tokens,
-          "archive_ref": archive_ref,
-          "preserved_refs": preserved_refs,
-        })
+      latest = (
+        await self._opts.session_log.latest_seq(session_id)
+        if obs.get("kind") == "compressed"
+        else None
+      )
+      event = kernel_observation_to_session_event(
+        obs,
+        turn,
+        next_archive_start=next_archive_start,
+        latest_seq=latest,
+        archive_ref=archive_ref,
+        preserved_refs=preserved_refs,
+        compression_action=_compression_action,
+      )
+      if not event:
+        continue
+      compressed_seq = await self._opts.session_log.append(session_id, event)
+      if event.get("kind") == "compressed":
         next_archive_start = compressed_seq + 1
-      elif kind == "rollbacked":
-        await self._opts.session_log.append(session_id, {
-          "kind": "rollbacked",
-          "turn": obs.get("turn") or turn,
-          "checkpoint_history_len": obs.get("checkpoint_history_len", 0),
-          "reason": obs.get("reason"),
-        })
-      elif kind == "capability_changed":
-        ev: dict = {
-          "kind": "capability_changed",
-          "turn": obs.get("turn") or turn,
-          "added": obs.get("added") or [],
-          "removed": obs.get("removed") or [],
-        }
-        for key in ("change_kind", "capability_id", "version", "mounted_by", "mount_reason"):
-          if obs.get(key) is not None:
-            ev[key] = obs[key]
-        await self._opts.session_log.append(session_id, ev)
-      elif kind == "milestone_advanced":
-        await self._opts.session_log.append(session_id, {
-          "kind": "milestone_advanced",
-          "turn": obs.get("turn") or turn,
-          "phase_id": obs.get("phase_id") or "",
-          "capabilities_unlocked": obs.get("capabilities_unlocked") or [],
-        })
-      elif kind == "milestone_blocked":
-        await self._opts.session_log.append(session_id, {
-          "kind": "milestone_blocked",
-          "turn": obs.get("turn") or turn,
-          "phase_id": obs.get("phase_id") or "",
-          "reason": obs.get("reason") or "",
-        })
-      elif kind == "milestone_evidence":
-        await self._opts.session_log.append(session_id, {
-          "kind": "milestone_evidence",
-          "turn": obs.get("turn") or turn,
-          "phase_id": obs.get("phase_id") or "",
-          "evidence": obs.get("evidence") or [],
-        })
-      elif kind == "checkpoint_taken":
-        await self._opts.session_log.append(session_id, {
-          "kind": "checkpoint_taken",
-          "turn": obs.get("turn") or turn,
-          "history_len": obs.get("history_len") or 0,
-        })
-      elif kind == "agent_spawned":
-        await self._opts.session_log.append(session_id, {
-          "kind": "agent_spawned",
-          "turn": obs.get("turn") or turn,
-          "agent_id": obs.get("agent_id") or "",
-          "parent_session_id": obs.get("parent_session_id") or "",
-          "role": obs.get("role") or "",
-          "isolation": obs.get("isolation") or "",
-          "context_inheritance": obs.get("context_inheritance") or "",
-          "permitted_capability_ids": obs.get("permitted_capability_ids") or [],
-        })
-      elif kind != "renewed":
-        import warnings
-        warnings.warn(f"[deepstrike] unhandled KernelObservation kind: {kind}", stacklevel=2)
     return next_archive_start
+
+
+def _compression_action(action: str | None) -> str | None:
+  if action in ("snip_compact", "micro_compact", "context_collapse", "auto_compact"):
+    return action
+  return None
 
 
 def _is_mid_run(events: list[SessionEntry]) -> bool:

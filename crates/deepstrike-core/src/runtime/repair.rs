@@ -67,10 +67,6 @@ pub fn effective_provider_replay(
     synthesize_provider_replay(content, tool_calls)
 }
 
-fn normalize_assistant_message(message: &mut Message) {
-    normalize_assistant_message_with_cap(message, 0);
-}
-
 fn normalize_assistant_message_with_cap(message: &mut Message, max_bytes: usize) {
     if message.token_count.is_none() {
         message.token_count = Some(estimate_token_count(
@@ -161,7 +157,7 @@ pub fn pending_tool_calls_from_messages(messages: &[Message]) -> Vec<ToolCall> {
 ///    as a system message `[Compressed context: turn {turn}]\n{summary}`.
 pub fn reconstruct_messages_with_fallback<F>(
     events: &[SessionEvent],
-    session_id: &str,
+    _session_id: &str,
     max_bytes: usize,
     mut load_archive: F,
 ) -> Vec<Message>
@@ -295,6 +291,45 @@ mod tests {
         };
         let out = effective_provider_replay("x", &[], Some(&stored)).expect("replay");
         assert_eq!(out.reasoning_content.as_deref(), Some("trace"));
+    }
+
+    #[test]
+    fn reconstruct_ignores_categorized_kernel_os_events() {
+        use crate::runtime::event_log::KernelEventCategory;
+        use crate::runtime::session::SessionEvent;
+
+        let events = vec![
+            SessionEvent::RunStarted {
+                run_id: "r1".into(),
+                goal: "g".into(),
+                criteria: vec![],
+                agent_id: None,
+                system_prompt: None,
+            },
+            SessionEvent::PageOut {
+                turn: 1,
+                category: Some(KernelEventCategory::Mm),
+                action: Some("auto_compact".into()),
+                summary: Some("sum".into()),
+                tier_hint: Some("durable".into()),
+                message_count: 3,
+            },
+            SessionEvent::SignalDisposed {
+                turn: 1,
+                category: Some(KernelEventCategory::Ipc),
+                signal_id: "sig-1".into(),
+                disposition: "queue".into(),
+                queue_depth: 1,
+            },
+        ];
+        let messages = reconstruct_messages_with_fallback(&events, "s1", 0, |_| {
+            Err(crate::context::snapshot::ContextFault::MissingArchive {
+                session_id: "s1".into(),
+                seq: 0,
+            })
+        });
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, Role::User);
     }
 
     #[test]

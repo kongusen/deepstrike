@@ -51,6 +51,13 @@ pub enum RunEvent {
         arguments: String,
         reason: String,
     },
+    PermissionResolved {
+        call_id: String,
+        tool_name: String,
+        approved: bool,
+        responder: String,
+        reason: Option<String>,
+    },
     Done {
         iterations: u32,
         total_tokens: u64,

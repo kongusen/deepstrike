@@ -156,6 +156,21 @@ export interface PermissionRequestEvent extends StreamEvent {
   reason: string
 }
 
+export interface PermissionResponse {
+  approved: boolean
+  responder?: string
+  reason?: string
+}
+
+export interface PermissionResolvedEvent extends StreamEvent {
+  type: "permission_resolved"
+  callId: string
+  toolName: string
+  approved: boolean
+  responder: string
+  reason?: string
+}
+
 export interface ToolDeniedEvent extends StreamEvent {
   type: "tool_denied"
   callId: string

@@ -84,6 +84,23 @@ class PermissionRequestEvent:
 
 
 @dataclass
+class PermissionResponse:
+    approved: bool
+    responder: str | None = None
+    reason: str | None = None
+
+
+@dataclass
+class PermissionResolvedEvent:
+    type: str = "permission_resolved"
+    call_id: str = ""
+    tool_name: str = ""
+    approved: bool = False
+    responder: str = "host"
+    reason: str | None = None
+
+
+@dataclass
 class ToolArgumentRepairedEvent:
     type: str = "tool_argument_repaired"
     call_id: str = ""
@@ -111,6 +128,7 @@ StreamEvent = Union[
     DoneEvent,
     ErrorEvent,
     PermissionRequestEvent,
+    PermissionResolvedEvent,
     ToolArgumentRepairedEvent,
     ToolDeniedEvent,
 ]

@@ -177,6 +177,121 @@ describe("RuntimeRunner", () => {
     const text = await collectText(runner.run({ sessionId: "s2", goal: "ping" }))
     expect(text).toBe("hi")
   })
+
+  it("continues an ask_user-gated tool after host approval", async () => {
+    let providerCalls = 0
+    let executed = false
+    const provider: LLMProvider = {
+      async complete() {
+        return { role: "assistant", content: "unused", toolCalls: [] }
+      },
+      async *stream() {
+        providerCalls += 1
+        if (providerCalls === 1) {
+          yield { type: "tool_call", id: "call_approval", name: "needs_approval", arguments: {} }
+          return
+        }
+        yield { type: "text_delta", delta: "done" }
+      },
+    }
+    const plane = new LocalExecutionPlane()
+    plane.register(tool("needs_approval", "Requires approval", { type: "object", properties: {} }, () => {
+      executed = true
+      return "approved-result"
+    }))
+    const log = new InMemorySessionLog()
+    const runner = new RuntimeRunner({
+      provider,
+      sessionLog: log,
+      executionPlane: plane,
+      maxTokens: 2048,
+      maxTurns: 2,
+      governance: { _attach: () => undefined, setTime: () => undefined, evaluate: () => ({ kind: "ask_user" as const, reason: "confirm execution" }) } as unknown as Governance,
+      onPermissionRequest: request => ({
+        approved: request.toolName === "needs_approval",
+        responder: "test-host",
+      }),
+    })
+
+    const events: StreamEvent[] = []
+    for await (const event of runner.run({ sessionId: "ask-user-approved", goal: "run approved tool" })) events.push(event)
+
+    expect(executed).toBe(true)
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "permission_request",
+      callId: "call_approval",
+      toolName: "needs_approval",
+    }))
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "permission_resolved",
+      callId: "call_approval",
+      approved: true,
+      responder: "test-host",
+    }))
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "tool_result",
+      callId: "call_approval",
+      name: "needs_approval",
+      content: "approved-result",
+      isError: false,
+    }))
+    const logEvents = (await log.read("ask-user-approved")).map(entry => entry.event)
+    expect(logEvents).toContainEqual(expect.objectContaining({
+      kind: "permission_resolved",
+      approved: true,
+      responder: "test-host",
+    }))
+  })
+
+  it("denies an ask_user-gated tool when the host rejects it", async () => {
+    let providerCalls = 0
+    let executed = false
+    const provider: LLMProvider = {
+      async complete() {
+        return { role: "assistant", content: "unused", toolCalls: [] }
+      },
+      async *stream() {
+        providerCalls += 1
+        if (providerCalls === 1) {
+          yield { type: "tool_call", id: "call_rejected", name: "needs_approval", arguments: {} }
+          return
+        }
+        yield { type: "text_delta", delta: "done" }
+      },
+    }
+    const plane = new LocalExecutionPlane()
+    plane.register(tool("needs_approval", "Requires approval", { type: "object", properties: {} }, () => {
+      executed = true
+      return "should-not-run"
+    }))
+    const runner = new RuntimeRunner({
+      provider,
+      sessionLog: new InMemorySessionLog(),
+      executionPlane: plane,
+      maxTokens: 2048,
+      maxTurns: 2,
+      governance: { _attach: () => undefined, setTime: () => undefined, evaluate: () => ({ kind: "ask_user" as const, reason: "confirm execution" }) } as unknown as Governance,
+      onPermissionRequest: () => ({ approved: false, responder: "test-host", reason: "user declined" }),
+    })
+
+    const events: StreamEvent[] = []
+    for await (const event of runner.run({ sessionId: "ask-user-denied", goal: "run rejected tool" })) events.push(event)
+
+    expect(executed).toBe(false)
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "permission_resolved",
+      callId: "call_rejected",
+      approved: false,
+      responder: "test-host",
+      reason: "user declined",
+    }))
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "tool_denied",
+      callId: "call_rejected",
+      toolName: "needs_approval",
+      reason: "user declined",
+    }))
+  })
 })
 
 describe("Governance", () => {

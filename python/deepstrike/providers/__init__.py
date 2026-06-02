@@ -26,6 +26,8 @@ from .stream import (
     DoneEvent,
     ErrorEvent,
     PermissionRequestEvent,
+    PermissionResolvedEvent,
+    PermissionResponse,
     ToolArgumentRepairedEvent,
 )
 from .replay import ReasoningReplayMixin, assistant_replay_key
@@ -48,6 +50,7 @@ __all__ = [
     "to_openai_content", "to_openai_message_params", "ThinkingTagStreamExtractor",
     "ReasoningReplayMixin", "assistant_replay_key",
     "StreamEvent", "TextDelta", "ThinkingDelta",
-    "ToolCallEvent", "ToolDeltaEvent", "ToolSuspendEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent", "PermissionRequestEvent",
+    "ToolCallEvent", "ToolDeltaEvent", "ToolSuspendEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent",
+    "PermissionRequestEvent", "PermissionResolvedEvent", "PermissionResponse",
     "ToolArgumentRepairedEvent",
 ]

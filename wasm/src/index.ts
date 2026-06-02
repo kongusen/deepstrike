@@ -51,6 +51,7 @@ export type {
   Message, ToolCall, ToolResult, ToolSchema,
   RenderedContext, ProviderRunState,
   StreamEvent, TextDelta, ThinkingDelta,
-  ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent,
+  ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
+  PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   LLMProvider,
 } from "./types.js"

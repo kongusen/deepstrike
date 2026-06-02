@@ -14,20 +14,24 @@ pub struct KnowledgeSurface {
     pub citations: Vec<String>,
 }
 
+/// Legacy agent-state surface, superseded by [`crate::context::task_state::TaskState`].
+///
+/// `TaskState` is now the single source of truth for goal/plan/progress/scratchpad
+/// and is rendered into the State turn. `Dashboard` is retained only for the
+/// `render_dashboard` opt-in path (off by default) and for `WorkingMemory`.
+/// Prefer `TaskState` for new code; the `goal_progress` / `plan` / `scratchpad`
+/// fields here mirror data that `TaskState` owns canonically.
 #[derive(Debug, Clone)]
 pub struct Dashboard {
     pub rho: f64,
     pub token_budget: u32,
-    #[deprecated(since = "0.2.0", note = "Use TaskState.progress instead")]
     pub goal_progress: String,
     pub error_count: u32,
     pub depth: u32,
     pub interrupt_requested: bool,
-    #[deprecated(since = "0.2.0", note = "Use TaskState.plan instead")]
     pub plan: Vec<String>,
     pub event_surface: EventSurface,
     pub knowledge_surface: KnowledgeSurface,
-    #[deprecated(since = "0.2.0", note = "Use TaskState.scratchpad instead")]
     pub scratchpad: String,
 }
 

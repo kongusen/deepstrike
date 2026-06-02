@@ -445,7 +445,7 @@ fn policy_to_rust(p: LoopPolicy) -> RustLoopPolicy {
         max_tokens: p.max_tokens,
         max_turns: p.max_turns,
         max_total_tokens: p.max_total_tokens as u64,
-        timeout_ms: p.timeout_ms.map(|x| x as u64),
+        max_wall_ms: p.timeout_ms.map(|x| x as u64),
     }
 }
 

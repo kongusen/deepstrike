@@ -8,6 +8,20 @@ export { LocalExecutionPlane } from "./runtime/execution-plane.js"
 export type { ExecutionPlane, RunContext } from "./runtime/execution-plane.js"
 export { InMemorySessionLog, FileSessionLog } from "./runtime/session-log.js"
 export type { SessionLog, SessionEvent } from "./runtime/session-log.js"
+export {
+  assertNativeProfile,
+  DEFAULT_NATIVE_ATTENTION_POLICY,
+  DEFAULT_NATIVE_GOVERNANCE_POLICY,
+  isNativeProfile,
+} from "./runtime/os-profile.js"
+export type { OsProfile } from "./runtime/os-profile.js"
+export {
+  rebuildOsSnapshotFromSessionEvents,
+  sessionLogHasRequiredCategories,
+} from "./runtime/os-snapshot.js"
+export type { OsSnapshot } from "./runtime/os-snapshot.js"
+export { categoryForKind, kernelObservationToSessionEvent } from "./runtime/kernel-event-log.js"
+export type { KernelEventCategory } from "./runtime/kernel-event-log.js"
 export { NullArchiveStore, FileArchiveStore } from "./runtime/archive.js"
 export type { ArchiveStore } from "./runtime/archive.js"
 export { EnvCredentialVault, InMemoryCredentialVault, ChainedCredentialVault } from "./runtime/credential-vault.js"
@@ -58,8 +72,8 @@ export type { RuntimeSignal, SignalSource } from "./signals/types.js"
 // ── Safety & Governance ────────────────────────────────────────────────────
 export { PermissionManager, PermissionMode } from "./safety/permissions.js"
 export type { PermissionDecision, Permission } from "./safety/permissions.js"
-export { Governance } from "./governance.js"
-export type { GovernanceVerdict } from "./governance.js"
+export { Governance, governancePolicyToKernelEvent } from "./governance.js"
+export type { GovernanceVerdict, GovernancePolicy, GovernanceConstraint } from "./governance.js"
 
 // ── Harness ────────────────────────────────────────────────────────────────
 export { SinglePassHarness, EvalLoopHarness, HarnessLoop } from "./harness/harness.js"
@@ -70,7 +84,8 @@ export type {
   Message, ToolCall, ToolResult, ToolSchema,
   ContentPart, TextPart, ImagePart, AudioPart,
   StreamEvent, TextDelta, ThinkingDelta,
-  ToolCallEvent, ToolChunk, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent,
+  ToolCallEvent, ToolChunk, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, DoneEvent, ErrorEvent,
+  PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   LLMProvider, RetryConfig, TokenUsage, ProviderToolSpec, ProviderRunState, ProviderReplay,
   RenderedContext,
 } from "./types.js"

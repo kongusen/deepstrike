@@ -1,5 +1,3 @@
-#![allow(deprecated)]
-
 use super::compression::CompressionPipeline;
 use super::config::ContextConfig;
 use super::partitions::ContextPartitions;
@@ -19,7 +17,11 @@ use compact_str::CompactString;
 pub const MEMORY_TOOL_NAME: &str = "memory";
 pub const KNOWLEDGE_TOOL_NAME: &str = "knowledge";
 
-#[deprecated(since = "0.2.0", note = "Internal/test-only. Use KernelRuntime instead.")]
+/// Internal context engine backing [`crate::runtime::KernelRuntime`].
+///
+/// Exposed for in-crate use and tests; external callers should drive the kernel
+/// through `KernelRuntime` rather than this type directly.
+#[doc(hidden)]
 pub struct ContextManager {
     pub partitions: ContextPartitions,
     pub max_tokens: u32,
@@ -37,6 +39,59 @@ pub struct ContextManager {
     compression: CompressionPipeline,
     pressure: PressureMonitor,
     renewal: RenewalPolicy,
+
+    // ── Layer 3: Time tracking for decay ─────────────────────────────────
+
+    /// Last activity timestamp (milliseconds since epoch).
+    /// Updated on each ProviderResult and ToolResults.
+    pub last_activity_ms: u64,
+
+    /// Last compression timestamp (milliseconds since epoch).
+    /// Updated on each compression pass.
+    pub last_compact_ms: Option<u64>,
+
+    // ── Layer 4: Collapse mode (read-time projection) ───────────────────────
+
+    /// Current collapse mode for Layer 4 read-time projection.
+    /// Controls how history is rendered without modifying original messages.
+    pub collapse_mode: CollapseMode,
+}
+
+/// Collapse mode for Layer 4 (Context Collapse read-time projection).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CollapseMode {
+    /// Normal mode - no projection, render full history
+    #[default]
+    Normal,
+    /// Collapse 90% - keep only most recent 10% of messages
+    Collapse90,
+    /// Collapse 95% - keep only most recent 5% of messages
+    Collapse95,
+}
+
+impl CollapseMode {
+    /// Determine collapse mode based on rho (pressure ratio).
+    pub fn from_rho(rho: f64, config: &ContextConfig) -> Self {
+        if rho >= config.collapse_threshold {
+            // Use slightly higher threshold for 95% mode
+            if rho >= (config.collapse_threshold + config.auto_threshold) / 2.0 {
+                CollapseMode::Collapse95
+            } else {
+                CollapseMode::Collapse90
+            }
+        } else {
+            CollapseMode::Normal
+        }
+    }
+
+    /// Get retention ratio (0.0 to 1.0).
+    pub fn retention_ratio(&self) -> f64 {
+        match self {
+            CollapseMode::Normal => 1.0,
+            CollapseMode::Collapse90 => 0.10,
+            CollapseMode::Collapse95 => 0.05,
+        }
+    }
 }
 
 impl ContextManager {
@@ -58,7 +113,44 @@ impl ContextManager {
             memory_enabled: false, knowledge_enabled: false, plan_tool_enabled: false,
             last_observed_prompt_tokens: None,
             compression, pressure, renewal,
+            last_activity_ms: 0,
+            last_compact_ms: None,
+            collapse_mode: CollapseMode::Normal,
         }
+    }
+
+    // ── Layer 3: Time-based decay ─────────────────────────────────────────────
+
+    /// Update activity timestamp (call on each ProviderResult and ToolResults).
+    pub fn record_activity(&mut self, now_ms: u64) {
+        self.last_activity_ms = now_ms;
+    }
+
+    /// Check if Micro-Compact should trigger based on time decay (Layer 3).
+    /// Returns true if idle time exceeds `micro_compact_idle_minutes`.
+    pub fn should_time_decay_compact(&self, now_ms: u64) -> bool {
+        let idle_ms = if let Some(last_compact) = self.last_compact_ms {
+            // Time since last compression
+            now_ms.saturating_sub(last_compact)
+        } else {
+            // Time since first activity
+            now_ms.saturating_sub(self.last_activity_ms)
+        };
+
+        let idle_minutes = idle_ms / 60_000;
+        idle_minutes >= self.config.micro_compact_idle_minutes as u64
+    }
+
+    // ── Layer 4: Collapse mode management ───────────────────────────────────
+
+    /// Update collapse mode based on current rho (Layer 4 read-time projection).
+    pub fn update_collapse_mode(&mut self) {
+        self.collapse_mode = CollapseMode::from_rho(self.rho(), &self.config);
+    }
+
+    /// Get current collapse mode.
+    pub fn get_collapse_mode(&self) -> CollapseMode {
+        self.collapse_mode
     }
 
     // ── Pressure ──────────────────────────────────────────────────────────────
@@ -76,11 +168,29 @@ impl ContextManager {
     }
 
     pub fn compress(&mut self, action: PressureAction) -> (u32, Option<String>, Vec<Message>) {
+        self.compress_with_time(action, None)
+    }
+
+    pub fn compress_with_time(
+        &mut self,
+        action: PressureAction,
+        now_ms: Option<u64>,
+    ) -> (u32, Option<String>, Vec<Message>) {
         if self.sections.is_partition_pinned(ContextSectionPartition::History) {
             return (0, None, vec![]);
         }
-        let target = self.config.target_tokens(self.max_tokens);
-        self.compression.compress(&mut self.partitions, action, self.max_tokens, target, &self.engine)
+
+        let result = {
+            let target = self.config.target_tokens(self.max_tokens);
+            self.compression.compress(&mut self.partitions, action, self.max_tokens, target, &self.engine)
+        };
+
+        // Record compression timestamp if provided
+        if let Some(ts) = now_ms {
+            self.last_compact_ms = Some(ts);
+        }
+
+        result
     }
 
     pub fn force_compress(&mut self) -> (u32, Option<String>, Vec<Message>) {

@@ -531,7 +531,7 @@ fn policy_to_rust(p: LoopPolicy) -> RustLoopPolicy {
             .max_total_tokens
             .map(|b| b.get_u64().1)
             .unwrap_or(1_000_000),
-        timeout_ms: p.timeout_ms.map(|b| b.get_u64().1),
+        max_wall_ms: p.timeout_ms.map(|b| b.get_u64().1),
     }
 }
 

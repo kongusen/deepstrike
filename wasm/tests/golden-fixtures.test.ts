@@ -59,20 +59,21 @@ describe("WASM Golden ABI Fixtures", () => {
     expect(step.observations).toHaveLength(0)
   })
 
-  it("input_spawn_sub_agent.json emits agent_spawned after start_run", () => {
+  it("input_spawn_sub_agent.json emits agent_process_changed after start_run", () => {
     const kernel = new KernelRuntime({ maxTokens: 2048 })
     kernel.step(readFileSync(join(fixturesDir, "input_start_run.json"), "utf8"))
 
     const step = JSON.parse(kernel.step(readFileSync(join(fixturesDir, "input_spawn_sub_agent.json"), "utf8")))
     expect(step.version).toBe(1)
     expect(step.actions).toHaveLength(0)
-    const spawned = step.observations.find((o: { kind: string }) => o.kind === "agent_spawned")
+    const spawned = step.observations.find((o: { kind: string }) => o.kind === "agent_process_changed")
     expect(spawned).toBeDefined()
     expect(spawned.agent_id).toBe("worker")
+    expect(spawned.state).toBe("running")
   })
 
   it.each([
-    ["observation_agent_spawned.json",       { kind: "agent_spawned",       agent_id: "worker" }],
+    ["observation_agent_process_changed.json", { kind: "agent_process_changed", agent_id: "worker", state: "running" }],
     ["observation_checkpoint_taken.json",    { kind: "checkpoint_taken",    turn: 2, history_len: 4 }],
     ["observation_renewed.json",             { kind: "renewed",             sprint: 2 }],
     ["observation_rollbacked.json",          { kind: "rollbacked",          turn: 2, checkpoint_history_len: 3 }],

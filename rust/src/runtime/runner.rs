@@ -30,7 +30,7 @@ use crate::providers::{LLMProvider, StreamEvent};
 use crate::run_event::RunEvent;
 use crate::runtime::archive::ArchiveStore;
 use crate::runtime::execution_plane::{
-    ExecutionPlane, LocalExecutionPlane, RunContext, ToolSuspendHandler,
+    ExecutionPlane, LocalExecutionPlane, PermissionRequestHandler, RunContext, ToolSuspendHandler,
 };
 use crate::runtime::provider_replay::{peek_provider_replay, seed_provider_replay_from_events};
 use crate::runtime::replay::{
@@ -65,7 +65,9 @@ pub struct MilestoneEvaluationContext {
 }
 
 pub type MilestoneEvaluationHandler = std::sync::Arc<
-    dyn Fn(MilestoneEvaluationContext) -> futures::future::BoxFuture<'static, Result<MilestoneCheckResult>>
+    dyn Fn(
+            MilestoneEvaluationContext,
+        ) -> futures::future::BoxFuture<'static, Result<MilestoneCheckResult>>
         + Send
         + Sync,
 >;
@@ -93,6 +95,7 @@ pub struct RuntimeOptions {
     pub tokenizer: Option<String>,
     pub enable_plan_tool: Option<bool>,
     pub on_tool_suspend: Option<ToolSuspendHandler>,
+    pub on_permission_request: Option<PermissionRequestHandler>,
     /// How to handle `EvaluateMilestone` actions. Default: `RequireVerifier`.
     pub milestone_policy: MilestonePolicy,
     pub milestone_contract: Option<deepstrike_core::types::milestone::MilestoneContract>,
@@ -313,7 +316,7 @@ impl RuntimeRunner {
             let policy = LoopPolicy {
                 max_tokens: self.opts.max_tokens,
                 max_turns: effective_max_turns,
-                timeout_ms: effective_timeout,
+                max_wall_ms: effective_timeout,
                 ..Default::default()
             };
 
@@ -482,7 +485,10 @@ impl RuntimeRunner {
                 kernel_action(
                     &mut kernel,
                     &mut pending_observations,
-                    KernelInputEvent::Resume,
+                    KernelInputEvent::Resume {
+                        approved_calls: vec![],
+                        denied_calls: vec![],
+                    },
                 )
             } else {
                 kernel_action(
@@ -680,6 +686,9 @@ impl RuntimeRunner {
                                 message: assistant.clone(),
                                 observed_input_tokens: None,
                                 observed_output_tokens: None,
+                                // COMPAT(gov-clock): rust SDK does not yet drive the in-kernel
+                                // governance gate, so no clock is fed. Set once it adopts governancePolicy.
+                                now_ms: None,
                             },
                         );
                         self.log(
@@ -717,6 +726,7 @@ impl RuntimeRunner {
                             knowledge_source: self.opts.knowledge_source.as_deref(),
                             governance: self.opts.governance.clone(),
                             on_tool_suspend: self.opts.on_tool_suspend.clone(),
+                            on_permission_request: self.opts.on_permission_request.clone(),
                         };
 
                         let mut tool_results = Vec::new();
@@ -819,26 +829,20 @@ impl RuntimeRunner {
                                             },
                                         )
                                         .await;
+                                        yield RunEvent::PermissionRequest { call_id, tool_name, arguments, reason };
+                                    }
+                                    RunEvent::PermissionResolved { call_id, tool_name, approved, responder, reason } => {
+                                        let turn = kernel.lock().unwrap().state_machine().turn;
                                         self.log(
                                             &session_id,
                                             SessionEvent::PermissionResolved {
                                                 turn,
-                                                approved: false,
-                                                responder: "policy_gate".to_string(),
+                                                approved,
+                                                responder: responder.clone(),
                                             },
                                         )
                                         .await;
-                                        self.log(
-                                            &session_id,
-                                            SessionEvent::ToolDenied {
-                                                turn,
-                                                call_id: call_id.clone(),
-                                                tool_name: tool_name.clone(),
-                                                reason: format!("permission denied by policy gate: {reason}"),
-                                            },
-                                        )
-                                        .await;
-                                        yield RunEvent::PermissionRequest { call_id, tool_name, arguments, reason };
+                                        yield RunEvent::PermissionResolved { call_id, tool_name, approved, responder, reason };
                                     }
                                     other => yield other,
                                 }
@@ -1237,29 +1241,19 @@ impl RuntimeRunner {
                     )
                     .await;
                 }
-                KernelObservation::AgentSpawned {
-                    turn,
-                    agent_id,
-                    parent_session_id,
-                    role,
-                    isolation,
-                    context_inheritance,
-                    permitted_capability_ids,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::AgentSpawned {
-                            turn,
-                            agent_id,
-                            parent_session_id,
-                            role,
-                            isolation,
-                            context_inheritance,
-                            permitted_capability_ids,
-                        },
-                    )
-                    .await;
-                }
+                KernelObservation::AgentProcessChanged { .. } => {}
+                // Governance flagged a tool call for user approval. The kernel does
+                // not block it; the SDK-side human-approval workflow is a follow-up.
+                KernelObservation::ToolGated { .. } => {}
+                // In-kernel signal routing decision. The rust SDK does not yet drive
+                // signals through the kernel attention policy; observation is logged
+                // by the generic observation path elsewhere if needed.
+                KernelObservation::SignalDisposed { .. } => {}
+                KernelObservation::BudgetExceeded { .. } => {}
+                KernelObservation::Suspended { .. } => {}
+                KernelObservation::Resumed { .. } => {}
+                KernelObservation::PageOut { .. } => {}
+                KernelObservation::PageInRequested { .. } => {}
             }
         }
         next_archive_start

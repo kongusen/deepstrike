@@ -48,6 +48,34 @@ pub struct ContextConfig {
     /// Use verbose internal control notes (e.g. "[SYSTEM] Transaction rollback: …").
     /// Defaults to false; uses concise natural-language notes instead.
     pub verbose_control_notes: bool,
+
+    // ── Layer 3: Time-based decay ───────────────────────────────────────
+
+    /// Minutes of inactivity before triggering Micro-Compact (Layer 3).
+    /// Defaults to 60 minutes — assumes Prompt Cache has expired by then.
+    pub micro_compact_idle_minutes: u32,
+
+    /// Number of recent tool results to preserve during Micro-Compact.
+    pub preserved_tool_results: usize,
+
+    // ── Layer 5: Auto-Compact buffer ─────────────────────────────────────
+
+    /// Buffer size for Auto-Compact trigger (Layer 5).
+    /// Trigger threshold = max_tokens - autocompact_buffer.
+    /// Defaults to 13K tokens (p99.99 of summarizer output length + safety margin).
+    pub autocompact_buffer: u32,
+}
+
+fn default_micro_compact_idle_minutes() -> u32 {
+    60
+}
+
+fn default_preserved_tool_results() -> usize {
+    5
+}
+
+fn default_autocompact_buffer() -> u32 {
+    13_000
 }
 
 impl Default for ContextConfig {
@@ -66,6 +94,9 @@ impl Default for ContextConfig {
             preserve_recent_turns: 2,
             render_dashboard: false,
             verbose_control_notes: false,
+            micro_compact_idle_minutes: 60,
+            preserved_tool_results: 5,
+            autocompact_buffer: 13_000,
         }
     }
 }
@@ -90,6 +121,12 @@ impl ContextConfig {
     /// Token cap for a single recovery/replay payload.
     pub fn recovery_content_tokens(&self, max_tokens: u32) -> u32 {
         (max_tokens as f64 * self.recovery_content_ratio) as u32
+    }
+
+    /// Auto-Compact trigger threshold (Layer 5).
+    /// Returns `max_tokens - autocompact_buffer` (absolute value).
+    pub fn autocompact_threshold(&self, max_tokens: u32) -> u32 {
+        max_tokens.saturating_sub(self.autocompact_buffer)
     }
 }
 

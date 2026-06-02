@@ -3,7 +3,7 @@ import type {
   AgentRunSpec, AgentSpawnedObservation, LoopResult, SubAgentResult, TerminationReason,
   KernelAgentRole,
 } from "./types/agent.js"
-import { agentRunSpecToKernel } from "./types/agent.js"
+import { agentRunSpecToKernel, findSpawnProcessObservation, spawnObservationToManifest } from "./types/agent.js"
 import type { RuntimeOptions } from "./runner.js"
 import type { SessionEvent, SessionLog } from "./session-log.js"
 import { FilteredExecutionPlane } from "./filtered-plane.js"
@@ -108,33 +108,23 @@ export async function spawnStandalone(
     parent_session_id: parentSessionId,
   })
 
-  const spawned = observations.find(o => o.kind === "agent_spawned")
-  if (!spawned || typeof spawned.agent_id !== "string") {
-    throw new Error("spawn_sub_agent did not emit agent_spawned")
+  const spawned = findSpawnProcessObservation(observations)
+  if (!spawned) {
+    throw new Error("spawn_sub_agent did not emit agent_process_changed")
   }
 
-  const turn = spawned.turn ?? 0
+  const manifest = spawnObservationToManifest(spawned, spec, parentSessionId)
   await parentOpts.sessionLog.append(parentSessionId, {
-    kind: "agent_spawned",
-    turn,
-    agent_id: spawned.agent_id,
-    parent_session_id: spawned.parent_session_id ?? parentSessionId,
-    role: spawned.role ?? spec.role,
-    isolation: spawned.isolation ?? spec.isolation ?? "shared",
-    context_inheritance: spawned.context_inheritance ?? "none",
-    permitted_capability_ids: spawned.permitted_capability_ids ?? [],
+    kind: "agent_process_changed",
+    turn: manifest.turn ?? 0,
+    agent_id: manifest.agent_id,
+    parent_session_id: manifest.parent_session_id,
+    role: manifest.role,
+    isolation: manifest.isolation,
+    context_inheritance: manifest.context_inheritance,
+    state: "running",
+    permitted_capability_ids: manifest.permitted_capability_ids,
   })
-
-  const manifest: AgentSpawnedObservation = {
-    kind: "agent_spawned",
-    turn,
-    agent_id: spawned.agent_id,
-    parent_session_id: spawned.parent_session_id ?? parentSessionId,
-    role: spawned.role ?? spec.role,
-    isolation: spawned.isolation ?? spec.isolation ?? "shared",
-    context_inheritance: spawned.context_inheritance ?? "none",
-    permitted_capability_ids: spawned.permitted_capability_ids ?? [],
-  }
 
   return orchestrator.run({
     parentOpts,

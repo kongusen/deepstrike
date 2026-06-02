@@ -5,6 +5,8 @@ export class KernelRuntime {
   private maxTurns: number
   private rendered = { systemText: "", turns: [] as unknown[] }
   private messages: unknown[] = []
+  private governanceAskUser = false
+  private resumedAfterAsk = false
 
   constructor(policy: { maxTokens: number; maxTurns?: number }) {
     this.maxTurns = policy.maxTurns ?? 25
@@ -14,22 +16,51 @@ export class KernelRuntime {
     const input = JSON.parse(inputJson) as { event?: Record<string, unknown> }
     const event = input.event ?? {}
     const actions: Array<Record<string, unknown>> = []
+    const observations: Array<Record<string, unknown>> = []
 
     switch (event.kind) {
+      case "load_governance_policy": {
+        const rules = (event.rules as Array<{ action?: string }>) ?? []
+        this.governanceAskUser = rules.some(r => r.action === "ask_user")
+        break
+      }
+      case "set_attention_policy":
+        break
       case "start_run":
         this.phase = 0
         this.terminal = false
+        this.resumedAfterAsk = false
         this.rendered = { systemText: "", turns: [{ role: "user", content: "test" }] }
         actions.push({ kind: "call_provider", context: this.rendered, tools: [] })
         break
       case "resume":
+        this.resumedAfterAsk = true
         this.rendered = { systemText: "", turns: [{ role: "user", content: "resume" }] }
         actions.push({ kind: "call_provider", context: this.rendered, tools: [] })
         break
       case "provider_result": {
         const message = (event.message as Record<string, unknown>) ?? {}
         this.messages.push(message)
-        const toolCalls = (message.tool_calls as unknown[]) ?? []
+        const toolCalls = (message.tool_calls as Array<{ id?: string; name?: string }>) ?? []
+        if (this.phase === 0 && toolCalls.length > 0 && this.governanceAskUser && !this.resumedAfterAsk) {
+          const call = toolCalls[0]
+          observations.push(
+            {
+              kind: "tool_gated",
+              turn: 1,
+              call_id: call.id ?? "c1",
+              tool: call.name ?? "needs_approval",
+              reason: "ask_user",
+            },
+            {
+              kind: "suspended",
+              turn: 1,
+              reason: "ask_user",
+              pending_calls: [call.id ?? "c1"],
+            },
+          )
+          break
+        }
         if (this.phase === 0 && toolCalls.length > 0) {
           this.phase = 1
           actions.push({ kind: "execute_tool", calls: toolCalls })
@@ -60,22 +91,24 @@ export class KernelRuntime {
           actions: [],
           observations: [
             {
-              kind: "agent_spawned",
+              kind: "agent_process_changed",
               turn: 1,
               agent_id: "worker",
               parent_session_id: "parent-session-001",
               role: "implement",
               isolation: "shared",
               context_inheritance: "full",
+              state: "running",
               permitted_capability_ids: ["read_file"],
             },
+            { kind: "suspended", turn: 1, reason: "sub_agent_await", pending_calls: ["worker"] },
           ],
         })
       default:
         break
     }
 
-    return JSON.stringify({ version: 1, actions, observations: [] })
+    return JSON.stringify({ version: 1, actions, observations })
   }
 
   isTerminal(): boolean { return this.terminal }

@@ -1,0 +1,112 @@
+import type { SessionEvent } from "./session-log.js"
+import { categoryForKind, type KernelEventCategory } from "./kernel-event-log.js"
+
+const KERNEL_KINDS = new Set([
+  "compressed",
+  "page_out",
+  "page_in",
+  "capability_changed",
+  "context_renewed",
+  "suspended",
+  "resumed",
+  "tool_gated",
+  "signal_disposed",
+  "budget_exceeded",
+  "checkpoint_taken",
+  "rollbacked",
+  "agent_process_changed",
+  "milestone_advanced",
+  "milestone_blocked",
+  "milestone_evidence",
+])
+
+export interface OsSnapshot {
+  lastSuspend?: { turn: number; reason: string; pending_calls: string[] }
+  lastResumedTurn?: number
+  processByAgent: Array<{ turn: number; agent_id: string; parent_session_id: string; state: string }>
+  budgetExceeded: Array<{ turn: number; budget: string }>
+  signals: Array<{ turn: number; signal_id: string; disposition: string; queue_depth: number }>
+  pageOutCount: number
+  pageInCount: number
+  toolGatedCount: number
+}
+
+export function rebuildOsSnapshotFromSessionEvents(
+  events: SessionEvent[],
+): OsSnapshot {
+  const snap: OsSnapshot = {
+    processByAgent: [],
+    budgetExceeded: [],
+    signals: [],
+    pageOutCount: 0,
+    pageInCount: 0,
+    toolGatedCount: 0,
+  }
+  const index = new Map<string, number>()
+
+  for (const event of events) {
+    if (!KERNEL_KINDS.has(event.kind) && event.kind !== "suspended" && event.kind !== "resumed") {
+      continue
+    }
+    switch (event.kind) {
+      case "suspended":
+        snap.lastSuspend = {
+          turn: event.turn,
+          reason: event.reason,
+          pending_calls: event.pending_calls ?? [],
+        }
+        break
+      case "resumed":
+        snap.lastResumedTurn = event.turn
+        break
+      case "tool_gated":
+        snap.toolGatedCount += 1
+        break
+      case "agent_process_changed": {
+        const record = {
+          turn: event.turn,
+          agent_id: event.agent_id,
+          parent_session_id: event.parent_session_id,
+          state: event.state ?? "running",
+        }
+        const idx = index.get(event.agent_id)
+        if (idx !== undefined) snap.processByAgent[idx] = record
+        else {
+          index.set(event.agent_id, snap.processByAgent.length)
+          snap.processByAgent.push(record)
+        }
+        break
+      }
+      case "budget_exceeded":
+        snap.budgetExceeded.push({ turn: event.turn, budget: event.budget })
+        break
+      case "signal_disposed":
+        snap.signals.push({
+          turn: event.turn,
+          signal_id: event.signal_id,
+          disposition: event.disposition,
+          queue_depth: event.queue_depth,
+        })
+        break
+      case "page_out":
+        snap.pageOutCount += 1
+        break
+      case "page_in":
+        snap.pageInCount += 1
+        break
+      default:
+        break
+    }
+  }
+  return snap
+}
+
+export function sessionLogHasRequiredCategories(events: SessionEvent[]): boolean {
+  for (const event of events) {
+    if (!KERNEL_KINDS.has(event.kind)) continue
+    const cat = (event as { category?: KernelEventCategory }).category
+    if (!cat) return false
+    if (cat !== categoryForKind(event.kind)) return false
+  }
+  return true
+}

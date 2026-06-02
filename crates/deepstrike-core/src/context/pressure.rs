@@ -45,10 +45,6 @@ impl PressureMonitor {
         }
     }
 
-    pub fn estimated_rho(&self, partitions: &ContextPartitions, engine: &ContextTokenEngine) -> f64 {
-        self.pressure(partitions, engine, None)
-    }
-
     pub fn recommend(&self, rho: f64) -> PressureAction {
         if rho > self.config.auto_threshold {
             PressureAction::AutoCompact

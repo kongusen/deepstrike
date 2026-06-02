@@ -18,12 +18,11 @@ pub use credential_vault::{
     ChainedCredentialVault, CredentialVault, EnvCredentialVault, InMemoryCredentialVault,
 };
 pub use execution_plane::{
-    ExecutionPlane, LocalExecutionPlane, RunContext, ToolSuspendHandler, ToolSuspendRequest,
+    ExecutionPlane, LocalExecutionPlane, PermissionRequest, PermissionRequestHandler,
+    PermissionResponse, RunContext, ToolSuspendHandler, ToolSuspendRequest,
 };
 pub use mcp_proxy_plane::{McpProxyPlane, McpServerConfig};
 pub use process_sandbox_plane::{ProcessSandboxPlane, SandboxOptions};
-pub use sandboxed_skill::{PythonSkillPolicy, SkillKind, scan_skill_dir};
-pub use skill_watcher::SkillWatcher;
 pub use provider_replay::{
     assistant_replay_key, peek_provider_replay, seed_provider_replay_from_events,
 };
@@ -33,4 +32,6 @@ pub use runner::{
     MilestoneEvaluationContext, MilestoneEvaluationHandler, MilestonePolicy, RuntimeOptions,
     RuntimeRunner, collect_text,
 };
+pub use sandboxed_skill::{PythonSkillPolicy, SkillKind, scan_skill_dir};
 pub use session_log::{FileSessionLog, InMemorySessionLog, SessionEntry, SessionLog};
+pub use skill_watcher::SkillWatcher;

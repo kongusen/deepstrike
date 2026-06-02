@@ -75,8 +75,8 @@ fn test_input_spawn_sub_agent_fixture() {
 }
 
 #[test]
-fn test_observation_agent_spawned_fixture() {
-    assert_roundtrip::<KernelObservation>("observation_agent_spawned.json");
+fn test_observation_agent_process_changed_fixture() {
+    assert_roundtrip::<KernelObservation>("observation_agent_process_changed.json");
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn test_observation_milestone_evidence_fixture() {
 }
 
 #[test]
-fn spawn_sub_agent_fixture_emits_agent_spawned_via_kernel() {
+fn spawn_sub_agent_fixture_updates_process_table_via_kernel() {
     use deepstrike_core::runtime::{KernelInput, KernelInputEvent, KernelObservation, KernelRuntime};
     use deepstrike_core::scheduler::policy::LoopPolicy;
     use deepstrike_core::types::task::RuntimeTask;
@@ -141,6 +141,7 @@ fn spawn_sub_agent_fixture_emits_agent_spawned_via_kernel() {
     assert!(step.actions.is_empty());
     assert!(step.observations.iter().any(|o| matches!(
         o,
-        KernelObservation::AgentSpawned { agent_id, .. } if agent_id == "worker"
+        KernelObservation::AgentProcessChanged { agent_id, state, .. }
+            if agent_id == "worker" && state == "running"
     )));
 }

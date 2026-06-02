@@ -35,6 +35,27 @@ pub type ToolSuspendHandler = std::sync::Arc<
         + Sync,
 >;
 
+#[derive(Clone)]
+pub struct PermissionRequest {
+    pub call_id: String,
+    pub tool_name: String,
+    pub arguments: String,
+    pub reason: String,
+}
+
+#[derive(Clone)]
+pub struct PermissionResponse {
+    pub approved: bool,
+    pub responder: String,
+    pub reason: Option<String>,
+}
+
+pub type PermissionRequestHandler = std::sync::Arc<
+    dyn Fn(PermissionRequest) -> futures::future::BoxFuture<'static, Result<PermissionResponse>>
+        + Send
+        + Sync,
+>;
+
 /// Per-run context passed into `ExecutionPlane::execute_all`.
 pub struct RunContext<'a> {
     pub agent_id: Option<&'a str>,
@@ -43,6 +64,7 @@ pub struct RunContext<'a> {
     pub knowledge_source: Option<&'a dyn KnowledgeSource>,
     pub governance: Option<Arc<Mutex<Governance>>>,
     pub on_tool_suspend: Option<ToolSuspendHandler>,
+    pub on_permission_request: Option<PermissionRequestHandler>,
 }
 
 fn make_result(
@@ -173,18 +195,46 @@ fn execute_all_local<'a>(
                         let reason = verdict.reason.unwrap_or_default();
                         let args_str = serde_json::to_string(&c.arguments)
                             .unwrap_or_else(|_| "{}".to_string());
-                        yield RunEvent::PermissionRequest {
+                        let request = PermissionRequest {
                             call_id: c.id.to_string(),
                             tool_name: c.name.to_string(),
+                            arguments: args_str.clone(),
+                            reason: reason.clone(),
+                        };
+                        yield RunEvent::PermissionRequest {
+                            call_id: request.call_id.clone(),
+                            tool_name: request.tool_name.clone(),
                             arguments: args_str,
                             reason: reason.clone(),
                         };
+
+                        let decision = resolve_permission_request(request, &ctx).await;
+                        yield RunEvent::PermissionResolved {
+                            call_id: c.id.to_string(),
+                            tool_name: c.name.to_string(),
+                            approved: decision.approved,
+                            responder: decision.responder.clone(),
+                            reason: decision.reason.clone(),
+                        };
+                        if decision.approved {
+                            permitted.push(c.clone());
+                            continue;
+                        }
+
+                        let denied_reason = decision.reason.unwrap_or_else(|| {
+                            if reason.is_empty() { "permission denied".to_string() } else { reason.clone() }
+                        });
+                        yield RunEvent::ToolDenied {
+                            call_id: c.id.to_string(),
+                            tool_name: c.name.to_string(),
+                            reason: denied_reason.clone(),
+                        };
                         yield RunEvent::ToolResult {
                             call_id: c.id.to_string(),
-                            content: format!("permission denied: awaiting user approval: {reason}"),
+                            content: format!("permission denied: {denied_reason}"),
                             is_error: true,
                             is_fatal: false,
-                            error_kind: Some(deepstrike_core::types::message::ToolErrorKind::Recoverable),
+                            error_kind: Some(deepstrike_core::types::message::ToolErrorKind::GovernanceDenied),
                         };
                         continue;
                     }
@@ -498,6 +548,36 @@ fn strip_frontmatter(content: &str) -> &str {
     }
 }
 
+async fn resolve_permission_request(
+    request: PermissionRequest,
+    ctx: &RunContext<'_>,
+) -> PermissionResponse {
+    let Some(handler) = &ctx.on_permission_request else {
+        return PermissionResponse {
+            approved: false,
+            responder: "policy_gate".to_string(),
+            reason: Some("no permission handler configured".to_string()),
+        };
+    };
+
+    match handler(request).await {
+        Ok(response) => PermissionResponse {
+            approved: response.approved,
+            responder: if response.responder.is_empty() {
+                "host".to_string()
+            } else {
+                response.responder
+            },
+            reason: response.reason,
+        },
+        Err(err) => PermissionResponse {
+            approved: false,
+            responder: "permission_handler".to_string(),
+            reason: Some(format!("permission handler failed: {err}")),
+        },
+    }
+}
+
 /// Collect tool results from a plane stream (one result per initial call).
 pub async fn collect_tool_results(
     mut stream: Pin<Box<dyn Stream<Item = Result<RunEvent>> + Send>>,
@@ -515,7 +595,13 @@ pub async fn collect_tool_results(
         {
             by_id.insert(
                 call_id.clone(),
-                make_result(compact_str::CompactString::new(&call_id), content, is_error, is_fatal, error_kind),
+                make_result(
+                    compact_str::CompactString::new(&call_id),
+                    content,
+                    is_error,
+                    is_fatal,
+                    error_kind,
+                ),
             );
         }
     }

@@ -31,13 +31,16 @@ pub use runtime::{
 pub use runtime::{ExecutionPlane, LocalExecutionPlane};
 pub use runtime::{FileSessionLog, InMemorySessionLog, SessionEntry, SessionLog};
 pub use runtime::{McpProxyPlane, McpServerConfig};
-pub use runtime::{ProcessSandboxPlane, SandboxOptions};
-pub use runtime::{RemoteVpcOptions, RemoteVpcPlane};
-pub use runtime::{RunContext, ToolSuspendHandler, ToolSuspendRequest};
 pub use runtime::{
     MilestoneEvaluationContext, MilestoneEvaluationHandler, MilestonePolicy, RuntimeOptions,
     RuntimeRunner, collect_text,
 };
+pub use runtime::{
+    PermissionRequest, PermissionRequestHandler, PermissionResponse, RunContext,
+    ToolSuspendHandler, ToolSuspendRequest,
+};
+pub use runtime::{ProcessSandboxPlane, SandboxOptions};
+pub use runtime::{RemoteVpcOptions, RemoteVpcPlane};
 pub use safety::{Permission, PermissionDecision, PermissionManager, PermissionMode};
 pub use signals::{GatewayReceiver, RuntimeSignal, ScheduledPrompt, SignalGateway, SignalSource};
 pub use tools::{

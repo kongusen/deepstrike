@@ -168,6 +168,7 @@ fn runtime_options_can_be_constructed() {
         tokenizer: None,
         enable_plan_tool: None,
         on_tool_suspend: None,
+        on_permission_request: None,
         milestone_policy: deepstrike_sdk::runtime::MilestonePolicy::default(),
         milestone_contract: None,
         run_spec: None,

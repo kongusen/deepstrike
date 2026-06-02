@@ -1,7 +1,7 @@
 import type {
   LLMProvider, Message, ToolCall, ToolResult, ToolSchema,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
-  ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
+  ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
 } from "../types.js"
 import type { ToolSuspendEvent } from "./execution-plane.js"
 import type { DreamStore, DreamResult, MemoryEntry, CurationResult, SessionData } from "../memory/index.js"
@@ -9,7 +9,8 @@ import type { KnowledgeSource } from "../knowledge/index.js"
 import type { SignalSource } from "../signals/index.js"
 import type { SessionLog, SessionEvent } from "./session-log.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
-import type { Governance } from "../governance.js"
+import { resolvePermissionRequest } from "./execution-plane.js"
+import { governancePolicyToKernelEvent, type Governance, type GovernancePolicy } from "../governance.js"
 import { getKernel } from "./kernel.js"
 import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
@@ -18,6 +19,7 @@ import {
   forceCompact,
   kernelAction,
   kernelApply,
+  kernelMaybeAction,
   messageToKernelMessage,
   skillMetadataToKernel,
   toolResultToKernel,
@@ -27,10 +29,21 @@ import {
   type KernelRuntimeHandle,
 } from "./kernel-step.js"
 import type { AgentRunSpec, AgentSpawnedObservation, SubAgentResult, MilestonePolicy, MilestoneContract, MilestoneCheckResult } from "./types/agent.js"
-import { agentRunSpecToKernel, subAgentResultToKernel, milestoneCheckPass, milestoneCheckResultToKernel } from "./types/agent.js"
+import {
+  agentRunSpecToKernel,
+  findSpawnProcessObservation,
+  milestoneCheckPass,
+  milestoneCheckResultToKernel,
+  spawnObservationToManifest,
+  subAgentResultToKernel,
+} from "./types/agent.js"
 import { defaultSubAgentOrchestrator, type SubAgentOrchestrator } from "./sub-agent-orchestrator.js"
+import { kernelObservationToSessionEvent, withCategory } from "./kernel-event-log.js"
+import { assertNativeProfile, isNativeProfile, type OsProfile } from "./os-profile.js"
 
 export interface RuntimeOptions {
+  /** @default "legacy" */
+  osProfile?: OsProfile
   provider: LLMProvider
   sessionLog: SessionLog
   executionPlane: ExecutionPlane
@@ -47,7 +60,10 @@ export interface RuntimeOptions {
   signalSource?: SignalSource
   extensions?: Record<string, unknown>
   governance?: Governance
+  governancePolicy?: GovernancePolicy
+  attentionPolicy?: { maxQueueSize?: number }
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
+  onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
   subAgentOrchestrator?: SubAgentOrchestrator
   milestonePolicy?: MilestonePolicy
   milestoneContract?: MilestoneContract
@@ -116,6 +132,96 @@ export class RuntimeRunner {
       content: message.content ?? "",
       tokens: tokens ?? Math.max(1, Math.ceil((message.content?.length ?? 0) / 4)),
     })
+  }
+
+  /** Phase 4: satisfy kernel page-in requests before meta-tool execution. */
+  private async applyKernelPageIn(
+    runtime: KernelRuntimeHandle,
+    sessionId: string,
+  ): Promise<void> {
+    const requests = this.pendingObservations.filter(
+      (o): o is KernelObservation & { kind: "page_in_requested"; tool: string; query: string; top_k?: number } =>
+        o.kind === "page_in_requested" && typeof o.tool === "string",
+    )
+    if (requests.length === 0) return
+
+    const entries: Array<{ content: string; tokens?: number; source?: string }> = []
+    for (const req of requests) {
+      const query = typeof req.query === "string" ? req.query : ""
+      const topK = typeof req.top_k === "number" ? req.top_k : 5
+      if (req.tool === "memory" && this.opts.dreamStore && this.opts.agentId) {
+        const hits = await this.opts.dreamStore.search(this.opts.agentId, query, topK)
+        for (const hit of hits) {
+          entries.push({
+            content: `[memory score=${hit.score.toFixed(3)}] ${hit.text}`,
+            source: "memory",
+          })
+        }
+      } else if (req.tool === "knowledge" && this.opts.knowledgeSource) {
+        const snippets = await this.opts.knowledgeSource.retrieve(query, topK)
+        for (const snippet of snippets) {
+          entries.push({ content: snippet, source: "knowledge" })
+        }
+      }
+    }
+    if (entries.length === 0) return
+    kernelApply(runtime, this.pendingObservations, { kind: "page_in", entries })
+    await this.opts.sessionLog.append(sessionId, withCategory({
+      kind: "page_in",
+      turn: runtime.turn(),
+      entry_count: entries.length,
+    }))
+  }
+
+  private async resolveKernelSuspend(
+    runtime: KernelRuntimeHandle,
+    sessionId: string,
+  ): Promise<{ approved: string[]; denied: string[]; events: StreamEvent[] }> {
+    const gated = this.pendingObservations.filter(
+      (o): o is KernelObservation & { kind: "tool_gated"; call_id: string; tool: string; reason: string } =>
+        o.kind === "tool_gated" && typeof o.call_id === "string" && typeof o.tool === "string",
+    )
+    const approved: string[] = []
+    const denied: string[] = []
+    const events: StreamEvent[] = []
+    const runCtx: RunContext = { onPermissionRequest: this.opts.onPermissionRequest }
+
+    for (const g of gated) {
+      const request: PermissionRequestEvent = {
+        type: "permission_request",
+        callId: g.call_id,
+        toolName: g.tool,
+        arguments: "{}",
+        reason: typeof g.reason === "string" ? g.reason : "",
+      }
+      events.push(request)
+      const decision = await resolvePermissionRequest(request, runCtx)
+      events.push({
+        type: "permission_resolved",
+        callId: g.call_id,
+        toolName: g.tool,
+        approved: decision.approved,
+        responder: decision.responder ?? "host",
+        ...(decision.reason ? { reason: decision.reason } : {}),
+      } as PermissionResolvedEvent)
+      await this.opts.sessionLog.append(sessionId, {
+        kind: "permission_requested",
+        turn: runtime.turn(),
+        tool: g.tool,
+        arguments: "{}",
+        reason: request.reason,
+      })
+      await this.opts.sessionLog.append(sessionId, {
+        kind: "permission_resolved",
+        turn: runtime.turn(),
+        approved: decision.approved,
+        responder: decision.responder ?? "host",
+      })
+      if (decision.approved) approved.push(g.call_id)
+      else denied.push(g.call_id)
+    }
+
+    return { approved, denied, events }
   }
 
   async dream(agentId: string, nowMs = Date.now()): Promise<DreamResult> {
@@ -200,6 +306,7 @@ export class RuntimeRunner {
     priorEvents?: Array<{ seq: number; event: SessionEvent }>,
     resumeMidRun = false,
   ): AsyncIterable<StreamEvent> {
+    assertNativeProfile(this.opts)
     this.interrupted = false
     this.pendingObservations = []
     this.currentSessionId = sessionId
@@ -297,6 +404,17 @@ export class RuntimeRunner {
     if (this.opts.runSpec) {
       startPayload.run_spec = agentRunSpecToKernel(this.opts.runSpec)
     }
+    if (this.opts.governancePolicy) {
+      kernelApply(runtime, this.pendingObservations, governancePolicyToKernelEvent(this.opts.governancePolicy))
+    }
+    if (this.opts.attentionPolicy) {
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_attention_policy",
+        ...(this.opts.attentionPolicy.maxQueueSize !== undefined
+          ? { max_queue_size: this.opts.attentionPolicy.maxQueueSize }
+          : {}),
+      })
+    }
 
     let action: KernelRunnerAction = resumeMidRun
       ? kernelAction(runtime, this.pendingObservations, { kind: "resume" })
@@ -304,6 +422,9 @@ export class RuntimeRunner {
     let hasAttemptedReactiveCompact = false
 
     while (!runtime.isTerminal()) {
+      if (action.kind === "execute_tool") {
+        await this.applyKernelPageIn(runtime, sessionId)
+      }
       nextCompressedArchiveStart = await this.appendObservations(sessionId, runtime, nextCompressedArchiveStart)
       if (this.interrupted) {
         action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
@@ -313,31 +434,64 @@ export class RuntimeRunner {
       if (this.opts.signalSource) {
         const sig = await this.opts.signalSource.nextSignal()
         if (sig) {
-          const kernelSig = {
-            id: crypto.randomUUID(),
-            source: sig.source ?? "custom",
-            signalType: sig.signalType ?? "event",
-            urgency: sig.urgency ?? "normal",
-            summary: String((sig.payload as Record<string, unknown>)?.goal ?? "signal"),
-            payload: JSON.stringify(sig.payload ?? {}),
-            dedupeKey: sig.dedupeKey,
-            timestampMs: Date.now(),
-          }
-          const disposition = router.ingest(kernelSig as Parameters<typeof router.ingest>[0], action.kind === "execute_tool")
-          if (disposition === "interrupt_now") {
-            action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
-            break
+          const id = crypto.randomUUID()
+          const source = sig.source ?? "custom"
+          const signalType = sig.signalType ?? "event"
+          const urgency = sig.urgency ?? "normal"
+          const summary = String((sig.payload as Record<string, unknown>)?.goal ?? "signal")
+          if (this.opts.attentionPolicy) {
+            const sigAction = kernelMaybeAction(runtime, this.pendingObservations, {
+              kind: "signal",
+              signal: {
+                id,
+                source,
+                signal_type: signalType,
+                urgency,
+                summary,
+                payload: sig.payload ?? {},
+                ...(sig.dedupeKey ? { dedupe_key: sig.dedupeKey } : {}),
+                timestamp_ms: Date.now(),
+              },
+            })
+            if (sigAction) action = sigAction
+          } else if (isNativeProfile(this.opts)) {
+            throw new Error(
+              'COMPAT(signal-legacy): osProfile "native" requires attentionPolicy',
+            )
+          } else {
+            const kernelSig = {
+              id,
+              source,
+              signalType,
+              urgency,
+              summary,
+              payload: JSON.stringify(sig.payload ?? {}),
+              dedupeKey: sig.dedupeKey,
+              timestampMs: Date.now(),
+            }
+            const disposition = router.ingest(kernelSig as Parameters<typeof router.ingest>[0], action.kind === "execute_tool")
+            if (disposition === "interrupt_now") {
+              action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
+              break
+            }
           }
         }
       }
 
-      let queued = router.next()
-      while (queued) {
-        if (queued.urgency === "critical") {
-          action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
-          break
+      if (!this.opts.attentionPolicy) {
+        if (isNativeProfile(this.opts)) {
+          throw new Error(
+            'COMPAT(signal-legacy): osProfile "native" forbids SDK signal queue drain',
+          )
         }
-        queued = router.next()
+        let queued = router.next()
+        while (queued) {
+          if (queued.urgency === "critical") {
+            action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
+            break
+          }
+          queued = router.next()
+        }
       }
       if (runtime.isTerminal()) break
 
@@ -401,12 +555,25 @@ export class RuntimeRunner {
           toolCalls: finalToolCalls,
           tokenCount: turnOutputTokens || turnTokens || undefined,
         }
-        action = kernelAction(runtime, this.pendingObservations, {
+        const providerEvent: Record<string, unknown> = {
           kind: "provider_result",
           message: messageToKernelMessage(assistantMessage),
           ...(turnInputTokens > 0 ? { observed_input_tokens: turnInputTokens } : {}),
           ...(turnOutputTokens > 0 ? { observed_output_tokens: turnOutputTokens } : {}),
-        })
+          ...(this.opts.governancePolicy ? { now_ms: Date.now() } : {}),
+        }
+        let nextAction = kernelMaybeAction(runtime, this.pendingObservations, providerEvent)
+        const hasSuspended = this.pendingObservations.some(o => o.kind === "suspended")
+        if (!nextAction && hasSuspended) {
+          const resolved = await this.resolveKernelSuspend(runtime, sessionId)
+          for (const evt of resolved.events) yield evt
+          nextAction = kernelAction(runtime, this.pendingObservations, {
+            kind: "resume",
+            approved_calls: resolved.approved,
+            denied_calls: resolved.denied,
+          })
+        }
+        action = nextAction ?? kernelAction(runtime, this.pendingObservations, providerEvent)
         const providerReplay = peekProviderReplay(this.opts.provider, finalText, finalToolCalls)
         await this.opts.sessionLog.append(sessionId, buildLlmCompletedEvent({
           turn: runtime.turn(),
@@ -425,8 +592,9 @@ export class RuntimeRunner {
           skillContentMap: this.opts.skillContentMap,
           dreamStore: this.opts.dreamStore,
           knowledgeSource: this.opts.knowledgeSource,
-          governance: this.opts.governance,
+          governance: this.opts.governancePolicy ? undefined : this.opts.governance,
           onToolSuspend: this.opts.onToolSuspend,
+          onPermissionRequest: this.opts.onPermissionRequest,
         }
 
         const toolResults: ToolResult[] = []
@@ -469,18 +637,14 @@ export class RuntimeRunner {
               arguments: typeof pre.arguments === "string" ? pre.arguments : JSON.stringify(pre.arguments),
               reason: pre.reason,
             })
+          } else if (evt.type === "permission_resolved") {
+            const resolved = evt as PermissionResolvedEvent
+            const turn = runtime.turn()
             await this.opts.sessionLog.append(sessionId, {
               kind: "permission_resolved",
               turn,
-              approved: false,
-              responder: "policy_gate",
-            })
-            await this.opts.sessionLog.append(sessionId, {
-              kind: "tool_denied",
-              turn,
-              call_id: pre.callId,
-              tool_name: pre.toolName,
-              reason: `permission denied by policy gate: ${pre.reason}`,
+              approved: resolved.approved,
+              responder: resolved.responder,
             })
           }
         }
@@ -590,19 +754,10 @@ export class RuntimeRunner {
     })
     this.nextArchiveStart = await this.appendObservations(parentSessionId, runtime, this.nextArchiveStart)
 
-    const spawned = observations.find(o => o.kind === "agent_spawned" && typeof o.agent_id === "string")
-    if (!spawned) throw new Error("spawn_sub_agent did not emit agent_spawned")
+    const spawned = findSpawnProcessObservation(observations)
+    if (!spawned) throw new Error("spawn_sub_agent did not emit agent_process_changed")
 
-    const manifest: AgentSpawnedObservation = {
-      kind: "agent_spawned",
-      turn: spawned.turn,
-      agent_id: spawned.agent_id!,
-      parent_session_id: spawned.parent_session_id ?? parentSessionId,
-      role: spawned.role ?? spec.role,
-      isolation: spawned.isolation ?? spec.isolation ?? "shared",
-      context_inheritance: spawned.context_inheritance ?? "none",
-      permitted_capability_ids: spawned.permitted_capability_ids ?? [],
-    }
+    const manifest = spawnObservationToManifest(spawned, spec, parentSessionId)
 
     const orchestrator = this.opts.subAgentOrchestrator ?? defaultSubAgentOrchestrator
     const result = await orchestrator.run({
@@ -629,81 +784,21 @@ export class RuntimeRunner {
     const preservedRefs = runtime.preservedRefs()
     const observations = this.pendingObservations.splice(0)
     for (const obs of observations) {
-      if (obs.kind === "compressed") {
-        const latest = await this.opts.sessionLog.latestSeq(sessionId)
-        if (latest < nextArchiveStart) continue
-        const end = latest
-        const compressedSeq = await this.opts.sessionLog.append(sessionId, {
-          kind: "compressed",
-          turn,
-          archived_seq_range: [nextArchiveStart, end],
-          action: compressionAction(obs.action),
-          summary: obs.summary,
-          summary_tokens: obs.summary
-            ? Math.max(1, Math.ceil(obs.summary.length / 4))
-            : undefined,
-          preserved_refs: preservedRefs,
-        })
+      if (obs.kind === "page_in_requested") continue
+
+      const latest =
+        obs.kind === "compressed" ? await this.opts.sessionLog.latestSeq(sessionId) : undefined
+      const event = kernelObservationToSessionEvent(obs, turn, {
+        nextArchiveStart,
+        latestSeq: latest,
+        preservedRefs,
+        compressionAction,
+      })
+      if (!event) continue
+
+      const compressedSeq = await this.opts.sessionLog.append(sessionId, event)
+      if (event.kind === "compressed") {
         nextArchiveStart = compressedSeq + 1
-      } else if (obs.kind === "rollbacked") {
-        await this.opts.sessionLog.append(sessionId, {
-          kind: "rollbacked",
-          turn: obs.turn ?? turn,
-          checkpoint_history_len: obs.checkpoint_history_len ?? 0,
-          reason: obs.reason,
-        })
-      } else if (obs.kind === "capability_changed") {
-        await this.opts.sessionLog.append(sessionId, {
-          kind: "capability_changed",
-          turn: obs.turn ?? turn,
-          added: obs.added ?? [],
-          removed: obs.removed ?? [],
-          ...(obs.change_kind != null && { change_kind: obs.change_kind }),
-          ...(obs.capability_id != null && { capability_id: obs.capability_id }),
-          ...(obs.version != null && { version: obs.version }),
-          ...(obs.mounted_by != null && { mounted_by: obs.mounted_by }),
-          ...(obs.mount_reason != null && { mount_reason: obs.mount_reason }),
-        })
-      } else if (obs.kind === "milestone_advanced") {
-        await this.opts.sessionLog.append(sessionId, {
-          kind: "milestone_advanced",
-          turn: obs.turn ?? turn,
-          phase_id: obs.phase_id ?? "",
-          capabilities_unlocked: obs.capabilities_unlocked ?? [],
-        })
-      } else if (obs.kind === "milestone_blocked") {
-        await this.opts.sessionLog.append(sessionId, {
-          kind: "milestone_blocked",
-          turn: obs.turn ?? turn,
-          phase_id: obs.phase_id ?? "",
-          reason: typeof obs.reason === "string" ? obs.reason : "",
-        })
-      } else if (obs.kind === "milestone_evidence") {
-        await this.opts.sessionLog.append(sessionId, {
-          kind: "milestone_evidence",
-          turn: obs.turn ?? turn,
-          phase_id: obs.phase_id ?? "",
-          evidence: obs.evidence ?? [],
-        })
-      } else if (obs.kind === "checkpoint_taken") {
-        await this.opts.sessionLog.append(sessionId, {
-          kind: "checkpoint_taken",
-          turn: obs.turn ?? turn,
-          history_len: obs.history_len ?? 0,
-        })
-      } else if (obs.kind === "agent_spawned") {
-        await this.opts.sessionLog.append(sessionId, {
-          kind: "agent_spawned",
-          turn: obs.turn ?? turn,
-          agent_id: obs.agent_id ?? "",
-          parent_session_id: obs.parent_session_id ?? "",
-          role: obs.role ?? "",
-          isolation: obs.isolation ?? "",
-          context_inheritance: obs.context_inheritance ?? "",
-          permitted_capability_ids: obs.permitted_capability_ids ?? [],
-        })
-      } else if (obs.kind !== "renewed") {
-        console.warn(`[deepstrike] unhandled KernelObservation kind: ${obs.kind}`)
       }
     }
     return nextArchiveStart

@@ -48,6 +48,32 @@ export interface AgentSpawnedObservation {
   permitted_capability_ids: string[]
 }
 
+export function findSpawnProcessObservation(
+  observations: Array<{ kind: string; agent_id?: string }>,
+): Record<string, unknown> | undefined {
+  return observations.find(
+    o => (o.kind === "agent_process_changed" || o.kind === "agent_spawned")
+      && typeof o.agent_id === "string",
+  ) as Record<string, unknown> | undefined
+}
+
+export function spawnObservationToManifest(
+  obs: Record<string, unknown>,
+  spec: AgentRunSpec,
+  parentSessionId: string,
+): AgentSpawnedObservation {
+  return {
+    kind: "agent_spawned",
+    turn: obs.turn as number | undefined,
+    agent_id: String(obs.agent_id ?? spec.identity.agentId),
+    parent_session_id: String(obs.parent_session_id ?? parentSessionId),
+    role: String(obs.role ?? spec.role),
+    isolation: String(obs.isolation ?? spec.isolation ?? "shared"),
+    context_inheritance: String(obs.context_inheritance ?? "none"),
+    permitted_capability_ids: (obs.permitted_capability_ids as string[]) ?? [],
+  }
+}
+
 export interface LoopResult {
   termination: TerminationReason | string
   finalMessage?: Message

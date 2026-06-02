@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from deepstrike._kernel import ToolCall, ToolResult, ToolSchema
 from deepstrike.providers.stream import (
   PermissionRequestEvent,
+  PermissionResolvedEvent,
+  PermissionResponse,
   StreamEvent,
   ToolDeltaEvent,
   ToolDeniedEvent,
@@ -38,6 +40,7 @@ class RunContext:
   knowledge_source: "KnowledgeSource | None" = None
   governance: "Governance | None" = None
   on_tool_suspend: Callable[[ToolSuspendEvent], Awaitable[Any] | Any] | None = None
+  on_permission_request: Callable[[PermissionRequestEvent], Awaitable[PermissionResponse | bool | dict[str, Any]] | PermissionResponse | bool | dict[str, Any]] | None = None
 
 
 class ExecutionPlane:
@@ -93,16 +96,32 @@ class LocalExecutionPlane:
           )
           continue
         if verdict.kind == "ask_user":
-          yield PermissionRequestEvent(
+          request = PermissionRequestEvent(
             call_id=c.id, tool_name=c.name, arguments=c.arguments, reason=verdict.reason or "",
           )
+          yield request
+
+          decision = await _resolve_permission_request(request, ctx)
+          yield PermissionResolvedEvent(
+            call_id=c.id,
+            tool_name=c.name,
+            approved=decision.approved,
+            responder=decision.responder or "host",
+            reason=decision.reason,
+          )
+          if decision.approved:
+            permitted.append(c)
+            continue
+
+          reason = decision.reason or verdict.reason or "permission denied"
+          yield ToolDeniedEvent(call_id=c.id, tool_name=c.name, reason=reason)
           yield ToolResultEvent(
             call_id=c.id,
             name=c.name,
-            content="awaiting user approval",
+            content=f"permission denied: {reason}",
             is_error=True,
             is_fatal=False,
-            error_kind="recoverable",
+            error_kind="governance_denied",
           )
           continue
       permitted.append(c)
@@ -272,3 +291,44 @@ def _parse_json(s: str) -> dict:
     return json.loads(s) if isinstance(s, str) else dict(s)
   except Exception:
     return {}
+
+
+async def resolve_permission_request(request: PermissionRequestEvent, ctx: RunContext) -> PermissionResponse:
+  return await _resolve_permission_request(request, ctx)
+
+
+async def _resolve_permission_request(request: PermissionRequestEvent, ctx: RunContext) -> PermissionResponse:
+  if ctx.on_permission_request is None:
+    return PermissionResponse(
+      approved=False,
+      responder="policy_gate",
+      reason="no permission handler configured",
+    )
+
+  try:
+    value = ctx.on_permission_request(request)
+    if hasattr(value, "__await__"):
+      value = await value
+    return _normalize_permission_response(value)
+  except Exception as exc:
+    return PermissionResponse(
+      approved=False,
+      responder="permission_handler",
+      reason=f"permission handler failed: {exc}",
+    )
+
+
+def _normalize_permission_response(value: PermissionResponse | bool | dict[str, Any]) -> PermissionResponse:
+  if isinstance(value, bool):
+    return PermissionResponse(approved=value, responder="host")
+  if isinstance(value, PermissionResponse):
+    return PermissionResponse(
+      approved=bool(value.approved),
+      responder=value.responder or "host",
+      reason=value.reason,
+    )
+  return PermissionResponse(
+    approved=bool(value.get("approved")),
+    responder=str(value.get("responder") or "host"),
+    reason=str(value["reason"]) if value.get("reason") is not None else None,
+  )

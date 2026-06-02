@@ -1,9 +1,16 @@
-#![allow(deprecated)]
+use std::collections::HashMap;
 
+use super::milestone::MilestoneTracker;
 use super::policy::LoopPolicy;
+use super::tcb::{ScheduleDecision, TaskState, TaskTable, Tcb, WaitReason};
+use crate::mm::{page_in_requests_from_calls, tier_hint_for_compress};
 use crate::AgentRunSpec;
 use crate::context::manager::ContextManager;
-use crate::types::agent::IsolationManifest;
+use crate::governance::pipeline::GovernancePipeline;
+use crate::proc::{AgentProcess, ProcessState, ProcessTable};
+use crate::signals::router::SignalRouter;
+use crate::types::agent::AgentIdentity;
+use crate::types::policy::{GovernanceVerdict, SignalDisposition};
 use crate::types::result::SubAgentResult;
 use crate::context::pressure::PressureAction;
 use crate::context::renderer::RenderedContext;
@@ -24,7 +31,64 @@ pub enum LoopPhase {
     Act { tool_calls: Vec<ToolCall> },
     Observe { results: Vec<ToolResult> },
     Delta { pressure: f64 },
+    /// Loop is suspended awaiting external resolution (human approval, sub-agent join).
+    /// The kernel will not call the provider until `Resume` is received.
+    Suspended { reason: SuspendReason },
+    /// Loop is blocked awaiting a tool continuation (e.g. tool suspend / milestone eval).
+    /// Reserved for future use — wired as a variant but not yet driven.
+    Blocked { awaiting: BlockReason },
     Terminal { result: LoopResult },
+}
+
+impl LoopPhase {
+    /// Canonical projection of the running phase onto the P2 schedulability lifecycle
+    /// ([`TaskState`]). The intra-turn steps (`Reason/Act/Observe/Delta`) all map to
+    /// `Running`; only `Idle/Blocked/Suspended/Terminal` carry distinct lifecycle meaning.
+    ///
+    /// This is the bridge contract that M1d preserves when `LoopPhase` is split so that
+    /// schedulability moves onto the TCB and `LoopPhase` keeps only the turn step.
+    pub fn lifecycle(&self) -> TaskState {
+        match self {
+            LoopPhase::Idle => TaskState::Ready,
+            LoopPhase::Reason
+            | LoopPhase::Act { .. }
+            | LoopPhase::Observe { .. }
+            | LoopPhase::Delta { .. } => TaskState::Running,
+            LoopPhase::Blocked { .. } => TaskState::Blocked,
+            LoopPhase::Suspended { .. } => TaskState::Suspended,
+            LoopPhase::Terminal { result } => TaskState::Done(result.termination),
+        }
+    }
+
+    /// The wait reason when the phase is non-runnable (`Suspended`/`Blocked`), using the
+    /// M0 [`WaitReason`] conversions. `None` for runnable / terminal phases.
+    pub fn wait_reason(&self) -> Option<WaitReason> {
+        match self {
+            LoopPhase::Suspended { reason } => Some((*reason).into()),
+            LoopPhase::Blocked { awaiting } => Some((*awaiting).into()),
+            _ => None,
+        }
+    }
+}
+
+/// Why the loop entered `Suspended` state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuspendReason {
+    /// Governance `AskUser` — waiting for SDK to resolve human approval.
+    AskUser,
+    /// Sub-agent spawned — waiting for sub-agent to complete.
+    SubAgentAwait,
+    /// Externally requested suspension.
+    External,
+}
+
+/// What the loop is blocked waiting for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockReason {
+    /// Awaiting a tool's continuation (tool suspend pattern).
+    ToolSuspend,
+    /// Awaiting milestone evaluation result.
+    MilestoneAwait,
 }
 
 /// Events fed into the state machine from the SDK layer.
@@ -82,6 +146,28 @@ pub enum LoopAction {
         verifier: Option<crate::types::milestone::MilestoneVerifier>,
         required_evidence: Vec<String>,
     },
+    /// Kernel is suspended — SDK must resolve (e.g. human approval) and feed `Resume`.
+    AwaitingResume,
+}
+
+/// Payload held while the loop is in `Suspended`.
+#[derive(Debug, Clone)]
+enum SuspendState {
+    /// Governance AskUser — awaiting `Resume { approved_calls, denied_calls }`.
+    AskUser {
+        calls: Vec<ToolCall>,
+        gated_reasons: HashMap<String, String>,
+    },
+    /// Sub-agent spawn — awaiting `SubAgentCompleted` for each listed agent id.
+    SubAgentAwait {
+        agent_ids: Vec<String>,
+    },
+}
+
+enum GateToolOutcome {
+    Proceed,
+    Blocked(LoopAction),
+    Suspended,
 }
 
 /// Snapshot of context lengths captured just before each LLM call.
@@ -102,6 +188,23 @@ pub enum LoopObservation {
         rho_after: f64,
         summary: Option<String>,
         archived: Vec<Message>,
+    },
+    /// Working memory paged out to long-term — SDK persists `archived` and optional summary.
+    PageOut {
+        turn: u32,
+        action: PressureAction,
+        rho_after: f64,
+        summary: Option<String>,
+        archived: Vec<Message>,
+        tier_hint: String,
+    },
+    /// Kernel requests SDK to fetch long-term memory before executing a meta-tool.
+    PageInRequested {
+        turn: u32,
+        call_id: String,
+        tool: String,
+        query: String,
+        top_k: u32,
     },
     /// Context renewal fired — a new sprint started to carry the conversation forward.
     Renewed { sprint: u32 },
@@ -145,18 +248,92 @@ pub enum LoopObservation {
         turn: u32,
         history_len: u32,
     },
-    /// Sub-agent spawned — carries the auto-generated isolation manifest.
-    AgentSpawned {
+    /// Kernel process table changed for a spawned sub-agent.
+    AgentProcessChanged {
         turn: u32,
-        manifest: IsolationManifest,
+        agent_id: String,
+        parent_session_id: String,
+        role: crate::types::agent::AgentRole,
+        isolation: crate::types::agent::AgentIsolation,
+        context_inheritance: crate::types::agent::ContextInheritance,
+        state: ProcessState,
+        permitted_capability_ids: Vec<String>,
+        result_termination: Option<String>,
+    },
+    /// A tool call requires user approval (governance `AskUser` verdict).
+    /// The kernel does not block it — the SDK is responsible for obtaining
+    /// approval before executing the named call.
+    ToolGated {
+        turn: u32,
+        call_id: String,
+        tool: String,
+        reason: String,
+    },
+    /// An inbound signal was routed by the in-kernel attention policy.
+    /// `disposition` is the kernel's decision; `queue_depth` is the post-routing
+    /// queue length (signals awaiting a turn boundary).
+    SignalDisposed {
+        turn: u32,
+        signal_id: String,
+        disposition: String,
+        queue_depth: u32,
+    },
+    /// Budget axis exhausted (turns / tokens / wall-time). Emitted alongside the
+    /// pending-termination path; SDK uses this for telemetry.
+    BudgetExceeded {
+        turn: u32,
+        budget: String,
+    },
+    /// Loop entered `Suspended` state (AskUser / SubAgentAwait / External).
+    Suspended {
+        turn: u32,
+        reason: String,
+        /// call IDs awaiting approval (for AskUser).
+        #[allow(dead_code)]
+        pending_calls: Vec<String>,
+    },
+    /// Loop resumed from `Suspended` state.
+    Resumed {
+        turn: u32,
+        approved: Vec<String>,
+        denied: Vec<String>,
+    },
+    /// Memory entry written successfully (Phase 7).
+    MemoryWritten {
+        turn: u32,
+        memory_id: String,
+        memory_kind: String,
+        size_bytes: u32,
+    },
+    /// Memory validation failed (Phase 7).
+    MemoryValidationFailed {
+        turn: u32,
+        memory_id: String,
+        error: String,
+    },
+    /// Memory query request (Phase 7).
+    MemoryQueried {
+        turn: u32,
+        query_context: String,
+        requested_k: usize,
+        requires_async_response: bool,
+    },
+    /// Large tool result spooled to disk (Layer 1).
+    LargeResultSpooled {
+        turn: u32,
+        call_id: String,
+        tool: String,
+        original_size: u32,
+        preview_size: u32,
+        spool_ref: Option<String>,
     },
 }
 
 /// Pure state machine for the L* execution loop. No I/O — only state transitions.
-#[deprecated(
-    since = "0.2.0",
-    note = "Internal/test-only. Use KernelRuntime instead."
-)]
+///
+/// Internal engine backing [`crate::runtime::KernelRuntime`]. Exposed for in-crate
+/// use and tests; external callers should drive the kernel through `KernelRuntime`.
+#[doc(hidden)]
 pub struct LoopStateMachine {
     pub phase: LoopPhase,
     pub turn: u32,
@@ -172,13 +349,45 @@ pub struct LoopStateMachine {
     /// drain_new_messages() returns the slice from this offset onward.
     session_history_baseline: usize,
     checkpoint: TurnCheckpoint,
-    /// Optional milestone contract loaded before the run starts.
-    milestone_contract: Option<MilestoneContract>,
-    /// Index of the current (not-yet-passed) phase within `milestone_contract`.
-    current_milestone_phase: usize,
-    /// How many times the current phase has been blocked (reset on advance).
-    milestone_blocked_count: usize,
+    /// Milestone contract tracker (extracted to reduce state machine bloat).
+    milestone: MilestoneTracker,
     pub run_spec: Option<AgentRunSpec>,
+    processes: ProcessTable,
+    /// M1c: canonical task registry (root task + one row per sub-agent). Maintained in
+    /// parallel with `processes` and `debug_assert`-equal to its lineage/lifecycle, so M1d can
+    /// make `ProcessTable` a derived view and drop its storage. Root is task `"root"`.
+    tasks: TaskTable,
+    /// Optional governance pipeline. When set, every tool call proposed by the
+    /// model is evaluated before `ExecuteTools` is emitted. `None` (default)
+    /// skips the gate entirely, preserving the pre-governance behavior.
+    governance: Option<GovernancePipeline>,
+    /// Optional in-kernel signal router. When set, inbound signals are routed
+    /// through dedup + attention policy + queue here (the kernel owns disposition).
+    /// `None` (default) keeps the legacy hardcoded urgency handling in `feed`.
+    signal_router: Option<SignalRouter>,
+    /// Wall-clock timestamp of the first `ProviderResult.now_ms` received.
+    /// Used by the wall-time budget axis in `SchedulerBudget::should_terminate`.
+    started_at_ms: Option<u64>,
+    /// Most-recent `now_ms` value from `ProviderResult`, forwarded to the budget check.
+    last_now_ms: Option<u64>,
+    /// Tool batch awaiting `Resume` after an AskUser suspend.
+    suspend_state: Option<SuspendState>,
+    /// Denied tool results to merge into the next `ToolResults` feed after resume.
+    pending_denied_results: Vec<ToolResult>,
+}
+
+/// Stable snake_case label for a signal disposition, used in `SignalDisposed`
+/// observations (part of the observation wire format).
+fn disposition_label(d: &SignalDisposition) -> &'static str {
+    match d {
+        SignalDisposition::Ignore => "ignore",
+        SignalDisposition::Observe => "observe",
+        SignalDisposition::Queue => "queue",
+        SignalDisposition::Run { .. } => "run",
+        SignalDisposition::Interrupt => "interrupt",
+        SignalDisposition::InterruptNow => "interrupt_now",
+        SignalDisposition::Dropped => "dropped",
+    }
 }
 
 impl LoopStateMachine {
@@ -200,10 +409,321 @@ impl LoopStateMachine {
             pending_termination: None,
             session_history_baseline: 0,
             checkpoint: TurnCheckpoint::default(),
-            milestone_contract: None,
-            current_milestone_phase: 0,
-            milestone_blocked_count: 0,
+            milestone: MilestoneTracker::new(),
             run_spec: None,
+            processes: ProcessTable::new(),
+            tasks: TaskTable::new(),
+            governance: None,
+            signal_router: None,
+            started_at_ms: None,
+            last_now_ms: None,
+            suspend_state: None,
+            pending_denied_results: Vec::new(),
+        }
+    }
+
+    /// Build a transient root [`Tcb`] mirroring the current scheduling facts (budget counters,
+    /// wall-clock anchors, lifecycle). M1b uses this to run the pure `schedule()` spine in
+    /// parallel with the legacy budget path; later milestones promote it to the live task row.
+    fn root_tcb(&self) -> Tcb {
+        let mut tcb = Tcb::root("root", self.policy.clone());
+        tcb.budget.turns = self.turn;
+        tcb.budget.total_tokens = self.total_tokens;
+        tcb.budget.started_at_ms = self.started_at_ms;
+        tcb.state = self.phase.lifecycle();
+        tcb
+    }
+
+    /// Adjust the wall-clock budget axis at runtime.
+    pub fn set_wall_budget(&mut self, max_wall_ms: Option<u64>) {
+        self.policy.max_wall_ms = max_wall_ms;
+    }
+
+    /// Install a governance pipeline. Once set, all model-proposed tool calls
+    /// are evaluated before execution. Denied/rate-limited calls roll the turn
+    /// back (reusing the `GovernanceDenied` path); `AskUser` calls surface a
+    /// `ToolGated` observation for the SDK to enforce.
+    pub fn set_governance(&mut self, pipeline: GovernancePipeline) {
+        self.governance = Some(pipeline);
+    }
+
+    /// Feed the current wall-clock time (ms) to scheduler/governance budget axes.
+    pub fn set_observed_time(&mut self, now_ms: u64) {
+        if self.started_at_ms.is_none() {
+            self.started_at_ms = Some(now_ms);
+        }
+        self.last_now_ms = Some(now_ms);
+        if let Some(pipeline) = self.governance.as_mut() {
+            pipeline.set_time(now_ms);
+        }
+    }
+
+    /// Enable in-kernel signal routing with the default urgency-based attention
+    /// policy and a bounded queue. Once set, inbound signals are dispatched through
+    /// the kernel (dedup + disposition + queue) instead of the legacy `feed` path.
+    pub fn set_attention(&mut self, max_queue_size: usize) {
+        self.signal_router = Some(SignalRouter::new(max_queue_size));
+    }
+
+    /// ABI entry for an inbound signal: clears observations, sweeps leases, then
+    /// dispatches through the in-kernel router (or the legacy path). Returns
+    /// `None` when the signal does not drive a provider call this step
+    /// (queued / observed / ignored / dropped).
+    pub fn signal_event(&mut self, signal: RuntimeSignal) -> Option<LoopAction> {
+        self.observations.clear();
+        self.sweep_expired_leases();
+        self.dispatch_signal(signal)
+    }
+
+    /// Route a signal and decide whether it drives a turn now. Assumes the caller
+    /// has already cleared observations / swept leases (see `feed` and `signal_event`).
+    fn dispatch_signal(&mut self, signal: RuntimeSignal) -> Option<LoopAction> {
+        let is_running = !matches!(self.phase, LoopPhase::Idle | LoopPhase::Terminal { .. });
+        match self.signal_router.as_mut() {
+            Some(router) => {
+                let signal_id = signal.id.to_string();
+                let summary = signal.summary.to_string();
+                let disposition = router.ingest(signal, is_running);
+                let queue_depth = router.depth() as u32;
+                self.observations.push(LoopObservation::SignalDisposed {
+                    turn: self.turn,
+                    signal_id,
+                    disposition: disposition_label(&disposition).to_string(),
+                    queue_depth,
+                });
+                match disposition {
+                    SignalDisposition::InterruptNow | SignalDisposition::Interrupt => {
+                        self.ctx.push_signal(format!("[INTERRUPT] {summary}"));
+                        self.phase = LoopPhase::Reason;
+                        Some(self.emit_call_llm())
+                    }
+                    SignalDisposition::Run { .. } => {
+                        self.ctx.push_signal(format!("[SIGNAL] {summary}"));
+                        self.phase = LoopPhase::Reason;
+                        Some(self.emit_call_llm())
+                    }
+                    // Observe: note it in context but don't force a turn.
+                    SignalDisposition::Observe => {
+                        self.ctx.push_signal(format!("[SIGNAL] {summary}"));
+                        None
+                    }
+                    // Queued in the kernel (drained at the next turn boundary), or
+                    // deduped / dropped — no provider call this step.
+                    SignalDisposition::Queue
+                    | SignalDisposition::Ignore
+                    | SignalDisposition::Dropped => None,
+                }
+            }
+            // COMPAT(signal-legacy): hardcoded urgency handling, pre-attention-policy.
+            // Active only when no SetAttentionPolicy was issued. Removable once all
+            // SDKs drive signals through the in-kernel router.
+            None => Some(self.legacy_signal(signal)),
+        }
+    }
+
+    /// Drain all kernel-queued signals into the current context as runtime notes.
+    /// No-op when no router is configured. Called at turn boundaries.
+    fn drain_queued_signals(&mut self) {
+        let drained: Vec<String> = match self.signal_router.as_mut() {
+            Some(router) => {
+                let mut out = Vec::new();
+                while let Some(sig) = router.next() {
+                    out.push(sig.summary.to_string());
+                }
+                out
+            }
+            None => Vec::new(),
+        };
+        for summary in drained {
+            self.ctx.push_signal(format!("[SIGNAL] {summary}"));
+        }
+    }
+
+    fn legacy_signal(&mut self, signal: RuntimeSignal) -> LoopAction {
+        match signal.urgency {
+            Urgency::Critical => {
+                self.ctx.push_signal(format!("[INTERRUPT] {}", signal.summary));
+                self.phase = LoopPhase::Reason;
+                self.emit_call_llm()
+            }
+            Urgency::High => {
+                self.ctx.push_signal(format!("[SIGNAL] {}", signal.summary));
+                self.emit_call_llm()
+            }
+            _ => self.emit_call_llm(),
+        }
+    }
+
+    /// Drop capability leases whose expiry turn has passed. Runs at the head of
+    /// every event so expired temporary capabilities are unmounted promptly.
+    fn sweep_expired_leases(&mut self) {
+        let current_turn = self.turn;
+        let mut to_remove = Vec::new();
+        for cap in self.ctx.capabilities.capabilities() {
+            if let Some(ref lease) = cap.lease {
+                if current_turn >= lease.expires_at_turn {
+                    to_remove.push((cap.kind, cap.id.to_string()));
+                }
+            }
+        }
+        for (kind, id) in to_remove {
+            self.unmount_capability(kind, &id);
+        }
+    }
+
+    /// Evaluate proposed tool calls against the governance pipeline.
+    fn gate_tool_calls(&mut self, calls: &[ToolCall]) -> GateToolOutcome {
+        let caller = self
+            .run_spec
+            .as_ref()
+            .map(|s| s.identity.clone())
+            .unwrap_or_else(|| AgentIdentity::new("agent", "session"));
+
+        let Some(pipeline) = self.governance.as_mut() else {
+            return GateToolOutcome::Proceed;
+        };
+
+        let mut gated: Vec<(String, String, String)> = Vec::new();
+        let mut hard_block: Option<(String, String)> = None;
+        for call in calls {
+            match pipeline.evaluate(call, &caller) {
+                GovernanceVerdict::Allow => {}
+                GovernanceVerdict::AskUser { reason } => {
+                    gated.push((call.id.to_string(), call.name.to_string(), reason));
+                }
+                GovernanceVerdict::Deny { reason, .. } => {
+                    if hard_block.is_none() {
+                        hard_block = Some((call.name.to_string(), reason));
+                    }
+                }
+                GovernanceVerdict::RateLimited { retry_after_ms } => {
+                    if hard_block.is_none() {
+                        hard_block = Some((
+                            call.name.to_string(),
+                            format!("rate limited, retry after {retry_after_ms}ms"),
+                        ));
+                    }
+                }
+            }
+        }
+
+        if let Some((tool_name, reason)) = hard_block {
+            let rb = RollbackReason::GovernanceDenied { tool_name, reason };
+            let note = Message::user(super::rollback::build_rollback_note(
+                &rb,
+                self.ctx.config.verbose_control_notes,
+            ));
+            self.rollback(rb);
+            self.ctx
+                .push_signal(note.content.as_text().unwrap_or_default().to_string());
+            self.phase = LoopPhase::Reason;
+            return GateToolOutcome::Blocked(self.emit_call_llm());
+        }
+
+        if gated.is_empty() {
+            return GateToolOutcome::Proceed;
+        }
+
+        let pending_calls: Vec<String> = gated.iter().map(|(id, _, _)| id.clone()).collect();
+        let gated_reasons: HashMap<String, String> = gated
+            .iter()
+            .map(|(id, _, reason)| (id.clone(), reason.clone()))
+            .collect();
+        for (call_id, tool, reason) in &gated {
+            self.observations.push(LoopObservation::ToolGated {
+                turn: self.turn,
+                call_id: call_id.clone(),
+                tool: tool.clone(),
+                reason: reason.clone(),
+            });
+        }
+        self.suspend_state = Some(SuspendState::AskUser {
+            calls: calls.to_vec(),
+            gated_reasons,
+        });
+        self.phase = LoopPhase::Suspended {
+            reason: SuspendReason::AskUser,
+        };
+        self.observations.push(LoopObservation::Suspended {
+            turn: self.turn,
+            reason: "ask_user".to_string(),
+            pending_calls,
+        });
+        GateToolOutcome::Suspended
+    }
+
+    /// Resume from `Suspended` after SDK resolves human approval (or wake preload).
+    pub fn resume_from_suspend(
+        &mut self,
+        approved_calls: Vec<String>,
+        denied_calls: Vec<String>,
+    ) -> LoopAction {
+        self.observations.clear();
+
+        if self.suspend_state.is_none() && approved_calls.is_empty() && denied_calls.is_empty() {
+            return self.resume_after_preload();
+        }
+
+        let Some(state) = self.suspend_state.take() else {
+            if approved_calls.is_empty() && denied_calls.is_empty() {
+                return self.resume_after_preload();
+            }
+            return LoopAction::AwaitingResume;
+        };
+
+        if !matches!(self.phase, LoopPhase::Suspended { .. }) {
+            return LoopAction::AwaitingResume;
+        }
+
+        self.observations.push(LoopObservation::Resumed {
+            turn: self.turn,
+            approved: approved_calls.clone(),
+            denied: denied_calls.clone(),
+        });
+
+        let approved_set: std::collections::HashSet<String> = approved_calls.into_iter().collect();
+        let denied_set: std::collections::HashSet<String> = denied_calls.into_iter().collect();
+
+        let SuspendState::AskUser { calls, gated_reasons } = state else {
+            return LoopAction::AwaitingResume;
+        };
+
+        let mut to_execute = Vec::new();
+        let mut synthetic_results = Vec::new();
+
+        for call in calls {
+            let id = call.id.to_string();
+            if let Some(reason) = gated_reasons.get(&id) {
+                if approved_set.contains(&id) {
+                    to_execute.push(call.clone());
+                } else if denied_set.contains(&id) || !approved_set.contains(&id) {
+                    synthetic_results.push(ToolResult {
+                        call_id: call.id.clone(),
+                        output: Content::Text(format!("permission denied: {reason}")),
+                        is_error: true,
+                        is_fatal: false,
+                        error_kind: Some(ToolErrorKind::GovernanceDenied),
+                        token_count: None,
+                    });
+                }
+            } else {
+                to_execute.push(call.clone());
+            }
+        }
+
+        self.pending_denied_results = synthetic_results;
+
+        if to_execute.is_empty() {
+            let results = std::mem::take(&mut self.pending_denied_results);
+            self.phase = LoopPhase::Reason;
+            return self.feed(LoopEvent::ToolResults { results });
+        }
+
+        self.phase = LoopPhase::Act {
+            tool_calls: to_execute.clone(),
+        };
+        LoopAction::ExecuteTools {
+            calls: to_execute,
         }
     }
 
@@ -212,15 +732,59 @@ impl LoopStateMachine {
         let action = PressureAction::AutoCompact;
         let (saved, summary, archived) = self.ctx.force_compress();
         if saved > 0 {
-            self.observations.push(LoopObservation::Compressed {
-                action,
-                rho_after: self.ctx.rho(),
-                summary,
-                archived,
-            });
+            self.push_compression_observations(action, summary, archived);
             true
         } else {
             false
+        }
+    }
+
+    fn push_compression_observations(
+        &mut self,
+        action: PressureAction,
+        summary: Option<String>,
+        archived: Vec<Message>,
+    ) {
+        let rho_after = self.ctx.rho();
+        self.observations.push(LoopObservation::Compressed {
+            action,
+            rho_after,
+            summary: summary.clone(),
+            archived: archived.clone(),
+        });
+        if archived.is_empty() {
+            return;
+        }
+        let tier_hint = tier_hint_for_compress(action).label().to_string();
+        self.observations.push(LoopObservation::PageOut {
+            turn: self.turn,
+            action,
+            rho_after,
+            summary,
+            archived,
+            tier_hint,
+        });
+    }
+
+    fn emit_page_in_requested(&mut self, calls: &[ToolCall]) {
+        for req in page_in_requests_from_calls(calls) {
+            self.observations.push(LoopObservation::PageInRequested {
+                turn: self.turn,
+                call_id: req.call_id,
+                tool: req.tool,
+                query: req.query,
+                top_k: req.top_k,
+            });
+        }
+    }
+
+    /// Apply SDK-fetched long-term entries into the knowledge partition (page-in).
+    pub fn apply_page_in(&mut self, entries: &[crate::mm::PageInEntry]) {
+        for entry in entries {
+            let tokens = entry
+                .tokens
+                .unwrap_or_else(|| self.ctx.engine.count(&entry.content).max(1));
+            self.ctx.push_knowledge(Message::system(entry.content.clone()), tokens);
         }
     }
 
@@ -247,6 +811,7 @@ impl LoopStateMachine {
             &self.ctx.partitions.history.messages,
         );
         if !calls.is_empty() {
+            self.emit_page_in_requested(&calls);
             self.phase = LoopPhase::Act {
                 tool_calls: calls.clone(),
             };
@@ -281,25 +846,16 @@ impl LoopStateMachine {
         let user_tokens = self.ctx.engine.count(&user_msg).max(1);
         self.ctx.push_history(Message::user(user_msg), user_tokens);
         self.phase = LoopPhase::Reason;
+        // M1c: register the root task (task 0) so the TaskTable holds the full task set.
+        let mut root = Tcb::root("root", self.policy.clone());
+        root.state = self.phase.lifecycle();
+        self.tasks.insert(root);
         self.emit_call_llm()
     }
 
     pub fn feed(&mut self, event: LoopEvent) -> LoopAction {
         self.observations.clear();
-
-        // 检查并清理过期的 Lease
-        let current_turn = self.turn;
-        let mut to_remove = Vec::new();
-        for cap in self.ctx.capabilities.capabilities() {
-            if let Some(ref lease) = cap.lease {
-                if current_turn >= lease.expires_at_turn {
-                    to_remove.push((cap.kind, cap.id.to_string()));
-                }
-            }
-        }
-        for (kind, id) in to_remove {
-            self.unmount_capability(kind, &id);
-        }
+        self.sweep_expired_leases();
 
         match event {
             LoopEvent::Start { task } => self.start(task),
@@ -315,16 +871,17 @@ impl LoopStateMachine {
                 if message.tool_calls.is_empty() {
                     // When a milestone contract is active and not yet complete,
                     // request evaluation instead of terminating.
-                    if !self.is_milestone_complete() {
-                        let phase_id = self.current_milestone_phase_id().unwrap_or("").to_string();
-                        let criteria = self.current_milestone_criteria().to_vec();
+                    if !self.milestone.is_complete() {
+                        let phase_id = self.milestone.current_phase_id().unwrap_or("").to_string();
+                        let criteria = self.milestone.current_criteria().to_vec();
                         let (verifier, required_evidence) = self
-                            .milestone_contract
+                            .milestone
+                            .contract
                             .as_ref()
-                            .and_then(|c| c.phases.get(self.current_milestone_phase))
+                            .and_then(|c| c.phases.get(self.milestone.current_phase))
                             .map(|p| (p.verifier.clone(), p.required_evidence.clone()))
                             .unwrap_or_default();
-                        let tokens = self.message_tokens(&message);
+                        // `tokens` was already computed for this message above.
                         self.ctx.push_history(message, tokens);
                         return LoopAction::EvaluateMilestone {
                             phase_id,
@@ -338,18 +895,33 @@ impl LoopStateMachine {
 
                 let calls = message.tool_calls.clone();
                 self.ctx.push_history(message, tokens);
+
+                // ━━ 记录活动时间（Layer 3时间衰减使用）
+                if let Some(now_ms) = self.last_now_ms {
+                    self.ctx.record_activity(now_ms);
+                }
+
+                match self.gate_tool_calls(&calls) {
+                    GateToolOutcome::Blocked(action) => return action,
+                    GateToolOutcome::Suspended => return LoopAction::AwaitingResume,
+                    GateToolOutcome::Proceed => {}
+                }
+                self.emit_page_in_requested(&calls);
                 self.phase = LoopPhase::Act {
                     tool_calls: calls.clone(),
                 };
                 LoopAction::ExecuteTools { calls }
             }
 
-            LoopEvent::ToolResults { results } => {
+            LoopEvent::ToolResults { mut results } => {
+                if !self.pending_denied_results.is_empty() {
+                    results.append(&mut self.pending_denied_results);
+                }
                 if let Some(reason) = results
                     .iter()
                     .find_map(|result| self.rollback_reason_for_tool_result(result))
                 {
-                    let note = Message::user(Self::build_rollback_note(
+                    let note = Message::user(super::rollback::build_rollback_note(
                         &reason,
                         self.ctx.config.verbose_control_notes,
                     ));
@@ -382,29 +954,65 @@ impl LoopStateMachine {
                 }
                 self.turn += 1;
 
-                if let Some(reason) = self.policy.should_terminate(self.turn, self.total_tokens) {
-                    let term = if reason == "max_turns" {
-                        TerminationReason::MaxTurns
-                    } else {
-                        TerminationReason::TokenBudget
+                if let Some(reason) = self.policy.should_terminate(
+                    self.turn,
+                    self.total_tokens,
+                    self.last_now_ms,
+                    self.started_at_ms,
+                ) {
+                    self.observations.push(LoopObservation::BudgetExceeded {
+                        turn: self.turn,
+                        budget: reason.to_string(),
+                    });
+                    let term = match reason {
+                        "max_turns" => TerminationReason::MaxTurns,
+                        "wall_time" => TerminationReason::Timeout,
+                        _ => TerminationReason::TokenBudget,
                     };
+                    // M1b: the pure scheduler must reach the identical terminate verdict + reason.
+                    debug_assert!(
+                        matches!(
+                            super::tcb::schedule(&self.root_tcb(), self.last_now_ms),
+                            ScheduleDecision::Terminate { reason: r, .. } if r == term
+                        ),
+                        "M1b schedule() disagrees with should_terminate (legacy reason {reason})"
+                    );
                     self.pending_termination = Some(term);
                     self.phase = LoopPhase::Reason;
                     return self.emit_call_llm();
                 }
+                // M1b: conversely, within budget the pure scheduler must say `Run`.
+                debug_assert!(
+                    matches!(
+                        super::tcb::schedule(&self.root_tcb(), self.last_now_ms),
+                        ScheduleDecision::Run { .. }
+                    ),
+                    "M1b schedule() should Run when should_terminate returned None"
+                );
 
+                // ━━ Layer 3: 时间衰减检查（独立于rho）
+                if let Some(now_ms) = self.last_now_ms {
+                    if self.ctx.should_time_decay_compact(now_ms) {
+                        // 强制MicroCompact，无论rho值
+                        let (saved, summary, archived) = self.ctx.compress(PressureAction::MicroCompact);
+                        self.push_compression_observations(PressureAction::MicroCompact, summary, archived);
+
+                        // 记录压缩时间
+                        self.ctx.last_compact_ms = Some(now_ms);
+                    }
+                }
+
+                // ━━ 更新CollapseMode（Layer 4读时投影策略）
+                self.ctx.update_collapse_mode();
+
+                // ━━ 原有rho检查（Layer 2/4/5触发）
                 let action = self.ctx.should_compress();
                 self.phase = LoopPhase::Delta {
                     pressure: self.ctx.rho(),
                 };
                 if action != PressureAction::None {
-                    let (_, summary, archived) = self.ctx.compress(action);
-                    self.observations.push(LoopObservation::Compressed {
-                        action,
-                        rho_after: self.ctx.rho(),
-                        summary,
-                        archived,
-                    });
+                    let (saved, summary, archived) = self.ctx.compress_with_time(action, self.last_now_ms);
+                    self.push_compression_observations(action, summary, archived);
                 }
 
                 // Renewal: when compression alone cannot recover enough headroom,
@@ -416,44 +1024,29 @@ impl LoopStateMachine {
                     });
                 }
 
+                // Turn boundary: drain any kernel-queued signals into context so they
+                // are seen on the next reasoning turn (ready queue → running).
+                self.drain_queued_signals();
+
                 self.phase = LoopPhase::Reason;
                 self.emit_call_llm()
             }
 
             LoopEvent::Signal { signal } => {
-                // Signals go into working (not history) — they are runtime events,
-                // not part of the conversation transcript.
-                match signal.urgency {
-                    Urgency::Critical => {
-                        self.ctx.push_signal(format!("[INTERRUPT] {}", signal.summary));
-                        self.phase = LoopPhase::Reason;
-                        self.emit_call_llm()
-                    }
-                    Urgency::High => {
-                        self.ctx.push_signal(format!("[SIGNAL] {}", signal.summary));
-                        self.emit_call_llm()
-                    }
-                    _ => self.emit_call_llm(),
-                }
+                // `feed` always returns an action; non-actionable dispositions
+                // (queue/observe/ignore) fall back to a plain provider call here.
+                // The kernel-routed path (`dispatch_signal`) is driven via the ABI.
+                self.dispatch_signal(signal)
+                    .unwrap_or_else(|| self.emit_call_llm())
             }
 
             LoopEvent::MilestoneResult { result } => self.handle_milestone_result(result),
 
-            LoopEvent::SubAgentCompleted { result } => {
-                let summary = result
-                    .result
-                    .final_message
-                    .as_ref()
-                    .and_then(|m| m.content.as_text())
-                    .unwrap_or_default();
-                self.ctx.push_signal(format!("[sub-agent {}] {}", result.agent_id, summary));
-                self.phase = LoopPhase::Reason;
-                self.emit_call_llm()
-            }
+            LoopEvent::SubAgentCompleted { result } => self.handle_sub_agent_completed(result),
 
             LoopEvent::Timeout => {
                 let reason = RollbackReason::Timeout;
-                let note = Message::user(Self::build_rollback_note(
+                let note = Message::user(super::rollback::build_rollback_note(
                     &reason,
                     self.ctx.config.verbose_control_notes,
                 ));
@@ -474,24 +1067,156 @@ impl LoopStateMachine {
         std::mem::take(&mut self.observations)
     }
 
-    /// Spawn a sub-agent: generates an isolation manifest from `spec` against
-    /// the current capability snapshot and emits an `AgentSpawned` observation.
-    ///
-    /// The caller (SDK runner) reads the observation, records the lineage in the
-    /// audit log, and drives the sub-agent loop. Feed the result back via
-    /// `LoopEvent::SubAgentCompleted`.
+    /// Spawn a sub-agent: registers a kernel process, emits `AgentProcessChanged`,
+    /// and enters `Suspended(SubAgentAwait)` until the SDK feeds `SubAgentCompleted`.
     pub fn spawn_sub_agent(
         &mut self,
         spec: AgentRunSpec,
         parent_session_id: &str,
-    ) -> IsolationManifest {
-        let manifest =
-            IsolationManifest::from_spec(&spec, parent_session_id, &self.ctx.capabilities);
-        self.observations.push(LoopObservation::AgentSpawned {
-            turn: self.turn,
-            manifest: manifest.clone(),
+    ) -> LoopAction {
+        let manifest = crate::types::agent::IsolationManifest::from_spec(
+            &spec,
+            parent_session_id,
+            &self.ctx.capabilities,
+        );
+        let agent_id = manifest.agent_id.to_string();
+        let process = self.processes.register_spawn(&manifest);
+        // M1c: mirror the spawn as a child task under the root.
+        let mut child = Tcb::root(manifest.agent_id.clone(), self.policy.clone());
+        child.parent = Some("root".into());
+        child.state = TaskState::from(process.state);
+        child.caps = process.permitted_capability_ids.clone();
+        self.tasks.insert(child);
+        self.push_agent_process_changed(process);
+        self.debug_assert_tasks_mirror_processes();
+        self.suspend_state = Some(SuspendState::SubAgentAwait {
+            agent_ids: vec![agent_id.clone()],
         });
-        manifest
+        self.phase = LoopPhase::Suspended {
+            reason: SuspendReason::SubAgentAwait,
+        };
+        self.observations.push(LoopObservation::Suspended {
+            turn: self.turn,
+            reason: "sub_agent_await".to_string(),
+            pending_calls: vec![agent_id],
+        });
+        LoopAction::AwaitingResume
+    }
+
+    fn handle_sub_agent_completed(&mut self, result: SubAgentResult) -> LoopAction {
+        if let Some(process) = self.processes.complete(result.clone()) {
+            // M1c: mirror the join onto the child task's lifecycle.
+            let mirrored = TaskState::from(process.state);
+            if let Some(task) = self.tasks.get_mut(process.agent_id.as_str()) {
+                task.state = mirrored;
+            }
+            self.push_agent_process_changed(process);
+            self.debug_assert_tasks_mirror_processes();
+        }
+        let summary = result
+            .result
+            .final_message
+            .as_ref()
+            .and_then(|m| m.content.as_text())
+            .unwrap_or_default();
+        self.ctx
+            .push_signal(format!("[sub-agent {}] {}", result.agent_id, summary));
+
+        let agent_id = result.agent_id.to_string();
+        let resume_parent = match (
+            &self.phase,
+            self.suspend_state.as_mut(),
+        ) {
+            (
+                LoopPhase::Suspended {
+                    reason: SuspendReason::SubAgentAwait,
+                },
+                Some(SuspendState::SubAgentAwait { agent_ids }),
+            ) => {
+                agent_ids.retain(|id| id != &agent_id);
+                if agent_ids.is_empty() {
+                    self.suspend_state = None;
+                    self.observations.push(LoopObservation::Resumed {
+                        turn: self.turn,
+                        approved: vec![agent_id],
+                        denied: Vec::new(),
+                    });
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => true,
+        };
+
+        if resume_parent {
+            self.phase = LoopPhase::Reason;
+            self.emit_call_llm()
+        } else {
+            LoopAction::AwaitingResume
+        }
+    }
+
+    pub fn agent_process(&self, agent_id: &str) -> Option<&AgentProcess> {
+        self.processes.get(agent_id)
+    }
+
+    pub fn agent_processes(&self) -> &[AgentProcess] {
+        self.processes.all()
+    }
+
+    /// M1c: the canonical task registry (root task + one row per sub-agent). This is the
+    /// schedulability/lineage source of truth; `agent_processes()` remains the rich record store
+    /// until M1d makes it a derived view.
+    pub fn task_table(&self) -> &TaskTable {
+        &self.tasks
+    }
+
+    /// Debug-only invariant: the TaskTable carries the root plus exactly one task per process,
+    /// with each child's lifecycle equal to its process state. Guards drift before M1d flips the
+    /// canonical/derived relationship.
+    fn debug_assert_tasks_mirror_processes(&self) {
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(
+                self.tasks.get("root").is_some(),
+                "M1c: root task missing from TaskTable"
+            );
+            for p in self.processes.all() {
+                match self.tasks.get(p.agent_id.as_str()) {
+                    Some(task) => debug_assert_eq!(
+                        task.state,
+                        TaskState::from(p.state),
+                        "M1c: TaskTable lifecycle drifted from ProcessTable for {}",
+                        p.agent_id
+                    ),
+                    None => panic!("M1c: process {} missing from TaskTable", p.agent_id),
+                }
+            }
+            debug_assert_eq!(
+                self.tasks.all().len(),
+                self.processes.all().len() + 1,
+                "M1c: TaskTable should hold root + one task per process"
+            );
+        }
+    }
+
+    fn push_agent_process_changed(&mut self, process: AgentProcess) {
+        self.observations.push(LoopObservation::AgentProcessChanged {
+            turn: self.turn,
+            agent_id: process.agent_id.to_string(),
+            parent_session_id: process.parent_session_id.to_string(),
+            role: process.role,
+            isolation: process.isolation,
+            context_inheritance: process.context_inheritance,
+            state: process.state,
+            permitted_capability_ids: process
+                .permitted_capability_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect(),
+            result_termination: process.result_termination_label().map(str::to_string),
+        });
     }
 
     fn terminate(
@@ -541,10 +1266,7 @@ impl LoopStateMachine {
         tools.extend(self.ctx.meta_tool_schemas());
 
         if let Some(ref spec) = self.run_spec {
-            use crate::types::agent::AgentRunSpec;
-            use crate::types::capability::{
-                CapabilityCommand, CapabilityDescriptor, CapabilityKind, CapabilityLease,
-            };
+            use crate::types::capability::CapabilityKind;
             tools.retain(|tool| {
                 let kind = match tool.name.as_str() {
                     "skill" => CapabilityKind::Skill,
@@ -579,7 +1301,7 @@ impl LoopStateMachine {
 
     fn rollback_reason_for_tool_result(&self, result: &ToolResult) -> Option<RollbackReason> {
         let tool_name = self.tool_name_for_call(&result.call_id);
-        let output = Self::tool_result_output_text(result);
+        let output = super::rollback::tool_result_output_text(result);
 
         if result.is_fatal {
             return Some(RollbackReason::FatalToolError {
@@ -617,58 +1339,30 @@ impl LoopStateMachine {
         }
     }
 
-    fn tool_result_output_text(result: &ToolResult) -> String {
-        match &result.output {
-            Content::Text(s) => s.clone(),
-            Content::Parts(parts) => serde_json::to_string(parts).unwrap_or_default(),
-        }
-    }
 
-    fn rollback_reason_message(reason: &RollbackReason) -> String {
-        match reason {
-            RollbackReason::FatalToolError { tool_name, error } => {
-                format!("fatal tool error in {tool_name}: {error}")
-            }
-            RollbackReason::GovernanceDenied { tool_name, reason } => {
-                format!("governance denied {tool_name}: {reason}")
-            }
-            RollbackReason::ProviderFailure { error } => {
-                format!("provider failure: {error}")
-            }
-            RollbackReason::Timeout => "timeout".to_string(),
-            RollbackReason::UserInterrupt => "user interrupt".to_string(),
-            RollbackReason::MalformedReplay { reason } => {
-                format!("malformed replay: {reason}")
-            }
-        }
-    }
-
-    fn build_rollback_note(reason: &RollbackReason, verbose: bool) -> String {
-        if verbose {
-            format!(
-                "[SYSTEM] Transaction rollback: {}",
-                Self::rollback_reason_message(reason)
-            )
-        } else {
-            match reason {
-                RollbackReason::FatalToolError { tool_name, error } => {
-                    format!("The previous step failed (`{tool_name}`: {error}). Please try a different approach.")
-                }
-                RollbackReason::GovernanceDenied { tool_name, reason } => {
-                    format!("Action `{tool_name}` was not allowed ({reason}). Please choose a different approach.")
-                }
-                RollbackReason::ProviderFailure { .. } => {
-                    "The previous attempt failed. Please try again.".to_string()
-                }
-                RollbackReason::Timeout => {
-                    "The previous step timed out. Please try a faster approach.".to_string()
-                }
-                RollbackReason::UserInterrupt => "Interrupted. Please continue.".to_string(),
-                RollbackReason::MalformedReplay { .. } => {
-                    "Context inconsistency detected. Please continue.".to_string()
-                }
-            }
-        }
+    /// Emit a `CapabilityChanged` observation for the current turn.
+    /// Single construction site for all mount/unmount/replace/pin changes.
+    #[allow(clippy::too_many_arguments)]
+    fn push_capability_change(
+        &mut self,
+        added: Vec<String>,
+        removed: Vec<String>,
+        change_kind: &str,
+        capability_id: Option<String>,
+        version: Option<String>,
+        mounted_by: Option<String>,
+        mount_reason: Option<String>,
+    ) {
+        self.observations.push(LoopObservation::CapabilityChanged {
+            turn: self.turn,
+            added,
+            removed,
+            change_kind: Some(change_kind.to_string()),
+            capability_id,
+            version,
+            mounted_by,
+            mount_reason,
+        });
     }
 
     pub fn execute_capability_command(&mut self, cmd: crate::types::capability::CapabilityCommand) {
@@ -691,22 +1385,21 @@ impl LoopStateMachine {
             } => {
                 let new_id = new_capability.id.to_string();
                 let version = new_capability.version.clone();
-                let old_kind_str = format!("{:?}", old_kind);
-                let new_kind_str = format!("{:?}", new_capability.kind);
+                let old_kind_str = old_kind.label();
+                let new_kind_str = new_capability.kind.label();
 
                 self.ctx.capabilities.remove(old_kind, &old_id);
                 self.ctx.capabilities.upsert(new_capability);
 
-                self.observations.push(LoopObservation::CapabilityChanged {
-                    turn: self.turn,
-                    added: vec![format!("{}:{}", new_kind_str, new_id)],
-                    removed: vec![format!("{}:{}", old_kind_str, old_id)],
-                    change_kind: Some("replace".to_string()),
-                    capability_id: Some(new_id),
+                self.push_capability_change(
+                    vec![format!("{}:{}", new_kind_str, new_id)],
+                    vec![format!("{}:{}", old_kind_str, old_id)],
+                    "replace",
+                    Some(new_id),
                     version,
-                    mounted_by: None,
-                    mount_reason: None,
-                });
+                    None,
+                    None,
+                );
             }
             CapabilityCommand::Pin { kind, id } => {
                 let version = self
@@ -716,16 +1409,15 @@ impl LoopStateMachine {
                     .and_then(|c| c.version.clone());
                 if let Some(cap) = self.ctx.capabilities.get_mut(kind, &id) {
                     cap.is_pinned = true;
-                    self.observations.push(LoopObservation::CapabilityChanged {
-                        turn: self.turn,
-                        added: vec![],
-                        removed: vec![],
-                        change_kind: Some("pin".to_string()),
-                        capability_id: Some(id),
+                    self.push_capability_change(
+                        vec![],
+                        vec![],
+                        "pin",
+                        Some(id),
                         version,
-                        mounted_by: None,
-                        mount_reason: None,
-                    });
+                        None,
+                        None,
+                    );
                 }
             }
         }
@@ -744,19 +1436,18 @@ impl LoopStateMachine {
             descriptor.mount_reason = mount_reason.clone();
         }
         let id = descriptor.id.to_string();
-        let kind_str = format!("{:?}", descriptor.kind);
+        let kind_str = descriptor.kind.label();
         let version = descriptor.version.clone();
         self.ctx.capabilities.upsert(descriptor);
-        self.observations.push(LoopObservation::CapabilityChanged {
-            turn: self.turn,
-            added: vec![format!("{}:{}", kind_str, id)],
-            removed: vec![],
-            change_kind: Some("mount".to_string()),
-            capability_id: Some(id),
+        self.push_capability_change(
+            vec![format!("{}:{}", kind_str, id)],
+            vec![],
+            "mount",
+            Some(id),
             version,
             mounted_by,
             mount_reason,
-        });
+        );
     }
 
     pub fn unmount_capability(&mut self, kind: crate::types::capability::CapabilityKind, id: &str) {
@@ -766,52 +1457,39 @@ impl LoopStateMachine {
             .get_mut(kind, id)
             .and_then(|c| c.version.clone());
         self.ctx.capabilities.remove(kind, id);
-        let kind_str = format!("{:?}", kind);
-        self.observations.push(LoopObservation::CapabilityChanged {
-            turn: self.turn,
-            added: vec![],
-            removed: vec![format!("{}:{}", kind_str, id)],
-            change_kind: Some("unmount".to_string()),
-            capability_id: Some(id.to_string()),
+        let kind_str = kind.label();
+        self.push_capability_change(
+            vec![],
+            vec![format!("{}:{}", kind_str, id)],
+            "unmount",
+            Some(id.to_string()),
             version,
-            mounted_by: None,
-            mount_reason: None,
-        });
+            None,
+            None,
+        );
     }
 
     // ─── Milestone contract ────────────────────────────────────────────────
 
     /// Load a milestone contract.  Must be called before `start()`.
     pub fn load_milestone_contract(&mut self, contract: MilestoneContract) {
-        self.milestone_contract = Some(contract);
-        self.current_milestone_phase = 0;
-        self.milestone_blocked_count = 0;
+        self.milestone.load_contract(contract);
     }
 
     /// Returns the ID of the current (not-yet-passed) phase, or `None` when
     /// no contract is loaded or all phases are complete.
     pub fn current_milestone_phase_id(&self) -> Option<&str> {
-        self.milestone_contract
-            .as_ref()
-            .and_then(|c| c.phases.get(self.current_milestone_phase))
-            .map(|p| p.id.as_str())
+        self.milestone.current_phase_id()
     }
 
     /// Returns the acceptance criteria of the current phase as a slice.
     pub fn current_milestone_criteria(&self) -> &[String] {
-        self.milestone_contract
-            .as_ref()
-            .and_then(|c| c.phases.get(self.current_milestone_phase))
-            .map(|p| p.criteria.as_slice())
-            .unwrap_or(&[])
+        self.milestone.current_criteria()
     }
 
     /// Returns `true` when there is no contract or all phases have passed.
     pub fn is_milestone_complete(&self) -> bool {
-        match &self.milestone_contract {
-            None => true,
-            Some(c) => self.current_milestone_phase >= c.phases.len(),
-        }
+        self.milestone.is_complete()
     }
 
     fn handle_milestone_result(&mut self, result: MilestoneCheckResult) -> LoopAction {
@@ -820,11 +1498,11 @@ impl LoopStateMachine {
         if result.passed {
             // Advance phase: mount unlocked capabilities with milestone provenance.
             let mut unlocked: Vec<String> = Vec::new();
-            if let Some(contract) = &self.milestone_contract.clone() {
-                if let Some(phase) = contract.phases.get(self.current_milestone_phase) {
+            if let Some(contract) = &self.milestone.contract.clone() {
+                if let Some(phase) = contract.phases.get(self.milestone.current_phase) {
                     let mounted_by = Some(format!("milestone:{}", phase.id));
                     for cap in phase.unlocks.clone() {
-                        let kind_str = format!("{:?}", cap.kind);
+                        let kind_str = cap.kind.label();
                         let id = cap.id.to_string();
                         unlocked.push(format!("{}:{}", kind_str, id));
                         self.mount_capability(
@@ -840,8 +1518,8 @@ impl LoopStateMachine {
                     });
                 }
             }
-            self.current_milestone_phase += 1;
-            self.milestone_blocked_count = 0;
+            self.milestone.current_phase += 1;
+            self.milestone.blocked_count = 0;
 
             if self.is_milestone_complete() {
                 return self.terminate(TerminationReason::Completed, None);
@@ -849,9 +1527,10 @@ impl LoopStateMachine {
 
             // Prompt the LLM with the next phase context.
             if let Some(criteria) = self
-                .milestone_contract
+                .milestone
+                .contract
                 .as_ref()
-                .and_then(|c| c.phases.get(self.current_milestone_phase))
+                .and_then(|c| c.phases.get(self.milestone.current_phase))
                 .map(|p| {
                     if p.criteria.is_empty() {
                         format!("[NEXT MILESTONE PHASE: {}]", p.id)
@@ -870,14 +1549,15 @@ impl LoopStateMachine {
             self.emit_call_llm()
         } else {
             // Phase blocked — increment retry count.
-            self.milestone_blocked_count += 1;
+            self.milestone.blocked_count += 1;
             let reason = result.reason.as_deref().unwrap_or("milestone criteria not met");
 
             // Retrieve the rollback_policy and retry budget for the current phase.
             let (rollback_policy, max_attempts) = self
-                .milestone_contract
+                .milestone
+                .contract
                 .as_ref()
-                .and_then(|c| c.phases.get(self.current_milestone_phase))
+                .and_then(|c| c.phases.get(self.milestone.current_phase))
                 .map(|p| {
                     let max = p
                         .retry_policy
@@ -890,7 +1570,7 @@ impl LoopStateMachine {
 
             // Check retry budget (0 = unlimited).
             let budget_exceeded = max_attempts > 0
-                && self.milestone_blocked_count as u32 >= max_attempts;
+                && self.milestone.blocked_count as u32 >= max_attempts;
 
             if budget_exceeded {
                 use crate::types::milestone::MilestoneRollbackPolicy;
@@ -923,10 +1603,6 @@ impl LoopStateMachine {
             }
 
             // Normal blocked: inject message and retry.
-            let msg = format!(
-                "[MILESTONE BLOCKED: {} — {}. Address the criteria and try again.]",
-                result.phase_id, reason
-            );
             self.ctx.push_signal(format!(
                 "[MILESTONE BLOCKED: {} — {}. Address the criteria and try again.]",
                 result.phase_id, reason
@@ -943,585 +1619,5 @@ impl LoopStateMachine {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::context::skill_catalog::SKILL_TOOL_NAME;
-    use crate::types::message::Role;
-    use crate::types::skill::SkillMetadata;
-
-    fn sm() -> LoopStateMachine {
-        LoopStateMachine::new(LoopPolicy {
-            max_tokens: 128_000,
-            ..LoopPolicy::default()
-        })
-    }
-
-    #[test]
-    fn start_emits_call_llm() {
-        let mut sm = sm();
-        let action = sm.start(RuntimeTask::new("Say hello"));
-        assert!(matches!(action, LoopAction::CallLLM { .. }));
-        assert!(matches!(sm.phase, LoopPhase::Reason));
-    }
-
-    #[test]
-    fn resume_after_preload_runs_pending_tools_before_llm() {
-        let mut sm = sm();
-        sm.preload_history(vec![
-            Message::user("goal"),
-            Message {
-                role: Role::Assistant,
-                content: Content::Text("checking".into()),
-                tool_calls: vec![ToolCall {
-                    id: compact_str::CompactString::new("call_ping"),
-                    name: compact_str::CompactString::new("ping"),
-                    arguments: serde_json::json!({}),
-                }],
-                token_count: Some(5),
-            },
-        ]);
-        match sm.resume_after_preload() {
-            LoopAction::ExecuteTools { calls } => {
-                assert_eq!(calls.len(), 1);
-                assert_eq!(calls[0].name.as_str(), "ping");
-            }
-            other => panic!("expected ExecuteTools, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn resume_after_preload_emits_call_llm_without_duplicate_user() {
-        let mut sm = sm();
-        sm.preload_history(vec![
-            Message::user("prior goal"),
-            Message::assistant("partial"),
-        ]);
-        let history_len = sm.ctx.partitions.history.messages.len();
-        let action = sm.resume_after_preload();
-        assert!(matches!(action, LoopAction::CallLLM { .. }));
-        assert_eq!(sm.ctx.partitions.history.messages.len(), history_len);
-    }
-
-    #[test]
-    fn start_places_user_message_in_history_not_signals() {
-        let mut sm = sm();
-        sm.start(RuntimeTask::new("Say hello"));
-        assert!(!sm.ctx.partitions.history.is_empty(), "history should have user message");
-        assert!(sm.ctx.partitions.signals.is_empty(), "signals should stay empty at start");
-    }
-
-    #[test]
-    fn llm_response_without_tools_terminates_and_saves_to_history() {
-        let mut sm = sm();
-        sm.start(RuntimeTask::new("Say hello"));
-        let action = sm.feed(LoopEvent::LLMResponse {
-            message: Message::assistant("Hello!"),
-        });
-        assert!(matches!(action, LoopAction::Done { .. }));
-        assert!(sm.is_terminal());
-        // Final response is committed to history
-        let history = &sm.ctx.partitions.history.messages;
-        assert!(
-            history
-                .iter()
-                .any(|m| m.content.as_text() == Some("Hello!"))
-        );
-    }
-
-    #[test]
-    fn timeout_rolls_back() {
-        let mut sm = sm();
-        sm.start(RuntimeTask::new("test"));
-        match sm.feed(LoopEvent::Timeout) {
-            LoopAction::CallLLM { .. } => {}
-            _ => panic!("expected CallLLM"),
-        }
-        assert!(sm.observations.iter().any(|o| {
-            matches!(
-                o,
-                LoopObservation::Rollbacked {
-                    reason: RollbackReason::Timeout,
-                    ..
-                }
-            )
-        }));
-    }
-
-    #[test]
-    fn critical_signal_goes_to_signals_not_history() {
-        use crate::types::signal::{SignalSource, SignalType, Urgency};
-        let mut sm = sm();
-        sm.start(RuntimeTask::new("test"));
-        let history_len_before = sm.ctx.partitions.history.messages.len();
-
-        let sig = RuntimeSignal::new(SignalSource::Gateway, SignalType::Alert, Urgency::Critical, "fire");
-        let action = sm.feed(LoopEvent::Signal { signal: sig });
-        assert!(matches!(action, LoopAction::CallLLM { .. }));
-        assert!(matches!(sm.phase, LoopPhase::Reason));
-        assert!(sm.ctx.partitions.signals.iter().any(|s| s.contains("[INTERRUPT]")));
-        assert_eq!(sm.ctx.partitions.history.messages.len(), history_len_before);
-    }
-
-    #[test]
-    fn max_turns_emits_final_toolless_call_then_terminates() {
-        let mut sm = LoopStateMachine::new(LoopPolicy {
-            max_tokens: 128_000,
-            max_turns: 1,
-            ..LoopPolicy::default()
-        });
-        sm.start(RuntimeTask::new("test"));
-
-        // After tool results hit maxTurns, kernel emits one final CallLLM with no tools
-        let action = sm.feed(LoopEvent::ToolResults { results: vec![] });
-        match action {
-            LoopAction::CallLLM { tools, .. } => {
-                assert!(tools.is_empty(), "final call must have no tools")
-            }
-            _ => panic!("expected CallLLM for final text-only call"),
-        }
-
-        // The LLM responds with text → terminates with MaxTurns
-        let action = sm.feed(LoopEvent::LLMResponse {
-            message: Message::assistant("final summary"),
-        });
-        match action {
-            LoopAction::Done { result } => {
-                assert_eq!(result.termination, TerminationReason::MaxTurns);
-                assert!(
-                    result.final_message.is_some(),
-                    "final message must be preserved"
-                );
-            }
-            _ => panic!("expected Done"),
-        }
-    }
-
-    #[test]
-    fn skill_tool_injected_in_call_llm_when_skills_registered() {
-        let mut sm = sm();
-        sm.ctx
-            .set_available_skills(vec![SkillMetadata::new("debug", "Debug helper")]);
-        let action = sm.start(RuntimeTask::new("Fix the bug"));
-        match action {
-            LoopAction::CallLLM { tools, .. } => {
-                assert!(tools.iter().any(|t| t.name.as_str() == SKILL_TOOL_NAME));
-            }
-            _ => panic!("expected CallLLM"),
-        }
-    }
-
-    #[test]
-    fn skill_tool_not_injected_when_no_skills() {
-        let mut sm = sm();
-        let action = sm.start(RuntimeTask::new("Say hello"));
-        match action {
-            LoopAction::CallLLM { tools, .. } => {
-                assert!(!tools.iter().any(|t| t.name.as_str() == SKILL_TOOL_NAME));
-            }
-            _ => panic!("expected CallLLM"),
-        }
-    }
-
-    #[test]
-    fn compression_emits_observation() {
-        let mut sm = LoopStateMachine::new(LoopPolicy {
-            max_tokens: 100,
-            max_turns: 100,
-            ..LoopPolicy::default()
-        });
-        sm.start(RuntimeTask::new("test"));
-        for i in 0..10 {
-            sm.ctx
-                .push_history(Message::user(format!("filler {i}")), 50);
-        }
-        sm.feed(LoopEvent::ToolResults { results: vec![] });
-        let obs = sm.take_observations();
-        assert!(
-            obs.iter()
-                .any(|o| matches!(o, LoopObservation::Compressed { .. }))
-        );
-    }
-
-    #[test]
-    fn renewal_emits_observation_when_pressure_extreme() {
-        // Renewal fires only when pressure stays > 0.98 even AFTER compression.
-        // Compression only targets history + skill, so we saturate the system
-        // partition (non-compressible) to keep rho above the threshold.
-        let mut sm = LoopStateMachine::new(LoopPolicy {
-            max_tokens: 100,
-            max_turns: 100,
-            ..LoopPolicy::default()
-        });
-        sm.start(RuntimeTask::new("test"));
-        // 10 system messages × 10 tokens = 100 tokens in non-compressible partition.
-        // rho = 100/100 = 1.0 > 0.98; compression on history saves nothing meaningful.
-        for i in 0..10 {
-            sm.ctx
-                .partitions
-                .system
-                .push(Message::system(format!("constraint {i}")), 10);
-        }
-        sm.feed(LoopEvent::ToolResults { results: vec![] });
-        let obs = sm.take_observations();
-        assert!(
-            obs.iter()
-                .any(|o| matches!(o, LoopObservation::Renewed { .. }))
-        );
-    }
-
-    #[test]
-    fn preload_history_and_drain_new_messages() {
-        let mut sm = sm();
-
-        // Simulate restoring a prior session with one exchange
-        let prior = vec![
-            Message::user("Hello from last time"),
-            Message::assistant("Hi! I remember."),
-        ];
-        sm.preload_history(prior.clone());
-        assert_eq!(sm.ctx.partitions.history.messages.len(), 2);
-
-        // Start a new turn
-        sm.start(RuntimeTask::new("What did I say before?"));
-
-        // New messages = user message from start() + (after termination) final assistant
-        let new_msgs = sm.drain_new_messages();
-        // At minimum the new user message must be present
-        assert!(!new_msgs.is_empty());
-        assert!(new_msgs.iter().any(|m| {
-            m.content
-                .as_text()
-                .map(|t| t == "Proceed with the task described in [TASK STATE].")
-                .unwrap_or(false)
-        }));
-        assert_eq!(sm.ctx.partitions.task_state.goal, "What did I say before?");
-        // Prior session messages are NOT in drain_new_messages
-        assert!(!new_msgs.iter().any(|m| {
-            m.content
-                .as_text()
-                .map(|t| t.contains("Hello from last time"))
-                .unwrap_or(false)
-        }));
-    }
-
-    #[test]
-    fn tool_result_content_parts_preserved_as_json() {
-        use crate::types::message::Content;
-        use compact_str::CompactString;
-
-        let mut sm = sm();
-        sm.start(RuntimeTask::new("test"));
-
-        // Simulate an LLM tool call
-        let mut msg = Message::assistant("");
-        msg.tool_calls.push(crate::types::message::ToolCall {
-            id: CompactString::new("c1"),
-            name: CompactString::new("my_tool"),
-            arguments: serde_json::json!({}),
-        });
-        sm.feed(LoopEvent::LLMResponse { message: msg });
-
-        // Feed a structured (Parts) tool result
-        let structured = Content::Parts(vec![ContentPart::Text {
-            text: "structured output".to_string(),
-        }]);
-        sm.feed(LoopEvent::ToolResults {
-            results: vec![ToolResult {
-                call_id: CompactString::new("c1"),
-                output: structured,
-                is_error: false,
-                is_fatal: false,
-                error_kind: None,
-                token_count: None,
-            }],
-        });
-
-        // The history should contain a tool message with JSON-serialised content
-        let tool_msgs: Vec<_> = sm
-            .ctx
-            .partitions
-            .history
-            .messages
-            .iter()
-            .filter(|m| matches!(m.role, crate::types::message::Role::Tool))
-            .collect();
-        assert!(
-            !tool_msgs.is_empty(),
-            "tool result message must be in history"
-        );
-        // Content is Parts (ToolResult part), not empty
-        if let Content::Parts(parts) = &tool_msgs[0].content {
-            assert!(!parts.is_empty());
-        }
-    }
-
-    // ─── Milestone contract tests ──────────────────────────────────────────
-
-    fn make_tool_schema(name: &str) -> ToolSchema {
-        ToolSchema {
-            name: compact_str::CompactString::new(name),
-            description: format!("tool {name}"),
-            parameters: serde_json::json!({"type": "object"}),
-        }
-    }
-
-    #[test]
-    fn milestone_contract_loads_and_reports_current_phase() {
-        let mut sm = sm();
-        let contract = crate::types::milestone::MilestoneContract::new()
-            .phase(
-                crate::types::milestone::MilestonePhase::new("phase-a")
-                    .with_criterion("Output contains 'hello'"),
-            )
-            .phase(crate::types::milestone::MilestonePhase::new("phase-b"));
-
-        sm.load_milestone_contract(contract);
-        assert_eq!(sm.current_milestone_phase_id(), Some("phase-a"));
-        assert!(!sm.is_milestone_complete());
-        assert_eq!(
-            sm.current_milestone_criteria(),
-            &["Output contains 'hello'"]
-        );
-    }
-
-    #[test]
-    fn milestone_pass_advances_phase_and_emits_observation() {
-        let mut sm = sm();
-        let contract = crate::types::milestone::MilestoneContract::new()
-            .phase(crate::types::milestone::MilestonePhase::new("plan"))
-            .phase(crate::types::milestone::MilestonePhase::new("implement"));
-        sm.load_milestone_contract(contract);
-        sm.start(RuntimeTask::new("do the thing"));
-
-        // Simulate LLM returning text-only → EvaluateMilestone
-        let action = sm.feed(LoopEvent::LLMResponse {
-            message: Message::assistant("plan drafted"),
-        });
-        assert!(
-            matches!(action, LoopAction::EvaluateMilestone { ref phase_id, .. } if phase_id == "plan"),
-            "expected EvaluateMilestone for 'plan', got {action:?}",
-        );
-
-        // Feed a passing result
-        let action2 = sm.feed(LoopEvent::MilestoneResult {
-            result: crate::types::milestone::MilestoneCheckResult::pass("plan"),
-        });
-        assert!(
-            matches!(action2, LoopAction::CallLLM { .. }),
-            "expect CallLLM after milestone advance",
-        );
-        assert_eq!(sm.current_milestone_phase_id(), Some("implement"));
-
-        let obs = sm.take_observations();
-        assert!(obs.iter().any(|o| matches!(
-            o,
-            LoopObservation::MilestoneAdvanced { phase_id, .. } if phase_id == "plan"
-        )));
-    }
-
-    #[test]
-    fn milestone_fail_blocks_phase_and_emits_observation() {
-        let mut sm = sm();
-        let contract = crate::types::milestone::MilestoneContract::new()
-            .phase(crate::types::milestone::MilestonePhase::new("plan"));
-        sm.load_milestone_contract(contract);
-        sm.start(RuntimeTask::new("do the thing"));
-
-        sm.feed(LoopEvent::LLMResponse {
-            message: Message::assistant("bad plan"),
-        });
-
-        let action = sm.feed(LoopEvent::MilestoneResult {
-            result: crate::types::milestone::MilestoneCheckResult::fail("plan", "missing evidence"),
-        });
-        assert!(
-            matches!(action, LoopAction::CallLLM { .. }),
-            "blocked run must return CallLLM"
-        );
-        // Phase index must NOT advance
-        assert_eq!(sm.current_milestone_phase_id(), Some("plan"));
-
-        let obs = sm.take_observations();
-        assert!(obs.iter().any(|o| matches!(
-            o,
-            LoopObservation::MilestoneBlocked { phase_id, reason, .. }
-            if phase_id == "plan" && reason.contains("missing evidence")
-        )));
-    }
-
-    #[test]
-    fn milestone_unlocks_capabilities_on_advance() {
-        let mut sm = sm();
-        let schema = make_tool_schema("deploy_tool");
-        let cap = crate::types::capability::CapabilityDescriptor::tool(schema);
-
-        let contract = crate::types::milestone::MilestoneContract::new()
-            .phase(crate::types::milestone::MilestonePhase::new("phase-a").unlocking(cap));
-        sm.load_milestone_contract(contract);
-        sm.start(RuntimeTask::new("build pipeline"));
-
-        // Confirm tool not yet in manifest
-        assert!(
-            sm.ctx
-                .capabilities
-                .by_kind(crate::types::capability::CapabilityKind::Tool)
-                .is_empty()
-        );
-
-        sm.feed(LoopEvent::LLMResponse {
-            message: Message::assistant("done"),
-        });
-        sm.feed(LoopEvent::MilestoneResult {
-            result: crate::types::milestone::MilestoneCheckResult::pass("phase-a"),
-        });
-
-        // Tool must now be in the capability manifest
-        let tools = sm
-            .ctx
-            .capabilities
-            .by_kind(crate::types::capability::CapabilityKind::Tool);
-        assert!(
-            tools.iter().any(|c| c.id.as_str() == "deploy_tool"),
-            "deploy_tool should be unlocked after phase-a passes",
-        );
-
-        // And capability_unlocked list in observation
-        let obs = sm.take_observations();
-        let advanced = obs.iter().find_map(|o| {
-            if let LoopObservation::MilestoneAdvanced {
-                capabilities_unlocked,
-                ..
-            } = o
-            {
-                Some(capabilities_unlocked)
-            } else {
-                None
-            }
-        });
-        assert!(advanced.is_some(), "MilestoneAdvanced observation expected");
-        assert!(advanced.unwrap().iter().any(|s| s.contains("deploy_tool")));
-    }
-
-    #[test]
-    fn all_phases_complete_terminates_run() {
-        let mut sm = sm();
-        let contract = crate::types::milestone::MilestoneContract::new()
-            .phase(crate::types::milestone::MilestonePhase::new("only-phase"));
-        sm.load_milestone_contract(contract);
-        sm.start(RuntimeTask::new("single milestone run"));
-
-        sm.feed(LoopEvent::LLMResponse {
-            message: Message::assistant("ready"),
-        });
-        let done = sm.feed(LoopEvent::MilestoneResult {
-            result: crate::types::milestone::MilestoneCheckResult::pass("only-phase"),
-        });
-
-        assert!(sm.is_milestone_complete());
-        assert!(
-            matches!(done, LoopAction::Done { .. }),
-            "all phases done must produce Done"
-        );
-    }
-
-    #[test]
-    fn no_contract_terminates_normally() {
-        let mut sm = sm();
-        // No milestone contract loaded
-        sm.start(RuntimeTask::new("simple task"));
-
-        let action = sm.feed(LoopEvent::LLMResponse {
-            message: Message::assistant("answer"),
-        });
-        assert!(
-            matches!(action, LoopAction::Done { .. }),
-            "without milestone contract, text-only response must terminate: {action:?}",
-        );
-    }
-
-    #[test]
-    fn mount_unmount_capability_emits_observation() {
-        let mut sm = sm();
-        let schema = ToolSchema {
-            name: compact_str::CompactString::new("test_tool"),
-            description: "test description".to_string(),
-            parameters: serde_json::json!({ "type": "object" }),
-        };
-        let desc =
-            crate::types::capability::CapabilityDescriptor::tool(schema).with_version("1.0.0");
-
-        sm.mount_capability(desc, None, None);
-
-        let obs = sm.take_observations();
-        assert_eq!(obs.len(), 1);
-        if let LoopObservation::CapabilityChanged {
-            turn,
-            added,
-            removed,
-            change_kind,
-            capability_id,
-            version,
-            ..
-        } = &obs[0]
-        {
-            assert_eq!(*turn, 0);
-            assert_eq!(added, &vec!["Tool:test_tool".to_string()]);
-            assert!(removed.is_empty());
-            assert_eq!(change_kind.as_deref(), Some("mount"));
-            assert_eq!(capability_id.as_deref(), Some("test_tool"));
-            assert_eq!(version.as_deref(), Some("1.0.0"));
-        } else {
-            panic!("Expected CapabilityChanged observation");
-        }
-
-        sm.unmount_capability(crate::types::capability::CapabilityKind::Tool, "test_tool");
-        let obs2 = sm.take_observations();
-        assert_eq!(obs2.len(), 1);
-        if let LoopObservation::CapabilityChanged {
-            turn,
-            added,
-            removed,
-            change_kind,
-            capability_id,
-            version,
-            ..
-        } = &obs2[0]
-        {
-            assert_eq!(*turn, 0);
-            assert!(added.is_empty());
-            assert_eq!(removed, &vec!["Tool:test_tool".to_string()]);
-            assert_eq!(change_kind.as_deref(), Some("unmount"));
-            assert_eq!(capability_id.as_deref(), Some("test_tool"));
-            assert_eq!(version.as_deref(), Some("1.0.0"));
-        } else {
-            panic!("Expected CapabilityChanged observation");
-        }
-    }
-
-    #[test]
-    fn rollback_note_is_concise_by_default() {
-        let reason = RollbackReason::FatalToolError {
-            tool_name: "run_tests".to_string(),
-            error: "exit code 1".to_string(),
-        };
-        let note = LoopStateMachine::build_rollback_note(&reason, false);
-        assert!(
-            !note.contains("[SYSTEM]"),
-            "default note must not contain [SYSTEM]: {note}"
-        );
-        assert!(
-            note.contains("run_tests"),
-            "note should name the tool: {note}"
-        );
-    }
-
-    #[test]
-    fn rollback_note_is_verbose_when_opted_in() {
-        let reason = RollbackReason::Timeout;
-        let note = LoopStateMachine::build_rollback_note(&reason, true);
-        assert!(
-            note.starts_with("[SYSTEM] Transaction rollback:"),
-            "verbose note must use internal format: {note}"
-        );
-    }
-}
+#[path = "state_machine_tests.rs"]
+mod tests;

@@ -1,0 +1,76 @@
+/**
+ * Deep Cosmic Blue Theme Overrides for VitePress
+ */
+
+:root {
+  /* Brand colors */
+  --vp-c-brand-1: #3b82f6;          /* Bright cosmic blue */
+  --vp-c-brand-2: #2563eb;          /* Med cosmic blue */
+  --vp-c-brand-3: #1d4ed8;          /* Darker blue */
+  --vp-c-brand-soft: rgba(59, 130, 246, 0.16);
+
+  /* Font settings */
+  --vp-font-family-base: 'Outfit', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+}
+
+/* Dark mode adjustments for cosmic theme */
+.dark {
+  --vp-c-brand-1: #60a5fa;          /* Lighter vibrant blue for dark mode */
+  --vp-c-brand-2: #3b82f6;
+  --vp-c-brand-3: #2563eb;
+  --vp-c-brand-soft: rgba(96, 165, 250, 0.16);
+
+  /* Backgrounds */
+  --vp-c-bg: #0b0f19;               /* Deep space background */
+  --vp-c-bg-soft: #111827;          /* Card/Soft background */
+  --vp-c-bg-mute: #1f2937;
+
+  /* Borders & Dividers */
+  --vp-c-divider: rgba(59, 130, 246, 0.15);
+  --vp-c-border: rgba(59, 130, 246, 0.2);
+}
+
+/* Home Page Hero Section Enhancements */
+.VPHero {
+  position: relative;
+  overflow: hidden;
+}
+
+.VPHero::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: radial-gradient(circle, rgba(37, 99, 235, 0.08) 0%, rgba(0, 0, 0, 0) 60%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* Customize code blocks */
+.vp-doc [class*='language-'] {
+  border: 1px solid rgba(59, 130, 246, 0.15);
+  border-radius: 8px;
+  background-color: #0f172a !important;
+}
+
+/* Custom layout styles */
+.vp-doc a {
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 0.2s ease;
+}
+
+.vp-doc a:hover {
+  text-decoration: underline;
+}
+
+/* Info custom containers styled with blue accent */
+.custom-block.info {
+  border-color: var(--vp-c-brand-1);
+  background-color: var(--vp-c-brand-soft);
+}
+.custom-block.info .custom-block-title {
+  color: var(--vp-c-brand-1);
+}

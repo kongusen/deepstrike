@@ -1,9 +1,9 @@
 use super::config::ContextConfig;
-use super::partitions::{ContextPartitions, Partition};
+use super::partitions::ContextPartitions;
 use super::pressure::PressureAction;
 use super::summarizer::Summarizer;
 use super::token_engine::ContextTokenEngine;
-use crate::types::message::{Content, ContentPart, Message, Role};
+use crate::types::message::{Content, ContentPart, Message};
 
 /// Compression result returned by every compactor.
 pub struct CompressResult {
@@ -97,18 +97,28 @@ impl Compressor for SnipCompactor {
         partition.token_count = partition.token_count.saturating_sub(saved);
 
         if saved > 0 {
+            // 记录释放的token数（传递给Layer 5 Auto-Compact）
             partitions.task_state.log_compression(
                 "snip_compact",
-                format!("{saved} tokens truncated from oversized messages"),
+                format!(
+                    "{saved} tokens truncated from oversized messages (boundary: snip)",
+                ),
             );
         }
 
         CompressResult {
             tokens_saved: saved,
-            summary: None,
+            summary: None,  // SnipCompactor不返回summary，保持原有行为
             archived: vec![],
         }
     }
+}
+
+/// 获取当前UTC时间戳
+fn utc_now() -> String {
+    // 在实际使用中，这应该从ProviderResult.now_ms获取
+    // 这里简化为占位符
+    format!("{:?}", std::time::SystemTime::now())
 }
 
 /// Helper to extract key fields and info from JSON strings.
@@ -484,13 +494,6 @@ impl CompressionPipeline {
 
         (total_saved, merged_summary, all_archived)
     }
-
-    fn compressor_for(&self, action: PressureAction) -> Option<&dyn Compressor> {
-        self.stages
-            .iter()
-            .find(|(a, _)| *a == action)
-            .map(|(_, c)| c.as_ref())
-    }
 }
 
 #[cfg(test)]
@@ -557,7 +560,7 @@ mod tests {
             output: "a".repeat(1200),
             is_error: false,
         }];
-        let mut msg = Message {
+        let msg = Message {
             role: Role::Tool,
             content: Content::Parts(parts),
             tool_calls: vec![],

@@ -49,6 +49,59 @@ export interface DreamStore {
   saveSession(data: SessionData): Promise<void>
 }
 
+// ─── Phase 7: Long-term memory types (mirroring kernel mm/memory.rs) ─────────
+
+/** Memory kind (4 types, mirroring Claude Code). */
+export type MemoryKind = "user" | "feedback" | "project" | "reference"
+
+/** Memory metadata (kernel stores, SDK provides full content). */
+export interface MemoryMetadata {
+  name: string
+  description: string
+  kind?: MemoryKind
+  created_at: number
+  updated_at: number
+  session_id?: string
+
+  // Heuristic inference fields
+  user_role?: string
+  expertise_level?: string
+  preference_rule?: string
+  approved_pattern?: string
+  project_phase?: string
+  relative_date?: string
+  external_url?: string
+  ticket_ref?: string
+}
+
+/** Memory write request (SDK → kernel). */
+export interface MemoryWriteRequest {
+  metadata: MemoryMetadata
+  content: string
+}
+
+/** Memory query request (kernel → SDK). */
+export interface MemoryQuery {
+  current_context: string
+  active_tools: string[]
+  already_surfaced: string[]
+  top_k: number
+}
+
+/** Memory retrieval response (SDK → kernel). */
+export interface MemoryRetrieval {
+  selected_memory_ids: string[]
+  selection_rationale: string
+}
+
+/** Memory validation error (mirroring kernel MemoryValidationError). */
+export type MemoryValidationError =
+  | { kind: "missing_required_field"; field: string }
+  | { kind: "content_too_large"; size: number; limit: number }
+  | { kind: "forbidden_pattern"; pattern: string; reason: string }
+  | { kind: "invalid_kind"; kind: string }
+  | { kind: "name_too_long"; length: number; limit: number }
+
 /** Durable transcript storage for same-session conversational continuity. */
 
 export interface DreamResult {

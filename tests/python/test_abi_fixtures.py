@@ -16,21 +16,23 @@ def _load(name: str) -> dict:
 
 
 @pytest.mark.timeout(30)
-def test_input_spawn_sub_agent_emits_agent_spawned() -> None:
+def test_input_spawn_sub_agent_emits_agent_process_changed() -> None:
     runtime = KernelRuntime(LoopPolicy(max_tokens=2048))
     runtime.step(json.dumps(_load("input_start_run.json")))
 
     step = json.loads(runtime.step(json.dumps(_load("input_spawn_sub_agent.json"))))
     assert step["version"] == 1
     assert step["actions"] == []
-    spawned = next(o for o in step["observations"] if o.get("kind") == "agent_spawned")
-    assert spawned["agent_id"] == "worker"
-    assert spawned["parent_session_id"] == "parent-session-001"
+    proc = next(o for o in step["observations"] if o.get("kind") == "agent_process_changed")
+    assert proc["agent_id"] == "worker"
+    assert proc["parent_session_id"] == "parent-session-001"
+    assert proc["state"] == "running"
+    assert any(o.get("kind") == "suspended" and o.get("reason") == "sub_agent_await" for o in step["observations"])
 
 
-def test_observation_agent_spawned_fixture_fields() -> None:
-    obs = _load("observation_agent_spawned.json")
-    assert obs["kind"] == "agent_spawned"
+def test_observation_agent_process_changed_fixture_fields() -> None:
+    obs = _load("observation_agent_process_changed.json")
+    assert obs["kind"] == "agent_process_changed"
     assert "read_file" in obs["permitted_capability_ids"]
 
 

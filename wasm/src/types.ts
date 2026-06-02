@@ -41,6 +41,7 @@ export interface RenderedContext {
   systemText: string
   systemStable?: string
   systemKnowledge?: string
+  systemVolatile?: string
   turns: Message[]
 }
 
@@ -53,6 +54,15 @@ export interface ToolResultEvent extends StreamEvent { type: "tool_result"; call
 export interface DoneEvent extends StreamEvent { type: "done"; iterations: number; totalTokens: number; status: string }
 export interface ErrorEvent extends StreamEvent { type: "error"; message: string }
 export interface PermissionRequestEvent extends StreamEvent { type: "permission_request"; callId: string; toolName: string; arguments: string; reason: string }
+export interface PermissionResponse { approved: boolean; responder?: string; reason?: string }
+export interface PermissionResolvedEvent extends StreamEvent {
+  type: "permission_resolved"
+  callId: string
+  toolName: string
+  approved: boolean
+  responder: string
+  reason?: string
+}
 export interface ToolDeniedEvent extends StreamEvent { type: "tool_denied"; callId: string; toolName: string; reason: string }
 export interface ToolArgumentRepairedEvent extends StreamEvent {
   type: "tool_argument_repaired"
