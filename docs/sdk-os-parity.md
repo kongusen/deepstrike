@@ -14,6 +14,7 @@ Optional `osProfile: "native"` / `os_profile: "native"` adds **fail-fast static 
 | `agent_process_changed` (proc) | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `schedulerBudget` / `scheduler_budget` → `set_scheduler_budget` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `resourceQuota` / `resource_quota` → `set_resource_quota` (M2) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `memoryPolicy` / `memory_policy` → `set_memory_policy` (enforced) | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Public OS config shape (`osProfile`, governance, attention, scheduler, quota) | ✓ | ✓ | ✓ | ✓ | ✓ |
 | mm page-in before `execute_tool` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Layer-1 `large_result_spooled` + spool I/O | ✓ | ✓ | ✓ | ✓ | event only |
@@ -28,6 +29,7 @@ Optional `osProfile: "native"` / `os_profile: "native"` adds **fail-fast static 
 - **Rust:** OS snapshot rebuild helpers are session-log oriented; runner exposes `write_memory` / `query_memory` parity with Node/Python.
 - **WASM:** Memory syscall **session event types** are mapped; runner-level `writeMemory` / `queryMemory` APIs are not yet public.
 - **Resource quotas (M2):** the kernel enforces spawn/depth/write-rate quotas for *all* SDKs (the `set_resource_quota` JSON event + `gate_syscall` trap are in core). Node/WASM expose `RuntimeOptions.resourceQuota`; Python/Rust expose `RuntimeOptions.resource_quota`. Each maps the ergonomic runner option onto the same snake_case kernel event.
+- **Memory policy:** all four SDKs expose the ergonomic option (`RuntimeOptions.memoryPolicy` in Node/WASM, `RuntimeOptions.memory_policy` in Python/Rust) → the `set_memory_policy` JSON event, which the kernel **enforces** at the memory syscall traps: `validationEnabled: false` admits writes without validation, `maxContentBytes` / `maxNameLength` override the validation size limits, and `retrievalTopK` caps the emitted `requested_k` (`min(query.top_k, retrievalTopK)`). `memoryPath` / `staleWarningDays` are carried for the SDK's recall I/O (the kernel performs no recall I/O). Opt-in: with no policy installed, writes use default-rule validation and retrieval uses the requested top-k verbatim. Node/Python/Rust install the policy on both the run runtime and standalone memory-syscall runtimes; WASM installs it during run setup.
 - **Public shape:** Node/WASM keep JS-style camelCase (`osProfile`, `governancePolicy`, `attentionPolicy`, `schedulerBudget`, `resourceQuota`); Python/Rust keep native snake_case (`os_profile`, `governance_policy`, `attention_policy`, `scheduler_budget`, `resource_quota`). The emitted kernel events are the same snake_case JSON ABI.
 
 ## CI gates

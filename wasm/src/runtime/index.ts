@@ -2,7 +2,7 @@ export type { SessionEvent, SessionLog } from "./session-log.js"
 export { InMemorySessionLog } from "./session-log.js"
 export type { RunContext, ExecutionPlane } from "./execution-plane.js"
 export { LocalExecutionPlane } from "./execution-plane.js"
-export type { MemoryWriteRateLimit, ResourceQuota, RuntimeOptions, SchedulerBudget } from "./runner.js"
+export type { MemoryPolicy, MemoryWriteRateLimit, ResourceQuota, RuntimeOptions, SchedulerBudget } from "./runner.js"
 export { RuntimeRunner, collectText } from "./runner.js"
 export { getKernel } from "./kernel.js"
 export {

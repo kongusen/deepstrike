@@ -335,6 +335,9 @@ pub struct LoopStateMachine {
     /// Timestamps of recent allowed `WriteMemory` syscalls, for the rolling-window rate limit.
     /// Only populated when `resource_quota.memory_writes_per_window` is set.
     memory_write_times: Vec<u64>,
+    /// Optional long-term memory policy (`set_memory_policy`). `None` (default) preserves
+    /// pre-policy behavior: default-rule validation + verbatim retrieval `top_k`.
+    memory_policy: Option<crate::mm::memory::MemoryPolicy>,
     /// Optional in-kernel signal router. When set, inbound signals are routed
     /// through dedup + attention policy + queue here (the kernel owns disposition).
     /// `None` (default) keeps the legacy hardcoded urgency handling in `feed`.
@@ -395,6 +398,7 @@ impl LoopStateMachine {
             governance: None,
             resource_quota: None,
             memory_write_times: Vec::new(),
+            memory_policy: None,
             signal_router: Some(SignalRouter::new(64)),
             started_at_ms: None,
             last_now_ms: None,
@@ -466,6 +470,18 @@ impl LoopStateMachine {
     /// the quota at the trap. Not setting it (the default) leaves them unconditionally allowed.
     pub fn set_resource_quota(&mut self, quota: crate::governance::quota::ResourceQuota) {
         self.resource_quota = Some(quota);
+    }
+
+    /// Install the long-term memory policy (`set_memory_policy`). Once set it gates `write_memory`
+    /// validation and bounds `query_memory` retrieval breadth. Not setting it (the default)
+    /// preserves pre-policy behavior.
+    pub fn set_memory_policy(&mut self, policy: crate::mm::memory::MemoryPolicy) {
+        self.memory_policy = Some(policy);
+    }
+
+    /// The installed memory policy, if any. `None` means default-rule validation + verbatim top_k.
+    pub fn memory_policy(&self) -> Option<&crate::mm::memory::MemoryPolicy> {
+        self.memory_policy.as_ref()
     }
 
     /// Feed the current wall-clock time (ms) to scheduler/governance budget axes.

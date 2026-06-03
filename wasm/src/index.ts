@@ -13,6 +13,7 @@ export {
 export type {
   NativeOsProfile,
   OsProfileId,
+  MemoryPolicy,
   MemoryWriteRateLimit,
   ResourceQuota,
   RuntimeOptions,

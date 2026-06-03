@@ -229,6 +229,61 @@ pub fn validate_memory_write(request: &MemoryWriteRequest) -> Result<(), MemoryV
     MemoryValidation::default().validate(request)
 }
 
+/// Declarative configuration for the kernel's long-term memory subsystem.
+///
+/// Installed via the `set_memory_policy` input event (opt-in). When no policy is installed the
+/// kernel preserves pre-policy behavior: every `write_memory` is validated with the default rules
+/// and `query_memory` uses the requested `top_k` verbatim. Installing a policy makes these knobs
+/// authoritative:
+/// - `validation_enabled = false` admits every write without validation.
+/// - `retrieval_top_k` is an upper bound: the emitted `requested_k` is `min(query.top_k, top_k)`.
+/// - `max_content_bytes` / `max_name_length` override the validation size limits when set.
+///
+/// `memory_path` and `stale_warning_days` are not enforced inside the kernel (the kernel performs
+/// no recall I/O); they are carried so the SDK consumes a single authoritative config.
+#[derive(Debug, Clone)]
+pub struct MemoryPolicy {
+    pub memory_path: String,
+    pub stale_warning_days: u32,
+    pub retrieval_top_k: usize,
+    pub validation_enabled: bool,
+    pub max_content_bytes: Option<u32>,
+    pub max_name_length: Option<usize>,
+}
+
+impl Default for MemoryPolicy {
+    fn default() -> Self {
+        Self {
+            memory_path: String::new(),
+            stale_warning_days: 2,
+            retrieval_top_k: 5,
+            validation_enabled: true,
+            max_content_bytes: None,
+            max_name_length: None,
+        }
+    }
+}
+
+impl MemoryPolicy {
+    /// Build the validation rules this policy implies, starting from the kernel defaults and
+    /// applying any size / name-length overrides.
+    pub fn validation(&self) -> MemoryValidation {
+        let mut v = MemoryValidation::default();
+        if let Some(bytes) = self.max_content_bytes {
+            v.max_size_bytes = bytes;
+        }
+        if let Some(len) = self.max_name_length {
+            v.max_name_length = len;
+        }
+        v
+    }
+
+    /// Clamp a requested retrieval count to this policy's `retrieval_top_k` upper bound.
+    pub fn clamp_top_k(&self, requested: usize) -> usize {
+        requested.min(self.retrieval_top_k)
+    }
+}
+
 /// Default validation rules (aligned with Claude Code's "what NOT to store").
 impl Default for MemoryValidation {
     fn default() -> Self {

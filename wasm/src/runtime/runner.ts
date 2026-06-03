@@ -61,6 +61,21 @@ export interface SchedulerBudget {
   maxWallMs?: number
 }
 
+/**
+ * Long-term memory policy (`set_memory_policy`) — opt-in, kernel-enforced. `validationEnabled:
+ * false` admits writes without validation, `maxContentBytes` / `maxNameLength` override the
+ * validation limits, and `retrievalTopK` caps `query_memory` breadth. `memoryPath` /
+ * `staleWarningDays` are carried for SDK recall I/O. Omitted fields keep the kernel defaults.
+ */
+export interface MemoryPolicy {
+  memoryPath?: string
+  staleWarningDays?: number
+  retrievalTopK?: number
+  validationEnabled?: boolean
+  maxContentBytes?: number
+  maxNameLength?: number
+}
+
 export interface RuntimeOptions {
   provider: LLMProvider
   sessionLog: SessionLog
@@ -83,6 +98,9 @@ export interface RuntimeOptions {
   attentionPolicy?: { maxQueueSize?: number }
   schedulerBudget?: SchedulerBudget
   resourceQuota?: ResourceQuota
+  memoryPolicy?: MemoryPolicy
+  tokenizer?: string
+  enablePlanTool?: boolean
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
   onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
   subAgentOrchestrator?: SubAgentOrchestrator
@@ -403,6 +421,19 @@ export class RuntimeRunner {
     })
     this.activeKernel = runtime
 
+    if (this.opts.tokenizer) {
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_tokenizer",
+        name: this.opts.tokenizer,
+      })
+    }
+    if (this.opts.enablePlanTool !== undefined) {
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_plan_tool_enabled",
+        enabled: this.opts.enablePlanTool,
+      })
+    }
+
     kernelApply(runtime, this.pendingObservations, {
       kind: "set_tools",
       tools: this.opts.executionPlane.schemas().map(toolSchemaToKernel),
@@ -419,7 +450,7 @@ export class RuntimeRunner {
     if (this.opts.initialMemory) {
       for (const mem of this.opts.initialMemory) {
         kernelApply(runtime, this.pendingObservations, {
-          kind: "add_memory_message",
+          kind: "add_knowledge_message",
           content: mem,
           tokens: Math.max(1, Math.ceil(mem.length / 4)),
         })
@@ -515,6 +546,18 @@ export class RuntimeRunner {
               }
             : {}),
         },
+      })
+    }
+    if (this.opts.memoryPolicy) {
+      const m = this.opts.memoryPolicy
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_memory_policy",
+        ...(m.memoryPath !== undefined ? { memory_path: m.memoryPath } : {}),
+        ...(m.staleWarningDays !== undefined ? { stale_warning_days: m.staleWarningDays } : {}),
+        ...(m.retrievalTopK !== undefined ? { retrieval_top_k: m.retrievalTopK } : {}),
+        ...(m.validationEnabled !== undefined ? { validation_enabled: m.validationEnabled } : {}),
+        ...(m.maxContentBytes !== undefined ? { max_content_bytes: m.maxContentBytes } : {}),
+        ...(m.maxNameLength !== undefined ? { max_name_length: m.maxNameLength } : {}),
       })
     }
 

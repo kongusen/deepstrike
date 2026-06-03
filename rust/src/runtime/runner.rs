@@ -6,7 +6,7 @@ use crate::runtime::skill_watcher::SkillWatcher;
 use async_stream::try_stream;
 use deepstrike_core::governance::quota::ResourceQuota;
 use deepstrike_core::memory::idle_pipeline::{IdleAction, IdleEvent, IdlePipeline, IdlePolicy};
-use deepstrike_core::mm::memory::{MemoryQuery, MemoryRetrieval, MemoryWriteRequest};
+use deepstrike_core::mm::memory::{MemoryPolicy, MemoryQuery, MemoryRetrieval, MemoryWriteRequest};
 use deepstrike_core::runtime::kernel::{
     KernelAction, KernelInput, KernelInputEvent, KernelObservation, KernelPressureAction,
     KernelRuntime, KernelStep,
@@ -103,6 +103,8 @@ pub struct RuntimeOptions {
     pub attention_policy: Option<AttentionPolicy>,
     pub scheduler_budget: Option<SchedulerBudget>,
     pub resource_quota: Option<ResourceQuota>,
+    /// Opt-in long-term memory policy (`set_memory_policy`), enforced at the kernel memory traps.
+    pub memory_policy: Option<MemoryPolicy>,
     pub tokenizer: Option<String>,
     pub enable_plan_tool: Option<bool>,
     pub on_tool_suspend: Option<ToolSuspendHandler>,
@@ -309,6 +311,9 @@ impl RuntimeRunner {
         }
         if let Some(quota) = self.opts.resource_quota.clone() {
             kernel.step(KernelInput::new(KernelInputEvent::SetResourceQuota { quota }));
+        }
+        if let Some(policy) = self.opts.memory_policy.clone() {
+            kernel.step(KernelInput::new(memory_policy_event(policy)));
         }
         let step = kernel.step(KernelInput::new(event));
         step.observations
@@ -774,6 +779,14 @@ impl RuntimeRunner {
                     &mut kernel,
                     &mut pending_observations,
                     KernelInputEvent::SetResourceQuota { quota },
+                );
+            }
+
+            if let Some(policy) = self.opts.memory_policy.clone() {
+                kernel_apply(
+                    &mut kernel,
+                    &mut pending_observations,
+                    memory_policy_event(policy),
                 );
             }
 
@@ -2044,6 +2057,18 @@ fn effective_wall_budget(
     scheduler_budget
         .and_then(|budget| budget.max_wall_ms)
         .or(fallback_timeout_ms)
+}
+
+/// Map the ergonomic [`MemoryPolicy`] onto the flat `set_memory_policy` kernel event.
+fn memory_policy_event(policy: MemoryPolicy) -> KernelInputEvent {
+    KernelInputEvent::SetMemoryPolicy {
+        memory_path: policy.memory_path,
+        stale_warning_days: policy.stale_warning_days,
+        retrieval_top_k: policy.retrieval_top_k,
+        validation_enabled: policy.validation_enabled,
+        max_content_bytes: policy.max_content_bytes,
+        max_name_length: policy.max_name_length,
+    }
 }
 
 fn next_archived_seq_start(events: Option<&[SessionEntry]>) -> u64 {

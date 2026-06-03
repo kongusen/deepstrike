@@ -95,6 +95,23 @@ class ResourceQuota:
 
 
 @dataclass
+class MemoryPolicy:
+  """Long-term memory policy installed through the kernel JSON event ABI (`set_memory_policy`).
+
+  Opt-in and kernel-enforced: ``validation_enabled=False`` admits writes without validation,
+  ``max_content_bytes`` / ``max_name_length`` override the validation limits, and
+  ``retrieval_top_k`` caps ``query_memory``'s emitted ``requested_k``. ``memory_path`` /
+  ``stale_warning_days`` are carried for SDK recall I/O. Omitted fields keep the kernel defaults.
+  """
+  memory_path: str | None = None
+  stale_warning_days: int | None = None
+  retrieval_top_k: int | None = None
+  validation_enabled: bool | None = None
+  max_content_bytes: int | None = None
+  max_name_length: int | None = None
+
+
+@dataclass
 class SchedulerBudget:
   """Optional scheduler budget overrides installed through the kernel JSON event ABI."""
   max_wall_ms: int | None = None
@@ -122,6 +139,7 @@ class RuntimeOptions:
   attention_policy: "AttentionPolicy | dict | None" = None
   scheduler_budget: SchedulerBudget | dict[str, Any] | None = None
   resource_quota: ResourceQuota | dict[str, Any] | None = None
+  memory_policy: MemoryPolicy | dict[str, Any] | None = None
   os_profile: "OsProfile | None" = None
   tokenizer: str | None = None
   enable_plan_tool: bool | None = None
@@ -277,6 +295,11 @@ class RuntimeRunner:
       kernel_apply(runtime, [], {
         "kind": "set_resource_quota",
         "quota": _resource_quota_to_kernel(self._opts.resource_quota),
+      })
+    if self._opts.memory_policy is not None:
+      kernel_apply(runtime, [], {
+        "kind": "set_memory_policy",
+        **_memory_policy_to_kernel(self._opts.memory_policy),
       })
     return runtime
 
@@ -705,7 +728,7 @@ class RuntimeRunner:
     if self._opts.initial_memory:
       for mem in self._opts.initial_memory:
         kernel_apply(runtime, self._pending_observations, {
-          "kind": "add_memory_message",
+          "kind": "add_knowledge_message",
           "content": mem,
           "tokens": max(1, len(mem) // 4),
         })
@@ -798,6 +821,12 @@ class RuntimeRunner:
       kernel_apply(runtime, self._pending_observations, {
         "kind": "set_resource_quota",
         "quota": _resource_quota_to_kernel(self._opts.resource_quota),
+      })
+
+    if self._opts.memory_policy is not None:
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "set_memory_policy",
+        **_memory_policy_to_kernel(self._opts.memory_policy),
       })
 
     action = (
@@ -1429,6 +1458,30 @@ def _resource_quota_to_kernel(quota: ResourceQuota | dict[str, Any]) -> dict[str
     else:
       max_writes, window_ms = rate
       out["memory_writes_per_window"] = [max_writes, window_ms]
+  return out
+
+
+def _memory_policy_to_kernel(policy: MemoryPolicy | dict[str, Any]) -> dict[str, Any]:
+  """Map the ergonomic snake_case policy onto the flat `set_memory_policy` event fields.
+
+  Omitted (None) fields are dropped so the kernel applies its serde defaults.
+  """
+  if isinstance(policy, dict):
+    get = policy.get
+  else:
+    get = lambda k: getattr(policy, k)  # noqa: E731
+  out: dict[str, Any] = {}
+  for field in (
+    "memory_path",
+    "stale_warning_days",
+    "retrieval_top_k",
+    "validation_enabled",
+    "max_content_bytes",
+    "max_name_length",
+  ):
+    value = get(field)
+    if value is not None:
+      out[field] = value
   return out
 
 

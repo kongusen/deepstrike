@@ -32,6 +32,30 @@ export interface ResourceQuota {
   memoryWritesPerWindow?: MemoryWriteRateLimit
 }
 
+/**
+ * Long-term memory policy — declarative knobs for the kernel's memory subsystem.
+ *
+ * Installed through the versioned JSON event ABI (`set_memory_policy`), the same channel as
+ * governance / scheduler / quota config, so memory configuration is replayable and
+ * session-loggable rather than a side-channel setter. Installing the policy is opt-in and
+ * kernel-enforced; omitted fields fall back to the kernel defaults (empty path, 2-day stale
+ * warning, top-5 retrieval, validation on). Enabling memory is still `dreamStore` + `agentId`.
+ */
+export interface MemoryPolicy {
+  /** Filesystem root the SDK uses to persist/scan memories; carried for SDK recall I/O. */
+  memoryPath?: string
+  /** Age after which a recalled memory is flagged stale (days); consumed SDK-side. */
+  staleWarningDays?: number
+  /** Upper bound on retrieval breadth: the kernel clamps `query_memory` top-k to this. */
+  retrievalTopK?: number
+  /** When false, the kernel admits every `write_memory` without validation. */
+  validationEnabled?: boolean
+  /** Override the kernel's `write_memory` content-size limit (bytes). */
+  maxContentBytes?: number
+  /** Override the kernel's `write_memory` name-length limit. */
+  maxNameLength?: number
+}
+
 export interface GovernanceInstance {
   setIdentity(agentId: string, sessionId: string): void
   addPermissionRule(pattern: string, action: "allow" | "deny" | "ask_user"): void

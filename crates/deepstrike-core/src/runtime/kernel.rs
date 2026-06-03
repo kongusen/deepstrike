@@ -247,7 +247,8 @@ pub enum KernelInputEvent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         entries: Vec<crate::mm::PageInEntry>,
     },
-    /// Configure long-term memory management policy (Phase 7).
+    /// Configure long-term memory management policy (Phase 7). Opt-in: installing the policy makes
+    /// `validation_enabled`, `retrieval_top_k`, and the optional size/name overrides authoritative.
     SetMemoryPolicy {
         #[serde(default)]
         memory_path: String,
@@ -257,6 +258,12 @@ pub enum KernelInputEvent {
         retrieval_top_k: usize,
         #[serde(default = "default_validation_enabled")]
         validation_enabled: bool,
+        /// Override the validation content-size limit (bytes). Omit to keep the kernel default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_content_bytes: Option<u32>,
+        /// Override the validation name-length limit. Omit to keep the kernel default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_name_length: Option<usize>,
     },
     /// Write a long-term memory entry (SDK background agent calls this).
     WriteMemory {
@@ -969,13 +976,24 @@ impl KernelRuntime {
                 self.sm.feed(LoopEvent::SubAgentCompleted { result })
             }
             KernelInputEvent::SetMemoryPolicy {
-                memory_path: _,
-                stale_warning_days: _,
-                retrieval_top_k: _,
-                validation_enabled: _,
+                memory_path,
+                stale_warning_days,
+                retrieval_top_k,
+                validation_enabled,
+                max_content_bytes,
+                max_name_length,
             } => {
-                // Phase 7: Store memory policy (SDK uses this for configuration).
-                // Kernel doesn't enforce the policy — it's passed through for SDK use.
+                // Phase 7: install the memory policy. The kernel enforces validation_enabled +
+                // retrieval_top_k + size/name overrides at the WriteMemory/QueryMemory traps;
+                // memory_path / stale_warning_days are carried for the SDK's recall I/O.
+                self.sm.set_memory_policy(crate::mm::memory::MemoryPolicy {
+                    memory_path,
+                    stale_warning_days,
+                    retrieval_top_k,
+                    validation_enabled,
+                    max_content_bytes,
+                    max_name_length,
+                });
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::WriteMemory { memory } => {
@@ -1008,7 +1026,15 @@ impl KernelRuntime {
                     );
                     return KernelStep::empty(self.sm.take_observations());
                 }
-                match validate_memory_write(&memory) {
+                // Validate honoring any installed memory policy: a policy with validation disabled
+                // admits the write outright; a policy with size/name overrides validates against
+                // those; no policy uses the default rules (pre-policy behavior).
+                let validation_result = match self.sm.memory_policy() {
+                    Some(p) if !p.validation_enabled => Ok(()),
+                    Some(p) => p.validation().validate(&memory),
+                    None => validate_memory_write(&memory),
+                };
+                match validation_result {
                     Ok(()) => {
                         // Emit observation for SDK to perform I/O
                         self.sm.observations.push(crate::scheduler::state_machine::LoopObservation::MemoryWritten {
@@ -1043,10 +1069,15 @@ impl KernelRuntime {
                 // Phase 7: Query memory for context.
                 // Kernel emits observation; SDK responds asynchronously.
                 let turn = self.sm.turn;
+                // An installed policy caps retrieval breadth: requested_k = min(query.top_k, policy).
+                let requested_k = match self.sm.memory_policy() {
+                    Some(p) => p.clamp_top_k(query.top_k),
+                    None => query.top_k,
+                };
                 self.sm.observations.push(crate::scheduler::state_machine::LoopObservation::MemoryQueried {
                     turn,
                     query_context: query.current_context.clone(),
-                    requested_k: query.top_k,
+                    requested_k,
                     requires_async_response: true,
                 });
                 return KernelStep::empty(self.sm.take_observations());
@@ -1284,6 +1315,111 @@ mod tests {
         }));
         assert!(runtime.state_machine().agent_process("worker").is_some());
         assert!(runtime.state_machine().is_suspended());
+    }
+
+    // ── M-memory-policy: set_memory_policy is enforced at the WriteMemory / QueryMemory traps ──
+
+    fn write_memory(runtime: &mut KernelRuntime, name: &str, content: &str) -> KernelStep {
+        use crate::mm::memory::{MemoryMetadata, MemoryWriteRequest};
+        runtime.step(KernelInput::new(KernelInputEvent::WriteMemory {
+            memory: MemoryWriteRequest {
+                metadata: MemoryMetadata {
+                    name: name.to_string(),
+                    description: "desc".to_string(),
+                    ..Default::default()
+                },
+                content: content.to_string(),
+            },
+        }))
+    }
+
+    #[test]
+    fn memory_policy_validation_disabled_admits_forbidden_write() {
+        // "代码模式:" is a forbidden pattern under default validation; disabling validation admits it.
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        runtime.step(KernelInput::new(KernelInputEvent::SetMemoryPolicy {
+            memory_path: String::new(),
+            stale_warning_days: 2,
+            retrieval_top_k: 5,
+            validation_enabled: false,
+            max_content_bytes: None,
+            max_name_length: None,
+        }));
+        let step = write_memory(&mut runtime, "note", "代码模式: foo");
+        assert!(step
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::MemoryWritten { .. })));
+        assert!(!step
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::MemoryValidationFailed { .. })));
+    }
+
+    #[test]
+    fn default_runtime_validates_forbidden_write() {
+        // No policy installed => default validation rejects the forbidden pattern (pre-policy behavior).
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let step = write_memory(&mut runtime, "note", "代码模式: foo");
+        assert!(step
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::MemoryValidationFailed { .. })));
+    }
+
+    #[test]
+    fn memory_policy_size_override_rejects_oversized_write() {
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        runtime.step(KernelInput::new(KernelInputEvent::SetMemoryPolicy {
+            memory_path: String::new(),
+            stale_warning_days: 2,
+            retrieval_top_k: 5,
+            validation_enabled: true,
+            max_content_bytes: Some(8),
+            max_name_length: None,
+        }));
+        let step = write_memory(&mut runtime, "note", "this content is well over eight bytes");
+        let failed = step.observations.iter().find_map(|o| match o {
+            KernelObservation::MemoryValidationFailed { error, .. } => Some(error.clone()),
+            _ => None,
+        });
+        assert!(failed.is_some_and(|e| e.contains("too large")));
+    }
+
+    #[test]
+    fn memory_policy_clamps_retrieval_top_k() {
+        use crate::mm::memory::MemoryQuery;
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        runtime.step(KernelInput::new(KernelInputEvent::SetMemoryPolicy {
+            memory_path: String::new(),
+            stale_warning_days: 2,
+            retrieval_top_k: 3,
+            validation_enabled: true,
+            max_content_bytes: None,
+            max_name_length: None,
+        }));
+        let step = runtime.step(KernelInput::new(KernelInputEvent::QueryMemory {
+            query: MemoryQuery { top_k: 50, ..Default::default() },
+        }));
+        let requested = step.observations.iter().find_map(|o| match o {
+            KernelObservation::MemoryQueried { requested_k, .. } => Some(*requested_k),
+            _ => None,
+        });
+        assert_eq!(requested, Some(3));
+    }
+
+    #[test]
+    fn default_runtime_uses_requested_top_k_verbatim() {
+        use crate::mm::memory::MemoryQuery;
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let step = runtime.step(KernelInput::new(KernelInputEvent::QueryMemory {
+            query: MemoryQuery { top_k: 50, ..Default::default() },
+        }));
+        let requested = step.observations.iter().find_map(|o| match o {
+            KernelObservation::MemoryQueried { requested_k, .. } => Some(*requested_k),
+            _ => None,
+        });
+        assert_eq!(requested, Some(50));
     }
 
     #[test]

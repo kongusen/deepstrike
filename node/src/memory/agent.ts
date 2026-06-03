@@ -11,60 +11,26 @@
  * - LLM (Sonnet) acts as selector, not vector similarity
  */
 
-import type { SessionData, MemoryEntry, DreamStore } from "./protocols.js"
+import type {
+  SessionData,
+  MemoryEntry,
+  DreamStore,
+  MemoryKind,
+  MemoryMetadata,
+  MemoryWriteRequest,
+  MemoryQuery,
+  MemoryRetrieval,
+} from "./protocols.js"
 
-/**
- * Memory metadata (matches kernel MemoryMetadata structure).
- */
-export interface MemoryMetadata {
-  name: string
-  description: string
-  kind?: MemoryKind
-  created_at: number
-  updated_at: number
-  session_id?: string
-
-  // Heuristic inference fields
-  user_role?: string
-  expertise_level?: string
-  preference_rule?: string
-  approved_pattern?: string
-  project_phase?: string
-  relative_date?: string
-  external_url?: string
-  ticket_ref?: string
-}
-
-/**
- * Memory kind (4 types, mirroring Claude Code).
- */
-export type MemoryKind = "user" | "feedback" | "project" | "reference"
-
-/**
- * Memory write request (SDK → kernel).
- */
-export interface MemoryWriteRequest {
-  metadata: MemoryMetadata
-  content: string
-}
-
-/**
- * Memory query request (kernel → SDK).
- */
-export interface MemoryQuery {
-  current_context: string
-  active_tools: string[]
-  already_surfaced: string[]
-  top_k: number
-}
-
-/**
- * Memory retrieval response (SDK → kernel).
- */
-export interface MemoryRetrieval {
-  selected_memory_ids: string[]
-  selection_rationale: string
-}
+// Long-term memory types live in `protocols.ts` as the single source of truth (mirroring kernel
+// `mm/memory.rs`). Re-exported here so existing `from "./memory/agent.js"` imports keep working.
+export type {
+  MemoryKind,
+  MemoryMetadata,
+  MemoryWriteRequest,
+  MemoryQuery,
+  MemoryRetrieval,
+} from "./protocols.js"
 
 /**
  * Memory index entry (from MEMORY.md).

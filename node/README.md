@@ -229,6 +229,16 @@ const runner = new RuntimeRunner({
     memoryWritesPerWindow: { maxWrites: 20, windowMs: 60_000 }, // rate-limit writeMemory
   },
 
+  // Long-term memory policy (set_memory_policy) — opt-in, kernel-enforced; omit for defaults.
+  memoryPolicy: {
+    memoryPath: "./.memory",     // where the SDK persists/scans memories (SDK-consumed)
+    staleWarningDays: 30,        // flag recalled memories older than this (SDK-consumed)
+    retrievalTopK: 5,            // kernel caps query_memory requested_k to this
+    validationEnabled: true,     // false → admit writes without validation
+    maxContentBytes: 10_000,     // override write_memory content-size limit
+    maxNameLength: 100,          // override write_memory name-length limit
+  },
+
   // Agent OS native profile (defaults shown)
   governancePolicy: DEFAULT_NATIVE_GOVERNANCE_POLICY,
   attentionPolicy: DEFAULT_NATIVE_ATTENTION_POLICY, // SignalRouter queue size 64
@@ -268,6 +278,7 @@ const runner = new RuntimeRunner({
 | `governancePolicy` | Declarative deny / ask_user / rate-limit / param rules loaded into the kernel before `start_run` |
 | `attentionPolicy` | In-kernel signal router queue size (default 64) |
 | `resourceQuota` | M2 declarative limits — `maxConcurrentSubagents` / `maxSpawnDepth` / `memoryWritesPerWindow` — enforced at the kernel syscall trap (`set_resource_quota`); over-quota spawns roll back, over-rate writes surface as `memory_validation_failed` |
+| `memoryPolicy` | Long-term memory config sent as `set_memory_policy` and **kernel-enforced**: `validationEnabled: false` admits writes without validation, `maxContentBytes` / `maxNameLength` override validation limits, `retrievalTopK` caps `query_memory` breadth; `memoryPath` / `staleWarningDays` are SDK-consumed (requires `dreamStore` + `agentId` to enable memory) |
 | `onPermissionRequest` | Resolves `tool_gated` + `suspended` → kernel `resume` with approved/denied call IDs |
 | `compressionStore` | Writes archived messages on `compressed` observations |
 | `asyncSummarizer` | Background LLM summary after compression; stored as `summary_upgraded` |

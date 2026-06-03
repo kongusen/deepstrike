@@ -1,5 +1,6 @@
 from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPlane, RunContext
 from deepstrike.runtime.runner import (
+  MemoryPolicy,
   MemoryWriteRateLimit,
   ResourceQuota,
   SchedulerBudget,
@@ -47,6 +48,7 @@ __all__ = [
   "RuntimeRunner",
   "RuntimeOptions",
   "ResourceQuota",
+  "MemoryPolicy",
   "MemoryWriteRateLimit",
   "SchedulerBudget",
   "SubAgentHarnessConfig",

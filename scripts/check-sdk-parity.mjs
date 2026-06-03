@@ -101,6 +101,40 @@ const CHECKS = [
     patterns: ["SetResourceQuota", "set_resource_quota"],
   },
   {
+    // Memory policy — Node is the reference: memory config flows into the kernel via the JSON
+    // event ABI (`set_memory_policy`), the same channel as governance / scheduler / quota config.
+    id: "node-memory-policy",
+    lang: "node",
+    path: "node/src/runtime/runner.ts",
+    patterns: ["memoryPolicy", "set_memory_policy", "retrieval_top_k", "max_content_bytes"],
+  },
+  {
+    id: "python-memory-policy",
+    lang: "python",
+    path: "python/deepstrike/runtime/runner.py",
+    patterns: ["memory_policy", "set_memory_policy", "retrieval_top_k", "max_content_bytes"],
+  },
+  {
+    id: "rust-memory-policy",
+    lang: "rust",
+    path: "rust/src/runtime/runner.rs",
+    patterns: ["memory_policy", "SetMemoryPolicy", "MemoryPolicy", "max_content_bytes"],
+  },
+  {
+    id: "wasm-memory-policy",
+    lang: "wasm",
+    path: "wasm/src/runtime/runner.ts",
+    patterns: ["memoryPolicy", "set_memory_policy", "retrieval_top_k", "max_content_bytes"],
+  },
+  {
+    // Memory policy is kernel-enforced: the handler installs it via sm.set_memory_policy and the
+    // WriteMemory / QueryMemory traps read it back.
+    id: "core-memory-policy",
+    lang: "core",
+    path: "crates/deepstrike-core/src/runtime/kernel.rs",
+    patterns: ["SetMemoryPolicy", "set_memory_policy", "memory_policy()"],
+  },
+  {
     id: "wasm-os-profile",
     lang: "wasm",
     path: "wasm/src/runtime/os-profile.ts",

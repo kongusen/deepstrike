@@ -90,7 +90,7 @@ Events:
 | `set_attention_policy` | Configure in-kernel signal router queue (`max_queue_size`) |
 | `set_scheduler_budget` | Optional wall-clock / turn / token budget overrides |
 | `set_resource_quota` | M2 资源配额 — install declarative spawn-concurrency / spawn-depth / memory-write-rate limits at the syscall trap (`quota`); opt-in, omit for unbounded |
-| `set_memory_policy` | Configure memory validation rules (`MemoryKind`, forbidden patterns, size limits) |
+| `set_memory_policy` | Install the memory policy (`memory_path`, `stale_warning_days`, `retrieval_top_k`, `validation_enabled`, optional `max_content_bytes` / `max_name_length`). Opt-in and **kernel-enforced**: `validation_enabled: false` admits writes without validation, the size/name fields override validation limits, and `retrieval_top_k` caps `query_memory`'s emitted `requested_k`. `memory_path` / `stale_warning_days` are carried for SDK recall I/O. Node reference: `RuntimeOptions.memoryPolicy` |
 | `write_memory` | Request validated long-term memory write; emits `memory_written` or `memory_validation_failed` |
 | `query_memory` | Request memory retrieval; emits `memory_queried`; host feeds `memory_retrieval_result` |
 | `memory_retrieval_result` | Close query loop after SDK search + selection |
@@ -249,6 +249,7 @@ Read-side helpers exposed for SDK bookkeeping:
 12. [x] M1 收口: `tcb::schedule()` is the sole budget decision point; `AgentProcess` is a derived view over the `TaskTable` (the separate `ProcessTable` storage is removed). ABI-neutral.
 13. [x] M2: resource quotas evaluated at the single syscall trap (`gate_syscall`); spawn / `write_memory` route through it. Opt-in via `set_resource_quota`.
 14. [x] M3: tool results are indexed as `HandleTable` handles; Layer-4 read-time projection renders `Collapsed` handles as previews (originals retained) and Layer-1 spool marks handles `SpooledOut`. ABI-neutral.
+15. [x] Memory policy enforced at the memory syscall traps: `validation_enabled` gates `write_memory` validation, `max_content_bytes` / `max_name_length` override the validation limits, and `retrieval_top_k` caps `query_memory`'s emitted `requested_k`. Opt-in via `set_memory_policy`.
 
 ## Compatibility Rules
 

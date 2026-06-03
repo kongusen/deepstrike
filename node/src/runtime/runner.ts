@@ -20,7 +20,7 @@ import type { SessionLog, SessionEvent, RollbackReason } from "./session-log.js"
 import type { ArchiveStore } from "./archive.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
 import { resolvePermissionRequest } from "./execution-plane.js"
-import { getKernel, type KernelRuntimeInstance, type ResourceQuota } from "../kernel.js"
+import { getKernel, type KernelRuntimeInstance, type MemoryPolicy, type ResourceQuota } from "../kernel.js"
 import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
 import { buildLlmCompletedEvent, buildRunTerminalEvent, repairEventsForRecovery } from "./session-repair.js"
@@ -106,6 +106,12 @@ export interface RuntimeOptions {
    * and memory-write syscalls are admitted unconditionally (pre-M2 behavior).
    */
   resourceQuota?: ResourceQuota
+  /**
+   * Optional long-term memory policy (`set_memory_policy`). Tunes the kernel's memory subsystem
+   * (retrieval top-k, stale-warning age, write validation, memory path). Unset leaves the kernel
+   * defaults. Enabling memory still requires `dreamStore` + `agentId`.
+   */
+  memoryPolicy?: MemoryPolicy
   tokenizer?: string
   enablePlanTool?: boolean
   /**
@@ -736,6 +742,20 @@ export class RuntimeRunner {
 
     if (this.opts.dreamStore && this.opts.agentId) {
       kernelApply(runtime, this.pendingObservations, { kind: "set_memory_enabled", enabled: true })
+    }
+    // Install optional memory policy. Maps the ergonomic camelCase option onto the kernel's
+    // snake_case `set_memory_policy` event; omitted fields fall back to kernel defaults.
+    if (this.opts.memoryPolicy) {
+      const m = this.opts.memoryPolicy
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_memory_policy",
+        ...(m.memoryPath !== undefined ? { memory_path: m.memoryPath } : {}),
+        ...(m.staleWarningDays !== undefined ? { stale_warning_days: m.staleWarningDays } : {}),
+        ...(m.retrievalTopK !== undefined ? { retrieval_top_k: m.retrievalTopK } : {}),
+        ...(m.validationEnabled !== undefined ? { validation_enabled: m.validationEnabled } : {}),
+        ...(m.maxContentBytes !== undefined ? { max_content_bytes: m.maxContentBytes } : {}),
+        ...(m.maxNameLength !== undefined ? { max_name_length: m.maxNameLength } : {}),
+      })
     }
     if (this.opts.knowledgeSource) {
       kernelApply(runtime, this.pendingObservations, { kind: "set_knowledge_enabled", enabled: true })
