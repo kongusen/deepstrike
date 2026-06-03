@@ -51,12 +51,6 @@ pub struct ContextManager {
     /// Updated on each compression pass.
     pub last_compact_ms: Option<u64>,
 
-    // ── Layer 4: Collapse mode (read-time projection) ───────────────────────
-
-    /// Current collapse mode for Layer 4 read-time projection.
-    /// Controls how history is rendered without modifying original messages.
-    pub collapse_mode: CollapseMode,
-
     // ── P3: handle table (context as address space) ─────────────────────────
 
     /// Per-task handle table: one [`Handle`] per addressable working-context object (tool results
@@ -65,43 +59,6 @@ pub struct ContextManager {
     pub handles: HandleTable,
     /// Monotonic allocator for [`HandleId`]s.
     next_handle_id: HandleId,
-}
-
-/// Collapse mode for Layer 4 (Context Collapse read-time projection).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CollapseMode {
-    /// Normal mode - no projection, render full history
-    #[default]
-    Normal,
-    /// Collapse 90% - keep only most recent 10% of messages
-    Collapse90,
-    /// Collapse 95% - keep only most recent 5% of messages
-    Collapse95,
-}
-
-impl CollapseMode {
-    /// Determine collapse mode based on rho (pressure ratio).
-    pub fn from_rho(rho: f64, config: &ContextConfig) -> Self {
-        if rho >= config.collapse_threshold {
-            // Use slightly higher threshold for 95% mode
-            if rho >= (config.collapse_threshold + config.auto_threshold) / 2.0 {
-                CollapseMode::Collapse95
-            } else {
-                CollapseMode::Collapse90
-            }
-        } else {
-            CollapseMode::Normal
-        }
-    }
-
-    /// Get retention ratio (0.0 to 1.0).
-    pub fn retention_ratio(&self) -> f64 {
-        match self {
-            CollapseMode::Normal => 1.0,
-            CollapseMode::Collapse90 => 0.10,
-            CollapseMode::Collapse95 => 0.05,
-        }
-    }
 }
 
 impl ContextManager {
@@ -125,7 +82,6 @@ impl ContextManager {
             compression, pressure, renewal,
             last_activity_ms: 0,
             last_compact_ms: None,
-            collapse_mode: CollapseMode::Normal,
             handles: HandleTable::new(),
             next_handle_id: 0,
         }
@@ -153,14 +109,14 @@ impl ContextManager {
         idle_minutes >= self.config.micro_compact_idle_minutes as u64
     }
 
-    // ── Layer 4: Collapse mode management ───────────────────────────────────
+    // ── Layer 4: read-time projection (handle residency) ────────────────────
 
     /// Recompute tool-result handle residency for Layer-4 read-time projection (call before
     /// `render`). When pressure (`rho`) reaches `collapse_threshold`, all but the most recent
     /// `preserve_recent_msgs` tool results are marked `Collapsed` (rendered as previews); when
     /// pressure subsides they return to `Resident`. Non-destructive: `partitions` is untouched, so
     /// projection fully reverses. Spooled/paged-out handles (Layer 1/page-out) are left as-is.
-    pub fn update_collapse_mode(&mut self) {
+    pub fn recompute_handle_residency(&mut self) {
         let collapse = self.rho() >= self.config.collapse_threshold;
         let keep = self.config.preserve_recent_msgs;
         let ids: Vec<HandleId> = self
@@ -184,13 +140,21 @@ impl ContextManager {
                 }
             }
         }
-        // Keep the legacy mode field in sync for any external readers during migration.
-        self.collapse_mode = CollapseMode::from_rho(self.rho(), &self.config);
     }
 
-    /// Get current collapse mode.
-    pub fn get_collapse_mode(&self) -> CollapseMode {
-        self.collapse_mode
+    /// Mark the handle anchored to `call_id` as spooled to disk (Layer 1): the SDK persists the
+    /// full output, working context keeps only the preview. Keeps the handle out of the
+    /// Resident↔Collapsed projection cycle. No-op if no handle is anchored to `call_id`.
+    pub fn mark_spooled(&mut self, call_id: &str, spool_ref: impl Into<String>) {
+        let spool_ref = spool_ref.into();
+        if let Some(handle) = self
+            .handles
+            .all_mut()
+            .iter_mut()
+            .find(|h| h.source.as_deref() == Some(call_id))
+        {
+            handle.residency = Residency::SpooledOut { r: spool_ref };
+        }
     }
 
     // ── Pressure ──────────────────────────────────────────────────────────────
@@ -630,15 +594,42 @@ mod tests {
         mgr.set_observed_prompt_tokens(950); // 950 / 1000 = 0.95 >= 0.90
         assert!(mgr.rho() >= mgr.config.collapse_threshold);
 
-        mgr.update_collapse_mode();
+        mgr.recompute_handle_residency();
         // Oldest is collapsed; the most recent (within preserve_recent_msgs) stays resident.
         assert_eq!(mgr.handles.residency_for_source("c0"), Some(&Residency::Collapsed));
         assert_eq!(mgr.handles.residency_for_source("c9"), Some(&Residency::Resident));
 
         // Reversible: once pressure drops, collapse is undone (read-time projection only).
         mgr.set_observed_prompt_tokens(100); // 0.10 < 0.90
-        mgr.update_collapse_mode();
+        mgr.recompute_handle_residency();
         assert_eq!(mgr.handles.residency_for_source("c0"), Some(&Residency::Resident));
+    }
+
+    #[test]
+    fn mark_spooled_sets_residency_and_survives_residency_recompute() {
+        let mut mgr = ContextManager::new(1_000);
+        mgr.push_history(
+            Message::tool(vec![ContentPart::ToolResult {
+                call_id: "big".into(),
+                output: "preview only".to_string(),
+                is_error: false,
+            }]),
+            10,
+        );
+        mgr.mark_spooled("big", "disk://big");
+        assert_eq!(
+            mgr.handles.residency_for_source("big"),
+            Some(&Residency::SpooledOut { r: "disk://big".to_string() })
+        );
+
+        // Even under collapse pressure, a spooled handle is not pulled into the
+        // Resident<->Collapsed projection cycle.
+        mgr.set_observed_prompt_tokens(990);
+        mgr.recompute_handle_residency();
+        assert_eq!(
+            mgr.handles.residency_for_source("big"),
+            Some(&Residency::SpooledOut { r: "disk://big".to_string() })
+        );
     }
 
     #[test]

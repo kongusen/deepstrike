@@ -1080,6 +1080,11 @@ impl LoopStateMachine {
                             .unwrap_or_else(|| self.ctx.engine.count_message(&tool_msg))
                     };
                     self.ctx.push_history(tool_msg, tokens);
+                    // Layer 1: a spooled result's handle is marked SpooledOut (its full output now
+                    // lives on disk via the SDK); the SDK maps call_id -> the persisted ref.
+                    if spooled {
+                        self.ctx.mark_spooled(&r.call_id, r.call_id.to_string());
+                    }
                 }
                 self.turn += 1;
 
@@ -1114,8 +1119,8 @@ impl LoopStateMachine {
                     self.execute_eviction_op(&crate::mm::EvictionOp::TimeDecayMicro);
                 }
 
-                // Layer 4 read-time projection mode tracks the post-time-decay rho.
-                self.ctx.update_collapse_mode();
+                // Layer 4 read-time projection: recompute handle residency on the post-time-decay rho.
+                self.ctx.recompute_handle_residency();
                 self.phase = LoopPhase::Delta {
                     pressure: self.ctx.rho(),
                 };
