@@ -920,6 +920,134 @@
         assert_eq!(sm.wait_reason(), None);
     }
 
+    // ---- Phase 0: budget-axis termination baseline -------------------------
+    //
+    // Pins the SM-level termination for all three budget axes (only `max_turns`
+    // was covered before). P1c swaps the `should_terminate` call site for the
+    // pure `schedule()`; these assert the resulting `BudgetExceeded` reason and
+    // terminal `TerminationReason` stay byte-identical across that swap.
+
+    #[test]
+    fn budget_exceeded_observation_on_token_budget() {
+        use crate::types::result::TerminationReason;
+        let mut sm = LoopStateMachine::new(LoopPolicy {
+            max_tokens: 128_000,
+            max_total_tokens: 10,
+            ..LoopPolicy::default()
+        });
+        sm.start(RuntimeTask::new("test"));
+        sm.take_observations();
+        // A tool result whose token_count pushes cumulative usage over the budget.
+        let action = sm.feed(LoopEvent::ToolResults {
+            results: vec![ToolResult {
+                call_id: compact_str::CompactString::new("c"),
+                output: Content::Text("x".into()),
+                is_error: false,
+                is_fatal: false,
+                error_kind: None,
+                token_count: Some(20),
+            }],
+        });
+        assert!(matches!(action, LoopAction::CallLLM { tools, .. } if tools.is_empty()));
+        let obs = sm.take_observations();
+        assert!(obs.iter().any(|o| matches!(
+            o,
+            LoopObservation::BudgetExceeded { budget, .. } if budget == "token_budget"
+        )));
+        let done = sm.feed(LoopEvent::LLMResponse {
+            message: Message::assistant("final"),
+        });
+        assert!(matches!(
+            done,
+            LoopAction::Done { result } if result.termination == TerminationReason::TokenBudget
+        ));
+    }
+
+    #[test]
+    fn budget_exceeded_observation_on_wall_time() {
+        use crate::types::result::TerminationReason;
+        let mut sm = LoopStateMachine::new(LoopPolicy {
+            max_tokens: 128_000,
+            max_wall_ms: Some(1_000),
+            ..LoopPolicy::default()
+        });
+        sm.set_observed_time(0); // anchors started_at_ms
+        sm.start(RuntimeTask::new("test"));
+        sm.take_observations();
+        sm.set_observed_time(2_000); // 2s elapsed >= 1s wall budget
+        let action = sm.feed(LoopEvent::ToolResults { results: vec![] });
+        assert!(matches!(action, LoopAction::CallLLM { tools, .. } if tools.is_empty()));
+        let obs = sm.take_observations();
+        assert!(obs.iter().any(|o| matches!(
+            o,
+            LoopObservation::BudgetExceeded { budget, .. } if budget == "wall_time"
+        )));
+        let done = sm.feed(LoopEvent::LLMResponse {
+            message: Message::assistant("final"),
+        });
+        assert!(matches!(
+            done,
+            LoopAction::Done { result } if result.termination == TerminationReason::Timeout
+        ));
+    }
+
+    // ---- Phase 0: AgentProcess view-shape baseline -------------------------
+    //
+    // Pins the exact `AgentProcess` field values exposed via `agent_process(es)`
+    // across the spawn→join lifecycle. P1b makes `ProcessTable` a derived view
+    // over the `TaskTable`; the reconstructed `AgentProcess` must reproduce these
+    // fields byte-for-byte so session-log / os-snapshot goldens stay stable.
+
+    #[test]
+    fn agent_process_view_shape_is_pinned_across_spawn_and_join() {
+        use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+        use crate::proc::ProcessState;
+        use crate::types::result::{LoopResult, SubAgentResult, TerminationReason};
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+
+        let spec = AgentRunSpec::new(
+            AgentIdentity::sub_agent("child", "child-session"),
+            AgentRole::Implement,
+            "child task",
+        );
+        sm.spawn_sub_agent(spec, "parent-sess");
+
+        let p = sm.agent_process("child").expect("process after spawn");
+        assert_eq!(p.agent_id.as_str(), "child");
+        assert_eq!(p.parent_session_id.as_str(), "parent-sess");
+        assert_eq!(p.role, AgentRole::Implement);
+        assert_eq!(p.state, ProcessState::Running);
+        assert!(p.result.is_none());
+        // Snapshot the spawn-time shape for cross-check after the view migration.
+        let isolation_at_spawn = p.isolation;
+        let inheritance_at_spawn = p.context_inheritance;
+
+        sm.feed(LoopEvent::SubAgentCompleted {
+            result: SubAgentResult {
+                agent_id: compact_str::CompactString::new("child"),
+                result: LoopResult {
+                    termination: TerminationReason::Completed,
+                    final_message: Some(Message::assistant("done")),
+                    turns_used: 2,
+                    total_tokens_used: 42,
+                },
+            },
+        });
+
+        let p = sm.agent_process("child").expect("process after join");
+        assert_eq!(p.state, ProcessState::Joined);
+        assert_eq!(p.isolation, isolation_at_spawn);
+        assert_eq!(p.context_inheritance, inheritance_at_spawn);
+        let result = p.result.as_ref().expect("join result");
+        assert_eq!(result.result.termination, TerminationReason::Completed);
+        assert_eq!(result.result.turns_used, 2);
+        assert_eq!(result.result.total_tokens_used, 42);
+        assert_eq!(sm.agent_processes().len(), 1);
+    }
+
     // ---- Layer 1: large tool result spool ----------------------------------
 
     #[test]
