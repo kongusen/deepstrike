@@ -4,7 +4,7 @@
 //! blocked count) to reduce bloat in the main state machine. The complex
 //! handling logic remains in LoopStateMachine for now.
 
-use crate::types::milestone::{MilestoneCheckResult, MilestoneContract};
+use crate::types::milestone::MilestoneContract;
 
 /// Tracks milestone contract progress.
 ///

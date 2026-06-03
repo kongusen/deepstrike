@@ -1,10 +1,10 @@
 //! Primitive P2: Task Control Block + unified scheduling entity.
 //!
-//! M0 scaffold (see `.local-docs/specs/agent-os-three-primitives.md`): types + conversions
-//! only — **no wiring, no behavior change**. A later milestone (M1) folds the root loop and
-//! every sub-agent into a single `Tcb` and replaces the scattered
-//! `LoopPhase` lifecycle variants + `SchedulerBudget::should_terminate` + `ProcessTable`
-//! with `TaskTable` + a pure `schedule()` function.
+//! See `.local-docs/specs/agent-os-three-primitives.md`. M1 收口 wired this in: the root loop and
+//! every sub-agent are a single `Tcb`, and the scattered `LoopPhase` lifecycle variants +
+//! `SchedulerBudget::should_terminate` + the former `ProcessTable` collapsed into the `TaskTable`
+//! plus the pure `schedule()` function (`schedule()` is now the sole budget decision point;
+//! `AgentProcess` is a derived view over child TCBs).
 //!
 //! Concept overlap this primitive collapses:
 //! - lifecycle written twice ([`crate::scheduler::state_machine::LoopPhase`] lifecycle variants /
@@ -162,10 +162,10 @@ pub struct BudgetSlice {
 
 /// Sub-agent-specific identity carried by a child [`Tcb`]; `None` on the root task.
 ///
-/// This is what lets [`crate::proc::ProcessTable`] become a *derived view* over the
-/// [`TaskTable`]: every child task whose `proc` is `Some` reconstructs exactly one
-/// [`crate::proc::AgentProcess`] (see [`crate::proc::AgentProcess::from_tcb`]). The previously
-/// duplicated process storage collapses into these fields.
+/// This is what makes the `AgentProcess` view *derived* from the [`TaskTable`]: every child task
+/// whose `proc` is `Some` reconstructs exactly one [`crate::proc::AgentProcess`] (see
+/// [`crate::proc::AgentProcess::from_tcb`]). The formerly duplicated process storage collapses
+/// into these fields.
 #[derive(Debug, Clone)]
 pub struct ProcInfo {
     pub parent_session_id: CompactString,
@@ -205,8 +205,7 @@ impl Tcb {
     }
 
     /// A sub-agent task spawned under the root, seeded `Running`, carrying the manifest's
-    /// process identity. The single source of truth for what was previously an `AgentProcess`
-    /// row in a separate `ProcessTable`.
+    /// process identity. The single source of truth for what the `AgentProcess` view exposes.
     pub fn spawned(manifest: &IsolationManifest, budget: SchedulerBudget) -> Self {
         Self {
             id: manifest.agent_id.clone(),
@@ -230,8 +229,8 @@ impl Tcb {
     }
 }
 
-/// Unified registry of all tasks. Generalizes [`crate::proc::ProcessTable`]; M1 makes
-/// the process table a view over this.
+/// Unified registry of all tasks: the root loop plus one child per sub-agent. The sole source of
+/// truth for schedulability and lineage; the `AgentProcess` view is derived from it.
 #[derive(Debug, Clone, Default)]
 pub struct TaskTable {
     tasks: Vec<Tcb>,

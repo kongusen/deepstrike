@@ -50,7 +50,7 @@ pub use mm::{
     plan_eviction, EvictionOp, EvictionPlan, Handle, HandleId, HandleKind, HandleTable,
     MemoryTierHint, PageInEntry, PageInRequest, Residency,
 };
-pub use proc::{AgentProcess, ProcessState, ProcessTable};
+pub use proc::{AgentProcess, ProcessState};
 pub use scheduler::tcb::{
     BudgetLedger, BudgetSlice, ScheduleDecision, TaskId, TaskState, TaskTable, Tcb, WaitReason,
 };

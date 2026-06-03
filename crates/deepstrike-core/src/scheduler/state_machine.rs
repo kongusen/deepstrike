@@ -21,7 +21,7 @@ use crate::types::message::{
 };
 use crate::types::milestone::{MilestoneCheckResult, MilestoneContract};
 use crate::types::result::{LoopResult, TerminationReason};
-use crate::types::signal::{RuntimeSignal, Urgency};
+use crate::types::signal::RuntimeSignal;
 use crate::types::task::RuntimeTask;
 
 /// The *turn step* of the L* execution loop (M1d).

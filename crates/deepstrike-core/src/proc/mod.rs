@@ -1,7 +1,7 @@
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
-use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance, IsolationManifest};
+use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance};
 use crate::types::result::{SubAgentResult, TerminationReason};
 
 /// Kernel-owned lifecycle state for a spawned agent process.
@@ -54,31 +54,10 @@ pub struct AgentProcess {
 }
 
 impl AgentProcess {
-    pub fn from_manifest(manifest: &IsolationManifest) -> Self {
-        Self {
-            agent_id: manifest.agent_id.clone(),
-            parent_session_id: manifest.parent_session_id.clone(),
-            role: manifest.role,
-            isolation: manifest.isolation,
-            context_inheritance: manifest.context_inheritance,
-            state: ProcessState::Running,
-            permitted_capability_ids: manifest.permitted_capability_ids.clone(),
-            result: None,
-        }
-    }
-
-    pub fn complete(&mut self, result: SubAgentResult) {
-        self.state = match result.result.termination {
-            TerminationReason::Completed => ProcessState::Joined,
-            _ => ProcessState::Failed,
-        };
-        self.result = Some(result);
-    }
-
     /// Reconstruct an `AgentProcess` from a child [`crate::scheduler::tcb::Tcb`] (M1 收口).
     ///
     /// Returns `None` for the root task (no `proc`). This is the bridge that makes the
-    /// `ProcessTable` a *derived view* over the kernel's `TaskTable`: the sub-agent's
+    /// `AgentProcess` records a *derived view* over the kernel's `TaskTable`: the sub-agent's
     /// declarative identity lives on the TCB, and the `AgentProcess` shape — the SDK ABI /
     /// session-log contract — is rebuilt on demand without a second source of truth.
     pub fn from_tcb(tcb: &crate::scheduler::tcb::Tcb) -> Option<Self> {
@@ -109,139 +88,55 @@ impl AgentProcess {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ProcessTable {
-    processes: Vec<AgentProcess>,
-}
-
-impl ProcessTable {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn register_spawn(&mut self, manifest: &IsolationManifest) -> AgentProcess {
-        let process = AgentProcess::from_manifest(manifest);
-        if let Some(existing) = self
-            .processes
-            .iter_mut()
-            .find(|p| p.agent_id == process.agent_id)
-        {
-            *existing = process.clone();
-        } else {
-            self.processes.push(process.clone());
-        }
-        process
-    }
-
-    pub fn complete(&mut self, result: SubAgentResult) -> Option<AgentProcess> {
-        let process = self
-            .processes
-            .iter_mut()
-            .find(|p| p.agent_id == result.agent_id)?;
-        process.complete(result);
-        Some(process.clone())
-    }
-
-    pub fn get(&self, agent_id: &str) -> Option<&AgentProcess> {
-        self.processes.iter().find(|p| p.agent_id.as_str() == agent_id)
-    }
-
-    pub fn all(&self) -> &[AgentProcess] {
-        &self.processes
-    }
-
-    /// Child processes registered under a parent session id (lineage audit).
-    pub fn children_of(&self, parent_session_id: &str) -> Vec<&AgentProcess> {
-        self.processes
-            .iter()
-            .filter(|p| p.parent_session_id.as_str() == parent_session_id)
-            .collect()
-    }
-
-    /// Agent ids still in the `Running` state.
-    pub fn running_agent_ids(&self) -> Vec<&str> {
-        self.processes
-            .iter()
-            .filter(|p| p.state == ProcessState::Running)
-            .map(|p| p.agent_id.as_str())
-            .collect()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::agent::{AgentRole, AgentRunSpec};
-    use crate::types::agent::AgentIdentity;
+    use crate::scheduler::policy::SchedulerBudget;
+    use crate::scheduler::tcb::{Tcb, TaskState};
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec, IsolationManifest};
     use crate::types::capability::CapabilityManifest;
-    use crate::types::message::Message;
-    use crate::types::result::{LoopResult, SubAgentResult};
 
-    #[test]
-    fn complete_marks_successful_process_joined() {
+    fn child_tcb(id: &str) -> Tcb {
         let spec = AgentRunSpec::new(
-            AgentIdentity::sub_agent("worker", "worker-session"),
+            AgentIdentity::sub_agent(id, &format!("{id}-session")),
             AgentRole::Implement,
             "do work",
         );
-        let manifest = IsolationManifest::from_spec(&spec, "parent", &CapabilityManifest::new());
-        let mut table = ProcessTable::new();
-        table.register_spawn(&manifest);
-
-        table.complete(SubAgentResult {
-            agent_id: "worker".into(),
-            result: LoopResult {
-                termination: TerminationReason::Completed,
-                final_message: Some(Message::assistant("done")),
-                turns_used: 1,
-                total_tokens_used: 10,
-            },
-        });
-
-        let process = table.get("worker").expect("process");
-        assert_eq!(process.state, ProcessState::Joined);
-        assert_eq!(process.result_termination_label(), Some("completed"));
+        let manifest = IsolationManifest::from_spec(&spec, "parent-sess", &CapabilityManifest::new());
+        Tcb::spawned(&manifest, SchedulerBudget::default())
     }
 
     #[test]
-    fn failed_join_marks_process_failed() {
-        let spec = AgentRunSpec::new(
-            AgentIdentity::sub_agent("worker", "worker-session"),
-            AgentRole::Implement,
-            "do work",
+    fn from_tcb_is_none_for_root_task() {
+        let root = Tcb::root("root", SchedulerBudget::default());
+        assert!(AgentProcess::from_tcb(&root).is_none());
+    }
+
+    #[test]
+    fn from_tcb_reconstructs_running_process() {
+        let tcb = child_tcb("worker");
+        let p = AgentProcess::from_tcb(&tcb).expect("child reconstructs a process");
+        assert_eq!(p.agent_id.as_str(), "worker");
+        assert_eq!(p.parent_session_id.as_str(), "parent-sess");
+        assert_eq!(p.role, AgentRole::Implement);
+        assert_eq!(p.state, ProcessState::Running);
+        assert!(p.result.is_none());
+    }
+
+    #[test]
+    fn process_state_of_maps_terminal_task_states() {
+        assert_eq!(process_state_of(TaskState::Running), ProcessState::Running);
+        assert_eq!(
+            process_state_of(TaskState::Done(TerminationReason::Completed)),
+            ProcessState::Joined
         );
-        let manifest = IsolationManifest::from_spec(&spec, "parent", &CapabilityManifest::new());
-        let mut table = ProcessTable::new();
-        table.register_spawn(&manifest);
-
-        table.complete(SubAgentResult {
-            agent_id: "worker".into(),
-            result: LoopResult {
-                termination: TerminationReason::Error,
-                final_message: None,
-                turns_used: 1,
-                total_tokens_used: 0,
-            },
-        });
-
-        let process = table.get("worker").expect("process");
-        assert_eq!(process.state, ProcessState::Failed);
-        assert_eq!(process.result_termination_label(), Some("error"));
-    }
-
-    #[test]
-    fn children_of_lists_lineage() {
-        let mut table = ProcessTable::new();
-        for id in ["a", "b"] {
-            let spec = AgentRunSpec::new(
-                AgentIdentity::sub_agent(id, &format!("{id}-session")),
-                AgentRole::Explore,
-                "task",
-            );
-            let manifest = IsolationManifest::from_spec(&spec, "parent-sess", &CapabilityManifest::new());
-            table.register_spawn(&manifest);
-        }
-        assert_eq!(table.children_of("parent-sess").len(), 2);
-        assert_eq!(table.running_agent_ids().len(), 2);
+        assert_eq!(
+            process_state_of(TaskState::Done(TerminationReason::Error)),
+            ProcessState::Failed
+        );
+        assert_eq!(
+            process_state_of(TaskState::Done(TerminationReason::Timeout)),
+            ProcessState::Failed
+        );
     }
 }
