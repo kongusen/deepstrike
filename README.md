@@ -45,19 +45,21 @@ deepstrike-core: pure Rust kernel · zero I/O · replayable state machine
 Context VM · governance pipeline · capability bus · transactions · milestones
 ```
 
-**0.2.5 — Agent OS release.** The kernel now mediates scheduling, compression, governance, signals, paging, and memory through unified syscall / TCB / MM primitives. Host SDKs own I/O; the kernel owns *when* and *whether*. See [CHANGELOG 0.2.5](./CHANGELOG.md#025---2026-06-02) for the full mechanism list.
+**0.2.6 — Agent OS consolidation.** M1 scheduler authority, M2 resource quotas, M3 handle residency and read-time projection, plus cross-SDK native profile and memory policy wiring. See [CHANGELOG 0.2.6](./CHANGELOG.md#026---2026-06-03).
 
 ## What Agent OS Gives You
 
 These are not internal refactors — they change what you can build without custom runner glue in every host SDK.
 
-| Before (≤ 0.2.4) | After (0.2.5) |
+| Before (≤ 0.2.4) | After (0.2.6) |
 | :--- | :--- |
 | Scheduling, compression, and permission logic scattered per SDK | Unified syscall trap, TCB lifecycle, and MM eviction funnel — same semantics in Node, Python, and Rust |
 | Large tool outputs and long sessions hit token walls | Layer-1 spool (preview + `.spool/` ref) and semantic page-out → long-term memory |
 | Governance and signal routing were optional SDK plugins | OS native profile: declarative governance and in-kernel signal routing on by default |
 | Long-term memory mostly via meta-tools and idle pipelines | `writeMemory` / `queryMemory` kernel syscalls with validation and audit events |
 | Session logs skewed toward chat + tools | Full OS event stream and rebuildable OS snapshots |
+| Quotas and memory rules fixed at compile time | `set_resource_quota` + `set_memory_policy` enforced at the syscall trap, opt-in at runtime |
+| Config surface drifted per SDK | Same 8 config-in options across Node, Python, Rust, and WASM (M1/M2/M3 consolidation) |
 
 **Kernel-mediated runtime (M0–M4)** — Tool calls, spawns, compression, and signals pass through one kernel gate with an explicit lifecycle (Ready / Running / Blocked / Suspended). You implement I/O; the kernel decides *when* and *whether*. `wake(sessionId)` and cross-language tooling see consistent behavior.
 
@@ -118,7 +120,7 @@ npm run docs:build
 | Rust | `deepstrike-sdk` | `cargo add deepstrike-sdk` |
 | Browser / Edge / WASM | `@deepstrike/wasm` | `npm install @deepstrike/wasm` |
 
-Current workspace version: `0.2.5`.
+Current workspace version: `0.2.6`.
 
 ## Quick Start
 
@@ -199,14 +201,14 @@ answer = await collect_text(runner.run_streaming("What is 2 + 3?"))
 
 ```toml
 [dependencies]
-deepstrike-sdk = "0.2.5"
+deepstrike-sdk = "0.2.6"
 ```
 
 See the [SDK guides](./docs/guides/index.md) for full examples, provider configuration, streaming events, governance hooks, and collaboration patterns.
 
 ## Core Capabilities
 
-- **Agent OS runtime (0.2.5+)**: kernel-mediated syscall trap, scheduler lifecycle, memory paging, process table, and IPC — host SDKs own all side effects.
+- **Agent OS runtime (0.2.6+)**: kernel-mediated syscall trap, scheduler lifecycle, memory paging, process table, resource quotas, and IPC — host SDKs own all side effects.
 - **Replayable kernel semantics**: loop control, context layout, rollback, milestones, signals, and audit behavior live behind a versioned ABI.
 - **Host-owned effects**: SDKs handle I/O, providers, tools, persistence, processes, and network boundaries.
 - **Provider portability**: Anthropic, OpenAI, Qwen, DeepSeek, MiniMax, Kimi, Ollama, and OpenAI-compatible gateways share a unified event stream.

@@ -170,6 +170,7 @@ fn runtime_options_can_be_constructed() {
         attention_policy: None,
         scheduler_budget: None,
         resource_quota: None,
+        memory_policy: None,
         tokenizer: None,
         enable_plan_tool: None,
         on_tool_suspend: None,

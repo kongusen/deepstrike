@@ -290,7 +290,7 @@ class MyEval(EvalLoopHarness):
 
 ## Signals — *external interrupts*
 
-`SignalGateway` is the entry point for all external events during a running session. **0.2.5 default:** signals flow through the **in-kernel** `SignalRouter` (configured via `set_attention_policy` / `attentionPolicy`, default queue size 64). The kernel assigns disposition and emits `signal_disposed` observations with `category: ipc`.
+`SignalGateway` is the entry point for all external events during a running session. **0.2.6 default:** signals flow through the **in-kernel** `SignalRouter` (configured via `set_attention_policy` / `attentionPolicy`, default queue size 64). The kernel assigns disposition and emits `signal_disposed` observations with `category: ipc`.
 
 Internally, delivered signals become `push_signal()` text and fold into **Slot 3** (`turns[0]`) alongside `task_state`. They are ephemeral — cleared after each render — and are **not** carried across renewal sprints.
 
@@ -401,7 +401,7 @@ See the full [Collaboration guide](../guides/collaboration.md) for API details a
 
 ## Safety — *permission boundaries*
 
-Every tool call passes through the **in-kernel governance gate** before execution (loaded via `load_governance_policy` / `governancePolicy`). **0.2.5 default:** `DEFAULT_NATIVE_GOVERNANCE_POLICY` (allow-all) is loaded on every run unless you override it. The SDK cannot bypass kernel denial or ask_user suspension.
+Every tool call passes through the **in-kernel governance gate** before execution (loaded via `load_governance_policy` / `governancePolicy`). **0.2.6 default:** `DEFAULT_NATIVE_GOVERNANCE_POLICY` (allow-all) is loaded on every run unless you override it. The SDK cannot bypass kernel denial or ask_user suspension.
 
 For SDK-local checks (tests, custom gates), use the standalone `Governance` class or `PermissionManager` — these are **not** wired automatically into `RuntimeRunner`; use `governancePolicy` for run-time enforcement.
 

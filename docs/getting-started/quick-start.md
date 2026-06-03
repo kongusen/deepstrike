@@ -24,7 +24,7 @@ Requires Python 3.10+.
 
 ```toml
 [dependencies]
-deepstrike-sdk = "0.2.5"
+deepstrike-sdk = "0.2.6"
 tokio = { version = "1", features = ["full"] }
 ```
 

@@ -1,6 +1,6 @@
 # SDK OS Parity Matrix
 
-Cross-language checklist for the **Agent OS native profile** (0.2.5+). Every `RuntimeRunner` run loads default governance and in-kernel signal routing unless you override `governancePolicy` / `attentionPolicy`.
+Cross-language checklist for the **Agent OS native profile** (0.2.6+). Every `RuntimeRunner` run loads default governance and in-kernel signal routing unless you override `governancePolicy` / `attentionPolicy`.
 
 Optional `osProfile: "native"` / `os_profile: "native"` adds **fail-fast static validation** (required policies, no legacy governance instance). Behavioral defaults already match native semantics.
 
@@ -49,6 +49,6 @@ When `osProfile: "native"` is set explicitly:
 | Legacy `governance` instance on runner | Forbidden |
 | Legacy `COMPAT(signal-legacy)` router | Forbidden (fail-fast) |
 
-**0.2.5 default runs** satisfy these behaviorally via `DEFAULT_NATIVE_ATTENTION_POLICY` and `DEFAULT_NATIVE_GOVERNANCE_POLICY` without setting `osProfile`.
+**0.2.6 default runs** satisfy these behaviorally via `DEFAULT_NATIVE_ATTENTION_POLICY` and `DEFAULT_NATIVE_GOVERNANCE_POLICY` without setting `osProfile`.
 
 See [Kernel ABI — OS Native Profile](./reference/kernel-abi.md#os-native-profile-phase-6) and [Agent OS](./concepts/agent-os.md).

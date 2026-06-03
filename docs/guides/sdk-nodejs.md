@@ -1,7 +1,7 @@
 # DeepStrike Node.js SDK — API 使用指南
 
 > Runtime v1：公共入口为 `RuntimeRunner` + `SessionLog` + `ExecutionPlane`。  
-> **0.2.5 Agent OS：** 默认加载 `governancePolicy` + in-kernel `attentionPolicy`；支持 Layer-1 spool、semantic page-out、`writeMemory` / `queryMemory`。概念总览见 [Agent OS](../concepts/agent-os.md) 与 `node/README.md`。
+> **0.2.6 Agent OS：** 默认加载 `governancePolicy` + in-kernel `attentionPolicy`；支持 Layer-1 spool、semantic page-out、`writeMemory` / `queryMemory`。概念总览见 [Agent OS](../concepts/agent-os.md) 与 `node/README.md`。
 
 ## 目录
 
@@ -382,7 +382,7 @@ pm.evaluate("fs", "write")   // { allowed: false, reason: "not granted" }
 
 ### 8.2 内核 Governance（推荐：`governancePolicy`）
 
-**0.2.5 默认：** 每次 `run()` 加载 `DEFAULT_NATIVE_GOVERNANCE_POLICY`（allow-all）到内核，工具执行前经 in-kernel gate 裁决。
+**0.2.6 默认：** 每次 `run()` 加载 `DEFAULT_NATIVE_GOVERNANCE_POLICY`（allow-all）到内核，工具执行前经 in-kernel gate 裁决。
 
 ```typescript
 import {

@@ -39,7 +39,7 @@ export default defineConfig({
         text: '🧠 Concepts',
         items: [
           { text: 'Overview', link: '/concepts/' },
-          { text: 'Agent OS (0.2.5+)', link: '/concepts/agent-os' },
+          { text: 'Agent OS (0.2.6+)', link: '/concepts/agent-os' },
           { text: 'Core Concepts', link: '/concepts/core-concepts' },
           { text: 'Context Slots & Compression', link: '/concepts/context-slots-compression' }
         ]

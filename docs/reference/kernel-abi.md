@@ -2,7 +2,7 @@
 
 ## Status
 
-Agent OS 0.2.5 — kernel three-primitives (M0–M4), native profile defaults, Layer-1 spool, semantic page-out, Phase-7 memory syscalls.
+Agent OS 0.2.6 — kernel three-primitives (M0–M4), native profile defaults, Layer-1 spool, semantic page-out, Phase-7 memory syscalls.
 
 Current implementation status:
 
@@ -139,13 +139,13 @@ Kernel audit source. Each observation maps to an OS event **category** for unifi
 | `agent_process_changed` | Process table entry changed (spawn: `running`; join: `joined` / `failed`) |
 | `suspended` / `resumed` | Parent loop suspended awaiting approval or sub-agent join |
 
-## OS Native Profile (Phase 6, 0.2.5 default behavior)
+## OS Native Profile (Phase 6, 0.2.6 default behavior)
 
-**0.2.5 runs** load `DEFAULT_NATIVE_GOVERNANCE_POLICY` and `DEFAULT_NATIVE_ATTENTION_POLICY` on every `RuntimeRunner` start unless you override them. In-kernel signal routing and governance enforcement are the default path; legacy SDK-side signal disposition is removed.
+**0.2.6 runs** load `DEFAULT_NATIVE_GOVERNANCE_POLICY` and `DEFAULT_NATIVE_ATTENTION_POLICY` on every `RuntimeRunner` start unless you override them. In-kernel signal routing and governance enforcement are the default path; legacy SDK-side signal disposition is removed.
 
 Optional explicit profile: `osProfile` / `os_profile: "native"` adds **fail-fast static validation** (policies required, legacy `governance` instance forbidden).
 
-| Requirement | Default (0.2.5) | Explicit `native` profile |
+| Requirement | Default (0.2.6) | Explicit `native` profile |
 |---|---|---|
 | `attentionPolicy` | loaded (queue 64) | **required** (fail-fast if missing) |
 | `governancePolicy` | loaded (allow-all default) | **required** (fail-fast if missing) |
@@ -158,7 +158,7 @@ Audit: `rebuildOsSnapshotFromSessionEvents(sessionEvents)` rebuilds a read-only 
 
 Parity CI: `node scripts/check-sdk-parity.mjs`. Matrix: [sdk-os-parity.md](../sdk-os-parity.md).
 
-## Memory Syscalls (Phase-7, 0.2.5)
+## Memory Syscalls (Phase-7, 0.2.6)
 
 Long-term memory I/O outside the main tool loop:
 

@@ -92,6 +92,7 @@ fn default_runtime_opts(
         attention_policy: None,
         scheduler_budget: None,
         resource_quota: None,
+        memory_policy: None,
         tokenizer: None,
         enable_plan_tool: None,
         on_tool_suspend: None,

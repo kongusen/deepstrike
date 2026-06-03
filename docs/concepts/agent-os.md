@@ -1,15 +1,15 @@
 # Agent OS
 
-**Status:** Current (0.2.5+)  
+**Status:** Current (0.2.6+)  
 **Related:** [Architecture overview](../architecture/overview.md) · [Kernel ABI](../reference/kernel-abi.md) · [SDK OS parity](../sdk-os-parity.md)
 
 ---
 
-DeepStrike 0.2.5 treats the runtime as an **Agent OS**: a pure-Rust microkernel mediates scheduling, memory, governance, signals, and processes; host SDKs (Node, Python, Rust, WASM) own all side effects — LLM calls, tools, disk, long-term storage, and network.
+DeepStrike 0.2.6 treats the runtime as an **Agent OS**: a pure-Rust microkernel mediates scheduling, memory, governance, signals, and processes; host SDKs (Node, Python, Rust, WASM) own all side effects — LLM calls, tools, disk, long-term storage, and network.
 
 ## Before and after
 
-| Before (≤ 0.2.4) | After (0.2.5) |
+| Before (≤ 0.2.4) | After (0.2.6) |
 | :--- | :--- |
 | Scheduling, compression, and permission logic scattered per SDK | Unified syscall trap, TCB lifecycle, and MM eviction funnel — same semantics across host languages |
 | Large tool outputs and long sessions hit token walls | Layer-1 spool (preview + `.spool/` ref) and semantic page-out → long-term memory |
@@ -113,4 +113,4 @@ Parity matrix: [SDK OS parity](../sdk-os-parity.md).
 
 ## Optional strict validation
 
-`osProfile: "native"` / `os_profile: "native"` runs static fail-fast checks: required policies present, legacy governance instances forbidden. **Behavioral defaults in 0.2.5 already use the native profile** — explicit `osProfile` is for tests and strict deployments.
+`osProfile: "native"` / `os_profile: "native"` runs static fail-fast checks: required policies present, legacy governance instances forbidden. **Behavioral defaults in 0.2.6 already use the native profile** — explicit `osProfile` is for tests and strict deployments.

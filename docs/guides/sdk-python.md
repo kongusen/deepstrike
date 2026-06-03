@@ -1,7 +1,7 @@
 # DeepStrike Python SDK — API 使用指南
 
 > Runtime v1：公共入口为 `RuntimeRunner` + `SessionLog` + `ExecutionPlane`。  
-> **0.2.5 Agent OS：** 默认加载 `governance_policy` + in-kernel `attention_policy`；支持 Layer-1 spool、semantic page-out、`write_memory` / `query_memory`。概念总览见 [Agent OS](../concepts/agent-os.md) 与 `python/README.md`。
+> **0.2.6 Agent OS：** 默认加载 `governance_policy` + in-kernel `attention_policy`；支持 Layer-1 spool、semantic page-out、`write_memory` / `query_memory`。概念总览见 [Agent OS](../concepts/agent-os.md) 与 `python/README.md`。
 
 ## 目录
 

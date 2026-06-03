@@ -4,6 +4,75 @@ All notable changes to DeepStrike are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.6] - 2026-06-03
+
+Agent OS consolidation release: M1 scheduler authority, M2 resource quotas with enforcement, M3 handle residency and Layer-4 read-time projection, native profile helpers across host SDKs, and configurable memory policy at the WriteMemory/QueryMemory traps.
+
+### What this release enables
+
+| Before (0.2.5) | After (0.2.6) |
+|---|---|
+| Scheduler and process views partially duplicated in SDK | `schedule()` is authoritative; task/process state unified under M1 consolidation |
+| Governance gate without per-resource budgets | M2 **resource quotas** via `set_resource_quota` — syscall trap enforces limits before tool I/O |
+| Layer-4 collapse removed messages in-place | **Read-time projection** via live `HandleTable` index; spool residency activated (M3.3) |
+| Memory validation rules fixed at compile time | **`set_memory_policy`** — toggle validation, cap `retrieval_top_k`, override size limits at runtime |
+| OS profile helpers only in Node | `assertNativeProfile` / `osProfile` + quota wiring in **Node, Python, Rust, WASM** |
+
+### Added
+
+#### Core — M1 consolidation
+
+- **`schedule()` authoritative:** Scheduler owns next-action decisions; legacy ProcessTable scaffold removed in favor of TaskTable view.
+- **Phase 0 regression baseline:** Budget-axis and AgentProcess-view tests pin consolidation contracts.
+
+#### Core — M2 resource quotas
+
+- **`set_resource_quota` ABI:** Per-resource limits enforced at the syscall trap before tool execution.
+- Kernel tests and state-machine wiring for quota exceed observations.
+
+#### Core — M3 handle residency (3.3a–3.3c)
+
+- **M3.3a — `HandleTable`:** Live index over working-context tool results.
+- **M3.3b — Layer-4 read-time projection:** Context collapse replaced by handle residency + projection at render time.
+- **M3.3c — Spool residency:** Layer-1 spool refs integrated into handle table; dead `CollapseMode` scaffold removed.
+
+#### Core — Memory policy enforcement
+
+- **`MemoryPolicy` installed via `set_memory_policy`:** `validation_enabled`, `retrieval_top_k`, `max_content_bytes`, stale-warning config.
+- WriteMemory / QueryMemory traps honor policy (`validation_enabled: false` bypasses rules; `retrieval_top_k` clamps query requests).
+
+#### SDK — Native profile + resource quota parity
+
+- **`assertNativeProfile` / `osProfile`** exported from Node, Python, Rust, and WASM runners.
+- **`set_resource_quota`** loaded through host runners before `start_run`.
+- **`memoryPolicy` / `memory_policy`** wired in Node, Python, Rust, and WASM (→ `set_memory_policy`).
+- **Config-shape isomorphism:** all four SDKs now expose the same 8 config-in options (`governancePolicy`, `attentionPolicy`, `schedulerBudget`, `resourceQuota`, `memoryPolicy`, `osProfile`, `tokenizer`, `enablePlanTool`). WASM previously lacked `tokenizer` / `enablePlanTool` — both added (`set_tokenizer` / `set_plan_tool_enabled` wiring).
+- **`scripts/check-sdk-parity.mjs`:** Expanded markers for os-profile, resource-quota, and memory-policy surfaces (per-SDK memory-policy checks).
+
+#### SDK — Stability example
+
+- **`node/examples/long-running-stability.mjs`:** Multi-turn validation harness (tools, skills, memory, spool, wake, quotas).
+
+#### Tests
+
+- `node/tests/runtime/memory-policy.test.ts` — kernel ABI reference tests for policy config and enforcement.
+- `python/tests/test_resource_quota.py`, Rust/WASM native-profile and resource-quota tests.
+
+### Changed
+
+- **Phase 4 cleanup:** Removed standalone `ProcessTable` and dead compression scaffold after M1/M3 consolidation.
+- **Documentation:** Kernel ABI and SDK parity matrix updated for M1/M2/M3 and memory policy; package READMEs note quota and policy APIs.
+
+### Fixed
+
+- **`initialMemory` on Python / WASM:** both runners emitted the removed `add_memory_message` event, which the kernel rejects (unknown `kind`) — any run setting `initial_memory` / `initialMemory` failed during setup. Migrated to `add_knowledge_message` (same `content` / `tokens` fields), matching the Node runner.
+
+### Notes
+
+- Rebuild Node native bindings after upgrade: `cd crates/deepstrike-node && napi build --platform --release`.
+- Python: `maturin develop --release` for the latest kernel ABI including `set_memory_policy` and `set_resource_quota`.
+- WASM: rebuild the bundle (`npm run build:wasm`, requires `wasm-pack`) so the `.wasm` embeds the updated core — without it the new config-in events are accepted but not enforced.
+
 ## [0.2.5] - 2026-06-02
 
 Agent OS release: kernel three-primitives refactor (M0–M4), OS native profile defaults, Layer-1 large-result spool, semantic page-out pipeline, and Phase-7 memory syscalls — across core, Node, Python, Rust, and Wasm event mapping.

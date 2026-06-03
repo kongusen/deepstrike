@@ -54,7 +54,7 @@ pip install deepstrike
 ```toml [Rust]
 # Cargo.toml
 [dependencies]
-deepstrike-sdk = "0.2.5"
+deepstrike-sdk = "0.2.6"
 ```
 
 ```bash [WASM]
@@ -65,7 +65,7 @@ npm install @deepstrike/wasm
 
 ## Read More
 
-- [Agent OS](./concepts/agent-os) — What 0.2.5 enables: kernel mediation, spool, memory syscalls, and observability.
+- [Agent OS](./concepts/agent-os) — What 0.2.6 enables: kernel mediation, spool, memory syscalls, and observability.
 - [Getting Started Guide](/getting-started/) — Install packages and run your first agent.
 - [Concepts](/concepts/) — Context VM, memory, governance, signals, and collaboration.
 - [SDK Guides](/guides/) — Full integration guides for Node.js, Python, and Rust.
