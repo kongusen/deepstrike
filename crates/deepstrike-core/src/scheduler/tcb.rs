@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 use crate::proc::ProcessState;
 use crate::scheduler::policy::SchedulerBudget;
 use crate::scheduler::state_machine::{BlockReason, SuspendReason};
-use crate::types::result::TerminationReason;
+use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance, IsolationManifest};
+use crate::types::result::{SubAgentResult, TerminationReason};
 
 /// Identity of a schedulable task. Task 0 is the root loop; children are sub-agents.
 /// Aligns with `AgentProcess.agent_id` so M1 can map process rows onto TCBs 1:1.
@@ -159,6 +160,22 @@ pub struct BudgetSlice {
     pub max_wall_ms: Option<u64>,
 }
 
+/// Sub-agent-specific identity carried by a child [`Tcb`]; `None` on the root task.
+///
+/// This is what lets [`crate::proc::ProcessTable`] become a *derived view* over the
+/// [`TaskTable`]: every child task whose `proc` is `Some` reconstructs exactly one
+/// [`crate::proc::AgentProcess`] (see [`crate::proc::AgentProcess::from_tcb`]). The previously
+/// duplicated process storage collapses into these fields.
+#[derive(Debug, Clone)]
+pub struct ProcInfo {
+    pub parent_session_id: CompactString,
+    pub role: AgentRole,
+    pub isolation: AgentIsolation,
+    pub context_inheritance: ContextInheritance,
+    /// The join result once the sub-agent has completed; `None` while running.
+    pub result: Option<SubAgentResult>,
+}
+
 /// One schedulable entity. The root loop and every sub-agent are uniform `Tcb`s.
 #[derive(Debug, Clone)]
 pub struct Tcb {
@@ -169,6 +186,8 @@ pub struct Tcb {
     pub wait: Option<WaitReason>,
     /// Capability ids permitted to this task (mirrors `AgentProcess.permitted_capability_ids`).
     pub caps: Vec<CompactString>,
+    /// Sub-agent identity for child tasks; `None` for the root loop.
+    pub proc: Option<ProcInfo>,
 }
 
 impl Tcb {
@@ -181,6 +200,28 @@ impl Tcb {
             budget: BudgetLedger::new(budget),
             wait: None,
             caps: Vec::new(),
+            proc: None,
+        }
+    }
+
+    /// A sub-agent task spawned under the root, seeded `Running`, carrying the manifest's
+    /// process identity. The single source of truth for what was previously an `AgentProcess`
+    /// row in a separate `ProcessTable`.
+    pub fn spawned(manifest: &IsolationManifest, budget: SchedulerBudget) -> Self {
+        Self {
+            id: manifest.agent_id.clone(),
+            parent: Some("root".into()),
+            state: TaskState::Running,
+            budget: BudgetLedger::new(budget),
+            wait: None,
+            caps: manifest.permitted_capability_ids.clone(),
+            proc: Some(ProcInfo {
+                parent_session_id: manifest.parent_session_id.clone(),
+                role: manifest.role,
+                isolation: manifest.isolation,
+                context_inheritance: manifest.context_inheritance,
+                result: None,
+            }),
         }
     }
 

@@ -23,6 +23,18 @@ impl ProcessState {
     }
 }
 
+/// Project a task's schedulability onto the coarser process lifecycle exposed in the
+/// `AgentProcess` view. Inverse of `impl From<ProcessState> for TaskState`: a child task is
+/// `Joined` once it completed successfully, `Failed` on any other terminal reason, else `Running`.
+fn process_state_of(state: crate::scheduler::tcb::TaskState) -> ProcessState {
+    use crate::scheduler::tcb::TaskState;
+    match state {
+        TaskState::Done(TerminationReason::Completed) => ProcessState::Joined,
+        TaskState::Done(_) => ProcessState::Failed,
+        _ => ProcessState::Running,
+    }
+}
+
 /// A sub-agent process registered by the kernel.
 ///
 /// The kernel owns only declarative lifecycle state. Host execution,
@@ -61,6 +73,26 @@ impl AgentProcess {
             _ => ProcessState::Failed,
         };
         self.result = Some(result);
+    }
+
+    /// Reconstruct an `AgentProcess` from a child [`crate::scheduler::tcb::Tcb`] (M1 收口).
+    ///
+    /// Returns `None` for the root task (no `proc`). This is the bridge that makes the
+    /// `ProcessTable` a *derived view* over the kernel's `TaskTable`: the sub-agent's
+    /// declarative identity lives on the TCB, and the `AgentProcess` shape — the SDK ABI /
+    /// session-log contract — is rebuilt on demand without a second source of truth.
+    pub fn from_tcb(tcb: &crate::scheduler::tcb::Tcb) -> Option<Self> {
+        let info = tcb.proc.as_ref()?;
+        Some(Self {
+            agent_id: tcb.id.clone(),
+            parent_session_id: info.parent_session_id.clone(),
+            role: info.role,
+            isolation: info.isolation,
+            context_inheritance: info.context_inheritance,
+            state: process_state_of(tcb.state),
+            permitted_capability_ids: tcb.caps.clone(),
+            result: info.result.clone(),
+        })
     }
 
     pub fn result_termination_label(&self) -> Option<&'static str> {

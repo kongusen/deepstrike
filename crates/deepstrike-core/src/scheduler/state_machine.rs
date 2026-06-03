@@ -8,7 +8,7 @@ use crate::AgentRunSpec;
 use crate::context::manager::ContextManager;
 use crate::governance::pipeline::GovernancePipeline;
 use crate::syscall::{Disposition, Syscall};
-use crate::proc::{AgentProcess, ProcessState, ProcessTable};
+use crate::proc::{AgentProcess, ProcessState};
 use crate::signals::router::SignalRouter;
 use crate::types::agent::AgentIdentity;
 use crate::types::policy::SignalDisposition;
@@ -320,10 +320,10 @@ pub struct LoopStateMachine {
     /// Milestone contract tracker (extracted to reduce state machine bloat).
     milestone: MilestoneTracker,
     pub run_spec: Option<AgentRunSpec>,
-    processes: ProcessTable,
-    /// M1c: canonical task registry (root task + one row per sub-agent). Maintained in
-    /// parallel with `processes` and `debug_assert`-equal to its lineage/lifecycle, so M1d can
-    /// make `ProcessTable` a derived view and drop its storage. Root is task `"root"`.
+    /// M1 收口: the single source of truth for schedulability *and* sub-agent lineage. Root is
+    /// task `"root"`; each sub-agent is a child task carrying its `ProcInfo`. The former
+    /// `ProcessTable` is now a derived view over this (`agent_process(es)` rebuild `AgentProcess`
+    /// rows on demand via `AgentProcess::from_tcb`).
     tasks: TaskTable,
     /// Optional governance pipeline. When set, every tool call proposed by the
     /// model is evaluated before `ExecuteTools` is emitted. `None` (default)
@@ -385,7 +385,6 @@ impl LoopStateMachine {
             checkpoint: TurnCheckpoint::default(),
             milestone: MilestoneTracker::new(),
             run_spec: None,
-            processes: ProcessTable::new(),
             tasks,
             governance: None,
             signal_router: Some(SignalRouter::new(64)),
@@ -1002,41 +1001,25 @@ impl LoopStateMachine {
                 }
                 self.turn += 1;
 
-                if let Some(reason) = self.policy.should_terminate(
-                    self.turn,
-                    self.total_tokens,
-                    self.last_now_ms,
-                    self.started_at_ms,
-                ) {
+                // M1 收口: the pure `schedule()` is now the single budget decision point.
+                // It evaluates the same three axes (turn/token/wall) via `BudgetLedger`, which
+                // delegates to `SchedulerBudget::should_terminate` internally — one source of truth.
+                if let ScheduleDecision::Terminate { reason: term, .. } =
+                    super::tcb::schedule(&self.root_tcb(), self.last_now_ms)
+                {
+                    let budget = match term {
+                        TerminationReason::MaxTurns => "max_turns",
+                        TerminationReason::Timeout => "wall_time",
+                        _ => "token_budget",
+                    };
                     self.observations.push(LoopObservation::BudgetExceeded {
                         turn: self.turn,
-                        budget: reason.to_string(),
+                        budget: budget.to_string(),
                     });
-                    let term = match reason {
-                        "max_turns" => TerminationReason::MaxTurns,
-                        "wall_time" => TerminationReason::Timeout,
-                        _ => TerminationReason::TokenBudget,
-                    };
-                    // M1b: the pure scheduler must reach the identical terminate verdict + reason.
-                    debug_assert!(
-                        matches!(
-                            super::tcb::schedule(&self.root_tcb(), self.last_now_ms),
-                            ScheduleDecision::Terminate { reason: r, .. } if r == term
-                        ),
-                        "M1b schedule() disagrees with should_terminate (legacy reason {reason})"
-                    );
                     self.pending_termination = Some(term);
                     self.phase = LoopPhase::Reason;
                     return self.emit_call_llm();
                 }
-                // M1b: conversely, within budget the pure scheduler must say `Run`.
-                debug_assert!(
-                    matches!(
-                        super::tcb::schedule(&self.root_tcb(), self.last_now_ms),
-                        ScheduleDecision::Run { .. }
-                    ),
-                    "M1b schedule() should Run when should_terminate returned None"
-                );
 
                 // ━━ Eviction checkpoint (M3): one decision model (`plan_eviction`), one
                 // execution funnel (`execute_eviction_op`). Layer 3 (idle/time-decay) must run
@@ -1145,15 +1128,17 @@ impl LoopStateMachine {
             return self.emit_call_llm();
         }
         let agent_id = manifest.agent_id.to_string();
-        let process = self.processes.register_spawn(&manifest);
-        // M1c: mirror the spawn as a child task under the root.
-        let mut child = Tcb::root(manifest.agent_id.clone(), self.policy.clone());
-        child.parent = Some("root".into());
-        child.state = TaskState::from(process.state);
-        child.caps = process.permitted_capability_ids.clone();
+        // M1 收口: register the sub-agent as a child task — the single source of truth. The
+        // `AgentProcess` view row is reconstructed from the TCB for the observation/session-log.
+        let child = Tcb::spawned(&manifest, self.policy.clone());
         self.tasks.insert(child);
-        self.push_agent_process_changed(process);
-        self.debug_assert_tasks_mirror_processes();
+        if let Some(process) = self
+            .tasks
+            .get(&agent_id)
+            .and_then(AgentProcess::from_tcb)
+        {
+            self.push_agent_process_changed(process);
+        }
         self.suspend_state = Some(SuspendState::SubAgentAwait {
             agent_ids: vec![agent_id.clone()],
         });
@@ -1170,14 +1155,25 @@ impl LoopStateMachine {
     }
 
     fn handle_sub_agent_completed(&mut self, result: SubAgentResult) -> LoopAction {
-        if let Some(process) = self.processes.complete(result.clone()) {
-            // M1c: mirror the join onto the child task's lifecycle.
-            let mirrored = TaskState::from(process.state);
-            if let Some(task) = self.tasks.get_mut(process.agent_id.as_str()) {
-                task.state = mirrored;
+        // M1 收口: record the join on the child task itself (the source of truth) — both the
+        // terminal lifecycle and the result payload — then rebuild the `AgentProcess` view row.
+        // The terminal `TaskState` preserves the legacy `ProcessState`→`TaskState` mapping
+        // (`Completed`→`Done(Completed)`, anything else→`Done(Error)`).
+        let process = if let Some(task) = self.tasks.get_mut(result.agent_id.as_str()) {
+            let process_state = match result.result.termination {
+                TerminationReason::Completed => crate::proc::ProcessState::Joined,
+                _ => crate::proc::ProcessState::Failed,
+            };
+            task.state = TaskState::from(process_state);
+            if let Some(info) = task.proc.as_mut() {
+                info.result = Some(result.clone());
             }
+            AgentProcess::from_tcb(task)
+        } else {
+            None
+        };
+        if let Some(process) = process {
             self.push_agent_process_changed(process);
-            self.debug_assert_tasks_mirror_processes();
         }
         let summary = result
             .result
@@ -1218,48 +1214,26 @@ impl LoopStateMachine {
         }
     }
 
-    pub fn agent_process(&self, agent_id: &str) -> Option<&AgentProcess> {
-        self.processes.get(agent_id)
+    /// The `AgentProcess` view of a sub-agent, reconstructed from its child task. `None` for the
+    /// root task or unknown ids. (M1 收口: derived from the `TaskTable`, no separate storage.)
+    pub fn agent_process(&self, agent_id: &str) -> Option<AgentProcess> {
+        self.tasks.get(agent_id).and_then(AgentProcess::from_tcb)
     }
 
-    pub fn agent_processes(&self) -> &[AgentProcess] {
-        self.processes.all()
+    /// The `AgentProcess` view of all sub-agents (every child task with process identity).
+    pub fn agent_processes(&self) -> Vec<AgentProcess> {
+        self.tasks
+            .all()
+            .iter()
+            .filter_map(AgentProcess::from_tcb)
+            .collect()
     }
 
-    /// M1c: the canonical task registry (root task + one row per sub-agent). This is the
-    /// schedulability/lineage source of truth; `agent_processes()` remains the rich record store
-    /// until M1d makes it a derived view.
+    /// The canonical task registry (root task + one row per sub-agent): the single source of
+    /// truth for schedulability *and* sub-agent lineage. `agent_process(es)` are derived views
+    /// over this table (M1 收口).
     pub fn task_table(&self) -> &TaskTable {
         &self.tasks
-    }
-
-    /// Debug-only invariant: the TaskTable carries the root plus exactly one task per process,
-    /// with each child's lifecycle equal to its process state. Guards drift before M1d flips the
-    /// canonical/derived relationship.
-    fn debug_assert_tasks_mirror_processes(&self) {
-        #[cfg(debug_assertions)]
-        {
-            debug_assert!(
-                self.tasks.get("root").is_some(),
-                "M1c: root task missing from TaskTable"
-            );
-            for p in self.processes.all() {
-                match self.tasks.get(p.agent_id.as_str()) {
-                    Some(task) => debug_assert_eq!(
-                        task.state,
-                        TaskState::from(p.state),
-                        "M1c: TaskTable lifecycle drifted from ProcessTable for {}",
-                        p.agent_id
-                    ),
-                    None => panic!("M1c: process {} missing from TaskTable", p.agent_id),
-                }
-            }
-            debug_assert_eq!(
-                self.tasks.all().len(),
-                self.processes.all().len() + 1,
-                "M1c: TaskTable should hold root + one task per process"
-            );
-        }
     }
 
     fn push_agent_process_changed(&mut self, process: AgentProcess) {
