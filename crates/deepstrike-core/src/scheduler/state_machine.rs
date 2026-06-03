@@ -329,6 +329,12 @@ pub struct LoopStateMachine {
     /// model is evaluated before `ExecuteTools` is emitted. `None` (default)
     /// skips the gate entirely, preserving the pre-governance behavior.
     governance: Option<GovernancePipeline>,
+    /// Optional resource quota evaluated at the syscall trap (M2). `None` (default) leaves spawn /
+    /// memory syscalls unconditionally allowed, preserving pre-M2 behavior.
+    resource_quota: Option<crate::governance::quota::ResourceQuota>,
+    /// Timestamps of recent allowed `WriteMemory` syscalls, for the rolling-window rate limit.
+    /// Only populated when `resource_quota.memory_writes_per_window` is set.
+    memory_write_times: Vec<u64>,
     /// Optional in-kernel signal router. When set, inbound signals are routed
     /// through dedup + attention policy + queue here (the kernel owns disposition).
     /// `None` (default) keeps the legacy hardcoded urgency handling in `feed`.
@@ -387,6 +393,8 @@ impl LoopStateMachine {
             run_spec: None,
             tasks,
             governance: None,
+            resource_quota: None,
+            memory_write_times: Vec::new(),
             signal_router: Some(SignalRouter::new(64)),
             started_at_ms: None,
             last_now_ms: None,
@@ -452,6 +460,12 @@ impl LoopStateMachine {
     /// `ToolGated` observation for the SDK to enforce.
     pub fn set_governance(&mut self, pipeline: GovernancePipeline) {
         self.governance = Some(pipeline);
+    }
+
+    /// Install resource quotas (M2). Once set, `Spawn` and `WriteMemory` syscalls are bounded by
+    /// the quota at the trap. Not setting it (the default) leaves them unconditionally allowed.
+    pub fn set_resource_quota(&mut self, quota: crate::governance::quota::ResourceQuota) {
+        self.resource_quota = Some(quota);
     }
 
     /// Feed the current wall-clock time (ms) to scheduler/governance budget axes.
@@ -553,9 +567,10 @@ impl LoopStateMachine {
 
     /// P1 (M2): the single syscall trap. Every effectful request the SDK proposes is adjudicated
     /// here, returning a unified [`Disposition`]. Tool calls run the governance pipeline (mapping
-    /// its verdict via `GovernanceVerdict -> Disposition`); `Spawn`/`PageIn`/memory carry no policy
-    /// stages yet and default to `Allow` — the chokepoint exists so quotas/rules can attach later
-    /// without a new ABI.
+    /// its verdict via `GovernanceVerdict -> Disposition`); `Spawn` and `WriteMemory` additionally
+    /// pass the resource quota (concurrency / depth / write rate). `PageIn`/`QueryMemory` carry no
+    /// quota yet and default to `Allow` — but route through the *same* trap so a policy can attach
+    /// later without a new ABI.
     fn evaluate_syscall(&mut self, sys: &Syscall) -> Disposition {
         match sys {
             Syscall::Invoke(call) => {
@@ -569,11 +584,78 @@ impl LoopStateMachine {
                     None => Disposition::Allow,
                 }
             }
-            Syscall::Spawn(_)
-            | Syscall::PageIn(_)
-            | Syscall::WriteMemory(_)
-            | Syscall::QueryMemory(_) => Disposition::Allow,
+            Syscall::Spawn(_) => self.evaluate_spawn_quota(),
+            Syscall::WriteMemory(_) => self.evaluate_memory_write_quota(),
+            Syscall::PageIn(_) | Syscall::QueryMemory(_) => Disposition::Allow,
         }
+    }
+
+    /// Public entry to the syscall trap, for effectful requests adjudicated outside the tool-call
+    /// path (memory writes, page-in). Tool calls go through `gate_tool_calls`; spawn through
+    /// `spawn_sub_agent`. All converge on [`Self::evaluate_syscall`].
+    pub fn gate_syscall(&mut self, sys: &Syscall) -> Disposition {
+        self.evaluate_syscall(sys)
+    }
+
+    /// Spawn quota: deny once the running sub-agent count hits `max_concurrent_subagents`, or the
+    /// new child's nesting depth would exceed `max_spawn_depth`. Reads only the kernel's own
+    /// `TaskTable` — no I/O. A denied spawn rolls the turn back like a denied tool call.
+    fn evaluate_spawn_quota(&self) -> Disposition {
+        let Some(quota) = self.resource_quota.as_ref() else {
+            return Disposition::Allow;
+        };
+        if let Some(max) = quota.max_concurrent_subagents {
+            let running = self
+                .tasks
+                .all()
+                .iter()
+                .filter(|t| t.proc.is_some() && matches!(t.state, TaskState::Running))
+                .count() as u32;
+            if running >= max {
+                return Disposition::Deny {
+                    stage: "quota",
+                    reason: format!(
+                        "max_concurrent_subagents={max} reached ({running} running)"
+                    ),
+                };
+            }
+        }
+        if let Some(max) = quota.max_spawn_depth {
+            // Sub-agents currently parent to the root task (depth 1). Nested spawning would
+            // generalize this to the spawning task's lineage depth.
+            let depth = 1u32;
+            if depth > max {
+                return Disposition::Deny {
+                    stage: "quota",
+                    reason: format!("max_spawn_depth={max} exceeded (depth {depth})"),
+                };
+            }
+        }
+        Disposition::Allow
+    }
+
+    /// Memory-write quota: a rolling-window rate limit. Prunes timestamps older than the window,
+    /// rate-limits if the window is full, else records this write's time. Uses the observed clock
+    /// (`last_now_ms`); with no clock fed it degenerates to "all in window 0" which still bounds
+    /// the count per `window_ms`.
+    fn evaluate_memory_write_quota(&mut self) -> Disposition {
+        let Some((max, window)) = self
+            .resource_quota
+            .as_ref()
+            .and_then(|q| q.memory_writes_per_window)
+        else {
+            return Disposition::Allow;
+        };
+        let now = self.last_now_ms.unwrap_or(0);
+        self.memory_write_times
+            .retain(|&t| now.saturating_sub(t) < window);
+        if self.memory_write_times.len() as u32 >= max {
+            let oldest = self.memory_write_times.first().copied().unwrap_or(now);
+            let retry_after_ms = window.saturating_sub(now.saturating_sub(oldest));
+            return Disposition::RateLimited { retry_after_ms };
+        }
+        self.memory_write_times.push(now);
+        Disposition::Allow
     }
 
     /// Evaluate proposed tool calls through the syscall trap (governance gate).

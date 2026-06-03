@@ -1048,6 +1048,104 @@
         assert_eq!(sm.agent_processes().len(), 1);
     }
 
+    // ---- Phase 2 (M2): resource quotas at the syscall trap -----------------
+
+    #[test]
+    fn spawn_quota_denies_beyond_concurrency_limit() {
+        use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+        let mut sm = sm();
+        sm.set_resource_quota(crate::governance::quota::ResourceQuota {
+            max_concurrent_subagents: Some(1),
+            ..Default::default()
+        });
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+
+        // First spawn is allowed; the loop suspends awaiting the join.
+        let a1 = sm.spawn_sub_agent(
+            AgentRunSpec::new(AgentIdentity::sub_agent("a", "a-sess"), AgentRole::Implement, "t"),
+            "parent-sess",
+        );
+        assert!(matches!(a1, LoopAction::AwaitingResume));
+        assert_eq!(sm.task_table().children_of("root").len(), 1);
+        sm.take_observations();
+
+        // Second spawn while one is still Running: denied by quota → rolled back, no new child.
+        let a2 = sm.spawn_sub_agent(
+            AgentRunSpec::new(AgentIdentity::sub_agent("b", "b-sess"), AgentRole::Implement, "t"),
+            "parent-sess",
+        );
+        assert!(matches!(a2, LoopAction::CallLLM { .. }));
+        assert_eq!(sm.task_table().children_of("root").len(), 1);
+        assert!(sm.agent_process("b").is_none());
+    }
+
+    #[test]
+    fn spawn_quota_denies_when_depth_exceeds_limit() {
+        use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+        let mut sm = sm();
+        sm.set_resource_quota(crate::governance::quota::ResourceQuota {
+            max_spawn_depth: Some(0), // no sub-agents permitted (direct children are depth 1)
+            ..Default::default()
+        });
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+
+        let action = sm.spawn_sub_agent(
+            AgentRunSpec::new(AgentIdentity::sub_agent("c", "c-sess"), AgentRole::Implement, "t"),
+            "parent-sess",
+        );
+        assert!(matches!(action, LoopAction::CallLLM { .. }));
+        assert!(!sm.is_suspended());
+        assert!(sm.agent_process("c").is_none());
+    }
+
+    #[test]
+    fn no_quota_leaves_spawn_unconditionally_allowed() {
+        use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+        // Pre-M2 behavior: without set_resource_quota, spawns are never quota-denied.
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+        let action = sm.spawn_sub_agent(
+            AgentRunSpec::new(AgentIdentity::sub_agent("d", "d-sess"), AgentRole::Implement, "t"),
+            "parent-sess",
+        );
+        assert!(matches!(action, LoopAction::AwaitingResume));
+        assert!(sm.is_suspended());
+    }
+
+    #[test]
+    fn memory_write_quota_rate_limits_within_window() {
+        use crate::mm::memory::{MemoryMetadata, MemoryWriteRequest};
+        use crate::syscall::{Disposition, Syscall};
+
+        let mut sm = sm();
+        sm.set_resource_quota(crate::governance::quota::ResourceQuota {
+            memory_writes_per_window: Some((2, 60_000)), // 2 writes / 60s
+            ..Default::default()
+        });
+        sm.set_observed_time(1_000);
+        let req = MemoryWriteRequest {
+            metadata: MemoryMetadata { name: "m".into(), description: "d".into(), ..Default::default() },
+            content: "c".to_string(),
+        };
+
+        assert!(sm.gate_syscall(&Syscall::WriteMemory(req.clone())).is_allowed());
+        assert!(sm.gate_syscall(&Syscall::WriteMemory(req.clone())).is_allowed());
+        // Third write within the window is rate-limited.
+        assert!(matches!(
+            sm.gate_syscall(&Syscall::WriteMemory(req.clone())),
+            Disposition::RateLimited { .. }
+        ));
+        // After the window elapses, writes are allowed again.
+        sm.set_observed_time(1_000 + 60_000);
+        assert!(sm.gate_syscall(&Syscall::WriteMemory(req)).is_allowed());
+    }
+
     // ---- Layer 1: large tool result spool ----------------------------------
 
     #[test]

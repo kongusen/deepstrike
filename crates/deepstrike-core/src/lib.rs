@@ -45,6 +45,7 @@ pub use governance::tool_decision::{
 };
 pub use governance::sandbox::SandboxProfile;
 pub use governance::pipeline::SecurityPolicySnapshot;
+pub use governance::quota::ResourceQuota;
 pub use mm::{
     plan_eviction, EvictionOp, EvictionPlan, Handle, HandleId, HandleKind, HandleTable,
     MemoryTierHint, PageInEntry, PageInRequest, Residency,

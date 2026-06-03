@@ -971,6 +971,31 @@ impl KernelRuntime {
                 // Kernel validates; SDK performs I/O.
                 use crate::mm::memory::validate_memory_write;
                 let turn = self.sm.turn;
+                // M2: route the write through the syscall trap so the resource quota (write-rate
+                // limit) applies. A rate-limited / denied write surfaces as a validation failure
+                // (the write does not happen) and short-circuits before validation.
+                let disposition = self
+                    .sm
+                    .gate_syscall(&crate::syscall::Syscall::WriteMemory(memory.clone()));
+                if !disposition.is_allowed() {
+                    let error = match disposition {
+                        crate::syscall::Disposition::RateLimited { retry_after_ms } => {
+                            format!("memory write rate limited; retry after {retry_after_ms}ms")
+                        }
+                        crate::syscall::Disposition::Deny { reason, .. } => {
+                            format!("memory write denied: {reason}")
+                        }
+                        _ => "memory write not permitted".to_string(),
+                    };
+                    self.sm.observations.push(
+                        crate::scheduler::state_machine::LoopObservation::MemoryValidationFailed {
+                            turn,
+                            memory_id: memory.metadata.name.clone(),
+                            error,
+                        },
+                    );
+                    return KernelStep::empty(self.sm.take_observations());
+                }
                 match validate_memory_write(&memory) {
                     Ok(()) => {
                         // Emit observation for SDK to perform I/O
