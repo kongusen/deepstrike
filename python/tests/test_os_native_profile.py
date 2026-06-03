@@ -14,6 +14,8 @@ from deepstrike.providers.stream import TextDelta, ToolCallEvent
 from deepstrike.runtime.os_profile import (
     DEFAULT_NATIVE_ATTENTION_POLICY,
     DEFAULT_NATIVE_GOVERNANCE_POLICY,
+    assert_native_profile,
+    os_profile,
 )
 from deepstrike.runtime.os_snapshot import (
     rebuild_os_snapshot_from_session_events,
@@ -35,6 +37,15 @@ class _StaticProvider:
             yield ToolCallEvent(id="c1", name="needs_approval", arguments={})
             return
         yield TextDelta(delta="ok")
+
+
+def test_native_profile_resolves_and_validates():
+    profile = assert_native_profile(os_profile("native"))
+    assert profile.id == "native"
+    assert profile.attention_policy.max_queue_size == 64
+    assert profile.governance_policy.rules[0].pattern == "*"
+    with pytest.raises(ValueError, match="Unsupported OS profile"):
+        assert_native_profile("invalid")
 
 
 @pytest.mark.asyncio

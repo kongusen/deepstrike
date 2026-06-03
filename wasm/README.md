@@ -39,6 +39,11 @@ const runner = new RuntimeRunner({
   executionPlane: plane,
   maxTokens: 32_000,
   maxTurns: 10,
+  resourceQuota: {
+    maxConcurrentSubagents: 4,
+    maxSpawnDepth: 2,
+    memoryWritesPerWindow: { maxWrites: 20, windowMs: 60_000 },
+  },
 })
 
 const answer = await collectText(runner.run({ sessionId: "demo", goal: "What is 2 + 3?" }))
@@ -89,6 +94,8 @@ The kernel (`@deepstrike/wasm-kernel`, Rust/wasm-bindgen) owns:
 | External signals | `postMessage` | event | any |
 
 The WASM SDK ships **no `readFile` built-in**. Tools must be pure JS / serializable data. Skills use `skillContentMap` on `RuntimeOptions` (no filesystem).
+
+`resourceQuota` is supported in the runner and maps to the kernel `set_resource_quota` event during run setup. The write-rate quota is enforced for kernel memory-write syscalls; WASM does not yet expose runner-level `writeMemory` / `queryMemory` helpers.
 
 ---
 

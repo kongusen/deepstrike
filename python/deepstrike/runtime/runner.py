@@ -52,7 +52,6 @@ from deepstrike.runtime.kernel_step import (
   tool_result_to_kernel,
   tool_schema_to_kernel,
 )
-from deepstrike.runtime.os_profile import DEFAULT_NATIVE_ATTENTION_POLICY, DEFAULT_NATIVE_GOVERNANCE_POLICY
 from deepstrike.runtime.replay_sanitize import sanitize_replay_text
 from deepstrike.runtime.session_repair import (
   build_llm_completed_event,
@@ -61,6 +60,7 @@ from deepstrike.runtime.session_repair import (
 )
 from deepstrike.runtime.session_log import SessionEntry, SessionEvent, SessionLog
 from deepstrike.runtime.archive import ArchiveStore
+from deepstrike.runtime.os_profile import assert_native_profile
 
 if TYPE_CHECKING:
   from deepstrike.governance import Governance, GovernancePolicy
@@ -77,6 +77,27 @@ class SubAgentHarnessConfig:
   """When set on RuntimeOptions, spawned sub-agents run through HarnessLoop."""
   eval_provider: LLMProvider
   max_attempts: int = 3
+
+
+@dataclass
+class MemoryWriteRateLimit:
+  """Rolling-window memory-write rate limit for ResourceQuota."""
+  max_writes: int
+  window_ms: int
+
+
+@dataclass
+class ResourceQuota:
+  """M2 resource quotas installed through the kernel JSON event ABI."""
+  max_concurrent_subagents: int | None = None
+  max_spawn_depth: int | None = None
+  memory_writes_per_window: MemoryWriteRateLimit | tuple[int, int] | None = None
+
+
+@dataclass
+class SchedulerBudget:
+  """Optional scheduler budget overrides installed through the kernel JSON event ABI."""
+  max_wall_ms: int | None = None
 
 
 @dataclass
@@ -99,6 +120,8 @@ class RuntimeOptions:
   governance: "Governance | None" = None
   governance_policy: "GovernancePolicy | None" = None
   attention_policy: "AttentionPolicy | dict | None" = None
+  scheduler_budget: SchedulerBudget | dict[str, Any] | None = None
+  resource_quota: ResourceQuota | dict[str, Any] | None = None
   os_profile: "OsProfile | None" = None
   tokenizer: str | None = None
   enable_plan_tool: bool | None = None
@@ -245,11 +268,17 @@ class RuntimeRunner:
       pass
 
   def _create_syscall_runtime(self) -> KernelRuntime:
-    return KernelRuntime(LoopPolicy(
+    runtime = KernelRuntime(LoopPolicy(
       max_tokens=self._opts.max_tokens,
       max_turns=self._opts.max_turns,
       timeout_ms=self._opts.timeout_ms,
     ))
+    if self._opts.resource_quota is not None:
+      kernel_apply(runtime, [], {
+        "kind": "set_resource_quota",
+        "quota": _resource_quota_to_kernel(self._opts.resource_quota),
+      })
+    return runtime
 
   async def _append_memory_syscall_observations(
     self,
@@ -743,19 +772,33 @@ class RuntimeRunner:
       from deepstrike.types.agent import agent_run_spec_to_kernel
       start_payload["run_spec"] = agent_run_spec_to_kernel(self._opts.run_spec)
 
-    gov_policy = self._opts.governance_policy or DEFAULT_NATIVE_GOVERNANCE_POLICY
+    os_profile = assert_native_profile(self._opts.os_profile or "native")
+    gov_policy = self._opts.governance_policy or os_profile.governance_policy
     kernel_apply(
       runtime,
       self._pending_observations,
       governance_policy_to_kernel_event(gov_policy),
     )
 
-    ap = self._opts.attention_policy or DEFAULT_NATIVE_ATTENTION_POLICY
+    ap = self._opts.attention_policy or os_profile.attention_policy
     max_q = ap.get("max_queue_size") if isinstance(ap, dict) else getattr(ap, "max_queue_size", None)
     kernel_apply(runtime, self._pending_observations, {
       "kind": "set_attention_policy",
       **({"max_queue_size": max_q} if max_q is not None else {}),
     })
+
+    scheduler_budget = _scheduler_budget_to_kernel(self._opts.scheduler_budget)
+    if scheduler_budget is not None:
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "set_scheduler_budget",
+        **scheduler_budget,
+      })
+
+    if self._opts.resource_quota is not None:
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "set_resource_quota",
+        "quota": _resource_quota_to_kernel(self._opts.resource_quota),
+      })
 
     action = (
       kernel_action(runtime, self._pending_observations, {"kind": "resume"})
@@ -1358,6 +1401,45 @@ def _next_archived_seq_start(events: list[SessionEntry] | None) -> int:
     if event.get("kind") == "compressed":
       next_seq = max(next_seq, int(event["archived_seq_range"][1]) + 1)
   return next_seq
+
+
+def _resource_quota_to_kernel(quota: ResourceQuota | dict[str, Any]) -> dict[str, Any]:
+  if isinstance(quota, dict):
+    max_concurrent = quota.get("max_concurrent_subagents")
+    max_depth = quota.get("max_spawn_depth")
+    rate = quota.get("memory_writes_per_window")
+  else:
+    max_concurrent = quota.max_concurrent_subagents
+    max_depth = quota.max_spawn_depth
+    rate = quota.memory_writes_per_window
+
+  out: dict[str, Any] = {}
+  if max_concurrent is not None:
+    out["max_concurrent_subagents"] = max_concurrent
+  if max_depth is not None:
+    out["max_spawn_depth"] = max_depth
+  if rate is not None:
+    if isinstance(rate, dict):
+      out["memory_writes_per_window"] = [
+        rate.get("max_writes"),
+        rate.get("window_ms"),
+      ]
+    elif isinstance(rate, MemoryWriteRateLimit):
+      out["memory_writes_per_window"] = [rate.max_writes, rate.window_ms]
+    else:
+      max_writes, window_ms = rate
+      out["memory_writes_per_window"] = [max_writes, window_ms]
+  return out
+
+
+def _scheduler_budget_to_kernel(budget: SchedulerBudget | dict[str, Any] | None) -> dict[str, Any] | None:
+  if budget is None:
+    return None
+  if isinstance(budget, dict):
+    max_wall_ms = budget.get("max_wall_ms", budget.get("maxWallMs"))
+  else:
+    max_wall_ms = budget.max_wall_ms
+  return {"max_wall_ms": max_wall_ms} if max_wall_ms is not None else {}
 
 
 def _to_kernel_message(message: object) -> Message:

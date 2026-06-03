@@ -12,20 +12,23 @@ Optional `osProfile: "native"` / `os_profile: "native"` adds **fail-fast static 
 | `attentionPolicy` + `signal_disposed` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `governancePolicy` suspend / resume | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `agent_process_changed` (proc) | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `resourceQuota` → `set_resource_quota` (M2) | ✓ | ✓ | event only | event only | event only |
+| `schedulerBudget` / `scheduler_budget` → `set_scheduler_budget` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `resourceQuota` / `resource_quota` → `set_resource_quota` (M2) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Public OS config shape (`osProfile`, governance, attention, scheduler, quota) | ✓ | ✓ | ✓ | ✓ | ✓ |
 | mm page-in before `execute_tool` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Layer-1 `large_result_spooled` + spool I/O | ✓ | ✓ | ✓ | ✓ | event only |
 | Semantic `page_out` → DreamStore | ✓ | ✓ | ✓ | ✓ | partial |
 | `writeMemory` / `queryMemory` syscalls | ✓ | ✓ | ✓ | ✓ | event only |
 | Kernel session events + `category` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `rebuild_os_snapshot_from_events` | ✓ | ✓ | ✓ | — | ✓ |
-| `osProfile: "native"` fail-fast | — | ✓ | ✓ | — | ✓ |
+| `osProfile: "native"` / `os_profile: "native"` fail-fast | — | ✓ | ✓ | ✓ | ✓ |
 
 **Notes**
 
 - **Rust:** OS snapshot rebuild helpers are session-log oriented; runner exposes `write_memory` / `query_memory` parity with Node/Python.
 - **WASM:** Memory syscall **session event types** are mapped; runner-level `writeMemory` / `queryMemory` APIs are not yet public.
-- **Resource quotas (M2):** the kernel enforces spawn/depth/write-rate quotas for *all* SDKs (the `set_resource_quota` JSON event + `gate_syscall` trap are in core). **Node is the reference runner wiring** — `RuntimeOptions.resourceQuota` maps the ergonomic option onto the event. Python / Rust / WASM can send the event directly but have no typed runner option yet (follow-up parity work).
+- **Resource quotas (M2):** the kernel enforces spawn/depth/write-rate quotas for *all* SDKs (the `set_resource_quota` JSON event + `gate_syscall` trap are in core). Node/WASM expose `RuntimeOptions.resourceQuota`; Python/Rust expose `RuntimeOptions.resource_quota`. Each maps the ergonomic runner option onto the same snake_case kernel event.
+- **Public shape:** Node/WASM keep JS-style camelCase (`osProfile`, `governancePolicy`, `attentionPolicy`, `schedulerBudget`, `resourceQuota`); Python/Rust keep native snake_case (`os_profile`, `governance_policy`, `attention_policy`, `scheduler_budget`, `resource_quota`). The emitted kernel events are the same snake_case JSON ABI.
 
 ## CI gates
 

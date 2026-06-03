@@ -15,6 +15,7 @@ mod tests;
 
 pub use deepstrike_core::context::renderer::RenderedContext;
 pub use deepstrike_core::governance::permission::PermissionAction;
+pub use deepstrike_core::governance::quota::ResourceQuota;
 pub use deepstrike_core::mm::memory::{
     MemoryKind, MemoryMetadata, MemoryQuery, MemoryRetrieval, MemoryWriteRequest,
 };
@@ -34,6 +35,11 @@ pub use runtime::{
 pub use runtime::{ExecutionPlane, LocalExecutionPlane};
 pub use runtime::{FileSessionLog, InMemorySessionLog, SessionEntry, SessionLog};
 pub use runtime::{McpProxyPlane, McpServerConfig};
+pub use runtime::{
+    AttentionPolicy, GovernancePolicy, MemoryWriteRateLimit, NativeOsProfile, OsProfile,
+    SchedulerBudget, assert_native_profile, default_native_governance_policy, os_profile,
+    DEFAULT_NATIVE_ATTENTION_POLICY,
+};
 pub use runtime::{
     MilestoneEvaluationContext, MilestoneEvaluationHandler, MilestonePolicy, RuntimeOptions,
     RuntimeRunner, collect_text,

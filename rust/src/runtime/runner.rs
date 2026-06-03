@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::runtime::sandboxed_skill::scan_skill_dir;
 use crate::runtime::skill_watcher::SkillWatcher;
 use async_stream::try_stream;
+use deepstrike_core::governance::quota::ResourceQuota;
 use deepstrike_core::memory::idle_pipeline::{IdleAction, IdleEvent, IdlePipeline, IdlePolicy};
 use deepstrike_core::mm::memory::{MemoryQuery, MemoryRetrieval, MemoryWriteRequest};
 use deepstrike_core::runtime::kernel::{
@@ -33,6 +34,9 @@ use crate::run_event::RunEvent;
 use crate::runtime::archive::ArchiveStore;
 use crate::runtime::execution_plane::{
     ExecutionPlane, LocalExecutionPlane, PermissionRequestHandler, RunContext, ToolSuspendHandler,
+};
+use crate::runtime::os_profile::{
+    assert_native_profile, AttentionPolicy, GovernancePolicy, OsProfile, SchedulerBudget,
 };
 use crate::runtime::provider_replay::{peek_provider_replay, seed_provider_replay_from_events};
 use crate::runtime::replay::{
@@ -94,6 +98,11 @@ pub struct RuntimeOptions {
     pub knowledge_source: Option<Box<dyn KnowledgeSource>>,
     pub signal_source: Option<Box<dyn SignalSource>>,
     pub governance: Option<Arc<tokio::sync::Mutex<Governance>>>,
+    pub os_profile: Option<OsProfile>,
+    pub governance_policy: Option<GovernancePolicy>,
+    pub attention_policy: Option<AttentionPolicy>,
+    pub scheduler_budget: Option<SchedulerBudget>,
+    pub resource_quota: Option<ResourceQuota>,
     pub tokenizer: Option<String>,
     pub enable_plan_tool: Option<bool>,
     pub on_tool_suspend: Option<ToolSuspendHandler>,
@@ -277,9 +286,30 @@ impl RuntimeRunner {
         let mut kernel = KernelRuntime::new(LoopPolicy {
             max_tokens: self.opts.max_tokens,
             max_turns: self.opts.max_turns.unwrap_or(25),
-            max_wall_ms: self.opts.timeout_ms,
+            max_wall_ms: effective_wall_budget(self.opts.scheduler_budget, self.opts.timeout_ms),
             ..Default::default()
         });
+        if let Ok(profile) = assert_native_profile(self.opts.os_profile.clone()) {
+            kernel.step(KernelInput::new(
+                self.opts
+                    .governance_policy
+                    .clone()
+                    .unwrap_or(profile.governance_policy)
+                    .into_kernel_event(),
+            ));
+            let attention = self.opts.attention_policy.unwrap_or(profile.attention_policy);
+            kernel.step(KernelInput::new(KernelInputEvent::SetAttentionPolicy {
+                max_queue_size: attention.max_queue_size.unwrap_or(64),
+            }));
+        }
+        if let Some(max_wall_ms) = effective_wall_budget(self.opts.scheduler_budget, self.opts.timeout_ms) {
+            kernel.step(KernelInput::new(KernelInputEvent::SetSchedulerBudget {
+                max_wall_ms: Some(max_wall_ms),
+            }));
+        }
+        if let Some(quota) = self.opts.resource_quota.clone() {
+            kernel.step(KernelInput::new(KernelInputEvent::SetResourceQuota { quota }));
+        }
         let step = kernel.step(KernelInput::new(event));
         step.observations
     }
@@ -533,11 +563,12 @@ impl RuntimeRunner {
             let provider_policy = self.opts.provider.runtime_policy();
             let effective_max_turns = self.opts.max_turns.or(provider_policy.max_turns).unwrap_or(25);
             let effective_timeout = self.opts.timeout_ms.or(provider_policy.timeout_ms);
+            let effective_wall_budget = effective_wall_budget(self.opts.scheduler_budget, effective_timeout);
 
             let policy = LoopPolicy {
                 max_tokens: self.opts.max_tokens,
                 max_turns: effective_max_turns,
-                max_wall_ms: effective_timeout,
+                max_wall_ms: effective_wall_budget,
                 ..Default::default()
             };
 
@@ -703,6 +734,48 @@ impl RuntimeRunner {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
+
+            let os_profile = assert_native_profile(self.opts.os_profile.clone())?;
+            let governance_policy = self
+                .opts
+                .governance_policy
+                .clone()
+                .unwrap_or(os_profile.governance_policy);
+            kernel_apply(
+                &mut kernel,
+                &mut pending_observations,
+                governance_policy.into_kernel_event(),
+            );
+
+            let attention_policy = self
+                .opts
+                .attention_policy
+                .unwrap_or(os_profile.attention_policy);
+            kernel_apply(
+                &mut kernel,
+                &mut pending_observations,
+                KernelInputEvent::SetAttentionPolicy {
+                    max_queue_size: attention_policy.max_queue_size.unwrap_or(64),
+                },
+            );
+
+            if let Some(max_wall_ms) = effective_wall_budget {
+                kernel_apply(
+                    &mut kernel,
+                    &mut pending_observations,
+                    KernelInputEvent::SetSchedulerBudget {
+                        max_wall_ms: Some(max_wall_ms),
+                    },
+                );
+            }
+
+            if let Some(quota) = self.opts.resource_quota.clone() {
+                kernel_apply(
+                    &mut kernel,
+                    &mut pending_observations,
+                    KernelInputEvent::SetResourceQuota { quota },
+                );
+            }
 
             let mut action = if resume_mid_run {
                 kernel_action(
@@ -1962,6 +2035,15 @@ fn is_prompt_too_long_error(error: &Error) -> bool {
         || msg.contains("prompt too long")
         || msg.contains("context length exceeded")
         || msg.contains("context_length_exceeded")
+}
+
+fn effective_wall_budget(
+    scheduler_budget: Option<SchedulerBudget>,
+    fallback_timeout_ms: Option<u64>,
+) -> Option<u64> {
+    scheduler_budget
+        .and_then(|budget| budget.max_wall_ms)
+        .or(fallback_timeout_ms)
 }
 
 fn next_archived_seq_start(events: Option<&[SessionEntry]>) -> u64 {

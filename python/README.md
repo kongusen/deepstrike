@@ -129,6 +129,7 @@ Spool, page-out, signals, processes, budgets, and memory events land in `Session
 |---|---|
 | Policy before tools run | `governance_policy` (default: allow-all native profile) |
 | External interrupts | `signal_source` + in-kernel `attention_policy` |
+| Spawn / memory-write quotas | `resource_quota` (`set_resource_quota`) |
 | Huge tool output | Automatic Layer-1 spool; optional custom `result_spool` |
 | Durable recall across runs | `DreamStore` + semantic `page_out` via `dream_summarizer` |
 | Programmatic memory I/O | `runner.write_memory()` / `runner.query_memory()` |
@@ -137,6 +138,21 @@ Spool, page-out, signals, processes, budgets, and memory events land in `Session
 ---
 
 ## Providers
+
+Resource quotas are opt-in and flow through the same replayable kernel event ABI:
+
+```python
+from deepstrike import MemoryWriteRateLimit, ResourceQuota
+
+runner = RuntimeRunner(RuntimeOptions(
+    # ...
+    resource_quota=ResourceQuota(
+        max_concurrent_subagents=4,
+        max_spawn_depth=2,
+        memory_writes_per_window=MemoryWriteRateLimit(max_writes=20, window_ms=60_000),
+    ),
+))
+```
 
 | Class | Backend | Notes |
 |-------|---------|-------|

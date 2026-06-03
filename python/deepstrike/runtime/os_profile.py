@@ -10,6 +10,13 @@ class AttentionPolicy:
   max_queue_size: int | None = None
 
 
+@dataclass
+class OsProfile:
+  id: str
+  attention_policy: AttentionPolicy | dict
+  governance_policy: GovernancePolicy
+
+
 DEFAULT_NATIVE_ATTENTION_POLICY = AttentionPolicy(max_queue_size=64)
 
 DEFAULT_NATIVE_GOVERNANCE_POLICY = GovernancePolicy(
@@ -24,6 +31,33 @@ DEFAULT_SANDBOX_POLICY = GovernancePolicy(
     GovernancePolicyRule(pattern="*", action="deny"),
   ],
 )
+
+
+def os_profile(profile: str | OsProfile = "native") -> OsProfile:
+  """Resolve a named OS profile into concrete kernel-owned policy defaults."""
+  if isinstance(profile, OsProfile):
+    return profile
+  if profile != "native":
+    raise ValueError(f"Unsupported OS profile: {profile}")
+  return OsProfile(
+    id="native",
+    attention_policy=DEFAULT_NATIVE_ATTENTION_POLICY,
+    governance_policy=DEFAULT_NATIVE_GOVERNANCE_POLICY,
+  )
+
+
+def assert_native_profile(profile: str | OsProfile = "native") -> OsProfile:
+  """Assert that a runtime is using a valid native microkernel policy profile."""
+  resolved = os_profile(profile)
+  if resolved.id != "native":
+    raise ValueError(f"Unsupported OS profile: {resolved.id}")
+  validation = validate_declarative_policy(
+    resolved.governance_policy,
+    resolved.attention_policy,
+  )
+  if not validation["valid"]:
+    raise ValueError(f"Invalid native OS profile: {'; '.join(validation['errors'])}")
+  return resolved
 
 
 def validate_declarative_policy(

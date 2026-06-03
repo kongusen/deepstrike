@@ -1,5 +1,13 @@
 import type { GovernancePolicy } from "../governance.js"
 
+export type OsProfileId = "native"
+
+export interface NativeOsProfile {
+  id: OsProfileId
+  attentionPolicy: { maxQueueSize?: number }
+  governancePolicy: GovernancePolicy
+}
+
 /** Default attention policy for native profile smoke tests. */
 export const DEFAULT_NATIVE_ATTENTION_POLICY = { maxQueueSize: 64 }
 
@@ -16,6 +24,30 @@ export const DEFAULT_SANDBOX_POLICY: GovernancePolicy = {
     { pattern: "run_command", action: "ask_user" },
     { pattern: "*", action: "deny" },
   ],
+}
+
+/** Resolve a named OS profile into concrete kernel-owned policy defaults. */
+export function osProfile(profile: OsProfileId | NativeOsProfile = "native"): NativeOsProfile {
+  if (typeof profile !== "string") return profile
+  if (profile !== "native") throw new Error(`Unsupported OS profile: ${profile}`)
+  return {
+    id: "native",
+    attentionPolicy: DEFAULT_NATIVE_ATTENTION_POLICY,
+    governancePolicy: DEFAULT_NATIVE_GOVERNANCE_POLICY,
+  }
+}
+
+/** Assert that a runtime is using a valid native microkernel policy profile. */
+export function assertNativeProfile(profile: OsProfileId | NativeOsProfile = "native"): NativeOsProfile {
+  const resolved = osProfile(profile)
+  if (resolved.id !== "native") {
+    throw new Error(`Unsupported OS profile: ${resolved.id}`)
+  }
+  const validation = validateDeclarativePolicy(resolved.governancePolicy, resolved.attentionPolicy)
+  if (!validation.valid) {
+    throw new Error(`Invalid native OS profile: ${validation.errors.join("; ")}`)
+  }
+  return resolved
 }
 
 /**

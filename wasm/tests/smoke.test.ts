@@ -7,6 +7,7 @@ import { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider } from 
 import { RuntimeRunner, collectText, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
 import { Governance } from "../src/governance.js"
 import type { LLMProvider, Message, ProviderRunState, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import { kernelEvents } from "@deepstrike/wasm-kernel"
 
 describe("tool + executeTools", () => {
   const add = tool("add", "Add two numbers.", {
@@ -175,6 +176,45 @@ describe("RuntimeRunner", () => {
     expect(events.some(e => e.type === "done")).toBe(true)
     const text = await collectText(runner.run({ sessionId: "s2", goal: "ping" }))
     expect(text).toBe("hi")
+  })
+
+  it("emits set_resource_quota when resourceQuota is configured", async () => {
+    kernelEvents.length = 0
+    const provider: LLMProvider = {
+      async *stream() {
+        yield { type: "text_delta", delta: "ok" }
+      },
+      async complete() {
+        return { role: "assistant", content: "ok", toolCalls: [] }
+      },
+    }
+    const runner = new RuntimeRunner({
+      provider,
+      sessionLog: new InMemorySessionLog(),
+      executionPlane: new LocalExecutionPlane(),
+      maxTokens: 2048,
+      schedulerBudget: { maxWallMs: 1234 },
+      resourceQuota: {
+        maxConcurrentSubagents: 2,
+        maxSpawnDepth: 1,
+        memoryWritesPerWindow: { maxWrites: 3, windowMs: 1000 },
+      },
+    })
+
+    await collectText(runner.run({ sessionId: "quota-wasm", goal: "go" }))
+
+    expect(kernelEvents).toContainEqual({
+      kind: "set_resource_quota",
+      quota: {
+        max_concurrent_subagents: 2,
+        max_spawn_depth: 1,
+        memory_writes_per_window: [3, 1000],
+      },
+    })
+    expect(kernelEvents).toContainEqual({
+      kind: "set_scheduler_budget",
+      max_wall_ms: 1234,
+    })
   })
 
   it("continues an ask_user-gated tool after host approval", async () => {

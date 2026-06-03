@@ -18,13 +18,18 @@ export interface GovernanceVerdict {
  * Every field is optional; an omitted field imposes no limit, and omitting the quota entirely
  * preserves the pre-M2 behavior of admitting all spawn / memory-write syscalls.
  */
+export interface MemoryWriteRateLimit {
+  maxWrites: number
+  windowMs: number
+}
+
 export interface ResourceQuota {
   /** Max sub-agents in the `running` state at once; further spawns are denied while at cap. */
   maxConcurrentSubagents?: number
   /** Max sub-agent nesting depth (direct children of the root loop are depth 1). */
   maxSpawnDepth?: number
   /** Rolling-window memory-write rate limit: at most `maxWrites` per any `windowMs` span. */
-  memoryWritesPerWindow?: { maxWrites: number; windowMs: number }
+  memoryWritesPerWindow?: MemoryWriteRateLimit
 }
 
 export interface GovernanceInstance {

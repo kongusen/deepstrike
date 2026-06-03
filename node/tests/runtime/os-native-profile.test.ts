@@ -3,6 +3,8 @@ import { collectText } from "../../src/runtime/runner.js"
 import {
   DEFAULT_NATIVE_ATTENTION_POLICY,
   DEFAULT_NATIVE_GOVERNANCE_POLICY,
+  assertNativeProfile,
+  osProfile,
 } from "../../src/runtime/os-profile.js"
 import {
   rebuildOsSnapshotFromSessionEvents,
@@ -11,6 +13,14 @@ import {
 import type { LLMProvider, Message, StreamEvent } from "../../src/types.js"
 
 describe("OS Native Profile (Phase 6)", () => {
+  it("resolves and validates the native OS profile", () => {
+    const profile = assertNativeProfile(osProfile("native"))
+    expect(profile.id).toBe("native")
+    expect(profile.attentionPolicy.maxQueueSize).toBe(64)
+    expect(profile.governancePolicy.rules?.[0]).toEqual({ pattern: "*", action: "allow" })
+    expect(() => assertNativeProfile({ ...profile, id: "invalid" as "native" })).toThrow(/Unsupported OS profile/)
+  })
+
   it("native profile run writes kernel events with required categories", async () => {
     const provider: LLMProvider = {
       async complete(): Promise<Message> {

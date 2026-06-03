@@ -4,6 +4,7 @@ pub mod archive;
 pub mod credential_vault;
 pub mod execution_plane;
 pub mod mcp_proxy_plane;
+pub mod os_profile;
 pub mod process_sandbox_plane;
 pub mod provider_replay;
 pub mod remote_vpc_plane;
@@ -23,6 +24,11 @@ pub use execution_plane::{
     PermissionResponse, RunContext, ToolSuspendHandler, ToolSuspendRequest,
 };
 pub use mcp_proxy_plane::{McpProxyPlane, McpServerConfig};
+pub use os_profile::{
+    AttentionPolicy, GovernancePolicy, MemoryWriteRateLimit, NativeOsProfile, OsProfile,
+    SchedulerBudget, assert_native_profile, default_native_governance_policy, os_profile,
+    DEFAULT_NATIVE_ATTENTION_POLICY,
+};
 pub use process_sandbox_plane::{ProcessSandboxPlane, SandboxOptions};
 pub use provider_replay::{
     assistant_replay_key, peek_provider_replay, seed_provider_replay_from_events,

@@ -1,4 +1,6 @@
 // Mock @deepstrike/wasm-kernel for tests (no .wasm binary needed)
+export const kernelEvents: Record<string, unknown>[] = []
+
 export class KernelRuntime {
   private terminal = false
   private phase = 0
@@ -15,6 +17,7 @@ export class KernelRuntime {
   step(inputJson: string): string {
     const input = JSON.parse(inputJson) as { event?: Record<string, unknown> }
     const event = input.event ?? {}
+    kernelEvents.push(event)
     const actions: Array<Record<string, unknown>> = []
     const observations: Array<Record<string, unknown>> = []
 

@@ -1,7 +1,7 @@
 // ── Runtime (Layer 1.5) ────────────────────────────────────────────────────
 export { RuntimeRunner, collectText } from "./runtime/runner.js"
-export type { RuntimeOptions } from "./runtime/runner.js"
-export type { ResourceQuota } from "./kernel.js"
+export type { RuntimeOptions, SchedulerBudget } from "./runtime/runner.js"
+export type { MemoryWriteRateLimit, ResourceQuota } from "./kernel.js"
 export { KernelPrimitivesDashboard } from "./runtime/kernel-primitives-dashboard.js"
 export { FilteredExecutionPlane } from "./runtime/filtered-plane.js"
 export { SubAgentOrchestrator, defaultSubAgentOrchestrator, spawnStandalone } from "./runtime/sub-agent-orchestrator.js"
@@ -13,7 +13,10 @@ export type { SessionLog, SessionEvent } from "./runtime/session-log.js"
 export {
   DEFAULT_NATIVE_ATTENTION_POLICY,
   DEFAULT_NATIVE_GOVERNANCE_POLICY,
+  assertNativeProfile,
+  osProfile,
 } from "./runtime/os-profile.js"
+export type { NativeOsProfile, OsProfileId } from "./runtime/os-profile.js"
 export {
   rebuildOsSnapshotFromSessionEvents,
   sessionLogHasRequiredCategories,

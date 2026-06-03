@@ -40,8 +40,26 @@ import {
 } from "./types/agent.js"
 import { defaultSubAgentOrchestrator, type SubAgentOrchestrator } from "./sub-agent-orchestrator.js"
 import { kernelObservationToSessionEvent, withCategory } from "./kernel-event-log.js"
-import { DEFAULT_NATIVE_ATTENTION_POLICY, DEFAULT_NATIVE_GOVERNANCE_POLICY } from "./os-profile.js"
+import { assertNativeProfile, type NativeOsProfile, type OsProfileId } from "./os-profile.js"
 import { LargeResultSpool } from "./large-result-spool.js"
+
+export interface MemoryWriteRateLimit {
+  maxWrites: number
+  windowMs: number
+}
+
+export interface ResourceQuota {
+  /** Max sub-agents in the `running` state at once; further spawns are denied while at cap. */
+  maxConcurrentSubagents?: number
+  /** Max sub-agent nesting depth (direct children of the root loop are depth 1). */
+  maxSpawnDepth?: number
+  /** Rolling-window memory-write rate limit: at most `maxWrites` per any `windowMs` span. */
+  memoryWritesPerWindow?: MemoryWriteRateLimit
+}
+
+export interface SchedulerBudget {
+  maxWallMs?: number
+}
 
 export interface RuntimeOptions {
   provider: LLMProvider
@@ -59,8 +77,12 @@ export interface RuntimeOptions {
   knowledgeSource?: KnowledgeSource
   signalSource?: SignalSource
   extensions?: Record<string, unknown>
+  /** Named or concrete OS profile. Defaults to the native microkernel profile. */
+  osProfile?: OsProfileId | NativeOsProfile
   governancePolicy?: GovernancePolicy
   attentionPolicy?: { maxQueueSize?: number }
+  schedulerBudget?: SchedulerBudget
+  resourceQuota?: ResourceQuota
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
   onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
   subAgentOrchestrator?: SubAgentOrchestrator
@@ -456,8 +478,9 @@ export class RuntimeRunner {
     if (this.opts.runSpec) {
       startPayload.run_spec = agentRunSpecToKernel(this.opts.runSpec)
     }
-    const attentionPolicy = this.opts.attentionPolicy ?? DEFAULT_NATIVE_ATTENTION_POLICY
-    const governancePolicy = this.opts.governancePolicy ?? DEFAULT_NATIVE_GOVERNANCE_POLICY
+    const osProfile = assertNativeProfile(this.opts.osProfile ?? "native")
+    const attentionPolicy = this.opts.attentionPolicy ?? osProfile.attentionPolicy
+    const governancePolicy = this.opts.governancePolicy ?? osProfile.governancePolicy
 
     kernelApply(runtime, this.pendingObservations, governancePolicyToKernelEvent(governancePolicy))
     kernelApply(runtime, this.pendingObservations, {
@@ -466,6 +489,34 @@ export class RuntimeRunner {
         ? { max_queue_size: attentionPolicy.maxQueueSize }
         : {}),
     })
+    if (this.opts.schedulerBudget) {
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_scheduler_budget",
+        ...(this.opts.schedulerBudget.maxWallMs !== undefined
+          ? { max_wall_ms: this.opts.schedulerBudget.maxWallMs }
+          : {}),
+      })
+    }
+    if (this.opts.resourceQuota) {
+      const q = this.opts.resourceQuota
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_resource_quota",
+        quota: {
+          ...(q.maxConcurrentSubagents !== undefined
+            ? { max_concurrent_subagents: q.maxConcurrentSubagents }
+            : {}),
+          ...(q.maxSpawnDepth !== undefined ? { max_spawn_depth: q.maxSpawnDepth } : {}),
+          ...(q.memoryWritesPerWindow !== undefined
+            ? {
+                memory_writes_per_window: [
+                  q.memoryWritesPerWindow.maxWrites,
+                  q.memoryWritesPerWindow.windowMs,
+                ],
+              }
+            : {}),
+        },
+      })
+    }
 
     let action: KernelRunnerAction = resumeMidRun
       ? kernelAction(runtime, this.pendingObservations, { kind: "resume" })

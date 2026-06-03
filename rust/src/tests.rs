@@ -250,6 +250,11 @@ mod tests {
             knowledge_source: None,
             signal_source: None,
             governance: None,
+            os_profile: None,
+            governance_policy: None,
+            attention_policy: None,
+            scheduler_budget: None,
+            resource_quota: None,
             tokenizer: None,
             enable_plan_tool: None,
             on_tool_suspend: None,
@@ -333,6 +338,11 @@ mod tests {
             knowledge_source: None,
             signal_source: None,
             governance: None,
+            os_profile: None,
+            governance_policy: None,
+            attention_policy: None,
+            scheduler_budget: None,
+            resource_quota: None,
             tokenizer: None,
             enable_plan_tool: None,
             on_tool_suspend: None,
@@ -502,6 +512,11 @@ mod tests {
             knowledge_source: None,
             signal_source: None,
             governance: None,
+            os_profile: None,
+            governance_policy: None,
+            attention_policy: None,
+            scheduler_budget: None,
+            resource_quota: None,
             tokenizer: None,
             enable_plan_tool: None,
             on_tool_suspend: None,
@@ -592,6 +607,11 @@ mod tests {
             knowledge_source: None,
             signal_source: None,
             governance: None,
+            os_profile: None,
+            governance_policy: None,
+            attention_policy: None,
+            scheduler_budget: None,
+            resource_quota: None,
             tokenizer: None,
             enable_plan_tool: None,
             on_tool_suspend: None,
@@ -660,6 +680,11 @@ mod tests {
             knowledge_source: None,
             signal_source: None,
             governance: None,
+            os_profile: None,
+            governance_policy: None,
+            attention_policy: None,
+            scheduler_budget: None,
+            resource_quota: None,
             tokenizer: None,
             enable_plan_tool: None,
             on_tool_suspend: None,
@@ -742,6 +767,11 @@ mod tests {
             knowledge_source: None,
             signal_source: None,
             governance: None,
+            os_profile: None,
+            governance_policy: None,
+            attention_policy: None,
+            scheduler_budget: None,
+            resource_quota: None,
             tokenizer: None,
             enable_plan_tool: None,
             on_tool_suspend: None,
@@ -922,6 +952,11 @@ mod tests {
             knowledge_source: None,
             signal_source: None,
             governance: None,
+            os_profile: None,
+            governance_policy: None,
+            attention_policy: None,
+            scheduler_budget: None,
+            resource_quota: None,
             tokenizer: None,
             enable_plan_tool: None,
             on_tool_suspend: None,
@@ -1027,6 +1062,11 @@ mod tests {
             knowledge_source: None,
             signal_source: None,
             governance: None,
+            os_profile: None,
+            governance_policy: None,
+            attention_policy: None,
+            scheduler_budget: None,
+            resource_quota: None,
             tokenizer: None,
             enable_plan_tool: None,
             on_tool_suspend: None,
@@ -1056,6 +1096,138 @@ mod tests {
         assert_eq!(memories.lock().unwrap()[0].text, "User prefers focused unit tests for SDK behavior.");
         let events = session_log.read("memory-syscall-rs", 0, None).await.unwrap();
         assert!(events.iter().any(|e| e.event.kind_str() == "memory_written"));
+    }
+
+    #[tokio::test]
+    async fn test_resource_quota_denies_write_memory_syscall() {
+        use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
+        use crate::runtime::session_log::SessionLog;
+        use deepstrike_core::governance::quota::ResourceQuota;
+        use deepstrike_core::mm::memory::{MemoryKind, MemoryMetadata, MemoryWriteRequest};
+        use std::sync::Arc;
+
+        let commits = Arc::new(std::sync::Mutex::new(0usize));
+
+        struct Store {
+            commits: Arc<std::sync::Mutex<usize>>,
+        }
+
+        #[async_trait::async_trait]
+        impl DreamStore for Store {
+            async fn load_sessions(&self, _agent_id: &str) -> crate::Result<Vec<deepstrike_core::memory::durable::SessionData>> {
+                Ok(vec![])
+            }
+            async fn load_memories(&self, _agent_id: &str) -> crate::Result<Vec<MemoryEntry>> {
+                Ok(vec![])
+            }
+            async fn commit(
+                &self,
+                _agent_id: &str,
+                _result: deepstrike_core::memory::curator::CurationResult,
+                _existing: &[MemoryEntry],
+            ) -> crate::Result<()> {
+                *self.commits.lock().unwrap() += 1;
+                Ok(())
+            }
+            async fn search(
+                &self,
+                _agent_id: &str,
+                _query: &str,
+                _top_k: usize,
+            ) -> crate::Result<Vec<MemoryEntry>> {
+                Ok(vec![])
+            }
+            async fn save_session(
+                &self,
+                _data: deepstrike_core::memory::durable::SessionData,
+            ) -> crate::Result<()> {
+                Ok(())
+            }
+        }
+
+        let session_log = Arc::new(InMemorySessionLog::new());
+        let runner = RuntimeRunner::new(RuntimeOptions {
+            provider: Box::new(MockLLMProvider),
+            execution_plane: None,
+            session_log: Some(session_log.clone()),
+            compression_store: None,
+            session_id: None,
+            max_tokens: 1000,
+            max_turns: Some(3),
+            timeout_ms: None,
+            extensions: None,
+            agent_id: Some("agent-memory".to_string()),
+            system_prompt: None,
+            initial_memory: vec![],
+            skill_dir: None,
+            dream_store: Some(Box::new(Store { commits: commits.clone() })),
+            knowledge_source: None,
+            signal_source: None,
+            governance: None,
+            os_profile: None,
+            governance_policy: None,
+            attention_policy: None,
+            scheduler_budget: None,
+            resource_quota: Some(ResourceQuota {
+                memory_writes_per_window: Some((0, 60_000)),
+                ..Default::default()
+            }),
+            tokenizer: None,
+            enable_plan_tool: None,
+            on_tool_suspend: None,
+            on_permission_request: None,
+            milestone_policy: MilestonePolicy::AutoPass,
+            milestone_contract: None,
+            run_spec: None,
+            on_milestone_evaluate: None,
+        });
+
+        runner.write_memory(
+            MemoryWriteRequest {
+                metadata: MemoryMetadata {
+                    name: "too-many-writes".to_string(),
+                    description: "Denied by quota".to_string(),
+                    kind: Some(MemoryKind::BehaviorPreference),
+                    created_at: 1,
+                    updated_at: 1,
+                    ..Default::default()
+                },
+                content: "This write should not be committed.".to_string(),
+            },
+            Some("memory-quota-rs"),
+            None,
+        ).await.unwrap();
+
+        assert_eq!(*commits.lock().unwrap(), 0);
+        let events = session_log.read("memory-quota-rs", 0, None).await.unwrap();
+        assert!(events.iter().any(|e| e.event.kind_str() == "memory_validation_failed"));
+    }
+
+    #[test]
+    fn test_public_agent_os_shape_helpers() {
+        use crate::{
+            assert_native_profile, MemoryWriteRateLimit, OsProfile, SchedulerBudget,
+            DEFAULT_NATIVE_ATTENTION_POLICY,
+        };
+
+        let profile = assert_native_profile(Some(OsProfile::Native)).unwrap();
+        assert_eq!(profile.id, "native");
+        assert_eq!(
+            profile.attention_policy.max_queue_size,
+            DEFAULT_NATIVE_ATTENTION_POLICY.max_queue_size,
+        );
+
+        let scheduler_budget = SchedulerBudget {
+            max_wall_ms: Some(1234),
+        };
+        assert_eq!(scheduler_budget.max_wall_ms, Some(1234));
+
+        let write_limit: (u32, u64) = MemoryWriteRateLimit {
+            max_writes: 3,
+            window_ms: 1000,
+        }
+        .into();
+        assert_eq!(write_limit, (3, 1000));
     }
 
     #[tokio::test]
@@ -1133,6 +1305,11 @@ mod tests {
             knowledge_source: None,
             signal_source: None,
             governance: None,
+            os_profile: None,
+            governance_policy: None,
+            attention_policy: None,
+            scheduler_budget: None,
+            resource_quota: None,
             tokenizer: None,
             enable_plan_tool: None,
             on_tool_suspend: None,
@@ -1212,6 +1389,11 @@ mod tests {
             knowledge_source: None,
             signal_source: None,
             governance: None,
+            os_profile: None,
+            governance_policy: None,
+            attention_policy: None,
+            scheduler_budget: None,
+            resource_quota: None,
             tokenizer: None,
             enable_plan_tool: None,
             on_tool_suspend: None,

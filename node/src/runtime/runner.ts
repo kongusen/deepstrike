@@ -57,8 +57,12 @@ import {
 import { defaultSubAgentOrchestrator, type SubAgentOrchestrator } from "./sub-agent-orchestrator.js"
 import { governancePolicyToKernelEvent, type GovernancePolicy } from "../governance.js"
 import { kernelObservationToSessionEvent, withCategory } from "./kernel-event-log.js"
-import { DEFAULT_NATIVE_ATTENTION_POLICY, DEFAULT_NATIVE_GOVERNANCE_POLICY } from "./os-profile.js"
+import { assertNativeProfile, type NativeOsProfile, type OsProfileId } from "./os-profile.js"
 import { LargeResultSpool } from "./large-result-spool.js"
+
+export interface SchedulerBudget {
+  maxWallMs?: number
+}
 
 export interface RuntimeOptions {
   provider: LLMProvider
@@ -75,6 +79,8 @@ export interface RuntimeOptions {
   knowledgeSource?: KnowledgeSource
   signalSource?: SignalSource
   extensions?: Record<string, unknown>
+  /** Named or concrete OS profile. Defaults to the native microkernel profile. */
+  osProfile?: OsProfileId | NativeOsProfile
   /**
    * Declarative governance policy loaded into the kernel (`load_governance_policy`).
    * The kernel enforces deny/veto/rate-limit/param-constraint before tools execute;
@@ -93,7 +99,7 @@ export interface RuntimeOptions {
    * in milliseconds; when set, the kernel terminates the run when exceeded.
    * Other axes (maxTurns, maxTokens) are set via RuntimeOptions directly.
    */
-  schedulerBudget?: { maxWallMs?: number }
+  schedulerBudget?: SchedulerBudget
   /**
    * Optional declarative resource quotas (`set_resource_quota`). Bounds spawn concurrency /
    * nesting depth and memory-write rate at the kernel's single syscall trap. When unset, spawn
@@ -773,8 +779,9 @@ export class RuntimeRunner {
     if (this.opts.runSpec) {
       startPayload.run_spec = agentRunSpecToKernel(this.opts.runSpec)
     }
-    const attentionPolicy = this.opts.attentionPolicy ?? DEFAULT_NATIVE_ATTENTION_POLICY
-    const governancePolicy = this.opts.governancePolicy ?? DEFAULT_NATIVE_GOVERNANCE_POLICY
+    const osProfile = assertNativeProfile(this.opts.osProfile ?? "native")
+    const attentionPolicy = this.opts.attentionPolicy ?? osProfile.attentionPolicy
+    const governancePolicy = this.opts.governancePolicy ?? osProfile.governancePolicy
 
     // Load the declarative governance policy into the kernel before the run starts,
     // so the in-kernel gate enforces deny/veto/rate-limit/param before any tool runs.

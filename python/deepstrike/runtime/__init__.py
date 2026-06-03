@@ -1,5 +1,13 @@
 from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPlane, RunContext
-from deepstrike.runtime.runner import RuntimeOptions, RuntimeRunner, SubAgentHarnessConfig, collect_text
+from deepstrike.runtime.runner import (
+  MemoryWriteRateLimit,
+  ResourceQuota,
+  SchedulerBudget,
+  RuntimeOptions,
+  RuntimeRunner,
+  SubAgentHarnessConfig,
+  collect_text,
+)
 from deepstrike.runtime.session_log import (
   FileSessionLog,
   InMemorySessionLog,
@@ -26,15 +34,21 @@ from deepstrike.runtime.filtered_plane import FilteredExecutionPlane
 from deepstrike.runtime.sub_agent_orchestrator import SubAgentOrchestrator, spawn_standalone, default_sub_agent_orchestrator
 from deepstrike.runtime.os_profile import (
   AttentionPolicy,
+  OsProfile,
   DEFAULT_NATIVE_ATTENTION_POLICY,
   DEFAULT_NATIVE_GOVERNANCE_POLICY,
   DEFAULT_SANDBOX_POLICY,
+  assert_native_profile,
+  os_profile,
   validate_declarative_policy,
 )
 
 __all__ = [
   "RuntimeRunner",
   "RuntimeOptions",
+  "ResourceQuota",
+  "MemoryWriteRateLimit",
+  "SchedulerBudget",
   "SubAgentHarnessConfig",
   "collect_text",
   "LocalExecutionPlane",
@@ -62,8 +76,11 @@ __all__ = [
   "default_sub_agent_orchestrator",
   "FilteredExecutionPlane",
   "AttentionPolicy",
+  "OsProfile",
   "DEFAULT_NATIVE_ATTENTION_POLICY",
   "DEFAULT_NATIVE_GOVERNANCE_POLICY",
   "DEFAULT_SANDBOX_POLICY",
+  "assert_native_profile",
+  "os_profile",
   "validate_declarative_policy",
 ]

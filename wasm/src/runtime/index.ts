@@ -2,6 +2,15 @@ export type { SessionEvent, SessionLog } from "./session-log.js"
 export { InMemorySessionLog } from "./session-log.js"
 export type { RunContext, ExecutionPlane } from "./execution-plane.js"
 export { LocalExecutionPlane } from "./execution-plane.js"
-export type { RuntimeOptions } from "./runner.js"
+export type { MemoryWriteRateLimit, ResourceQuota, RuntimeOptions, SchedulerBudget } from "./runner.js"
 export { RuntimeRunner, collectText } from "./runner.js"
 export { getKernel } from "./kernel.js"
+export {
+  DEFAULT_NATIVE_ATTENTION_POLICY,
+  DEFAULT_NATIVE_GOVERNANCE_POLICY,
+  DEFAULT_SANDBOX_POLICY,
+  assertNativeProfile,
+  osProfile,
+  validateDeclarativePolicy,
+} from "./os-profile.js"
+export type { NativeOsProfile, OsProfileId } from "./os-profile.js"

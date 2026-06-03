@@ -205,7 +205,7 @@ The kernel exposes **one syscall trap** (`gate_syscall`) where every effectful r
 
 Install from any FFI SDK via the **`set_resource_quota` input event** (`{ "kind": "set_resource_quota", "quota": { … } }`) — the same versioned JSON event ABI as governance / scheduler config, so quotas are replayable and session-loggable. (In-process Rust callers can also use `LoopStateMachine::set_resource_quota`.) **Opt-in:** with no quota set, spawn / memory writes are unconditionally allowed (pre-M2 behavior). Quotas read only kernel-owned facts (running child tasks in the `TaskTable`, the observed clock) — no I/O.
 
-The Node SDK is the reference wiring: `RuntimeOptions.resourceQuota` (`maxConcurrentSubagents` / `maxSpawnDepth` / `memoryWritesPerWindow`) is mapped onto the snake_case quota shape and sent at run setup next to `set_scheduler_budget` ([node/src/runtime/runner.ts](../../node/src/runtime/runner.ts)).
+SDK runner wiring maps ergonomic options onto the same snake_case quota shape: Node/WASM use `RuntimeOptions.resourceQuota` (`maxConcurrentSubagents` / `maxSpawnDepth` / `memoryWritesPerWindow`), while Python/Rust use `RuntimeOptions.resource_quota` (`max_concurrent_subagents` / `max_spawn_depth` / `memory_writes_per_window`). Each sends `set_resource_quota` during run setup; standalone Python/Rust memory syscalls also install the configured quota on their temporary syscall runtime.
 
 `spawn`, `page_in`, `write_memory`, and `query_memory` all flow through the same `gate_syscall` path as tool calls (`page_in` / `query_memory` default to `Allow` but route through the trap so policies can attach later).
 

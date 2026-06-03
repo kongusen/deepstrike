@@ -21,7 +21,7 @@ futures = "0.3"
 use std::sync::Arc;
 use deepstrike_sdk::{
     InMemorySessionLog, LocalExecutionPlane, OpenAIProvider,
-    RegisteredTool, RuntimeOptions, RuntimeRunner,
+    RegisteredTool, ResourceQuota, RuntimeOptions, RuntimeRunner,
 };
 
 #[tokio::main]
@@ -53,6 +53,11 @@ async fn main() {
         knowledge_source: None,
         signal_source: None,
         governance: None,
+        resource_quota: Some(ResourceQuota {
+            max_concurrent_subagents: Some(4),
+            max_spawn_depth: Some(2),
+            memory_writes_per_window: Some((20, 60_000)),
+        }),
         on_tool_suspend: None,
     });
 
@@ -140,6 +145,11 @@ RuntimeOptions {
     agent_id: Some("my-agent".into()),
     initial_memory: vec![],     // preloaded blocks → Slot 2
     governance: None,
+    resource_quota: Some(ResourceQuota {
+        max_concurrent_subagents: Some(4),
+        max_spawn_depth: Some(2),
+        memory_writes_per_window: Some((20, 60_000)),
+    }),
     on_tool_suspend: None,
     // ...
 }
