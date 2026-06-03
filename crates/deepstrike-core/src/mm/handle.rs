@@ -119,6 +119,10 @@ impl HandleTable {
         self.handles.iter().find(|h| h.id == id)
     }
 
+    pub fn get_mut(&mut self, id: HandleId) -> Option<&mut Handle> {
+        self.handles.iter_mut().find(|h| h.id == id)
+    }
+
     pub fn all(&self) -> &[Handle] {
         &self.handles
     }

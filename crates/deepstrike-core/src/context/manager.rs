@@ -155,8 +155,36 @@ impl ContextManager {
 
     // ── Layer 4: Collapse mode management ───────────────────────────────────
 
-    /// Update collapse mode based on current rho (Layer 4 read-time projection).
+    /// Recompute tool-result handle residency for Layer-4 read-time projection (call before
+    /// `render`). When pressure (`rho`) reaches `collapse_threshold`, all but the most recent
+    /// `preserve_recent_msgs` tool results are marked `Collapsed` (rendered as previews); when
+    /// pressure subsides they return to `Resident`. Non-destructive: `partitions` is untouched, so
+    /// projection fully reverses. Spooled/paged-out handles (Layer 1/page-out) are left as-is.
     pub fn update_collapse_mode(&mut self) {
+        let collapse = self.rho() >= self.config.collapse_threshold;
+        let keep = self.config.preserve_recent_msgs;
+        let ids: Vec<HandleId> = self
+            .handles
+            .all()
+            .iter()
+            .filter(|h| matches!(h.kind, HandleKind::ToolResult))
+            .map(|h| h.id)
+            .collect();
+        let cutoff = ids.len().saturating_sub(keep);
+        for (i, id) in ids.iter().enumerate() {
+            if let Some(handle) = self.handles.get_mut(*id) {
+                // Only toggle the reversible Resident<->Collapsed axis; never clobber a handle
+                // that has been spooled or paged out.
+                if matches!(handle.residency, Residency::Resident | Residency::Collapsed) {
+                    handle.residency = if collapse && i < cutoff {
+                        Residency::Collapsed
+                    } else {
+                        Residency::Resident
+                    };
+                }
+            }
+        }
+        // Keep the legacy mode field in sync for any external readers during migration.
         self.collapse_mode = CollapseMode::from_rho(self.rho(), &self.config);
     }
 
@@ -229,11 +257,12 @@ impl ContextManager {
     // ── Render ────────────────────────────────────────────────────────────────
 
     pub fn render(&self) -> RenderedContext {
-        super::renderer::render(
+        super::renderer::render_projected(
             &self.partitions,
             self.max_tokens,
             &self.engine,
             self.config.preserve_recent_msgs,
+            &self.handles,
         )
     }
 
@@ -584,6 +613,32 @@ mod tests {
         mgr.set_memory_enabled(true);
         let after = mgr.snapshot_hint();
         assert_ne!(before.capability_manifest_hash, after.capability_manifest_hash);
+    }
+
+    #[test]
+    fn update_collapse_mode_collapses_old_tool_results_under_pressure() {
+        let mut mgr = ContextManager::new(1_000);
+        for i in 0..10 {
+            let m = Message::tool(vec![ContentPart::ToolResult {
+                call_id: format!("c{i}").into(),
+                output: "x".repeat(40),
+                is_error: false,
+            }]);
+            mgr.push_history(m, 40);
+        }
+        // Drive rho past collapse_threshold deterministically via observed prompt tokens.
+        mgr.set_observed_prompt_tokens(950); // 950 / 1000 = 0.95 >= 0.90
+        assert!(mgr.rho() >= mgr.config.collapse_threshold);
+
+        mgr.update_collapse_mode();
+        // Oldest is collapsed; the most recent (within preserve_recent_msgs) stays resident.
+        assert_eq!(mgr.handles.residency_for_source("c0"), Some(&Residency::Collapsed));
+        assert_eq!(mgr.handles.residency_for_source("c9"), Some(&Residency::Resident));
+
+        // Reversible: once pressure drops, collapse is undone (read-time projection only).
+        mgr.set_observed_prompt_tokens(100); // 0.10 < 0.90
+        mgr.update_collapse_mode();
+        assert_eq!(mgr.handles.residency_for_source("c0"), Some(&Residency::Resident));
     }
 
     #[test]
