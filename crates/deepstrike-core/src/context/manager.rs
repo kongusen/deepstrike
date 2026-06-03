@@ -9,8 +9,9 @@ use super::snapshot::{ContextSnapshotHint, ContextSnapshot};
 use super::skill_catalog::SkillCatalog;
 use super::task_state::{TaskState, TaskUpdate};
 use super::token_engine::ContextTokenEngine;
+use crate::mm::handle::{Handle, HandleId, HandleKind, HandleTable, Residency};
 use crate::types::capability::{CapabilityKind, CapabilityManifest};
-use crate::types::message::{Message, ToolSchema};
+use crate::types::message::{Content, ContentPart, Message, ToolSchema};
 use crate::types::skill::SkillMetadata;
 use compact_str::CompactString;
 
@@ -55,6 +56,15 @@ pub struct ContextManager {
     /// Current collapse mode for Layer 4 read-time projection.
     /// Controls how history is rendered without modifying original messages.
     pub collapse_mode: CollapseMode,
+
+    // ── P3: handle table (context as address space) ─────────────────────────
+
+    /// Per-task handle table: one [`Handle`] per addressable working-context object (tool results
+    /// today). Residency transitions on these handles drive read-time projection (Layer 4) and
+    /// spool (Layer 1) — the original messages in `partitions` are never mutated by projection.
+    pub handles: HandleTable,
+    /// Monotonic allocator for [`HandleId`]s.
+    next_handle_id: HandleId,
 }
 
 /// Collapse mode for Layer 4 (Context Collapse read-time projection).
@@ -116,6 +126,8 @@ impl ContextManager {
             last_activity_ms: 0,
             last_compact_ms: None,
             collapse_mode: CollapseMode::Normal,
+            handles: HandleTable::new(),
+            next_handle_id: 0,
         }
     }
 
@@ -242,7 +254,30 @@ impl ContextManager {
     // ── History / Knowledge ───────────────────────────────────────────────────
 
     pub fn push_history(&mut self, msg: Message, tokens: u32) {
+        // P3 (3a): index each tool result entering working context as a handle, anchored to its
+        // call_id. Pure bookkeeping — render/compression still read `partitions` until 3b. The
+        // handle's residency later drives read-time projection without mutating the message.
+        if let Content::Parts(parts) = &msg.content {
+            for part in parts {
+                if let ContentPart::ToolResult { call_id, output, .. } = part {
+                    let id = self.alloc_handle_id();
+                    let tok = self.engine.count(output).max(1);
+                    self.handles.insert(Handle::resident_for(
+                        id,
+                        HandleKind::ToolResult,
+                        tok,
+                        call_id.clone(),
+                    ));
+                }
+            }
+        }
         self.partitions.history.push(msg, tokens);
+    }
+
+    fn alloc_handle_id(&mut self) -> HandleId {
+        let id = self.next_handle_id;
+        self.next_handle_id = self.next_handle_id.wrapping_add(1);
+        id
     }
 
     /// Push content into the Knowledge slot (memory retrievals, skill defs, artifacts).
@@ -549,5 +584,25 @@ mod tests {
         mgr.set_memory_enabled(true);
         let after = mgr.snapshot_hint();
         assert_ne!(before.capability_manifest_hash, after.capability_manifest_hash);
+    }
+
+    #[test]
+    fn push_history_indexes_tool_results_as_resident_handles() {
+        let mut mgr = ContextManager::new(10_000);
+        let msg = Message::tool(vec![ContentPart::ToolResult {
+            call_id: "call_1".into(),
+            output: "the tool output".to_string(),
+            is_error: false,
+        }]);
+        mgr.push_history(msg, 20);
+        // A handle was indexed, anchored to the call_id, resident by default.
+        assert_eq!(mgr.handles.all().len(), 1);
+        assert_eq!(
+            mgr.handles.residency_for_source("call_1"),
+            Some(&Residency::Resident)
+        );
+        // A plain text turn allocates no handle.
+        mgr.push_history(Message::user("hello"), 5);
+        assert_eq!(mgr.handles.all().len(), 1);
     }
 }

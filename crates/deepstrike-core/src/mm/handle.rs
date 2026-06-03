@@ -9,6 +9,7 @@
 //! deciding its own trigger) becomes one [`EvictionPlan`] of uniform [`EvictionOp`]s; page-out (④)
 //! and long-term memory residency (⑦) ride on [`Residency`].
 
+use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
 use crate::context::pressure::PressureAction;
@@ -71,11 +72,27 @@ pub struct Handle {
     pub residency: Residency,
     /// Token cost of the resident form (used by the eviction planner).
     pub tokens: u32,
+    /// Link back to the source object in working context — for [`HandleKind::ToolResult`] this is
+    /// the tool `call_id`, letting the renderer project a handle's residency onto its message
+    /// (read-time projection) without mutating the stored message. `None` for handles with no
+    /// in-context anchor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<CompactString>,
 }
 
 impl Handle {
     pub fn resident(id: HandleId, kind: HandleKind, tokens: u32) -> Self {
-        Self { id, kind, residency: Residency::Resident, tokens }
+        Self { id, kind, residency: Residency::Resident, tokens, source: None }
+    }
+
+    /// A resident handle anchored to a source object (e.g. a tool `call_id`).
+    pub fn resident_for(
+        id: HandleId,
+        kind: HandleKind,
+        tokens: u32,
+        source: impl Into<CompactString>,
+    ) -> Self {
+        Self { id, kind, residency: Residency::Resident, tokens, source: Some(source.into()) }
     }
 }
 
@@ -104,6 +121,27 @@ impl HandleTable {
 
     pub fn all(&self) -> &[Handle] {
         &self.handles
+    }
+
+    pub fn all_mut(&mut self) -> &mut [Handle] {
+        &mut self.handles
+    }
+
+    /// Residency of the handle anchored to `source` (e.g. a tool `call_id`), if any.
+    /// The renderer uses this to project a tool result without touching the stored message.
+    pub fn residency_for_source(&self, source: &str) -> Option<&Residency> {
+        self.handles
+            .iter()
+            .find(|h| h.source.as_deref() == Some(source))
+            .map(|h| &h.residency)
+    }
+
+    /// Tool-result handles in insertion (recency) order — oldest first. Used by the residency
+    /// planner to decide which older results to project out under context pressure.
+    pub fn tool_result_handles_mut(&mut self) -> impl Iterator<Item = &mut Handle> {
+        self.handles
+            .iter_mut()
+            .filter(|h| matches!(h.kind, HandleKind::ToolResult))
     }
 
     /// Sum of tokens for handles still occupying working context.
@@ -233,12 +271,14 @@ mod tests {
             kind: HandleKind::SpoolFile,
             residency: Residency::SpooledOut { r: "disk://x".into() },
             tokens: 5000,
+            source: None,
         });
         table.insert(Handle {
             id: 3,
             kind: HandleKind::MemoryPage,
             residency: Residency::Collapsed,
             tokens: 200,
+            source: None,
         });
         assert_eq!(table.resident_tokens(), 100);
     }
