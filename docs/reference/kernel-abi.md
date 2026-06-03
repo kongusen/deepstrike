@@ -192,6 +192,20 @@ When `RuntimeOptions.subAgentHarness` is configured, the host runs the child thr
 
 **Collaboration layer:** `AgentPool.ensureCoordinator()` (default in `CreatorVerifierMode` / `OrchestrationMode`). Pass `useLegacyRunners: true` / `use_legacy_runners=True` to opt out.
 
+## Resource Quotas (M2)
+
+The kernel exposes **one syscall trap** (`gate_syscall`) where every effectful request is adjudicated to a `Disposition` (`Allow` / `Deny` / `RateLimited` / `Gate` / …). Governance rules gate tool *invocation*; an optional `ResourceQuota` extends the same trap to bound **resources** — without a new ABI shape:
+
+| Quota field | Applies to | Effect when exceeded |
+|---|---|---|
+| `max_concurrent_subagents` | `spawn` | `Deny` (stage `quota`) → spawn rolls the turn back like a denied tool call |
+| `max_spawn_depth` | `spawn` | `Deny` (stage `quota`) |
+| `memory_writes_per_window` `(max, window_ms)` | `write_memory` | `RateLimited` → write skipped, surfaces as `memory_validation_failed` |
+
+Install via `LoopStateMachine::set_resource_quota(ResourceQuota { .. })`. **Opt-in:** with no quota set, spawn / memory writes are unconditionally allowed (pre-M2 behavior). Quotas read only kernel-owned facts (running child tasks in the `TaskTable`, the observed clock) — no I/O.
+
+`spawn`, `page_in`, `write_memory`, and `query_memory` all flow through the same `gate_syscall` path as tool calls (`page_in` / `query_memory` default to `Allow` but route through the trap so policies can attach later).
+
 ## KernelRuntime
 
 ```rust
@@ -229,6 +243,9 @@ Read-side helpers exposed for SDK bookkeeping:
 9. [x] Golden ABI fixtures cover all four host bindings (`tests/fixtures/abi/`).
 10. [x] Sub-agent spawn/complete inputs + `AgentSpawned` observation fixtures.
 11. [x] Node/Python SDK sub-agent orchestrator + collaboration spawn path.
+12. [x] M1 收口: `tcb::schedule()` is the sole budget decision point; `AgentProcess` is a derived view over the `TaskTable` (the separate `ProcessTable` storage is removed). ABI-neutral.
+13. [x] M2: resource quotas evaluated at the single syscall trap (`gate_syscall`); spawn / `write_memory` route through it. Opt-in via `set_resource_quota`.
+14. [x] M3: tool results are indexed as `HandleTable` handles; Layer-4 read-time projection renders `Collapsed` handles as previews (originals retained) and Layer-1 spool marks handles `SpooledOut`. ABI-neutral.
 
 ## Compatibility Rules
 
