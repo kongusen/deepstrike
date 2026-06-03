@@ -20,7 +20,7 @@ import type { SessionLog, SessionEvent, RollbackReason } from "./session-log.js"
 import type { ArchiveStore } from "./archive.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
 import { resolvePermissionRequest } from "./execution-plane.js"
-import { getKernel, type KernelRuntimeInstance } from "../kernel.js"
+import { getKernel, type KernelRuntimeInstance, type ResourceQuota } from "../kernel.js"
 import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
 import { buildLlmCompletedEvent, buildRunTerminalEvent, repairEventsForRecovery } from "./session-repair.js"
@@ -94,6 +94,12 @@ export interface RuntimeOptions {
    * Other axes (maxTurns, maxTokens) are set via RuntimeOptions directly.
    */
   schedulerBudget?: { maxWallMs?: number }
+  /**
+   * Optional declarative resource quotas (`set_resource_quota`). Bounds spawn concurrency /
+   * nesting depth and memory-write rate at the kernel's single syscall trap. When unset, spawn
+   * and memory-write syscalls are admitted unconditionally (pre-M2 behavior).
+   */
+  resourceQuota?: ResourceQuota
   tokenizer?: string
   enablePlanTool?: boolean
   /**
@@ -787,6 +793,29 @@ export class RuntimeRunner {
         ...(this.opts.schedulerBudget.maxWallMs !== undefined
           ? { max_wall_ms: this.opts.schedulerBudget.maxWallMs }
           : {}),
+      })
+    }
+    // Install optional resource quotas at the syscall trap (M2). Maps the ergonomic camelCase
+    // option onto the kernel's snake_case quota shape; the write-rate window is the serde tuple
+    // `[maxWrites, windowMs]`. Omitting the option leaves spawn / memory writes unbounded.
+    if (this.opts.resourceQuota) {
+      const q = this.opts.resourceQuota
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_resource_quota",
+        quota: {
+          ...(q.maxConcurrentSubagents !== undefined
+            ? { max_concurrent_subagents: q.maxConcurrentSubagents }
+            : {}),
+          ...(q.maxSpawnDepth !== undefined ? { max_spawn_depth: q.maxSpawnDepth } : {}),
+          ...(q.memoryWritesPerWindow !== undefined
+            ? {
+                memory_writes_per_window: [
+                  q.memoryWritesPerWindow.maxWrites,
+                  q.memoryWritesPerWindow.windowMs,
+                ],
+              }
+            : {}),
+        },
       })
     }
     let action: KernelRunnerAction = resumeMidRun

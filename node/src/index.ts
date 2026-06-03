@@ -1,6 +1,7 @@
 // ── Runtime (Layer 1.5) ────────────────────────────────────────────────────
 export { RuntimeRunner, collectText } from "./runtime/runner.js"
 export type { RuntimeOptions } from "./runtime/runner.js"
+export type { ResourceQuota } from "./kernel.js"
 export { KernelPrimitivesDashboard } from "./runtime/kernel-primitives-dashboard.js"
 export { FilteredExecutionPlane } from "./runtime/filtered-plane.js"
 export { SubAgentOrchestrator, defaultSubAgentOrchestrator, spawnStandalone } from "./runtime/sub-agent-orchestrator.js"

@@ -222,6 +222,13 @@ const runner = new RuntimeRunner({
   timeoutMs: 60_000,
   schedulerBudget: { maxWallMs: 300_000 },
 
+  // Resource quotas (M2) — enforced at the kernel syscall trap. Opt-in; omit for unbounded.
+  resourceQuota: {
+    maxConcurrentSubagents: 4,                       // deny spawn while at cap
+    maxSpawnDepth: 2,                                // deny spawn past nesting depth
+    memoryWritesPerWindow: { maxWrites: 20, windowMs: 60_000 }, // rate-limit writeMemory
+  },
+
   // Agent OS native profile (defaults shown)
   governancePolicy: DEFAULT_NATIVE_GOVERNANCE_POLICY,
   attentionPolicy: DEFAULT_NATIVE_ATTENTION_POLICY, // SignalRouter queue size 64
@@ -260,6 +267,7 @@ const runner = new RuntimeRunner({
 |--------|---------|
 | `governancePolicy` | Declarative deny / ask_user / rate-limit / param rules loaded into the kernel before `start_run` |
 | `attentionPolicy` | In-kernel signal router queue size (default 64) |
+| `resourceQuota` | M2 declarative limits — `maxConcurrentSubagents` / `maxSpawnDepth` / `memoryWritesPerWindow` — enforced at the kernel syscall trap (`set_resource_quota`); over-quota spawns roll back, over-rate writes surface as `memory_validation_failed` |
 | `onPermissionRequest` | Resolves `tool_gated` + `suspended` → kernel `resume` with approved/denied call IDs |
 | `compressionStore` | Writes archived messages on `compressed` observations |
 | `asyncSummarizer` | Background LLM summary after compression; stored as `summary_upgraded` |

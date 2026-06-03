@@ -89,6 +89,7 @@ Events:
 | `load_governance_policy` | Load declarative governance rules (deny / ask_user / rate-limit / param) before run |
 | `set_attention_policy` | Configure in-kernel signal router queue (`max_queue_size`) |
 | `set_scheduler_budget` | Optional wall-clock / turn / token budget overrides |
+| `set_resource_quota` | M2 资源配额 — install declarative spawn-concurrency / spawn-depth / memory-write-rate limits at the syscall trap (`quota`); opt-in, omit for unbounded |
 | `set_memory_policy` | Configure memory validation rules (`MemoryKind`, forbidden patterns, size limits) |
 | `write_memory` | Request validated long-term memory write; emits `memory_written` or `memory_validation_failed` |
 | `query_memory` | Request memory retrieval; emits `memory_queried`; host feeds `memory_retrieval_result` |
@@ -202,7 +203,9 @@ The kernel exposes **one syscall trap** (`gate_syscall`) where every effectful r
 | `max_spawn_depth` | `spawn` | `Deny` (stage `quota`) |
 | `memory_writes_per_window` `(max, window_ms)` | `write_memory` | `RateLimited` → write skipped, surfaces as `memory_validation_failed` |
 
-Install via `LoopStateMachine::set_resource_quota(ResourceQuota { .. })`. **Opt-in:** with no quota set, spawn / memory writes are unconditionally allowed (pre-M2 behavior). Quotas read only kernel-owned facts (running child tasks in the `TaskTable`, the observed clock) — no I/O.
+Install from any FFI SDK via the **`set_resource_quota` input event** (`{ "kind": "set_resource_quota", "quota": { … } }`) — the same versioned JSON event ABI as governance / scheduler config, so quotas are replayable and session-loggable. (In-process Rust callers can also use `LoopStateMachine::set_resource_quota`.) **Opt-in:** with no quota set, spawn / memory writes are unconditionally allowed (pre-M2 behavior). Quotas read only kernel-owned facts (running child tasks in the `TaskTable`, the observed clock) — no I/O.
+
+The Node SDK is the reference wiring: `RuntimeOptions.resourceQuota` (`maxConcurrentSubagents` / `maxSpawnDepth` / `memoryWritesPerWindow`) is mapped onto the snake_case quota shape and sent at run setup next to `set_scheduler_budget` ([node/src/runtime/runner.ts](../../node/src/runtime/runner.ts)).
 
 `spawn`, `page_in`, `write_memory`, and `query_memory` all flow through the same `gate_syscall` path as tool calls (`page_in` / `query_memory` default to `Allow` but route through the trap so policies can attach later).
 

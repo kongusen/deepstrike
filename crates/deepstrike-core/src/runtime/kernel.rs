@@ -203,6 +203,14 @@ pub enum KernelInputEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_wall_ms: Option<u64>,
     },
+    /// M2 资源配额: install a declarative [`crate::governance::quota::ResourceQuota`] at the
+    /// single syscall trap. Like governance/attention/scheduler config, quotas flow in through
+    /// the versioned JSON event ABI (replayable, session-loggable) rather than a side-channel
+    /// setter — sending it is opt-in, and omitting it preserves the pre-M2 unconditional `Allow`
+    /// for spawn / memory-write syscalls.
+    SetResourceQuota {
+        quota: crate::governance::quota::ResourceQuota,
+    },
     ProviderResult {
         message: Message,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -915,6 +923,10 @@ impl KernelRuntime {
                 self.sm.set_wall_budget(max_wall_ms);
                 return KernelStep::empty(self.sm.take_observations());
             }
+            KernelInputEvent::SetResourceQuota { quota } => {
+                self.sm.set_resource_quota(quota);
+                return KernelStep::empty(self.sm.take_observations());
+            }
             KernelInputEvent::ProviderResult {
                 message,
                 observed_input_tokens,
@@ -1205,6 +1217,73 @@ mod tests {
             runtime.state_machine().wait_reason(),
             Some(crate::scheduler::tcb::WaitReason::SubAgentJoin(_))
         ));
+    }
+
+    #[test]
+    fn set_resource_quota_input_denies_spawn_over_quota() {
+        use crate::governance::quota::ResourceQuota;
+        use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        // Quota flows in through the same versioned JSON event ABI as governance/scheduler config.
+        let step = runtime.step(KernelInput::new(KernelInputEvent::SetResourceQuota {
+            quota: ResourceQuota { max_spawn_depth: Some(0), ..ResourceQuota::default() },
+        }));
+        assert!(step.actions.is_empty(), "config input yields no actions");
+
+        runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+            task: RuntimeTask::new("parent task"),
+            run_spec: None,
+        }));
+        runtime.state_machine_mut().take_observations();
+
+        let spec = AgentRunSpec::new(
+            AgentIdentity::sub_agent("worker", "worker-session"),
+            AgentRole::Implement,
+            "do work",
+        );
+        let step = runtime.step(KernelInput::new(KernelInputEvent::SpawnSubAgent {
+            spec,
+            parent_session_id: "parent-session".to_string(),
+        }));
+
+        // Denied spawn rolls the turn back to another reasoning pass — no process registered,
+        // not suspended on a sub-agent join.
+        assert!(matches!(
+            step.actions.as_slice(),
+            [KernelAction::CallProvider { .. }]
+        ));
+        assert!(!step.observations.iter().any(|o| matches!(
+            o,
+            KernelObservation::AgentProcessChanged { agent_id, .. } if agent_id == "worker"
+        )));
+        assert!(runtime.state_machine().agent_process("worker").is_none());
+        assert!(!runtime.state_machine().is_suspended());
+    }
+
+    #[test]
+    fn default_runtime_leaves_spawn_unquota_ed() {
+        use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+        // No SetResourceQuota event => pre-M2 behavior: spawn is unconditionally admitted.
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+            task: RuntimeTask::new("parent task"),
+            run_spec: None,
+        }));
+        runtime.state_machine_mut().take_observations();
+
+        let spec = AgentRunSpec::new(
+            AgentIdentity::sub_agent("worker", "worker-session"),
+            AgentRole::Implement,
+            "do work",
+        );
+        runtime.step(KernelInput::new(KernelInputEvent::SpawnSubAgent {
+            spec,
+            parent_session_id: "parent-session".to_string(),
+        }));
+        assert!(runtime.state_machine().agent_process("worker").is_some());
+        assert!(runtime.state_machine().is_suspended());
     }
 
     #[test]

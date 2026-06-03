@@ -46,6 +46,19 @@ const CHECKS = [
     patterns: ["applyKernelPageIn", 'action.kind === "execute_tool"'],
   },
   {
+    // M2 资源配额 — Node is the reference: quotas flow into the kernel via the JSON event ABI.
+    id: "node-resource-quota",
+    lang: "node",
+    path: "node/src/runtime/runner.ts",
+    patterns: ["resourceQuota", "set_resource_quota", "max_concurrent_subagents"],
+  },
+  {
+    id: "core-resource-quota",
+    lang: "core",
+    path: "crates/deepstrike-core/src/runtime/kernel.rs",
+    patterns: ["SetResourceQuota", "set_resource_quota"],
+  },
+  {
     id: "wasm-os-profile",
     lang: "wasm",
     path: "wasm/src/runtime/os-profile.ts",

@@ -12,6 +12,7 @@ Optional `osProfile: "native"` / `os_profile: "native"` adds **fail-fast static 
 | `attentionPolicy` + `signal_disposed` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `governancePolicy` suspend / resume | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `agent_process_changed` (proc) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `resourceQuota` → `set_resource_quota` (M2) | ✓ | ✓ | event only | event only | event only |
 | mm page-in before `execute_tool` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Layer-1 `large_result_spooled` + spool I/O | ✓ | ✓ | ✓ | ✓ | event only |
 | Semantic `page_out` → DreamStore | ✓ | ✓ | ✓ | ✓ | partial |
@@ -24,6 +25,7 @@ Optional `osProfile: "native"` / `os_profile: "native"` adds **fail-fast static 
 
 - **Rust:** OS snapshot rebuild helpers are session-log oriented; runner exposes `write_memory` / `query_memory` parity with Node/Python.
 - **WASM:** Memory syscall **session event types** are mapped; runner-level `writeMemory` / `queryMemory` APIs are not yet public.
+- **Resource quotas (M2):** the kernel enforces spawn/depth/write-rate quotas for *all* SDKs (the `set_resource_quota` JSON event + `gate_syscall` trap are in core). **Node is the reference runner wiring** — `RuntimeOptions.resourceQuota` maps the ergonomic option onto the event. Python / Rust / WASM can send the event directly but have no typed runner option yet (follow-up parity work).
 
 ## CI gates
 

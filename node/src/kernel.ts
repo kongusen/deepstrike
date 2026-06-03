@@ -10,6 +10,23 @@ export interface GovernanceVerdict {
   retryAfterMs?: number
 }
 
+/**
+ * M2 资源配额 — declarative resource limits enforced at the kernel's single syscall trap.
+ *
+ * Installed through the versioned JSON event ABI (`set_resource_quota`), not a side-channel
+ * setter, so quota config is replayable and session-loggable like governance/scheduler config.
+ * Every field is optional; an omitted field imposes no limit, and omitting the quota entirely
+ * preserves the pre-M2 behavior of admitting all spawn / memory-write syscalls.
+ */
+export interface ResourceQuota {
+  /** Max sub-agents in the `running` state at once; further spawns are denied while at cap. */
+  maxConcurrentSubagents?: number
+  /** Max sub-agent nesting depth (direct children of the root loop are depth 1). */
+  maxSpawnDepth?: number
+  /** Rolling-window memory-write rate limit: at most `maxWrites` per any `windowMs` span. */
+  memoryWritesPerWindow?: { maxWrites: number; windowMs: number }
+}
+
 export interface GovernanceInstance {
   setIdentity(agentId: string, sessionId: string): void
   addPermissionRule(pattern: string, action: "allow" | "deny" | "ask_user"): void
