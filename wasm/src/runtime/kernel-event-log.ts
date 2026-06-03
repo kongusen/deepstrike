@@ -18,6 +18,7 @@ export function categoryForKind(kind: string): KernelEventCategory {
     case "large_result_spooled":
     case "memory_written":
     case "memory_queried":
+    case "memory_validation_failed":
       return "mm"
     case "agent_process_changed":
       return "proc"
@@ -212,6 +213,13 @@ export function kernelObservationToSessionEvent(
         query_context: obs.query_context ?? "",
         requested_k: obs.requested_k ?? 0,
         requires_async_response: obs.requires_async_response ?? false,
+      })
+    case "memory_validation_failed":
+      return withCategory({
+        kind: "memory_validation_failed" as const,
+        turn: t,
+        memory_id: obs.memory_id ?? "",
+        error: obs.error ?? "",
       })
     default:
       return null

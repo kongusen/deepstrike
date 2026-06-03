@@ -81,6 +81,7 @@ export type SessionEvent =
     }
   | { kind: "memory_written"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; memory_id: string; memory_kind: string; size_bytes: number }
   | { kind: "memory_queried"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; query_context: string; requested_k: number; requires_async_response: boolean }
+  | { kind: "memory_validation_failed"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; memory_id: string; error: string }
   | { kind: "run_terminal"; reason: string; turns_used: number; total_tokens: number }
   | { kind: "summary_upgraded"; compressed_seq: number; summary: string }
 

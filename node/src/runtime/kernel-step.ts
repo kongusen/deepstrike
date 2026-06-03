@@ -97,6 +97,8 @@ export interface KernelObservation {
   query_context?: string
   requested_k?: number
   requires_async_response?: boolean
+  /** memory_validation_failed (Phase 7). */
+  error?: string
 }
 
 interface KernelStepJson {
