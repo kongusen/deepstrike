@@ -1270,3 +1270,190 @@
         let child = sm.task_table().get("child").expect("child task");
         assert_eq!(child.state, TaskState::Done(TerminationReason::Completed));
     }
+
+    // ---- W0: kernel-resident workflow executor -----------------------------
+
+    fn wf_completed(agent_id: &str) -> crate::types::result::SubAgentResult {
+        use crate::types::result::{LoopResult, SubAgentResult, TerminationReason};
+        SubAgentResult {
+            agent_id: compact_str::CompactString::new(agent_id),
+            result: LoopResult {
+                termination: TerminationReason::Completed,
+                final_message: Some(Message::assistant("ok")),
+                turns_used: 1,
+                total_tokens_used: 1,
+            },
+        }
+    }
+
+    fn count_spawned(obs: &[LoopObservation]) -> usize {
+        obs.iter()
+            .filter(|o| matches!(o, LoopObservation::AgentProcessChanged { state, .. } if *state == crate::proc::ProcessState::Running))
+            .count()
+    }
+
+    #[test]
+    fn workflow_fanout_spawns_batch_then_synthesizes() {
+        use crate::orchestration::workflow::fanout_synthesize;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+
+        let spec = fanout_synthesize(
+            vec![
+                RuntimeTask::new("w0"),
+                RuntimeTask::new("w1"),
+                RuntimeTask::new("w2"),
+            ],
+            RuntimeTask::new("synth"),
+        );
+        let action = sm.load_workflow(spec, "sess");
+        assert!(matches!(action, LoopAction::AwaitingResume));
+        assert!(sm.workflow_active());
+        assert!(sm.is_suspended());
+
+        // First batch: the 3 workers spawn in parallel, one Suspended barrier over all of them.
+        let obs = sm.take_observations();
+        assert_eq!(count_spawned(&obs), 3);
+        let suspended = obs.iter().find_map(|o| match o {
+            LoopObservation::Suspended {
+                reason,
+                pending_calls,
+                ..
+            } => Some((reason.clone(), pending_calls.len())),
+            _ => None,
+        });
+        assert_eq!(suspended, Some(("workflow_batch".to_string(), 3)));
+
+        // Two workers done → still suspended (batch not drained).
+        assert!(matches!(
+            sm.feed(LoopEvent::SubAgentCompleted {
+                result: wf_completed("wf-node0")
+            }),
+            LoopAction::AwaitingResume
+        ));
+        assert!(matches!(
+            sm.feed(LoopEvent::SubAgentCompleted {
+                result: wf_completed("wf-node1")
+            }),
+            LoopAction::AwaitingResume
+        ));
+        assert!(sm.workflow_active());
+        sm.take_observations();
+
+        // Third worker done → batch drains, synth (wf-node3) becomes the next gated batch.
+        assert!(matches!(
+            sm.feed(LoopEvent::SubAgentCompleted {
+                result: wf_completed("wf-node2")
+            }),
+            LoopAction::AwaitingResume
+        ));
+        assert!(sm.workflow_active());
+        let obs = sm.take_observations();
+        assert_eq!(count_spawned(&obs), 1); // synth spawned
+        assert!(sm.agent_process("wf-node3").is_some());
+
+        // Synth done → no more ready nodes → workflow finishes, parent resumes.
+        let final_action = sm.feed(LoopEvent::SubAgentCompleted {
+            result: wf_completed("wf-node3"),
+        });
+        assert!(matches!(final_action, LoopAction::CallLLM { .. }));
+        assert!(!sm.workflow_active());
+        assert!(
+            sm.take_observations()
+                .iter()
+                .any(|o| matches!(o, LoopObservation::Resumed { .. }))
+        );
+    }
+
+    #[test]
+    fn workflow_linear_chain_spawns_one_at_a_time() {
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+
+        // A → B → C
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("A"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("B"), AgentRole::Implement).with_depends_on(vec![0]),
+            WorkflowNode::new(RuntimeTask::new("C"), AgentRole::Implement).with_depends_on(vec![1]),
+        ]);
+        sm.load_workflow(spec, "sess");
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // only A
+
+        sm.feed(LoopEvent::SubAgentCompleted {
+            result: wf_completed("wf-node0"),
+        });
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // B
+        assert!(sm.workflow_active());
+
+        sm.feed(LoopEvent::SubAgentCompleted {
+            result: wf_completed("wf-node1"),
+        });
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // C
+
+        let done = sm.feed(LoopEvent::SubAgentCompleted {
+            result: wf_completed("wf-node2"),
+        });
+        assert!(matches!(done, LoopAction::CallLLM { .. }));
+        assert!(!sm.workflow_active());
+    }
+
+    #[test]
+    fn workflow_node_spawn_is_gated_by_quota() {
+        use crate::orchestration::workflow::fanout_synthesize;
+
+        let mut sm = sm();
+        sm.set_resource_quota(crate::governance::quota::ResourceQuota {
+            max_concurrent_subagents: Some(1),
+            ..Default::default()
+        });
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+
+        // 2 workers → synth. With concurrency cap 1, only the first worker spawns; the second is
+        // denied at the syscall gate, so synth (which depends on it) never becomes ready.
+        let spec = fanout_synthesize(
+            vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
+            RuntimeTask::new("synth"),
+        );
+        sm.load_workflow(spec, "sess");
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // only wf-node0
+        assert!(sm.agent_process("wf-node0").is_some());
+        assert!(sm.agent_process("wf-node1").is_none()); // gated, never spawned
+
+        // wf-node0 completes → batch drains, synth never ready → workflow finishes.
+        let done = sm.feed(LoopEvent::SubAgentCompleted {
+            result: wf_completed("wf-node0"),
+        });
+        assert!(matches!(done, LoopAction::CallLLM { .. }));
+        assert!(!sm.workflow_active());
+        assert!(sm.agent_process("wf-node1").is_none());
+    }
+
+    #[test]
+    fn single_spawn_path_leaves_workflow_inactive() {
+        use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+        sm.spawn_sub_agent(
+            AgentRunSpec::new(
+                AgentIdentity::sub_agent("child", "child-session"),
+                AgentRole::Implement,
+                "child task",
+            ),
+            "parent-sess",
+        );
+        assert!(!sm.workflow_active());
+        let done = sm.feed(LoopEvent::SubAgentCompleted {
+            result: wf_completed("child"),
+        });
+        assert!(matches!(done, LoopAction::CallLLM { .. }));
+        assert!(!sm.workflow_active());
+    }

@@ -351,6 +351,10 @@ pub struct LoopStateMachine {
     suspend_state: Option<SuspendState>,
     /// Denied tool results to merge into the next `ToolResults` feed after resume.
     pending_denied_results: Vec<ToolResult>,
+    /// W0: an in-flight workflow DAG, when one is loaded. The kernel spawns its ready nodes as
+    /// gated batches (each through `evaluate_syscall(Syscall::Spawn)`) and advances on
+    /// completions. `None` (default) preserves the single-spawn `spawn_sub_agent` behavior.
+    workflow: Option<crate::scheduler::workflow_run::WorkflowRun>,
 }
 
 /// Stable snake_case label for a signal disposition, used in `SignalDisposed`
@@ -404,6 +408,7 @@ impl LoopStateMachine {
             last_now_ms: None,
             suspend_state: None,
             pending_denied_results: Vec::new(),
+            workflow: None,
         }
     }
 
@@ -1287,6 +1292,16 @@ impl LoopStateMachine {
         self.ctx
             .push_signal(format!("[sub-agent {}] {}", result.agent_id, summary));
 
+        // W0: if a workflow owns this agent, advance its DAG (feed completion, drain the batch,
+        // spawn the next gated batch or finish) instead of the single-spawn barrier below.
+        if self
+            .workflow
+            .as_ref()
+            .is_some_and(|w| w.owns_agent(result.agent_id.as_str()))
+        {
+            return self.advance_workflow(result);
+        }
+
         let agent_id = result.agent_id.to_string();
         // Suspended awaiting a sub-agent join (lifecycle on the root task, M1d).
         let awaiting_sub_agent =
@@ -1314,6 +1329,141 @@ impl LoopStateMachine {
             self.emit_call_llm()
         } else {
             LoopAction::AwaitingResume
+        }
+    }
+
+    /// Whether a workflow DAG is currently in flight.
+    pub fn workflow_active(&self) -> bool {
+        self.workflow.is_some()
+    }
+
+    /// W0: load a workflow DAG and spawn its first gated batch. On an invalid spec (cycle /
+    /// out-of-range dependency) the workflow is not installed and the loop continues with a
+    /// rollback note, mirroring how a denied effect is surfaced.
+    pub fn load_workflow(
+        &mut self,
+        spec: crate::orchestration::workflow::WorkflowSpec,
+        parent_session_id: &str,
+    ) -> LoopAction {
+        match crate::scheduler::workflow_run::WorkflowRun::new(&spec, parent_session_id) {
+            Ok(run) => {
+                self.workflow = Some(run);
+                self.spawn_workflow_batch()
+            }
+            Err(err) => {
+                let rb = RollbackReason::GovernanceDenied {
+                    tool_name: "load_workflow".to_string(),
+                    reason: err.to_string(),
+                };
+                let note = Message::user(super::rollback::build_rollback_note(
+                    &rb,
+                    self.ctx.config.verbose_control_notes,
+                ));
+                self.ctx
+                    .push_signal(note.content.as_text().unwrap_or_default().to_string());
+                self.phase = LoopPhase::Reason;
+                self.emit_call_llm()
+            }
+        }
+    }
+
+    /// Spawn every ready node of the in-flight workflow as one batch, each gated through the
+    /// syscall trap. Allowed nodes register a child task and join the batch barrier; gated nodes
+    /// are marked failed (their dependents never become ready). Suspends on the batch via the
+    /// existing `SubAgentAwait` barrier, or finishes the workflow if nothing could be spawned.
+    fn spawn_workflow_batch(&mut self) -> LoopAction {
+        let ready = self
+            .workflow
+            .as_ref()
+            .map(|w| w.ready_batch())
+            .unwrap_or_default();
+        let mut spawned_ids: Vec<String> = Vec::new();
+        for node in ready {
+            // Owned manifest — releases the immutable `self.workflow` borrow before the gate.
+            let manifest = match self.workflow.as_ref() {
+                Some(w) => w.manifest_for(node),
+                None => continue,
+            };
+            if self
+                .evaluate_syscall(&Syscall::Spawn(manifest.clone()))
+                .is_allowed()
+            {
+                let agent_id = manifest.agent_id.to_string();
+                let child = Tcb::spawned(&manifest, self.policy.clone());
+                self.tasks.insert(child);
+                if let Some(process) =
+                    self.tasks.get(&agent_id).and_then(AgentProcess::from_tcb)
+                {
+                    self.push_agent_process_changed(process);
+                }
+                if let Some(run) = self.workflow.as_mut() {
+                    run.mark_spawned(node, &agent_id);
+                }
+                spawned_ids.push(agent_id);
+            } else if let Some(run) = self.workflow.as_mut() {
+                run.mark_denied(node);
+            }
+        }
+
+        if spawned_ids.is_empty() {
+            // Nothing could be spawned (all gated, or no ready nodes) — the workflow cannot make
+            // progress, so finish it and hand control back to the parent loop.
+            self.workflow = None;
+            self.phase = LoopPhase::Reason;
+            return self.emit_call_llm();
+        }
+
+        let wait = WaitReason::SubAgentJoin(spawned_ids[0].clone().into());
+        self.suspend_state = Some(SuspendState::SubAgentAwait {
+            agent_ids: spawned_ids.clone(),
+        });
+        self.set_lifecycle(TaskState::Suspended, Some(wait));
+        self.observations.push(LoopObservation::Suspended {
+            turn: self.turn,
+            reason: "workflow_batch".to_string(),
+            pending_calls: spawned_ids,
+        });
+        LoopAction::AwaitingResume
+    }
+
+    /// W0: advance the in-flight workflow after a node completed. Feeds the DAG, drains the batch
+    /// barrier, and either spawns the next ready batch (still suspended) or finishes the workflow
+    /// and resumes the parent loop. Finishing on "batch drained + no more ready nodes" handles
+    /// both full completion and a stall caused by a gated dependency.
+    fn advance_workflow(&mut self, result: SubAgentResult) -> LoopAction {
+        let agent_id = result.agent_id.to_string();
+        if let Some(run) = self.workflow.as_mut() {
+            run.record_completion(&agent_id, result.result.clone());
+        }
+        if let Some(SuspendState::SubAgentAwait { agent_ids }) = self.suspend_state.as_mut() {
+            agent_ids.retain(|id| id != &agent_id);
+        }
+        let batch_drained = matches!(
+            self.suspend_state.as_ref(),
+            Some(SuspendState::SubAgentAwait { agent_ids }) if agent_ids.is_empty()
+        );
+        if !batch_drained {
+            return LoopAction::AwaitingResume;
+        }
+
+        self.suspend_state = None;
+        let next = self
+            .workflow
+            .as_ref()
+            .map(|w| w.ready_batch())
+            .unwrap_or_default();
+        if next.is_empty() {
+            // Workflow finished (all nodes terminal, or stalled by a gated dependency).
+            self.workflow = None;
+            self.observations.push(LoopObservation::Resumed {
+                turn: self.turn,
+                approved: vec![agent_id],
+                denied: Vec::new(),
+            });
+            self.phase = LoopPhase::Reason;
+            self.emit_call_llm()
+        } else {
+            self.spawn_workflow_batch()
         }
     }
 
