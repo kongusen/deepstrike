@@ -1435,4 +1435,40 @@ mod tests {
         assert!(events.iter().any(|e| e.event.kind_str() == "memory_validation_failed"));
         assert!(!events.iter().any(|e| e.event.kind_str() == "memory_written"));
     }
+
+    #[test]
+    fn tournament_resolves_a_winner_via_sdk_reexport() {
+        use crate::{Tournament, TournamentAction};
+        let mut t = Tournament::new(vec!["a".into(), "b".into(), "c".into(), "d".into()]).unwrap();
+        match t.start() {
+            TournamentAction::JudgeRound { round, matches } => {
+                assert_eq!(round, 1);
+                assert_eq!(matches.len(), 2);
+            }
+            _ => panic!("expected first round"),
+        }
+        t.feed_round(vec!["a".into(), "d".into()]).unwrap();
+        match t.feed_round(vec!["d".into()]).unwrap() {
+            TournamentAction::Done { winner, rounds_used } => {
+                assert_eq!(winner, "d");
+                assert_eq!(rounds_used, 2);
+            }
+            _ => panic!("expected done"),
+        }
+    }
+
+    #[test]
+    fn loop_until_done_stops_and_backstops_via_sdk_reexport() {
+        use crate::{LoopAction, LoopConfig, LoopUntilDone, RoundReport, StopCondition, StopReason};
+        let mut l = LoopUntilDone::new(LoopConfig::new(vec![StopCondition::NoNewFindings]));
+        assert_eq!(l.start(), LoopAction::Spawn { round: 1 });
+        assert_eq!(
+            l.feed(RoundReport { new_findings: 2, errors: 0 }),
+            LoopAction::Spawn { round: 2 }
+        );
+        assert_eq!(
+            l.feed(RoundReport { new_findings: 0, errors: 5 }),
+            LoopAction::Done { rounds_used: 2, reason: StopReason::NoNewFindings }
+        );
+    }
 }

@@ -19,6 +19,10 @@ pub use deepstrike_core::governance::quota::ResourceQuota;
 pub use deepstrike_core::mm::memory::{
     MemoryKind, MemoryMetadata, MemoryPolicy, MemoryQuery, MemoryRetrieval, MemoryWriteRequest,
 };
+pub use deepstrike_core::orchestration::loop_until_done::{
+    LoopAction, LoopConfig, LoopUntilDone, RoundReport, StopCondition, StopReason,
+};
+pub use deepstrike_core::orchestration::tournament::{Tournament, TournamentAction};
 pub use governance::{Governance, GovernanceVerdict};
 pub use harness::{Harness, HarnessOutcome, HarnessRequest, QualityGate};
 pub use harness_loop::{EvalLoopHarness, HarnessLoop, SinglePassHarness};
