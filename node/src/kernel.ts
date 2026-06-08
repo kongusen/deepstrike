@@ -161,6 +161,61 @@ export interface KernelRuntimeInstance {
   preservedRefs(): string[]
 }
 
+/** One pairwise match-up in a tournament round. */
+export interface TournamentMatch {
+  id: number
+  left: string
+  right: string
+}
+
+/** Discriminated action returned by {@link TournamentInstance} methods. */
+export interface TournamentAction {
+  kind: "judgeRound" | "done"
+  /** `judgeRound`: 1-based round number. */
+  round?: number
+  /** `judgeRound`: run one fresh-context judge per match (parallelisable). */
+  matches?: TournamentMatch[]
+  /** `done`: the winning entrant id. */
+  winner?: string
+  /** `done`: number of rounds played. */
+  roundsUsed?: number
+}
+
+interface TournamentInstance {
+  start(): TournamentAction
+  feedRound(winners: string[]): TournamentAction
+  isDone(): boolean
+}
+
+/** A single loop stop predicate. `maxRounds` is required when `kind === "maxRounds"`. */
+export interface StopConditionSpec {
+  kind: "noNewFindings" | "noErrors" | "maxRounds"
+  maxRounds?: number
+}
+
+/** What the SDK reports after running a loop round's worker. */
+export interface RoundReport {
+  newFindings: number
+  errors: number
+}
+
+/** Discriminated action returned by {@link LoopUntilDoneInstance} methods. */
+export interface LoopAction {
+  kind: "spawn" | "done"
+  /** `spawn`: 1-based round number to run. */
+  round?: number
+  /** `done`: number of rounds run. */
+  roundsUsed?: number
+  /** `done`: which condition fired. */
+  reason?: "noNewFindings" | "noErrors" | "maxRounds"
+}
+
+interface LoopUntilDoneInstance {
+  start(): LoopAction
+  feed(report: RoundReport): LoopAction
+  isDone(): boolean
+}
+
 interface KernelModule {
   Governance: new (defaultAction?: "allow" | "deny" | "ask_user") => GovernanceInstance
   KernelRuntime: new (policy: {
@@ -172,6 +227,18 @@ interface KernelModule {
   SignalRouter: new (maxQueueSize: number) => SignalRouterInstance
   EvalPipeline: new (options?: { extractSkillOnPass?: boolean }) => EvalPipelineInstance
   IdlePipeline: new (agentId: string) => IdlePipelineInstance
+  Tournament: new (entrants: string[]) => TournamentInstance
+  LoopUntilDone: new (conditions: StopConditionSpec[]) => LoopUntilDoneInstance
+}
+
+/** Create a single-elimination tournament (pairwise comparative judging). Throws if `entrants` is empty. */
+export function createTournament(entrants: string[]): TournamentInstance {
+  return new (getKernel().Tournament)(entrants)
+}
+
+/** Create a loop-until-done state machine. A `maxRounds` backstop is injected if none is given. */
+export function createLoopUntilDone(conditions: StopConditionSpec[]): LoopUntilDoneInstance {
+  return new (getKernel().LoopUntilDone)(conditions)
 }
 
 const cjsRequire = createRequire(import.meta.url)

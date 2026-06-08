@@ -2,6 +2,14 @@
 export { RuntimeRunner, collectText } from "./runtime/runner.js"
 export type { RuntimeOptions, SchedulerBudget } from "./runtime/runner.js"
 export type { MemoryPolicy, MemoryWriteRateLimit, ResourceQuota } from "./kernel.js"
+export { createTournament, createLoopUntilDone } from "./kernel.js"
+export type {
+  TournamentMatch,
+  TournamentAction,
+  StopConditionSpec,
+  RoundReport,
+  LoopAction,
+} from "./kernel.js"
 export { KernelPrimitivesDashboard } from "./runtime/kernel-primitives-dashboard.js"
 export { FilteredExecutionPlane } from "./runtime/filtered-plane.js"
 export { SubAgentOrchestrator, defaultSubAgentOrchestrator, spawnStandalone } from "./runtime/sub-agent-orchestrator.js"
