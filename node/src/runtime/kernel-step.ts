@@ -99,6 +99,19 @@ export interface KernelObservation {
   requires_async_response?: boolean
   /** memory_validation_failed (Phase 7). */
   error?: string
+  // W0-ABI: workflow lifecycle observations.
+  /** workflow_batch_spawned: per-node spawn descriptors (agent_id + goal + role/isolation). */
+  nodes?: Array<{
+    agent_id: string
+    goal: string
+    role: string
+    isolation: string
+    context_inheritance: string
+    model_hint?: string
+  }>
+  /** workflow_completed. */
+  completed?: string[]
+  failed?: string[]
 }
 
 interface KernelStepJson {

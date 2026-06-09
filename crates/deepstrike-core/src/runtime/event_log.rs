@@ -87,7 +87,8 @@ pub fn category_for_kind(kind: &str) -> KernelEventCategory {
         |         "renewed"
         | "context_renewed"
         | "large_result_spooled" => KernelEventCategory::Mm,
-        "agent_process_changed" | "agent_spawned" => KernelEventCategory::Proc,
+        "agent_process_changed" | "agent_spawned" | "workflow_batch_spawned"
+        | "workflow_completed" => KernelEventCategory::Proc,
         "signal_disposed" => KernelEventCategory::Ipc,
         "memory_written" | "memory_queried" | "memory_validation_failed" => KernelEventCategory::Mm,
         _ => KernelEventCategory::Sched,
@@ -107,6 +108,8 @@ pub const KERNEL_OBSERVATION_KINDS: &[&str] = &[
     "milestone_evidence",
     "checkpoint_taken",
     "agent_process_changed",
+    "workflow_batch_spawned",
+    "workflow_completed",
     "tool_gated",
     "signal_disposed",
     "budget_exceeded",

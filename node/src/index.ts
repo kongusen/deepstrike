@@ -115,6 +115,10 @@ export type {
   MilestonePolicy,
   SubAgentResult,
   TerminationReason,
+  WorkflowSpec,
+  WorkflowNodeSpec,
+  WorkflowTaskSpec,
+  WorkflowSpawnInfo,
 } from "./types/agent.js"
 export {
   agentIdentitySub,
@@ -123,6 +127,7 @@ export {
   milestoneCheckPass,
   milestoneCheckResultToKernel,
   subAgentResultToKernel,
+  workflowSpecToKernel,
 } from "./types/agent.js"
 
 // ── Collaboration layer (Layer 2 + Layer 3) ────────────────────────────────

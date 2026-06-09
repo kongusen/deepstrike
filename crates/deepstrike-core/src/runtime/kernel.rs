@@ -237,6 +237,14 @@ pub enum KernelInputEvent {
         spec: AgentRunSpec,
         parent_session_id: String,
     },
+    /// W0-ABI: load a workflow DAG and spawn its first gated batch. The kernel drives the DAG;
+    /// each node spawn passes the syscall trap and is reported via `workflow_batch_spawned`.
+    /// Completions feed back through `SubAgentCompleted` (reused); finish emits
+    /// `workflow_completed`.
+    LoadWorkflow {
+        spec: crate::orchestration::workflow::WorkflowSpec,
+        parent_session_id: String,
+    },
     /// Feed a completed sub-agent result back into the parent loop.
     SubAgentCompleted {
         result: SubAgentResult,
@@ -427,6 +435,20 @@ pub enum KernelObservation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         result_termination: Option<String>,
     },
+    /// W0-ABI: a workflow batch was spawned — each node's spawn descriptor (agent id + goal +
+    /// role/isolation/inheritance) so the SDK can run the kernel-generated nodes.
+    WorkflowBatchSpawned {
+        turn: u32,
+        nodes: Vec<crate::scheduler::workflow_run::WorkflowSpawnInfo>,
+    },
+    /// W0-ABI: a workflow finished (all nodes terminal, or stalled by a gated dependency).
+    WorkflowCompleted {
+        turn: u32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        completed: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        failed: Vec<String>,
+    },
     /// A tool call needs user approval (governance `AskUser`). Not blocked by the
     /// kernel — the SDK must obtain approval before executing the named call.
     ToolGated {
@@ -602,6 +624,18 @@ impl From<LoopObservation> for KernelObservation {
                 state: state.label().to_string(),
                 permitted_capability_ids,
                 result_termination,
+            },
+            LoopObservation::WorkflowBatchSpawned { turn, nodes } => {
+                Self::WorkflowBatchSpawned { turn, nodes }
+            }
+            LoopObservation::WorkflowCompleted {
+                turn,
+                completed,
+                failed,
+            } => Self::WorkflowCompleted {
+                turn,
+                completed,
+                failed,
             },
             LoopObservation::ToolGated {
                 turn,
@@ -967,6 +1001,16 @@ impl KernelRuntime {
                 parent_session_id,
             } => {
                 let action = self.sm.spawn_sub_agent(spec, &parent_session_id);
+                if matches!(action, LoopAction::AwaitingResume) {
+                    return KernelStep::empty(self.sm.take_observations());
+                }
+                return KernelStep::single(action, self.sm.take_observations());
+            }
+            KernelInputEvent::LoadWorkflow {
+                spec,
+                parent_session_id,
+            } => {
+                let action = self.sm.load_workflow(spec, &parent_session_id);
                 if matches!(action, LoopAction::AwaitingResume) {
                     return KernelStep::empty(self.sm.take_observations());
                 }
@@ -1844,6 +1888,75 @@ mod tests {
         assert!(step.observations.iter().any(|o| matches!(
             o,
             KernelObservation::PageInRequested { tool, .. } if tool == "memory"
+        )));
+    }
+
+    #[test]
+    fn load_workflow_input_drives_dag_to_completion() {
+        use crate::orchestration::workflow::fanout_synthesize;
+        use crate::types::result::{LoopResult, SubAgentResult, TerminationReason};
+
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+            task: RuntimeTask::new("parent task"),
+            run_spec: None,
+        }));
+        runtime.state_machine_mut().take_observations();
+
+        // Exercise the full serde round-trip of LoadWorkflow + WorkflowSpec over the ABI.
+        let spec =
+            fanout_synthesize(vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")], RuntimeTask::new("synth"));
+        let event = KernelInputEvent::LoadWorkflow {
+            spec,
+            parent_session_id: "sess".to_string(),
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: KernelInputEvent = serde_json::from_str(&json).expect("deserialize");
+
+        let step = runtime.step(KernelInput::new(parsed));
+        // First batch carries both workers' goals so the SDK can run them.
+        let batch = step
+            .observations
+            .iter()
+            .find_map(|o| match o {
+                KernelObservation::WorkflowBatchSpawned { nodes, .. } => Some(nodes.clone()),
+                _ => None,
+            })
+            .expect("workflow_batch_spawned");
+        assert_eq!(batch.len(), 2);
+        let goals: Vec<&str> = batch.iter().map(|n| n.goal.as_str()).collect();
+        assert!(goals.contains(&"w0") && goals.contains(&"w1"));
+        assert_eq!(batch[0].agent_id, "wf-node0");
+        assert_eq!(batch[0].isolation, "read_only"); // fanout workers are Explore → read_only
+
+        let complete = |runtime: &mut KernelRuntime, id: &str| {
+            runtime.step(KernelInput::new(KernelInputEvent::SubAgentCompleted {
+                result: SubAgentResult {
+                    agent_id: compact_str::CompactString::new(id),
+                    result: LoopResult {
+                        termination: TerminationReason::Completed,
+                        final_message: None,
+                        turns_used: 1,
+                        total_tokens_used: 1,
+                    },
+                },
+            }))
+        };
+
+        complete(&mut runtime, "wf-node0");
+        // After both workers, synth becomes the next batch.
+        let step = complete(&mut runtime, "wf-node1");
+        assert!(step.observations.iter().any(|o| matches!(
+            o,
+            KernelObservation::WorkflowBatchSpawned { nodes, .. }
+                if nodes.len() == 1 && nodes[0].agent_id == "wf-node2"
+        )));
+
+        // Synth completes → workflow finishes.
+        let step = complete(&mut runtime, "wf-node2");
+        assert!(step.observations.iter().any(|o| matches!(
+            o,
+            KernelObservation::WorkflowCompleted { completed, .. } if completed.len() == 3
         )));
     }
 }

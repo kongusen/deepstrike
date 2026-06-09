@@ -11,16 +11,60 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::orchestration::executor;
-use crate::orchestration::task_graph::TaskGraph;
+use crate::orchestration::task_graph::{TaskGraph, TaskStatus};
 use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
-use crate::types::agent::IsolationManifest;
+use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance, IsolationManifest};
 use crate::types::error::Result;
 use crate::types::result::LoopResult;
 
 /// Deterministic kernel agent id for a workflow node (stable across resume / audit).
 pub fn node_agent_id(node: usize) -> String {
     format!("wf-node{node}")
+}
+
+/// Enough to run one spawned workflow node, carried to the SDK in the `WorkflowBatchSpawned`
+/// observation. Role/isolation/inheritance are canonical snake_case strings (serde names) so the
+/// host SDK can rebuild an agent run spec — the kernel generates these specs internally, so this
+/// is how the goal reaches the SDK that actually executes the node.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowSpawnInfo {
+    pub agent_id: String,
+    pub goal: String,
+    pub role: String,
+    pub isolation: String,
+    pub context_inheritance: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_hint: Option<String>,
+}
+
+fn role_label(role: AgentRole) -> &'static str {
+    match role {
+        AgentRole::Explore => "explore",
+        AgentRole::Plan => "plan",
+        AgentRole::Implement => "implement",
+        AgentRole::Verify => "verify",
+        AgentRole::Custom => "custom",
+    }
+}
+
+fn isolation_label(isolation: AgentIsolation) -> &'static str {
+    match isolation {
+        AgentIsolation::Shared => "shared",
+        AgentIsolation::ReadOnly => "read_only",
+        AgentIsolation::Worktree => "worktree",
+        AgentIsolation::Remote => "remote",
+    }
+}
+
+fn inheritance_label(inheritance: ContextInheritance) -> &'static str {
+    match inheritance {
+        ContextInheritance::None => "none",
+        ContextInheritance::SystemOnly => "system_only",
+        ContextInheritance::Full => "full",
+    }
 }
 
 /// The state of one in-flight workflow execution.
@@ -73,6 +117,21 @@ impl WorkflowRun {
         &self.nodes[node].task.goal
     }
 
+    /// The SDK-facing spawn descriptor for a node (agent id + goal + canonical role/isolation/
+    /// inheritance strings + model hint). The kernel owns the spec; this is how the goal reaches
+    /// the host that runs the node.
+    pub fn spawn_info(&self, node: usize) -> WorkflowSpawnInfo {
+        let n = &self.nodes[node];
+        WorkflowSpawnInfo {
+            agent_id: node_agent_id(node),
+            goal: n.task.goal.clone(),
+            role: role_label(n.role).to_string(),
+            isolation: isolation_label(n.isolation).to_string(),
+            context_inheritance: inheritance_label(n.context_inheritance).to_string(),
+            model_hint: n.model_hint.clone(),
+        }
+    }
+
     /// Mark a node as spawned: start it in the graph, record it in the live batch, and map its
     /// kernel agent id back to the node for completion routing.
     pub fn mark_spawned(&mut self, node: usize, agent_id: &str) {
@@ -109,6 +168,21 @@ impl WorkflowRun {
     /// True once every node is terminal (completed or failed) and nothing is in flight.
     pub fn is_complete(&self) -> bool {
         self.graph.all_done() && self.batch.is_empty()
+    }
+
+    /// Outcome at finish: `(completed_agent_ids, failed_agent_ids)` by node. Nodes left
+    /// `Pending`/`Ready` (stalled behind a gated dependency) appear in neither.
+    pub fn outcome(&self) -> (Vec<String>, Vec<String>) {
+        let mut completed = Vec::new();
+        let mut failed = Vec::new();
+        for i in 0..self.graph.len() {
+            match self.graph.get(i).map(|n| n.status) {
+                Some(TaskStatus::Completed) => completed.push(node_agent_id(i)),
+                Some(TaskStatus::Failed) => failed.push(node_agent_id(i)),
+                _ => {}
+            }
+        }
+        (completed, failed)
     }
 
     /// Total node count.

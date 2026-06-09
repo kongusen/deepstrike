@@ -228,6 +228,18 @@ pub enum LoopObservation {
         permitted_capability_ids: Vec<String>,
         result_termination: Option<String>,
     },
+    /// W0-ABI: a workflow batch was spawned. Carries each node's spawn descriptor (agent id +
+    /// goal + role/isolation/inheritance) so the SDK can run the nodes the kernel generated.
+    WorkflowBatchSpawned {
+        turn: u32,
+        nodes: Vec<crate::scheduler::workflow_run::WorkflowSpawnInfo>,
+    },
+    /// W0-ABI: a workflow finished (all nodes terminal, or stalled by a gated dependency).
+    WorkflowCompleted {
+        turn: u32,
+        completed: Vec<String>,
+        failed: Vec<String>,
+    },
     /// A tool call requires user approval (governance `AskUser` verdict).
     /// The kernel does not block it — the SDK is responsible for obtaining
     /// approval before executing the named call.
@@ -1378,6 +1390,7 @@ impl LoopStateMachine {
             .map(|w| w.ready_batch())
             .unwrap_or_default();
         let mut spawned_ids: Vec<String> = Vec::new();
+        let mut spawned_infos: Vec<crate::scheduler::workflow_run::WorkflowSpawnInfo> = Vec::new();
         for node in ready {
             // Owned manifest — releases the immutable `self.workflow` borrow before the gate.
             let manifest = match self.workflow.as_ref() {
@@ -1399,6 +1412,9 @@ impl LoopStateMachine {
                 if let Some(run) = self.workflow.as_mut() {
                     run.mark_spawned(node, &agent_id);
                 }
+                if let Some(run) = self.workflow.as_ref() {
+                    spawned_infos.push(run.spawn_info(node));
+                }
                 spawned_ids.push(agent_id);
             } else if let Some(run) = self.workflow.as_mut() {
                 run.mark_denied(node);
@@ -1408,11 +1424,14 @@ impl LoopStateMachine {
         if spawned_ids.is_empty() {
             // Nothing could be spawned (all gated, or no ready nodes) — the workflow cannot make
             // progress, so finish it and hand control back to the parent loop.
-            self.workflow = None;
-            self.phase = LoopPhase::Reason;
-            return self.emit_call_llm();
+            return self.finish_workflow();
         }
 
+        // W0-ABI: tell the SDK which nodes to run (with their goals) before suspending.
+        self.observations.push(LoopObservation::WorkflowBatchSpawned {
+            turn: self.turn,
+            nodes: spawned_infos,
+        });
         let wait = WaitReason::SubAgentJoin(spawned_ids[0].clone().into());
         self.suspend_state = Some(SuspendState::SubAgentAwait {
             agent_ids: spawned_ids.clone(),
@@ -1424,6 +1443,22 @@ impl LoopStateMachine {
             pending_calls: spawned_ids,
         });
         LoopAction::AwaitingResume
+    }
+
+    /// Finish the in-flight workflow: emit `WorkflowCompleted` with its outcome, clear it, and
+    /// resume the parent loop. Shared by the all-gated path and the drained-no-more-ready path.
+    fn finish_workflow(&mut self) -> LoopAction {
+        if let Some(run) = self.workflow.as_ref() {
+            let (completed, failed) = run.outcome();
+            self.observations.push(LoopObservation::WorkflowCompleted {
+                turn: self.turn,
+                completed,
+                failed,
+            });
+        }
+        self.workflow = None;
+        self.phase = LoopPhase::Reason;
+        self.emit_call_llm()
     }
 
     /// W0: advance the in-flight workflow after a node completed. Feeds the DAG, drains the batch
@@ -1454,14 +1489,12 @@ impl LoopStateMachine {
             .unwrap_or_default();
         if next.is_empty() {
             // Workflow finished (all nodes terminal, or stalled by a gated dependency).
-            self.workflow = None;
             self.observations.push(LoopObservation::Resumed {
                 turn: self.turn,
                 approved: vec![agent_id],
                 denied: Vec::new(),
             });
-            self.phase = LoopPhase::Reason;
-            self.emit_call_llm()
+            self.finish_workflow()
         } else {
             self.spawn_workflow_batch()
         }

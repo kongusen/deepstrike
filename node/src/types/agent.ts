@@ -191,3 +191,87 @@ export function milestoneCheckPass(phaseId: string): MilestoneCheckResult {
 export function milestoneCheckFail(phaseId: string, reason: string): MilestoneCheckResult {
   return { phaseId, passed: false, reason }
 }
+
+// ─── W0-ABI: declarative workflow specs ───
+
+/** A task for a workflow node: a full object, or a bare goal string. */
+export type WorkflowTaskSpec = { goal: string; criteria?: string[]; lane?: string } | string
+
+/** One node in a declarative workflow DAG (camelCase host shape). */
+export interface WorkflowNodeSpec {
+  task: WorkflowTaskSpec
+  role: KernelAgentRole
+  isolation?: AgentIsolation
+  contextInheritance?: ContextInheritance
+  modelHint?: string
+  /** Indices of nodes this node depends on. */
+  dependsOn?: number[]
+}
+
+/** A declarative workflow DAG the kernel runs node-by-node, gating each spawn. */
+export interface WorkflowSpec {
+  nodes: WorkflowNodeSpec[]
+}
+
+/** Per-node spawn descriptor carried in the `workflow_batch_spawned` observation. */
+export interface WorkflowSpawnInfo {
+  agent_id: string
+  goal: string
+  role: string
+  isolation: string
+  context_inheritance: string
+  model_hint?: string
+}
+
+/** Map a host `WorkflowSpec` to the snake_case kernel JSON (`load_workflow.spec`). */
+export function workflowSpecToKernel(spec: WorkflowSpec): Record<string, unknown> {
+  return {
+    nodes: spec.nodes.map(n => {
+      const task = typeof n.task === "string" ? { goal: n.task } : n.task
+      return {
+        task: {
+          goal: task.goal,
+          // `criteria` is required by the kernel's RuntimeTask serde (no default).
+          criteria: task.criteria ?? [],
+          ...(task.lane ? { lane: task.lane } : {}),
+        },
+        role: n.role,
+        // role/isolation/context_inheritance have no serde default in the kernel — always emit.
+        isolation: n.isolation ?? "shared",
+        context_inheritance: n.contextInheritance ?? "none",
+        ...(n.modelHint ? { model_hint: n.modelHint } : {}),
+        ...(n.dependsOn && n.dependsOn.length ? { depends_on: n.dependsOn } : {}),
+      }
+    }),
+  }
+}
+
+/** Build a sub-agent run spec for a kernel-generated workflow node. */
+export function workflowNodeToSpec(node: WorkflowSpawnInfo, parentSessionId: string): AgentRunSpec {
+  return {
+    identity: {
+      agentId: node.agent_id,
+      sessionId: `${parentSessionId}-${node.agent_id}`,
+      isSubAgent: true,
+      parentSessionId,
+    },
+    role: node.role as KernelAgentRole,
+    isolation: node.isolation as AgentIsolation,
+    goal: node.goal,
+  }
+}
+
+/** Build the host manifest for a kernel-generated workflow node. */
+export function workflowNodeToManifest(
+  node: WorkflowSpawnInfo,
+  parentSessionId: string,
+): AgentProcessChangedObservation {
+  return {
+    kind: "agent_process_changed",
+    agent_id: node.agent_id,
+    parent_session_id: parentSessionId,
+    role: node.role,
+    isolation: node.isolation,
+    context_inheritance: node.context_inheritance,
+  }
+}

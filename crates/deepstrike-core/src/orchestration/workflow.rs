@@ -12,21 +12,25 @@
 //!
 //! Pure: no I/O, no clock, no spawning. Validation reuses [`TaskGraph::topological_sort`].
 
+use serde::{Deserialize, Serialize};
+
 use super::task_graph::TaskGraph;
 use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance};
 use crate::types::error::{DeepStrikeError, Result};
 use crate::types::task::{RuntimeTask, TaskLane};
 
 /// One node in a workflow DAG: a task plus the contract its agent runs under.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowNode {
     pub task: RuntimeTask,
     pub role: AgentRole,
     pub isolation: AgentIsolation,
     pub context_inheritance: ContextInheritance,
     /// Optional model preference (e.g. "opus" / "sonnet"); the SDK resolves it. See W4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_hint: Option<String>,
     /// Indices into [`WorkflowSpec::nodes`] this node depends on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<usize>,
 }
 
@@ -78,7 +82,7 @@ fn role_defaults(role: AgentRole) -> (AgentIsolation, ContextInheritance) {
 }
 
 /// A declarative workflow DAG.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkflowSpec {
     pub nodes: Vec<WorkflowNode>,
 }
