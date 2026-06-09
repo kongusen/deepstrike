@@ -7,6 +7,7 @@ import {
   verifyRules,
 } from "../src/types/agent.js"
 import type { WorkflowSpec, WorkflowSpawnInfo } from "../src/types/agent.js"
+import { buildWorkflowNodeCompletedEvent, recoverCompletedWorkflowNodes } from "../src/runtime/session-repair.js"
 
 function step(rt: { step(json: string): string }, event: Record<string, unknown>) {
   return JSON.parse(rt.step(JSON.stringify({ version: 1, event }))) as {
@@ -152,5 +153,99 @@ describe("LoadWorkflow ABI drives the DAG end-to-end", () => {
     const completed = afterSynth.observations.find(o => o.kind === "workflow_completed")
     expect(completed?.completed?.sort()).toEqual(["wf-node0", "wf-node1", "wf-node2"])
     expect(afterSynth.actions[0]?.kind).toBe("call_provider")
+  })
+})
+import { getKernel } from "../src/kernel.js"
+import { buildWorkflowNodeCompletedEvent, recoverCompletedWorkflowNodes } from "../src/runtime/session-repair.js"
+
+describe("resume persistence", () => {
+  it("buildWorkflowNodeCompletedEvent builds a valid SessionEvent", () => {
+    const event = buildWorkflowNodeCompletedEvent({
+      turn: 5,
+      agentId: "wf-node3",
+      termination: "completed",
+    })
+    expect(event.kind).toBe("workflow_node_completed")
+    expect(event.turn).toBe(5)
+    expect(event.agent_id).toBe("wf-node3")
+    expect(event.termination).toBe("completed")
+    // category and primitive are added by the logging layer (withCategory)
+  })
+
+  it("recoverCompletedWorkflowNodes extracts completed agent_ids", () => {
+    const events = [
+      { seq: 0, event: { kind: "run_started", run_id: "s1", goal: "test", criteria: [] } },
+      { seq: 1, event: buildWorkflowNodeCompletedEvent({ turn: 1, agentId: "wf-node0", termination: "completed" }) },
+      { seq: 2, event: buildWorkflowNodeCompletedEvent({ turn: 2, agentId: "wf-node1", termination: "failed" }) },
+      { seq: 3, event: buildWorkflowNodeCompletedEvent({ turn: 3, agentId: "wf-node2", termination: "completed" }) },
+      { seq: 4, event: { kind: "run_terminal", reason: "done", turns_used: 3, total_tokens: 10 } },
+    ]
+    const completed = recoverCompletedWorkflowNodes(events)
+    expect(completed).toEqual(["wf-node0", "wf-node2"])
+  })
+
+  it("recoverCompletedWorkflowNodes returns empty for empty stream", () => {
+    expect(recoverCompletedWorkflowNodes([])).toEqual([])
+    expect(recoverCompletedWorkflowNodes([{ seq: 0, event: { kind: "run_started", run_id: "s1", goal: "x", criteria: [] } }])).toEqual([])
+  })
+
+  it("kernel resumes workflow from completed nodes", () => {
+    const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
+    step(rt, { kind: "start_run", task: { goal: "parent", criteria: [] } })
+
+    const spec: WorkflowSpec = {
+      nodes: [
+        { task: "w0", role: "explore" },
+        { task: "w1", role: "explore" },
+        { task: "synth", role: "plan", dependsOn: [0, 1] },
+      ],
+    }
+
+    // Resume with node0 already completed.
+    const loaded = step(rt, {
+      kind: "load_workflow",
+      spec: workflowSpecToKernel(spec),
+      parent_session_id: "sess",
+      resumed_completed: ["wf-node0"],
+    })
+
+    // Only node1 is in the ready batch; node0 is skipped.
+    const batch1 = loaded.observations.find(o => o.kind === "workflow_batch_spawned")
+    expect(batch1?.nodes?.map(n => n.agent_id)).toEqual(["wf-node1"])
+    expect(batch1?.nodes?.length).toBe(1)
+
+    // Complete node1 → synth batch appears.
+    const afterW1 = complete(rt, "wf-node1")
+    const batch2 = afterW1.observations.find(o => o.kind === "workflow_batch_spawned")
+    expect(batch2?.nodes?.map(n => n.agent_id)).toEqual(["wf-node2"])
+
+    // Synth done → workflow completes with all three nodes.
+    const afterSynth = complete(rt, "wf-node2")
+    const completed = afterSynth.observations.find(o => o.kind === "workflow_completed")
+    expect(completed?.completed?.sort()).toEqual(["wf-node0", "wf-node1", "wf-node2"])
+  })
+
+  it("kernel resumes with all nodes already completed", () => {
+    const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
+    step(rt, { kind: "start_run", task: { goal: "parent", criteria: [] } })
+
+    const spec: WorkflowSpec = {
+      nodes: [
+        { task: "w0", role: "explore" },
+        { task: "synth", role: "plan", dependsOn: [0] },
+      ],
+    }
+
+    // Both nodes already completed → immediate workflow_completed.
+    const loaded = step(rt, {
+      kind: "load_workflow",
+      spec: workflowSpecToKernel(spec),
+      parent_session_id: "sess",
+      resumed_completed: ["wf-node0", "wf-node1"],
+    })
+
+    const completed = loaded.observations.find(o => o.kind === "workflow_completed")
+    expect(completed?.completed?.sort()).toEqual(["wf-node0", "wf-node1"])
+    expect(loaded.actions[0]?.kind).toBe("call_provider")
   })
 })

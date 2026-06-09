@@ -162,10 +162,10 @@ def test_provider_instantiation():
     from deepstrike.providers import GLMProvider
     assert GLMProvider(api_key="test")._model == "glm-5.1"
     assert GLMProvider(api_key="test", model="glm/glm-4-plus").runtime_policy().max_turns == 35
-    from deepstrike.providers import GeminiProvider, KimiProvider, MiniMaxProvider, QwenProvider
+    from deepstrike.providers import GeminiProvider, KimiProvider, MiniMaxAnthropicProvider, QwenProvider
     assert AnthropicProvider(api_key="test", model="claude-opus-4-1").runtime_policy().max_turns == 50
     assert OpenAIProvider(api_key="test", model="gpt-5.5").runtime_policy().max_turns == 60
-    assert MiniMaxProvider(api_key="test", model="MiniMax-M2.7-highspeed").runtime_policy().max_turns == 35
+    assert MiniMaxAnthropicProvider(api_key="test", model="MiniMax-M2.7-highspeed").runtime_policy().max_turns == 35
     assert KimiProvider(api_key="test", model="kimi-k2-thinking").runtime_policy().max_turns == 50
     assert QwenProvider(api_key="test", model="qwen3.7-max-preview").runtime_policy().max_turns == 45
     assert QwenProvider(api_key="test", model="qwen3.5-plus").runtime_policy().max_turns == 35

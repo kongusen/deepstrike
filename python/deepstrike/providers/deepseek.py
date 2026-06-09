@@ -41,6 +41,97 @@ class DeepSeekProvider(OpenAIProvider):
     def runtime_policy(self) -> RuntimePolicy:
         return _DEEPSEEK_POLICIES.get(self._model, RuntimePolicy())
 
+    def descriptor(self) -> ProviderDescriptor:
+        return ProviderDescriptor(
+            provider="deepseek",
+            protocol="openai-chat",
+            model=self._model,
+            reasoning={"supported": True, "preserve_across_tool_turns": True, "requires_replay_for_tool_turns": True},
+            tool_calls={"supported": True, "requires_strict_pairing": True},
+        )
+
+    def _require_non_empty_reasoning_replay_for_tool_turns(self, extensions: dict | None) -> bool:
+        if (extensions or {}).get("thinking") is False:
+            return False
+        return self._model in _DEEPSEEK_REASONING_MODELS
+
+    def _remember_deepseek_replay(
+        self,
+        content: str,
+        tool_calls: list[ToolCall],
+        reasoning_content: object,
+        native_tool_calls: list | None = None,
+    ) -> None:
+        """Persist a provider-scoped replay envelope only when real reasoning was
+        produced. A missing/empty reasoning_content is never synthesized."""
+        if not (isinstance(reasoning_content, str) and reasoning_content.strip()):
+            return
+        envelope: dict = {
+            "schema_version": 2,
+            "provider": "deepseek",
+            "protocol": "openai-chat",
+            "model": self._model,
+            "reasoning_content": reasoning_content,
+        }
+        if native_tool_calls:
+            envelope["tool_calls"] = native_tool_calls
+        self.remember_replay_fields(
+            Message(role="assistant", content=content, tool_calls=tool_calls or None),
+            envelope,
+        )
+
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
+        if self._circuit.is_open():
+            raise RuntimeError("Circuit breaker open")
+
+        msgs = self._build_messages(context, extensions)
+        tool_defs = self._build_tools(tools)
+
+        last_exc = None
+        for attempt in range(self._retry.max_retries):
+            try:
+                request_extensions = {k: v for k, v in (extensions or {}).items() if k not in {"model", "messages", "tools", "stream", "stream_options"}}
+                resp = await self._client.chat.completions.create(
+                    **request_extensions,
+                    model=self._model,
+                    messages=msgs,
+                    tools=tool_defs,
+                )
+                self._circuit.record_success()
+
+                choice = resp.choices[0].message
+                content = choice.content or ""
+                native_tool_calls = choice.tool_calls or []
+                tool_calls: list[ToolCall] = []
+                for tc in native_tool_calls:
+                    normalized = normalize_tool_call(tc.id, tc.function.name, tc.function.arguments)
+                    if normalized:
+                        tool_calls.append(normalized)
+
+                reasoning_content = getattr(choice, "reasoning_content", None)
+                if reasoning_content is None and getattr(choice, "model_extra", None):
+                    reasoning_content = choice.model_extra.get("reasoning_content")
+                wire_tool_calls = [
+                    {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in native_tool_calls
+                ]
+                self._remember_deepseek_replay(content, tool_calls, reasoning_content, wire_tool_calls)
+
+                return Message(
+                    role="assistant",
+                    content=content,
+                    token_count=resp.usage.total_tokens if resp.usage else None,
+                    tool_calls=tool_calls or None,
+                )
+            except Exception as exc:
+                last_exc = exc
+                self._circuit.record_failure()
+                if attempt < self._retry.max_retries - 1:
+                    import asyncio
+                    await asyncio.sleep(self._retry.base_delay * (2 ** attempt))
+
+        raise last_exc or RuntimeError("Complete failed")
+
     def _build_body(self, messages: list[Message], tools: list[ToolSchema], stream: bool, extensions: dict | None = None) -> dict:
         body = super()._build_body(messages, tools, stream)
         if self._model in _REASONER_MODELS:
@@ -111,9 +202,16 @@ class DeepSeekProvider(OpenAIProvider):
                 final_tool_calls.append(tc)
                 yield ToolCallEvent(id=tc.id, name=tc.name, arguments=args)
 
-        if final_tool_calls or reasoning_content:
-            self.remember_reasoning_for_turn(final_text, final_tool_calls, reasoning_content)
+        native_tool_calls = [
+            {
+                "id": tb["id"],
+                "type": "function",
+                "function": {"name": tb["name"], "arguments": tb["args_buf"] or "{}"},
+            }
+            for tb in tool_calls.values()
+        ]
+        self._remember_deepseek_replay(final_text, final_tool_calls, reasoning_content, native_tool_calls)
 
     def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
-        messages = self._build_messages(context)
+        messages = self._build_messages(context, extensions)
         return self._stream_gen(messages, tools, extensions)

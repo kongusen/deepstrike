@@ -35,7 +35,7 @@ from .anthropic import AnthropicProvider
 from .openai import OpenAIProvider
 from .qwen import QwenProvider
 from .deepseek import DeepSeekProvider
-from .minimax import MiniMaxProvider
+from .minimax import MiniMaxAnthropicProvider, MiniMaxOpenAIProvider
 from .ollama import OllamaProvider
 from .kimi import KimiProvider
 from .gemini import GeminiProvider
@@ -43,7 +43,7 @@ from .glm import GLMProvider
 
 __all__ = [
     "LLMProvider", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
-    "QwenProvider", "DeepSeekProvider", "MiniMaxProvider", "OllamaProvider", "KimiProvider", "GeminiProvider", "GLMProvider",
+    "QwenProvider", "DeepSeekProvider", "MiniMaxAnthropicProvider", "MiniMaxOpenAIProvider", "OllamaProvider", "KimiProvider", "GeminiProvider", "GLMProvider",
     "RetryConfig", "CircuitBreaker", "normalize_tool_call", "parse_tool_arguments",
     "TokenUsage", "ProviderToolSpec",
     "to_anthropic_content", "to_anthropic_messages",

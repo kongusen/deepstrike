@@ -386,13 +386,22 @@ class RuntimeRunner:
       status=result.result.termination,
     )
 
-  async def run_workflow(self, spec: "WorkflowSpec") -> dict[str, list[str]]:
+  async def run_workflow(
+    self,
+    spec: "WorkflowSpec",
+    *,
+    resumed_completed: list[str] | None = None,
+  ) -> dict[str, list[str]]:
     """W0-ABI: run a declarative workflow DAG.
 
     The kernel owns the DAG and gates every node spawn through the syscall trap; this driver
     runs each kernel-emitted batch of nodes in parallel via the sub-agent orchestrator, feeds
     their results back, and loops until the kernel reports completion. Returns
     ``{"completed": [...], "failed": [...]}`` (node agent-ids).
+
+    Args:
+        spec: The workflow specification.
+        resumed_completed: List of node agent_ids already completed (for resume recovery).
     """
     import asyncio
 
@@ -400,6 +409,7 @@ class RuntimeRunner:
       SubAgentRunContext,
       default_sub_agent_orchestrator,
     )
+    from deepstrike.runtime.session_repair import build_workflow_node_completed_event
     from deepstrike.types.agent import (
       WorkflowSpawnInfo,
       sub_agent_result_to_kernel,
@@ -414,11 +424,16 @@ class RuntimeRunner:
     runtime = self._active_kernel
     orchestrator = self._opts.sub_agent_orchestrator or default_sub_agent_orchestrator
 
-    observations = kernel_apply(runtime, self._pending_observations, {
+    load_event: dict[str, Any] = {
       "kind": "load_workflow",
       "spec": workflow_spec_to_kernel(spec),
       "parent_session_id": parent_session_id,
-    })
+    }
+    # Only include resumed_completed if non-empty (kernel uses presence to detect resume mode).
+    if resumed_completed and len(resumed_completed) > 0:
+      load_event["resumed_completed"] = resumed_completed
+
+    observations = kernel_apply(runtime, self._pending_observations, load_event)
 
     async def run_node(raw: dict) -> Any:
       node = WorkflowSpawnInfo(
@@ -460,6 +475,30 @@ class RuntimeRunner:
           "kind": "sub_agent_completed",
           "result": sub_agent_result_to_kernel(result),
         })
+        # Persist node completion for resume recovery.
+        await self._opts.session_log.append(
+          parent_session_id,
+          build_workflow_node_completed_event(
+            turn=runtime.turn(),
+            agent_id=result.agent_id,
+            termination=result.result.termination,
+          ),
+        )
+
+  async def resume_workflow(self, spec: "WorkflowSpec") -> dict[str, list[str]]:
+    """Resume a workflow from the parent session's completed nodes.
+
+    Reads the session log, extracts completed workflow node agent_ids, and
+    calls run_workflow with resumed_completed so the kernel skips those nodes.
+    """
+    from deepstrike.runtime.session_repair import recover_completed_workflow_nodes
+
+    if self._current_session_id is None:
+      raise RuntimeError("resume_workflow requires an active parent run")
+
+    events = await self._opts.session_log.read(self._current_session_id)
+    resumed_completed = recover_completed_workflow_nodes(events)
+    return await self.run_workflow(spec, resumed_completed=resumed_completed)
 
   def interrupt(self) -> None:
     self._interrupted = True

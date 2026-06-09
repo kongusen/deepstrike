@@ -4,12 +4,21 @@ use crate::runtime::event_log::{category_for_kind, KernelEventCategory, Primitiv
 use crate::types::message::{Message, ToolCall, ToolResult};
 
 /// Provider-native replay payload persisted in `llm_completed` for wake/preload recovery.
+///
+/// The core is provider-neutral: it persists and round-trips the replay envelope
+/// verbatim without interpreting protocol-specific shapes. `native_blocks` and
+/// `reasoning_content` are modeled explicitly because the recovery path reads
+/// them; every other envelope field (`schema_version`, `provider`, `protocol`,
+/// `model`, `reasoning_details`, `native_message`, `tool_calls`, …) is preserved
+/// through `extra` so SDK-owned protocol metadata is never dropped.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ProviderReplay {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_blocks: Option<Vec<serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

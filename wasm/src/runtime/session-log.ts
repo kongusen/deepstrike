@@ -82,6 +82,31 @@ export type SessionEvent =
   | { kind: "memory_written"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; memory_id: string; memory_kind: string; size_bytes: number }
   | { kind: "memory_queried"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; query_context: string; requested_k: number; requires_async_response: boolean }
   | { kind: "memory_validation_failed"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; memory_id: string; error: string }
+  | {
+      kind: "workflow_node_completed"
+      turn: number
+      category?: KernelEventCategory
+      primitive?: KernelPrimitive
+      agent_id: string
+      termination: string
+    }
+  | {
+      kind: "workflow_batch_spawned"
+      turn: number
+      category?: KernelEventCategory
+      primitive?: KernelPrimitive
+      node_count: number
+      node_ids: string[]
+    }
+  | {
+      kind: "workflow_completed"
+      turn: number
+      category?: KernelEventCategory
+      primitive?: KernelPrimitive
+      completed: string[]
+      failed: string[]
+      total_nodes: number
+    }
   | { kind: "run_terminal"; reason: string; turns_used: number; total_tokens: number }
   | { kind: "summary_upgraded"; compressed_seq: number; summary: string }
 

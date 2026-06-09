@@ -24,49 +24,6 @@ fn estimate_token_count(text: &str) -> u32 {
     (text.chars().count() as u32 / 4).max(1)
 }
 
-/// Minimal Anthropic-style blocks from plain `content` + `tool_calls` when
-/// `provider_replay` was not persisted (legacy logs or crash before append).
-pub fn synthesize_provider_replay(
-    content: &str,
-    tool_calls: &[ToolCall],
-) -> Option<ProviderReplay> {
-    if tool_calls.is_empty() {
-        return None;
-    }
-    let mut blocks = Vec::new();
-    if !content.is_empty() {
-        blocks.push(serde_json::json!({ "type": "text", "text": content }));
-    }
-    for tc in tool_calls {
-        blocks.push(serde_json::json!({
-            "type": "tool_use",
-            "id": tc.id,
-            "name": tc.name,
-            "input": tc.arguments,
-        }));
-    }
-    Some(ProviderReplay {
-        native_blocks: Some(blocks),
-        reasoning_content: None,
-    })
-}
-
-/// Prefer persisted replay; fall back to synthesis for tool turns.
-pub fn effective_provider_replay(
-    content: &str,
-    tool_calls: &[ToolCall],
-    stored: Option<&ProviderReplay>,
-) -> Option<ProviderReplay> {
-    if let Some(stored) = stored {
-        if stored.native_blocks.as_ref().is_some_and(|b| !b.is_empty())
-            || stored.reasoning_content.is_some()
-        {
-            return Some(stored.clone());
-        }
-    }
-    synthesize_provider_replay(content, tool_calls)
-}
-
 fn normalize_assistant_message_with_cap(message: &mut Message, max_bytes: usize) {
     if message.token_count.is_none() {
         message.token_count = Some(estimate_token_count(
@@ -78,20 +35,21 @@ fn normalize_assistant_message_with_cap(message: &mut Message, max_bytes: usize)
     }
 }
 
-/// Normalize a single `LlmCompleted` for recovery (message fields + provider_replay).
+/// Normalize a single `LlmCompleted` for recovery (message fields only).
+///
+/// Provider-neutral: the stored `provider_replay` envelope is left untouched.
+/// The core never synthesizes a protocol-specific replay shape — legacy
+/// reconstruction is the responsibility of the target provider in the SDK.
 pub fn repair_llm_completed(message: &mut Message, provider_replay: &mut Option<ProviderReplay>) {
     repair_llm_completed_with_cap(message, provider_replay, 0);
 }
 
 pub fn repair_llm_completed_with_cap(
     message: &mut Message,
-    provider_replay: &mut Option<ProviderReplay>,
+    _provider_replay: &mut Option<ProviderReplay>,
     max_bytes: usize,
 ) {
     normalize_assistant_message_with_cap(message, max_bytes);
-    let content = message.content.as_text().unwrap_or("").to_owned();
-    *provider_replay =
-        effective_provider_replay(&content, &message.tool_calls, provider_replay.as_ref());
 }
 
 /// Repair event log entries in place for recovery minimum set completeness.
@@ -267,30 +225,62 @@ mod tests {
     use compact_str::CompactString;
 
     #[test]
-    fn synthesize_provider_replay_builds_tool_use_blocks() {
-        let replay = synthesize_provider_replay(
-            "checking",
-            &[ToolCall {
+    fn repair_does_not_synthesize_provider_replay_for_tool_turns() {
+        let mut message = Message {
+            role: Role::Assistant,
+            content: Content::Text("checking".into()),
+            tool_calls: vec![ToolCall {
                 id: CompactString::new("c1"),
                 name: CompactString::new("ping"),
                 arguments: serde_json::json!({}),
             }],
-        )
-        .expect("replay");
-        let blocks = replay.native_blocks.expect("blocks");
-        assert_eq!(blocks.len(), 2);
-        assert_eq!(blocks[0]["type"], "text");
-        assert_eq!(blocks[1]["type"], "tool_use");
+            token_count: None,
+        };
+        let mut replay: Option<ProviderReplay> = None;
+        repair_llm_completed(&mut message, &mut replay);
+        // Provider-neutral: no fabricated native_blocks.
+        assert!(replay.is_none());
+        // Message is still normalized (token count backfilled).
+        assert!(message.token_count.is_some());
     }
 
     #[test]
-    fn effective_provider_replay_prefers_stored() {
-        let stored = ProviderReplay {
+    fn repair_passes_stored_replay_through() {
+        let mut message = Message {
+            role: Role::Assistant,
+            content: Content::Text("x".into()),
+            tool_calls: vec![],
+            token_count: Some(1),
+        };
+        let mut replay = Some(ProviderReplay {
             native_blocks: None,
             reasoning_content: Some("trace".into()),
-        };
-        let out = effective_provider_replay("x", &[], Some(&stored)).expect("replay");
-        assert_eq!(out.reasoning_content.as_deref(), Some("trace"));
+            extra: serde_json::Map::new(),
+        });
+        repair_llm_completed(&mut message, &mut replay);
+        assert_eq!(
+            replay.as_ref().and_then(|r| r.reasoning_content.as_deref()),
+            Some("trace")
+        );
+    }
+
+    #[test]
+    fn provider_replay_round_trips_unknown_envelope_fields() {
+        let json = serde_json::json!({
+            "schema_version": 2,
+            "provider": "deepseek",
+            "protocol": "openai-chat",
+            "model": "deepseek-v4-flash",
+            "reasoning_content": "trace",
+            "reasoning_details": [{"type": "reasoning.text", "text": "trace"}],
+            "tool_calls": [{"id": "c1"}]
+        });
+        let replay: ProviderReplay = serde_json::from_value(json.clone()).expect("parse");
+        assert_eq!(replay.reasoning_content.as_deref(), Some("trace"));
+        assert_eq!(replay.extra["provider"], "deepseek");
+        assert_eq!(replay.extra["protocol"], "openai-chat");
+        // Re-serialize: the envelope is preserved verbatim.
+        assert_eq!(serde_json::to_value(&replay).expect("serialize"), json);
     }
 
     #[test]

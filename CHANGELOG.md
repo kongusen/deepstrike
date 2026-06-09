@@ -41,7 +41,40 @@ Dynamic workflows: the kernel can now author and run agent-orchestration DAGs as
 ### Notes / deferred
 
 - WASM workflow drive is type-checked but not runtime-tested (needs `wasm-pack`); Rust SDK has no sub-agent orchestrator, so it gets type re-exports, not a `run_workflow` drive.
-- Resume persistence to the session log (auto-recover `resumed_completed`) and runtime claim-extraction (dynamic verifier fan-out) are follow-ups; the resume *primitive* and `verify_rules` static shape ship here.
+- Runtime claim-extraction (dynamic verifier fan-out) is a follow-up; `verify_rules` static shape ships here.
+- **Resume persistence to the session log** now ships across Node, Python, and WASM: `workflow_node_completed` events are persisted after each node, `recoverCompletedWorkflowNodes` extracts completed agent_ids from the log, and `resumeWorkflow`/`resume_workflow` drive recovery. The kernel's resume primitive (`WorkflowRun::resume`) correctly filters completed nodes from the batch via `load_workflow_resumed`.
+
+---
+
+Provider replay protocol fidelity: the provider layer now owns capture, validation, and protocol-scoped replay, and the shared recovery layer stopped fabricating provider-specific shapes — fixing reasoning/tool 400s and cross-provider replay pollution. The contract is consistent across Node, Python, WASM, and the Rust core.
+
+### What this enables
+
+| Before | After |
+|---|---|
+| Recovery layer synthesized Anthropic `native_blocks` for **any** tool turn lacking a stored replay (all SDKs + core) | `normalize_llm_completed` is **provider-neutral**: it passes the stored envelope through verbatim and never synthesizes a protocol shape |
+| Rebuilt history seeded blindly into whatever provider ran next | **Protocol-aware seeding**: a stored envelope is only seeded into a provider speaking the same wire protocol; cross-protocol fallbacks re-serialize neutral context |
+| DeepSeek reasoning + tool turns could ship requests the provider rejects (missing `reasoning_content`) | **Fail fast** with a provider/model/tool-id error before dispatch; non-empty `reasoning_content` captured into a provider-scoped envelope (stream **and** non-stream) |
+| Replay envelope metadata could leak into OpenAI-compatible request messages | Only **wire-safe** fields (`reasoning_content` / `reasoning_details`) are merged; `schema_version`/`provider`/`protocol`/`native_message` stay out of the request |
+| MiniMax was Anthropic-only | Split into **`MiniMaxAnthropicProvider`** (native_blocks) and **`MiniMaxOpenAIProvider`** (`reasoning_split`, preserves `reasoning_details`) |
+
+### Added
+
+- **`ProviderDescriptor`** (Node/WASM/Python) advertising `{provider, protocol, model, reasoning, toolCalls}`; descriptors on Anthropic/OpenAI-chat/DeepSeek/MiniMax providers drive protocol-aware recovery instead of class-name guessing.
+- **OpenAI-compatible replay validator** (Node + Python): strict tool-result pairing (orphan/duplicate rejection) and a DeepSeek/MiniMax non-empty-`reasoning_content` requirement, run before request construction.
+- **`MiniMaxOpenAIProvider`** + `minimax.openai` endpoint profile (Node); `reasoning_split: true` by default; `reasoning_details` survives replay.
+- `isReplayCompatibleWithProvider` / `is_replay_compatible_with_provider` + protocol inference for legacy envelopes (by shape).
+
+### Changed
+
+- **Anthropic legacy reconstruction** moved out of the shared recovery layer into `AnthropicProvider.seedProviderReplay` (Node/WASM/Python): legacy logs without a persisted replay reconstruct neutral text + tool_use blocks at seed time, scoped to the Anthropic provider.
+- **Rust core** `ProviderReplay` preserves unknown envelope fields (`#[serde(flatten)] extra`) so SDK-owned protocol metadata round-trips losslessly; `repair_llm_completed` no longer rewrites `provider_replay`.
+- DeepSeek `complete()`/`stream()` capture a versioned, provider-scoped replay envelope only when real reasoning was produced (no `""` synthesis).
+
+### Breaking
+
+- **`MiniMaxProvider` removed** in favor of `MiniMaxAnthropicProvider` (Node + Python exports updated; no alias). Use `MiniMaxOpenAIProvider` for the OpenAI-compatible endpoint.
+- Core `runtime::{synthesize_provider_replay, effective_provider_replay}` removed (provider synthesis is no longer a core responsibility).
 
 ## [0.2.6] - 2026-06-03
 

@@ -13,9 +13,9 @@ pub use kernel::{
 };
 
 pub use repair::{
-    effective_provider_replay, pending_tool_calls_from_messages, reconstruct_messages_with_fallback,
-    repair_events, repair_events_with_cap, repair_llm_completed, repair_llm_completed_with_cap,
-    sanitize_recovery_text, sanitize_recovery_text_bounded, synthesize_provider_replay,
+    pending_tool_calls_from_messages, reconstruct_messages_with_fallback, repair_events,
+    repair_events_with_cap, repair_llm_completed, repair_llm_completed_with_cap,
+    sanitize_recovery_text, sanitize_recovery_text_bounded,
 };
 pub use event_log::{
     category_for_kind, primitive_for_kind, KernelEventCategory, Primitive, KERNEL_OBSERVATION_KINDS,

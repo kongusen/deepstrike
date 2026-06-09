@@ -3,6 +3,15 @@ from __future__ import annotations
 from typing import Any, TypedDict
 
 from deepstrike._kernel import ToolCall
+from deepstrike.providers.replay import assistant_replay_key  # re-exported for runtime API stability
+
+__all__ = [
+    "ProviderReplay",
+    "assistant_replay_key",
+    "is_replay_compatible_with_provider",
+    "seed_provider_replay_from_events",
+    "peek_provider_replay",
+]
 
 class ProviderReplay(TypedDict, total=False):
     schema_version: int

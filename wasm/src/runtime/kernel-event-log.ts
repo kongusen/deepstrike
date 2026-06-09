@@ -221,6 +221,26 @@ export function kernelObservationToSessionEvent(
         memory_id: obs.memory_id ?? "",
         error: obs.error ?? "",
       })
+    case "workflow_batch_spawned": {
+      const nodes = (obs as any).nodes ?? []
+      return withCategory({
+        kind: "workflow_batch_spawned" as const,
+        turn: t,
+        node_count: nodes.length,
+        node_ids: nodes.map((n: any) => n.agent_id ?? ""),
+      })
+    }
+    case "workflow_completed": {
+      const completed = (obs as any).completed ?? []
+      const failed = (obs as any).failed ?? []
+      return withCategory({
+        kind: "workflow_completed" as const,
+        turn: t,
+        completed,
+        failed,
+        total_nodes: completed.length + failed.length,
+      })
+    }
     default:
       return null
   }

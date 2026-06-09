@@ -37,7 +37,7 @@ from deepstrike.governance import Governance, GovernanceVerdict
 from deepstrike.providers import (
     LLMProvider, RenderedContext, ProviderRunState, RuntimePolicy,
     AnthropicProvider, OpenAIProvider,
-    QwenProvider, DeepSeekProvider, MiniMaxProvider, OllamaProvider, KimiProvider,
+    QwenProvider, DeepSeekProvider, MiniMaxAnthropicProvider, MiniMaxOpenAIProvider, OllamaProvider, KimiProvider,
     StreamEvent, TextDelta, ThinkingDelta,
     ToolCallEvent, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, DoneEvent, ErrorEvent,
     PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse, ToolArgumentRepairedEvent,
@@ -98,7 +98,7 @@ __all__ = [
     "ProviderReplay",
     "ProviderReplay",
     "LLMProvider", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
-    "QwenProvider", "DeepSeekProvider", "MiniMaxProvider", "OllamaProvider", "KimiProvider",
+    "QwenProvider", "DeepSeekProvider", "MiniMaxAnthropicProvider", "MiniMaxOpenAIProvider", "OllamaProvider", "KimiProvider",
     "StreamEvent", "TextDelta", "ThinkingDelta",
     "ToolCallEvent", "ToolDeltaEvent", "ToolSuspendEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent",
     "PermissionRequestEvent", "PermissionResolvedEvent", "PermissionResponse", "ToolArgumentRepairedEvent",

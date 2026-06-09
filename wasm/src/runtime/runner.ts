@@ -15,7 +15,13 @@ import { governancePolicyToKernelEvent, type GovernancePolicy } from "../governa
 import { getKernel } from "./kernel.js"
 import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
-import { buildLlmCompletedEvent, buildRunTerminalEvent, repairEventsForRecovery } from "./session-repair.js"
+import {
+  buildLlmCompletedEvent,
+  buildRunTerminalEvent,
+  buildWorkflowNodeCompletedEvent,
+  recoverCompletedWorkflowNodes,
+  repairEventsForRecovery,
+} from "./session-repair.js"
 import {
   forceCompact,
   kernelAction,
@@ -895,7 +901,10 @@ export class RuntimeRunner {
    * through the syscall trap; this driver runs each kernel-emitted batch of nodes in parallel,
    * feeds their results back, and loops until the kernel reports the workflow complete.
    */
-  async runWorkflow(spec: WorkflowSpec): Promise<{ completed: string[]; failed: string[] }> {
+  async runWorkflow(
+    spec: WorkflowSpec,
+    opts?: { resumedCompleted?: string[] },
+  ): Promise<{ completed: string[]; failed: string[] }> {
     if (!this.activeKernel || !this.currentSessionId) {
       throw new Error("runWorkflow requires an active parent run")
     }
@@ -907,6 +916,8 @@ export class RuntimeRunner {
       kind: "load_workflow",
       spec: workflowSpecToKernel(spec),
       parent_session_id: parentSessionId,
+      // W0-ABI resume: skip nodes already completed before an interruption.
+      ...(opts?.resumedCompleted && opts.resumedCompleted.length ? { resumed_completed: opts.resumedCompleted } : {}),
     })
 
     for (;;) {
@@ -939,8 +950,28 @@ export class RuntimeRunner {
           kind: "sub_agent_completed",
           result: subAgentResultToKernel(result),
         })
+        // Persist node completion for resume recovery.
+        await this.opts.sessionLog.append(parentSessionId, buildWorkflowNodeCompletedEvent({
+          turn: runtime.turn(),
+          agentId: result.agentId,
+          termination: result.result.termination,
+        }))
       }
     }
+  }
+
+  /**
+   * Resume a workflow from the parent session's completed nodes.
+   * Reads the session log, extracts completed workflow node agent_ids, and
+   * calls runWorkflow with resumedCompleted so the kernel skips those nodes.
+   */
+  async resumeWorkflow(spec: WorkflowSpec): Promise<{ completed: string[]; failed: string[] }> {
+    if (!this.currentSessionId) {
+      throw new Error("resumeWorkflow requires an active parent run")
+    }
+    const events = await this.opts.sessionLog.read(this.currentSessionId)
+    const resumedCompleted = recoverCompletedWorkflowNodes(events)
+    return this.runWorkflow(spec, { resumedCompleted })
   }
 
   private async appendObservations(

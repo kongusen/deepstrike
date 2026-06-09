@@ -76,3 +76,29 @@ def build_run_terminal_event(*, reason: str, turns_used: int, total_tokens: int)
     "turns_used": max(0, turns_used),
     "total_tokens": max(0, total_tokens),
   }
+
+
+def build_workflow_node_completed_event(*, turn: int, agent_id: str, termination: str) -> dict[str, Any]:
+  """Build a workflow_node_completed event for persistence after a node finishes."""
+  return {
+    "kind": "workflow_node_completed",
+    "turn": turn,
+    "agent_id": agent_id,
+    "termination": termination,
+  }
+
+
+def recover_completed_workflow_nodes(events: list[Any]) -> list[str]:
+  """Recover completed workflow node agent_ids from a session event stream.
+
+  Scans for workflow_node_completed events and returns the agent_ids whose
+  termination was "completed". Used to rebuild resumed_completed for resume_workflow.
+  """
+  completed: list[str] = []
+  for entry in events:
+    event = entry.event if hasattr(entry, "event") else entry
+    if event.get("kind") == "workflow_node_completed" and event.get("termination") == "completed":
+      agent_id = event.get("agent_id")
+      if agent_id:
+        completed.append(agent_id)
+  return completed

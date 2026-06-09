@@ -302,6 +302,34 @@ class MemoryRetrievalResultEvent(TypedDict, total=False):
     selection_rationale: str
 
 
+class WorkflowNodeCompletedEvent(TypedDict, total=False):
+    kind: Literal["workflow_node_completed"]
+    turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
+    agent_id: str
+    termination: str
+
+
+class WorkflowBatchSpawnedEvent(TypedDict, total=False):
+    kind: Literal["workflow_batch_spawned"]
+    turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
+    node_count: int
+    node_ids: list[str]
+
+
+class WorkflowCompletedEvent(TypedDict, total=False):
+    kind: Literal["workflow_completed"]
+    turn: int
+    category: KernelEventCategory
+    primitive: KernelPrimitive
+    completed: list[str]
+    failed: list[str]
+    total_nodes: int
+
+
 SessionEvent = (
     RunStartedEvent
     | LlmCompletedEvent
@@ -332,6 +360,9 @@ SessionEvent = (
     | MemoryQueriedEvent
     | MemoryValidationFailedEvent
     | MemoryRetrievalResultEvent
+    | WorkflowNodeCompletedEvent
+    | WorkflowBatchSpawnedEvent
+    | WorkflowCompletedEvent
     | RunTerminalEvent
 )
 

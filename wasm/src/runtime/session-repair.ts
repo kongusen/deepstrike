@@ -71,3 +71,33 @@ export function buildRunTerminalEvent(input: {
     total_tokens: Math.max(0, input.totalTokens),
   }
 }
+
+export function buildWorkflowNodeCompletedEvent(input: {
+  turn: number
+  agentId: string
+  termination: string
+}): Extract<SessionEvent, { kind: "workflow_node_completed" }> {
+  return {
+    kind: "workflow_node_completed",
+    turn: input.turn,
+    agent_id: input.agentId,
+    termination: input.termination,
+  }
+}
+
+/**
+ * Recover completed workflow node agent_ids from a session event stream.
+ * Scans for workflow_node_completed events and returns the agent_ids whose
+ * termination was "completed". Used to rebuild resumedCompleted for resumeWorkflow.
+ */
+export function recoverCompletedWorkflowNodes(
+  events: Array<{ seq: number; event: SessionEvent }>,
+): string[] {
+  const completed: string[] = []
+  for (const { event } of events) {
+    if (event.kind === "workflow_node_completed" && event.termination === "completed") {
+      completed.push(event.agent_id)
+    }
+  }
+  return completed
+}
