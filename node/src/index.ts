@@ -50,7 +50,7 @@ export { DeepSeekProvider } from "./providers/deepseek.js"
 export { KimiProvider } from "./providers/kimi.js"
 export { QwenProvider } from "./providers/qwen.js"
 export { GeminiProvider } from "./providers/gemini.js"
-export { MiniMaxProvider } from "./providers/minimax.js"
+export { MiniMaxAnthropicProvider, MiniMaxOpenAIProvider } from "./providers/minimax.js"
 export { OllamaProvider } from "./providers/ollama.js"
 export { CircuitBreaker, normalizeToolCall } from "./providers/base.js"
 export { OpenAIChatAdapter } from "./providers/openai-chat.js"
@@ -128,6 +128,9 @@ export {
   milestoneCheckResultToKernel,
   subAgentResultToKernel,
   workflowSpecToKernel,
+  fanoutSynthesize,
+  generateAndFilter,
+  verifyRules,
 } from "./types/agent.js"
 
 // ── Collaboration layer (Layer 2 + Layer 3) ────────────────────────────────

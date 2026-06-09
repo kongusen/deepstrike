@@ -5,8 +5,9 @@ from typing import AsyncIterator
 from openai import AsyncOpenAI
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent, ThinkingDelta
-from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, to_openai_message_params, ThinkingTagStreamExtractor
-from .replay import ReasoningReplayMixin
+from .base import RetryConfig, CircuitBreaker, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, to_openai_message_params, ThinkingTagStreamExtractor
+from .replay import ReasoningReplayMixin, assistant_replay_key
+from .replay_validator import validate_openai_chat_replay
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,27 @@ class OpenAIProvider(ReasoningReplayMixin):
     def runtime_policy(self) -> RuntimePolicy:
         return _OPENAI_POLICIES.get(self._model, RuntimePolicy())
 
-    def _build_messages(self, context: RenderedContext) -> list[dict]:
+    def descriptor(self) -> ProviderDescriptor:
+        return ProviderDescriptor(
+            provider="openai",
+            protocol="openai-chat",
+            model=self._model,
+            reasoning={"supported": True, "preserve_across_tool_turns": False},
+            tool_calls={"supported": True, "requires_strict_pairing": True},
+        )
+
+    def _require_non_empty_reasoning_replay_for_tool_turns(self, extensions: dict | None) -> bool:
+        return False
+
+    def _build_messages(self, context: RenderedContext, extensions: dict | None = None) -> list[dict]:
+        validate_openai_chat_replay(
+            context.turns,
+            descriptor=self.descriptor(),
+            require_non_empty_reasoning_for_tool_calls=self._require_non_empty_reasoning_replay_for_tool_turns(extensions),
+            replay_for_assistant=lambda content, tool_calls: self._replay_fields.get(
+                assistant_replay_key(content, tool_calls)
+            ),
+        )
         serialized = to_openai_message_params(context)
         return self._merge_replay_into_openai_messages(serialized, context)
 
@@ -104,7 +125,7 @@ class OpenAIProvider(ReasoningReplayMixin):
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
 
-        msgs = self._build_messages(context)
+        msgs = self._build_messages(context, extensions)
         tool_defs = self._build_tools(tools)
 
         last_exc = None
@@ -145,7 +166,7 @@ class OpenAIProvider(ReasoningReplayMixin):
         raise last_exc or RuntimeError("Complete failed")
 
     async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
-        msgs = self._build_messages(context)
+        msgs = self._build_messages(context, extensions)
         tool_defs = self._build_tools(tools)
         tool_call_bufs: dict[int, dict] = {}
         emitted_tool_call_indexes: set[int] = set()

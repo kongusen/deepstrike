@@ -1,6 +1,6 @@
 import { DeepSeekProvider } from "../src/providers/deepseek.js"
 import { KimiProvider } from "../src/providers/kimi.js"
-import { MiniMaxProvider } from "../src/providers/minimax.js"
+import { MiniMaxAnthropicProvider } from "../src/providers/minimax.js"
 import { OpenAIChatProvider } from "../src/providers/openai.js"
 import { QwenProvider } from "../src/providers/qwen.js"
 
@@ -30,13 +30,13 @@ function installChatStream(provider: unknown, chunks: Record<string, unknown>[])
 
 describe("current provider runtime behavior", () => {
   it("uses MiniMax's Anthropic endpoint by default", () => {
-    const provider = new MiniMaxProvider("test-key")
+    const provider = new MiniMaxAnthropicProvider("test-key")
     expect((provider as unknown as { client: { baseURL: string } }).client.baseURL)
       .toBe("https://api.minimaxi.com/anthropic")
   })
 
   it("uses Anthropic api-key auth for MiniMax by default", () => {
-    const provider = new MiniMaxProvider("test-key")
+    const provider = new MiniMaxAnthropicProvider("test-key")
     const client = (provider as unknown as {
       client: { apiKey: string | null; authToken: string | null }
     }).client
@@ -51,7 +51,7 @@ describe("current provider runtime behavior", () => {
   })
 
   it("replays MiniMax native Anthropic blocks after a tool-use turn", async () => {
-    const provider = new MiniMaxProvider("test-key")
+    const provider = new MiniMaxAnthropicProvider("test-key")
     let capturedSecondRequest: Record<string, unknown> | undefined
     let callCount = 0
     ;(provider as unknown as {

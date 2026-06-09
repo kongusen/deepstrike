@@ -10,51 +10,18 @@ def _estimate_token_count(text: str) -> int:
   return max(1, len(text) // 4)
 
 
-def _parse_tool_input(args: str) -> dict[str, Any]:
-  import json
-  try:
-    return json.loads(args or "{}")
-  except Exception:
-    return {}
-
-
-def synthesize_provider_replay(content: str, tool_calls: list[ToolCall]) -> dict[str, Any] | None:
-  if not tool_calls:
-    return None
-  blocks: list[dict[str, Any]] = []
-  if content:
-    blocks.append({"type": "text", "text": content})
-  for tc in tool_calls:
-    if isinstance(tc, dict):
-      tc_id, tc_name, tc_args = tc["id"], tc["name"], tc.get("arguments", "{}")
-    else:
-      tc_id, tc_name, tc_args = tc.id, tc.name, tc.arguments
-    blocks.append({
-      "type": "tool_use",
-      "id": tc_id,
-      "name": tc_name,
-      "input": _parse_tool_input(tc_args if isinstance(tc_args, str) else str(tc_args)),
-    })
-  return {"native_blocks": blocks}
-
-
-def effective_provider_replay(
-  content: str,
-  tool_calls: list[ToolCall],
-  stored: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-  if stored:
-    if stored.get("native_blocks") or stored.get("reasoning_content") is not None:
-      return stored
-  return synthesize_provider_replay(content, tool_calls)
-
-
 def normalize_llm_completed(event: dict[str, Any], max_bytes: int | None = None) -> dict[str, Any]:
+  """Normalize a persisted llm_completed event for recovery.
+
+  Content is sanitized and token_count backfilled, but the stored
+  ``provider_replay`` envelope is passed through verbatim. This layer is
+  provider-neutral and never synthesizes protocol-specific replay shapes
+  (e.g. Anthropic ``native_blocks``); legacy reconstruction for a given
+  protocol is the target provider's ``seed_provider_replay`` responsibility.
+  """
   content = sanitize_replay_text(event.get("content", ""), max_bytes)
   tool_calls = list(event.get("tool_calls") or [])
-  provider_replay = effective_provider_replay(
-    content, tool_calls, event.get("provider_replay"),
-  )
+  provider_replay = event.get("provider_replay")
   out: dict[str, Any] = {
     "kind": "llm_completed",
     "turn": event["turn"],

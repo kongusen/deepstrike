@@ -1,7 +1,13 @@
 import type OpenAI from "openai"
-import type { Message, RenderedContext, ToolSchema } from "../types.js"
+import type { Message, ProviderDescriptor, RenderedContext, ToolSchema } from "../types.js"
 import { assistantReplayKey } from "../runtime/provider-replay.js"
 import { normalizeToolCall, toOpenAIMessageParams } from "./base.js"
+import { validateOpenAIChatReplay } from "./replay-validator.js"
+
+export interface OpenAIChatBuildMessageOptions {
+  descriptor?: ProviderDescriptor
+  requireNonEmptyReasoningForToolCalls?: boolean
+}
 
 export class OpenAIChatAdapter {
   private replayFields = new Map<string, Record<string, unknown>>()
@@ -13,7 +19,12 @@ export class OpenAIChatAdapter {
     }))
   }
 
-  buildMessages(context: RenderedContext): OpenAI.ChatCompletionMessageParam[] {
+  buildMessages(context: RenderedContext, options: OpenAIChatBuildMessageOptions = {}): OpenAI.ChatCompletionMessageParam[] {
+    validateOpenAIChatReplay(context, {
+      descriptor: options.descriptor,
+      requireNonEmptyReasoningForToolCalls: options.requireNonEmptyReasoningForToolCalls,
+      replayForAssistant: message => this.replayFields.get(assistantReplayKey(message)),
+    })
     // toOpenAIMessageParams prepends systemText as messages[0], then turns.
     const serialized = toOpenAIMessageParams(context)
     // Cursor starts at 1 to skip the system message injected by toOpenAIMessageParams.
@@ -26,7 +37,8 @@ export class OpenAIChatAdapter {
       }
       if (source.role === "assistant") {
         const replay = this.replayFields.get(assistantReplayKey(source))
-        if (replay) serialized[cursor] = { ...serialized[cursor], ...replay }
+        const wireReplay = openAIChatWireReplayFields(replay)
+        if (wireReplay) serialized[cursor] = { ...serialized[cursor], ...wireReplay }
       }
       cursor += 1
     }
@@ -51,4 +63,12 @@ export class OpenAIChatAdapter {
   peekReplayFields(message: Pick<Message, "content" | "toolCalls">): Record<string, unknown> | undefined {
     return this.replayFields.get(assistantReplayKey(message))
   }
+}
+
+function openAIChatWireReplayFields(replay: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!replay) return undefined
+  const fields: Record<string, unknown> = {}
+  if (typeof replay.reasoning_content === "string") fields.reasoning_content = replay.reasoning_content
+  if (replay.reasoning_details !== undefined) fields.reasoning_details = replay.reasoning_details
+  return Object.keys(fields).length ? fields : undefined
 }

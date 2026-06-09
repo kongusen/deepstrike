@@ -5,13 +5,16 @@ from typing import AsyncIterator
 import httpx
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent
-from .base import RetryConfig, RenderedContext, RuntimePolicy, normalize_tool_call
+from .base import RetryConfig, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call
 from .openai import OpenAIProvider
 
 logger = logging.getLogger(__name__)
 
 _DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 _REASONER_MODELS = {"deepseek-reasoner", "deepseek-r1"}
+# Models whose tool turns require a non-empty reasoning_content replay (fail fast
+# rather than send a request the provider rejects with 400).
+_DEEPSEEK_REASONING_MODELS = {"deepseek-reasoner", "deepseek-r1", "deepseek-v4-flash", "deepseek-v4-pro"}
 
 _DEEPSEEK_POLICIES: dict[str, RuntimePolicy] = {
     "deepseek-chat":     RuntimePolicy(max_turns=25),

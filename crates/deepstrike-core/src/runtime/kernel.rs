@@ -244,6 +244,9 @@ pub enum KernelInputEvent {
     LoadWorkflow {
         spec: crate::orchestration::workflow::WorkflowSpec,
         parent_session_id: String,
+        /// W0-ABI resume: node agent-ids already completed (recovered from the log). Empty = fresh.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        resumed_completed: Vec<String>,
     },
     /// Feed a completed sub-agent result back into the parent loop.
     SubAgentCompleted {
@@ -1009,8 +1012,14 @@ impl KernelRuntime {
             KernelInputEvent::LoadWorkflow {
                 spec,
                 parent_session_id,
+                resumed_completed,
             } => {
-                let action = self.sm.load_workflow(spec, &parent_session_id);
+                let action = if resumed_completed.is_empty() {
+                    self.sm.load_workflow(spec, &parent_session_id)
+                } else {
+                    self.sm
+                        .load_workflow_resumed(spec, &parent_session_id, &resumed_completed)
+                };
                 if matches!(action, LoopAction::AwaitingResume) {
                     return KernelStep::empty(self.sm.take_observations());
                 }
@@ -1909,6 +1918,7 @@ mod tests {
         let event = KernelInputEvent::LoadWorkflow {
             spec,
             parent_session_id: "sess".to_string(),
+            resumed_completed: Vec::new(),
         };
         let json = serde_json::to_string(&event).expect("serialize");
         let parsed: KernelInputEvent = serde_json::from_str(&json).expect("deserialize");
@@ -1958,5 +1968,38 @@ mod tests {
             o,
             KernelObservation::WorkflowCompleted { completed, .. } if completed.len() == 3
         )));
+    }
+
+    #[test]
+    fn load_workflow_resumes_from_completed_nodes() {
+        use crate::orchestration::workflow::fanout_synthesize;
+
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+            task: RuntimeTask::new("parent task"),
+            run_spec: None,
+        }));
+        runtime.state_machine_mut().take_observations();
+
+        // Resume a 2-worker fanout where worker 0 already completed before the interruption.
+        let spec =
+            fanout_synthesize(vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")], RuntimeTask::new("synth"));
+        let step = runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow {
+            spec,
+            parent_session_id: "sess".to_string(),
+            resumed_completed: vec!["wf-node0".to_string()],
+        }));
+
+        // Only the remaining worker is re-spawned (node 0 is not re-run).
+        let batch = step
+            .observations
+            .iter()
+            .find_map(|o| match o {
+                KernelObservation::WorkflowBatchSpawned { nodes, .. } => Some(nodes.clone()),
+                _ => None,
+            })
+            .expect("workflow_batch_spawned");
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].agent_id, "wf-node1");
     }
 }

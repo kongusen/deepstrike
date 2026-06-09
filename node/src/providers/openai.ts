@@ -1,5 +1,5 @@
 import OpenAI from "openai"
-import type { Message, ProviderReplay, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
+import type { Message, ProviderDescriptor, ProviderReplay, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, omitExtensionKeys, ThinkingTagStreamExtractor } from "./base.js"
 import { OpenAIChatAdapter } from "./openai-chat.js"
@@ -51,21 +51,48 @@ export class OpenAIChatProvider implements LLMProvider {
     return OPENAI_POLICIES[this.model] ?? {}
   }
 
+  descriptor(): ProviderDescriptor {
+    return {
+      provider: "openai",
+      protocol: "openai-chat",
+      model: this.model,
+      reasoning: {
+        supported: true,
+        preserveAcrossToolTurns: false,
+      },
+      toolCalls: {
+        supported: true,
+        requiresStrictPairing: true,
+      },
+    }
+  }
+
+  protected requireNonEmptyReasoningReplayForToolTurns(_extensions?: Record<string, unknown>): boolean {
+    return false
+  }
+
+  protected buildChatMessages(context: RenderedContext, extensions?: Record<string, unknown>) {
+    return this.chat.buildMessages(context, {
+      descriptor: this.descriptor(),
+      requireNonEmptyReasoningForToolCalls: this.requireNonEmptyReasoningReplayForToolTurns(extensions),
+    })
+  }
+
   peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {
     const fields = this.chat.peekReplayFields(message)
-    if (!fields || !("reasoning_content" in fields)) return undefined
-    return { reasoning_content: String(fields.reasoning_content ?? "") }
+    if (!fields || !("reasoning_content" in fields || "reasoning_details" in fields)) return undefined
+    return fields as ProviderReplay
   }
 
   seedProviderReplay(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void {
-    if (replay.reasoning_content !== undefined) {
-      this.chat.rememberReplayFields(message, { reasoning_content: replay.reasoning_content })
+    if (replay.reasoning_content !== undefined || replay.reasoning_details !== undefined) {
+      this.chat.rememberReplayFields(message, replay as Record<string, unknown>)
     }
   }
 
   async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
-    const msgs = this.chat.buildMessages(context)
+    const msgs = this.buildChatMessages(context, extensions)
 
     let lastErr: unknown
     for (let i = 0; i < this.maxRetries; i++) {
@@ -90,7 +117,7 @@ export class OpenAIChatProvider implements LLMProvider {
   }
 
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
-    const msgs = this.chat.buildMessages(context)
+    const msgs = this.buildChatMessages(context, extensions)
     const toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }> = {}
     const emittedToolCallIndexes = new Set<number>()
     const extractor = new ThinkingTagStreamExtractor()
@@ -190,7 +217,7 @@ export class OpenAIChatProvider implements LLMProvider {
   }
 
   protected requestExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
-    return omitExtensionKeys(extensions, ["model", "messages", "tools", "stream", "stream_options"])
+    return omitExtensionKeys(extensions, ["model", "messages", "tools", "stream", "stream_options", "__deepstrikeThinkingEnabled"])
   }
 }
 

@@ -1,4 +1,4 @@
-import type { RuntimePolicy } from "../types.js"
+import type { ProviderDescriptor, RuntimePolicy } from "../types.js"
 import { OpenAIChatProvider } from "./openai.js"
 import { endpointProfiles } from "./profiles.js"
 
@@ -27,5 +27,13 @@ export class GLMProvider extends OpenAIChatProvider {
 
   override runtimePolicy(): RuntimePolicy {
     return GLM_POLICIES[this.model] ?? {}
+  }
+
+  override descriptor(): ProviderDescriptor {
+    return {
+      ...super.descriptor(),
+      provider: "glm",
+      model: this.model,
+    }
   }
 }

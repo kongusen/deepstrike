@@ -12,6 +12,9 @@ from deepstrike import (
     WorkflowSpec,
     WorkflowNodeSpec,
     workflow_spec_to_kernel,
+    fanout_synthesize,
+    generate_and_filter,
+    verify_rules,
 )
 from deepstrike._kernel import KernelRuntime, LoopPolicy
 
@@ -51,6 +54,24 @@ def test_workflow_spec_to_kernel_shape():
     }
     assert k["nodes"][1]["task"] == {"goal": "synth", "criteria": ["merge"]}
     assert k["nodes"][1]["depends_on"] == [0]
+
+
+def test_workflow_templates_shapes():
+    fan = fanout_synthesize(["a", "b", "c"], "merge")
+    assert len(fan.nodes) == 4
+    assert fan.nodes[0].role == "explore" and fan.nodes[0].isolation == "read_only"
+    assert fan.nodes[3].role == "plan" and fan.nodes[3].depends_on == [0, 1, 2]
+
+    gen = generate_and_filter(["x", "y"], "dedupe")
+    assert gen.nodes[0].role == "implement"
+    assert gen.nodes[2].role == "verify" and gen.nodes[2].depends_on == [0, 1]
+
+    ver = verify_rules(["r1", "r2"], "skeptic")
+    assert len(ver.nodes) == 3
+    for n in ver.nodes[:2]:
+        assert n.role == "verify" and n.context_inheritance == "none" and n.depends_on == []
+    assert ver.nodes[2].depends_on == [0, 1]
+    assert len(verify_rules(["only"]).nodes) == 1
 
 
 @pytest.mark.asyncio

@@ -262,3 +262,55 @@ def workflow_node_to_manifest(
     context_inheritance=node.context_inheritance,
     permitted_capability_ids=[],
   )
+
+
+# ─── W1/W2 workflow templates (the six patterns as one-liners) ───
+# Roles carry the kernel's role_defaults isolation/inheritance so host-built specs match the core
+# orchestration::workflow constructors (e.g. verifiers stay bias-resistant).
+
+
+def _as_task(t: "str | dict[str, Any]") -> "str | dict[str, Any]":
+  return t
+
+
+def fanout_synthesize(workers: list, synthesize) -> WorkflowSpec:
+  """N parallel read-only Explore workers feeding a single Plan synthesizer (barrier)."""
+  nodes = [
+    WorkflowNodeSpec(task=_as_task(w), role="explore", isolation="read_only", context_inheritance="system_only")
+    for w in workers
+  ]
+  nodes.append(WorkflowNodeSpec(
+    task=_as_task(synthesize), role="plan", isolation="shared", context_inheritance="full",
+    depends_on=list(range(len(workers))),
+  ))
+  return WorkflowSpec(nodes=nodes)
+
+
+def generate_and_filter(generators: list, filter) -> WorkflowSpec:  # noqa: A002
+  """N parallel Implement generators feeding a single Verify filter/dedupe step (barrier)."""
+  nodes = [
+    WorkflowNodeSpec(task=_as_task(g), role="implement", isolation="worktree", context_inheritance="full")
+    for g in generators
+  ]
+  nodes.append(WorkflowNodeSpec(
+    task=_as_task(filter), role="verify", isolation="read_only", context_inheritance="none",
+    depends_on=list(range(len(generators))),
+  ))
+  return WorkflowSpec(nodes=nodes)
+
+
+def verify_rules(rules: list, skeptic=None) -> WorkflowSpec:
+  """One fresh-context verifier per rule (parallel) + optional skeptic depending on all.
+
+  Verifiers run read-only with no inherited author context (bias-resistant).
+  """
+  nodes = [
+    WorkflowNodeSpec(task=_as_task(r), role="verify", isolation="read_only", context_inheritance="none")
+    for r in rules
+  ]
+  if skeptic is not None:
+    nodes.append(WorkflowNodeSpec(
+      task=_as_task(skeptic), role="verify", isolation="read_only", context_inheritance="none",
+      depends_on=list(range(len(rules))),
+    ))
+  return WorkflowSpec(nodes=nodes)

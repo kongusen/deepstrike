@@ -4,7 +4,7 @@
  */
 import { OpenAIChatProvider } from "../../src/providers/openai.js"
 import { DeepSeekProvider } from "../../src/providers/deepseek.js"
-import { MiniMaxProvider } from "../../src/providers/minimax.js"
+import { MiniMaxAnthropicProvider } from "../../src/providers/minimax.js"
 import type { LLMProvider } from "../../src/types.js"
 
 export type ProviderName = "openai" | "deepseek" | "minimax"
@@ -33,7 +33,7 @@ export function loadProviders(): Record<ProviderName, LLMProvider | null> {
       ? new DeepSeekProvider(deepseekKey, process.env.DEEPSEEK_MODEL ?? "deepseek-chat")
       : null,
     minimax: minimaxKey
-      ? new MiniMaxProvider(minimaxKey, process.env.MINIMAX_MODEL)
+      ? new MiniMaxAnthropicProvider(minimaxKey, process.env.MINIMAX_MODEL)
       : null,
   }
 }

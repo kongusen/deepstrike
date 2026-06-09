@@ -197,6 +197,9 @@ export function milestoneCheckFail(phaseId: string, reason: string): MilestoneCh
 /** A task for a workflow node: a full object, or a bare goal string. */
 export type WorkflowTaskSpec = { goal: string; criteria?: string[]; lane?: string } | string
 
+/** W3 trust level for a workflow node. */
+export type NodeTrust = "trusted" | "quarantined"
+
 /** One node in a declarative workflow DAG (camelCase host shape). */
 export interface WorkflowNodeSpec {
   task: WorkflowTaskSpec
@@ -204,6 +207,8 @@ export interface WorkflowNodeSpec {
   isolation?: AgentIsolation
   contextInheritance?: ContextInheritance
   modelHint?: string
+  /** W3: `quarantined` nodes read untrusted content and must run without privileges. */
+  trust?: NodeTrust
   /** Indices of nodes this node depends on. */
   dependsOn?: number[]
 }
@@ -221,6 +226,8 @@ export interface WorkflowSpawnInfo {
   isolation: string
   context_inheritance: string
   model_hint?: string
+  /** W3 trust level: `"trusted"` | `"quarantined"`. */
+  trust?: string
 }
 
 /** Map a host `WorkflowSpec` to the snake_case kernel JSON (`load_workflow.spec`). */
@@ -240,6 +247,7 @@ export function workflowSpecToKernel(spec: WorkflowSpec): Record<string, unknown
         isolation: n.isolation ?? "shared",
         context_inheritance: n.contextInheritance ?? "none",
         ...(n.modelHint ? { model_hint: n.modelHint } : {}),
+        ...(n.trust && n.trust !== "trusted" ? { trust: n.trust } : {}),
         ...(n.dependsOn && n.dependsOn.length ? { depends_on: n.dependsOn } : {}),
       }
     }),
@@ -274,4 +282,71 @@ export function workflowNodeToManifest(
     isolation: node.isolation,
     context_inheritance: node.context_inheritance,
   }
+}
+
+// ─── W1/W2 workflow templates (the six patterns as one-liners) ───
+// Roles carry the kernel's role_defaults isolation/inheritance so host-built specs match the
+// core `orchestration::workflow` constructors (e.g. verifiers stay bias-resistant).
+
+function asTask(t: WorkflowTaskSpec): { goal: string; criteria?: string[]; lane?: string } {
+  return typeof t === "string" ? { goal: t } : t
+}
+
+/** N parallel read-only Explore workers feeding a single Plan synthesizer (barrier). */
+export function fanoutSynthesize(workers: WorkflowTaskSpec[], synthesize: WorkflowTaskSpec): WorkflowSpec {
+  const nodes: WorkflowNodeSpec[] = workers.map(t => ({
+    task: asTask(t),
+    role: "explore",
+    isolation: "read_only",
+    contextInheritance: "system_only",
+  }))
+  nodes.push({
+    task: asTask(synthesize),
+    role: "plan",
+    isolation: "shared",
+    contextInheritance: "full",
+    dependsOn: workers.map((_, i) => i),
+  })
+  return { nodes }
+}
+
+/** N parallel Implement generators feeding a single Verify filter/dedupe step (barrier). */
+export function generateAndFilter(generators: WorkflowTaskSpec[], filter: WorkflowTaskSpec): WorkflowSpec {
+  const nodes: WorkflowNodeSpec[] = generators.map(t => ({
+    task: asTask(t),
+    role: "implement",
+    isolation: "worktree",
+    contextInheritance: "full",
+  }))
+  nodes.push({
+    task: asTask(filter),
+    role: "verify",
+    isolation: "read_only",
+    contextInheritance: "none",
+    dependsOn: generators.map((_, i) => i),
+  })
+  return { nodes }
+}
+
+/**
+ * One fresh-context verifier per rule/claim (parallel) + optional skeptic that depends on all and
+ * re-checks flags. Verifiers run read-only with no inherited author context (bias-resistant).
+ */
+export function verifyRules(rules: WorkflowTaskSpec[], skeptic?: WorkflowTaskSpec): WorkflowSpec {
+  const nodes: WorkflowNodeSpec[] = rules.map(t => ({
+    task: asTask(t),
+    role: "verify",
+    isolation: "read_only",
+    contextInheritance: "none",
+  }))
+  if (skeptic !== undefined) {
+    nodes.push({
+      task: asTask(skeptic),
+      role: "verify",
+      isolation: "read_only",
+      contextInheritance: "none",
+      dependsOn: rules.map((_, i) => i),
+    })
+  }
+  return { nodes }
 }

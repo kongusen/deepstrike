@@ -3,7 +3,7 @@ import { OpenAIChatProvider } from "../src/providers/openai.js"
 import { DeepSeekProvider } from "../src/providers/deepseek.js"
 import { KimiProvider } from "../src/providers/kimi.js"
 import { OpenAIResponsesProvider } from "../src/providers/openai-responses.js"
-import { MiniMaxProvider } from "../src/providers/minimax.js"
+import { MiniMaxAnthropicProvider } from "../src/providers/minimax.js"
 import { AnthropicProvider } from "../src/providers/anthropic.js"
 import { QwenProvider } from "../src/providers/qwen.js"
 import { GeminiProvider } from "../src/providers/gemini.js"
@@ -54,7 +54,7 @@ describe("provider catalog", () => {
     expect(createProvider({
       model: "minimax/MiniMax-M2.7",
       apiKey: "test-key",
-    })).toBeInstanceOf(MiniMaxProvider)
+    })).toBeInstanceOf(MiniMaxAnthropicProvider)
     expect(createProvider({
       model: "deepseek/deepseek-v4-flash",
       apiKey: "test-key",

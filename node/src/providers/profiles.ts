@@ -70,6 +70,12 @@ export const endpointProfiles = {
     protocol: "anthropic-messages",
     baseURL: "https://api.minimaxi.com/anthropic",
   },
+  "minimax.openai": {
+    id: "minimax.openai",
+    providerId: "minimax",
+    protocol: "openai-chat",
+    baseURL: "https://api.minimaxi.com/v1",
+  },
   "deepseek.openai": {
     id: "deepseek.openai",
     providerId: "deepseek",

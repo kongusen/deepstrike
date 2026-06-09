@@ -244,6 +244,21 @@ class RuntimePolicy:
         self.timeout_ms = timeout_ms
 
 
+# Wire protocols a provider can speak. Mirrors the Node/WASM ProviderProtocol union.
+ProviderProtocol = str  # "anthropic-messages" | "openai-chat" | "openai-responses" | "gemini"
+
+
+@dataclass
+class ProviderDescriptor:
+    """Stable identity advertised by a provider so the recovery layer can decide
+    whether a stored replay envelope may be seeded into it."""
+    provider: str
+    protocol: ProviderProtocol
+    model: str
+    reasoning: dict[str, Any] = field(default_factory=dict)
+    tool_calls: dict[str, Any] = field(default_factory=dict)
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
     async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message: ...

@@ -1,4 +1,4 @@
-import type { RuntimePolicy } from "../types.js"
+import type { ProviderDescriptor, RuntimePolicy } from "../types.js"
 import { OpenAIChatProvider } from "./openai.js"
 import { endpointProfiles } from "./profiles.js"
 
@@ -26,5 +26,13 @@ export class KimiProvider extends OpenAIChatProvider {
 
   override runtimePolicy(): RuntimePolicy {
     return KIMI_POLICIES[this.model] ?? {}
+  }
+
+  override descriptor(): ProviderDescriptor {
+    return {
+      ...super.descriptor(),
+      provider: "kimi",
+      model: this.model,
+    }
   }
 }

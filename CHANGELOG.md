@@ -4,6 +4,45 @@ All notable changes to DeepStrike are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+Dynamic workflows: the kernel can now author and run agent-orchestration DAGs as a first-class primitive — every node spawn passes the syscall gate, so quotas, trust, and future spawn policies apply per node for free. Inspired by Anthropic's *A harness for every task*.
+
+### What this enables
+
+| Before | After |
+|---|---|
+| SDK orchestrates sub-agents; kernel adjudicates one spawn at a time | Kernel owns a workflow **DAG**, spawning ready nodes as **gated batches** and advancing on completions (`load_workflow` ABI) |
+| No comparative-judgment or unbounded-loop control in-kernel | First-class **Tournament** (pairwise) and **LoopUntilDone** (stop-predicate + backstop) state machines |
+| Workflow shapes hand-built each time | **Templates**: `fanout_synthesize`, `generate_and_filter`, `verify_rules`, `classify_and_act` |
+| Verifiers could inherit the author's context | **Adversarial-verification default contract**: verifier nodes run `ReadOnly` + no inherited context (anti self-preferential-bias) |
+| No trust boundary / model hint on nodes | **W3 quarantine** (`trust`) and **W4 model routing** (`model_hint`) carried to every spawn descriptor |
+
+### Added
+
+#### Core — orchestration primitives
+
+- **`orchestration::tournament`** — single-elimination bracket with pairwise comparative judging (round-batched for parallel judges; bye/odd handling).
+- **`orchestration::loop_until_done`** — `StopCondition{NoNewFindings,NoErrors,MaxRounds}`, first-hit wins, with an injected `MaxRounds` backstop guaranteeing in-kernel termination.
+- **`orchestration::workflow`** — declarative `WorkflowSpec`/`WorkflowNode` (role/isolation/inheritance/model_hint/trust/deps) with `validate()` + `to_task_graph()`; templates `fanout_synthesize`, `generate_and_filter`, `verify_rules`, `classify_and_act`. `NodeTrust{Trusted,Quarantined}` (W3); `model_hint` (W4).
+
+#### Core — W0 kernel-resident workflow executor
+
+- **`scheduler::workflow_run::WorkflowRun`** — holds the DAG, spawns ready nodes as gated batches (each via `evaluate_syscall(Spawn)`), advances on completions, and `resume()`s from already-completed node ids.
+- **`KernelInputEvent::LoadWorkflow { spec, parent_session_id, resumed_completed }`** + observations `WorkflowBatchSpawned` (carries each node's goal + role/isolation/trust/model_hint) and `WorkflowCompleted`.
+
+#### SDKs
+
+- **Node:** `createTournament`, `createLoopUntilDone`, `RuntimeRunner.runWorkflow(spec, {resumedCompleted})`, workflow templates, `workflowSpecToKernel`. Real-model e2e for the workflow drive + all three primitives.
+- **Python:** same primitives + `RuntimeRunner.run_workflow`, templates, `StopCondition` helper.
+- **WASM:** primitives + `runWorkflow` + templates (tsc-verified).
+- **Rust SDK:** re-exports `Tournament`/`LoopUntilDone`/`WorkflowSpec`/templates from `deepstrike-core`.
+
+### Notes / deferred
+
+- WASM workflow drive is type-checked but not runtime-tested (needs `wasm-pack`); Rust SDK has no sub-agent orchestrator, so it gets type re-exports, not a `run_workflow` drive.
+- Resume persistence to the session log (auto-recover `resumed_completed`) and runtime claim-extraction (dynamic verifier fan-out) are follow-ups; the resume *primitive* and `verify_rules` static shape ship here.
+
 ## [0.2.6] - 2026-06-03
 
 Agent OS consolidation release: M1 scheduler authority, M2 resource quotas with enforcement, M3 handle residency and Layer-4 read-time projection, native profile helpers across host SDKs, and configurable memory policy at the WriteMemory/QueryMemory traps.

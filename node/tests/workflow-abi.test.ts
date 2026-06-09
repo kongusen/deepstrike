@@ -1,5 +1,11 @@
 import { getKernel } from "../src/kernel.js"
-import { workflowSpecToKernel, workflowNodeToSpec } from "../src/types/agent.js"
+import {
+  workflowSpecToKernel,
+  workflowNodeToSpec,
+  fanoutSynthesize,
+  generateAndFilter,
+  verifyRules,
+} from "../src/types/agent.js"
 import type { WorkflowSpec, WorkflowSpawnInfo } from "../src/types/agent.js"
 
 function step(rt: { step(json: string): string }, event: Record<string, unknown>) {
@@ -54,6 +60,34 @@ describe("workflowSpecToKernel", () => {
     })
     // string-task shorthand still yields an empty criteria array
     expect((k.nodes[0] as { task: { criteria: unknown } }).task.criteria).toEqual([])
+  })
+})
+
+describe("workflow templates", () => {
+  it("fanoutSynthesize: parallel explore workers → plan synthesizer", () => {
+    const spec = fanoutSynthesize(["a", "b", "c"], "merge")
+    expect(spec.nodes).toHaveLength(4)
+    expect(spec.nodes[0]).toMatchObject({ role: "explore", isolation: "read_only", contextInheritance: "system_only" })
+    expect(spec.nodes[3]).toMatchObject({ role: "plan", dependsOn: [0, 1, 2] })
+  })
+
+  it("generateAndFilter: implement generators → verify filter", () => {
+    const spec = generateAndFilter(["x", "y"], "dedupe")
+    expect(spec.nodes).toHaveLength(3)
+    expect(spec.nodes[0]).toMatchObject({ role: "implement" })
+    expect(spec.nodes[2]).toMatchObject({ role: "verify", contextInheritance: "none", dependsOn: [0, 1] })
+  })
+
+  it("verifyRules: bias-resistant verifiers + skeptic", () => {
+    const spec = verifyRules(["rule1", "rule2"], "skeptic")
+    expect(spec.nodes).toHaveLength(3)
+    for (const n of spec.nodes.slice(0, 2)) {
+      expect(n).toMatchObject({ role: "verify", isolation: "read_only", contextInheritance: "none" })
+      expect(n.dependsOn).toBeUndefined()
+    }
+    expect(spec.nodes[2].dependsOn).toEqual([0, 1])
+    // no skeptic → just verifiers
+    expect(verifyRules(["only"]).nodes).toHaveLength(1)
   })
 })
 

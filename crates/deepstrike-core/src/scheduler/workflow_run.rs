@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::orchestration::executor;
 use crate::orchestration::task_graph::{TaskGraph, TaskStatus};
-use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+use crate::orchestration::workflow::{NodeTrust, WorkflowNode, WorkflowSpec};
 use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance, IsolationManifest};
 use crate::types::error::Result;
 use crate::types::result::LoopResult;
@@ -38,6 +38,14 @@ pub struct WorkflowSpawnInfo {
     pub context_inheritance: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_hint: Option<String>,
+    /// W3 trust level (`"trusted"` | `"quarantined"`) — the SDK runs quarantined nodes without
+    /// privileges and crosses their output back only as a structured summary.
+    #[serde(default = "default_trust")]
+    pub trust: String,
+}
+
+fn default_trust() -> String {
+    "trusted".to_string()
 }
 
 fn role_label(role: AgentRole) -> &'static str {
@@ -67,6 +75,23 @@ fn inheritance_label(inheritance: ContextInheritance) -> &'static str {
     }
 }
 
+fn trust_label(trust: NodeTrust) -> &'static str {
+    match trust {
+        NodeTrust::Trusted => "trusted",
+        NodeTrust::Quarantined => "quarantined",
+    }
+}
+
+/// Synthetic terminal result for a node recovered as already-completed during resume.
+fn resumed_result() -> LoopResult {
+    LoopResult {
+        termination: crate::types::result::TerminationReason::Completed,
+        final_message: None,
+        turns_used: 0,
+        total_tokens_used: 0,
+    }
+}
+
 /// The state of one in-flight workflow execution.
 pub struct WorkflowRun {
     graph: TaskGraph,
@@ -90,6 +115,22 @@ impl WorkflowRun {
             node_of_agent: HashMap::new(),
             batch: Vec::new(),
         })
+    }
+
+    /// W0-ABI resume: rebuild an in-flight run by replaying which node agent-ids already completed
+    /// (e.g. recovered from the session log after an interruption). Those nodes are pre-marked
+    /// done so [`ready_batch`](Self::ready_batch) returns only the remaining work — the kernel then
+    /// continues the DAG from where it left off. Unknown ids are ignored.
+    pub fn resume(spec: &WorkflowSpec, parent_session_id: &str, completed: &[String]) -> Result<Self> {
+        let mut run = Self::new(spec, parent_session_id)?;
+        let n = run.graph.len();
+        for id in completed {
+            if let Some(node) = (0..n).find(|&i| node_agent_id(i) == *id) {
+                run.graph.start(node);
+                run.graph.complete(node, resumed_result());
+            }
+        }
+        Ok(run)
     }
 
     /// Node indices whose dependencies are satisfied and that have not yet started.
@@ -129,6 +170,7 @@ impl WorkflowRun {
             isolation: isolation_label(n.isolation).to_string(),
             context_inheritance: inheritance_label(n.context_inheritance).to_string(),
             model_hint: n.model_hint.clone(),
+            trust: trust_label(n.trust).to_string(),
         }
     }
 
@@ -284,5 +326,50 @@ mod tests {
     fn unknown_agent_completion_is_none() {
         let mut run = fanout2();
         assert_eq!(run.record_completion("not-a-node", done()), None);
+    }
+
+    #[test]
+    fn resume_skips_already_completed_nodes() {
+        // fanout2: workers 0,1 → synth 2. Resume with worker 0 already done.
+        let spec = fanout_synthesize(
+            vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
+            RuntimeTask::new("synth"),
+        );
+        let run = WorkflowRun::resume(&spec, "sess", &[node_agent_id(0)]).unwrap();
+        // only the remaining worker (node 1) is ready; node 0 is already complete, synth still gated.
+        assert_eq!(run.ready_batch(), vec![1]);
+        assert!(!run.is_complete());
+    }
+
+    #[test]
+    fn resume_with_all_done_completes() {
+        let spec = fanout_synthesize(vec![RuntimeTask::new("w0")], RuntimeTask::new("synth"));
+        // both nodes (worker 0, synth 1) recovered as done.
+        let run = WorkflowRun::resume(&spec, "sess", &[node_agent_id(0), node_agent_id(1)]).unwrap();
+        assert!(run.ready_batch().is_empty());
+        assert!(run.is_complete());
+    }
+
+    #[test]
+    fn spawn_info_carries_model_hint_and_trust() {
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("read tickets"), AgentRole::Explore)
+                .quarantined()
+                .with_model_hint("haiku"),
+            WorkflowNode::new(RuntimeTask::new("act"), AgentRole::Implement),
+        ]);
+        let run = WorkflowRun::new(&spec, "sess").unwrap();
+
+        // W3: quarantined node + W4: model hint both reach the spawn descriptor.
+        let q = run.spawn_info(0);
+        assert_eq!(q.trust, "quarantined");
+        assert_eq!(q.model_hint.as_deref(), Some("haiku"));
+        // default node is trusted, no model hint.
+        let t = run.spawn_info(1);
+        assert_eq!(t.trust, "trusted");
+        assert_eq!(t.model_hint, None);
     }
 }

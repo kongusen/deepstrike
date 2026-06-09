@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk"
-import type { Message, ProviderReplay, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
+import type { Message, ProviderDescriptor, ProviderReplay, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
 import { assistantReplayKey } from "../runtime/provider-replay.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, normalizeToolCall, omitExtensionKeys, toAnthropicMessages } from "./base.js"
@@ -48,6 +48,28 @@ export class AnthropicProvider implements LLMProvider {
     return CLAUDE_POLICIES[this.model] ?? {}
   }
 
+  /** Identity advertised in the descriptor; overridden by Anthropic-compatible vendors (e.g. MiniMax). */
+  protected providerName(): string {
+    return "anthropic"
+  }
+
+  descriptor(): ProviderDescriptor {
+    return {
+      provider: this.providerName(),
+      protocol: "anthropic-messages",
+      model: this.model,
+      reasoning: {
+        supported: true,
+        preserveAcrossToolTurns: true,
+        requiresReplayForToolTurns: true,
+      },
+      toolCalls: {
+        supported: true,
+        requiresStrictPairing: true,
+      },
+    }
+  }
+
   peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {
     const blocks = this.nativeAssistantBlocks.get(assistantReplayKey(message))
     return blocks?.length ? { native_blocks: blocks } : undefined
@@ -56,7 +78,13 @@ export class AnthropicProvider implements LLMProvider {
   seedProviderReplay(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void {
     if (replay.native_blocks?.length) {
       this.nativeAssistantBlocks.set(assistantReplayKey(message), replay.native_blocks)
+      return
     }
+    // Legacy log without persisted native blocks: reconstruct neutral
+    // text + tool_use blocks from the transcript so a tool-use turn can be
+    // replayed. Thinking blocks were never persisted, so they are not recovered.
+    const blocks = reconstructAnthropicBlocks(message)
+    if (blocks.length) this.nativeAssistantBlocks.set(assistantReplayKey(message), blocks)
   }
 
   private buildTools(tools: ToolSchema[]) {
@@ -233,4 +261,24 @@ export class AnthropicProvider implements LLMProvider {
     if (!message.toolCalls?.length && !blocks.some(b => b.type === "thinking")) return
     this.nativeAssistantBlocks.set(assistantReplayKey(message), blocks)
   }
+}
+
+/**
+ * Reconstruct Anthropic assistant content blocks from a neutral transcript when
+ * no provider replay was persisted. Only meaningful for tool-use turns: a plain
+ * text turn needs no native blocks to replay.
+ */
+function reconstructAnthropicBlocks(
+  message: Pick<Message, "content" | "toolCalls">,
+): Array<Record<string, unknown>> {
+  const toolCalls = message.toolCalls ?? []
+  if (!toolCalls.length) return []
+  const blocks: Array<Record<string, unknown>> = []
+  if (message.content) blocks.push({ type: "text", text: message.content })
+  for (const tc of toolCalls) {
+    let input: Record<string, unknown> = {}
+    try { input = JSON.parse(tc.arguments || "{}") as Record<string, unknown> } catch { input = {} }
+    blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input })
+  }
+  return blocks
 }

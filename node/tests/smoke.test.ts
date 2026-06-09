@@ -7,7 +7,7 @@ import { QwenProvider } from "../src/providers/qwen.js"
 import { DeepSeekProvider } from "../src/providers/deepseek.js"
 import { KimiProvider } from "../src/providers/kimi.js"
 import { OpenAIResponsesProvider } from "../src/providers/openai-responses.js"
-import { MiniMaxProvider } from "../src/providers/minimax.js"
+import { MiniMaxAnthropicProvider } from "../src/providers/minimax.js"
 import { PermissionManager, PermissionMode } from "../src/safety/permissions.js"
 import { ScheduledPrompt } from "../src/signals/scheduled.js"
 
@@ -148,7 +148,7 @@ describe("Provider instantiation", () => {
     })
 
     try {
-      const providers = [OpenAIProvider, OpenAIChatProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider, KimiProvider]
+      const providers = [OpenAIProvider, OpenAIChatProvider, QwenProvider, DeepSeekProvider, MiniMaxAnthropicProvider, KimiProvider]
       for (const Provider of providers) expect(new Provider("test-key")).toBeDefined()
       expect((globalThis as typeof globalThis & { window?: unknown }).window).toEqual({ document: {} })
     } finally {
@@ -165,7 +165,7 @@ describe("Provider instantiation", () => {
     expect(new DeepSeekProvider("test-key")).toBeDefined()
   })
 
-  it("MiniMaxProvider constructs", () => {
-    expect(new MiniMaxProvider("test-key")).toBeDefined()
+  it("MiniMaxAnthropicProvider constructs", () => {
+    expect(new MiniMaxAnthropicProvider("test-key")).toBeDefined()
   })
 })

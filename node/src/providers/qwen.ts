@@ -1,5 +1,5 @@
 import OpenAI from "openai"
-import type { LLMProvider, Message, RenderedContext, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, ToolSchema, RuntimePolicy, ProviderReplay } from "../types.js"
+import type { LLMProvider, Message, ProviderDescriptor, RenderedContext, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, ToolSchema, RuntimePolicy, ProviderReplay } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, omitExtensionKeys } from "./base.js"
 import { OpenAIChatAdapter } from "./openai-chat.js"
@@ -46,6 +46,26 @@ export class QwenProvider implements LLMProvider {
     return QWEN_POLICIES[this.model] ?? {}
   }
 
+  descriptor(): ProviderDescriptor {
+    return {
+      provider: "qwen",
+      protocol: "openai-chat",
+      model: this.model,
+      reasoning: {
+        supported: true,
+        preserveAcrossToolTurns: true,
+      },
+      toolCalls: {
+        supported: true,
+        requiresStrictPairing: true,
+      },
+    }
+  }
+
+  private buildChatMessages(context: RenderedContext) {
+    return this.chat.buildMessages(context, { descriptor: this.descriptor() })
+  }
+
   peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {
     const fields = this.chat.peekReplayFields(message)
     if (!fields || !("reasoning_content" in fields)) return undefined
@@ -60,7 +80,7 @@ export class QwenProvider implements LLMProvider {
 
   async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
-    const msgs = this.chat.buildMessages(context)
+    const msgs = this.buildChatMessages(context)
     const extraBody = this.thinkingExtraBody(extensions)
 
     let lastErr: unknown
@@ -87,7 +107,7 @@ export class QwenProvider implements LLMProvider {
   }
 
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
-    const msgs = this.chat.buildMessages(context)
+    const msgs = this.buildChatMessages(context)
     const toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }> = {}
     const emittedToolCallIndexes = new Set<number>()
     let reasoningContent = ""

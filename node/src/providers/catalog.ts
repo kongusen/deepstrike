@@ -4,7 +4,7 @@ import { OpenAIChatProvider } from "./openai.js"
 import { DeepSeekProvider } from "./deepseek.js"
 import { KimiProvider } from "./kimi.js"
 import { OpenAIResponsesProvider } from "./openai-responses.js"
-import { MiniMaxProvider } from "./minimax.js"
+import { MiniMaxAnthropicProvider, MiniMaxOpenAIProvider } from "./minimax.js"
 import { QwenProvider } from "./qwen.js"
 import { GeminiProvider } from "./gemini.js"
 import { GLMProvider } from "./glm.js"
@@ -62,7 +62,10 @@ export function createProvider(options: CreateProviderOptions): LLMProvider {
     }
   }
   if (providerId === "minimax" && endpoint.protocol === "anthropic-messages") {
-    return new MiniMaxProvider(options.apiKey, model, options.retry, baseURL)
+    return new MiniMaxAnthropicProvider(options.apiKey, model, options.retry, baseURL)
+  }
+  if (providerId === "minimax" && endpoint.protocol === "openai-chat") {
+    return new MiniMaxOpenAIProvider(options.apiKey, model, options.retry, baseURL)
   }
   if (providerId === "deepseek" && endpoint.protocol === "openai-chat") {
     return new DeepSeekProvider(options.apiKey, model, options.retry, baseURL)

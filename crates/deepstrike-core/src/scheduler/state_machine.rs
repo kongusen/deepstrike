@@ -1357,7 +1357,32 @@ impl LoopStateMachine {
         spec: crate::orchestration::workflow::WorkflowSpec,
         parent_session_id: &str,
     ) -> LoopAction {
-        match crate::scheduler::workflow_run::WorkflowRun::new(&spec, parent_session_id) {
+        self.install_workflow(crate::scheduler::workflow_run::WorkflowRun::new(
+            &spec,
+            parent_session_id,
+        ))
+    }
+
+    /// W0-ABI resume: load a workflow whose listed node agent-ids already completed (recovered from
+    /// the session log after an interruption); the kernel continues the DAG from the remaining work.
+    pub fn load_workflow_resumed(
+        &mut self,
+        spec: crate::orchestration::workflow::WorkflowSpec,
+        parent_session_id: &str,
+        completed: &[String],
+    ) -> LoopAction {
+        self.install_workflow(crate::scheduler::workflow_run::WorkflowRun::resume(
+            &spec,
+            parent_session_id,
+            completed,
+        ))
+    }
+
+    fn install_workflow(
+        &mut self,
+        built: crate::types::error::Result<crate::scheduler::workflow_run::WorkflowRun>,
+    ) -> LoopAction {
+        match built {
             Ok(run) => {
                 self.workflow = Some(run);
                 self.spawn_workflow_batch()

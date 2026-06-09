@@ -19,6 +19,17 @@ use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance};
 use crate::types::error::{DeepStrikeError, Result};
 use crate::types::task::{RuntimeTask, TaskLane};
 
+/// W3: a node's trust level. `Quarantined` nodes read untrusted content and must run with no
+/// privileges; their output crosses into the trusted plane only as a structured summary (the SDK
+/// enforces this — the kernel carries the flag to every spawn descriptor).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeTrust {
+    #[default]
+    Trusted,
+    Quarantined,
+}
+
 /// One node in a workflow DAG: a task plus the contract its agent runs under.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowNode {
@@ -29,9 +40,16 @@ pub struct WorkflowNode {
     /// Optional model preference (e.g. "opus" / "sonnet"); the SDK resolves it. See W4.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_hint: Option<String>,
+    /// W3 trust level. Default `Trusted`.
+    #[serde(default, skip_serializing_if = "is_trusted")]
+    pub trust: NodeTrust,
     /// Indices into [`WorkflowSpec::nodes`] this node depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<usize>,
+}
+
+fn is_trusted(t: &NodeTrust) -> bool {
+    matches!(t, NodeTrust::Trusted)
 }
 
 impl WorkflowNode {
@@ -44,6 +62,7 @@ impl WorkflowNode {
             isolation,
             context_inheritance,
             model_hint: None,
+            trust: NodeTrust::Trusted,
             depends_on: Vec::new(),
         }
     }
@@ -65,6 +84,12 @@ impl WorkflowNode {
 
     pub fn with_model_hint(mut self, hint: impl Into<String>) -> Self {
         self.model_hint = Some(hint.into());
+        self
+    }
+
+    /// Mark this node as quarantined (reads untrusted content, runs without privileges).
+    pub fn quarantined(mut self) -> Self {
+        self.trust = NodeTrust::Quarantined;
         self
     }
 }

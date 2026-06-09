@@ -5,7 +5,7 @@ from typing import AsyncIterator
 from anthropic import AsyncAnthropic
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, to_anthropic_messages
+from .base import RetryConfig, CircuitBreaker, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, parse_tool_arguments, to_anthropic_messages
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,19 @@ class AnthropicProvider:
     def runtime_policy(self) -> RuntimePolicy:
         return _CLAUDE_POLICIES.get(self._model, RuntimePolicy())
 
+    def _provider_name(self) -> str:
+        """Identity advertised in the descriptor; overridden by Anthropic-compatible vendors (e.g. MiniMax)."""
+        return "anthropic"
+
+    def descriptor(self) -> ProviderDescriptor:
+        return ProviderDescriptor(
+            provider=self._provider_name(),
+            protocol="anthropic-messages",
+            model=self._model,
+            reasoning={"supported": True, "preserve_across_tool_turns": True, "requires_replay_for_tool_turns": True},
+            tool_calls={"supported": True, "requires_strict_pairing": True},
+        )
+
     def peek_provider_replay(self, content: str, tool_calls: list[ToolCall]) -> dict | None:
         blocks = self._native_assistant_blocks.get(self._assistant_replay_key_parts(content, tool_calls))
         return {"native_blocks": blocks} if blocks else None
@@ -49,6 +62,13 @@ class AnthropicProvider:
         blocks = replay.get("native_blocks")
         if blocks:
             self._native_assistant_blocks[self._assistant_replay_key_parts(content, tool_calls)] = blocks
+            return
+        # Legacy log without persisted native blocks: reconstruct neutral
+        # text + tool_use blocks from the transcript so a tool-use turn can be
+        # replayed. Thinking blocks were never persisted and are not recovered.
+        reconstructed = _reconstruct_anthropic_blocks(content, tool_calls)
+        if reconstructed:
+            self._native_assistant_blocks[self._assistant_replay_key_parts(content, tool_calls)] = reconstructed
 
     def _build_messages(self, turns: list[Message]) -> list[dict]:
         return to_anthropic_messages(
@@ -221,7 +241,31 @@ class AnthropicProvider:
         return json.dumps({
             "content": content,
             "tool_calls": [
-                {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                {"id": _tc_field(tc, "id"), "name": _tc_field(tc, "name"), "arguments": _tc_field(tc, "arguments")}
                 for tc in tool_calls
             ],
         }, sort_keys=True)
+
+
+def _tc_field(tc: object, field_name: str) -> object:
+    if isinstance(tc, dict):
+        return tc.get(field_name)
+    return getattr(tc, field_name, None)
+
+
+def _reconstruct_anthropic_blocks(content: str, tool_calls: list) -> list[dict]:
+    """Reconstruct Anthropic assistant content blocks from a neutral transcript
+    when no provider replay was persisted. Only meaningful for tool-use turns."""
+    if not tool_calls:
+        return []
+    blocks: list[dict] = []
+    if content:
+        blocks.append({"type": "text", "text": content})
+    for tc in tool_calls:
+        blocks.append({
+            "type": "tool_use",
+            "id": _tc_field(tc, "id"),
+            "name": _tc_field(tc, "name"),
+            "input": parse_tool_arguments(_tc_field(tc, "arguments")),
+        })
+    return blocks

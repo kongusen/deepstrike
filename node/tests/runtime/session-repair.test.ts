@@ -1,20 +1,11 @@
 import {
   buildLlmCompletedEvent,
   buildRunTerminalEvent,
-  effectiveProviderReplay,
   normalizeLlmCompleted,
   repairEventsForRecovery,
-  synthesizeProviderReplay,
 } from "../../src/runtime/session-repair.js"
 
 describe("session-repair", () => {
-  it("synthesizes provider_replay for tool turns", () => {
-    const replay = synthesizeProviderReplay("checking", [
-      { id: "c1", name: "ping", arguments: "{}" },
-    ])
-    expect(replay?.native_blocks).toHaveLength(2)
-  })
-
   it("normalizes llm_completed with empty tool_calls", () => {
     const out = normalizeLlmCompleted({
       kind: "llm_completed",
@@ -25,7 +16,7 @@ describe("session-repair", () => {
     expect(out.token_count).toBeGreaterThan(0)
   })
 
-  it("fills missing provider_replay during repair", () => {
+  it("does NOT synthesize provider_replay during repair (provider-neutral)", () => {
     const repaired = repairEventsForRecovery([{
       seq: 0,
       event: {
@@ -37,13 +28,24 @@ describe("session-repair", () => {
     }])
     expect(repaired[0].event).toEqual(expect.objectContaining({
       kind: "llm_completed",
-      provider_replay: expect.objectContaining({ native_blocks: expect.any(Array) }),
+      tool_calls: [{ id: "c1", name: "ping", arguments: "{}" }],
     }))
+    expect((repaired[0].event as { provider_replay?: unknown }).provider_replay).toBeUndefined()
   })
 
-  it("prefers stored reasoning replay", () => {
-    const replay = effectiveProviderReplay("x", [], { reasoning_content: "trace" })
-    expect(replay?.reasoning_content).toBe("trace")
+  it("passes a stored provider_replay envelope through verbatim", () => {
+    const stored = { schema_version: 2 as const, provider: "deepseek", protocol: "openai-chat" as const, reasoning_content: "trace" }
+    const repaired = repairEventsForRecovery([{
+      seq: 0,
+      event: {
+        kind: "llm_completed",
+        turn: 0,
+        content: "x",
+        tool_calls: [],
+        provider_replay: stored,
+      },
+    }])
+    expect((repaired[0].event as { provider_replay?: unknown }).provider_replay).toEqual(stored)
   })
 
   it("builds run_terminal with non-negative counters", () => {

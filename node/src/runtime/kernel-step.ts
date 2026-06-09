@@ -108,6 +108,7 @@ export interface KernelObservation {
     isolation: string
     context_inheritance: string
     model_hint?: string
+    trust?: string
   }>
   /** workflow_completed. */
   completed?: string[]

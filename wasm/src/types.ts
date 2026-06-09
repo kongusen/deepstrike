@@ -78,14 +78,43 @@ export interface ToolArgumentRepairedEvent extends StreamEvent {
  */
 export type ProviderRunState = Record<string, unknown>
 
+export type ProviderProtocol =
+  | "anthropic-messages"
+  | "openai-chat"
+  | "openai-responses"
+  | "gemini"
+
+export interface ProviderDescriptor {
+  provider: string
+  protocol: ProviderProtocol
+  model: string
+  reasoning: {
+    supported: boolean
+    preserveAcrossToolTurns: boolean
+    requiresReplayForToolTurns?: boolean
+  }
+  toolCalls: {
+    supported: boolean
+    requiresStrictPairing: boolean
+  }
+}
+
 export interface ProviderReplay {
+  schema_version?: 1 | 2
+  provider?: string
+  protocol?: ProviderProtocol
+  model?: string
   native_blocks?: Array<Record<string, unknown>>
   reasoning_content?: string
+  reasoning_details?: unknown
+  native_message?: unknown
+  tool_calls?: unknown[]
 }
 
 export interface LLMProvider {
   createRunState?(): ProviderRunState
   runtimePolicy?(): { maxTurns?: number; timeoutMs?: number }
+  descriptor?(): ProviderDescriptor
   peekProviderReplay?(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined
   seedProviderReplay?(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void
   complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message>

@@ -64,6 +64,7 @@ from deepstrike.types.agent import (
     MilestoneContract, MilestonePhase, MilestoneCheckResult, MilestonePolicy,
     milestone_check_pass, milestone_check_fail,
     WorkflowSpec, WorkflowNodeSpec, WorkflowSpawnInfo, workflow_spec_to_kernel,
+    fanout_synthesize, generate_and_filter, verify_rules,
 )
 from deepstrike.collaboration import (
     AcceptanceCriterion, VerificationContract, ContractCheckResult,
@@ -135,5 +136,6 @@ __all__ = [
     "LoopUntilDone", "LoopAction", "RoundReport", "StopCondition",
     # Workflow DAG drive (W0-ABI)
     "WorkflowSpec", "WorkflowNodeSpec", "WorkflowSpawnInfo", "workflow_spec_to_kernel",
+    "fanout_synthesize", "generate_and_filter", "verify_rules",
     "__version__",
 ]

@@ -39,8 +39,24 @@ def assistant_replay_key(content: str, tool_calls: list[ToolCall]) -> str:
     }, sort_keys=True)
 
 
+def openai_chat_wire_replay_fields(replay: dict[str, Any] | None) -> dict[str, Any]:
+    """Only wire-safe reasoning fields may be merged into an OpenAI-compatible
+    request message. Envelope metadata (schema_version / provider / protocol /
+    model / native_message / tool_calls) is recovery bookkeeping and must never
+    be sent to the provider."""
+    if not replay:
+        return {}
+    fields: dict[str, Any] = {}
+    if isinstance(replay.get("reasoning_content"), str):
+        fields["reasoning_content"] = replay["reasoning_content"]
+    if replay.get("reasoning_details") is not None:
+        fields["reasoning_details"] = replay["reasoning_details"]
+    return fields
+
+
 class ReasoningReplayMixin:
-    """OpenAI-compatible providers: persist reasoning_content across tool turns."""
+    """OpenAI-compatible providers: persist reasoning_content / reasoning_details
+    across tool turns as a provider-scoped replay envelope."""
 
     _replay_fields: dict[str, dict[str, Any]]
 
@@ -52,15 +68,15 @@ class ReasoningReplayMixin:
 
     def peek_provider_replay(self, content: str, tool_calls: list[ToolCall]) -> dict | None:
         fields = self._replay_fields.get(assistant_replay_key(content, tool_calls))
-        if fields and "reasoning_content" in fields:
-            return {"reasoning_content": fields["reasoning_content"]}
+        if fields and ("reasoning_content" in fields or "reasoning_details" in fields):
+            return dict(fields)
         return None
 
     def seed_provider_replay(self, content: str, tool_calls: list[ToolCall], replay: dict) -> None:
-        if "reasoning_content" in replay:
+        if "reasoning_content" in replay or "reasoning_details" in replay:
             self.remember_replay_fields(
                 Message(role="assistant", content=content, tool_calls=tool_calls or None),
-                {"reasoning_content": replay["reasoning_content"]},
+                dict(replay),
             )
 
     def _merge_replay_into_openai_messages(
@@ -80,8 +96,9 @@ class ReasoningReplayMixin:
                 replay = self._replay_fields.get(
                     assistant_replay_key(source.content, source.tool_calls or [])
                 )
-                if replay:
-                    serialized[cursor] = {**serialized[cursor], **replay}
+                wire = openai_chat_wire_replay_fields(replay)
+                if wire:
+                    serialized[cursor] = {**serialized[cursor], **wire}
             cursor += 1
         return serialized
 

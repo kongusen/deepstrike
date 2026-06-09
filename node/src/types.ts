@@ -206,12 +206,40 @@ export interface RetryConfig {
  */
 export type ProviderRunState = Record<string, unknown>
 
+export type ProviderProtocol =
+  | "anthropic-messages"
+  | "openai-chat"
+  | "openai-responses"
+  | "gemini"
+
+export interface ProviderDescriptor {
+  provider: string
+  protocol: ProviderProtocol
+  model: string
+  reasoning: {
+    supported: boolean
+    preserveAcrossToolTurns: boolean
+    requiresReplayForToolTurns?: boolean
+  }
+  toolCalls: {
+    supported: boolean
+    requiresStrictPairing: boolean
+  }
+}
+
 /** Provider-native fields required to replay a turn across requests (thinking blocks, reasoning_content, etc.). */
 export interface ProviderReplay {
+  schema_version?: 1 | 2
+  provider?: string
+  protocol?: ProviderProtocol
+  model?: string
   /** Anthropic-style assistant content blocks (thinking, text, tool_use). */
   native_blocks?: Array<Record<string, unknown>>
   /** OpenAI-compatible reasoning field (DeepSeek, etc.). */
   reasoning_content?: string
+  reasoning_details?: unknown
+  native_message?: unknown
+  tool_calls?: unknown[]
 }
 
 /** Structured render output produced by the kernel for each LLM call. */
@@ -239,6 +267,7 @@ export interface RuntimePolicy {
 
 export interface LLMProvider {
   createRunState?(): ProviderRunState
+  descriptor?(): ProviderDescriptor
   /**
    * Optional: return the recommended runtime policy for this provider's model.
    * RuntimeRunner uses this as a fallback when the caller has not specified

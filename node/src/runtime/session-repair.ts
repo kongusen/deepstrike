@@ -8,47 +8,22 @@ function estimateTokenCount(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4))
 }
 
-function parseToolInput(args: string): Record<string, unknown> {
-  try { return JSON.parse(args || "{}") as Record<string, unknown> } catch { return {} }
-}
-
-/** Minimal native blocks when provider_replay was not persisted. */
-export function synthesizeProviderReplay(
-  content: string,
-  toolCalls: ToolCall[],
-): ProviderReplay | undefined {
-  if (!toolCalls.length) return undefined
-  const blocks: Array<Record<string, unknown>> = []
-  if (content) blocks.push({ type: "text", text: content })
-  for (const tc of toolCalls) {
-    blocks.push({
-      type: "tool_use",
-      id: tc.id,
-      name: tc.name,
-      input: parseToolInput(tc.arguments),
-    })
-  }
-  return { native_blocks: blocks }
-}
-
-export function effectiveProviderReplay(
-  content: string,
-  toolCalls: ToolCall[],
-  stored?: ProviderReplay,
-): ProviderReplay | undefined {
-  if (stored?.native_blocks?.length || stored?.reasoning_content != null) {
-    return stored
-  }
-  return synthesizeProviderReplay(content, toolCalls)
-}
-
+/**
+ * Normalize a persisted llm_completed event for recovery.
+ *
+ * Content is sanitized and token_count backfilled, but the stored
+ * `provider_replay` envelope is passed through verbatim — this layer is
+ * provider-neutral and must never synthesize protocol-specific replay shapes
+ * (e.g. Anthropic `native_blocks`). Legacy reconstruction for a given protocol
+ * is the responsibility of that provider's `seedProviderReplay`.
+ */
 export function normalizeLlmCompleted(
   event: Extract<SessionEvent, { kind: "llm_completed" }>,
   maxBytes?: number,
 ): Extract<SessionEvent, { kind: "llm_completed" }> {
   const content = sanitizeReplayText(event.content ?? "", maxBytes)
   const toolCalls = event.tool_calls ?? []
-  const providerReplay = effectiveProviderReplay(content, toolCalls, event.provider_replay)
+  const providerReplay = event.provider_replay
   return {
     kind: "llm_completed",
     turn: event.turn,

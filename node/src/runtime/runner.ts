@@ -459,7 +459,10 @@ export class RuntimeRunner {
    * feeds their results back, and loops until the kernel reports the workflow complete.
    * Returns the completed / failed node agent-ids.
    */
-  async runWorkflow(spec: WorkflowSpec): Promise<{ completed: string[]; failed: string[] }> {
+  async runWorkflow(
+    spec: WorkflowSpec,
+    opts?: { resumedCompleted?: string[] },
+  ): Promise<{ completed: string[]; failed: string[] }> {
     if (!this.activeKernel || !this.currentSessionId) {
       throw new Error("runWorkflow requires an active parent run")
     }
@@ -471,6 +474,8 @@ export class RuntimeRunner {
       kind: "load_workflow",
       spec: workflowSpecToKernel(spec),
       parent_session_id: parentSessionId,
+      // W0-ABI resume: skip nodes already completed before an interruption.
+      ...(opts?.resumedCompleted?.length ? { resumed_completed: opts.resumedCompleted } : {}),
     })
 
     for (;;) {
