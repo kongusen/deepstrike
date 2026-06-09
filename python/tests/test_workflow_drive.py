@@ -170,8 +170,8 @@ async def test_run_workflow_resumes_from_completed_nodes():
     outcome = await runner.run_workflow(spec, resumed_completed=["wf-node0"])
     assert sorted(outcome["completed"]) == ["wf-node0", "wf-node1", "wf-node2"]
     assert outcome["failed"] == []
-    # Node0 still dispatched in batch (known limitation: kernel resume includes resumed nodes).
-    assert "w0" in orch.goals
+    # Node0 is correctly skipped (not dispatched), only w1 and synth run.
+    assert "w0" not in orch.goals
     assert "w1" in orch.goals
     assert "synth" in orch.goals
 
@@ -199,13 +199,12 @@ async def test_run_workflow_with_all_nodes_resumed():
         WorkflowNodeSpec(task="synth", role="plan", depends_on=[0]),
     ])
 
-    # Both nodes already completed → outcome includes them (kernel records resumed as completed).
+    # Both nodes already completed → kernel skips dispatch, batch is empty.
     outcome = await runner.run_workflow(spec, resumed_completed=["wf-node0", "wf-node1"])
     assert sorted(outcome["completed"]) == ["wf-node0", "wf-node1"]
     assert outcome["failed"] == []
-    # Known limitation: kernel still dispatches resumed nodes in the batch.
-    # The orchestrator runs them and reports completion, but they were already done.
-    assert len(orch.goals) == 2  # w0 and synth still dispatched
+    # All nodes resumed → nothing dispatched.
+    assert len(orch.goals) == 0
 
 
 @pytest.mark.asyncio
