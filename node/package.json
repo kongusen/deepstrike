@@ -1,6 +1,6 @@
 {
   "name": "@deepstrike/sdk",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "DeepStrike Node.js SDK",
   "type": "module",
   "main": "dist/index.js",
