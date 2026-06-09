@@ -174,6 +174,37 @@ pub fn generate_and_filter(generators: Vec<RuntimeTask>, filter: RuntimeTask) ->
 }
 
 // ---------------------------------------------------------------------------
+// W2 — Adversarial verification (the default contract)
+// ---------------------------------------------------------------------------
+
+/// One fresh-context verifier per rule/claim, optionally followed by a skeptic that re-checks
+/// every flag to suppress false positives.
+///
+/// This is the article's rule-adherence pattern. Each verifier runs as a `Verify` agent, which
+/// [`role_defaults`] gives `ReadOnly` isolation + [`ContextInheritance::None`] — the verifier does
+/// **not** inherit the author's reasoning, so it cannot rubber-stamp it (the structural defence
+/// against self-preferential bias). The optional `skeptic` depends on all verifiers and reviews
+/// their flags (real violation vs. false positive). Runs on the W0 workflow executor.
+///
+/// Pair each verifier with [`crate::harness::eval_pipeline::EvalPipeline`] at run time for the
+/// rubric scoring. For rules known only at run time (claim extraction), a dynamic-fan-out variant
+/// is a later round; this covers the case where the rule/claim set is known up front.
+pub fn verify_rules(rules: Vec<RuntimeTask>, skeptic: Option<RuntimeTask>) -> WorkflowSpec {
+    let mut nodes: Vec<WorkflowNode> = rules
+        .into_iter()
+        .map(|t| WorkflowNode::new(t.with_lane(TaskLane::Verify), AgentRole::Verify))
+        .collect();
+    if let Some(skeptic) = skeptic {
+        let verifier_ids: Vec<usize> = (0..nodes.len()).collect();
+        nodes.push(
+            WorkflowNode::new(skeptic.with_lane(TaskLane::Verify), AgentRole::Verify)
+                .with_depends_on(verifier_ids),
+        );
+    }
+    WorkflowSpec::new(nodes)
+}
+
+// ---------------------------------------------------------------------------
 // Pattern 3 — Classify-and-act
 // ---------------------------------------------------------------------------
 
@@ -247,6 +278,44 @@ mod tests {
         assert_eq!(spec.nodes[2].role, AgentRole::Verify);
         assert_eq!(spec.nodes[2].context_inheritance, ContextInheritance::None);
         assert_eq!(spec.nodes[0].role, AgentRole::Implement);
+        spec.validate().unwrap();
+    }
+
+    #[test]
+    fn verify_rules_with_skeptic_shape() {
+        let spec = verify_rules(
+            vec![task("money is integer cents"), task("errors propagate"), task("utc timestamps")],
+            Some(task("skeptic: real violation or false positive?")),
+        );
+        assert_eq!(spec.nodes.len(), 4);
+        // skeptic depends on every verifier
+        assert_eq!(spec.nodes[3].depends_on, vec![0, 1, 2]);
+        assert_eq!(spec.nodes[3].role, AgentRole::Verify);
+        spec.validate().unwrap();
+        // verifiers are the ready set; skeptic gated behind them
+        assert_eq!(spec.to_task_graph().unwrap().ready_tasks(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn verify_rules_verifiers_are_bias_resistant() {
+        // The default contract: every verifier runs with no inherited author context.
+        let spec = verify_rules(vec![task("rule a"), task("rule b")], None);
+        assert_eq!(spec.nodes.len(), 2); // no skeptic → just the verifiers
+        for node in &spec.nodes {
+            assert_eq!(node.role, AgentRole::Verify);
+            assert_eq!(node.context_inheritance, ContextInheritance::None);
+            assert_eq!(node.isolation, AgentIsolation::ReadOnly);
+            assert!(node.depends_on.is_empty()); // all parallel
+        }
+        spec.validate().unwrap();
+    }
+
+    #[test]
+    fn verify_rules_empty_with_skeptic_is_just_skeptic() {
+        // No rules → skeptic has nothing to depend on; still a valid single-node spec.
+        let spec = verify_rules(vec![], Some(task("skeptic")));
+        assert_eq!(spec.nodes.len(), 1);
+        assert!(spec.nodes[0].depends_on.is_empty());
         spec.validate().unwrap();
     }
 
