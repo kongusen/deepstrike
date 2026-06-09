@@ -1471,4 +1471,20 @@ mod tests {
             LoopAction::Done { rounds_used: 2, reason: StopReason::NoNewFindings }
         );
     }
+
+    #[test]
+    fn workflow_spec_reexport_builds_and_validates() {
+        use crate::{WorkflowSpec, fanout_synthesize};
+        use deepstrike_core::types::task::RuntimeTask;
+
+        let spec: WorkflowSpec = fanout_synthesize(
+            vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
+            RuntimeTask::new("synth"),
+        );
+        assert_eq!(spec.nodes.len(), 3);
+        spec.validate().expect("valid dag");
+        // workers ready first; synth gated behind both.
+        let graph = spec.to_task_graph().expect("graph");
+        assert_eq!(graph.ready_tasks(), vec![0, 1]);
+    }
 }

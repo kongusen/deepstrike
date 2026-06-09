@@ -1603,6 +1603,10 @@ impl RuntimeRunner {
                     .await;
                 }
                 KernelObservation::AgentProcessChanged { .. } => {}
+                // W0-ABI workflow lifecycle. The rust SDK has no workflow drive yet
+                // (node/python only), so these are observed-but-ignored here.
+                KernelObservation::WorkflowBatchSpawned { .. } => {}
+                KernelObservation::WorkflowCompleted { .. } => {}
                 // Governance flagged a tool call for user approval. The kernel does
                 // not block it; the SDK-side human-approval workflow is a follow-up.
                 KernelObservation::ToolGated { .. } => {}

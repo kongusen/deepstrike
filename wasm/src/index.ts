@@ -41,7 +41,12 @@ export type {
   MilestonePolicy,
   SubAgentResult,
   TerminationReason,
+  WorkflowSpec,
+  WorkflowNodeSpec,
+  WorkflowTaskSpec,
+  WorkflowSpawnInfo,
 } from "./runtime/types/agent.js"
+export { workflowSpecToKernel } from "./runtime/types/agent.js"
 export { Governance } from "./governance.js"
 export type { GovernanceVerdict } from "./governance.js"
 export { AnthropicProvider } from "./providers/anthropic.js"

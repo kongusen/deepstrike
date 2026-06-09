@@ -23,6 +23,11 @@ pub use deepstrike_core::orchestration::loop_until_done::{
     LoopAction, LoopConfig, LoopUntilDone, RoundReport, StopCondition, StopReason,
 };
 pub use deepstrike_core::orchestration::tournament::{Tournament, TournamentAction};
+pub use deepstrike_core::orchestration::workflow::{
+    ClassifyAndAct, WorkflowNode, WorkflowSpec, classify_and_act, fanout_synthesize,
+    generate_and_filter,
+};
+pub use deepstrike_core::scheduler::workflow_run::{WorkflowRun, WorkflowSpawnInfo};
 pub use governance::{Governance, GovernanceVerdict};
 pub use harness::{Harness, HarnessOutcome, HarnessRequest, QualityGate};
 pub use harness_loop::{EvalLoopHarness, HarnessLoop, SinglePassHarness};

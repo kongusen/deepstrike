@@ -29,7 +29,7 @@ import {
   type KernelRunnerAction,
   type KernelRuntimeHandle,
 } from "./kernel-step.js"
-import type { AgentRunSpec, AgentProcessChangedObservation, SubAgentResult, MilestonePolicy, MilestoneContract, MilestoneCheckResult } from "./types/agent.js"
+import type { AgentRunSpec, AgentProcessChangedObservation, SubAgentResult, MilestonePolicy, MilestoneContract, MilestoneCheckResult, WorkflowSpec, WorkflowSpawnInfo } from "./types/agent.js"
 import {
   agentRunSpecToKernel,
   findSpawnProcessObservation,
@@ -37,6 +37,9 @@ import {
   milestoneCheckResultToKernel,
   spawnObservationToManifest,
   subAgentResultToKernel,
+  workflowNodeToManifest,
+  workflowNodeToSpec,
+  workflowSpecToKernel,
 } from "./types/agent.js"
 import { defaultSubAgentOrchestrator, type SubAgentOrchestrator } from "./sub-agent-orchestrator.js"
 import { kernelObservationToSessionEvent, withCategory } from "./kernel-event-log.js"
@@ -885,6 +888,59 @@ export class RuntimeRunner {
       result: subAgentResultToKernel(result),
     })
     return result
+  }
+
+  /**
+   * W0-ABI: run a declarative workflow DAG. The kernel owns the DAG and gates every node spawn
+   * through the syscall trap; this driver runs each kernel-emitted batch of nodes in parallel,
+   * feeds their results back, and loops until the kernel reports the workflow complete.
+   */
+  async runWorkflow(spec: WorkflowSpec): Promise<{ completed: string[]; failed: string[] }> {
+    if (!this.activeKernel || !this.currentSessionId) {
+      throw new Error("runWorkflow requires an active parent run")
+    }
+    const parentSessionId = this.currentSessionId
+    const runtime = this.activeKernel
+    const orchestrator = this.opts.subAgentOrchestrator ?? defaultSubAgentOrchestrator
+
+    let observations = kernelApply(runtime, this.pendingObservations, {
+      kind: "load_workflow",
+      spec: workflowSpecToKernel(spec),
+      parent_session_id: parentSessionId,
+    })
+
+    for (;;) {
+      const done = observations.find(o => o.kind === "workflow_completed") as
+        | { completed?: string[]; failed?: string[] }
+        | undefined
+      if (done) return { completed: done.completed ?? [], failed: done.failed ?? [] }
+
+      const batch = observations.find(o => o.kind === "workflow_batch_spawned") as
+        | { nodes?: WorkflowSpawnInfo[] }
+        | undefined
+      const nodes = batch?.nodes ?? []
+      if (nodes.length === 0) return { completed: [], failed: [] }
+
+      const results = await Promise.all(
+        nodes.map(node =>
+          orchestrator.run({
+            parentOpts: this.opts,
+            parentSessionId,
+            spec: workflowNodeToSpec(node, parentSessionId),
+            manifest: workflowNodeToManifest(node, parentSessionId),
+            sessionLog: this.opts.sessionLog,
+          }),
+        ),
+      )
+
+      observations = []
+      for (const result of results) {
+        observations = kernelApply(runtime, this.pendingObservations, {
+          kind: "sub_agent_completed",
+          result: subAgentResultToKernel(result),
+        })
+      }
+    }
   }
 
   private async appendObservations(

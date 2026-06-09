@@ -173,3 +173,92 @@ def sub_agent_result_to_kernel(result: SubAgentResult) -> dict[str, Any]:
       "total_tokens_used": result.result.total_tokens_used,
     },
   }
+
+
+# ─── W0-ABI: declarative workflow specs ───
+
+
+@dataclass
+class WorkflowNodeSpec:
+  """One node in a declarative workflow DAG (host shape)."""
+
+  task: str | dict[str, Any]  # goal string, or {"goal", "criteria"?, "lane"?}
+  role: KernelAgentRole
+  isolation: AgentIsolation = "shared"
+  context_inheritance: ContextInheritance = "none"
+  model_hint: str | None = None
+  depends_on: list[int] = field(default_factory=list)
+
+
+@dataclass
+class WorkflowSpec:
+  """A declarative workflow DAG the kernel runs node-by-node, gating each spawn."""
+
+  nodes: list[WorkflowNodeSpec]
+
+
+@dataclass
+class WorkflowSpawnInfo:
+  """Per-node spawn descriptor carried in the ``workflow_batch_spawned`` observation."""
+
+  agent_id: str
+  goal: str
+  role: str
+  isolation: str
+  context_inheritance: str
+  model_hint: str | None = None
+
+
+def workflow_spec_to_kernel(spec: WorkflowSpec) -> dict[str, Any]:
+  """Map a host ``WorkflowSpec`` to the snake_case kernel JSON (``load_workflow.spec``)."""
+  nodes: list[dict[str, Any]] = []
+  for n in spec.nodes:
+    task = {"goal": n.task} if isinstance(n.task, str) else dict(n.task)
+    kernel_task: dict[str, Any] = {
+      "goal": task["goal"],
+      # `criteria` is required by the kernel's RuntimeTask serde (no default).
+      "criteria": task.get("criteria", []),
+    }
+    if task.get("lane"):
+      kernel_task["lane"] = task["lane"]
+    node: dict[str, Any] = {
+      "task": kernel_task,
+      "role": n.role,
+      "isolation": n.isolation,
+      "context_inheritance": n.context_inheritance,
+    }
+    if n.model_hint:
+      node["model_hint"] = n.model_hint
+    if n.depends_on:
+      node["depends_on"] = list(n.depends_on)
+    nodes.append(node)
+  return {"nodes": nodes}
+
+
+def workflow_node_to_spec(node: WorkflowSpawnInfo, parent_session_id: str) -> AgentRunSpec:
+  """Build a sub-agent run spec for a kernel-generated workflow node."""
+  return AgentRunSpec(
+    identity=AgentIdentity(
+      agent_id=node.agent_id,
+      session_id=f"{parent_session_id}-{node.agent_id}",
+      is_sub_agent=True,
+      parent_session_id=parent_session_id,
+    ),
+    role=node.role,  # type: ignore[arg-type]
+    goal=node.goal,
+    isolation=node.isolation,  # type: ignore[arg-type]
+  )
+
+
+def workflow_node_to_manifest(
+  node: WorkflowSpawnInfo, parent_session_id: str
+) -> AgentProcessChangedObservation:
+  """Build the host manifest for a kernel-generated workflow node."""
+  return AgentProcessChangedObservation(
+    agent_id=node.agent_id,
+    parent_session_id=parent_session_id,
+    role=node.role,
+    isolation=node.isolation,
+    context_inheritance=node.context_inheritance,
+    permitted_capability_ids=[],
+  )

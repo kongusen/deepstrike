@@ -386,6 +386,81 @@ class RuntimeRunner:
       status=result.result.termination,
     )
 
+  async def run_workflow(self, spec: "WorkflowSpec") -> dict[str, list[str]]:
+    """W0-ABI: run a declarative workflow DAG.
+
+    The kernel owns the DAG and gates every node spawn through the syscall trap; this driver
+    runs each kernel-emitted batch of nodes in parallel via the sub-agent orchestrator, feeds
+    their results back, and loops until the kernel reports completion. Returns
+    ``{"completed": [...], "failed": [...]}`` (node agent-ids).
+    """
+    import asyncio
+
+    from deepstrike.runtime.sub_agent_orchestrator import (
+      SubAgentRunContext,
+      default_sub_agent_orchestrator,
+    )
+    from deepstrike.types.agent import (
+      WorkflowSpawnInfo,
+      sub_agent_result_to_kernel,
+      workflow_node_to_manifest,
+      workflow_node_to_spec,
+      workflow_spec_to_kernel,
+    )
+
+    if self._active_kernel is None or self._current_session_id is None:
+      raise RuntimeError("run_workflow requires an active parent run")
+    parent_session_id = self._current_session_id
+    runtime = self._active_kernel
+    orchestrator = self._opts.sub_agent_orchestrator or default_sub_agent_orchestrator
+
+    observations = kernel_apply(runtime, self._pending_observations, {
+      "kind": "load_workflow",
+      "spec": workflow_spec_to_kernel(spec),
+      "parent_session_id": parent_session_id,
+    })
+
+    async def run_node(raw: dict) -> Any:
+      node = WorkflowSpawnInfo(
+        agent_id=raw["agent_id"],
+        goal=raw["goal"],
+        role=raw["role"],
+        isolation=raw["isolation"],
+        context_inheritance=raw["context_inheritance"],
+        model_hint=raw.get("model_hint"),
+      )
+      return await orchestrator.run(SubAgentRunContext(
+        parent_opts=self._opts,
+        parent_session_id=parent_session_id,
+        spec=workflow_node_to_spec(node, parent_session_id),
+        manifest=workflow_node_to_manifest(node, parent_session_id),
+        session_log=self._opts.session_log,
+        harness=self._opts.sub_agent_harness,
+      ))
+
+    while True:
+      done = next((o for o in observations if o.get("kind") == "workflow_completed"), None)
+      if done is not None:
+        return {
+          "completed": list(done.get("completed") or []),
+          "failed": list(done.get("failed") or []),
+        }
+      batch = next((o for o in observations if o.get("kind") == "workflow_batch_spawned"), None)
+      nodes = (batch or {}).get("nodes") or []
+      if not nodes:
+        return {"completed": [], "failed": []}
+
+      # Run the batch's nodes in parallel — each is independent within a round.
+      results = await asyncio.gather(*(run_node(n) for n in nodes))
+
+      # Feed completions back; the draining feed yields the next batch or completion.
+      observations = []
+      for result in results:
+        observations = kernel_apply(runtime, self._pending_observations, {
+          "kind": "sub_agent_completed",
+          "result": sub_agent_result_to_kernel(result),
+        })
+
   def interrupt(self) -> None:
     self._interrupted = True
 

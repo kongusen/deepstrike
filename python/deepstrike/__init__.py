@@ -63,6 +63,7 @@ from deepstrike.types.agent import (
     KernelAgentRole, AgentIsolation, ContextInheritance,
     MilestoneContract, MilestonePhase, MilestoneCheckResult, MilestonePolicy,
     milestone_check_pass, milestone_check_fail,
+    WorkflowSpec, WorkflowNodeSpec, WorkflowSpawnInfo, workflow_spec_to_kernel,
 )
 from deepstrike.collaboration import (
     AcceptanceCriterion, VerificationContract, ContractCheckResult,
@@ -132,5 +133,7 @@ __all__ = [
     # Workflow primitives
     "Tournament", "TournamentAction", "TournamentMatch",
     "LoopUntilDone", "LoopAction", "RoundReport", "StopCondition",
+    # Workflow DAG drive (W0-ABI)
+    "WorkflowSpec", "WorkflowNodeSpec", "WorkflowSpawnInfo", "workflow_spec_to_kernel",
     "__version__",
 ]
