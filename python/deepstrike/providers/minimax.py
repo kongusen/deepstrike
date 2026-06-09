@@ -5,7 +5,7 @@ from typing import AsyncIterator
 
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .anthropic import AnthropicProvider
-from .base import ProviderDescriptor, RenderedContext, RetryConfig, RuntimePolicy, normalize_tool_call
+from .base import ProviderDescriptor, RenderedContext, RetryConfig, RuntimePolicy, normalize_tool_call, wire_request_extensions
 from .openai import OpenAIProvider
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
 
@@ -119,7 +119,7 @@ class MiniMaxOpenAIProvider(OpenAIProvider):
         last_exc = None
         for attempt in range(self._retry.max_retries):
             try:
-                request_extensions = {k: v for k, v in ext.items() if k not in {"model", "messages", "tools", "stream", "stream_options"}}
+                request_extensions = wire_request_extensions(ext)
                 resp = await self._client.chat.completions.create(
                     **request_extensions,
                     model=self._model,

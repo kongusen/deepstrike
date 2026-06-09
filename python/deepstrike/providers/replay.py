@@ -6,6 +6,7 @@ from typing import Any
 from deepstrike._kernel import Message, ToolCall
 
 from .base import RenderedContext
+from .replay_validator import DEGRADED_REASONING_PLACEHOLDER, assess_reasoning_replay
 
 
 def _sort_dict_keys(val: Any) -> Any:
@@ -83,6 +84,7 @@ class ReasoningReplayMixin:
         self,
         serialized: list[dict[str, Any]],
         context: RenderedContext,
+        degrade_missing_reasoning: bool = False,
     ) -> list[dict[str, Any]]:
         cursor = 1 if context.system_text else 0
         for source in context.turns:
@@ -97,10 +99,26 @@ class ReasoningReplayMixin:
                     assistant_replay_key(source.content, source.tool_calls or [])
                 )
                 wire = openai_chat_wire_replay_fields(replay)
+                if not wire and degrade_missing_reasoning and source.tool_calls:
+                    # Reasoning-requiring provider, no stored reasoning for this
+                    # tool-call turn, caller opted into degradation: inject a
+                    # placeholder so the wire message stays well-formed instead of
+                    # failing the whole request.
+                    wire = {"reasoning_content": DEGRADED_REASONING_PLACEHOLDER}
                 if wire:
                     serialized[cursor] = {**serialized[cursor], **wire}
             cursor += 1
         return serialized
+
+    def assess_reasoning(self, context: RenderedContext) -> dict:
+        """Raise-free pre-flight check: which assistant tool-call turns in
+        ``context`` lack the non-empty reasoning replay this provider needs."""
+        return assess_reasoning_replay(
+            context.turns,
+            lambda content, tool_calls: self._replay_fields.get(
+                assistant_replay_key(content, tool_calls)
+            ),
+        )
 
     def remember_reasoning_for_turn(
         self,

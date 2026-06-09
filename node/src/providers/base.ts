@@ -30,12 +30,22 @@ export class CircuitBreaker {
 }
 
 
+/**
+ * Internal control flags that steer DeepStrike's own serialization/validation
+ * and must never be forwarded to any provider's wire request, regardless of the
+ * per-call omit list.
+ */
+export const INTERNAL_EXTENSION_KEYS: readonly string[] = [
+  "__deepstrikeThinkingEnabled",
+  "degradeMissingReasoningReplay",
+]
+
 export function omitExtensionKeys(
   extensions: Record<string, unknown> | undefined,
   keys: readonly string[],
 ): Record<string, unknown> {
   if (!extensions) return {}
-  const blocked = new Set(keys)
+  const blocked = new Set([...keys, ...INTERNAL_EXTENSION_KEYS])
   return Object.fromEntries(Object.entries(extensions).filter(([key]) => !blocked.has(key)))
 }
 

@@ -242,6 +242,14 @@ export interface ProviderReplay {
   tool_calls?: unknown[]
 }
 
+/** Result of a pre-flight reasoning-replay assessment for a target provider. */
+export interface ReplayabilityAssessment {
+  /** True when every reasoning-requiring tool-call turn has replay available. */
+  ok: boolean
+  /** Tool-call ids whose turn lacks the required non-empty reasoning replay. */
+  offendingCallIds: string[]
+}
+
 /** Structured render output produced by the kernel for each LLM call. */
 export interface RenderedContext {
   /** Identity + Knowledge combined — for providers with a single system slot (OpenAI). */
@@ -278,6 +286,14 @@ export interface LLMProvider {
   peekProviderReplay?(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined
   /** Restore provider-native replay fields when rebuilding history from SessionLog. */
   seedProviderReplay?(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void
+  /**
+   * Pre-flight query: would this history validate against this provider with the
+   * given extensions, without sending the request? Returns the tool-call ids
+   * whose turn lacks the reasoning replay this provider requires, so an embedder
+   * can route around the failure (keep thinking on, disable it, or skip this
+   * candidate) before issuing the request. Seed any persisted replay first.
+   */
+  assessReplayability?(context: RenderedContext, extensions?: Record<string, unknown>): ReplayabilityAssessment
   complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message>
   stream(
     context: RenderedContext,

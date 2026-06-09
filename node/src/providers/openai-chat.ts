@@ -2,11 +2,22 @@ import type OpenAI from "openai"
 import type { Message, ProviderDescriptor, RenderedContext, ToolSchema } from "../types.js"
 import { assistantReplayKey } from "../runtime/provider-replay.js"
 import { normalizeToolCall, toOpenAIMessageParams } from "./base.js"
-import { validateOpenAIChatReplay } from "./replay-validator.js"
+import {
+  DEGRADED_REASONING_PLACEHOLDER,
+  assessReasoningReplay,
+  validateOpenAIChatReplay,
+  type ReplayabilityAssessment,
+} from "./replay-validator.js"
 
 export interface OpenAIChatBuildMessageOptions {
   descriptor?: ProviderDescriptor
   requireNonEmptyReasoningForToolCalls?: boolean
+  /**
+   * Degrade (rather than throw) when a reasoning-requiring tool-call turn has
+   * no stored reasoning replay: a placeholder reasoning is injected so the
+   * request still goes out in degraded form.
+   */
+  degradeMissingReasoning?: boolean
 }
 
 export class OpenAIChatAdapter {
@@ -23,8 +34,12 @@ export class OpenAIChatAdapter {
     validateOpenAIChatReplay(context, {
       descriptor: options.descriptor,
       requireNonEmptyReasoningForToolCalls: options.requireNonEmptyReasoningForToolCalls,
+      degradeMissingReasoning: options.degradeMissingReasoning,
       replayForAssistant: message => this.replayFields.get(assistantReplayKey(message)),
     })
+    const degradeReasoning = Boolean(
+      options.requireNonEmptyReasoningForToolCalls && options.degradeMissingReasoning,
+    )
     // toOpenAIMessageParams prepends systemText as messages[0], then turns.
     const serialized = toOpenAIMessageParams(context)
     // Cursor starts at 1 to skip the system message injected by toOpenAIMessageParams.
@@ -37,13 +52,29 @@ export class OpenAIChatAdapter {
       }
       if (source.role === "assistant") {
         const replay = this.replayFields.get(assistantReplayKey(source))
-        const wireReplay = openAIChatWireReplayFields(replay)
+        let wireReplay = openAIChatWireReplayFields(replay)
+        if (!wireReplay && degradeReasoning && source.toolCalls?.length) {
+          // Reasoning-requiring provider, no stored reasoning for this tool-call
+          // turn, caller opted into degradation: inject a placeholder so the
+          // wire message stays well-formed instead of failing the whole request.
+          wireReplay = { reasoning_content: DEGRADED_REASONING_PLACEHOLDER }
+        }
         if (wireReplay) serialized[cursor] = { ...serialized[cursor], ...wireReplay }
       }
       cursor += 1
     }
 
     return serialized as unknown as OpenAI.ChatCompletionMessageParam[]
+  }
+
+  /**
+   * Throw-free pre-flight check: which assistant tool-call turns in `context`
+   * lack the non-empty reasoning replay a reasoning-requiring provider needs.
+   */
+  assessReasoning(context: RenderedContext): ReplayabilityAssessment {
+    return assessReasoningReplay(context.turns, {
+      replayForAssistant: message => this.replayFields.get(assistantReplayKey(message)),
+    })
   }
 
   normalizeToolCalls(toolCalls: OpenAI.ChatCompletionMessageToolCall[] = []) {

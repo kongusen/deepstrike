@@ -232,6 +232,7 @@ impl LLMProvider for AnthropicProvider {
             Some(ProviderReplay {
                 native_blocks: Some(blocks),
                 reasoning_content: None,
+                extra: serde_json::Map::new(),
             })
         }
     }

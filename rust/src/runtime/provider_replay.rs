@@ -1,6 +1,3 @@
-use deepstrike_core::runtime::repair::{
-    effective_provider_replay, repair_events, repair_llm_completed,
-};
 use deepstrike_core::runtime::session::{ProviderReplay, SessionEvent};
 use deepstrike_core::types::message::ToolCall;
 
@@ -17,11 +14,9 @@ pub fn seed_provider_replay_from_events(
             ..
         } = &entry.event
         {
-            let content = message.content.as_text().unwrap_or("").to_string();
-            let replay =
-                effective_provider_replay(&content, &message.tool_calls, provider_replay.as_ref());
-            if let Some(replay) = replay {
-                provider.seed_provider_replay(&content, &message.tool_calls, &replay);
+            if let Some(replay) = provider_replay {
+                let content = message.content.as_text().unwrap_or("").to_string();
+                provider.seed_provider_replay(&content, &message.tool_calls, replay);
             }
         }
     }
@@ -47,4 +42,92 @@ pub fn assistant_replay_key(content: &str, tool_calls: &[ToolCall]) -> String {
         }).collect::<Vec<_>>(),
     })
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::{LLMProvider, ProviderRunState, StreamEvent};
+    use async_trait::async_trait;
+    use deepstrike_core::context::renderer::RenderedContext;
+    use deepstrike_core::runtime::session::SessionEvent;
+    use deepstrike_core::types::message::{Content, Message, Role, ToolSchema};
+    use futures::{Stream, stream};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct CapturingProvider {
+        seeded: Mutex<Vec<(String, ProviderReplay)>>,
+    }
+
+    #[async_trait]
+    impl LLMProvider for CapturingProvider {
+        fn seed_provider_replay(
+            &self,
+            content: &str,
+            _tool_calls: &[ToolCall],
+            replay: &ProviderReplay,
+        ) {
+            self.seeded
+                .lock()
+                .unwrap()
+                .push((content.to_owned(), replay.clone()));
+        }
+
+        async fn stream(
+            &self,
+            _context: &RenderedContext,
+            _tools: &[ToolSchema],
+            _extensions: Option<&serde_json::Value>,
+            _state: Option<&ProviderRunState>,
+        ) -> crate::Result<Box<dyn Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>>
+        {
+            Ok(Box::new(Box::pin(stream::empty())))
+        }
+    }
+
+    #[test]
+    fn seeds_only_persisted_provider_replay_from_events() {
+        let provider = CapturingProvider::default();
+        let replay = ProviderReplay {
+            native_blocks: None,
+            reasoning_content: Some("trace".into()),
+            extra: serde_json::Map::new(),
+        };
+        let entries = vec![
+            SessionEntry {
+                seq: 0,
+                event: SessionEvent::LlmCompleted {
+                    turn: 0,
+                    message: Message {
+                        role: Role::Assistant,
+                        content: Content::Text("without replay".into()),
+                        tool_calls: vec![],
+                        token_count: None,
+                    },
+                    provider_replay: None,
+                },
+            },
+            SessionEntry {
+                seq: 1,
+                event: SessionEvent::LlmCompleted {
+                    turn: 1,
+                    message: Message {
+                        role: Role::Assistant,
+                        content: Content::Text("with replay".into()),
+                        tool_calls: vec![],
+                        token_count: None,
+                    },
+                    provider_replay: Some(replay.clone()),
+                },
+            },
+        ];
+
+        seed_provider_replay_from_events(&provider, &entries);
+
+        let seeded = provider.seeded.lock().unwrap();
+        assert_eq!(seeded.len(), 1);
+        assert_eq!(seeded[0].0, "with replay");
+        assert_eq!(seeded[0].1, replay);
+    }
 }

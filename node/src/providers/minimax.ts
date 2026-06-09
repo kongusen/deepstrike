@@ -90,6 +90,9 @@ export class MiniMaxOpenAIProvider extends OpenAIChatProvider {
     return {
       ...omitExtensionKeys(extensions, ["reasoning_split", "exposeReasoning"]),
       __deepstrikeThinkingEnabled: reasoningSplit,
+      // Re-thread the degrade control flag (omitExtensionKeys strips internal
+      // keys) so buildChatMessages can honor it; the wire-request omit drops it.
+      ...(extensions?.degradeMissingReasoningReplay === true ? { degradeMissingReasoningReplay: true } : {}),
       reasoning_split: reasoningSplit,
     }
   }

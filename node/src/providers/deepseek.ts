@@ -56,6 +56,9 @@ export class DeepSeekProvider extends OpenAIChatProvider {
     const requestExtensions = {
       ...omitExtensionKeys(extensions, ["thinking", "reasoningEffort", "exposeReasoning", "extra_body", "reasoning_effort"]),
       __deepstrikeThinkingEnabled: thinkingEnabled,
+      // Re-thread the degrade control flag (omitExtensionKeys strips internal
+      // keys) so buildChatMessages can honor it; the wire-request omit drops it.
+      ...(extensions?.degradeMissingReasoningReplay === true ? { degradeMissingReasoningReplay: true } : {}),
       reasoning_effort: reasoningEffort,
       extra_body: { thinking: { type: thinking } },
     }

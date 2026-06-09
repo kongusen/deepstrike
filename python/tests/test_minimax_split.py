@@ -1,4 +1,4 @@
-from deepstrike._kernel import Message, ToolCall
+from deepstrike._kernel import ContentPartObj, Message, ToolCall
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.minimax import MiniMaxAnthropicProvider, MiniMaxOpenAIProvider
 
@@ -47,6 +47,9 @@ def test_minimax_openai_wire_filter_does_not_leak_envelope_fields():
     })
     context = RenderedContext(turns=[
         Message(role="assistant", content="checking", tool_calls=tool_calls),
+        Message(role="tool", content="", content_parts=[
+            ContentPartObj("tool_result", call_id="c1", output="pong", is_error=False),
+        ]),
     ])
     msgs = p._build_messages(context)
     assert msgs[0]["reasoning_content"] == "real plan"

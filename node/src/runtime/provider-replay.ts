@@ -1,4 +1,4 @@
-import type { LLMProvider, Message, ProviderDescriptor, ProviderProtocol, ProviderReplay, ToolCall } from "../types.js"
+import type { LLMProvider, Message, ProviderDescriptor, ProviderProtocol, ProviderReplay, RenderedContext, ReplayabilityAssessment, ToolCall } from "../types.js"
 import type { SessionEvent } from "./session-log.js"
 
 function sortObjectKeys(val: any): any {
@@ -91,4 +91,19 @@ export function peekProviderReplay(
   toolCalls: ToolCall[],
 ): ProviderReplay | undefined {
   return provider.peekProviderReplay?.({ content, toolCalls })
+}
+
+/**
+ * Pre-flight query for fallback routing: would `context` validate against
+ * `provider` (with `extensions`) before the request is sent? Seed any persisted
+ * replay (via `seedProviderReplayFromEvents`) first so the assessment reflects
+ * what the provider can actually replay. Providers that do not implement
+ * `assessReplayability` (no reasoning-replay requirement) are reported as ok.
+ */
+export function assessProviderReplayability(
+  provider: LLMProvider,
+  context: RenderedContext,
+  extensions?: Record<string, unknown>,
+): ReplayabilityAssessment {
+  return provider.assessReplayability?.(context, extensions) ?? { ok: true, offendingCallIds: [] }
 }

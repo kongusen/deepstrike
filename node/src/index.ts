@@ -60,6 +60,13 @@ export { endpointProfiles, modelProfiles, getModelProfile } from "./providers/pr
 export type { ModelProfileId, ProviderId } from "./providers/profiles.js"
 export { createProvider } from "./providers/catalog.js"
 export type { CreateProviderOptions, EndpointProfileId } from "./providers/catalog.js"
+export { ProviderReplayValidationError, DEGRADED_REASONING_PLACEHOLDER } from "./providers/replay-validator.js"
+export {
+  assessProviderReplayability,
+  peekProviderReplay,
+  seedProviderReplayFromEvents,
+  isReplayCompatibleWithProvider,
+} from "./runtime/provider-replay.js"
 
 // ── Tools & Skills ─────────────────────────────────────────────────────────
 export { tool, streamingTool, executeTools, readFile, validateToolArguments } from "./tools/index.js"
@@ -98,7 +105,7 @@ export type {
   ToolCallEvent, ToolChunk, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, DoneEvent, ErrorEvent,
   PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   LLMProvider, RetryConfig, TokenUsage, ProviderToolSpec, ProviderRunState, ProviderReplay,
-  RenderedContext,
+  RenderedContext, ReplayabilityAssessment,
 } from "./types.js"
 export type {
   AgentCapabilityFilter,

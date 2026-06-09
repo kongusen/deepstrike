@@ -31,6 +31,12 @@ from .stream import (
     ToolArgumentRepairedEvent,
 )
 from .replay import ReasoningReplayMixin, assistant_replay_key
+from .replay_validator import (
+    DEGRADED_REASONING_PLACEHOLDER,
+    ProviderReplayValidationError,
+    assess_reasoning_replay,
+    validate_openai_chat_replay,
+)
 from .anthropic import AnthropicProvider
 from .openai import OpenAIProvider
 from .qwen import QwenProvider
@@ -49,6 +55,8 @@ __all__ = [
     "to_anthropic_content", "to_anthropic_messages",
     "to_openai_content", "to_openai_message_params", "ThinkingTagStreamExtractor",
     "ReasoningReplayMixin", "assistant_replay_key",
+    "ProviderReplayValidationError", "validate_openai_chat_replay", "assess_reasoning_replay",
+    "DEGRADED_REASONING_PLACEHOLDER",
     "StreamEvent", "TextDelta", "ThinkingDelta",
     "ToolCallEvent", "ToolDeltaEvent", "ToolSuspendEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent",
     "PermissionRequestEvent", "PermissionResolvedEvent", "PermissionResponse",

@@ -5,7 +5,7 @@ from typing import AsyncIterator
 from openai import AsyncOpenAI
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent, ThinkingDelta
-from .base import RetryConfig, CircuitBreaker, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, to_openai_message_params, ThinkingTagStreamExtractor
+from .base import RetryConfig, CircuitBreaker, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, to_openai_message_params, ThinkingTagStreamExtractor, wire_request_extensions
 from .replay import ReasoningReplayMixin, assistant_replay_key
 from .replay_validator import validate_openai_chat_replay
 
@@ -66,17 +66,35 @@ class OpenAIProvider(ReasoningReplayMixin):
     def _require_non_empty_reasoning_replay_for_tool_turns(self, extensions: dict | None) -> bool:
         return False
 
+    def _degrade_missing_reasoning_replay(self, extensions: dict | None) -> bool:
+        return (extensions or {}).get("degrade_missing_reasoning_replay") is True
+
+    def assess_replayability(self, context: RenderedContext, extensions: dict | None = None) -> dict:
+        """Pre-flight query: would this history validate against this provider with
+        the given extensions, without sending the request? Returns the tool-call
+        ids whose turn lacks the reasoning replay this provider requires, so an
+        embedder can route around the failure before issuing the request. Seed any
+        persisted replay first. ``ok`` is True when no reasoning replay is required."""
+        if not self._require_non_empty_reasoning_replay_for_tool_turns(extensions):
+            return {"ok": True, "offending_call_ids": []}
+        return self.assess_reasoning(context)
+
     def _build_messages(self, context: RenderedContext, extensions: dict | None = None) -> list[dict]:
+        require_reasoning = self._require_non_empty_reasoning_replay_for_tool_turns(extensions)
+        degrade = self._degrade_missing_reasoning_replay(extensions)
         validate_openai_chat_replay(
             context.turns,
             descriptor=self.descriptor(),
-            require_non_empty_reasoning_for_tool_calls=self._require_non_empty_reasoning_replay_for_tool_turns(extensions),
+            require_non_empty_reasoning_for_tool_calls=require_reasoning,
+            degrade_missing_reasoning=degrade,
             replay_for_assistant=lambda content, tool_calls: self._replay_fields.get(
                 assistant_replay_key(content, tool_calls)
             ),
         )
         serialized = to_openai_message_params(context)
-        return self._merge_replay_into_openai_messages(serialized, context)
+        return self._merge_replay_into_openai_messages(
+            serialized, context, degrade_missing_reasoning=require_reasoning and degrade,
+        )
 
     def _build_tools(self, tools: list[ToolSchema]) -> list[dict] | None:
         if not tools:
@@ -107,11 +125,7 @@ class OpenAIProvider(ReasoningReplayMixin):
         extensions: dict | None = None,
     ) -> dict:
         body = {
-            **{
-                k: v
-                for k, v in (extensions or {}).items()
-                if k not in {"model", "messages", "tools", "stream", "stream_options"}
-            },
+            **wire_request_extensions(extensions),
             "model": self._model,
             "messages": messages,
             "stream": stream,
@@ -131,7 +145,7 @@ class OpenAIProvider(ReasoningReplayMixin):
         last_exc = None
         for attempt in range(self._retry.max_retries):
             try:
-                request_extensions = {k: v for k, v in (extensions or {}).items() if k not in {"model", "messages", "tools", "stream", "stream_options"}}
+                request_extensions = wire_request_extensions(extensions)
                 resp = await self._client.chat.completions.create(
                     **request_extensions,
                     model=self._model,
@@ -175,7 +189,7 @@ class OpenAIProvider(ReasoningReplayMixin):
         accumulated_content = ""
         final_tool_calls = []
 
-        request_extensions = {k: v for k, v in (extensions or {}).items() if k not in {"model", "messages", "tools", "stream", "stream_options"}}
+        request_extensions = wire_request_extensions(extensions)
         stream = await self._client.chat.completions.create(
             **request_extensions,
             model=self._model,

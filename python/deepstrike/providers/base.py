@@ -11,6 +11,20 @@ from .stream import StreamEvent
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
+# Internal control flags that steer DeepStrike's own serialization/validation
+# and must never be forwarded to any provider's wire request.
+INTERNAL_EXTENSION_KEYS = frozenset({"degrade_missing_reasoning_replay"})
+
+# Keys the chat-completions transport sets itself; never echo them from extensions.
+_WIRE_RESERVED_KEYS = frozenset({"model", "messages", "tools", "stream", "stream_options"})
+
+
+def wire_request_extensions(extensions: dict | None, *, extra_omit: tuple[str, ...] = ()) -> dict:
+    """Filter caller extensions down to what is safe to send on the wire,
+    dropping transport-reserved keys and DeepStrike-internal control flags."""
+    blocked = _WIRE_RESERVED_KEYS | INTERNAL_EXTENSION_KEYS | frozenset(extra_omit)
+    return {k: v for k, v in (extensions or {}).items() if k not in blocked}
+
 
 def parse_tool_arguments(value: Any) -> dict[str, Any]:
     """Normalize tool arguments to dict, handling str/dict/null."""

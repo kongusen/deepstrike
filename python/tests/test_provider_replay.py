@@ -1,6 +1,6 @@
 import pytest
 
-from deepstrike._kernel import Message, ToolCall, ToolResult
+from deepstrike._kernel import ContentPartObj, Message, ToolCall, ToolResult
 from deepstrike.providers.anthropic import AnthropicProvider
 from deepstrike.providers.base import RenderedContext, to_anthropic_messages
 from deepstrike.providers.openai import OpenAIProvider
@@ -108,7 +108,12 @@ def test_openai_reasoning_replay_roundtrip():
     "reasoning_content": "thought",
   })
   context = RenderedContext(
-    turns=[Message(role="assistant", content="done", tool_calls=[ToolCall("call_1", "lookup", "{}")])],
+    turns=[
+      Message(role="assistant", content="done", tool_calls=[ToolCall("call_1", "lookup", "{}")]),
+      Message(role="tool", content="", content_parts=[
+        ContentPartObj("tool_result", call_id="call_1", output="pong", is_error=False),
+      ]),
+    ],
   )
   msgs = provider._build_messages(context)
   assert msgs[0]["reasoning_content"] == "thought"

@@ -3,6 +3,7 @@ import type { Message, ProviderDescriptor, ProviderReplay, RenderedContext, Tool
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, omitExtensionKeys, ThinkingTagStreamExtractor } from "./base.js"
 import { OpenAIChatAdapter } from "./openai-chat.js"
+import type { ReplayabilityAssessment } from "./replay-validator.js"
 
 const OPENAI_POLICIES: Record<string, RuntimePolicy> = {
   "gpt-5.5":       { maxTurns: 60 },
@@ -71,11 +72,30 @@ export class OpenAIChatProvider implements LLMProvider {
     return false
   }
 
+  protected degradeMissingReasoningReplay(extensions?: Record<string, unknown>): boolean {
+    return extensions?.degradeMissingReasoningReplay === true
+  }
+
   protected buildChatMessages(context: RenderedContext, extensions?: Record<string, unknown>) {
     return this.chat.buildMessages(context, {
       descriptor: this.descriptor(),
       requireNonEmptyReasoningForToolCalls: this.requireNonEmptyReasoningReplayForToolTurns(extensions),
+      degradeMissingReasoning: this.degradeMissingReasoningReplay(extensions),
     })
+  }
+
+  /**
+   * Pre-flight query: would this history validate against this provider with the
+   * given extensions, without sending the request? Lets an embedder route around
+   * a reasoning-replay failure (keep thinking on, disable it, or skip this
+   * candidate) before issuing the request. `ok: true` when this provider does
+   * not require reasoning replay for the current extensions.
+   */
+  assessReplayability(context: RenderedContext, extensions?: Record<string, unknown>): ReplayabilityAssessment {
+    if (!this.requireNonEmptyReasoningReplayForToolTurns(extensions)) {
+      return { ok: true, offendingCallIds: [] }
+    }
+    return this.chat.assessReasoning(context)
   }
 
   peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {

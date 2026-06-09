@@ -11,6 +11,7 @@ __all__ = [
     "is_replay_compatible_with_provider",
     "seed_provider_replay_from_events",
     "peek_provider_replay",
+    "assess_provider_replayability",
 ]
 
 class ProviderReplay(TypedDict, total=False):
@@ -77,3 +78,15 @@ def peek_provider_replay(provider: Any, content: str, tool_calls: list[ToolCall]
     if not callable(peek):
         return None
     return peek(content, tool_calls)
+
+
+def assess_provider_replayability(provider: Any, context: Any, extensions: dict | None = None) -> dict:
+    """Pre-flight query for fallback routing: would ``context`` validate against
+    ``provider`` (with ``extensions``) before the request is sent? Seed any
+    persisted replay first so the assessment reflects what the provider can
+    actually replay. Providers without ``assess_replayability`` (no reasoning-
+    replay requirement) are reported as ``ok``."""
+    assess = getattr(provider, "assess_replayability", None)
+    if not callable(assess):
+        return {"ok": True, "offending_call_ids": []}
+    return assess(context, extensions)

@@ -76,6 +76,19 @@ Provider replay protocol fidelity: the provider layer now owns capture, validati
 - **`MiniMaxProvider` removed** in favor of `MiniMaxAnthropicProvider` (Node + Python exports updated; no alias). Use `MiniMaxOpenAIProvider` for the OpenAI-compatible endpoint.
 - Core `runtime::{synthesize_provider_replay, effective_provider_replay}` removed (provider synthesis is no longer a core responsibility).
 
+## [0.2.8] - 2026-06-09
+
+Provider-replay fallback routing: embedders running a multi-provider fallback chain can now pre-empt and recover from reasoning-replay validation failures instead of failing the whole request. Node + Python SDKs (the only SDKs that carry the OpenAI-compatible reasoning-replay validator).
+
+### Added
+
+- **Pre-flight query** `provider.assessReplayability(context, extensions?)` → `{ ok, offendingCallIds }` (Node) / `assess_replayability(context, extensions)` → `{ ok, offending_call_ids }` (Python): ask, before sending, which assistant tool-call turns lack the non-empty reasoning replay a reasoning-requiring provider (DeepSeek / MiniMax) needs — so a fallback host can keep thinking on, disable it, or skip the candidate. Runtime helper `assessProviderReplayability` / `assess_provider_replayability` treats providers without the hook as `ok`.
+- **Graceful degradation opt-out** `extensions.degradeMissingReasoningReplay` (Node) / `extensions["degrade_missing_reasoning_replay"]` (Python): when a reasoning-requiring tool-call turn has no stored reasoning, serialize it with a minimal placeholder (`DEGRADED_REASONING_PLACEHOLDER`) so a recovery/fallback request goes out degraded-but-successful instead of throwing. Opt-in, never the silent default. The control flag is stripped centrally (`INTERNAL_EXTENSION_KEYS`) and never leaks onto the wire request.
+
+### Fixed
+
+- Strict tool-result pairing now rejects the **missing case** — an assistant `tool_calls` turn whose `tool_call_id`s are never answered before the next assistant/user turn — at the SDK layer, alongside the existing orphan/duplicate checks, instead of surfacing later as a gateway `400`.
+
 ## [0.2.6] - 2026-06-03
 
 Agent OS consolidation release: M1 scheduler authority, M2 resource quotas with enforcement, M3 handle residency and Layer-4 read-time projection, native profile helpers across host SDKs, and configurable memory policy at the WriteMemory/QueryMemory traps.
