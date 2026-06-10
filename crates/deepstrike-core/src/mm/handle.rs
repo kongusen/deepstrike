@@ -131,6 +131,14 @@ impl HandleTable {
         &mut self.handles
     }
 
+    /// Retain only the handles for which `keep` returns true; drop the rest. The GC primitive the
+    /// context manager uses to evict handles whose backing message has left working context
+    /// (archived by compression / dropped on renewal) — bounding the table to the working set
+    /// instead of growing with total session length.
+    pub fn retain(&mut self, keep: impl FnMut(&Handle) -> bool) {
+        self.handles.retain(keep);
+    }
+
     /// Residency of the handle anchored to `source` (e.g. a tool `call_id`), if any.
     /// The renderer uses this to project a tool result without touching the stored message.
     pub fn residency_for_source(&self, source: &str) -> Option<&Residency> {

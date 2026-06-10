@@ -318,7 +318,7 @@ fn execute_capability_command_mount_unmount_replace_pin() {
     assert_eq!(sm.ctx.capabilities.len(), 1);
     let obs = sm.take_observations();
     assert_eq!(obs.len(), 1);
-    if let deepstrike_core::scheduler::state_machine::LoopObservation::CapabilityChanged {
+    if let deepstrike_core::KernelObservation::CapabilityChanged {
         change_kind,
         capability_id,
         version,
@@ -339,7 +339,7 @@ fn execute_capability_command_mount_unmount_replace_pin() {
     assert!(sm.ctx.capabilities.capabilities()[0].is_pinned);
     let obs = sm.take_observations();
     assert_eq!(obs.len(), 1);
-    if let deepstrike_core::scheduler::state_machine::LoopObservation::CapabilityChanged {
+    if let deepstrike_core::KernelObservation::CapabilityChanged {
         change_kind,
         ..
     } = &obs[0] {
@@ -357,7 +357,7 @@ fn execute_capability_command_mount_unmount_replace_pin() {
     assert_eq!(sm.ctx.capabilities.capabilities()[0].description, "new system doctor");
     let obs = sm.take_observations();
     assert_eq!(obs.len(), 1);
-    if let deepstrike_core::scheduler::state_machine::LoopObservation::CapabilityChanged {
+    if let deepstrike_core::KernelObservation::CapabilityChanged {
         change_kind,
         capability_id,
         version,
@@ -410,7 +410,7 @@ fn capability_lease_auto_revokes() {
     assert_eq!(sm.ctx.capabilities.len(), 0);
     let obs = sm.take_observations();
     assert!(obs.iter().any(|o| {
-        if let deepstrike_core::scheduler::state_machine::LoopObservation::CapabilityChanged {
+        if let deepstrike_core::KernelObservation::CapabilityChanged {
             change_kind,
             capability_id,
             ..

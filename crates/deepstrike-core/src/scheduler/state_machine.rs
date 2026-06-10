@@ -8,13 +8,17 @@ use crate::AgentRunSpec;
 use crate::context::manager::ContextManager;
 use crate::governance::pipeline::GovernancePipeline;
 use crate::syscall::{Disposition, Syscall};
-use crate::proc::{AgentProcess, ProcessState};
+use crate::proc::AgentProcess;
 use crate::signals::router::SignalRouter;
 use crate::types::agent::AgentIdentity;
 use crate::types::policy::SignalDisposition;
 use crate::types::result::SubAgentResult;
 use crate::context::pressure::PressureAction;
 use crate::context::renderer::RenderedContext;
+// `pub use` so external integration tests that glob `state_machine::*` resolve the observation
+// type here — exactly as they did for the former `pub enum LoopObservation` this replaced.
+pub use crate::runtime::kernel::KernelObservation;
+use crate::runtime::kernel::KernelPressureAction;
 use crate::runtime::session::RollbackReason;
 use crate::types::message::{
     Content, ContentPart, Message, ToolCall, ToolErrorKind, ToolResult, ToolSchema,
@@ -147,168 +151,6 @@ pub struct TurnCheckpoint {
     pub task_state: Option<crate::context::task_state::TaskState>,
 }
 
-/// One-shot observation emitted by the kernel during `feed`.
-/// SDK drains this between calls for telemetry/UI updates.
-#[derive(Debug, Clone)]
-pub enum LoopObservation {
-    Compressed {
-        action: PressureAction,
-        rho_after: f64,
-        summary: Option<String>,
-        archived: Vec<Message>,
-    },
-    /// Working memory paged out to long-term — SDK persists `archived` and optional summary.
-    PageOut {
-        turn: u32,
-        action: PressureAction,
-        rho_after: f64,
-        summary: Option<String>,
-        archived: Vec<Message>,
-        tier_hint: String,
-    },
-    /// Kernel requests SDK to fetch long-term memory before executing a meta-tool.
-    PageInRequested {
-        turn: u32,
-        call_id: String,
-        tool: String,
-        query: String,
-        top_k: u32,
-    },
-    /// Context renewal fired — a new sprint started to carry the conversation forward.
-    Renewed { sprint: u32 },
-    /// Rollback event indicating a turn execution failure led to restoring state
-    Rollbacked {
-        turn: u32,
-        checkpoint_history_len: u32,
-        reason: RollbackReason,
-    },
-    /// Capabilities dynamically updated
-    CapabilityChanged {
-        turn: u32,
-        added: Vec<String>,
-        removed: Vec<String>,
-        change_kind: Option<String>,
-        capability_id: Option<String>,
-        version: Option<String>,
-        mounted_by: Option<String>,
-        mount_reason: Option<String>,
-    },
-    /// Milestone phase satisfied — capabilities unlocked, phase advanced.
-    MilestoneAdvanced {
-        turn: u32,
-        phase_id: String,
-        capabilities_unlocked: Vec<String>,
-    },
-    /// Milestone assertion failed — loop continues without phase advancement.
-    MilestoneBlocked {
-        turn: u32,
-        phase_id: String,
-        reason: String,
-    },
-    /// Evidence collected by the verifier during milestone evaluation.
-    MilestoneEvidence {
-        turn: u32,
-        phase_id: String,
-        evidence: Vec<String>,
-    },
-    /// Checkpoint taken at the start of a turn transaction (before LLM call).
-    CheckpointTaken {
-        turn: u32,
-        history_len: u32,
-    },
-    /// Kernel process table changed for a spawned sub-agent.
-    AgentProcessChanged {
-        turn: u32,
-        agent_id: String,
-        parent_session_id: String,
-        role: crate::types::agent::AgentRole,
-        isolation: crate::types::agent::AgentIsolation,
-        context_inheritance: crate::types::agent::ContextInheritance,
-        state: ProcessState,
-        permitted_capability_ids: Vec<String>,
-        result_termination: Option<String>,
-    },
-    /// W0-ABI: a workflow batch was spawned. Carries each node's spawn descriptor (agent id +
-    /// goal + role/isolation/inheritance) so the SDK can run the nodes the kernel generated.
-    WorkflowBatchSpawned {
-        turn: u32,
-        nodes: Vec<crate::scheduler::workflow_run::WorkflowSpawnInfo>,
-    },
-    /// W0-ABI: a workflow finished (all nodes terminal, or stalled by a gated dependency).
-    WorkflowCompleted {
-        turn: u32,
-        completed: Vec<String>,
-        failed: Vec<String>,
-    },
-    /// A tool call requires user approval (governance `AskUser` verdict).
-    /// The kernel does not block it — the SDK is responsible for obtaining
-    /// approval before executing the named call.
-    ToolGated {
-        turn: u32,
-        call_id: String,
-        tool: String,
-        reason: String,
-    },
-    /// An inbound signal was routed by the in-kernel attention policy.
-    /// `disposition` is the kernel's decision; `queue_depth` is the post-routing
-    /// queue length (signals awaiting a turn boundary).
-    SignalDisposed {
-        turn: u32,
-        signal_id: String,
-        disposition: String,
-        queue_depth: u32,
-    },
-    /// Budget axis exhausted (turns / tokens / wall-time). Emitted alongside the
-    /// pending-termination path; SDK uses this for telemetry.
-    BudgetExceeded {
-        turn: u32,
-        budget: String,
-    },
-    /// Loop entered `Suspended` state (AskUser / SubAgentAwait / External).
-    Suspended {
-        turn: u32,
-        reason: String,
-        /// call IDs awaiting approval (for AskUser).
-        #[allow(dead_code)]
-        pending_calls: Vec<String>,
-    },
-    /// Loop resumed from `Suspended` state.
-    Resumed {
-        turn: u32,
-        approved: Vec<String>,
-        denied: Vec<String>,
-    },
-    /// Memory entry written successfully (Phase 7).
-    MemoryWritten {
-        turn: u32,
-        memory_id: String,
-        memory_kind: String,
-        size_bytes: u32,
-    },
-    /// Memory validation failed (Phase 7).
-    MemoryValidationFailed {
-        turn: u32,
-        memory_id: String,
-        error: String,
-    },
-    /// Memory query request (Phase 7).
-    MemoryQueried {
-        turn: u32,
-        query_context: String,
-        requested_k: usize,
-        requires_async_response: bool,
-    },
-    /// Large tool result spooled to disk (Layer 1).
-    LargeResultSpooled {
-        turn: u32,
-        call_id: String,
-        tool: String,
-        original_size: u32,
-        preview_size: u32,
-        spool_ref: Option<String>,
-    },
-}
-
 /// Pure state machine for the L* execution loop. No I/O — only state transitions.
 ///
 /// Internal engine backing [`crate::runtime::KernelRuntime`]. Exposed for in-crate
@@ -319,7 +161,7 @@ pub struct LoopStateMachine {
     pub turn: u32,
     pub ctx: ContextManager,
     pub tools: Vec<ToolSchema>,
-    pub observations: Vec<LoopObservation>,
+    pub observations: Vec<KernelObservation>,
     policy: LoopPolicy,
     total_tokens: u64,
     /// When set, the next LLM call strips tools to force a text response,
@@ -538,7 +380,7 @@ impl LoopStateMachine {
         let summary = signal.summary.to_string();
         let disposition = router.ingest(signal, is_running);
         let queue_depth = router.depth() as u32;
-        self.observations.push(LoopObservation::SignalDisposed {
+        self.observations.push(KernelObservation::SignalDisposed {
             turn: self.turn,
             signal_id,
             disposition: disposition_label(&disposition).to_string(),
@@ -746,7 +588,7 @@ impl LoopStateMachine {
             .map(|(id, _, reason)| (id.clone(), reason.clone()))
             .collect();
         for (call_id, tool, reason) in &gated {
-            self.observations.push(LoopObservation::ToolGated {
+            self.observations.push(KernelObservation::ToolGated {
                 turn: self.turn,
                 call_id: call_id.clone(),
                 tool: tool.clone(),
@@ -758,7 +600,7 @@ impl LoopStateMachine {
             gated_reasons,
         });
         self.set_lifecycle(TaskState::Suspended, Some(WaitReason::Approval));
-        self.observations.push(LoopObservation::Suspended {
+        self.observations.push(KernelObservation::Suspended {
             turn: self.turn,
             reason: "ask_user".to_string(),
             pending_calls,
@@ -789,7 +631,7 @@ impl LoopStateMachine {
             return LoopAction::AwaitingResume;
         }
 
-        self.observations.push(LoopObservation::Resumed {
+        self.observations.push(KernelObservation::Resumed {
             turn: self.turn,
             approved: approved_calls.clone(),
             denied: denied_calls.clone(),
@@ -862,8 +704,8 @@ impl LoopStateMachine {
         archived: Vec<Message>,
     ) {
         let rho_after = self.ctx.rho();
-        self.observations.push(LoopObservation::Compressed {
-            action,
+        self.observations.push(KernelObservation::Compressed {
+            action: KernelPressureAction::from(action),
             rho_after,
             summary: summary.clone(),
             archived: archived.clone(),
@@ -872,9 +714,9 @@ impl LoopStateMachine {
             return;
         }
         let tier_hint = tier_hint_for_compress(action).label().to_string();
-        self.observations.push(LoopObservation::PageOut {
+        self.observations.push(KernelObservation::PageOut {
             turn: self.turn,
-            action,
+            action: KernelPressureAction::from(action),
             rho_after,
             summary,
             archived,
@@ -906,7 +748,7 @@ impl LoopStateMachine {
 
     fn emit_page_in_requested(&mut self, calls: &[ToolCall]) {
         for req in page_in_requests_from_calls(calls) {
-            self.observations.push(LoopObservation::PageInRequested {
+            self.observations.push(KernelObservation::PageInRequested {
                 turn: self.turn,
                 call_id: req.call_id,
                 tool: req.tool,
@@ -1086,7 +928,7 @@ impl LoopStateMachine {
                         self.ctx.config.spool_preview_bytes,
                     ) {
                         Some(decision) => {
-                            self.observations.push(LoopObservation::LargeResultSpooled {
+                            self.observations.push(KernelObservation::LargeResultSpooled {
                                 turn: self.turn,
                                 call_id: r.call_id.to_string(),
                                 // ToolResult carries no tool name; the SDK maps call_id -> tool.
@@ -1132,7 +974,7 @@ impl LoopStateMachine {
                         TerminationReason::Timeout => "wall_time",
                         _ => "token_budget",
                     };
-                    self.observations.push(LoopObservation::BudgetExceeded {
+                    self.observations.push(KernelObservation::BudgetExceeded {
                         turn: self.turn,
                         budget: budget.to_string(),
                     });
@@ -1169,7 +1011,13 @@ impl LoopStateMachine {
                 // start a new sprint — carry forward system + memory + last N history turns.
                 if self.ctx.should_renew() {
                     self.ctx.renew();
-                    self.observations.push(LoopObservation::Renewed {
+                    // A new sprint is a session boundary for signal identity: clear the dedup set so
+                    // it cannot grow unbounded across a long run, and so a signal seen in a prior
+                    // sprint may legitimately re-fire in the new one.
+                    if let Some(router) = self.signal_router.as_mut() {
+                        router.clear_dedup();
+                    }
+                    self.observations.push(KernelObservation::Renewed {
                         sprint: self.ctx.sprint,
                     });
                 }
@@ -1210,7 +1058,7 @@ impl LoopStateMachine {
 
 
     /// Drain observations emitted during the last `start`/`feed` call.
-    pub fn take_observations(&mut self) -> Vec<LoopObservation> {
+    pub fn take_observations(&mut self) -> Vec<KernelObservation> {
         std::mem::take(&mut self.observations)
     }
 
@@ -1266,7 +1114,7 @@ impl LoopStateMachine {
             TaskState::Suspended,
             Some(WaitReason::SubAgentJoin(manifest.agent_id.clone())),
         );
-        self.observations.push(LoopObservation::Suspended {
+        self.observations.push(KernelObservation::Suspended {
             turn: self.turn,
             reason: "sub_agent_await".to_string(),
             pending_calls: vec![agent_id],
@@ -1323,7 +1171,7 @@ impl LoopStateMachine {
                 agent_ids.retain(|id| id != &agent_id);
                 if agent_ids.is_empty() {
                     self.suspend_state = None;
-                    self.observations.push(LoopObservation::Resumed {
+                    self.observations.push(KernelObservation::Resumed {
                         turn: self.turn,
                         approved: vec![agent_id],
                         denied: Vec::new(),
@@ -1453,7 +1301,7 @@ impl LoopStateMachine {
         }
 
         // W0-ABI: tell the SDK which nodes to run (with their goals) before suspending.
-        self.observations.push(LoopObservation::WorkflowBatchSpawned {
+        self.observations.push(KernelObservation::WorkflowBatchSpawned {
             turn: self.turn,
             nodes: spawned_infos,
         });
@@ -1462,7 +1310,7 @@ impl LoopStateMachine {
             agent_ids: spawned_ids.clone(),
         });
         self.set_lifecycle(TaskState::Suspended, Some(wait));
-        self.observations.push(LoopObservation::Suspended {
+        self.observations.push(KernelObservation::Suspended {
             turn: self.turn,
             reason: "workflow_batch".to_string(),
             pending_calls: spawned_ids,
@@ -1475,7 +1323,7 @@ impl LoopStateMachine {
     fn finish_workflow(&mut self) -> LoopAction {
         if let Some(run) = self.workflow.as_ref() {
             let (completed, failed) = run.outcome();
-            self.observations.push(LoopObservation::WorkflowCompleted {
+            self.observations.push(KernelObservation::WorkflowCompleted {
                 turn: self.turn,
                 completed,
                 failed,
@@ -1514,7 +1362,7 @@ impl LoopStateMachine {
             .unwrap_or_default();
         if next.is_empty() {
             // Workflow finished (all nodes terminal, or stalled by a gated dependency).
-            self.observations.push(LoopObservation::Resumed {
+            self.observations.push(KernelObservation::Resumed {
                 turn: self.turn,
                 approved: vec![agent_id],
                 denied: Vec::new(),
@@ -1548,14 +1396,17 @@ impl LoopStateMachine {
     }
 
     fn push_agent_process_changed(&mut self, process: AgentProcess) {
-        self.observations.push(LoopObservation::AgentProcessChanged {
+        // Wire form: role/isolation/inheritance are debug-lowercase (`readonly`, `systemonly`),
+        // state via `label()`. Preserved verbatim from the former `From<LoopObservation>` so the
+        // observation merge stays byte-identical (locked by `agent_process_changed_locks_*` test).
+        self.observations.push(KernelObservation::AgentProcessChanged {
             turn: self.turn,
             agent_id: process.agent_id.to_string(),
             parent_session_id: process.parent_session_id.to_string(),
-            role: process.role,
-            isolation: process.isolation,
-            context_inheritance: process.context_inheritance,
-            state: process.state,
+            role: format!("{:?}", process.role).to_lowercase(),
+            isolation: format!("{:?}", process.isolation).to_lowercase(),
+            context_inheritance: format!("{:?}", process.context_inheritance).to_lowercase(),
+            state: process.state.label().to_string(),
             permitted_capability_ids: process
                 .permitted_capability_ids
                 .iter()
@@ -1597,7 +1448,7 @@ impl LoopStateMachine {
         self.checkpoint.history_len = self.ctx.partitions.history.messages.len();
         self.checkpoint.signals_len = self.ctx.partitions.signals.len();
         self.checkpoint.task_state = Some(self.ctx.partitions.task_state.clone());
-        self.observations.push(LoopObservation::CheckpointTaken {
+        self.observations.push(KernelObservation::CheckpointTaken {
             turn: self.turn,
             history_len: self.checkpoint.history_len as u32,
         });
@@ -1639,10 +1490,10 @@ impl LoopStateMachine {
         if let Some(ref state) = self.checkpoint.task_state {
             self.ctx.partitions.task_state = state.clone();
         }
-        self.observations.push(LoopObservation::Rollbacked {
+        self.observations.push(KernelObservation::Rollbacked {
             turn: self.turn,
             checkpoint_history_len: self.checkpoint.history_len as u32,
-            reason,
+            reason: Some(reason),
         });
     }
 
@@ -1700,7 +1551,7 @@ impl LoopStateMachine {
         mounted_by: Option<String>,
         mount_reason: Option<String>,
     ) {
-        self.observations.push(LoopObservation::CapabilityChanged {
+        self.observations.push(KernelObservation::CapabilityChanged {
             turn: self.turn,
             added,
             removed,
@@ -1858,7 +1709,7 @@ impl LoopStateMachine {
                             Some("phase_advance".to_string()),
                         );
                     }
-                    self.observations.push(LoopObservation::MilestoneAdvanced {
+                    self.observations.push(KernelObservation::MilestoneAdvanced {
                         turn: self.turn,
                         phase_id: phase.id.clone(),
                         capabilities_unlocked: unlocked,
@@ -1923,7 +1774,7 @@ impl LoopStateMachine {
                 use crate::types::milestone::MilestoneRollbackPolicy;
                 match rollback_policy {
                     MilestoneRollbackPolicy::Terminate => {
-                        self.observations.push(LoopObservation::MilestoneBlocked {
+                        self.observations.push(KernelObservation::MilestoneBlocked {
                             turn: self.turn,
                             phase_id: result.phase_id.clone(),
                             reason: format!("retry budget exhausted: {reason}"),
@@ -1931,7 +1782,7 @@ impl LoopStateMachine {
                         return self.terminate(TerminationReason::MilestoneExceeded, None);
                     }
                     MilestoneRollbackPolicy::Rollback => {
-                        self.observations.push(LoopObservation::MilestoneBlocked {
+                        self.observations.push(KernelObservation::MilestoneBlocked {
                             turn: self.turn,
                             phase_id: result.phase_id.clone(),
                             reason: format!("retry budget exhausted (rollback): {reason}"),
@@ -1954,7 +1805,7 @@ impl LoopStateMachine {
                 "[MILESTONE BLOCKED: {} — {}. Address the criteria and try again.]",
                 result.phase_id, reason
             ));
-            self.observations.push(LoopObservation::MilestoneBlocked {
+            self.observations.push(KernelObservation::MilestoneBlocked {
                 turn: self.turn,
                 phase_id: result.phase_id,
                 reason: reason.to_string(),

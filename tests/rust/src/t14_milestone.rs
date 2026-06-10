@@ -131,7 +131,7 @@ fn retry_policy_terminate_on_exceed() {
         "first fail should continue (CallLLM), not terminate"
     );
     assert!(
-        obs1.iter().any(|o| matches!(o, LoopObservation::MilestoneBlocked { .. })),
+        obs1.iter().any(|o| matches!(o, KernelObservation::MilestoneBlocked { .. })),
         "first fail should emit MilestoneBlocked, got: {obs1:?}"
     );
 
@@ -192,7 +192,7 @@ fn retry_policy_rollback_on_exceed() {
     });
     let obs = sm.take_observations();
     assert!(
-        obs.iter().any(|o| matches!(o, LoopObservation::Rollbacked { .. })),
+        obs.iter().any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
         "should rollback when MilestoneRollbackPolicy::Rollback and budget exceeded"
     );
 }
@@ -241,14 +241,14 @@ fn capability_unlock_has_milestone_provenance() {
 
     let obs = sm.take_observations();
     let capability_changed = obs.iter().find(|o| {
-        matches!(o, LoopObservation::CapabilityChanged { mounted_by: Some(mb), .. } if mb.starts_with("milestone:"))
+        matches!(o, KernelObservation::CapabilityChanged { mounted_by: Some(mb), .. } if mb.starts_with("milestone:"))
     });
     assert!(
         capability_changed.is_some(),
         "capability unlock should carry mounted_by = 'milestone:{{phase_id}}'"
     );
 
-    if let Some(LoopObservation::CapabilityChanged { mounted_by, mount_reason, .. }) = capability_changed {
+    if let Some(KernelObservation::CapabilityChanged { mounted_by, mount_reason, .. }) = capability_changed {
         assert_eq!(mounted_by.as_deref(), Some("milestone:plan"));
         assert_eq!(mount_reason.as_deref(), Some("phase_advance"));
     }

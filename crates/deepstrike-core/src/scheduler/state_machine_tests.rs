@@ -68,7 +68,7 @@
         assert!(sm.observations.iter().any(|o| {
             matches!(
                 o,
-                LoopObservation::PageInRequested { tool, query, .. }
+                KernelObservation::PageInRequested { tool, query, .. }
                     if tool == "memory" && query == "archived"
             )
         }));
@@ -124,8 +124,8 @@
         assert!(sm.observations.iter().any(|o| {
             matches!(
                 o,
-                LoopObservation::Rollbacked {
-                    reason: RollbackReason::Timeout,
+                KernelObservation::Rollbacked {
+                    reason: Some(RollbackReason::Timeout),
                     ..
                 }
             )
@@ -223,7 +223,7 @@
         let obs = sm.take_observations();
         assert!(
             obs.iter()
-                .any(|o| matches!(o, LoopObservation::Compressed { .. }))
+                .any(|o| matches!(o, KernelObservation::Compressed { .. }))
         );
     }
 
@@ -250,7 +250,7 @@
         let obs = sm.take_observations();
         assert!(
             obs.iter()
-                .any(|o| matches!(o, LoopObservation::Renewed { .. }))
+                .any(|o| matches!(o, KernelObservation::Renewed { .. }))
         );
     }
 
@@ -268,7 +268,7 @@
         }
         assert!(sm.force_compact());
         let obs = sm.take_observations();
-        assert!(obs.iter().any(|o| matches!(o, LoopObservation::PageOut { .. })));
+        assert!(obs.iter().any(|o| matches!(o, KernelObservation::PageOut { .. })));
     }
 
     // ---- Layer 5: AutoCompact → semantic page-out (SDK does the LLM summary) ----
@@ -292,7 +292,7 @@
         let obs = sm.take_observations();
         let semantic_pageout = obs.iter().any(|o| matches!(
             o,
-            LoopObservation::PageOut { tier_hint, archived, action: PressureAction::AutoCompact, .. }
+            KernelObservation::PageOut { tier_hint, archived, action: KernelPressureAction::AutoCompact, .. }
                 if tier_hint == "semantic" && !archived.is_empty()
         ));
         assert!(
@@ -317,7 +317,7 @@
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(
             o,
-            LoopObservation::PageInRequested { tool, query, .. }
+            KernelObservation::PageInRequested { tool, query, .. }
             if tool == "memory" && query == "bugs"
         )));
     }
@@ -480,7 +480,7 @@
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(
             o,
-            LoopObservation::MilestoneAdvanced { phase_id, .. } if phase_id == "plan"
+            KernelObservation::MilestoneAdvanced { phase_id, .. } if phase_id == "plan"
         )));
     }
 
@@ -509,7 +509,7 @@
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(
             o,
-            LoopObservation::MilestoneBlocked { phase_id, reason, .. }
+            KernelObservation::MilestoneBlocked { phase_id, reason, .. }
             if phase_id == "plan" && reason.contains("missing evidence")
         )));
     }
@@ -553,7 +553,7 @@
         // And capability_unlocked list in observation
         let obs = sm.take_observations();
         let advanced = obs.iter().find_map(|o| {
-            if let LoopObservation::MilestoneAdvanced {
+            if let KernelObservation::MilestoneAdvanced {
                 capabilities_unlocked,
                 ..
             } = o
@@ -619,7 +619,7 @@
 
         let obs = sm.take_observations();
         assert_eq!(obs.len(), 1);
-        if let LoopObservation::CapabilityChanged {
+        if let KernelObservation::CapabilityChanged {
             turn,
             added,
             removed,
@@ -642,7 +642,7 @@
         sm.unmount_capability(crate::types::capability::CapabilityKind::Tool, "test_tool");
         let obs2 = sm.take_observations();
         assert_eq!(obs2.len(), 1);
-        if let LoopObservation::CapabilityChanged {
+        if let KernelObservation::CapabilityChanged {
             turn,
             added,
             removed,
@@ -720,8 +720,8 @@
         assert!(matches!(action, LoopAction::AwaitingResume));
         assert!(sm.is_suspended());
         let obs = sm.take_observations();
-        assert!(obs.iter().any(|o| matches!(o, LoopObservation::Suspended { .. })));
-        assert!(obs.iter().any(|o| matches!(o, LoopObservation::ToolGated { .. })));
+        assert!(obs.iter().any(|o| matches!(o, KernelObservation::Suspended { .. })));
+        assert!(obs.iter().any(|o| matches!(o, KernelObservation::ToolGated { .. })));
     }
 
     #[test]
@@ -743,7 +743,7 @@
             other => panic!("expected ExecuteTools, got {other:?}"),
         }
         let obs = sm.take_observations();
-        assert!(obs.iter().any(|o| matches!(o, LoopObservation::Resumed { .. })));
+        assert!(obs.iter().any(|o| matches!(o, KernelObservation::Resumed { .. })));
     }
 
     #[test]
@@ -797,7 +797,7 @@
         let resumed = sm.feed(LoopEvent::SubAgentCompleted { result });
         assert!(matches!(resumed, LoopAction::CallLLM { .. }));
         let obs = sm.take_observations();
-        assert!(obs.iter().any(|o| matches!(o, LoopObservation::Resumed { .. })));
+        assert!(obs.iter().any(|o| matches!(o, KernelObservation::Resumed { .. })));
         assert_eq!(
             sm.agent_process("child")
                 .expect("process")
@@ -819,7 +819,7 @@
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(
             o,
-            LoopObservation::BudgetExceeded { budget, .. } if budget == "max_turns"
+            KernelObservation::BudgetExceeded { budget, .. } if budget == "max_turns"
         )));
         let done = sm.feed(LoopEvent::LLMResponse {
             message: Message::assistant("final"),
@@ -952,7 +952,7 @@
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(
             o,
-            LoopObservation::BudgetExceeded { budget, .. } if budget == "token_budget"
+            KernelObservation::BudgetExceeded { budget, .. } if budget == "token_budget"
         )));
         let done = sm.feed(LoopEvent::LLMResponse {
             message: Message::assistant("final"),
@@ -980,7 +980,7 @@
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(
             o,
-            LoopObservation::BudgetExceeded { budget, .. } if budget == "wall_time"
+            KernelObservation::BudgetExceeded { budget, .. } if budget == "wall_time"
         )));
         let done = sm.feed(LoopEvent::LLMResponse {
             message: Message::assistant("final"),
@@ -1170,7 +1170,7 @@
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(
             o,
-            LoopObservation::LargeResultSpooled { call_id, original_size, spool_ref: None, .. }
+            KernelObservation::LargeResultSpooled { call_id, original_size, spool_ref: None, .. }
                 if call_id == "big" && *original_size == (60 * 1024)
         )));
 
@@ -1213,7 +1213,7 @@
         let obs = sm.take_observations();
         assert!(!obs
             .iter()
-            .any(|o| matches!(o, LoopObservation::LargeResultSpooled { .. })));
+            .any(|o| matches!(o, KernelObservation::LargeResultSpooled { .. })));
     }
 
     // ---- M1c: canonical TaskTable mirrors ProcessTable ----------------------
@@ -1286,9 +1286,9 @@
         }
     }
 
-    fn count_spawned(obs: &[LoopObservation]) -> usize {
+    fn count_spawned(obs: &[KernelObservation]) -> usize {
         obs.iter()
-            .filter(|o| matches!(o, LoopObservation::AgentProcessChanged { state, .. } if *state == crate::proc::ProcessState::Running))
+            .filter(|o| matches!(o, KernelObservation::AgentProcessChanged { state, .. } if state == "running"))
             .count()
     }
 
@@ -1317,7 +1317,7 @@
         let obs = sm.take_observations();
         assert_eq!(count_spawned(&obs), 3);
         let suspended = obs.iter().find_map(|o| match o {
-            LoopObservation::Suspended {
+            KernelObservation::Suspended {
                 reason,
                 pending_calls,
                 ..
@@ -1363,7 +1363,7 @@
         assert!(
             sm.take_observations()
                 .iter()
-                .any(|o| matches!(o, LoopObservation::Resumed { .. }))
+                .any(|o| matches!(o, KernelObservation::Resumed { .. }))
         );
     }
 

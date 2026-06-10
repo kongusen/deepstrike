@@ -13,7 +13,7 @@ use crate::context::task_state::TaskUpdate;
 use crate::context::token_engine::ContextTokenEngine;
 use crate::runtime::session::RollbackReason;
 use crate::scheduler::policy::LoopPolicy;
-use crate::scheduler::state_machine::{LoopAction, LoopEvent, LoopObservation, LoopStateMachine};
+use crate::scheduler::state_machine::{LoopAction, LoopEvent, LoopStateMachine};
 use crate::types::agent::AgentRunSpec;
 use crate::types::capability::{CapabilityCommand, CapabilityDescriptor, CapabilityKind};
 use crate::types::message::{Message, ToolCall, ToolResult, ToolSchema};
@@ -303,19 +303,19 @@ pub struct KernelStep {
 }
 
 impl KernelStep {
-    fn empty(observations: Vec<LoopObservation>) -> Self {
+    fn empty(observations: Vec<KernelObservation>) -> Self {
         Self {
             version: KERNEL_ABI_VERSION,
             actions: Vec::new(),
-            observations: observations.into_iter().map(Into::into).collect(),
+            observations,
         }
     }
 
-    fn single(action: LoopAction, observations: Vec<LoopObservation>) -> Self {
+    fn single(action: LoopAction, observations: Vec<KernelObservation>) -> Self {
         Self {
             version: KERNEL_ABI_VERSION,
             actions: vec![action.into()],
-            observations: observations.into_iter().map(Into::into).collect(),
+            observations,
         }
     }
 }
@@ -532,221 +532,6 @@ pub enum KernelObservation {
         preview_size: u32,
         spool_ref: Option<String>,
     },
-}
-
-impl From<LoopObservation> for KernelObservation {
-    fn from(observation: LoopObservation) -> Self {
-        match observation {
-            LoopObservation::Compressed {
-                action,
-                rho_after,
-                summary,
-                archived,
-            } => Self::Compressed {
-                action: action.into(),
-                rho_after,
-                summary,
-                archived,
-            },
-            LoopObservation::Renewed { sprint } => Self::Renewed { sprint },
-            LoopObservation::Rollbacked {
-                turn,
-                checkpoint_history_len,
-                reason,
-            } => Self::Rollbacked {
-                turn,
-                checkpoint_history_len,
-                reason: Some(reason),
-            },
-            LoopObservation::CapabilityChanged {
-                turn,
-                added,
-                removed,
-                change_kind,
-                capability_id,
-                version,
-                mounted_by,
-                mount_reason,
-            } => Self::CapabilityChanged {
-                turn,
-                added,
-                removed,
-                change_kind,
-                capability_id,
-                version,
-                mounted_by,
-                mount_reason,
-            },
-            LoopObservation::MilestoneAdvanced {
-                turn,
-                phase_id,
-                capabilities_unlocked,
-            } => Self::MilestoneAdvanced {
-                turn,
-                phase_id,
-                capabilities_unlocked,
-            },
-            LoopObservation::MilestoneBlocked {
-                turn,
-                phase_id,
-                reason,
-            } => Self::MilestoneBlocked {
-                turn,
-                phase_id,
-                reason,
-            },
-            LoopObservation::MilestoneEvidence {
-                turn,
-                phase_id,
-                evidence,
-            } => Self::MilestoneEvidence {
-                turn,
-                phase_id,
-                evidence,
-            },
-            LoopObservation::CheckpointTaken { turn, history_len } => {
-                Self::CheckpointTaken { turn, history_len }
-            }
-            LoopObservation::AgentProcessChanged {
-                turn,
-                agent_id,
-                parent_session_id,
-                role,
-                isolation,
-                context_inheritance,
-                state,
-                permitted_capability_ids,
-                result_termination,
-            } => Self::AgentProcessChanged {
-                turn,
-                agent_id,
-                parent_session_id,
-                role: format!("{role:?}").to_lowercase(),
-                isolation: format!("{isolation:?}").to_lowercase(),
-                context_inheritance: format!("{context_inheritance:?}").to_lowercase(),
-                state: state.label().to_string(),
-                permitted_capability_ids,
-                result_termination,
-            },
-            LoopObservation::WorkflowBatchSpawned { turn, nodes } => {
-                Self::WorkflowBatchSpawned { turn, nodes }
-            }
-            LoopObservation::WorkflowCompleted {
-                turn,
-                completed,
-                failed,
-            } => Self::WorkflowCompleted {
-                turn,
-                completed,
-                failed,
-            },
-            LoopObservation::ToolGated {
-                turn,
-                call_id,
-                tool,
-                reason,
-            } => Self::ToolGated {
-                turn,
-                call_id,
-                tool,
-                reason,
-            },
-            LoopObservation::SignalDisposed {
-                turn,
-                signal_id,
-                disposition,
-                queue_depth,
-            } => Self::SignalDisposed {
-                turn,
-                signal_id,
-                disposition,
-                queue_depth,
-            },
-            LoopObservation::BudgetExceeded { turn, budget } => {
-                Self::BudgetExceeded { turn, budget }
-            }
-            LoopObservation::Suspended { turn, reason, pending_calls } => {
-                Self::Suspended { turn, reason, pending_calls }
-            }
-            LoopObservation::Resumed { turn, approved, denied } => {
-                Self::Resumed { turn, approved, denied }
-            }
-            LoopObservation::PageOut {
-                turn,
-                action,
-                rho_after,
-                summary,
-                archived,
-                tier_hint,
-            } => Self::PageOut {
-                turn,
-                action: action.into(),
-                rho_after,
-                summary,
-                archived,
-                tier_hint,
-            },
-            LoopObservation::PageInRequested {
-                turn,
-                call_id,
-                tool,
-                query,
-                top_k,
-            } => Self::PageInRequested {
-                turn,
-                call_id,
-                tool,
-                query,
-                top_k,
-            },
-            LoopObservation::MemoryWritten {
-                turn,
-                memory_id,
-                memory_kind,
-                size_bytes,
-            } => Self::MemoryWritten {
-                turn,
-                memory_id,
-                memory_kind,
-                size_bytes,
-            },
-            LoopObservation::MemoryValidationFailed {
-                turn,
-                memory_id,
-                error,
-            } => Self::MemoryValidationFailed {
-                turn,
-                memory_id,
-                error,
-            },
-            LoopObservation::MemoryQueried {
-                turn,
-                query_context,
-                requested_k,
-                requires_async_response,
-            } => Self::MemoryQueried {
-                turn,
-                query_context,
-                requested_k,
-                requires_async_response,
-            },
-            LoopObservation::LargeResultSpooled {
-                turn,
-                call_id,
-                tool,
-                original_size,
-                preview_size,
-                spool_ref,
-            } => Self::LargeResultSpooled {
-                turn,
-                call_id,
-                tool,
-                original_size,
-                preview_size,
-                spool_ref,
-            },
-        }
-    }
 }
 
 /// Transaction-boundary observations emitted by the kernel.
@@ -1071,7 +856,7 @@ impl KernelRuntime {
                         _ => "memory write not permitted".to_string(),
                     };
                     self.sm.observations.push(
-                        crate::scheduler::state_machine::LoopObservation::MemoryValidationFailed {
+                        KernelObservation::MemoryValidationFailed {
                             turn,
                             memory_id: memory.metadata.name.clone(),
                             error,
@@ -1090,7 +875,7 @@ impl KernelRuntime {
                 match validation_result {
                     Ok(()) => {
                         // Emit observation for SDK to perform I/O
-                        self.sm.observations.push(crate::scheduler::state_machine::LoopObservation::MemoryWritten {
+                        self.sm.observations.push(KernelObservation::MemoryWritten {
                             turn,
                             memory_id: memory.metadata.name.clone(),
                             memory_kind: memory.metadata.kind.map(|k| k.label()).unwrap_or_else(|| {
@@ -1109,7 +894,7 @@ impl KernelRuntime {
                             MemoryValidationError::InvalidKind { kind } => format!("Invalid kind: {}", kind),
                             MemoryValidationError::NameTooLong { length, limit } => format!("Name too long: {} chars (limit: {})", length, limit),
                         };
-                        self.sm.observations.push(crate::scheduler::state_machine::LoopObservation::MemoryValidationFailed {
+                        self.sm.observations.push(KernelObservation::MemoryValidationFailed {
                             turn,
                             memory_id: memory.metadata.name.clone(),
                             error: error_msg,
@@ -1127,7 +912,7 @@ impl KernelRuntime {
                     Some(p) => p.clamp_top_k(query.top_k),
                     None => query.top_k,
                 };
-                self.sm.observations.push(crate::scheduler::state_machine::LoopObservation::MemoryQueried {
+                self.sm.observations.push(KernelObservation::MemoryQueried {
                     turn,
                     query_context: query.current_context.clone(),
                     requested_k,
@@ -1368,6 +1153,48 @@ mod tests {
         }));
         assert!(runtime.state_machine().agent_process("worker").is_some());
         assert!(runtime.state_machine().is_suspended());
+    }
+
+    /// Wire-format lock for `agent_process_changed` multi-word enum values. The kernel stringifies
+    /// `isolation`/`context_inheritance` as debug-lowercase (`readonly`/`systemonly`), which is NOT
+    /// the same as serde snake_case (`read_only`/`system_only`) — and no golden fixture covers these
+    /// variants. This pins the current bytes so the observation refactor cannot silently change them.
+    #[test]
+    fn agent_process_changed_locks_multiword_wire_form() {
+        use crate::types::agent::{AgentIdentity, AgentIsolation, AgentRole, AgentRunSpec};
+
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+            task: RuntimeTask::new("parent task"),
+            run_spec: None,
+        }));
+        runtime.state_machine_mut().take_observations();
+
+        // Verify role → SystemOnly inheritance; explicit ReadOnly isolation. Both are multi-word.
+        let spec = AgentRunSpec::new(
+            AgentIdentity::sub_agent("worker", "worker-session"),
+            AgentRole::Verify,
+            "do work",
+        )
+        .with_isolation(AgentIsolation::ReadOnly);
+        let step = runtime.step(KernelInput::new(KernelInputEvent::SpawnSubAgent {
+            spec,
+            parent_session_id: "parent-session".to_string(),
+        }));
+
+        let obs = step
+            .observations
+            .iter()
+            .find(|o| matches!(o, KernelObservation::AgentProcessChanged { .. }))
+            .expect("agent_process_changed observation");
+        let json = serde_json::to_value(obs).unwrap();
+        assert_eq!(json["isolation"], "readonly", "isolation must stay debug-lowercase");
+        assert_eq!(
+            json["context_inheritance"], "systemonly",
+            "context_inheritance must stay debug-lowercase"
+        );
+        assert_eq!(json["role"], "verify");
+        assert_eq!(json["state"], "running");
     }
 
     // ── M-memory-policy: set_memory_policy is enforced at the WriteMemory / QueryMemory traps ──

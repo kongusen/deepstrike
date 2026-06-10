@@ -59,7 +59,7 @@ fn recoverable_error_preserves_history() {
     assert_eq!(sm.turn, 1);
     assert!(sm.ctx.partitions.history.messages.len() > history_before);
     let obs = sm.take_observations();
-    assert!(!obs.iter().any(|o| matches!(o, LoopObservation::Rollbacked { .. })));
+    assert!(!obs.iter().any(|o| matches!(o, KernelObservation::Rollbacked { .. })));
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn none_error_kind_also_does_not_rollback() {
 
     assert_eq!(sm.turn, 1);
     let obs = sm.take_observations();
-    assert!(!obs.iter().any(|o| matches!(o, LoopObservation::Rollbacked { .. })));
+    assert!(!obs.iter().any(|o| matches!(o, KernelObservation::Rollbacked { .. })));
 }
 
 // ─── G5 gate: fatal error triggers rollback ─────────────────────────────────
@@ -108,10 +108,10 @@ fn fatal_error_kind_rolls_back_to_checkpoint() {
     // History must have been truncated back to the checkpoint length
     assert!(sm.ctx.partitions.history.messages.len() <= history_at_checkpoint);
     let obs = sm.take_observations();
-    let rolled = obs.iter().find(|o| matches!(o, LoopObservation::Rollbacked { .. }));
+    let rolled = obs.iter().find(|o| matches!(o, KernelObservation::Rollbacked { .. }));
     assert!(rolled.is_some(), "expected Rollbacked observation");
-    if let Some(LoopObservation::Rollbacked { reason, .. }) = rolled {
-        assert!(matches!(reason, RollbackReason::FatalToolError { .. }));
+    if let Some(KernelObservation::Rollbacked { reason, .. }) = rolled {
+        assert!(matches!(reason, Some(RollbackReason::FatalToolError { .. })));
     }
 }
 
@@ -133,7 +133,7 @@ fn is_fatal_flag_rolls_back() {
     });
 
     let obs = sm.take_observations();
-    assert!(obs.iter().any(|o| matches!(o, LoopObservation::Rollbacked { .. })));
+    assert!(obs.iter().any(|o| matches!(o, KernelObservation::Rollbacked { .. })));
 }
 
 // ─── Checkpoint observation emitted before LLM call ─────────────────────────
@@ -146,7 +146,7 @@ fn checkpoint_taken_observation_emitted_before_llm_call() {
     // start() → emit_call_llm() → should push CheckpointTaken
     let obs = sm.take_observations();
     assert!(
-        obs.iter().any(|o| matches!(o, LoopObservation::CheckpointTaken { turn: 0, .. })),
+        obs.iter().any(|o| matches!(o, KernelObservation::CheckpointTaken { turn: 0, .. })),
         "expected CheckpointTaken at turn 0, got: {obs:?}"
     );
 }
@@ -169,10 +169,10 @@ fn checkpoint_history_len_matches_actual_history() {
     });
 
     let obs = sm.take_observations();
-    let checkpoint = obs.iter().find(|o| matches!(o, LoopObservation::CheckpointTaken { turn: 1, .. }));
+    let checkpoint = obs.iter().find(|o| matches!(o, KernelObservation::CheckpointTaken { turn: 1, .. }));
     assert!(checkpoint.is_some(), "expected CheckpointTaken at turn 1");
 
-    if let Some(LoopObservation::CheckpointTaken { history_len, .. }) = checkpoint {
+    if let Some(KernelObservation::CheckpointTaken { history_len, .. }) = checkpoint {
         // history_len at checkpoint should equal current history length at time of capture
         assert!(*history_len > 0);
     }

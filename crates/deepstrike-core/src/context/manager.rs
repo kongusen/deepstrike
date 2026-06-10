@@ -119,27 +119,55 @@ impl ContextManager {
     pub fn recompute_handle_residency(&mut self) {
         let collapse = self.rho() >= self.config.collapse_threshold;
         let keep = self.config.preserve_recent_msgs;
-        let ids: Vec<HandleId> = self
+        // Single mutable pass in insertion order. The previous implementation collected ids then
+        // re-found each via `get_mut` (a linear scan), making this O(handles²) **every turn** — the
+        // long-session cliff. `tool_result_handles_mut().enumerate()` yields the same set in the
+        // same order, so `i`/`cutoff` are bit-identical to the old logic, now in O(handles).
+        let total = self
             .handles
             .all()
             .iter()
             .filter(|h| matches!(h.kind, HandleKind::ToolResult))
-            .map(|h| h.id)
-            .collect();
-        let cutoff = ids.len().saturating_sub(keep);
-        for (i, id) in ids.iter().enumerate() {
-            if let Some(handle) = self.handles.get_mut(*id) {
-                // Only toggle the reversible Resident<->Collapsed axis; never clobber a handle
-                // that has been spooled or paged out.
-                if matches!(handle.residency, Residency::Resident | Residency::Collapsed) {
-                    handle.residency = if collapse && i < cutoff {
-                        Residency::Collapsed
-                    } else {
-                        Residency::Resident
-                    };
-                }
+            .count();
+        let cutoff = total.saturating_sub(keep);
+        for (i, handle) in self.handles.tool_result_handles_mut().enumerate() {
+            // Only toggle the reversible Resident<->Collapsed axis; never clobber a handle
+            // that has been spooled or paged out.
+            if matches!(handle.residency, Residency::Resident | Residency::Collapsed) {
+                handle.residency = if collapse && i < cutoff {
+                    Residency::Collapsed
+                } else {
+                    Residency::Resident
+                };
             }
         }
+    }
+
+    /// Drop handles whose anchored source message no longer lives in `partitions.history` — i.e.
+    /// archived by a compaction or dropped on renewal. Without this the handle table grows with
+    /// total session length (a handle per tool result, never removed), which also inflates the
+    /// per-turn `recompute_handle_residency` scan. Called at compaction/renewal boundaries, so the
+    /// table tracks the working set, not the whole session. Handles with no `source` anchor (future
+    /// non-tool-result kinds) are always kept — they can't be orphaned by this check.
+    pub fn prune_orphaned_handles(&mut self) {
+        let live: std::collections::HashSet<CompactString> = self
+            .partitions
+            .history
+            .messages
+            .iter()
+            .flat_map(|m| match &m.content {
+                Content::Parts(parts) => parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        ContentPart::ToolResult { call_id, .. } => Some(call_id.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect();
+        self.handles
+            .retain(|h| h.source.as_ref().is_none_or(|s| live.contains(s)));
     }
 
     /// Mark the handle anchored to `call_id` as spooled to disk (Layer 1): the SDK persists the
@@ -194,6 +222,11 @@ impl ContextManager {
             self.last_compact_ms = Some(ts);
         }
 
+        // Archived messages have left history — drop their now-orphaned handles (bounds the table).
+        if !result.2.is_empty() {
+            self.prune_orphaned_handles();
+        }
+
         result
     }
 
@@ -201,7 +234,11 @@ impl ContextManager {
         if self.sections.is_partition_pinned(ContextSectionPartition::History) {
             return (0, None, vec![]);
         }
-        self.compression.compress(&mut self.partitions, PressureAction::AutoCompact, self.max_tokens, 0, &self.engine)
+        let result = self.compression.compress(&mut self.partitions, PressureAction::AutoCompact, self.max_tokens, 0, &self.engine);
+        if !result.2.is_empty() {
+            self.prune_orphaned_handles();
+        }
+        result
     }
 
     // ── Renewal ───────────────────────────────────────────────────────────────
@@ -216,6 +253,8 @@ impl ContextManager {
         self.partitions = renewed;
         self.last_handoff = Some(artifact);
         self.sprint += 1;
+        // History was rebuilt wholesale — drop handles anchored to messages it no longer carries.
+        self.prune_orphaned_handles();
     }
 
     // ── Render ────────────────────────────────────────────────────────────────
@@ -650,5 +689,103 @@ mod tests {
         // A plain text turn allocates no handle.
         mgr.push_history(Message::user("hello"), 5);
         assert_eq!(mgr.handles.all().len(), 1);
+    }
+
+    // ── W1-3: handle-table GC (prune orphaned handles + bounded recompute) ──
+
+    fn tool_result_msg(call_id: &str, output: &str) -> Message {
+        Message::tool(vec![ContentPart::ToolResult {
+            call_id: call_id.into(),
+            output: output.to_string(),
+            is_error: false,
+        }])
+    }
+
+    #[test]
+    fn prune_orphaned_handles_drops_handles_whose_message_left_history() {
+        let mut mgr = ContextManager::new(10_000);
+        mgr.push_history(tool_result_msg("c0", "out 0"), 20);
+        mgr.push_history(tool_result_msg("c1", "out 1"), 20);
+        assert_eq!(mgr.handles.all().len(), 2);
+
+        // Simulate compaction archiving the oldest tool-result message out of history.
+        mgr.partitions.history.messages.remove(0);
+        mgr.prune_orphaned_handles();
+
+        // The handle for the evicted message is gone; the live one is retained.
+        assert_eq!(mgr.handles.all().len(), 1);
+        assert!(mgr.handles.residency_for_source("c0").is_none());
+        assert_eq!(
+            mgr.handles.residency_for_source("c1"),
+            Some(&Residency::Resident)
+        );
+    }
+
+    #[test]
+    fn autocompact_prunes_handles_for_archived_tool_results() {
+        let mut mgr = ContextManager::new(1_000);
+        // Enough oversized tool results to force AutoCompact to archive some.
+        for i in 0..30 {
+            mgr.push_history(tool_result_msg(&format!("c{i}"), &"x".repeat(200)), 80);
+        }
+        assert_eq!(mgr.handles.all().len(), 30);
+
+        let (saved, _, archived) = mgr.compress(PressureAction::AutoCompact);
+        assert!(saved > 0 && !archived.is_empty(), "expected archival");
+
+        // After compaction the table tracks only the tool results still in working history —
+        // not the whole session. (No handle outlives its backing message.)
+        let live_tool_results = mgr
+            .partitions
+            .history
+            .messages
+            .iter()
+            .filter(|m| matches!(&m.content, Content::Parts(p)
+                if p.iter().any(|x| matches!(x, ContentPart::ToolResult { .. }))))
+            .count();
+        assert_eq!(mgr.handles.all().len(), live_tool_results);
+        assert!(mgr.handles.all().len() < 30, "table must shrink with archival");
+    }
+
+    #[test]
+    fn renew_prunes_handles_for_dropped_history() {
+        let mut mgr = ContextManager::new(1_000);
+        mgr.init_task("g".to_string(), vec![]);
+        for i in 0..20 {
+            mgr.push_history(tool_result_msg(&format!("c{i}"), "data"), 60);
+        }
+        mgr.renew();
+        // Every retained handle must still be anchored to a message present in the renewed history.
+        for h in mgr.handles.all() {
+            if let Some(src) = h.source.as_ref() {
+                assert!(
+                    mgr.handles.residency_for_source(src).is_some(),
+                    "no dangling handle survives renewal"
+                );
+            }
+        }
+        assert!(mgr.handles.all().len() <= 20);
+    }
+
+    #[test]
+    fn recompute_residency_index_semantics_with_spooled_in_the_middle() {
+        // Locks the O(n)-rewrite's index/cutoff semantics against the old id+get_mut version:
+        // a spooled handle still occupies an index position but is never toggled.
+        let mut mgr = ContextManager::new(1_000);
+        for i in 0..6 {
+            mgr.push_history(tool_result_msg(&format!("c{i}"), &"y".repeat(40)), 40);
+        }
+        mgr.mark_spooled("c2", "disk://c2");
+
+        mgr.set_observed_prompt_tokens(950); // rho >= collapse_threshold
+        mgr.recompute_handle_residency();
+
+        // Spooled stays spooled; the most recent preserve_recent_msgs stay resident; older collapse.
+        assert_eq!(
+            mgr.handles.residency_for_source("c2"),
+            Some(&Residency::SpooledOut { r: "disk://c2".to_string() })
+        );
+        assert_eq!(mgr.handles.residency_for_source("c0"), Some(&Residency::Collapsed));
+        assert_eq!(mgr.handles.residency_for_source("c5"), Some(&Residency::Resident));
     }
 }

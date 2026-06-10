@@ -9,7 +9,7 @@ use deepstrike_core::context::renderer::RenderedContext;
 use deepstrike_core::governance::permission::PermissionAction;
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::scheduler::policy::LoopPolicy;
-use deepstrike_core::scheduler::state_machine::{LoopObservation, LoopStateMachine};
+use deepstrike_core::scheduler::state_machine::{KernelObservation, LoopStateMachine};
 use deepstrike_core::types::capability::{CapabilityDescriptor, CapabilityKind};
 use deepstrike_core::types::message::{Content, Message, Role, ToolCall, ToolResult, ToolSchema};
 use deepstrike_sdk::ExecutionPlane;
@@ -568,7 +568,7 @@ async fn reactive_compact_on_413_retry() {
 
 /// Verifies the full milestone cascade chain:
 /// `LoopStateMachine::load_milestone_contract` → `EvaluateMilestone` action →
-/// `MilestoneResult` feed → `LoopObservation::MilestoneAdvanced` →
+/// `MilestoneResult` feed → `KernelObservation::MilestoneAdvanced` →
 /// `SessionEvent::MilestoneAdvanced` written to audit log.
 #[tokio::test]
 async fn milestone_pass_writes_session_event() {
@@ -611,7 +611,7 @@ async fn milestone_pass_writes_session_event() {
     let session_id = "milestone-chain-test";
 
     for obs in &observations {
-        if let LoopObservation::MilestoneAdvanced {
+        if let KernelObservation::MilestoneAdvanced {
             turn,
             phase_id,
             capabilities_unlocked,
@@ -671,7 +671,7 @@ async fn milestone_block_writes_session_event() {
     let session_id = "milestone-block-test";
 
     for obs in &observations {
-        if let LoopObservation::MilestoneBlocked {
+        if let KernelObservation::MilestoneBlocked {
             turn,
             phase_id,
             reason,
@@ -706,7 +706,7 @@ async fn milestone_block_writes_session_event() {
 // ─── CapabilityManifest: mount → observation → SessionEvent chain ─────────
 
 /// Verifies the full chain:
-/// `LoopStateMachine::mount_capability` emits `LoopObservation::CapabilityChanged`,
+/// `LoopStateMachine::mount_capability` emits `KernelObservation::CapabilityChanged`,
 /// which the runner converts to `SessionEvent::CapabilityChanged` in the audit log.
 /// The test simulates the runner's observation-processing step inline so no real
 /// LLM provider is needed.
@@ -737,7 +737,7 @@ async fn capability_mount_emits_capability_changed_session_event() {
     let mut saw_capability_changed = false;
 
     for obs in &observations {
-        if let LoopObservation::CapabilityChanged {
+        if let KernelObservation::CapabilityChanged {
             turn,
             added,
             removed,
@@ -819,7 +819,7 @@ async fn capability_unmount_emits_capability_changed_session_event() {
     let session_id = "cap-unmount-test";
 
     for obs in &observations {
-        if let LoopObservation::CapabilityChanged {
+        if let KernelObservation::CapabilityChanged {
             turn,
             added,
             removed,
