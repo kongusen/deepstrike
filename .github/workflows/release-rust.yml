@@ -20,24 +20,8 @@ jobs:
 
       - name: Dry-run publish check
         run: |
-          cargo publish -p deepstrike-tokenizer --dry-run
           cargo publish -p deepstrike-core --dry-run --allow-dirty
           cargo publish -p deepstrike-sdk --dry-run --allow-dirty
-
-      - name: Publish deepstrike-tokenizer
-        run: cargo publish -p deepstrike-tokenizer
-
-      - name: Wait for deepstrike-tokenizer in crates.io index
-        shell: bash
-        run: |
-          VERSION="$(cat VERSION)"
-          for i in $(seq 1 12); do
-            if cargo search deepstrike-tokenizer 2>/dev/null | grep -q "\"$VERSION\""; then
-              echo "deepstrike-tokenizer $VERSION is indexed"; break
-            fi
-            echo "Waiting for index... attempt $i/12"
-            sleep 15
-          done
 
       - name: Publish deepstrike-core
         run: cargo publish -p deepstrike-core
