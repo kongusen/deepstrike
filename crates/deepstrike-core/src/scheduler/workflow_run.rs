@@ -202,6 +202,11 @@ impl WorkflowRun {
         self.node_of_agent.contains_key(agent_id)
     }
 
+    /// The parent session id for this workflow (stamped on each node's manifest).
+    pub fn parent_session_id(&self) -> &str {
+        &self.parent_session_id
+    }
+
     /// True once the current batch has drained (every spawned node reported back).
     pub fn batch_drained(&self) -> bool {
         self.batch.is_empty()

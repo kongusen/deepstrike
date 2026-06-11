@@ -375,6 +375,11 @@ pub enum KernelObservation {
         rho_after: f64,
         summary: Option<String>,
         archived: Vec<Message>,
+        /// W1-1 cache-awareness: the message index at which this compression invalidated the
+        /// prompt cache prefix (if any). `None` = prefix-safe. SDK/telemetry can use this to
+        /// quantify "tokens saved vs cache rebuild cost". Additive ABI field with default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invalidates_prefix_at: Option<usize>,
     },
     Renewed {
         sprint: u32,

@@ -187,8 +187,32 @@ impl ContextManager {
 
     // ── Pressure ──────────────────────────────────────────────────────────────
 
+    /// **Raw** rho — full partition weight (or provider-observed tokens when available). This is the
+    /// projection-decision rho: [`Self::recompute_handle_residency`] marks the Resident↔Collapsed set
+    /// from *this* value, so it must NOT discount paged content (else collapse → rho drops →
+    /// un-collapse would oscillate). Compaction/renewal triggers use [`Self::effective_rho`] instead.
     pub fn rho(&self) -> f64 {
-        self.pressure.pressure(&self.partitions, &self.engine, self.last_observed_prompt_tokens)
+        self.pressure
+            .pressure(&self.partitions, &self.engine, self.last_observed_prompt_tokens)
+    }
+
+    /// **Effective** rho — the pressure that actually drives compaction/renewal, made paging-aware.
+    ///
+    /// When provider usage is authoritative (`observed_prompt_tokens` set), the rendered prompt was
+    /// already collapsed (the renderer emits previews for `Collapsed` handles), so the observed count
+    /// already reflects paging — raw rho is exact and returned as-is. In the **estimate** path
+    /// (no observed tokens) we estimate from `partitions`, which still carry the full weight of
+    /// paged-out tool results (collapse is non-destructive); we subtract the non-resident handle
+    /// tokens so that collapsing/spooling a result immediately relieves pressure, rather than only
+    /// after the next provider round-trip. With no paged handles this equals [`Self::rho`], so the
+    /// pre-paging behavior is preserved exactly.
+    pub fn effective_rho(&self) -> f64 {
+        if self.max_tokens == 0 || self.last_observed_prompt_tokens.is_some() {
+            return self.rho();
+        }
+        let total = self.partitions.total_tokens(&self.engine);
+        let effective = total.saturating_sub(self.handles.non_resident_tokens());
+        effective as f64 / self.max_tokens as f64
     }
 
     pub fn set_observed_prompt_tokens(&mut self, tokens: u32) {
@@ -196,7 +220,10 @@ impl ContextManager {
     }
 
     pub fn should_compress(&self) -> PressureAction {
-        self.pressure.recommend(self.rho())
+        // Use effective (paging-aware) rho: once tool results are collapsed/spooled they no longer
+        // occupy working context, so they must not keep driving compaction. Equals raw rho when
+        // nothing is paged (behavior-preserving) and when provider usage is authoritative.
+        self.pressure.recommend(self.effective_rho())
     }
 
     pub fn compress(&mut self, action: PressureAction) -> (u32, Option<String>, Vec<Message>) {
@@ -239,6 +266,42 @@ impl ContextManager {
             self.prune_orphaned_handles();
         }
         result
+    }
+
+    /// W1-1 收口: run one compaction `action` toward an **explicit** `target_tokens`, instead of
+    /// re-deriving the target from config. This is what lets `EvictionOp::Collapse { target_tokens }`
+    /// flow from the planner (the single decision point) straight to the executor — the compactor no
+    /// longer re-decides the target. `compress_with_time` remains the config-derived convenience used
+    /// by the other layers (Snip/Micro), whose target equals `config.target_tokens(max_tokens)`.
+    pub fn compress_with_target(
+        &mut self,
+        action: PressureAction,
+        target_tokens: u32,
+        now_ms: Option<u64>,
+    ) -> (u32, Option<String>, Vec<Message>) {
+        if self.sections.is_partition_pinned(ContextSectionPartition::History) {
+            return (0, None, vec![]);
+        }
+        let result =
+            self.compression
+                .compress(&mut self.partitions, action, self.max_tokens, target_tokens, &self.engine);
+        if let Some(ts) = now_ms {
+            self.last_compact_ms = Some(ts);
+        }
+        if !result.2.is_empty() {
+            self.prune_orphaned_handles();
+        }
+        result
+    }
+
+    /// W1-1 收口: the truthful compaction parameters the planner stamps into the [`EvictionPlan`],
+    /// read once from config so the ops carry real values (not magic-number placeholders) and the
+    /// executor stays a pure executor. Returns `(target_tokens, preserve_recent_turns)`.
+    pub fn plan_compaction_params(&self) -> (u32, usize) {
+        (
+            self.config.target_tokens(self.max_tokens),
+            self.config.preserve_recent_turns,
+        )
     }
 
     // ── Renewal ───────────────────────────────────────────────────────────────
@@ -699,6 +762,39 @@ mod tests {
             output: output.to_string(),
             is_error: false,
         }])
+    }
+
+    #[test]
+    fn effective_rho_discounts_paged_out_handles() {
+        let mut mgr = ContextManager::new(1_000);
+        // A large tool-result output so its handle carries a real token weight.
+        let big = "data ".repeat(200);
+        let tok = mgr.engine.count(&big);
+        mgr.push_history(tool_result_msg("c0", &big), tok);
+        mgr.push_history(Message::user("u"), 50);
+
+        let raw = mgr.rho();
+        // Everything resident → effective equals raw (behavior-preserving when nothing is paged).
+        assert_eq!(mgr.handles.non_resident_tokens(), 0);
+        assert!((mgr.effective_rho() - raw).abs() < f64::EPSILON);
+
+        // Page the tool result out of working context.
+        mgr.mark_spooled("c0", "disk://c0");
+        let paged = mgr.handles.non_resident_tokens();
+        assert!(paged > 0, "handle is now non-resident with a real token weight");
+
+        // Raw rho is unchanged (partitions are untouched by the non-destructive projection)...
+        assert!((mgr.rho() - raw).abs() < f64::EPSILON, "raw rho unchanged by paging");
+        // ...but effective rho drops by exactly the paged tokens — paging relieves pressure now.
+        let total = mgr.partitions.total_tokens(&mgr.engine);
+        let expected = total.saturating_sub(paged) as f64 / 1_000.0;
+        assert!((mgr.effective_rho() - expected).abs() < f64::EPSILON);
+        assert!(mgr.effective_rho() < raw, "effective pressure relieved by paging");
+
+        // When provider usage is authoritative, the rendered prompt was already collapsed, so
+        // effective falls back to raw (no double-discount).
+        mgr.set_observed_prompt_tokens(900);
+        assert!((mgr.effective_rho() - mgr.rho()).abs() < f64::EPSILON);
     }
 
     #[test]

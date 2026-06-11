@@ -1442,6 +1442,7 @@ impl RuntimeRunner {
                     rho_after: _,
                     summary,
                     archived,
+                    invalidates_prefix_at: _,
                 } => {
                     let Some(log) = &self.opts.session_log else {
                         continue;

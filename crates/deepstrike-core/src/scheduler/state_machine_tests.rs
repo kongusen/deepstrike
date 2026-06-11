@@ -1404,7 +1404,11 @@
     }
 
     #[test]
-    fn workflow_node_spawn_is_gated_by_quota() {
+    fn workflow_node_concurrency_limit_serializes_via_defer() {
+        // W2-1 收口: under the run-queue executor a concurrency cap no longer *fails* the surplus
+        // node (the old batch barrier `mark_denied`'d it, starving its dependents). Instead the cap
+        // is transient backpressure: the surplus node is DEFERRED and runs once a slot frees, so the
+        // whole DAG still completes — just serialized.
         use crate::orchestration::workflow::fanout_synthesize;
 
         let mut sm = sm();
@@ -1415,24 +1419,71 @@
         sm.start(RuntimeTask::new("parent"));
         sm.take_observations();
 
-        // 2 workers → synth. With concurrency cap 1, only the first worker spawns; the second is
-        // denied at the syscall gate, so synth (which depends on it) never becomes ready.
+        // 2 workers → synth. Cap 1: only wf-node0 spawns now; wf-node1 is deferred (NOT failed).
         let spec = fanout_synthesize(
             vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
             RuntimeTask::new("synth"),
         );
         sm.load_workflow(spec, "sess");
-        assert_eq!(count_spawned(&sm.take_observations()), 1); // only wf-node0
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // only wf-node0 fits the slot
         assert!(sm.agent_process("wf-node0").is_some());
-        assert!(sm.agent_process("wf-node1").is_none()); // gated, never spawned
+        assert!(sm.agent_process("wf-node1").is_none()); // deferred, not yet spawned
 
-        // wf-node0 completes → batch drains, synth never ready → workflow finishes.
-        let done = sm.feed(LoopEvent::SubAgentCompleted {
-            result: wf_completed("wf-node0"),
-        });
+        // wf-node0 completes → its slot frees → the deferred wf-node1 now spawns (not starved).
+        assert!(matches!(
+            sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") }),
+            LoopAction::AwaitingResume
+        ));
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node1 spawned after the slot freed
+        assert!(sm.agent_process("wf-node1").is_some());
+        assert!(sm.workflow_active());
+
+        // wf-node1 completes → both workers done → synth (wf-node2) becomes ready and spawns.
+        assert!(matches!(
+            sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") }),
+            LoopAction::AwaitingResume
+        ));
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // synth
+        assert!(sm.agent_process("wf-node2").is_some());
+
+        // synth completes → DAG done, parent resumes. Every node ran despite the cap of 1.
+        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node2") });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
         assert!(!sm.workflow_active());
-        assert!(sm.agent_process("wf-node1").is_none());
+    }
+
+    #[test]
+    fn workflow_run_queue_unblocks_dependents_per_node() {
+        // W2-1 收口 — the batch barrier is gone: a node whose dependency finishes early starts
+        // immediately, without waiting for the slowest sibling in that dependency's layer.
+        // DAG:  A(0) ─┬─► C(2)   and   B(1) ─► (only C)         plus  A(0) ─► D(3)
+        // i.e. C depends on A & B; D depends only on A. When A completes (B still running), D must
+        // spawn right away — the old batch path would have waited for B too.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("A"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("B"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("C"), AgentRole::Implement).with_depends_on(vec![0, 1]),
+            WorkflowNode::new(RuntimeTask::new("D"), AgentRole::Implement).with_depends_on(vec![0]),
+        ]);
+        sm.load_workflow(spec, "sess");
+        // A and B have no deps → both spawn in the first round.
+        assert_eq!(count_spawned(&sm.take_observations()), 2);
+
+        // A completes while B is still running → D (depends only on A) spawns immediately; C still
+        // waits on B. This is the per-node unblock the run queue delivers.
+        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") });
+        let obs = sm.take_observations();
+        assert_eq!(count_spawned(&obs), 1, "D unblocks on A alone, not waiting for B");
+        assert!(sm.agent_process("wf-node3").is_some(), "D (node 3) is running");
+        assert!(sm.agent_process("wf-node2").is_none(), "C still waits on B");
+        assert!(sm.workflow_active());
     }
 
     #[test]
@@ -1456,4 +1507,187 @@
         });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
         assert!(!sm.workflow_active());
+    }
+
+
+    // ─── W2-2: Snapshot/Restore Roundtrip Tests ─────────────────────────────
+
+    #[test]
+    fn snapshot_roundtrip_preserves_turn_and_tokens() {
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("test task"));
+        sm.turn = 5;
+        sm.total_tokens = 1000;
+
+        let snap = sm.snapshot();
+        let restored = LoopStateMachine::restore(&snap);
+
+        assert_eq!(restored.turn, 5);
+        assert_eq!(restored.total_tokens, 1000);
+    }
+
+    #[test]
+    fn snapshot_roundtrip_preserves_task_table() {
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+
+        // Spawn a sub-agent
+        use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+        let _ = sm.spawn_sub_agent(
+            AgentRunSpec::new(
+                AgentIdentity::sub_agent("child", "child-session"),
+                AgentRole::Implement,
+                "child task",
+            ),
+            "parent-sess",
+        );
+
+        let snap = sm.snapshot();
+        assert_eq!(snap.tasks.len(), 2); // root + child
+
+        let restored = LoopStateMachine::restore(&snap);
+        assert_eq!(restored.task_table().all().len(), 2);
+        assert!(restored.task_table().get("root").is_some());
+        assert!(restored.task_table().get("child").is_some());
+    }
+
+    #[test]
+    fn snapshot_roundtrip_preserves_context_messages() {
+        let mut sm = sm();
+        sm.ctx.push_history(Message::user("test message"), 10);
+
+        let snap = sm.snapshot();
+        assert_eq!(snap.context.history_messages.len(), 1);
+
+        let restored = LoopStateMachine::restore(&snap);
+        assert_eq!(restored.ctx.partitions.history.messages.len(), 1);
+        assert_eq!(
+            restored.ctx.partitions.history.messages[0]
+                .content
+                .as_text(),
+            Some("test message")
+        );
+    }
+
+    #[test]
+    fn snapshot_roundtrip_preserves_signals() {
+        let mut sm = sm();
+        sm.ctx.push_signal("[TEST] test signal".to_string());
+
+        let snap = sm.snapshot();
+        assert_eq!(snap.context.signals.len(), 1);
+        assert_eq!(snap.context.signals[0], "[TEST] test signal");
+
+        let restored = LoopStateMachine::restore(&snap);
+        assert_eq!(restored.ctx.partitions.signals.len(), 1);
+        assert_eq!(restored.ctx.partitions.signals[0], "[TEST] test signal");
+    }
+
+    #[test]
+    fn snapshot_roundtrip_preserves_task_state() {
+        let mut sm = sm();
+        sm.ctx.init_task("test goal".to_string(), vec![]);
+        sm.ctx.partitions.task_state.progress = "50% done".to_string();
+
+        let snap = sm.snapshot();
+        assert_eq!(snap.context.task_goal.as_deref(), Some("test goal"));
+        assert_eq!(
+            snap.context.task_progress.as_deref(),
+            Some("50% done")
+        );
+
+        let restored = LoopStateMachine::restore(&snap);
+        assert_eq!(restored.ctx.partitions.task_state.goal, "test goal");
+        assert_eq!(restored.ctx.partitions.task_state.progress, "50% done");
+    }
+
+    #[test]
+    fn snapshot_roundtrip_serialization() {
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("test"));
+        sm.turn = 3;
+        sm.total_tokens = 500;
+
+        let snap = sm.snapshot();
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&snap).expect("serialize snapshot");
+        let restored_snap: crate::runtime::snapshot::KernelSnapshot =
+            serde_json::from_str(&json).expect("deserialize snapshot");
+
+        assert_eq!(restored_snap.turn, 3);
+        assert_eq!(restored_snap.total_tokens, 500);
+
+        let restored = LoopStateMachine::restore(&restored_snap);
+        assert_eq!(restored.turn, 3);
+        assert_eq!(restored.total_tokens, 500);
+    }
+
+    #[test]
+    fn snapshot_roundtrip_with_suspended_state() {
+        use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+
+        // Spawn sub-agent which suspends the parent
+        let _ = sm.spawn_sub_agent(
+            AgentRunSpec::new(
+                AgentIdentity::sub_agent("child", "child-session"),
+                AgentRole::Implement,
+                "child task",
+            ),
+            "parent-sess",
+        );
+
+        let snap = sm.snapshot();
+        let restored = LoopStateMachine::restore(&snap);
+
+        // Verify suspended state is preserved
+        assert!(matches!(
+            restored.lifecycle(),
+            TaskState::Suspended
+        ));
+        assert!(matches!(
+            restored.wait_reason(),
+            Some(crate::scheduler::tcb::WaitReason::SubAgentJoin(_))
+        ));
+    }
+
+    #[test]
+    fn snapshot_restore_independence() {
+        // Verify that restoring creates an independent copy
+        let mut sm = sm();
+        sm.turn = 5;
+        sm.ctx.push_signal("original".to_string());
+
+        let snap = sm.snapshot();
+        let mut restored = LoopStateMachine::restore(&snap);
+
+        // Modify restored
+        restored.turn = 10;
+        restored.ctx.push_signal("modified".to_string());
+
+        // Original should be unchanged
+        assert_eq!(sm.turn, 5);
+        assert_eq!(sm.ctx.partitions.signals.len(), 1);
+
+        // Restored should have its modifications
+        assert_eq!(restored.turn, 10);
+        assert_eq!(restored.ctx.partitions.signals.len(), 2);
+    }
+
+    #[test]
+    fn snapshot_preserves_max_tokens_and_sprint() {
+        let mut sm = sm();
+        sm.ctx.max_tokens = 64_000;
+        sm.ctx.sprint = 2;
+
+        let snap = sm.snapshot();
+        assert_eq!(snap.context.max_tokens, 64_000);
+        assert_eq!(snap.context.sprint, 2);
+
+        let restored = LoopStateMachine::restore(&snap);
+        assert_eq!(restored.ctx.max_tokens, 64_000);
+        assert_eq!(restored.ctx.sprint, 2);
     }

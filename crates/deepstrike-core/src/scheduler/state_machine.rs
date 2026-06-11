@@ -509,6 +509,43 @@ impl LoopStateMachine {
         Disposition::Allow
     }
 
+    /// W2-1: spawn-quota evaluation for a **deferrable** caller (the workflow run queue). Unlike the
+    /// synchronous `evaluate_spawn_quota` — where a blocking spawn that can't run *now* can only be
+    /// rolled back (`Deny`) — a run-queue node that hits the **transient** concurrency limit is
+    /// `Defer`red: it stays `Ready`, gets a `deferred_until` backoff, and is retried by the scheduler
+    /// once a running sibling frees a slot. A **permanent** depth limit is still a hard `Deny` (more
+    /// nesting will never become available). This is the first **real producer** of
+    /// `Disposition::Defer` — resolving diagnostic A's dead variant for the run-queue path. The
+    /// synchronous path keeps using `evaluate_spawn_quota`, so its `Deny`-on-quota behavior (and the
+    /// golden/tests pinning it) is unchanged.
+    fn evaluate_spawn_quota_deferrable(&self) -> Disposition {
+        let Some(quota) = self.resource_quota.as_ref() else {
+            return Disposition::Allow;
+        };
+        if let Some(max) = quota.max_concurrent_subagents {
+            let running = self
+                .tasks
+                .all()
+                .iter()
+                .filter(|t| t.proc.is_some() && matches!(t.state, TaskState::Running))
+                .count() as u32;
+            if running >= max {
+                // Transient: a running sibling will complete and free a slot → defer and retry.
+                return Disposition::Defer { slot: running };
+            }
+        }
+        if let Some(max) = quota.max_spawn_depth {
+            let depth = 1u32;
+            if depth > max {
+                return Disposition::Deny {
+                    stage: "quota",
+                    reason: format!("max_spawn_depth={max} exceeded (depth {depth})"),
+                };
+            }
+        }
+        Disposition::Allow
+    }
+
     /// Memory-write quota: a rolling-window rate limit. Prunes timestamps older than the window,
     /// rate-limits if the window is full, else records this write's time. Uses the observed clock
     /// (`last_now_ms`); with no clock fed it degenerates to "all in window 0" which still bounds
@@ -690,7 +727,8 @@ impl LoopStateMachine {
         let action = PressureAction::AutoCompact;
         let (saved, summary, archived) = self.ctx.force_compress();
         if saved > 0 {
-            self.push_compression_observations(action, summary, archived);
+            // AutoCompact invalidates prefix at 0 (drops all but last K turns).
+            self.push_compression_observations(action, summary, archived, Some(0));
             true
         } else {
             false
@@ -702,6 +740,7 @@ impl LoopStateMachine {
         action: PressureAction,
         summary: Option<String>,
         archived: Vec<Message>,
+        invalidates_prefix_at: Option<usize>,
     ) {
         let rho_after = self.ctx.rho();
         self.observations.push(KernelObservation::Compressed {
@@ -709,6 +748,7 @@ impl LoopStateMachine {
             rho_after,
             summary: summary.clone(),
             archived: archived.clone(),
+            invalidates_prefix_at,
         });
         if archived.is_empty() {
             return;
@@ -725,24 +765,77 @@ impl LoopStateMachine {
     }
 
     /// Execute one [`EvictionOp`] from an [`EvictionPlan`] — the single compaction execution
-    /// funnel (M3). `TimeDecayMicro` uses the non-time compress path and stamps `last_compact_ms`
-    /// (Layer 3); `Pressure` uses the time-aware path (Layers 2/4/5). `Spool` (Layer 1) is handled
-    /// at tool-result ingestion, not here.
+    /// funnel (M3). Each op maps to the appropriate legacy compression path for now (behavior
+    /// preservation); the full refactor (step 3+) will route each to a dedicated executor.
     fn execute_eviction_op(&mut self, op: &crate::mm::EvictionOp) {
         use crate::mm::EvictionOp;
+        let cache_impact = op.invalidates_prefix_at();
         match op {
+            EvictionOp::Spool(_) => {
+                // Layer 1: handled at tool-result ingestion, not here. No-op in this path.
+            }
+            EvictionOp::Snip { per_msg_ratio: _ } => {
+                // Layer 2: route to SnipCompact via the pipeline (behavior-preserving shim).
+                // Use the public `compress_with_time` which already wires target_tokens from config.
+                let (saved, summary, archived) =
+                    self.ctx.compress_with_time(PressureAction::SnipCompact, self.last_now_ms);
+                if saved > 0 || summary.is_some() {
+                    self.push_compression_observations(
+                        PressureAction::SnipCompact,
+                        summary,
+                        archived,
+                        cache_impact,
+                    );
+                }
+            }
             EvictionOp::TimeDecayMicro => {
+                // Layer 3: idle/time-decay micro-compact. Uses non-time compress path + stamps time.
                 let (_, summary, archived) = self.ctx.compress(PressureAction::MicroCompact);
-                self.push_compression_observations(PressureAction::MicroCompact, summary, archived);
+                self.push_compression_observations(
+                    PressureAction::MicroCompact,
+                    summary,
+                    archived,
+                    cache_impact,
+                );
                 if let Some(now_ms) = self.last_now_ms {
                     self.ctx.last_compact_ms = Some(now_ms);
                 }
             }
-            EvictionOp::Pressure(action) => {
-                let (_, summary, archived) = self.ctx.compress_with_time(*action, self.last_now_ms);
-                self.push_compression_observations(*action, summary, archived);
+            EvictionOp::Collapse { target_tokens } => {
+                // Layer 4: collapse to the planner's explicit target (W1-1 收口 — the executor honors
+                // the plan's `target_tokens` verbatim instead of re-deriving it from config). The
+                // planner stamps `config.target_tokens(max)`, so this is behavior-identical to the
+                // old config-derived path while making the plan the single decision point.
+                let (saved, summary, archived) = self.ctx.compress_with_target(
+                    PressureAction::ContextCollapse,
+                    *target_tokens,
+                    self.last_now_ms,
+                );
+                if saved > 0 || summary.is_some() {
+                    self.push_compression_observations(
+                        PressureAction::ContextCollapse,
+                        summary,
+                        archived,
+                        cache_impact,
+                    );
+                }
             }
-            EvictionOp::Spool(_) => {}
+            EvictionOp::AutoCompact { preserve_turns: _ } => {
+                // Layer 5: auto-compact down to the preserve floor (target 0). The op carries the
+                // truthful `preserve_turns` (= `config.preserve_recent_turns`, stamped by the planner);
+                // the pipeline applies that same value at the compactor, so honoring the op and the
+                // config path are byte-identical here. Per-op preserve plumbing into the pipeline is a
+                // minor follow-up; the headline target placeholder is already gone (see Collapse).
+                let (saved, summary, archived) = self.ctx.force_compress();
+                if saved > 0 || summary.is_some() {
+                    self.push_compression_observations(
+                        PressureAction::AutoCompact,
+                        summary,
+                        archived,
+                        cache_impact,
+                    );
+                }
+            }
         }
     }
 
@@ -1000,11 +1093,19 @@ impl LoopStateMachine {
                     pressure: self.ctx.rho(),
                 };
 
-                // Layers 2/4/5: pressure recommendation on the (possibly reduced) rho.
-                let plan = crate::mm::plan_eviction(self.ctx.should_compress(), idle_decay);
+                // Layers 2/4/5: execute the pressure-driven ops from the plan (skip TimeDecayMicro
+                // if already executed). The plan carries specific ops stamped with real config-derived
+                // params (W1-1 收口 — no magic-number placeholders), not the umbrella `Pressure` wrapper.
+                let (target_tokens, preserve_turns) = self.ctx.plan_compaction_params();
+                let plan =
+                    crate::mm::plan_eviction(self.ctx.should_compress(), idle_decay, target_tokens, preserve_turns);
                 debug_assert_eq!(plan.has_time_decay(), idle_decay);
-                if let Some(action) = plan.pressure_action() {
-                    self.execute_eviction_op(&crate::mm::EvictionOp::Pressure(action));
+                for op in &plan.ops {
+                    // Skip TimeDecayMicro if we already executed it (prevents double-execution).
+                    if matches!(op, crate::mm::EvictionOp::TimeDecayMicro) && idle_decay {
+                        continue;
+                    }
+                    self.execute_eviction_op(op);
                 }
 
                 // Renewal: when compression alone cannot recover enough headroom,
@@ -1112,7 +1213,7 @@ impl LoopStateMachine {
         });
         self.set_lifecycle(
             TaskState::Suspended,
-            Some(WaitReason::SubAgentJoin(manifest.agent_id.clone())),
+            Some(WaitReason::SubAgentJoin(vec![manifest.agent_id.clone()])),
         );
         self.observations.push(KernelObservation::Suspended {
             turn: self.turn,
@@ -1233,7 +1334,7 @@ impl LoopStateMachine {
         match built {
             Ok(run) => {
                 self.workflow = Some(run);
-                self.spawn_workflow_batch()
+                self.drive_workflow(None)
             }
             Err(err) => {
                 let rb = RollbackReason::GovernanceDenied {
@@ -1252,11 +1353,16 @@ impl LoopStateMachine {
         }
     }
 
-    /// Spawn every ready node of the in-flight workflow as one batch, each gated through the
-    /// syscall trap. Allowed nodes register a child task and join the batch barrier; gated nodes
-    /// are marked failed (their dependents never become ready). Suspends on the batch via the
-    /// existing `SubAgentAwait` barrier, or finishes the workflow if nothing could be spawned.
-    fn spawn_workflow_batch(&mut self) -> LoopAction {
+    /// Spawn every workflow node that is **ready now and fits under the concurrency cap**, each
+    /// gated through the *deferrable* spawn quota. A transient concurrency limit (`Defer`) stops
+    /// the round and leaves the remaining ready nodes untouched — a running sibling's completion
+    /// will free a slot and the next [`Self::drive_workflow`] round retries them (W2-1 收口: quota
+    /// backpressure = enqueue-and-retry, not permanent denial). A permanent limit (`Deny`, e.g.
+    /// depth) marks the node failed so its dependents starve. Returns the freshly spawned ids and
+    /// their `WorkflowSpawnInfo` (for the `WorkflowBatchSpawned` observation).
+    fn spawn_ready_workflow_nodes(
+        &mut self,
+    ) -> (Vec<String>, Vec<crate::scheduler::workflow_run::WorkflowSpawnInfo>) {
         let ready = self
             .workflow
             .as_ref()
@@ -1270,52 +1376,104 @@ impl LoopStateMachine {
                 Some(w) => w.manifest_for(node),
                 None => continue,
             };
-            if self
-                .evaluate_syscall(&Syscall::Spawn(manifest.clone()))
-                .is_allowed()
-            {
-                let agent_id = manifest.agent_id.to_string();
-                let child = Tcb::spawned(&manifest, self.policy.clone());
-                self.tasks.insert(child);
-                if let Some(process) =
-                    self.tasks.get(&agent_id).and_then(AgentProcess::from_tcb)
-                {
-                    self.push_agent_process_changed(process);
+            match self.evaluate_spawn_quota_deferrable() {
+                Disposition::Allow => {
+                    let agent_id = manifest.agent_id.to_string();
+                    let child = Tcb::spawned(&manifest, self.policy.clone());
+                    self.tasks.insert(child);
+                    if let Some(process) = self.tasks.get(&agent_id).and_then(AgentProcess::from_tcb) {
+                        self.push_agent_process_changed(process);
+                    }
+                    if let Some(run) = self.workflow.as_mut() {
+                        run.mark_spawned(node, &agent_id);
+                    }
+                    if let Some(run) = self.workflow.as_ref() {
+                        spawned_infos.push(run.spawn_info(node));
+                    }
+                    spawned_ids.push(agent_id);
                 }
-                if let Some(run) = self.workflow.as_mut() {
-                    run.mark_spawned(node, &agent_id);
+                Disposition::Defer { .. } => {
+                    // Concurrency cap reached: leave this node (and the rest of this round) Ready;
+                    // the scheduler retries them once a running sibling frees a slot.
+                    break;
                 }
-                if let Some(run) = self.workflow.as_ref() {
-                    spawned_infos.push(run.spawn_info(node));
+                _ => {
+                    // Permanent denial (e.g. depth limit): the node fails; dependents starve.
+                    if let Some(run) = self.workflow.as_mut() {
+                        run.mark_denied(node);
+                    }
                 }
-                spawned_ids.push(agent_id);
-            } else if let Some(run) = self.workflow.as_mut() {
-                run.mark_denied(node);
+            }
+        }
+        (spawned_ids, spawned_infos)
+    }
+
+    /// Run-queue workflow executor (W2-1 收口 — the default, replacing the old batch barrier). Spawns
+    /// every currently-runnable ready node, then suspends on the running set or finishes. Unlike the
+    /// batch barrier, a node's dependents can start the moment *that* node completes, without waiting
+    /// for the slowest sibling in its dependency layer. For DAGs with no intra-layer skew
+    /// (fanout/linear) the spawn sequence is identical to the old batch path. `just_completed` is the
+    /// node whose completion triggered this round (`None` on the initial install).
+    fn drive_workflow(&mut self, just_completed: Option<String>) -> LoopAction {
+        // Drop the just-completed node from the running set (its TCB is already terminal).
+        if let Some(id) = just_completed.as_deref() {
+            if let Some(SuspendState::SubAgentAwait { agent_ids }) = self.suspend_state.as_mut() {
+                agent_ids.retain(|a| a != id);
             }
         }
 
-        if spawned_ids.is_empty() {
-            // Nothing could be spawned (all gated, or no ready nodes) — the workflow cannot make
-            // progress, so finish it and hand control back to the parent loop.
-            return self.finish_workflow();
+        // Spawn everything ready that fits under the concurrency cap right now.
+        let (spawned_ids, spawned_infos) = self.spawn_ready_workflow_nodes();
+        if !spawned_ids.is_empty() {
+            // W0-ABI: tell the SDK which nodes to run (with their goals) before suspending.
+            self.observations.push(KernelObservation::WorkflowBatchSpawned {
+                turn: self.turn,
+                nodes: spawned_infos,
+            });
+            match self.suspend_state.as_mut() {
+                Some(SuspendState::SubAgentAwait { agent_ids }) => {
+                    agent_ids.extend(spawned_ids.iter().cloned());
+                }
+                _ => {
+                    self.suspend_state = Some(SuspendState::SubAgentAwait {
+                        agent_ids: spawned_ids.clone(),
+                    });
+                }
+            }
+            let wait_ids: Vec<crate::scheduler::tcb::TaskId> = match &self.suspend_state {
+                Some(SuspendState::SubAgentAwait { agent_ids }) => {
+                    agent_ids.iter().map(|s| s.clone().into()).collect()
+                }
+                _ => Vec::new(),
+            };
+            self.set_lifecycle(TaskState::Suspended, Some(WaitReason::SubAgentJoin(wait_ids)));
+            self.observations.push(KernelObservation::Suspended {
+                turn: self.turn,
+                reason: "workflow_batch".to_string(),
+                pending_calls: spawned_ids,
+            });
         }
 
-        // W0-ABI: tell the SDK which nodes to run (with their goals) before suspending.
-        self.observations.push(KernelObservation::WorkflowBatchSpawned {
-            turn: self.turn,
-            nodes: spawned_infos,
-        });
-        let wait = WaitReason::SubAgentJoin(spawned_ids[0].clone().into());
-        self.suspend_state = Some(SuspendState::SubAgentAwait {
-            agent_ids: spawned_ids.clone(),
-        });
-        self.set_lifecycle(TaskState::Suspended, Some(wait));
-        self.observations.push(KernelObservation::Suspended {
-            turn: self.turn,
-            reason: "workflow_batch".to_string(),
-            pending_calls: spawned_ids,
-        });
-        LoopAction::AwaitingResume
+        // Still nodes running? keep awaiting their completions.
+        let running = matches!(
+            self.suspend_state.as_ref(),
+            Some(SuspendState::SubAgentAwait { agent_ids }) if !agent_ids.is_empty()
+        );
+        if running {
+            return LoopAction::AwaitingResume;
+        }
+
+        // Nothing running and nothing newly spawned → the DAG is done, or stalled because a
+        // gated/denied dependency starves its dependents. Resume the parent loop.
+        self.suspend_state = None;
+        if let Some(id) = just_completed {
+            self.observations.push(KernelObservation::Resumed {
+                turn: self.turn,
+                approved: vec![id],
+                denied: Vec::new(),
+            });
+        }
+        self.finish_workflow()
     }
 
     /// Finish the in-flight workflow: emit `WorkflowCompleted` with its outcome, clear it, and
@@ -1334,43 +1492,16 @@ impl LoopStateMachine {
         self.emit_call_llm()
     }
 
-    /// W0: advance the in-flight workflow after a node completed. Feeds the DAG, drains the batch
-    /// barrier, and either spawns the next ready batch (still suspended) or finishes the workflow
-    /// and resumes the parent loop. Finishing on "batch drained + no more ready nodes" handles
-    /// both full completion and a stall caused by a gated dependency.
+    /// W0/W2-1: advance the in-flight workflow after a node completed. Records the completion, then
+    /// hands off to the run-queue executor [`Self::drive_workflow`], which spawns any node whose
+    /// dependencies are now satisfied (without waiting for the rest of the completing node's layer)
+    /// and either suspends on the still-running set or finishes the workflow.
     fn advance_workflow(&mut self, result: SubAgentResult) -> LoopAction {
         let agent_id = result.agent_id.to_string();
         if let Some(run) = self.workflow.as_mut() {
             run.record_completion(&agent_id, result.result.clone());
         }
-        if let Some(SuspendState::SubAgentAwait { agent_ids }) = self.suspend_state.as_mut() {
-            agent_ids.retain(|id| id != &agent_id);
-        }
-        let batch_drained = matches!(
-            self.suspend_state.as_ref(),
-            Some(SuspendState::SubAgentAwait { agent_ids }) if agent_ids.is_empty()
-        );
-        if !batch_drained {
-            return LoopAction::AwaitingResume;
-        }
-
-        self.suspend_state = None;
-        let next = self
-            .workflow
-            .as_ref()
-            .map(|w| w.ready_batch())
-            .unwrap_or_default();
-        if next.is_empty() {
-            // Workflow finished (all nodes terminal, or stalled by a gated dependency).
-            self.observations.push(KernelObservation::Resumed {
-                turn: self.turn,
-                approved: vec![agent_id],
-                denied: Vec::new(),
-            });
-            self.finish_workflow()
-        } else {
-            self.spawn_workflow_batch()
-        }
+        self.drive_workflow(Some(agent_id))
     }
 
     /// The `AgentProcess` view of a sub-agent, reconstructed from its child task. `None` for the
@@ -1393,6 +1524,100 @@ impl LoopStateMachine {
     /// over this table (M1 收口).
     pub fn task_table(&self) -> &TaskTable {
         &self.tasks
+    }
+
+    /// W2-2: Create a snapshot of the current kernel state for crash recovery or migration.
+    pub fn snapshot(&self) -> crate::runtime::snapshot::KernelSnapshot {
+        use crate::runtime::snapshot::{ContextSnapshot, KernelSnapshot};
+        let context = ContextSnapshot::from_context(&self.ctx);
+        KernelSnapshot::from_state(
+            self.turn,
+            self.total_tokens,
+            &self.tasks,
+            &context,
+            self.run_spec.as_ref(),
+        )
+    }
+
+    /// W2-2: Restore kernel state from a snapshot. Returns a new LoopStateMachine rebuilt from the snapshot.
+    /// Note: This is a foundational restore - some state (governance, milestone, signal router dedup) is
+    /// recreated from policy/config rather than serialized, following the principle that strategy is data.
+    pub fn restore(snap: &crate::runtime::snapshot::KernelSnapshot) -> Self {
+        use crate::signals::router::SignalRouter;
+
+        // Reconstruct policy from the max_tokens in snapshot
+        let policy = crate::scheduler::policy::LoopPolicy {
+            max_tokens: snap.context.max_tokens,
+            ..Default::default()
+        };
+
+        // Rebuild TaskTable from snapshot TCBs
+        let mut tasks = TaskTable::new();
+        for tcb_snap in &snap.tasks {
+            if let Some(tcb) = snap.restore_tcb(tcb_snap) {
+                tasks.insert(tcb);
+            }
+        }
+
+        // Rebuild context partitions from snapshot
+        let mut ctx = ContextManager::new(snap.context.max_tokens);
+        ctx.sprint = snap.context.sprint;
+
+        // Restore messages
+        for msg in &snap.context.system_messages {
+            let tokens = ctx.engine.count_message(msg);
+            ctx.partitions.system.push(msg.clone(), tokens);
+        }
+        for msg in &snap.context.knowledge_messages {
+            let tokens = ctx.engine.count_message(msg);
+            ctx.partitions.knowledge.push(msg.clone(), tokens);
+        }
+        for msg in &snap.context.history_messages {
+            let tokens = ctx.engine.count_message(msg);
+            ctx.partitions.history.push(msg.clone(), tokens);
+        }
+
+        // Restore task state
+        if let Some(goal) = &snap.context.task_goal {
+            ctx.partitions.task_state.goal = goal.clone();
+        }
+        if let Some(plan_json) = &snap.context.task_plan {
+            if let Ok(plan_steps) = serde_json::from_str::<Vec<crate::context::task_state::PlanStep>>(plan_json) {
+                ctx.partitions.task_state.plan = plan_steps;
+            }
+        }
+        if let Some(progress) = &snap.context.task_progress {
+            ctx.partitions.task_state.progress = progress.clone();
+        }
+
+        // Restore signals
+        ctx.partitions.signals = snap.context.signals.clone();
+
+        Self {
+            phase: LoopPhase::Reason,
+            turn: snap.turn,
+            ctx,
+            tools: Vec::new(),  // Tools are rebuilt from capabilities on next LLM call
+            observations: Vec::new(),
+            policy,
+            total_tokens: snap.total_tokens,
+            pending_termination: None,
+            session_history_baseline: 0,
+            checkpoint: TurnCheckpoint::default(),
+            milestone: crate::scheduler::milestone::MilestoneTracker::new(),
+            run_spec: snap.run_spec(),
+            tasks,
+            governance: None,  // Governance is policy data, recreated from config
+            resource_quota: None,
+            memory_write_times: Vec::new(),
+            memory_policy: None,
+            signal_router: Some(SignalRouter::new(64)),  // Dedup cleared on restore
+            started_at_ms: None,
+            last_now_ms: None,
+            suspend_state: None,
+            pending_denied_results: Vec::new(),
+            workflow: None,
+        }
     }
 
     fn push_agent_process_changed(&mut self, process: AgentProcess) {
