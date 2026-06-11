@@ -6,6 +6,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-06-11
+
+Compaction collapse: the 690-line compaction pipeline becomes a single planner decision point feeding pure mechanical executors, and the kernel now surfaces the **prompt-cache cost** of each compaction so the SDK can weigh tokens-saved against cache-rebuild. This release also fixes three regressions introduced by 0.2.9's W1 consolidation.
+
+### Fixed (0.2.9 regressions)
+
+- **Escalation suppression (B):** `should_compress` consulted post-paging *effective* ρ, so pressure escalation was silently suppressed after handles were paged out. Reverted to raw ρ for the escalation/trigger decision.
+- **Label/log mismatch (C):** the `auto_compact` action was logged under another compactor's label because compactors self-summarised and self-logged. Compactors are now pure; the pipeline summarises and logs exactly once under the requested action.
+- **Debug-assert abort (A):** an over-strict `debug_assert_eq!` on time-decay tripped (SIGABRT) when micro-compaction also emitted a time-decay op. Relaxed to an implication.
+
+### Changed
+
+- **Compactors → pure executors.** Selection logic (which oversized messages to snip, which tool-results to excerpt, how many oldest to drop) is lifted into pure planner helpers; `SnipCompactor` / `MicroCompactor` / `CollapseCompactor` / `AutoCompactor` no longer summarise, log, or select.
+- **Cache-aware prefix protection.** Snip/excerpt skip the oldest `preserve_recent_turns` messages so they don't rewrite the Anthropic prompt-cache prefix — with a forced-compaction fallback (`prefix_keep` yields when there's no drop-room, so reactive 413 compaction still frees tokens).
+- **Accurate cache cost on the `Compressed` observation.** Each step computes the real `prefix_invalidated_at`; the pipeline folds `min(...)` and surfaces it (plus tokens-saved) so the SDK can quantify *saved vs. rebuild*.
+
+### CI
+
+- Drop orphan `deepstrike-tokenizer` from `release-rust`: it isn't a workspace member and nothing depends on it, so `cargo publish -p deepstrike-tokenizer` failed on the first dry-run line and killed every Rust release. Publish `deepstrike-core` + `deepstrike-sdk` only.
+
+### Tests
+
+- Compaction golden tests recomputed for the prefix-protected behavior; new regression gates: `prefix_keep_yields_without_drop_fallback`, `pipeline_reports_accurate_prefix_invalidation`, `auto_compact_entry_logs_auto_compact_action`. Core 426 / fresh node 241 / fresh python 87 green.
+
 ## [0.2.9] - 2026-06-11
 
 Dynamic workflows: the kernel can now author and run agent-orchestration DAGs as a first-class primitive — every node spawn passes the syscall gate, so quotas, trust, and future spawn policies apply per node for free. Inspired by Anthropic's *A harness for every task*.
