@@ -1366,7 +1366,7 @@
     /// The spawn descriptors from the most recent `WorkflowBatchSpawned` observation.
     fn last_batch_spawns(
         obs: &[KernelObservation],
-    ) -> Vec<crate::scheduler::workflow_run::WorkflowSpawnInfo> {
+    ) -> Vec<crate::orchestration::workflow::WorkflowSpawnInfo> {
         obs.iter()
             .rev()
             .find_map(|o| match o {

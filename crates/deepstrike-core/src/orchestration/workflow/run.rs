@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::orchestration::task_graph::{TaskGraph, TaskStatus};
 use crate::orchestration::tournament::{EntrantId, Match, Tournament, TournamentAction};
-use crate::orchestration::workflow::{NodeKind, NodeTrust, WorkflowNode, WorkflowSpec};
+use super::{NodeKind, NodeTrust, WorkflowNode, WorkflowSpec};
 use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance, IsolationManifest};
 use crate::types::error::Result;
 use crate::types::result::{LoopResult, TerminationReason};

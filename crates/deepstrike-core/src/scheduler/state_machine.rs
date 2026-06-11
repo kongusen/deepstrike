@@ -208,7 +208,7 @@ pub struct LoopStateMachine {
     /// W0: an in-flight workflow DAG, when one is loaded. The kernel spawns its ready nodes as
     /// gated batches (each through `evaluate_syscall(Syscall::Spawn)`) and advances on
     /// completions. `None` (default) preserves the single-spawn `spawn_sub_agent` behavior.
-    workflow: Option<crate::scheduler::workflow_run::WorkflowRun>,
+    workflow: Option<crate::orchestration::workflow::WorkflowRun>,
 }
 
 /// Stable snake_case label for a signal disposition, used in `SignalDisposed`
@@ -1314,7 +1314,7 @@ impl LoopStateMachine {
         spec: crate::orchestration::workflow::WorkflowSpec,
         parent_session_id: &str,
     ) -> LoopAction {
-        self.install_workflow(crate::scheduler::workflow_run::WorkflowRun::new(
+        self.install_workflow(crate::orchestration::workflow::WorkflowRun::new(
             &spec,
             parent_session_id,
         ))
@@ -1328,7 +1328,7 @@ impl LoopStateMachine {
         parent_session_id: &str,
         completed: &[String],
     ) -> LoopAction {
-        self.install_workflow(crate::scheduler::workflow_run::WorkflowRun::resume(
+        self.install_workflow(crate::orchestration::workflow::WorkflowRun::resume(
             &spec,
             parent_session_id,
             completed,
@@ -1337,7 +1337,7 @@ impl LoopStateMachine {
 
     fn install_workflow(
         &mut self,
-        built: crate::types::error::Result<crate::scheduler::workflow_run::WorkflowRun>,
+        built: crate::types::error::Result<crate::orchestration::workflow::WorkflowRun>,
     ) -> LoopAction {
         match built {
             Ok(run) => {
@@ -1370,7 +1370,7 @@ impl LoopStateMachine {
     /// their `WorkflowSpawnInfo` (for the `WorkflowBatchSpawned` observation).
     fn spawn_ready_workflow_nodes(
         &mut self,
-    ) -> (Vec<String>, Vec<crate::scheduler::workflow_run::WorkflowSpawnInfo>) {
+    ) -> (Vec<String>, Vec<crate::orchestration::workflow::WorkflowSpawnInfo>) {
         // A2 tournament: a controller node whose deps are satisfied fans out into entrant children
         // (and spawns no agent of its own) before we read the ready set — so its entrants/judges
         // are picked up by the same run-queue spawn loop as any other node.
@@ -1383,7 +1383,7 @@ impl LoopStateMachine {
             .map(|w| w.ready_batch())
             .unwrap_or_default();
         let mut spawned_ids: Vec<String> = Vec::new();
-        let mut spawned_infos: Vec<crate::scheduler::workflow_run::WorkflowSpawnInfo> = Vec::new();
+        let mut spawned_infos: Vec<crate::orchestration::workflow::WorkflowSpawnInfo> = Vec::new();
         for node in ready {
             // W3 quarantine stage: a quarantined node that declares write privilege is a contradiction
             // (it reads untrusted content) — deny the spawn in-kernel and starve its dependents, rather
@@ -1395,7 +1395,7 @@ impl LoopStateMachine {
                 let rb = RollbackReason::GovernanceDenied {
                     tool_name: format!(
                         "workflow-node:{}",
-                        crate::scheduler::workflow_run::node_agent_id(node)
+                        crate::orchestration::workflow::node_agent_id(node)
                     ),
                     reason: "quarantine: quarantined node requested write-capable isolation".to_string(),
                 };

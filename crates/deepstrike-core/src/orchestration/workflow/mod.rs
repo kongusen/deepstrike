@@ -22,6 +22,12 @@ use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance};
 use crate::types::error::{DeepStrikeError, Result};
 use crate::types::task::{RuntimeTask, TaskLane};
 
+/// The kernel-resident execution state for an in-flight [`WorkflowSpec`] — the DAG run-queue,
+/// tournament bracket advancement, and per-node spawn descriptors. Was `scheduler/workflow_run.rs`;
+/// folded under `workflow` so the declarative spec and its runtime live in one module.
+pub mod run;
+pub use run::*;
+
 /// W3: a node's trust level. `Quarantined` nodes read untrusted content and must run with no
 /// privileges; their output crosses into the trusted plane only as a structured summary (the SDK
 /// enforces this — the kernel carries the flag to every spawn descriptor).

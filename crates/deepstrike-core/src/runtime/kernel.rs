@@ -447,7 +447,7 @@ pub enum KernelObservation {
     /// role/isolation/inheritance) so the SDK can run the kernel-generated nodes.
     WorkflowBatchSpawned {
         turn: u32,
-        nodes: Vec<crate::scheduler::workflow_run::WorkflowSpawnInfo>,
+        nodes: Vec<crate::orchestration::workflow::WorkflowSpawnInfo>,
     },
     /// W0-ABI: a workflow finished (all nodes terminal, or stalled by a gated dependency).
     WorkflowCompleted {
