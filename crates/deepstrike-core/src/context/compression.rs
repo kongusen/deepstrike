@@ -46,16 +46,12 @@ impl Compressor for SnipCompactor {
         let per_msg_limit = ((max_tokens as f64 * self.per_msg_ratio) as u32).max(50);
         let mut saved = 0u32;
         let partition = &mut partitions.history;
+        let indices = oversized_text_message_indices(&partition.messages, per_msg_limit, engine);
 
-        for msg in &mut partition.messages {
+        for &i in &indices {
+            let msg = &mut partition.messages[i];
             let original_tokens = msg.token_count.unwrap_or_else(|| engine.count_message(msg));
-            if original_tokens <= per_msg_limit {
-                continue;
-            }
             if let Content::Text(ref t) = msg.content {
-                if original_tokens <= 10 {
-                    continue;
-                }
                 let head_limit = per_msg_limit / 2;
                 let tail_limit = per_msg_limit.saturating_sub(head_limit);
                 let head_text = engine.truncate(t, head_limit);
@@ -96,22 +92,37 @@ impl Compressor for SnipCompactor {
 
         partition.token_count = partition.token_count.saturating_sub(saved);
 
-        if saved > 0 {
-            // 记录释放的token数（传递给Layer 5 Auto-Compact）
-            partitions.task_state.log_compression(
-                "snip_compact",
-                format!(
-                    "{saved} tokens truncated from oversized messages (boundary: snip)",
-                ),
-            );
-        }
-
+        // Pure executor: snip caps oversized messages in place; it never archives or summarizes.
+        // Summary + compression-log attribution is the pipeline's job (under the *requested* action).
         CompressResult {
             tokens_saved: saved,
-            summary: None,  // SnipCompactor不返回summary，保持原有行为
+            summary: None,
             archived: vec![],
         }
     }
+}
+
+/// Pure selection (W1-1 collapse): indices of oversized **text** history messages a snip caps
+/// (tokens > `per_msg_limit`; non-text and tiny ≤10-token messages skipped). The cache-aware planner
+/// reuses this to choose which — and how far back — to snip; the executor only applies the head/tail
+/// truncation to the chosen indices.
+fn oversized_text_message_indices(
+    messages: &[Message],
+    per_msg_limit: u32,
+    engine: &ContextTokenEngine,
+) -> Vec<usize> {
+    messages
+        .iter()
+        .enumerate()
+        .filter(|(_, msg)| {
+            if !matches!(msg.content, Content::Text(_)) {
+                return false;
+            }
+            let toks = msg.token_count.unwrap_or_else(|| engine.count_message(msg));
+            toks > per_msg_limit && toks > 10
+        })
+        .map(|(i, _)| i)
+        .collect()
 }
 
 /// 获取当前UTC时间戳
@@ -206,7 +217,37 @@ fn excerpt_text(
     format!("{}… [… {} tokens omitted …] …{}", head, remaining, tail)
 }
 
-/// rho > micro_threshold: replace tool results with a compact excerpt.
+/// Pure selection (W1-1 collapse): indices of history messages whose large (≥200-token) tool result
+/// a micro-compact would excerpt — the first tool-result part whose `call_id` is not in
+/// `preserved_refs`. The executor applies the excerpt. The cache-aware planner reuses this: tool
+/// results are interleaved mid/late history, so excerpting them is prefix-safe.
+fn excerptable_tool_result_indices(
+    messages: &[Message],
+    preserved_refs: &[String],
+    engine: &ContextTokenEngine,
+) -> Vec<usize> {
+    messages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, msg)| {
+            let toks = msg.token_count.unwrap_or_else(|| engine.count_message(msg));
+            if toks < 200 {
+                return None;
+            }
+            let Content::Parts(parts) = &msg.content else {
+                return None;
+            };
+            let call_id = parts.iter().find_map(|p| match p {
+                ContentPart::ToolResult { call_id, .. } => Some(call_id.to_string()),
+                _ => None,
+            })?;
+            (!preserved_refs.contains(&call_id)).then_some(i)
+        })
+        .collect()
+}
+
+/// rho > micro_threshold: replace tool results with a compact excerpt. Selection via
+/// [`excerptable_tool_result_indices`]; this executor only applies the excerpt.
 pub struct MicroCompactor;
 
 impl Compressor for MicroCompactor {
@@ -219,9 +260,6 @@ impl Compressor for MicroCompactor {
         _summarizer: &dyn Summarizer,
         engine: &ContextTokenEngine,
     ) -> CompressResult {
-        let mut saved = 0u32;
-        let preserved_refs = &partitions.task_state.preserved_refs;
-
         let find_tool_name = |call_id: &str, msgs: &[Message]| -> Option<String> {
             for m in msgs {
                 for tc in &m.tool_calls {
@@ -233,14 +271,20 @@ impl Compressor for MicroCompactor {
             None
         };
 
+        // Selection lifted to a pure helper (already excludes `preserved_refs`); the executor only
+        // applies the excerpt to the chosen tool-result messages.
+        let indices = excerptable_tool_result_indices(
+            &partitions.history.messages,
+            &partitions.task_state.preserved_refs,
+            engine,
+        );
+        let messages_clone = partitions.history.messages.clone();
         let partition = &mut partitions.history;
-        let messages_clone = partition.messages.clone();
+        let mut saved = 0u32;
 
-        for msg in &mut partition.messages {
+        for &i in &indices {
+            let msg = &mut partition.messages[i];
             let original_tokens = msg.token_count.unwrap_or_else(|| engine.count_message(msg));
-            if original_tokens < 200 {
-                continue;
-            }
             if let Content::Parts(ref mut parts) = msg.content {
                 let tool_result_index = parts
                     .iter()
@@ -252,10 +296,6 @@ impl Compressor for MicroCompactor {
                         is_error: _,
                     } = &mut parts[idx]
                     {
-                        if preserved_refs.contains(&call_id.to_string()) {
-                            continue;
-                        }
-
                         let tool_name = find_tool_name(call_id, &messages_clone)
                             .unwrap_or_else(|| "unknown".to_string());
 
@@ -291,13 +331,7 @@ impl Compressor for MicroCompactor {
 
         partition.token_count = partition.token_count.saturating_sub(saved);
 
-        if saved > 0 {
-            partitions.task_state.log_compression(
-                "micro_compact",
-                format!("{saved} tokens excerpted from tool results"),
-            );
-        }
-
+        // Pure executor: excerpts tool results in place; no archive, summary, or self-log.
         CompressResult {
             tokens_saved: saved,
             summary: None,
@@ -306,7 +340,33 @@ impl Compressor for MicroCompactor {
     }
 }
 
-/// rho > collapse_threshold: drop oldest messages until within target, prepending summary.
+/// Pure **selection** (W1-1 collapse): how many of the oldest history messages to drop to bring the
+/// partition under `target_tokens`, never crossing the preserve-recent floor (`keep` messages).
+/// Returns `(count, tokens_saved)`; the executor just drains `count` from the front. This is the
+/// decision the cache-aware planner reuses to "batch one big drop to target" rather than re-deriving
+/// the count inside the compactor.
+pub fn plan_drop_oldest(
+    messages: &[Message],
+    total_tokens: u32,
+    target_tokens: u32,
+    keep: usize,
+    engine: &ContextTokenEngine,
+) -> (usize, u32) {
+    let limit = messages.len().saturating_sub(keep);
+    let mut saved = 0u32;
+    let mut n = 0usize;
+    for (i, msg) in messages.iter().take(limit).enumerate() {
+        if total_tokens.saturating_sub(saved) <= target_tokens {
+            break;
+        }
+        saved += msg.token_count.unwrap_or_else(|| engine.count_message(msg));
+        n = i + 1;
+    }
+    (n, saved)
+}
+
+/// rho > collapse_threshold: drop oldest messages until within target. Selection via
+/// [`plan_drop_oldest`]; this executor only drains the chosen count.
 pub struct CollapseCompactor;
 
 impl Compressor for CollapseCompactor {
@@ -316,23 +376,13 @@ impl Compressor for CollapseCompactor {
         target_tokens: u32,
         _max_tokens: u32,
         preserve_k: usize,
-        summarizer: &dyn Summarizer,
+        _summarizer: &dyn Summarizer,
         engine: &ContextTokenEngine,
     ) -> CompressResult {
         let partition = &mut partitions.history;
-        let mut saved = 0u32;
-        let mut n = 0usize;
-
         let keep = preserve_k * 2; // turns → messages (user + assistant per turn)
-        let limit = partition.messages.len().saturating_sub(keep);
-        for i in 0..limit {
-            if partition.token_count.saturating_sub(saved) <= target_tokens {
-                break;
-            }
-            let msg = &partition.messages[i];
-            saved += msg.token_count.unwrap_or_else(|| engine.count_message(msg));
-            n = i + 1;
-        }
+        let (n, saved) =
+            plan_drop_oldest(&partition.messages, partition.token_count, target_tokens, keep, engine);
 
         if n == 0 {
             return CompressResult {
@@ -343,16 +393,13 @@ impl Compressor for CollapseCompactor {
         }
 
         let archived: Vec<Message> = partition.messages.drain(..n).collect();
-        let summary_text =
-            summarizer.summarize(&archived, PressureAction::ContextCollapse, target_tokens);
-
         partition.token_count = partition.token_count.saturating_sub(saved);
 
-        partitions.task_state.log_compression("context_collapse", summary_text.clone());
-
+        // Pure executor: return the drained messages; the pipeline summarizes + logs once under the
+        // requested action.
         CompressResult {
             tokens_saved: saved,
-            summary: Some(summary_text),
+            summary: None,
             archived,
         }
     }
@@ -368,7 +415,7 @@ impl Compressor for AutoCompactor {
         _target_tokens: u32,
         _max_tokens: u32,
         preserve_k: usize,
-        summarizer: &dyn Summarizer,
+        _summarizer: &dyn Summarizer,
         engine: &ContextTokenEngine,
     ) -> CompressResult {
         let partition = &mut partitions.history;
@@ -402,9 +449,6 @@ impl Compressor for AutoCompactor {
 
         partition.messages = kept;
 
-        let summary_text =
-            summarizer.summarize(&archived, PressureAction::AutoCompact, _max_tokens);
-
         let kept_tokens: u32 = partition
             .messages
             .iter()
@@ -412,11 +456,11 @@ impl Compressor for AutoCompactor {
             .sum();
         partition.token_count = kept_tokens;
 
-        partitions.task_state.log_compression("auto_compact", summary_text.clone());
-
+        // Pure executor: return the drained messages; the pipeline summarizes + logs once under the
+        // requested action.
         CompressResult {
             tokens_saved: original_tokens.saturating_sub(kept_tokens),
-            summary: Some(summary_text),
+            summary: None,
             archived,
         }
     }
@@ -459,7 +503,6 @@ impl CompressionPipeline {
         }
 
         let mut total_saved = 0;
-        let mut all_summaries = vec![];
         let mut all_archived = vec![];
         let summarizer = super::summarizer::RuleSummarizer;
 
@@ -477,22 +520,24 @@ impl CompressionPipeline {
                     engine,
                 );
                 total_saved += res.tokens_saved;
-                if let Some(s) = res.summary {
-                    if !s.is_empty() {
-                        all_summaries.push(s);
-                    }
-                }
                 all_archived.extend(res.archived);
             }
         }
 
-        let merged_summary = if all_summaries.is_empty() {
+        // Single decision point for summary + log attribution: whatever the cascade drained is
+        // summarized ONCE under the **requested** action and logged once. The compactors are pure
+        // executors that no longer self-attribute — so a `compress(AutoCompact)` whose draining
+        // happened in the Collapse stage is still labeled `auto_compact` (the C fix), and a
+        // `compress(ContextCollapse)` stays `context_collapse` (unchanged).
+        let summary = if all_archived.is_empty() {
             None
         } else {
-            Some(all_summaries.join("\n\n"))
+            let s = summarizer.summarize(&all_archived, action, target_tokens);
+            partitions.task_state.log_compression(action.label(), s.clone());
+            Some(s)
         };
 
-        (total_saved, merged_summary, all_archived)
+        (total_saved, summary, all_archived)
     }
 }
 
@@ -588,7 +633,11 @@ mod tests {
         let result = compactor.compress(&mut ctx, 250, MAX, 2, &summarizer(), &engine());
         assert!(result.tokens_saved > 0);
         assert!(ctx.history.messages.len() < 8);
-        assert!(ctx.task_state.compression_log.iter().any(|e| e.action == "context_collapse"));
+        // Pure executor: returns the drained messages; summary + log attribution is the pipeline's
+        // job (under the requested action), so the compactor itself no longer summarizes or logs.
+        assert!(!result.archived.is_empty(), "drained messages are returned to the pipeline");
+        assert!(result.summary.is_none(), "compactor no longer self-summarizes");
+        assert!(ctx.task_state.compression_log.is_empty(), "compactor no longer logs");
     }
 
     #[test]
@@ -658,9 +707,30 @@ mod tests {
         let result = compactor.compress(&mut ctx, 0, MAX, 2, &summarizer(), &engine());
         assert!(result.tokens_saved > 0);
         assert_eq!(ctx.history.messages.len(), 4); // kept last 2 turns = 4 messages
-        assert!(result.summary.is_some());
-        // Summary now routes through compression_log → systemVolatile
-        assert!(ctx.task_state.compression_log.iter().any(|e| e.action == "auto_compact"));
+        // Pure executor: returns the drained messages; the pipeline summarizes + logs under the
+        // requested action (see `baseline_auto_*` / `pipeline_attributes_summary_to_requested_action`).
+        assert!(!result.archived.is_empty(), "drained messages returned to the pipeline");
+        assert!(result.summary.is_none(), "compactor no longer self-summarizes");
+        assert!(ctx.task_state.compression_log.is_empty(), "compactor no longer logs");
+    }
+
+    #[test]
+    fn plan_drop_oldest_respects_target_and_preserve_floor() {
+        // Pure selection helper (W1-1 collapse): drop the fewest oldest messages to reach target,
+        // never below the preserve floor. This is the decision the cache-aware planner reuses.
+        let msgs: Vec<Message> = (0..8)
+            .map(|i| {
+                let mut m = Message::user(format!("m{i}"));
+                m.token_count = Some(50);
+                m
+            })
+            .collect();
+        // total=400, target=250, keep=2 → drop 3 oldest (150 saved) lands exactly at 250.
+        assert_eq!(plan_drop_oldest(&msgs, 400, 250, 2, &engine()), (3, 150));
+        // target=0 with keep=2 → drains down to the floor (len-keep = 6), never below it.
+        assert_eq!(plan_drop_oldest(&msgs, 400, 0, 2, &engine()), (6, 300));
+        // already under target → no drop.
+        assert_eq!(plan_drop_oldest(&msgs, 400, 500, 2, &engine()), (0, 0));
     }
 
     // ─── W1-1 characterization baseline ────────────────────────────────────────
@@ -769,16 +839,20 @@ mod tests {
     }
 
     #[test]
-    fn baseline_auto_matches_collapse_at_preserve_floor() {
-        // AutoCompact runs all 4 stages, but on this fixture Snip→Micro→Collapse already hit the
-        // preserve floor, so the Auto stage archives nothing extra: identical outcome to Collapse.
+    fn baseline_auto_attributes_summary_to_auto_compact() {
+        // AutoCompact runs all 4 stages; on this fixture Snip→Micro→Collapse already hit the preserve
+        // floor, so the Auto *stage* archives nothing extra. The token math is identical to Collapse,
+        // but the summary is attributed to the **requested** action (auto_compact) — NOT silently
+        // downgraded to context_collapse by whichever stage did the draining. This is the C fix:
+        // op-label == summary/log label (node K04/K09 + the manager-level regression gate).
         let (before, saved, summary, archived, msgs, total) = run_baseline(PressureAction::AutoCompact);
         assert_eq!(before, 2001);
         assert_eq!(saved, 1462);
         assert_eq!(archived, 2);
         assert_eq!(msgs, 4);
         assert_eq!(total, 539);
-        assert!(summary.is_some());
+        let summary = summary.expect("auto-compact summarizes the archived messages");
+        assert!(summary.contains("[Compressed: auto_compact]"), "got: {summary}");
     }
 
     #[test]

@@ -1105,7 +1105,11 @@ impl LoopStateMachine {
                 let (target_tokens, preserve_turns) = self.ctx.plan_compaction_params();
                 let plan =
                     crate::mm::plan_eviction(self.ctx.should_compress(), idle_decay, target_tokens, preserve_turns);
-                debug_assert_eq!(plan.has_time_decay(), idle_decay);
+                // `idle_decay` ⇒ the plan carries a `TimeDecayMicro` (so the skip-on-already-executed
+                // below is meaningful). The converse does NOT hold: a pressure-driven `MicroCompact`
+                // also emits `TimeDecayMicro` independent of `idle_decay` (W1 unified planner), so we
+                // assert the implication, not equality.
+                debug_assert!(!idle_decay || plan.has_time_decay());
                 for op in &plan.ops {
                     // Skip TimeDecayMicro if we already executed it (prevents double-execution).
                     if matches!(op, crate::mm::EvictionOp::TimeDecayMicro) && idle_decay {

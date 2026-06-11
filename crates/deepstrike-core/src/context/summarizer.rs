@@ -34,13 +34,7 @@ impl Summarizer for RuleSummarizer {
             })
             .unwrap_or_default();
 
-        let action_str = match action {
-            PressureAction::SnipCompact => "snip_compact",
-            PressureAction::MicroCompact => "micro_compact",
-            PressureAction::ContextCollapse => "context_collapse",
-            PressureAction::AutoCompact => "auto_compact",
-            PressureAction::None => "none",
-        };
+        let action_str = action.label();
 
         let mut s =
             format!("[Compressed: {action_str}]\n{n} messages / {tokens} tokens archived\n");

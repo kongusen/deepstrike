@@ -220,10 +220,15 @@ impl ContextManager {
     }
 
     pub fn should_compress(&self) -> PressureAction {
-        // Use effective (paging-aware) rho: once tool results are collapsed/spooled they no longer
-        // occupy working context, so they must not keep driving compaction. Equals raw rho when
-        // nothing is paged (behavior-preserving) and when provider usage is authoritative.
-        self.pressure.recommend(self.effective_rho())
+        // Compaction-tier recommendation runs on **raw** rho. The paging-aware `effective_rho` was
+        // wired here during W1-1 but it over-relieved pressure: once `micro_compact` paged out
+        // tool-result handles, effective rho fell below the collapse/auto_compact thresholds, so the
+        // heavy tiers never fired — violating W1-1's own DoD ("既有压缩 golden 不变" /
+        // "AutoCompact 后 wake 注入语义摘要"). Until the full cache-aware planner lands (the planner
+        // that scores prefix-invalidation per op, `effective_rho` reserved for it), the tier trigger
+        // must use raw rho so escalation is preserved. `effective_rho` stays defined + tested for
+        // that work; it is intentionally not consulted by the trigger today.
+        self.pressure.recommend(self.rho())
     }
 
     pub fn compress(&mut self, action: PressureAction) -> (u32, Option<String>, Vec<Message>) {
@@ -630,6 +635,37 @@ mod tests {
         mgr.pin_section("history.rolling");
         let (saved, _, _) = mgr.force_compress();
         assert_eq!(saved, 0);
+    }
+
+    // ── W1-1 完成态 regression gates (Step 0). RED until the planner/pure-executor rewrite. ──
+
+    #[test]
+    fn auto_compact_entry_logs_auto_compact_action() {
+        // C regression gate: `force_compress` is the auto-compact entry point; the summary the
+        // provider eventually sees (rendered from `compression_log`) must carry the **auto_compact**
+        // label. The broken W1 cascade ran `compress(AutoCompact, target=0)`, so `CollapseCompactor`
+        // drained the whole history first and logged `context_collapse`, then `AutoCompactor` had
+        // nothing to archive — the event was labeled `auto_compact` but the log/render showed
+        // `context_collapse`. The pure-executor model logs with the op's own label, restoring the
+        // op-label == log-label contract end users observe (node K04/K09).
+        let mut mgr = ContextManager::new(1_000);
+        for i in 0..40 {
+            mgr.push_history(Message::user(format!("turn {i}: {}", "ctx ".repeat(40))), 200);
+        }
+        let (saved, summary, _) = mgr.force_compress();
+        assert!(saved > 0, "force_compress should compact a large history");
+        assert!(summary.is_some(), "auto-compact summarizes the archived turns");
+        let actions: Vec<&str> = mgr
+            .partitions
+            .task_state
+            .compression_log
+            .iter()
+            .map(|e| e.action.as_str())
+            .collect();
+        assert!(
+            actions.last() == Some(&"auto_compact"),
+            "auto-compact entry must log an auto_compact action; got {actions:?}"
+        );
     }
 
     #[test]

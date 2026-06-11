@@ -414,6 +414,28 @@ mod tests {
     }
 
     #[test]
+    fn plan_eviction_micro_compact_emits_time_decay_without_idle() {
+        // Regression: a pressure-driven MicroCompact emits a TimeDecayMicro op *independent* of the
+        // idle-decay flag. So `has_time_decay()` can be true while `idle_decay` is false — the state
+        // machine's compaction checkpoint must assert the implication (`idle_decay ⇒ has_time_decay`),
+        // NOT equality (the old `debug_assert_eq!(has_time_decay, idle_decay)` wrongly aborted here).
+        let plan = plan_eviction(PressureAction::MicroCompact, false, 50_000, 2);
+        assert!(plan.has_time_decay(), "MicroCompact yields a time-decay op even when not idle");
+        // And the checkpoint invariant the fixed assertion encodes holds for every combination:
+        for recommended in [
+            PressureAction::None,
+            PressureAction::MicroCompact,
+            PressureAction::AutoCompact,
+            PressureAction::ContextCollapse,
+        ] {
+            for idle in [false, true] {
+                let p = plan_eviction(recommended, idle, 50_000, 2);
+                assert!(!idle || p.has_time_decay(), "idle_decay must imply a time-decay op");
+            }
+        }
+    }
+
+    #[test]
     fn eviction_op_labels() {
         assert_eq!(EvictionOp::Spool(1).label(), "spool");
         assert_eq!(EvictionOp::Snip { per_msg_ratio: 0.1 }.label(), "snip");

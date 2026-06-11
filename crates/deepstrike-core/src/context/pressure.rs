@@ -12,6 +12,20 @@ pub enum PressureAction {
     AutoCompact,
 }
 
+impl PressureAction {
+    /// Canonical snake_case label — the single source for compaction-event action strings and the
+    /// `[Compressed: {label}]` summary marker (used by both the summarizer and the compaction log).
+    pub fn label(self) -> &'static str {
+        match self {
+            PressureAction::None => "none",
+            PressureAction::SnipCompact => "snip_compact",
+            PressureAction::MicroCompact => "micro_compact",
+            PressureAction::ContextCollapse => "context_collapse",
+            PressureAction::AutoCompact => "auto_compact",
+        }
+    }
+}
+
 /// Monitors rho = used_tokens / max_tokens and recommends compression actions.
 /// All thresholds come from `ContextConfig` — no hardcoded constants.
 pub struct PressureMonitor {
