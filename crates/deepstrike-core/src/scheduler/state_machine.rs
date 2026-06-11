@@ -731,10 +731,9 @@ impl LoopStateMachine {
     /// 强行进行一次最大力度的压缩归档。通常用于收到模型 API 413 (Prompt too long) 时做兜底重试。
     pub fn force_compact(&mut self) -> bool {
         let action = PressureAction::AutoCompact;
-        let (saved, summary, archived) = self.ctx.force_compress();
+        let (saved, summary, archived, cache_at) = self.ctx.force_compress();
         if saved > 0 {
-            // AutoCompact invalidates prefix at 0 (drops all but last K turns).
-            self.push_compression_observations(action, summary, archived, Some(0));
+            self.push_compression_observations(action, summary, archived, cache_at);
             true
         } else {
             false
@@ -775,7 +774,6 @@ impl LoopStateMachine {
     /// preservation); the full refactor (step 3+) will route each to a dedicated executor.
     fn execute_eviction_op(&mut self, op: &crate::mm::EvictionOp) {
         use crate::mm::EvictionOp;
-        let cache_impact = op.invalidates_prefix_at();
         match op {
             EvictionOp::Spool(_) => {
                 // Layer 1: handled at tool-result ingestion, not here. No-op in this path.
@@ -783,25 +781,25 @@ impl LoopStateMachine {
             EvictionOp::Snip { per_msg_ratio: _ } => {
                 // Layer 2: route to SnipCompact via the pipeline (behavior-preserving shim).
                 // Use the public `compress_with_time` which already wires target_tokens from config.
-                let (saved, summary, archived) =
+                let (saved, summary, archived, cache_at) =
                     self.ctx.compress_with_time(PressureAction::SnipCompact, self.last_now_ms);
                 if saved > 0 || summary.is_some() {
                     self.push_compression_observations(
                         PressureAction::SnipCompact,
                         summary,
                         archived,
-                        cache_impact,
+                        cache_at,
                     );
                 }
             }
             EvictionOp::TimeDecayMicro => {
                 // Layer 3: idle/time-decay micro-compact. Uses non-time compress path + stamps time.
-                let (_, summary, archived) = self.ctx.compress(PressureAction::MicroCompact);
+                let (_, summary, archived, cache_at) = self.ctx.compress(PressureAction::MicroCompact);
                 self.push_compression_observations(
                     PressureAction::MicroCompact,
                     summary,
                     archived,
-                    cache_impact,
+                    cache_at,
                 );
                 if let Some(now_ms) = self.last_now_ms {
                     self.ctx.last_compact_ms = Some(now_ms);
@@ -812,7 +810,7 @@ impl LoopStateMachine {
                 // the plan's `target_tokens` verbatim instead of re-deriving it from config). The
                 // planner stamps `config.target_tokens(max)`, so this is behavior-identical to the
                 // old config-derived path while making the plan the single decision point.
-                let (saved, summary, archived) = self.ctx.compress_with_target(
+                let (saved, summary, archived, cache_at) = self.ctx.compress_with_target(
                     PressureAction::ContextCollapse,
                     *target_tokens,
                     self.last_now_ms,
@@ -822,7 +820,7 @@ impl LoopStateMachine {
                         PressureAction::ContextCollapse,
                         summary,
                         archived,
-                        cache_impact,
+                        cache_at,
                     );
                 }
             }
@@ -832,13 +830,13 @@ impl LoopStateMachine {
                 // the pipeline applies that same value at the compactor, so honoring the op and the
                 // config path are byte-identical here. Per-op preserve plumbing into the pipeline is a
                 // minor follow-up; the headline target placeholder is already gone (see Collapse).
-                let (saved, summary, archived) = self.ctx.force_compress();
+                let (saved, summary, archived, cache_at) = self.ctx.force_compress();
                 if saved > 0 || summary.is_some() {
                     self.push_compression_observations(
                         PressureAction::AutoCompact,
                         summary,
                         archived,
-                        cache_impact,
+                        cache_at,
                     );
                 }
             }

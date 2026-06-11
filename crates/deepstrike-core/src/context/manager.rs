@@ -231,7 +231,7 @@ impl ContextManager {
         self.pressure.recommend(self.rho())
     }
 
-    pub fn compress(&mut self, action: PressureAction) -> (u32, Option<String>, Vec<Message>) {
+    pub fn compress(&mut self, action: PressureAction) -> (u32, Option<String>, Vec<Message>, Option<usize>) {
         self.compress_with_time(action, None)
     }
 
@@ -239,9 +239,9 @@ impl ContextManager {
         &mut self,
         action: PressureAction,
         now_ms: Option<u64>,
-    ) -> (u32, Option<String>, Vec<Message>) {
+    ) -> (u32, Option<String>, Vec<Message>, Option<usize>) {
         if self.sections.is_partition_pinned(ContextSectionPartition::History) {
-            return (0, None, vec![]);
+            return (0, None, vec![], None);
         }
 
         let result = {
@@ -262,9 +262,9 @@ impl ContextManager {
         result
     }
 
-    pub fn force_compress(&mut self) -> (u32, Option<String>, Vec<Message>) {
+    pub fn force_compress(&mut self) -> (u32, Option<String>, Vec<Message>, Option<usize>) {
         if self.sections.is_partition_pinned(ContextSectionPartition::History) {
-            return (0, None, vec![]);
+            return (0, None, vec![], None);
         }
         let result = self.compression.compress(&mut self.partitions, PressureAction::AutoCompact, self.max_tokens, 0, &self.engine);
         if !result.2.is_empty() {
@@ -283,9 +283,9 @@ impl ContextManager {
         action: PressureAction,
         target_tokens: u32,
         now_ms: Option<u64>,
-    ) -> (u32, Option<String>, Vec<Message>) {
+    ) -> (u32, Option<String>, Vec<Message>, Option<usize>) {
         if self.sections.is_partition_pinned(ContextSectionPartition::History) {
-            return (0, None, vec![]);
+            return (0, None, vec![], None);
         }
         let result =
             self.compression
@@ -613,7 +613,7 @@ mod tests {
         for _ in 0..30 { mgr.push_history(Message::user("filler message for pinning test"), 50); }
         let tokens_before = mgr.partitions.history.token_count;
         mgr.pin_section("history.rolling");
-        let (saved, _, _) = mgr.compress(PressureAction::AutoCompact);
+        let (saved, _, _, _) = mgr.compress(PressureAction::AutoCompact);
         assert_eq!(saved, 0);
         assert_eq!(mgr.partitions.history.token_count, tokens_before);
     }
@@ -624,7 +624,7 @@ mod tests {
         for _ in 0..30 { mgr.push_history(Message::user("filler"), 50); }
         mgr.pin_section("history.rolling");
         mgr.unpin_section("history.rolling");
-        let (saved, _, _) = mgr.compress(PressureAction::AutoCompact);
+        let (saved, _, _, _) = mgr.compress(PressureAction::AutoCompact);
         assert!(saved > 0);
     }
 
@@ -633,7 +633,7 @@ mod tests {
         let mut mgr = ContextManager::new(1_000);
         for _ in 0..10 { mgr.push_history(Message::user("filler"), 50); }
         mgr.pin_section("history.rolling");
-        let (saved, _, _) = mgr.force_compress();
+        let (saved, _, _, _) = mgr.force_compress();
         assert_eq!(saved, 0);
     }
 
@@ -652,7 +652,7 @@ mod tests {
         for i in 0..40 {
             mgr.push_history(Message::user(format!("turn {i}: {}", "ctx ".repeat(40))), 200);
         }
-        let (saved, summary, _) = mgr.force_compress();
+        let (saved, summary, _, _) = mgr.force_compress();
         assert!(saved > 0, "force_compress should compact a large history");
         assert!(summary.is_some(), "auto-compact summarizes the archived turns");
         let actions: Vec<&str> = mgr
@@ -869,7 +869,7 @@ mod tests {
         }
         assert_eq!(mgr.handles.all().len(), 30);
 
-        let (saved, _, archived) = mgr.compress(PressureAction::AutoCompact);
+        let (saved, _, archived, _) = mgr.compress(PressureAction::AutoCompact);
         assert!(saved > 0 && !archived.is_empty(), "expected archival");
 
         // After compaction the table tracks only the tool results still in working history —

@@ -6,6 +6,7 @@ use super::token_engine::ContextTokenEngine;
 use crate::types::message::{Content, ContentPart, Message};
 
 /// Compression result returned by every compactor.
+#[derive(Default)]
 pub struct CompressResult {
     /// Tokens freed from the partition.
     pub tokens_saved: u32,
@@ -13,6 +14,10 @@ pub struct CompressResult {
     pub summary: Option<String>,
     /// Messages drained/archived from the context.
     pub archived: Vec<Message>,
+    /// Cache-aware (W1-1 step 2 / DoD #4): the earliest history-message index this op rewrote or
+    /// removed — i.e. where it invalidates the prompt-cache prefix. `None` = prefix-safe (touched
+    /// nothing). The pipeline folds the minimum across stages and surfaces it on the observation.
+    pub prefix_invalidated_at: Option<usize>,
 }
 
 /// Compression strategy interface.
@@ -103,8 +108,8 @@ impl Compressor for SnipCompactor {
         // Summary + compression-log attribution is the pipeline's job (under the *requested* action).
         CompressResult {
             tokens_saved: saved,
-            summary: None,
-            archived: vec![],
+            prefix_invalidated_at: indices.iter().min().copied(),
+            ..Default::default()
         }
     }
 }
@@ -369,8 +374,8 @@ impl Compressor for MicroCompactor {
         // Pure executor: excerpts tool results in place; no archive, summary, or self-log.
         CompressResult {
             tokens_saved: saved,
-            summary: None,
-            archived: vec![],
+            prefix_invalidated_at: indices.iter().min().copied(),
+            ..Default::default()
         }
     }
 }
@@ -420,22 +425,19 @@ impl Compressor for CollapseCompactor {
             plan_drop_oldest(&partition.messages, partition.token_count, target_tokens, keep, engine);
 
         if n == 0 {
-            return CompressResult {
-                tokens_saved: 0,
-                summary: None,
-                archived: vec![],
-            };
+            return CompressResult::default();
         }
 
         let archived: Vec<Message> = partition.messages.drain(..n).collect();
         partition.token_count = partition.token_count.saturating_sub(saved);
 
         // Pure executor: return the drained messages; the pipeline summarizes + logs once under the
-        // requested action.
+        // requested action. Dropping the oldest `n` breaks the cache prefix at index 0.
         CompressResult {
             tokens_saved: saved,
-            summary: None,
             archived,
+            prefix_invalidated_at: Some(0),
+            ..Default::default()
         }
     }
 }
@@ -455,11 +457,7 @@ impl Compressor for AutoCompactor {
     ) -> CompressResult {
         let partition = &mut partitions.history;
         if partition.messages.is_empty() {
-            return CompressResult {
-                tokens_saved: 0,
-                summary: None,
-                archived: vec![],
-            };
+            return CompressResult::default();
         }
 
         let original_tokens = partition.token_count;
@@ -475,11 +473,7 @@ impl Compressor for AutoCompactor {
 
         if archived.is_empty() {
             partition.messages = kept;
-            return CompressResult {
-                tokens_saved: 0,
-                summary: None,
-                archived: vec![],
-            };
+            return CompressResult::default();
         }
 
         partition.messages = kept;
@@ -492,11 +486,12 @@ impl Compressor for AutoCompactor {
         partition.token_count = kept_tokens;
 
         // Pure executor: return the drained messages; the pipeline summarizes + logs once under the
-        // requested action.
+        // requested action. Auto-compact drops all but the last K turns → prefix break at index 0.
         CompressResult {
             tokens_saved: original_tokens.saturating_sub(kept_tokens),
-            summary: None,
             archived,
+            prefix_invalidated_at: Some(0),
+            ..Default::default()
         }
     }
 }
@@ -573,13 +568,16 @@ impl CompressionPipeline {
         max_tokens: u32,
         target_tokens: u32,
         engine: &ContextTokenEngine,
-    ) -> (u32, Option<String>, Vec<Message>) {
+    ) -> (u32, Option<String>, Vec<Message>, Option<usize>) {
         if action == PressureAction::None {
-            return (0, None, vec![]);
+            return (0, None, vec![], None);
         }
 
         let mut total_saved = 0;
         let mut all_archived = vec![];
+        // Cache cost of the whole compaction = the earliest prefix-break across the stages that ran
+        // (an earlier break dominates). `None` = entirely prefix-safe.
+        let mut cache_at: Option<usize> = None;
         let summarizer = super::summarizer::RuleSummarizer;
 
         for (stage_action, compressor) in &self.stages {
@@ -596,6 +594,7 @@ impl CompressionPipeline {
                     engine,
                 );
                 total_saved += res.tokens_saved;
+                cache_at = [cache_at, res.prefix_invalidated_at].into_iter().flatten().min();
                 all_archived.extend(res.archived);
             }
         }
@@ -613,7 +612,7 @@ impl CompressionPipeline {
             Some(s)
         };
 
-        (total_saved, summary, all_archived)
+        (total_saved, summary, all_archived, cache_at)
     }
 }
 
@@ -851,6 +850,33 @@ mod tests {
         assert_eq!(plan_cache_cost(&[]), None);
     }
 
+    #[test]
+    fn pipeline_reports_accurate_prefix_invalidation() {
+        // (a) DoD #4: the pipeline surfaces the earliest message any stage actually touched. On the
+        // len=6 baseline (prefix_keep=2), a SnipCompact protects the oldest 2 and caps msgs 3,4 — so
+        // the cache break is at index 3, NOT the coarse 0. An AutoCompact drops the oldest → break 0.
+        let cfg = config();
+        let mut ctx = baseline_partitions();
+        let (_s, _u, _a, cache_at) = CompressionPipeline::new(&cfg).compress(
+            &mut ctx,
+            PressureAction::SnipCompact,
+            MAX,
+            500,
+            &engine(),
+        );
+        assert_eq!(cache_at, Some(3), "snip protected the oldest 2 → earliest touch is msg 3");
+
+        let mut ctx2 = baseline_partitions();
+        let (_s2, _u2, _a2, cache_at2) = CompressionPipeline::new(&cfg).compress(
+            &mut ctx2,
+            PressureAction::AutoCompact,
+            MAX,
+            500,
+            &engine(),
+        );
+        assert_eq!(cache_at2, Some(0), "dropping the oldest breaks the cache prefix at 0");
+    }
+
     // ─── W1-1 characterization baseline ────────────────────────────────────────
     // Locks the CURRENT compaction behavior (tokens_saved / archived count / summary)
     // across all four pressure levels + the cascade, so the upcoming compactor→executor
@@ -904,7 +930,7 @@ mod tests {
     fn run_baseline(action: PressureAction) -> (u32, u32, Option<String>, usize, usize, u32) {
         let mut ctx = baseline_partitions();
         let before = ctx.total_tokens(&engine());
-        let (saved, summary, archived) =
+        let (saved, summary, archived, _cache_at) =
             CompressionPipeline::new(&config()).compress(&mut ctx, action, MAX, 500, &engine());
         let archived_len = archived.len();
         let msgs_after = ctx.history.messages.len();
@@ -1002,7 +1028,7 @@ mod tests {
         let mut ctx = ContextPartitions::new(&cfg);
         ctx.history.push(Message::user("a".repeat(3600)), 900);
 
-        let (saved, summary, archived) = pipeline.compress(
+        let (saved, summary, archived, _cache_at) = pipeline.compress(
             &mut ctx,
             PressureAction::AutoCompact,
             1_000,
