@@ -6,6 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-06-11
+
 Dynamic workflows: the kernel can now author and run agent-orchestration DAGs as a first-class primitive — every node spawn passes the syscall gate, so quotas, trust, and future spawn policies apply per node for free. Inspired by Anthropic's *A harness for every task*.
 
 ### What this enables
@@ -73,6 +75,7 @@ Provider replay protocol fidelity: the provider layer now owns capture, validati
 
 ### Breaking
 
+- **Standalone `Tournament` / `LoopUntilDone` primitives removed** from all SDKs (Node `createTournament`/`createLoopUntilDone`, Python `Tournament`/`LoopUntilDone`/`StopCondition`, WASM + Rust re-exports) in favor of the `NodeKind::Tournament` / `NodeKind::Loop` workflow nodes driven by the one executor (A#1 fold-in). Tournament's bracket logic survives as the kernel-internal `orchestration::tournament` core.
 - **`MiniMaxProvider` removed** in favor of `MiniMaxAnthropicProvider` (Node + Python exports updated; no alias). Use `MiniMaxOpenAIProvider` for the OpenAI-compatible endpoint.
 - Core `runtime::{synthesize_provider_replay, effective_provider_replay}` removed (provider synthesis is no longer a core responsibility).
 
