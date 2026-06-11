@@ -30,6 +30,20 @@ pub enum NodeTrust {
     Quarantined,
 }
 
+/// Control-flow kind of a workflow node. `Spawn` (the default) runs the node's agent once.
+/// `Loop` re-runs it until a stop condition, *then* promotes its dependents — the first dynamic
+/// (runtime-node-addition) control-flow type. Additive: existing specs omit `kind` → `Spawn`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum NodeKind {
+    /// Run the node's agent once (classic spawn node).
+    #[default]
+    Spawn,
+    /// Re-run the node's agent up to `max_iters` times (v1: deterministic count). A future
+    /// `loop_continue` signal on the completion result will allow early "until done" stops.
+    Loop { max_iters: usize },
+}
+
 /// One node in a workflow DAG: a task plus the contract its agent runs under.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowNode {
@@ -43,6 +57,9 @@ pub struct WorkflowNode {
     /// W3 trust level. Default `Trusted`.
     #[serde(default, skip_serializing_if = "is_trusted")]
     pub trust: NodeTrust,
+    /// Control-flow kind. Default `Spawn` (run once).
+    #[serde(default, skip_serializing_if = "is_spawn")]
+    pub kind: NodeKind,
     /// Indices into [`WorkflowSpec::nodes`] this node depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<usize>,
@@ -50,6 +67,10 @@ pub struct WorkflowNode {
 
 fn is_trusted(t: &NodeTrust) -> bool {
     matches!(t, NodeTrust::Trusted)
+}
+
+fn is_spawn(k: &NodeKind) -> bool {
+    matches!(k, NodeKind::Spawn)
 }
 
 impl WorkflowNode {
@@ -63,8 +84,16 @@ impl WorkflowNode {
             context_inheritance,
             model_hint: None,
             trust: NodeTrust::Trusted,
+            kind: NodeKind::Spawn,
             depends_on: Vec::new(),
         }
+    }
+
+    /// Make this a loop node: re-run the agent up to `max_iters` times before completing.
+    /// Dependents wait for the whole loop to finish.
+    pub fn with_loop(mut self, max_iters: usize) -> Self {
+        self.kind = NodeKind::Loop { max_iters };
+        self
     }
 
     pub fn with_depends_on(mut self, depends_on: Vec<usize>) -> Self {
@@ -128,6 +157,11 @@ impl WorkflowSpec {
     pub fn validate(&self) -> Result<()> {
         let n = self.nodes.len();
         for (i, node) in self.nodes.iter().enumerate() {
+            if let NodeKind::Loop { max_iters: 0 } = node.kind {
+                return Err(DeepStrikeError::InvalidConfig(format!(
+                    "node {i} is a loop with max_iters=0 (would never run)"
+                )));
+            }
             for &dep in &node.depends_on {
                 if dep >= n {
                     return Err(DeepStrikeError::InvalidConfig(format!(

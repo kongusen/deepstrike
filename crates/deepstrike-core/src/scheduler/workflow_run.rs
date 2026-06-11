@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::orchestration::executor;
 use crate::orchestration::task_graph::{TaskGraph, TaskStatus};
-use crate::orchestration::workflow::{NodeTrust, WorkflowNode, WorkflowSpec};
+use crate::orchestration::workflow::{NodeKind, NodeTrust, WorkflowNode, WorkflowSpec};
 use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance, IsolationManifest};
 use crate::types::error::Result;
 use crate::types::result::LoopResult;
@@ -102,6 +102,9 @@ pub struct WorkflowRun {
     node_of_agent: HashMap<String, usize>,
     /// Nodes spawned in the current batch, awaiting completion.
     batch: Vec<usize>,
+    /// Completed-iteration count per `Loop` node (absent / 0 = no iterations finished yet). The
+    /// in-flight iteration's agent id is `wf-node{N}-i{iter_counts[N]}`.
+    iter_counts: HashMap<usize, usize>,
 }
 
 impl WorkflowRun {
@@ -114,6 +117,7 @@ impl WorkflowRun {
             parent_session_id: parent_session_id.to_string(),
             node_of_agent: HashMap::new(),
             batch: Vec::new(),
+            iter_counts: HashMap::new(),
         })
     }
 
@@ -138,13 +142,27 @@ impl WorkflowRun {
         executor::next_batch(&self.graph).runnable
     }
 
-    /// Build the isolation manifest for a node, preserving its explicit isolation +
+    /// The agent id for a node's *current* spawn. For a `Spawn` node this is the stable
+    /// `wf-node{N}`; for a `Loop` node it is `wf-node{N}-i{k}` where `k` is the count of iterations
+    /// already finished — so each iteration gets a distinct id without any new ABI (the SDK simply
+    /// spawns the id it is given and feeds it back as a `sub_agent_completed`).
+    pub fn current_agent_id(&self, node: usize) -> String {
+        match self.nodes[node].kind {
+            NodeKind::Loop { .. } => {
+                let k = self.iter_counts.get(&node).copied().unwrap_or(0);
+                format!("{}-i{k}", node_agent_id(node))
+            }
+            NodeKind::Spawn => node_agent_id(node),
+        }
+    }
+
+    /// Build the isolation manifest for a node's current spawn, preserving its explicit isolation +
     /// context-inheritance (the `AgentRunSpec`→`from_spec` path would overwrite these with
     /// role defaults). Capability inheritance for workflow nodes is left to a later round.
     pub fn manifest_for(&self, node: usize) -> IsolationManifest {
         let n = &self.nodes[node];
         IsolationManifest {
-            agent_id: node_agent_id(node).into(),
+            agent_id: self.current_agent_id(node).into(),
             parent_session_id: self.parent_session_id.as_str().into(),
             role: n.role,
             isolation: n.isolation,
@@ -174,7 +192,7 @@ impl WorkflowRun {
     pub fn spawn_info(&self, node: usize) -> WorkflowSpawnInfo {
         let n = &self.nodes[node];
         WorkflowSpawnInfo {
-            agent_id: node_agent_id(node),
+            agent_id: self.current_agent_id(node),
             goal: n.task.goal.clone(),
             role: role_label(n.role).to_string(),
             isolation: isolation_label(n.isolation).to_string(),
@@ -200,10 +218,27 @@ impl WorkflowRun {
 
     /// Record a completed sub-agent against its node. Returns the node index if `agent_id`
     /// belonged to this workflow (and removes it from the live batch), else `None`.
+    ///
+    /// For a `Loop` node this counts the finished iteration: while more iterations remain
+    /// (`< max_iters`) the node is re-armed (`set_ready`) — so the next `ready_batch`/spawn round
+    /// runs `wf-node{N}-i{k+1}` — and the node stays non-terminal, keeping its dependents pending.
+    /// Only when the loop is exhausted is the node `complete`d, promoting its dependents.
     pub fn record_completion(&mut self, agent_id: &str, result: LoopResult) -> Option<usize> {
         let node = *self.node_of_agent.get(agent_id)?;
-        self.graph.complete(node, result);
         self.batch.retain(|&n| n != node);
+
+        if let NodeKind::Loop { max_iters } = self.nodes[node].kind {
+            let done = self.iter_counts.entry(node).or_insert(0);
+            *done += 1;
+            if *done < max_iters {
+                // More iterations to run: re-arm the node, keep it (and its dependents) in flight.
+                self.graph.set_ready(node);
+                return Some(node);
+            }
+        }
+
+        // Spawn node, or the loop's final iteration: terminal — promote dependents.
+        self.graph.complete(node, result);
         Some(node)
     }
 
@@ -283,6 +318,43 @@ mod tests {
         assert_eq!(run.ready_batch(), vec![0, 1]);
         assert_eq!(run.len(), 3);
         assert!(!run.is_complete());
+    }
+
+    #[test]
+    fn loop_node_iterates_with_distinct_ids_then_promotes_dependent() {
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        // node 0 = Loop{3}; node 1 depends on node 0 (must wait for the whole loop).
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("refine"), AgentRole::Implement).with_loop(3),
+            WorkflowNode::new(RuntimeTask::new("finalize"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+        ]);
+        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+
+        // Three iterations, each with a distinct agent id; the dependent stays unready throughout.
+        for k in 0..3 {
+            assert_eq!(run.ready_batch(), vec![0], "loop node ready for iteration {k}");
+            let id = run.current_agent_id(0);
+            assert_eq!(id, format!("wf-node0-i{k}"), "distinct per-iteration id");
+            run.mark_spawned(0, &id);
+            assert!(!run.is_complete());
+            let node = run.record_completion(&id, done()).unwrap();
+            assert_eq!(node, 0);
+            if k < 2 {
+                // Loop continues: node 0 re-armed, dependent NOT yet ready.
+                assert_eq!(run.ready_batch(), vec![0]);
+            }
+        }
+
+        // Loop exhausted → node 0 complete → dependent (node 1) becomes ready.
+        assert_eq!(run.ready_batch(), vec![1], "dependent unblocks only after the loop ends");
+        let id1 = run.current_agent_id(1);
+        assert_eq!(id1, "wf-node1", "spawn node keeps the plain id");
+        run.mark_spawned(1, &id1);
+        run.record_completion(&id1, done());
+        assert!(run.is_complete());
     }
 
     #[test]

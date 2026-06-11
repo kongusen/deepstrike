@@ -1533,6 +1533,54 @@
     }
 
     #[test]
+    fn loop_node_reruns_then_unblocks_dependent_via_drive_workflow() {
+        // A#2 Loop node end-to-end through the run-queue executor: a Loop{2} node runs two
+        // iterations (distinct agent ids wf-node0-i0/i1), and its dependent spawns only after the
+        // loop finishes. Proves runtime node addition with zero new ABI (same WorkflowBatchSpawned/
+        // SubAgentCompleted contract).
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("iterate to convergence"));
+        sm.take_observations();
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("refine"), AgentRole::Implement).with_loop(2),
+            WorkflowNode::new(RuntimeTask::new("finalize"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+        ]);
+        sm.load_workflow(spec, "sess");
+
+        // Iteration 0 spawns.
+        assert_eq!(count_spawned(&sm.take_observations()), 1);
+        assert!(sm.agent_process("wf-node0-i0").is_some());
+        assert!(sm.agent_process("wf-node1").is_none(), "dependent waits for the loop");
+
+        // i0 completes → loop continues → iteration 1 spawns (not the dependent).
+        assert!(matches!(
+            sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0-i0") }),
+            LoopAction::AwaitingResume
+        ));
+        assert_eq!(count_spawned(&sm.take_observations()), 1);
+        assert!(sm.agent_process("wf-node0-i1").is_some(), "second iteration spawned");
+        assert!(sm.agent_process("wf-node1").is_none());
+
+        // i1 completes → loop done (max_iters=2) → the dependent finally spawns.
+        assert!(matches!(
+            sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0-i1") }),
+            LoopAction::AwaitingResume
+        ));
+        assert_eq!(count_spawned(&sm.take_observations()), 1);
+        assert!(sm.agent_process("wf-node1").is_some(), "dependent spawns after the loop ends");
+
+        // dependent completes → workflow finishes, parent resumes.
+        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
+        assert!(matches!(done, LoopAction::CallLLM { .. }));
+        assert!(!sm.workflow_active());
+    }
+
+    #[test]
     fn quarantined_node_read_only_is_allowed() {
         // The invariant only bites on write-capable isolation — a quarantined read-only node runs.
         use crate::orchestration::workflow::{NodeTrust, WorkflowNode, WorkflowSpec};
