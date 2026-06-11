@@ -386,6 +386,13 @@ impl ContextManager {
         self.partitions.signals.push(text);
     }
 
+    /// Record a durable user directive in the (non-compressible, renewal-carried) task_state, so a
+    /// mid-task user command keeps its salience across compaction/renewal — unlike the ephemeral
+    /// signal channel, which is cleared on renewal.
+    pub fn record_directive(&mut self, text: impl Into<String>) {
+        self.partitions.task_state.record_directive(text);
+    }
+
     // ── Task state ────────────────────────────────────────────────────────────
 
     pub fn init_task(&mut self, goal: String, criteria: Vec<String>) {

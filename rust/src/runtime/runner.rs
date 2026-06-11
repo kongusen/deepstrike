@@ -2157,6 +2157,9 @@ fn parse_update_plan_args(val: &serde_json::Value) -> TaskUpdate {
         scratchpad,
         blocked_on,
         preserved_refs,
+        // Directives are promoted in-kernel from acted-on signals; the SDK update path leaves them
+        // untouched here (use `..` semantics) unless a future control plane curates them explicitly.
+        directives: None,
     }
 }
 

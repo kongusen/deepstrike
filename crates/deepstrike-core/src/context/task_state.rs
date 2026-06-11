@@ -31,6 +31,13 @@ pub struct TaskState {
     pub scratchpad: String,
     /// Reasons the current step cannot proceed.
     pub blocked_on: Vec<String>,
+    /// Durable user directives / standing constraints (e.g. mid-task corrections, "don't do X").
+    /// Promoted here from the *ephemeral* signal channel so they survive compression AND renewal
+    /// like the goal does — without this, the most recent user command loses salience exactly at
+    /// the compaction/renewal boundaries between consecutive contexts (the "goal drift" failure).
+    /// Bounded + recency-ordered (oldest dropped past [`MAX_DIRECTIVES`]); newest last.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub directives: Vec<String>,
     /// Call IDs or artifact hashes that must be preserved from compression.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preserved_refs: Vec<String>,
@@ -55,6 +62,9 @@ impl PlanStep {
     }
 }
 
+/// Maximum durable directives retained; past this the oldest is dropped (recency window).
+pub const MAX_DIRECTIVES: usize = 8;
+
 /// Partial update applied by the SDK or via `update_plan` meta-tool.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TaskUpdate {
@@ -64,6 +74,8 @@ pub struct TaskUpdate {
     pub scratchpad: Option<String>,
     pub blocked_on: Option<Vec<String>>,
     pub preserved_refs: Option<Vec<String>>,
+    /// Replace the durable directive list wholesale (SDK/model curation).
+    pub directives: Option<Vec<String>>,
 }
 
 impl TaskState {
@@ -79,6 +91,15 @@ impl TaskState {
 
         if !self.criteria.is_empty() {
             lines.push(format!("criteria: {}", self.criteria.join(" | ")));
+        }
+
+        // Active directives render right after the goal — highest salience after the objective, so
+        // a recent user command keeps its imperative force across compaction/renewal.
+        if !self.directives.is_empty() {
+            lines.push("active_directives (most recent last):".to_string());
+            for d in &self.directives {
+                lines.push(format!("  - {d}"));
+            }
         }
 
         if !self.plan.is_empty() {
@@ -123,6 +144,23 @@ impl TaskState {
         lines.join("\n")
     }
 
+    /// Record a durable user directive (deduped against the most recent, recency-capped at
+    /// [`MAX_DIRECTIVES`]). Newest is appended last; the oldest is dropped past the cap so the
+    /// channel stays bounded across a long session.
+    pub fn record_directive(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if text.trim().is_empty() {
+            return;
+        }
+        // Re-issuing the same directive moves it to most-recent rather than duplicating.
+        self.directives.retain(|d| d != &text);
+        self.directives.push(text);
+        if self.directives.len() > MAX_DIRECTIVES {
+            let overflow = self.directives.len() - MAX_DIRECTIVES;
+            self.directives.drain(0..overflow);
+        }
+    }
+
     /// Append a compression event to the log. Never overwrites existing entries.
     pub fn log_compression(&mut self, action: &str, summary: String) {
         self.compression_log.push(CompressionEntry {
@@ -149,6 +187,13 @@ impl TaskState {
         }
         if let Some(r) = update.preserved_refs {
             self.preserved_refs = r;
+        }
+        if let Some(d) = update.directives {
+            self.directives = d;
+            if self.directives.len() > MAX_DIRECTIVES {
+                let overflow = self.directives.len() - MAX_DIRECTIVES;
+                self.directives.drain(0..overflow);
+            }
         }
     }
 
@@ -225,6 +270,51 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(ts.open_steps(), vec!["b"]);
+    }
+
+    #[test]
+    fn record_directive_dedups_caps_and_orders_by_recency() {
+        let mut ts = TaskState::default();
+        ts.record_directive("don't touch the db schema");
+        ts.record_directive("use 2-space indent");
+        // Re-issuing moves to most-recent, no duplicate.
+        ts.record_directive("don't touch the db schema");
+        assert_eq!(ts.directives, ["use 2-space indent", "don't touch the db schema"]);
+
+        // Bounded at MAX_DIRECTIVES — oldest dropped.
+        let mut ts = TaskState::default();
+        for i in 0..(MAX_DIRECTIVES + 3) {
+            ts.record_directive(format!("rule {i}"));
+        }
+        assert_eq!(ts.directives.len(), MAX_DIRECTIVES);
+        assert_eq!(ts.directives.first().unwrap(), "rule 3"); // 0..2 dropped
+        assert_eq!(ts.directives.last().unwrap(), &format!("rule {}", MAX_DIRECTIVES + 2));
+
+        // Blank is ignored.
+        let mut ts = TaskState::default();
+        ts.record_directive("  ");
+        assert!(ts.directives.is_empty());
+    }
+
+    #[test]
+    fn directives_render_after_goal() {
+        let mut ts = TaskState { goal: "ship it".to_string(), ..Default::default() };
+        ts.record_directive("don't break the public API");
+        let s = ts.format_compact();
+        assert!(s.contains("active_directives"));
+        assert!(s.contains("- don't break the public API"));
+        // Renders after the goal line.
+        assert!(s.find("goal: ship it").unwrap() < s.find("don't break the public API").unwrap());
+    }
+
+    #[test]
+    fn apply_replaces_directives_and_caps() {
+        let mut ts = TaskState::default();
+        ts.apply(TaskUpdate {
+            directives: Some((0..(MAX_DIRECTIVES + 2)).map(|i| format!("d{i}")).collect()),
+            ..Default::default()
+        });
+        assert_eq!(ts.directives.len(), MAX_DIRECTIVES);
     }
 
     #[test]

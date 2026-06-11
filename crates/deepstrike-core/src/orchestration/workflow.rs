@@ -87,6 +87,13 @@ impl WorkflowNode {
         self
     }
 
+    /// W3: mark this node's trust level. `Quarantined` nodes read untrusted content and are
+    /// kernel-enforced to read-only (a quarantined node declaring write isolation is denied).
+    pub fn with_trust(mut self, trust: NodeTrust) -> Self {
+        self.trust = trust;
+        self
+    }
+
     /// Mark this node as quarantined (reads untrusted content, runs without privileges).
     pub fn quarantined(mut self) -> Self {
         self.trust = NodeTrust::Quarantined;

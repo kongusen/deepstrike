@@ -68,6 +68,9 @@ pub struct ContextSnapshot {
     pub task_plan: Option<String>,
     pub task_progress: Option<String>,
     pub task_open_steps: Vec<String>,
+    /// Durable user directives — preserved across snapshot/restore like goal/plan.
+    #[serde(default)]
+    pub task_directives: Vec<String>,
     pub history_messages: Vec<Message>,
     pub signals: Vec<String>,
     pub max_tokens: u32,
@@ -91,6 +94,7 @@ impl ContextSnapshot {
             task_plan,
             task_progress: Some(ctx.partitions.task_state.progress.clone()),
             task_open_steps: ctx.partitions.task_state.open_steps(),
+            task_directives: ctx.partitions.task_state.directives.clone(),
             history_messages: ctx.partitions.history.messages.clone(),
             signals: ctx.partitions.signals.clone(),
             max_tokens: ctx.max_tokens,

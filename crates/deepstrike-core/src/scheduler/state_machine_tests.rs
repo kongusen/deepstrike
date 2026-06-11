@@ -148,6 +148,50 @@
     }
 
     #[test]
+    fn user_directive_survives_renewal() {
+        // Part B: a mid-task user command (arriving as an acted-on signal) is promoted into the
+        // durable directive channel and must survive a sprint renewal — unlike the ephemeral signal
+        // copy, which renewal clears. This is the fix for "latest command loses salience across
+        // consecutive contexts".
+        use crate::types::signal::{SignalSource, SignalType, Urgency};
+        let mut sm = LoopStateMachine::new(LoopPolicy {
+            max_tokens: 100,
+            max_turns: 100,
+            ..LoopPolicy::default()
+        });
+        sm.start(RuntimeTask::new("ship the feature"));
+
+        let sig = RuntimeSignal::new(
+            SignalSource::Gateway,
+            SignalType::Alert,
+            Urgency::Critical,
+            "do NOT modify the migration files",
+        );
+        sm.feed(LoopEvent::Signal { signal: sig });
+        assert!(
+            sm.ctx.partitions.task_state.directives.iter().any(|d| d.contains("migration files")),
+            "acted-on signal is promoted to a durable directive"
+        );
+
+        // Force renewal: saturate the non-compressible system partition so rho stays > 0.98.
+        for i in 0..10 {
+            sm.ctx.partitions.system.push(Message::system(format!("c{i}")), 10);
+        }
+        sm.feed(LoopEvent::ToolResults { results: vec![] });
+        assert!(
+            sm.take_observations().iter().any(|o| matches!(o, KernelObservation::Renewed { .. })),
+            "renewal fired"
+        );
+
+        // Ephemeral signal copy is gone, but the durable directive survives and renders.
+        assert!(
+            sm.ctx.partitions.task_state.directives.iter().any(|d| d.contains("migration files")),
+            "user directive must survive a sprint renewal"
+        );
+        assert!(sm.ctx.partitions.task_state.format_compact().contains("migration files"));
+    }
+
+    #[test]
     fn max_turns_emits_final_toolless_call_then_terminates() {
         let mut sm = LoopStateMachine::new(LoopPolicy {
             max_tokens: 128_000,
@@ -1450,6 +1494,62 @@
         let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node2") });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
         assert!(!sm.workflow_active());
+    }
+
+    #[test]
+    fn quarantined_node_with_write_isolation_is_denied_in_kernel() {
+        // Part A #3: the kernel enforces the quarantine invariant — a quarantined node (reads
+        // untrusted content) that declares a write-capable isolation is denied at spawn, starving
+        // its dependents, rather than trusting the SDK to honor read-only.
+        use crate::orchestration::workflow::{NodeTrust, WorkflowNode, WorkflowSpec};
+        use crate::types::agent::{AgentIsolation, AgentRole};
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("triage untrusted input"));
+        sm.take_observations();
+
+        // node0: quarantined but asks for Shared (write) isolation → must be denied.
+        // node1: depends on node0 → starves (never becomes ready).
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("read untrusted webpage"), AgentRole::Explore)
+                .with_isolation(AgentIsolation::Shared)
+                .with_trust(NodeTrust::Quarantined),
+            WorkflowNode::new(RuntimeTask::new("act on it"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+        ]);
+        let action = sm.load_workflow(spec, "sess");
+
+        // Nothing spawns (node0 denied, node1 starved) → workflow finishes immediately.
+        assert!(matches!(action, LoopAction::CallLLM { .. }));
+        assert!(sm.agent_process("wf-node0").is_none(), "quarantined+write node denied");
+        assert!(sm.agent_process("wf-node1").is_none(), "dependent starves");
+        assert!(!sm.workflow_active());
+        let obs = sm.take_observations();
+        assert!(
+            obs.iter().any(|o| matches!(o, KernelObservation::Rollbacked { .. }))
+                || sm.ctx.partitions.signals.iter().any(|s| s.to_lowercase().contains("quarantine")),
+            "quarantine denial is surfaced"
+        );
+    }
+
+    #[test]
+    fn quarantined_node_read_only_is_allowed() {
+        // The invariant only bites on write-capable isolation — a quarantined read-only node runs.
+        use crate::orchestration::workflow::{NodeTrust, WorkflowNode, WorkflowSpec};
+        use crate::types::agent::{AgentIsolation, AgentRole};
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("triage"));
+        sm.take_observations();
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("read untrusted webpage"), AgentRole::Explore)
+                .with_isolation(AgentIsolation::ReadOnly)
+                .with_trust(NodeTrust::Quarantined),
+        ]);
+        sm.load_workflow(spec, "sess");
+        assert_eq!(count_spawned(&sm.take_observations()), 1, "read-only quarantined node spawns");
+        assert!(sm.agent_process("wf-node0").is_some());
     }
 
     #[test]

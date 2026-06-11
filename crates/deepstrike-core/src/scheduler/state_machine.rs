@@ -386,19 +386,25 @@ impl LoopStateMachine {
             disposition: disposition_label(&disposition).to_string(),
             queue_depth,
         });
+        // Acted-on external signals are user/agent directives: also promote into the durable
+        // directive channel so they survive compaction/renewal (the ephemeral signal copy below is
+        // cleared at the next sprint boundary). Queue/Ignore/Dropped are not acted on → not durable.
         match disposition {
             SignalDisposition::InterruptNow | SignalDisposition::Interrupt => {
+                self.ctx.record_directive(summary.clone());
                 self.ctx.push_signal(format!("[INTERRUPT] {summary}"));
                 self.phase = LoopPhase::Reason;
                 Some(self.emit_call_llm())
             }
             SignalDisposition::Run { .. } => {
+                self.ctx.record_directive(summary.clone());
                 self.ctx.push_signal(format!("[SIGNAL] {summary}"));
                 self.phase = LoopPhase::Reason;
                 Some(self.emit_call_llm())
             }
             // Observe: note it in context but don't force a turn.
             SignalDisposition::Observe => {
+                self.ctx.record_directive(summary.clone());
                 self.ctx.push_signal(format!("[SIGNAL] {summary}"));
                 None
             }
@@ -1371,6 +1377,28 @@ impl LoopStateMachine {
         let mut spawned_ids: Vec<String> = Vec::new();
         let mut spawned_infos: Vec<crate::scheduler::workflow_run::WorkflowSpawnInfo> = Vec::new();
         for node in ready {
+            // W3 quarantine stage: a quarantined node that declares write privilege is a contradiction
+            // (it reads untrusted content) — deny the spawn in-kernel and starve its dependents, rather
+            // than trusting the SDK to honor read-only. Equivalent to `Deny{stage:"quarantine"}`.
+            if self.workflow.as_ref().is_some_and(|w| w.quarantine_violation(node)) {
+                if let Some(run) = self.workflow.as_mut() {
+                    run.mark_denied(node);
+                }
+                let rb = RollbackReason::GovernanceDenied {
+                    tool_name: format!(
+                        "workflow-node:{}",
+                        crate::scheduler::workflow_run::node_agent_id(node)
+                    ),
+                    reason: "quarantine: quarantined node requested write-capable isolation".to_string(),
+                };
+                let note = Message::user(super::rollback::build_rollback_note(
+                    &rb,
+                    self.ctx.config.verbose_control_notes,
+                ));
+                self.ctx
+                    .push_signal(note.content.as_text().unwrap_or_default().to_string());
+                continue;
+            }
             // Owned manifest — releases the immutable `self.workflow` borrow before the gate.
             let manifest = match self.workflow.as_ref() {
                 Some(w) => w.manifest_for(node),
@@ -1589,6 +1617,7 @@ impl LoopStateMachine {
         if let Some(progress) = &snap.context.task_progress {
             ctx.partitions.task_state.progress = progress.clone();
         }
+        ctx.partitions.task_state.directives = snap.context.task_directives.clone();
 
         // Restore signals
         ctx.partitions.signals = snap.context.signals.clone();

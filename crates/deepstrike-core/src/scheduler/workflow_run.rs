@@ -158,6 +158,16 @@ impl WorkflowRun {
         &self.nodes[node].task.goal
     }
 
+    /// W3 quarantine invariant: a quarantined node reads untrusted content and must run read-only.
+    /// Returns `true` if the node is `Quarantined` yet declares a write-capable isolation
+    /// (`Shared`/`Worktree`/`Remote`) — a privilege contradiction the kernel refuses to spawn,
+    /// turning the SDK's "self-discipline" quarantine into an in-kernel, auditable enforcement.
+    pub fn quarantine_violation(&self, node: usize) -> bool {
+        let n = &self.nodes[node];
+        matches!(n.trust, NodeTrust::Quarantined)
+            && !matches!(n.isolation, AgentIsolation::ReadOnly)
+    }
+
     /// The SDK-facing spawn descriptor for a node (agent id + goal + canonical role/isolation/
     /// inheritance strings + model hint). The kernel owns the spec; this is how the goal reaches
     /// the host that runs the node.
