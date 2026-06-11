@@ -39,14 +39,21 @@ impl Compressor for SnipCompactor {
         partitions: &mut ContextPartitions,
         _target_tokens: u32,
         max_tokens: u32,
-        _preserve_k: usize,
+        preserve_k: usize,
         _summarizer: &dyn Summarizer,
         engine: &ContextTokenEngine,
     ) -> CompressResult {
         let per_msg_limit = ((max_tokens as f64 * self.per_msg_ratio) as u32).max(50);
         let mut saved = 0u32;
         let partition = &mut partitions.history;
-        let indices = oversized_text_message_indices(&partition.messages, per_msg_limit, engine);
+        // Cache-prefix protection yields when there is no drop-fallback. An untouchable message —
+        // protected-from-snip (idx < preserve_k) AND inside the drop floor (idx ≥ len − preserve_k*2)
+        // — exists only when `len < preserve_k*3`. Below that threshold, disable protection so a
+        // forced/413 compaction can always cap the oldest messages and free space; above it, the
+        // prefix is droppable as a fallback, so we protect it (cache-aware).
+        let prefix_keep = prefix_keep_for(partition.messages.len(), preserve_k);
+        let indices =
+            oversized_text_message_indices(&partition.messages, per_msg_limit, prefix_keep, engine);
 
         for &i in &indices {
             let msg = &mut partition.messages[i];
@@ -106,15 +113,35 @@ impl Compressor for SnipCompactor {
 /// (tokens > `per_msg_limit`; non-text and tiny ≤10-token messages skipped). The cache-aware planner
 /// reuses this to choose which — and how far back — to snip; the executor only applies the head/tail
 /// truncation to the chosen indices.
+/// How many of the oldest messages to protect from in-place rewrites (snip/excerpt) as the stable
+/// prompt-cache prefix. The protection **yields when there is no drop-fallback**: an untouchable
+/// message (protected-from-snip `idx < preserve_k` AND inside the drop floor `idx ≥ len − preserve_k*2`)
+/// exists only when `len < preserve_k*3`. Below that, return 0 so a forced/413 compaction can always
+/// cap the oldest messages; at or above it, the prefix is droppable as a fallback, so protect it.
+fn prefix_keep_for(len: usize, preserve_k: usize) -> usize {
+    if len >= preserve_k.saturating_mul(3) {
+        preserve_k
+    } else {
+        0
+    }
+}
+
 fn oversized_text_message_indices(
     messages: &[Message],
     per_msg_limit: u32,
+    prefix_keep: usize,
     engine: &ContextTokenEngine,
 ) -> Vec<usize> {
     messages
         .iter()
         .enumerate()
-        .filter(|(_, msg)| {
+        .filter(|(i, msg)| {
+            // Cache-aware (W1-1 step 2): never snip the oldest `prefix_keep` messages — they are the
+            // stable prompt-cache prefix, and rewriting one invalidates the whole cache. Their tokens
+            // are reclaimed by a batched DropOldest instead (which breaks the prefix exactly once).
+            if *i < prefix_keep {
+                return false;
+            }
             if !matches!(msg.content, Content::Text(_)) {
                 return false;
             }
@@ -224,12 +251,18 @@ fn excerpt_text(
 fn excerptable_tool_result_indices(
     messages: &[Message],
     preserved_refs: &[String],
+    prefix_keep: usize,
     engine: &ContextTokenEngine,
 ) -> Vec<usize> {
     messages
         .iter()
         .enumerate()
         .filter_map(|(i, msg)| {
+            // Cache-aware (W1-1 step 2): protect the oldest `prefix_keep` messages from in-place
+            // excerpting (they are the stable prompt-cache prefix).
+            if i < prefix_keep {
+                return None;
+            }
             let toks = msg.token_count.unwrap_or_else(|| engine.count_message(msg));
             if toks < 200 {
                 return None;
@@ -256,7 +289,7 @@ impl Compressor for MicroCompactor {
         partitions: &mut ContextPartitions,
         _target_tokens: u32,
         _max_tokens: u32,
-        _preserve_k: usize,
+        preserve_k: usize,
         _summarizer: &dyn Summarizer,
         engine: &ContextTokenEngine,
     ) -> CompressResult {
@@ -271,11 +304,13 @@ impl Compressor for MicroCompactor {
             None
         };
 
-        // Selection lifted to a pure helper (already excludes `preserved_refs`); the executor only
-        // applies the excerpt to the chosen tool-result messages.
+        // Selection lifted to a pure helper (excludes `preserved_refs` + the cache-prefix when it has
+        // a drop-fallback); the executor only applies the excerpt to the chosen tool-result messages.
+        let prefix_keep = prefix_keep_for(partitions.history.messages.len(), preserve_k);
         let indices = excerptable_tool_result_indices(
             &partitions.history.messages,
             &partitions.task_state.preserved_refs,
+            prefix_keep,
             engine,
         );
         let messages_clone = partitions.history.messages.clone();
@@ -466,6 +501,47 @@ impl Compressor for AutoCompactor {
     }
 }
 
+// ─── Cache-aware compaction (W1-1 step 2) ───────────────────────────────────────────────────────
+// Additive cost model: introduced + tested before it drives the cascade, so the behavior-changing
+// wiring (prefix-safe-first selection + batching, with golden updates) is a separate, reviewable step.
+
+/// A fully-specified compaction step the cache-aware planner emits; the executor applies it
+/// mechanically (all *selection* already done by the planner via the pure helpers above).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompactionStep {
+    /// Excerpt the tool results at these history-message indices. Prefix-safe in practice: tool
+    /// results are interleaved mid/late, so the earliest touched index is rarely the cache prefix.
+    Excerpt { msg_idx: Vec<usize> },
+    /// Cap the oversized text messages at these indices to `per_msg_limit`.
+    Snip { msg_idx: Vec<usize>, per_msg_limit: u32 },
+    /// Drop the `count` oldest messages (the pipeline summarizes them). Prefix-breaking at index 0.
+    DropOldest { count: usize },
+}
+
+impl CompactionStep {
+    /// The earliest history-message index this step rewrites or removes — i.e. where it invalidates
+    /// the prompt-cache prefix. `None` = prefix-safe (touches nothing). A lower index is a higher
+    /// cache cost (Anthropic keys the cache off the first N messages), so the planner prefers `None`
+    /// or a later index, and escalates to a prefix-breaking drop only when the safe steps can't free
+    /// enough.
+    pub fn invalidates_prefix_at(&self) -> Option<usize> {
+        match self {
+            CompactionStep::Excerpt { msg_idx } | CompactionStep::Snip { msg_idx, .. } => {
+                msg_idx.iter().min().copied()
+            }
+            CompactionStep::DropOldest { count } => (*count > 0).then_some(0),
+        }
+    }
+}
+
+/// The prompt-cache-invalidation index of a whole plan = the earliest break across its steps (an
+/// earlier break invalidates everything after it, so the minimum dominates the cost). `None` means
+/// the plan is entirely prefix-safe and preserves the prompt cache — the cache-aware planner's goal
+/// whenever the safe steps can free enough.
+pub fn plan_cache_cost(steps: &[CompactionStep]) -> Option<usize> {
+    steps.iter().filter_map(|s| s.invalidates_prefix_at()).min()
+}
+
 /// Compression pipeline — operates on history partition but can reference full partitions.
 pub struct CompressionPipeline {
     stages: Vec<(PressureAction, Box<dyn Compressor>)>,
@@ -571,7 +647,8 @@ mod tests {
         };
         let mut ctx = ContextPartitions::new(&cfg);
         ctx.history.push(Message::user("a".repeat(800)), 200);
-        let result = compactor.compress(&mut ctx, 0, MAX, 2, &summarizer(), &engine());
+        // preserve_k=0: exercise the truncation transform directly (no cache-prefix protection).
+        let result = compactor.compress(&mut ctx, 0, MAX, 0, &summarizer(), &engine());
         assert!(result.tokens_saved > 0);
         if let Content::Text(ref t) = ctx.history.messages[0].content {
             assert!(t.contains("… [… 100 tokens omitted …] …"), "got: {t}");
@@ -614,7 +691,8 @@ mod tests {
         ctx.history.messages.push(msg);
         ctx.history.token_count = 300;
 
-        let result = compactor.compress(&mut ctx, 0, MAX, 2, &summarizer(), &engine());
+        // preserve_k=0: exercise the excerpt transform directly (no cache-prefix protection).
+        let result = compactor.compress(&mut ctx, 0, MAX, 0, &summarizer(), &engine());
         assert!(result.tokens_saved > 0);
         let text = ctx.history.messages[0].content.as_text().unwrap();
         assert!(
@@ -733,6 +811,46 @@ mod tests {
         assert_eq!(plan_drop_oldest(&msgs, 400, 500, 2, &engine()), (0, 0));
     }
 
+    #[test]
+    fn prefix_keep_yields_without_drop_fallback() {
+        // Protect the oldest `preserve_k` only when the history is large enough that they remain
+        // droppable (len >= preserve_k*3); otherwise 0, so a forced/413 compaction can cap them.
+        assert_eq!(prefix_keep_for(6, 2), 2, "len 6 >= 6 → protect oldest 2");
+        assert_eq!(prefix_keep_for(5, 2), 0, "len 5 < 6 → would leave an untouchable message");
+        assert_eq!(prefix_keep_for(3, 2), 0);
+        assert_eq!(prefix_keep_for(0, 2), 0);
+    }
+
+    #[test]
+    fn compaction_step_prefix_cost() {
+        // Excerpt/Snip cost = the earliest touched message index; DropOldest breaks the prefix at 0.
+        assert_eq!(CompactionStep::Excerpt { msg_idx: vec![5, 8] }.invalidates_prefix_at(), Some(5));
+        assert_eq!(
+            CompactionStep::Snip { msg_idx: vec![3, 9], per_msg_limit: 50 }.invalidates_prefix_at(),
+            Some(3)
+        );
+        assert_eq!(CompactionStep::DropOldest { count: 4 }.invalidates_prefix_at(), Some(0));
+        assert_eq!(CompactionStep::DropOldest { count: 0 }.invalidates_prefix_at(), None);
+        // An empty selection touches nothing → prefix-safe.
+        assert_eq!(CompactionStep::Excerpt { msg_idx: vec![] }.invalidates_prefix_at(), None);
+    }
+
+    #[test]
+    fn plan_cache_cost_is_the_earliest_break() {
+        // Cost of a plan = the earliest message any step touches (an earlier break dominates).
+        let late = vec![
+            CompactionStep::Excerpt { msg_idx: vec![6] },
+            CompactionStep::Snip { msg_idx: vec![7], per_msg_limit: 50 },
+        ];
+        assert_eq!(plan_cache_cost(&late), Some(6));
+        // Escalating to a DropOldest breaks the prefix at 0 — the whole plan's cost collapses to 0.
+        let mut with_drop = late.clone();
+        with_drop.push(CompactionStep::DropOldest { count: 3 });
+        assert_eq!(plan_cache_cost(&with_drop), Some(0));
+        // An empty plan preserves the cache entirely.
+        assert_eq!(plan_cache_cost(&[]), None);
+    }
+
     // ─── W1-1 characterization baseline ────────────────────────────────────────
     // Locks the CURRENT compaction behavior (tokens_saved / archived count / summary)
     // across all four pressure levels + the cascade, so the upcoming compactor→executor
@@ -796,28 +914,32 @@ mod tests {
 
     #[test]
     fn baseline_snip_only_caps_text_no_archival() {
-        // SnipCompact runs only the Snip stage: caps oversized text messages in place; never
-        // archives or summarizes. Cascade stops above target (snip alone can't reach 500).
+        // SnipCompact runs only the Snip stage: caps oversized text messages in place — EXCEPT the
+        // oldest `preserve_recent_turns` (=2) messages, which are the stable cache prefix and are
+        // protected from in-place rewrites (W1-1 step 2 cache-aware). So it caps the 2 non-prefix
+        // oversized turns (idx 3,4), not all 4: 500 saved, was 1000 before prefix-protection. Never
+        // archives or summarizes.
         let (before, saved, summary, archived, msgs, total) = run_baseline(PressureAction::SnipCompact);
         assert_eq!(before, 2001);
-        assert_eq!(saved, 1000);
+        assert_eq!(saved, 500, "2 non-prefix oversized turns × 250 (oldest 2 protected; was 1000)");
         assert_eq!(archived, 0);
         assert!(summary.is_none());
         assert_eq!(msgs, 6, "snip mutates in place, drops no messages");
-        assert_eq!(total, 1001);
+        assert_eq!(total, 1501);
     }
 
     #[test]
     fn baseline_micro_excerpts_tool_results() {
-        // MicroCompact runs Snip then Micro: tool results excerpted to placeholders. Still no
-        // archival/summary; messages stay in place.
+        // MicroCompact runs Snip then Micro: snip caps the non-prefix oversized text (500); micro
+        // excerpts the non-prefix tool results (362). The cache prefix (oldest 2) is protected from
+        // both in-place ops. Still no archival/summary; messages stay in place.
         let (before, saved, summary, archived, msgs, total) = run_baseline(PressureAction::MicroCompact);
         assert_eq!(before, 2001);
-        assert_eq!(saved, 1362);
+        assert_eq!(saved, 862, "snip(500, prefix-protected) + excerpt(362); was 1362");
         assert_eq!(archived, 0);
         assert!(summary.is_none());
         assert_eq!(msgs, 6);
-        assert_eq!(total, 639);
+        assert_eq!(total, 1139);
     }
 
     #[test]
@@ -871,6 +993,9 @@ mod tests {
     fn pipeline_stops_cascade_when_target_reached() {
         let cfg = ContextConfig {
             snip_per_msg_ratio: 0.25,
+            // preserve_recent_turns=0: no cache-prefix protection, so snip can cap the lone message —
+            // this test isolates the cascade early-break (snip reaches target → heavier stages skip).
+            preserve_recent_turns: 0,
             ..Default::default()
         };
         let pipeline = CompressionPipeline::new(&cfg);
