@@ -244,6 +244,7 @@ mod tests {
                 final_message: None,
                 turns_used: 1,
                 total_tokens_used: 0,
+                loop_continue: None,
             },
         );
         assert_eq!(g.nodes[b].status, TaskStatus::Ready);

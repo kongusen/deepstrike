@@ -1780,6 +1780,7 @@ mod tests {
                         final_message: None,
                         turns_used: 1,
                         total_tokens_used: 1,
+                        loop_continue: None,
                     },
                 },
             }))

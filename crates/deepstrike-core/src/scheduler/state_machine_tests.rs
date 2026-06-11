@@ -836,6 +836,7 @@
                 final_message: Some(Message::assistant("ok")),
                 turns_used: 1,
                 total_tokens_used: 1,
+                loop_continue: None,
             },
         };
         let resumed = sm.feed(LoopEvent::SubAgentCompleted { result });
@@ -1077,6 +1078,7 @@
                     final_message: Some(Message::assistant("done")),
                     turns_used: 2,
                     total_tokens_used: 42,
+                    loop_continue: None,
                 },
             },
         });
@@ -1306,6 +1308,7 @@
                     final_message: Some(Message::assistant("ok")),
                     turns_used: 1,
                     total_tokens_used: 1,
+                    loop_continue: None,
                 },
             },
         });
@@ -1326,8 +1329,16 @@
                 final_message: Some(Message::assistant("ok")),
                 turns_used: 1,
                 total_tokens_used: 1,
+                loop_continue: None,
             },
         }
+    }
+
+    /// A workflow completion that signals the loop should stop early (v2 "until done").
+    fn wf_completed_stop(agent_id: &str) -> crate::types::result::SubAgentResult {
+        let mut r = wf_completed(agent_id);
+        r.result.loop_continue = Some(false);
+        r
     }
 
     fn count_spawned(obs: &[KernelObservation]) -> usize {
@@ -1575,6 +1586,40 @@
         assert!(sm.agent_process("wf-node1").is_some(), "dependent spawns after the loop ends");
 
         // dependent completes → workflow finishes, parent resumes.
+        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
+        assert!(matches!(done, LoopAction::CallLLM { .. }));
+        assert!(!sm.workflow_active());
+    }
+
+    #[test]
+    fn loop_node_stops_early_on_loop_continue_false() {
+        // A#2 v2 "until done": a Loop{5} node normally runs 5 iterations, but an iteration that
+        // reports loop_continue=Some(false) ends the loop early and promotes the dependent.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("search until no new findings"));
+        sm.take_observations();
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("probe"), AgentRole::Explore).with_loop(5),
+            WorkflowNode::new(RuntimeTask::new("report"), AgentRole::Plan).with_depends_on(vec![0]),
+        ]);
+        sm.load_workflow(spec, "sess");
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // i0
+
+        // i0 → continue (no opinion); i1 spawns.
+        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0-i0") });
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // i1
+        assert!(sm.agent_process("wf-node1").is_none(), "dependent still waiting");
+
+        // i1 signals "done" (loop_continue=false) at iteration 2 of 5 → loop ends early; dependent spawns.
+        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed_stop("wf-node0-i1") });
+        assert_eq!(count_spawned(&sm.take_observations()), 1);
+        assert!(sm.agent_process("wf-node1").is_some(), "early stop promoted the dependent");
+        assert!(sm.agent_process("wf-node0-i2").is_none(), "no third iteration ran");
+
         let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
         assert!(!sm.workflow_active());

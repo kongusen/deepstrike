@@ -1686,6 +1686,7 @@ impl LoopStateMachine {
             final_message,
             turns_used: self.turn,
             total_tokens_used: self.total_tokens,
+            loop_continue: None,
         };
         self.set_lifecycle(TaskState::Done(termination), None);
         LoopAction::Done { result }

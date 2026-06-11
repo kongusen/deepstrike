@@ -89,6 +89,7 @@ fn resumed_result() -> LoopResult {
         final_message: None,
         turns_used: 0,
         total_tokens_used: 0,
+        loop_continue: None,
     }
 }
 
@@ -228,9 +229,12 @@ impl WorkflowRun {
         self.batch.retain(|&n| n != node);
 
         if let NodeKind::Loop { max_iters } = self.nodes[node].kind {
+            // v2 semantic stop: the iteration may signal "done" (`loop_continue == Some(false)`),
+            // ending the loop before `max_iters`. `None`/`Some(true)` run to the cap (v1 behavior).
+            let stop_requested = result.loop_continue == Some(false);
             let done = self.iter_counts.entry(node).or_insert(0);
             *done += 1;
-            if *done < max_iters {
+            if *done < max_iters && !stop_requested {
                 // More iterations to run: re-arm the node, keep it (and its dependents) in flight.
                 self.graph.set_ready(node);
                 return Some(node);
@@ -300,6 +304,7 @@ mod tests {
             final_message: None,
             turns_used: 1,
             total_tokens_used: 0,
+            loop_continue: None,
         }
     }
 

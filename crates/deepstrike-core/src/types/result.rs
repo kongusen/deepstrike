@@ -22,6 +22,12 @@ pub struct LoopResult {
     pub final_message: Option<Message>,
     pub turns_used: u32,
     pub total_tokens_used: u64,
+    /// Loop-node "until done" signal (A#2 v2): when an iteration of a `NodeKind::Loop` workflow
+    /// node reports `Some(false)`, the kernel stops the loop early (before `max_iters`). `None`
+    /// (the default, and what every non-loop result carries) = no opinion → run to `max_iters`.
+    /// Additive ABI: omitted on the wire when `None`, so existing producers are byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_continue: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
