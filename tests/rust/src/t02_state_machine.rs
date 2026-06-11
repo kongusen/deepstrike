@@ -154,9 +154,9 @@ fn timeout_triggers_rollback_with_reason() {
     assert!(obs.iter().any(|o| {
         matches!(
             o,
-            LoopObservation::Rollbacked {
+            KernelObservation::Rollbacked {
                 checkpoint_history_len: 1,
-                reason: RollbackReason::Timeout,
+                reason: Some(RollbackReason::Timeout),
                 ..
             }
         )
@@ -197,7 +197,7 @@ fn recoverable_tool_error_does_not_rollback() {
     assert!(
         !sm.take_observations()
             .iter()
-            .any(|o| matches!(o, LoopObservation::Rollbacked { .. }))
+            .any(|o| matches!(o, KernelObservation::Rollbacked { .. }))
     );
     assert!(
         sm.ctx
@@ -246,9 +246,9 @@ fn fatal_tool_error_triggers_rollback_with_reason() {
     assert!(obs.iter().any(|o| {
         matches!(
             o,
-            LoopObservation::Rollbacked {
+            KernelObservation::Rollbacked {
                 checkpoint_history_len: 1,
-                reason: RollbackReason::FatalToolError { tool_name, error },
+                reason: Some(RollbackReason::FatalToolError { tool_name, error }),
                 ..
             } if tool_name == "write_file" && error == "disk corrupt"
         )
@@ -444,7 +444,7 @@ fn compression_emits_compressed_observation() {
     let obs = sm.take_observations();
     assert!(
         obs.iter()
-            .any(|o| matches!(o, LoopObservation::Compressed { .. }))
+            .any(|o| matches!(o, KernelObservation::Compressed { .. }))
     );
 }
 

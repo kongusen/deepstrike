@@ -68,7 +68,7 @@
         assert!(sm.observations.iter().any(|o| {
             matches!(
                 o,
-                LoopObservation::PageInRequested { tool, query, .. }
+                KernelObservation::PageInRequested { tool, query, .. }
                     if tool == "memory" && query == "archived"
             )
         }));
@@ -124,8 +124,8 @@
         assert!(sm.observations.iter().any(|o| {
             matches!(
                 o,
-                LoopObservation::Rollbacked {
-                    reason: RollbackReason::Timeout,
+                KernelObservation::Rollbacked {
+                    reason: Some(RollbackReason::Timeout),
                     ..
                 }
             )
@@ -145,6 +145,50 @@
         assert!(matches!(sm.phase, LoopPhase::Reason));
         assert!(sm.ctx.partitions.signals.iter().any(|s| s.contains("[INTERRUPT]")));
         assert_eq!(sm.ctx.partitions.history.messages.len(), history_len_before);
+    }
+
+    #[test]
+    fn user_directive_survives_renewal() {
+        // Part B: a mid-task user command (arriving as an acted-on signal) is promoted into the
+        // durable directive channel and must survive a sprint renewal — unlike the ephemeral signal
+        // copy, which renewal clears. This is the fix for "latest command loses salience across
+        // consecutive contexts".
+        use crate::types::signal::{SignalSource, SignalType, Urgency};
+        let mut sm = LoopStateMachine::new(LoopPolicy {
+            max_tokens: 100,
+            max_turns: 100,
+            ..LoopPolicy::default()
+        });
+        sm.start(RuntimeTask::new("ship the feature"));
+
+        let sig = RuntimeSignal::new(
+            SignalSource::Gateway,
+            SignalType::Alert,
+            Urgency::Critical,
+            "do NOT modify the migration files",
+        );
+        sm.feed(LoopEvent::Signal { signal: sig });
+        assert!(
+            sm.ctx.partitions.task_state.directives.iter().any(|d| d.contains("migration files")),
+            "acted-on signal is promoted to a durable directive"
+        );
+
+        // Force renewal: saturate the non-compressible system partition so rho stays > 0.98.
+        for i in 0..10 {
+            sm.ctx.partitions.system.push(Message::system(format!("c{i}")), 10);
+        }
+        sm.feed(LoopEvent::ToolResults { results: vec![] });
+        assert!(
+            sm.take_observations().iter().any(|o| matches!(o, KernelObservation::Renewed { .. })),
+            "renewal fired"
+        );
+
+        // Ephemeral signal copy is gone, but the durable directive survives and renders.
+        assert!(
+            sm.ctx.partitions.task_state.directives.iter().any(|d| d.contains("migration files")),
+            "user directive must survive a sprint renewal"
+        );
+        assert!(sm.ctx.partitions.task_state.format_compact().contains("migration files"));
     }
 
     #[test]
@@ -223,7 +267,7 @@
         let obs = sm.take_observations();
         assert!(
             obs.iter()
-                .any(|o| matches!(o, LoopObservation::Compressed { .. }))
+                .any(|o| matches!(o, KernelObservation::Compressed { .. }))
         );
     }
 
@@ -250,7 +294,7 @@
         let obs = sm.take_observations();
         assert!(
             obs.iter()
-                .any(|o| matches!(o, LoopObservation::Renewed { .. }))
+                .any(|o| matches!(o, KernelObservation::Renewed { .. }))
         );
     }
 
@@ -268,7 +312,7 @@
         }
         assert!(sm.force_compact());
         let obs = sm.take_observations();
-        assert!(obs.iter().any(|o| matches!(o, LoopObservation::PageOut { .. })));
+        assert!(obs.iter().any(|o| matches!(o, KernelObservation::PageOut { .. })));
     }
 
     // ---- Layer 5: AutoCompact → semantic page-out (SDK does the LLM summary) ----
@@ -292,7 +336,7 @@
         let obs = sm.take_observations();
         let semantic_pageout = obs.iter().any(|o| matches!(
             o,
-            LoopObservation::PageOut { tier_hint, archived, action: PressureAction::AutoCompact, .. }
+            KernelObservation::PageOut { tier_hint, archived, action: KernelPressureAction::AutoCompact, .. }
                 if tier_hint == "semantic" && !archived.is_empty()
         ));
         assert!(
@@ -317,7 +361,7 @@
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(
             o,
-            LoopObservation::PageInRequested { tool, query, .. }
+            KernelObservation::PageInRequested { tool, query, .. }
             if tool == "memory" && query == "bugs"
         )));
     }
@@ -480,7 +524,7 @@
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(
             o,
-            LoopObservation::MilestoneAdvanced { phase_id, .. } if phase_id == "plan"
+            KernelObservation::MilestoneAdvanced { phase_id, .. } if phase_id == "plan"
         )));
     }
 
@@ -509,7 +553,7 @@
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(
             o,
-            LoopObservation::MilestoneBlocked { phase_id, reason, .. }
+            KernelObservation::MilestoneBlocked { phase_id, reason, .. }
             if phase_id == "plan" && reason.contains("missing evidence")
         )));
     }
@@ -553,7 +597,7 @@
         // And capability_unlocked list in observation
         let obs = sm.take_observations();
         let advanced = obs.iter().find_map(|o| {
-            if let LoopObservation::MilestoneAdvanced {
+            if let KernelObservation::MilestoneAdvanced {
                 capabilities_unlocked,
                 ..
             } = o
@@ -619,7 +663,7 @@
 
         let obs = sm.take_observations();
         assert_eq!(obs.len(), 1);
-        if let LoopObservation::CapabilityChanged {
+        if let KernelObservation::CapabilityChanged {
             turn,
             added,
             removed,
@@ -642,7 +686,7 @@
         sm.unmount_capability(crate::types::capability::CapabilityKind::Tool, "test_tool");
         let obs2 = sm.take_observations();
         assert_eq!(obs2.len(), 1);
-        if let LoopObservation::CapabilityChanged {
+        if let KernelObservation::CapabilityChanged {
             turn,
             added,
             removed,
@@ -720,8 +764,8 @@
         assert!(matches!(action, LoopAction::AwaitingResume));
         assert!(sm.is_suspended());
         let obs = sm.take_observations();
-        assert!(obs.iter().any(|o| matches!(o, LoopObservation::Suspended { .. })));
-        assert!(obs.iter().any(|o| matches!(o, LoopObservation::ToolGated { .. })));
+        assert!(obs.iter().any(|o| matches!(o, KernelObservation::Suspended { .. })));
+        assert!(obs.iter().any(|o| matches!(o, KernelObservation::ToolGated { .. })));
     }
 
     #[test]
@@ -743,7 +787,7 @@
             other => panic!("expected ExecuteTools, got {other:?}"),
         }
         let obs = sm.take_observations();
-        assert!(obs.iter().any(|o| matches!(o, LoopObservation::Resumed { .. })));
+        assert!(obs.iter().any(|o| matches!(o, KernelObservation::Resumed { .. })));
     }
 
     #[test]
@@ -792,12 +836,15 @@
                 final_message: Some(Message::assistant("ok")),
                 turns_used: 1,
                 total_tokens_used: 1,
+                loop_continue: None,
+                classify_branch: None,
+                tournament_winner: None,
             },
         };
         let resumed = sm.feed(LoopEvent::SubAgentCompleted { result });
         assert!(matches!(resumed, LoopAction::CallLLM { .. }));
         let obs = sm.take_observations();
-        assert!(obs.iter().any(|o| matches!(o, LoopObservation::Resumed { .. })));
+        assert!(obs.iter().any(|o| matches!(o, KernelObservation::Resumed { .. })));
         assert_eq!(
             sm.agent_process("child")
                 .expect("process")
@@ -819,7 +866,7 @@
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(
             o,
-            LoopObservation::BudgetExceeded { budget, .. } if budget == "max_turns"
+            KernelObservation::BudgetExceeded { budget, .. } if budget == "max_turns"
         )));
         let done = sm.feed(LoopEvent::LLMResponse {
             message: Message::assistant("final"),
@@ -952,7 +999,7 @@
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(
             o,
-            LoopObservation::BudgetExceeded { budget, .. } if budget == "token_budget"
+            KernelObservation::BudgetExceeded { budget, .. } if budget == "token_budget"
         )));
         let done = sm.feed(LoopEvent::LLMResponse {
             message: Message::assistant("final"),
@@ -980,7 +1027,7 @@
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(
             o,
-            LoopObservation::BudgetExceeded { budget, .. } if budget == "wall_time"
+            KernelObservation::BudgetExceeded { budget, .. } if budget == "wall_time"
         )));
         let done = sm.feed(LoopEvent::LLMResponse {
             message: Message::assistant("final"),
@@ -1033,6 +1080,9 @@
                     final_message: Some(Message::assistant("done")),
                     turns_used: 2,
                     total_tokens_used: 42,
+                    loop_continue: None,
+                    classify_branch: None,
+                    tournament_winner: None,
                 },
             },
         });
@@ -1170,7 +1220,7 @@
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(
             o,
-            LoopObservation::LargeResultSpooled { call_id, original_size, spool_ref: None, .. }
+            KernelObservation::LargeResultSpooled { call_id, original_size, spool_ref: None, .. }
                 if call_id == "big" && *original_size == (60 * 1024)
         )));
 
@@ -1213,7 +1263,7 @@
         let obs = sm.take_observations();
         assert!(!obs
             .iter()
-            .any(|o| matches!(o, LoopObservation::LargeResultSpooled { .. })));
+            .any(|o| matches!(o, KernelObservation::LargeResultSpooled { .. })));
     }
 
     // ---- M1c: canonical TaskTable mirrors ProcessTable ----------------------
@@ -1262,6 +1312,9 @@
                     final_message: Some(Message::assistant("ok")),
                     turns_used: 1,
                     total_tokens_used: 1,
+                    loop_continue: None,
+                    classify_branch: None,
+                    tournament_winner: None,
                 },
             },
         });
@@ -1282,13 +1335,50 @@
                 final_message: Some(Message::assistant("ok")),
                 turns_used: 1,
                 total_tokens_used: 1,
+                loop_continue: None,
+                classify_branch: None,
+                tournament_winner: None,
             },
         }
     }
 
-    fn count_spawned(obs: &[LoopObservation]) -> usize {
+    /// A workflow completion that signals the loop should stop early (v2 "until done").
+    fn wf_completed_stop(agent_id: &str) -> crate::types::result::SubAgentResult {
+        let mut r = wf_completed(agent_id);
+        r.result.loop_continue = Some(false);
+        r
+    }
+
+    /// A classifier completion that selects a branch label.
+    fn wf_completed_branch(agent_id: &str, label: &str) -> crate::types::result::SubAgentResult {
+        let mut r = wf_completed(agent_id);
+        r.result.classify_branch = Some(label.to_string());
+        r
+    }
+
+    /// A tournament judge completion reporting its winning entrant id.
+    fn wf_completed_winner(agent_id: &str, winner: &str) -> crate::types::result::SubAgentResult {
+        let mut r = wf_completed(agent_id);
+        r.result.tournament_winner = Some(winner.to_string());
+        r
+    }
+
+    /// The spawn descriptors from the most recent `WorkflowBatchSpawned` observation.
+    fn last_batch_spawns(
+        obs: &[KernelObservation],
+    ) -> Vec<crate::scheduler::workflow_run::WorkflowSpawnInfo> {
         obs.iter()
-            .filter(|o| matches!(o, LoopObservation::AgentProcessChanged { state, .. } if *state == crate::proc::ProcessState::Running))
+            .rev()
+            .find_map(|o| match o {
+                KernelObservation::WorkflowBatchSpawned { nodes, .. } => Some(nodes.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    fn count_spawned(obs: &[KernelObservation]) -> usize {
+        obs.iter()
+            .filter(|o| matches!(o, KernelObservation::AgentProcessChanged { state, .. } if state == "running"))
             .count()
     }
 
@@ -1317,7 +1407,7 @@
         let obs = sm.take_observations();
         assert_eq!(count_spawned(&obs), 3);
         let suspended = obs.iter().find_map(|o| match o {
-            LoopObservation::Suspended {
+            KernelObservation::Suspended {
                 reason,
                 pending_calls,
                 ..
@@ -1363,7 +1453,7 @@
         assert!(
             sm.take_observations()
                 .iter()
-                .any(|o| matches!(o, LoopObservation::Resumed { .. }))
+                .any(|o| matches!(o, KernelObservation::Resumed { .. }))
         );
     }
 
@@ -1404,7 +1494,11 @@
     }
 
     #[test]
-    fn workflow_node_spawn_is_gated_by_quota() {
+    fn workflow_node_concurrency_limit_serializes_via_defer() {
+        // W2-1 收口: under the run-queue executor a concurrency cap no longer *fails* the surplus
+        // node (the old batch barrier `mark_denied`'d it, starving its dependents). Instead the cap
+        // is transient backpressure: the surplus node is DEFERRED and runs once a slot frees, so the
+        // whole DAG still completes — just serialized.
         use crate::orchestration::workflow::fanout_synthesize;
 
         let mut sm = sm();
@@ -1415,24 +1509,319 @@
         sm.start(RuntimeTask::new("parent"));
         sm.take_observations();
 
-        // 2 workers → synth. With concurrency cap 1, only the first worker spawns; the second is
-        // denied at the syscall gate, so synth (which depends on it) never becomes ready.
+        // 2 workers → synth. Cap 1: only wf-node0 spawns now; wf-node1 is deferred (NOT failed).
         let spec = fanout_synthesize(
             vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
             RuntimeTask::new("synth"),
         );
         sm.load_workflow(spec, "sess");
-        assert_eq!(count_spawned(&sm.take_observations()), 1); // only wf-node0
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // only wf-node0 fits the slot
         assert!(sm.agent_process("wf-node0").is_some());
-        assert!(sm.agent_process("wf-node1").is_none()); // gated, never spawned
+        assert!(sm.agent_process("wf-node1").is_none()); // deferred, not yet spawned
 
-        // wf-node0 completes → batch drains, synth never ready → workflow finishes.
-        let done = sm.feed(LoopEvent::SubAgentCompleted {
-            result: wf_completed("wf-node0"),
-        });
+        // wf-node0 completes → its slot frees → the deferred wf-node1 now spawns (not starved).
+        assert!(matches!(
+            sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") }),
+            LoopAction::AwaitingResume
+        ));
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node1 spawned after the slot freed
+        assert!(sm.agent_process("wf-node1").is_some());
+        assert!(sm.workflow_active());
+
+        // wf-node1 completes → both workers done → synth (wf-node2) becomes ready and spawns.
+        assert!(matches!(
+            sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") }),
+            LoopAction::AwaitingResume
+        ));
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // synth
+        assert!(sm.agent_process("wf-node2").is_some());
+
+        // synth completes → DAG done, parent resumes. Every node ran despite the cap of 1.
+        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node2") });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
         assert!(!sm.workflow_active());
+    }
+
+    #[test]
+    fn quarantined_node_with_write_isolation_is_denied_in_kernel() {
+        // Part A #3: the kernel enforces the quarantine invariant — a quarantined node (reads
+        // untrusted content) that declares a write-capable isolation is denied at spawn, starving
+        // its dependents, rather than trusting the SDK to honor read-only.
+        use crate::orchestration::workflow::{NodeTrust, WorkflowNode, WorkflowSpec};
+        use crate::types::agent::{AgentIsolation, AgentRole};
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("triage untrusted input"));
+        sm.take_observations();
+
+        // node0: quarantined but asks for Shared (write) isolation → must be denied.
+        // node1: depends on node0 → starves (never becomes ready).
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("read untrusted webpage"), AgentRole::Explore)
+                .with_isolation(AgentIsolation::Shared)
+                .with_trust(NodeTrust::Quarantined),
+            WorkflowNode::new(RuntimeTask::new("act on it"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+        ]);
+        let action = sm.load_workflow(spec, "sess");
+
+        // Nothing spawns (node0 denied, node1 starved) → workflow finishes immediately.
+        assert!(matches!(action, LoopAction::CallLLM { .. }));
+        assert!(sm.agent_process("wf-node0").is_none(), "quarantined+write node denied");
+        assert!(sm.agent_process("wf-node1").is_none(), "dependent starves");
+        assert!(!sm.workflow_active());
+        let obs = sm.take_observations();
+        assert!(
+            obs.iter().any(|o| matches!(o, KernelObservation::Rollbacked { .. }))
+                || sm.ctx.partitions.signals.iter().any(|s| s.to_lowercase().contains("quarantine")),
+            "quarantine denial is surfaced"
+        );
+    }
+
+    #[test]
+    fn loop_node_reruns_then_unblocks_dependent_via_drive_workflow() {
+        // A#2 Loop node end-to-end through the run-queue executor: a Loop{2} node runs two
+        // iterations (distinct agent ids wf-node0-i0/i1), and its dependent spawns only after the
+        // loop finishes. Proves runtime node addition with zero new ABI (same WorkflowBatchSpawned/
+        // SubAgentCompleted contract).
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("iterate to convergence"));
+        sm.take_observations();
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("refine"), AgentRole::Implement).with_loop(2),
+            WorkflowNode::new(RuntimeTask::new("finalize"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+        ]);
+        sm.load_workflow(spec, "sess");
+
+        // Iteration 0 spawns.
+        assert_eq!(count_spawned(&sm.take_observations()), 1);
+        assert!(sm.agent_process("wf-node0-i0").is_some());
+        assert!(sm.agent_process("wf-node1").is_none(), "dependent waits for the loop");
+
+        // i0 completes → loop continues → iteration 1 spawns (not the dependent).
+        assert!(matches!(
+            sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0-i0") }),
+            LoopAction::AwaitingResume
+        ));
+        assert_eq!(count_spawned(&sm.take_observations()), 1);
+        assert!(sm.agent_process("wf-node0-i1").is_some(), "second iteration spawned");
         assert!(sm.agent_process("wf-node1").is_none());
+
+        // i1 completes → loop done (max_iters=2) → the dependent finally spawns.
+        assert!(matches!(
+            sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0-i1") }),
+            LoopAction::AwaitingResume
+        ));
+        assert_eq!(count_spawned(&sm.take_observations()), 1);
+        assert!(sm.agent_process("wf-node1").is_some(), "dependent spawns after the loop ends");
+
+        // dependent completes → workflow finishes, parent resumes.
+        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
+        assert!(matches!(done, LoopAction::CallLLM { .. }));
+        assert!(!sm.workflow_active());
+    }
+
+    #[test]
+    fn loop_node_stops_early_on_loop_continue_false() {
+        // A#2 v2 "until done": a Loop{5} node normally runs 5 iterations, but an iteration that
+        // reports loop_continue=Some(false) ends the loop early and promotes the dependent.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("search until no new findings"));
+        sm.take_observations();
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("probe"), AgentRole::Explore).with_loop(5),
+            WorkflowNode::new(RuntimeTask::new("report"), AgentRole::Plan).with_depends_on(vec![0]),
+        ]);
+        sm.load_workflow(spec, "sess");
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // i0
+
+        // i0 → continue (no opinion); i1 spawns.
+        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0-i0") });
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // i1
+        assert!(sm.agent_process("wf-node1").is_none(), "dependent still waiting");
+
+        // i1 signals "done" (loop_continue=false) at iteration 2 of 5 → loop ends early; dependent spawns.
+        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed_stop("wf-node0-i1") });
+        assert_eq!(count_spawned(&sm.take_observations()), 1);
+        assert!(sm.agent_process("wf-node1").is_some(), "early stop promoted the dependent");
+        assert!(sm.agent_process("wf-node0-i2").is_none(), "no third iteration ran");
+
+        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
+        assert!(matches!(done, LoopAction::CallLLM { .. }));
+        assert!(!sm.workflow_active());
+    }
+
+    #[test]
+    fn classify_node_routes_to_chosen_branch_and_prunes_others() {
+        // A#2 Classify: a classifier node's result selects one branch to run; the other branches'
+        // nodes are pruned (never spawn). Conditional edges in an otherwise static DAG.
+        use crate::orchestration::workflow::{ClassifyBranch, WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("triage this ticket"));
+        sm.take_observations();
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("classify ticket"), AgentRole::Plan).with_classify(vec![
+                ClassifyBranch { label: "bug".into(), nodes: vec![1] },
+                ClassifyBranch { label: "feature".into(), nodes: vec![2] },
+            ]),
+            WorkflowNode::new(RuntimeTask::new("fix the bug"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+            WorkflowNode::new(RuntimeTask::new("build the feature"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+        ]);
+        sm.load_workflow(spec, "sess");
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // the classifier (wf-node0)
+
+        // Classifier returns "bug" → the bug branch (node 1) runs; the feature branch (node 2) is pruned.
+        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed_branch("wf-node0", "bug") });
+        assert_eq!(count_spawned(&sm.take_observations()), 1);
+        assert!(sm.agent_process("wf-node1").is_some(), "chosen branch runs");
+        assert!(sm.agent_process("wf-node2").is_none(), "other branch pruned");
+
+        // bug branch completes → workflow done (feature branch was pruned).
+        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
+        assert!(matches!(done, LoopAction::CallLLM { .. }));
+        assert!(!sm.workflow_active());
+    }
+
+    #[test]
+    fn tournament_node_drives_bracket_end_to_end_via_drive_workflow() {
+        // A#2 Tournament: a controller node spawns no agent of its own — it fans out into 4 entrant
+        // generators, then a single-elimination bracket of pairwise judges (each carrying its
+        // JudgeMatch over the existing WorkflowBatchSpawned contract), and resolves to one champion
+        // before its dependent runs. Exercises the real run-queue executor end-to-end.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("pick the strongest candidate"));
+        sm.take_observations();
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("which ad converts best?"), AgentRole::Plan)
+                .with_tournament(vec![
+                    RuntimeTask::new("draft ad A"),
+                    RuntimeTask::new("draft ad B"),
+                    RuntimeTask::new("draft ad C"),
+                    RuntimeTask::new("draft ad D"),
+                ]),
+            WorkflowNode::new(RuntimeTask::new("ship the winner"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+        ]);
+        sm.load_workflow(spec, "sess");
+
+        // Node 0 = controller, node 1 = the gated dependent ("ship the winner"). Entrant children are
+        // appended after the static spec → wf-node2..5; the controller spawns no agent of its own.
+        let obs = sm.take_observations();
+        assert_eq!(count_spawned(&obs), 4, "four entrant generators");
+        assert!(sm.agent_process("wf-node0").is_none(), "controller spawns no agent of its own");
+        for id in ["wf-node2", "wf-node3", "wf-node4", "wf-node5"] {
+            assert!(sm.agent_process(id).is_some(), "{id} entrant spawned");
+        }
+        assert!(last_batch_spawns(&obs).iter().all(|n| n.judge_match.is_none()), "entrants aren't judges");
+
+        // Entrants finish → round-1 judges spawn (2 matches), each with its pair as a JudgeMatch.
+        for id in ["wf-node2", "wf-node3", "wf-node4"] {
+            sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed(id) });
+            assert_eq!(count_spawned(&sm.take_observations()), 0, "no judges until every entrant is in");
+        }
+        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node5") });
+        let r1 = sm.take_observations();
+        assert_eq!(count_spawned(&r1), 2, "two round-1 judges (wf-node6, wf-node7)");
+        let r1_matches: Vec<_> =
+            last_batch_spawns(&r1).iter().filter_map(|n| n.judge_match.clone()).collect();
+        assert_eq!(r1_matches.len(), 2, "each round-1 judge carries a match");
+        assert_eq!(r1_matches[0].left, "wf-node2");
+        assert_eq!(r1_matches[0].right, "wf-node3");
+        assert_eq!(r1_matches[1].left, "wf-node4");
+        assert_eq!(r1_matches[1].right, "wf-node5");
+        assert!(sm.agent_process("wf-node1").is_none(), "dependent waits for the whole bracket");
+
+        // Judges report winners (entrant 2 and entrant 4 advance) → one final judge spawns.
+        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed_winner("wf-node6", "wf-node2") });
+        assert_eq!(count_spawned(&sm.take_observations()), 0, "final waits for both round-1 judges");
+        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed_winner("wf-node7", "wf-node4") });
+        let r2 = sm.take_observations();
+        assert_eq!(count_spawned(&r2), 1, "one final judge (wf-node8)");
+        let r2_match = last_batch_spawns(&r2)[0].judge_match.clone().expect("final judge match");
+        assert_eq!(r2_match.left, "wf-node2");
+        assert_eq!(r2_match.right, "wf-node4");
+
+        // Final judge crowns entrant 4 → controller completes; only now does the dependent run.
+        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed_winner("wf-node8", "wf-node4") });
+        assert_eq!(count_spawned(&sm.take_observations()), 1, "dependent spawns after the bracket");
+        assert!(sm.agent_process("wf-node1").is_some(), "the 'ship the winner' dependent");
+
+        // Dependent completes → workflow finishes, parent loop resumes.
+        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
+        assert!(matches!(done, LoopAction::CallLLM { .. }));
+        assert!(!sm.workflow_active());
+    }
+
+    #[test]
+    fn quarantined_node_read_only_is_allowed() {
+        // The invariant only bites on write-capable isolation — a quarantined read-only node runs.
+        use crate::orchestration::workflow::{NodeTrust, WorkflowNode, WorkflowSpec};
+        use crate::types::agent::{AgentIsolation, AgentRole};
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("triage"));
+        sm.take_observations();
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("read untrusted webpage"), AgentRole::Explore)
+                .with_isolation(AgentIsolation::ReadOnly)
+                .with_trust(NodeTrust::Quarantined),
+        ]);
+        sm.load_workflow(spec, "sess");
+        assert_eq!(count_spawned(&sm.take_observations()), 1, "read-only quarantined node spawns");
+        assert!(sm.agent_process("wf-node0").is_some());
+    }
+
+    #[test]
+    fn workflow_run_queue_unblocks_dependents_per_node() {
+        // W2-1 收口 — the batch barrier is gone: a node whose dependency finishes early starts
+        // immediately, without waiting for the slowest sibling in that dependency's layer.
+        // DAG:  A(0) ─┬─► C(2)   and   B(1) ─► (only C)         plus  A(0) ─► D(3)
+        // i.e. C depends on A & B; D depends only on A. When A completes (B still running), D must
+        // spawn right away — the old batch path would have waited for B too.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("A"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("B"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("C"), AgentRole::Implement).with_depends_on(vec![0, 1]),
+            WorkflowNode::new(RuntimeTask::new("D"), AgentRole::Implement).with_depends_on(vec![0]),
+        ]);
+        sm.load_workflow(spec, "sess");
+        // A and B have no deps → both spawn in the first round.
+        assert_eq!(count_spawned(&sm.take_observations()), 2);
+
+        // A completes while B is still running → D (depends only on A) spawns immediately; C still
+        // waits on B. This is the per-node unblock the run queue delivers.
+        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") });
+        let obs = sm.take_observations();
+        assert_eq!(count_spawned(&obs), 1, "D unblocks on A alone, not waiting for B");
+        assert!(sm.agent_process("wf-node3").is_some(), "D (node 3) is running");
+        assert!(sm.agent_process("wf-node2").is_none(), "C still waits on B");
+        assert!(sm.workflow_active());
     }
 
     #[test]
@@ -1456,4 +1845,187 @@
         });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
         assert!(!sm.workflow_active());
+    }
+
+
+    // ─── W2-2: Snapshot/Restore Roundtrip Tests ─────────────────────────────
+
+    #[test]
+    fn snapshot_roundtrip_preserves_turn_and_tokens() {
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("test task"));
+        sm.turn = 5;
+        sm.total_tokens = 1000;
+
+        let snap = sm.snapshot();
+        let restored = LoopStateMachine::restore(&snap);
+
+        assert_eq!(restored.turn, 5);
+        assert_eq!(restored.total_tokens, 1000);
+    }
+
+    #[test]
+    fn snapshot_roundtrip_preserves_task_table() {
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+
+        // Spawn a sub-agent
+        use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+        let _ = sm.spawn_sub_agent(
+            AgentRunSpec::new(
+                AgentIdentity::sub_agent("child", "child-session"),
+                AgentRole::Implement,
+                "child task",
+            ),
+            "parent-sess",
+        );
+
+        let snap = sm.snapshot();
+        assert_eq!(snap.tasks.len(), 2); // root + child
+
+        let restored = LoopStateMachine::restore(&snap);
+        assert_eq!(restored.task_table().all().len(), 2);
+        assert!(restored.task_table().get("root").is_some());
+        assert!(restored.task_table().get("child").is_some());
+    }
+
+    #[test]
+    fn snapshot_roundtrip_preserves_context_messages() {
+        let mut sm = sm();
+        sm.ctx.push_history(Message::user("test message"), 10);
+
+        let snap = sm.snapshot();
+        assert_eq!(snap.context.history_messages.len(), 1);
+
+        let restored = LoopStateMachine::restore(&snap);
+        assert_eq!(restored.ctx.partitions.history.messages.len(), 1);
+        assert_eq!(
+            restored.ctx.partitions.history.messages[0]
+                .content
+                .as_text(),
+            Some("test message")
+        );
+    }
+
+    #[test]
+    fn snapshot_roundtrip_preserves_signals() {
+        let mut sm = sm();
+        sm.ctx.push_signal("[TEST] test signal".to_string());
+
+        let snap = sm.snapshot();
+        assert_eq!(snap.context.signals.len(), 1);
+        assert_eq!(snap.context.signals[0], "[TEST] test signal");
+
+        let restored = LoopStateMachine::restore(&snap);
+        assert_eq!(restored.ctx.partitions.signals.len(), 1);
+        assert_eq!(restored.ctx.partitions.signals[0], "[TEST] test signal");
+    }
+
+    #[test]
+    fn snapshot_roundtrip_preserves_task_state() {
+        let mut sm = sm();
+        sm.ctx.init_task("test goal".to_string(), vec![]);
+        sm.ctx.partitions.task_state.progress = "50% done".to_string();
+
+        let snap = sm.snapshot();
+        assert_eq!(snap.context.task_goal.as_deref(), Some("test goal"));
+        assert_eq!(
+            snap.context.task_progress.as_deref(),
+            Some("50% done")
+        );
+
+        let restored = LoopStateMachine::restore(&snap);
+        assert_eq!(restored.ctx.partitions.task_state.goal, "test goal");
+        assert_eq!(restored.ctx.partitions.task_state.progress, "50% done");
+    }
+
+    #[test]
+    fn snapshot_roundtrip_serialization() {
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("test"));
+        sm.turn = 3;
+        sm.total_tokens = 500;
+
+        let snap = sm.snapshot();
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&snap).expect("serialize snapshot");
+        let restored_snap: crate::runtime::snapshot::KernelSnapshot =
+            serde_json::from_str(&json).expect("deserialize snapshot");
+
+        assert_eq!(restored_snap.turn, 3);
+        assert_eq!(restored_snap.total_tokens, 500);
+
+        let restored = LoopStateMachine::restore(&restored_snap);
+        assert_eq!(restored.turn, 3);
+        assert_eq!(restored.total_tokens, 500);
+    }
+
+    #[test]
+    fn snapshot_roundtrip_with_suspended_state() {
+        use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+
+        // Spawn sub-agent which suspends the parent
+        let _ = sm.spawn_sub_agent(
+            AgentRunSpec::new(
+                AgentIdentity::sub_agent("child", "child-session"),
+                AgentRole::Implement,
+                "child task",
+            ),
+            "parent-sess",
+        );
+
+        let snap = sm.snapshot();
+        let restored = LoopStateMachine::restore(&snap);
+
+        // Verify suspended state is preserved
+        assert!(matches!(
+            restored.lifecycle(),
+            TaskState::Suspended
+        ));
+        assert!(matches!(
+            restored.wait_reason(),
+            Some(crate::scheduler::tcb::WaitReason::SubAgentJoin(_))
+        ));
+    }
+
+    #[test]
+    fn snapshot_restore_independence() {
+        // Verify that restoring creates an independent copy
+        let mut sm = sm();
+        sm.turn = 5;
+        sm.ctx.push_signal("original".to_string());
+
+        let snap = sm.snapshot();
+        let mut restored = LoopStateMachine::restore(&snap);
+
+        // Modify restored
+        restored.turn = 10;
+        restored.ctx.push_signal("modified".to_string());
+
+        // Original should be unchanged
+        assert_eq!(sm.turn, 5);
+        assert_eq!(sm.ctx.partitions.signals.len(), 1);
+
+        // Restored should have its modifications
+        assert_eq!(restored.turn, 10);
+        assert_eq!(restored.ctx.partitions.signals.len(), 2);
+    }
+
+    #[test]
+    fn snapshot_preserves_max_tokens_and_sprint() {
+        let mut sm = sm();
+        sm.ctx.max_tokens = 64_000;
+        sm.ctx.sprint = 2;
+
+        let snap = sm.snapshot();
+        assert_eq!(snap.context.max_tokens, 64_000);
+        assert_eq!(snap.context.sprint, 2);
+
+        let restored = LoopStateMachine::restore(&snap);
+        assert_eq!(restored.ctx.max_tokens, 64_000);
+        assert_eq!(restored.ctx.sprint, 2);
     }

@@ -6,6 +6,7 @@ pub mod kernel;
 pub mod replay;
 pub mod repair;
 pub mod session;
+pub mod snapshot;
 
 pub use kernel::{
     KERNEL_ABI_VERSION, KernelAction, KernelInput, KernelInputEvent, KernelObservation,
@@ -25,3 +26,4 @@ pub use replay::{
     OsSnapshot, ProcessRecord, SignalDisposedRecord, SuspendRecord,
 };
 pub use session::{ProviderReplay, SessionEvent};
+pub use snapshot::{KernelSnapshot, ProcInfoSnapshot, ResultSnapshot, TcbSnapshot};

@@ -102,6 +102,15 @@ impl TaskGraph {
         }
     }
 
+    /// Re-mark a (running) task as Ready without touching dependents — used to re-arm a loop node
+    /// for its next iteration. Unlike [`complete`](Self::complete), this does NOT decrement any
+    /// in-degree, so the loop node's dependents stay pending until the loop finally `complete`s.
+    pub fn set_ready(&mut self, task_id: usize) {
+        if let Some(node) = self.nodes.get_mut(task_id) {
+            node.status = TaskStatus::Ready;
+        }
+    }
+
     /// Mark a task as completed; promote dependents whose in-degree reaches 0.
     pub fn complete(&mut self, task_id: usize, result: LoopResult) {
         if let Some(node) = self.nodes.get_mut(task_id) {
@@ -208,6 +217,19 @@ mod tests {
     }
 
     #[test]
+    fn set_ready_rearms_without_promoting_dependents() {
+        let mut g = TaskGraph::new();
+        let a = g.add(RuntimeTask::new("A"), vec![]); // loop node
+        let b = g.add(RuntimeTask::new("B"), vec![a]); // dependent
+        g.start(a);
+        // Re-arm A for its next iteration: A is Ready again, but B stays Pending (no promotion).
+        g.set_ready(a);
+        assert_eq!(g.nodes[a].status, TaskStatus::Ready);
+        assert_eq!(g.nodes[b].status, TaskStatus::Pending);
+        assert_eq!(g.ready_tasks(), vec![a]);
+    }
+
+    #[test]
     fn complete_promotes_dependent() {
         use crate::types::result::{LoopResult, TerminationReason};
         let mut g = TaskGraph::new();
@@ -222,6 +244,9 @@ mod tests {
                 final_message: None,
                 turns_used: 1,
                 total_tokens_used: 0,
+                loop_continue: None,
+                classify_branch: None,
+                tournament_winner: None,
             },
         );
         assert_eq!(g.nodes[b].status, TaskStatus::Ready);

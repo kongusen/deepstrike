@@ -6,9 +6,12 @@
 //! constructors below emit, and the shape a future "orchestration-as-syscall" round will
 //! lower into per-step [`crate::syscall::Syscall`]s.
 //!
-//! Three patterns are template constructors here; the other three already have first-class
-//! primitives: [`super::tournament::Tournament`], [`super::loop_until_done::LoopUntilDone`],
-//! and the adversarial-verification [`crate::harness::eval_pipeline::EvalPipeline`].
+//! Three patterns are template constructors here. The dynamic control-flow patterns —
+//! loop-until-done, classify-and-act, and tournament — are now first-class [`NodeKind`] variants
+//! ([`NodeKind::Loop`] / [`NodeKind::Classify`] / [`NodeKind::Tournament`]) driven by the unified
+//! workflow executor; the former standalone `loop_until_done` / `tournament` SDK primitives were
+//! removed in their favor (A#1). Adversarial verification stays in
+//! [`crate::harness::eval_pipeline::EvalPipeline`].
 //!
 //! Pure: no I/O, no clock, no spawning. Validation reuses [`TaskGraph::topological_sort`].
 
@@ -30,6 +33,39 @@ pub enum NodeTrust {
     Quarantined,
 }
 
+/// One branch of a [`NodeKind::Classify`] node: a label and the node indices to enable when the
+/// classifier's result selects that label. The other branches' nodes are pruned (failed) so they
+/// never run — this is how a classify node yields *conditional edges* in an otherwise static DAG.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClassifyBranch {
+    pub label: String,
+    pub nodes: Vec<usize>,
+}
+
+/// Control-flow kind of a workflow node. `Spawn` (the default) runs the node's agent once.
+/// `Loop` re-runs it until a stop condition; `Classify` routes to one branch by its result;
+/// `Tournament` generates entrants and pairwise-judges them — all dynamic control-flow types.
+/// Additive: existing specs omit `kind` → `Spawn`. (No `Eq`: a `Tournament`'s entrant tasks carry
+/// arbitrary JSON metadata, which is `PartialEq` but not `Eq`.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum NodeKind {
+    /// Run the node's agent once (classic spawn node).
+    #[default]
+    Spawn,
+    /// Re-run the node's agent up to `max_iters` times; an iteration reporting
+    /// `loop_continue=Some(false)` stops early (v2 "until done").
+    Loop { max_iters: usize },
+    /// Run the node's agent once as a classifier; its `classify_branch` result selects one branch
+    /// to run and prunes the others. Branch nodes must `depends_on` this classify node.
+    Classify { branches: Vec<ClassifyBranch> },
+    /// A *controller* node (spawns no agent of its own): it generates `entrants` candidates in
+    /// parallel, then runs a single-elimination bracket of pairwise judges (reusing
+    /// [`super::tournament::Tournament`]) until one survivor remains. The winner's id lands in the
+    /// node's `tournament_winner` result; dependents start only after the bracket resolves.
+    Tournament { entrants: Vec<RuntimeTask> },
+}
+
 /// One node in a workflow DAG: a task plus the contract its agent runs under.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowNode {
@@ -43,6 +79,9 @@ pub struct WorkflowNode {
     /// W3 trust level. Default `Trusted`.
     #[serde(default, skip_serializing_if = "is_trusted")]
     pub trust: NodeTrust,
+    /// Control-flow kind. Default `Spawn` (run once).
+    #[serde(default, skip_serializing_if = "is_spawn")]
+    pub kind: NodeKind,
     /// Indices into [`WorkflowSpec::nodes`] this node depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<usize>,
@@ -50,6 +89,10 @@ pub struct WorkflowNode {
 
 fn is_trusted(t: &NodeTrust) -> bool {
     matches!(t, NodeTrust::Trusted)
+}
+
+fn is_spawn(k: &NodeKind) -> bool {
+    matches!(k, NodeKind::Spawn)
 }
 
 impl WorkflowNode {
@@ -63,8 +106,30 @@ impl WorkflowNode {
             context_inheritance,
             model_hint: None,
             trust: NodeTrust::Trusted,
+            kind: NodeKind::Spawn,
             depends_on: Vec::new(),
         }
+    }
+
+    /// Make this a loop node: re-run the agent up to `max_iters` times before completing.
+    /// Dependents wait for the whole loop to finish.
+    pub fn with_loop(mut self, max_iters: usize) -> Self {
+        self.kind = NodeKind::Loop { max_iters };
+        self
+    }
+
+    /// Make this a classify node: its result selects one of `branches` to run; the rest are pruned.
+    pub fn with_classify(mut self, branches: Vec<ClassifyBranch>) -> Self {
+        self.kind = NodeKind::Classify { branches };
+        self
+    }
+
+    /// Make this a tournament *controller* node: it spawns no agent of its own but generates each
+    /// of `entrants` (in parallel), then pairwise-judges them to a single winner. The node's own
+    /// `task.goal` is the judging criterion handed to every judge. Requires ≥2 entrants.
+    pub fn with_tournament(mut self, entrants: Vec<RuntimeTask>) -> Self {
+        self.kind = NodeKind::Tournament { entrants };
+        self
     }
 
     pub fn with_depends_on(mut self, depends_on: Vec<usize>) -> Self {
@@ -84,6 +149,13 @@ impl WorkflowNode {
 
     pub fn with_model_hint(mut self, hint: impl Into<String>) -> Self {
         self.model_hint = Some(hint.into());
+        self
+    }
+
+    /// W3: mark this node's trust level. `Quarantined` nodes read untrusted content and are
+    /// kernel-enforced to read-only (a quarantined node declaring write isolation is denied).
+    pub fn with_trust(mut self, trust: NodeTrust) -> Self {
+        self.trust = trust;
         self
     }
 
@@ -121,6 +193,39 @@ impl WorkflowSpec {
     pub fn validate(&self) -> Result<()> {
         let n = self.nodes.len();
         for (i, node) in self.nodes.iter().enumerate() {
+            if let NodeKind::Loop { max_iters: 0 } = node.kind {
+                return Err(DeepStrikeError::InvalidConfig(format!(
+                    "node {i} is a loop with max_iters=0 (would never run)"
+                )));
+            }
+            if let NodeKind::Tournament { entrants } = &node.kind {
+                if entrants.len() < 2 {
+                    return Err(DeepStrikeError::InvalidConfig(format!(
+                        "tournament node {i} needs at least 2 entrants (have {})",
+                        entrants.len()
+                    )));
+                }
+            }
+            if let NodeKind::Classify { branches } = &node.kind {
+                for branch in branches {
+                    for &bn in &branch.nodes {
+                        if bn >= n {
+                            return Err(DeepStrikeError::InvalidConfig(format!(
+                                "classify node {i} branch '{}' references out-of-range node {bn}",
+                                branch.label
+                            )));
+                        }
+                        // Branch nodes must be gated by the classifier, else they'd run before
+                        // classification and the prune would come too late.
+                        if !self.nodes[bn].depends_on.contains(&i) {
+                            return Err(DeepStrikeError::InvalidConfig(format!(
+                                "classify node {i} branch '{}' node {bn} must depends_on {i}",
+                                branch.label
+                            )));
+                        }
+                    }
+                }
+            }
             for &dep in &node.depends_on {
                 if dep >= n {
                     return Err(DeepStrikeError::InvalidConfig(format!(
@@ -384,6 +489,35 @@ mod tests {
             WorkflowNode::new(task("b"), AgentRole::Plan).with_depends_on(vec![0]),
         ]);
         assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn tournament_node_requires_two_entrants() {
+        // ≥2 entrants is valid; <2 is a spec error (no contest).
+        let ok = WorkflowSpec::new(vec![WorkflowNode::new(task("rank"), AgentRole::Plan)
+            .with_tournament(vec![task("a"), task("b")])]);
+        ok.validate().unwrap();
+
+        let one = WorkflowSpec::new(vec![WorkflowNode::new(task("rank"), AgentRole::Plan)
+            .with_tournament(vec![task("only")])]);
+        assert!(one.validate().is_err());
+    }
+
+    #[test]
+    fn tournament_node_kind_round_trips_and_gates_dependents() {
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(task("pick best"), AgentRole::Plan)
+                .with_tournament(vec![task("x"), task("y"), task("z")]),
+            WorkflowNode::new(task("use winner"), AgentRole::Implement).with_depends_on(vec![0]),
+        ]);
+        spec.validate().unwrap();
+        // Only the controller is ready up front; the dependent waits for the bracket.
+        assert_eq!(spec.to_task_graph().unwrap().ready_tasks(), vec![0]);
+        // serde keeps the entrants under the tagged `tournament` kind.
+        let json = serde_json::to_string(&spec.nodes[0].kind).unwrap();
+        assert!(json.contains("\"type\":\"tournament\""), "{json}");
+        let back: NodeKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, spec.nodes[0].kind);
     }
 
     #[test]

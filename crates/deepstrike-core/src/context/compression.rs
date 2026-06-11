@@ -663,6 +663,136 @@ mod tests {
         assert!(ctx.task_state.compression_log.iter().any(|e| e.action == "auto_compact"));
     }
 
+    // ─── W1-1 characterization baseline ────────────────────────────────────────
+    // Locks the CURRENT compaction behavior (tokens_saved / archived count / summary)
+    // across all four pressure levels + the cascade, so the upcoming compactor→executor
+    // refactor (EvictionOp vocab + cache-aware planner) is provably behavior-preserving.
+    // These are golden-master pins: the values describe what the pipeline does TODAY, not
+    // an independent derivation. If a future change moves a number here, that is a behavior
+    // change and must be justified, not blindly re-pinned.
+
+    use crate::types::message::Role;
+    use compact_str::CompactString;
+
+    /// Deterministic fixture: 4 oversized text turns + 2 tool-result messages, explicit token
+    /// counts so the cascade math is reproducible under `char_approx`.
+    fn baseline_partitions() -> ContextPartitions {
+        let cfg = config();
+        let mut ctx = ContextPartitions::new(&cfg);
+        // Oversized text turns (trigger Snip / Collapse / Auto).
+        ctx.history.push(Message::user("u0 ".repeat(120)), 300);
+        ctx.history.push(Message::assistant("a0 ".repeat(120)), 300);
+        // Tool-result message (trigger Micro).
+        ctx.history.messages.push(Message {
+            role: Role::Tool,
+            content: Content::Parts(vec![ContentPart::ToolResult {
+                call_id: CompactString::new("call_1"),
+                output: serde_json::json!({"rows": 42, "ok": true, "name": "alpha"}).to_string()
+                    + &"-pad".repeat(400),
+                is_error: false,
+            }]),
+            tool_calls: vec![],
+            token_count: Some(400),
+        });
+        ctx.history.token_count += 400;
+        ctx.history.push(Message::user("u1 ".repeat(120)), 300);
+        ctx.history.push(Message::assistant("a1 ".repeat(120)), 300);
+        ctx.history.messages.push(Message {
+            role: Role::Tool,
+            content: Content::Parts(vec![ContentPart::ToolResult {
+                call_id: CompactString::new("call_2"),
+                output: "y".repeat(1600),
+                is_error: false,
+            }]),
+            tool_calls: vec![],
+            token_count: Some(400),
+        });
+        ctx.history.token_count += 400;
+        ctx
+    }
+
+    /// Run the pipeline on a fresh baseline fixture at one action level.
+    /// Returns `(before, saved, summary, archived_len, msgs_after, total_after)`.
+    fn run_baseline(action: PressureAction) -> (u32, u32, Option<String>, usize, usize, u32) {
+        let mut ctx = baseline_partitions();
+        let before = ctx.total_tokens(&engine());
+        let (saved, summary, archived) =
+            CompressionPipeline::new(&config()).compress(&mut ctx, action, MAX, 500, &engine());
+        let archived_len = archived.len();
+        let msgs_after = ctx.history.messages.len();
+        let total_after = ctx.total_tokens(&engine());
+        (before, saved, summary, archived_len, msgs_after, total_after)
+    }
+
+    #[test]
+    fn baseline_snip_only_caps_text_no_archival() {
+        // SnipCompact runs only the Snip stage: caps oversized text messages in place; never
+        // archives or summarizes. Cascade stops above target (snip alone can't reach 500).
+        let (before, saved, summary, archived, msgs, total) = run_baseline(PressureAction::SnipCompact);
+        assert_eq!(before, 2001);
+        assert_eq!(saved, 1000);
+        assert_eq!(archived, 0);
+        assert!(summary.is_none());
+        assert_eq!(msgs, 6, "snip mutates in place, drops no messages");
+        assert_eq!(total, 1001);
+    }
+
+    #[test]
+    fn baseline_micro_excerpts_tool_results() {
+        // MicroCompact runs Snip then Micro: tool results excerpted to placeholders. Still no
+        // archival/summary; messages stay in place.
+        let (before, saved, summary, archived, msgs, total) = run_baseline(PressureAction::MicroCompact);
+        assert_eq!(before, 2001);
+        assert_eq!(saved, 1362);
+        assert_eq!(archived, 0);
+        assert!(summary.is_none());
+        assert_eq!(msgs, 6);
+        assert_eq!(total, 639);
+    }
+
+    #[test]
+    fn baseline_collapse_drops_oldest_and_summarizes() {
+        // ContextCollapse runs Snip→Micro→Collapse: oldest messages drained to `archived` with a
+        // summary, down to the preserve-recent floor (4 msgs kept).
+        let (before, saved, summary, archived, msgs, total) =
+            run_baseline(PressureAction::ContextCollapse);
+        assert_eq!(before, 2001);
+        assert_eq!(saved, 1462);
+        assert_eq!(archived, 2, "drops the 2 oldest messages above the preserve floor");
+        assert_eq!(msgs, 4, "preserve_recent_turns=2 → 4 messages kept");
+        assert_eq!(total, 539);
+        let summary = summary.expect("collapse summarizes archived messages");
+        assert!(
+            summary.contains("[Compressed: context_collapse]"),
+            "summary routes the collapse action: {summary}"
+        );
+    }
+
+    #[test]
+    fn baseline_auto_matches_collapse_at_preserve_floor() {
+        // AutoCompact runs all 4 stages, but on this fixture Snip→Micro→Collapse already hit the
+        // preserve floor, so the Auto stage archives nothing extra: identical outcome to Collapse.
+        let (before, saved, summary, archived, msgs, total) = run_baseline(PressureAction::AutoCompact);
+        assert_eq!(before, 2001);
+        assert_eq!(saved, 1462);
+        assert_eq!(archived, 2);
+        assert_eq!(msgs, 4);
+        assert_eq!(total, 539);
+        assert!(summary.is_some());
+    }
+
+    #[test]
+    fn baseline_saved_is_monotonic_in_action_level() {
+        // The cross-level contract the refactor must preserve: heavier pressure never frees less.
+        let snip = run_baseline(PressureAction::SnipCompact).1;
+        let micro = run_baseline(PressureAction::MicroCompact).1;
+        let collapse = run_baseline(PressureAction::ContextCollapse).1;
+        let auto = run_baseline(PressureAction::AutoCompact).1;
+        assert!(snip <= micro, "{snip} <= {micro}");
+        assert!(micro <= collapse, "{micro} <= {collapse}");
+        assert!(collapse <= auto, "{collapse} <= {auto}");
+    }
+
     #[test]
     fn pipeline_stops_cascade_when_target_reached() {
         let cfg = ContextConfig {

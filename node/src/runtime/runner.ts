@@ -484,19 +484,22 @@ export class RuntimeRunner {
       ...(opts?.resumedCompleted?.length ? { resumed_completed: opts.resumedCompleted } : {}),
     })
 
-    for (;;) {
-      const done = observations.find(o => o.kind === "workflow_completed") as
+    const collectNodes = (obs: typeof observations): WorkflowSpawnInfo[] =>
+      (obs.find(o => o.kind === "workflow_batch_spawned") as { nodes?: WorkflowSpawnInfo[] } | undefined)
+        ?.nodes ?? []
+    const findDone = (obs: typeof observations) =>
+      obs.find(o => o.kind === "workflow_completed") as
         | { completed?: string[]; failed?: string[] }
         | undefined
-      if (done) return { completed: done.completed ?? [], failed: done.failed ?? [] }
 
-      const batch = observations.find(o => o.kind === "workflow_batch_spawned") as
-        | { nodes?: WorkflowSpawnInfo[] }
-        | undefined
-      const nodes = batch?.nodes ?? []
+    let done = findDone(observations)
+    if (done) return { completed: done.completed ?? [], failed: done.failed ?? [] }
+    let nodes = collectNodes(observations)
+
+    for (;;) {
       if (nodes.length === 0) return { completed: [], failed: [] } // nothing to run (e.g. all gated)
 
-      // Run the batch's nodes in parallel — each is independent within a round.
+      // Run the currently-runnable nodes in parallel — each is independent within a round.
       const results = await Promise.all(
         nodes.map(node =>
           orchestrator.run({
@@ -510,13 +513,22 @@ export class RuntimeRunner {
         ),
       )
 
-      // Feed completions back; the draining feed yields the next batch or completion.
-      observations = []
+      // Feed completions back one at a time. The kernel's run-queue executor may spawn a node's
+      // dependents the moment *that* node completes (per-node unblock), so each feed can emit its
+      // own `workflow_batch_spawned`; ACCUMULATE them across the round rather than keeping only the
+      // last feed's (the old code overwrote `observations` per feed and dropped nodes unblocked by
+      // earlier completions — stalling uneven DAGs). Completion and new spawns are mutually
+      // exclusive per feed, so a `workflow_completed` only arrives once nothing remains to run.
+      const nextNodes: WorkflowSpawnInfo[] = []
+      done = undefined
       for (const result of results) {
-        observations = kernelApply(runtime, this.pendingObservations, {
+        const obs = kernelApply(runtime, this.pendingObservations, {
           kind: "sub_agent_completed",
           result: subAgentResultToKernel(result),
         })
+        nextNodes.push(...collectNodes(obs))
+        const d = findDone(obs)
+        if (d) done = d
         // Persist node completion for resume recovery.
         await this.opts.sessionLog.append(parentSessionId, buildWorkflowNodeCompletedEvent({
           turn: runtime.turn(),
@@ -524,6 +536,10 @@ export class RuntimeRunner {
           termination: result.result.termination,
         }))
       }
+      if (done && nextNodes.length === 0) {
+        return { completed: done.completed ?? [], failed: done.failed ?? [] }
+      }
+      nodes = nextNodes
     }
   }
 

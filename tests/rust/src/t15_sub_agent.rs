@@ -134,7 +134,7 @@ fn spawn_sub_agent_emits_process_observation() {
     let obs = sm.take_observations();
     assert!(obs.iter().any(|o| matches!(
         o,
-        LoopObservation::AgentProcessChanged {
+        KernelObservation::AgentProcessChanged {
             agent_id,
             parent_session_id,
             role,
@@ -142,8 +142,8 @@ fn spawn_sub_agent_emits_process_observation() {
             ..
         } if agent_id == "worker"
             && parent_session_id == "parent-session-001"
-            && *role == AgentRole::Implement
-            && *state == ProcessState::Running
+            && role == "implement"
+            && state == "running"
     )));
 }
 
@@ -171,16 +171,16 @@ fn spawn_sub_agent_registers_kernel_process() {
     assert!(obs.iter().any(|o| {
         matches!(
             o,
-            LoopObservation::AgentProcessChanged {
+            KernelObservation::AgentProcessChanged {
                 agent_id,
                 state,
                 ..
-            } if agent_id == "worker" && *state == ProcessState::Running
+            } if agent_id == "worker" && state == "running"
         )
     }));
     assert!(obs.iter().any(|o| matches!(
         o,
-        LoopObservation::Suspended { reason, .. } if reason == "sub_agent_await"
+        KernelObservation::Suspended { reason, .. } if reason == "sub_agent_await"
     )));
 }
 
@@ -233,6 +233,9 @@ fn sub_agent_completed_resumes_loop_with_call_llm() {
             final_message: Some(Message::assistant("task complete")),
             turns_used: 3,
             total_tokens_used: 500,
+            loop_continue: None,
+            classify_branch: None,
+            tournament_winner: None,
         },
     };
 
@@ -267,6 +270,9 @@ fn sub_agent_completed_updates_kernel_process() {
             final_message: Some(Message::assistant("task complete")),
             turns_used: 3,
             total_tokens_used: 500,
+            loop_continue: None,
+            classify_branch: None,
+            tournament_winner: None,
         },
     };
 
@@ -278,13 +284,13 @@ fn sub_agent_completed_updates_kernel_process() {
     assert!(sm.take_observations().iter().any(|o| {
         matches!(
             o,
-            LoopObservation::AgentProcessChanged {
+            KernelObservation::AgentProcessChanged {
                 agent_id,
                 state,
                 result_termination,
                 ..
             } if agent_id == "worker"
-                && *state == ProcessState::Joined
+                && state == "joined"
                 && result_termination.as_deref() == Some("completed")
         )
     }));
