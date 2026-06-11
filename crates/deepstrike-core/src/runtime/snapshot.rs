@@ -197,6 +197,7 @@ impl KernelSnapshot {
                             total_tokens_used: 0,
                             loop_continue: None,
                             classify_branch: None,
+                            tournament_winner: None,
                         },
                     }),
                     _ => None,

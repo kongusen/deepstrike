@@ -1369,6 +1369,12 @@ impl LoopStateMachine {
     fn spawn_ready_workflow_nodes(
         &mut self,
     ) -> (Vec<String>, Vec<crate::scheduler::workflow_run::WorkflowSpawnInfo>) {
+        // A2 tournament: a controller node whose deps are satisfied fans out into entrant children
+        // (and spawns no agent of its own) before we read the ready set — so its entrants/judges
+        // are picked up by the same run-queue spawn loop as any other node.
+        if let Some(run) = self.workflow.as_mut() {
+            run.expand_ready_controllers();
+        }
         let ready = self
             .workflow
             .as_ref()
@@ -1688,6 +1694,7 @@ impl LoopStateMachine {
             total_tokens_used: self.total_tokens,
             loop_continue: None,
             classify_branch: None,
+            tournament_winner: None,
         };
         self.set_lifecycle(TaskState::Done(termination), None);
         LoopAction::Done { result }

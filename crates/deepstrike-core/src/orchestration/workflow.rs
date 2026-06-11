@@ -40,9 +40,11 @@ pub struct ClassifyBranch {
 }
 
 /// Control-flow kind of a workflow node. `Spawn` (the default) runs the node's agent once.
-/// `Loop` re-runs it until a stop condition; `Classify` routes to one branch by its result —
-/// both dynamic control-flow types. Additive: existing specs omit `kind` → `Spawn`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// `Loop` re-runs it until a stop condition; `Classify` routes to one branch by its result;
+/// `Tournament` generates entrants and pairwise-judges them — all dynamic control-flow types.
+/// Additive: existing specs omit `kind` → `Spawn`. (No `Eq`: a `Tournament`'s entrant tasks carry
+/// arbitrary JSON metadata, which is `PartialEq` but not `Eq`.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum NodeKind {
     /// Run the node's agent once (classic spawn node).
@@ -54,6 +56,11 @@ pub enum NodeKind {
     /// Run the node's agent once as a classifier; its `classify_branch` result selects one branch
     /// to run and prunes the others. Branch nodes must `depends_on` this classify node.
     Classify { branches: Vec<ClassifyBranch> },
+    /// A *controller* node (spawns no agent of its own): it generates `entrants` candidates in
+    /// parallel, then runs a single-elimination bracket of pairwise judges (reusing
+    /// [`super::tournament::Tournament`]) until one survivor remains. The winner's id lands in the
+    /// node's `tournament_winner` result; dependents start only after the bracket resolves.
+    Tournament { entrants: Vec<RuntimeTask> },
 }
 
 /// One node in a workflow DAG: a task plus the contract its agent runs under.
@@ -111,6 +118,14 @@ impl WorkflowNode {
     /// Make this a classify node: its result selects one of `branches` to run; the rest are pruned.
     pub fn with_classify(mut self, branches: Vec<ClassifyBranch>) -> Self {
         self.kind = NodeKind::Classify { branches };
+        self
+    }
+
+    /// Make this a tournament *controller* node: it spawns no agent of its own but generates each
+    /// of `entrants` (in parallel), then pairwise-judges them to a single winner. The node's own
+    /// `task.goal` is the judging criterion handed to every judge. Requires ≥2 entrants.
+    pub fn with_tournament(mut self, entrants: Vec<RuntimeTask>) -> Self {
+        self.kind = NodeKind::Tournament { entrants };
         self
     }
 
@@ -179,6 +194,14 @@ impl WorkflowSpec {
                 return Err(DeepStrikeError::InvalidConfig(format!(
                     "node {i} is a loop with max_iters=0 (would never run)"
                 )));
+            }
+            if let NodeKind::Tournament { entrants } = &node.kind {
+                if entrants.len() < 2 {
+                    return Err(DeepStrikeError::InvalidConfig(format!(
+                        "tournament node {i} needs at least 2 entrants (have {})",
+                        entrants.len()
+                    )));
+                }
             }
             if let NodeKind::Classify { branches } = &node.kind {
                 for branch in branches {
@@ -463,6 +486,35 @@ mod tests {
             WorkflowNode::new(task("b"), AgentRole::Plan).with_depends_on(vec![0]),
         ]);
         assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn tournament_node_requires_two_entrants() {
+        // ≥2 entrants is valid; <2 is a spec error (no contest).
+        let ok = WorkflowSpec::new(vec![WorkflowNode::new(task("rank"), AgentRole::Plan)
+            .with_tournament(vec![task("a"), task("b")])]);
+        ok.validate().unwrap();
+
+        let one = WorkflowSpec::new(vec![WorkflowNode::new(task("rank"), AgentRole::Plan)
+            .with_tournament(vec![task("only")])]);
+        assert!(one.validate().is_err());
+    }
+
+    #[test]
+    fn tournament_node_kind_round_trips_and_gates_dependents() {
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(task("pick best"), AgentRole::Plan)
+                .with_tournament(vec![task("x"), task("y"), task("z")]),
+            WorkflowNode::new(task("use winner"), AgentRole::Implement).with_depends_on(vec![0]),
+        ]);
+        spec.validate().unwrap();
+        // Only the controller is ready up front; the dependent waits for the bracket.
+        assert_eq!(spec.to_task_graph().unwrap().ready_tasks(), vec![0]);
+        // serde keeps the entrants under the tagged `tournament` kind.
+        let json = serde_json::to_string(&spec.nodes[0].kind).unwrap();
+        assert!(json.contains("\"type\":\"tournament\""), "{json}");
+        let back: NodeKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, spec.nodes[0].kind);
     }
 
     #[test]

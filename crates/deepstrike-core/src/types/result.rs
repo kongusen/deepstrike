@@ -32,6 +32,12 @@ pub struct LoopResult {
     /// branch label here; the kernel runs that branch and prunes the others. Additive ABI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classify_branch: Option<String>,
+    /// Tournament-node judge verdict (A#2): a judge sub-agent of a `NodeKind::Tournament` node
+    /// reports the winning entrant's agent id here (one of the match's two entrants). The kernel
+    /// advances the bracket with it; the controller node's final result carries the champion's id
+    /// in this same field. Additive ABI: omitted on the wire when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tournament_winner: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -235,6 +235,7 @@ fn sub_agent_completed_resumes_loop_with_call_llm() {
             total_tokens_used: 500,
             loop_continue: None,
             classify_branch: None,
+            tournament_winner: None,
         },
     };
 
@@ -271,6 +272,7 @@ fn sub_agent_completed_updates_kernel_process() {
             total_tokens_used: 500,
             loop_continue: None,
             classify_branch: None,
+            tournament_winner: None,
         },
     };
 

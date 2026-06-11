@@ -1782,6 +1782,7 @@ mod tests {
                         total_tokens_used: 1,
                         loop_continue: None,
                         classify_branch: None,
+                        tournament_winner: None,
                     },
                 },
             }))
