@@ -74,10 +74,6 @@ from deepstrike.collaboration import (
     HandoffArtifact, HandoffBus, ContractOutcomeInput,
     CreatorVerifierMode, OrchestrationMode, CreatorVerifierMetrics,
 )
-from deepstrike.workflow import (
-    Tournament, TournamentAction, TournamentMatch,
-    LoopUntilDone, LoopAction, RoundReport, StopCondition,
-)
 __all__ = [
     "RuntimeRunner",
     "RuntimeOptions",
@@ -131,9 +127,6 @@ __all__ = [
     "ContractDrivenHarness", "ContractOutcome", "ContractHarnessOptions", "Violation",
     "HandoffArtifact", "HandoffBus", "ContractOutcomeInput",
     "CreatorVerifierMode", "OrchestrationMode", "CreatorVerifierMetrics",
-    # Workflow primitives
-    "Tournament", "TournamentAction", "TournamentMatch",
-    "LoopUntilDone", "LoopAction", "RoundReport", "StopCondition",
     # Workflow DAG drive (W0-ABI)
     "WorkflowSpec", "WorkflowNodeSpec", "WorkflowSpawnInfo", "workflow_spec_to_kernel",
     "fanout_synthesize", "generate_and_filter", "verify_rules",

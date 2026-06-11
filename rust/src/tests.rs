@@ -1437,39 +1437,23 @@ mod tests {
     }
 
     #[test]
-    fn tournament_resolves_a_winner_via_sdk_reexport() {
-        use crate::{Tournament, TournamentAction};
-        let mut t = Tournament::new(vec!["a".into(), "b".into(), "c".into(), "d".into()]).unwrap();
-        match t.start() {
-            TournamentAction::JudgeRound { round, matches } => {
-                assert_eq!(round, 1);
-                assert_eq!(matches.len(), 2);
-            }
-            _ => panic!("expected first round"),
-        }
-        t.feed_round(vec!["a".into(), "d".into()]).unwrap();
-        match t.feed_round(vec!["d".into()]).unwrap() {
-            TournamentAction::Done { winner, rounds_used } => {
-                assert_eq!(winner, "d");
-                assert_eq!(rounds_used, 2);
-            }
-            _ => panic!("expected done"),
-        }
-    }
+    fn tournament_and_loop_are_node_kinds_via_sdk_reexport() {
+        // A#1: the standalone Tournament / LoopUntilDone SDK primitives were removed; tournaments
+        // and loop-until-done are now `NodeKind` variants built through the workflow SDK surface.
+        use crate::{WorkflowNode, WorkflowSpec};
+        use deepstrike_core::types::agent::AgentRole;
+        use deepstrike_core::types::task::RuntimeTask;
 
-    #[test]
-    fn loop_until_done_stops_and_backstops_via_sdk_reexport() {
-        use crate::{LoopAction, LoopConfig, LoopUntilDone, RoundReport, StopCondition, StopReason};
-        let mut l = LoopUntilDone::new(LoopConfig::new(vec![StopCondition::NoNewFindings]));
-        assert_eq!(l.start(), LoopAction::Spawn { round: 1 });
-        assert_eq!(
-            l.feed(RoundReport { new_findings: 2, errors: 0 }),
-            LoopAction::Spawn { round: 2 }
-        );
-        assert_eq!(
-            l.feed(RoundReport { new_findings: 0, errors: 5 }),
-            LoopAction::Done { rounds_used: 2, reason: StopReason::NoNewFindings }
-        );
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("pick the best"), AgentRole::Plan).with_tournament(
+                vec![RuntimeTask::new("a"), RuntimeTask::new("b"), RuntimeTask::new("c")],
+            ),
+            WorkflowNode::new(RuntimeTask::new("refine until done"), AgentRole::Implement)
+                .with_loop(5),
+        ]);
+        spec.validate().expect("tournament + loop nodes form a valid dag");
+        // The tournament controller is ready up front; only it (not its entrants yet) is runnable.
+        assert_eq!(spec.to_task_graph().expect("graph").ready_tasks(), vec![0, 1]);
     }
 
     #[test]

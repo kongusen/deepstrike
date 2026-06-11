@@ -6,9 +6,12 @@
 //! constructors below emit, and the shape a future "orchestration-as-syscall" round will
 //! lower into per-step [`crate::syscall::Syscall`]s.
 //!
-//! Three patterns are template constructors here; the other three already have first-class
-//! primitives: [`super::tournament::Tournament`], [`super::loop_until_done::LoopUntilDone`],
-//! and the adversarial-verification [`crate::harness::eval_pipeline::EvalPipeline`].
+//! Three patterns are template constructors here. The dynamic control-flow patterns —
+//! loop-until-done, classify-and-act, and tournament — are now first-class [`NodeKind`] variants
+//! ([`NodeKind::Loop`] / [`NodeKind::Classify`] / [`NodeKind::Tournament`]) driven by the unified
+//! workflow executor; the former standalone `loop_until_done` / `tournament` SDK primitives were
+//! removed in their favor (A#1). Adversarial verification stays in
+//! [`crate::harness::eval_pipeline::EvalPipeline`].
 //!
 //! Pure: no I/O, no clock, no spawning. Validation reuses [`TaskGraph::topological_sort`].
 

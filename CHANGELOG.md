@@ -13,7 +13,7 @@ Dynamic workflows: the kernel can now author and run agent-orchestration DAGs as
 | Before | After |
 |---|---|
 | SDK orchestrates sub-agents; kernel adjudicates one spawn at a time | Kernel owns a workflow **DAG**, spawning ready nodes as **gated batches** and advancing on completions (`load_workflow` ABI) |
-| No comparative-judgment or unbounded-loop control in-kernel | First-class **Tournament** (pairwise) and **LoopUntilDone** (stop-predicate + backstop) state machines |
+| No comparative-judgment or unbounded-loop control in-kernel | Dynamic control-flow **node kinds** on the one workflow executor: **`Loop`** (until-done), **`Classify`** (conditional branch), **`Tournament`** (pairwise bracket) |
 | Workflow shapes hand-built each time | **Templates**: `fanout_synthesize`, `generate_and_filter`, `verify_rules`, `classify_and_act` |
 | Verifiers could inherit the author's context | **Adversarial-verification default contract**: verifier nodes run `ReadOnly` + no inherited context (anti self-preferential-bias) |
 | No trust boundary / model hint on nodes | **W3 quarantine** (`trust`) and **W4 model routing** (`model_hint`) carried to every spawn descriptor |
@@ -22,8 +22,8 @@ Dynamic workflows: the kernel can now author and run agent-orchestration DAGs as
 
 #### Core — orchestration primitives
 
-- **`orchestration::tournament`** — single-elimination bracket with pairwise comparative judging (round-batched for parallel judges; bye/odd handling).
-- **`orchestration::loop_until_done`** — `StopCondition{NoNewFindings,NoErrors,MaxRounds}`, first-hit wins, with an injected `MaxRounds` backstop guaranteeing in-kernel termination.
+- **Dynamic control-flow node kinds** (`orchestration::workflow::NodeKind`) — `Loop{max_iters}` (re-run until `loop_continue=false` or the cap), `Classify{branches}` (route to one branch by the node's `classify_branch` result, prune the rest), `Tournament{entrants}` (a *controller* node that generates entrants then pairwise-judges them to a winner via `tournament_winner`). All driven by the single workflow executor; additive ABI (`loop_continue` / `classify_branch` / `tournament_winner` result fields, `judge_match` spawn field).
+- **`orchestration::tournament`** — single-elimination bracket (round-batched parallel judges; bye/odd handling), now the **kernel-internal** bracket core behind `NodeKind::Tournament` (no longer an SDK-exposed standalone primitive).
 - **`orchestration::workflow`** — declarative `WorkflowSpec`/`WorkflowNode` (role/isolation/inheritance/model_hint/trust/deps) with `validate()` + `to_task_graph()`; templates `fanout_synthesize`, `generate_and_filter`, `verify_rules`, `classify_and_act`. `NodeTrust{Trusted,Quarantined}` (W3); `model_hint` (W4).
 
 #### Core — W0 kernel-resident workflow executor
@@ -33,10 +33,10 @@ Dynamic workflows: the kernel can now author and run agent-orchestration DAGs as
 
 #### SDKs
 
-- **Node:** `createTournament`, `createLoopUntilDone`, `RuntimeRunner.runWorkflow(spec, {resumedCompleted})`, workflow templates, `workflowSpecToKernel`. Real-model e2e for the workflow drive + all three primitives.
-- **Python:** same primitives + `RuntimeRunner.run_workflow`, templates, `StopCondition` helper.
-- **WASM:** primitives + `runWorkflow` + templates (tsc-verified).
-- **Rust SDK:** re-exports `Tournament`/`LoopUntilDone`/`WorkflowSpec`/templates from `deepstrike-core`.
+- **Node:** `RuntimeRunner.runWorkflow(spec, {resumedCompleted})`, workflow templates, `workflowSpecToKernel`. Control-flow node kinds (Loop/Classify/Tournament) ride the existing `runWorkflow` drive. Real-model e2e for the workflow DAG.
+- **Python:** `RuntimeRunner.run_workflow`, templates, `workflow_spec_to_kernel`.
+- **WASM:** `runWorkflow` + templates (tsc-verified).
+- **Rust SDK:** re-exports `WorkflowSpec`/`WorkflowNode`/`WorkflowRun`/`JudgeMatch`/templates from `deepstrike-core`.
 
 ### Notes / deferred
 
