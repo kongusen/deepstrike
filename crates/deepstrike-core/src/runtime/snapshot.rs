@@ -196,6 +196,7 @@ impl KernelSnapshot {
                             turns_used: 0,
                             total_tokens_used: 0,
                             loop_continue: None,
+                            classify_branch: None,
                         },
                     }),
                     _ => None,

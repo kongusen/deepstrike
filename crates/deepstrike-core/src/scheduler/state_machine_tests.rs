@@ -837,6 +837,7 @@
                 turns_used: 1,
                 total_tokens_used: 1,
                 loop_continue: None,
+                classify_branch: None,
             },
         };
         let resumed = sm.feed(LoopEvent::SubAgentCompleted { result });
@@ -1079,6 +1080,7 @@
                     turns_used: 2,
                     total_tokens_used: 42,
                     loop_continue: None,
+                    classify_branch: None,
                 },
             },
         });
@@ -1309,6 +1311,7 @@
                     turns_used: 1,
                     total_tokens_used: 1,
                     loop_continue: None,
+                    classify_branch: None,
                 },
             },
         });
@@ -1330,6 +1333,7 @@
                 turns_used: 1,
                 total_tokens_used: 1,
                 loop_continue: None,
+                classify_branch: None,
             },
         }
     }
@@ -1338,6 +1342,13 @@
     fn wf_completed_stop(agent_id: &str) -> crate::types::result::SubAgentResult {
         let mut r = wf_completed(agent_id);
         r.result.loop_continue = Some(false);
+        r
+    }
+
+    /// A classifier completion that selects a branch label.
+    fn wf_completed_branch(agent_id: &str, label: &str) -> crate::types::result::SubAgentResult {
+        let mut r = wf_completed(agent_id);
+        r.result.classify_branch = Some(label.to_string());
         r
     }
 
@@ -1620,6 +1631,42 @@
         assert!(sm.agent_process("wf-node1").is_some(), "early stop promoted the dependent");
         assert!(sm.agent_process("wf-node0-i2").is_none(), "no third iteration ran");
 
+        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
+        assert!(matches!(done, LoopAction::CallLLM { .. }));
+        assert!(!sm.workflow_active());
+    }
+
+    #[test]
+    fn classify_node_routes_to_chosen_branch_and_prunes_others() {
+        // A#2 Classify: a classifier node's result selects one branch to run; the other branches'
+        // nodes are pruned (never spawn). Conditional edges in an otherwise static DAG.
+        use crate::orchestration::workflow::{ClassifyBranch, WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("triage this ticket"));
+        sm.take_observations();
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("classify ticket"), AgentRole::Plan).with_classify(vec![
+                ClassifyBranch { label: "bug".into(), nodes: vec![1] },
+                ClassifyBranch { label: "feature".into(), nodes: vec![2] },
+            ]),
+            WorkflowNode::new(RuntimeTask::new("fix the bug"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+            WorkflowNode::new(RuntimeTask::new("build the feature"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+        ]);
+        sm.load_workflow(spec, "sess");
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // the classifier (wf-node0)
+
+        // Classifier returns "bug" → the bug branch (node 1) runs; the feature branch (node 2) is pruned.
+        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed_branch("wf-node0", "bug") });
+        assert_eq!(count_spawned(&sm.take_observations()), 1);
+        assert!(sm.agent_process("wf-node1").is_some(), "chosen branch runs");
+        assert!(sm.agent_process("wf-node2").is_none(), "other branch pruned");
+
+        // bug branch completes → workflow done (feature branch was pruned).
         let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
         assert!(!sm.workflow_active());

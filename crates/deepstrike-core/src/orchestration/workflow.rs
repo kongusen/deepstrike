@@ -30,18 +30,30 @@ pub enum NodeTrust {
     Quarantined,
 }
 
+/// One branch of a [`NodeKind::Classify`] node: a label and the node indices to enable when the
+/// classifier's result selects that label. The other branches' nodes are pruned (failed) so they
+/// never run — this is how a classify node yields *conditional edges* in an otherwise static DAG.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClassifyBranch {
+    pub label: String,
+    pub nodes: Vec<usize>,
+}
+
 /// Control-flow kind of a workflow node. `Spawn` (the default) runs the node's agent once.
-/// `Loop` re-runs it until a stop condition, *then* promotes its dependents — the first dynamic
-/// (runtime-node-addition) control-flow type. Additive: existing specs omit `kind` → `Spawn`.
+/// `Loop` re-runs it until a stop condition; `Classify` routes to one branch by its result —
+/// both dynamic control-flow types. Additive: existing specs omit `kind` → `Spawn`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum NodeKind {
     /// Run the node's agent once (classic spawn node).
     #[default]
     Spawn,
-    /// Re-run the node's agent up to `max_iters` times (v1: deterministic count). A future
-    /// `loop_continue` signal on the completion result will allow early "until done" stops.
+    /// Re-run the node's agent up to `max_iters` times; an iteration reporting
+    /// `loop_continue=Some(false)` stops early (v2 "until done").
     Loop { max_iters: usize },
+    /// Run the node's agent once as a classifier; its `classify_branch` result selects one branch
+    /// to run and prunes the others. Branch nodes must `depends_on` this classify node.
+    Classify { branches: Vec<ClassifyBranch> },
 }
 
 /// One node in a workflow DAG: a task plus the contract its agent runs under.
@@ -93,6 +105,12 @@ impl WorkflowNode {
     /// Dependents wait for the whole loop to finish.
     pub fn with_loop(mut self, max_iters: usize) -> Self {
         self.kind = NodeKind::Loop { max_iters };
+        self
+    }
+
+    /// Make this a classify node: its result selects one of `branches` to run; the rest are pruned.
+    pub fn with_classify(mut self, branches: Vec<ClassifyBranch>) -> Self {
+        self.kind = NodeKind::Classify { branches };
         self
     }
 
@@ -161,6 +179,26 @@ impl WorkflowSpec {
                 return Err(DeepStrikeError::InvalidConfig(format!(
                     "node {i} is a loop with max_iters=0 (would never run)"
                 )));
+            }
+            if let NodeKind::Classify { branches } = &node.kind {
+                for branch in branches {
+                    for &bn in &branch.nodes {
+                        if bn >= n {
+                            return Err(DeepStrikeError::InvalidConfig(format!(
+                                "classify node {i} branch '{}' references out-of-range node {bn}",
+                                branch.label
+                            )));
+                        }
+                        // Branch nodes must be gated by the classifier, else they'd run before
+                        // classification and the prune would come too late.
+                        if !self.nodes[bn].depends_on.contains(&i) {
+                            return Err(DeepStrikeError::InvalidConfig(format!(
+                                "classify node {i} branch '{}' node {bn} must depends_on {i}",
+                                branch.label
+                            )));
+                        }
+                    }
+                }
             }
             for &dep in &node.depends_on {
                 if dep >= n {

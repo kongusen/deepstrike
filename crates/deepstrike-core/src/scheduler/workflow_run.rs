@@ -90,6 +90,7 @@ fn resumed_result() -> LoopResult {
         turns_used: 0,
         total_tokens_used: 0,
         loop_continue: None,
+        classify_branch: None,
     }
 }
 
@@ -153,7 +154,8 @@ impl WorkflowRun {
                 let k = self.iter_counts.get(&node).copied().unwrap_or(0);
                 format!("{}-i{k}", node_agent_id(node))
             }
-            NodeKind::Spawn => node_agent_id(node),
+            // Spawn and Classify both run once → stable plain id.
+            NodeKind::Spawn | NodeKind::Classify { .. } => node_agent_id(node),
         }
     }
 
@@ -228,20 +230,38 @@ impl WorkflowRun {
         let node = *self.node_of_agent.get(agent_id)?;
         self.batch.retain(|&n| n != node);
 
-        if let NodeKind::Loop { max_iters } = self.nodes[node].kind {
-            // v2 semantic stop: the iteration may signal "done" (`loop_continue == Some(false)`),
-            // ending the loop before `max_iters`. `None`/`Some(true)` run to the cap (v1 behavior).
-            let stop_requested = result.loop_continue == Some(false);
-            let done = self.iter_counts.entry(node).or_insert(0);
-            *done += 1;
-            if *done < max_iters && !stop_requested {
-                // More iterations to run: re-arm the node, keep it (and its dependents) in flight.
-                self.graph.set_ready(node);
-                return Some(node);
+        match &self.nodes[node].kind {
+            NodeKind::Loop { max_iters } => {
+                // v2 semantic stop: the iteration may signal "done" (`loop_continue == Some(false)`),
+                // ending the loop before `max_iters`. `None`/`Some(true)` run to the cap (v1 behavior).
+                let max_iters = *max_iters;
+                let stop_requested = result.loop_continue == Some(false);
+                let done = self.iter_counts.entry(node).or_insert(0);
+                *done += 1;
+                if *done < max_iters && !stop_requested {
+                    // More iterations: re-arm the node, keep it (and its dependents) in flight.
+                    self.graph.set_ready(node);
+                    return Some(node);
+                }
             }
+            NodeKind::Classify { branches } => {
+                // Route to the branch matching the classifier's reported label; prune every other
+                // branch's nodes (fail them) *before* completing this node, so that `complete`'s
+                // dependent-promotion only arms the chosen branch (failed nodes are never re-armed).
+                let chosen = result.classify_branch.clone();
+                let prune: Vec<usize> = branches
+                    .iter()
+                    .filter(|b| Some(&b.label) != chosen.as_ref())
+                    .flat_map(|b| b.nodes.iter().copied())
+                    .collect();
+                for bn in prune {
+                    self.graph.fail(bn);
+                }
+            }
+            NodeKind::Spawn => {}
         }
 
-        // Spawn node, or the loop's final iteration: terminal — promote dependents.
+        // Spawn node, loop's final iteration, or a completed classifier: promote dependents.
         self.graph.complete(node, result);
         Some(node)
     }
@@ -305,6 +325,7 @@ mod tests {
             turns_used: 1,
             total_tokens_used: 0,
             loop_continue: None,
+            classify_branch: None,
         }
     }
 

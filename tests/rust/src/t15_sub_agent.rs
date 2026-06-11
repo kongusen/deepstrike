@@ -234,6 +234,7 @@ fn sub_agent_completed_resumes_loop_with_call_llm() {
             turns_used: 3,
             total_tokens_used: 500,
             loop_continue: None,
+            classify_branch: None,
         },
     };
 
@@ -269,6 +270,7 @@ fn sub_agent_completed_updates_kernel_process() {
             turns_used: 3,
             total_tokens_used: 500,
             loop_continue: None,
+            classify_branch: None,
         },
     };
 

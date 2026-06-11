@@ -28,6 +28,10 @@ pub struct LoopResult {
     /// Additive ABI: omitted on the wire when `None`, so existing producers are byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_continue: Option<bool>,
+    /// Classify-node branch selection (A#2): a `NodeKind::Classify` node's agent reports the chosen
+    /// branch label here; the kernel runs that branch and prunes the others. Additive ABI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classify_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
