@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// Parallelism hint for task scheduling and executor enforcement.
 ///
 /// - `Orchestrate`: serial, produces contracts; runs one at a time
-/// - `Implement`: serial, DAG chain; `executor::next_batch` enforces max 1 running
+/// - `Implement`: serial, DAG chain; `TaskGraph::ready_tasks` enforces max 1 running
 /// - `Retrieve`: parallelisable; no mutual exclusion between retrieve tasks
 /// - `Verify`: parallelisable, but each task must run in an isolated agent context
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]

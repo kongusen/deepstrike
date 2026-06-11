@@ -13,7 +13,6 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::orchestration::executor;
 use crate::orchestration::task_graph::{TaskGraph, TaskStatus};
 use crate::orchestration::tournament::{EntrantId, Match, Tournament, TournamentAction};
 use crate::orchestration::workflow::{NodeKind, NodeTrust, WorkflowNode, WorkflowSpec};
@@ -185,7 +184,7 @@ impl WorkflowRun {
 
     /// Node indices whose dependencies are satisfied and that have not yet started.
     pub fn ready_batch(&self) -> Vec<usize> {
-        executor::next_batch(&self.graph).runnable
+        self.graph.ready_tasks()
     }
 
     /// The agent id for a node's *current* spawn. For a `Spawn` node this is the stable

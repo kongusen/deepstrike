@@ -1,8 +1,8 @@
 //! Single-elimination tournament — pairwise comparative judging.
 //!
-//! Pattern mirrors [`super::gen_eval::GenEvalLoop`]: a pure control state machine that
-//! holds the bracket and emits **abstract actions**; the SDK runs a fresh-context judge
-//! agent per match and feeds back winners. No prompt assembly, no I/O, no clock.
+//! A pure control state machine: it holds the bracket and emits **abstract actions**; the SDK
+//! runs a fresh-context judge agent per match and feeds back winners. No prompt assembly, no
+//! I/O, no clock.
 //!
 //! Why a tournament instead of absolute scoring: comparative judgment ("which of these
 //! two is better?") is more reliable than asking one agent to score 1000 items, and only
