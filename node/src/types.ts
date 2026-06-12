@@ -1,3 +1,5 @@
+import type { WorkflowNodeSpec } from "./types/agent.js"
+
 export interface TextPart {
   type: "text"
   text: string
@@ -125,6 +127,14 @@ export interface ToolResultEvent extends StreamEvent {
   isError: boolean
   isFatal?: boolean
   errorKind?: ToolErrorKind
+}
+
+/** R3-1: a workflow node's agent called the `submit_workflow_nodes` tool. The runner intercepts it
+ *  (it cannot apply to the child's own kernel — the workflow lives in the parent) and surfaces the
+ *  requested nodes as this event; the `runWorkflow` driver sends them to the parent kernel. */
+export interface WorkflowNodesSubmittedEvent extends StreamEvent {
+  type: "workflow_nodes_submitted"
+  nodes: WorkflowNodeSpec[]
 }
 
 export interface DoneEvent extends StreamEvent {
