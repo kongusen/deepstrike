@@ -1718,6 +1718,7 @@ def _parse_submit_workflow_nodes_args(args_str: str) -> list:
         isolation=item.get("isolation", "shared"),
         context_inheritance=item.get("context_inheritance", "none"),
         model_hint=item.get("model_hint"),
+        trust=item.get("trust", "trusted"),
         depends_on=list(item.get("depends_on") or []),
       ))
   return nodes

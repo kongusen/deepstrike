@@ -260,6 +260,18 @@ def test_submit_workflow_nodes_to_kernel_shape():
     }
 
 
+def test_submit_workflow_nodes_carries_trust_and_deps():
+    from deepstrike import submit_workflow_nodes_to_kernel
+
+    event = submit_workflow_nodes_to_kernel([
+        WorkflowNodeSpec(task="scrape", role="explore", isolation="read_only", trust="quarantined"),
+        WorkflowNodeSpec(task="verify", role="verify", depends_on=[0]),
+    ])
+    assert event["nodes"][0]["trust"] == "quarantined"
+    assert "trust" not in event["nodes"][1]  # default "trusted" omitted on the wire
+    assert event["nodes"][1]["depends_on"] == [0]
+
+
 @pytest.mark.asyncio
 async def test_run_workflow_submit_nodes_appends_and_completes():
     # R3-1: a node "submits" more work (via SubAgentResult.submitted_nodes); run_workflow sends

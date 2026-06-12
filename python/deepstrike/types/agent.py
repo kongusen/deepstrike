@@ -7,6 +7,7 @@ from typing import Any, Literal
 KernelAgentRole = Literal["explore", "plan", "implement", "verify", "custom"]
 AgentIsolation = Literal["shared", "read_only", "worktree", "remote"]
 ContextInheritance = Literal["none", "system_only", "full"]
+NodeTrust = Literal["trusted", "quarantined"]
 TerminationReason = Literal[
   "completed", "max_turns", "token_budget", "timeout", "user_abort", "error", "milestone_exceeded",
 ]
@@ -191,6 +192,8 @@ class WorkflowNodeSpec:
   isolation: AgentIsolation = "shared"
   context_inheritance: ContextInheritance = "none"
   model_hint: str | None = None
+  # W3: `quarantined` nodes read untrusted content and must run without privileges (read-only).
+  trust: NodeTrust = "trusted"
   depends_on: list[int] = field(default_factory=list)
 
 
@@ -232,6 +235,8 @@ def workflow_node_spec_to_kernel(n: WorkflowNodeSpec) -> dict[str, Any]:
   }
   if n.model_hint:
     node["model_hint"] = n.model_hint
+  if getattr(n, "trust", "trusted") and n.trust != "trusted":
+    node["trust"] = n.trust
   if n.depends_on:
     node["depends_on"] = list(n.depends_on)
   return node
@@ -269,6 +274,7 @@ submit_workflow_nodes_tool: dict[str, Any] = {
             "role": {"type": "string", "enum": ["explore", "plan", "implement", "verify", "custom"]},
             "isolation": {"type": "string", "enum": ["shared", "read_only", "worktree", "remote"]},
             "context_inheritance": {"type": "string", "enum": ["none", "system_only", "full"]},
+            "trust": {"type": "string", "enum": ["trusted", "quarantined"]},
             "depends_on": {"type": "array", "items": {"type": "integer"}},
           },
           "required": ["task", "role"],

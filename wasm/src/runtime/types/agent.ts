@@ -201,12 +201,16 @@ export function milestoneCheckFail(phaseId: string, reason: string): MilestoneCh
 export type WorkflowTaskSpec = { goal: string; criteria?: string[]; lane?: string } | string
 
 /** One node in a declarative workflow DAG (camelCase host shape). */
+export type NodeTrust = "trusted" | "quarantined"
+
 export interface WorkflowNodeSpec {
   task: WorkflowTaskSpec
   role: KernelAgentRole
   isolation?: AgentIsolation
   contextInheritance?: ContextInheritance
   modelHint?: string
+  /** W3: `quarantined` nodes read untrusted content and must run without privileges (read-only). */
+  trust?: NodeTrust
   /** Indices of nodes this node depends on. */
   dependsOn?: number[]
 }
@@ -242,6 +246,7 @@ export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): Record<string, un
     isolation: n.isolation ?? "shared",
     context_inheritance: n.contextInheritance ?? "none",
     ...(n.modelHint ? { model_hint: n.modelHint } : {}),
+    ...(n.trust && n.trust !== "trusted" ? { trust: n.trust } : {}),
     ...(n.dependsOn && n.dependsOn.length ? { depends_on: n.dependsOn } : {}),
   }
 }
@@ -273,6 +278,7 @@ export const submitWorkflowNodesTool: ToolSchema = {
             role: { type: "string", enum: ["explore", "plan", "implement", "verify", "custom"] },
             isolation: { type: "string", enum: ["shared", "read_only", "worktree", "remote"] },
             contextInheritance: { type: "string", enum: ["none", "system_only", "full"] },
+            trust: { type: "string", enum: ["trusted", "quarantined"] },
             dependsOn: { type: "array", items: { type: "integer" } },
           },
           required: ["task", "role"],
