@@ -22,6 +22,7 @@ export default defineConfig({
     nav: [
       { text: 'Home', link: '/' },
       { text: 'Agent OS', link: '/concepts/agent-os' },
+      { text: 'Workflows', link: '/concepts/dynamic-workflows' },
       { text: 'Quick Start', link: '/getting-started/quick-start' },
       { text: 'Concepts', link: '/concepts/core-concepts' },
       { text: 'Guides', link: '/guides/sdk-nodejs' }
@@ -40,6 +41,7 @@ export default defineConfig({
         items: [
           { text: 'Overview', link: '/concepts/' },
           { text: 'Agent OS (0.2.6+)', link: '/concepts/agent-os' },
+          { text: 'Dynamic Workflows (0.2.11+)', link: '/concepts/dynamic-workflows' },
           { text: 'Core Concepts', link: '/concepts/core-concepts' },
           { text: 'Context Slots & Compression', link: '/concepts/context-slots-compression' }
         ]

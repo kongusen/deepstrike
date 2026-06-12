@@ -106,8 +106,8 @@ Parity matrix: [SDK OS parity](../sdk-os-parity.md).
 
 | SDK | Deep dive |
 | :--- | :--- |
-| Node.js / TypeScript | [Node SDK guide](../guides/sdk-nodejs.md) · [node/README.md](../../node/README.md) |
-| Python | [Python SDK guide](../guides/sdk-python.md) · [python/README.md](../../python/README.md) |
+| Node.js / TypeScript | [Node SDK guide](../guides/sdk-nodejs.md) · [node/README.md](https://github.com/kongusen/deepstrike/blob/main/node/README.md) |
+| Python | [Python SDK guide](../guides/sdk-python.md) · [python/README.md](https://github.com/kongusen/deepstrike/blob/main/python/README.md) |
 | Rust | [Rust SDK guide](../guides/sdk-rust.md) |
 | WASM | Event mapping only for memory syscalls; runner APIs in progress |
 

@@ -20,6 +20,9 @@ features:
   - icon: 🧠
     title: Agent OS Microkernel
     details: Syscall trap, scheduler lifecycle, and memory management — kernel decides when and whether; SDKs execute I/O.
+  - icon: 🕸️
+    title: Dynamic Workflows
+    details: The six harness patterns as first-class kernel nodes — classify, fan-out, loop, tournament, plus runtime DAG-append, deterministic reduce nodes, and quarantine.
   - icon: 🔌
     title: Host-Owned Side Effects
     details: Pure Rust core, zero I/O. Node, Python, Rust, and WASM SDKs own providers, tools, spool, and long-term memory.
@@ -54,7 +57,7 @@ pip install deepstrike
 ```toml [Rust]
 # Cargo.toml
 [dependencies]
-deepstrike-sdk = "0.2.6"
+deepstrike-sdk = "0.2.11"
 ```
 
 ```bash [WASM]
@@ -66,6 +69,7 @@ npm install @deepstrike/wasm
 ## Read More
 
 - [Agent OS](./concepts/agent-os) — What 0.2.6 enables: kernel mediation, spool, memory syscalls, and observability.
+- [Dynamic Workflows](./concepts/dynamic-workflows) — The six harness patterns as kernel nodes, runtime DAG-append, reduce nodes, and quarantine (0.2.11+).
 - [Getting Started Guide](/getting-started/) — Install packages and run your first agent.
 - [Concepts](/concepts/) — Context VM, memory, governance, signals, and collaboration.
 - [SDK Guides](/guides/) — Full integration guides for Node.js, Python, and Rust.

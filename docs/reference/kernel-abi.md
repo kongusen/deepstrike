@@ -86,6 +86,8 @@ Events:
 | `milestone_result` | Feed verifier output for the current milestone |
 | `spawn_sub_agent` | Spawn a sub-agent; registers process, emits `agent_process_changed`, suspends parent (`sub_agent_await`) until `sub_agent_completed` |
 | `sub_agent_completed` | Feed completed sub-agent result back into parent loop |
+| `load_workflow` | Load a declarative `WorkflowSpec` DAG; the kernel spawns the first gated batch (`workflow_batch_spawned`) and drives the DAG node-by-node. Optional `resumed_completed` / `resumed_submissions` resume an interrupted run. See [Workflow ABI](#workflow-abi-dynamic-workflows) |
+| `submit_workflow_nodes` | Append nodes to the in-flight workflow DAG at runtime (loop-until-done / per-item fan-out); optional `submitter_agent_id` so a quarantined submitter's nodes are coerced to quarantined. No-op if no workflow is active |
 | `load_governance_policy` | Load declarative governance rules (deny / ask_user / rate-limit / param) before run |
 | `set_attention_policy` | Configure in-kernel signal router queue (`max_queue_size`) |
 | `set_scheduler_budget` | Optional wall-clock / turn / token budget overrides |
@@ -115,7 +117,7 @@ Kernel audit source. Each observation maps to an OS event **category** for unifi
 | Category | Observations |
 |---|---|
 | `syscall` | `tool_gated`, `capability_changed`, `memory_written`, `memory_validation_failed`, `memory_queried` |
-| `sched` | `suspended`, `resumed`, `budget_exceeded`, `checkpoint_taken`, `rollbacked`, `milestone_*` |
+| `sched` | `suspended`, `resumed`, `budget_exceeded`, `checkpoint_taken`, `rollbacked`, `milestone_*`, `workflow_batch_spawned`, `workflow_completed` |
 | `mm` | `compressed`, `page_out`, `page_in_requested`, `large_result_spooled`, `renewed` (+ SDK `page_in` session event) |
 | `proc` | `agent_process_changed` |
 | `ipc` | `signal_disposed` |
@@ -138,6 +140,8 @@ Kernel audit source. Each observation maps to an OS event **category** for unifi
 | `milestone_evidence` | Verifier-collected evidence for current phase |
 | `agent_process_changed` | Process table entry changed (spawn: `running`; join: `joined` / `failed`) |
 | `suspended` / `resumed` | Parent loop suspended awaiting approval or sub-agent join |
+| `workflow_batch_spawned` | A workflow drive round produced a batch of ready node spawn descriptors (`WorkflowSpawnInfo[]`) for the host to run |
+| `workflow_completed` | The workflow DAG finished; carries `completed` / `failed` node agent-ids |
 
 ## OS Native Profile (Phase 6, 0.2.6 default behavior)
 
@@ -192,6 +196,36 @@ When `RuntimeOptions.subAgentHarness` is configured, the host runs the child thr
 | Python | `RuntimeRunner.spawn_sub_agent(spec)` | `spawn_standalone(opts, session_id, spec)` |
 
 **Collaboration layer:** `AgentPool.ensureCoordinator()` (default in `CreatorVerifierMode` / `OrchestrationMode`). Pass `useLegacyRunners: true` / `use_legacy_runners=True` to opt out.
+
+## Workflow ABI (dynamic workflows)
+
+A **workflow** is a declarative DAG the kernel drives node-by-node, gating each spawn through the same syscall trap. The kernel owns control flow; the host runs the agents. Conceptual overview: [Dynamic Workflows](../concepts/dynamic-workflows.md).
+
+**Drive loop.** Host sends `load_workflow { spec, parent_session_id }`. The kernel validates the DAG and emits `workflow_batch_spawned` with the ready nodes' `WorkflowSpawnInfo`. The host runs each node (as a sub-agent) and feeds `sub_agent_completed` back; the kernel unblocks dependents per-node and emits the next batch, or `workflow_completed { completed, failed }` when the DAG is done.
+
+**`WorkflowSpec` JSON shape.** `{ "nodes": [ WorkflowNode, … ] }`, each node:
+
+| Field | Meaning |
+|---|---|
+| `task` | `{ goal, criteria?, lane? }` (or a bare goal string in the SDKs) |
+| `role` | `explore` / `plan` / `implement` / `verify` / `custom` |
+| `isolation` | `shared` / `read_only` / `worktree` / `remote` |
+| `context_inheritance` | `none` / `system_only` / `full` |
+| `depends_on` | indices of nodes this node depends on (`[]` = ready immediately) |
+| `kind` | `spawn` (default) · `loop { max_iters }` · `classify { branches }` · `tournament { entrants }` · `reduce { reducer }` |
+| `trust` | `trusted` (default) / `quarantined` — a quarantined node is denied write-capable isolation at the gate |
+| `output_schema` | optional JSON Schema; carried to the spawn descriptor for SDK-side validate + retry |
+| `model_hint` | optional model preference resolved by the SDK |
+
+**Runtime node-append (`SubmitNodes`).** A running node can grow the DAG: the SDK sends `submit_workflow_nodes { nodes, submitter_agent_id? }`. `depends_on` in a submission is **batch-relative and backward-only**. Each appended spawn passes the unchanged gate; a `max_workflow_nodes` quota (see below) caps runaway growth. A quarantined `submitter_agent_id` coerces every submitted node to `quarantined` (no privilege escalation). Submissions are persisted (`workflow_nodes_submitted` session event) and replayed via `load_workflow`'s `resumed_submissions` on resume.
+
+**Deterministic `reduce` nodes** run no LLM: the kernel stamps the spawn descriptor with a `reducer` name + dependency agent ids, and the SDK routes it to a pure registered function (`dedupe_lines` / `merge_json_arrays` / `concat` / `count`, or a user reducer) over those outputs.
+
+**Resume.** `load_workflow` accepts `resumed_completed` (node agent-ids already finished, recovered from the session log) and `resumed_submissions` (runtime-append batches, in order); the kernel reconstructs the exact pre-interruption graph and continues from the remaining work.
+
+**Governance.** `set_resource_quota`'s `max_workflow_nodes` caps total DAG size (the runaway-loop backstop); a denied `submit_workflow_nodes` surfaces a governance rollback note and the workflow continues with its existing nodes.
+
+**SDK drivers:** Node `RuntimeRunner.runWorkflow(spec)` / `resumeWorkflow(spec)`; Python `run_workflow(spec)` / `resume_workflow(spec)`.
 
 ## Resource Quotas (M2)
 

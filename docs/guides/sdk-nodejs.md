@@ -16,6 +16,8 @@
 9. [信号系统 (Signals)](#9-信号系统-signals)
 10. [评估框架 (Harness)](#10-评估框架-harness)
 11. [协作层 (Collaboration)](#11-协作层-collaboration)
+12. [进阶特性 (Milestones, Sub-agents, Artifacts)](#12-进阶特性-milestones-sub-agents-artifacts)
+13. [动态工作流 (Dynamic Workflows)](#13-动态工作流-dynamic-workflows)
 
 ---
 
@@ -697,3 +699,52 @@ for await (const evt of runner.spawnSubAgent(spec)) {
 ### 12.3 产物推送 (Artifacts)
 
 > **已移除。** 四槽重构后 artifacts 分区已移除。请使用 `initialMemory` → Slot 2，或依赖 history 压缩 tier 处理大输出。
+
+---
+
+## 13. 动态工作流 (Dynamic Workflows)
+
+把一个声明式 DAG 交给内核,让它为每个节点 spawn 一个全新上下文的子 agent——内核掌握控制流(门控 · 预算 · join 挂起 · 恢复),你的 SDK 跑 agent。概念总览见 [Dynamic Workflows](../concepts/dynamic-workflows.md);ABI 见 [Kernel ABI — Workflow ABI](../reference/kernel-abi.md#workflow-abi-dynamic-workflows)。
+
+```ts
+// 每条规则一个全新上下文的 verifier(不继承作者上下文 → 无法自我背书),
+// 再加一个 skeptic 复核它们的 flag。内核把 3 个 verifier 作为一个受门控的批次 spawn,
+// 在 join 处挂起,等它们完成后再跑 skeptic。
+const outcome = await runner.runWorkflow({
+  nodes: [
+    { task: "规则:金额是整数分 —— 代码里有没有违反?", role: "verify" },
+    { task: "规则:所有 error 都向上传播 —— 有没有违反?", role: "verify" },
+    { task: "规则:时间戳都是 UTC —— 有没有违反?",       role: "verify" },
+    { task: "Skeptic:上面的 flag 里哪些是真违规?",      role: "verify", dependsOn: [0, 1, 2] },
+  ],
+})
+// => { completed: ["wf-node0", "wf-node1", "wf-node2", "wf-node3"], failed: [] }
+```
+
+### 13.1 节点 kind(六种模式)
+
+节点的 `kind` 选择控制流形状;同一个执行器驱动全部,每次 spawn 都过 syscall gate:
+
+| `kind` | 行为 |
+|---|---|
+| `{ type: "spawn" }`(默认) | 跑一次该节点的 agent |
+| `{ type: "loop", maxIters }` | 反复运行直到 agent 报告完成,以 `maxIters` 兜底 |
+| `{ type: "classify", branches }` | 分类器的结果选中一个分支,其余分支在运行前被剪掉 |
+| `{ type: "tournament", entrants }` | 生成 N 个参赛者,再跑两两对阵的 judge bracket 到一个冠军 |
+| `{ type: "reduce", reducer }` | **无 token 的宿主计算** —— 一个纯函数(`dedupe_lines` / `merge_json_arrays` / `concat` / `count`,或经 `reducers` 选项自定义)作用于依赖输出 |
+
+模板构造器:`fanoutSynthesize(workers, synth)`、`generateAndFilter(gens, filter)`、`verifyRules(rules, skeptic)`。
+
+### 13.2 运行时扩展 DAG
+
+把 `submitWorkflowNodesTool` 交给某个节点,它的 agent 就能在运行中向活动 DAG 追加节点(真正的 loop-until-done;为发现的每条 claim 派一个 verifier)。提交的 `dependsOn` 是**批次相对、仅向后**的;每个追加的 spawn 仍过同一道配额 / 深度 / 隔离门;提交会被记录并在 `resumeWorkflow` 时回放。
+
+### 13.3 信任、schema 与预算
+
+- **隔离无逃逸** —— 给读取不可信内容的节点设 `trust: "quarantined"`;它申请可写隔离会在内核被拒,且它运行时提交的任何节点都被强制降级为 quarantined(污点传递,无权限升级)。
+- **结构化输出** —— 给节点设 `outputSchema`;runner 指示 agent、对结果做校验,不符合则带错误回喂、重跑一次。始终不符合的节点会失败(其依赖被饿死)。
+- **预算即信号** —— 装上 `maxWorkflowNodes` / `maxConcurrentSubagents` 配额后,每个 spawn 出来的节点都会在 goal 里带上剩余余量,协调者据此定扇出规模。
+
+### 13.4 恢复
+
+`resumeWorkflow(spec)` 从 session log 恢复:已完成节点被跳过,运行时追加的节点被回放,内核从断点继续。
