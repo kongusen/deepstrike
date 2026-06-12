@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from deepstrike._kernel import KernelRuntime, LoopPolicy
-from deepstrike.providers.stream import DoneEvent, TextDelta
+from deepstrike.providers.stream import DoneEvent, TextDelta, WorkflowNodesSubmittedEvent
 from deepstrike.runtime.filtered_plane import FilteredExecutionPlane
 from deepstrike.runtime.kernel_step import kernel_apply
 from deepstrike.runtime.runner import RuntimeOptions, RuntimeRunner, SubAgentHarnessConfig
@@ -198,6 +198,10 @@ class SubAgentOrchestrator:
 
     done: DoneEvent | None = None
     final_text = ""
+    # R3-1: collect any nodes this node's agent submitted via the `submit_workflow_nodes` tool (the
+    # runner surfaces them as `WorkflowNodesSubmittedEvent` because the workflow lives in the parent
+    # kernel, not this child's). `run_workflow` sends them to the parent kernel.
+    submitted_nodes: list = []
     async for evt in child_runner.run(
       session_id=ctx.spec.identity.session_id,
       goal=ctx.spec.goal,
@@ -207,6 +211,8 @@ class SubAgentOrchestrator:
         final_text += evt.delta
       if isinstance(evt, DoneEvent):
         done = evt
+      if isinstance(evt, WorkflowNodesSubmittedEvent):
+        submitted_nodes.extend(evt.nodes)
 
     from deepstrike._kernel import Message
 
@@ -217,7 +223,11 @@ class SubAgentOrchestrator:
       total_tokens_used=done.total_tokens if done else 0,
       final_message=final_message,
     )
-    return SubAgentResult(agent_id=ctx.spec.identity.agent_id, result=loop_result)
+    return SubAgentResult(
+      agent_id=ctx.spec.identity.agent_id,
+      result=loop_result,
+      submitted_nodes=submitted_nodes,
+    )
 
 
 default_sub_agent_orchestrator = SubAgentOrchestrator()

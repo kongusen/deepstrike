@@ -245,3 +245,60 @@ async def test_resume_workflow_recovers_from_session_log():
     assert "wf-node2" in outcome["completed"]  # synth runs and completes
     # Node1 ran again (it was failed, not completed).
     assert outcome.get("failed") == []
+
+
+def test_submit_workflow_nodes_to_kernel_shape():
+    from deepstrike import submit_workflow_nodes_to_kernel
+
+    event = submit_workflow_nodes_to_kernel([WorkflowNodeSpec(task="more", role="implement")])
+    assert event == {
+        "kind": "submit_workflow_nodes",
+        "nodes": [
+            {"task": {"goal": "more", "criteria": []}, "role": "implement",
+             "isolation": "shared", "context_inheritance": "none"},
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_submit_nodes_appends_and_completes():
+    # R3-1: a node "submits" more work (via SubAgentResult.submitted_nodes); run_workflow sends
+    # submit_workflow_nodes to the parent kernel BEFORE the node's completion, the appended node
+    # spawns and runs, and the workflow finishes only after it too completes.
+    class _SubmitOnceOrchestrator:
+        def __init__(self):
+            self.goals: list[str] = []
+            self._submitted = False
+
+        async def run(self, ctx):
+            self.goals.append(ctx.spec.goal)
+            submitted = []
+            if not self._submitted and ctx.spec.goal == "root":
+                self._submitted = True
+                submitted = [WorkflowNodeSpec(task="discovered", role="implement")]
+            return SubAgentResult(
+                agent_id=ctx.spec.identity.agent_id,
+                result=LoopResult(termination="completed", turns_used=1, total_tokens_used=1),
+                submitted_nodes=submitted,
+            )
+
+    orch = _SubmitOnceOrchestrator()
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=_StubProvider(),
+        session_log=InMemorySessionLog(),
+        execution_plane=LocalExecutionPlane(),
+        sub_agent_orchestrator=orch,
+        max_tokens=1000,
+    ))
+    rt = KernelRuntime(LoopPolicy(max_tokens=1000))
+    rt.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
+    runner._active_kernel = rt
+    runner._current_session_id = "sess"
+
+    spec = WorkflowSpec(nodes=[WorkflowNodeSpec(task="root", role="implement")])
+    outcome = await runner.run_workflow(spec)
+
+    # Both the root and the dynamically-submitted node completed.
+    assert sorted(outcome["completed"]) == ["wf-node0", "wf-node1"]
+    assert outcome["failed"] == []
+    assert "discovered" in orch.goals

@@ -79,6 +79,10 @@ class LoopResult:
 class SubAgentResult:
   agent_id: str
   result: LoopResult
+  # R3-1: nodes this node's agent asked to append to the parent workflow DAG (via the
+  # `submit_workflow_nodes` tool). Surfaced by the orchestrator; `run_workflow` sends them to the
+  # parent kernel before this node's completion. SDK-internal — not sent on the kernel SubAgentResult.
+  submitted_nodes: list[WorkflowNodeSpec] = field(default_factory=list)
 
 
 @dataclass
@@ -209,30 +213,71 @@ class WorkflowSpawnInfo:
   model_hint: str | None = None
 
 
+def workflow_node_spec_to_kernel(n: WorkflowNodeSpec) -> dict[str, Any]:
+  """Map one host ``WorkflowNodeSpec`` to its snake_case kernel JSON. Shared by ``load_workflow`` and
+  ``submit_workflow_nodes`` (R3-1) so the two encodings never drift."""
+  task = {"goal": n.task} if isinstance(n.task, str) else dict(n.task)
+  kernel_task: dict[str, Any] = {
+    "goal": task["goal"],
+    # `criteria` is required by the kernel's RuntimeTask serde (no default).
+    "criteria": task.get("criteria", []),
+  }
+  if task.get("lane"):
+    kernel_task["lane"] = task["lane"]
+  node: dict[str, Any] = {
+    "task": kernel_task,
+    "role": n.role,
+    "isolation": n.isolation,
+    "context_inheritance": n.context_inheritance,
+  }
+  if n.model_hint:
+    node["model_hint"] = n.model_hint
+  if n.depends_on:
+    node["depends_on"] = list(n.depends_on)
+  return node
+
+
 def workflow_spec_to_kernel(spec: WorkflowSpec) -> dict[str, Any]:
   """Map a host ``WorkflowSpec`` to the snake_case kernel JSON (``load_workflow.spec``)."""
-  nodes: list[dict[str, Any]] = []
-  for n in spec.nodes:
-    task = {"goal": n.task} if isinstance(n.task, str) else dict(n.task)
-    kernel_task: dict[str, Any] = {
-      "goal": task["goal"],
-      # `criteria` is required by the kernel's RuntimeTask serde (no default).
-      "criteria": task.get("criteria", []),
-    }
-    if task.get("lane"):
-      kernel_task["lane"] = task["lane"]
-    node: dict[str, Any] = {
-      "task": kernel_task,
-      "role": n.role,
-      "isolation": n.isolation,
-      "context_inheritance": n.context_inheritance,
-    }
-    if n.model_hint:
-      node["model_hint"] = n.model_hint
-    if n.depends_on:
-      node["depends_on"] = list(n.depends_on)
-    nodes.append(node)
-  return {"nodes": nodes}
+  return {"nodes": [workflow_node_spec_to_kernel(n) for n in spec.nodes]}
+
+
+def submit_workflow_nodes_to_kernel(nodes: list[WorkflowNodeSpec]) -> dict[str, Any]:
+  """R3-1: map a batch of host nodes to the ``submit_workflow_nodes`` kernel event body."""
+  return {"kind": "submit_workflow_nodes", "nodes": [workflow_node_spec_to_kernel(n) for n in nodes]}
+
+
+# R3-1: the tool a workflow-coordinator node's agent calls to append work to the running DAG (true
+# loop-until-done / dynamic fan-out). The runner intercepts the call and routes the nodes to the
+# parent kernel (the child's own kernel holds no workflow).
+submit_workflow_nodes_tool: dict[str, Any] = {
+  "name": "submit_workflow_nodes",
+  "description": (
+    "Append new nodes to the running workflow DAG (dynamic fan-out / loop-until-done). Each node "
+    "spawns as a gated sub-agent. Use when you discover more work that should run as its own node."
+  ),
+  "parameters": json.dumps({
+    "type": "object",
+    "properties": {
+      "nodes": {
+        "type": "array",
+        "description": "Workflow nodes to append; each runs as a gated sub-agent.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "task": {"description": "The node's goal: a string, or {goal, criteria?, lane?}."},
+            "role": {"type": "string", "enum": ["explore", "plan", "implement", "verify", "custom"]},
+            "isolation": {"type": "string", "enum": ["shared", "read_only", "worktree", "remote"]},
+            "context_inheritance": {"type": "string", "enum": ["none", "system_only", "full"]},
+            "depends_on": {"type": "array", "items": {"type": "integer"}},
+          },
+          "required": ["task", "role"],
+        },
+      },
+    },
+    "required": ["nodes"],
+  }),
+}
 
 
 def workflow_node_to_spec(node: WorkflowSpawnInfo, parent_session_id: str) -> AgentRunSpec:

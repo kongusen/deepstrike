@@ -64,6 +64,7 @@ from deepstrike.types.agent import (
     MilestoneContract, MilestonePhase, MilestoneCheckResult, MilestonePolicy,
     milestone_check_pass, milestone_check_fail,
     WorkflowSpec, WorkflowNodeSpec, WorkflowSpawnInfo, workflow_spec_to_kernel,
+    workflow_node_spec_to_kernel, submit_workflow_nodes_to_kernel, submit_workflow_nodes_tool,
     fanout_synthesize, generate_and_filter, verify_rules,
 )
 from deepstrike.collaboration import (
@@ -129,6 +130,7 @@ __all__ = [
     "CreatorVerifierMode", "OrchestrationMode", "CreatorVerifierMetrics",
     # Workflow DAG drive (W0-ABI)
     "WorkflowSpec", "WorkflowNodeSpec", "WorkflowSpawnInfo", "workflow_spec_to_kernel",
+    "workflow_node_spec_to_kernel", "submit_workflow_nodes_to_kernel", "submit_workflow_nodes_tool",
     "fanout_synthesize", "generate_and_filter", "verify_rules",
     "__version__",
 ]

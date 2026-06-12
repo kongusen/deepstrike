@@ -1,6 +1,6 @@
 import type {
   LLMProvider, Message, ToolCall, ToolResult, ToolSchema,
-  StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
+  StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, WorkflowNodesSubmittedEvent, DoneEvent, ErrorEvent,
   ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   DreamSummarizer,
 } from "../types.js"
@@ -35,7 +35,7 @@ import {
   type KernelRunnerAction,
   type KernelRuntimeHandle,
 } from "./kernel-step.js"
-import type { AgentRunSpec, AgentProcessChangedObservation, SubAgentResult, MilestonePolicy, MilestoneContract, MilestoneCheckResult, WorkflowSpec, WorkflowSpawnInfo } from "./types/agent.js"
+import type { AgentRunSpec, AgentProcessChangedObservation, SubAgentResult, MilestonePolicy, MilestoneContract, MilestoneCheckResult, WorkflowSpec, WorkflowSpawnInfo, WorkflowNodeSpec } from "./types/agent.js"
 import {
   agentRunSpecToKernel,
   findSpawnProcessObservation,
@@ -43,6 +43,7 @@ import {
   milestoneCheckResultToKernel,
   spawnObservationToManifest,
   subAgentResultToKernel,
+  submitWorkflowNodesToKernel,
   workflowNodeToManifest,
   workflowNodeToSpec,
   workflowSpecToKernel,
@@ -713,7 +714,18 @@ export class RuntimeRunner {
         }
 
         const toolResults: ToolResult[] = []
-        for await (const evt of this.opts.executionPlane.executeAll(allCalls, runCtx)) {
+        // R3-1: intercept `submit_workflow_nodes` — it can't apply to this runner's kernel (when this
+        // runner is a workflow node, the workflow lives in the parent). Surface the nodes as an event;
+        // the orchestrator collects them and `runWorkflow` sends them to the parent kernel.
+        const submitCalls = allCalls.filter(c => c.name === "submit_workflow_nodes")
+        const normalCalls = allCalls.filter(c => c.name !== "submit_workflow_nodes")
+        for (const call of submitCalls) {
+          const nodes = parseSubmitWorkflowNodesArgs(call.arguments)
+          yield { type: "workflow_nodes_submitted", nodes } as WorkflowNodesSubmittedEvent
+          toolResults.push({ callId: call.id, output: "submitted", isError: false })
+          yield { type: "tool_result", callId: call.id, content: "submitted", isError: false } as ToolResultEvent
+        }
+        for await (const evt of this.opts.executionPlane.executeAll(normalCalls, runCtx)) {
           yield evt
           if (evt.type === "tool_result") {
             const tre = evt as ToolResultEvent
@@ -912,7 +924,7 @@ export class RuntimeRunner {
     const runtime = this.activeKernel
     const orchestrator = this.opts.subAgentOrchestrator ?? defaultSubAgentOrchestrator
 
-    let observations = kernelApply(runtime, this.pendingObservations, {
+    const observations = kernelApply(runtime, this.pendingObservations, {
       kind: "load_workflow",
       spec: workflowSpecToKernel(spec),
       parent_session_id: parentSessionId,
@@ -920,16 +932,16 @@ export class RuntimeRunner {
       ...(opts?.resumedCompleted && opts.resumedCompleted.length ? { resumed_completed: opts.resumedCompleted } : {}),
     })
 
-    for (;;) {
-      const done = observations.find(o => o.kind === "workflow_completed") as
-        | { completed?: string[]; failed?: string[] }
-        | undefined
-      if (done) return { completed: done.completed ?? [], failed: done.failed ?? [] }
+    const collectNodes = (obs: typeof observations): WorkflowSpawnInfo[] =>
+      (obs.find(o => o.kind === "workflow_batch_spawned") as { nodes?: WorkflowSpawnInfo[] } | undefined)?.nodes ?? []
+    const findDone = (obs: typeof observations) =>
+      obs.find(o => o.kind === "workflow_completed") as { completed?: string[]; failed?: string[] } | undefined
 
-      const batch = observations.find(o => o.kind === "workflow_batch_spawned") as
-        | { nodes?: WorkflowSpawnInfo[] }
-        | undefined
-      const nodes = batch?.nodes ?? []
+    let done = findDone(observations)
+    if (done) return { completed: done.completed ?? [], failed: done.failed ?? [] }
+    let nodes = collectNodes(observations)
+
+    for (;;) {
       if (nodes.length === 0) return { completed: [], failed: [] }
 
       const results = await Promise.all(
@@ -944,12 +956,24 @@ export class RuntimeRunner {
         ),
       )
 
-      observations = []
+      // Accumulate next-batch nodes across feeds (per-node unblock can spawn dependents per feed).
+      const nextNodes: WorkflowSpawnInfo[] = []
+      done = undefined
       for (const result of results) {
-        observations = kernelApply(runtime, this.pendingObservations, {
+        // R3-1: if this node's agent submitted more nodes, append them to the parent DAG BEFORE
+        // reporting the node's completion — the workflow is still active, so even a last-node
+        // submission keeps the DAG alive.
+        if (result.submittedNodes?.length) {
+          const subObs = kernelApply(runtime, this.pendingObservations, submitWorkflowNodesToKernel(result.submittedNodes))
+          nextNodes.push(...collectNodes(subObs))
+        }
+        const obs = kernelApply(runtime, this.pendingObservations, {
           kind: "sub_agent_completed",
           result: subAgentResultToKernel(result),
         })
+        nextNodes.push(...collectNodes(obs))
+        const d = findDone(obs)
+        if (d) done = d
         // Persist node completion for resume recovery.
         await this.opts.sessionLog.append(parentSessionId, buildWorkflowNodeCompletedEvent({
           turn: runtime.turn(),
@@ -957,6 +981,10 @@ export class RuntimeRunner {
           termination: result.result.termination,
         }))
       }
+      if (done && nextNodes.length === 0) {
+        return { completed: done.completed ?? [], failed: done.failed ?? [] }
+      }
+      nodes = nextNodes
     }
   }
 
@@ -1173,4 +1201,16 @@ export async function collectText(stream: AsyncIterable<StreamEvent>): Promise<s
     if (evt.type === "text_delta") text += (evt as TextDelta).delta
   }
   return text
+}
+
+/** R3-1: parse `submit_workflow_nodes` tool args (`{ nodes: WorkflowNodeSpec[] }`). Node shapes are
+ *  trusted structurally; the kernel validates them on append. Malformed payload → no nodes. */
+function parseSubmitWorkflowNodesArgs(argsStr: string): WorkflowNodeSpec[] {
+  let parsed: Record<string, unknown> = {}
+  try {
+    parsed = JSON.parse(argsStr) as Record<string, unknown>
+  } catch {
+    // Ignore parse error → no nodes submitted.
+  }
+  return Array.isArray(parsed.nodes) ? (parsed.nodes as WorkflowNodeSpec[]) : []
 }

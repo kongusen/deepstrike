@@ -1,5 +1,7 @@
 // Shared types — identical shape to Node SDK, camelCase throughout
 
+import type { WorkflowNodeSpec } from "./runtime/types/agent.js"
+
 export interface Message {
   role: "system" | "user" | "assistant" | "tool"
   content: string
@@ -51,6 +53,8 @@ export interface UsageEvent extends StreamEvent { type: "usage"; totalTokens: nu
 export interface ThinkingDelta extends StreamEvent { type: "thinking_delta"; delta: string }
 export interface ToolCallEvent extends StreamEvent { type: "tool_call"; id: string; name: string; arguments: Record<string, unknown> }
 export interface ToolResultEvent extends StreamEvent { type: "tool_result"; callId: string; name: string; content: string; isError: boolean; isFatal?: boolean; errorKind?: ToolErrorKind }
+/** R3-1: a workflow node's agent called `submit_workflow_nodes`; the runner surfaces the requested nodes (the workflow lives in the parent kernel) and `runWorkflow` sends them to the parent kernel. */
+export interface WorkflowNodesSubmittedEvent extends StreamEvent { type: "workflow_nodes_submitted"; nodes: WorkflowNodeSpec[] }
 export interface DoneEvent extends StreamEvent { type: "done"; iterations: number; totalTokens: number; status: string; dreamResult?: import("./memory/index.js").DreamResult }
 export interface ErrorEvent extends StreamEvent { type: "error"; message: string }
 export interface PermissionRequestEvent extends StreamEvent { type: "permission_request"; callId: string; toolName: string; arguments: string; reason: string }

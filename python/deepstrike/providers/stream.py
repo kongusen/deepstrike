@@ -117,6 +117,15 @@ class ToolDeniedEvent:
     reason: str = ""
 
 
+@dataclass
+class WorkflowNodesSubmittedEvent:
+    """R3-1: a workflow node's agent called the ``submit_workflow_nodes`` tool. The runner surfaces
+    the requested nodes (it cannot apply them to the child's own kernel — the workflow lives in the
+    parent kernel); ``run_workflow`` sends them to the parent kernel before the node's completion."""
+    type: str = "workflow_nodes_submitted"
+    nodes: list = field(default_factory=list)  # list[WorkflowNodeSpec]; untyped to avoid an import cycle
+
+
 StreamEvent = Union[
     UsageEvent,
     ThinkingDelta,
@@ -131,4 +140,5 @@ StreamEvent = Union[
     PermissionResolvedEvent,
     ToolArgumentRepairedEvent,
     ToolDeniedEvent,
+    WorkflowNodesSubmittedEvent,
 ]

@@ -1,4 +1,4 @@
-import type { Message } from "../../types.js"
+import type { Message, ToolSchema } from "../../types.js"
 
 export type KernelAgentRole = "explore" | "plan" | "implement" | "verify" | "custom"
 export type AgentIsolation = "shared" | "read_only" | "worktree" | "remote"
@@ -89,6 +89,9 @@ export interface LoopResult {
 export interface SubAgentResult {
   agentId: string
   result: LoopResult
+  /** R3-1: nodes this node's agent asked to append to the parent workflow DAG. Surfaced by the
+   *  orchestrator; `runWorkflow` sends them to the parent kernel before completion. SDK-internal. */
+  submittedNodes?: WorkflowNodeSpec[]
 }
 
 export interface MilestoneCheckResult {
@@ -224,25 +227,60 @@ export interface WorkflowSpawnInfo {
 }
 
 /** Map a host `WorkflowSpec` to the snake_case kernel JSON (`load_workflow.spec`). */
-export function workflowSpecToKernel(spec: WorkflowSpec): Record<string, unknown> {
+/** Map one host `WorkflowNodeSpec` to its snake_case kernel JSON. Shared by `load_workflow` and
+ *  `submit_workflow_nodes` (R3-1) so the two encodings never drift. */
+export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): Record<string, unknown> {
+  const task = typeof n.task === "string" ? { goal: n.task } : n.task
   return {
-    nodes: spec.nodes.map(n => {
-      const task = typeof n.task === "string" ? { goal: n.task } : n.task
-      return {
-        task: {
-          goal: task.goal,
-          // `criteria` is required by the kernel's RuntimeTask serde (no default).
-          criteria: task.criteria ?? [],
-          ...(task.lane ? { lane: task.lane } : {}),
-        },
-        role: n.role,
-        isolation: n.isolation ?? "shared",
-        context_inheritance: n.contextInheritance ?? "none",
-        ...(n.modelHint ? { model_hint: n.modelHint } : {}),
-        ...(n.dependsOn && n.dependsOn.length ? { depends_on: n.dependsOn } : {}),
-      }
-    }),
+    task: {
+      goal: task.goal,
+      // `criteria` is required by the kernel's RuntimeTask serde (no default).
+      criteria: task.criteria ?? [],
+      ...(task.lane ? { lane: task.lane } : {}),
+    },
+    role: n.role,
+    isolation: n.isolation ?? "shared",
+    context_inheritance: n.contextInheritance ?? "none",
+    ...(n.modelHint ? { model_hint: n.modelHint } : {}),
+    ...(n.dependsOn && n.dependsOn.length ? { depends_on: n.dependsOn } : {}),
   }
+}
+
+export function workflowSpecToKernel(spec: WorkflowSpec): Record<string, unknown> {
+  return { nodes: spec.nodes.map(workflowNodeSpecToKernel) }
+}
+
+/** R3-1: map a batch of host nodes to the `submit_workflow_nodes` kernel event body. */
+export function submitWorkflowNodesToKernel(nodes: WorkflowNodeSpec[]): Record<string, unknown> {
+  return { kind: "submit_workflow_nodes", nodes: nodes.map(workflowNodeSpecToKernel) }
+}
+
+/** R3-1: the tool a workflow-coordinator node's agent calls to append work to the running DAG. */
+export const submitWorkflowNodesTool: ToolSchema = {
+  name: "submit_workflow_nodes",
+  description:
+    "Append new nodes to the running workflow DAG (dynamic fan-out / loop-until-done). Each node " +
+    "spawns as a gated sub-agent. Use when you discover more work that should run as its own node.",
+  parameters: JSON.stringify({
+    type: "object",
+    properties: {
+      nodes: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            task: { description: "The node's goal: a string, or { goal, criteria?, lane? }." },
+            role: { type: "string", enum: ["explore", "plan", "implement", "verify", "custom"] },
+            isolation: { type: "string", enum: ["shared", "read_only", "worktree", "remote"] },
+            contextInheritance: { type: "string", enum: ["none", "system_only", "full"] },
+            dependsOn: { type: "array", items: { type: "integer" } },
+          },
+          required: ["task", "role"],
+        },
+      },
+    },
+    required: ["nodes"],
+  }),
 }
 
 /** Build a sub-agent run spec for a kernel-generated workflow node. */

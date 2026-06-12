@@ -1,7 +1,7 @@
-import type { DoneEvent, StreamEvent, TextDelta } from "../types.js"
+import type { DoneEvent, StreamEvent, TextDelta, WorkflowNodesSubmittedEvent } from "../types.js"
 import type {
   AgentRunSpec, AgentProcessChangedObservation, LoopResult, SubAgentResult, TerminationReason,
-  KernelAgentRole,
+  KernelAgentRole, WorkflowNodeSpec,
 } from "./types/agent.js"
 import { agentRunSpecToKernel, findSpawnProcessObservation, spawnObservationToManifest } from "./types/agent.js"
 import type { RuntimeOptions } from "./runner.js"
@@ -63,12 +63,15 @@ export class SubAgentOrchestrator {
 
     let done: DoneEvent | undefined
     let finalText = ""
+    // R3-1: collect any nodes this node's agent submitted via the `submit_workflow_nodes` tool.
+    const submittedNodes: WorkflowNodeSpec[] = []
     for await (const evt of childRunner.run({
       sessionId: ctx.spec.identity.sessionId,
       goal: ctx.spec.goal,
     })) {
       if (evt.type === "text_delta") finalText += (evt as TextDelta).delta
       if (evt.type === "done") done = evt as DoneEvent
+      if (evt.type === "workflow_nodes_submitted") submittedNodes.push(...(evt as WorkflowNodesSubmittedEvent).nodes)
     }
 
     const loopResult: LoopResult = {
@@ -80,7 +83,11 @@ export class SubAgentOrchestrator {
         : {}),
     }
 
-    return { agentId: ctx.spec.identity.agentId, result: loopResult }
+    return {
+      agentId: ctx.spec.identity.agentId,
+      result: loopResult,
+      ...(submittedNodes.length ? { submittedNodes } : {}),
+    }
   }
 }
 

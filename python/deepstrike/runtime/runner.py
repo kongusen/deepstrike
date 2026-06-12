@@ -34,6 +34,7 @@ from deepstrike.providers.stream import (
   PermissionRequestEvent,
   PermissionResolvedEvent,
   PermissionResponse,
+  WorkflowNodesSubmittedEvent,
 )
 from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPlane, RunContext
 from deepstrike.governance import governance_policy_to_kernel_event
@@ -413,6 +414,7 @@ class RuntimeRunner:
     from deepstrike.types.agent import (
       WorkflowSpawnInfo,
       sub_agent_result_to_kernel,
+      submit_workflow_nodes_to_kernel,
       workflow_node_to_manifest,
       workflow_node_to_spec,
       workflow_spec_to_kernel,
@@ -453,28 +455,48 @@ class RuntimeRunner:
         harness=self._opts.sub_agent_harness,
       ))
 
+    def _collect_nodes(obs: list) -> list:
+      batch = next((o for o in obs if o.get("kind") == "workflow_batch_spawned"), None)
+      return (batch or {}).get("nodes") or []
+
+    def _find_done(obs: list):
+      return next((o for o in obs if o.get("kind") == "workflow_completed"), None)
+
+    done = _find_done(observations)
+    if done is not None:
+      return {"completed": list(done.get("completed") or []), "failed": list(done.get("failed") or [])}
+    nodes = _collect_nodes(observations)
+
     while True:
-      done = next((o for o in observations if o.get("kind") == "workflow_completed"), None)
-      if done is not None:
-        return {
-          "completed": list(done.get("completed") or []),
-          "failed": list(done.get("failed") or []),
-        }
-      batch = next((o for o in observations if o.get("kind") == "workflow_batch_spawned"), None)
-      nodes = (batch or {}).get("nodes") or []
       if not nodes:
         return {"completed": [], "failed": []}
 
-      # Run the batch's nodes in parallel — each is independent within a round.
+      # Run the currently-runnable nodes in parallel — each is independent within a round.
       results = await asyncio.gather(*(run_node(n) for n in nodes))
 
-      # Feed completions back; the draining feed yields the next batch or completion.
-      observations = []
+      # Feed completions back one at a time. The run-queue executor can unblock a node's dependents
+      # the moment it completes, so each feed may emit its own batch — ACCUMULATE across the round.
+      next_nodes: list = []
+      done = None
       for result in results:
-        observations = kernel_apply(runtime, self._pending_observations, {
+        # R3-1: if this node's agent submitted more nodes, append them to the parent DAG BEFORE
+        # reporting the node's completion — the workflow is still active (the kernel hasn't seen this
+        # node finish), so even a last-node submission keeps the DAG alive.
+        if getattr(result, "submitted_nodes", None):
+          sub_obs = kernel_apply(
+            runtime,
+            self._pending_observations,
+            submit_workflow_nodes_to_kernel(result.submitted_nodes),
+          )
+          next_nodes.extend(_collect_nodes(sub_obs))
+        obs = kernel_apply(runtime, self._pending_observations, {
           "kind": "sub_agent_completed",
           "result": sub_agent_result_to_kernel(result),
         })
+        next_nodes.extend(_collect_nodes(obs))
+        d = _find_done(obs)
+        if d is not None:
+          done = d
         # Persist node completion for resume recovery.
         await self._opts.session_log.append(
           parent_session_id,
@@ -484,6 +506,9 @@ class RuntimeRunner:
             termination=result.result.termination,
           ),
         )
+      if done is not None and not next_nodes:
+        return {"completed": list(done.get("completed") or []), "failed": list(done.get("failed") or [])}
+      nodes = next_nodes
 
   async def resume_workflow(self, spec: "WorkflowSpec") -> dict[str, list[str]]:
     """Resume a workflow from the parent session's completed nodes.
@@ -1074,8 +1099,9 @@ class RuntimeRunner:
           result_spool=self._opts.result_spool or LargeResultSpool(),
         )
         tool_results: list[ToolResult] = []
-        normal_calls = [c for c in all_calls if c.name != "update_plan"]
+        normal_calls = [c for c in all_calls if c.name not in ("update_plan", "submit_workflow_nodes")]
         plan_calls = [c for c in all_calls if c.name == "update_plan"]
+        submit_calls = [c for c in all_calls if c.name == "submit_workflow_nodes"]
 
         for call in plan_calls:
           update = _parse_update_plan_args(call.arguments)
@@ -1086,6 +1112,16 @@ class RuntimeRunner:
           result = ToolResult(call_id=call.id, output="success", is_error=False)
           tool_results.append(result)
           yield ToolResultEvent(call_id=call.id, content="success", is_error=False)
+
+        # R3-1: `submit_workflow_nodes` cannot be applied to this runner's kernel — when this runner
+        # is a workflow node, the workflow lives in the *parent* kernel. Surface the requested nodes
+        # as an event; the orchestrator collects them and `run_workflow` sends `submit_workflow_nodes`
+        # to the parent kernel. (Outside a workflow node the event is simply unconsumed — a no-op.)
+        for call in submit_calls:
+          nodes = _parse_submit_workflow_nodes_args(call.arguments)
+          yield WorkflowNodesSubmittedEvent(nodes=nodes)
+          tool_results.append(ToolResult(call_id=call.id, output="submitted", is_error=False))
+          yield ToolResultEvent(call_id=call.id, content="submitted", is_error=False)
 
         if normal_calls:
           async for evt in self._plane.execute_all(normal_calls, run_ctx):
@@ -1659,3 +1695,29 @@ def _parse_update_plan_args(args_str: str) -> TaskUpdate:
     scratchpad=scratchpad,
     blocked_on=blocked_on,
   )
+
+
+def _parse_submit_workflow_nodes_args(args_str: str) -> list:
+  """R3-1: parse the ``submit_workflow_nodes`` tool args (``{"nodes": [...]}``) into WorkflowNodeSpec.
+  Node shapes are trusted structurally; the kernel validates them (dep range, quota) on append. A
+  malformed payload yields no nodes rather than raising."""
+  from deepstrike.types.agent import WorkflowNodeSpec
+  try:
+    parsed = json.loads(args_str)
+  except Exception:
+    return []
+  raw = parsed.get("nodes") if isinstance(parsed, dict) else None
+  if not isinstance(raw, list):
+    return []
+  nodes = []
+  for item in raw:
+    if isinstance(item, dict) and "task" in item and "role" in item:
+      nodes.append(WorkflowNodeSpec(
+        task=item["task"],
+        role=item["role"],
+        isolation=item.get("isolation", "shared"),
+        context_inheritance=item.get("context_inheritance", "none"),
+        model_hint=item.get("model_hint"),
+        depends_on=list(item.get("depends_on") or []),
+      ))
+  return nodes
