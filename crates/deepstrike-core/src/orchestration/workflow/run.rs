@@ -514,6 +514,44 @@ impl WorkflowRun {
         self.graph.complete(controller, result);
     }
 
+    // ── R3-1: runtime node submission (true loop-until-done / dynamic fan-out) ────────────────────
+
+    /// Append a batch of nodes to the in-flight DAG at runtime — the kernel side of the dynamic
+    /// "submit nodes" capability, generalizing the tournament's [`Self::append_child`]. A running
+    /// node, on completion, can ask for more work to be spawned: unknown-size discovery
+    /// (loop-until-done) and per-item fan-out (e.g. a claim-extractor spawning one verifier per
+    /// claim) both reduce to "append these nodes now".
+    ///
+    /// Each submitted node's `depends_on` is interpreted **batch-relative and backward-only**: index
+    /// `d` refers to the `d`-th node of *this* submission, and only `d < this node's position` is
+    /// honored — so a submission can carry its own internal forward chain (extractor → dependents)
+    /// while forward/self/out-of-range references are dropped rather than stranding the node behind
+    /// an unsatisfiable dependency. Nodes with no (remaining) deps are immediately `Ready`, exactly
+    /// like tournament entrants, and flow through the unchanged gated spawn loop — so quota / depth /
+    /// quarantine apply per node with **no new gate**. Returns the appended node indices (their
+    /// agent ids are the deterministic `wf-node{idx}`).
+    ///
+    /// Pure graph mutation: the caller (state machine) is responsible for routing the trigger
+    /// through `evaluate_syscall` before calling this, keeping the kernel's zero-I/O contract.
+    pub fn submit_nodes(&mut self, nodes: Vec<WorkflowNode>) -> Vec<usize> {
+        let base = self.nodes.len();
+        let mut ids = Vec::with_capacity(nodes.len());
+        for (offset, mut node) in nodes.into_iter().enumerate() {
+            let deps: Vec<usize> = node
+                .depends_on
+                .iter()
+                .filter(|&&d| d < offset)
+                .map(|&d| base + d)
+                .collect();
+            node.depends_on = deps.clone();
+            let idx = self.graph.add(node.task.clone(), deps);
+            debug_assert_eq!(idx, self.nodes.len(), "graph/nodes index drift");
+            self.nodes.push(node);
+            ids.push(idx);
+        }
+        ids
+    }
+
     /// Whether `agent_id` belongs to this workflow.
     pub fn owns_agent(&self, agent_id: &str) -> bool {
         self.node_of_agent.contains_key(agent_id)
@@ -615,6 +653,101 @@ mod tests {
         assert_eq!(run.ready_batch(), vec![0, 1]);
         assert_eq!(run.len(), 3);
         assert!(!run.is_complete());
+    }
+
+    // ── R3-1: runtime node submission ────────────────────────────────────────────────────────
+
+    #[test]
+    fn submit_nodes_appends_independent_nodes_ready_immediately() {
+        use crate::orchestration::workflow::WorkflowNode;
+        use crate::types::agent::AgentRole;
+
+        let mut run = fanout2(); // nodes 0,1 (workers) → 2 (synth)
+        assert_eq!(run.len(), 3);
+        let ids = run.submit_nodes(vec![
+            WorkflowNode::new(RuntimeTask::new("extra-a"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("extra-b"), AgentRole::Implement),
+        ]);
+        assert_eq!(ids, vec![3, 4], "appended after the existing 3 nodes");
+        assert_eq!(run.len(), 5);
+        let ready = run.ready_batch();
+        assert!(
+            ready.contains(&3) && ready.contains(&4),
+            "submitted independent nodes are immediately ready: {ready:?}"
+        );
+    }
+
+    #[test]
+    fn submitted_nodes_must_complete_before_workflow_is_done() {
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        // A single spawn node that, on completion, submits more work (loop-until-done shape).
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("root"),
+            AgentRole::Implement,
+        )]);
+        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let id0 = run.current_agent_id(0);
+        run.mark_spawned(0, &id0);
+        run.record_completion(&id0, done());
+        let ids = run.submit_nodes(vec![WorkflowNode::new(
+            RuntimeTask::new("more"),
+            AgentRole::Implement,
+        )]);
+        assert_eq!(ids, vec![1]);
+        assert!(!run.is_complete(), "not complete while the submitted node is pending");
+        let spawned = spawn_round(&mut run);
+        assert_eq!(spawned, vec![(1usize, "wf-node1".to_string())]);
+        run.record_completion("wf-node1", done());
+        assert!(run.is_complete(), "complete once the submitted node finishes");
+    }
+
+    #[test]
+    fn submit_nodes_honors_batch_relative_backward_deps() {
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("root"),
+            AgentRole::Implement,
+        )]);
+        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let id0 = run.current_agent_id(0);
+        run.mark_spawned(0, &id0);
+        run.record_completion(&id0, done());
+        // [extractor @offset 0, dependent @offset 1 depends on 0].
+        let ids = run.submit_nodes(vec![
+            WorkflowNode::new(RuntimeTask::new("extractor"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("dependent"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+        ]);
+        assert_eq!(ids, vec![1, 2]);
+        assert_eq!(run.ready_batch(), vec![1], "backward dep keeps the dependent pending");
+        run.mark_spawned(1, "wf-node1");
+        run.record_completion("wf-node1", done());
+        assert_eq!(run.ready_batch(), vec![2], "dependent unblocks after the extractor");
+    }
+
+    #[test]
+    fn submit_nodes_drops_forward_and_out_of_range_deps() {
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("root"),
+            AgentRole::Implement,
+        )]);
+        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        // Only dep is a forward/out-of-range ref → dropped, so the node must not be stranded.
+        let ids = run.submit_nodes(vec![
+            WorkflowNode::new(RuntimeTask::new("a"), AgentRole::Implement).with_depends_on(vec![5]),
+        ]);
+        assert_eq!(ids, vec![1]);
+        assert!(
+            run.ready_batch().contains(&1),
+            "a node whose only dep was dropped is ready, not stranded"
+        );
     }
 
     #[test]
