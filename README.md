@@ -73,7 +73,7 @@ The article enumerates six composable patterns. Each is a first-class primitive 
 | **Adversarial verification** — verify each output against a rubric | `verify_rules` — one fresh-context verifier per rule, each in its own TCB with **no inherited author context**, so it can't rubber-stamp |
 | **Generate-and-filter** — generate ideas, filter by rubric, dedupe | `generate_and_filter` — N generators → a `Verify` filter/dedupe barrier |
 | **Tournament** — agents compete; pairwise judges pick a winner | `NodeKind::Tournament` — a controller node generates N entrants, then runs a pairwise judge bracket to one winner (comparative judgment beats absolute scoring; the deterministic loop holds the bracket) |
-| **Loop until done** — loop until a stop condition, not a fixed pass count | `NodeKind::Loop` — re-run until the node reports done (`loop_continue`), with a hard `max_iters` backstop |
+| **Loop until done** — loop until a stop condition, not a fixed pass count | `NodeKind::Loop` — re-run until the node reports done (`loop_continue`), with a hard `max_iters` backstop. For *unknown-size* discovery, a running node can also append fresh nodes to the live DAG with the `SubmitNodes` syscall (true loop-until-done · per-item fan-out) |
 
 ## The three failure modes, handled structurally
 
@@ -87,12 +87,14 @@ The point of the harness is to defeat the single-context failure modes by constr
 
 ## …and the article's other building blocks
 
-The post also calls out four mechanisms beyond the patterns. DeepStrike implements each in the kernel:
+The post also calls out mechanisms beyond the patterns. DeepStrike implements each in the kernel:
 
-- **Quarantine** — the triage pattern bars agents that read *untrusted public content* from taking high-privilege actions. DeepStrike enforces this in-kernel: a `Quarantined` node that requests write-capable isolation is **denied at the syscall gate** (`NodeTrust`), turning self-discipline into an auditable invariant.
+- **Quarantine, with no escape hatch** — the triage pattern bars agents that read *untrusted public content* from taking high-privilege actions. DeepStrike enforces this in-kernel: a `Quarantined` node that requests write-capable isolation is **denied at the syscall gate** (`NodeTrust`). And because a quarantined node may have read adversarial content, the *topology it asks for is untrusted too*: any nodes it submits at runtime are coerced to `Quarantined` (transitive taint), so it can't escape its sandbox by spawning a "trusted" child.
+- **Deterministic compute between stages** — not every step needs an LLM. A `NodeKind::Reduce` node runs no agent: the kernel schedules it like a spawn, the SDK routes it to a pure registered function (`dedupe_lines` / `merge_json_arrays` / `concat` / `count`, or your own) over its dependencies' outputs. The dedupe/filter/merge "ordinary code between stages" of a script — but as a governed, replayable DAG node, with zero tokens burned.
+- **Structured output, validated** — a node can declare an `output_schema`; the kernel carries it to the spawn descriptor, and the SDK instructs the agent, validates the result against it, and re-runs once with the errors fed back on mismatch. A node that never conforms **fails** (its dependents starve) rather than feeding garbage downstream.
+- **Budget as a signal, not just a wall** — token/node budgets are enforced per spawn (`BudgetLedger`, `max_workflow_nodes`), *and* each spawned node learns its remaining headroom (`WorkflowBudget`), so a coordinator can size its next fan-out to the budget left instead of blindly hitting the cap.
 - **Model & intelligence routing** — every node carries a `model_hint`; a Classify node can research a task and route it to a cheaper or stronger model (the article's Sonnet-vs-Opus example).
-- **Token budgets** — "use 10k tokens" maps to a kernel `BudgetLedger` enforced per spawn.
-- **Resume after interruption** — quit the terminal mid-run and the workflow picks up where it left off, via `WorkflowRun::resume` and a rebuildable `KernelSnapshot`.
+- **Resume after interruption** — quit the terminal mid-run and the workflow picks up where it left off — including runtime-appended nodes, recorded and replayed — via `WorkflowRun::resume` and a rebuildable `KernelSnapshot`.
 
 ## Why a kernel, not a script
 
@@ -135,9 +137,9 @@ const spec = {
 const outcome = await runner.runWorkflow(spec)
 ```
 
-Swap a node's `kind` to `{ type: "loop", maxIters: 5 }`, `{ type: "classify", branches: [...] }`, or `{ type: "tournament", entrants: [...] }` and the same executor drives loops, conditional routing, and pairwise brackets — every node still passing the syscall gate.
+Swap a node's `kind` to `{ type: "loop", maxIters: 5 }`, `{ type: "classify", branches: [...] }`, `{ type: "tournament", entrants: [...] }`, or `{ type: "reduce", reducer: "dedupe_lines" }` and the same executor drives loops, conditional routing, pairwise brackets, and tokenless host-compute — every node still passing the syscall gate. Hand a node the `submit_workflow_nodes` tool and it can grow the DAG mid-run (one verifier per claim it discovers).
 
-`0.2.9 — Dynamic workflows: the six harness patterns as first-class kernel nodes (`Loop` · `Classify` · `Tournament`), durable directives, and in-kernel quarantine.` See the [CHANGELOG](./CHANGELOG.md).
+**0.2.11** — Dynamic workflows go runtime-dynamic: the `SubmitNodes` syscall lets a running node grow the DAG (true loop-until-done · per-item fan-out), plus deterministic `Reduce` nodes, per-node `output_schema`, budget-as-signal, and a quarantine no-escalation gate. See the [CHANGELOG](./CHANGELOG.md).
 
 ## Built on an Agent OS substrate
 
@@ -161,7 +163,7 @@ SDK-specific APIs and examples: [Node.js](./node/README.md#what-agent-os-gives-y
 | Rust | `deepstrike-sdk` | `cargo add deepstrike-sdk` |
 | Browser / Edge / WASM | `@deepstrike/wasm` | `npm install @deepstrike/wasm` |
 
-Current workspace version: `0.2.9`.
+Current workspace version: `0.2.11`.
 
 ## Quick start
 
@@ -242,7 +244,7 @@ answer = await collect_text(runner.run_streaming("What is 2 + 3?"))
 deepstrike-sdk = "0.2.11"
 ```
 
-See the [SDK guides](./docs/guides/index.md) for full examples, provider configuration, streaming events, governance hooks, and the dynamic-workflow drive (`runWorkflow` / `run_workflow`).
+See the [SDK guides](./docs/guides/index.md) for full examples, provider configuration, streaming events, and governance hooks. For the dynamic-workflow drive (`runWorkflow` / `run_workflow`), see the per-SDK **Dynamic workflows** sections: [Node.js](./node/README.md#dynamic-workflows) · [Python](./python/README.md#dynamic-workflows).
 
 ## Documentation
 

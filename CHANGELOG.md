@@ -8,20 +8,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.2.11] - 2026-06-12
 
-Orchestration consolidation: drop the dead pre-fold-in scaffolding left over after the dynamic-workflow `NodeKind` collapse (A#1), and fold the workflow runtime next to its declarative spec. A pure-refactor release — zero behavior change, no ABI change, no version-gated behavior.
+Dynamic-workflow release: an orchestration consolidation (R1/R2), the **runtime DAG-append syscall** (`SubmitNodes`), and the four structural gaps (G1–G4) surfaced by comparing our orchestration-as-data engine against Claude Code's code-orchestration model (`agent()` / `parallel()` / `pipeline()` + the six patterns + quarantine + budget). G1–G4 are additive ABI, landed kernel-first then mirrored across node/python/wasm; golden fixtures byte-identical.
 
-### Removed (internal)
+### Added
 
-- **Dead orchestration scaffolding.** `gen_eval.rs` (`GenEvalLoop`), `planner.rs` (`build_graph`), and `executor.rs` had no callers — the live DAG path runs entirely through `WorkflowSpec::to_task_graph` and `WorkflowRun`. The one used helper (`executor::next_batch`) was inlined to `TaskGraph::ready_tasks`. No SDK bindings, no documented API. `orchestration/` goes from 6 modules to 3. Core tests 426 → 422 (removed the dead modules' own tests).
+- **Runtime node-append (`Syscall::SubmitNodes`).** A running workflow node can append nodes to the live DAG via `submit_workflow_nodes` — true loop-until-done and per-item fan-out (the claim-extractor → one-verifier-per-claim shape). `depends_on` is batch-relative and backward-only; each appended spawn passes the same syscall gate (quota / depth / quarantine) as any node; submissions are recorded and replayed on resume. Governance backstop: a `max_workflow_nodes` quota caps runaway growth.
+- **G1 — quarantine no-privilege-escalation (security).** `SubmitWorkflowNodes` now carries `submitter_agent_id`; `WorkflowRun::submit_nodes_from` coerces every node of a quarantined submitter to `Quarantined` (transitive taint), which the existing spawn-time quarantine gate then enforces. Closes the path where a quarantined node — having read untrusted content — escaped its sandbox by submitting a "trusted" / write-capable child.
+- **G2 — deterministic compute nodes (`NodeKind::Reduce`).** A host-compute node that runs no LLM: the kernel schedules it like a `Spawn` but stamps its descriptor with a `reducer` name + dependency agent ids, and the SDK routes it to a pure registered function (`dedupe_lines` / `merge_json_arrays` / `concat` / `count`, plus user reducers) over those dependency outputs. Dedupe / filter / merge between stages without burning an agent — the "ordinary code between stages" of code-orchestration, expressed as a DAG node.
+- **G3 — per-node `output_schema` (structured output).** `WorkflowNode.output_schema` rides to the spawn descriptor; the SDK instructs the agent, validates its output against a JSON-Schema subset, and re-runs the node once with the validation errors fed back on mismatch.
+- **G4 — budget-as-signal.** `WorkflowBatchSpawned` carries a `WorkflowBudget` snapshot (node / concurrency headroom under the active quota); the runner injects a concise budget note into each node's goal so a coordinator can size its `submit_workflow_nodes` batch to real headroom instead of blindly hitting the cap. Omitted when no quota is installed.
 
 ### Changed
 
+- **Error-terminated workflow nodes now fail instead of complete.** `record_completion` *fails* (rather than completes) a node whose agent returned `TerminationReason::Error`, so its dependents starve instead of running on missing / garbage input — a general correctness fix, and the lever G3 uses to fail a node whose output never conforms to its schema. Other terminations (max-turns / budget / timeout) still complete, since they may carry partial output.
 - **`workflow_run` folded into the `workflow` module.** `scheduler/workflow_run.rs` had zero `scheduler/` dependencies (it imported only `orchestration/` + `types/`), so it was an orchestration concern historically misplaced under the scheduler. Moved into a directory module: `orchestration/workflow.rs` → `workflow/mod.rs` (the declarative spec), `scheduler/workflow_run.rs` → `workflow/run.rs` (the runtime). The public surface is unified under `orchestration::workflow::{WorkflowRun, WorkflowSpawnInfo, JudgeMatch, node_agent_id}`; the rust SDK re-export path updated accordingly. Pure move, history preserved as renames.
 - **Documented the `EvictionOp` / `PressureAction` layer boundary.** A planned merge of the two was reframed after a closer read: `EvictionOp` is the planner-op vocabulary (per-op payload) and `PressureAction` is the pressure-level vocabulary (`recommend` / `should_compress` return value, `Ord` cascade key, wire label). They are distinct layers bridged once at `execute_eviction_op`, not a redundancy — documented as such so it isn't re-misframed.
 
+### Removed (internal)
+
+- **Dead orchestration scaffolding.** `gen_eval.rs` (`GenEvalLoop`), `planner.rs` (`build_graph`), and `executor.rs` had no callers — the live DAG path runs entirely through `WorkflowSpec::to_task_graph` and `WorkflowRun`. The one used helper (`executor::next_batch`) was inlined to `TaskGraph::ready_tasks`. No SDK bindings, no documented API. `orchestration/` goes from 6 modules to 3.
+
 ### Notes
 
-- The originally-planned R2 consolidation (compaction dual-vocabulary collapse, signal → `schedule_multi`) was descoped after implementation-time findings: the dual vocabulary is two legitimate layers, and routing signals through `schedule_multi` is a no-op in the current single-task model (deferred to the future multi-task scheduler work). The runtime-node-append syscall (`SubmitNodes`), nested control flow, and the quarantine cross-boundary gate remain on the 0.3.x+ roadmap.
+- The originally-planned R2 consolidation (compaction dual-vocabulary collapse, signal → `schedule_multi`) was descoped after implementation-time findings: the dual vocabulary is two legitimate layers, and routing signals through `schedule_multi` is a no-op in the current single-task model (deferred to the future multi-task scheduler work).
+- Tests: core **437**, node **266**, python **104**; wasm `tsc` clean; clippy 0 errors; golden fixtures byte-identical across all four SDKs.
 
 ## [0.2.10] - 2026-06-11
 

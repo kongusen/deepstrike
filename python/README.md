@@ -137,6 +137,44 @@ Spool, page-out, signals, processes, budgets, and memory events land in `Session
 
 ---
 
+## Dynamic workflows
+
+Instead of planning **and** executing a hard task in one long context window, hand the kernel a declarative DAG and let it spawn a fresh-context sub-agent per node. The kernel owns the control flow (gate · budget · suspend-on-join · resume); your SDK runs the agents. See the [top-level overview](../README.md#the-six-harness-patterns-as-first-class-kernel-nodes) for the full pattern catalog.
+
+```py
+from deepstrike import WorkflowSpec, WorkflowNodeSpec
+
+# One fresh-context verifier per rule (no inherited author context → can't rubber-stamp),
+# then a skeptic that reviews their flags. The kernel spawns the 3 verifiers as one gated
+# batch, suspends on the join, and runs the skeptic once they complete.
+outcome = await runner.run_workflow(WorkflowSpec(nodes=[
+    WorkflowNodeSpec(task="Rule: money is integer cents — violated?", role="verify"),
+    WorkflowNodeSpec(task="Rule: all errors propagate — violated?",    role="verify"),
+    WorkflowNodeSpec(task="Rule: timestamps are UTC — violated?",       role="verify"),
+    WorkflowNodeSpec(task="Skeptic: which flags are real violations?",  role="verify", depends_on=[0, 1, 2]),
+]))
+# => {"completed": ["wf-node0", …], "failed": []}
+```
+
+A node's `kind` selects the control-flow shape; the same executor drives them all, every spawn passing the syscall gate:
+
+| Node kind | Behavior |
+|---|---|
+| spawn (default) | Run the node's agent once |
+| loop (`max_iters`) | Re-run until the agent signals it's done, capped at `max_iters` |
+| classify (`branches`) | The classifier's result selects one branch; the rest are pruned |
+| tournament (`entrants`) | Generate N entrants, then a pairwise-judge bracket to one winner |
+| reduce (`reducer`) | **Tokenless host-compute** — a pure function (`dedupe_lines` / `merge_json_arrays` / `concat` / `count`, or your own via the `reducers` option) over the node's dependency outputs |
+
+### 0.2.11 capabilities
+
+- **Runtime fan-out** — give a node the `submit_workflow_nodes_tool` and its agent can append nodes to the live DAG mid-run (true loop-until-done; one verifier per claim it discovers). Recorded and replayed on `resume_workflow`.
+- **Quarantine, no escape** — set `trust="quarantined"` on a node that reads untrusted content; it's denied write-capable isolation in-kernel, and any nodes it submits are coerced to quarantined too (no privilege escalation).
+- **Structured output** — set `output_schema` on a node; the runner instructs the agent, validates the result against the JSON-Schema subset, and re-runs once with the errors on mismatch. A node that never conforms fails (its dependents starve).
+- **Budget as signal** — with a `max_workflow_nodes` / `max_concurrent_subagents` quota installed, each spawned node's goal carries its remaining headroom so a coordinator can size its fan-out to fit.
+
+---
+
 ## Providers
 
 Resource quotas are opt-in and flow through the same replayable kernel event ABI:

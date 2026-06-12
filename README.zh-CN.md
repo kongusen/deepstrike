@@ -74,7 +74,7 @@ deepstrike-core  ──  调度节点:经门控 · 有预算 · 可重放 · 可
 | **Adversarial verification** —— 按 rubric 对每个产出做对抗式验证 | `verify_rules` —— 每条规则一个全新上下文的 verifier,各自在独立 TCB 中运行、**不继承作者上下文**,因此无法走过场盖章 |
 | **Generate-and-filter** —— 生成点子,按 rubric 过滤、去重 | `generate_and_filter` —— N 个 generator → 一个 `Verify` 过滤/去重 barrier |
 | **Tournament** —— 让 agent 互相竞争,两两评判选出胜者 | `NodeKind::Tournament` —— 一个控制器节点生成 N 个参赛者,再跑两两评判 bracket 直到决出唯一胜者(比较式评判优于绝对打分;确定性循环持有整个对阵表) |
-| **Loop until done** —— 循环直到满足停止条件,而非固定轮数 | `NodeKind::Loop` —— 反复运行直到节点报告完成(`loop_continue`),并带一个硬性 `max_iters` 兜底 |
+| **Loop until done** —— 循环直到满足停止条件,而非固定轮数 | `NodeKind::Loop` —— 反复运行直到节点报告完成(`loop_continue`),并带一个硬性 `max_iters` 兜底。对*未知规模*的发现,运行中的节点还能用 `SubmitNodes` syscall 向活动 DAG 追加新节点(真正的 loop-until-done · 按项扇出) |
 
 ## 三种失败模式,用结构来治
 
@@ -88,12 +88,14 @@ harness 的意义就是用结构去击败单上下文的失败模式。DeepStrik
 
 ## ……以及文章点名的其他构件
 
-文章还点出了模式之外的四种机制。DeepStrike 在内核里逐一实现:
+文章还点出了模式之外的机制。DeepStrike 在内核里逐一实现:
 
-- **Quarantine(隔离区)** —— triage 模式禁止读取*不可信公开内容*的 agent 执行高权限动作。DeepStrike 在内核内强制:一个 `Quarantined` 节点若申请可写隔离级别,会在 **syscall gate 被拒绝**(`NodeTrust`),把“自律”变成可审计的不变量。
+- **Quarantine(隔离区),且无逃逸口** —— triage 模式禁止读取*不可信公开内容*的 agent 执行高权限动作。DeepStrike 在内核内强制:一个 `Quarantined` 节点若申请可写隔离级别,会在 **syscall gate 被拒绝**(`NodeTrust`)。而且,既然隔离节点可能读过对抗性内容,*它请求的拓扑本身也不可信*:它在运行时提交的任何节点都会被强制降级为 `Quarantined`(污点传递),所以它无法靠 spawn 一个“可信”子节点来逃出沙箱。
+- **阶段之间的确定性计算** —— 不是每一步都需要 LLM。`NodeKind::Reduce` 节点不跑 agent:内核像调度 spawn 一样调度它,SDK 把它路由到一个纯函数(`dedupe_lines` / `merge_json_arrays` / `concat` / `count`,或你自定义的)作用于其依赖的输出。这就是脚本里“阶段之间的普通代码”做的 dedupe/filter/merge——但作为一个受治理、可重放的 DAG 节点,且零 token 消耗。
+- **结构化输出,带校验** —— 节点可声明 `output_schema`;内核把它带到 spawn 描述符,SDK 指示 agent、对结果做校验,并在不符合时把错误回喂、重跑一次。始终不符合的节点会**失败**(其依赖被饿死),而不是把垃圾喂给下游。
+- **预算是信号,不只是墙** —— token/节点预算在每次 spawn 时强制(`BudgetLedger`、`max_workflow_nodes`),*同时*每个 spawn 出来的节点都能得知自己剩余的余量(`WorkflowBudget`),于是协调者可以按剩余预算来定下一轮扇出的规模,而不是盲目撞上限。
 - **模型与智能路由** —— 每个节点携带 `model_hint`;一个 Classify 节点可以先调研任务、再把它路由到更便宜或更强的模型(文章里的 Sonnet vs Opus 例子)。
-- **Token 预算** —— “use 10k tokens” 映射为内核 `BudgetLedger`,在每次 spawn 时强制。
-- **中断后恢复** —— 中途退出终端,工作流也能从断点续上,靠 `WorkflowRun::resume` 与可重建的 `KernelSnapshot`。
+- **中断后恢复** —— 中途退出终端,工作流也能从断点续上——包括运行时追加的节点(已记录并回放)——靠 `WorkflowRun::resume` 与可重建的 `KernelSnapshot`。
 
 ## 为什么是内核,而不是脚本
 
@@ -136,9 +138,9 @@ const spec = {
 const outcome = await runner.runWorkflow(spec)
 ```
 
-把某个节点的 `kind` 换成 `{ type: "loop", maxIters: 5 }`、`{ type: "classify", branches: [...] }` 或 `{ type: "tournament", entrants: [...] }`,同一个执行器就能驱动循环、条件路由与两两对阵——每个节点依旧过 syscall gate。
+把某个节点的 `kind` 换成 `{ type: "loop", maxIters: 5 }`、`{ type: "classify", branches: [...] }`、`{ type: "tournament", entrants: [...] }` 或 `{ type: "reduce", reducer: "dedupe_lines" }`,同一个执行器就能驱动循环、条件路由、两两对阵与无 token 的宿主计算——每个节点依旧过 syscall gate。把 `submit_workflow_nodes` 工具交给某个节点,它就能在运行中扩展 DAG(为发现的每条 claim 派一个 verifier)。
 
-`0.2.9 — 动态工作流:六种 harness 模式成为一等内核节点(`Loop` · `Classify` · `Tournament`)、持久 directives、内核内 quarantine。` 详见 [CHANGELOG](./CHANGELOG.md)。
+**0.2.11** — 动态工作流变得“运行时动态”:`SubmitNodes` syscall 让运行中的节点扩展 DAG(真正的 loop-until-done · 按项扇出),外加确定性的 `Reduce` 节点、按节点的 `output_schema`、预算即信号,以及一道 quarantine 无逃逸闸门。详见 [CHANGELOG](./CHANGELOG.md)。
 
 ## 构建在 Agent OS 底座之上
 
@@ -162,7 +164,7 @@ const outcome = await runner.runWorkflow(spec)
 | Rust | `deepstrike-sdk` | `cargo add deepstrike-sdk` |
 | 浏览器 / 边缘 / WASM | `@deepstrike/wasm` | `npm install @deepstrike/wasm` |
 
-当前工作区版本:`0.2.9`。
+当前工作区版本:`0.2.11`。
 
 ## 快速开始
 
@@ -240,10 +242,10 @@ answer = await collect_text(runner.run_streaming("2 + 3 等于几?"))
 
 ```toml
 [dependencies]
-deepstrike-sdk = "0.2.9"
+deepstrike-sdk = "0.2.11"
 ```
 
-完整示例、provider 配置、流式事件、治理钩子,以及动态工作流驱动(`runWorkflow` / `run_workflow`),见 [SDK 指南](./docs/guides/index.md)。
+完整示例、provider 配置、流式事件与治理钩子,见 [SDK 指南](./docs/guides/index.md)。动态工作流驱动(`runWorkflow` / `run_workflow`)见各 SDK 的 **Dynamic workflows** 小节:[Node.js](./node/README.md#dynamic-workflows) · [Python](./python/README.md#dynamic-workflows)。
 
 ## 文档
 
