@@ -2,7 +2,14 @@ use super::config::ContextConfig;
 use super::partitions::ContextPartitions;
 use super::token_engine::ContextTokenEngine;
 
-/// Action recommended by the pressure monitor.
+/// Action recommended by the pressure monitor — the *pressure-level* vocabulary.
+///
+/// This is distinct from [`crate::mm::EvictionOp`] (the *planner-op* vocabulary) and the two must
+/// **not** be collapsed: `PressureAction` is what [`PressureMonitor::recommend`] /
+/// `ContextManager::should_compress` return, the `Ord`-keyed cascade selector inside the compression
+/// pipeline, and the canonical compaction wire label. `EvictionOp` is what `plan_eviction` emits, and
+/// carries per-op data this enum has no place for. The single bridge between the two layers is
+/// `LoopStateMachine::execute_eviction_op`. See the layer-boundary note on [`crate::mm::EvictionOp`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PressureAction {
     None,

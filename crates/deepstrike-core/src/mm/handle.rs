@@ -186,6 +186,15 @@ impl HandleTable {
 /// emits the drained messages as `archived` on the `Compressed` observation, and the SDK upgrades
 /// that summary out-of-band (LLM call = SDK I/O, a kernel non-goal), writing back a second
 /// `compressed` event. A separate in-kernel `Summarize` op would be a never-produced dead variant.
+///
+/// **Layer boundary vs [`crate::context::pressure::PressureAction`] (do not collapse the two):**
+/// `EvictionOp` is the *planner-op* vocabulary — what `plan_eviction` decides to do, carrying the
+/// per-op payload (`target_tokens` / `per_msg_ratio` / `preserve_turns`). `PressureAction` is the
+/// *pressure-level* vocabulary owned by the pressure subsystem: it is what `PressureMonitor::recommend`
+/// and `ContextManager::should_compress` return, the `Ord`-keyed cascade selector inside the
+/// compression pipeline, and the canonical wire label. They map ~1:1 by layer but are not redundant —
+/// `Spool` / `TimeDecayMicro` don't sit on the linear pressure cascade, and `PressureAction` carries no
+/// per-op data. The one bridge is `execute_eviction_op`, which is the intended seam, not duplication.
 #[derive(Debug, Clone)]
 pub enum EvictionOp {
     /// Layer 1: spool a large handle to disk, keep a preview reference in context.
