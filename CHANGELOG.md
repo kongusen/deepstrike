@@ -6,6 +6,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-06-12
+
+Orchestration consolidation: drop the dead pre-fold-in scaffolding left over after the dynamic-workflow `NodeKind` collapse (A#1), and fold the workflow runtime next to its declarative spec. A pure-refactor release — zero behavior change, no ABI change, no version-gated behavior.
+
+### Removed (internal)
+
+- **Dead orchestration scaffolding.** `gen_eval.rs` (`GenEvalLoop`), `planner.rs` (`build_graph`), and `executor.rs` had no callers — the live DAG path runs entirely through `WorkflowSpec::to_task_graph` and `WorkflowRun`. The one used helper (`executor::next_batch`) was inlined to `TaskGraph::ready_tasks`. No SDK bindings, no documented API. `orchestration/` goes from 6 modules to 3. Core tests 426 → 422 (removed the dead modules' own tests).
+
+### Changed
+
+- **`workflow_run` folded into the `workflow` module.** `scheduler/workflow_run.rs` had zero `scheduler/` dependencies (it imported only `orchestration/` + `types/`), so it was an orchestration concern historically misplaced under the scheduler. Moved into a directory module: `orchestration/workflow.rs` → `workflow/mod.rs` (the declarative spec), `scheduler/workflow_run.rs` → `workflow/run.rs` (the runtime). The public surface is unified under `orchestration::workflow::{WorkflowRun, WorkflowSpawnInfo, JudgeMatch, node_agent_id}`; the rust SDK re-export path updated accordingly. Pure move, history preserved as renames.
+- **Documented the `EvictionOp` / `PressureAction` layer boundary.** A planned merge of the two was reframed after a closer read: `EvictionOp` is the planner-op vocabulary (per-op payload) and `PressureAction` is the pressure-level vocabulary (`recommend` / `should_compress` return value, `Ord` cascade key, wire label). They are distinct layers bridged once at `execute_eviction_op`, not a redundancy — documented as such so it isn't re-misframed.
+
+### Notes
+
+- The originally-planned R2 consolidation (compaction dual-vocabulary collapse, signal → `schedule_multi`) was descoped after implementation-time findings: the dual vocabulary is two legitimate layers, and routing signals through `schedule_multi` is a no-op in the current single-task model (deferred to the future multi-task scheduler work). The runtime-node-append syscall (`SubmitNodes`), nested control flow, and the quarantine cross-boundary gate remain on the 0.3.x+ roadmap.
+
 ## [0.2.10] - 2026-06-11
 
 Compaction collapse: the 690-line compaction pipeline becomes a single planner decision point feeding pure mechanical executors, and the kernel now surfaces the **prompt-cache cost** of each compaction so the SDK can weigh tokens-saved against cache-rebuild. This release also fixes three regressions introduced by 0.2.9's W1 consolidation.
