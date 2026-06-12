@@ -252,6 +252,14 @@ pub enum KernelInputEvent {
     SubAgentCompleted {
         result: SubAgentResult,
     },
+    /// R3-1: append nodes to the in-flight workflow DAG at runtime (dynamic fan-out /
+    /// loop-until-done). Sent by the SDK while the submitting node is still running — the appended
+    /// nodes spawn on the next gated drive. No-op if no workflow is active. Additive ABI: a brand-new
+    /// event variant, so existing SDKs that never send it are byte-identical on the wire.
+    SubmitWorkflowNodes {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        nodes: Vec<crate::orchestration::workflow::WorkflowNode>,
+    },
     /// Feed long-term memory entries into the knowledge partition (page-in).
     /// SDK performs retrieval I/O; kernel only applies the result.
     PageIn {
@@ -817,6 +825,13 @@ impl KernelRuntime {
             }
             KernelInputEvent::SubAgentCompleted { result } => {
                 self.sm.feed(LoopEvent::SubAgentCompleted { result })
+            }
+            KernelInputEvent::SubmitWorkflowNodes { nodes } => {
+                let action = self.sm.submit_workflow_nodes(nodes);
+                if matches!(action, LoopAction::AwaitingResume) {
+                    return KernelStep::empty(self.sm.take_observations());
+                }
+                return KernelStep::single(action, self.sm.take_observations());
             }
             KernelInputEvent::SetMemoryPolicy {
                 memory_path,
@@ -1802,6 +1817,72 @@ mod tests {
         assert!(step.observations.iter().any(|o| matches!(
             o,
             KernelObservation::WorkflowCompleted { completed, .. } if completed.len() == 3
+        )));
+    }
+
+    #[test]
+    fn submit_workflow_nodes_input_appends_a_node_over_the_abi() {
+        // R3-1: exercise the full serde round-trip of SubmitWorkflowNodes + WorkflowNode over the
+        // ABI, and confirm the appended node spawns as a workflow batch mid-run.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+        use crate::types::result::{LoopResult, SubAgentResult, TerminationReason};
+
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+            task: RuntimeTask::new("parent task"),
+            run_spec: None,
+        }));
+        runtime.state_machine_mut().take_observations();
+
+        // A single-node workflow: wf-node0 spawns first.
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("root"),
+            AgentRole::Implement,
+        )]);
+        runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow {
+            spec,
+            parent_session_id: "sess".to_string(),
+            resumed_completed: Vec::new(),
+        }));
+        runtime.state_machine_mut().take_observations();
+
+        // Submit a node over the ABI while wf-node0 runs (full serde round-trip).
+        let event = KernelInputEvent::SubmitWorkflowNodes {
+            nodes: vec![WorkflowNode::new(RuntimeTask::new("more"), AgentRole::Implement)],
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: KernelInputEvent = serde_json::from_str(&json).expect("deserialize");
+        let step = runtime.step(KernelInput::new(parsed));
+        // The appended node spawns as wf-node1 in a workflow batch.
+        assert!(step.observations.iter().any(|o| matches!(
+            o,
+            KernelObservation::WorkflowBatchSpawned { nodes, .. }
+                if nodes.len() == 1 && nodes[0].agent_id == "wf-node1" && nodes[0].goal == "more"
+        )));
+
+        let complete = |runtime: &mut KernelRuntime, id: &str| {
+            runtime.step(KernelInput::new(KernelInputEvent::SubAgentCompleted {
+                result: SubAgentResult {
+                    agent_id: compact_str::CompactString::new(id),
+                    result: LoopResult {
+                        termination: TerminationReason::Completed,
+                        final_message: None,
+                        turns_used: 1,
+                        total_tokens_used: 1,
+                        loop_continue: None,
+                        classify_branch: None,
+                        tournament_winner: None,
+                    },
+                },
+            }))
+        };
+        complete(&mut runtime, "wf-node0");
+        // The workflow finishes only after the submitted node also completes (2 nodes total).
+        let step = complete(&mut runtime, "wf-node1");
+        assert!(step.observations.iter().any(|o| matches!(
+            o,
+            KernelObservation::WorkflowCompleted { completed, .. } if completed.len() == 2
         )));
     }
 

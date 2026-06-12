@@ -1543,6 +1543,54 @@
     }
 
     #[test]
+    fn submit_workflow_nodes_appends_and_spawns_mid_run() {
+        // R3-1: a running workflow node submits more work; the appended node spawns (gated) at once
+        // and the workflow stays alive until it too completes — the kernel side of true
+        // loop-until-done / dynamic fan-out, with no new gate or observation.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+
+        // A single root node spawns first.
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("root"),
+            AgentRole::Implement,
+        )]);
+        sm.load_workflow(spec, "sess");
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node0
+        assert!(sm.agent_process("wf-node0").is_some());
+
+        // While wf-node0 runs, submit one more node — it spawns immediately as wf-node1.
+        let action = sm.submit_workflow_nodes(vec![WorkflowNode::new(
+            RuntimeTask::new("discovered-work"),
+            AgentRole::Implement,
+        )]);
+        assert!(matches!(action, LoopAction::AwaitingResume));
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node1
+        assert!(sm.agent_process("wf-node1").is_some());
+        assert!(sm.workflow_active());
+
+        // Empty submission (and a submission with no active workflow) is a no-op.
+        sm.submit_workflow_nodes(vec![]);
+        assert_eq!(count_spawned(&sm.take_observations()), 0);
+
+        // The root completes but the workflow keeps running its submitted node.
+        assert!(matches!(
+            sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") }),
+            LoopAction::AwaitingResume
+        ));
+        assert!(sm.workflow_active(), "still running the submitted node");
+
+        // The submitted node completes → DAG done, parent resumes.
+        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
+        assert!(matches!(done, LoopAction::CallLLM { .. }));
+        assert!(!sm.workflow_active());
+    }
+
+    #[test]
     fn quarantined_node_with_write_isolation_is_denied_in_kernel() {
         // Part A #3: the kernel enforces the quarantine invariant — a quarantined node (reads
         // untrusted content) that declares a write-capable isolation is denied at spawn, starving

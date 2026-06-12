@@ -1320,6 +1320,25 @@ impl LoopStateMachine {
         ))
     }
 
+    /// R3-1: append nodes to the in-flight workflow DAG at runtime, then drive one gated spawn round
+    /// so any now-ready node starts immediately (alongside the still-running submitter). The append
+    /// is pure graph mutation; each appended node's *spawn* still passes through the spawn gate in
+    /// [`Self::spawn_ready_workflow_nodes`] (quota / depth / quarantine), so this adds no new gate and
+    /// can't outrun the concurrency cap. No active workflow (or an empty submission) → a no-op that
+    /// leaves the current suspension untouched.
+    pub fn submit_workflow_nodes(
+        &mut self,
+        nodes: Vec<crate::orchestration::workflow::WorkflowNode>,
+    ) -> LoopAction {
+        if nodes.is_empty() || self.workflow.is_none() {
+            return LoopAction::AwaitingResume;
+        }
+        if let Some(run) = self.workflow.as_mut() {
+            run.submit_nodes(nodes);
+        }
+        self.drive_workflow(None)
+    }
+
     /// W0-ABI resume: load a workflow whose listed node agent-ids already completed (recovered from
     /// the session log after an interruption); the kernel continues the DAG from the remaining work.
     pub fn load_workflow_resumed(
