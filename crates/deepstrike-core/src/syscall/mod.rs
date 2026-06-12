@@ -33,6 +33,10 @@ pub enum Syscall {
     WriteMemory(MemoryWriteRequest),
     /// Retrieve long-term memory entries.
     QueryMemory(MemoryQuery),
+    /// R3-1: append `count` nodes to the in-flight workflow DAG at runtime. Gating DAG growth through
+    /// the trap lets a `ResourceQuota` backstop a runaway loop-until-done (denied past
+    /// `max_workflow_nodes`); per-node spawns are still gated separately by `Spawn`.
+    SubmitNodes { count: usize },
 }
 
 impl Syscall {
@@ -44,6 +48,7 @@ impl Syscall {
             Self::PageIn(_) => "page_in",
             Self::WriteMemory(_) => "write_memory",
             Self::QueryMemory(_) => "query_memory",
+            Self::SubmitNodes { .. } => "submit_nodes",
         }
     }
 }

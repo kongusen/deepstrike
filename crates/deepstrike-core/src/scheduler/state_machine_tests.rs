@@ -1591,6 +1591,42 @@
     }
 
     #[test]
+    fn submit_workflow_nodes_denied_past_max_workflow_nodes_quota() {
+        // R3-1 governance: a submission that would grow the DAG past max_workflow_nodes is denied
+        // (runaway loop-until-done backstop); the workflow continues with its existing nodes.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.set_resource_quota(crate::governance::quota::ResourceQuota {
+            max_workflow_nodes: Some(1),
+            ..Default::default()
+        });
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("root"),
+            AgentRole::Implement,
+        )]);
+        sm.load_workflow(spec, "sess");
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node0
+
+        // Submitting would grow the DAG to 2 > max(1) → denied; no wf-node1 spawns.
+        sm.submit_workflow_nodes(vec![WorkflowNode::new(
+            RuntimeTask::new("more"),
+            AgentRole::Implement,
+        )]);
+        assert_eq!(count_spawned(&sm.take_observations()), 0);
+        assert!(sm.agent_process("wf-node1").is_none(), "denied submission does not spawn");
+
+        // The workflow finishes with just the root.
+        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") });
+        assert!(matches!(done, LoopAction::CallLLM { .. }));
+        assert!(!sm.workflow_active());
+    }
+
+    #[test]
     fn quarantined_node_output_is_labeled_crossing_into_trusted_context() {
         // R3-3: the kernel marks a quarantined node's output as untrusted-origin when it crosses into
         // the trusted parent context. Shaping the content into a summary stays SDK-side; the kernel

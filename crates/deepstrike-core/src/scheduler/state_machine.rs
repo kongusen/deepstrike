@@ -467,7 +467,27 @@ impl LoopStateMachine {
             }
             Syscall::Spawn(_) => self.evaluate_spawn_quota(),
             Syscall::WriteMemory(_) => self.evaluate_memory_write_quota(),
+            Syscall::SubmitNodes { count } => self.evaluate_submit_nodes_quota(*count),
             Syscall::PageIn(_) | Syscall::QueryMemory(_) => Disposition::Allow,
+        }
+    }
+
+    /// R3-1 governance: deny a runtime workflow-node submission that would grow the DAG past
+    /// `ResourceQuota::max_workflow_nodes` — a backstop against an unbounded loop-until-done. Reads
+    /// only the kernel's own workflow node count; no I/O. No quota / no active workflow → allow.
+    fn evaluate_submit_nodes_quota(&self, count: usize) -> Disposition {
+        let Some(max) = self.resource_quota.as_ref().and_then(|q| q.max_workflow_nodes) else {
+            return Disposition::Allow;
+        };
+        let current = self.workflow.as_ref().map(|w| w.len()).unwrap_or(0);
+        let projected = current.saturating_add(count);
+        if projected > max {
+            Disposition::Deny {
+                stage: "workflow_growth",
+                reason: format!("submit_nodes would grow workflow to {projected} nodes (max {max})"),
+            }
+        } else {
+            Disposition::Allow
         }
     }
 
@@ -1340,6 +1360,27 @@ impl LoopStateMachine {
         nodes: Vec<crate::orchestration::workflow::WorkflowNode>,
     ) -> LoopAction {
         if nodes.is_empty() || self.workflow.is_none() {
+            return LoopAction::AwaitingResume;
+        }
+        // R3-1 governance: gate DAG growth through the syscall trap. A `max_workflow_nodes` quota
+        // denies a submission that would grow the workflow past the cap (runaway loop-until-done
+        // backstop); the workflow continues with its existing nodes and a rollback note is surfaced.
+        let disposition = self.evaluate_syscall(&Syscall::SubmitNodes { count: nodes.len() });
+        if !disposition.is_allowed() {
+            let reason = match &disposition {
+                Disposition::Deny { reason, .. } => reason.clone(),
+                _ => "workflow node submission denied".to_string(),
+            };
+            let rb = RollbackReason::GovernanceDenied {
+                tool_name: "submit_workflow_nodes".to_string(),
+                reason,
+            };
+            let note = Message::user(super::rollback::build_rollback_note(
+                &rb,
+                self.ctx.config.verbose_control_notes,
+            ));
+            self.ctx
+                .push_signal(note.content.as_text().unwrap_or_default().to_string());
             return LoopAction::AwaitingResume;
         }
         if let Some(run) = self.workflow.as_mut() {

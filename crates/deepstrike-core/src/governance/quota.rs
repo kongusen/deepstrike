@@ -26,6 +26,11 @@ pub struct ResourceQuota {
     /// successful `WriteMemory` syscalls may occur within any `window_ms` span.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_writes_per_window: Option<(u32, u64)>,
+    /// R3-1: max total nodes a single workflow DAG may grow to via runtime `SubmitNodes`. Once the
+    /// DAG (existing + submitted) would exceed this, the submission is denied — a backstop against an
+    /// unbounded loop-until-done. `None` = no cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_workflow_nodes: Option<usize>,
 }
 
 impl ResourceQuota {
@@ -34,6 +39,7 @@ impl ResourceQuota {
         self.max_concurrent_subagents.is_none()
             && self.max_spawn_depth.is_none()
             && self.memory_writes_per_window.is_none()
+            && self.max_workflow_nodes.is_none()
     }
 }
 
