@@ -272,6 +272,48 @@ def test_submit_workflow_nodes_carries_trust_and_deps():
     assert event["nodes"][1]["depends_on"] == [0]
 
 
+def test_recover_submitted_workflow_nodes_in_order():
+    from deepstrike.runtime.session_repair import (
+        build_workflow_nodes_submitted_event,
+        recover_submitted_workflow_nodes,
+    )
+
+    e1 = build_workflow_nodes_submitted_event(turn=1, nodes=[{"task": {"goal": "a"}}])
+    e2 = build_workflow_nodes_submitted_event(turn=2, nodes=[{"task": {"goal": "b"}}])
+    assert recover_submitted_workflow_nodes([e1, e2]) == [
+        [{"task": {"goal": "a"}}],
+        [{"task": {"goal": "b"}}],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_resumes_dynamically_appended_nodes():
+    # R3-1: a workflow that dynamically appended a node is resumed via resumed_submissions; the kernel
+    # re-applies the recorded submission so the appended node is reconstructed and runs.
+    from deepstrike import submit_workflow_nodes_to_kernel
+
+    orch = _StubOrchestrator()
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=_StubProvider(),
+        session_log=InMemorySessionLog(),
+        execution_plane=LocalExecutionPlane(),
+        sub_agent_orchestrator=orch,
+        max_tokens=1000,
+    ))
+    rt = KernelRuntime(LoopPolicy(max_tokens=1000))
+    rt.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
+    runner._active_kernel = rt
+    runner._current_session_id = "sess"
+
+    spec = WorkflowSpec(nodes=[WorkflowNodeSpec(task="root", role="implement")])
+    batch = submit_workflow_nodes_to_kernel([WorkflowNodeSpec(task="discovered", role="implement")])["nodes"]
+
+    # Root recovered as completed; one submission re-applied → wf-node1 reconstructed and run.
+    outcome = await runner.run_workflow(spec, resumed_completed=["wf-node0"], resumed_submissions=[batch])
+    assert sorted(outcome["completed"]) == ["wf-node0", "wf-node1"]
+    assert "discovered" in orch.goals
+
+
 @pytest.mark.asyncio
 async def test_run_workflow_submit_nodes_appends_and_completes():
     # R3-1: a node "submits" more work (via SubAgentResult.submitted_nodes); run_workflow sends

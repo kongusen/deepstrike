@@ -101,3 +101,24 @@ export function recoverCompletedWorkflowNodes(
   }
   return completed
 }
+
+/** R3-1: build workflow_nodes_submitted for persistence after a runtime submission, so resume can
+ *  re-apply it. `nodes` is the kernel-shape (snake_case) submitted node array. */
+export function buildWorkflowNodesSubmittedEvent(input: {
+  turn: number
+  nodes: Record<string, unknown>[]
+}): Extract<SessionEvent, { kind: "workflow_nodes_submitted" }> {
+  return { kind: "workflow_nodes_submitted", turn: input.turn, nodes: input.nodes }
+}
+
+/** R3-1: recover the runtime submission batches (in order) to rebuild `resumed_submissions` for
+ *  resumeWorkflow, so dynamically-appended nodes are reconstructed. */
+export function recoverSubmittedWorkflowNodes(
+  events: Array<{ seq: number; event: SessionEvent }>,
+): Record<string, unknown>[][] {
+  const submissions: Record<string, unknown>[][] = []
+  for (const { event } of events) {
+    if (event.kind === "workflow_nodes_submitted") submissions.push(event.nodes)
+  }
+  return submissions
+}

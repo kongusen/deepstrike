@@ -102,3 +102,20 @@ def recover_completed_workflow_nodes(events: list[Any]) -> list[str]:
       if agent_id:
         completed.append(agent_id)
   return completed
+
+
+def build_workflow_nodes_submitted_event(*, turn: int, nodes: list) -> dict[str, Any]:
+  """R3-1: build a workflow_nodes_submitted event for persistence after a runtime submission, so
+  resume can re-apply it. ``nodes`` is the kernel-shape (snake_case) submitted node array."""
+  return {"kind": "workflow_nodes_submitted", "turn": turn, "nodes": nodes}
+
+
+def recover_submitted_workflow_nodes(events: list[Any]) -> list:
+  """R3-1: recover the runtime submission batches (in order) from a session event stream, to rebuild
+  ``resumed_submissions`` for resume_workflow so dynamically-appended nodes are reconstructed."""
+  submissions: list = []
+  for entry in events:
+    event = entry.event if hasattr(entry, "event") else entry
+    if event.get("kind") == "workflow_nodes_submitted":
+      submissions.append(event.get("nodes") or [])
+  return submissions

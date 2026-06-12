@@ -19,7 +19,9 @@ import {
   buildLlmCompletedEvent,
   buildRunTerminalEvent,
   buildWorkflowNodeCompletedEvent,
+  buildWorkflowNodesSubmittedEvent,
   recoverCompletedWorkflowNodes,
+  recoverSubmittedWorkflowNodes,
   repairEventsForRecovery,
 } from "./session-repair.js"
 import {
@@ -915,7 +917,7 @@ export class RuntimeRunner {
    */
   async runWorkflow(
     spec: WorkflowSpec,
-    opts?: { resumedCompleted?: string[] },
+    opts?: { resumedCompleted?: string[]; resumedSubmissions?: Record<string, unknown>[][] },
   ): Promise<{ completed: string[]; failed: string[] }> {
     if (!this.activeKernel || !this.currentSessionId) {
       throw new Error("runWorkflow requires an active parent run")
@@ -930,6 +932,8 @@ export class RuntimeRunner {
       parent_session_id: parentSessionId,
       // W0-ABI resume: skip nodes already completed before an interruption.
       ...(opts?.resumedCompleted && opts.resumedCompleted.length ? { resumed_completed: opts.resumedCompleted } : {}),
+      // R3-1: re-apply recorded runtime submissions so dynamically-appended nodes are reconstructed.
+      ...(opts?.resumedSubmissions && opts.resumedSubmissions.length ? { resumed_submissions: opts.resumedSubmissions } : {}),
     })
 
     const collectNodes = (obs: typeof observations): WorkflowSpawnInfo[] =>
@@ -964,8 +968,14 @@ export class RuntimeRunner {
         // reporting the node's completion — the workflow is still active, so even a last-node
         // submission keeps the DAG alive.
         if (result.submittedNodes?.length) {
-          const subObs = kernelApply(runtime, this.pendingObservations, submitWorkflowNodesToKernel(result.submittedNodes))
+          const submitEvent = submitWorkflowNodesToKernel(result.submittedNodes)
+          const subObs = kernelApply(runtime, this.pendingObservations, submitEvent)
           nextNodes.push(...collectNodes(subObs))
+          // R3-1: persist the submission (kernel-shape nodes) so resume can re-apply it.
+          await this.opts.sessionLog.append(parentSessionId, buildWorkflowNodesSubmittedEvent({
+            turn: runtime.turn(),
+            nodes: (submitEvent.nodes as Record<string, unknown>[]) ?? [],
+          }))
         }
         const obs = kernelApply(runtime, this.pendingObservations, {
           kind: "sub_agent_completed",
@@ -999,7 +1009,8 @@ export class RuntimeRunner {
     }
     const events = await this.opts.sessionLog.read(this.currentSessionId)
     const resumedCompleted = recoverCompletedWorkflowNodes(events)
-    return this.runWorkflow(spec, { resumedCompleted })
+    const resumedSubmissions = recoverSubmittedWorkflowNodes(events)
+    return this.runWorkflow(spec, { resumedCompleted, resumedSubmissions })
   }
 
   private async appendObservations(

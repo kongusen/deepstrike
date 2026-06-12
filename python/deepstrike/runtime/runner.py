@@ -392,6 +392,7 @@ class RuntimeRunner:
     spec: "WorkflowSpec",
     *,
     resumed_completed: list[str] | None = None,
+    resumed_submissions: list | None = None,
   ) -> dict[str, list[str]]:
     """W0-ABI: run a declarative workflow DAG.
 
@@ -410,7 +411,10 @@ class RuntimeRunner:
       SubAgentRunContext,
       default_sub_agent_orchestrator,
     )
-    from deepstrike.runtime.session_repair import build_workflow_node_completed_event
+    from deepstrike.runtime.session_repair import (
+      build_workflow_node_completed_event,
+      build_workflow_nodes_submitted_event,
+    )
     from deepstrike.types.agent import (
       WorkflowSpawnInfo,
       sub_agent_result_to_kernel,
@@ -434,6 +438,9 @@ class RuntimeRunner:
     # Only include resumed_completed if non-empty (kernel uses presence to detect resume mode).
     if resumed_completed and len(resumed_completed) > 0:
       load_event["resumed_completed"] = resumed_completed
+    # R3-1: re-apply recorded runtime submissions so dynamically-appended nodes are reconstructed.
+    if resumed_submissions and len(resumed_submissions) > 0:
+      load_event["resumed_submissions"] = resumed_submissions
 
     observations = kernel_apply(runtime, self._pending_observations, load_event)
 
@@ -483,12 +490,17 @@ class RuntimeRunner:
         # reporting the node's completion — the workflow is still active (the kernel hasn't seen this
         # node finish), so even a last-node submission keeps the DAG alive.
         if getattr(result, "submitted_nodes", None):
-          sub_obs = kernel_apply(
-            runtime,
-            self._pending_observations,
-            submit_workflow_nodes_to_kernel(result.submitted_nodes),
-          )
+          submit_event = submit_workflow_nodes_to_kernel(result.submitted_nodes)
+          sub_obs = kernel_apply(runtime, self._pending_observations, submit_event)
           next_nodes.extend(_collect_nodes(sub_obs))
+          # R3-1: persist the submission (kernel-shape nodes) so resume can re-apply it.
+          await self._opts.session_log.append(
+            parent_session_id,
+            build_workflow_nodes_submitted_event(
+              turn=runtime.turn(),
+              nodes=submit_event.get("nodes") or [],
+            ),
+          )
         obs = kernel_apply(runtime, self._pending_observations, {
           "kind": "sub_agent_completed",
           "result": sub_agent_result_to_kernel(result),
@@ -516,14 +528,22 @@ class RuntimeRunner:
     Reads the session log, extracts completed workflow node agent_ids, and
     calls run_workflow with resumed_completed so the kernel skips those nodes.
     """
-    from deepstrike.runtime.session_repair import recover_completed_workflow_nodes
+    from deepstrike.runtime.session_repair import (
+      recover_completed_workflow_nodes,
+      recover_submitted_workflow_nodes,
+    )
 
     if self._current_session_id is None:
       raise RuntimeError("resume_workflow requires an active parent run")
 
     events = await self._opts.session_log.read(self._current_session_id)
     resumed_completed = recover_completed_workflow_nodes(events)
-    return await self.run_workflow(spec, resumed_completed=resumed_completed)
+    resumed_submissions = recover_submitted_workflow_nodes(events)
+    return await self.run_workflow(
+      spec,
+      resumed_completed=resumed_completed,
+      resumed_submissions=resumed_submissions,
+    )
 
   def interrupt(self) -> None:
     self._interrupted = True
