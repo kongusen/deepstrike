@@ -96,6 +96,14 @@ export type SessionEvent =
       termination: string
     }
   | {
+      kind: "workflow_nodes_submitted"
+      turn: number
+      category?: KernelEventCategory
+      primitive?: KernelPrimitive
+      /** Kernel-shape (snake_case) submitted node specs — persisted so resume can re-apply them. */
+      nodes: Record<string, unknown>[]
+    }
+  | {
       kind: "workflow_batch_spawned"
       turn: number
       category?: KernelEventCategory

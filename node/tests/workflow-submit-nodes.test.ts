@@ -1,6 +1,7 @@
 import { getKernel } from "../src/kernel.js"
 import { submitWorkflowNodesToKernel } from "../src/types/agent.js"
 import type { WorkflowSpec, WorkflowSpawnInfo } from "../src/types/agent.js"
+import { buildWorkflowNodesSubmittedEvent, recoverSubmittedWorkflowNodes } from "../src/runtime/session-repair.js"
 
 function step(rt: { step(json: string): string }, event: Record<string, unknown>) {
   return JSON.parse(rt.step(JSON.stringify({ version: 1, event }))) as {
@@ -73,6 +74,40 @@ describe("submit_workflow_nodes over the kernel ABI", () => {
     // The workflow finishes only after BOTH the root and the submitted node complete.
     const afterRoot = complete(rt, "wf-node0")
     expect(afterRoot.observations.some(o => o.kind === "workflow_completed")).toBe(false)
+    const done = complete(rt, "wf-node1")
+    const completed = done.observations.find(o => o.kind === "workflow_completed")
+    expect(completed?.completed?.sort()).toEqual(["wf-node0", "wf-node1"])
+  })
+})
+
+describe("resume reconstructs dynamically-appended nodes", () => {
+  it("recovers submission batches from the session log in order", () => {
+    const e1 = buildWorkflowNodesSubmittedEvent({ turn: 1, nodes: [{ task: { goal: "a", criteria: [] } }] })
+    const e2 = buildWorkflowNodesSubmittedEvent({ turn: 2, nodes: [{ task: { goal: "b", criteria: [] } }] })
+    const events = [{ seq: 0, event: e1 }, { seq: 1, event: e2 }]
+    expect(recoverSubmittedWorkflowNodes(events)).toEqual([
+      [{ task: { goal: "a", criteria: [] } }],
+      [{ task: { goal: "b", criteria: [] } }],
+    ])
+  })
+
+  it("load_workflow with resumed_submissions re-applies the appended node over the ABI", () => {
+    const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
+    step(rt, { kind: "start_run", task: { goal: "parent", criteria: [] } })
+    // Base spec = 1 node. Resume: root completed, one submission re-applied (the appended node not done).
+    const loaded = step(rt, {
+      kind: "load_workflow",
+      spec: { nodes: [{ task: { goal: "root", criteria: [] }, role: "implement", isolation: "shared", context_inheritance: "none" }] },
+      parent_session_id: "sess",
+      resumed_completed: ["wf-node0"],
+      resumed_submissions: [[{ task: { goal: "discovered", criteria: [] }, role: "implement", isolation: "shared", context_inheritance: "none" }]],
+    })
+    // wf-node0 already done → the re-applied appended node wf-node1 is the remaining work, spawned.
+    expect(
+      loaded.observations.some(
+        o => o.kind === "workflow_batch_spawned" && o.nodes?.some(n => n.agent_id === "wf-node1" && n.goal === "discovered"),
+      ),
+    ).toBe(true)
     const done = complete(rt, "wf-node1")
     const completed = done.observations.find(o => o.kind === "workflow_completed")
     expect(completed?.completed?.sort()).toEqual(["wf-node0", "wf-node1"])
