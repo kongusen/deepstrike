@@ -70,6 +70,13 @@ pub enum NodeKind {
     /// [`super::tournament::Tournament`]) until one survivor remains. The winner's id lands in the
     /// node's `tournament_winner` result; dependents start only after the bracket resolves.
     Tournament { entrants: Vec<RuntimeTask> },
+    /// G2 deterministic compute: a *host-compute* node that runs no LLM agent. The kernel schedules
+    /// it like a `Spawn` (deps / ready / completion) but stamps its spawn descriptor with `reducer`
+    /// + the dependency agent ids, and the SDK routes it to a registered pure function over those
+    /// dependencies' outputs (dedupe / filter / merge / early-exit) instead of the model. This is the
+    /// "ordinary code between stages" of the code-orchestration model, expressed as a DAG node — no
+    /// agent burned, fully deterministic. `reducer` names the SDK-side function.
+    Reduce { reducer: String },
 }
 
 /// One node in a workflow DAG: a task plus the contract its agent runs under.
@@ -85,6 +92,13 @@ pub struct WorkflowNode {
     /// W3 trust level. Default `Trusted`.
     #[serde(default, skip_serializing_if = "is_trusted")]
     pub trust: NodeTrust,
+    /// G3 structured output: an optional JSON Schema the node's agent output must conform to. The
+    /// kernel is zero-I/O and never validates it — it carries the schema verbatim to the spawn
+    /// descriptor so the SDK can instruct the agent and validate/retry on its result (the structured
+    /// "summary only" contract from image 8 is enforced SDK-side; the kernel owns the contract).
+    /// Additive: omitted on the wire when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
     /// Control-flow kind. Default `Spawn` (run once).
     #[serde(default, skip_serializing_if = "is_spawn")]
     pub kind: NodeKind,
@@ -112,6 +126,7 @@ impl WorkflowNode {
             context_inheritance,
             model_hint: None,
             trust: NodeTrust::Trusted,
+            output_schema: None,
             kind: NodeKind::Spawn,
             depends_on: Vec::new(),
         }
@@ -135,6 +150,14 @@ impl WorkflowNode {
     /// `task.goal` is the judging criterion handed to every judge. Requires ≥2 entrants.
     pub fn with_tournament(mut self, entrants: Vec<RuntimeTask>) -> Self {
         self.kind = NodeKind::Tournament { entrants };
+        self
+    }
+
+    /// G2: make this a deterministic *reduce* node — it runs no LLM agent; the SDK routes it to the
+    /// registered `reducer` function over its dependencies' outputs (dedupe / filter / merge). Give
+    /// it `depends_on` the nodes whose outputs it consumes.
+    pub fn with_reduce(mut self, reducer: impl Into<String>) -> Self {
+        self.kind = NodeKind::Reduce { reducer: reducer.into() };
         self
     }
 
@@ -168,6 +191,13 @@ impl WorkflowNode {
     /// Mark this node as quarantined (reads untrusted content, runs without privileges).
     pub fn quarantined(mut self) -> Self {
         self.trust = NodeTrust::Quarantined;
+        self
+    }
+
+    /// G3: require this node's output to conform to a JSON Schema. The kernel carries it verbatim to
+    /// the spawn descriptor; the SDK instructs the agent and validates/retries on its result.
+    pub fn with_output_schema(mut self, schema: serde_json::Value) -> Self {
+        self.output_schema = Some(schema);
         self
     }
 }

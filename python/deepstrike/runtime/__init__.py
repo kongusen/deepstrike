@@ -35,6 +35,7 @@ from deepstrike.runtime.mcp_proxy_plane import McpProxyPlane, McpServerConfig
 from deepstrike.runtime.remote_vpc_plane import RemoteVpcPlane
 from deepstrike.runtime.filtered_plane import FilteredExecutionPlane
 from deepstrike.runtime.sub_agent_orchestrator import SubAgentOrchestrator, spawn_standalone, default_sub_agent_orchestrator
+from deepstrike.runtime.reducers import builtin_reducers, resolve_reducer
 from deepstrike.runtime.os_profile import (
   AttentionPolicy,
   OsProfile,
@@ -54,6 +55,8 @@ __all__ = [
   "MemoryWriteRateLimit",
   "SchedulerBudget",
   "SubAgentHarnessConfig",
+  "builtin_reducers",
+  "resolve_reducer",
   "collect_text",
   "LocalExecutionPlane",
   "ExecutionPlane",

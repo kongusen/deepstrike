@@ -17,6 +17,8 @@ from deepstrike.runtime import (
     MemoryWriteRateLimit,
     SchedulerBudget,
     SubAgentHarnessConfig,
+    builtin_reducers,
+    resolve_reducer,
     OsProfile,
     assert_native_profile,
     os_profile,
@@ -65,6 +67,7 @@ from deepstrike.types.agent import (
     milestone_check_pass, milestone_check_fail,
     WorkflowSpec, WorkflowNodeSpec, WorkflowSpawnInfo, workflow_spec_to_kernel,
     workflow_node_spec_to_kernel, submit_workflow_nodes_to_kernel, submit_workflow_nodes_tool,
+    workflow_budget_note,
     fanout_synthesize, generate_and_filter, verify_rules,
 )
 from deepstrike.collaboration import (
@@ -78,6 +81,8 @@ from deepstrike.collaboration import (
 __all__ = [
     "RuntimeRunner",
     "RuntimeOptions",
+    "builtin_reducers",
+    "resolve_reducer",
     "ResourceQuota",
     "MemoryPolicy",
     "MemoryWriteRateLimit",
@@ -131,6 +136,7 @@ __all__ = [
     # Workflow DAG drive (W0-ABI)
     "WorkflowSpec", "WorkflowNodeSpec", "WorkflowSpawnInfo", "workflow_spec_to_kernel",
     "workflow_node_spec_to_kernel", "submit_workflow_nodes_to_kernel", "submit_workflow_nodes_tool",
+    "workflow_budget_note",
     "fanout_synthesize", "generate_and_filter", "verify_rules",
     "__version__",
 ]

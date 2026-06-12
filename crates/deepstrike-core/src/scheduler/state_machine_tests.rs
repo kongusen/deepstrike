@@ -1564,17 +1564,20 @@
         assert!(sm.agent_process("wf-node0").is_some());
 
         // While wf-node0 runs, submit one more node — it spawns immediately as wf-node1.
-        let action = sm.submit_workflow_nodes(vec![WorkflowNode::new(
-            RuntimeTask::new("discovered-work"),
-            AgentRole::Implement,
-        )]);
+        let action = sm.submit_workflow_nodes(
+            vec![WorkflowNode::new(
+                RuntimeTask::new("discovered-work"),
+                AgentRole::Implement,
+            )],
+            None,
+        );
         assert!(matches!(action, LoopAction::AwaitingResume));
         assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node1
         assert!(sm.agent_process("wf-node1").is_some());
         assert!(sm.workflow_active());
 
         // Empty submission (and a submission with no active workflow) is a no-op.
-        sm.submit_workflow_nodes(vec![]);
+        sm.submit_workflow_nodes(vec![], None);
         assert_eq!(count_spawned(&sm.take_observations()), 0);
 
         // The root completes but the workflow keeps running its submitted node.
@@ -1613,10 +1616,10 @@
         assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node0
 
         // Submitting would grow the DAG to 2 > max(1) → denied; no wf-node1 spawns.
-        sm.submit_workflow_nodes(vec![WorkflowNode::new(
-            RuntimeTask::new("more"),
-            AgentRole::Implement,
-        )]);
+        sm.submit_workflow_nodes(
+            vec![WorkflowNode::new(RuntimeTask::new("more"), AgentRole::Implement)],
+            None,
+        );
         assert_eq!(count_spawned(&sm.take_observations()), 0);
         assert!(sm.agent_process("wf-node1").is_none(), "denied submission does not spawn");
 
@@ -1624,6 +1627,64 @@
         let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
         assert!(!sm.workflow_active());
+    }
+
+    #[test]
+    fn workflow_batch_spawned_carries_remaining_budget_under_quota() {
+        // G4 budget-as-signal: a coordinator node reads remaining headroom to scale its submission.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.set_resource_quota(crate::governance::quota::ResourceQuota {
+            max_workflow_nodes: Some(5),
+            max_concurrent_subagents: Some(3),
+            ..Default::default()
+        });
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("root"),
+            AgentRole::Implement,
+        )]);
+        sm.load_workflow(spec, "sess");
+
+        // The first batch (wf-node0) reports: 1/5 nodes used → 4 remaining; 1 running → 2 slots left.
+        let budget = sm
+            .take_observations()
+            .into_iter()
+            .find_map(|o| match o {
+                KernelObservation::WorkflowBatchSpawned { budget, .. } => budget,
+                _ => None,
+            })
+            .expect("budget present under an active quota");
+        assert_eq!(budget.nodes_used, 1);
+        assert_eq!(budget.nodes_max, Some(5));
+        assert_eq!(budget.nodes_remaining, Some(4));
+        assert_eq!(budget.running_subagents, 1);
+        assert_eq!(budget.max_concurrent_subagents, Some(3));
+        assert_eq!(budget.concurrency_remaining, Some(2));
+    }
+
+    #[test]
+    fn workflow_batch_spawned_omits_budget_without_quota() {
+        // No resource quota installed → nothing to bound → no budget signal (additive: omitted).
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("root"),
+            AgentRole::Implement,
+        )]);
+        sm.load_workflow(spec, "sess");
+        let had_budget = sm.take_observations().into_iter().any(|o| {
+            matches!(o, KernelObservation::WorkflowBatchSpawned { budget: Some(_), .. })
+        });
+        assert!(!had_budget, "no quota ⇒ no budget signal");
     }
 
     #[test]

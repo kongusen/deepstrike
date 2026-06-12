@@ -42,6 +42,20 @@ pub struct WorkflowSpawnInfo {
     /// privileges and crosses their output back only as a structured summary.
     #[serde(default = "default_trust")]
     pub trust: String,
+    /// G3 structured output: the JSON Schema the node's output must conform to, carried verbatim
+    /// from [`WorkflowNode::output_schema`]. The SDK instructs the agent with it and validates +
+    /// retries on its result. `None` when the node declared no schema. Additive ABI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
+    /// G2 deterministic compute: present only for a [`NodeKind::Reduce`] node — the name of the
+    /// SDK-registered pure function the SDK runs (over `input_agent_ids`' outputs) instead of an LLM
+    /// agent. `None` for every ordinary node. Additive ABI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reducer: Option<String>,
+    /// G2: the dependency agent ids whose outputs a [`NodeKind::Reduce`] node consumes (its
+    /// `depends_on`, resolved to stable agent ids). Empty for non-reduce nodes. Additive ABI.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_agent_ids: Vec<String>,
     /// Present only for a tournament *judge* spawn (A#2): the two entrant agent ids whose outputs
     /// this judge must compare. The SDK looks up those entrants' produced candidates, runs the
     /// judge, and reports the winner in the result's `tournament_winner`. `None` for every ordinary
@@ -61,6 +75,33 @@ fn default_trust() -> String {
 pub struct JudgeMatch {
     pub left: String,
     pub right: String,
+}
+
+/// G4 budget-as-signal: a snapshot of the workflow's remaining headroom under the active resource
+/// quota, carried to the SDK on every `WorkflowBatchSpawned`. A coordinator/submitter node reads it
+/// to *scale its next submission to what is actually available* — the analogue of the host-side
+/// `budget.remaining()` in the code-orchestration model — instead of blindly hitting the cap and
+/// eating a `Deny`. `None` remaining fields mean that dimension is unbounded (no quota set).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct WorkflowBudget {
+    /// Nodes currently in the DAG (spec + every runtime submission so far).
+    pub nodes_used: usize,
+    /// `ResourceQuota::max_workflow_nodes`, if set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nodes_max: Option<usize>,
+    /// `nodes_max - nodes_used` (saturating), if a node cap is set — how many more nodes may be
+    /// submitted before the `max_workflow_nodes` backstop denies further growth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nodes_remaining: Option<usize>,
+    /// Sub-agents currently in the `running` state.
+    pub running_subagents: usize,
+    /// `ResourceQuota::max_concurrent_subagents`, if set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent_subagents: Option<usize>,
+    /// `max_concurrent_subagents - running_subagents` (saturating), if a concurrency cap is set —
+    /// how many of a submission's nodes can spawn *immediately* rather than deferring for a slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency_remaining: Option<usize>,
 }
 
 fn role_label(role: AgentRole) -> &'static str {
@@ -212,11 +253,13 @@ impl WorkflowRun {
                 let k = self.iter_counts.get(&node).copied().unwrap_or(0);
                 format!("{}-i{k}", node_agent_id(node))
             }
-            // Spawn / Classify run once, and a Tournament controller never spawns its own agent
-            // (its entrant/judge children are separate Spawn nodes) → stable plain id.
-            NodeKind::Spawn | NodeKind::Classify { .. } | NodeKind::Tournament { .. } => {
-                node_agent_id(node)
-            }
+            // Spawn / Classify run once, a Tournament controller never spawns its own agent (its
+            // entrant/judge children are separate Spawn nodes), and a Reduce node runs once as host
+            // compute → stable plain id.
+            NodeKind::Spawn
+            | NodeKind::Classify { .. }
+            | NodeKind::Tournament { .. }
+            | NodeKind::Reduce { .. } => node_agent_id(node),
         }
     }
 
@@ -255,6 +298,15 @@ impl WorkflowRun {
     /// the host that runs the node.
     pub fn spawn_info(&self, node: usize) -> WorkflowSpawnInfo {
         let n = &self.nodes[node];
+        // G2: a Reduce node carries its reducer name + the stable agent ids of its dependencies, so
+        // the SDK can gather those outputs and run the pure function. Non-reduce nodes carry neither.
+        let (reducer, input_agent_ids) = match &n.kind {
+            NodeKind::Reduce { reducer } => (
+                Some(reducer.clone()),
+                n.depends_on.iter().map(|&d| node_agent_id(d)).collect(),
+            ),
+            _ => (None, Vec::new()),
+        };
         WorkflowSpawnInfo {
             agent_id: self.current_agent_id(node),
             goal: n.task.goal.clone(),
@@ -263,6 +315,9 @@ impl WorkflowRun {
             context_inheritance: inheritance_label(n.context_inheritance).to_string(),
             model_hint: n.model_hint.clone(),
             trust: trust_label(n.trust).to_string(),
+            output_schema: n.output_schema.clone(),
+            reducer,
+            input_agent_ids,
             judge_match: self.judge_matches.get(&node).cloned(),
         }
     }
@@ -327,12 +382,22 @@ impl WorkflowRun {
                 }
             }
             // A Tournament controller never reaches here (it spawns no agent of its own; its
-            // children route through `child_controller` above). Defensive no-op for completeness.
-            NodeKind::Spawn | NodeKind::Tournament { .. } => {}
+            // children route through `child_controller` above). A Reduce node completes like a Spawn
+            // (its host-compute result feeds back as an ordinary completion). Defensive no-op.
+            NodeKind::Spawn | NodeKind::Tournament { .. } | NodeKind::Reduce { .. } => {}
         }
 
-        // Spawn node, loop's final iteration, or a completed classifier: promote dependents.
-        self.graph.complete(node, result);
+        // Spawn node, loop's final iteration, or a completed classifier. A node whose agent
+        // terminated in `Error` is *failed* (its dependents starve) rather than completed — an
+        // errored agent must not promote dependents that would run on missing/garbage input. This
+        // is also the SDK's only lever to fail a node from a result: G3 schema enforcement returns
+        // an `Error`-terminated result when output never conforms, failing the node here. Other
+        // terminations (max-turns / budget / timeout) still complete — they may carry partial output.
+        if matches!(result.termination, crate::types::result::TerminationReason::Error) {
+            self.graph.fail(node);
+        } else {
+            self.graph.complete(node, result);
+        }
         Some(node)
     }
 
@@ -548,6 +613,31 @@ impl WorkflowRun {
     ///
     /// Pure graph mutation: the caller (state machine) is responsible for routing the trigger
     /// through `evaluate_syscall` before calling this, keeping the kernel's zero-I/O contract.
+    ///
+    /// G1 no-privilege-escalation: when `submitter` names a [`NodeTrust::Quarantined`] node, every
+    /// node in this submission is coerced to `Quarantined` before append. A quarantined agent read
+    /// untrusted content (which may be adversarial), so the topology it asks for is itself untrusted:
+    /// it must not be able to launch a *trusted* (or write-capable) child and thereby escape its
+    /// sandbox. This is transitive taint — a quarantined origin's descendants inherit quarantine —
+    /// the topological analogue of a process spawned by an untrusted process inheriting its label.
+    /// Trusted (or absent) submitters pass through unchanged. The coercion is enforced here in the
+    /// kernel rather than trusting the SDK, and composes with the spawn-time
+    /// [`Self::quarantine_violation`] gate (a coerced node that also asked for write isolation is
+    /// then denied at spawn).
+    pub fn submit_nodes_from(
+        &mut self,
+        submitter: Option<&str>,
+        mut nodes: Vec<WorkflowNode>,
+    ) -> Vec<usize> {
+        let submitter_quarantined = submitter.is_some_and(|s| self.is_agent_quarantined(s));
+        if submitter_quarantined {
+            for node in &mut nodes {
+                node.trust = NodeTrust::Quarantined;
+            }
+        }
+        self.submit_nodes(nodes)
+    }
+
     pub fn submit_nodes(&mut self, nodes: Vec<WorkflowNode>) -> Vec<usize> {
         let base = self.nodes.len();
         let mut ids = Vec::with_capacity(nodes.len());
@@ -726,6 +816,124 @@ mod tests {
         assert_eq!(spawned, vec![(1usize, "wf-node1".to_string())]);
         run.record_completion("wf-node1", done());
         assert!(run.is_complete(), "complete once the submitted node finishes");
+    }
+
+    #[test]
+    fn reduce_node_carries_reducer_and_inputs_then_completes_like_a_spawn() {
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        // G2: two fan-out workers feed a deterministic reduce node (dedupe). The reduce node runs no
+        // agent; its descriptor names the reducer + its inputs, and it completes like a spawn.
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("worker-a"), AgentRole::Explore),
+            WorkflowNode::new(RuntimeTask::new("worker-b"), AgentRole::Explore),
+            WorkflowNode::new(RuntimeTask::new("merge"), AgentRole::Implement)
+                .with_reduce("dedupe_lines")
+                .with_depends_on(vec![0, 1]),
+        ]);
+        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+
+        // Only the two workers are ready first (the reduce node waits on both).
+        assert_eq!(run.ready_batch(), vec![0, 1]);
+        for i in [0usize, 1] {
+            let id = run.current_agent_id(i);
+            run.mark_spawned(i, &id);
+            run.record_completion(&id, done());
+        }
+
+        // Now the reduce node is ready; its descriptor carries the reducer name + both input ids.
+        assert_eq!(run.ready_batch(), vec![2]);
+        let info = run.spawn_info(2);
+        assert_eq!(info.reducer.as_deref(), Some("dedupe_lines"));
+        assert_eq!(info.input_agent_ids, vec!["wf-node0".to_string(), "wf-node1".to_string()]);
+
+        // The reduce node's (SDK-computed) result feeds back as an ordinary completion → DAG done.
+        run.mark_spawned(2, "wf-node2");
+        run.record_completion("wf-node2", done());
+        assert!(run.is_complete());
+        let (completed, failed) = run.outcome();
+        assert_eq!(completed, vec!["wf-node0", "wf-node1", "wf-node2"]);
+        assert!(failed.is_empty());
+    }
+
+    #[test]
+    fn output_schema_reaches_the_spawn_descriptor() {
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        // G3: a node declaring an output schema carries it verbatim to the SDK spawn descriptor.
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["verdict"],
+            "properties": { "verdict": { "type": "string" } }
+        });
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("judge"),
+            AgentRole::Verify,
+        )
+        .with_output_schema(schema.clone())]);
+        let run = WorkflowRun::new(&spec, "sess").unwrap();
+        let info = run.spawn_info(0);
+        assert_eq!(info.output_schema.as_ref(), Some(&schema));
+
+        // Full serde round-trip preserves it (additive ABI).
+        let json = serde_json::to_string(&info).unwrap();
+        let back: WorkflowSpawnInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.output_schema, Some(schema));
+
+        // A node without a schema omits the field entirely on the wire.
+        let plain = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("x"),
+            AgentRole::Implement,
+        )]);
+        let plain_info = WorkflowRun::new(&plain, "sess").unwrap().spawn_info(0);
+        assert!(plain_info.output_schema.is_none());
+        assert!(!serde_json::to_string(&plain_info).unwrap().contains("output_schema"));
+    }
+
+    #[test]
+    fn quarantined_submitter_taints_submitted_nodes() {
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        // G1: a quarantined root reads untrusted content, then tries to submit a node it declares
+        // "trusted" (and write-capable). The kernel must coerce that node to quarantined — a
+        // quarantined origin cannot escalate its descendants out of the sandbox.
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("read-untrusted"),
+            AgentRole::Explore,
+        )
+        .quarantined()]);
+        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let id0 = run.current_agent_id(0);
+        run.mark_spawned(0, &id0);
+        run.record_completion(&id0, done());
+
+        // Submitted node claims Trusted; the quarantined submitter cannot grant that.
+        let ids = run.submit_nodes_from(
+            Some(&id0),
+            vec![WorkflowNode::new(RuntimeTask::new("act"), AgentRole::Implement)],
+        );
+        assert_eq!(ids, vec![1]);
+        let id1 = run.current_agent_id(1);
+        run.mark_spawned(1, &id1);
+        assert!(
+            run.is_agent_quarantined(&id1),
+            "submitted node inherits the submitter's quarantine (no escalation)"
+        );
+
+        // A trusted / unknown submitter does NOT coerce — only quarantined origins taint.
+        let ids2 = run.submit_nodes_from(
+            None,
+            vec![WorkflowNode::new(RuntimeTask::new("trusted-work"), AgentRole::Implement)],
+        );
+        let id2 = run.current_agent_id(ids2[0]);
+        run.mark_spawned(ids2[0], &id2);
+        assert!(
+            !run.is_agent_quarantined(&id2),
+            "no quarantined submitter ⇒ no coercion"
+        );
     }
 
     #[test]

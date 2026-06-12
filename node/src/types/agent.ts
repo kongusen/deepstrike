@@ -214,6 +214,12 @@ export interface WorkflowNodeSpec {
   modelHint?: string
   /** W3: `quarantined` nodes read untrusted content and must run without privileges. */
   trust?: NodeTrust
+  /** G3: JSON Schema the node's output must conform to. The kernel carries it to the spawn
+   *  descriptor; the runner instructs the agent and validates + retries once on mismatch. */
+  outputSchema?: Record<string, unknown>
+  /** G2: make this a deterministic *reduce* node — it runs no LLM agent. The runner routes it to the
+   *  registered reducer of this name, over its `dependsOn` nodes' outputs (dedupe / filter / merge). */
+  reducer?: string
   /** Indices of nodes this node depends on. */
   dependsOn?: number[]
 }
@@ -233,6 +239,44 @@ export interface WorkflowSpawnInfo {
   model_hint?: string
   /** W3 trust level: `"trusted"` | `"quarantined"`. */
   trust?: string
+  /** G3: JSON Schema the node's output must conform to (carried verbatim from the spec). */
+  output_schema?: Record<string, unknown>
+  /** G2: for a reduce node, the name of the registered host function to run (no LLM). */
+  reducer?: string
+  /** G2: the dependency agent ids whose outputs a reduce node consumes. */
+  input_agent_ids?: string[]
+}
+
+/** G4 budget-as-signal: the workflow's remaining headroom under the active quota, carried on the
+ *  `workflow_batch_spawned` observation so a coordinator node can scale its next submission. */
+export interface WorkflowBudget {
+  nodes_used: number
+  nodes_max?: number
+  nodes_remaining?: number
+  running_subagents: number
+  max_concurrent_subagents?: number
+  concurrency_remaining?: number
+}
+
+/** G4: a concise, human-readable budget note appended to a coordinator node's goal, so its agent can
+ *  size a `submit_workflow_nodes` batch to what is actually available. Returns "" when nothing is
+ *  bounded (no quota ⇒ no signal). */
+export function workflowBudgetNote(budget: WorkflowBudget | undefined): string {
+  if (!budget) return ""
+  const parts: string[] = []
+  if (budget.nodes_remaining != null && budget.nodes_max != null) {
+    parts.push(`nodes ${budget.nodes_used}/${budget.nodes_max} used, ${budget.nodes_remaining} remaining`)
+  }
+  if (budget.concurrency_remaining != null && budget.max_concurrent_subagents != null) {
+    parts.push(
+      `concurrency ${budget.running_subagents}/${budget.max_concurrent_subagents} running, ${budget.concurrency_remaining} free`,
+    )
+  }
+  if (parts.length === 0) return ""
+  return (
+    `[workflow budget] ${parts.join(" · ")}. ` +
+    "If you submit more workflow nodes, keep the batch within the remaining node budget."
+  )
 }
 
 /** Map one host `WorkflowNodeSpec` to its snake_case kernel JSON. Shared by `load_workflow` (the
@@ -252,6 +296,9 @@ export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): Record<string, un
     context_inheritance: n.contextInheritance ?? "none",
     ...(n.modelHint ? { model_hint: n.modelHint } : {}),
     ...(n.trust && n.trust !== "trusted" ? { trust: n.trust } : {}),
+    ...(n.outputSchema ? { output_schema: n.outputSchema } : {}),
+    // G2: a reducer name lowers to the kernel's `NodeKind::Reduce` (serde-tagged by `type`).
+    ...(n.reducer ? { kind: { type: "reduce", reducer: n.reducer } } : {}),
     ...(n.dependsOn && n.dependsOn.length ? { depends_on: n.dependsOn } : {}),
   }
 }
@@ -261,9 +308,18 @@ export function workflowSpecToKernel(spec: WorkflowSpec): Record<string, unknown
   return { nodes: spec.nodes.map(workflowNodeSpecToKernel) }
 }
 
-/** R3-1: map a batch of host nodes to the `submit_workflow_nodes` kernel event body. */
-export function submitWorkflowNodesToKernel(nodes: WorkflowNodeSpec[]): Record<string, unknown> {
-  return { kind: "submit_workflow_nodes", nodes: nodes.map(workflowNodeSpecToKernel) }
+/** R3-1: map a batch of host nodes to the `submit_workflow_nodes` kernel event body. G1: pass
+ *  `submitterAgentId` (the node that requested the append) so the kernel can enforce no-privilege-
+ *  escalation — a quarantined submitter's nodes are coerced to quarantined. Omitted ⇒ no coercion. */
+export function submitWorkflowNodesToKernel(
+  nodes: WorkflowNodeSpec[],
+  submitterAgentId?: string,
+): Record<string, unknown> {
+  return {
+    kind: "submit_workflow_nodes",
+    nodes: nodes.map(workflowNodeSpecToKernel),
+    ...(submitterAgentId ? { submitter_agent_id: submitterAgentId } : {}),
+  }
 }
 
 /** R3-1: the tool a workflow-coordinator node's agent calls to append work to the running DAG
@@ -301,6 +357,14 @@ export const submitWorkflowNodesTool: ToolSchema = {
             isolation: { type: "string", enum: ["shared", "read_only", "worktree", "remote"] },
             contextInheritance: { type: "string", enum: ["none", "system_only", "full"] },
             trust: { type: "string", enum: ["trusted", "quarantined"] },
+            outputSchema: {
+              type: "object",
+              description: "Optional JSON Schema the node's output must conform to (validated + retried SDK-side).",
+            },
+            reducer: {
+              type: "string",
+              description: "Make this a deterministic reduce node (no LLM); names a registered reducer.",
+            },
             dependsOn: {
               type: "array",
               items: { type: "integer" },

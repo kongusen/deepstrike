@@ -498,6 +498,32 @@ impl LoopStateMachine {
         self.evaluate_syscall(sys)
     }
 
+    /// G4: snapshot the active workflow's remaining headroom under the resource quota. `None` when no
+    /// quota is installed (nothing to bound, so no signal to report). Reads only the kernel's own
+    /// node count + `TaskTable` — no I/O. Carried on `WorkflowBatchSpawned` so a coordinator node can
+    /// scale its next submission to what is actually available.
+    fn workflow_budget(&self) -> Option<crate::orchestration::workflow::WorkflowBudget> {
+        let quota = self.resource_quota.as_ref()?;
+        let nodes_used = self.workflow.as_ref().map(|w| w.len()).unwrap_or(0);
+        let running_subagents = self
+            .tasks
+            .all()
+            .iter()
+            .filter(|t| t.proc.is_some() && matches!(t.state, TaskState::Running))
+            .count();
+        let nodes_max = quota.max_workflow_nodes;
+        let max_concurrent_subagents = quota.max_concurrent_subagents.map(|m| m as usize);
+        Some(crate::orchestration::workflow::WorkflowBudget {
+            nodes_used,
+            nodes_max,
+            nodes_remaining: nodes_max.map(|m| m.saturating_sub(nodes_used)),
+            running_subagents,
+            max_concurrent_subagents,
+            concurrency_remaining: max_concurrent_subagents
+                .map(|m| m.saturating_sub(running_subagents)),
+        })
+    }
+
     /// Spawn quota: deny once the running sub-agent count hits `max_concurrent_subagents`, or the
     /// new child's nesting depth would exceed `max_spawn_depth`. Reads only the kernel's own
     /// `TaskTable` — no I/O. A denied spawn rolls the turn back like a denied tool call.
@@ -1358,6 +1384,7 @@ impl LoopStateMachine {
     pub fn submit_workflow_nodes(
         &mut self,
         nodes: Vec<crate::orchestration::workflow::WorkflowNode>,
+        submitter_agent_id: Option<&str>,
     ) -> LoopAction {
         if nodes.is_empty() || self.workflow.is_none() {
             return LoopAction::AwaitingResume;
@@ -1384,7 +1411,9 @@ impl LoopStateMachine {
             return LoopAction::AwaitingResume;
         }
         if let Some(run) = self.workflow.as_mut() {
-            run.submit_nodes(nodes);
+            // G1: route through the trust-aware entry point — a quarantined submitter's nodes are
+            // coerced to quarantined in-kernel before append (no topological privilege escalation).
+            run.submit_nodes_from(submitter_agent_id, nodes);
         }
         self.drive_workflow(None)
     }
@@ -1532,10 +1561,14 @@ impl LoopStateMachine {
         // Spawn everything ready that fits under the concurrency cap right now.
         let (spawned_ids, spawned_infos) = self.spawn_ready_workflow_nodes();
         if !spawned_ids.is_empty() {
+            // G4: snapshot remaining budget *after* this batch's spawns are reflected in the running
+            // set, so a coordinator node reads accurate headroom for its next submission.
+            let budget = self.workflow_budget();
             // W0-ABI: tell the SDK which nodes to run (with their goals) before suspending.
             self.observations.push(KernelObservation::WorkflowBatchSpawned {
                 turn: self.turn,
                 nodes: spawned_infos,
+                budget,
             });
             match self.suspend_state.as_mut() {
                 Some(SuspendState::SubAgentAwait { agent_ids }) => {

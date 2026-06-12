@@ -37,7 +37,7 @@ import {
   type KernelRunnerAction,
   type KernelRuntimeHandle,
 } from "./kernel-step.js"
-import type { AgentRunSpec, AgentProcessChangedObservation, SubAgentResult, MilestonePolicy, MilestoneContract, MilestoneCheckResult, WorkflowSpec, WorkflowSpawnInfo, WorkflowNodeSpec } from "./types/agent.js"
+import type { AgentRunSpec, AgentProcessChangedObservation, SubAgentResult, MilestonePolicy, MilestoneContract, MilestoneCheckResult, WorkflowSpec, WorkflowSpawnInfo, WorkflowNodeSpec, WorkflowBudget } from "./types/agent.js"
 import {
   agentRunSpecToKernel,
   findSpawnProcessObservation,
@@ -46,11 +46,19 @@ import {
   spawnObservationToManifest,
   subAgentResultToKernel,
   submitWorkflowNodesToKernel,
+  workflowBudgetNote,
   workflowNodeToManifest,
   workflowNodeToSpec,
   workflowSpecToKernel,
 } from "./types/agent.js"
 import { defaultSubAgentOrchestrator, type SubAgentOrchestrator } from "./sub-agent-orchestrator.js"
+import {
+  extractJsonValue,
+  schemaInstruction,
+  schemaRetryInstruction,
+  validateAgainstSchema,
+} from "./output-schema.js"
+import { resolveReducer, type ReducerRegistry } from "./reducers.js"
 import { kernelObservationToSessionEvent, withCategory } from "./kernel-event-log.js"
 import { assertNativeProfile, type NativeOsProfile, type OsProfileId } from "./os-profile.js"
 import { LargeResultSpool } from "./large-result-spool.js"
@@ -116,6 +124,8 @@ export interface RuntimeOptions {
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
   onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
   subAgentOrchestrator?: SubAgentOrchestrator
+  /** G2: custom reducers for `NodeKind::Reduce` workflow nodes, merged over the built-ins. */
+  reducers?: ReducerRegistry
   milestonePolicy?: MilestonePolicy
   milestoneContract?: MilestoneContract
   onMilestoneEvaluate?: (ctx: { phaseId: string; criteria: string[]; requiredEvidence: string[] }) => Promise<MilestoneCheckResult> | MilestoneCheckResult
@@ -911,6 +921,90 @@ export class RuntimeRunner {
   }
 
   /**
+   * G3: run one workflow node, enforcing its `output_schema` (if any) by instructing the agent,
+   * validating its output (the supported JSON-Schema subset), and re-running once with the errors
+   * fed back on mismatch. If it still does not conform, the node is failed with the validation
+   * reason (an `Error`-terminated result fails the node in-kernel, starving its dependents).
+   */
+  private async runWorkflowNode(
+    node: WorkflowSpawnInfo,
+    parentSessionId: string,
+    orchestrator: SubAgentOrchestrator,
+    budget?: WorkflowBudget,
+    outputs?: Map<string, string>,
+  ): Promise<SubAgentResult> {
+    // G2: a reduce node runs no LLM — execute the registered pure function over its dependency
+    // outputs and feed the result back as an ordinary completion. Deterministic; no agent burned.
+    if (node.reducer) {
+      return this.runReduceNode(node, outputs ?? new Map())
+    }
+
+    const baseSpec = workflowNodeToSpec(node, parentSessionId)
+    const manifest = workflowNodeToManifest(node, parentSessionId)
+    // G4: surface remaining workflow budget so a coordinator node can size its submission.
+    const budgetNote = workflowBudgetNote(budget)
+    const withBudget = (goal: string) => (budgetNote ? `${goal}\n\n${budgetNote}` : goal)
+    const mkCtx = (goal: string) => ({
+      parentOpts: this.opts,
+      parentSessionId,
+      spec: { ...baseSpec, goal: withBudget(goal) },
+      manifest,
+      sessionLog: this.opts.sessionLog,
+    })
+
+    const schema = node.output_schema
+    if (!schema) return orchestrator.run(mkCtx(baseSpec.goal))
+
+    const MAX_ATTEMPTS = 2
+    let last: SubAgentResult | undefined
+    let lastErrors: string[] = []
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const goal =
+        attempt === 1
+          ? `${baseSpec.goal}\n\n${schemaInstruction(schema)}`
+          : `${baseSpec.goal}\n\n${schemaRetryInstruction(schema, lastErrors)}`
+      const result = await orchestrator.run(mkCtx(goal))
+      const content = result.result.finalMessage?.content
+      const text = typeof content === "string" ? content : content != null ? JSON.stringify(content) : ""
+      const v = validateAgainstSchema(extractJsonValue(text), schema)
+      if (v.ok) return result
+      last = result
+      lastErrors = v.errors
+    }
+
+    const reason = `output_schema validation failed after ${MAX_ATTEMPTS} attempts: ${lastErrors.join("; ")}`
+    const fallback = last as SubAgentResult
+    return {
+      ...fallback,
+      result: {
+        ...fallback.result,
+        termination: "error",
+        finalMessage: { role: "assistant", content: reason, toolCalls: [] },
+      },
+    }
+  }
+
+  /**
+   * G2: execute a deterministic reduce node — run the named reducer (built-ins overlaid with
+   * `opts.reducers`) over its dependency outputs and return a synthetic completion. No LLM, zero
+   * tokens. An unknown reducer or a thrown reducer fails the node (`Error` → starves dependents).
+   */
+  private runReduceNode(node: WorkflowSpawnInfo, outputs: Map<string, string>): SubAgentResult {
+    const ok = (content: string, termination: string): SubAgentResult => ({
+      agentId: node.agent_id,
+      result: { termination, finalMessage: { role: "assistant", content, toolCalls: [] }, turnsUsed: 0, totalTokensUsed: 0 },
+    })
+    const reducer = resolveReducer(node.reducer as string, this.opts.reducers)
+    if (!reducer) return ok(`unknown reducer "${node.reducer}"`, "error")
+    const inputs = (node.input_agent_ids ?? []).map(agentId => ({ agentId, output: outputs.get(agentId) ?? "" }))
+    try {
+      return ok(reducer(inputs), "completed")
+    } catch (err) {
+      return ok(`reducer "${node.reducer}" threw: ${err instanceof Error ? err.message : String(err)}`, "error")
+    }
+  }
+
+  /**
    * W0-ABI: run a declarative workflow DAG. The kernel owns the DAG and gates every node spawn
    * through the syscall trap; this driver runs each kernel-emitted batch of nodes in parallel,
    * feeds their results back, and loops until the kernel reports the workflow complete.
@@ -938,39 +1032,44 @@ export class RuntimeRunner {
 
     const collectNodes = (obs: typeof observations): WorkflowSpawnInfo[] =>
       (obs.find(o => o.kind === "workflow_batch_spawned") as { nodes?: WorkflowSpawnInfo[] } | undefined)?.nodes ?? []
+    // G4: the batch observation carries the workflow's remaining budget; track the latest.
+    const collectBudget = (obs: typeof observations): WorkflowBudget | undefined =>
+      (obs.find(o => o.kind === "workflow_batch_spawned") as { budget?: WorkflowBudget } | undefined)?.budget
     const findDone = (obs: typeof observations) =>
       obs.find(o => o.kind === "workflow_completed") as { completed?: string[]; failed?: string[] } | undefined
 
     let done = findDone(observations)
     if (done) return { completed: done.completed ?? [], failed: done.failed ?? [] }
     let nodes = collectNodes(observations)
+    let budget = collectBudget(observations)
+    // G2: each completed node's output, keyed by agent id — a reduce node reads its deps' outputs.
+    const outputs = new Map<string, string>()
 
     for (;;) {
       if (nodes.length === 0) return { completed: [], failed: [] }
 
+      const roundBudget = budget
       const results = await Promise.all(
-        nodes.map(node =>
-          orchestrator.run({
-            parentOpts: this.opts,
-            parentSessionId,
-            spec: workflowNodeToSpec(node, parentSessionId),
-            manifest: workflowNodeToManifest(node, parentSessionId),
-            sessionLog: this.opts.sessionLog,
-          }),
-        ),
+        nodes.map(node => this.runWorkflowNode(node, parentSessionId, orchestrator, roundBudget, outputs)),
       )
 
       // Accumulate next-batch nodes across feeds (per-node unblock can spawn dependents per feed).
       const nextNodes: WorkflowSpawnInfo[] = []
       done = undefined
       for (const result of results) {
+        // G2: record this node's output so a downstream reduce node can consume it.
+        const outContent = result.result.finalMessage?.content
+        outputs.set(result.agentId, typeof outContent === "string" ? outContent : outContent != null ? JSON.stringify(outContent) : "")
         // R3-1: if this node's agent submitted more nodes, append them to the parent DAG BEFORE
         // reporting the node's completion — the workflow is still active, so even a last-node
         // submission keeps the DAG alive.
         if (result.submittedNodes?.length) {
-          const submitEvent = submitWorkflowNodesToKernel(result.submittedNodes)
+          // G1: stamp the submitting node's agent id so the kernel coerces a quarantined submitter's
+          // nodes to quarantined (no topological privilege escalation).
+          const submitEvent = submitWorkflowNodesToKernel(result.submittedNodes, result.agentId)
           const subObs = kernelApply(runtime, this.pendingObservations, submitEvent)
           nextNodes.push(...collectNodes(subObs))
+          budget = collectBudget(subObs) ?? budget
           // R3-1: persist the submission (kernel-shape nodes) so resume can re-apply it.
           await this.opts.sessionLog.append(parentSessionId, buildWorkflowNodesSubmittedEvent({
             turn: runtime.turn(),
@@ -982,6 +1081,7 @@ export class RuntimeRunner {
           result: subAgentResultToKernel(result),
         })
         nextNodes.push(...collectNodes(obs))
+        budget = collectBudget(obs) ?? budget
         const d = findDone(obs)
         if (d) done = d
         // Persist node completion for resume recovery.

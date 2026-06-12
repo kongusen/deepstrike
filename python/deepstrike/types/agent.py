@@ -194,6 +194,11 @@ class WorkflowNodeSpec:
   model_hint: str | None = None
   # W3: `quarantined` nodes read untrusted content and must run without privileges (read-only).
   trust: NodeTrust = "trusted"
+  # G3: JSON Schema the node's output must conform to (validated + retried SDK-side).
+  output_schema: dict[str, Any] | None = None
+  # G2: make this a deterministic reduce node — runs no LLM agent; the runner routes it to the
+  # registered reducer of this name over its ``depends_on`` nodes' outputs.
+  reducer: str | None = None
   depends_on: list[int] = field(default_factory=list)
 
 
@@ -214,6 +219,35 @@ class WorkflowSpawnInfo:
   isolation: str
   context_inheritance: str
   model_hint: str | None = None
+  # G3: JSON Schema the node's output must conform to (carried verbatim from the spec).
+  output_schema: dict[str, Any] | None = None
+  # G2: for a reduce node, the registered reducer name + the dependency agent ids it consumes.
+  reducer: str | None = None
+  input_agent_ids: list[str] = field(default_factory=list)
+
+
+def workflow_budget_note(budget: dict[str, Any] | None) -> str:
+  """G4: a concise budget note appended to a coordinator node's goal so its agent can size a
+  ``submit_workflow_nodes`` batch to what is available. ``budget`` is the snake_case dict carried on
+  the ``workflow_batch_spawned`` observation. Returns "" when nothing is bounded (no quota)."""
+  if not budget:
+    return ""
+  parts: list[str] = []
+  if budget.get("nodes_remaining") is not None and budget.get("nodes_max") is not None:
+    parts.append(
+      f"nodes {budget.get('nodes_used')}/{budget['nodes_max']} used, {budget['nodes_remaining']} remaining"
+    )
+  if budget.get("concurrency_remaining") is not None and budget.get("max_concurrent_subagents") is not None:
+    parts.append(
+      f"concurrency {budget.get('running_subagents')}/{budget['max_concurrent_subagents']} running, "
+      f"{budget['concurrency_remaining']} free"
+    )
+  if not parts:
+    return ""
+  return (
+    "[workflow budget] " + " · ".join(parts) + ". "
+    "If you submit more workflow nodes, keep the batch within the remaining node budget."
+  )
 
 
 def workflow_node_spec_to_kernel(n: WorkflowNodeSpec) -> dict[str, Any]:
@@ -237,6 +271,11 @@ def workflow_node_spec_to_kernel(n: WorkflowNodeSpec) -> dict[str, Any]:
     node["model_hint"] = n.model_hint
   if getattr(n, "trust", "trusted") and n.trust != "trusted":
     node["trust"] = n.trust
+  if getattr(n, "output_schema", None):
+    node["output_schema"] = n.output_schema
+  # G2: a reducer name lowers to the kernel's NodeKind::Reduce (serde-tagged by `type`).
+  if getattr(n, "reducer", None):
+    node["kind"] = {"type": "reduce", "reducer": n.reducer}
   if n.depends_on:
     node["depends_on"] = list(n.depends_on)
   return node
@@ -247,9 +286,22 @@ def workflow_spec_to_kernel(spec: WorkflowSpec) -> dict[str, Any]:
   return {"nodes": [workflow_node_spec_to_kernel(n) for n in spec.nodes]}
 
 
-def submit_workflow_nodes_to_kernel(nodes: list[WorkflowNodeSpec]) -> dict[str, Any]:
-  """R3-1: map a batch of host nodes to the ``submit_workflow_nodes`` kernel event body."""
-  return {"kind": "submit_workflow_nodes", "nodes": [workflow_node_spec_to_kernel(n) for n in nodes]}
+def submit_workflow_nodes_to_kernel(
+  nodes: list[WorkflowNodeSpec], submitter_agent_id: str | None = None
+) -> dict[str, Any]:
+  """R3-1: map a batch of host nodes to the ``submit_workflow_nodes`` kernel event body.
+
+  G1: ``submitter_agent_id`` (the node that requested the append) lets the kernel enforce
+  no-privilege-escalation — a quarantined submitter's nodes are coerced to quarantined. Omitted ⇒
+  no coercion.
+  """
+  body: dict[str, Any] = {
+    "kind": "submit_workflow_nodes",
+    "nodes": [workflow_node_spec_to_kernel(n) for n in nodes],
+  }
+  if submitter_agent_id:
+    body["submitter_agent_id"] = submitter_agent_id
+  return body
 
 
 # R3-1: the tool a workflow-coordinator node's agent calls to append work to the running DAG (true
@@ -275,6 +327,8 @@ submit_workflow_nodes_tool: dict[str, Any] = {
             "isolation": {"type": "string", "enum": ["shared", "read_only", "worktree", "remote"]},
             "context_inheritance": {"type": "string", "enum": ["none", "system_only", "full"]},
             "trust": {"type": "string", "enum": ["trusted", "quarantined"]},
+            "output_schema": {"type": "object", "description": "Optional JSON Schema the node's output must conform to."},
+            "reducer": {"type": "string", "description": "Make this a deterministic reduce node (no LLM); names a registered reducer."},
             "depends_on": {"type": "array", "items": {"type": "integer"}},
           },
           "required": ["task", "role"],

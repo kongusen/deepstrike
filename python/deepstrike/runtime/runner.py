@@ -148,6 +148,8 @@ class RuntimeOptions:
   on_permission_request: Callable[[PermissionRequestEvent], Awaitable[PermissionResponse | bool | dict[str, Any]] | PermissionResponse | bool | dict[str, Any]] | None = None
   sub_agent_orchestrator: Any | None = None
   sub_agent_harness: SubAgentHarnessConfig | None = None
+  # G2: custom reducers for NodeKind::Reduce nodes, merged over the built-ins. A reduce node runs no LLM.
+  reducers: dict | None = None
   dream_system_prompt: str | None = None
   milestone_policy: "MilestonePolicy | None" = None
   on_milestone_evaluate: Callable[[dict[str, Any]], Awaitable[Any] | Any] | None = None
@@ -416,12 +418,21 @@ class RuntimeRunner:
       build_workflow_nodes_submitted_event,
     )
     from deepstrike.types.agent import (
+      LoopResult,
+      SubAgentResult,
       WorkflowSpawnInfo,
       sub_agent_result_to_kernel,
       submit_workflow_nodes_to_kernel,
       workflow_node_to_manifest,
       workflow_node_to_spec,
       workflow_spec_to_kernel,
+    )
+    from dataclasses import replace as _dc_replace
+    from deepstrike.runtime.output_schema import (
+      extract_json_value,
+      schema_instruction,
+      schema_retry_instruction,
+      validate_against_schema,
     )
 
     if self._active_kernel is None or self._current_session_id is None:
@@ -444,7 +455,42 @@ class RuntimeRunner:
 
     observations = kernel_apply(runtime, self._pending_observations, load_event)
 
-    async def run_node(raw: dict) -> Any:
+    # G2: each completed node's output keyed by agent id — a reduce node reads its dependencies'
+    # outputs from here. Deps always complete in an earlier round than the reduce node consuming them.
+    outputs: dict[str, str] = {}
+
+    def _run_reduce_node(raw: dict) -> Any:
+      from deepstrike.runtime.reducers import resolve_reducer
+      from deepstrike._kernel import Message
+
+      def _result(content: str, termination: str) -> Any:
+        return SubAgentResult(
+          agent_id=raw["agent_id"],
+          result=LoopResult(
+            termination=termination,
+            turns_used=0,
+            total_tokens_used=0,
+            final_message=Message(role="assistant", content=content),
+          ),
+        )
+
+      reducer = resolve_reducer(raw["reducer"], self._opts.reducers)
+      if reducer is None:
+        return _result(f'unknown reducer "{raw["reducer"]}"', "error")
+      inputs = [{"agent_id": aid, "output": outputs.get(aid, "")} for aid in raw.get("input_agent_ids", [])]
+      try:
+        return _result(reducer(inputs), "completed")
+      except Exception as exc:  # noqa: BLE001 — a thrown reducer fails the node deterministically
+        return _result(f'reducer "{raw["reducer"]}" threw: {exc}', "error")
+
+    async def run_node(raw: dict, budget: dict | None = None) -> Any:
+      from deepstrike.types.agent import workflow_budget_note
+
+      # G2: a reduce node runs no LLM — execute the registered pure function over its dependency
+      # outputs and feed the result back as an ordinary completion. Deterministic; no agent burned.
+      if raw.get("reducer"):
+        return _run_reduce_node(raw)
+
       node = WorkflowSpawnInfo(
         agent_id=raw["agent_id"],
         goal=raw["goal"],
@@ -452,19 +498,70 @@ class RuntimeRunner:
         isolation=raw["isolation"],
         context_inheritance=raw["context_inheritance"],
         model_hint=raw.get("model_hint"),
+        output_schema=raw.get("output_schema"),
       )
-      return await orchestrator.run(SubAgentRunContext(
-        parent_opts=self._opts,
-        parent_session_id=parent_session_id,
-        spec=workflow_node_to_spec(node, parent_session_id),
-        manifest=workflow_node_to_manifest(node, parent_session_id),
-        session_log=self._opts.session_log,
-        harness=self._opts.sub_agent_harness,
-      ))
+      base_spec = workflow_node_to_spec(node, parent_session_id)
+      manifest = workflow_node_to_manifest(node, parent_session_id)
+      # G4: surface remaining workflow budget so a coordinator node can size its submission.
+      budget_note = workflow_budget_note(budget)
+
+      async def _run(goal: str) -> Any:
+        final_goal = f"{goal}\n\n{budget_note}" if budget_note else goal
+        return await orchestrator.run(SubAgentRunContext(
+          parent_opts=self._opts,
+          parent_session_id=parent_session_id,
+          spec=_dc_replace(base_spec, goal=final_goal),
+          manifest=manifest,
+          session_log=self._opts.session_log,
+          harness=self._opts.sub_agent_harness,
+        ))
+
+      schema = node.output_schema
+      if not schema:
+        return await _run(base_spec.goal)
+
+      # G3: instruct + validate + retry once on mismatch; fail the node if it never conforms.
+      max_attempts = 2
+      last: Any = None
+      last_errors: list[str] = []
+      for attempt in range(1, max_attempts + 1):
+        goal = (
+          f"{base_spec.goal}\n\n{schema_instruction(schema)}"
+          if attempt == 1
+          else f"{base_spec.goal}\n\n{schema_retry_instruction(schema, last_errors)}"
+        )
+        result = await _run(goal)
+        final = result.result.final_message
+        text = getattr(final, "content", "") if final is not None else ""
+        errors = validate_against_schema(extract_json_value(text), schema)
+        if not errors:
+          return result
+        last = result
+        last_errors = errors
+
+      reason = (
+        f"output_schema validation failed after {max_attempts} attempts: " + "; ".join(last_errors)
+      )
+      from deepstrike._kernel import Message
+      return SubAgentResult(
+        agent_id=last.agent_id,
+        result=LoopResult(
+          termination="error",
+          turns_used=last.result.turns_used,
+          total_tokens_used=last.result.total_tokens_used,
+          final_message=Message(role="assistant", content=reason),
+        ),
+        submitted_nodes=getattr(last, "submitted_nodes", []),
+      )
 
     def _collect_nodes(obs: list) -> list:
       batch = next((o for o in obs if o.get("kind") == "workflow_batch_spawned"), None)
       return (batch or {}).get("nodes") or []
+
+    def _collect_budget(obs: list):
+      # G4: the batch observation carries the workflow's remaining budget (None without a quota).
+      batch = next((o for o in obs if o.get("kind") == "workflow_batch_spawned"), None)
+      return (batch or {}).get("budget")
 
     def _find_done(obs: list):
       return next((o for o in obs if o.get("kind") == "workflow_completed"), None)
@@ -473,26 +570,36 @@ class RuntimeRunner:
     if done is not None:
       return {"completed": list(done.get("completed") or []), "failed": list(done.get("failed") or [])}
     nodes = _collect_nodes(observations)
+    budget = _collect_budget(observations)
 
     while True:
       if not nodes:
         return {"completed": [], "failed": []}
 
       # Run the currently-runnable nodes in parallel — each is independent within a round.
-      results = await asyncio.gather(*(run_node(n) for n in nodes))
+      round_budget = budget
+      results = await asyncio.gather(*(run_node(n, round_budget) for n in nodes))
 
       # Feed completions back one at a time. The run-queue executor can unblock a node's dependents
       # the moment it completes, so each feed may emit its own batch — ACCUMULATE across the round.
       next_nodes: list = []
       done = None
       for result in results:
+        # G2: record this node's output so a downstream reduce node can consume it.
+        _final = result.result.final_message
+        outputs[result.agent_id] = getattr(_final, "content", "") if _final is not None else ""
         # R3-1: if this node's agent submitted more nodes, append them to the parent DAG BEFORE
         # reporting the node's completion — the workflow is still active (the kernel hasn't seen this
         # node finish), so even a last-node submission keeps the DAG alive.
         if getattr(result, "submitted_nodes", None):
-          submit_event = submit_workflow_nodes_to_kernel(result.submitted_nodes)
+          # G1: stamp the submitting node's agent id so the kernel coerces a quarantined submitter's
+          # nodes to quarantined (no topological privilege escalation).
+          submit_event = submit_workflow_nodes_to_kernel(
+            result.submitted_nodes, getattr(result, "agent_id", None)
+          )
           sub_obs = kernel_apply(runtime, self._pending_observations, submit_event)
           next_nodes.extend(_collect_nodes(sub_obs))
+          budget = _collect_budget(sub_obs) or budget
           # R3-1: persist the submission (kernel-shape nodes) so resume can re-apply it.
           await self._opts.session_log.append(
             parent_session_id,
@@ -506,6 +613,7 @@ class RuntimeRunner:
           "result": sub_agent_result_to_kernel(result),
         })
         next_nodes.extend(_collect_nodes(obs))
+        budget = _collect_budget(obs) or budget
         d = _find_done(obs)
         if d is not None:
           done = d

@@ -264,6 +264,11 @@ pub enum KernelInputEvent {
     SubmitWorkflowNodes {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         nodes: Vec<crate::orchestration::workflow::WorkflowNode>,
+        /// G1: the agent id of the node that requested this submission. When it names a quarantined
+        /// node, the kernel coerces every submitted node to quarantined (no privilege escalation
+        /// across the trust boundary). Additive: omitted by older SDKs → `None` → no coercion.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        submitter_agent_id: Option<String>,
     },
     /// Feed long-term memory entries into the knowledge partition (page-in).
     /// SDK performs retrieval I/O; kernel only applies the result.
@@ -461,6 +466,11 @@ pub enum KernelObservation {
     WorkflowBatchSpawned {
         turn: u32,
         nodes: Vec<crate::orchestration::workflow::WorkflowSpawnInfo>,
+        /// G4 budget-as-signal: the workflow's remaining headroom under the active quota at spawn
+        /// time, so a coordinator node can scale its next submission. Additive: omitted when no
+        /// resource quota is installed (nothing to report).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget: Option<crate::orchestration::workflow::WorkflowBudget>,
     },
     /// W0-ABI: a workflow finished (all nodes terminal, or stalled by a gated dependency).
     WorkflowCompleted {
@@ -836,8 +846,13 @@ impl KernelRuntime {
             KernelInputEvent::SubAgentCompleted { result } => {
                 self.sm.feed(LoopEvent::SubAgentCompleted { result })
             }
-            KernelInputEvent::SubmitWorkflowNodes { nodes } => {
-                let action = self.sm.submit_workflow_nodes(nodes);
+            KernelInputEvent::SubmitWorkflowNodes {
+                nodes,
+                submitter_agent_id,
+            } => {
+                let action = self
+                    .sm
+                    .submit_workflow_nodes(nodes, submitter_agent_id.as_deref());
                 if matches!(action, LoopAction::AwaitingResume) {
                     return KernelStep::empty(self.sm.take_observations());
                 }
@@ -1862,6 +1877,7 @@ mod tests {
         // Submit a node over the ABI while wf-node0 runs (full serde round-trip).
         let event = KernelInputEvent::SubmitWorkflowNodes {
             nodes: vec![WorkflowNode::new(RuntimeTask::new("more"), AgentRole::Implement)],
+            submitter_agent_id: None,
         };
         let json = serde_json::to_string(&event).expect("serialize");
         let parsed: KernelInputEvent = serde_json::from_str(&json).expect("deserialize");
