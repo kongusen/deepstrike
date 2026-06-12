@@ -1258,8 +1258,17 @@ impl LoopStateMachine {
             .as_ref()
             .and_then(|m| m.content.as_text())
             .unwrap_or_default();
+        // R3-3 cross-boundary provenance: a quarantined node read untrusted content, so its output
+        // crossing into the trusted parent context is labeled as untrusted-origin. The kernel
+        // enforces the *label* (auditable, machine-checkable); shaping the output into a structured
+        // summary stays the SDK's job, since the kernel cannot inspect content shape.
+        let quarantined = self
+            .workflow
+            .as_ref()
+            .is_some_and(|w| w.is_agent_quarantined(result.agent_id.as_str()));
+        let marker = if quarantined { "quarantined sub-agent" } else { "sub-agent" };
         self.ctx
-            .push_signal(format!("[sub-agent {}] {}", result.agent_id, summary));
+            .push_signal(format!("[{marker} {}] {}", result.agent_id, summary));
 
         // W0: if a workflow owns this agent, advance its DAG (feed completion, drain the batch,
         // spawn the next gated batch or finish) instead of the single-spawn barrier below.

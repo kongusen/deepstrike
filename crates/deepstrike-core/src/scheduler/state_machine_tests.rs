@@ -1591,6 +1591,38 @@
     }
 
     #[test]
+    fn quarantined_node_output_is_labeled_crossing_into_trusted_context() {
+        // R3-3: the kernel marks a quarantined node's output as untrusted-origin when it crosses into
+        // the trusted parent context. Shaping the content into a summary stays SDK-side; the kernel
+        // enforces the provenance label so a trusted consumer can't mistake it for trusted content.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+
+        // A single quarantined node — Explore defaults to ReadOnly, so the quarantine invariant holds.
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("read-untrusted"), AgentRole::Explore).quarantined(),
+        ]);
+        sm.load_workflow(spec, "sess");
+        sm.take_observations();
+        assert!(sm.agent_process("wf-node0").is_some(), "quarantined ReadOnly node spawns");
+
+        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") });
+        assert!(
+            sm.ctx
+                .partitions
+                .signals
+                .iter()
+                .any(|s| s.contains("[quarantined sub-agent wf-node0]")),
+            "quarantined output is labeled untrusted-origin on crossing: {:?}",
+            sm.ctx.partitions.signals
+        );
+    }
+
+    #[test]
     fn quarantined_node_with_write_isolation_is_denied_in_kernel() {
         // Part A #3: the kernel enforces the quarantine invariant — a quarantined node (reads
         // untrusted content) that declares a write-capable isolation is denied at spawn, starving

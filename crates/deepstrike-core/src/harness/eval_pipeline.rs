@@ -2,6 +2,15 @@
 ///
 /// Mirrors `IdlePipeline` in structure: pure computation in kernel, I/O in SDK.
 ///
+/// **Deprecation track (R3-4).** This standalone, single-shot pipeline predates the workflow
+/// substrate. For adversarial verification, the recommended path is now the
+/// [`crate::orchestration::workflow::verify_rules`] template (one fresh-context verifier per rule +
+/// an optional skeptic, with the bias-resistant `role_defaults` Verify ⇒ (ReadOnly, None) contract),
+/// and — for unknown-size verification — dynamic claim-level fan-out via R3-1
+/// [`crate::orchestration::workflow::WorkflowRun::submit_nodes`] (a claim-extractor node submits one
+/// verifier per claim it finds). `EvalPipeline` stays bound across the SDKs and is maintained, but
+/// not extended; a future major (0.5.x consolidation) reassesses folding it into the workflow path.
+///
 /// ```text
 /// Phase 1 — Prompt assembly (synchronous, in-kernel)
 /// ┌──────────────────────────────────────────────────────┐

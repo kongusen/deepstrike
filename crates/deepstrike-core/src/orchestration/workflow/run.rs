@@ -557,6 +557,16 @@ impl WorkflowRun {
         self.node_of_agent.contains_key(agent_id)
     }
 
+    /// R3-3: whether the node behind `agent_id` is `Quarantined` (it read untrusted content). The
+    /// kernel uses this to label that node's output as untrusted-origin when it crosses into the
+    /// trusted parent context — the provenance half of the cross-boundary contract (shaping the
+    /// output into a structured summary stays the SDK's job; the kernel cannot inspect content).
+    pub fn is_agent_quarantined(&self, agent_id: &str) -> bool {
+        self.node_of_agent
+            .get(agent_id)
+            .is_some_and(|&node| matches!(self.nodes[node].trust, NodeTrust::Quarantined))
+    }
+
     /// The parent session id for this workflow (stamped on each node's manifest).
     pub fn parent_session_id(&self) -> &str {
         &self.parent_session_id
@@ -748,6 +758,41 @@ mod tests {
             run.ready_batch().contains(&1),
             "a node whose only dep was dropped is ready, not stranded"
         );
+    }
+
+    #[test]
+    fn submitted_node_can_itself_be_a_loop_control_flow() {
+        // R3-2: control flow *composes* through dynamic submission — a submitted node can itself be
+        // a Loop (or Tournament), executing its full control flow. This delivers nested control flow
+        // without changing `NodeKind::Tournament`'s entrant type: the submitter just hands over a
+        // node whose `kind` the unchanged completion machinery already honors.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("root"),
+            AgentRole::Implement,
+        )]);
+        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let id0 = run.current_agent_id(0);
+        run.mark_spawned(0, &id0);
+        run.record_completion(&id0, done());
+
+        // Submit a Loop{2} node mid-run.
+        let ids = run.submit_nodes(vec![
+            WorkflowNode::new(RuntimeTask::new("refine"), AgentRole::Implement).with_loop(2),
+        ]);
+        assert_eq!(ids, vec![1]);
+
+        // It iterates with distinct per-iteration ids, then completes — its control flow runs.
+        for k in 0..2 {
+            assert_eq!(run.ready_batch(), vec![1], "submitted loop ready for iteration {k}");
+            let id = run.current_agent_id(1);
+            assert_eq!(id, format!("wf-node1-i{k}"), "submitted loop gets per-iteration ids");
+            run.mark_spawned(1, &id);
+            run.record_completion(&id, done());
+        }
+        assert!(run.is_complete(), "submitted loop ran its 2 iterations then finished");
     }
 
     #[test]
