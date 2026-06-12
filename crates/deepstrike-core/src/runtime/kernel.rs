@@ -247,6 +247,11 @@ pub enum KernelInputEvent {
         /// W0-ABI resume: node agent-ids already completed (recovered from the log). Empty = fresh.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         resumed_completed: Vec<String>,
+        /// R3-1 resume: the runtime `submit_workflow_nodes` batches (in order) recovered from the log,
+        /// re-applied before completions so dynamically-appended nodes are reconstructed. Additive:
+        /// empty for a fresh run or a resume without dynamic submissions.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        resumed_submissions: Vec<Vec<crate::orchestration::workflow::WorkflowNode>>,
     },
     /// Feed a completed sub-agent result back into the parent loop.
     SubAgentCompleted {
@@ -811,12 +816,17 @@ impl KernelRuntime {
                 spec,
                 parent_session_id,
                 resumed_completed,
+                resumed_submissions,
             } => {
-                let action = if resumed_completed.is_empty() {
+                let action = if resumed_completed.is_empty() && resumed_submissions.is_empty() {
                     self.sm.load_workflow(spec, &parent_session_id)
                 } else {
-                    self.sm
-                        .load_workflow_resumed(spec, &parent_session_id, &resumed_completed)
+                    self.sm.load_workflow_resumed(
+                        spec,
+                        &parent_session_id,
+                        &resumed_submissions,
+                        &resumed_completed,
+                    )
                 };
                 if matches!(action, LoopAction::AwaitingResume) {
                     return KernelStep::empty(self.sm.take_observations());
@@ -1766,6 +1776,7 @@ mod tests {
             spec,
             parent_session_id: "sess".to_string(),
             resumed_completed: Vec::new(),
+            resumed_submissions: Vec::new(),
         };
         let json = serde_json::to_string(&event).expect("serialize");
         let parsed: KernelInputEvent = serde_json::from_str(&json).expect("deserialize");
@@ -1844,6 +1855,7 @@ mod tests {
             spec,
             parent_session_id: "sess".to_string(),
             resumed_completed: Vec::new(),
+            resumed_submissions: Vec::new(),
         }));
         runtime.state_machine_mut().take_observations();
 
@@ -1904,6 +1916,7 @@ mod tests {
             spec,
             parent_session_id: "sess".to_string(),
             resumed_completed: vec!["wf-node0".to_string()],
+            resumed_submissions: Vec::new(),
         }));
 
         // Only the remaining worker is re-spawned (node 0 is not re-run).

@@ -1395,11 +1395,13 @@ impl LoopStateMachine {
         &mut self,
         spec: crate::orchestration::workflow::WorkflowSpec,
         parent_session_id: &str,
+        submissions: &[Vec<crate::orchestration::workflow::WorkflowNode>],
         completed: &[String],
     ) -> LoopAction {
         self.install_workflow(crate::orchestration::workflow::WorkflowRun::resume(
             &spec,
             parent_session_id,
+            submissions,
             completed,
         ))
     }

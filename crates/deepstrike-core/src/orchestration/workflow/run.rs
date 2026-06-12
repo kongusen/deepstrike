@@ -170,8 +170,23 @@ impl WorkflowRun {
     /// (e.g. recovered from the session log after an interruption). Those nodes are pre-marked
     /// done so [`ready_batch`](Self::ready_batch) returns only the remaining work — the kernel then
     /// continues the DAG from where it left off. Unknown ids are ignored.
-    pub fn resume(spec: &WorkflowSpec, parent_session_id: &str, completed: &[String]) -> Result<Self> {
+    ///
+    /// R3-1: `submissions` are the runtime [`Self::submit_nodes`] batches recorded (in order) before
+    /// the interruption. They are re-applied **first**, reconstructing dynamically-appended nodes at
+    /// the same indices/ids they had originally — `submit_nodes` appends by order alone (independent
+    /// of completion state), so re-applying every submission up front and then marking completions
+    /// reproduces the exact pre-interruption graph. Without this, appended nodes (not in the spec)
+    /// would vanish on resume and their completed ids would match nothing.
+    pub fn resume(
+        spec: &WorkflowSpec,
+        parent_session_id: &str,
+        submissions: &[Vec<WorkflowNode>],
+        completed: &[String],
+    ) -> Result<Self> {
         let mut run = Self::new(spec, parent_session_id)?;
+        for batch in submissions {
+            run.submit_nodes(batch.clone());
+        }
         let n = run.graph.len();
         for id in completed {
             if let Some(node) = (0..n).find(|&i| node_agent_id(i) == *id) {
@@ -897,7 +912,7 @@ mod tests {
             vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
             RuntimeTask::new("synth"),
         );
-        let run = WorkflowRun::resume(&spec, "sess", &[node_agent_id(0)]).unwrap();
+        let run = WorkflowRun::resume(&spec, "sess", &[], &[node_agent_id(0)]).unwrap();
         // only the remaining worker (node 1) is ready; node 0 is already complete, synth still gated.
         assert_eq!(run.ready_batch(), vec![1]);
         assert!(!run.is_complete());
@@ -907,9 +922,36 @@ mod tests {
     fn resume_with_all_done_completes() {
         let spec = fanout_synthesize(vec![RuntimeTask::new("w0")], RuntimeTask::new("synth"));
         // both nodes (worker 0, synth 1) recovered as done.
-        let run = WorkflowRun::resume(&spec, "sess", &[node_agent_id(0), node_agent_id(1)]).unwrap();
+        let run = WorkflowRun::resume(&spec, "sess", &[], &[node_agent_id(0), node_agent_id(1)]).unwrap();
         assert!(run.ready_batch().is_empty());
         assert!(run.is_complete());
+    }
+
+    #[test]
+    fn resume_reapplies_submissions_to_reconstruct_appended_nodes() {
+        // R3-1: a workflow that dynamically appended a node (wf-node1) is resumed by re-applying the
+        // recorded submission, so the appended node exists again and its completed id matches —
+        // without this, the appended node (not in the spec) would vanish on resume.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("root"),
+            AgentRole::Implement,
+        )]);
+        let submission = vec![WorkflowNode::new(RuntimeTask::new("discovered"), AgentRole::Implement)];
+
+        // root done, submission re-applied, but the appended node not yet completed.
+        let run = WorkflowRun::resume(&spec, "sess", &[submission.clone()], &[node_agent_id(0)]).unwrap();
+        assert_eq!(run.len(), 2, "base node + re-applied submitted node");
+        assert_eq!(run.ready_batch(), vec![1], "the re-applied appended node is the remaining work");
+        assert!(!run.is_complete());
+
+        // both recovered as done → resume finishes.
+        let run2 =
+            WorkflowRun::resume(&spec, "sess", &[submission], &[node_agent_id(0), node_agent_id(1)]).unwrap();
+        assert!(run2.ready_batch().is_empty());
+        assert!(run2.is_complete());
     }
 
     #[test]
