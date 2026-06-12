@@ -180,7 +180,12 @@ class SubAgentOrchestrator:
       total_tokens_used=outcome.total_tokens,
       final_message=final_message,
     )
-    return SubAgentResult(agent_id=ctx.spec.identity.agent_id, result=loop_result)
+    # R3-1: surface nodes the agent submitted under the harness so run_workflow appends them.
+    return SubAgentResult(
+      agent_id=ctx.spec.identity.agent_id,
+      result=loop_result,
+      submitted_nodes=list(getattr(outcome, "submitted_nodes", []) or []),
+    )
 
   async def _run_direct(self, ctx: SubAgentRunContext) -> SubAgentResult:
     permitted = set(ctx.manifest.permitted_capability_ids)

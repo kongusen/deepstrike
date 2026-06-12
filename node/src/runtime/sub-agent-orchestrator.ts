@@ -101,6 +101,8 @@ export class SubAgentOrchestrator {
           totalTokensUsed: outcome.totalTokens,
           ...(outcome.result ? { finalMessage: { role: "assistant" as const, content: outcome.result, toolCalls: [] } } : {}),
         },
+        // R3-1: surface nodes the agent submitted under the harness so `runWorkflow` appends them.
+        ...(outcome.submittedNodes?.length ? { submittedNodes: outcome.submittedNodes } : {}),
       }
     }
 

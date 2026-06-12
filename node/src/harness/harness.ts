@@ -33,6 +33,8 @@ export interface HarnessOutcome {
   overallScore?: number
   feedback?: string
   details?: CriterionResult[]
+  /** R3-1: nodes the agent submitted via `submit_workflow_nodes` while running under the harness. */
+  submittedNodes?: import("../types/agent.js").WorkflowNodeSpec[]
 }
 
 export interface Verdict {
@@ -48,6 +50,7 @@ export type HarnessEvent =
   | { type: "tool_delta"; callId: string; delta?: string; chunk?: Record<string, unknown> }
   | { type: "tool_suspend"; callId: string; suspensionId: string; payload?: Record<string, unknown> }
   | { type: "tool_result"; callId: string; content: string; isError: boolean }
+  | { type: "workflow_nodes_submitted"; nodes: import("../types/agent.js").WorkflowNodeSpec[] }
   | { type: "supervising" }
   | { type: "revising"; verdict: Verdict }
   | { type: "done"; verdict: Verdict; iterations: number; totalTokens: number; status: string }
@@ -114,7 +117,13 @@ export class HarnessLoop {
 
   async run(request: HarnessRequest): Promise<HarnessOutcome> {
     let last: HarnessEvent | undefined
-    for await (const evt of this.stream(request)) last = evt
+    // R3-1: collect nodes the agent submitted while running under the harness, so dynamic fan-out
+    // works in harness mode too (not just the plain streaming path).
+    const submittedNodes: import("../types/agent.js").WorkflowNodeSpec[] = []
+    for await (const evt of this.stream(request)) {
+      last = evt
+      if (evt.type === "workflow_nodes_submitted") submittedNodes.push(...evt.nodes)
+    }
     const done = last?.type === "done" ? last as Extract<HarnessEvent, { type: "done" }> : undefined
     return {
       result: "",
@@ -125,6 +134,7 @@ export class HarnessLoop {
       overallScore: done?.verdict.overallScore,
       feedback: done?.verdict.feedback,
       details: done?.verdict.details,
+      ...(submittedNodes.length ? { submittedNodes } : {}),
     }
   }
 
@@ -157,6 +167,9 @@ export class HarnessLoop {
         } else if (evt.type === "tool_result") {
           const tr = evt as unknown as { callId: string; content: string; isError: boolean }
           yield { type: "tool_result", callId: tr.callId, content: tr.content, isError: tr.isError }
+        } else if (evt.type === "workflow_nodes_submitted") {
+          const ws = evt as unknown as { nodes: import("../types/agent.js").WorkflowNodeSpec[] }
+          yield { type: "workflow_nodes_submitted", nodes: ws.nodes }
         } else if (evt.type === "done") {
           const d = evt as DoneEvent
           lastIterations = d.iterations

@@ -43,6 +43,8 @@ class HarnessOutcome:
     overall_score: float | None = None
     feedback: str | None = None
     details: list[CriterionResult] = field(default_factory=list)
+    # R3-1: nodes the agent submitted via `submit_workflow_nodes` while running under the harness.
+    submitted_nodes: list = field(default_factory=list)
 
 
 @dataclass
@@ -191,6 +193,9 @@ class HarnessLoop:
         self._skill_dir = pathlib.Path(skill_dir) if skill_dir else None
 
     async def run(self, request: HarnessRequest) -> HarnessOutcome:
+        # R3-1: collect nodes the agent submits while running under the harness (dynamic fan-out in
+        # harness mode too, not just the plain streaming path).
+        self._submitted_nodes: list = []
         last: "HarnessEvent | None" = None
         async for evt in self.stream(request):
             last = evt
@@ -204,6 +209,7 @@ class HarnessLoop:
             overall_score=done.verdict.overall_score if done else None,
             feedback=done.verdict.feedback if done else None,
             details=done.verdict.details if done else None,
+            submitted_nodes=list(self._submitted_nodes),
         )
 
     def stream(self, request: HarnessRequest) -> "AsyncIterator[HarnessEvent]":
@@ -238,6 +244,11 @@ class HarnessLoop:
                         yield ToolSuspendEvent(call_id=getattr(evt, "call_id", None), suspension_id=getattr(evt, "suspension_id", None), payload=getattr(evt, "payload", None))
                     elif kind == "tool_result":
                         yield ToolResultEvent(call_id=getattr(evt, "call_id", None), content=getattr(evt, "content", None), is_error=getattr(evt, "is_error", None))
+                    elif kind == "workflow_nodes_submitted":
+                        # R3-1: accumulate submitted nodes for run() to surface on the outcome.
+                        if not hasattr(self, "_submitted_nodes"):
+                            self._submitted_nodes = []
+                        self._submitted_nodes.extend(getattr(evt, "nodes", None) or [])
 
             yield SupervisingEvent()
 
