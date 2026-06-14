@@ -6,6 +6,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.15] - 2026-06-15
+
+### Fixed
+
+- **Meta-tool leakage in workflow child runners.** Child nodes wasted turns calling meta-tools (`skill`, `memory`, `knowledge`, `update_plan`) that were always whitelisted regardless of the node's `permitted_capability_ids`. Two root causes fixed:
+  - **Source leakage:** child runners inherited parent's `skillDir`/`dreamStore`/`knowledgeSource`/`enablePlanTool` via spread operator, causing the kernel to register meta-tool schemas the LLM would then call. Now only sources whose meta-tool is in `permitted_capability_ids` are passed to the child runner.
+  - **Filter leakage:** `FilteredExecutionPlane` hardcoded `DEFAULT_META_TOOLS` as always-allowed. The orchestrator now derives the `metaTools` set from the manifest and passes it explicitly, so only permitted meta-tools are admitted.
+- Applied consistently across all three runtimes: Node (`sub-agent-orchestrator.ts`), Python (`sub_agent_orchestrator.py`), and WASM (`sub-agent-orchestrator.ts`).
+
 ## [0.2.14] - 2026-06-14
 
 ### Fixed
