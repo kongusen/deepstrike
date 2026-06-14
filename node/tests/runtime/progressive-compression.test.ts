@@ -124,9 +124,9 @@ describe("ContextCollapse — summary contains tool names for follow-up task", (
       const allText = context.turns.map(t => t.content ?? "").join(" ")
 
       // RuleSummarizer format: "tools used: <name>"
-      // CollapseCompactor routes summary through compression_log → systemVolatile via task_state
-      const stateTurn = (context.stateTurn ?? context.turns[0])?.content ?? ""
-      if (stateTurn.includes("tools used:") && stateTurn.includes("accumulate")) {
+      // CollapseCompactor routes summary through compression_log → task_state → systemText/stateTurn
+      const allCtx = [context.systemText, context.systemStable, context.stateTurn?.content, context.turns[0]?.content].filter(Boolean).join("\n")
+      if (allCtx.includes("tools used:") && allCtx.includes("accumulate")) {
         summaryWithToolName = true
         yield { type: "text_delta" as const, delta: "done" }
         return
@@ -172,9 +172,9 @@ describe("AutoCompact — summary injected into working partition", () => {
     const provider = trackingProvider(async function* (context, n) {
       const allText = context.turns.map(t => t.content ?? "").join(" ")
 
-      // AutoCompact summary routes through compression_log → task_state → turns[0]
-      const stateTurn = (context.stateTurn ?? context.turns[0])?.content ?? ""
-      if (stateTurn.includes("[Compressed: auto_compact]")) {
+      // AutoCompact summary routes through compression_log → task_state → systemText/stateTurn
+      const allCtx = [context.systemText, context.systemStable, context.stateTurn?.content, context.turns[0]?.content].filter(Boolean).join("\n")
+      if (allCtx.includes("[Compressed: auto_compact]")) {
         sawAutoCompactSummary = true
         yield { type: "text_delta" as const, delta: "done" }
         return

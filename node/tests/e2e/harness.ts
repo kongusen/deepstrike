@@ -96,7 +96,7 @@ export class MetricCapturingProvider implements LLMProvider {
     const snapshot = {
       turnsCount: ctx.turns.length,
       systemKnowledge: ctx.systemKnowledge ?? "",
-      stateTurnContent: (ctx.stateTurn ?? ctx.turns[0])?.content ?? "",
+      stateTurnContent: [ctx.systemText, ctx.systemStable, ctx.stateTurn?.content, ctx.turns[0]?.content].filter(Boolean).join("\n"),
     }
 
     try {

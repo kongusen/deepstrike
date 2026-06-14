@@ -21,7 +21,8 @@ function contextText(context: RenderedContext): string {
   return [
     context.systemText,
     context.systemStable ?? "",
-    context.systemVolatile ?? "",
+    context.systemKnowledge ?? "",
+    context.stateTurn?.content ?? "",
     ...context.turns.flatMap(t => [
       t.content ?? "",
       ...(t.contentParts ?? []).map((p: any) => p.output ?? p.text ?? ""),
@@ -181,9 +182,9 @@ describe("E2E mechanism contract tests", () => {
     await collectText(runner.run({ sessionId: "k03-mechanism", goal }))
 
     const first = provider.calls[0]
-    // goal is in the State turn — stateTurn on a rebuilt binding, else turns[0]
-    expect((first.stateTurn ?? first.turns[0])?.content ?? "").toContain("Count from 1 to 3")
-    expect(first.systemText).not.toContain("[TASK STATE]")
+    // goal lands in systemText/systemStable (rebuilt kernel), stateTurn (mid kernel), or turns[0] (legacy)
+    const goalContent = [first.systemText, first.systemStable, first.stateTurn?.content, first.turns[0]?.content].filter(Boolean).join("\n")
+    expect(goalContent).toContain("Count from 1 to 3")
   })
 
   it("K04 injects an auto-compact summary into the next provider context", async () => {
@@ -384,12 +385,12 @@ describe("E2E mechanism contract tests", () => {
       // MicroCompact injects "[tool result:" into excerpted ContentPart messages
       if (text.includes("[tool result:")) everMicroFired = true
 
-      // ── Phase 4: AutoCompact fired — verify summary injected into State turn (turns[0]) ──
-      // AutoCompact writes summary to compression_log → task_state.format_compact() → turns[0].
+      // ── Phase 4: AutoCompact fired — verify summary in context ──
+      // AutoCompact writes summary to compression_log → task_state → systemText/stateTurn.
       if (text.includes("[Compressed: auto_compact]")) {
-        const stateTurn = (context.stateTurn ?? context.turns[0])?.content ?? ""
-        const hasSummary = stateTurn.includes("[Compressed: auto_compact]")
-        const hasAnchorTool = stateTurn.includes("seed_anchor")
+        const allCtx = [context.systemText, context.systemStable, context.stateTurn?.content, context.turns[0]?.content].filter(Boolean).join("\n")
+        const hasSummary = allCtx.includes("[Compressed: auto_compact]")
+        const hasAnchorTool = allCtx.includes("seed_anchor")
         return [{ type: "text_delta", delta: hasSummary && hasAnchorTool ? "VERIFIED" : "SUMMARY-MISSING" }]
       }
 
@@ -488,7 +489,7 @@ describe("E2E mechanism contract tests", () => {
     // Anchor tool must have been called
     expect(anchorsSeeded.has(RETAIN_ANCHOR)).toBe(true)
 
-    // AutoCompact summary injected into systemVolatile and lists seed_anchor tool
+    // AutoCompact summary injected into context (systemText/stateTurn) and lists seed_anchor tool
     expect(text).toContain("VERIFIED")
     expect(text).not.toContain("SUMMARY-MISSING")
   })
