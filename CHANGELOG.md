@@ -14,6 +14,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **Source leakage:** child runners inherited parent's `skillDir`/`dreamStore`/`knowledgeSource`/`enablePlanTool` via spread operator, causing the kernel to register meta-tool schemas the LLM would then call. Now only sources whose meta-tool is in `permitted_capability_ids` are passed to the child runner.
   - **Filter leakage:** `FilteredExecutionPlane` hardcoded `DEFAULT_META_TOOLS` as always-allowed. The orchestrator now derives the `metaTools` set from the manifest and passes it explicitly, so only permitted meta-tools are admitted.
 - Applied consistently across all three runtimes: Node (`sub-agent-orchestrator.ts`), Python (`sub_agent_orchestrator.py`), and WASM (`sub-agent-orchestrator.ts`).
+- **`renderedContextToSdk` dropped `state_turn` and `frozen_prefix_len` from the kernel JSON step path.** The kernel emits these fields in the `call_provider` action's `RenderedContext`, but the Node and WASM SDK's JSON→SDK mapper (`renderedContextToSdk`) never read them — so `stateTurn` was always `undefined` and `frozenPrefixLen` was always missing in the provider context. The NAPI `render()` path (used only for reactive-compact retries) was correct; the primary `step()` path was not. Python was already correct.
 
 ## [0.2.14] - 2026-06-14
 

@@ -236,12 +236,17 @@ function kernelMessageToSdk(raw: Record<string, unknown>): Message {
 }
 
 function renderedContextToSdk(raw: Record<string, unknown>): RenderedContext {
-  return {
+  const rawStateTurn = (raw.state_turn ?? raw.stateTurn) as Record<string, unknown> | undefined
+  const frozenLen = (raw.frozen_prefix_len ?? raw.frozenPrefixLen) as number | undefined
+  const ctx: RenderedContext = {
     systemText: String(raw.system_text ?? raw.systemText ?? ""),
     systemStable: String(raw.system_stable ?? raw.systemStable ?? ""),
     systemKnowledge: String(raw.system_knowledge ?? raw.systemKnowledge ?? ""),
     turns: ((raw.turns as Array<Record<string, unknown>>) ?? []).map(kernelMessageToSdk),
   }
+  if (rawStateTurn) ctx.stateTurn = kernelMessageToSdk(rawStateTurn)
+  if (typeof frozenLen === "number") ctx.frozenPrefixLen = frozenLen
+  return ctx
 }
 
 function mapKernelAction(raw: Record<string, unknown>): KernelRunnerAction {
