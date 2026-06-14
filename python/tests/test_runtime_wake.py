@@ -98,11 +98,12 @@ async def test_run_session_continuity():
 
   assert any(m.content == "My name is Ada." for m in provider.calls[1].turns)
   assert any(m.content == "answer-1" for m in provider.calls[1].turns)
-  # goal is in state_turn (rebuilt binding) or turns[0] (old binding)
-  all_msgs = list(provider.calls[1].turns)
-  if getattr(provider.calls[1], "state_turn", None) is not None:
-      all_msgs.append(provider.calls[1].state_turn)
-  assert any("What is my name?" in m.content for m in all_msgs)
+  # goal lands in system_text (old kernel), state_turn (new kernel), or turns[0] (legacy)
+  ctx = provider.calls[1]
+  all_text = [ctx.system_text] + [m.content for m in ctx.turns]
+  if getattr(ctx, "state_turn", None) is not None:
+      all_text.append(ctx.state_turn.content)
+  assert any("What is my name?" in t for t in all_text)
 
 
 @pytest.mark.asyncio

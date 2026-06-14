@@ -27,9 +27,9 @@ describe("RuntimeRunner session continuity", () => {
       expect.objectContaining({ role: "user", content: "My name is Ada." }),
       expect.objectContaining({ role: "assistant", content: "answer-1" }),
     ]))
-    // goal is in the State turn (stateTurn) on a rebuilt binding, else turns[0]
+    // goal lands in systemText (old kernel), stateTurn (new kernel), or turns[0] (legacy)
     const ctx = provider.calls[1]
-    const allContent = [ctx.stateTurn, ...ctx.turns].filter(Boolean).map(m => m!.content).join("\n")
+    const allContent = [ctx.systemText, ctx.stateTurn?.content, ...ctx.turns.map(m => m.content)].filter(Boolean).join("\n")
     expect(allContent).toContain("What is my name?")
   })
 
