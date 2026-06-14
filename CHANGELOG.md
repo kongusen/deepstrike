@@ -6,6 +6,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.13] - 2026-06-14
+
+### Fixed
+
+- **TaskLane is now a freeform string instead of a strict enum.** The kernel previously defined `TaskLane` as a four-variant Rust enum (`orchestrate`, `implement`, `retrieve`, `verify`), causing `serde` deserialization to reject any custom lane value (e.g. `"prd-fill"`, `"eval"`). Since the kernel never reads `lane` for scheduling — it is purely a classification label that round-trips through `KernelInput` — the type is now a `#[serde(transparent)]` `String` newtype with well-known constants. Downstream apps can use any lane string without kernel changes.
+
 ## [0.2.12] - 2026-06-14
 
 Render→provider optimization release. Three converged workstreams, all in the layer that turns kernel context into a provider wire request — and all orthogonal to the Agent OS (partition/scheduler) and dynamic-workflow (orchestration DAG) layers: **(1)** provider prompt-caching so multi-turn history actually caches, **(2)** a deeper prefix-cache / attention pass (metrics, monotonic collapse, two-tier breakpoints), and **(3)** correct multimodal image input. The axiom behind all three: prompt-cache, KV-cache, and attention reward a single shape — a long, **byte-stable, position-0-contiguous prefix** with the volatile-but-important content pushed to the **end**.
