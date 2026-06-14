@@ -92,11 +92,26 @@ def _harness_criteria(spec: AgentRunSpec) -> list:
   ]
 
 
+def _derive_meta_tools(permitted: set[str], opts: RuntimeOptions) -> frozenset[str]:
+  """Derive which meta-tools a child runner should expose based on permitted IDs and available sources."""
+  meta: set[str] = set()
+  if "skill" in permitted and opts.skill_dir:
+    meta.add("skill")
+  if "memory" in permitted and opts.dream_store:
+    meta.add("memory")
+  if "knowledge" in permitted and opts.knowledge_source:
+    meta.add("knowledge")
+  if "update_plan" in permitted and opts.enable_plan_tool:
+    meta.add("update_plan")
+  return frozenset(meta)
+
+
 def _build_child_opts(
   ctx: SubAgentRunContext,
   *,
   system_prompt: str | None,
   filtered_plane,
+  meta_tools: frozenset[str],
 ) -> RuntimeOptions:
   return RuntimeOptions(
     provider=ctx.parent_opts.provider,
@@ -108,14 +123,14 @@ def _build_child_opts(
     agent_id=ctx.spec.identity.agent_id,
     system_prompt=system_prompt,
     initial_memory=ctx.parent_opts.initial_memory,
-    skill_dir=ctx.parent_opts.skill_dir,
-    dream_store=ctx.parent_opts.dream_store,
-    knowledge_source=ctx.parent_opts.knowledge_source,
+    skill_dir=ctx.parent_opts.skill_dir if "skill" in meta_tools else None,
+    dream_store=ctx.parent_opts.dream_store if "memory" in meta_tools else None,
+    knowledge_source=ctx.parent_opts.knowledge_source if "knowledge" in meta_tools else None,
     signal_source=ctx.parent_opts.signal_source,
     extensions=ctx.parent_opts.extensions,
     governance=ctx.parent_opts.governance,
     tokenizer=ctx.parent_opts.tokenizer,
-    enable_plan_tool=ctx.parent_opts.enable_plan_tool,
+    enable_plan_tool=ctx.parent_opts.enable_plan_tool if "update_plan" in meta_tools else None,
     compression_store=ctx.parent_opts.compression_store,
     on_tool_suspend=ctx.parent_opts.on_tool_suspend,
     on_permission_request=ctx.parent_opts.on_permission_request,
@@ -149,14 +164,16 @@ class SubAgentOrchestrator:
     from deepstrike.harness.harness import HarnessLoop, HarnessRequest
 
     permitted = set(ctx.manifest.permitted_capability_ids)
+    meta_tools = _derive_meta_tools(permitted, ctx.parent_opts)
     from deepstrike.runtime.execution_plane import LocalExecutionPlane
 
     plane = ctx.parent_opts.execution_plane or LocalExecutionPlane()
-    filtered = FilteredExecutionPlane(plane, permitted)
+    filtered = FilteredExecutionPlane(plane, permitted, meta_tools)
     child_runner = RuntimeRunner(_build_child_opts(
       ctx,
       system_prompt=ctx.parent_opts.system_prompt,
       filtered_plane=filtered,
+      meta_tools=meta_tools,
     ))
     loop = HarnessLoop(
       child_runner,
@@ -189,16 +206,18 @@ class SubAgentOrchestrator:
 
   async def _run_direct(self, ctx: SubAgentRunContext) -> SubAgentResult:
     permitted = set(ctx.manifest.permitted_capability_ids)
+    meta_tools = _derive_meta_tools(permitted, ctx.parent_opts)
     system_prompt, inherit_events = await _resolve_inheritance(ctx)
 
     from deepstrike.runtime.execution_plane import LocalExecutionPlane
 
     plane = ctx.parent_opts.execution_plane or LocalExecutionPlane()
-    filtered = FilteredExecutionPlane(plane, permitted)
+    filtered = FilteredExecutionPlane(plane, permitted, meta_tools)
     child_runner = RuntimeRunner(_build_child_opts(
       ctx,
       system_prompt=system_prompt,
       filtered_plane=filtered,
+      meta_tools=meta_tools,
     ))
 
     done: DoneEvent | None = None

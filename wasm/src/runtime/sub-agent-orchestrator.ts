@@ -33,11 +33,22 @@ function terminationFromStatus(status: string): TerminationReason | string {
   return status
 }
 
+/** Derive which meta-tools a child runner should expose based on permitted IDs and available sources. */
+function deriveMetaTools(permitted: Set<string>, opts: RuntimeOptions): Set<string> {
+  const metaTools = new Set<string>()
+  if (permitted.has("skill") && opts.skillContentMap?.size) metaTools.add("skill")
+  if (permitted.has("memory") && opts.dreamStore) metaTools.add("memory")
+  if (permitted.has("knowledge") && opts.knowledgeSource) metaTools.add("knowledge")
+  if (permitted.has("update_plan") && opts.enablePlanTool) metaTools.add("update_plan")
+  return metaTools
+}
+
 /** Host-side driver for kernel-isolated sub-agent runs. */
 export class SubAgentOrchestrator {
   async run(ctx: SubAgentRunContext): Promise<SubAgentResult> {
     const permitted = new Set(ctx.manifest.permitted_capability_ids ?? [])
-    const filteredPlane = new FilteredExecutionPlane(ctx.parentOpts.executionPlane, permitted)
+    const metaTools = deriveMetaTools(permitted, ctx.parentOpts)
+    const filteredPlane = new FilteredExecutionPlane(ctx.parentOpts.executionPlane, permitted, metaTools)
 
     let systemPrompt = ctx.parentOpts.systemPrompt
     let inheritEvents: Array<{ seq: number; event: SessionEvent }> | undefined
@@ -59,6 +70,10 @@ export class SubAgentOrchestrator {
       agentId: ctx.spec.identity.agentId,
       systemPrompt,
       sessionLog: ctx.sessionLog,
+      skillContentMap: metaTools.has("skill") ? ctx.parentOpts.skillContentMap : undefined,
+      dreamStore: metaTools.has("memory") ? ctx.parentOpts.dreamStore : undefined,
+      knowledgeSource: metaTools.has("knowledge") ? ctx.parentOpts.knowledgeSource : undefined,
+      enablePlanTool: metaTools.has("update_plan") ? ctx.parentOpts.enablePlanTool : undefined,
     })
 
     let done: DoneEvent | undefined

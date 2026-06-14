@@ -37,11 +37,22 @@ function terminationFromStatus(status: string): TerminationReason | string {
   return status
 }
 
+/** Derive which meta-tools a child runner should expose based on permitted IDs and available sources. */
+function deriveMetaTools(permitted: Set<string>, opts: RuntimeOptions): Set<string> {
+  const metaTools = new Set<string>()
+  if (permitted.has("skill") && opts.skillDir) metaTools.add("skill")
+  if (permitted.has("memory") && opts.dreamStore) metaTools.add("memory")
+  if (permitted.has("knowledge") && opts.knowledgeSource) metaTools.add("knowledge")
+  if (permitted.has("update_plan") && opts.enablePlanTool) metaTools.add("update_plan")
+  return metaTools
+}
+
 /** Host-side driver for kernel-isolated sub-agent runs. */
 export class SubAgentOrchestrator {
   async *stream(ctx: SubAgentRunContext): AsyncIterable<StreamEvent> {
     const permitted = new Set(ctx.manifest.permitted_capability_ids ?? [])
-    const filteredPlane = new FilteredExecutionPlane(ctx.parentOpts.executionPlane, permitted)
+    const metaTools = deriveMetaTools(permitted, ctx.parentOpts)
+    const filteredPlane = new FilteredExecutionPlane(ctx.parentOpts.executionPlane, permitted, metaTools)
 
     let systemPrompt = ctx.parentOpts.systemPrompt
     let inheritEvents: Array<{ seq: number; event: SessionEvent }> | undefined
@@ -63,6 +74,10 @@ export class SubAgentOrchestrator {
       agentId: ctx.spec.identity.agentId,
       systemPrompt,
       sessionLog: ctx.sessionLog,
+      skillDir: metaTools.has("skill") ? ctx.parentOpts.skillDir : undefined,
+      dreamStore: metaTools.has("memory") ? ctx.parentOpts.dreamStore : undefined,
+      knowledgeSource: metaTools.has("knowledge") ? ctx.parentOpts.knowledgeSource : undefined,
+      enablePlanTool: metaTools.has("update_plan") ? ctx.parentOpts.enablePlanTool : undefined,
     })
 
     yield* childRunner.run({
@@ -77,12 +92,17 @@ export class SubAgentOrchestrator {
       const { RuntimeRunner } = await import("./runner.js")
       const { HarnessLoop } = await import("../harness/harness.js")
       const permitted = new Set(ctx.manifest.permitted_capability_ids ?? [])
-      const filteredPlane = new FilteredExecutionPlane(ctx.parentOpts.executionPlane, permitted)
+      const metaTools = deriveMetaTools(permitted, ctx.parentOpts)
+      const filteredPlane = new FilteredExecutionPlane(ctx.parentOpts.executionPlane, permitted, metaTools)
       const childRunner = new RuntimeRunner({
         ...ctx.parentOpts,
         executionPlane: filteredPlane,
         agentId: ctx.spec.identity.agentId,
         sessionLog: ctx.sessionLog,
+        skillDir: metaTools.has("skill") ? ctx.parentOpts.skillDir : undefined,
+        dreamStore: metaTools.has("memory") ? ctx.parentOpts.dreamStore : undefined,
+        knowledgeSource: metaTools.has("knowledge") ? ctx.parentOpts.knowledgeSource : undefined,
+        enablePlanTool: metaTools.has("update_plan") ? ctx.parentOpts.enablePlanTool : undefined,
       })
       const loop = new HarnessLoop(childRunner, ctx.harness.evalProvider, {
         maxAttempts: ctx.harness.maxAttempts ?? 3,
