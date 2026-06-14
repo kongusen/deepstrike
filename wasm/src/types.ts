@@ -62,11 +62,13 @@ export interface RenderedContext {
   systemText: string
   systemStable?: string
   systemKnowledge?: string
-  systemVolatile?: string
   turns: Message[]
   /** Volatile State turn (task_state + signals), rendered after the cacheable
    *  history. Absent on un-rebuilt bindings — then it's still inside turns[0]. */
   stateTurn?: Message
+  /** Message count of the frozen history prefix (compaction boundary). When set,
+   *  Anthropic pins a deep cache breakpoint here instead of the rolling pair. */
+  frozenPrefixLen?: number
 }
 
 export interface StreamEvent { type: string }

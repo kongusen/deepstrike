@@ -72,7 +72,15 @@ export function toAnthropicMessages(
 
   for (const msg of context.turns) {
     if (msg.role === "tool") {
-      result.push({ role: "user", content: [{ type: "tool_result", tool_use_id: msg.content ? undefined : "", content: msg.content, is_error: false }] })
+      const parts = (msg.contentParts ?? [])
+        .filter(p => p.type === "tool_result")
+        .map(p => ({ type: "tool_result", tool_use_id: p.callId, content: p.output, is_error: p.isError ?? false }))
+      if (parts.length) {
+        result.push({ role: "user", content: parts })
+      } else {
+        // Fallback for messages without structured contentParts
+        result.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "", content: msg.content, is_error: false }] })
+      }
       continue
     }
 
@@ -98,13 +106,6 @@ export function toAnthropicMessages(
       role: msg.role,
       content: msg.contentParts?.length ? anthropicPartsContent(msg.contentParts) : msg.content,
     })
-  }
-
-  if (context.systemVolatile && result.length > 0) {
-    const last = result[result.length - 1]
-    if (last.role === "user") {
-      last.content = `${String(last.content ?? "")}\n\n[SYSTEM REMINDER]\n${context.systemVolatile}`
-    }
   }
 
   return result

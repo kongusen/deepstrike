@@ -6,6 +6,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.14] - 2026-06-14
+
+### Fixed
+
+- **stateTurn serialization unified across all providers.** The volatile State turn was rendered through content-only serializers (`toAnthropicContent` / raw `.content`) instead of the full message path, silently dropping `toolCalls` (→ missing `tool_use` blocks) and `contentParts`. Affected: Anthropic (Node, Python, WASM), OpenAI Responses (Node). All four now go through the same `toAnthropicMessages` / three-branch expansion that history turns use.
+- **WASM `toAnthropicMessages` tool_result serialization.** Tool messages were serialized with a hardcoded empty `tool_use_id` and `is_error: false` instead of reading `contentParts` for the correct `callId`, `output`, and `isError`. Now matches the Node/Python implementation.
+- **WASM `RenderedContext` type parity.** Added missing `frozenPrefixLen` field (P1-E deep cache anchor was silently lost). Removed phantom `systemVolatile` field (kernel never emits it; was dead code).
+- **WASM Anthropic P1-E deep anchor.** `applyMessageCacheControl` now accepts `frozenPrefixLen` and pins a stable breakpoint at the compaction boundary instead of always rolling, matching the Node/Python implementation.
+
 ## [0.2.13] - 2026-06-14
 
 ### Fixed

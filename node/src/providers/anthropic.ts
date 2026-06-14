@@ -287,10 +287,13 @@ export class AnthropicProvider implements LLMProvider {
     // the deep breakpoint at the compaction boundary; absent ⇒ rolling-pair fallback.
     applyMessageCacheControl(msgs, context.frozenPrefixLen)
     if (context.stateTurn) {
-      msgs.push({
-        role: context.stateTurn.role === "assistant" ? "assistant" : "user",
-        content: toAnthropicContent(context.stateTurn),
-      } as unknown as Anthropic.MessageParam)
+      // Render through toAnthropicMessages so assistant tool_use blocks and
+      // tool-role tool_result parts are serialized correctly — toAnthropicContent
+      // only handles contentParts/content and would silently drop toolCalls.
+      const stateMsgs = toAnthropicMessages([context.stateTurn], message =>
+        this.nativeAssistantBlocks.get(assistantReplayKey(message))
+      ) as unknown as Anthropic.MessageParam[]
+      msgs.push(...stateMsgs)
     }
 
     if (msgs.length === 0) {

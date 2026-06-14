@@ -23,15 +23,23 @@ function buildAnthropicTools(tools: ToolSchema[], anchorCache: boolean) {
  * Roll cache breakpoints across the conversation tail so the message-history
  * prefix is written once and re-read on later turns (without this the cached
  * prefix stops at the end of `system` and the whole tool-result history is
- * re-billed at full input price every turn). Marks the final message plus the
- * nearest preceding user turn (read anchor); a bare string body is promoted to
- * a cache-bearing text block.
+ * re-billed at full input price every turn).
+ *
+ * When `frozenPrefixLen` marks a distinct frozen prefix (the compaction
+ * boundary), pin the deep breakpoint there — it is byte-stable across turns,
+ * so `[0..frozen]` is re-read cheaply every turn; the tail breakpoint writes
+ * only the incremental `[frozen..tail]`. Otherwise fall back to the rolling
+ * pair: final message + nearest preceding user turn.
  */
-function applyMessageCacheControl(msgs: Array<Record<string, unknown>>): void {
+function applyMessageCacheControl(msgs: Array<Record<string, unknown>>, frozenPrefixLen?: number): void {
   if (!msgs.length) return
   const targets = new Set<number>([msgs.length - 1])
-  for (let i = msgs.length - 2; i >= 0 && targets.size < MESSAGE_CACHE_BREAKPOINTS; i--) {
-    if (msgs[i].role === "user") targets.add(i)
+  if (typeof frozenPrefixLen === "number" && frozenPrefixLen >= 1 && frozenPrefixLen < msgs.length) {
+    targets.add(frozenPrefixLen - 1)
+  } else {
+    for (let i = msgs.length - 2; i >= 0 && targets.size < MESSAGE_CACHE_BREAKPOINTS; i--) {
+      if (msgs[i].role === "user") targets.add(i)
+    }
   }
   for (const idx of targets) markLastBlockCacheable(msgs[idx])
 }
@@ -119,14 +127,17 @@ export class AnthropicProvider implements LLMProvider {
     const msgs = toAnthropicMessages(context, message =>
       this.nativeAssistantBlocks.get(assistantReplayKey(message))
     )
-    applyMessageCacheControl(msgs)
+    applyMessageCacheControl(msgs, context.frozenPrefixLen)
     // Append the volatile State turn AFTER the cache breakpoints (uncached tail);
     // absent on un-rebuilt bindings, where the state is already inside `turns`.
+    // Render through toAnthropicMessages so assistant tool_use blocks are
+    // serialized correctly — raw content would silently drop toolCalls.
     if (context.stateTurn) {
-      msgs.push({
-        role: context.stateTurn.role === "assistant" ? "assistant" : "user",
-        content: context.stateTurn.content,
-      })
+      const stateCtx: RenderedContext = { systemText: "", turns: [context.stateTurn] }
+      const stateMsgs = toAnthropicMessages(stateCtx, message =>
+        this.nativeAssistantBlocks.get(assistantReplayKey(message))
+      )
+      msgs.push(...stateMsgs)
     }
     assertCacheBudget(system, tools.length)
 

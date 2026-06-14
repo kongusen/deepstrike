@@ -70,11 +70,25 @@ export class OpenAIResponsesAdapter {
     // The volatile State turn is sent every turn (it changes each call and is
     // never "covered" by previous_response_id). Absent on un-rebuilt bindings,
     // where the state is already inside the covered/uncovered history.
+    // Rendered through the same assistant-toolCalls / tool-result branches above
+    // so tool_use blocks are not silently dropped.
     if (context.stateTurn) {
-      input.push({
-        role: context.stateTurn.role === "assistant" ? "assistant" : "user",
-        content: this.buildMessageContent(context.stateTurn),
-      })
+      const st = context.stateTurn
+      if (st.role === "assistant" && st.toolCalls?.length) {
+        if (st.content || st.contentParts?.length) {
+          input.push({ role: "assistant", content: this.buildMessageContent(st) })
+        }
+        for (const tc of st.toolCalls) {
+          input.push({ type: "function_call", call_id: tc.id, name: tc.name, arguments: tc.arguments })
+        }
+      } else if (st.role === "tool") {
+        for (const part of st.contentParts ?? []) {
+          if (part.type !== "tool_result") continue
+          input.push({ type: "function_call_output", call_id: part.callId, output: part.output })
+        }
+      } else {
+        input.push({ role: st.role, content: this.buildMessageContent(st) })
+      }
     }
 
     return input

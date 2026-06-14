@@ -99,8 +99,17 @@ class AnthropicProvider:
         # boundary; None ⇒ rolling-pair fallback.
         _apply_message_cache_control(msgs, frozen_prefix_len)
         if state_turn is not None:
-            role = "assistant" if state_turn.role == "assistant" else "user"
-            msgs.append({"role": role, "content": to_anthropic_content(state_turn)})
+            # Render through to_anthropic_messages so assistant tool_use blocks
+            # and tool-role tool_result parts are serialized correctly —
+            # to_anthropic_content only handles contentParts/content and would
+            # silently drop tool_calls.
+            state_msgs = to_anthropic_messages(
+                [state_turn],
+                native_replay=lambda message: self._native_assistant_blocks.get(
+                    self._assistant_replay_key(message)
+                ),
+            )
+            msgs.extend(state_msgs)
         return msgs
 
     def _build_tools(self, tools: list[ToolSchema], anchor_cache: bool) -> list[dict] | None:
