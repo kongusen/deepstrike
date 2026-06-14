@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "deepstrike-core"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "compact_str",
  "pretty_assertions",
@@ -206,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "deepstrike-node"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "compact_str",
  "deepstrike-core",
@@ -218,7 +218,7 @@ dependencies = [
 
 [[package]]
 name = "deepstrike-py"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "compact_str",
  "deepstrike-core",
@@ -229,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "deepstrike-sdk"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "deepstrike-wasm"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "compact_str",
  "deepstrike-core",
