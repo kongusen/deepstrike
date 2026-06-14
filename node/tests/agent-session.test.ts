@@ -27,8 +27,8 @@ describe("RuntimeRunner session continuity", () => {
       expect.objectContaining({ role: "user", content: "My name is Ada." }),
       expect.objectContaining({ role: "assistant", content: "answer-1" }),
     ]))
-    // goal is now in turns[0] (State slot), not systemVolatile
-    expect(provider.calls[1].turns[0].content).toContain("What is my name?")
+    // goal is in the State turn — stateTurn on a rebuilt binding, else turns[0]
+    expect((provider.calls[1].stateTurn ?? provider.calls[1].turns[0]).content).toContain("What is my name?")
   })
 
   it("keeps different session ids isolated", async () => {

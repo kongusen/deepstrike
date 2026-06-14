@@ -1,7 +1,7 @@
 import OpenAI from "openai"
 import type { Message, ProviderDescriptor, ProviderReplay, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
-import { CircuitBreaker, omitExtensionKeys, ThinkingTagStreamExtractor } from "./base.js"
+import { CircuitBreaker, omitExtensionKeys, openAICachedPromptTokens, stablePromptCacheKey, ThinkingTagStreamExtractor } from "./base.js"
 import { OpenAIChatAdapter } from "./openai-chat.js"
 import type { ReplayabilityAssessment } from "./replay-validator.js"
 
@@ -118,6 +118,7 @@ export class OpenAIChatProvider implements LLMProvider {
     for (let i = 0; i < this.maxRetries; i++) {
       try {
         const resp = await this.client.chat.completions.create({
+          prompt_cache_key: this.promptCacheKey(context, tools),
           ...this.requestExtensions(extensions),
           model: this.model,
           messages: msgs,
@@ -145,6 +146,7 @@ export class OpenAIChatProvider implements LLMProvider {
     let accumulatedContent = ""
 
     const stream = await this.client.chat.completions.create({
+      prompt_cache_key: this.promptCacheKey(context, tools),
       ...this.requestExtensions(extensions),
       model: this.model,
       messages: msgs,
@@ -156,11 +158,13 @@ export class OpenAIChatProvider implements LLMProvider {
     let totalTokens = 0
     let inputTokens = 0
     let outputTokens = 0
+    let cacheReadTokens = 0
     for await (const chunk of stream) {
       if (chunk.usage) {
         totalTokens = chunk.usage.total_tokens
         inputTokens = chunk.usage.prompt_tokens ?? 0
         outputTokens = chunk.usage.completion_tokens ?? 0
+        cacheReadTokens = openAICachedPromptTokens(chunk.usage)
         continue
       }
       const choice = chunk.choices[0]
@@ -233,7 +237,17 @@ export class OpenAIChatProvider implements LLMProvider {
       emittedToolCallIndexes.add(idx)
       yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
     }
-    if (totalTokens > 0) yield { type: "usage", totalTokens, inputTokens, outputTokens } as StreamEvent
+    if (totalTokens > 0) yield { type: "usage", totalTokens, inputTokens, outputTokens, ...(cacheReadTokens > 0 ? { cacheReadInputTokens: cacheReadTokens } : {}) } as StreamEvent
+  }
+
+  /**
+   * Default `prompt_cache_key` derived from the cacheable prefix (system prompt +
+   * tool names) so requests for the same agent config route to the same cache.
+   * A caller-supplied `prompt_cache_key` in extensions overrides it (it is spread
+   * after this default). Unknown to non-OpenAI compatible endpoints, which ignore it.
+   */
+  protected promptCacheKey(context: RenderedContext, tools: ToolSchema[]): string {
+    return stablePromptCacheKey([context.systemText, tools.map(t => t.name).join(",")])
   }
 
   protected requestExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {

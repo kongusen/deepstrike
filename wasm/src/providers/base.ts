@@ -1,8 +1,40 @@
-import type { Message, RenderedContext } from "../types.js"
+import type { ContentPart, Message, RenderedContext } from "../types.js"
 import { assistantReplayKey } from "../runtime/provider-replay.js"
 
 function parseToolArguments(args: string): Record<string, unknown> {
   try { return JSON.parse(args || "{}") as Record<string, unknown> } catch { return {} }
+}
+
+/** Multimodal: OpenAI content blocks from contentParts (text + image). */
+function openAIPartsContent(parts: ContentPart[]): Array<Record<string, unknown>> {
+  return parts.map(p => {
+    if (p.type === "image") {
+      const url = p.data ? `data:${p.mediaType ?? "image/png"};base64,${p.data}` : (p.url ?? "")
+      return { type: "image_url", image_url: { url, ...(p.detail ? { detail: p.detail } : {}) } }
+    }
+    return { type: "text", text: p.text ?? p.output ?? "" }
+  })
+}
+
+/** Multimodal: Anthropic content blocks from contentParts (text + image). */
+function anthropicPartsContent(parts: ContentPart[]): Array<Record<string, unknown>> {
+  return parts.map(p => {
+    if (p.type === "image") {
+      const source = p.data
+        ? { type: "base64", media_type: p.mediaType ?? "image/png", data: p.data }
+        : { type: "url", url: p.url ?? "" }
+      return { type: "image", source }
+    }
+    return { type: "text", text: p.text ?? p.output ?? "" }
+  })
+}
+
+/** History turns with the volatile State turn appended as the latest turn
+ *  (OpenAI), keeping the history a stable cacheable prefix. Anthropic appends it
+ *  after the cache breakpoint. Absent on un-rebuilt bindings — then the state is
+ *  already inside `turns`. */
+export function turnsWithStateAppended(context: RenderedContext): Message[] {
+  return context.stateTurn ? [...context.turns, context.stateTurn] : context.turns
 }
 
 /** Build OpenAI-compatible chat messages from a RenderedContext. */
@@ -11,12 +43,15 @@ export function toOpenAIMessages(context: RenderedContext): Array<Record<string,
   if (context.systemText) {
     messages.push({ role: "system", content: context.systemText })
   }
-  for (const msg of context.turns) {
+  for (const msg of turnsWithStateAppended(context)) {
     if (msg.role === "tool") {
       messages.push({ role: "tool", content: msg.content })
       continue
     }
-    const next: Record<string, unknown> = { role: msg.role, content: msg.content }
+    const next: Record<string, unknown> = {
+      role: msg.role,
+      content: msg.contentParts?.length ? openAIPartsContent(msg.contentParts) : msg.content,
+    }
     if (msg.role === "assistant" && msg.toolCalls?.length) {
       next.tool_calls = msg.toolCalls.map(tc => ({
         id: tc.id,
@@ -59,7 +94,10 @@ export function toAnthropicMessages(
       continue
     }
 
-    result.push({ role: msg.role, content: msg.content })
+    result.push({
+      role: msg.role,
+      content: msg.contentParts?.length ? anthropicPartsContent(msg.contentParts) : msg.content,
+    })
   }
 
   if (context.systemVolatile && result.length > 0) {

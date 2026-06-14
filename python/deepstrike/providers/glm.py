@@ -1,7 +1,9 @@
 from __future__ import annotations
+from .anthropic import AnthropicProvider
 from .base import RetryConfig, RuntimePolicy
 from .openai import OpenAIProvider
 
+_GLM_ANTHROPIC_BASE = "https://api.z.ai/api/anthropic"
 _GLM_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 
 _GLM_POLICIES: dict[str, RuntimePolicy] = {
@@ -14,6 +16,25 @@ _GLM_POLICIES: dict[str, RuntimePolicy] = {
     "glm-4-air": RuntimePolicy(max_turns=20),
     "glm/glm-4-air": RuntimePolicy(max_turns=20),
 }
+
+
+class GLMAnthropicProvider(AnthropicProvider):
+    """GLM (Zhipu AI) over its Anthropic-compatible endpoint."""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "glm-5.1",
+        retry_config: RetryConfig | None = None,
+        base_url: str = _GLM_ANTHROPIC_BASE,
+    ):
+        super().__init__(api_key, model, retry_config, base_url=base_url)
+
+    def _provider_name(self) -> str:
+        return "glm"
+
+    def runtime_policy(self) -> RuntimePolicy:
+        return _GLM_POLICIES.get(self._model, RuntimePolicy())
 
 
 class GLMProvider(OpenAIProvider):

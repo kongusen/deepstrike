@@ -86,6 +86,8 @@ class ReasoningReplayMixin:
         context: RenderedContext,
         degrade_missing_reasoning: bool = False,
     ) -> list[dict[str, Any]]:
+        # to_openai_message_params appends the State turn LAST, so the cursor only
+        # skips the system message to align with context.turns (history).
         cursor = 1 if context.system_text else 0
         for source in context.turns:
             if source.role == "tool":

@@ -1,7 +1,7 @@
 import { GoogleGenerativeAI, type Content, type Part, type RequestOptions, type Tool } from "@google/generative-ai"
 import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
-import { CircuitBreaker, normalizeToolCall } from "./base.js"
+import { CircuitBreaker, normalizeToolCall, turnsWithStateAppended } from "./base.js"
 import { endpointProfiles } from "./profiles.js"
 
 const GEMINI_BASE = (endpointProfiles as Record<string, { baseURL: string }>)["gemini.google"].baseURL
@@ -53,7 +53,19 @@ export function buildContents(turns: Message[]): Content[] {
         parts.push({ functionCall: { name: tc.name, args } })
       }
     }
-    if (msg.content) parts.push({ text: msg.content })
+    // Multimodal: render contentParts (text + image) when present, else the plain
+    // text body. Without this, image inputs to Gemini were silently dropped.
+    if (msg.contentParts?.length) {
+      for (const p of msg.contentParts) {
+        if (p.type === "text") parts.push({ text: p.text })
+        else if (p.type === "image") {
+          if (p.data) parts.push({ inlineData: { mimeType: p.mediaType ?? "image/png", data: p.data } })
+          else if (p.url) parts.push({ fileData: { mimeType: p.mediaType ?? "image/png", fileUri: p.url } } as Part)
+        }
+      }
+    } else if (msg.content) {
+      parts.push({ text: msg.content })
+    }
     if (parts.length) contents.push({ role, parts })
   }
   return contents
@@ -97,7 +109,7 @@ export class GeminiProvider implements LLMProvider {
   async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
     const system = context.systemText || undefined
-    const contents = buildContents(context.turns)
+    const contents = buildContents(turnsWithStateAppended(context))
     const geminiTools = buildTools(tools)
 
     let lastErr: unknown
@@ -139,7 +151,7 @@ export class GeminiProvider implements LLMProvider {
 
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
     const system = context.systemText || undefined
-    const contents = buildContents(context.turns)
+    const contents = buildContents(turnsWithStateAppended(context))
     const geminiTools = buildTools(tools)
 
     const m = this.genAI.getGenerativeModel({
@@ -168,11 +180,15 @@ export class GeminiProvider implements LLMProvider {
 
     const usage = (await result.response).usageMetadata
     if (usage?.totalTokenCount) {
+      // Gemini implicit/explicit cache hits are reported as cachedContentTokenCount,
+      // a subset of promptTokenCount (which stays the full prompt for accounting).
+      const cachedTokens = (usage as { cachedContentTokenCount?: number }).cachedContentTokenCount ?? 0
       yield {
         type: "usage",
         totalTokens: usage.totalTokenCount,
         inputTokens: usage.promptTokenCount ?? 0,
         outputTokens: usage.candidatesTokenCount ?? 0,
+        ...(cachedTokens > 0 ? { cacheReadInputTokens: cachedTokens } : {}),
       } as StreamEvent
     }
   }

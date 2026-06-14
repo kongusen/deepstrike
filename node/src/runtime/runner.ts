@@ -1,5 +1,5 @@
 import type {
-  LLMProvider, Message, ToolCall, ToolResult, ToolSchema,
+  LLMProvider, Message, ContentPart, ToolCall, ToolResult, ToolSchema,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, WorkflowNodesSubmittedEvent, DoneEvent, ErrorEvent,
   ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
   PermissionResponse, PermissionResolvedEvent, AsyncSummarizer, DreamSummarizer,
@@ -691,6 +691,8 @@ export class RuntimeRunner {
     sessionId: string
     goal: string
     criteria?: string[]
+    /** Multimodal inputs (images / audio) attached to the task as a user message. */
+    attachments?: ContentPart[]
     extensions?: Record<string, unknown>
     /** Parent transcript to preload (e.g. sub-agent full context inheritance). */
     inheritEvents?: Array<{ seq: number; event: SessionEvent }>
@@ -705,6 +707,7 @@ export class RuntimeRunner {
         criteria: req.criteria ?? [],
         agent_id: this.opts.agentId,
         system_prompt: this.opts.systemPrompt,
+        ...(req.attachments?.length ? { attachments: req.attachments } : {}),
       })
     }
     yield* this.execute(
@@ -714,6 +717,7 @@ export class RuntimeRunner {
       req.extensions,
       prior.length > 0 ? prior : undefined,
       midRun,
+      req.attachments,
     )
   }
 
@@ -725,7 +729,7 @@ export class RuntimeRunner {
     if (!startEntry) throw new Error(`No run_started event for session: ${sessionId}`)
     const start = startEntry.event as Extract<SessionEvent, { kind: "run_started" }>
 
-    yield* this.execute(sessionId, start.goal, start.criteria, extensions, events, true)
+    yield* this.execute(sessionId, start.goal, start.criteria, extensions, events, true, start.attachments)
   }
 
   async *dream(agentId: string, nowMs = Date.now()): AsyncIterable<StreamEvent> {
@@ -898,6 +902,7 @@ export class RuntimeRunner {
     extensions?: Record<string, unknown>,
     priorEvents?: Array<{ seq: number; event: SessionEvent }>,
     resumeMidRun = false,
+    attachments?: ContentPart[],
   ): AsyncIterable<StreamEvent> {
     this.interrupted = false
     this.pendingObservations = []
@@ -1079,6 +1084,16 @@ export class RuntimeRunner {
               }
             : {}),
         },
+      })
+    }
+    // Multimodal upload: seed the user's attachments (images/audio) as a history
+    // message before start_run pushes the "[TASK STATE]" anchor. init_task does not
+    // clear history, so order becomes [attachment user msg, "Proceed…"] — both land
+    // in the first render. On resume the message is already in the replayed history.
+    if (!resumeMidRun && attachments?.length) {
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "add_history_message",
+        message: attachmentsToKernelMessage(attachments),
       })
     }
     let action: KernelRunnerAction = resumeMidRun
@@ -1568,6 +1583,30 @@ export class RuntimeRunner {
 
 function isMidRun(events: Array<{ seq: number; event: SessionEvent }>): boolean {
   return events.length > 0 && !events.some(e => e.event.kind === "run_terminal")
+}
+
+/**
+ * Build a kernel `add_history_message` payload from user attachments: a `user`
+ * message whose content is the multimodal parts in the kernel's serde shape
+ * (`Content::Parts`; image `media_type`, not `mediaType`). Lets a caller upload
+ * images/audio with the task — the message lands in history before the first render.
+ */
+function attachmentsToKernelMessage(parts: ContentPart[]): Record<string, unknown> {
+  const content = parts.map(p => {
+    if (p.type === "image") {
+      return {
+        type: "image",
+        ...(p.url ? { url: p.url } : {}),
+        ...(p.data ? { data: p.data } : {}),
+        ...(p.mediaType ? { media_type: p.mediaType } : {}),
+        ...(p.detail ? { detail: p.detail } : {}),
+      }
+    }
+    if (p.type === "audio") return { type: "audio", data: p.data, media_type: p.mediaType }
+    if (p.type === "text") return { type: "text", text: p.text }
+    return { type: "text", text: "" }
+  })
+  return { role: "user", content }
 }
 
 function compressionAction(action?: string): Extract<SessionEvent, { kind: "compressed" }>["action"] {

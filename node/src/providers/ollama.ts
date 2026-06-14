@@ -1,5 +1,5 @@
 import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
-import { normalizeToolCall, omitExtensionKeys } from "./base.js"
+import { normalizeToolCall, omitExtensionKeys, turnsWithStateAppended } from "./base.js"
 
 // Prefix-based policy for local models (first match wins)
 const OLLAMA_PREFIX_POLICIES: Array<[string, RuntimePolicy]> = [
@@ -33,7 +33,7 @@ export class OllamaProvider implements LLMProvider {
   private toOllamaMessages(context: RenderedContext) {
     const result = []
     if (context.systemText) result.push({ role: "system", content: context.systemText })
-    for (const m of context.turns) {
+    for (const m of turnsWithStateAppended(context)) {
       const images: string[] = []
       if (m.contentParts?.length) {
         for (const p of m.contentParts) {

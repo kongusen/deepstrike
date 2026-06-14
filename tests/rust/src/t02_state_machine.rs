@@ -274,7 +274,7 @@ fn criteria_injected_into_user_message() {
             assert!(!user_msgs.is_empty());
             let text = user_msgs.last().unwrap().content.as_text().unwrap();
             assert_eq!(text, "Proceed with the task described in [TASK STATE].");
-            let state_text = context.turns.first().and_then(|m| m.content.as_text()).unwrap_or("");
+            let state_text = context.state_turn.as_ref().and_then(|m| m.content.as_text()).unwrap_or("");
             assert!(state_text.contains("Write code"));
             assert!(state_text.contains("criteria:"));
             assert!(state_text.contains("Must handle errors"));
@@ -301,7 +301,7 @@ fn no_criteria_means_plain_goal() {
                 .unwrap();
             assert_eq!(user_text, "Proceed with the task described in [TASK STATE].");
             assert!(!user_text.contains("Criteria:"));
-            let state_text = context.turns.first().and_then(|m| m.content.as_text()).unwrap_or("");
+            let state_text = context.state_turn.as_ref().and_then(|m| m.content.as_text()).unwrap_or("");
             assert!(state_text.contains("Say hello"));
         }
         _ => panic!("expected CallLLM"),

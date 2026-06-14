@@ -81,7 +81,7 @@ describe("RuntimeRunner thinking wake recovery", () => {
       expect(text).toBe("finished")
       expect(provider.streamCalls).toBe(1)
       expect(provider.capturedRequest?.messages).toEqual([
-        { role: "user", content: "use ping" },
+        { role: "user", content: [{ type: "text", text: "use ping", cache_control: { type: "ephemeral" } }] },
         {
           role: "assistant",
           content: [
@@ -92,7 +92,7 @@ describe("RuntimeRunner thinking wake recovery", () => {
         },
         {
           role: "user",
-          content: [{ type: "tool_result", tool_use_id: "call_ping", content: "pong", is_error: false }],
+          content: [{ type: "tool_result", tool_use_id: "call_ping", content: "pong", is_error: false, cache_control: { type: "ephemeral" } }],
         },
       ])
     } finally {

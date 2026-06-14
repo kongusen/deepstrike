@@ -103,8 +103,10 @@ describe("current provider runtime behavior", () => {
       ],
     }, [])) {}
 
+    // The first user turn and the trailing tool-result turn carry rolling cache
+    // breakpoints (the bare string body is promoted to a cache-bearing text block).
     expect(capturedSecondRequest?.messages).toEqual([
-      { role: "user", content: "hi" },
+      { role: "user", content: [{ type: "text", text: "hi", cache_control: { type: "ephemeral" } }] },
       {
         role: "assistant",
         content: [
@@ -115,7 +117,7 @@ describe("current provider runtime behavior", () => {
       },
       {
         role: "user",
-        content: [{ type: "tool_result", tool_use_id: "call_1", content: "ok", is_error: false }],
+        content: [{ type: "tool_result", tool_use_id: "call_1", content: "ok", is_error: false, cache_control: { type: "ephemeral" } }],
       },
     ])
   })

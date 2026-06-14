@@ -664,6 +664,14 @@ impl KernelRuntime {
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::AddKnowledgeMessage { content, tokens } => {
+                // P1-B2 cache contract: the knowledge partition renders into the cached system[1]
+                // block. Appending here is the right home for *stable* reference material (skill
+                // defs, durable artifacts) — it's append-only, so the existing prefix stays
+                // byte-stable, and a fresh append costs only a one-time system[1] re-cache. Do NOT
+                // route *per-turn* retrievals (a memory/knowledge lookup that changes every turn)
+                // through here: each would rewrite the cached block and invalidate it plus the
+                // history cache every turn. Volatile per-turn context belongs on the signal/tail
+                // path (`push_signal` → state_turn), which is uncached *and* high-attention (P1-F).
                 self.sm.ctx.partitions.knowledge.push(Message::system(content), tokens.max(1));
                 return KernelStep::empty(self.sm.take_observations());
             }

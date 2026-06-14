@@ -7,8 +7,8 @@ try:
 except ImportError:  # pragma: no cover - exercised only when optional provider dep is absent.
     google_genai = None
 from deepstrike._kernel import Message, ToolCall, ToolSchema
-from .stream import StreamEvent, TextDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call
+from .stream import StreamEvent, TextDelta, ToolCallEvent, UsageEvent
+from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, turns_with_state_appended
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,19 @@ class GeminiProvider:
                     except json.JSONDecodeError:
                         args = {}
                     parts.append({"function_call": {"name": tc.name, "args": args}})
-            if msg.content:
+            # Multimodal: render content_parts (text + image) when present, else the
+            # plain text body. Without this, image inputs to Gemini were dropped.
+            cparts = getattr(msg, "content_parts", None) or []
+            if cparts:
+                for p in cparts:
+                    if p.type == "text":
+                        parts.append({"text": p.text})
+                    elif p.type == "image":
+                        if getattr(p, "data", None):
+                            parts.append({"inline_data": {"mime_type": p.media_type or "image/png", "data": p.data}})
+                        elif getattr(p, "url", None):
+                            parts.append({"file_data": {"mime_type": p.media_type or "image/png", "file_uri": p.url}})
+            elif msg.content:
                 parts.append({"text": msg.content})
             if parts:
                 contents.append({"role": role, "parts": parts})
@@ -158,7 +170,7 @@ class GeminiProvider:
             raise RuntimeError("Circuit breaker open")
 
         system = context.system_text or None
-        contents = self._build_contents(context.turns)
+        contents = self._build_contents(turns_with_state_appended(context))
         config = self._build_config(system, tools)
 
         last_exc = None
@@ -207,10 +219,11 @@ class GeminiProvider:
 
     async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
         system = context.system_text or None
-        contents = self._build_contents(context.turns)
+        contents = self._build_contents(turns_with_state_appended(context))
         config = self._build_config(system, tools)
 
         tool_calls: list[dict] = []
+        last_usage = None
 
         if self._model is not None:
             stream = await self._model.generate_content_async(contents, stream=True)
@@ -222,6 +235,9 @@ class GeminiProvider:
             )
 
         async for chunk in stream:
+            # usage_metadata is cumulative and populated on the final chunk(s).
+            if getattr(chunk, "usage_metadata", None):
+                last_usage = chunk.usage_metadata
             for part in self._response_parts(chunk):
                 text = self._part_text(part)
                 if text:
@@ -234,3 +250,15 @@ class GeminiProvider:
 
         for tc in tool_calls:
             yield ToolCallEvent(id=tc["id"], name=tc["name"], arguments=tc["args"])
+
+        if last_usage is not None:
+            # Implicit/explicit cache hits surface as cached_content_token_count,
+            # a subset of prompt_token_count (kept as the full prompt count).
+            total = getattr(last_usage, "total_token_count", 0) or 0
+            if total:
+                yield UsageEvent(
+                    total_tokens=total,
+                    input_tokens=getattr(last_usage, "prompt_token_count", 0) or 0,
+                    output_tokens=getattr(last_usage, "candidates_token_count", 0) or 0,
+                    cache_read_input_tokens=getattr(last_usage, "cached_content_token_count", 0) or 0,
+                )

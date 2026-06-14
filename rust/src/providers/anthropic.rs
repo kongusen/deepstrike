@@ -54,7 +54,7 @@ impl AnthropicProvider {
             .insert(assistant_replay_key(content, tool_calls), blocks);
     }
 
-    fn context_to_anthropic(&self, context: &RenderedContext) -> (Option<String>, Vec<Value>) {
+    fn context_to_anthropic(&self, context: &RenderedContext) -> (Option<Value>, Vec<Value>) {
         let native = self.native_assistant_blocks.lock().unwrap();
         context_to_anthropic(context, |content, tool_calls| {
             native
@@ -110,7 +110,7 @@ fn content_to_anthropic(content: &Content) -> Value {
 fn context_to_anthropic(
     context: &RenderedContext,
     native_replay: impl Fn(&str, &[ToolCall]) -> Option<Vec<Value>>,
-) -> (Option<String>, Vec<Value>) {
+) -> (Option<Value>, Vec<Value>) {
     let mut msgs = Vec::new();
     for message in &context.turns {
         if message.role == Role::Tool {
@@ -172,27 +172,129 @@ fn context_to_anthropic(
         };
         msgs.push(json!({ "role": role, "content": content_to_anthropic(&message.content) }));
     }
-    (
-        if context.system_text.is_empty() {
-            None
-        } else {
-            Some(context.system_text.clone())
-        },
-        msgs,
-    )
+    apply_message_cache_control(&mut msgs);
+    // The volatile State turn is rendered AFTER the cache breakpoints, so the
+    // history prefix stays cacheable and the state is the cheap uncached tail.
+    // (When produced by an un-rebuilt binding, state_turn is None and the state
+    // is already inside `turns` — rendered as-is above.)
+    if let Some(state) = &context.state_turn {
+        let role = if state.role == Role::Assistant { "assistant" } else { "user" };
+        msgs.push(json!({ "role": role, "content": content_to_anthropic(&state.content) }));
+    }
+    (build_system(context), msgs)
 }
 
-fn tools_to_anthropic(tools: &[ToolSchema]) -> Vec<Value> {
+/// Anthropic accepts at most this many cache_control breakpoints per request.
+const MAX_CACHE_BREAKPOINTS: usize = 4;
+/// Rolling cache breakpoints reserved for the message history (system uses ≤2).
+const MESSAGE_CACHE_BREAKPOINTS: usize = 2;
+
+fn tools_to_anthropic(tools: &[ToolSchema], anchor_cache: bool) -> Vec<Value> {
+    let last = tools.len().saturating_sub(1);
     tools
         .iter()
-        .map(|t| {
-            json!({
+        .enumerate()
+        .map(|(i, t)| {
+            let mut def = json!({
                 "name": t.name.as_str(),
                 "description": t.description,
                 "input_schema": t.parameters,
-            })
+            });
+            // Anchor a tool breakpoint only when the system blocks won't carry one;
+            // otherwise system_stable already caches the tools prefix (tools render
+            // first) and a redundant breakpoint would overrun the 4-slot budget.
+            if anchor_cache && i == last {
+                def["cache_control"] = json!({ "type": "ephemeral" });
+            }
+            def
         })
         .collect()
+}
+
+/// Structured system blocks with cache_control when the kernel partitioned the
+/// prompt (system_stable / system_knowledge); else the flat system_text string
+/// (no breakpoint), or None.
+fn build_system(context: &RenderedContext) -> Option<Value> {
+    if context.system_stable.is_empty() && context.system_knowledge.is_empty() {
+        return if context.system_text.is_empty() {
+            None
+        } else {
+            Some(json!(context.system_text))
+        };
+    }
+    let mut blocks = Vec::new();
+    if !context.system_stable.is_empty() {
+        blocks.push(json!({ "type": "text", "text": context.system_stable, "cache_control": { "type": "ephemeral" } }));
+    }
+    if !context.system_knowledge.is_empty() {
+        blocks.push(json!({ "type": "text", "text": context.system_knowledge, "cache_control": { "type": "ephemeral" } }));
+    }
+    if blocks.is_empty() {
+        None
+    } else {
+        Some(json!(blocks))
+    }
+}
+
+/// Roll cache breakpoints across the conversation tail so the message-history
+/// prefix is written once and re-read on later turns. Without this the cached
+/// prefix stops at the end of `system` and the whole tool-result history is
+/// re-billed at full input price every turn. Marks the final message plus the
+/// nearest preceding user turn (read anchor); a bare string body is promoted to
+/// a cache-bearing text block.
+fn apply_message_cache_control(msgs: &mut [Value]) {
+    if msgs.is_empty() {
+        return;
+    }
+    let last = msgs.len() - 1;
+    let mut targets = vec![last];
+    let mut i = last;
+    while i > 0 && targets.len() < MESSAGE_CACHE_BREAKPOINTS {
+        i -= 1;
+        if msgs[i].get("role").and_then(|v| v.as_str()) == Some("user") {
+            targets.push(i);
+        }
+    }
+    for idx in targets {
+        mark_last_block_cacheable(&mut msgs[idx]);
+    }
+}
+
+fn mark_last_block_cacheable(msg: &mut Value) {
+    let cache_control = json!({ "type": "ephemeral" });
+    match msg.get_mut("content") {
+        Some(Value::String(s)) => {
+            if s.is_empty() {
+                return; // don't synthesize an empty (API-rejected) text block
+            }
+            let text = s.clone();
+            msg["content"] = json!([{ "type": "text", "text": text, "cache_control": cache_control }]);
+        }
+        Some(Value::Array(arr)) => {
+            if let Some(obj) = arr.last_mut().and_then(|b| b.as_object_mut()) {
+                obj.insert("cache_control".to_string(), cache_control);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Regression guard: fail before the API would reject the request for exceeding
+/// the cache_control breakpoint limit. Uses the worst-case message count, so it
+/// can only fire if a future change adds a system partition or raises the budget.
+fn assert_cache_budget(system: Option<&Value>, tool_count: usize) -> Result<()> {
+    let system_breakpoints = match system {
+        Some(Value::Array(a)) => a.len(),
+        _ => 0,
+    };
+    let is_array = matches!(system, Some(Value::Array(_)));
+    let tool_breakpoints = if tool_count > 0 && !is_array { 1 } else { 0 };
+    if system_breakpoints + tool_breakpoints + MESSAGE_CACHE_BREAKPOINTS > MAX_CACHE_BREAKPOINTS {
+        return Err(Error::Provider(format!(
+            "Anthropic cache_control budget exceeded: {system_breakpoints} system + {tool_breakpoints} tool + {MESSAGE_CACHE_BREAKPOINTS} message > {MAX_CACHE_BREAKPOINTS}"
+        )));
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -275,6 +377,9 @@ impl LLMProvider for AnthropicProvider {
     ) -> Result<Box<dyn Stream<Item = Result<StreamEvent>> + Send + Unpin>> {
         self.stream_native_blocks.lock().unwrap().clear();
         let (system, msgs) = self.context_to_anthropic(context);
+        // Anchor the tool breakpoint only when system is not structured blocks.
+        let tool_anchor = !matches!(&system, Some(Value::Array(_)));
+        assert_cache_budget(system.as_ref(), tools.len())?;
         let mut body = json!({
             "model": self.model,
             "max_tokens": self.max_tokens,
@@ -282,10 +387,10 @@ impl LLMProvider for AnthropicProvider {
             "stream": true,
         });
         if let Some(s) = system {
-            body["system"] = json!(s);
+            body["system"] = s;
         }
         if !tools.is_empty() {
-            body["tools"] = json!(tools_to_anthropic(tools));
+            body["tools"] = json!(tools_to_anthropic(tools, tool_anchor));
         }
         if let Some(ext) = extensions {
             if ext
@@ -320,13 +425,22 @@ impl LLMProvider for AnthropicProvider {
     }
 }
 
-fn anthropic_usage_total(usage: &Value) -> Option<u32> {
-    let input = usage.get("input_tokens")?.as_u64()?;
-    let output = usage
-        .get("output_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    Some((input + output) as u32)
+/// Extract raw usage components `(uncached_input, cache_read, cache_creation,
+/// output)` from an Anthropic usage object; absent fields default to 0. Returns
+/// None only when `usage` is not an object. Anthropic pins input + cache counts
+/// at message_start and reports cumulative output on message_delta, so callers
+/// max-accumulate these across events rather than trusting any single one.
+fn anthropic_usage_breakdown(usage: &Value) -> Option<(u32, u32, u32, u32)> {
+    if !usage.is_object() {
+        return None;
+    }
+    let field = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    Some((
+        field("input_tokens"),
+        field("cache_read_input_tokens"),
+        field("cache_creation_input_tokens"),
+        field("output_tokens"),
+    ))
 }
 
 fn parse_anthropic_sse(
@@ -338,8 +452,8 @@ fn parse_anthropic_sse(
         std::collections::HashMap::new();
 
     futures::stream::unfold(
-        (Box::pin(byte_stream), buf, tool_blocks, native_blocks),
-        |(mut stream, mut buf, mut tool_blocks, native_blocks)| async move {
+        (Box::pin(byte_stream), buf, tool_blocks, native_blocks, (0u32, 0u32, 0u32, 0u32)),
+        |(mut stream, mut buf, mut tool_blocks, native_blocks, mut acc)| async move {
             loop {
                 if let Some(pos) = buf.find('\n') {
                     let line = buf[..pos].trim().to_string();
@@ -384,7 +498,7 @@ fn parse_anthropic_sse(
                             if !delta.is_empty() {
                                 return Some((
                                     Ok(StreamEvent::TextDelta { delta }),
-                                    (stream, buf, tool_blocks, native_blocks),
+                                    (stream, buf, tool_blocks, native_blocks, acc),
                                 ));
                             }
                         } else if d["type"] == "thinking_delta" {
@@ -397,7 +511,7 @@ fn parse_anthropic_sse(
                             if !delta.is_empty() {
                                 return Some((
                                     Ok(StreamEvent::ThinkingDelta { delta }),
-                                    (stream, buf, tool_blocks, native_blocks),
+                                    (stream, buf, tool_blocks, native_blocks, acc),
                                 ));
                             }
                         } else if d["type"] == "signature_delta" {
@@ -428,24 +542,34 @@ fn parse_anthropic_sse(
                                     name,
                                     arguments,
                                 }),
-                                (stream, buf, tool_blocks, native_blocks),
+                                (stream, buf, tool_blocks, native_blocks, acc),
                             ));
                         }
                     } else if kind == "message_start" || kind == "message_delta" {
-                        if let Some(total) = evt
-                            .get("usage")
-                            .and_then(anthropic_usage_total)
-                            .or_else(|| {
-                                evt.get("message")
-                                    .and_then(|m| m.get("usage"))
-                                    .and_then(anthropic_usage_total)
-                            })
+                        let usage = evt.get("usage").or_else(|| {
+                            evt.get("message").and_then(|m| m.get("usage"))
+                        });
+                        if let Some((uncached, cache_read, cache_creation, output)) =
+                            usage.and_then(anthropic_usage_breakdown)
                         {
+                            // acc = (uncached, cache_read, cache_creation, output).
+                            // A message_delta omits input/cache (read as 0); max()
+                            // keeps the totals pinned at message_start while letting
+                            // the final cumulative output through.
+                            acc.0 = acc.0.max(uncached);
+                            acc.1 = acc.1.max(cache_read);
+                            acc.2 = acc.2.max(cache_creation);
+                            acc.3 = acc.3.max(output);
+                            let full_input = acc.0 + acc.1 + acc.2;
                             return Some((
                                 Ok(StreamEvent::Usage {
-                                    total_tokens: total,
+                                    total_tokens: full_input + acc.3,
+                                    input_tokens: full_input,
+                                    output_tokens: acc.3,
+                                    cache_read_input_tokens: acc.1,
+                                    cache_creation_input_tokens: acc.2,
                                 }),
-                                (stream, buf, tool_blocks, native_blocks),
+                                (stream, buf, tool_blocks, native_blocks, acc),
                             ));
                         }
                     }
@@ -459,7 +583,7 @@ fn parse_anthropic_sse(
                     Some(Err(e)) => {
                         return Some((
                             Err(Error::Provider(e.to_string())),
-                            (stream, buf, tool_blocks, native_blocks),
+                            (stream, buf, tool_blocks, native_blocks, acc),
                         ));
                     }
                     None => return None,
@@ -476,9 +600,25 @@ mod tests {
     use deepstrike_core::types::message::{ContentPart, Message, ToolCall};
 
     #[test]
-    fn anthropic_usage_total_sums_input_and_output() {
-        let usage = json!({ "input_tokens": 100, "output_tokens": 50 });
-        assert_eq!(anthropic_usage_total(&usage), Some(150));
+    fn anthropic_usage_breakdown_extracts_raw_components() {
+        let usage = json!({
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_input_tokens": 900,
+            "cache_creation_input_tokens": 10,
+        });
+        // (uncached, cache_read, cache_creation, output)
+        assert_eq!(anthropic_usage_breakdown(&usage), Some((100, 900, 10, 50)));
+    }
+
+    #[test]
+    fn anthropic_usage_breakdown_defaults_absent_fields_to_zero() {
+        // A message_delta carries only the cumulative output; the rest read as 0
+        // so the caller's max-accumulator keeps the message_start input/cache.
+        let usage = json!({ "output_tokens": 50 });
+        assert_eq!(anthropic_usage_breakdown(&usage), Some((0, 0, 0, 50)));
+        // A non-object usage yields None.
+        assert_eq!(anthropic_usage_breakdown(&json!("nope")), None);
     }
 
     #[test]
@@ -505,14 +645,26 @@ mod tests {
                     is_error: false,
                 }]),
             ],
+            state_turn: None,
+            frozen_prefix_len: None,
         };
 
         let (system, messages) = context_to_anthropic(&context, |_, _| None);
-        assert_eq!(system.as_deref(), Some("system rules"));
+        // system_stable present -> structured cache block, not a bare string.
+        assert_eq!(
+            system,
+            Some(json!([
+                { "type": "text", "text": "system rules", "cache_control": { "type": "ephemeral" } }
+            ]))
+        );
+        // The first user turn and the trailing tool-result turn carry rolling
+        // cache breakpoints; the assistant tool-use turn is untouched.
         assert_eq!(
             messages,
             vec![
-                json!({ "role": "user", "content": "What is the weather?" }),
+                json!({ "role": "user", "content": [
+                    { "type": "text", "text": "What is the weather?", "cache_control": { "type": "ephemeral" } }
+                ] }),
                 json!({
                     "role": "assistant",
                     "content": [
@@ -532,9 +684,50 @@ mod tests {
                         "tool_use_id": "call_1",
                         "content": "sunny",
                         "is_error": false,
+                        "cache_control": { "type": "ephemeral" },
                     }],
                 }),
             ]
         );
+    }
+
+    #[test]
+    fn budget_guard_passes_for_partitioned_system_with_tools() {
+        let context = RenderedContext {
+            system_text: "rules\nknowledge".into(),
+            system_stable: "rules".into(),
+            system_knowledge: "knowledge".into(),
+            turns: vec![Message::user("hi")],
+            state_turn: None,
+            frozen_prefix_len: None,
+        };
+        let (system, _msgs) = context_to_anthropic(&context, |_, _| None);
+        // 2 system + 2 message = 4 (tool breakpoint dropped) — at the limit, ok.
+        assert!(assert_cache_budget(system.as_ref(), 3).is_ok());
+    }
+
+    #[test]
+    fn state_turn_rendered_after_history_without_cache_control() {
+        // History is the cacheable prefix; the volatile state turn is the tail.
+        let context = RenderedContext {
+            system_text: String::new(),
+            system_stable: String::new(),
+            system_knowledge: String::new(),
+            turns: vec![
+                Message::user("earlier question"),
+                Message::assistant("earlier answer"),
+            ],
+            state_turn: Some(Message::user("[TASK STATE] goal: g\n\nProceed.")),
+            frozen_prefix_len: None,
+        };
+        let (_system, messages) = context_to_anthropic(&context, |_, _| None);
+        // history (2) + state (1) appended last
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[2]["role"], "user");
+        assert!(messages[2]["content"].as_str().unwrap().contains("[TASK STATE]"));
+        // the state turn carries NO cache breakpoint (it is the uncached tail)
+        assert!(messages[2].get("cache_control").is_none());
+        // the last history turn DID get a breakpoint (read anchor) — it became a block array
+        assert!(messages[1]["content"].is_array() || messages[0]["content"].is_array());
     }
 }

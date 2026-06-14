@@ -40,9 +40,10 @@ export class OpenAIChatAdapter {
     const degradeReasoning = Boolean(
       options.requireNonEmptyReasoningForToolCalls && options.degradeMissingReasoning,
     )
-    // toOpenAIMessageParams prepends systemText as messages[0], then turns.
+    // toOpenAIMessageParams emits [system?, ...history, stateTurn?] — the State
+    // turn is APPENDED last, so the cursor only skips the system message to align
+    // with context.turns (history) when writing reasoning-replay fields.
     const serialized = toOpenAIMessageParams(context)
-    // Cursor starts at 1 to skip the system message injected by toOpenAIMessageParams.
     let cursor = context.systemText ? 1 : 0
 
     for (const source of context.turns) {

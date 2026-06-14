@@ -181,8 +181,8 @@ describe("E2E mechanism contract tests", () => {
     await collectText(runner.run({ sessionId: "k03-mechanism", goal }))
 
     const first = provider.calls[0]
-    // goal is now in turns[0] (State slot), not systemVolatile
-    expect(first.turns[0]?.content ?? "").toContain("Count from 1 to 3")
+    // goal is in the State turn — stateTurn on a rebuilt binding, else turns[0]
+    expect((first.stateTurn ?? first.turns[0])?.content ?? "").toContain("Count from 1 to 3")
     expect(first.systemText).not.toContain("[TASK STATE]")
   })
 

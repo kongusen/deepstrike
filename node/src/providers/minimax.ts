@@ -3,7 +3,7 @@ import type { Message, ProviderDescriptor, RenderedContext, RuntimePolicy, Strea
 import { AnthropicProvider } from "./anthropic.js"
 import { OpenAIChatProvider } from "./openai.js"
 import { endpointProfiles } from "./profiles.js"
-import { omitExtensionKeys } from "./base.js"
+import { omitExtensionKeys, openAICachedPromptTokens } from "./base.js"
 
 const MINIMAX_POLICIES: Record<string, RuntimePolicy> = {
   "MiniMax-M2.7":           { maxTurns: 35 },
@@ -149,11 +149,13 @@ export class MiniMaxOpenAIProvider extends OpenAIChatProvider {
     let totalTokens = 0
     let inputTokens = 0
     let outputTokens = 0
+    let cacheReadTokens = 0
     for await (const chunk of stream) {
       if (chunk.usage) {
         totalTokens = chunk.usage.total_tokens
         inputTokens = chunk.usage.prompt_tokens ?? 0
         outputTokens = chunk.usage.completion_tokens ?? 0
+        cacheReadTokens = openAICachedPromptTokens(chunk.usage)
         continue
       }
       const choice = chunk.choices[0]
@@ -199,7 +201,7 @@ export class MiniMaxOpenAIProvider extends OpenAIChatProvider {
       emittedToolCallIndexes.add(idx)
       yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
     }
-    if (totalTokens > 0) yield { type: "usage", totalTokens, inputTokens, outputTokens } as StreamEvent
+    if (totalTokens > 0) yield { type: "usage", totalTokens, inputTokens, outputTokens, ...(cacheReadTokens > 0 ? { cacheReadInputTokens: cacheReadTokens } : {}) } as StreamEvent
   }
 
   private rememberMiniMaxReplay(

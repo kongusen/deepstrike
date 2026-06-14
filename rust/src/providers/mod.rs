@@ -36,6 +36,13 @@ pub enum StreamEvent {
     /// Token usage from the provider (e.g. OpenAI `stream_options.include_usage`).
     Usage {
         total_tokens: u32,
+        /// Full prompt size: uncached input + cache reads + cache writes.
+        input_tokens: u32,
+        output_tokens: u32,
+        /// Prompt tokens served from cache (billed ~0.1x). Subset of input_tokens.
+        cache_read_input_tokens: u32,
+        /// Prompt tokens written to cache (billed ~1.25x). Subset of input_tokens.
+        cache_creation_input_tokens: u32,
     },
     Done,
 }
@@ -124,8 +131,13 @@ pub async fn collect_message_from_stream(
 /// Token consumption for a single LLM call.
 #[derive(Debug, Clone, Default)]
 pub struct TokenUsage {
+    /// Full prompt size: uncached input + cache reads + cache writes.
     pub input_tokens: u32,
     pub output_tokens: u32,
+    /// Prompt tokens served from cache (billed ~0.1x). Subset of input_tokens.
+    pub cache_read_input_tokens: u32,
+    /// Prompt tokens written to cache (billed ~1.25x). Subset of input_tokens.
+    pub cache_creation_input_tokens: u32,
 }
 
 impl TokenUsage {

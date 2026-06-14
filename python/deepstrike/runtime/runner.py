@@ -717,6 +717,7 @@ class RuntimeRunner:
     goal: str,
     session_id: str | None = None,
     criteria: list[str] | None = None,
+    attachments: list[dict] | None = None,
     extensions: dict | None = None,
     inherit_events: list | None = None,
   ) -> AsyncIterator[StreamEvent]:
@@ -731,10 +732,11 @@ class RuntimeRunner:
         "criteria": criteria or [],
         **({"agent_id": self._opts.agent_id} if self._opts.agent_id else {}),
         **({"system_prompt": self._opts.system_prompt} if self._opts.system_prompt else {}),
+        **({"attachments": attachments} if attachments else {}),
       })
     async for evt in self._execute(
       sid, goal, criteria or [], extensions,
-      prior if prior else None, mid_run,
+      prior if prior else None, mid_run, attachments,
     ):
       yield evt
 
@@ -757,6 +759,7 @@ class RuntimeRunner:
       extensions,
       events,
       True,
+      start.get("attachments"),
     ):
       yield evt
 
@@ -944,6 +947,7 @@ class RuntimeRunner:
     extensions: dict | None,
     prior_events: list[SessionEntry] | None,
     resume_mid_run: bool,
+    attachments: list[dict] | None = None,
   ) -> AsyncIterator[StreamEvent]:
     self._interrupted = False
     self._pending_observations = []
@@ -1094,6 +1098,16 @@ class RuntimeRunner:
       kernel_apply(runtime, self._pending_observations, {
         "kind": "set_memory_policy",
         **_memory_policy_to_kernel(self._opts.memory_policy),
+      })
+
+    # Multimodal upload: seed the user's attachments (images/audio) as a history
+    # message before start_run pushes the "[TASK STATE]" anchor. init_task does not
+    # clear history, so both land in the first render. On resume they are already
+    # in the replayed history.
+    if not resume_mid_run and attachments:
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "add_history_message",
+        "message": {"role": "user", "content": list(attachments)},
       })
 
     action = (

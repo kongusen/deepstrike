@@ -39,17 +39,19 @@ from .replay_validator import (
 )
 from .anthropic import AnthropicProvider
 from .openai import OpenAIProvider
-from .qwen import QwenProvider
-from .deepseek import DeepSeekProvider
+from .qwen import QwenProvider, QwenAnthropicProvider
+from .deepseek import DeepSeekProvider, DeepSeekAnthropicProvider
 from .minimax import MiniMaxAnthropicProvider, MiniMaxOpenAIProvider
 from .ollama import OllamaProvider
-from .kimi import KimiProvider
+from .kimi import KimiProvider, KimiAnthropicProvider
 from .gemini import GeminiProvider
-from .glm import GLMProvider
+from .glm import GLMProvider, GLMAnthropicProvider
 
 __all__ = [
     "LLMProvider", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
-    "QwenProvider", "DeepSeekProvider", "MiniMaxAnthropicProvider", "MiniMaxOpenAIProvider", "OllamaProvider", "KimiProvider", "GeminiProvider", "GLMProvider",
+    "QwenProvider", "QwenAnthropicProvider", "DeepSeekProvider", "DeepSeekAnthropicProvider",
+    "MiniMaxAnthropicProvider", "MiniMaxOpenAIProvider", "OllamaProvider",
+    "KimiProvider", "KimiAnthropicProvider", "GeminiProvider", "GLMProvider", "GLMAnthropicProvider",
     "RetryConfig", "CircuitBreaker", "normalize_tool_call", "parse_tool_arguments",
     "TokenUsage", "ProviderToolSpec",
     "to_anthropic_content", "to_anthropic_messages",

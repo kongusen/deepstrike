@@ -801,8 +801,16 @@ struct RenderedContext {
     system_stable: String,
     #[pyo3(get)]
     system_knowledge: String,
+    /// History turns only — the stable, cacheable message prefix.
     #[pyo3(get)]
     turns: Vec<Message>,
+    /// Volatile State turn (task_state + signals), rendered after the cacheable history.
+    #[pyo3(get)]
+    state_turn: Option<Message>,
+    /// P1-E: count of leading `turns` forming the frozen prefix (byte-stable until the next
+    /// compaction). Providers pin a deep cache breakpoint here; absent ⇒ rolling-pair fallback.
+    #[pyo3(get)]
+    frozen_prefix_len: Option<usize>,
 }
 
 #[pymethods]
@@ -819,6 +827,8 @@ impl RenderedContext {
             system_stable: rc.system_stable,
             system_knowledge: rc.system_knowledge,
             turns: rc.turns.iter().map(Message::from_rust).collect(),
+            state_turn: rc.state_turn.as_ref().map(Message::from_rust),
+            frozen_prefix_len: rc.frozen_prefix_len,
         }
     }
 }

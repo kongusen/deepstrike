@@ -5,7 +5,7 @@ from typing import AsyncIterator
 import httpx
 from deepstrike._kernel import Message, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call
+from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, turns_with_state_appended
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ class OllamaProvider:
         msgs = []
         if context.system_text:
             msgs.append({"role": "system", "content": context.system_text})
-        for m in context.turns:
+        for m in turns_with_state_appended(context):
             entry: dict = {"role": m.role, "content": m.content}
             parts = getattr(m, "content_parts", None)
             if parts:

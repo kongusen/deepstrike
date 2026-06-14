@@ -99,7 +99,10 @@ impl ContextSnapshotHint {
     }
 }
 
-fn stable_hash(bytes: &[u8]) -> u64 {
+/// FNV-1a 64-bit. The kernel's one stable, dependency-free content hash — shared
+/// by snapshot hints and the render-layer [`super::renderer::PrefixFingerprint`] so
+/// both speak the same fingerprint dialect.
+pub(crate) fn stable_hash(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in bytes {
         hash ^= u64::from(*byte);

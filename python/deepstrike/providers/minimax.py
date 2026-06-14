@@ -5,7 +5,7 @@ from typing import AsyncIterator
 
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .anthropic import AnthropicProvider
-from .base import ProviderDescriptor, RenderedContext, RetryConfig, RuntimePolicy, normalize_tool_call, wire_request_extensions
+from .base import ProviderDescriptor, RenderedContext, RetryConfig, RuntimePolicy, normalize_tool_call, openai_cached_prompt_tokens, wire_request_extensions
 from .openai import OpenAIProvider
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
 
@@ -184,7 +184,13 @@ class MiniMaxOpenAIProvider(OpenAIProvider):
 
         async for chunk in stream:
             if getattr(chunk, "usage", None):
-                yield UsageEvent(total_tokens=chunk.usage.total_tokens)
+                u = chunk.usage
+                yield UsageEvent(
+                    total_tokens=getattr(u, "total_tokens", 0) or 0,
+                    input_tokens=getattr(u, "prompt_tokens", 0) or 0,
+                    output_tokens=getattr(u, "completion_tokens", 0) or 0,
+                    cache_read_input_tokens=openai_cached_prompt_tokens(u),
+                )
                 continue
             choice = chunk.choices[0] if chunk.choices else None
             if not choice:

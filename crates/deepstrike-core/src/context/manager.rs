@@ -59,6 +59,13 @@ pub struct ContextManager {
     pub handles: HandleTable,
     /// Monotonic allocator for [`HandleId`]s.
     next_handle_id: HandleId,
+
+    /// P1-E: history length (message count) as of the last compaction/renewal. Messages below this
+    /// index are the **frozen prefix** — byte-stable until the next compaction — so the renderer can
+    /// hand providers a `frozen_prefix_len` for a long-lived deep cache breakpoint. 0 before any
+    /// compaction (no frozen region yet). Not snapshotted: on resume it resets to 0 and rebuilds at
+    /// the next compaction (graceful — only the deep-cache durability lapses, never correctness).
+    frozen_history_len: usize,
 }
 
 impl ContextManager {
@@ -84,6 +91,7 @@ impl ContextManager {
             last_compact_ms: None,
             handles: HandleTable::new(),
             next_handle_id: 0,
+            frozen_history_len: 0,
         }
     }
 
@@ -113,16 +121,24 @@ impl ContextManager {
 
     /// Recompute tool-result handle residency for Layer-4 read-time projection (call before
     /// `render`). When pressure (`rho`) reaches `collapse_threshold`, all but the most recent
-    /// `preserve_recent_msgs` tool results are marked `Collapsed` (rendered as previews); when
-    /// pressure subsides they return to `Resident`. Non-destructive: `partitions` is untouched, so
-    /// projection fully reverses. Spooled/paged-out handles (Layer 1/page-out) are left as-is.
+    /// `preserve_recent_msgs` tool results are marked `Collapsed` (rendered as previews).
+    ///
+    /// **Monotonic within a cache generation (P0-C):** collapse is one-way here —
+    /// `Resident → Collapsed` only, never the reverse. The old two-way version un-collapsed when
+    /// `rho` fell back below the threshold, which (a) rewrote mid-history bytes and invalidated the
+    /// prompt-cache prefix on every threshold oscillation, and (b) re-billed a full tool-result body
+    /// for near-zero attention gain (an old result that already faded). Un-collapsing now happens
+    /// only at compaction/renewal boundaries via [`Self::reset_collapse_generation`] — the one moment
+    /// the prefix is rewritten anyway, so the cache cost is already paid. Non-destructive:
+    /// `partitions` is untouched. Spooled/paged-out handles are left as-is.
     pub fn recompute_handle_residency(&mut self) {
-        let collapse = self.rho() >= self.config.collapse_threshold;
+        // Monotonic: below the threshold we never *un*-collapse, so there is nothing to do.
+        if self.rho() < self.config.collapse_threshold {
+            return;
+        }
         let keep = self.config.preserve_recent_msgs;
-        // Single mutable pass in insertion order. The previous implementation collected ids then
-        // re-found each via `get_mut` (a linear scan), making this O(handles²) **every turn** — the
-        // long-session cliff. `tool_result_handles_mut().enumerate()` yields the same set in the
-        // same order, so `i`/`cutoff` are bit-identical to the old logic, now in O(handles).
+        // Single mutable pass in insertion order. `tool_result_handles_mut().enumerate()` yields the
+        // collapse candidates oldest-first; `i < cutoff` protects the most recent `keep` results.
         let total = self
             .handles
             .all()
@@ -131,14 +147,23 @@ impl ContextManager {
             .count();
         let cutoff = total.saturating_sub(keep);
         for (i, handle) in self.handles.tool_result_handles_mut().enumerate() {
-            // Only toggle the reversible Resident<->Collapsed axis; never clobber a handle
-            // that has been spooled or paged out.
-            if matches!(handle.residency, Residency::Resident | Residency::Collapsed) {
-                handle.residency = if collapse && i < cutoff {
-                    Residency::Collapsed
-                } else {
-                    Residency::Resident
-                };
+            // Only fold the reversible Resident → Collapsed axis; never clobber a handle that has
+            // been spooled or paged out, and never reverse an existing collapse mid-generation.
+            if i < cutoff && matches!(handle.residency, Residency::Resident) {
+                handle.residency = Residency::Collapsed;
+            }
+        }
+    }
+
+    /// Start a fresh collapse generation: un-collapse every `Collapsed` handle back to `Resident`.
+    /// Called only at compaction/renewal boundaries — the sole points where un-collapsing is
+    /// cache-free, since the rendered prefix is rewritten there regardless. Between boundaries
+    /// [`Self::recompute_handle_residency`] keeps collapse strictly one-way (P0-C). Spooled/paged-out
+    /// handles are untouched (they leave the Resident↔Collapsed cycle deliberately).
+    pub fn reset_collapse_generation(&mut self) {
+        for handle in self.handles.all_mut() {
+            if matches!(handle.residency, Residency::Collapsed) {
+                handle.residency = Residency::Resident;
             }
         }
     }
@@ -257,6 +282,18 @@ impl ContextManager {
         // Archived messages have left history — drop their now-orphaned handles (bounds the table).
         if !result.2.is_empty() {
             self.prune_orphaned_handles();
+            // Compaction rewrote the history prefix — start a fresh collapse generation so
+            // surviving handles re-evaluate from Resident (P0-C: the one cache-free un-collapse point).
+            self.reset_collapse_generation();
+        }
+        // P2-D × P1-E: re-anchor the frozen-prefix boundary only when the compaction actually broke
+        // the prompt-cache prefix (`result.3` = the planner's per-step `cache_at` cost, `Some` ⇒ a
+        // prefix break). A prefix-safe compaction (late Snip/Excerpt that touches no early message)
+        // leaves `[0..frozen]` byte-stable, so the deep cache survives the compaction and the boundary
+        // holds — strictly more precise than the old `archived`-keyed reset, which missed an early
+        // in-place Snip and needlessly re-anchored after a prefix-safe pass.
+        if result.3.is_some() {
+            self.frozen_history_len = self.partitions.history.messages.len();
         }
 
         result
@@ -269,6 +306,18 @@ impl ContextManager {
         let result = self.compression.compress(&mut self.partitions, PressureAction::AutoCompact, self.max_tokens, 0, &self.engine);
         if !result.2.is_empty() {
             self.prune_orphaned_handles();
+            // Compaction rewrote the history prefix — start a fresh collapse generation so
+            // surviving handles re-evaluate from Resident (P0-C: the one cache-free un-collapse point).
+            self.reset_collapse_generation();
+        }
+        // P2-D × P1-E: re-anchor the frozen-prefix boundary only when the compaction actually broke
+        // the prompt-cache prefix (`result.3` = the planner's per-step `cache_at` cost, `Some` ⇒ a
+        // prefix break). A prefix-safe compaction (late Snip/Excerpt that touches no early message)
+        // leaves `[0..frozen]` byte-stable, so the deep cache survives the compaction and the boundary
+        // holds — strictly more precise than the old `archived`-keyed reset, which missed an early
+        // in-place Snip and needlessly re-anchored after a prefix-safe pass.
+        if result.3.is_some() {
+            self.frozen_history_len = self.partitions.history.messages.len();
         }
         result
     }
@@ -295,6 +344,18 @@ impl ContextManager {
         }
         if !result.2.is_empty() {
             self.prune_orphaned_handles();
+            // Compaction rewrote the history prefix — start a fresh collapse generation so
+            // surviving handles re-evaluate from Resident (P0-C: the one cache-free un-collapse point).
+            self.reset_collapse_generation();
+        }
+        // P2-D × P1-E: re-anchor the frozen-prefix boundary only when the compaction actually broke
+        // the prompt-cache prefix (`result.3` = the planner's per-step `cache_at` cost, `Some` ⇒ a
+        // prefix break). A prefix-safe compaction (late Snip/Excerpt that touches no early message)
+        // leaves `[0..frozen]` byte-stable, so the deep cache survives the compaction and the boundary
+        // holds — strictly more precise than the old `archived`-keyed reset, which missed an early
+        // in-place Snip and needlessly re-anchored after a prefix-safe pass.
+        if result.3.is_some() {
+            self.frozen_history_len = self.partitions.history.messages.len();
         }
         result
     }
@@ -321,8 +382,12 @@ impl ContextManager {
         self.partitions = renewed;
         self.last_handoff = Some(artifact);
         self.sprint += 1;
-        // History was rebuilt wholesale — drop handles anchored to messages it no longer carries.
+        // History was rebuilt wholesale — drop handles anchored to messages it no longer carries,
+        // and start a fresh collapse generation (P0-C) since the whole prefix changed.
         self.prune_orphaned_handles();
+        self.reset_collapse_generation();
+        // P1-E: the renewed history is the new frozen base.
+        self.frozen_history_len = self.partitions.history.messages.len();
     }
 
     // ── Render ────────────────────────────────────────────────────────────────
@@ -334,6 +399,7 @@ impl ContextManager {
             &self.engine,
             self.config.preserve_recent_msgs,
             &self.handles,
+            self.frozen_history_len,
         )
     }
 
@@ -586,12 +652,14 @@ mod tests {
     }
 
     #[test]
-    fn render_includes_task_state_in_turns_not_system() {
+    fn render_includes_task_state_in_state_turn_not_system() {
         let mut mgr = ContextManager::new(10_000);
         mgr.init_task("find anomalies".to_string(), vec![]);
         let rc = mgr.render();
         assert!(!rc.system_text.contains("[TASK STATE]"), "task_state must not be in system_text");
-        assert!(rc.turns[0].content.as_text().unwrap().contains("[TASK STATE] goal: find anomalies"));
+        // State turn is separated from the cacheable history (turns).
+        let state = rc.state_turn.as_ref().expect("should have a state turn");
+        assert!(state.content.as_text().unwrap().contains("[TASK STATE] goal: find anomalies"));
     }
 
     #[test]
@@ -744,10 +812,86 @@ mod tests {
         assert_eq!(mgr.handles.residency_for_source("c0"), Some(&Residency::Collapsed));
         assert_eq!(mgr.handles.residency_for_source("c9"), Some(&Residency::Resident));
 
-        // Reversible: once pressure drops, collapse is undone (read-time projection only).
+        // P0-C — monotonic within a generation: once collapsed, dropping pressure does NOT
+        // un-collapse (un-collapsing would re-bill the body and churn the cache prefix).
         mgr.set_observed_prompt_tokens(100); // 0.10 < 0.90
         mgr.recompute_handle_residency();
+        assert_eq!(
+            mgr.handles.residency_for_source("c0"),
+            Some(&Residency::Collapsed),
+            "collapse is sticky until a compaction boundary"
+        );
+
+        // Only a generation reset (compaction/renewal) un-collapses.
+        mgr.reset_collapse_generation();
         assert_eq!(mgr.handles.residency_for_source("c0"), Some(&Residency::Resident));
+    }
+
+    #[test]
+    fn frozen_prefix_len_anchors_at_compaction_and_holds_across_appends() {
+        let mut mgr = ContextManager::new(1_000);
+        // Pre-compaction: no frozen region yet → providers use the rolling-pair fallback.
+        for i in 0..30 {
+            mgr.push_history(Message::user(format!("turn {i}: {}", "ctx ".repeat(30))), 150);
+        }
+        assert!(mgr.render().frozen_prefix_len.is_none(), "no frozen region before any compaction");
+
+        let (saved, _, archived, _) = mgr.compress(PressureAction::AutoCompact);
+        assert!(saved > 0 && !archived.is_empty(), "expected archival");
+
+        // Immediately after compaction the hot tail is empty → deep would coincide with the tail → None.
+        assert!(mgr.render().frozen_prefix_len.is_none(), "deep == tail right after compaction");
+
+        // As turns are appended, the deep boundary holds fixed while the tail grows.
+        mgr.push_history(Message::user("new 1"), 5);
+        let f1 = mgr.render().frozen_prefix_len.expect("frozen region exists once the tail grows");
+        mgr.push_history(Message::assistant("reply 1"), 5);
+        mgr.push_history(Message::user("new 2"), 5);
+        let rc = mgr.render();
+        let f2 = rc.frozen_prefix_len.expect("frozen region holds");
+        assert_eq!(f1, f2, "the deep boundary is fixed between compactions; only the tail grows");
+        assert!(f2 < rc.turns.len(), "deep boundary is distinct from the rolling tail");
+    }
+
+    #[test]
+    fn frozen_boundary_holds_through_a_prefix_safe_compaction() {
+        // P2-D × P1-E: the boundary re-anchors on a prefix-breaking compaction (cache_at = Some) but
+        // is preserved through a prefix-safe one (cache_at = None) — the deep cache survives.
+        let mut mgr = ContextManager::new(10_000);
+        for i in 0..5 {
+            mgr.push_history(Message::user(format!("m{i}")), 5);
+        }
+        mgr.frozen_history_len = 3; // pretend a prior compaction anchored the deep cache here
+
+        // A no-op / prefix-safe compaction (PressureAction::None ⇒ cache_at None) must NOT move the
+        // anchor — the cached [0..3] prefix is untouched, so the deep breakpoint stays put.
+        let (_, _, _, cache_at) = mgr.compress(PressureAction::None);
+        assert!(cache_at.is_none(), "no-op compaction is prefix-safe");
+        assert_eq!(mgr.frozen_history_len, 3, "prefix-safe compaction preserves the deep-cache anchor");
+    }
+
+    #[test]
+    fn collapse_generation_resets_on_autocompact() {
+        let mut mgr = ContextManager::new(1_000);
+        // Many oversized tool results: some will be archived by AutoCompact, the survivors
+        // should come back Resident (fresh generation), not stay stuck Collapsed.
+        for i in 0..20 {
+            mgr.push_history(tool_result_msg(&format!("c{i}"), &"x".repeat(120)), 60);
+        }
+        mgr.set_observed_prompt_tokens(980); // force collapse of the older results
+        mgr.recompute_handle_residency();
+        assert_eq!(mgr.handles.residency_for_source("c0"), Some(&Residency::Collapsed));
+
+        let (saved, _, archived, _) = mgr.compress(PressureAction::AutoCompact);
+        assert!(saved > 0 && !archived.is_empty(), "expected archival");
+
+        // Every surviving tool-result handle is Resident again — the compaction boundary
+        // rewrote the prefix, so the next pressure cycle re-decides from scratch.
+        for h in mgr.handles.all() {
+            if matches!(h.kind, HandleKind::ToolResult) {
+                assert_eq!(h.residency, Residency::Resident, "generation reset un-collapses survivors");
+            }
+        }
     }
 
     #[test]

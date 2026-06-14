@@ -193,7 +193,7 @@ describe("RuntimeRunner wake recovery", () => {
       expect.objectContaining({ role: "user", content: "My name is Ada." }),
       expect.objectContaining({ role: "assistant", content: "answer-1" }),
     ]))
-    expect(provider.calls[1].turns[0].content).toContain("What is my name?")
+    expect((provider.calls[1].stateTurn ?? provider.calls[1].turns[0]).content).toContain("What is my name?")
   })
 
   it("records compressed events when kernel compresses context", async () => {

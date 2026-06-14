@@ -1,8 +1,7 @@
 import type { ProviderDescriptor, RuntimePolicy } from "../types.js"
+import { AnthropicProvider } from "./anthropic.js"
 import { OpenAIChatProvider } from "./openai.js"
 import { endpointProfiles } from "./profiles.js"
-
-const MOONSHOT_BASE = endpointProfiles["kimi.openai"].baseURL
 
 const KIMI_POLICIES: Record<string, RuntimePolicy> = {
   "moonshot-v1-8k":   { maxTurns: 15 },
@@ -14,12 +13,37 @@ const KIMI_POLICIES: Record<string, RuntimePolicy> = {
   "kimi-k2-thinking-turbo": { maxTurns: 40 },
 }
 
+/**
+ * Kimi over its Anthropic-compatible endpoint.
+ */
+export class KimiAnthropicProvider extends AnthropicProvider {
+  constructor(
+    apiKey: string,
+    model: string = "kimi-k2.6",
+    retry?: { maxRetries: number; baseDelay: number },
+    baseURL: string = endpointProfiles["kimi.anthropic"].baseURL,
+  ) {
+    super(apiKey, model, retry, {
+      baseURL,
+      authMode: "api-key",
+    })
+  }
+
+  protected override providerName(): string {
+    return "kimi"
+  }
+
+  override runtimePolicy(): RuntimePolicy {
+    return KIMI_POLICIES[this.model] ?? {}
+  }
+}
+
 export class KimiProvider extends OpenAIChatProvider {
   constructor(
     apiKey: string,
     model: string = "kimi-k2.6",
     retry?: { maxRetries: number; baseDelay: number },
-    baseURL: string = MOONSHOT_BASE,
+    baseURL: string = endpointProfiles["kimi.openai"].baseURL,
   ) {
     super(apiKey, model, retry, baseURL)
   }

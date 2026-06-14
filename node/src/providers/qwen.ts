@@ -1,11 +1,10 @@
 import OpenAI from "openai"
 import type { LLMProvider, Message, ProviderDescriptor, RenderedContext, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, ToolSchema, RuntimePolicy, ProviderReplay } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
-import { CircuitBreaker, omitExtensionKeys } from "./base.js"
+import { AnthropicProvider } from "./anthropic.js"
+import { CircuitBreaker, omitExtensionKeys, openAICachedPromptTokens } from "./base.js"
 import { OpenAIChatAdapter } from "./openai-chat.js"
 import { endpointProfiles } from "./profiles.js"
-
-const QWEN_BASE = (endpointProfiles as Record<string, { baseURL: string }>)["qwen.dashscope"].baseURL
 
 const QWEN_POLICIES: Record<string, RuntimePolicy> = {
   "qwen3.7-max-preview": { maxTurns: 45 },
@@ -23,6 +22,31 @@ const QWEN_POLICIES: Record<string, RuntimePolicy> = {
   "qwen3.5-27b": { maxTurns: 20 },
 }
 
+/**
+ * Qwen over its Anthropic-compatible endpoint.
+ */
+export class QwenAnthropicProvider extends AnthropicProvider {
+  constructor(
+    apiKey: string,
+    model: string = "qwen3.6-plus",
+    retry?: { maxRetries: number; baseDelay: number },
+    baseURL: string = endpointProfiles["qwen.anthropic"].baseURL,
+  ) {
+    super(apiKey, model, retry, {
+      baseURL,
+      authMode: "api-key",
+    })
+  }
+
+  protected override providerName(): string {
+    return "qwen"
+  }
+
+  override runtimePolicy(): RuntimePolicy {
+    return QWEN_POLICIES[this.model] ?? {}
+  }
+}
+
 export class QwenProvider implements LLMProvider {
   protected client: OpenAI
   protected circuit: CircuitBreaker
@@ -34,7 +58,7 @@ export class QwenProvider implements LLMProvider {
     apiKey: string,
     protected readonly model = "qwen3.6-plus",
     retry = { maxRetries: 3, baseDelay: 1000 },
-    baseURL: string = QWEN_BASE,
+    baseURL: string = endpointProfiles["qwen.dashscope"].baseURL,
   ) {
     this.client = withServerRuntimeGuard(() => new OpenAI({ apiKey, baseURL }))
     this.circuit = new CircuitBreaker()
@@ -127,11 +151,13 @@ export class QwenProvider implements LLMProvider {
     let totalTokens = 0
     let inputTokens = 0
     let outputTokens = 0
+    let cacheReadTokens = 0
     for await (const chunk of stream) {
       if (chunk.usage) {
         totalTokens = chunk.usage.total_tokens
         inputTokens = chunk.usage.prompt_tokens ?? 0
         outputTokens = chunk.usage.completion_tokens ?? 0
+        cacheReadTokens = openAICachedPromptTokens(chunk.usage)
         continue
       }
       const choice = chunk.choices[0]
@@ -181,7 +207,7 @@ export class QwenProvider implements LLMProvider {
       emittedToolCallIndexes.add(idx)
       yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
     }
-    if (totalTokens > 0) yield { type: "usage", totalTokens, inputTokens, outputTokens } as StreamEvent
+    if (totalTokens > 0) yield { type: "usage", totalTokens, inputTokens, outputTokens, ...(cacheReadTokens > 0 ? { cacheReadInputTokens: cacheReadTokens } : {}) } as StreamEvent
   }
 
   private thinkingExtraBody(extensions?: Record<string, unknown>): Record<string, unknown> | undefined {

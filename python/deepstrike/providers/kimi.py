@@ -1,7 +1,9 @@
 from __future__ import annotations
+from .anthropic import AnthropicProvider
 from .base import RetryConfig, RuntimePolicy
 from .openai import OpenAIProvider
 
+_KIMI_ANTHROPIC_BASE = "https://api.moonshot.ai/anthropic"
 _MOONSHOT_BASE_URL = "https://api.moonshot.cn/v1"
 
 _KIMI_POLICIES: dict[str, RuntimePolicy] = {
@@ -13,6 +15,25 @@ _KIMI_POLICIES: dict[str, RuntimePolicy] = {
     "kimi-k2-thinking": RuntimePolicy(max_turns=50),
     "kimi-k2-thinking-turbo": RuntimePolicy(max_turns=40),
 }
+
+
+class KimiAnthropicProvider(AnthropicProvider):
+    """Kimi (Moonshot AI) over its Anthropic-compatible endpoint."""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "kimi-k2.6",
+        retry_config: RetryConfig | None = None,
+        base_url: str = _KIMI_ANTHROPIC_BASE,
+    ):
+        super().__init__(api_key, model, retry_config, base_url=base_url)
+
+    def _provider_name(self) -> str:
+        return "kimi"
+
+    def runtime_policy(self) -> RuntimePolicy:
+        return _KIMI_POLICIES.get(self._model, RuntimePolicy())
 
 
 class KimiProvider(OpenAIProvider):

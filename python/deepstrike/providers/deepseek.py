@@ -6,10 +6,12 @@ import httpx
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent
 from .base import RetryConfig, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, wire_request_extensions
+from .anthropic import AnthropicProvider
 from .openai import OpenAIProvider
 
 logger = logging.getLogger(__name__)
 
+_DEEPSEEK_ANTHROPIC_BASE = "https://api.deepseek.com/anthropic"
 _DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 _REASONER_MODELS = {"deepseek-reasoner", "deepseek-r1"}
 # Models whose tool turns require a non-empty reasoning_content replay (fail fast
@@ -23,6 +25,25 @@ _DEEPSEEK_POLICIES: dict[str, RuntimePolicy] = {
     "deepseek-v4-flash": RuntimePolicy(max_turns=20),
     "deepseek-v4-pro":   RuntimePolicy(max_turns=35),
 }
+
+
+class DeepSeekAnthropicProvider(AnthropicProvider):
+    """DeepSeek over its Anthropic-compatible endpoint."""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "deepseek-v4-flash",
+        retry_config: RetryConfig | None = None,
+        base_url: str = _DEEPSEEK_ANTHROPIC_BASE,
+    ):
+        super().__init__(api_key, model, retry_config, base_url=base_url)
+
+    def _provider_name(self) -> str:
+        return "deepseek"
+
+    def runtime_policy(self) -> RuntimePolicy:
+        return _DEEPSEEK_POLICIES.get(self._model, RuntimePolicy())
 
 
 class DeepSeekProvider(OpenAIProvider):

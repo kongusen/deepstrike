@@ -1,13 +1,13 @@
 import { createProvider } from "../src/providers/catalog.js"
 import { OpenAIChatProvider } from "../src/providers/openai.js"
-import { DeepSeekProvider } from "../src/providers/deepseek.js"
-import { KimiProvider } from "../src/providers/kimi.js"
+import { DeepSeekProvider, DeepSeekAnthropicProvider } from "../src/providers/deepseek.js"
+import { KimiProvider, KimiAnthropicProvider } from "../src/providers/kimi.js"
 import { OpenAIResponsesProvider } from "../src/providers/openai-responses.js"
 import { MiniMaxAnthropicProvider } from "../src/providers/minimax.js"
 import { AnthropicProvider } from "../src/providers/anthropic.js"
-import { QwenProvider } from "../src/providers/qwen.js"
+import { QwenProvider, QwenAnthropicProvider } from "../src/providers/qwen.js"
 import { GeminiProvider } from "../src/providers/gemini.js"
-import { GLMProvider } from "../src/providers/glm.js"
+import { GLMProvider, GLMAnthropicProvider } from "../src/providers/glm.js"
 
 describe("provider catalog", () => {
   it("creates OpenAI Chat providers from chat model profiles", () => {
@@ -58,11 +58,11 @@ describe("provider catalog", () => {
     expect(createProvider({
       model: "deepseek/deepseek-v4-flash",
       apiKey: "test-key",
-    })).toBeInstanceOf(DeepSeekProvider)
+    })).toBeInstanceOf(DeepSeekAnthropicProvider)
     expect(createProvider({
       model: "kimi/kimi-k2.6",
       apiKey: "test-key",
-    })).toBeInstanceOf(KimiProvider)
+    })).toBeInstanceOf(KimiAnthropicProvider)
   })
 
   it("allows custom provider-prefixed model names for forward compatibility", () => {
@@ -90,7 +90,7 @@ describe("provider catalog", () => {
       model: "qwen-future",
       apiKey: "test-key",
       baseURL: "https://dashscope-gateway.example.com/v1",
-    })).toBeInstanceOf(QwenProvider)
+    })).toBeInstanceOf(QwenAnthropicProvider)
 
     expect(createProvider({
       provider: "gemini",
@@ -100,11 +100,11 @@ describe("provider catalog", () => {
     })).toBeInstanceOf(GeminiProvider)
 
     expect(createProvider({
-      endpoint: "glm.openai",
+      endpoint: "glm.anthropic",
       model: "glm-future",
       apiKey: "test-key",
       baseURL: "https://glm-gateway.example.com/v4",
-    })).toBeInstanceOf(GLMProvider)
+    })).toBeInstanceOf(GLMAnthropicProvider)
   })
 
   it("requires provider context for custom model names without a provider prefix", () => {

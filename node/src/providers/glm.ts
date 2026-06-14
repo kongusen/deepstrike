@@ -1,8 +1,7 @@
 import type { ProviderDescriptor, RuntimePolicy } from "../types.js"
+import { AnthropicProvider } from "./anthropic.js"
 import { OpenAIChatProvider } from "./openai.js"
 import { endpointProfiles } from "./profiles.js"
-
-const GLM_BASE = endpointProfiles["glm.openai"].baseURL
 
 const GLM_POLICIES: Record<string, RuntimePolicy> = {
   "glm-5.1": { maxTurns: 50 },
@@ -15,12 +14,37 @@ const GLM_POLICIES: Record<string, RuntimePolicy> = {
   "glm/glm-4-air": { maxTurns: 20 },
 }
 
+/**
+ * GLM over its Anthropic-compatible endpoint.
+ */
+export class GLMAnthropicProvider extends AnthropicProvider {
+  constructor(
+    apiKey: string,
+    model: string = "glm-5.1",
+    retry?: { maxRetries: number; baseDelay: number },
+    baseURL: string = endpointProfiles["glm.anthropic"].baseURL,
+  ) {
+    super(apiKey, model, retry, {
+      baseURL,
+      authMode: "api-key",
+    })
+  }
+
+  protected override providerName(): string {
+    return "glm"
+  }
+
+  override runtimePolicy(): RuntimePolicy {
+    return GLM_POLICIES[this.model] ?? {}
+  }
+}
+
 export class GLMProvider extends OpenAIChatProvider {
   constructor(
     apiKey: string,
     model: string = "glm-5.1",
     retry?: { maxRetries: number; baseDelay: number },
-    baseURL: string = GLM_BASE,
+    baseURL: string = endpointProfiles["glm.openai"].baseURL,
   ) {
     super(apiKey, model, retry, baseURL)
   }

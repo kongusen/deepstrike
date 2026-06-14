@@ -326,8 +326,13 @@ pub struct RenderedContext {
     pub system_stable: String,
     /// Knowledge (memory retrievals, skill definitions, artifacts). Anthropic system[1] with cache_control.
     pub system_knowledge: String,
-    /// Turns: [0] = State (task_state + signals), [1..N] = History.
+    /// History turns only — the stable, cacheable message prefix.
     pub turns: Vec<Message>,
+    /// Volatile State turn (task_state + signals), rendered after the cacheable history.
+    pub state_turn: Option<Message>,
+    /// P1-E: count of leading `turns` forming the frozen prefix (byte-stable until the next
+    /// compaction). Providers pin a deep cache breakpoint here; absent ⇒ rolling-pair fallback.
+    pub frozen_prefix_len: Option<u32>,
 }
 
 // ────────────────────────────────── conversion helpers ──────────────────────────────────
@@ -541,6 +546,8 @@ fn rendered_context_from_rust(rc: RustRenderedContext) -> RenderedContext {
         system_stable: rc.system_stable,
         system_knowledge: rc.system_knowledge,
         turns: rc.turns.iter().map(message_from_rust).collect(),
+        state_turn: rc.state_turn.as_ref().map(message_from_rust),
+        frozen_prefix_len: rc.frozen_prefix_len.map(|n| n as u32),
     }
 }
 

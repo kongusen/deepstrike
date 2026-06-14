@@ -4,8 +4,8 @@ import logging
 from typing import AsyncIterator
 from anthropic import AsyncAnthropic
 from deepstrike._kernel import Message, ToolCall, ToolSchema
-from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, parse_tool_arguments, to_anthropic_messages
+from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
+from .base import RetryConfig, CircuitBreaker, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, parse_tool_arguments, to_anthropic_content, to_anthropic_messages
 
 logger = logging.getLogger(__name__)
 
@@ -70,18 +70,43 @@ class AnthropicProvider:
         if reconstructed:
             self._native_assistant_blocks[self._assistant_replay_key_parts(content, tool_calls)] = reconstructed
 
-    def _build_messages(self, turns: list[Message]) -> list[dict]:
-        return to_anthropic_messages(
+    def _build_system(self, context: RenderedContext):
+        """Structured system blocks with cache_control when the kernel partitioned
+        the prompt (system_stable / system_knowledge); else the flat system_text
+        string (no cache breakpoint), or None."""
+        stable = getattr(context, "system_stable", "") or ""
+        knowledge = getattr(context, "system_knowledge", "") or ""
+        if not stable and not knowledge:
+            return context.system_text or None
+        blocks: list[dict] = []
+        if stable:
+            blocks.append({"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}})
+        if knowledge:
+            blocks.append({"type": "text", "text": knowledge, "cache_control": {"type": "ephemeral"}})
+        return blocks or None
+
+    def _build_messages(self, turns: list[Message], state_turn=None, frozen_prefix_len=None) -> list[dict]:
+        msgs = to_anthropic_messages(
             turns,
             native_replay=lambda message: self._native_assistant_blocks.get(
                 self._assistant_replay_key(message)
             ),
         )
+        # Cache breakpoints anchor on the stable history; the volatile State turn
+        # is appended AFTER them as the uncached tail. On un-rebuilt bindings
+        # state_turn is None and the state is already inside turns (rendered above).
+        # frozen_prefix_len (P1-E) pins the deep breakpoint at the compaction
+        # boundary; None ⇒ rolling-pair fallback.
+        _apply_message_cache_control(msgs, frozen_prefix_len)
+        if state_turn is not None:
+            role = "assistant" if state_turn.role == "assistant" else "user"
+            msgs.append({"role": role, "content": to_anthropic_content(state_turn)})
+        return msgs
 
-    def _build_tools(self, tools: list[ToolSchema]) -> list[dict] | None:
+    def _build_tools(self, tools: list[ToolSchema], anchor_cache: bool) -> list[dict] | None:
         if not tools:
             return None
-        return [
+        defs = [
             {
                 "name": t.name,
                 "description": t.description,
@@ -89,6 +114,12 @@ class AnthropicProvider:
             }
             for t in tools
         ]
+        # Anchor the tools-prefix cache on the final tool only when the system
+        # blocks won't carry a breakpoint (tools render before system, so a
+        # system_stable breakpoint already covers them).
+        if anchor_cache:
+            defs[-1]["cache_control"] = {"type": "ephemeral"}
+        return defs
 
     def _remember_native_blocks(self, content: str, tool_calls: list[ToolCall], blocks: list[dict]) -> None:
         if not blocks:
@@ -101,9 +132,10 @@ class AnthropicProvider:
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
 
-        msgs = self._build_messages(context.turns)
-        system = context.system_text or None
-        tool_defs = self._build_tools(tools)
+        msgs = self._build_messages(context.turns, context.state_turn, context.frozen_prefix_len)
+        system = self._build_system(context)
+        tool_defs = self._build_tools(tools, anchor_cache=not isinstance(system, list))
+        _assert_cache_budget(system, len(tools))
 
         last_exc = None
         for attempt in range(self._retry.max_retries):
@@ -146,10 +178,19 @@ class AnthropicProvider:
 
                 self._remember_native_blocks(content, tool_calls, native_blocks)
 
+                # token_count is the turn total: full prompt (uncached + cache
+                # read + cache write) + output, so it stays accurate once caching
+                # moves most of the prompt into cache_read.
+                usage = resp.usage
+                full_input = (
+                    (usage.input_tokens or 0)
+                    + (getattr(usage, "cache_read_input_tokens", 0) or 0)
+                    + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
+                )
                 return Message(
                     role="assistant",
                     content=content,
-                    token_count=resp.usage.input_tokens + resp.usage.output_tokens,
+                    token_count=full_input + (usage.output_tokens or 0),
                     tool_calls=tool_calls or None,
                 )
             except Exception as exc:
@@ -163,14 +204,19 @@ class AnthropicProvider:
         raise last_exc or RuntimeError("Complete failed")
 
     async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
-        msgs = self._build_messages(context.turns)
-        system = context.system_text or None
-        tool_defs = self._build_tools(tools)
+        msgs = self._build_messages(context.turns, context.state_turn, context.frozen_prefix_len)
+        system = self._build_system(context)
+        tool_defs = self._build_tools(tools, anchor_cache=not isinstance(system, list))
+        _assert_cache_budget(system, len(tools))
 
         native_blocks: dict[int, dict] = {}
         tool_blocks: dict[int, dict] = {}
         final_text = ""
         final_tool_calls: list[ToolCall] = []
+        uncached_input = 0
+        cache_read = 0
+        cache_creation = 0
+        output_tokens = 0
 
         request_extensions = {k: v for k, v in (extensions or {}).items() if k not in {"model", "messages", "system", "tools", "stream", "max_tokens"}}
         async with self._client.messages.stream(
@@ -185,8 +231,22 @@ class AnthropicProvider:
                 if event.type in ("message_start", "message_delta"):
                     usage = getattr(event, "usage", None) or getattr(getattr(event, "message", None), "usage", None)
                     if usage is not None:
-                        from deepstrike.providers.stream import UsageEvent
-                        yield UsageEvent(total_tokens=usage.input_tokens + getattr(usage, "output_tokens", 0))
+                        # input + cache counts are pinned at message_start; a later
+                        # message_delta may omit them — max() prevents zeroing.
+                        uncached_input = max(uncached_input, getattr(usage, "input_tokens", 0) or 0)
+                        cache_read = max(cache_read, getattr(usage, "cache_read_input_tokens", 0) or 0)
+                        cache_creation = max(cache_creation, getattr(usage, "cache_creation_input_tokens", 0) or 0)
+                        output_tokens = max(output_tokens, getattr(usage, "output_tokens", 0) or 0)
+                        # input_tokens is the FULL prompt size (uncached + cache
+                        # read + cache write) for accurate context accounting.
+                        full_input = uncached_input + cache_read + cache_creation
+                        yield UsageEvent(
+                            total_tokens=full_input + output_tokens,
+                            input_tokens=full_input,
+                            output_tokens=output_tokens,
+                            cache_read_input_tokens=cache_read,
+                            cache_creation_input_tokens=cache_creation,
+                        )
                 elif event.type == "content_block_start":
                     idx = event.index
                     block = event.content_block
@@ -245,6 +305,69 @@ class AnthropicProvider:
                 for tc in tool_calls
             ],
         }, sort_keys=True)
+
+
+# Anthropic accepts at most 4 cache_control breakpoints per request; the static
+# system/tools prefix uses up to 2, leaving 2 for the rolling message history.
+_MAX_CACHE_BREAKPOINTS = 4
+_MESSAGE_CACHE_BREAKPOINTS = 2
+
+
+def _apply_message_cache_control(msgs: list[dict], frozen_prefix_len: "int | None" = None) -> None:
+    """Place the (<=2) message-history cache breakpoints. The final message always
+    gets one (writes the current full prefix). The second is placed by one of two
+    strategies:
+
+      * Deep anchor (P1-E): when ``frozen_prefix_len`` marks a distinct frozen prefix
+        (the compaction boundary), pin the second breakpoint there. It is byte-stable
+        across turns, so ``[0..frozen]`` is re-read cheaply every turn and is immune to
+        the 20-block lookback miss on heavy tool turns; the tail then writes only the
+        incremental ``[frozen..tail]``.
+      * Rolling fallback: otherwise mark the nearest preceding user turn (the previous
+        turn's read anchor); Anthropic's 20-block lookback bridges light turns.
+
+    Without this the cached prefix stops at ``system`` and the whole tool-result history
+    is re-billed at full price every turn (~quadratic cumulative cost). A bare string
+    body is promoted to a cache-bearing text block."""
+    if not msgs:
+        return
+    targets = {len(msgs) - 1}
+    if isinstance(frozen_prefix_len, int) and 1 <= frozen_prefix_len < len(msgs):
+        # Deep anchor at the frozen-prefix boundary (last frozen turn). Fixed between compactions.
+        targets.add(frozen_prefix_len - 1)
+    else:
+        i = len(msgs) - 2
+        while i >= 0 and len(targets) < _MESSAGE_CACHE_BREAKPOINTS:
+            if msgs[i].get("role") == "user":
+                targets.add(i)
+            i -= 1
+    for idx in targets:
+        _mark_last_block_cacheable(msgs[idx])
+
+
+def _mark_last_block_cacheable(msg: dict) -> None:
+    cache_control = {"type": "ephemeral"}
+    content = msg.get("content")
+    if isinstance(content, str):
+        if not content:
+            return  # don't synthesize an empty (API-rejected) text block
+        msg["content"] = [{"type": "text", "text": content, "cache_control": cache_control}]
+        return
+    if isinstance(content, list) and content:
+        content[-1]["cache_control"] = cache_control
+
+
+def _assert_cache_budget(system: object, tool_count: int) -> None:
+    """Regression guard: fail loudly before the API would reject the request for
+    exceeding the cache_control breakpoint limit."""
+    system_breakpoints = len(system) if isinstance(system, list) else 0
+    tool_breakpoints = 1 if tool_count > 0 and not isinstance(system, list) else 0
+    worst_case = system_breakpoints + tool_breakpoints + _MESSAGE_CACHE_BREAKPOINTS
+    if worst_case > _MAX_CACHE_BREAKPOINTS:
+        raise ValueError(
+            f"Anthropic cache_control budget exceeded: {system_breakpoints} system + "
+            f"{tool_breakpoints} tool + {_MESSAGE_CACHE_BREAKPOINTS} message > {_MAX_CACHE_BREAKPOINTS}"
+        )
 
 
 def _tc_field(tc: object, field_name: str) -> object:

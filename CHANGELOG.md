@@ -6,6 +6,46 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-06-14
+
+Render→provider optimization release. Three converged workstreams, all in the layer that turns kernel context into a provider wire request — and all orthogonal to the Agent OS (partition/scheduler) and dynamic-workflow (orchestration DAG) layers: **(1)** provider prompt-caching so multi-turn history actually caches, **(2)** a deeper prefix-cache / attention pass (metrics, monotonic collapse, two-tier breakpoints), and **(3)** correct multimodal image input. The axiom behind all three: prompt-cache, KV-cache, and attention reward a single shape — a long, **byte-stable, position-0-contiguous prefix** with the volatile-but-important content pushed to the **end**.
+
+> **Activation note.** The kernel-emitted fields (`state_turn`, `frozen_prefix_len`) are additive + dual-path: Rust (source-linked) is live; Node/Python/WASM activate them on the next native binding rebuild (`napi` / `maturin` / `wasm-pack`, performed at publish) and run **byte-for-byte at prior behavior** until then (provider reads the field when present, falls back to `turns[0]` when absent). Multimodal image **upload + use works without a rebuild** — it rides the already-shipped `add_history_message` kernel event plus pure-SDK serialization.
+
+### Added
+
+**Prompt caching — multi-turn history (all four ports)**
+
+- **State turn separated from the cacheable history (the fix that makes multi-turn caching actually work).** The volatile State turn (task_state + signals, rebuilt every call) was rendered as `turns[0]` — at the *front* of the message array. Because caching is a prefix match, that volatile first message invalidated the entire message cache every turn, so the rolling breakpoints below produced **zero** history cache reads in any real multi-turn run (Anthropic's explicit cache *and* OpenAI/Gemini/Ollama's automatic prefix caches alike). The kernel now emits it as a separate `RenderedContext.state_turn` field with `turns` history-only; every provider renders it **last** (Anthropic after the cache breakpoint; OpenAI-family / Gemini / Ollama as the latest turn; Responses as a fresh input each turn). History becomes a byte-stable cacheable prefix — live task state lands by recency. ABI added across the kernel + all three native bindings + four SDK type defs.
+- **Rolling message-history cache breakpoints (Anthropic).** Two `cache_control` breakpoints roll across the conversation tail — the final message + the nearest preceding user turn (Anthropic's 20-block lookback bridges multi-block turns). With `systemStable` / `systemKnowledge` this writes the history prefix once and re-reads it every turn, collapsing input cost from ~quadratic to ~linear.
+- **Cache-token usage surfacing.** Usage event / `TokenUsage` gain `cacheReadInputTokens` (~0.1×) and `cacheCreationInputTokens` (~1.25×). OpenAI-family map their figures in — `prompt_tokens_details.cached_tokens` (OpenAI/Qwen/MiniMax/GLM/Kimi), DeepSeek `prompt_cache_hit_tokens`, Gemini `cachedContentTokenCount`, Responses `input_tokens_details.cached_tokens`.
+- **Deterministic `prompt_cache_key`** (Node + Python OpenAI-family) for steadier automatic-cache routing — FNV over system + tool names, overridable by the caller, ignored by non-OpenAI endpoints.
+- **Cache-budget regression guard** + **Python system partition** (`RenderedContext` gains `system_stable` / `system_knowledge`, already exposed by the PyO3 binding).
+
+**Prefix-cache & attention pass (P0–P1)**
+
+- **Cache-reuse metrics (P0-A).** `PrefixFingerprint` (per-render hash of system blocks + each history turn) certifies the reuse contract — one render extends another iff system hashes match *and* the prior turn-hash vector is a prefix of this one; `cacheHitRate` (`cacheRead / inputTokens`) is the headline metric for a session. Pure/derived, never persisted.
+- **Monotonic collapse (P0-C).** Layer-4 tool-result collapse is now one-way (`Resident → Collapsed`) within a cache generation, reset only at compaction/renewal boundaries. The old two-way version un-collapsed when pressure fell, rewriting mid-prefix bytes and invalidating the prompt-cache on every threshold oscillation; collapse now only rewrites the prefix at the moments it's already being rewritten.
+- **Two-tier breakpoints (P1-E).** With `frozen_prefix_len` set, the Anthropic provider **pins a deep breakpoint at the frozen boundary** and rolls one at the tail (instead of the rolling pair), maximizing the stable cached span on long histories; dual-path falls back to the rolling pair when the field is absent.
+
+**Multimodal image input (the framework couldn't upload/use images before)**
+
+- **Upload.** `run({ goal, attachments })` seeds images/audio as a user history message via the `add_history_message` kernel event — injected before `start_run` so they land in the **first** render, and persisted in `run_started` for wake/resume. Node + Python.
+- **Use.** Every provider now serializes image parts: fixed **Gemini** (Node + Python — `buildContents` sent only text, dropping images) and **WASM** (added `contentParts` to the `Message` type + image rendering in both converters); Anthropic / OpenAI-chat / Ollama / Responses / Rust were already correct. The core content model (`ContentPart::Image`) and all three bindings carry image parts end-to-end.
+
+### Changed
+
+- **Tool cache breakpoint dropped when system blocks carry one** — tools render before `system`, so the `systemStable` breakpoint already caches the tools prefix; the tool breakpoint is anchored only when `system` is an unpartitioned string, freeing a 4th slot for the message history.
+- **`inputTokens` is the full prompt size** (uncached + cache read + cache write), not the uncached remainder — it feeds the kernel's context-pressure gate as the authoritative prompt size (uncached-only would suppress compaction until a 413). Cost = `inputTokens − cacheRead − cacheCreation`.
+- **Anthropic streaming usage is max-accumulated** — input/cache counts pinned at `message_start`, a later `message_delta` may omit them; `Math.max` keeps totals from zeroing and lets the final output through.
+- **Default protocol for DeepSeek, Qwen, GLM, Kimi switched to `anthropic-messages`.**  All four Chinese providers now offer Anthropic Messages API compatible endpoints; the framework defaults match the same dual-provider pattern MiniMax already used. Each vendor gains an `*AnthropicProvider` class (Node + Python) and a new endpoint profile (`deepseek.anthropic` → `api.deepseek.com/anthropic`, `qwen.anthropic` → `dashscope-intl.aliyuncs.com/apps/anthropic`, `glm.anthropic` → `api.z.ai/api/anthropic`, `kimi.anthropic` → `api.moonshot.ai/anthropic`). Model profile defaults (`defaultEndpointId`) point to the Anthropic endpoint for all chat models; embedding models stay on their existing endpoints. The OpenAI-based classes remain available and are selected when callers pass the `*.openai` endpoint explicitly — fully backward compatible.
+
+### Notes
+
+- **Verified live** against DeepSeek (`api.deepseek.com`): a second turn over a shared prefix reported `cacheRead = 2560 / 2645` input tokens — the entire `[system + history]` prefix served from cache, confirming the append-state-last design delivers real multi-turn cache hits on an OpenAI-family provider.
+- Additive + dual-path throughout; **no config = prior behavior**; all wire changes pass golden + 4-SDK parity; pure/zero-I/O paths don't regress.
+- Tests: core **447**; rust SDK **45** + integration **224**; node **280**; python **112**; wasm **43** + `tsc` clean. `verify-release.sh` green.
+
 ## [0.2.11] - 2026-06-12
 
 Dynamic-workflow release: an orchestration consolidation (R1/R2), the **runtime DAG-append syscall** (`SubmitNodes`), and the four structural gaps (G1–G4) surfaced by comparing our orchestration-as-data engine against Claude Code's code-orchestration model (`agent()` / `parallel()` / `pipeline()` + the six patterns + quarantine + budget). G1–G4 are additive ABI, landed kernel-first then mirrored across node/python/wasm; golden fixtures byte-identical.

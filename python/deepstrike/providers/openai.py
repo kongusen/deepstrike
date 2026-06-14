@@ -4,8 +4,8 @@ import logging
 from typing import AsyncIterator
 from openai import AsyncOpenAI
 from deepstrike._kernel import Message, ToolCall, ToolSchema
-from .stream import StreamEvent, TextDelta, ToolCallEvent, ThinkingDelta
-from .base import RetryConfig, CircuitBreaker, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, to_openai_message_params, ThinkingTagStreamExtractor, wire_request_extensions
+from .stream import StreamEvent, TextDelta, ToolCallEvent, ThinkingDelta, UsageEvent
+from .base import RetryConfig, CircuitBreaker, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, openai_cached_prompt_tokens, stable_prompt_cache_key, to_openai_message_params, ThinkingTagStreamExtractor, wire_request_extensions
 from .replay import ReasoningReplayMixin, assistant_replay_key
 from .replay_validator import validate_openai_chat_replay
 
@@ -135,6 +135,12 @@ class OpenAIProvider(ReasoningReplayMixin):
             body["tools"] = tool_defs
         return body
 
+    def _prompt_cache_key(self, context: RenderedContext, tools: list[ToolSchema]) -> str:
+        """Default ``prompt_cache_key`` from the cacheable prefix (system prompt +
+        tool names). A caller-supplied key in extensions wins (setdefault). Unknown
+        to non-OpenAI compatible endpoints, which ignore it."""
+        return stable_prompt_cache_key([context.system_text, ",".join(t.name for t in tools)])
+
     async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
@@ -146,6 +152,7 @@ class OpenAIProvider(ReasoningReplayMixin):
         for attempt in range(self._retry.max_retries):
             try:
                 request_extensions = wire_request_extensions(extensions)
+                request_extensions.setdefault("prompt_cache_key", self._prompt_cache_key(context, tools))
                 resp = await self._client.chat.completions.create(
                     **request_extensions,
                     model=self._model,
@@ -190,6 +197,7 @@ class OpenAIProvider(ReasoningReplayMixin):
         final_tool_calls = []
 
         request_extensions = wire_request_extensions(extensions)
+        request_extensions.setdefault("prompt_cache_key", self._prompt_cache_key(context, tools))
         stream = await self._client.chat.completions.create(
             **request_extensions,
             model=self._model,
@@ -200,6 +208,17 @@ class OpenAIProvider(ReasoningReplayMixin):
         )
 
         async for chunk in stream:
+            usage = getattr(chunk, "usage", None)
+            if usage:
+                # Automatic prefix-cache hits surface as prompt_tokens_details.cached_tokens
+                # (a subset of prompt_tokens, which stays the full prompt count).
+                yield UsageEvent(
+                    total_tokens=getattr(usage, "total_tokens", 0) or 0,
+                    input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+                    output_tokens=getattr(usage, "completion_tokens", 0) or 0,
+                    cache_read_input_tokens=openai_cached_prompt_tokens(usage),
+                )
+                continue
             choice = chunk.choices[0] if chunk.choices else None
             if not choice:
                 continue

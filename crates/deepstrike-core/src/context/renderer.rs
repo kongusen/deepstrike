@@ -1,4 +1,6 @@
 use super::partitions::ContextPartitions;
+use super::snapshot::stable_hash;
+use super::task_state::TaskState;
 use super::token_engine::ContextTokenEngine;
 use crate::mm::handle::{HandleTable, Residency};
 use crate::types::message::{Content, ContentPart, Message, Role};
@@ -8,8 +10,16 @@ use serde::{Deserialize, Serialize};
 ///
 /// Slot 1 — system_stable:    Identity (system partition). Anthropic system[0] cache_control.
 /// Slot 2 — system_knowledge: Knowledge partition. Anthropic system[1] cache_control.
-/// Slot 3 — turns[0]:         State (task_state + signals). Rebuilt every call.
-/// Slot 4 — turns[1..N]:      History turns.
+/// Slot 3 — turns[0..N]:      History turns (stable, cacheable prefix).
+/// Slot 4 — state_turn:       State (task_state + signals), rebuilt every call.
+///
+/// The State turn is kept OUT of `turns` so the history prefix stays byte-stable
+/// across turns and can be prompt-cached. Providers place `state_turn` themselves:
+/// Anthropic appends it AFTER the message-history cache breakpoint (so the volatile
+/// state is the cheap uncached tail); OpenAI-family prepend it (preserving today's
+/// ordering). When this struct is produced by an older binding that has not been
+/// rebuilt, `state_turn` is absent and `turns[0]` still carries the State turn —
+/// providers handle both shapes.
 ///
 /// system_text = system_stable + system_knowledge (for OpenAI which has one system slot).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,8 +30,82 @@ pub struct RenderedContext {
     pub system_stable: String,
     /// Knowledge (memory retrievals, skill definitions, artifacts). Anthropic system[1] with cache_control.
     pub system_knowledge: String,
-    /// Turns: [0] = State (task_state + signals), [1..N] = History.
+    /// History turns only — the stable, cacheable message prefix.
     pub turns: Vec<Message>,
+    /// Volatile State turn (task_state + signals), rebuilt every call. Rendered
+    /// after the cacheable history. `None` when there is no task state or signals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_turn: Option<Message>,
+    /// P1-E: number of leading `turns` that form the **frozen prefix** — byte-stable until the
+    /// next compaction. Providers that place explicit cache breakpoints (Anthropic) pin one *deep*
+    /// breakpoint at this boundary (a long-lived cache that survives many turns and is immune to
+    /// the 20-block lookback miss on heavy tool turns) and roll the other at the tail. `None` when
+    /// there is no distinct frozen region yet (pre-first-compaction, or the whole render is hot) —
+    /// providers then fall back to the rolling-pair placement. Providers clamp out-of-range values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen_prefix_len: Option<usize>,
+}
+
+/// Per-render fingerprint of the **cacheable prefix** — the segments a provider
+/// caches as a stable prefix (system blocks + history `turns`). Excludes
+/// `state_turn` (the volatile uncached tail) and `token_count` metadata (not on the
+/// wire). This is the metrics-first instrument (P0-A) behind the optimization work:
+/// two renders share a reusable KV / prompt-cache prefix iff their system hashes
+/// match *and* one's `turn_hashes` is a prefix of the other's. Pure and derived —
+/// never stored in snapshots, session logs, or event logs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrefixFingerprint {
+    pub system_stable_hash: u64,
+    pub system_knowledge_hash: u64,
+    /// One stable hash per history turn, in order. The longest common prefix with a
+    /// previous render's vector = how many turns stay cache-reusable across the call.
+    pub turn_hashes: Vec<u64>,
+}
+
+impl PrefixFingerprint {
+    /// True when `self`'s cacheable prefix is a byte-stable *extension* of `prev`:
+    /// identical system segments and `prev.turn_hashes` is a prefix of
+    /// `self.turn_hashes`. This is exactly the KV / prompt-cache reuse condition —
+    /// no drift anywhere in the prefix, only growth at the tail.
+    pub fn extends(&self, prev: &PrefixFingerprint) -> bool {
+        self.system_stable_hash == prev.system_stable_hash
+            && self.system_knowledge_hash == prev.system_knowledge_hash
+            && prev.turn_hashes.len() <= self.turn_hashes.len()
+            && self.turn_hashes[..prev.turn_hashes.len()] == prev.turn_hashes[..]
+    }
+
+    /// Number of leading turns byte-identical to `prev` — the reusable turn-prefix
+    /// length. A drop below `prev.turn_hashes.len()` signals mid-prefix churn (a
+    /// turn rewritten in place, e.g. an in-place collapse) that invalidates cache.
+    pub fn common_turn_prefix(&self, prev: &PrefixFingerprint) -> usize {
+        self.turn_hashes
+            .iter()
+            .zip(prev.turn_hashes.iter())
+            .take_while(|(a, b)| a == b)
+            .count()
+    }
+}
+
+/// Wire-relevant hash of one turn: role + content + tool_calls, **excluding**
+/// `token_count` (kernel-only metadata that never reaches the provider). Serialised
+/// through serde so every content variant and tool-call argument is covered with a
+/// deterministic field order.
+fn hash_turn(msg: &Message) -> u64 {
+    let material =
+        serde_json::to_vec(&(&msg.role, &msg.content, &msg.tool_calls)).unwrap_or_default();
+    stable_hash(&material)
+}
+
+impl RenderedContext {
+    /// Compute the [`PrefixFingerprint`] for this render. See its docs for the
+    /// cache-reuse contract it certifies.
+    pub fn prefix_fingerprint(&self) -> PrefixFingerprint {
+        PrefixFingerprint {
+            system_stable_hash: stable_hash(self.system_stable.as_bytes()),
+            system_knowledge_hash: stable_hash(self.system_knowledge.as_bytes()),
+            turn_hashes: self.turns.iter().map(hash_turn).collect(),
+        }
+    }
 }
 
 fn build_system_stable(partitions: &ContextPartitions) -> String {
@@ -40,16 +124,48 @@ fn build_system_knowledge(partitions: &ContextPartitions) -> String {
         .join("\n\n")
 }
 
-/// Build the State turn (messages[0]): task_state + signals + "Proceed." anchor.
+/// P1-F: a one-line recency footer restating the current focus — goal, active plan step, and the
+/// most recent standing directive. It is rendered as the *last* content before the "Proceed."
+/// anchor, the highest-attention position in the prompt (the model attends most to the final
+/// tokens). The full TASK STATE block still leads the turn for primacy + reference; this footer
+/// just re-surfaces "what to do right now" where attention peaks. `None` when there is no goal.
+fn salience_footer(ts: &TaskState) -> Option<String> {
+    if ts.goal.is_empty() {
+        return None;
+    }
+    let mut s = format!("→ focus: {}", ts.goal);
+    if let Some(i) = ts.current_step {
+        if let Some(step) = ts.plan.get(i) {
+            if !step.done {
+                s.push_str(&format!(" · step {}: {}", i + 1, step.label));
+            }
+        }
+    }
+    if let Some(d) = ts.directives.last() {
+        s.push_str(&format!(" · must: {d}"));
+    }
+    Some(s)
+}
+
+/// Build the State turn (the volatile tail): task_state + signals + a recency focus footer +
+/// "Proceed." anchor. The footer sits last (just before "Proceed.") so the current goal/step/
+/// directive land in the prompt's highest-attention position (P1-F).
 fn build_state_turn(partitions: &ContextPartitions) -> Option<Message> {
     let task = partitions.task_state.format_compact();
     if task.is_empty() && partitions.signals.is_empty() {
         return None;
     }
-    let mut parts: Vec<&str> = Vec::new();
-    if !task.is_empty() { parts.push(&task); }
+    let mut parts: Vec<String> = Vec::new();
+    if !task.is_empty() {
+        parts.push(task);
+    }
     let signals_text = partitions.signals.join("\n");
-    if !signals_text.is_empty() { parts.push(&signals_text); }
+    if !signals_text.is_empty() {
+        parts.push(signals_text);
+    }
+    if let Some(footer) = salience_footer(&partitions.task_state) {
+        parts.push(footer);
+    }
     let body = parts.join("\n\n");
     Some(Message::user(format!("{body}\n\nProceed.")))
 }
@@ -116,14 +232,15 @@ fn project_message(msg: &Message, handles: &HandleTable) -> Option<Message> {
 
 /// Render the context into a `RenderedContext` suitable for a provider API call.
 ///
-/// Equivalent to [`render_projected`] with an empty handle table (no Layer-4 projection).
+/// Equivalent to [`render_projected`] with an empty handle table (no Layer-4 projection) and no
+/// frozen-prefix boundary (`frozen_history_len = 0` → `frozen_prefix_len` is always `None`).
 pub fn render(
     partitions: &ContextPartitions,
     budget: u32,
     engine: &ContextTokenEngine,
     preserve_recent_msgs: usize,
 ) -> RenderedContext {
-    render_projected(partitions, budget, engine, preserve_recent_msgs, &HandleTable::new())
+    render_projected(partitions, budget, engine, preserve_recent_msgs, &HandleTable::new(), 0)
 }
 
 /// Render with Layer-4 read-time projection driven by `handles`: tool results whose handle is
@@ -140,6 +257,7 @@ pub fn render_projected(
     engine: &ContextTokenEngine,
     preserve_recent_msgs: usize,
     handles: &HandleTable,
+    frozen_history_len: usize,
 ) -> RenderedContext {
     let system_stable = build_system_stable(partitions);
     let system_knowledge = build_system_knowledge(partitions);
@@ -178,7 +296,13 @@ pub fn render_projected(
             remaining = remaining.saturating_sub(tokens);
         } else if remaining > 0 {
             match &effective.content {
-                Content::Text(_) => kept_rev.push(engine.truncate_message(effective, remaining)),
+                // P0-B1: drop a Text boundary message **whole** rather than mid-truncate. A
+                // truncated body's bytes depend on `remaining`, which varies per turn — that churns
+                // turns[0] and invalidates the entire cached prefix. Compaction normally keeps
+                // history under budget, so this overflow path is a rare safety net; keeping every
+                // kept turn a complete message preserves prompt-cache reuse.
+                Content::Text(_) => {}
+                // A Parts message was already included whole (byte-stable) — unchanged.
                 Content::Parts(_) => kept_rev.push(effective.clone()),
             }
             break;
@@ -191,12 +315,29 @@ pub fn render_projected(
     let mut turns = kept_rev;
     normalize_turn_prefix(&mut turns);
 
-    // Prepend the State turn (task_state + signals) as turns[0].
-    if let Some(state_turn) = build_state_turn(partitions) {
-        turns.insert(0, state_turn);
-    }
+    // The State turn (task_state + signals) is volatile — keep it OUT of the
+    // cacheable history. Providers render it after the history (Anthropic) or
+    // prepended (OpenAI). See RenderedContext docs.
+    let state_turn = build_state_turn(partitions);
 
-    RenderedContext { system_text, system_stable, system_knowledge, turns }
+    // P1-E: locate the frozen-prefix boundary in rendered turns. `frozen_history_len` is the
+    // history length as of the last compaction (0 before any) — messages beyond it are the hot
+    // tail that grows each turn. We count the hot tail from the END, which is robust to the leading
+    // anchor and to budget-dropping of OLD turns (the recent tail is never dropped). Emit `Some`
+    // only for a distinct, non-empty frozen region; otherwise providers use the rolling-pair
+    // fallback (deep == tail would waste a breakpoint).
+    let hot = partitions
+        .history
+        .messages
+        .len()
+        .saturating_sub(frozen_history_len);
+    let frozen_prefix_len = if frozen_history_len > 0 && hot > 0 && hot < turns.len() {
+        Some(turns.len() - hot)
+    } else {
+        None
+    };
+
+    RenderedContext { system_text, system_stable, system_knowledge, turns, state_turn, frozen_prefix_len }
 }
 
 #[cfg(test)]
@@ -204,7 +345,7 @@ mod tests {
     use super::*;
     use crate::context::config::ContextConfig;
     use crate::context::partitions::ContextPartitions;
-    use crate::context::task_state::TaskState;
+    use crate::context::task_state::{PlanStep, TaskState};
     use crate::context::token_engine::ContextTokenEngine;
     use crate::types::message::{Message, Role};
 
@@ -230,14 +371,16 @@ mod tests {
     }
 
     #[test]
-    fn task_state_appears_in_turns_first_user() {
+    fn task_state_appears_in_state_turn() {
         let mut c = ctx();
         c.task_state = TaskState { goal: "find the bug".to_string(), ..Default::default() };
         let rc = render(&c, 10_000, &engine(), 4);
         assert!(!rc.system_text.contains("[TASK STATE]"), "task_state must not be in system_text");
-        let first = rc.turns.first().expect("should have a state turn");
-        assert_eq!(first.role, Role::User);
-        assert!(first.content.as_text().unwrap().contains("[TASK STATE] goal: find the bug"));
+        let state = rc.state_turn.as_ref().expect("should have a state turn");
+        assert_eq!(state.role, Role::User);
+        assert!(state.content.as_text().unwrap().contains("[TASK STATE] goal: find the bug"));
+        // State is NOT in the cacheable history turns.
+        assert!(!rc.turns.iter().any(|m| m.content.as_text().map(|t| t.contains("[TASK STATE]")).unwrap_or(false)));
     }
 
     #[test]
@@ -246,8 +389,8 @@ mod tests {
         c.task_state = TaskState { goal: "g".to_string(), ..Default::default() };
         c.signals.push("[ROLLBACK] tool failed".to_string());
         let rc = render(&c, 10_000, &engine(), 4);
-        let first = rc.turns.first().unwrap();
-        assert!(first.content.as_text().unwrap().contains("[ROLLBACK] tool failed"));
+        let state = rc.state_turn.as_ref().unwrap();
+        assert!(state.content.as_text().unwrap().contains("[ROLLBACK] tool failed"));
     }
 
     #[test]
@@ -255,20 +398,22 @@ mod tests {
         let c = ctx();
         let rc = render(&c, 10_000, &engine(), 4);
         // No state turn when task_state is empty and no signals
+        assert!(rc.state_turn.is_none());
         assert!(rc.turns.is_empty());
     }
 
     #[test]
-    fn history_follows_state_turn() {
+    fn history_excludes_state_turn() {
         let mut c = ctx();
         c.task_state = TaskState { goal: "g".to_string(), ..Default::default() };
         c.history.push(Message::user("step 1"), 5);
         c.history.push(Message::assistant("done"), 5);
         let rc = render(&c, 10_000, &engine(), 4);
-        assert_eq!(rc.turns[0].role, Role::User); // state turn
-        assert!(rc.turns[0].content.as_text().unwrap().contains("[TASK STATE]"));
-        assert_eq!(rc.turns[1].role, Role::User);
-        assert_eq!(rc.turns[2].role, Role::Assistant);
+        // turns is history only; state lives in state_turn.
+        assert!(rc.state_turn.as_ref().unwrap().content.as_text().unwrap().contains("[TASK STATE]"));
+        assert_eq!(rc.turns[0].role, Role::User);
+        assert_eq!(rc.turns[0].content.as_text(), Some("step 1"));
+        assert_eq!(rc.turns[1].role, Role::Assistant);
     }
 
     #[test]
@@ -310,7 +455,7 @@ mod tests {
         h.residency = Residency::Collapsed;
         handles.insert(h);
 
-        let rc = render_projected(&c, 10_000, &engine(), 4, &handles);
+        let rc = render_projected(&c, 10_000, &engine(), 4, &handles, 0);
         let rendered: String = rc
             .turns
             .iter()
@@ -353,7 +498,7 @@ mod tests {
         let mut handles = HandleTable::new();
         handles.insert(Handle::resident_for(1, HandleKind::ToolResult, 60, "c2"));
 
-        let rc = render_projected(&c, 10_000, &engine(), 4, &handles);
+        let rc = render_projected(&c, 10_000, &engine(), 4, &handles, 0);
         let rendered: String = rc
             .turns
             .iter()
@@ -370,14 +515,154 @@ mod tests {
         assert!(!rendered.contains("[collapsed:"));
     }
 
+    // ── P1-F: state-turn recency footer ───────────────────────────────────
+
     #[test]
-    fn text_truncated_when_budget_exhausted() {
+    fn state_turn_ends_with_salience_footer_before_proceed() {
+        let mut c = ctx();
+        c.task_state = TaskState {
+            goal: "ship the cache work".to_string(),
+            plan: vec![PlanStep { label: "do E".to_string(), done: false }],
+            current_step: Some(0),
+            ..Default::default()
+        };
+        c.task_state.record_directive("don't break ABI");
+        let rc = render(&c, 100_000, &engine(), 4);
+        let text = rc.state_turn.unwrap().content.as_text().unwrap().to_string();
+
+        // The full TASK STATE block still leads (primacy) ...
+        assert!(text.starts_with("[TASK STATE] goal: ship the cache work"));
+        // ... and the very last block before "Proceed." is the focus footer (recency).
+        let before_proceed = text.rsplit_once("\n\nProceed.").expect("ends with Proceed").0;
+        let last_block = before_proceed.rsplit("\n\n").next().unwrap();
+        assert!(last_block.starts_with("→ focus: ship the cache work"), "got: {last_block}");
+        assert!(last_block.contains("step 1: do E"));
+        assert!(last_block.contains("must: don't break ABI"));
+    }
+
+    #[test]
+    fn no_salience_footer_without_a_goal() {
+        let mut c = ctx();
+        c.signals.push("[ROLLBACK] tool failed".to_string());
+        let rc = render(&c, 100_000, &engine(), 4);
+        let text = rc.state_turn.unwrap().content.as_text().unwrap().to_string();
+        assert!(!text.contains("→ focus:"), "no goal ⇒ no footer");
+        // signals remain the last content before the anchor.
+        assert!(text.contains("[ROLLBACK] tool failed"));
+    }
+
+    // ── P0-A: prefix fingerprint (cache-drift instrument) ──────────────────
+
+    #[test]
+    fn prefix_fingerprint_is_stable_when_appending_history() {
+        let mut c = ctx();
+        c.system.push(Message::system("rules"), 5);
+        c.knowledge.push(Message::system("skill: debug"), 5);
+        c.history.push(Message::user("turn A"), 5);
+        c.history.push(Message::assistant("turn B"), 5);
+        let fp1 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
+
+        // Append a new turn — the existing prefix must stay byte-identical.
+        c.history.push(Message::user("turn C"), 5);
+        let fp2 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
+
+        assert!(fp2.extends(&fp1), "appending must only grow the tail, never drift the prefix");
+        assert_eq!(fp2.common_turn_prefix(&fp1), 2, "both prior turns stay cache-reusable");
+        assert_eq!(fp2.turn_hashes.len(), 3);
+    }
+
+    #[test]
+    fn prefix_fingerprint_ignores_state_turn() {
+        // Same history, different task_state/signals → the cacheable prefix is
+        // identical (state lives in the uncached tail, out of `turns`).
+        let mut c = ctx();
+        c.history.push(Message::user("turn A"), 5);
+        c.task_state = TaskState { goal: "first goal".to_string(), ..Default::default() };
+        let fp1 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
+
+        c.task_state = TaskState { goal: "totally different goal".to_string(), ..Default::default() };
+        c.signals.push("[ROLLBACK] whatever".to_string());
+        let fp2 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
+
+        assert_eq!(fp1, fp2, "volatile state must not perturb the cacheable prefix");
+    }
+
+    #[test]
+    fn prefix_fingerprint_detects_system_drift() {
+        let mut c = ctx();
+        c.system.push(Message::system("rules v1"), 5);
+        c.history.push(Message::user("turn A"), 5);
+        let fp1 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
+
+        c.system.messages.clear();
+        c.system.push(Message::system("rules v2"), 5);
+        let fp2 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
+
+        assert_ne!(fp1.system_stable_hash, fp2.system_stable_hash);
+        assert!(!fp2.extends(&fp1), "a system-block edit invalidates the whole prefix");
+    }
+
+    #[test]
+    fn prefix_fingerprint_detects_in_place_collapse_churn() {
+        use crate::mm::handle::{Handle, HandleKind, HandleTable, Residency};
+
+        let mut c = ctx();
+        c.history.push(Message::user("start"), 5);
+        let long = "DATA ".repeat(200);
+        c.history.push(
+            Message::tool(vec![ContentPart::ToolResult {
+                call_id: "c1".into(),
+                output: long,
+                is_error: false,
+            }]),
+            250,
+        );
+        c.history.push(Message::user("recent"), 5);
+
+        let resident = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
+
+        // Collapsing the old tool result rewrites that turn in place → the prefix
+        // hash at that position changes (the cache-cost of folding, made visible).
+        let mut handles = HandleTable::new();
+        let mut h = Handle::resident_for(1, HandleKind::ToolResult, 250, "c1");
+        h.residency = Residency::Collapsed;
+        handles.insert(h);
+        let collapsed = render_projected(&c, 100_000, &engine(), 4, &handles, 0).prefix_fingerprint();
+
+        // turn 0 ("start") is byte-stable; the collapsed tool result at turn 1 drifts.
+        assert_eq!(collapsed.common_turn_prefix(&resident), 1, "drift begins at the collapsed turn");
+        assert!(!collapsed.extends(&resident));
+    }
+
+    #[test]
+    fn protected_recent_messages_kept_whole_over_budget() {
         let mut c = ctx();
         c.history.push(Message::user("first message"), 5);
         c.history.push(Message::user("a".repeat(1000)), 250);
+        // preserve_recent_msgs=4 protects both — kept whole regardless of the 10-token budget.
         let rc = render(&c, 10, &engine(), 4);
         assert!(rc.turns.iter().any(|m| {
             m.content.as_text().map(|t| t.contains("first message")).unwrap_or(false)
         }));
+    }
+
+    #[test]
+    fn oversized_text_boundary_is_dropped_whole_not_truncated() {
+        // P0-B1: an unprotected, over-budget Text boundary message is dropped whole — never
+        // mid-truncated — so no budget-dependent fragment lands in the cached prefix.
+        let mut c = ctx();
+        c.history.push(Message::user("a".repeat(1000)), 250); // oldest, oversized
+        c.history.push(Message::user("recent"), 2); // newest, fits
+        let rc = render(&c, 5, &engine(), 0); // nothing protected
+        assert_eq!(rc.turns.len(), 1, "only the fitting newest turn survives");
+        assert_eq!(rc.turns[0].content.as_text(), Some("recent"));
+        assert!(
+            !rc.turns.iter().any(|m| m
+                .content
+                .as_text()
+                .map(|t| t.starts_with("aaaa"))
+                .unwrap_or(false)),
+            "no truncated body in the prefix"
+        );
     }
 }

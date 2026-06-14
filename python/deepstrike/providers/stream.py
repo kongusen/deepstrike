@@ -57,6 +57,12 @@ class ToolResultEvent:
 class UsageEvent:
     type: str = "usage"
     total_tokens: int = 0
+    # Full prompt size (uncached input + cache reads + cache writes) and output.
+    input_tokens: int = 0
+    output_tokens: int = 0
+    # Cost breakdown (subset of input_tokens): reads bill ~0.1x, writes ~1.25x.
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
 
 
 @dataclass

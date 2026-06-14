@@ -207,13 +207,27 @@ def to_anthropic_messages(
     return result
 
 
+def turns_with_state_appended(context: "RenderedContext") -> list:
+    """History turns with the volatile State turn appended as the latest turn, for
+    providers that render it inline (OpenAI-family, Gemini, Ollama). Appending
+    keeps the history a byte-stable prefix so their automatic prefix caches hit
+    across turns. Anthropic appends it after the cache breakpoint instead. When
+    state_turn is absent (un-rebuilt binding) the State turn is still inside turns,
+    so this returns turns as-is."""
+    state_turn = getattr(context, "state_turn", None)
+    return [*context.turns, state_turn] if state_turn is not None else list(context.turns)
+
+
 def to_openai_message_params(context: "RenderedContext") -> list[dict]:
     """Serialize provider-neutral context into OpenAI-compatible chat messages."""
     result: list[dict] = []
     if context.system_text:
         result.append({"role": "system", "content": context.system_text})
 
-    for msg in context.turns:
+    # The volatile State turn is appended as the latest turn so the history stays
+    # a stable prefix that OpenAI's automatic cache can hit. Absent on un-rebuilt
+    # bindings, where the state is already inside turns.
+    for msg in turns_with_state_appended(context):
         if msg.role == "tool":
             for p in (getattr(msg, "content_parts", None) or []):
                 if p.type == "tool_result":
@@ -241,10 +255,81 @@ def to_openai_message_params(context: "RenderedContext") -> list[dict]:
     return result
 
 
+def stable_prompt_cache_key(parts: list[str]) -> str:
+    """Deterministic short key for OpenAI's ``prompt_cache_key`` — groups requests
+    that share a cacheable prefix (same system prompt + tool set) onto the same
+    cache routing, improving automatic prefix-cache hit rates with no caller input.
+    FNV-1a over the parts; stable across processes, no hashlib dependency."""
+    h = 0x811C9DC5
+    joined = " ".join(parts)
+    for ch in joined:
+        h ^= ord(ch) & 0xFF
+        h = (h * 0x01000193) & 0xFFFFFFFF
+    return f"ds-{h:08x}"
+
+
+def openai_cached_prompt_tokens(usage: Any) -> int:
+    """Cached-prompt-token count from an OpenAI-compatible usage object. Covers
+    the standard ``prompt_tokens_details.cached_tokens`` (OpenAI, Qwen, MiniMax,
+    GLM, Kimi) and DeepSeek's ``prompt_cache_hit_tokens``. These caches bill reads
+    only, so there is no separate cache-creation count. The figure is a subset of
+    ``prompt_tokens`` (the full prompt), surfaced for cost visibility."""
+    if usage is None:
+        return 0
+
+    def _get(obj: Any, key: str) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return getattr(obj, key, None)
+
+    details = _get(usage, "prompt_tokens_details")
+    standard = _get(details, "cached_tokens") if details is not None else None
+    deepseek = _get(usage, "prompt_cache_hit_tokens")
+    return max(
+        int(standard) if isinstance(standard, (int, float)) else 0,
+        int(deepseek) if isinstance(deepseek, (int, float)) else 0,
+    )
+
+
+def cache_hit_rate(usage: Any) -> float:
+    """Prompt-cache hit rate for one usage record: the fraction of the full prompt
+    served from cache this request (``cache_read_input_tokens / input_tokens``,
+    clamped to [0, 1]). Returns 0.0 when the prompt size is unknown. This is the
+    headline metric for the prefix-cache work (P0-A) — across a long, append-only
+    session it should climb and stay high; a sustained drop means the cacheable
+    prefix is drifting. Accepts a ``UsageEvent``, a dict, or any object exposing
+    those attributes (mirrors the Node ``cacheHitRate`` for SDK parity)."""
+
+    def _get(obj: Any, key: str) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return getattr(obj, key, None)
+
+    input_tokens = _get(usage, "input_tokens")
+    if not isinstance(input_tokens, (int, float)) or input_tokens <= 0:
+        return 0.0
+    read = _get(usage, "cache_read_input_tokens")
+    read = int(read) if isinstance(read, (int, float)) else 0
+    return min(1.0, max(0.0, read / input_tokens))
+
+
 @dataclass
 class RenderedContext:
     system_text: str = ""
     turns: list[Message] = field(default_factory=list)
+    # Identity partition (Anthropic system[0] with cache_control). Empty when the
+    # kernel did not partition the system prompt.
+    system_stable: str = ""
+    # Knowledge partition (Anthropic system[1] with cache_control).
+    system_knowledge: str = ""
+    # Volatile State turn (task_state + signals), rendered after the cacheable
+    # history. None when produced by an older binding — then the State turn is
+    # still inside turns[0] and providers render turns as-is.
+    state_turn: "Message | None" = None
+    # P1-E: count of leading turns forming the frozen prefix (byte-stable until the
+    # next compaction). The Anthropic provider pins a deep cache breakpoint here and
+    # rolls the other at the tail; None ⇒ rolling-pair fallback.
+    frozen_prefix_len: "int | None" = None
 
 
 # Opaque per-run state owned by the provider (e.g. OpenAI Responses continuation).

@@ -117,3 +117,16 @@ async def test_gemini_keeps_duplicate_function_names_distinct(monkeypatch):
     events = [event async for event in gen]
     tool_events = [e for e in events if isinstance(e, ToolCallEvent)]
     assert [(e.id, e.arguments) for e in tool_events] == [("call_1", {"q": "a"}), ("call_2", {"q": "b"})]
+
+
+def test_cache_hit_rate_matches_node_semantics():
+    """P0-A: cache_hit_rate mirrors the Node cacheHitRate helper for SDK parity."""
+    from deepstrike.providers.base import cache_hit_rate
+    from deepstrike.providers.stream import UsageEvent
+
+    # 1600 of a 2000-token prompt served from cache -> 0.8 (same as the Node golden).
+    usage = UsageEvent(input_tokens=2000, cache_read_input_tokens=1600, cache_creation_input_tokens=200)
+    assert cache_hit_rate(usage) == pytest.approx(0.8)
+    # Unknown prompt size -> 0.0; dict form is accepted too.
+    assert cache_hit_rate({"input_tokens": 0}) == 0.0
+    assert cache_hit_rate({"input_tokens": 100, "cache_read_input_tokens": 25}) == pytest.approx(0.25)

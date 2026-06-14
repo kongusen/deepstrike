@@ -94,6 +94,19 @@ export interface ToolCallEvent extends StreamEvent {
   arguments: Record<string, unknown>
 }
 
+export interface UsageEvent extends StreamEvent {
+  type: "usage"
+  /** Full prompt size + output (the authoritative prompt size for context accounting). */
+  totalTokens: number
+  /** Full prompt size: uncached input + cache reads + cache writes. */
+  inputTokens?: number
+  outputTokens?: number
+  /** Prompt tokens served from cache this request (billed ~0.1x). Subset of inputTokens. */
+  cacheReadInputTokens?: number
+  /** Prompt tokens written to cache this request (billed ~1.25x). Subset of inputTokens. */
+  cacheCreationInputTokens?: number
+}
+
 export type ToolChunk =
   | string
   | { type: "text"; text: string }
@@ -189,9 +202,14 @@ export interface ToolDeniedEvent extends StreamEvent {
 }
 
 export interface TokenUsage {
+  /** Full prompt size: uncached input + cache reads + cache writes. */
   inputTokens: number
   outputTokens: number
   totalTokens: number
+  /** Prompt tokens served from cache (billed ~0.1x). Subset of inputTokens. */
+  cacheReadInputTokens?: number
+  /** Prompt tokens written to cache (billed ~1.25x). Subset of inputTokens. */
+  cacheCreationInputTokens?: number
 }
 
 export interface ProviderToolSpec {
@@ -268,8 +286,24 @@ export interface RenderedContext {
   systemStable?: string
   /** Knowledge (memory retrievals, skill definitions, artifacts). Anthropic system[1] with cache_control. */
   systemKnowledge?: string
-  /** Turns: [0] = State (task_state + signals), [1..N] = History. */
+  /** History turns only — the stable, cacheable message prefix. */
   turns: Message[]
+  /**
+   * Volatile State turn (task_state + signals), rebuilt every call. Providers
+   * render it after the cacheable history (Anthropic: after the cache breakpoint;
+   * OpenAI-family: prepended, preserving order). Absent when produced by an
+   * older binding that has not been rebuilt — then the State turn is still inside
+   * `turns[0]` and providers render `turns` as-is.
+   */
+  stateTurn?: Message
+  /**
+   * P1-E: count of leading `turns` forming the frozen prefix — byte-stable until the next
+   * compaction. The Anthropic provider pins a deep cache breakpoint at this boundary (a long-lived
+   * cache that survives many turns and is immune to the 20-block lookback miss on heavy tool turns)
+   * and rolls the other breakpoint at the tail. Absent (older binding, or no distinct frozen region
+   * yet) ⇒ the provider falls back to the rolling-pair placement.
+   */
+  frozenPrefixLen?: number
 }
 
 /**

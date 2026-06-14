@@ -267,6 +267,11 @@ pub struct RenderedContext {
     pub system_stable: String,
     pub system_knowledge: String,
     pub turns: Vec<Message>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_turn: Option<Message>,
+    /// P1-E: count of leading `turns` forming the frozen prefix; absent ⇒ rolling-pair fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen_prefix_len: Option<u32>,
 }
 
 #[derive(Tsify, Clone, Serialize, Deserialize)]
@@ -455,6 +460,8 @@ fn rendered_context_from_rust(rc: RustRenderedContext) -> RenderedContext {
         system_stable: rc.system_stable,
         system_knowledge: rc.system_knowledge,
         turns: rc.turns.iter().map(message_from_rust).collect(),
+        state_turn: rc.state_turn.as_ref().map(message_from_rust),
+        frozen_prefix_len: rc.frozen_prefix_len.map(|n| n as u32),
     }
 }
 

@@ -67,6 +67,16 @@ export class OpenAIResponsesAdapter {
       })
     }
 
+    // The volatile State turn is sent every turn (it changes each call and is
+    // never "covered" by previous_response_id). Absent on un-rebuilt bindings,
+    // where the state is already inside the covered/uncovered history.
+    if (context.stateTurn) {
+      input.push({
+        role: context.stateTurn.role === "assistant" ? "assistant" : "user",
+        content: this.buildMessageContent(context.stateTurn),
+      })
+    }
+
     return input
   }
 
@@ -248,11 +258,15 @@ export class OpenAIResponsesProvider implements LLMProvider {
         runState.previousResponseId = evt.response.id
         runState.coveredMessageCount = context.turns.length + 1
         if (evt.response.usage?.total_tokens) {
+          // Responses API reports prompt-cache hits as input_tokens_details.cached_tokens,
+          // a subset of input_tokens (the full prompt, kept for accounting).
+          const cachedTokens = evt.response.usage.input_tokens_details?.cached_tokens ?? 0
           yield {
             type: "usage",
             totalTokens: evt.response.usage.total_tokens,
             ...(evt.response.usage.input_tokens ? { inputTokens: evt.response.usage.input_tokens } : {}),
             ...(evt.response.usage.output_tokens ? { outputTokens: evt.response.usage.output_tokens } : {}),
+            ...(cachedTokens > 0 ? { cacheReadInputTokens: cachedTokens } : {}),
           } as StreamEvent
         }
       }

@@ -4,8 +4,9 @@ import logging
 from typing import AsyncIterator
 from http import HTTPStatus
 from deepstrike._kernel import Message, ToolCall, ToolSchema
-from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, to_openai_message_params
+from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
+from .anthropic import AnthropicProvider
+from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, openai_cached_prompt_tokens, to_openai_message_params
 from .replay import ReasoningReplayMixin
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,28 @@ _QWEN_POLICIES: dict[str, RuntimePolicy] = {
     "qwen3.5-35b-a3b": RuntimePolicy(max_turns=20),
     "qwen3.5-27b": RuntimePolicy(max_turns=20),
 }
+
+
+_QWEN_ANTHROPIC_BASE = "https://dashscope-intl.aliyuncs.com/apps/anthropic"
+
+
+class QwenAnthropicProvider(AnthropicProvider):
+    """Qwen over its Anthropic-compatible endpoint."""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "qwen3.6-plus",
+        retry_config: RetryConfig | None = None,
+        base_url: str = _QWEN_ANTHROPIC_BASE,
+    ):
+        super().__init__(api_key, model, retry_config, base_url=base_url)
+
+    def _provider_name(self) -> str:
+        return "qwen"
+
+    def runtime_policy(self) -> RuntimePolicy:
+        return _QWEN_POLICIES.get(self._model, RuntimePolicy())
 
 
 class QwenProvider(ReasoningReplayMixin):
@@ -160,11 +183,16 @@ class QwenProvider(ReasoningReplayMixin):
         reasoning_content = ""
         final_text = ""
         final_tool_calls: list[ToolCall] = []
+        last_usage = None
 
         stream = await self._generation.call(**kwargs)
         async for chunk in stream:
             if chunk.status_code != HTTPStatus.OK:
                 continue
+
+            # DashScope reports cumulative usage on each chunk; keep the latest.
+            if getattr(chunk, "usage", None):
+                last_usage = chunk.usage
 
             choice = chunk.output.choices[0] if chunk.output.choices else None
             if not choice:
@@ -216,3 +244,15 @@ class QwenProvider(ReasoningReplayMixin):
                 yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)
 
         self.remember_reasoning_for_turn(final_text, final_tool_calls, reasoning_content)
+
+        if last_usage is not None:
+            # DashScope usage uses input_tokens / output_tokens / total_tokens.
+            input_tokens = getattr(last_usage, "input_tokens", 0) or 0
+            output_tokens = getattr(last_usage, "output_tokens", 0) or 0
+            total = getattr(last_usage, "total_tokens", 0) or (input_tokens + output_tokens)
+            yield UsageEvent(
+                total_tokens=total,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_input_tokens=openai_cached_prompt_tokens(last_usage),
+            )

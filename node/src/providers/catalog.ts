@@ -1,13 +1,13 @@
 import type { LLMProvider } from "../types.js"
 import { AnthropicProvider } from "./anthropic.js"
 import { OpenAIChatProvider } from "./openai.js"
-import { DeepSeekProvider } from "./deepseek.js"
-import { KimiProvider } from "./kimi.js"
+import { DeepSeekProvider, DeepSeekAnthropicProvider } from "./deepseek.js"
+import { KimiProvider, KimiAnthropicProvider } from "./kimi.js"
 import { OpenAIResponsesProvider } from "./openai-responses.js"
 import { MiniMaxAnthropicProvider, MiniMaxOpenAIProvider } from "./minimax.js"
-import { QwenProvider } from "./qwen.js"
+import { QwenProvider, QwenAnthropicProvider } from "./qwen.js"
 import { GeminiProvider } from "./gemini.js"
-import { GLMProvider } from "./glm.js"
+import { GLMProvider, GLMAnthropicProvider } from "./glm.js"
 import { endpointProfiles, getModelProfile, modelProfiles, type ModelProfileId, type ProviderId } from "./profiles.js"
 
 export type EndpointProfileId = keyof typeof endpointProfiles
@@ -67,17 +67,29 @@ export function createProvider(options: CreateProviderOptions): LLMProvider {
   if (providerId === "minimax" && endpoint.protocol === "openai-chat") {
     return new MiniMaxOpenAIProvider(options.apiKey, model, options.retry, baseURL)
   }
+  if (providerId === "deepseek" && endpoint.protocol === "anthropic-messages") {
+    return new DeepSeekAnthropicProvider(options.apiKey, model, options.retry, baseURL)
+  }
   if (providerId === "deepseek" && endpoint.protocol === "openai-chat") {
     return new DeepSeekProvider(options.apiKey, model, options.retry, baseURL)
   }
+  if (providerId === "kimi" && endpoint.protocol === "anthropic-messages") {
+    return new KimiAnthropicProvider(options.apiKey, model, options.retry, baseURL)
+  }
   if (providerId === "kimi" && endpoint.protocol === "openai-chat") {
     return new KimiProvider(options.apiKey, model, options.retry, baseURL)
+  }
+  if (providerId === "qwen" && endpoint.protocol === "anthropic-messages") {
+    return new QwenAnthropicProvider(options.apiKey, model, options.retry, baseURL)
   }
   if (providerId === "qwen" && endpoint.protocol === "openai-chat") {
     return new QwenProvider(options.apiKey, model, options.retry, baseURL)
   }
   if (providerId === "gemini" && endpoint.protocol === "gemini") {
     return new GeminiProvider(options.apiKey, model, options.retry, baseURL)
+  }
+  if (providerId === "glm" && endpoint.protocol === "anthropic-messages") {
+    return new GLMAnthropicProvider(options.apiKey, model, options.retry, baseURL)
   }
   if (providerId === "glm" && endpoint.protocol === "openai-chat") {
     return new GLMProvider(options.apiKey, model, options.retry, baseURL)
@@ -105,11 +117,11 @@ function defaultEndpointForProvider(providerId: ProviderId | undefined): Endpoin
     anthropic: "anthropic.messages",
     openai: "openai.chat",
     minimax: "minimax.anthropic",
-    deepseek: "deepseek.openai",
-    kimi: "kimi.openai",
-    qwen: "qwen.dashscope",
+    deepseek: "deepseek.anthropic",
+    kimi: "kimi.anthropic",
+    qwen: "qwen.anthropic",
     gemini: "gemini.google",
-    glm: "glm.openai",
+    glm: "glm.anthropic",
   }
   return defaults[providerId]
 }

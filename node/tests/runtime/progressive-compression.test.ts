@@ -125,7 +125,7 @@ describe("ContextCollapse — summary contains tool names for follow-up task", (
 
       // RuleSummarizer format: "tools used: <name>"
       // CollapseCompactor routes summary through compression_log → systemVolatile via task_state
-      const stateTurn = context.turns[0]?.content ?? ""
+      const stateTurn = (context.stateTurn ?? context.turns[0])?.content ?? ""
       if (stateTurn.includes("tools used:") && stateTurn.includes("accumulate")) {
         summaryWithToolName = true
         yield { type: "text_delta" as const, delta: "done" }
@@ -173,7 +173,7 @@ describe("AutoCompact — summary injected into working partition", () => {
       const allText = context.turns.map(t => t.content ?? "").join(" ")
 
       // AutoCompact summary routes through compression_log → task_state → turns[0]
-      const stateTurn = context.turns[0]?.content ?? ""
+      const stateTurn = (context.stateTurn ?? context.turns[0])?.content ?? ""
       if (stateTurn.includes("[Compressed: auto_compact]")) {
         sawAutoCompactSummary = true
         yield { type: "text_delta" as const, delta: "done" }

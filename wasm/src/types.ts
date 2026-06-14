@@ -2,11 +2,30 @@
 
 import type { WorkflowNodeSpec } from "./runtime/types/agent.js"
 
+export interface ContentPart {
+  type: "text" | "image" | "audio" | "tool_result"
+  text?: string
+  /** Remote image URL (mutually exclusive with `data`). */
+  url?: string
+  /** Raw base64-encoded bytes (image/audio). */
+  data?: string
+  /** MIME type, e.g. `"image/png"`. */
+  mediaType?: string
+  /** OpenAI vision detail level. */
+  detail?: "auto" | "low" | "high"
+  callId?: string
+  output?: string
+  isError?: boolean
+}
+
 export interface Message {
   role: "system" | "user" | "assistant" | "tool"
   content: string
   tokenCount?: number
   toolCalls?: ToolCall[]
+  /** Multimodal parts (text + image/audio). When present, providers render these
+   *  instead of the plain `content` string. */
+  contentParts?: ContentPart[]
 }
 
 export interface ToolCall {
@@ -45,11 +64,14 @@ export interface RenderedContext {
   systemKnowledge?: string
   systemVolatile?: string
   turns: Message[]
+  /** Volatile State turn (task_state + signals), rendered after the cacheable
+   *  history. Absent on un-rebuilt bindings — then it's still inside turns[0]. */
+  stateTurn?: Message
 }
 
 export interface StreamEvent { type: string }
 export interface TextDelta extends StreamEvent { type: "text_delta"; delta: string }
-export interface UsageEvent extends StreamEvent { type: "usage"; totalTokens: number; inputTokens?: number; outputTokens?: number }
+export interface UsageEvent extends StreamEvent { type: "usage"; totalTokens: number; inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }
 export interface ThinkingDelta extends StreamEvent { type: "thinking_delta"; delta: string }
 export interface ToolCallEvent extends StreamEvent { type: "tool_call"; id: string; name: string; arguments: Record<string, unknown> }
 export interface ToolResultEvent extends StreamEvent { type: "tool_result"; callId: string; name: string; content: string; isError: boolean; isFatal?: boolean; errorKind?: ToolErrorKind }

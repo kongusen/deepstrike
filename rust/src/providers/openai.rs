@@ -8,6 +8,18 @@ use serde_json::{Value, json};
 use super::{LLMProvider, RuntimePolicy, StreamEvent};
 use crate::{Error, Result};
 
+/// Cached-prompt-token count from an OpenAI-compatible usage object: the standard
+/// `prompt_tokens_details.cached_tokens` (OpenAI, Qwen, MiniMax, GLM, Kimi) and
+/// DeepSeek's `prompt_cache_hit_tokens`. These caches bill reads only (no
+/// cache-creation count); the figure is a subset of `prompt_tokens`.
+fn openai_cached_prompt_tokens(usage: &Value) -> u32 {
+    let standard = usage["prompt_tokens_details"]["cached_tokens"]
+        .as_u64()
+        .unwrap_or(0);
+    let deepseek = usage["prompt_cache_hit_tokens"].as_u64().unwrap_or(0);
+    standard.max(deepseek) as u32
+}
+
 pub struct OpenAIProvider {
     client: Client,
     api_key: String,
@@ -113,7 +125,10 @@ fn context_to_openai(context: &RenderedContext) -> Vec<Value> {
     if !context.system_text.is_empty() {
         messages.push(json!({ "role": "system", "content": context.system_text }));
     }
-    for message in &context.turns {
+    // OpenAI auto-caches by prefix; the volatile State turn is appended as the
+    // latest turn so the history stays a stable cacheable prefix. `state_turn` is
+    // None on un-rebuilt bindings, where the state is still inside `turns`.
+    for message in context.turns.iter().chain(context.state_turn.iter()) {
         if message.role == Role::Tool {
             if let Content::Parts(parts) = &message.content {
                 for part in parts {
@@ -390,9 +405,14 @@ fn parse_openai_sse(
                         continue;
                     };
                     if let Some(total) = chunk["usage"]["total_tokens"].as_u64() {
+                        let usage = &chunk["usage"];
                         return Some((
                             Ok(StreamEvent::Usage {
                                 total_tokens: total as u32,
+                                input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+                                output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0) as u32,
+                                cache_read_input_tokens: openai_cached_prompt_tokens(usage),
+                                cache_creation_input_tokens: 0,
                             }),
                             (stream, buf, tool_accum, flushed),
                         ));
@@ -483,6 +503,8 @@ mod tests {
                     is_error: false,
                 }]),
             ],
+            state_turn: None,
+            frozen_prefix_len: None,
         };
 
         assert_eq!(
@@ -505,5 +527,23 @@ mod tests {
                 json!({ "role": "tool", "tool_call_id": "call_1", "content": "sunny" }),
             ]
         );
+    }
+
+    #[test]
+    fn state_turn_appended_as_latest_turn() {
+        let context = RenderedContext {
+            system_text: "sys".into(),
+            system_stable: "sys".into(),
+            system_knowledge: String::new(),
+            turns: vec![Message::user("history msg")],
+            state_turn: Some(Message::user("[TASK STATE] goal: g\n\nProceed.")),
+            frozen_prefix_len: None,
+        };
+        let msgs = context_to_openai(&context);
+        // [system][history][state] — history is the stable cacheable prefix, state last.
+        assert_eq!(msgs[0]["role"], "system");
+        assert_eq!(msgs[1]["content"], "history msg");
+        assert_eq!(msgs[2]["role"], "user");
+        assert!(msgs[2]["content"].as_str().unwrap().contains("[TASK STATE]"));
     }
 }

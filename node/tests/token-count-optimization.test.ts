@@ -51,6 +51,46 @@ describe("Token Count Optimization", () => {
         totalTokens: 120,
         inputTokens: 100,
         outputTokens: 20,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      })
+    })
+
+    it("reports full prompt size (input + cache) and surfaces the cache breakdown", async () => {
+      const provider = new AnthropicProvider("test-key")
+      ;(provider as any).client = {
+        messages: {
+          stream: () => ({
+            async *[Symbol.asyncIterator]() {
+              // message_start pins input + cache counts; message_delta carries
+              // the final output count and (per the API) omits input/cache.
+              yield {
+                type: "message_start",
+                message: {
+                  usage: {
+                    input_tokens: 200,
+                    cache_read_input_tokens: 5000,
+                    cache_creation_input_tokens: 300,
+                    output_tokens: 1,
+                  },
+                },
+              }
+              yield { type: "message_delta", usage: { output_tokens: 40 } }
+            },
+          }),
+        },
+      }
+      const events: any[] = []
+      for await (const event of provider.stream(mockContext, [])) events.push(event)
+      const usage = events.filter(e => e.type === "usage").at(-1)
+      // inputTokens is the FULL prompt: 200 uncached + 5000 read + 300 write.
+      expect(usage).toEqual({
+        type: "usage",
+        totalTokens: 5540, // 5500 prompt + 40 output
+        inputTokens: 5500,
+        outputTokens: 40, // max() keeps 40 despite the message_delta omitting input/cache
+        cacheReadInputTokens: 5000,
+        cacheCreationInputTokens: 300,
       })
     })
   })

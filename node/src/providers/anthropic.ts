@@ -1,8 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk"
-import type { Message, ProviderDescriptor, ProviderReplay, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
+import type { Message, ProviderDescriptor, ProviderReplay, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent, LLMProvider, RuntimePolicy } from "../types.js"
 import { assistantReplayKey } from "../runtime/provider-replay.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
-import { CircuitBreaker, normalizeToolCall, omitExtensionKeys, toAnthropicMessages } from "./base.js"
+import { CircuitBreaker, normalizeToolCall, omitExtensionKeys, toAnthropicContent, toAnthropicMessages } from "./base.js"
 
 const CLAUDE_POLICIES: Record<string, RuntimePolicy> = {
   "claude-opus-4-1":          { maxTurns: 50 },
@@ -87,12 +87,19 @@ export class AnthropicProvider implements LLMProvider {
     if (blocks.length) this.nativeAssistantBlocks.set(assistantReplayKey(message), blocks)
   }
 
-  private buildTools(tools: ToolSchema[]) {
+  /**
+   * Build tool definitions. A cache breakpoint is anchored on the final tool
+   * only when the system blocks won't carry one (`anchorCache`). When structured
+   * system blocks are present, their breakpoints already cache the tools prefix
+   * (tools render before system), so a redundant tool breakpoint would only burn
+   * one of Anthropic's 4 cache_control slots — slots the message history needs.
+   */
+  private buildTools(tools: ToolSchema[], anchorCache: boolean) {
     return tools.map((t, i) => ({
       name: t.name,
       description: t.description,
       input_schema: JSON.parse(t.parameters),
-      ...(i === tools.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {}),
+      ...(anchorCache && i === tools.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {}),
     }))
   }
 
@@ -100,6 +107,7 @@ export class AnthropicProvider implements LLMProvider {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
     const system = this.buildSystem(context)
     const msgs = this.buildMessages(context)
+    assertCacheBudget(system, tools.length)
     const requestExtensions = this.requestExtensions(extensions)
 
     let lastErr: unknown
@@ -111,7 +119,7 @@ export class AnthropicProvider implements LLMProvider {
           max_tokens: typeof extensions?.max_tokens === "number" ? extensions.max_tokens : 8096,
           ...(system ? { system } : {}),
           messages: msgs,
-          ...(tools.length ? { tools: this.buildTools(tools) } : {}),
+          ...(tools.length ? { tools: this.buildTools(tools, !Array.isArray(system)) } : {}),
         }, extensions)
         this.circuit.recordSuccess()
         let content = ""
@@ -138,6 +146,7 @@ export class AnthropicProvider implements LLMProvider {
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
     const system = this.buildSystem(context)
     const msgs = this.buildMessages(context)
+    assertCacheBudget(system, tools.length)
     const requestExtensions = this.requestExtensions(extensions)
     const toolBlocks: Record<number, { id: string; name: string; argsBuf: string }> = {}
     const nativeBlocks: Record<number, Record<string, unknown>> = {}
@@ -150,18 +159,37 @@ export class AnthropicProvider implements LLMProvider {
       max_tokens: typeof extensions?.max_tokens === "number" ? extensions.max_tokens : 8096,
       ...(system ? { system } : {}),
       messages: msgs,
-      ...(tools.length ? { tools: this.buildTools(tools) } : {}),
+      ...(tools.length ? { tools: this.buildTools(tools, !Array.isArray(system)) } : {}),
     }, extensions)
 
-    let totalTokens = 0
+    let uncachedInput = 0
+    let cacheReadTokens = 0
+    let cacheCreationTokens = 0
+    let outputTokens = 0
     for await (const evt of stream) {
       if (evt.type === "message_start" || evt.type === "message_delta") {
         const usage = evt.usage ?? evt.message?.usage
         if (usage) {
-          const inputTokens = usage.input_tokens ?? 0
-          const outputTokens = usage.output_tokens ?? 0
-          totalTokens = inputTokens + outputTokens
-          yield { type: "usage", totalTokens, inputTokens, outputTokens } as StreamEvent
+          // input + cache counts are cumulative and pinned at message_start; a
+          // later message_delta may omit them (null), so Math.max keeps the
+          // running totals from being clobbered back to zero.
+          uncachedInput = Math.max(uncachedInput, usage.input_tokens ?? 0)
+          cacheReadTokens = Math.max(cacheReadTokens, usage.cache_read_input_tokens ?? 0)
+          cacheCreationTokens = Math.max(cacheCreationTokens, usage.cache_creation_input_tokens ?? 0)
+          outputTokens = Math.max(outputTokens, usage.output_tokens ?? 0)
+          // inputTokens is the FULL prompt size (uncached + cache read + cache
+          // write). The kernel reads it as the authoritative prompt size for
+          // context-pressure/compaction — excluding cached tokens would make a
+          // cache-heavy turn look tiny and suppress compaction until a 413.
+          const inputTokens = uncachedInput + cacheReadTokens + cacheCreationTokens
+          yield {
+            type: "usage",
+            totalTokens: inputTokens + outputTokens,
+            inputTokens,
+            outputTokens,
+            cacheReadInputTokens: cacheReadTokens,
+            cacheCreationInputTokens: cacheCreationTokens,
+          } as UsageEvent
         }
       } else if (evt.type === "content_block_start") {
         nativeBlocks[evt.index] = { ...(evt.content_block as unknown as Record<string, unknown>) }
@@ -228,6 +256,12 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   private buildSystem(context: RenderedContext): Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }> | string | undefined {
+    // B3 note: the system shape is content-driven — 0 blocks (string), 1 block
+    // (stable only), or 2 blocks (stable + knowledge). The first turn `systemKnowledge`
+    // appears, the block count rises 1→2, which is a one-time prompt-cache invalidation
+    // (the knowledge prefix didn't exist to cache before). It is byte-stable thereafter;
+    // dynamic per-turn knowledge belongs in the uncached tail, not this block. An empty
+    // knowledge string is intentionally never emitted (the API rejects empty text blocks).
     if (!context.systemStable && !context.systemKnowledge) {
       return context.systemText || undefined
     }
@@ -246,6 +280,19 @@ export class AnthropicProvider implements LLMProvider {
       this.nativeAssistantBlocks.get(assistantReplayKey(message))
     ) as unknown as Anthropic.MessageParam[]
 
+    // Cache breakpoints anchor on the stable history; the volatile State turn is
+    // appended AFTER them as the uncached tail (so the history prefix re-reads
+    // across turns). On un-rebuilt bindings stateTurn is absent and the state is
+    // already inside `turns` — rendered as-is above. `frozenPrefixLen` (P1-E) pins
+    // the deep breakpoint at the compaction boundary; absent ⇒ rolling-pair fallback.
+    applyMessageCacheControl(msgs, context.frozenPrefixLen)
+    if (context.stateTurn) {
+      msgs.push({
+        role: context.stateTurn.role === "assistant" ? "assistant" : "user",
+        content: toAnthropicContent(context.stateTurn),
+      } as unknown as Anthropic.MessageParam)
+    }
+
     if (msgs.length === 0) {
       msgs.push({ role: "user", content: "Proceed." })
     }
@@ -260,6 +307,81 @@ export class AnthropicProvider implements LLMProvider {
     if (!blocks.length) return
     if (!message.toolCalls?.length && !blocks.some(b => b.type === "thinking")) return
     this.nativeAssistantBlocks.set(assistantReplayKey(message), blocks)
+  }
+}
+
+/** Anthropic accepts at most this many cache_control breakpoints per request. */
+const MAX_CACHE_BREAKPOINTS = 4
+
+/**
+ * Number of rolling cache breakpoints to spend on the message history. Anthropic
+ * allows 4 cache_control breakpoints total; the static system/tools prefix
+ * consumes up to 2 (systemStable + systemKnowledge), leaving 2 for the history.
+ */
+const MESSAGE_CACHE_BREAKPOINTS = 2
+
+/**
+ * Regression guard: fail loudly if the static (system + tools) breakpoints plus
+ * the rolling message budget could exceed Anthropic's hard limit, instead of
+ * letting the API reject the request with an opaque 400. Uses the worst-case
+ * message count (`MESSAGE_CACHE_BREAKPOINTS`), so it can only fire if a future
+ * change adds a system partition or raises the message budget.
+ */
+function assertCacheBudget(system: unknown, toolCount: number): void {
+  const systemBreakpoints = Array.isArray(system) ? system.length : 0
+  const toolBreakpoints = toolCount > 0 && !Array.isArray(system) ? 1 : 0
+  const worstCase = systemBreakpoints + toolBreakpoints + MESSAGE_CACHE_BREAKPOINTS
+  if (worstCase > MAX_CACHE_BREAKPOINTS) {
+    throw new Error(
+      `Anthropic cache_control budget exceeded: ${systemBreakpoints} system + ${toolBreakpoints} tool + ${MESSAGE_CACHE_BREAKPOINTS} message > ${MAX_CACHE_BREAKPOINTS}`,
+    )
+  }
+}
+
+/**
+ * Place the (≤2) message-history cache breakpoints. The final message always gets
+ * one — it writes the current full prefix for the next turn to read. The second is
+ * placed by one of two strategies:
+ *
+ *   • **Deep anchor (P1-E)** — when `frozenPrefixLen` marks a distinct frozen prefix
+ *     (the compaction boundary), pin the second breakpoint there. It is byte-stable
+ *     across turns, so `[0..frozen]` is re-read cheaply every turn and is immune to
+ *     the 20-block lookback miss that strikes heavy tool turns (>20 blocks/turn); the
+ *     tail breakpoint then writes only the incremental `[frozen..tail]`.
+ *   • **Rolling fallback** — otherwise (older binding / no compaction yet / whole
+ *     render hot), roll the second breakpoint to the nearest preceding user turn, the
+ *     previous turn's read anchor (Anthropic's 20-block lookback bridges light turns).
+ *
+ * Without any of this the cached prefix stops at the end of `system` and every turn
+ * re-bills the entire tool-result history at full price (~quadratic cumulative cost).
+ * cache_control attaches to the last content block of each target, promoting a bare
+ * string body to a text block.
+ */
+function applyMessageCacheControl(msgs: Anthropic.MessageParam[], frozenPrefixLen?: number): void {
+  if (!msgs.length) return
+  const targets = new Set<number>([msgs.length - 1])
+  if (typeof frozenPrefixLen === "number" && frozenPrefixLen >= 1 && frozenPrefixLen < msgs.length) {
+    // Deep anchor at the frozen-prefix boundary (last frozen turn). Fixed between compactions.
+    targets.add(frozenPrefixLen - 1)
+  } else {
+    for (let i = msgs.length - 2; i >= 0 && targets.size < MESSAGE_CACHE_BREAKPOINTS; i--) {
+      if (msgs[i].role === "user") targets.add(i)
+    }
+  }
+  for (const idx of targets) markLastBlockCacheable(msgs[idx])
+}
+
+/** Attach an ephemeral cache breakpoint to a message's final content block. */
+function markLastBlockCacheable(msg: Anthropic.MessageParam): void {
+  const cache_control = { type: "ephemeral" as const }
+  if (typeof msg.content === "string") {
+    if (!msg.content) return // don't synthesize an empty (API-rejected) text block
+    msg.content = [{ type: "text", text: msg.content, cache_control }]
+    return
+  }
+  if (Array.isArray(msg.content) && msg.content.length) {
+    const last = msg.content[msg.content.length - 1] as { cache_control?: { type: "ephemeral" } }
+    last.cache_control = cache_control
   }
 }
 

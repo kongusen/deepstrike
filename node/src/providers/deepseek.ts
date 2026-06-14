@@ -1,10 +1,9 @@
 import OpenAI from "openai"
 import type { Message, ProviderDescriptor, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, RuntimePolicy } from "../types.js"
+import { AnthropicProvider } from "./anthropic.js"
 import { OpenAIChatProvider } from "./openai.js"
 import { endpointProfiles } from "./profiles.js"
-import { omitExtensionKeys } from "./base.js"
-
-const DEEPSEEK_BASE = endpointProfiles["deepseek.openai"].baseURL
+import { omitExtensionKeys, openAICachedPromptTokens } from "./base.js"
 
 const DEEPSEEK_POLICIES: Record<string, RuntimePolicy> = {
   "deepseek-chat":      { maxTurns: 25 },
@@ -13,12 +12,37 @@ const DEEPSEEK_POLICIES: Record<string, RuntimePolicy> = {
   "deepseek-v4-pro":    { maxTurns: 35 },
 }
 
+/**
+ * DeepSeek over its Anthropic-compatible endpoint.
+ */
+export class DeepSeekAnthropicProvider extends AnthropicProvider {
+  constructor(
+    apiKey: string,
+    model: string = "deepseek-v4-flash",
+    retry?: { maxRetries: number; baseDelay: number },
+    baseURL: string = endpointProfiles["deepseek.anthropic"].baseURL,
+  ) {
+    super(apiKey, model, retry, {
+      baseURL,
+      authMode: "api-key",
+    })
+  }
+
+  protected override providerName(): string {
+    return "deepseek"
+  }
+
+  override runtimePolicy(): RuntimePolicy {
+    return DEEPSEEK_POLICIES[this.model] ?? {}
+  }
+}
+
 export class DeepSeekProvider extends OpenAIChatProvider {
   constructor(
     apiKey: string,
     model: string = "deepseek-v4-flash",
     retry?: { maxRetries: number; baseDelay: number },
-    baseURL: string = DEEPSEEK_BASE,
+    baseURL: string = endpointProfiles["deepseek.openai"].baseURL,
   ) {
     super(apiKey, model, retry, baseURL)
   }
@@ -117,11 +141,13 @@ export class DeepSeekProvider extends OpenAIChatProvider {
     let totalTokens = 0
     let inputTokens = 0
     let outputTokens = 0
+    let cacheReadTokens = 0
     for await (const chunk of stream) {
       if (chunk.usage) {
         totalTokens = chunk.usage.total_tokens
         inputTokens = chunk.usage.prompt_tokens ?? 0
         outputTokens = chunk.usage.completion_tokens ?? 0
+        cacheReadTokens = openAICachedPromptTokens(chunk.usage)
         continue
       }
       const choice = chunk.choices[0]
@@ -170,7 +196,7 @@ export class DeepSeekProvider extends OpenAIChatProvider {
       emittedToolCallIndexes.add(idx)
       yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
     }
-    if (totalTokens > 0) yield { type: "usage", totalTokens, inputTokens, outputTokens } as StreamEvent
+    if (totalTokens > 0) yield { type: "usage", totalTokens, inputTokens, outputTokens, ...(cacheReadTokens > 0 ? { cacheReadInputTokens: cacheReadTokens } : {}) } as StreamEvent
   }
 
   private rememberDeepSeekReplay(

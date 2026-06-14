@@ -28,6 +28,8 @@ fn rendered_context_from_messages(messages: Vec<Message>) -> RenderedContext {
         system_stable: system_text,
         system_knowledge: String::new(),
         turns,
+        state_turn: None,
+        frozen_prefix_len: None,
     }
 }
 

@@ -18,7 +18,7 @@ describe("provider profiles", () => {
     ])
     expect(modelProfiles["kimi/kimi-k2.6"]).toMatchObject({
       providerId: "kimi",
-      defaultEndpointId: "kimi.openai",
+      defaultEndpointId: "kimi.anthropic",
       reasoning: { supported: true },
     })
   })
@@ -44,17 +44,17 @@ describe("provider profiles", () => {
       contextWindow: 204_800,
     })
     expect(modelProfiles["qwen/qwen3.7-max-preview"]).toMatchObject({
-      defaultEndpointId: "qwen.dashscope",
+      defaultEndpointId: "qwen.anthropic",
       contextWindow: 256_000,
       reasoning: { supported: true },
     })
     expect(modelProfiles["qwen/qwen3.6-27b"]).toMatchObject({
-      defaultEndpointId: "qwen.dashscope",
+      defaultEndpointId: "qwen.anthropic",
       contextWindow: 256_000,
       reasoning: { supported: true },
     })
     expect(modelProfiles["qwen/qwen3.5-plus"]).toMatchObject({
-      defaultEndpointId: "qwen.dashscope",
+      defaultEndpointId: "qwen.anthropic",
       contextWindow: 1_000_000,
       reasoning: { supported: true },
     })
@@ -105,13 +105,13 @@ describe("provider profiles", () => {
 
   it("models current DeepSeek V4 endpoints and thinking controls", () => {
     expect(modelProfiles["deepseek/deepseek-v4-flash"]).toMatchObject({
-      defaultEndpointId: "deepseek.openai",
+      defaultEndpointId: "deepseek.anthropic",
       reasoning: { supported: true, preserveAcrossToolTurns: true },
     })
     expect(modelProfiles["deepseek/deepseek-v4-pro"]).toBeDefined()
   })
 
-  it("registers GLM 5.1 and GLM 4 profiles on the OpenAI-compatible endpoint", () => {
+  it("registers GLM 5.1 and GLM 4 profiles on the Anthropic-compatible endpoint", () => {
     expect(Object.keys(modelProfiles).filter(id => id.startsWith("glm/")).sort()).toEqual([
       "glm/embedding-2",
       "glm/embedding-3",
@@ -122,7 +122,7 @@ describe("provider profiles", () => {
     ])
     expect(modelProfiles["glm/glm-5.1"]).toMatchObject({
       providerId: "glm",
-      defaultEndpointId: "glm.openai",
+      defaultEndpointId: "glm.anthropic",
       contextWindow: 200_000,
       reasoning: { supported: true, preserveAcrossToolTurns: true },
       policy: { maxTurns: 50 },

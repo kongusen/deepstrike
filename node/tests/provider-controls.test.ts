@@ -54,7 +54,11 @@ describe("provider control-plane forwarding", () => {
         temperature: 0.2,
         system: "system",
       })
-      expect(req.messages).toEqual([{ role: "user", content: "hi" }])
+      // The sole user turn carries a rolling cache breakpoint (bare string body
+      // promoted to a cache-bearing text block); structural override is ignored.
+      expect(req.messages).toEqual([
+        { role: "user", content: [{ type: "text", text: "hi", cache_control: { type: "ephemeral" } }] },
+      ])
       expect(req.tools).toBeDefined()
     }
   })
@@ -116,6 +120,20 @@ describe("provider control-plane forwarding", () => {
     expect(requests[0]).toMatchObject({ model: "gpt-4o", temperature: 0.1, reasoning_effort: "high" })
     expect(requests[1]).toMatchObject({ model: "gpt-4o", temperature: 0.1, reasoning_effort: "high", stream: true })
     expect(requests[1].stream_options).toEqual({ include_usage: true })
+
+    // A deterministic prompt_cache_key is set (same prefix -> same key across calls).
+    expect(requests[0].prompt_cache_key).toMatch(/^ds-[0-9a-f]{8}$/)
+    expect(requests[1].prompt_cache_key).toBe(requests[0].prompt_cache_key)
+  })
+
+  it("lets a caller-supplied prompt_cache_key override the default", async () => {
+    const provider = new OpenAIChatProvider("test-key")
+    const requests: Array<Record<string, unknown>> = []
+    ;(provider as unknown as { client: { chat: { completions: { create(req: Record<string, unknown>): Promise<unknown> } } } }).client = {
+      chat: { completions: { async create(req) { requests.push(req); return { choices: [{ message: { content: "ok" } }], usage: { total_tokens: 1 } } } } },
+    }
+    await provider.complete(context, tools, { prompt_cache_key: "tenant-42" })
+    expect(requests[0].prompt_cache_key).toBe("tenant-42")
   })
 
   it("forwards Responses API extensions in stream and complete", async () => {

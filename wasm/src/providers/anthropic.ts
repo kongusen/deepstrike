@@ -1,13 +1,64 @@
 import type { RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent, LLMProvider, Message, ProviderDescriptor, ProviderReplay } from "../types.js"
 import { assistantReplayKey, collectStreamMessage, toAnthropicMessages } from "./base.js"
 
-function buildAnthropicTools(tools: ToolSchema[]) {
+/** Anthropic accepts at most this many cache_control breakpoints per request. */
+const MAX_CACHE_BREAKPOINTS = 4
+/** Rolling cache breakpoints reserved for the message history (system uses ≤2). */
+const MESSAGE_CACHE_BREAKPOINTS = 2
+
+function buildAnthropicTools(tools: ToolSchema[], anchorCache: boolean) {
   return tools.map((t, i) => ({
     name: t.name,
     description: t.description,
     input_schema: JSON.parse(t.parameters),
-    ...(i === tools.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {}),
+    // Anchor a tool breakpoint only when the system blocks won't carry one;
+    // otherwise systemStable already caches the tools prefix (tools render
+    // first), and a redundant tool breakpoint would burn a slot the message
+    // history needs to stay within the 4-breakpoint budget.
+    ...(anchorCache && i === tools.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {}),
   }))
+}
+
+/**
+ * Roll cache breakpoints across the conversation tail so the message-history
+ * prefix is written once and re-read on later turns (without this the cached
+ * prefix stops at the end of `system` and the whole tool-result history is
+ * re-billed at full input price every turn). Marks the final message plus the
+ * nearest preceding user turn (read anchor); a bare string body is promoted to
+ * a cache-bearing text block.
+ */
+function applyMessageCacheControl(msgs: Array<Record<string, unknown>>): void {
+  if (!msgs.length) return
+  const targets = new Set<number>([msgs.length - 1])
+  for (let i = msgs.length - 2; i >= 0 && targets.size < MESSAGE_CACHE_BREAKPOINTS; i--) {
+    if (msgs[i].role === "user") targets.add(i)
+  }
+  for (const idx of targets) markLastBlockCacheable(msgs[idx])
+}
+
+function markLastBlockCacheable(msg: Record<string, unknown>): void {
+  const cache_control = { type: "ephemeral" as const }
+  if (typeof msg.content === "string") {
+    if (!msg.content) return
+    msg.content = [{ type: "text", text: msg.content, cache_control }]
+    return
+  }
+  if (Array.isArray(msg.content) && msg.content.length) {
+    const last = msg.content[msg.content.length - 1] as Record<string, unknown>
+    last.cache_control = cache_control
+  }
+}
+
+/** Regression guard: fail loudly before the API would reject the request for
+ *  exceeding the cache_control breakpoint limit. */
+function assertCacheBudget(system: unknown, toolCount: number): void {
+  const systemBreakpoints = Array.isArray(system) ? system.length : 0
+  const toolBreakpoints = toolCount > 0 && !Array.isArray(system) ? 1 : 0
+  if (systemBreakpoints + toolBreakpoints + MESSAGE_CACHE_BREAKPOINTS > MAX_CACHE_BREAKPOINTS) {
+    throw new Error(
+      `Anthropic cache_control budget exceeded: ${systemBreakpoints} system + ${toolBreakpoints} tool + ${MESSAGE_CACHE_BREAKPOINTS} message > ${MAX_CACHE_BREAKPOINTS}`,
+    )
+  }
 }
 
 export class AnthropicProvider implements LLMProvider {
@@ -68,6 +119,16 @@ export class AnthropicProvider implements LLMProvider {
     const msgs = toAnthropicMessages(context, message =>
       this.nativeAssistantBlocks.get(assistantReplayKey(message))
     )
+    applyMessageCacheControl(msgs)
+    // Append the volatile State turn AFTER the cache breakpoints (uncached tail);
+    // absent on un-rebuilt bindings, where the state is already inside `turns`.
+    if (context.stateTurn) {
+      msgs.push({
+        role: context.stateTurn.role === "assistant" ? "assistant" : "user",
+        content: context.stateTurn.content,
+      })
+    }
+    assertCacheBudget(system, tools.length)
 
     const body: Record<string, unknown> = {
       model: this.model,
@@ -75,7 +136,7 @@ export class AnthropicProvider implements LLMProvider {
       messages: msgs,
       stream: true,
       ...(system ? { system } : {}),
-      ...(tools.length ? { tools: buildAnthropicTools(tools) } : {}),
+      ...(tools.length ? { tools: buildAnthropicTools(tools, !Array.isArray(system)) } : {}),
     }
     if (extensions?.enable_thinking) {
       body.thinking = { type: "enabled", budget_tokens: 8000 }
@@ -100,6 +161,10 @@ export class AnthropicProvider implements LLMProvider {
     const reader = resp.body!.getReader()
     const decoder = new TextDecoder()
     let buf = ""
+    let uncachedInput = 0
+    let cacheReadTokens = 0
+    let cacheCreationTokens = 0
+    let outputTokens = 0
 
     while (true) {
       const { done, value } = await reader.read()
@@ -115,17 +180,28 @@ export class AnthropicProvider implements LLMProvider {
           const evt = JSON.parse(data) as Record<string, unknown>
           if (evt.type === "message_start" || evt.type === "message_delta") {
             const usage = (evt.usage ?? (evt.message as Record<string, unknown> | undefined)?.usage) as
-              | { input_tokens?: number; output_tokens?: number }
+              | { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
               | undefined
-            if (usage?.input_tokens != null) {
-              const inputTokens = usage.input_tokens ?? 0
-              const outputTokens = usage.output_tokens ?? 0
-              yield {
-                type: "usage",
-                totalTokens: inputTokens + outputTokens,
-                inputTokens,
-                outputTokens,
-              } as UsageEvent
+            if (usage) {
+              // input + cache counts are pinned at message_start; a later
+              // message_delta may omit them — Math.max prevents zeroing.
+              uncachedInput = Math.max(uncachedInput, usage.input_tokens ?? 0)
+              cacheReadTokens = Math.max(cacheReadTokens, usage.cache_read_input_tokens ?? 0)
+              cacheCreationTokens = Math.max(cacheCreationTokens, usage.cache_creation_input_tokens ?? 0)
+              outputTokens = Math.max(outputTokens, usage.output_tokens ?? 0)
+              // inputTokens is the FULL prompt (uncached + cache read + write):
+              // the kernel reads it as the authoritative context size.
+              const inputTokens = uncachedInput + cacheReadTokens + cacheCreationTokens
+              if (inputTokens > 0 || outputTokens > 0) {
+                yield {
+                  type: "usage",
+                  totalTokens: inputTokens + outputTokens,
+                  inputTokens,
+                  outputTokens,
+                  cacheReadInputTokens: cacheReadTokens,
+                  cacheCreationInputTokens: cacheCreationTokens,
+                } as UsageEvent
+              }
             }
           } else if (evt.type === "content_block_start") {
             const idx = evt.index as number

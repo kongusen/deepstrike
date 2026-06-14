@@ -198,9 +198,17 @@ def _message_from_kernel(raw: dict[str, Any]) -> Message:
 
 
 def _context_from_kernel(raw: dict[str, Any]) -> RenderedContext:
+  state_raw = raw.get("state_turn") or raw.get("stateTurn")
+  frozen_raw = raw.get("frozen_prefix_len")
+  if frozen_raw is None:
+    frozen_raw = raw.get("frozenPrefixLen")
   return RenderedContext(
     system_text=str(raw.get("system_text") or raw.get("systemText") or ""),
+    system_stable=str(raw.get("system_stable") or raw.get("systemStable") or ""),
+    system_knowledge=str(raw.get("system_knowledge") or raw.get("systemKnowledge") or ""),
     turns=[_message_from_kernel(m) for m in raw.get("turns", []) or []],
+    state_turn=_message_from_kernel(state_raw) if state_raw else None,
+    frozen_prefix_len=int(frozen_raw) if isinstance(frozen_raw, (int, float)) else None,
   )
 
 

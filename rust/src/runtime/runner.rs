@@ -977,7 +977,7 @@ impl RuntimeRunner {
                                         arguments,
                                     });
                                 }
-                                StreamEvent::Usage { total_tokens } => {
+                                StreamEvent::Usage { total_tokens, .. } => {
                                     turn_tokens = total_tokens;
                                 }
                                 StreamEvent::Done => {}
@@ -1949,6 +1949,8 @@ impl RuntimeRunner {
                 tool_calls: vec![],
                 token_count: None,
             }],
+            state_turn: None,
+            frozen_prefix_len: None,
         };
 
         let synth_state = self.opts.provider.create_run_state();
@@ -2109,6 +2111,8 @@ fn rendered_context_from_messages(
         system_stable: system_text,
         system_knowledge: String::new(),
         turns,
+        state_turn: None,
+        frozen_prefix_len: None,
     }
 }
 

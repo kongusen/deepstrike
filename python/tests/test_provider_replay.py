@@ -66,8 +66,10 @@ async def test_wake_restores_thinking_blocks_from_provider_replay(tmp_path):
 
   text = await collect_text(runner.wake(session_id))
   assert text == "finished"
+  # The first user turn and the trailing tool-result turn carry rolling cache
+  # breakpoints (the bare string body is promoted to a cache-bearing text block).
   assert provider.captured_messages == [
-    {"role": "user", "content": "use ping"},
+    {"role": "user", "content": [{"type": "text", "text": "use ping", "cache_control": {"type": "ephemeral"}}]},
     {
       "role": "assistant",
       "content": [
@@ -78,7 +80,7 @@ async def test_wake_restores_thinking_blocks_from_provider_replay(tmp_path):
     },
     {
       "role": "user",
-      "content": [{"type": "tool_result", "tool_use_id": "call_ping", "content": "pong", "is_error": False}],
+      "content": [{"type": "tool_result", "tool_use_id": "call_ping", "content": "pong", "is_error": False, "cache_control": {"type": "ephemeral"}}],
     },
   ]
 

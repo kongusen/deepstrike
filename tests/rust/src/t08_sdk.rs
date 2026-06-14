@@ -318,6 +318,7 @@ fn token_usage_total() {
     let usage = deepstrike_sdk::providers::TokenUsage {
         input_tokens: 100,
         output_tokens: 50,
+        ..Default::default()
     };
     assert_eq!(usage.total_tokens(), 150);
 }
