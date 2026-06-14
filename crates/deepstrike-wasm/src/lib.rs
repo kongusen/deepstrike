@@ -110,7 +110,7 @@ pub struct RuntimeTask {
     pub goal: String,
     #[serde(default)]
     pub criteria: Vec<String>,
-    /// `"orchestrate"` | `"implement"` (default) | `"retrieve"` | `"verify"`
+    /// Freeform lane label. Well-known: `"orchestrate"` | `"implement"` (default) | `"retrieve"` | `"verify"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lane: Option<String>,
 }

@@ -142,7 +142,7 @@ pub struct ToolSchema {
 pub struct RuntimeTask {
     pub goal: String,
     pub criteria: Option<Vec<String>>,
-    /// `"orchestrate"` | `"implement"` (default) | `"retrieve"` | `"verify"`
+    /// Freeform lane label. Well-known: `"orchestrate"` | `"implement"` (default) | `"retrieve"` | `"verify"`.
     pub lane: Option<String>,
 }
 

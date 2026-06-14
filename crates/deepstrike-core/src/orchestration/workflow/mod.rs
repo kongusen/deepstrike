@@ -307,11 +307,11 @@ impl WorkflowSpec {
 pub fn fanout_synthesize(workers: Vec<RuntimeTask>, synthesize: RuntimeTask) -> WorkflowSpec {
     let mut nodes: Vec<WorkflowNode> = workers
         .into_iter()
-        .map(|t| WorkflowNode::new(t.with_lane(TaskLane::Retrieve), AgentRole::Explore))
+        .map(|t| WorkflowNode::new(t.with_lane(TaskLane::new(TaskLane::RETRIEVE)), AgentRole::Explore))
         .collect();
     let worker_ids: Vec<usize> = (0..nodes.len()).collect();
     nodes.push(
-        WorkflowNode::new(synthesize.with_lane(TaskLane::Orchestrate), AgentRole::Plan)
+        WorkflowNode::new(synthesize.with_lane(TaskLane::new(TaskLane::ORCHESTRATE)), AgentRole::Plan)
             .with_depends_on(worker_ids),
     );
     WorkflowSpec::new(nodes)
@@ -329,11 +329,11 @@ pub fn fanout_synthesize(workers: Vec<RuntimeTask>, synthesize: RuntimeTask) -> 
 pub fn generate_and_filter(generators: Vec<RuntimeTask>, filter: RuntimeTask) -> WorkflowSpec {
     let mut nodes: Vec<WorkflowNode> = generators
         .into_iter()
-        .map(|t| WorkflowNode::new(t.with_lane(TaskLane::Retrieve), AgentRole::Implement))
+        .map(|t| WorkflowNode::new(t.with_lane(TaskLane::new(TaskLane::RETRIEVE)), AgentRole::Implement))
         .collect();
     let gen_ids: Vec<usize> = (0..nodes.len()).collect();
     nodes.push(
-        WorkflowNode::new(filter.with_lane(TaskLane::Verify), AgentRole::Verify)
+        WorkflowNode::new(filter.with_lane(TaskLane::new(TaskLane::VERIFY)), AgentRole::Verify)
             .with_depends_on(gen_ids),
     );
     WorkflowSpec::new(nodes)
@@ -358,12 +358,12 @@ pub fn generate_and_filter(generators: Vec<RuntimeTask>, filter: RuntimeTask) ->
 pub fn verify_rules(rules: Vec<RuntimeTask>, skeptic: Option<RuntimeTask>) -> WorkflowSpec {
     let mut nodes: Vec<WorkflowNode> = rules
         .into_iter()
-        .map(|t| WorkflowNode::new(t.with_lane(TaskLane::Verify), AgentRole::Verify))
+        .map(|t| WorkflowNode::new(t.with_lane(TaskLane::new(TaskLane::VERIFY)), AgentRole::Verify))
         .collect();
     if let Some(skeptic) = skeptic {
         let verifier_ids: Vec<usize> = (0..nodes.len()).collect();
         nodes.push(
-            WorkflowNode::new(skeptic.with_lane(TaskLane::Verify), AgentRole::Verify)
+            WorkflowNode::new(skeptic.with_lane(TaskLane::new(TaskLane::VERIFY)), AgentRole::Verify)
                 .with_depends_on(verifier_ids),
         );
     }

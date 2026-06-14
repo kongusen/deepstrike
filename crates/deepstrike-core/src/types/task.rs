@@ -1,19 +1,36 @@
 use serde::{Deserialize, Serialize};
 
-/// Parallelism hint for task scheduling and executor enforcement.
+/// Freeform parallelism / classification hint for task scheduling.
 ///
-/// - `Orchestrate`: serial, produces contracts; runs one at a time
-/// - `Implement`: serial, DAG chain; `TaskGraph::ready_tasks` enforces max 1 running
-/// - `Retrieve`: parallelisable; no mutual exclusion between retrieve tasks
-/// - `Verify`: parallelisable, but each task must run in an isolated agent context
+/// The kernel transparently round-trips any string the caller sets.  Well-known
+/// constants are provided for the built-in workflow templates:
+///
+/// - `"orchestrate"` — serial, produces contracts; runs one at a time
+/// - `"implement"`   — serial, DAG chain; `TaskGraph::ready_tasks` enforces max 1
+/// - `"retrieve"`    — parallelisable; no mutual exclusion
+/// - `"verify"`      — parallelisable, isolated agent context
+///
+/// Callers may use any other value (e.g. `"prd-fill"`, `"eval"`) without kernel
+/// changes — the field is a transparent label, not a scheduling gate.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskLane {
-    Orchestrate,
-    #[default]
-    Implement,
-    Retrieve,
-    Verify,
+#[serde(transparent)]
+pub struct TaskLane(pub String);
+
+impl TaskLane {
+    pub const ORCHESTRATE: &'static str = "orchestrate";
+    pub const IMPLEMENT: &'static str = "implement";
+    pub const RETRIEVE: &'static str = "retrieve";
+    pub const VERIFY: &'static str = "verify";
+
+    pub fn new(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+}
+
+impl std::fmt::Display for TaskLane {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
