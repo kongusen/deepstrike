@@ -387,7 +387,7 @@ describe("E2E mechanism contract tests", () => {
       // ── Phase 4: AutoCompact fired — verify summary injected into State turn (turns[0]) ──
       // AutoCompact writes summary to compression_log → task_state.format_compact() → turns[0].
       if (text.includes("[Compressed: auto_compact]")) {
-        const stateTurn = context.turns[0]?.content ?? ""
+        const stateTurn = (context.stateTurn ?? context.turns[0])?.content ?? ""
         const hasSummary = stateTurn.includes("[Compressed: auto_compact]")
         const hasAnchorTool = stateTurn.includes("seed_anchor")
         return [{ type: "text_delta", delta: hasSummary && hasAnchorTool ? "VERIFIED" : "SUMMARY-MISSING" }]

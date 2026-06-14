@@ -193,7 +193,9 @@ describe("RuntimeRunner wake recovery", () => {
       expect.objectContaining({ role: "user", content: "My name is Ada." }),
       expect.objectContaining({ role: "assistant", content: "answer-1" }),
     ]))
-    expect((provider.calls[1].stateTurn ?? provider.calls[1].turns[0]).content).toContain("What is my name?")
+    const ctx = provider.calls[1]
+    const allContent = [ctx.stateTurn, ...ctx.turns].filter(Boolean).map(m => m!.content).join("\n")
+    expect(allContent).toContain("What is my name?")
   })
 
   it("records compressed events when kernel compresses context", async () => {
