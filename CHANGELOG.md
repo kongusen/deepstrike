@@ -6,6 +6,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.17] - 2026-06-15
+
+### Added
+
+- **Agent-authored workflows (M5/G1).** An agent can now author and run its own workflow DAG. `start_workflow` lets a workflow node flatten a whole sub-spec onto the running DAG, and a top-level agent calling `start_workflow` mid-conversation auto-pivots its run into driving the authored workflow (kernel `Syscall::LoadWorkflow` + `KernelInputEvent::SubmitWorkflow` + `RuntimeRunner.bootstrapWorkflow`, **bootstrap-or-flatten** under one kernel / one quota). Node, Python, WASM.
+- **Mid-flight signal preemption.** A Critical `InterruptNow` signal aborts in-flight work instead of only being noted in context. The kernel distinguishes soft `Interrupt` (handled at the next turn boundary) from hard `InterruptNow` (preempt running sub-agents/workflow → mark `Done(UserAbort)`, tear the owning workflow down, emit the new `AgentPreempted` observation, reclaim the root). The SDK cancels the in-flight LLM call: `AbortSignal` → provider socket abort on Node/WASM (anthropic/openai/fetch), asyncio `task.cancel()` on Python. A concurrent monitor delivers signals during a running workflow batch.
+
+### Changed
+
+- **Kernel microkernel split.** `scheduler/state_machine.rs` decomposed into `state_machine/{mod,gate,signal,capability,eviction,tests}.rs` — the syscall gate, signal routing, and capability ops are now focused modules and the state machine is the dispatcher. No behavior change.
+- Removed the dead `Disposition::Transform` variant.
+
 ## [0.2.16] - 2026-06-15
 
 ### Fixed
