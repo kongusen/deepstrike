@@ -151,6 +151,10 @@ export interface LLMProvider {
     tools: ToolSchema[],
     extensions?: Record<string, unknown>,
     state?: ProviderRunState,
+    /** #2-B-ii: when provided, a preempt (`interrupt()`) aborts the in-flight request. SDK-client
+     *  providers forward it via `{ signal }`; the runner also breaks the consume loop on abort, so
+     *  providers that ignore it still stop processing immediately. Optional ⇒ backward-compatible. */
+    signal?: AbortSignal,
   ): AsyncIterable<StreamEvent>
 }
 

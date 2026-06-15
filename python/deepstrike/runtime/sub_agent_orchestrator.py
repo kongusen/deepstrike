@@ -29,6 +29,9 @@ class SubAgentRunContext:
   manifest: AgentProcessChangedObservation
   session_log: SessionLog
   harness: SubAgentHarnessConfig | None = None
+  # M5 v2.1: set when this child is a workflow node — propagated so a nested ``start_workflow``
+  # FLATTENS to the parent kernel rather than auto-pivoting into its own bootstrap.
+  is_workflow_node: bool = False
 
 
 def _termination_from_status(status: str) -> str:
@@ -106,6 +109,33 @@ def _derive_meta_tools(permitted: set[str], opts: RuntimeOptions) -> frozenset[s
   return frozenset(meta)
 
 
+def _resolve_provider(opts: RuntimeOptions, model_hint: str | None):
+  """M1/G3 intelligence routing: resolve the provider for a sub-agent from its spec's ``model_hint``.
+
+  Falls back to the parent provider when there is no hint or no ``provider_for`` hook resolves it."""
+  if model_hint and opts.provider_for is not None:
+    routed = opts.provider_for(model_hint)
+    if routed is not None:
+      return routed
+  return opts.provider
+
+
+def _wrap_worktree(ctx: SubAgentRunContext, plane):
+  """M3/G4: if this is an ``isolation: "worktree"`` node and a worktree manager is configured, wrap
+  its plane in a ``WorktreeExecutionPlane`` (creates a git worktree, injects it as ``cwd``, removes
+  it on cleanup). Returns ``(plane, cleanup)``; a non-worktree node gets a pass-through + no-op."""
+  if getattr(ctx.manifest, "isolation", None) == "worktree" and ctx.parent_opts.worktree_manager is not None:
+    from deepstrike.runtime.worktree_plane import WorktreeExecutionPlane
+
+    wt = WorktreeExecutionPlane(plane, ctx.parent_opts.worktree_manager, ctx.spec.identity.agent_id)
+    return wt, wt.cleanup
+
+  async def _noop() -> None:
+    return None
+
+  return plane, _noop
+
+
 def _build_child_opts(
   ctx: SubAgentRunContext,
   *,
@@ -114,7 +144,12 @@ def _build_child_opts(
   meta_tools: frozenset[str],
 ) -> RuntimeOptions:
   return RuntimeOptions(
-    provider=ctx.parent_opts.provider,
+    # M1/G3: route to the node's hinted model (falls back to the parent provider);
+    # propagate the hook so nested sub-agents route too.
+    provider=_resolve_provider(ctx.parent_opts, getattr(ctx.spec, "model_hint", None)),
+    provider_for=ctx.parent_opts.provider_for,
+    # M4/G5: cap the child run at the node's token budget (falls back to the inherited cap).
+    max_total_tokens=getattr(ctx.spec, "token_budget", None) or ctx.parent_opts.max_total_tokens,
     session_log=ctx.session_log,
     execution_plane=filtered_plane,
     max_tokens=ctx.parent_opts.max_tokens,
@@ -134,6 +169,8 @@ def _build_child_opts(
     compression_store=ctx.parent_opts.compression_store,
     on_tool_suspend=ctx.parent_opts.on_tool_suspend,
     on_permission_request=ctx.parent_opts.on_permission_request,
+    # M5 v2.1: a workflow node's `start_workflow` flattens to the parent kernel (no nested pivot).
+    is_workflow_node=ctx.is_workflow_node,
   )
 
 
@@ -169,10 +206,12 @@ class SubAgentOrchestrator:
 
     plane = ctx.parent_opts.execution_plane or LocalExecutionPlane()
     filtered = FilteredExecutionPlane(plane, permitted, meta_tools)
+    # M3/G4: worktree isolation for a worktree node (cleaned up in `finally` below).
+    exec_plane, cleanup_worktree = _wrap_worktree(ctx, filtered)
     child_runner = RuntimeRunner(_build_child_opts(
       ctx,
       system_prompt=ctx.parent_opts.system_prompt,
-      filtered_plane=filtered,
+      filtered_plane=exec_plane,
       meta_tools=meta_tools,
     ))
     loop = HarnessLoop(
@@ -180,10 +219,13 @@ class SubAgentOrchestrator:
       ctx.harness.eval_provider,
       max_attempts=ctx.harness.max_attempts,
     )
-    outcome = await loop.run(HarnessRequest(
-      goal=ctx.spec.goal,
-      criteria=_harness_criteria(ctx.spec),
-    ))
+    try:
+      outcome = await loop.run(HarnessRequest(
+        goal=ctx.spec.goal,
+        criteria=_harness_criteria(ctx.spec),
+      ))
+    finally:
+      await cleanup_worktree()
 
     from deepstrike._kernel import Message
 
@@ -213,10 +255,12 @@ class SubAgentOrchestrator:
 
     plane = ctx.parent_opts.execution_plane or LocalExecutionPlane()
     filtered = FilteredExecutionPlane(plane, permitted, meta_tools)
+    # M3/G4: a worktree node runs inside its own git worktree (created here, removed in `finally`).
+    exec_plane, cleanup_worktree = _wrap_worktree(ctx, filtered)
     child_runner = RuntimeRunner(_build_child_opts(
       ctx,
       system_prompt=system_prompt,
-      filtered_plane=filtered,
+      filtered_plane=exec_plane,
       meta_tools=meta_tools,
     ))
 
@@ -226,17 +270,20 @@ class SubAgentOrchestrator:
     # runner surfaces them as `WorkflowNodesSubmittedEvent` because the workflow lives in the parent
     # kernel, not this child's). `run_workflow` sends them to the parent kernel.
     submitted_nodes: list = []
-    async for evt in child_runner.run(
-      session_id=ctx.spec.identity.session_id,
-      goal=ctx.spec.goal,
-      inherit_events=inherit_events,
-    ):
-      if isinstance(evt, TextDelta):
-        final_text += evt.delta
-      if isinstance(evt, DoneEvent):
-        done = evt
-      if isinstance(evt, WorkflowNodesSubmittedEvent):
-        submitted_nodes.extend(evt.nodes)
+    try:
+      async for evt in child_runner.run(
+        session_id=ctx.spec.identity.session_id,
+        goal=ctx.spec.goal,
+        inherit_events=inherit_events,
+      ):
+        if isinstance(evt, TextDelta):
+          final_text += evt.delta
+        if isinstance(evt, DoneEvent):
+          done = evt
+        if isinstance(evt, WorkflowNodesSubmittedEvent):
+          submitted_nodes.extend(evt.nodes)
+    finally:
+      await cleanup_worktree()
 
     from deepstrike._kernel import Message
 

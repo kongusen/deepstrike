@@ -54,7 +54,7 @@ export class ProcessSandboxPlane extends LocalExecutionPlane {
     return env
   }
 
-  private runSubprocess(cmd: string, argv: string[]): Promise<{ output: string; isError: boolean }> {
+  private runSubprocess(cmd: string, argv: string[], cwd: string): Promise<{ output: string; isError: boolean }> {
     return new Promise(resolve => {
       const chunks: Buffer[] = []
       let totalBytes = 0
@@ -68,7 +68,7 @@ export class ProcessSandboxPlane extends LocalExecutionPlane {
       }
 
       const child = spawn(cmd, argv, {
-        cwd: this.sandboxDir,
+        cwd,
         env: this.buildEnv(),
         stdio: ["ignore", "pipe", "pipe"],
       })
@@ -108,9 +108,11 @@ export class ProcessSandboxPlane extends LocalExecutionPlane {
         },
         required: ["command"],
       },
-      async (args: Record<string, unknown>) => {
-        await mkdir(this.sandboxDir, { recursive: true })
-        const { output, isError } = await this.runSubprocess("bash", ["-c", String(args.command)])
+      async (args: Record<string, unknown>, ctx?: { cwd?: string }) => {
+        // M3/G4: run in the sub-agent's worktree when one was injected, else the sandbox dir.
+        const cwd = ctx?.cwd ?? this.sandboxDir
+        if (!ctx?.cwd) await mkdir(this.sandboxDir, { recursive: true })
+        const { output, isError } = await this.runSubprocess("bash", ["-c", String(args.command)], cwd)
         if (isError && !output.trim()) return "Process exited with non-zero status and produced no output."
         return output || "(no output)"
       },
@@ -128,9 +130,11 @@ export class ProcessSandboxPlane extends LocalExecutionPlane {
         },
         required: ["code"],
       },
-      async (args: Record<string, unknown>) => {
-        await mkdir(this.sandboxDir, { recursive: true })
-        const { output, isError } = await this.runSubprocess("node", ["-e", String(args.code)])
+      async (args: Record<string, unknown>, ctx?: { cwd?: string }) => {
+        // M3/G4: run in the sub-agent's worktree when one was injected, else the sandbox dir.
+        const cwd = ctx?.cwd ?? this.sandboxDir
+        if (!ctx?.cwd) await mkdir(this.sandboxDir, { recursive: true })
+        const { output, isError } = await this.runSubprocess("node", ["-e", String(args.code)], cwd)
         if (isError && !output.trim()) return "Script exited with non-zero status and produced no output."
         return output || "(no output)"
       },

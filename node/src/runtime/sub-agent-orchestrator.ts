@@ -7,6 +7,8 @@ import { agentRunSpecToKernel, findSpawnProcessObservation, spawnObservationToMa
 import type { RuntimeOptions } from "./runner.js"
 import type { SessionEvent, SessionLog } from "./session-log.js"
 import { FilteredExecutionPlane } from "./filtered-plane.js"
+import { WorktreeExecutionPlane } from "./worktree-plane.js"
+import type { ExecutionPlane } from "./execution-plane.js"
 import { kernelApply, type KernelObservation } from "./kernel-step.js"
 
 export interface SubAgentRunContext {
@@ -19,6 +21,14 @@ export interface SubAgentRunContext {
     evalProvider: import("../types.js").LLMProvider
     maxAttempts?: number
   }
+  /** M5 v2.1: set when this child is a workflow node (spawned by the workflow driver). Propagated to
+   *  the child runner so a nested `start_workflow` FLATTENS to the parent kernel rather than
+   *  auto-pivoting into its own bootstrap (which would fragment the one-kernel/one-quota governance). */
+  isWorkflowNode?: boolean
+  /** #2-B-ii: parent-controlled abort. When this fires (the kernel preempted this node via
+   *  `InterruptNow` → `AgentPreempted`), the orchestrator interrupts the child runner, cancelling its
+   *  in-flight LLM call. */
+  abortSignal?: AbortSignal
 }
 
 function terminationFromStatus(status: string): TerminationReason | string {
@@ -37,6 +47,39 @@ function terminationFromStatus(status: string): TerminationReason | string {
   return status
 }
 
+/** M3/G4: if this sub-agent is an `isolation: "worktree"` node and a worktree manager is configured,
+ *  wrap its plane in a `WorktreeExecutionPlane` (creates a git worktree, injects it as `cwd`, removes
+ *  it on cleanup). Returns the plane to use plus a cleanup hook the caller must run when the sub-agent
+ *  finishes. Without a manager (or for non-worktree nodes) this is a pass-through with a no-op cleanup. */
+function withWorktree(
+  ctx: SubAgentRunContext,
+  plane: ExecutionPlane,
+): { plane: ExecutionPlane; cleanup: () => Promise<void> } {
+  if (ctx.manifest.isolation === "worktree" && ctx.parentOpts.worktreeManager) {
+    const wt = new WorktreeExecutionPlane(plane, ctx.parentOpts.worktreeManager, ctx.spec.identity.agentId)
+    return { plane: wt, cleanup: () => wt.cleanup() }
+  }
+  return { plane, cleanup: async () => {} }
+}
+
+/** M1/G3 intelligence routing: resolve the provider for a sub-agent from its spec's `modelHint`.
+ *  Falls back to the parent provider when there is no hint or no `providerFor` hook resolves it. */
+export function resolveProvider(opts: RuntimeOptions, modelHint?: string): RuntimeOptions["provider"] {
+  if (modelHint && opts.providerFor) {
+    const routed = opts.providerFor(modelHint)
+    if (routed) return routed
+  }
+  return opts.provider
+}
+
+/** #2-B-ii: bridge a parent-controlled AbortSignal to a child runner's `interrupt()` — fires now if
+ *  the signal is already aborted (creation race), else once when it aborts. */
+function linkAbort(signal: AbortSignal | undefined, runner: { interrupt(): void }): void {
+  if (!signal) return
+  if (signal.aborted) { runner.interrupt(); return }
+  signal.addEventListener("abort", () => runner.interrupt(), { once: true })
+}
+
 /** Derive which meta-tools a child runner should expose based on permitted IDs and available sources. */
 function deriveMetaTools(permitted: Set<string>, opts: RuntimeOptions): Set<string> {
   const metaTools = new Set<string>()
@@ -53,6 +96,8 @@ export class SubAgentOrchestrator {
     const permitted = new Set(ctx.manifest.permitted_capability_ids ?? [])
     const metaTools = deriveMetaTools(permitted, ctx.parentOpts)
     const filteredPlane = new FilteredExecutionPlane(ctx.parentOpts.executionPlane, permitted, metaTools)
+    // M3/G4: a worktree node runs inside its own git worktree (created here, removed in `finally`).
+    const { plane: execPlane, cleanup: cleanupWorktree } = withWorktree(ctx, filteredPlane)
 
     let systemPrompt = ctx.parentOpts.systemPrompt
     let inheritEvents: Array<{ seq: number; event: SessionEvent }> | undefined
@@ -70,7 +115,11 @@ export class SubAgentOrchestrator {
     const { RuntimeRunner } = await import("./runner.js")
     const childRunner = new RuntimeRunner({
       ...ctx.parentOpts,
-      executionPlane: filteredPlane,
+      // M1/G3: route to the node's hinted model (falls back to the parent provider).
+      provider: resolveProvider(ctx.parentOpts, ctx.spec.modelHint),
+      // M4/G5: cap the child run at the node's token budget (falls back to the inherited cap).
+      maxTotalTokens: ctx.spec.tokenBudget ?? ctx.parentOpts.maxTotalTokens,
+      executionPlane: execPlane,
       agentId: ctx.spec.identity.agentId,
       systemPrompt,
       sessionLog: ctx.sessionLog,
@@ -78,13 +127,22 @@ export class SubAgentOrchestrator {
       dreamStore: metaTools.has("memory") ? ctx.parentOpts.dreamStore : undefined,
       knowledgeSource: metaTools.has("knowledge") ? ctx.parentOpts.knowledgeSource : undefined,
       enablePlanTool: metaTools.has("update_plan") ? ctx.parentOpts.enablePlanTool : undefined,
+      // M5 v2.1: a workflow node's `start_workflow` flattens to the parent kernel (no nested pivot).
+      isWorkflowNode: ctx.isWorkflowNode,
     })
+    // #2-B-ii: when the parent preempts this node (kernel `AgentPreempted`), interrupt the child —
+    // cancelling its in-flight LLM call. Handle an already-aborted signal too (creation race).
+    linkAbort(ctx.abortSignal, childRunner)
 
-    yield* childRunner.run({
-      sessionId: ctx.spec.identity.sessionId,
-      goal: ctx.spec.goal,
-      inheritEvents,
-    })
+    try {
+      yield* childRunner.run({
+        sessionId: ctx.spec.identity.sessionId,
+        goal: ctx.spec.goal,
+        inheritEvents,
+      })
+    } finally {
+      await cleanupWorktree()
+    }
   }
 
   async run(ctx: SubAgentRunContext): Promise<SubAgentResult> {
@@ -94,25 +152,40 @@ export class SubAgentOrchestrator {
       const permitted = new Set(ctx.manifest.permitted_capability_ids ?? [])
       const metaTools = deriveMetaTools(permitted, ctx.parentOpts)
       const filteredPlane = new FilteredExecutionPlane(ctx.parentOpts.executionPlane, permitted, metaTools)
+      // M3/G4: worktree isolation for a worktree node (cleaned up in `finally` below).
+      const { plane: execPlane, cleanup: cleanupWorktree } = withWorktree(ctx, filteredPlane)
       const childRunner = new RuntimeRunner({
         ...ctx.parentOpts,
-        executionPlane: filteredPlane,
+        // M1/G3: route to the node's hinted model (falls back to the parent provider).
+        provider: resolveProvider(ctx.parentOpts, ctx.spec.modelHint),
+        // M4/G5: cap the child run at the node's token budget (falls back to the inherited cap).
+        maxTotalTokens: ctx.spec.tokenBudget ?? ctx.parentOpts.maxTotalTokens,
+        executionPlane: execPlane,
         agentId: ctx.spec.identity.agentId,
         sessionLog: ctx.sessionLog,
         skillDir: metaTools.has("skill") ? ctx.parentOpts.skillDir : undefined,
         dreamStore: metaTools.has("memory") ? ctx.parentOpts.dreamStore : undefined,
         knowledgeSource: metaTools.has("knowledge") ? ctx.parentOpts.knowledgeSource : undefined,
         enablePlanTool: metaTools.has("update_plan") ? ctx.parentOpts.enablePlanTool : undefined,
+        // M5 v2.1: a workflow node's `start_workflow` flattens to the parent kernel (no nested pivot).
+        isWorkflowNode: ctx.isWorkflowNode,
       })
+      // #2-B-ii: parent preempt → interrupt the child (cancels its in-flight LLM call).
+      linkAbort(ctx.abortSignal, childRunner)
       const loop = new HarnessLoop(childRunner, ctx.harness.evalProvider, {
         maxAttempts: ctx.harness.maxAttempts ?? 3,
       })
-      const outcome = await loop.run({
-        goal: ctx.spec.goal,
-        criteria: (ctx.spec.milestones?.phases.flatMap(p => p.criteria) ?? [])
-          .filter((t): t is string => typeof t === "string")
-          .map(text => ({ text, required: true })),
-      })
+      let outcome
+      try {
+        outcome = await loop.run({
+          goal: ctx.spec.goal,
+          criteria: (ctx.spec.milestones?.phases.flatMap(p => p.criteria) ?? [])
+            .filter((t): t is string => typeof t === "string")
+            .map(text => ({ text, required: true })),
+        })
+      } finally {
+        await cleanupWorktree()
+      }
       return {
         agentId: ctx.spec.identity.agentId,
         result: {

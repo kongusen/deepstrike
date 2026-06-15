@@ -12,8 +12,16 @@ class RegisteredTool:
     def __init__(self, fn: Callable, schema: ToolSchema):
         self.fn = fn
         self.schema = schema
+        # M3/G4: a tool opts into the run context by declaring a ``ctx`` parameter; we pass it only
+        # then, so existing tools (whose params are purely the tool args) are unaffected.
+        try:
+            self._wants_ctx = "ctx" in inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            self._wants_ctx = False
 
-    async def __call__(self, **kwargs):
+    async def __call__(self, _ctx=None, **kwargs):
+        if self._wants_ctx:
+            kwargs["ctx"] = _ctx
         result = self.fn(**kwargs)
         if inspect.isawaitable(result):
             result = await result
@@ -25,6 +33,8 @@ class RegisteredTool:
 def _schema_for(fn: Callable) -> ToolSchema:
     hints = fn.__annotations__.copy()
     hints.pop("return", None)
+    # M3/G4: ``ctx`` is the runtime context, not a tool argument — never expose it in the schema.
+    hints.pop("ctx", None)
     py_to_json = {int: "integer", float: "number", bool: "boolean", str: "string"}
     properties = {
         name: {"type": py_to_json.get(typ, "string")}

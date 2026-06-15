@@ -17,6 +17,11 @@ export interface RunContext {
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
   onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
   resultSpool?: LargeResultSpool
+  /** M3/G4 worktree isolation: the working directory a sub-agent's tools should run in (the git
+   *  worktree created for an `isolation: "worktree"` node). Injected by `WorktreeExecutionPlane`; a
+   *  cwd-aware execution plane / tool reads it to scope filesystem + subprocess work. Undefined ⇒
+   *  the plane's own default cwd. */
+  cwd?: string
 }
 
 export interface ExecutionPlane {
@@ -163,7 +168,9 @@ export class LocalExecutionPlane implements ExecutionPlane {
           repairedArguments: JSON.stringify(args),
         } as StreamEvent
       }
-      const output = await registered.execute(args)
+      // M3/G4: pass the run context (incl. `cwd`) so cwd-aware tools scope their work to the
+      // sub-agent's worktree. `RunContext` is structurally assignable to the tool's `ToolExecContext`.
+      const output = await registered.execute(args, ctx)
       if (isAsyncIterable(output)) {
         let combined = ""
         const iterator = output[Symbol.asyncIterator]()

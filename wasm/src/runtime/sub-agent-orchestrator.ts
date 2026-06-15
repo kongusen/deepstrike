@@ -15,6 +15,19 @@ export interface SubAgentRunContext {
   spec: AgentRunSpec
   manifest: AgentProcessChangedObservation
   sessionLog: SessionLog
+  /** M5 v2.1: set when this child is a workflow node — propagated so a nested `start_workflow`
+   *  FLATTENS to the parent kernel rather than auto-pivoting into its own bootstrap. */
+  isWorkflowNode?: boolean
+  /** #2-B-ii: parent-controlled abort — when the kernel preempts this node (`AgentPreempted`), the
+   *  orchestrator interrupts the child runner, cancelling its in-flight LLM call. */
+  abortSignal?: AbortSignal
+}
+
+/** #2-B-ii: bridge a parent AbortSignal to a child runner's `interrupt()` (fires now if already aborted). */
+function linkAbort(signal: AbortSignal | undefined, runner: { interrupt(): void }): void {
+  if (!signal) return
+  if (signal.aborted) { runner.interrupt(); return }
+  signal.addEventListener("abort", () => runner.interrupt(), { once: true })
 }
 
 function terminationFromStatus(status: string): TerminationReason | string {
@@ -31,6 +44,16 @@ function terminationFromStatus(status: string): TerminationReason | string {
     return normalized as TerminationReason
   }
   return status
+}
+
+/** M1/G3 intelligence routing: resolve the provider for a sub-agent from its spec's `modelHint`.
+ *  Falls back to the parent provider when there is no hint or no `providerFor` hook resolves it. */
+export function resolveProvider(opts: RuntimeOptions, modelHint?: string): RuntimeOptions["provider"] {
+  if (modelHint && opts.providerFor) {
+    const routed = opts.providerFor(modelHint)
+    if (routed) return routed
+  }
+  return opts.provider
 }
 
 /** Derive which meta-tools a child runner should expose based on permitted IDs and available sources. */
@@ -66,6 +89,10 @@ export class SubAgentOrchestrator {
     const { RuntimeRunner } = await import("./runner.js")
     const childRunner = new RuntimeRunner({
       ...ctx.parentOpts,
+      // M1/G3: route to the node's hinted model (falls back to the parent provider).
+      provider: resolveProvider(ctx.parentOpts, ctx.spec.modelHint),
+      // M4/G5: cap the child run at the node's token budget (falls back to the inherited cap).
+      maxTotalTokens: ctx.spec.tokenBudget ?? ctx.parentOpts.maxTotalTokens,
       executionPlane: filteredPlane,
       agentId: ctx.spec.identity.agentId,
       systemPrompt,
@@ -74,7 +101,11 @@ export class SubAgentOrchestrator {
       dreamStore: metaTools.has("memory") ? ctx.parentOpts.dreamStore : undefined,
       knowledgeSource: metaTools.has("knowledge") ? ctx.parentOpts.knowledgeSource : undefined,
       enablePlanTool: metaTools.has("update_plan") ? ctx.parentOpts.enablePlanTool : undefined,
+      // M5 v2.1: a workflow node's `start_workflow` flattens to the parent kernel (no nested pivot).
+      isWorkflowNode: ctx.isWorkflowNode,
     })
+    // #2-B-ii: parent preempt → interrupt the child (cancels its in-flight LLM call).
+    linkAbort(ctx.abortSignal, childRunner)
 
     let done: DoneEvent | undefined
     let finalText = ""

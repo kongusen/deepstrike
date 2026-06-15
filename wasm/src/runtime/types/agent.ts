@@ -35,6 +35,11 @@ export interface AgentRunSpec {
   capabilityFilter?: AgentCapabilityFilter
   milestones?: MilestoneContract
   metadata?: Record<string, unknown>
+  /** M1/G3: per-agent model preference; the host resolves it via `RuntimeOptions.providerFor`.
+   *  Host-side routing only — not sent to the kernel. */
+  modelHint?: string
+  /** M4/G5: cumulative token cap for this sub-agent's run (sets the child kernel's `maxTotalTokens`). */
+  tokenBudget?: number
 }
 
 /** Kernel process-table observation (Phase 3 canonical spawn signal). */
@@ -84,6 +89,14 @@ export interface LoopResult {
   finalMessage?: Message
   turnsUsed: number
   totalTokensUsed: number
+  /** A#2 v2 loop stop signal: a loop iteration sets `false` to end the loop before `max_iters`.
+   *  `undefined` (every non-loop result) ⇒ no opinion → run to the cap. Sent only when set. */
+  loopContinue?: boolean
+  /** A#2 classify routing: a classifier node reports the chosen branch label here; the kernel runs
+   *  that branch and prunes the rest. Sent only when set. */
+  classifyBranch?: string
+  /** A#2 tournament verdict: a judge reports the winning entrant's agent id here. Sent only when set. */
+  tournamentWinner?: string
 }
 
 export interface SubAgentResult {
@@ -183,6 +196,11 @@ export function subAgentResultToKernel(result: SubAgentResult): Record<string, u
         : null,
       turns_used: result.result.turnsUsed,
       total_tokens_used: result.result.totalTokensUsed,
+      // A#2: control-flow signals — additive, omitted on the wire when unset so a plain spawn's
+      // result is byte-identical to before. The kernel reads each only for the matching node kind.
+      ...(result.result.loopContinue !== undefined ? { loop_continue: result.result.loopContinue } : {}),
+      ...(result.result.classifyBranch !== undefined ? { classify_branch: result.result.classifyBranch } : {}),
+      ...(result.result.tournamentWinner !== undefined ? { tournament_winner: result.result.tournamentWinner } : {}),
     },
   }
 }
@@ -216,6 +234,17 @@ export interface WorkflowNodeSpec {
   /** G2: make this a deterministic reduce node — runs no LLM; the runner routes it to the registered
    *  reducer of this name over its `dependsOn` nodes' outputs. */
   reducer?: string
+  /** A#2 v2: make this a *loop* node — re-run its agent up to `maxIters` times. An iteration may end
+   *  the loop early by reporting `loopContinue: false` (the runner solicits this from the agent). */
+  loop?: { maxIters: number }
+  /** A#2: make this a *classify* node — its agent picks exactly one branch `label`; that branch's
+   *  nodes run and the others are pruned. Each branch node must list this node's index in `dependsOn`. */
+  classify?: { branches: Array<{ label: string; nodes: number[] }> }
+  /** A#2: make this a *tournament controller* — generate each `entrants` candidate in parallel, then
+   *  pairwise-judge them to one winner (this node's `task.goal` is the judging criterion). ≥2 entrants. */
+  tournament?: { entrants: WorkflowTaskSpec[] }
+  /** M4/G5: cap this node's child run at `tokenBudget` cumulative tokens (the per-node "use N tokens"). */
+  tokenBudget?: number
   /** Indices of nodes this node depends on. */
   dependsOn?: number[]
 }
@@ -239,6 +268,17 @@ export interface WorkflowSpawnInfo {
   reducer?: string
   /** G2: the dependency agent ids whose outputs a reduce node consumes. */
   input_agent_ids?: string[]
+  /** A#2: present only for a tournament *judge* spawn — the two entrant agent ids whose produced
+   *  outputs this judge compares. The runner looks them up and reports the winner as `tournamentWinner`. */
+  judge_match?: { left: string; right: string }
+  /** A#2 v2: present only for a *loop* iteration spawn — the loop's `max_iters`. Marks the spawn as a
+   *  loop iteration so the runner solicits + reports a `loopContinue` stop signal. */
+  loop_max_iters?: number
+  /** A#2: present only for a *classify* spawn — the branch labels the classifier must choose among.
+   *  Non-empty marks the spawn as a classifier so the runner instructs the agent + reports `classifyBranch`. */
+  classify_labels?: string[]
+  /** M4/G5: the node's per-node cumulative token cap, if set — the runner caps the child run here. */
+  token_budget?: number
 }
 
 /** G4 budget-as-signal: the workflow's remaining headroom under the active quota, carried on the
@@ -250,6 +290,11 @@ export interface WorkflowBudget {
   running_subagents: number
   max_concurrent_subagents?: number
   concurrency_remaining?: number
+  /** M4/G5 token headroom: tokens used / run-level cap / tokens remaining, so a coordinator can scale
+   *  a submission to "use N tokens". */
+  tokens_used?: number
+  tokens_max?: number
+  tokens_remaining?: number
 }
 
 /** G4: a concise budget note appended to a coordinator node's goal. "" when nothing is bounded. */
@@ -264,33 +309,59 @@ export function workflowBudgetNote(budget: WorkflowBudget | undefined): string {
       `concurrency ${budget.running_subagents}/${budget.max_concurrent_subagents} running, ${budget.concurrency_remaining} free`,
     )
   }
+  if (budget.tokens_remaining != null && budget.tokens_max != null) {
+    parts.push(`tokens ${budget.tokens_used ?? 0}/${budget.tokens_max} used, ${budget.tokens_remaining} remaining`)
+  }
   if (parts.length === 0) return ""
   return (
     `[workflow budget] ${parts.join(" · ")}. ` +
-    "If you submit more workflow nodes, keep the batch within the remaining node budget."
+    "If you submit more workflow nodes, keep the batch within the remaining node and token budget."
   )
 }
 
-/** Map a host `WorkflowSpec` to the snake_case kernel JSON (`load_workflow.spec`). */
+/** Normalize a `WorkflowTaskSpec` (object or bare goal string) to the kernel's `RuntimeTask` JSON. */
+function workflowTaskToKernel(t: WorkflowTaskSpec): Record<string, unknown> {
+  const task = typeof t === "string" ? { goal: t } : t
+  return {
+    goal: task.goal,
+    // `criteria` is required by the kernel's RuntimeTask serde (no default).
+    criteria: task.criteria ?? [],
+    ...(task.lane ? { lane: task.lane } : {}),
+  }
+}
+
+/** Lower a node's control-flow kind to the kernel's serde-tagged `NodeKind` JSON, or `undefined` for
+ *  a plain spawn. `reducer` / `loop` / `classify` / `tournament` are mutually exclusive. */
+function nodeKindToKernel(n: WorkflowNodeSpec): Record<string, unknown> | undefined {
+  const declared = [n.reducer != null, n.loop != null, n.classify != null, n.tournament != null].filter(Boolean).length
+  if (declared > 1) {
+    throw new Error("a workflow node may declare at most one of: reducer, loop, classify, tournament")
+  }
+  if (n.reducer != null) return { type: "reduce", reducer: n.reducer }
+  if (n.loop != null) return { type: "loop", max_iters: n.loop.maxIters }
+  if (n.classify != null) {
+    return { type: "classify", branches: n.classify.branches.map(b => ({ label: b.label, nodes: b.nodes })) }
+  }
+  if (n.tournament != null) return { type: "tournament", entrants: n.tournament.entrants.map(workflowTaskToKernel) }
+  return undefined
+}
+
 /** Map one host `WorkflowNodeSpec` to its snake_case kernel JSON. Shared by `load_workflow` and
  *  `submit_workflow_nodes` (R3-1) so the two encodings never drift. */
 export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): Record<string, unknown> {
-  const task = typeof n.task === "string" ? { goal: n.task } : n.task
+  const kind = nodeKindToKernel(n)
   return {
-    task: {
-      goal: task.goal,
-      // `criteria` is required by the kernel's RuntimeTask serde (no default).
-      criteria: task.criteria ?? [],
-      ...(task.lane ? { lane: task.lane } : {}),
-    },
+    task: workflowTaskToKernel(n.task),
     role: n.role,
     isolation: n.isolation ?? "shared",
     context_inheritance: n.contextInheritance ?? "none",
     ...(n.modelHint ? { model_hint: n.modelHint } : {}),
     ...(n.trust && n.trust !== "trusted" ? { trust: n.trust } : {}),
     ...(n.outputSchema ? { output_schema: n.outputSchema } : {}),
-    // G2: a reducer name lowers to the kernel's `NodeKind::Reduce` (serde-tagged by `type`).
-    ...(n.reducer ? { kind: { type: "reduce", reducer: n.reducer } } : {}),
+    // A#2/G2: loop / classify / tournament / reduce lower to a serde-tagged `NodeKind`; spawn omits it.
+    ...(kind ? { kind } : {}),
+    // M4/G5: per-node token cap (additive; omitted when unset).
+    ...(n.tokenBudget != null ? { token_budget: n.tokenBudget } : {}),
     ...(n.dependsOn && n.dependsOn.length ? { depends_on: n.dependsOn } : {}),
   }
 }
@@ -313,34 +384,122 @@ export function submitWorkflowNodesToKernel(
   }
 }
 
+/** M5/G1: map an agent-authored spec to the `submit_workflow` kernel event body (the agent-reachable
+ *  `Syscall::LoadWorkflow`). The kernel bootstraps the DAG when none is active, else flattens onto it.
+ *  `parentSessionId` seeds child session ids on bootstrap; `submitterAgentId` carries G1 trust coercion
+ *  on the flatten case. */
+export function submitWorkflowToKernel(
+  spec: WorkflowSpec,
+  parentSessionId: string,
+  submitterAgentId?: string,
+): Record<string, unknown> {
+  return {
+    kind: "submit_workflow",
+    spec: workflowSpecToKernel(spec),
+    parent_session_id: parentSessionId,
+    ...(submitterAgentId ? { submitter_agent_id: submitterAgentId } : {}),
+  }
+}
+
 /** R3-1: the tool a workflow-coordinator node's agent calls to append work to the running DAG. */
+/** Shared JSON-Schema for a workflow-node batch (a DAG). Used by both `submit_workflow_nodes`
+ *  (append) and `start_workflow` (M5 v1: author a sub-workflow), so the two tools never drift. */
+const workflowNodesArraySchema = {
+  type: "array",
+  items: {
+    type: "object",
+    properties: {
+      task: { description: "The node's goal: a string, or { goal, criteria?, lane? }." },
+      role: { type: "string", enum: ["explore", "plan", "implement", "verify", "custom"] },
+      isolation: { type: "string", enum: ["shared", "read_only", "worktree", "remote"] },
+      contextInheritance: { type: "string", enum: ["none", "system_only", "full"] },
+      trust: { type: "string", enum: ["trusted", "quarantined"] },
+      outputSchema: { type: "object", description: "Optional JSON Schema the node's output must conform to." },
+      modelHint: { type: "string", description: "Preferred model for this node (e.g. \"opus\"/\"sonnet\"); the host routes it." },
+      reducer: { type: "string", description: "Make this a deterministic reduce node (no LLM); names a registered reducer." },
+      loop: {
+        type: "object",
+        description: "Make this a loop node: re-run up to maxIters times, ending early when the agent reports done.",
+        properties: { maxIters: { type: "integer", description: "Hard iteration cap." } },
+        required: ["maxIters"],
+      },
+      classify: {
+        type: "object",
+        description: "Make this a classify node: pick one branch label; that branch's nodes run, the rest are pruned.",
+        properties: {
+          branches: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                label: { type: "string" },
+                nodes: { type: "array", items: { type: "integer" }, description: "Batch-relative node indices for this branch." },
+              },
+              required: ["label", "nodes"],
+            },
+          },
+        },
+        required: ["branches"],
+      },
+      tournament: {
+        type: "object",
+        description: "Make this a tournament controller: generate each entrant, then pairwise-judge to one winner.",
+        properties: {
+          entrants: {
+            type: "array",
+            description: "≥2 candidate tasks to generate and judge.",
+            items: {
+              oneOf: [
+                { type: "string" },
+                { type: "object", properties: { goal: { type: "string" }, criteria: { type: "array", items: { type: "string" } } }, required: ["goal"] },
+              ],
+            },
+          },
+        },
+        required: ["entrants"],
+      },
+      tokenBudget: { type: "integer", description: "Cap this node's child run at this many cumulative tokens." },
+      dependsOn: { type: "array", items: { type: "integer" } },
+    },
+    required: ["task", "role"],
+  },
+} as const
+
 export const submitWorkflowNodesTool: ToolSchema = {
   name: "submit_workflow_nodes",
   description:
     "Append new nodes to the running workflow DAG (dynamic fan-out / loop-until-done). Each node " +
-    "spawns as a gated sub-agent. Use when you discover more work that should run as its own node.",
+    "spawns as a gated sub-agent. Use when you discover more work that should run as its own node. " +
+    "A node may declare ONE control-flow kind — `loop` / `classify` / `tournament` / `reducer` — " +
+    "otherwise it is a plain spawn. Within a submission, `dependsOn` and `classify.branches[].nodes` " +
+    "are batch-relative (index 0 = this batch's first node).",
+  parameters: JSON.stringify({
+    type: "object",
+    properties: { nodes: workflowNodesArraySchema },
+    required: ["nodes"],
+  }),
+}
+
+/** M5 v1 (flatten): the tool an agent calls to author a sub-workflow — a cohesive DAG of nodes
+ *  composed onto the running workflow. Lowers to the same append path as `submit_workflow_nodes`
+ *  (a `WorkflowSpec` is a node batch). v2 adds top-level bootstrap (the `LoadWorkflow` syscall). */
+export const startWorkflowTool: ToolSchema = {
+  name: "start_workflow",
+  description:
+    "Author and run a sub-workflow: a DAG of nodes (fan-out / classify / tournament / loop / reduce) " +
+    "composed onto the current run. Use to structure a multi-step task as its own harness. The nodes " +
+    "spawn as gated sub-agents; `dependsOn` / `classify.branches[].nodes` are spec-relative.",
   parameters: JSON.stringify({
     type: "object",
     properties: {
-      nodes: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            task: { description: "The node's goal: a string, or { goal, criteria?, lane? }." },
-            role: { type: "string", enum: ["explore", "plan", "implement", "verify", "custom"] },
-            isolation: { type: "string", enum: ["shared", "read_only", "worktree", "remote"] },
-            contextInheritance: { type: "string", enum: ["none", "system_only", "full"] },
-            trust: { type: "string", enum: ["trusted", "quarantined"] },
-            outputSchema: { type: "object", description: "Optional JSON Schema the node's output must conform to." },
-            reducer: { type: "string", description: "Make this a deterministic reduce node (no LLM); names a registered reducer." },
-            dependsOn: { type: "array", items: { type: "integer" } },
-          },
-          required: ["task", "role"],
-        },
+      spec: {
+        type: "object",
+        description: "The workflow specification.",
+        properties: { nodes: workflowNodesArraySchema },
+        required: ["nodes"],
       },
     },
-    required: ["nodes"],
+    required: ["spec"],
   }),
 }
 
@@ -356,6 +515,10 @@ export function workflowNodeToSpec(node: WorkflowSpawnInfo, parentSessionId: str
     role: node.role as KernelAgentRole,
     isolation: node.isolation as AgentIsolation,
     goal: node.goal,
+    // M1/G3: carry the node's model preference so the orchestrator can route to a provider.
+    ...(node.model_hint ? { modelHint: node.model_hint } : {}),
+    // M4/G5: carry the node's token cap so the orchestrator can bound the child run.
+    ...(node.token_budget != null ? { tokenBudget: node.token_budget } : {}),
   }
 }
 

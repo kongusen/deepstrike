@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk"
-import type { Message, ProviderDescriptor, ProviderReplay, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent, LLMProvider, RuntimePolicy } from "../types.js"
+import type { Message, ProviderDescriptor, ProviderReplay, ProviderRunState, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent, LLMProvider, RuntimePolicy } from "../types.js"
 import { assistantReplayKey } from "../runtime/provider-replay.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, normalizeToolCall, omitExtensionKeys, toAnthropicContent, toAnthropicMessages } from "./base.js"
@@ -143,7 +143,7 @@ export class AnthropicProvider implements LLMProvider {
     throw lastErr
   }
 
-  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: ProviderRunState, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const system = this.buildSystem(context)
     const msgs = this.buildMessages(context)
     assertCacheBudget(system, tools.length)
@@ -160,7 +160,7 @@ export class AnthropicProvider implements LLMProvider {
       ...(system ? { system } : {}),
       messages: msgs,
       ...(tools.length ? { tools: this.buildTools(tools, !Array.isArray(system)) } : {}),
-    }, extensions)
+    }, extensions, signal)
 
     let uncachedInput = 0
     let cacheReadTokens = 0
@@ -248,10 +248,13 @@ export class AnthropicProvider implements LLMProvider {
   private streamMessage(
     params: Record<string, unknown>,
     extensions?: Record<string, unknown>,
+    signal?: AbortSignal,
   ): AsyncIterable<any> {
+    // #2-B-ii: forward the abort signal as a request option so a preempt cancels the HTTP request.
+    const opts = signal ? { signal } : undefined
     return (this.hasBetas(extensions)
-      ? this.client.beta.messages.stream(params as unknown as Parameters<typeof this.client.beta.messages.stream>[0])
-      : this.client.messages.stream(params as unknown as Anthropic.MessageStreamParams)
+      ? this.client.beta.messages.stream(params as unknown as Parameters<typeof this.client.beta.messages.stream>[0], opts)
+      : this.client.messages.stream(params as unknown as Anthropic.MessageStreamParams, opts)
     ) as unknown as AsyncIterable<any>
   }
 

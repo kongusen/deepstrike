@@ -48,14 +48,17 @@ class ProcessSandboxPlane(LocalExecutionPlane):
         env[key] = os.environ[key]
     return env
 
-  async def _run_subprocess(self, cmd: str, args: list[str]) -> tuple[str, bool]:
-    self._sandbox_dir.mkdir(parents=True, exist_ok=True)
+  async def _run_subprocess(self, cmd: str, args: list[str], cwd: str | None = None) -> tuple[str, bool]:
+    # M3/G4: run in the sub-agent's worktree when one was injected, else the sandbox dir.
+    effective_cwd = cwd or str(self._sandbox_dir)
+    if cwd is None:
+      self._sandbox_dir.mkdir(parents=True, exist_ok=True)
     try:
       proc = await asyncio.create_subprocess_exec(
         cmd, *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd=str(self._sandbox_dir),
+        cwd=effective_cwd,
         env=self._build_env(),
       )
       try:
@@ -74,8 +77,9 @@ class ProcessSandboxPlane(LocalExecutionPlane):
   def _make_bash_tool(self) -> RegisteredTool:
     sandbox = self
 
-    async def run_bash(command: str) -> str:
-      output, is_error = await sandbox._run_subprocess("bash", ["-c", command])
+    async def run_bash(command: str, ctx=None) -> str:
+      cwd = ctx.cwd if ctx is not None and ctx.cwd else None
+      output, is_error = await sandbox._run_subprocess("bash", ["-c", command], cwd)
       if is_error and not output.strip():
         return "Process exited with non-zero status and produced no output."
       return output or "(no output)"
@@ -94,8 +98,9 @@ class ProcessSandboxPlane(LocalExecutionPlane):
   def _make_python_tool(self) -> RegisteredTool:
     sandbox = self
 
-    async def run_python(code: str) -> str:
-      output, is_error = await sandbox._run_subprocess("python3", ["-c", code])
+    async def run_python(code: str, ctx=None) -> str:
+      cwd = ctx.cwd if ctx is not None and ctx.cwd else None
+      output, is_error = await sandbox._run_subprocess("python3", ["-c", code], cwd)
       if is_error and not output.strip():
         return "Script exited with non-zero status and produced no output."
       return output or "(no output)"

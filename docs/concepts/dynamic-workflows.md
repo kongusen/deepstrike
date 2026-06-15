@@ -46,17 +46,30 @@ The Python driver is identical in shape (`runner.run_workflow(WorkflowSpec(nodes
 
 ## The six patterns, as first-class kernel nodes
 
-Each composable pattern is a first-class primitive, driven by one workflow executor. A node's `kind` selects the control-flow shape:
+Each composable pattern is a first-class primitive, driven by one workflow executor. A node-spec field selects the control-flow shape (the SDK lowers it to the kernel's serde-tagged `NodeKind`; declaring more than one is a spec error):
 
-| Pattern | Node `kind` / template | Behavior |
+| Pattern | Host node-spec field / template | Behavior |
 | :--- | :--- | :--- |
-| **Spawn** | `{ type: "spawn" }` (default) | Run the node's agent once |
-| **Classify-and-act** | `{ type: "classify", branches }` | The classifier node's result selects one branch; the others are pruned before they ever run |
+| **Spawn** | *(default — no control-flow field)* | Run the node's agent once |
+| **Classify-and-act** | `classify: { branches }` | The classifier node's result selects one branch; the others are pruned before they ever run |
 | **Fan-out-and-synthesize** | `fanoutSynthesize(workers, synth)` | N parallel read-only workers → a synthesize barrier that waits for all and merges their outputs |
 | **Adversarial verification** | `verifyRules(rules, skeptic)` | One fresh-context verifier per rule, each in its own TCB with no inherited author context, so it can't rubber-stamp |
 | **Generate-and-filter** | `generateAndFilter(gens, filter)` | N generators → a `Verify` filter / dedupe barrier |
-| **Tournament** | `{ type: "tournament", entrants }` | A controller node generates N entrants, then runs a pairwise-judge bracket to one winner (comparative judgment beats absolute scoring) |
-| **Loop until done** | `{ type: "loop", maxIters }` | Re-run until the agent signals it's done, with a hard `maxIters` backstop |
+| **Tournament** | `tournament: { entrants }` | A controller node generates N entrants, then runs a pairwise-judge bracket to one winner (comparative judgment beats absolute scoring) |
+| **Loop until done** | `loop: { maxIters }` | Re-run until the agent signals it's done (`loopContinue: false`), with a hard `maxIters` backstop |
+
+For the LLM-driven kinds, the SDK runs the node's agent and reads back one additive result signal — a classifier reports `classifyBranch`, a loop iteration reports `loopContinue`, a tournament judge reports `tournamentWinner` — and the kernel uses it to route, stop, or advance the bracket. Each can also carry an `outputSchema` or `modelHint` like any node.
+
+```ts
+// loop: re-run "refine" until the agent says it's done, at most 5 times
+{ task: "refine the draft", role: "implement", loop: { maxIters: 5 } }
+// classify: route to one branch; node 1 runs only if the agent picks "bug", node 2 if "feature"
+{ task: "triage this issue", role: "plan",
+  classify: { branches: [{ label: "bug", nodes: [1] }, { label: "feature", nodes: [2] }] } }
+// tournament: generate 4 ad variants, pairwise-judge to one winner (this goal is the criterion)
+{ task: "pick the most persuasive ad", role: "plan",
+  tournament: { entrants: ["variant A brief", "variant B brief", "variant C brief", "variant D brief"] } }
+```
 
 ## Runtime-dynamic: growing the DAG mid-run
 
@@ -76,7 +89,7 @@ Not every step needs an LLM. A `NodeKind::Reduce` node runs no agent at all: the
 Built-in reducers: `dedupe_lines`, `merge_json_arrays`, `concat`, `count`. Register your own through the runner's `reducers` option. This is the "ordinary code between stages" of a script — dedupe / filter / merge — but as a governed, replayable DAG node.
 
 ```ts
-{ task: "merge findings", role: "implement", kind: { type: "reduce", reducer: "dedupe_lines" }, dependsOn: [0, 1, 2] }
+{ task: "merge findings", role: "implement", reducer: "dedupe_lines", dependsOn: [0, 1, 2] }
 ```
 
 ## Structural answers to the three failure modes

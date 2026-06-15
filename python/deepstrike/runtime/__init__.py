@@ -36,6 +36,20 @@ from deepstrike.runtime.remote_vpc_plane import RemoteVpcPlane
 from deepstrike.runtime.filtered_plane import FilteredExecutionPlane
 from deepstrike.runtime.sub_agent_orchestrator import SubAgentOrchestrator, spawn_standalone, default_sub_agent_orchestrator
 from deepstrike.runtime.reducers import builtin_reducers, resolve_reducer
+from deepstrike.runtime.workflow_store import FileWorkflowStore
+from deepstrike.runtime.worktree_plane import (
+  GitWorktreeManager,
+  WorktreeExecutionPlane,
+  WorktreeManager,
+)
+from deepstrike.runtime.workflow_control_flow import (
+  classify_instruction,
+  extract_classify_branch,
+  extract_judge_winner,
+  extract_loop_continue,
+  judge_goal,
+  loop_instruction,
+)
 from deepstrike.runtime.os_profile import (
   AttentionPolicy,
   OsProfile,
@@ -57,6 +71,16 @@ __all__ = [
   "SubAgentHarnessConfig",
   "builtin_reducers",
   "resolve_reducer",
+  "FileWorkflowStore",
+  "WorktreeExecutionPlane",
+  "GitWorktreeManager",
+  "WorktreeManager",
+  "loop_instruction",
+  "classify_instruction",
+  "judge_goal",
+  "extract_loop_continue",
+  "extract_classify_branch",
+  "extract_judge_winner",
   "collect_text",
   "LocalExecutionPlane",
   "ExecutionPlane",

@@ -16,10 +16,15 @@ describe("workflowBudgetNote", () => {
       running_subagents: 1,
       max_concurrent_subagents: 3,
       concurrency_remaining: 2,
+      tokens_used: 2500,
+      tokens_max: 10000,
+      tokens_remaining: 7500,
     }
     const note = workflowBudgetNote(full)
     expect(note).toContain("nodes 1/5 used, 4 remaining")
     expect(note).toContain("concurrency 1/3 running, 2 free")
+    // M4/G5: token headroom is surfaced so a coordinator can scale to "use N tokens".
+    expect(note).toContain("tokens 2500/10000 used, 7500 remaining")
 
     // No quota ⇒ no signal.
     expect(workflowBudgetNote(undefined)).toBe("")
@@ -65,5 +70,7 @@ describe("runWorkflow surfaces the kernel budget into a node's goal", () => {
     expect(goals).toHaveLength(1)
     expect(goals[0]).toContain("[workflow budget]")
     expect(goals[0]).toContain("nodes 1/5 used, 4 remaining")
+    // M4/G5: the kernel now also reports token headroom (cap always set on the scheduler budget).
+    expect(goals[0]).toMatch(/tokens \d+\/\d+ used, \d+ remaining/)
   })
 })

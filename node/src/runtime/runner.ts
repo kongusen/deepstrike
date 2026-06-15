@@ -63,6 +63,7 @@ import {
   spawnObservationToManifest,
   subAgentResultToKernel,
   submitWorkflowNodesToKernel,
+  submitWorkflowToKernel,
   workflowBudgetNote,
   workflowNodeToManifest,
   workflowNodeToSpec,
@@ -76,6 +77,10 @@ import {
   validateAgainstSchema,
 } from "./output-schema.js"
 import { resolveReducer, type ReducerRegistry } from "./reducers.js"
+import {
+  loopInstruction, classifyInstruction, judgeGoal,
+  extractLoopContinue, extractClassifyBranch, extractJudgeWinner,
+} from "./workflow-control-flow.js"
 import { governancePolicyToKernelEvent, type GovernancePolicy } from "../governance.js"
 import { kernelObservationToSessionEvent, withCategory } from "./kernel-event-log.js"
 import { assertNativeProfile, type NativeOsProfile, type OsProfileId } from "./os-profile.js"
@@ -87,6 +92,19 @@ export interface SchedulerBudget {
 
 export interface RuntimeOptions {
   provider: LLMProvider
+  /** M4/G5: cumulative token cap for this run (the kernel's `max_total_tokens`). A workflow node's
+   *  `tokenBudget` flows here for its child run, so an expensive node self-terminates at the cap.
+   *  Undefined ⇒ the kernel default. */
+  maxTotalTokens?: number
+  /** M1/G3 intelligence routing: resolve a per-node provider from a workflow node's `modelHint`
+   *  (e.g. "opus" / "sonnet" / "haiku"). Returns undefined ⇒ fall back to `provider`. A workflow
+   *  node carrying `model_hint` runs against the resolved provider; without this hook the hint is a
+   *  no-op (the kernel still carries it for audit). */
+  providerFor?: (modelHint: string) => LLMProvider | undefined
+  /** M3/G4 worktree isolation: when set, an `isolation: "worktree"` sub-agent runs inside a git
+   *  worktree this manager creates (and removes on completion), injected as `RunContext.cwd`.
+   *  Undefined ⇒ worktree nodes fall back to the inherited plane (no isolation). */
+  worktreeManager?: import("./worktree-plane.js").WorktreeManager
   sessionLog: SessionLog
   executionPlane: ExecutionPlane
   maxTokens: number
@@ -157,6 +175,13 @@ export interface RuntimeOptions {
   milestoneContract?: MilestoneContract
   /** Custom sub-agent host driver; defaults to SubAgentOrchestrator. */
   subAgentOrchestrator?: SubAgentOrchestrator
+  /** M5 v2.1: marks this runner as executing AS a workflow node (a child spawned by the workflow
+   *  driver). A workflow node's `start_workflow` FLATTENS to the parent kernel (emits
+   *  `workflow_nodes_submitted` for `runWorkflow` to append). A top-level run (this flag unset)
+   *  instead AUTO-PIVOTS: it bootstraps + drives the authored workflow in its own kernel and resumes
+   *  the reason loop with the outcome. The orchestrator sets this on workflow-node children so a
+   *  nested `start_workflow` flattens rather than recursing. */
+  isWorkflowNode?: boolean
   /**
    * When set, sub-agents run through a HarnessLoop with this config.
    * The eval provider evaluates the sub-agent's output against the criteria
@@ -191,6 +216,9 @@ export interface RuntimeOptions {
 
 export class RuntimeRunner {
   private interrupted = false
+  /** #2-B-ii: aborts the in-flight provider stream when the run is interrupted/preempted. Recreated
+   *  per `execute`; `interrupt()` fires it so a Critical `InterruptNow` cancels the live LLM call. */
+  private abortController: AbortController | null = null
   private activeKernel: KernelRuntimeInstance | null = null
   private pendingObservations: KernelObservation[] = []
   private currentSessionId: string | null = null
@@ -199,6 +227,9 @@ export class RuntimeRunner {
   private pendingSpoolOutputs = new Map<string, { tool: string; output: string }>()
   /** Local cache of paged-out/archived messages for priority memory retrieval. */
   private localPageOutCache: Message[] = []
+  /** M5 v2.1: sub-workflow specs a top-level agent authored via `start_workflow`, awaiting auto-drive
+   *  at the next safe point (after the tool turn resolves, kernel back in Reason — not suspended). */
+  private pendingAuthoredWorkflows: WorkflowSpec[] = []
   private dashboard: KernelPrimitivesDashboard | null = null
 
   constructor(private readonly opts: RuntimeOptions) {
@@ -319,6 +350,8 @@ export class RuntimeRunner {
     return new KernelRuntime({
       maxTokens: this.opts.maxTokens,
       maxTurns: this.opts.maxTurns,
+      // M4/G5: per-node token cap → child run's cumulative token budget.
+      maxTotalTokens: this.opts.maxTotalTokens !== undefined ? BigInt(this.opts.maxTotalTokens) : undefined,
       timeoutMs: this.opts.timeoutMs !== undefined ? BigInt(this.opts.timeoutMs) : undefined,
     })
   }
@@ -487,6 +520,7 @@ export class RuntimeRunner {
     orchestrator: SubAgentOrchestrator,
     budget?: WorkflowBudget,
     outputs?: Map<string, string>,
+    abortSignal?: AbortSignal,
   ): Promise<SubAgentResult> {
     // G2: a reduce node runs no LLM — execute the registered pure function over its dependency
     // outputs and feed the result back as an ordinary completion. Deterministic; no agent burned.
@@ -506,8 +540,49 @@ export class RuntimeRunner {
       spec: { ...baseSpec, goal: withBudget(goal) },
       manifest,
       sessionLog: this.opts.sessionLog,
+      // M5 v2.1: this child IS a workflow node — its `start_workflow` flattens to this kernel (the
+      // workflow it would author joins the running DAG) rather than bootstrapping a nested pivot.
+      isWorkflowNode: true,
+      // #2-B-ii: the per-node abort signal the driver fires when the kernel preempts this node.
+      ...(abortSignal ? { abortSignal } : {}),
       ...(this.opts.subAgentHarness ? { harness: this.opts.subAgentHarness } : {}),
     })
+    const textOf = (r: SubAgentResult): string => {
+      const c = r.result.finalMessage?.content
+      return typeof c === "string" ? c : c != null ? JSON.stringify(c) : ""
+    }
+    const withSignal = (r: SubAgentResult, patch: Partial<SubAgentResult["result"]>): SubAgentResult =>
+      ({ ...r, result: { ...r.result, ...patch } })
+
+    // A#2 tournament judge: this node compares two entrants' produced outputs rather than running its
+    // own goal. Look up both candidates, run a judge over the controller's criterion, and report the
+    // winning entrant's agent id as `tournamentWinner` (the kernel advances the bracket with it).
+    if (node.judge_match) {
+      const out = outputs ?? new Map<string, string>()
+      const left = out.get(node.judge_match.left) ?? ""
+      const right = out.get(node.judge_match.right) ?? ""
+      const result = await orchestrator.run(mkCtx(judgeGoal(baseSpec.goal, left, right)))
+      const winner = extractJudgeWinner(textOf(result))
+      const winnerId = winner === "right" ? node.judge_match.right : node.judge_match.left
+      return withSignal(result, { tournamentWinner: winnerId })
+    }
+
+    // A#2 v2 loop iteration: run the increment, then extract a stop signal so the kernel can end the
+    // loop early (`loopContinue: false`). No signal ⇒ run to `max_iters`.
+    if (node.loop_max_iters != null) {
+      const result = await orchestrator.run(mkCtx(`${baseSpec.goal}\n\n${loopInstruction(node.loop_max_iters)}`))
+      const cont = extractLoopContinue(textOf(result))
+      return cont === undefined ? result : withSignal(result, { loopContinue: cont })
+    }
+
+    // A#2 classify: run the classifier, then extract the chosen branch label; the kernel runs that
+    // branch and prunes the rest. No recognizable choice ⇒ leave unset (kernel prunes all branches).
+    if (node.classify_labels && node.classify_labels.length) {
+      const labels = node.classify_labels
+      const result = await orchestrator.run(mkCtx(`${baseSpec.goal}\n\n${classifyInstruction(labels)}`))
+      const branch = extractClassifyBranch(textOf(result), labels)
+      return branch === undefined ? result : withSignal(result, { classifyBranch: branch })
+    }
 
     const schema = node.output_schema
     if (!schema) return orchestrator.run(mkCtx(baseSpec.goal))
@@ -571,15 +646,14 @@ export class RuntimeRunner {
   async runWorkflow(
     spec: WorkflowSpec,
     opts?: { resumedCompleted?: string[]; resumedSubmissions?: Record<string, unknown>[][] },
-  ): Promise<{ completed: string[]; failed: string[] }> {
+  ): Promise<{ completed: string[]; failed: string[]; outputs: Record<string, string> }> {
     if (!this.activeKernel || !this.currentSessionId) {
       throw new Error("runWorkflow requires an active parent run")
     }
     const parentSessionId = this.currentSessionId
     const runtime = this.activeKernel
-    const orchestrator = this.opts.subAgentOrchestrator ?? defaultSubAgentOrchestrator
 
-    let observations = kernelApply(runtime, this.pendingObservations, {
+    const observations = kernelApply(runtime, this.pendingObservations, {
       kind: "load_workflow",
       spec: workflowSpecToKernel(spec),
       parent_session_id: parentSessionId,
@@ -588,6 +662,103 @@ export class RuntimeRunner {
       // R3-1: re-apply recorded runtime submissions so dynamically-appended nodes are reconstructed.
       ...(opts?.resumedSubmissions?.length ? { resumed_submissions: opts.resumedSubmissions } : {}),
     })
+    return this.driveWorkflow(observations, parentSessionId, runtime)
+  }
+
+  /**
+   * M5/G1: bootstrap an **agent-authored** workflow ("the model writes its own harness"). Unlike
+   * `runWorkflow` (the host fires the privileged `load_workflow`), this routes the spec through the
+   * agent-reachable `Syscall::LoadWorkflow` (the `submit_workflow` event): with no workflow active the
+   * kernel **bootstraps** the DAG; if one is already active it **flattens** the spec's nodes onto it
+   * (bootstrap-or-flatten — one kernel, one quota, never a workflow stack). Gated by the same
+   * `max_workflow_nodes` backstop as runtime submission, so an authored harness can't overgrow the run.
+   * The resulting batches are driven by the same shared driver as `runWorkflow`.
+   */
+  async bootstrapWorkflow(
+    spec: WorkflowSpec,
+    opts?: { submitterAgentId?: string },
+  ): Promise<{ completed: string[]; failed: string[]; outputs: Record<string, string> }> {
+    if (!this.activeKernel || !this.currentSessionId) {
+      throw new Error("bootstrapWorkflow requires an active parent run")
+    }
+    const parentSessionId = this.currentSessionId
+    const runtime = this.activeKernel
+    const observations = kernelApply(
+      runtime,
+      this.pendingObservations,
+      submitWorkflowToKernel(spec, parentSessionId, opts?.submitterAgentId),
+    )
+    return this.driveWorkflow(observations, parentSessionId, runtime)
+  }
+
+  /**
+   * M5 v2.1: drive the sub-workflow(s) a top-level agent authored via `start_workflow`. Called at the
+   * verified-safe point (right after the tool turn resolved to `call_provider` — kernel in Reason, not
+   * suspended). For each authored spec: `bootstrapWorkflow` runs it in THIS kernel (the kernel resumes
+   * the agent reason loop on `workflow_completed` — `finish_workflow` sets phase=Reason), then the
+   * outcome is injected as a user message so the agent's next turn sees the result. Returns a fresh
+   * `call_provider` synthesized from the updated context (the workflow drive consumed its own kernel
+   * actions, so we re-render — the same pattern as the reactive-compact retry path).
+   */
+  private async driveAuthoredWorkflows(
+    runtime: KernelRuntimeInstance,
+    action: Extract<KernelRunnerAction, { kind: "call_provider" }>,
+  ): Promise<Extract<KernelRunnerAction, { kind: "call_provider" }>> {
+    const specs = this.pendingAuthoredWorkflows
+    this.pendingAuthoredWorkflows = []
+    for (const spec of specs) {
+      const outcome = await this.bootstrapWorkflow(spec)
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "add_history_message",
+        message: messageToKernelMessage({ role: "user", content: authoredWorkflowOutcomeNote(outcome) }),
+      })
+    }
+    return { kind: "call_provider", context: runtime.render(), tools: action.tools }
+  }
+
+  /**
+   * #2-B-ii: while a workflow batch is in flight, poll the signal source. A Critical `InterruptNow`
+   * routes through the kernel (which, with the root suspended in `SubAgentAwait`, preempts — marks the
+   * running nodes `UserAbort`, tears the `WorkflowRun` down, emits `AgentPreempted`); we then abort the
+   * matching children's in-flight LLM calls (via their per-node `AbortController` → `interrupt()`).
+   * Returns the torn-down workflow's outcome on preemption, else `null`. No-op (null) without a signal
+   * source. Non-preempting signals (queue/observe/soft-interrupt) are still applied as they arrive.
+   */
+  private async monitorWorkflowPreemption(
+    runtime: KernelRuntimeInstance,
+    controllers: Map<string, AbortController>,
+    batchState: { settled: boolean },
+  ): Promise<{ completed: string[]; failed: string[] } | null> {
+    const source = this.opts.signalSource
+    if (!source) return null
+    while (!batchState.settled) {
+      const sig = await source.nextSignal()
+      if (batchState.settled) break
+      if (!sig) { await new Promise(resolve => setTimeout(resolve, 5)); continue }
+      const obs = kernelApply(runtime, this.pendingObservations, signalToKernelEvent(sig))
+      const preempted = obs.find(o => o.kind === "agent_preempted") as { agent_ids?: string[] } | undefined
+      if (preempted) {
+        for (const id of preempted.agent_ids ?? []) controllers.get(id)?.abort()
+        const wc = obs.find(o => o.kind === "workflow_completed") as { completed?: string[]; failed?: string[] } | undefined
+        return { completed: wc?.completed ?? [], failed: wc?.failed ?? [] }
+      }
+    }
+    return null
+  }
+
+  /**
+   * Shared workflow driver for `runWorkflow` (host `load_workflow`) and `bootstrapWorkflow` (agent
+   * `submit_workflow`): given the observations from the initial load/bootstrap, run each kernel-emitted
+   * batch in parallel, feed completions back (appending any agent-submitted nodes first), and loop
+   * until the kernel reports the workflow complete. Returns the completed / failed node agent-ids.
+   */
+  private async driveWorkflow(
+    initial: KernelObservation[],
+    parentSessionId: string,
+    runtime: KernelRuntimeInstance,
+  ): Promise<{ completed: string[]; failed: string[]; outputs: Record<string, string> }> {
+    let observations = initial
+    const orchestrator = this.opts.subAgentOrchestrator ?? defaultSubAgentOrchestrator
 
     const collectNodes = (obs: typeof observations): WorkflowSpawnInfo[] =>
       (obs.find(o => o.kind === "workflow_batch_spawned") as { nodes?: WorkflowSpawnInfo[] } | undefined)
@@ -602,7 +773,7 @@ export class RuntimeRunner {
         | undefined
 
     let done = findDone(observations)
-    if (done) return { completed: done.completed ?? [], failed: done.failed ?? [] }
+    if (done) return { completed: done.completed ?? [], failed: done.failed ?? [], outputs: {} }
     let nodes = collectNodes(observations)
     let budget = collectBudget(observations)
     // G2: each completed node's output, keyed by agent id — a reduce node reads its dependencies'
@@ -611,13 +782,23 @@ export class RuntimeRunner {
     const outputs = new Map<string, string>()
 
     for (;;) {
-      if (nodes.length === 0) return { completed: [], failed: [] } // nothing to run (e.g. all gated)
+      if (nodes.length === 0) return { completed: [], failed: [], outputs: Object.fromEntries(outputs) } // nothing to run (e.g. all gated)
 
       // Run the currently-runnable nodes in parallel — each is independent within a round.
       const roundBudget = budget
+      // #2-B-ii: per-node abort controllers + a concurrent preemption monitor. While the batch is in
+      // flight the monitor polls the signal source; a Critical `InterruptNow` routes through the kernel
+      // (which preempts → `AgentPreempted` + tears the workflow down) and we abort the matching child's
+      // in-flight LLM call. If the kernel preempted, stop driving and return the torn-down outcome.
+      const controllers = new Map(nodes.map(n => [n.agent_id, new AbortController()] as const))
+      const batchState = { settled: false }
+      const monitor = this.monitorWorkflowPreemption(runtime, controllers, batchState)
       const results = await Promise.all(
-        nodes.map(node => this.runWorkflowNode(node, parentSessionId, orchestrator, roundBudget, outputs)),
+        nodes.map(node => this.runWorkflowNode(node, parentSessionId, orchestrator, roundBudget, outputs, controllers.get(node.agent_id)?.signal)),
       )
+      batchState.settled = true
+      const preempted = await monitor
+      if (preempted) return { ...preempted, outputs: Object.fromEntries(outputs) }
 
       // Feed completions back one at a time. The kernel's run-queue executor may spawn a node's
       // dependents the moment *that* node completes (per-node unblock), so each feed can emit its
@@ -664,7 +845,7 @@ export class RuntimeRunner {
         }))
       }
       if (done && nextNodes.length === 0) {
-        return { completed: done.completed ?? [], failed: done.failed ?? [] }
+        return { completed: done.completed ?? [], failed: done.failed ?? [], outputs: Object.fromEntries(outputs) }
       }
       nodes = nextNodes
     }
@@ -685,7 +866,7 @@ export class RuntimeRunner {
     return this.runWorkflow(spec, { resumedCompleted, resumedSubmissions })
   }
 
-  interrupt(): void { this.interrupted = true }
+  interrupt(): void { this.interrupted = true; this.abortController?.abort() }
 
   async *run(req: {
     sessionId: string
@@ -905,6 +1086,7 @@ export class RuntimeRunner {
     attachments?: ContentPart[],
   ): AsyncIterable<StreamEvent> {
     this.interrupted = false
+    this.abortController = new AbortController()
     this.pendingObservations = []
     this.pendingSpoolOutputs.clear()
     this.currentSessionId = sessionId
@@ -1120,34 +1302,25 @@ export class RuntimeRunner {
       if (this.opts.signalSource) {
         const sig = await this.opts.signalSource.nextSignal()
         if (sig) {
-          const id = crypto.randomUUID()
-          const source = sig.source ?? "custom"
-          const signalType = sig.signalType ?? "event"
-          const urgency = sig.urgency ?? "normal"
-          const summary = String((sig.payload as Record<string, unknown>)?.goal ?? sig.kind ?? "signal")
-          // Kernel-routed: the kernel decides disposition (dedup/queue/interrupt)
-          // and emits `signal_disposed`. An actionable disposition yields a new
-          // action to adopt; queued/observed/ignored yields none (kernel buffers).
-          // Wire shape is snake_case RuntimeSignal with an object payload.
-          const sigAction = kernelMaybeAction(runtime, this.pendingObservations, {
-            kind: "signal",
-            signal: {
-              id,
-              source,
-              signal_type: signalType,
-              urgency,
-              summary,
-              payload: sig.payload ?? {},
-              ...(sig.dedupeKey ? { dedupe_key: sig.dedupeKey } : {}),
-              timestamp_ms: Date.now(),
-            },
-          })
+          // Kernel-routed: the kernel decides disposition (dedup/queue/interrupt) and emits
+          // `signal_disposed`. An actionable disposition yields a new action to adopt; queued/observed/
+          // ignored yields none (kernel buffers).
+          const sigAction = kernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(sig))
           if (sigAction) action = sigAction
         }
       }
       if (runtime.isTerminal()) break
 
       if (action.kind === "call_provider") {
+        // M5 v2.1: top-level auto-pivot at the safe point. If the agent authored sub-workflow(s) via
+        // `start_workflow`, drive each in THIS kernel now (the kernel is in Reason / `call_provider`,
+        // NOT suspended — driving mid-suspend would clobber the single-slot suspend state), inject the
+        // outcome into context, and re-render. Loop-top placement (vs only after `tool_results`) catches
+        // EVERY path to `call_provider` — including resuming after an approval gate — so a queued spec
+        // is never stranded. Drains the queue; fires once per authored batch.
+        if (this.pendingAuthoredWorkflows.length > 0) {
+          action = await this.driveAuthoredWorkflows(runtime, action)
+        }
         const finalToolCalls: ToolCall[] = []
         let finalText = ""
         const context = action.context
@@ -1157,8 +1330,13 @@ export class RuntimeRunner {
         let turnOutputTokens = 0
         let shouldRetry = false
 
+        const abortSignal = this.abortController?.signal
         try {
-          for await (const evt of this.opts.provider.stream(context, tools, Object.keys(ext).length ? ext : undefined, providerState)) {
+          for await (const evt of this.opts.provider.stream(context, tools, Object.keys(ext).length ? ext : undefined, providerState, abortSignal)) {
+            // #2-B-ii: a preempting `interrupt()` fires `abortController` — stop consuming the live
+            // stream immediately (providers that forward `signal` also abort the socket; the rest at
+            // least stop here at the next event). The loop-top `interrupted` check then ends the run.
+            if (abortSignal?.aborted) break
             if (evt.type === "usage") {
               const usageEvt = evt as { type: string; totalTokens: number; inputTokens?: number; outputTokens?: number }
               turnTokens = usageEvt.totalTokens
@@ -1174,6 +1352,9 @@ export class RuntimeRunner {
             }
           }
         } catch (err) {
+          // #2-B-ii: an aborted in-flight request surfaces as an AbortError — treat it as an interrupt
+          // (the loop-top `interrupted` check converts it to a clean `timeout`/UserAbort), not a crash.
+          if (abortSignal?.aborted) { this.interrupted = true }
           const errMsg = String(err).toLowerCase()
           if (
             (errMsg.includes("413") || errMsg.includes("too long") || errMsg.includes("context length exceeded") || errMsg.includes("context_length_exceeded")) &&
@@ -1194,6 +1375,14 @@ export class RuntimeRunner {
             action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
             break
           }
+        }
+
+        // #2-B-ii: stream aborted (preempt/interrupt) via the break path (provider yielded no error) —
+        // end the turn now with a timeout so the kernel terminates the run, rather than feeding the
+        // partial assistant output as a normal turn.
+        if (abortSignal?.aborted) {
+          action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
+          break
         }
 
         if (shouldRetry) {
@@ -1253,9 +1442,13 @@ export class RuntimeRunner {
         }
 
         const toolResults: ToolResult[] = []
-        const normalCalls = allCalls.filter(c => c.name !== "update_plan" && c.name !== "submit_workflow_nodes")
+        const normalCalls = allCalls.filter(
+          c => c.name !== "update_plan" && c.name !== "submit_workflow_nodes" && c.name !== "start_workflow",
+        )
         const planCalls = allCalls.filter(c => c.name === "update_plan")
-        const submitCalls = allCalls.filter(c => c.name === "submit_workflow_nodes")
+        // M5 v1: `start_workflow` (author a sub-workflow) flattens to the same append path as
+        // `submit_workflow_nodes` — a `WorkflowSpec` is a node batch. (v2 adds top-level bootstrap.)
+        const submitCalls = allCalls.filter(c => c.name === "submit_workflow_nodes" || c.name === "start_workflow")
 
         for (const call of planCalls) {
           const update = parseUpdatePlanArgs(call.arguments)
@@ -1274,7 +1467,24 @@ export class RuntimeRunner {
         // sends `submit_workflow_nodes` to the parent kernel. (When not a workflow node, the event is
         // simply unconsumed — a no-op.)
         for (const call of submitCalls) {
-          const nodes = parseSubmitWorkflowNodesArgs(call.arguments)
+          // M5 v2.1: a TOP-LEVEL agent authoring a whole sub-workflow via `start_workflow` — record the
+          // full spec and AUTO-PIVOT once this tool turn resolves (the loop drives it in this kernel and
+          // injects the outcome). A workflow-NODE's `start_workflow` (and every `submit_workflow_nodes`)
+          // instead FLATTENS: the batch is surfaced for the parent `runWorkflow` to append.
+          if (call.name === "start_workflow" && !this.opts.isWorkflowNode) {
+            const spec = parseStartWorkflowSpec(call.arguments)
+            if (spec) {
+              this.pendingAuthoredWorkflows.push(spec)
+              const out = "workflow authored; executing now"
+              toolResults.push({ callId: call.id, output: out, isError: false })
+              yield { type: "tool_result", callId: call.id, content: out, isError: false } as ToolResultEvent
+              continue
+            }
+          }
+          // `start_workflow` wraps the batch as `{ spec: { nodes } }`; `submit_workflow_nodes` is `{ nodes }`.
+          const nodes = call.name === "start_workflow"
+            ? parseStartWorkflowArgs(call.arguments)
+            : parseSubmitWorkflowNodesArgs(call.arguments)
           yield { type: "workflow_nodes_submitted", nodes } as WorkflowNodesSubmittedEvent
           const result = { callId: call.id, output: "submitted", isError: false }
           toolResults.push(result)
@@ -1832,4 +2042,69 @@ function parseSubmitWorkflowNodesArgs(argsStr: string): WorkflowNodeSpec[] {
     // Ignore parse error → no nodes submitted.
   }
   return Array.isArray(parsed.nodes) ? (parsed.nodes as WorkflowNodeSpec[]) : []
+}
+
+/** M5 v1: parse the `start_workflow` tool arguments (`{ spec: { nodes: WorkflowNodeSpec[] } }`) into
+ *  the spec's node batch — flattened onto the running workflow via the same append path. A malformed
+ *  payload yields no nodes rather than throwing. */
+function parseStartWorkflowArgs(argsStr: string): WorkflowNodeSpec[] {
+  let parsed: Record<string, unknown> = {}
+  try {
+    parsed = JSON.parse(argsStr) as Record<string, unknown>
+  } catch {
+    // Ignore parse error → no nodes.
+  }
+  const spec = parsed.spec as { nodes?: unknown } | undefined
+  return Array.isArray(spec?.nodes) ? (spec!.nodes as WorkflowNodeSpec[]) : []
+}
+
+/** M5 v2.1: parse the full `WorkflowSpec` from a top-level `start_workflow` call, for auto-pivot drive
+ *  (vs `parseStartWorkflowArgs`, which returns only the node batch for the flatten path). Returns
+ *  `undefined` on a malformed / empty payload so the caller falls back to the flatten path. */
+function parseStartWorkflowSpec(argsStr: string): WorkflowSpec | undefined {
+  try {
+    const parsed = JSON.parse(argsStr) as { spec?: { nodes?: unknown } }
+    if (Array.isArray(parsed.spec?.nodes) && parsed.spec!.nodes.length > 0) {
+      return { nodes: parsed.spec!.nodes as WorkflowNodeSpec[] }
+    }
+  } catch {
+    // Ignore parse error → undefined (fall back to flatten).
+  }
+  return undefined
+}
+
+/** M5 v2.1: render an authored-workflow outcome into a user-message note injected back into the
+ *  agent's context, so the agent's next turn continues with the sub-workflow's results in view. */
+function authoredWorkflowOutcomeNote(outcome: {
+  completed: string[]
+  failed: string[]
+  outputs: Record<string, string>
+}): string {
+  const lines = [
+    `[authored workflow result] ${outcome.completed.length} node(s) completed` +
+      (outcome.failed.length ? `, ${outcome.failed.length} failed` : "") + ".",
+  ]
+  for (const id of outcome.completed) {
+    const out = outcome.outputs[id]
+    if (out) lines.push(`- ${id}: ${out.length > 500 ? out.slice(0, 500) + "…" : out}`)
+  }
+  return lines.join("\n")
+}
+
+/** Lower a host `RuntimeSignal` to the kernel's snake_case `signal` input event. Shared by the main
+ *  loop's per-turn poll and #2-B-ii's workflow-batch preemption monitor (so the two never drift). */
+function signalToKernelEvent(sig: RuntimeSignal): Record<string, unknown> {
+  return {
+    kind: "signal",
+    signal: {
+      id: crypto.randomUUID(),
+      source: sig.source ?? "custom",
+      signal_type: sig.signalType ?? "event",
+      urgency: sig.urgency ?? "normal",
+      summary: String((sig.payload as Record<string, unknown>)?.goal ?? sig.kind ?? "signal"),
+      payload: sig.payload ?? {},
+      ...(sig.dedupeKey ? { dedupe_key: sig.dedupeKey } : {}),
+      timestamp_ms: Date.now(),
+    },
+  }
 }

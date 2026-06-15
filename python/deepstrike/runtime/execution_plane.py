@@ -42,6 +42,9 @@ class RunContext:
   on_tool_suspend: Callable[[ToolSuspendEvent], Awaitable[Any] | Any] | None = None
   on_permission_request: Callable[[PermissionRequestEvent], Awaitable[PermissionResponse | bool | dict[str, Any]] | PermissionResponse | bool | dict[str, Any]] | None = None
   result_spool: "LargeResultSpool | None" = None
+  # M3/G4: the working directory a sub-agent's tools should run in (the git worktree created for an
+  # ``isolation: "worktree"`` node). Injected by ``WorktreeExecutionPlane``; a cwd-aware tool reads it.
+  cwd: str | None = None
 
 
 class ExecutionPlane:
@@ -192,7 +195,8 @@ class LocalExecutionPlane:
           original_arguments=original_args_str,
           repaired_arguments=json.dumps(kwargs),
         )
-      output = await registered(**kwargs)
+      # M3/G4: pass the run context (incl. ``cwd``) so cwd-aware tools scope work to the worktree.
+      output = await registered(_ctx=ctx, **kwargs)
       if isinstance(output, AsyncIterable):
         combined = ""
         iterator = output.__aiter__()

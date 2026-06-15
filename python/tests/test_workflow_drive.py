@@ -561,10 +561,13 @@ def test_g4_workflow_budget_note_formats_and_omits():
     full = {
         "nodes_used": 1, "nodes_max": 5, "nodes_remaining": 4,
         "running_subagents": 1, "max_concurrent_subagents": 3, "concurrency_remaining": 2,
+        "tokens_used": 2500, "tokens_max": 10000, "tokens_remaining": 7500,
     }
     note = workflow_budget_note(full)
     assert "nodes 1/5 used, 4 remaining" in note
     assert "concurrency 1/3 running, 2 free" in note
+    # M4/G5: token headroom surfaced so a coordinator can scale to "use N tokens".
+    assert "tokens 2500/10000 used, 7500 remaining" in note
     assert workflow_budget_note(None) == ""
     assert workflow_budget_note({"nodes_used": 2, "running_subagents": 1}) == ""
 

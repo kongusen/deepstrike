@@ -25,6 +25,7 @@ export class OpenAIProvider implements LLMProvider {
     tools: ToolSchema[],
     extraBody: Record<string, unknown>,
     exposeReasoning = false,
+    signal?: AbortSignal,
   ): AsyncIterable<StreamEvent> {
     const body: Record<string, unknown> = {
       model: this.model,
@@ -38,6 +39,7 @@ export class OpenAIProvider implements LLMProvider {
       method: "POST",
       headers: { "Authorization": `Bearer ${this.apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      ...(signal ? { signal } : {}), // #2-B-ii: a preempt aborts the in-flight request at the socket.
     })
     if (!resp.ok) throw new Error(`OpenAI ${resp.status}: ${await resp.text()}`)
 
@@ -79,9 +81,9 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
-  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: unknown, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const { expose_reasoning: _, exposeReasoning: __, ...passthrough } = extensions ?? {}
-    yield* this.streamInner(context, tools, passthrough)
+    yield* this.streamInner(context, tools, passthrough, false, signal)
   }
 }
 
@@ -90,7 +92,7 @@ export class QwenProvider extends OpenAIProvider {
     super(apiKey, model, "https://dashscope.aliyuncs.com/compatible-mode/v1")
   }
 
-  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: unknown, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const enableThinking = Boolean(extensions?.enableThinking)
     const thinkingBudget = extensions?.thinkingBudget as number | undefined
     const { enableThinking: _, thinkingBudget: __, expose_reasoning: ___, exposeReasoning: ____, ...passthrough } = extensions ?? {}
@@ -98,7 +100,7 @@ export class QwenProvider extends OpenAIProvider {
       ...passthrough,
       ...(enableThinking ? { enable_thinking: true, ...(thinkingBudget ? { thinking_budget: thinkingBudget } : {}) } : {}),
     }
-    yield* this.streamInner(context, tools, extra, enableThinking)
+    yield* this.streamInner(context, tools, extra, enableThinking, signal)
   }
 }
 
@@ -107,12 +109,12 @@ export class DeepSeekProvider extends OpenAIProvider {
     super(apiKey, model, "https://api.deepseek.com/v1")
   }
 
-  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: unknown, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const exposeReasoning = Boolean(extensions?.exposeReasoning)
     const isReasoner = DEEPSEEK_REASONERS.has(this.model)
     const filteredTools = isReasoner ? [] : tools
     const { exposeReasoning: _, expose_reasoning: __, ...passthrough } = extensions ?? {}
-    yield* this.streamInner(context, filteredTools, passthrough, exposeReasoning)
+    yield* this.streamInner(context, filteredTools, passthrough, exposeReasoning, signal)
   }
 }
 
@@ -121,12 +123,12 @@ export class MiniMaxProvider extends OpenAIProvider {
     super(apiKey, model, "https://api.minimax.chat/v1")
   }
 
-  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: unknown, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const exposeReasoning = Boolean(extensions?.exposeReasoning)
     const isReasoner = MINIMAX_REASONERS.has(this.model)
     const filteredTools = isReasoner ? [] : tools
     const { exposeReasoning: _, expose_reasoning: __, ...passthrough } = extensions ?? {}
-    yield* this.streamInner(context, filteredTools, passthrough, exposeReasoning)
+    yield* this.streamInner(context, filteredTools, passthrough, exposeReasoning, signal)
   }
 }
 

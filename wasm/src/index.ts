@@ -46,7 +46,11 @@ export type {
   WorkflowTaskSpec,
   WorkflowSpawnInfo,
 } from "./runtime/types/agent.js"
-export { workflowSpecToKernel, workflowNodeSpecToKernel, submitWorkflowNodesToKernel, submitWorkflowNodesTool, fanoutSynthesize, generateAndFilter, verifyRules } from "./runtime/types/agent.js"
+export { workflowSpecToKernel, workflowNodeSpecToKernel, submitWorkflowNodesToKernel, submitWorkflowToKernel, submitWorkflowNodesTool, startWorkflowTool, fanoutSynthesize, generateAndFilter, verifyRules } from "./runtime/types/agent.js"
+export {
+  loopInstruction, classifyInstruction, judgeGoal,
+  extractLoopContinue, extractClassifyBranch, extractJudgeWinner,
+} from "./runtime/workflow-control-flow.js"
 export { Governance } from "./governance.js"
 export type { GovernanceVerdict } from "./governance.js"
 export { AnthropicProvider } from "./providers/anthropic.js"

@@ -1,19 +1,26 @@
 import type { ToolChunk, ToolSchema, ToolResult } from "../types.js"
 
+/** M3/G4: the runtime context a tool may read when executing. Carries the working directory the tool
+ *  should operate in — set to a sub-agent's git worktree for `isolation: "worktree"` nodes. A narrow,
+ *  dependency-free shape; the execution plane's `RunContext` is structurally assignable to it. */
+export interface ToolExecContext {
+  cwd?: string
+}
+
 export interface RegisteredTool {
   schema: ToolSchema
-  execute(args: Record<string, unknown>): Promise<string> | AsyncIterable<ToolChunk>
+  execute(args: Record<string, unknown>, ctx?: ToolExecContext): Promise<string> | AsyncIterable<ToolChunk>
 }
 
 export function tool(
   name: string,
   description: string,
   parameters: Record<string, unknown>,
-  fn: (args: Record<string, unknown>) => Promise<string> | string,
+  fn: (args: Record<string, unknown>, ctx?: ToolExecContext) => Promise<string> | string,
 ): RegisteredTool {
   return {
     schema: { name, description, parameters: JSON.stringify(parameters) },
-    async execute(args) { return fn(args) },
+    async execute(args, ctx) { return fn(args, ctx) },
   }
 }
 
@@ -21,11 +28,11 @@ export function streamingTool(
   name: string,
   description: string,
   parameters: Record<string, unknown>,
-  fn: (args: Record<string, unknown>) => AsyncIterable<ToolChunk>,
+  fn: (args: Record<string, unknown>, ctx?: ToolExecContext) => AsyncIterable<ToolChunk>,
 ): RegisteredTool {
   return {
     schema: { name, description, parameters: JSON.stringify(parameters) },
-    execute(args) { return fn(args) },
+    execute(args, ctx) { return fn(args, ctx) },
   }
 }
 

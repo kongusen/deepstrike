@@ -115,7 +115,7 @@ export class AnthropicProvider implements LLMProvider {
     return collectStreamMessage(this.stream(context, tools, extensions))
   }
 
-  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: unknown, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const systemBlocks: Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }> = []
     if (context.systemStable) {
       systemBlocks.push({ type: "text", text: context.systemStable, cache_control: { type: "ephemeral" } })
@@ -162,6 +162,7 @@ export class AnthropicProvider implements LLMProvider {
         "anthropic-beta": "prompt-caching-2024-07-31",
       },
       body: JSON.stringify(body),
+      ...(signal ? { signal } : {}), // #2-B-ii: a preempt aborts the in-flight request at the socket.
     })
     if (!resp.ok) throw new Error(`Anthropic ${resp.status}: ${await resp.text()}`)
 

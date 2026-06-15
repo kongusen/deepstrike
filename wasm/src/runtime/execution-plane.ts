@@ -23,6 +23,9 @@ export interface RunContext {
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
   onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
   resultSpool?: LargeResultSpool
+  /** M3/G4: working directory a tool should run in. WASM has no filesystem, so this is carried for
+   *  tool-ABI parity with Node/Python rather than consumed by a worktree plane. */
+  cwd?: string
 }
 
 export interface ExecutionPlane {
@@ -115,7 +118,9 @@ export class LocalExecutionPlane implements ExecutionPlane {
       }
       try {
         const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>
-        const output = await registered.execute(args)
+        // M3/G4: pass the run context for tool-ABI parity with Node/Python (`RunContext` is
+        // structurally assignable to the tool's `ToolExecContext`).
+        const output = await registered.execute(args, ctx)
         yield { type: "tool_result", callId: call.id, name: call.name, content: String(output), isError: false } as ToolResultEvent
       } catch (err) {
         yield {

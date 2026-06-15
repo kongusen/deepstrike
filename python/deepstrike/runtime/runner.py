@@ -123,9 +123,18 @@ class RuntimeOptions:
   provider: LLMProvider
   session_log: SessionLog
   execution_plane: ExecutionPlane | None = None
+  # M1/G3 intelligence routing: resolve a per-node provider from a workflow node's ``model_hint``.
+  # Returns None ⇒ fall back to ``provider``. Without this hook the hint is a no-op.
+  provider_for: Callable[[str], LLMProvider | None] | None = None
+  # M3/G4: when set, an ``isolation: "worktree"`` sub-agent runs inside a git worktree this manager
+  # creates (and removes on completion), injected as ``RunContext.cwd``. None ⇒ no isolation.
+  worktree_manager: Any = None
   compression_store: ArchiveStore | None = None
   max_tokens: int = 32_000
   max_turns: int = 25
+  # M4/G5: cumulative token cap for this run (the kernel's ``max_total_tokens``); a node's
+  # ``token_budget`` flows here for its child run. None ⇒ the kernel default.
+  max_total_tokens: int | None = None
   timeout_ms: int | None = None
   agent_id: str | None = None
   system_prompt: str | None = None
@@ -147,6 +156,10 @@ class RuntimeOptions:
   on_tool_suspend: Callable[[ToolSuspendEvent], Awaitable[Any] | Any] | None = None
   on_permission_request: Callable[[PermissionRequestEvent], Awaitable[PermissionResponse | bool | dict[str, Any]] | PermissionResponse | bool | dict[str, Any]] | None = None
   sub_agent_orchestrator: Any | None = None
+  # M5 v2.1: marks this runner as a workflow node (child of the workflow driver). A workflow node's
+  # ``start_workflow`` FLATTENS to the parent kernel; a top-level run (unset) AUTO-PIVOTS — bootstraps +
+  # drives the authored workflow in its own kernel, then resumes the reason loop with the outcome.
+  is_workflow_node: bool = False
   sub_agent_harness: SubAgentHarnessConfig | None = None
   # G2: custom reducers for NodeKind::Reduce nodes, merged over the built-ins. A reduce node runs no LLM.
   reducers: dict | None = None
@@ -171,6 +184,9 @@ class RuntimeRunner:
     self._next_archive_start: int = 0
     self._pending_spool_outputs: dict[str, dict[str, str]] = {}
     self._local_page_out_cache: list[Any] = []
+    # M5 v2.1: sub-workflow specs a top-level agent authored via ``start_workflow``, awaiting auto-drive
+    # at the next safe point (after the tool turn resolves, kernel back in Reason — not suspended).
+    self._pending_authored_workflows: list[Any] = []
 
   @property
   def host_options(self) -> RuntimeOptions:
@@ -289,11 +305,15 @@ class RuntimeRunner:
       pass
 
   def _create_syscall_runtime(self) -> KernelRuntime:
-    runtime = KernelRuntime(LoopPolicy(
+    # M4/G5: only override the cumulative token cap when set, else keep the kernel default.
+    _policy_kwargs: dict[str, Any] = dict(
       max_tokens=self._opts.max_tokens,
       max_turns=self._opts.max_turns,
       timeout_ms=self._opts.timeout_ms,
-    ))
+    )
+    if self._opts.max_total_tokens is not None:
+      _policy_kwargs["max_total_tokens"] = self._opts.max_total_tokens
+    runtime = KernelRuntime(LoopPolicy(**_policy_kwargs))
     if self._opts.resource_quota is not None:
       kernel_apply(runtime, [], {
         "kind": "set_resource_quota",
@@ -389,12 +409,34 @@ class RuntimeRunner:
       status=result.result.termination,
     )
 
+  async def bootstrap_workflow(
+    self,
+    spec: "WorkflowSpec",
+    *,
+    submitter_agent_id: str | None = None,
+  ) -> dict[str, list[str]]:
+    """M5/G1: bootstrap an *agent-authored* workflow ("the model writes its own harness").
+
+    Unlike :meth:`run_workflow` (the host fires the privileged ``load_workflow``), this routes the
+    spec through the agent-reachable ``Syscall::LoadWorkflow`` (the ``submit_workflow`` event): with
+    no workflow active the kernel **bootstraps** the DAG; if one is already active it **flattens** the
+    spec's nodes onto it (bootstrap-or-flatten — one kernel, one quota, never a workflow stack). Gated
+    by the same ``max_workflow_nodes`` backstop as runtime submission. The same shared driver runs it.
+    """
+    from deepstrike.types.agent import submit_workflow_to_kernel
+
+    if self._active_kernel is None or self._current_session_id is None:
+      raise RuntimeError("bootstrap_workflow requires an active parent run")
+    initial_event = submit_workflow_to_kernel(spec, self._current_session_id, submitter_agent_id)
+    return await self.run_workflow(spec, _initial_event=initial_event)
+
   async def run_workflow(
     self,
     spec: "WorkflowSpec",
     *,
     resumed_completed: list[str] | None = None,
     resumed_submissions: list | None = None,
+    _initial_event: dict[str, Any] | None = None,
   ) -> dict[str, list[str]]:
     """W0-ABI: run a declarative workflow DAG.
 
@@ -406,6 +448,9 @@ class RuntimeRunner:
     Args:
         spec: The workflow specification.
         resumed_completed: List of node agent_ids already completed (for resume recovery).
+        _initial_event: Internal — the kernel event that loads the DAG. Defaults to ``load_workflow``
+            (host drive); :meth:`bootstrap_workflow` passes a ``submit_workflow`` event instead so an
+            agent-authored spec is bootstrapped through the syscall trap with identical driving.
     """
     import asyncio
 
@@ -434,6 +479,14 @@ class RuntimeRunner:
       schema_retry_instruction,
       validate_against_schema,
     )
+    from deepstrike.runtime.workflow_control_flow import (
+      classify_instruction,
+      extract_classify_branch,
+      extract_judge_winner,
+      extract_loop_continue,
+      judge_goal,
+      loop_instruction,
+    )
 
     if self._active_kernel is None or self._current_session_id is None:
       raise RuntimeError("run_workflow requires an active parent run")
@@ -441,17 +494,21 @@ class RuntimeRunner:
     runtime = self._active_kernel
     orchestrator = self._opts.sub_agent_orchestrator or default_sub_agent_orchestrator
 
-    load_event: dict[str, Any] = {
-      "kind": "load_workflow",
-      "spec": workflow_spec_to_kernel(spec),
-      "parent_session_id": parent_session_id,
-    }
-    # Only include resumed_completed if non-empty (kernel uses presence to detect resume mode).
-    if resumed_completed and len(resumed_completed) > 0:
-      load_event["resumed_completed"] = resumed_completed
-    # R3-1: re-apply recorded runtime submissions so dynamically-appended nodes are reconstructed.
-    if resumed_submissions and len(resumed_submissions) > 0:
-      load_event["resumed_submissions"] = resumed_submissions
+    # M5/G1: bootstrap_workflow passes a pre-built submit_workflow event; otherwise the host load path.
+    if _initial_event is not None:
+      load_event: dict[str, Any] = _initial_event
+    else:
+      load_event = {
+        "kind": "load_workflow",
+        "spec": workflow_spec_to_kernel(spec),
+        "parent_session_id": parent_session_id,
+      }
+      # Only include resumed_completed if non-empty (kernel uses presence to detect resume mode).
+      if resumed_completed and len(resumed_completed) > 0:
+        load_event["resumed_completed"] = resumed_completed
+      # R3-1: re-apply recorded runtime submissions so dynamically-appended nodes are reconstructed.
+      if resumed_submissions and len(resumed_submissions) > 0:
+        load_event["resumed_submissions"] = resumed_submissions
 
     observations = kernel_apply(runtime, self._pending_observations, load_event)
 
@@ -514,7 +571,41 @@ class RuntimeRunner:
           manifest=manifest,
           session_log=self._opts.session_log,
           harness=self._opts.sub_agent_harness,
+          # M5 v2.1: this child IS a workflow node — its `start_workflow` flattens to this kernel.
+          is_workflow_node=True,
         ))
+
+      def _text(result: Any) -> str:
+        final = result.result.final_message
+        return getattr(final, "content", "") if final is not None else ""
+
+      def _with_signal(result: Any, **patch: Any) -> Any:
+        return _dc_replace(result, result=_dc_replace(result.result, **patch))
+
+      # A#2 tournament judge: compare two entrants' produced outputs rather than running the node's own
+      # goal. Look up both candidates, judge over the controller's criterion, report the winner's id.
+      judge = raw.get("judge_match")
+      if judge:
+        left = outputs.get(judge["left"], "")
+        right = outputs.get(judge["right"], "")
+        result = await _run(judge_goal(base_spec.goal, left, right))
+        winner = extract_judge_winner(_text(result))
+        winner_id = judge["right"] if winner == "right" else judge["left"]
+        return _with_signal(result, tournament_winner=winner_id)
+
+      # A#2 v2 loop iteration: run the increment, then extract a stop signal. No signal ⇒ run to cap.
+      loop_max = raw.get("loop_max_iters")
+      if loop_max is not None:
+        result = await _run(f"{base_spec.goal}\n\n{loop_instruction(loop_max)}")
+        cont = extract_loop_continue(_text(result))
+        return result if cont is None else _with_signal(result, loop_continue=cont)
+
+      # A#2 classify: run the classifier, then extract the chosen branch label (kernel prunes the rest).
+      labels = raw.get("classify_labels") or []
+      if labels:
+        result = await _run(f"{base_spec.goal}\n\n{classify_instruction(labels)}")
+        branch = extract_classify_branch(_text(result), labels)
+        return result if branch is None else _with_signal(result, classify_branch=branch)
 
       schema = node.output_schema
       if not schema:
@@ -568,17 +659,59 @@ class RuntimeRunner:
 
     done = _find_done(observations)
     if done is not None:
-      return {"completed": list(done.get("completed") or []), "failed": list(done.get("failed") or [])}
+      return {"completed": list(done.get("completed") or []), "failed": list(done.get("failed") or []), "outputs": dict(outputs)}
     nodes = _collect_nodes(observations)
     budget = _collect_budget(observations)
 
     while True:
       if not nodes:
-        return {"completed": [], "failed": []}
+        return {"completed": [], "failed": [], "outputs": dict(outputs)}
 
       # Run the currently-runnable nodes in parallel — each is independent within a round.
       round_budget = budget
-      results = await asyncio.gather(*(run_node(n, round_budget) for n in nodes))
+      # #2-B-ii: per-node tasks + a concurrent preemption monitor. While the batch is in flight the
+      # monitor polls the signal source; a Critical InterruptNow → kernel preempt → AgentPreempted →
+      # cancel the matching node's task → CancelledError aborts its in-flight LLM call (asyncio idiom,
+      # vs node's AbortSignal). On preempt, stop driving and return the torn-down outcome.
+      tasks = {n["agent_id"]: asyncio.create_task(run_node(n, round_budget)) for n in nodes}
+      preempt_outcome: dict | None = None
+
+      async def _monitor() -> None:
+        nonlocal preempt_outcome
+        source = self._opts.signal_source
+        if source is None:
+          return
+        while not all(t.done() for t in tasks.values()):
+          sig = await source.next_signal()
+          if all(t.done() for t in tasks.values()):
+            break
+          if sig is None:
+            await asyncio.sleep(0.005)
+            continue
+          obs = kernel_apply(runtime, self._pending_observations, _signal_to_kernel_event(sig))
+          preempted = next((o for o in obs if o.get("kind") == "agent_preempted"), None)
+          if preempted:
+            for aid in preempted.get("agent_ids", []):
+              t = tasks.get(aid)
+              if t is not None:
+                t.cancel()
+            wc = next((o for o in obs if o.get("kind") == "workflow_completed"), None)
+            preempt_outcome = {"completed": (wc or {}).get("completed", []), "failed": (wc or {}).get("failed", [])}
+            return
+
+      monitor_task = asyncio.create_task(_monitor())
+      results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+      monitor_task.cancel()
+      try:
+        await monitor_task
+      except asyncio.CancelledError:
+        pass
+      if preempt_outcome is not None:
+        return {**preempt_outcome, "outputs": dict(outputs)}
+      # No preemption → re-raise any genuine node error (preserve the original gather propagation).
+      for _r in results:
+        if isinstance(_r, BaseException):
+          raise _r
 
       # Feed completions back one at a time. The run-queue executor can unblock a node's dependents
       # the moment it completes, so each feed may emit its own batch — ACCUMULATE across the round.
@@ -627,8 +760,27 @@ class RuntimeRunner:
           ),
         )
       if done is not None and not next_nodes:
-        return {"completed": list(done.get("completed") or []), "failed": list(done.get("failed") or [])}
+        return {"completed": list(done.get("completed") or []), "failed": list(done.get("failed") or []), "outputs": dict(outputs)}
       nodes = next_nodes
+
+  async def _drive_authored_workflows(self, runtime: Any, action: Any) -> Any:
+    """M5 v2.1: drive the sub-workflow(s) a top-level agent authored via ``start_workflow``.
+
+    Called at the safe point (tool turn resolved → kernel in Reason, not suspended). Each runs in THIS
+    kernel (the kernel resumes the reason loop on ``workflow_completed`` — ``finish_workflow`` sets
+    phase=Reason), then the outcome is injected as a user message and a fresh ``call_provider`` is
+    synthesized from the updated context (the workflow drive consumed its own kernel actions — same
+    re-render pattern as the reactive-compact retry path).
+    """
+    specs = self._pending_authored_workflows
+    self._pending_authored_workflows = []
+    for spec in specs:
+      outcome = await self.bootstrap_workflow(spec)
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "add_history_message",
+        "message": {"role": "user", "content": _authored_workflow_outcome_note(outcome)},
+      })
+    return SimpleNamespace(kind="call_provider", context=runtime.render(), tools=action.tools)
 
   async def resume_workflow(self, spec: "WorkflowSpec") -> dict[str, list[str]]:
     """Resume a workflow from the parent session's completed nodes.
@@ -965,11 +1117,15 @@ class RuntimeRunner:
     effective_max_turns  = self._opts.max_turns  or (provider_policy.max_turns  if provider_policy else None) or 25
     effective_timeout_ms = self._opts.timeout_ms or (provider_policy.timeout_ms if provider_policy else None)
 
-    policy = LoopPolicy(
+    _policy_kwargs: dict[str, Any] = dict(
       max_tokens=self._opts.max_tokens,
       max_turns=effective_max_turns,
       timeout_ms=effective_timeout_ms,
     )
+    # M4/G5: only override the cumulative token cap when set, else keep the kernel default.
+    if self._opts.max_total_tokens is not None:
+      _policy_kwargs["max_total_tokens"] = self._opts.max_total_tokens
+    policy = LoopPolicy(**_policy_kwargs)
     runtime = KernelRuntime(policy)
     self._active_kernel = runtime
 
@@ -1131,25 +1287,18 @@ class RuntimeRunner:
       if self._opts.signal_source:
         sig = await self._opts.signal_source.next_signal()
         if sig:
-          sig_action = kernel_maybe_action(runtime, self._pending_observations, {
-            "kind": "signal",
-            "signal": {
-              "id": str(uuid.uuid4()),
-              "source": sig.source,
-              "signal_type": sig.signal_type,
-              "urgency": sig.urgency,
-              "summary": str(sig.payload.get("goal") or sig.kind),
-              "payload": sig.payload,
-              **({"dedupe_key": sig.dedupe_key} if sig.dedupe_key else {}),
-              "timestamp_ms": int(time.time() * 1000),
-            },
-          })
+          sig_action = kernel_maybe_action(runtime, self._pending_observations, _signal_to_kernel_event(sig))
           if sig_action:
             action = sig_action
       if runtime.is_terminal():
         break
 
       if action.kind == "call_provider":
+        # M5 v2.1: top-level auto-pivot at the safe point (kernel in Reason, not suspended). Loop-top
+        # placement catches every path to call_provider (incl. post-approval-resume), so a queued
+        # authored spec is never stranded. Drains the queue; fires once per authored batch.
+        if self._pending_authored_workflows:
+          action = await self._drive_authored_workflows(runtime, action)
         final_tool_calls: list[ToolCall] = []
         final_text = ""
         context = action.context or RenderedContext()
@@ -1159,6 +1308,12 @@ class RuntimeRunner:
           async for evt in self._opts.provider.stream(
             context, action.tools or [], extensions=ext if ext else None, state=provider_state,
           ):
+            # #2-B-ii: a preempting interrupt() stops consuming the live stream immediately; breaking
+            # the `async for` closes the provider's async generator → its httpx context exits → the
+            # socket aborts. (Workflow preemption uses task.cancel(), which raises CancelledError here
+            # — a BaseException, so the `except Exception` below does not swallow it; it propagates.)
+            if self._interrupted:
+              break
             if getattr(evt, "type", None) == "usage":
               turn_tokens = getattr(evt, "total_tokens", 0)
               continue
@@ -1186,6 +1341,11 @@ class RuntimeRunner:
             yield ErrorEvent(message=str(exc))
             action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
             break
+
+        # #2-B-ii: stream aborted (preempt/interrupt) via the break path — end the turn now.
+        if self._interrupted:
+          action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
+          break
 
         if should_retry:
           action = SimpleNamespace(
@@ -1241,9 +1401,10 @@ class RuntimeRunner:
           result_spool=self._opts.result_spool or LargeResultSpool(),
         )
         tool_results: list[ToolResult] = []
-        normal_calls = [c for c in all_calls if c.name not in ("update_plan", "submit_workflow_nodes")]
+        # M5 v1: `start_workflow` (author a sub-workflow) flattens to the same append path.
+        normal_calls = [c for c in all_calls if c.name not in ("update_plan", "submit_workflow_nodes", "start_workflow")]
         plan_calls = [c for c in all_calls if c.name == "update_plan"]
-        submit_calls = [c for c in all_calls if c.name == "submit_workflow_nodes"]
+        submit_calls = [c for c in all_calls if c.name in ("submit_workflow_nodes", "start_workflow")]
 
         for call in plan_calls:
           update = _parse_update_plan_args(call.arguments)
@@ -1260,7 +1421,24 @@ class RuntimeRunner:
         # as an event; the orchestrator collects them and `run_workflow` sends `submit_workflow_nodes`
         # to the parent kernel. (Outside a workflow node the event is simply unconsumed — a no-op.)
         for call in submit_calls:
-          nodes = _parse_submit_workflow_nodes_args(call.arguments)
+          # M5 v2.1: a TOP-LEVEL agent authoring a whole sub-workflow via `start_workflow` — record the
+          # spec and AUTO-PIVOT once this tool turn resolves (drive it in this kernel, inject the
+          # outcome). A workflow-NODE's `start_workflow` (and every `submit_workflow_nodes`) FLATTENS:
+          # the batch is surfaced for the parent `run_workflow` to append.
+          if call.name == "start_workflow" and not self._opts.is_workflow_node:
+            spec = _parse_start_workflow_spec(call.arguments)
+            if spec is not None:
+              self._pending_authored_workflows.append(spec)
+              out = "workflow authored; executing now"
+              tool_results.append(ToolResult(call_id=call.id, output=out, is_error=False))
+              yield ToolResultEvent(call_id=call.id, content=out, is_error=False)
+              continue
+          # `start_workflow` wraps the batch as `{spec: {nodes}}`; `submit_workflow_nodes` is `{nodes}`.
+          nodes = (
+            _parse_start_workflow_args(call.arguments)
+            if call.name == "start_workflow"
+            else _parse_submit_workflow_nodes_args(call.arguments)
+          )
           yield WorkflowNodesSubmittedEvent(nodes=nodes)
           tool_results.append(ToolResult(call_id=call.id, output="submitted", is_error=False))
           yield ToolResultEvent(call_id=call.id, content="submitted", is_error=False)
@@ -1839,16 +2017,10 @@ def _parse_update_plan_args(args_str: str) -> TaskUpdate:
   )
 
 
-def _parse_submit_workflow_nodes_args(args_str: str) -> list:
-  """R3-1: parse the ``submit_workflow_nodes`` tool args (``{"nodes": [...]}``) into WorkflowNodeSpec.
-  Node shapes are trusted structurally; the kernel validates them (dep range, quota) on append. A
-  malformed payload yields no nodes rather than raising."""
+def _nodes_from_raw_list(raw) -> list:
+  """Build WorkflowNodeSpecs from a raw node list (shared by the submit + start parsers). Node shapes
+  are trusted structurally; the kernel validates them (dep range, quota) on append."""
   from deepstrike.types.agent import WorkflowNodeSpec
-  try:
-    parsed = json.loads(args_str)
-  except Exception:
-    return []
-  raw = parsed.get("nodes") if isinstance(parsed, dict) else None
   if not isinstance(raw, list):
     return []
   nodes = []
@@ -1861,6 +2033,80 @@ def _parse_submit_workflow_nodes_args(args_str: str) -> list:
         context_inheritance=item.get("context_inheritance", "none"),
         model_hint=item.get("model_hint"),
         trust=item.get("trust", "trusted"),
+        output_schema=item.get("output_schema"),
+        # M2/G2: pass the control-flow kind through so a submitted node can itself be a
+        # reduce / loop / classify / tournament (not silently downgraded to a plain spawn).
+        reducer=item.get("reducer"),
+        loop=item.get("loop"),
+        classify=item.get("classify"),
+        tournament=item.get("tournament"),
+        # M4/G5: pass the per-node token cap through.
+        token_budget=item.get("token_budget"),
         depends_on=list(item.get("depends_on") or []),
       ))
   return nodes
+
+
+def _parse_submit_workflow_nodes_args(args_str: str) -> list:
+  """R3-1: parse the ``submit_workflow_nodes`` tool args (``{"nodes": [...]}``) into WorkflowNodeSpec.
+  A malformed payload yields no nodes rather than raising."""
+  try:
+    parsed = json.loads(args_str)
+  except Exception:
+    return []
+  return _nodes_from_raw_list(parsed.get("nodes") if isinstance(parsed, dict) else None)
+
+
+def _parse_start_workflow_args(args_str: str) -> list:
+  """M5 v1: parse the ``start_workflow`` tool args (``{"spec": {"nodes": [...]}}``) into the spec's
+  node batch — flattened onto the running workflow via the same append path."""
+  try:
+    parsed = json.loads(args_str)
+  except Exception:
+    return []
+  spec = parsed.get("spec") if isinstance(parsed, dict) else None
+  return _nodes_from_raw_list(spec.get("nodes") if isinstance(spec, dict) else None)
+
+
+def _parse_start_workflow_spec(args_str: str):
+  """M5 v2.1: parse the full ``WorkflowSpec`` from a top-level ``start_workflow`` call for the
+  auto-pivot drive. Returns ``None`` on a malformed / empty payload (caller falls back to flatten)."""
+  from deepstrike.types.agent import WorkflowSpec
+
+  nodes = _parse_start_workflow_args(args_str)
+  return WorkflowSpec(nodes=nodes) if nodes else None
+
+
+def _authored_workflow_outcome_note(outcome: dict) -> str:
+  """M5 v2.1: render an authored-workflow outcome into a user-message note injected back into the
+  agent's context, so its next turn continues with the sub-workflow's results in view."""
+  completed = outcome.get("completed") or []
+  failed = outcome.get("failed") or []
+  outputs = outcome.get("outputs") or {}
+  lines = [
+    f"[authored workflow result] {len(completed)} node(s) completed"
+    + (f", {len(failed)} failed" if failed else "") + "."
+  ]
+  for node_id in completed:
+    out = outputs.get(node_id)
+    if out:
+      lines.append(f"- {node_id}: {out[:500] + '…' if len(out) > 500 else out}")
+  return "\n".join(lines)
+
+
+def _signal_to_kernel_event(sig) -> dict:
+  """Lower a host RuntimeSignal to the kernel's snake_case ``signal`` event. Shared by the main loop's
+  per-turn poll and #2-B-ii's workflow-batch preemption monitor (so the two never drift)."""
+  return {
+    "kind": "signal",
+    "signal": {
+      "id": str(uuid.uuid4()),
+      "source": sig.source,
+      "signal_type": sig.signal_type,
+      "urgency": sig.urgency,
+      "summary": str(sig.payload.get("goal") or sig.kind),
+      "payload": sig.payload,
+      **({"dedupe_key": sig.dedupe_key} if sig.dedupe_key else {}),
+      "timestamp_ms": int(time.time() * 1000),
+    },
+  }

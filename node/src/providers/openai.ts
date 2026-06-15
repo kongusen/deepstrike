@@ -1,5 +1,5 @@
 import OpenAI from "openai"
-import type { Message, ProviderDescriptor, ProviderReplay, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
+import type { Message, ProviderDescriptor, ProviderReplay, ProviderRunState, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, omitExtensionKeys, openAICachedPromptTokens, stablePromptCacheKey, ThinkingTagStreamExtractor } from "./base.js"
 import { OpenAIChatAdapter } from "./openai-chat.js"
@@ -137,7 +137,7 @@ export class OpenAIChatProvider implements LLMProvider {
     throw lastErr
   }
 
-  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: ProviderRunState, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const msgs = this.buildChatMessages(context, extensions)
     const toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }> = {}
     const emittedToolCallIndexes = new Set<number>()
@@ -153,7 +153,8 @@ export class OpenAIChatProvider implements LLMProvider {
       ...(tools.length ? { tools: this.chat.buildTools(tools) } : {}),
       stream: true,
       stream_options: { include_usage: true },
-    })
+    // #2-B-ii: forward the abort signal so a preempt cancels the in-flight HTTP request.
+    }, signal ? { signal } : undefined)
 
     let totalTokens = 0
     let inputTokens = 0

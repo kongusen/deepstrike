@@ -3,6 +3,13 @@ export { RuntimeRunner, collectText } from "./runtime/runner.js"
 export type { RuntimeOptions, SchedulerBudget } from "./runtime/runner.js"
 export { builtinReducers, resolveReducer } from "./runtime/reducers.js"
 export type { Reducer, ReducerRegistry, ReducerInput } from "./runtime/reducers.js"
+export {
+  loopInstruction, classifyInstruction, judgeGoal,
+  extractLoopContinue, extractClassifyBranch, extractJudgeWinner,
+} from "./runtime/workflow-control-flow.js"
+export { WorktreeExecutionPlane, GitWorktreeManager } from "./runtime/worktree-plane.js"
+export type { WorktreeManager } from "./runtime/worktree-plane.js"
+export { FileWorkflowStore } from "./runtime/workflow-store.js"
 export type { MemoryPolicy, MemoryWriteRateLimit, ResourceQuota } from "./kernel.js"
 export { KernelPrimitivesDashboard } from "./runtime/kernel-primitives-dashboard.js"
 export { FilteredExecutionPlane } from "./runtime/filtered-plane.js"
@@ -132,7 +139,9 @@ export {
   workflowSpecToKernel,
   workflowNodeSpecToKernel,
   submitWorkflowNodesToKernel,
+  submitWorkflowToKernel,
   submitWorkflowNodesTool,
+  startWorkflowTool,
   fanoutSynthesize,
   generateAndFilter,
   verifyRules,
