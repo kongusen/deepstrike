@@ -10,9 +10,9 @@ use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
 use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
 use deepstrike_core::governance::rate_limit::RateLimit;
-use deepstrike_core::harness::eval_pipeline::{
-    Criterion as RustCriterion, EvalAction as RustEvalAction, EvalEvent as RustEvalEvent,
-    EvalPipeline as RustEvalPipeline, EvalPolicy as RustEvalPolicy, EvalResult as RustEvalResult,
+use deepstrike_core::harness::eval::{
+    build_eval_messages as rust_build_eval_messages, parse_verdict as rust_parse_verdict,
+    verdict_output_schema as rust_verdict_output_schema, Criterion as RustCriterion,
 };
 use deepstrike_core::runtime::{
     KernelInput as RustKernelInput, KernelRuntime as RustKernelRuntime,
@@ -295,14 +295,6 @@ pub struct CriterionResult {
 }
 
 #[derive(Tsify, Clone, Serialize, Deserialize)]
-#[tsify(from_wasm_abi)]
-#[serde(rename_all = "camelCase")]
-pub struct EvalPipelineOptions {
-    #[serde(default)]
-    pub extract_skill_on_pass: bool,
-}
-
-#[derive(Tsify, Clone, Serialize, Deserialize)]
 #[tsify(into_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillCandidate {
@@ -313,21 +305,15 @@ pub struct SkillCandidate {
     pub content: String,
 }
 
+/// The structured verdict from `parseVerdict`.
 #[derive(Tsify, Clone, Serialize, Deserialize)]
 #[tsify(into_wasm_abi)]
 #[serde(rename_all = "camelCase")]
-pub struct EvalPipelineAction {
-    pub kind: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub messages: Option<Vec<Message>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub passed: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub overall_score: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub feedback: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub details: Option<Vec<CriterionResult>>,
+pub struct Verdict {
+    pub passed: bool,
+    pub overall_score: f64,
+    pub feedback: String,
+    pub details: Vec<CriterionResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_candidate: Option<SkillCandidate>,
 }
@@ -462,49 +448,6 @@ fn rendered_context_from_rust(rc: RustRenderedContext) -> RenderedContext {
         turns: rc.turns.iter().map(message_from_rust).collect(),
         state_turn: rc.state_turn.as_ref().map(message_from_rust),
         frozen_prefix_len: rc.frozen_prefix_len.map(|n| n as u32),
-    }
-}
-
-fn eval_done_action(result: RustEvalResult) -> EvalPipelineAction {
-    EvalPipelineAction {
-        kind: "done".into(),
-        messages: None,
-        passed: Some(result.passed),
-        overall_score: Some(result.overall_score as f64),
-        feedback: Some(result.feedback),
-        details: Some(
-            result
-                .details
-                .into_iter()
-                .map(|detail| CriterionResult {
-                    criterion: detail.criterion,
-                    passed: detail.passed,
-                    score: detail.score as f64,
-                    feedback: detail.feedback,
-                })
-                .collect(),
-        ),
-        skill_candidate: result.skill_candidate.map(|skill| SkillCandidate {
-            name: skill.name,
-            description: skill.description,
-            when_to_use: skill.when_to_use,
-            content: skill.content,
-        }),
-    }
-}
-
-fn eval_action_from_rust(action: RustEvalAction) -> EvalPipelineAction {
-    match action {
-        RustEvalAction::Evaluate { messages } => EvalPipelineAction {
-            kind: "evaluate".into(),
-            messages: Some(messages.iter().map(message_from_rust).collect()),
-            passed: None,
-            overall_score: None,
-            feedback: None,
-            details: None,
-            skill_candidate: None,
-        },
-        RustEvalAction::Done { result } => eval_done_action(result),
     }
 }
 
@@ -645,62 +588,67 @@ impl SignalRouter {
     }
 }
 
-// ────────────────────────────────────────────── EvalPipeline ──────────────────────────────────────────────
+// ────────────────────────────────────────────── Eval primitives ──────────────────────────────────────────────
+// The generate→evaluate quality gate's stateless compute (0.5.0 fold of the former `EvalPipeline`
+// class, OS-axis #6). The SDK `HarnessLoop` drives the loop; these expose the kernel's prompt
+// builder + verdict parser + verdict schema.
 
-#[wasm_bindgen]
-pub struct EvalPipeline {
-    inner: RustEvalPipeline,
+/// Build the impartial-evaluator messages for one attempt. Call the evaluator LLM with these, then
+/// feed the text to `parseVerdict`.
+#[wasm_bindgen(js_name = buildEvalMessages)]
+pub fn build_eval_messages(
+    goal: String,
+    criteria: Vec<Criterion>,
+    result: String,
+    attempt: u32,
+    extract_skill_on_pass: bool,
+) -> Vec<Message> {
+    let rust_criteria: Vec<RustCriterion> = criteria
+        .into_iter()
+        .map(|criterion| RustCriterion {
+            text: criterion.text,
+            required: criterion.required,
+            weight: criterion.weight.map(|weight| weight as f32).unwrap_or(1.0),
+        })
+        .collect();
+    rust_build_eval_messages(&goal, &rust_criteria, &result, attempt, extract_skill_on_pass)
+        .iter()
+        .map(message_from_rust)
+        .collect()
 }
 
-#[wasm_bindgen]
-impl EvalPipeline {
-    #[wasm_bindgen(constructor)]
-    pub fn new(options: EvalPipelineOptions) -> Self {
-        Self {
-            inner: RustEvalPipeline::new(RustEvalPolicy {
-                extract_skill_on_pass: options.extract_skill_on_pass,
-            }),
-        }
-    }
-
-    #[wasm_bindgen(js_name = feedOutcome)]
-    pub fn feed_outcome(
-        &mut self,
-        goal: String,
-        criteria: Vec<Criterion>,
-        result: String,
-        attempt: u32,
-    ) -> EvalPipelineAction {
-        let criteria = criteria
+/// Parse the evaluator LLM's JSON response into a structured `Verdict`.
+#[wasm_bindgen(js_name = parseVerdict)]
+pub fn parse_verdict(content: String) -> Verdict {
+    let r = rust_parse_verdict(&content);
+    Verdict {
+        passed: r.passed,
+        overall_score: r.overall_score as f64,
+        feedback: r.feedback,
+        details: r
+            .details
             .into_iter()
-            .map(|criterion| RustCriterion {
-                text: criterion.text,
-                required: criterion.required,
-                weight: criterion.weight.map(|weight| weight as f32).unwrap_or(1.0),
+            .map(|detail| CriterionResult {
+                criterion: detail.criterion,
+                passed: detail.passed,
+                score: detail.score as f64,
+                feedback: detail.feedback,
             })
-            .collect();
-        eval_action_from_rust(self.inner.feed(RustEvalEvent::Outcome {
-            goal,
-            criteria,
-            result,
-            attempt,
-        }))
+            .collect(),
+        skill_candidate: r.skill_candidate.map(|skill| SkillCandidate {
+            name: skill.name,
+            description: skill.description,
+            when_to_use: skill.when_to_use,
+            content: skill.content,
+        }),
     }
+}
 
-    #[wasm_bindgen(js_name = feedEvalResult)]
-    pub fn feed_eval_result(&mut self, content: String) -> EvalPipelineAction {
-        eval_action_from_rust(self.inner.feed(RustEvalEvent::EvalResult { content }))
-    }
-
-    #[wasm_bindgen]
-    pub fn reset(&mut self) {
-        self.inner.reset();
-    }
-
-    #[wasm_bindgen(js_name = isIdle)]
-    pub fn is_idle(&self) -> bool {
-        self.inner.is_idle()
-    }
+/// JSON Schema (as a JSON string) for the verdict an eval node must produce — used as the
+/// `outputSchema` of the eval node in the `gen_eval` workflow template.
+#[wasm_bindgen(js_name = verdictOutputSchema)]
+pub fn verdict_output_schema(extract_skill_on_pass: bool) -> String {
+    rust_verdict_output_schema(extract_skill_on_pass).to_string()
 }
 
 // ────────────────────────────────────────────── Governance ──────────────────────────────────────────────

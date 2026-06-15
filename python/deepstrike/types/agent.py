@@ -590,3 +590,23 @@ def verify_rules(rules: list, skeptic=None) -> WorkflowSpec:
       depends_on=list(range(len(rules))),
     ))
   return WorkflowSpec(nodes=nodes)
+
+
+def gen_eval(worker, evaluate, max_iters: int = 3, extract_skill_on_pass: bool = True) -> WorkflowSpec:
+  """Generate→evaluate quality gate (the EvalPipeline successor, #6): a ``loop`` worker node (re-run
+  up to ``max_iters``, stopping early on a ``loop_continue=False`` self-signal) + a bias-resistant
+  ``verify`` eval node gated on it, carrying the kernel's verdict ``output_schema``. Mirrors the
+  kernel ``gen_eval`` template. For the iterative retry-with-feedback variant, drive it with
+  ``HarnessLoop``."""
+  from deepstrike._kernel import verdict_output_schema
+  schema = json.loads(verdict_output_schema(extract_skill_on_pass))
+  return WorkflowSpec(nodes=[
+    WorkflowNodeSpec(
+      task=_as_task(worker), role="implement", isolation="worktree", context_inheritance="full",
+      loop={"max_iters": max(1, max_iters)},
+    ),
+    WorkflowNodeSpec(
+      task=_as_task(evaluate), role="verify", isolation="read_only", context_inheritance="none",
+      depends_on=[0], output_schema=schema,
+    ),
+  ])

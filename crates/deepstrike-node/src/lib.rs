@@ -47,9 +47,9 @@ use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
 use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
 use deepstrike_core::governance::rate_limit::RateLimit;
-use deepstrike_core::harness::eval_pipeline::{
-    Criterion as RustCriterion, EvalAction as RustEvalAction, EvalEvent as RustEvalEvent,
-    EvalPipeline as RustEvalPipeline, EvalPolicy as RustEvalPolicy,
+use deepstrike_core::harness::eval::{
+    build_eval_messages as rust_build_eval_messages, parse_verdict as rust_parse_verdict,
+    verdict_output_schema as rust_verdict_output_schema, Criterion as RustCriterion,
 };
 use deepstrike_core::memory::curator::CurationResult as RustCurationResult;
 use deepstrike_core::memory::durable::SessionData as RustSessionData;
@@ -1003,7 +1003,10 @@ fn idle_pipeline_action_from_rust(a: RustIdleAction) -> IdlePipelineAction {
     }
 }
 
-// ─────────────────────────────────────────── EvalPipeline ────────────────────────────────────────
+// ─────────────────────────────────────────── Eval primitives ────────────────────────────────────
+// The generate→evaluate quality gate's stateless compute (0.5.0 fold of the former `EvalPipeline`
+// class, OS-axis #6). The SDK `HarnessLoop` drives the loop; these expose the kernel's prompt
+// builder + verdict parser + verdict schema so eval compute stays single-sourced in the kernel.
 
 #[napi(object)]
 #[derive(Clone)]
@@ -1024,12 +1027,6 @@ pub struct CriterionResult {
 
 #[napi(object)]
 #[derive(Clone)]
-pub struct EvalPipelineOptions {
-    pub extract_skill_on_pass: Option<bool>,
-}
-
-#[napi(object)]
-#[derive(Clone)]
 pub struct SkillCandidate {
     pub name: String,
     pub description: String,
@@ -1037,141 +1034,75 @@ pub struct SkillCandidate {
     pub content: String,
 }
 
-/// Discriminated union returned by `EvalPipeline` methods. Inspect `kind`:
-/// - `"evaluate"` → `messages` (SDK must call evaluator LLM, then `feedEvalResult`)
-/// - `"done"`     → `passed`, `overallScore`, `feedback`, `details`, optional `skillCandidate`
+/// The structured verdict from [`parseVerdict`]: `passed`, `overallScore`, `feedback`, per-criterion
+/// `details`, and an optional `skillCandidate` distilled from a passing run.
 #[napi(object)]
 #[derive(Clone)]
-pub struct EvalPipelineAction {
-    pub kind: String,
-    pub messages: Option<Vec<Message>>,
-    pub passed: Option<bool>,
-    pub overall_score: Option<f64>,
-    pub feedback: Option<String>,
-    pub details: Option<Vec<CriterionResult>>,
+pub struct Verdict {
+    pub passed: bool,
+    pub overall_score: f64,
+    pub feedback: String,
+    pub details: Vec<CriterionResult>,
     pub skill_candidate: Option<SkillCandidate>,
 }
 
-/// Kernel state machine for the evaluation cycle.
-///
-/// Drive it like this:
-/// 1. `feedOutcome(goal, criteria, result, attempt)` → `"evaluate"` action
-/// 2. Call evaluator LLM with `action.messages`, collect the text response
-/// 3. `feedEvalResult(text)` → `"done"` action
-/// 4. Read `action.passed` / `action.feedback` / `action.skillCandidate`
-/// 5. Call `reset()` before the next attempt
+/// Build the impartial-evaluator messages for one attempt (system contract + the goal/criteria/output
+/// user message). Call the evaluator LLM with these, then feed the text to [`parseVerdict`].
 #[napi]
-pub struct EvalPipeline {
-    inner: RustEvalPipeline,
+pub fn build_eval_messages(
+    goal: String,
+    criteria: Vec<Criterion>,
+    result: String,
+    attempt: u32,
+    extract_skill_on_pass: bool,
+) -> Vec<Message> {
+    let rust_criteria: Vec<RustCriterion> = criteria
+        .into_iter()
+        .map(|c| RustCriterion {
+            text: c.text,
+            required: c.required,
+            weight: c.weight.map(|w| w as f32).unwrap_or(1.0),
+        })
+        .collect();
+    rust_build_eval_messages(&goal, &rust_criteria, &result, attempt, extract_skill_on_pass)
+        .iter()
+        .map(message_from_rust)
+        .collect()
 }
 
+/// Parse the evaluator LLM's JSON response into a structured [`Verdict`] (tolerant of fences / missing
+/// fields).
 #[napi]
-impl EvalPipeline {
-    #[napi(constructor)]
-    pub fn new(options: Option<EvalPipelineOptions>) -> Self {
-        let policy = RustEvalPolicy {
-            extract_skill_on_pass: options
-                .and_then(|o| o.extract_skill_on_pass)
-                .unwrap_or(true),
-        };
-        Self {
-            inner: RustEvalPipeline::new(policy),
-        }
-    }
-
-    /// Phase 1 — provide the goal, criteria, agent output, and attempt number.
-    /// Returns an `"evaluate"` action with messages to send to the evaluator LLM.
-    #[napi]
-    pub fn feed_outcome(
-        &mut self,
-        goal: String,
-        criteria: Vec<Criterion>,
-        result: String,
-        attempt: u32,
-    ) -> EvalPipelineAction {
-        let rust_criteria = criteria
+pub fn parse_verdict(content: String) -> Verdict {
+    let r = rust_parse_verdict(&content);
+    Verdict {
+        passed: r.passed,
+        overall_score: r.overall_score as f64,
+        feedback: r.feedback,
+        details: r
+            .details
             .into_iter()
-            .map(|c| RustCriterion {
-                text: c.text,
-                required: c.required,
-                weight: c.weight.map(|w| w as f32).unwrap_or(1.0),
+            .map(|d| CriterionResult {
+                criterion: d.criterion,
+                passed: d.passed,
+                score: d.score as f64,
+                feedback: d.feedback,
             })
-            .collect();
-        match self.inner.feed(RustEvalEvent::Outcome {
-            goal,
-            criteria: rust_criteria,
-            result,
-            attempt,
-        }) {
-            RustEvalAction::Evaluate { messages } => EvalPipelineAction {
-                kind: "evaluate".into(),
-                messages: Some(messages.iter().map(message_from_rust).collect()),
-                passed: None,
-                overall_score: None,
-                feedback: None,
-                details: None,
-                skill_candidate: None,
-            },
-            RustEvalAction::Done { result } => eval_done_action(result),
-        }
-    }
-
-    /// Phase 2 — feed back the evaluator LLM's text response.
-    #[napi]
-    pub fn feed_eval_result(&mut self, content: String) -> EvalPipelineAction {
-        match self.inner.feed(RustEvalEvent::EvalResult { content }) {
-            RustEvalAction::Done { result } => eval_done_action(result),
-            RustEvalAction::Evaluate { messages } => EvalPipelineAction {
-                kind: "evaluate".into(),
-                messages: Some(messages.iter().map(message_from_rust).collect()),
-                passed: None,
-                overall_score: None,
-                feedback: None,
-                details: None,
-                skill_candidate: None,
-            },
-        }
-    }
-
-    #[napi]
-    pub fn reset(&mut self) {
-        self.inner.reset();
-    }
-
-    #[napi]
-    pub fn is_idle(&self) -> bool {
-        self.inner.is_idle()
-    }
-}
-
-fn eval_done_action(
-    result: deepstrike_core::harness::eval_pipeline::EvalResult,
-) -> EvalPipelineAction {
-    EvalPipelineAction {
-        kind: "done".into(),
-        messages: None,
-        passed: Some(result.passed),
-        overall_score: Some(result.overall_score as f64),
-        feedback: Some(result.feedback),
-        details: Some(
-            result
-                .details
-                .into_iter()
-                .map(|d| CriterionResult {
-                    criterion: d.criterion,
-                    passed: d.passed,
-                    score: d.score as f64,
-                    feedback: d.feedback,
-                })
-                .collect(),
-        ),
-        skill_candidate: result.skill_candidate.map(|s| SkillCandidate {
+            .collect(),
+        skill_candidate: r.skill_candidate.map(|s| SkillCandidate {
             name: s.name,
             description: s.description,
             when_to_use: s.when_to_use,
             content: s.content,
         }),
     }
+}
+
+/// JSON Schema (as a JSON string) for the verdict an eval node must produce — used as the
+/// `outputSchema` of the eval node in the `gen_eval` workflow template.
+#[napi]
+pub fn verdict_output_schema(extract_skill_on_pass: bool) -> String {
+    rust_verdict_output_schema(extract_skill_on_pass).to_string()
 }
 
 /// Kernel state machine for the idle dreaming cycle.

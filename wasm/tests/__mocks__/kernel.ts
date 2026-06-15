@@ -157,23 +157,24 @@ export class SignalRouter {
   clearDedup(): void {}
 }
 
-export class EvalPipeline {
-  constructor(_options: { extractSkillOnPass: boolean }) {}
+// Eval / harness quality gate (0.5.0 fold: free functions, was the EvalPipeline class).
+export function buildEvalMessages(
+  _goal: string, _criteria: unknown[], _result: string, _attempt: number, _extractSkillOnPass: boolean,
+) {
+  return []
+}
 
-  feedOutcome(_goal: string, _criteria: unknown[], _result: string, _attempt: number) {
-    return { kind: "evaluate", messages: [] }
+export function parseVerdict(_content: string) {
+  return { passed: true, overallScore: 1, feedback: "", details: [], skillCandidate: undefined }
+}
+
+export function verdictOutputSchema(extractSkillOnPass: boolean) {
+  const properties: Record<string, unknown> = {
+    passed: { type: "boolean" },
+    overall_score: { type: "number" },
+    feedback: { type: "string" },
+    details: { type: "array" },
   }
-
-  feedEvalResult(_content: string) {
-    return {
-      kind: "done",
-      passed: true,
-      overallScore: 1,
-      feedback: "",
-      details: [],
-    }
-  }
-
-  reset(): void {}
-  isIdle(): boolean { return true }
+  if (extractSkillOnPass) properties.skill = { type: "object" }
+  return JSON.stringify({ type: "object", required: ["passed", "overall_score", "feedback"], properties })
 }

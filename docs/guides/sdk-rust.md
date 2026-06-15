@@ -696,41 +696,40 @@ let rendered = ctx.render();  // RenderedContext — 映射到 provider API
 
 详见 [context-slots-compression.md](../concepts/context-slots-compression.md)。
 
-### 11.3 EvalPipeline
+### 11.3 评估原语（generate → evaluate 质量门）
+
+> **0.5.x fold（#6）：** 旧的 `EvalPipeline` 状态机类已移除，质量门改为**无状态纯函数** +
+> `gen_eval` workflow 模板。`HarnessLoop` 仍是迭代「重试-带反馈」的驱动器（公开接口不变）。
 
 ```rust
-use deepstrike_core::harness::eval_pipeline::*;
+use deepstrike_core::harness::{build_eval_messages, parse_verdict, Criterion};
 
-let mut pipeline = EvalPipeline::new(EvalPolicy { extract_skill_on_pass: true });
-
-// Phase 1: 构建评估 prompt
-let action = pipeline.feed(EvalEvent::Outcome {
-    goal: "Write tests".into(),
-    criteria: vec!["Cover edge cases".into()],
-    result: agent_output,
-    attempt: 1,
-});
-let messages = match action {
-    EvalAction::Evaluate { messages } => messages,
-    _ => unreachable!(),
-};
+// Phase 1: 内核构建评估 prompt（无状态）
+let messages = build_eval_messages(
+    "Write tests",
+    &[Criterion::required("Cover edge cases")],
+    &agent_output,
+    /* attempt */ 1,
+    /* extract_skill_on_pass */ true,
+);
 
 // Phase 2: SDK 调用 LLM 获取评判结果
 let eval_text = call_llm(&messages).await;
 
 // Phase 3: 内核解析裁定
-let action = pipeline.feed(EvalEvent::EvalResult { content: eval_text });
-match action {
-    EvalAction::Done { result } => {
-        println!("Passed: {}, Feedback: {}", result.passed, result.feedback);
-        if let Some(skill) = result.skill_candidate {
-            println!("Extracted skill: {}", skill.name);
-        }
-    }
-    _ => {}
+let verdict = parse_verdict(&eval_text);
+println!("Passed: {}, Feedback: {}", verdict.passed, verdict.feedback);
+if let Some(skill) = verdict.skill_candidate {
+    println!("Extracted skill: {}", skill.name);
 }
+```
 
-pipeline.reset(); // 可重用
+声明式形态是 `gen_eval` 模板（`Loop` worker + 带 `verdict_output_schema` 的偏见隔离 `Verify`
+eval 节点），可直接交给 `runWorkflow` 跑：
+
+```rust
+use deepstrike_core::orchestration::workflow::gen_eval;
+let spec = gen_eval(worker_task, eval_task, /* max_iters */ 3, /* extract_skill_on_pass */ true);
 ```
 
 ---

@@ -10,8 +10,9 @@
 //! loop-until-done, classify-and-act, and tournament — are now first-class [`NodeKind`] variants
 //! ([`NodeKind::Loop`] / [`NodeKind::Classify`] / [`NodeKind::Tournament`]) driven by the unified
 //! workflow executor; the former standalone `loop_until_done` / `tournament` SDK primitives were
-//! removed in their favor (A#1). Adversarial verification stays in
-//! [`crate::harness::eval_pipeline::EvalPipeline`].
+//! removed in their favor (A#1). The generate→evaluate→retry quality gate is the [`gen_eval`]
+//! template (a `Loop` worker + a `Verify` eval node carrying [`crate::harness::verdict_output_schema`]);
+//! its eval/verdict compute lives in [`crate::harness`].
 //!
 //! Pure: no I/O, no clock, no spawning. Validation reuses [`TaskGraph::topological_sort`].
 
@@ -338,7 +339,7 @@ pub fn fanout_synthesize(workers: Vec<RuntimeTask>, synthesize: RuntimeTask) -> 
 ///
 /// Structurally a fan-out barrier, but semantically distinct: generators are `Implement`
 /// agents producing candidates; the filter is a `Verify` agent that ranks/dedupes against
-/// a rubric (pair with [`crate::harness::eval_pipeline::EvalPipeline`] for the rubric).
+/// a rubric (pair with the [`gen_eval`] verdict schema for the rubric).
 pub fn generate_and_filter(generators: Vec<RuntimeTask>, filter: RuntimeTask) -> WorkflowSpec {
     let mut nodes: Vec<WorkflowNode> = generators
         .into_iter()
@@ -365,9 +366,9 @@ pub fn generate_and_filter(generators: Vec<RuntimeTask>, filter: RuntimeTask) ->
 /// against self-preferential bias). The optional `skeptic` depends on all verifiers and reviews
 /// their flags (real violation vs. false positive). Runs on the W0 workflow executor.
 ///
-/// Pair each verifier with [`crate::harness::eval_pipeline::EvalPipeline`] at run time for the
-/// rubric scoring. For rules known only at run time (claim extraction), a dynamic-fan-out variant
-/// is a later round; this covers the case where the rule/claim set is known up front.
+/// For unknown-size rule sets (claim extraction), a dynamic-fan-out variant is a later round; this
+/// covers the case where the rule/claim set is known up front. For the generate→evaluate→retry
+/// quality gate (scoring one author's output against criteria), see [`gen_eval`].
 pub fn verify_rules(rules: Vec<RuntimeTask>, skeptic: Option<RuntimeTask>) -> WorkflowSpec {
     let mut nodes: Vec<WorkflowNode> = rules
         .into_iter()
@@ -381,6 +382,44 @@ pub fn verify_rules(rules: Vec<RuntimeTask>, skeptic: Option<RuntimeTask>) -> Wo
         );
     }
     WorkflowSpec::new(nodes)
+}
+
+// ---------------------------------------------------------------------------
+// Quality gate — generate → evaluate (#6, the EvalPipeline successor)
+// ---------------------------------------------------------------------------
+
+/// The generate→evaluate quality gate as a workflow: a `Loop` **worker** node (the task, re-run up
+/// to `max_iters`, stopping early on a `loop_continue=false` self-signal) followed by a `Verify`
+/// **eval** node that scores the worker's output against the goal/criteria and emits a structured
+/// verdict ([`crate::harness::verdict_output_schema`] as its `output_schema`).
+///
+/// This is the declarative substrate form of the former `EvalPipeline` (0.5.0 fold, OS-axis #6).
+/// The eval node is a `Verify` agent — [`role_defaults`] gives it `ReadOnly` + [`ContextInheritance::None`]
+/// so it does not inherit the worker's reasoning (bias resistance); it evaluates the worker's
+/// *output*, carried in via its task goal. The verdict's `passed` is the gate.
+///
+/// For the **iterative retry-with-feedback** variant (re-run the worker with the eval's feedback
+/// folded into the next attempt), the SDK `HarnessLoop` drives this with the same
+/// [`crate::harness::build_eval_messages`] / [`crate::harness::parse_verdict`] primitives — the
+/// kernel `Loop` re-arms a single node, so per-iteration eval is necessarily SDK-driven.
+pub fn gen_eval(
+    worker: RuntimeTask,
+    eval: RuntimeTask,
+    max_iters: usize,
+    extract_skill_on_pass: bool,
+) -> WorkflowSpec {
+    let worker_node = WorkflowNode::new(
+        worker.with_lane(TaskLane::new(TaskLane::ORCHESTRATE)),
+        AgentRole::Implement,
+    )
+    .with_loop(max_iters.max(1));
+    let eval_node = WorkflowNode::new(
+        eval.with_lane(TaskLane::new(TaskLane::VERIFY)),
+        AgentRole::Verify,
+    )
+    .with_depends_on(vec![0])
+    .with_output_schema(crate::harness::verdict_output_schema(extract_skill_on_pass));
+    WorkflowSpec::new(vec![worker_node, eval_node])
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +525,43 @@ mod tests {
             assert_eq!(node.isolation, AgentIsolation::ReadOnly);
             assert!(node.depends_on.is_empty()); // all parallel
         }
+        spec.validate().unwrap();
+    }
+
+    #[test]
+    fn gen_eval_shape() {
+        // Worker loops; eval is a bias-resistant Verify node gated on the worker, carrying the
+        // verdict output_schema.
+        let spec = gen_eval(task("implement feature"), task("score against criteria"), 3, true);
+        assert_eq!(spec.nodes.len(), 2);
+
+        let worker = &spec.nodes[0];
+        assert_eq!(worker.role, AgentRole::Implement);
+        assert_eq!(worker.kind, NodeKind::Loop { max_iters: 3 });
+        assert!(worker.depends_on.is_empty());
+
+        let eval = &spec.nodes[1];
+        assert_eq!(eval.role, AgentRole::Verify);
+        assert_eq!(eval.context_inheritance, ContextInheritance::None);
+        assert_eq!(eval.isolation, AgentIsolation::ReadOnly);
+        assert_eq!(eval.depends_on, vec![0]);
+        let schema = eval.output_schema.as_ref().expect("eval node carries verdict schema");
+        assert!(schema["properties"]["passed"].is_object());
+        assert!(schema["properties"]["skill"].is_object()); // extract_skill_on_pass=true
+
+        spec.validate().unwrap();
+        // Worker is the only initially-ready node; eval is gated.
+        assert_eq!(spec.to_task_graph().unwrap().ready_tasks(), vec![0]);
+    }
+
+    #[test]
+    fn gen_eval_max_iters_floor_and_no_skill() {
+        // max_iters=0 would be an invalid loop; the template floors it to 1.
+        let spec = gen_eval(task("w"), task("e"), 0, false);
+        assert_eq!(spec.nodes[0].kind, NodeKind::Loop { max_iters: 1 });
+        // extract_skill_on_pass=false ⇒ no skill property in the verdict schema.
+        let schema = spec.nodes[1].output_schema.as_ref().unwrap();
+        assert!(schema["properties"]["skill"].is_null());
         spec.validate().unwrap();
     }
 

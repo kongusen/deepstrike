@@ -2,7 +2,7 @@ from __future__ import annotations
 import pathlib
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Protocol, TYPE_CHECKING, Union, runtime_checkable
-from deepstrike._kernel import EvalPipeline
+from deepstrike._kernel import build_eval_messages, parse_verdict
 from deepstrike.providers.stream import DoneEvent as _ProviderDoneEvent, TextDelta
 
 from deepstrike.providers.base import RenderedContext
@@ -216,7 +216,6 @@ class HarnessLoop:
         return self._run_streaming_impl(request)
 
     async def _run_streaming_impl(self, request: HarnessRequest) -> AsyncIterator[HarnessEvent]:
-        pipeline = EvalPipeline(extract_skill_on_pass=True)
         criteria = request.criteria or []
 
         current_goal = request.goal
@@ -252,12 +251,10 @@ class HarnessLoop:
 
             yield SupervisingEvent()
 
-            eval_action = pipeline.feed_outcome(request.goal, criteria, last_result, attempt)
-            if eval_action.kind != "evaluate":
-                break
-
+            # #6 (0.5.0): the eval/verdict compute is the kernel's stateless free functions (was the
+            # EvalPipeline state machine). Build the eval prompt, call the eval LLM, parse the verdict.
+            eval_msgs = build_eval_messages(request.goal, criteria, last_result, attempt, True)
             eval_text = ""
-            eval_msgs = eval_action.messages or []
             eval_system = "\n\n".join(m.content for m in eval_msgs if m.role == "system")
             eval_turns = [m for m in eval_msgs if m.role != "system"]
             eval_context = RenderedContext(system_text=eval_system, turns=eval_turns)
@@ -265,22 +262,19 @@ class HarnessLoop:
                 if isinstance(evt, TextDelta):
                     eval_text += evt.delta
 
-            done_action = pipeline.feed_eval_result(eval_text)
-            if done_action.kind != "done":
-                break
-
+            parsed = parse_verdict(eval_text)
             verdict = Verdict(
-                passed=done_action.passed or False,
-                overall_score=getattr(done_action, "overall_score", 0.0) or 0.0,
-                feedback=done_action.feedback or "",
+                passed=parsed.passed,
+                overall_score=parsed.overall_score,
+                feedback=parsed.feedback,
                 details=[
                     CriterionResult(criterion=d.criterion, passed=d.passed, score=d.score, feedback=d.feedback)
-                    for d in (getattr(done_action, "details", None) or [])
+                    for d in (parsed.details or [])
                 ],
             )
 
             if verdict.passed:
-                sc = done_action.skill_candidate
+                sc = parsed.skill_candidate
                 if sc and self._skill_dir:
                     lines = ["---", f"name: {sc.name}", f"description: {sc.description}"]
                     if sc.when_to_use:
@@ -294,6 +288,5 @@ class HarnessLoop:
             yield RevisingEvent(verdict=verdict)
             current_goal = f"{request.goal}\n\n[Attempt {attempt} feedback: {verdict.feedback}]"
             last_result = ""
-            pipeline.reset()
 
         yield MaxAttemptsReachedEvent()

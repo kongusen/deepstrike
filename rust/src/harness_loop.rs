@@ -165,12 +165,9 @@ impl<'a> HarnessLoop<'a> {
         &'b self,
         request: HarnessRequest,
     ) -> impl futures::Stream<Item = Result<HarnessEvent>> + 'b {
-        use deepstrike_core::harness::eval_pipeline::{
-            EvalAction, EvalEvent, EvalPipeline, EvalPolicy,
-        };
+        use deepstrike_core::harness::eval::{build_eval_messages, parse_verdict, Criterion};
 
         async_stream::stream! {
-            let mut pipeline = EvalPipeline::new(EvalPolicy { extract_skill_on_pass: true });
             let mut current_goal = request.goal.clone();
             let criteria_texts: Vec<String> = request.criteria.iter().map(|c| c.text.clone()).collect();
 
@@ -211,18 +208,12 @@ impl<'a> HarnessLoop<'a> {
 
                 yield Ok(HarnessEvent::Supervising);
 
-                let eval_action = pipeline.feed(EvalEvent::Outcome {
-                    goal: request.goal.clone(),
-                    criteria: request.criteria.iter().map(|c| deepstrike_core::harness::eval_pipeline::Criterion {
-                        text: c.text.clone(), required: c.required, weight: c.weight,
-                    }).collect(),
-                    result: last_result,
-                    attempt,
-                });
-                let messages = match eval_action {
-                    EvalAction::Evaluate { messages } => messages,
-                    EvalAction::Done { .. } => break,
-                };
+                // #6 (0.5.0): eval/verdict compute is the kernel's stateless free functions (was the
+                // EvalPipeline state machine). Build the eval prompt, call the eval LLM, parse the verdict.
+                let eval_criteria: Vec<Criterion> = request.criteria.iter().map(|c| Criterion {
+                    text: c.text.clone(), required: c.required, weight: c.weight,
+                }).collect();
+                let messages = build_eval_messages(&request.goal, &eval_criteria, &last_result, attempt, true);
 
                 let mut eval_text = String::new();
                 let context = rendered_context_from_messages(messages);
@@ -237,10 +228,7 @@ impl<'a> HarnessLoop<'a> {
                     }
                 }
 
-                let eval_result = match pipeline.feed(EvalEvent::EvalResult { content: eval_text }) {
-                    EvalAction::Done { result } => result,
-                    _ => break,
-                };
+                let eval_result = parse_verdict(&eval_text);
 
                 let verdict = Verdict {
                     passed: eval_result.passed,
@@ -269,7 +257,6 @@ impl<'a> HarnessLoop<'a> {
 
                 yield Ok(HarnessEvent::Revising { verdict: verdict.clone() });
                 current_goal = format!("{}\n\n[Attempt {} feedback: {}]", request.goal, attempt, verdict.feedback);
-                pipeline.reset();
             }
 
             yield Ok(HarnessEvent::MaxAttemptsReached);

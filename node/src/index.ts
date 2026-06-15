@@ -145,6 +145,7 @@ export {
   fanoutSynthesize,
   generateAndFilter,
   verifyRules,
+  genEval,
 } from "./types/agent.js"
 
 // ── Collaboration layer (Layer 2 + Layer 3) ────────────────────────────────

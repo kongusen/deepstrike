@@ -346,9 +346,13 @@ fn high_urgency_signal_injects_note() {
     let action = sm.feed(LoopEvent::Signal { signal: sig });
     assert!(matches!(action, LoopAction::CallLLM { .. }));
 
-    // With the in-kernel router, High urgency while running maps to Interrupt (not legacy [SIGNAL]).
+    // High urgency is a *soft* interrupt: the kernel records a `[SIGNAL]` note (handled at the next
+    // turn boundary). The hard `[INTERRUPT]` marker is reserved for Critical/`InterruptNow` (see
+    // `signals::attention::UrgencyBasedPolicy` + `dispatch_signal`).
+    let has_signal_note = sm.ctx.partitions.signals.iter().any(|t| t.contains("[SIGNAL]"));
+    assert!(has_signal_note);
     let has_interrupt = sm.ctx.partitions.signals.iter().any(|t| t.contains("[INTERRUPT]"));
-    assert!(has_interrupt);
+    assert!(!has_interrupt);
 }
 
 // ─── Meta-tool injection ────────────────────────────────────────────────────

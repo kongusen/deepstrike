@@ -42,9 +42,9 @@ use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
 use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
 use deepstrike_core::governance::rate_limit::RateLimit;
-use deepstrike_core::harness::eval_pipeline::{
-    Criterion as RustCriterion, EvalAction as RustEvalAction, EvalEvent as RustEvalEvent,
-    EvalPipeline as RustEvalPipeline, EvalPolicy as RustEvalPolicy, EvalResult as RustEvalResult,
+use deepstrike_core::harness::eval::{
+    build_eval_messages as rust_build_eval_messages, parse_verdict as rust_parse_verdict,
+    verdict_output_schema as rust_verdict_output_schema, Criterion as RustCriterion,
     SkillCandidate as RustSkillCandidate,
 };
 use deepstrike_core::memory::curator::CurationResult as RustCurationResult;
@@ -1456,153 +1456,107 @@ impl SkillCandidate {
     }
 }
 
-/// Tagged union returned by `EvalPipeline` methods. Inspect `kind`:
-/// - `"evaluate"` → `messages` (SDK must call evaluator LLM, then `feed_eval_result`)
-/// - `"done"`     → `passed`, `overall_score`, `feedback`, `details`, optional `skill_candidate`
+/// The structured verdict from [`parse_verdict`]: `passed`, `overall_score`, `feedback`, per-criterion
+/// `details`, and an optional `skill_candidate` distilled from a passing run.
 #[pyclass]
 #[derive(Clone)]
-struct EvalPipelineAction {
+struct Verdict {
     #[pyo3(get)]
-    kind: String,
+    passed: bool,
     #[pyo3(get)]
-    messages: Option<Vec<Message>>,
+    overall_score: f32,
     #[pyo3(get)]
-    passed: Option<bool>,
+    feedback: String,
     #[pyo3(get)]
-    overall_score: Option<f32>,
-    #[pyo3(get)]
-    feedback: Option<String>,
-    #[pyo3(get)]
-    details: Option<Vec<PyCriterionResult>>,
+    details: Vec<PyCriterionResult>,
     #[pyo3(get)]
     skill_candidate: Option<SkillCandidate>,
 }
 
 #[pymethods]
-impl EvalPipelineAction {
+impl Verdict {
     fn __repr__(&self) -> String {
         format!(
-            "EvalPipelineAction(kind={:?}, passed={:?})",
-            self.kind, self.passed
+            "Verdict(passed={:?}, overall_score={:?})",
+            self.passed, self.overall_score
         )
     }
 }
 
-impl EvalPipelineAction {
-    fn from_rust_action(a: RustEvalAction) -> Self {
-        match a {
-            RustEvalAction::Evaluate { messages } => Self {
-                kind: "evaluate".into(),
-                messages: Some(messages.iter().map(Message::from_rust).collect()),
-                passed: None,
-                overall_score: None,
-                feedback: None,
-                details: None,
-                skill_candidate: None,
-            },
-            RustEvalAction::Done { result } => Self::from_rust_result(result),
-        }
-    }
+fn criteria_from_py(criteria: Vec<PyObject>) -> Vec<RustCriterion> {
+    use pyo3::Python;
+    Python::with_gil(|py| {
+        criteria
+            .iter()
+            .map(|obj| {
+                let text = obj
+                    .getattr(py, "text")
+                    .and_then(|v| v.extract::<String>(py))
+                    .unwrap_or_default();
+                let required = obj
+                    .getattr(py, "required")
+                    .and_then(|v| v.extract::<bool>(py))
+                    .unwrap_or(true);
+                let weight = obj
+                    .getattr(py, "weight")
+                    .and_then(|v| v.extract::<f32>(py))
+                    .unwrap_or(1.0);
+                RustCriterion {
+                    text,
+                    required,
+                    weight,
+                }
+            })
+            .collect::<Vec<_>>()
+    })
+}
 
-    fn from_rust_result(r: RustEvalResult) -> Self {
-        Self {
-            kind: "done".into(),
-            messages: None,
-            passed: Some(r.passed),
-            overall_score: Some(r.overall_score),
-            feedback: Some(r.feedback),
-            details: Some(
-                r.details
-                    .into_iter()
-                    .map(|d| PyCriterionResult {
-                        criterion: d.criterion,
-                        passed: d.passed,
-                        score: d.score,
-                        feedback: d.feedback,
-                    })
-                    .collect(),
-            ),
-            skill_candidate: r.skill_candidate.map(SkillCandidate::from_rust),
-        }
+/// Build the impartial-evaluator messages for one attempt. Call the evaluator LLM with these, then
+/// feed the text to `parse_verdict`. (0.5.0 fold of the former `EvalPipeline` class, OS-axis #6.)
+#[pyfunction]
+#[pyo3(signature = (goal, criteria, result, attempt, extract_skill_on_pass = true))]
+fn build_eval_messages(
+    goal: String,
+    criteria: Vec<PyObject>,
+    result: String,
+    attempt: u32,
+    extract_skill_on_pass: bool,
+) -> Vec<Message> {
+    let rust_criteria = criteria_from_py(criteria);
+    rust_build_eval_messages(&goal, &rust_criteria, &result, attempt, extract_skill_on_pass)
+        .iter()
+        .map(Message::from_rust)
+        .collect()
+}
+
+/// Parse the evaluator LLM's JSON response into a structured `Verdict`.
+#[pyfunction]
+fn parse_verdict(content: String) -> Verdict {
+    let r = rust_parse_verdict(&content);
+    Verdict {
+        passed: r.passed,
+        overall_score: r.overall_score,
+        feedback: r.feedback,
+        details: r
+            .details
+            .into_iter()
+            .map(|d| PyCriterionResult {
+                criterion: d.criterion,
+                passed: d.passed,
+                score: d.score,
+                feedback: d.feedback,
+            })
+            .collect(),
+        skill_candidate: r.skill_candidate.map(SkillCandidate::from_rust),
     }
 }
 
-/// Kernel state machine for the evaluation cycle.
-///
-/// Drive it like this:
-/// 1. `feed_outcome(goal, criteria, result, attempt)` → `"evaluate"` action
-/// 2. Call evaluator LLM with `action.messages`, collect the text response
-/// 3. `feed_eval_result(text)` → `"done"` action
-/// 4. Read `action.passed` / `action.feedback` / `action.skill_candidate`
-/// 5. Call `reset()` before the next attempt
-#[pyclass]
-struct EvalPipeline {
-    inner: RustEvalPipeline,
-}
-
-#[pymethods]
-impl EvalPipeline {
-    #[new]
-    #[pyo3(signature = (extract_skill_on_pass = true))]
-    fn new(extract_skill_on_pass: bool) -> Self {
-        Self {
-            inner: RustEvalPipeline::new(RustEvalPolicy {
-                extract_skill_on_pass,
-            }),
-        }
-    }
-
-    fn feed_outcome(
-        &mut self,
-        goal: String,
-        criteria: Vec<PyObject>,
-        result: String,
-        attempt: u32,
-    ) -> EvalPipelineAction {
-        use pyo3::Python;
-        let rust_criteria = Python::with_gil(|py| {
-            criteria
-                .iter()
-                .map(|obj| {
-                    let text = obj
-                        .getattr(py, "text")
-                        .and_then(|v| v.extract::<String>(py))
-                        .unwrap_or_default();
-                    let required = obj
-                        .getattr(py, "required")
-                        .and_then(|v| v.extract::<bool>(py))
-                        .unwrap_or(true);
-                    let weight = obj
-                        .getattr(py, "weight")
-                        .and_then(|v| v.extract::<f32>(py))
-                        .unwrap_or(1.0);
-                    RustCriterion {
-                        text,
-                        required,
-                        weight,
-                    }
-                })
-                .collect::<Vec<_>>()
-        });
-        EvalPipelineAction::from_rust_action(self.inner.feed(RustEvalEvent::Outcome {
-            goal,
-            criteria: rust_criteria,
-            result,
-            attempt,
-        }))
-    }
-
-    fn feed_eval_result(&mut self, content: String) -> EvalPipelineAction {
-        EvalPipelineAction::from_rust_action(self.inner.feed(RustEvalEvent::EvalResult { content }))
-    }
-
-    fn is_idle(&self) -> bool {
-        self.inner.is_idle()
-    }
-
-    fn reset(&mut self) {
-        self.inner.reset();
-    }
+/// JSON Schema (as a JSON string) for the verdict an eval node must produce — used as the
+/// `output_schema` of the eval node in the `gen_eval` workflow template.
+#[pyfunction]
+#[pyo3(signature = (extract_skill_on_pass = true))]
+fn verdict_output_schema(extract_skill_on_pass: bool) -> String {
+    rust_verdict_output_schema(extract_skill_on_pass).to_string()
 }
 
 // ──────────────────────────────────────── module registration ─────────────────────────────────
@@ -1636,11 +1590,13 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<IdleRunResult>()?;
     m.add_class::<IdlePipelineAction>()?;
     m.add_class::<IdlePipeline>()?;
-    // Eval / harness pipeline
+    // Eval / harness quality gate (0.5.0 fold: free functions, was the EvalPipeline class)
     m.add_class::<PyCriterionResult>()?;
     m.add_class::<SkillCandidate>()?;
-    m.add_class::<EvalPipelineAction>()?;
-    m.add_class::<EvalPipeline>()?;
+    m.add_class::<Verdict>()?;
+    m.add_function(wrap_pyfunction!(build_eval_messages, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_verdict, m)?)?;
+    m.add_function(wrap_pyfunction!(verdict_output_schema, m)?)?;
     Ok(())
 }
 

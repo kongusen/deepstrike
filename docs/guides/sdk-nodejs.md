@@ -489,7 +489,7 @@ console.log(outcome.passed, outcome.feedback)
 
 ### 10.4 子 Agent × HarnessLoop
 
-配置 `subAgentHarness` 后，`spawnSubAgent()` 会自动通过 `HarnessLoop` + `EvalPipeline` 评估子 agent 输出；criteria 来自 `AgentRunSpec.milestones.phases[].criteria`。未配置时走原有直接运行路径。
+配置 `subAgentHarness` 后，`spawnSubAgent()` 会自动通过 `HarnessLoop`（内核评估原语 `buildEvalMessages` / `parseVerdict`）评估子 agent 输出；criteria 来自 `AgentRunSpec.milestones.phases[].criteria`。未配置时走原有直接运行路径。
 
 ```typescript
 const runner = new RuntimeRunner({

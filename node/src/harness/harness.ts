@@ -140,7 +140,6 @@ export class HarnessLoop {
 
   async *stream(request: HarnessRequest): AsyncIterable<HarnessEvent> {
     const kernel = getKernel()
-    const pipeline = new kernel.EvalPipeline({ extractSkillOnPass: true })
     const criteria = request.criteria ?? []
 
     let currentGoal = request.goal
@@ -180,11 +179,10 @@ export class HarnessLoop {
 
       yield { type: "supervising" }
 
-      const evalAction = pipeline.feedOutcome(request.goal, criteria, lastResult, attempt)
-      if (evalAction.kind !== "evaluate") break
-
+      // #6 (0.5.0): the eval/verdict compute is the kernel's stateless free functions (was the
+      // EvalPipeline state machine). Build the eval prompt, call the eval LLM, parse the verdict.
+      const evalMsgs = kernel.buildEvalMessages(request.goal, criteria, lastResult, attempt, true)
       let evalText = ""
-      const evalMsgs = evalAction.messages ?? []
       const evalContext = {
         systemText: evalMsgs.filter((m: { role: string }) => m.role === "system").map((m: { content: string }) => m.content).join("\n\n"),
         turns: evalMsgs.filter((m: { role: string }) => m.role !== "system"),
@@ -193,19 +191,17 @@ export class HarnessLoop {
         if (evt.type === "text_delta") evalText += (evt as TextDelta).delta
       }
 
-      const doneAction = pipeline.feedEvalResult(evalText)
-      if (doneAction.kind !== "done") break
-
+      const parsed = kernel.parseVerdict(evalText)
       const verdict: Verdict = {
-        passed: doneAction.passed ?? false,
-        overallScore: doneAction.overallScore ?? 0,
-        feedback: doneAction.feedback ?? "",
-        details: doneAction.details ?? [],
+        passed: parsed.passed,
+        overallScore: parsed.overallScore,
+        feedback: parsed.feedback,
+        details: parsed.details ?? [],
       }
 
       if (verdict.passed) {
-        if (doneAction.skillCandidate && this.skillDir) {
-          const { name, description, whenToUse, content } = doneAction.skillCandidate
+        if (parsed.skillCandidate && this.skillDir) {
+          const { name, description, whenToUse, content } = parsed.skillCandidate
           const fm = ["---", `name: ${name}`, `description: ${description}`,
             whenToUse ? `when_to_use: ${whenToUse}` : null, "---", ""]
             .filter(Boolean).join("\n")
@@ -218,7 +214,6 @@ export class HarnessLoop {
       yield { type: "revising", verdict }
       currentGoal = `${request.goal}\n\n[Attempt ${attempt} feedback: ${verdict.feedback}]`
       lastResult = ""
-      pipeline.reset()
     }
 
     yield { type: "max_attempts_reached" }

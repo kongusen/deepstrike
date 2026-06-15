@@ -6,6 +6,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.18] - 2026-06-15
+
+### Changed
+
+- **BREAKING — `EvalPipeline` folded into the workflow substrate (OS-axis #6).** The standalone `EvalPipeline` state-machine class and its FFI bindings are **removed** (Node `EvalPipeline`/`EvalPipelineAction`, Python `EvalPipeline`/`EvalPipelineAction`, WASM `EvalPipeline`, and the kernel `harness::eval_pipeline` module). The generate→evaluate→retry quality gate's compute is now **stateless free functions** exposed on each port: `buildEvalMessages` / `parseVerdict` / `verdictOutputSchema` (Node/WASM camelCase; Python `build_eval_messages` / `parse_verdict` / `verdict_output_schema`). The quality gate's declarative form is the new **`gen_eval` workflow template** — a `Loop` worker + a bias-resistant `Verify` eval node carrying `verdictOutputSchema` as its `output_schema` (kernel `orchestration::workflow::gen_eval`, mirrored as `genEval` / `gen_eval` in the Node/Python SDKs). `HarnessLoop`'s public surface (`HarnessOutcome`) is unchanged — it now drives the loop with the free functions instead of the state machine. **Migration:** replace `new EvalPipeline({extractSkillOnPass}); p.feedOutcome(...); p.feedEvalResult(...)` with `buildEvalMessages(goal, criteria, result, attempt, extractSkillOnPass)` + `parseVerdict(text)`; or use `HarnessLoop` (unchanged) / the `gen_eval` template.
+
+### Added
+
+- **OpenAI Responses continuation — Python parity (prefix-cache G1).** New Python `OpenAIResponsesProvider` (+ `OpenAIResponsesAdapter`) mirroring Node: `previous_response_id` keeps history server-side so each turn sends only the uncovered tail, with automatic degrade-to-full on a missing/expired chain. Continuation state lives in the provider-owned `ProviderRunState`. (Node has shipped this since 0.2.12; this closes the Python gap. WASM/Rust stay minimal.)
+
+### Fixed
+
+- **Rust SDK didn't handle the `AgentPreempted` observation** added in 0.2.17 — its `KernelObservation` match was non-exhaustive, so `deepstrike-sdk` failed to compile (`cargo test --workspace` was red). Added the missing no-op arm.
+- **Stale signal-preemption test.** `t02_state_machine::high_urgency_signal_injects_note` asserted a High-urgency signal injects the hard `[INTERRUPT]` marker, but 0.2.17 made High a *soft* `Interrupt` that records a `[SIGNAL]` note (the `[INTERRUPT]` marker is now exclusive to Critical/`InterruptNow`). Test updated to match the shipped semantics.
+
 ## [0.2.17] - 2026-06-15
 
 ### Added

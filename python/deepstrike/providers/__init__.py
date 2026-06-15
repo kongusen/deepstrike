@@ -39,6 +39,7 @@ from .replay_validator import (
 )
 from .anthropic import AnthropicProvider
 from .openai import OpenAIProvider
+from .openai_responses import OpenAIResponsesProvider, OpenAIResponsesAdapter
 from .qwen import QwenProvider, QwenAnthropicProvider
 from .deepseek import DeepSeekProvider, DeepSeekAnthropicProvider
 from .minimax import MiniMaxAnthropicProvider, MiniMaxOpenAIProvider
@@ -49,6 +50,7 @@ from .glm import GLMProvider, GLMAnthropicProvider
 
 __all__ = [
     "LLMProvider", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
+    "OpenAIResponsesProvider", "OpenAIResponsesAdapter",
     "QwenProvider", "QwenAnthropicProvider", "DeepSeekProvider", "DeepSeekAnthropicProvider",
     "MiniMaxAnthropicProvider", "MiniMaxOpenAIProvider", "OllamaProvider",
     "KimiProvider", "KimiAnthropicProvider", "GeminiProvider", "GLMProvider", "GLMAnthropicProvider",

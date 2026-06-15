@@ -47,7 +47,7 @@ from deepstrike.runtime import (
 from deepstrike.governance import Governance, GovernanceVerdict
 from deepstrike.providers import (
     LLMProvider, RenderedContext, ProviderRunState, RuntimePolicy,
-    AnthropicProvider, OpenAIProvider,
+    AnthropicProvider, OpenAIProvider, OpenAIResponsesProvider,
     QwenProvider, DeepSeekProvider, MiniMaxAnthropicProvider, MiniMaxOpenAIProvider, OllamaProvider, KimiProvider,
     StreamEvent, TextDelta, ThinkingDelta,
     ToolCallEvent, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, DoneEvent, ErrorEvent,
@@ -77,7 +77,7 @@ from deepstrike.types.agent import (
     WorkflowSpec, WorkflowNodeSpec, WorkflowSpawnInfo, workflow_spec_to_kernel,
     workflow_node_spec_to_kernel, submit_workflow_nodes_to_kernel, submit_workflow_to_kernel, submit_workflow_nodes_tool, start_workflow_tool,
     workflow_budget_note,
-    fanout_synthesize, generate_and_filter, verify_rules,
+    fanout_synthesize, generate_and_filter, verify_rules, gen_eval,
 )
 from deepstrike.collaboration import (
     AcceptanceCriterion, VerificationContract, ContractCheckResult,
@@ -118,6 +118,7 @@ __all__ = [
     "ProviderReplay",
     "ProviderReplay",
     "LLMProvider", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
+    "OpenAIResponsesProvider",
     "QwenProvider", "DeepSeekProvider", "MiniMaxAnthropicProvider", "MiniMaxOpenAIProvider", "OllamaProvider", "KimiProvider",
     "StreamEvent", "TextDelta", "ThinkingDelta",
     "ToolCallEvent", "ToolDeltaEvent", "ToolSuspendEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent",
@@ -155,6 +156,6 @@ __all__ = [
     "WorkflowSpec", "WorkflowNodeSpec", "WorkflowSpawnInfo", "workflow_spec_to_kernel",
     "workflow_node_spec_to_kernel", "submit_workflow_nodes_to_kernel", "submit_workflow_to_kernel", "submit_workflow_nodes_tool", "start_workflow_tool",
     "workflow_budget_note",
-    "fanout_synthesize", "generate_and_filter", "verify_rules",
+    "fanout_synthesize", "generate_and_filter", "verify_rules", "gen_eval",
     "__version__",
 ]

@@ -51,7 +51,7 @@ DeepStrike separates computation from I/O at the language boundary. A pure-Rust 
 │  P3 MM       — compression funnel, spool, page-out/in, memory     │
 │  Proc        — sub-agent process table                            │
 │  IPC         — in-kernel SignalRouter (default)                   │
-│  ContextEngine · EvalPipeline · IdlePipeline · collaboration types│
+│  ContextEngine · eval (gen_eval) · IdlePipeline · collaboration  │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -82,7 +82,7 @@ The kernel never touches the network, filesystem, or clock. All time-dependent b
 | **Proc** | Process table for spawned sub-agents; `agent_process_changed` observations |
 | **IPC / signals** | In-kernel `SignalRouter` (default): dedup, attention queue, disposition → `signal_disposed` |
 | `ContextEngine` | Four-slot context window; compresses **history only** under pressure |
-| `EvalPipeline` | LLM-as-judge scoring; extracts `SkillCandidate` objects from passing runs |
+| Eval primitives | LLM-as-judge scoring as stateless functions (`build_eval_messages` / `parse_verdict` / `verdict_output_schema`); extracts `SkillCandidate` objects from passing runs. Declarative form: the `gen_eval` workflow template |
 | `IdlePipeline` | Post-session: analyses `SessionData`, synthesises insights, commits to `DreamStore` |
 | **Event log** | Observations tagged `syscall` · `sched` · `mm` · `proc` · `ipc` for session log and OS snapshot rebuild |
 

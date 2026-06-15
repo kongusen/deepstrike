@@ -1,259 +1,108 @@
-use deepstrike_core::harness::eval_pipeline::*;
+use deepstrike_core::harness::{build_eval_messages, parse_verdict, verdict_output_schema, Criterion};
 
-// ─── EvalPipeline lifecycle ─────────────────────────────────────────────────
+// ─── Eval prompt builder ────────────────────────────────────────────────────
 
 #[test]
-fn pipeline_starts_idle() {
-    let p = EvalPipeline::new(EvalPolicy::default());
-    assert!(p.is_idle());
+fn build_eval_messages_contain_goal_and_criteria() {
+    let messages = build_eval_messages(
+        "Write tests",
+        &[Criterion::required("Cover edge cases")],
+        "test code",
+        1,
+        true,
+    );
+    let all_text: String = messages
+        .iter()
+        .filter_map(|m| m.content.as_text())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(all_text.contains("Write tests"));
+    assert!(all_text.contains("Cover edge cases"));
+    assert!(all_text.contains("test code"));
+    // attempt number surfaces in the output header
+    assert!(all_text.contains("attempt 1"));
 }
 
 #[test]
-fn outcome_transitions_to_eval_pending() {
-    let mut p = EvalPipeline::new(EvalPolicy::default());
-    let action = p.feed(EvalEvent::Outcome {
-        goal: "Write a function".into(),
-        criteria: vec!["Must handle errors".into()],
-        result: "fn foo() {}".into(),
-        attempt: 1,
-    });
-    assert!(matches!(action, EvalAction::Evaluate { .. }));
-    assert!(matches!(p.phase, EvalPhase::EvalPending { .. }));
+fn build_eval_messages_skill_instruction_toggles() {
+    let with_skill: String = build_eval_messages("g", &[], "r", 1, true)
+        .iter()
+        .filter_map(|m| m.content.as_text())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(with_skill.contains("\"skill\""));
+    let no_skill: String = build_eval_messages("g", &[], "r", 1, false)
+        .iter()
+        .filter_map(|m| m.content.as_text())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(!no_skill.contains("\"name\":\"snake_case\""));
+}
+
+// ─── Verdict parsing ─────────────────────────────────────────────────────────
+
+#[test]
+fn parse_verdict_passed() {
+    let result = parse_verdict(r#"{"passed": true, "feedback": "All criteria met"}"#);
+    assert!(result.passed);
+    assert_eq!(result.feedback, "All criteria met");
+    assert!(result.skill_candidate.is_none());
 }
 
 #[test]
-fn evaluate_messages_contain_goal_and_criteria() {
-    let mut p = EvalPipeline::new(EvalPolicy::default());
-    let action = p.feed(EvalEvent::Outcome {
-        goal: "Write tests".into(),
-        criteria: vec!["Cover edge cases".into()],
-        result: "test code".into(),
-        attempt: 1,
-    });
-    match action {
-        EvalAction::Evaluate { messages } => {
-            let all_text: String = messages
-                .iter()
-                .filter_map(|m| m.content.as_text())
-                .collect::<Vec<_>>()
-                .join(" ");
-            assert!(all_text.contains("Write tests"));
-            assert!(all_text.contains("Cover edge cases"));
-            assert!(all_text.contains("test code"));
-        }
-        _ => panic!("expected Evaluate"),
-    }
-}
-
-// ─── Eval result parsing ────────────────────────────────────────────────────
-
-#[test]
-fn eval_result_passed() {
-    let mut p = EvalPipeline::new(EvalPolicy::default());
-    p.feed(EvalEvent::Outcome {
-        goal: "g".into(),
-        criteria: vec![],
-        result: "r".into(),
-        attempt: 1,
-    });
-    let action = p.feed(EvalEvent::EvalResult {
-        content: r#"{"passed": true, "feedback": "All criteria met"}"#.into(),
-    });
-    match action {
-        EvalAction::Done { result } => {
-            assert!(result.passed);
-            assert_eq!(result.feedback, "All criteria met");
-            assert!(result.skill_candidate.is_none());
-        }
-        _ => panic!("expected Done"),
-    }
+fn parse_verdict_failed() {
+    let result = parse_verdict(r#"{"passed": false, "feedback": "Missing error handling"}"#);
+    assert!(!result.passed);
+    assert_eq!(result.feedback, "Missing error handling");
 }
 
 #[test]
-fn eval_result_failed() {
-    let mut p = EvalPipeline::new(EvalPolicy::default());
-    p.feed(EvalEvent::Outcome {
-        goal: "g".into(),
-        criteria: vec![],
-        result: "r".into(),
-        attempt: 1,
-    });
-    let action = p.feed(EvalEvent::EvalResult {
-        content: r#"{"passed": false, "feedback": "Missing error handling"}"#.into(),
-    });
-    match action {
-        EvalAction::Done { result } => {
-            assert!(!result.passed);
-            assert_eq!(result.feedback, "Missing error handling");
-        }
-        _ => panic!("expected Done"),
-    }
-}
-
-#[test]
-fn eval_result_with_skill_candidate() {
-    let mut p = EvalPipeline::new(EvalPolicy {
-        extract_skill_on_pass: true,
-    });
-    p.feed(EvalEvent::Outcome {
-        goal: "g".into(),
-        criteria: vec![],
-        result: "r".into(),
-        attempt: 1,
-    });
+fn parse_verdict_with_skill_candidate() {
     let json = r#"{"passed":true,"feedback":"Good","skill":{"name":"robust_api","description":"API with retries","content":"Always retry on 5xx."}}"#;
-    let action = p.feed(EvalEvent::EvalResult {
-        content: json.into(),
-    });
-    match action {
-        EvalAction::Done { result } => {
-            assert!(result.passed);
-            let skill = result.skill_candidate.unwrap();
-            assert_eq!(skill.name, "robust_api");
-            assert_eq!(skill.description, "API with retries");
-            assert!(skill.content.contains("retry"));
-        }
-        _ => panic!("expected Done"),
-    }
+    let result = parse_verdict(json);
+    assert!(result.passed);
+    let skill = result.skill_candidate.unwrap();
+    assert_eq!(skill.name, "robust_api");
+    assert_eq!(skill.description, "API with retries");
+    assert!(skill.content.contains("retry"));
 }
 
 #[test]
-fn eval_result_skill_with_when_to_use() {
-    let mut p = EvalPipeline::new(EvalPolicy {
-        extract_skill_on_pass: true,
-    });
-    p.feed(EvalEvent::Outcome {
-        goal: "g".into(),
-        criteria: vec![],
-        result: "r".into(),
-        attempt: 1,
-    });
+fn parse_verdict_skill_with_when_to_use() {
     let json = r#"{"passed":true,"feedback":"ok","skill":{"name":"retry","description":"retry logic","when_to_use":"When calling external APIs","content":"body"}}"#;
-    let action = p.feed(EvalEvent::EvalResult {
-        content: json.into(),
-    });
-    match action {
-        EvalAction::Done { result } => {
-            let skill = result.skill_candidate.unwrap();
-            assert_eq!(
-                skill.when_to_use.as_deref(),
-                Some("When calling external APIs")
-            );
-        }
-        _ => panic!("expected Done"),
-    }
-}
-
-// ─── Markdown fence stripping ───────────────────────────────────────────────
-
-#[test]
-fn strips_markdown_json_fences() {
-    let mut p = EvalPipeline::new(EvalPolicy::default());
-    p.feed(EvalEvent::Outcome {
-        goal: "g".into(),
-        criteria: vec![],
-        result: "r".into(),
-        attempt: 1,
-    });
-    let action = p.feed(EvalEvent::EvalResult {
-        content: "```json\n{\"passed\":true,\"feedback\":\"good\"}\n```".into(),
-    });
-    match action {
-        EvalAction::Done { result } => assert!(result.passed),
-        _ => panic!("expected Done"),
-    }
+    let result = parse_verdict(json);
+    let skill = result.skill_candidate.unwrap();
+    assert_eq!(
+        skill.when_to_use.as_deref(),
+        Some("When calling external APIs")
+    );
 }
 
 #[test]
-fn handles_malformed_json() {
-    let mut p = EvalPipeline::new(EvalPolicy::default());
-    p.feed(EvalEvent::Outcome {
-        goal: "g".into(),
-        criteria: vec![],
-        result: "r".into(),
-        attempt: 1,
-    });
-    let action = p.feed(EvalEvent::EvalResult {
-        content: "not json at all".into(),
-    });
-    match action {
-        EvalAction::Done { result } => {
-            assert!(!result.passed); // defaults to false
-        }
-        _ => panic!("expected Done"),
-    }
-}
-
-// ─── Reset ──────────────────────────────────────────────────────────────────
-
-#[test]
-fn reset_returns_to_idle() {
-    let mut p = EvalPipeline::new(EvalPolicy::default());
-    p.feed(EvalEvent::Outcome {
-        goal: "g".into(),
-        criteria: vec![],
-        result: "r".into(),
-        attempt: 1,
-    });
-    p.feed(EvalEvent::EvalResult {
-        content: r#"{"passed":true,"feedback":"ok"}"#.into(),
-    });
-    assert!(!p.is_idle());
-    p.reset();
-    assert!(p.is_idle());
+fn parse_verdict_strips_markdown_json_fences() {
+    let result = parse_verdict("```json\n{\"passed\":true,\"feedback\":\"good\"}\n```");
+    assert!(result.passed);
 }
 
 #[test]
-fn reset_allows_reuse() {
-    let mut p = EvalPipeline::new(EvalPolicy::default());
-    p.feed(EvalEvent::Outcome {
-        goal: "g".into(),
-        criteria: vec![],
-        result: "r".into(),
-        attempt: 1,
-    });
-    p.feed(EvalEvent::EvalResult {
-        content: r#"{"passed":false,"feedback":"fail"}"#.into(),
-    });
-    p.reset();
-
-    let action = p.feed(EvalEvent::Outcome {
-        goal: "g2".into(),
-        criteria: vec!["c1".into()],
-        result: "r2".into(),
-        attempt: 2,
-    });
-    assert!(matches!(action, EvalAction::Evaluate { .. }));
+fn parse_verdict_handles_malformed_json() {
+    let result = parse_verdict("not json at all");
+    assert!(!result.passed); // defaults to false
 }
 
-// ─── EvalPolicy ─────────────────────────────────────────────────────────────
+// ─── Verdict output schema (gen_eval eval-node contract) ──────────────────────
 
 #[test]
-fn eval_policy_default() {
-    let policy = EvalPolicy::default();
-    assert!(policy.extract_skill_on_pass);
-}
-
-#[test]
-fn eval_policy_no_skill_extraction() {
-    let mut p = EvalPipeline::new(EvalPolicy {
-        extract_skill_on_pass: false,
-    });
-    p.feed(EvalEvent::Outcome {
-        goal: "g".into(),
-        criteria: vec![],
-        result: "r".into(),
-        attempt: 1,
-    });
-    let action = p.feed(EvalEvent::EvalResult {
-        content: r#"{"passed":true,"feedback":"ok"}"#.into(),
-    });
-    match action {
-        EvalAction::Done { result } => {
-            assert!(result.passed);
-        }
-        _ => panic!("expected Done"),
-    }
+fn verdict_output_schema_shape() {
+    let schema = verdict_output_schema(true);
+    assert_eq!(schema["type"], "object");
+    assert!(schema["properties"]["passed"].is_object());
+    assert!(schema["properties"]["overall_score"].is_object());
+    assert!(schema["properties"]["feedback"].is_object());
+    assert!(schema["properties"]["details"].is_object());
+    assert!(schema["properties"]["skill"].is_object());
+    // skill property is dropped when extraction is disabled
+    assert!(verdict_output_schema(false)["properties"]["skill"].is_null());
 }
 
 // ─── SDK-level Harness types ────────────────────────────────────────────────

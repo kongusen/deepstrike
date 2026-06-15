@@ -36,11 +36,8 @@ declare module "@deepstrike/wasm-kernel" {
     feedSynthesisResult(content: string): { kind: string; curationResult?: unknown; runResult?: unknown }
   }
 
-  export class EvalPipeline {
-    constructor(options: { extractSkillOnPass: boolean })
-    feedOutcome(goal: string, criteria: unknown[], result: string, attempt: number): { kind: string; messages?: unknown[] }
-    feedEvalResult(content: string): { kind: string; passed?: boolean; overallScore?: number; feedback?: string; details?: unknown[]; skillCandidate?: unknown }
-    reset(): void
-    isIdle(): boolean
-  }
+  // Eval / harness quality gate (0.5.0 fold: free functions, was the EvalPipeline class).
+  export function buildEvalMessages(goal: string, criteria: unknown[], result: string, attempt: number, extractSkillOnPass: boolean): import("./types.js").Message[]
+  export function parseVerdict(content: string): { passed: boolean; overallScore: number; feedback: string; details: unknown[]; skillCandidate?: unknown }
+  export function verdictOutputSchema(extractSkillOnPass: boolean): string
 }

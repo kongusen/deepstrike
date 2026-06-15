@@ -90,13 +90,11 @@ interface NativeCriterion {
   weight?: number
 }
 
-interface EvalPipelineAction {
-  kind: "evaluate" | "done"
-  messages?: Message[]
-  passed?: boolean
-  overallScore?: number
-  feedback?: string
-  details?: Array<{
+export interface Verdict {
+  passed: boolean
+  overallScore: number
+  feedback: string
+  details: Array<{
     criterion: string
     passed: boolean
     score: number
@@ -108,12 +106,6 @@ interface EvalPipelineAction {
     whenToUse?: string
     content: string
   }
-}
-
-interface EvalPipelineInstance {
-  feedOutcome(goal: string, criteria: NativeCriterion[], result: string, attempt: number): EvalPipelineAction
-  feedEvalResult(content: string): EvalPipelineAction
-  reset(): void
 }
 
 interface IdlePipelineAction {
@@ -170,7 +162,10 @@ interface KernelModule {
     timeoutMs?: bigint
   }) => KernelRuntimeInstance
   SignalRouter: new (maxQueueSize: number) => SignalRouterInstance
-  EvalPipeline: new (options?: { extractSkillOnPass?: boolean }) => EvalPipelineInstance
+  // Eval / harness quality gate (0.5.0 fold: free functions, was the EvalPipeline class).
+  buildEvalMessages(goal: string, criteria: NativeCriterion[], result: string, attempt: number, extractSkillOnPass: boolean): Message[]
+  parseVerdict(content: string): Verdict
+  verdictOutputSchema(extractSkillOnPass: boolean): string
   IdlePipeline: new (agentId: string) => IdlePipelineInstance
 }
 

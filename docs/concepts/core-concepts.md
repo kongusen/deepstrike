@@ -36,7 +36,7 @@ estimated_tokens: 800
 
 ### Automatic skill extraction
 
-`HarnessLoop` creates skills automatically. When a run passes the quality gate, `EvalPipeline` extracts the successful pattern and writes it as a new `.md` file. This closes the feedback loop: good solutions become reusable guides.
+`HarnessLoop` creates skills automatically. When a run passes the quality gate, the eval step (`parseVerdict`) surfaces a `SkillCandidate` from the successful pattern and `HarnessLoop` writes it as a new `.md` file. This closes the feedback loop: good solutions become reusable guides.
 
 ### SkillRegistry (Python / Node.js)
 
@@ -246,9 +246,9 @@ Wraps a full agent session with LLM-as-judge retry:
 
 ```text
 attempt 1 → runner.run(goal)
-          → EvalPipeline: score=0.4  feedback="no error handling, no docstring"
+          → eval (parseVerdict): score=0.4  feedback="no error handling, no docstring"
 attempt 2 → runner.run(goal + "\n\nPrevious feedback: " + feedback)
-          → EvalPipeline: score=0.85 ✓ passed
+          → eval (parseVerdict): score=0.85 ✓ passed
           → SkillCandidate extracted → written to skills/sort_function.md
 ```
 

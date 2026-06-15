@@ -1,5 +1,6 @@
-pub mod eval_pipeline;
+pub mod eval;
 
-pub use eval_pipeline::{
-    EvalAction, EvalEvent, EvalPhase, EvalPipeline, EvalPolicy, EvalResult, SkillCandidate,
+pub use eval::{
+    build_eval_messages, parse_verdict, verdict_output_schema, Criterion, CriterionResult,
+    EvalResult, SkillCandidate,
 };

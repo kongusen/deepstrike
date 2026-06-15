@@ -83,7 +83,6 @@ export class HarnessLoop {
 
   async *runStreaming(request: HarnessRequest): AsyncIterable<HarnessEvent> {
     const kernel = await import("@deepstrike/wasm-kernel")
-    const pipeline = new kernel.EvalPipeline({ extractSkillOnPass: true })
     const criteria = request.criteria ?? []
 
     let currentGoal = request.goal
@@ -116,26 +115,23 @@ export class HarnessLoop {
 
       yield { type: "supervising" }
 
-      const evalAction = pipeline.feedOutcome(request.goal, criteria, lastResult, attempt)
-      if (evalAction.kind !== "evaluate") break
-
+      // #6 (0.5.0): eval/verdict compute is the kernel's stateless free functions (was EvalPipeline).
+      const evalMsgs = kernel.buildEvalMessages(request.goal, criteria, lastResult, attempt, true)
       let evalText = ""
       const evalContext: import("../types.js").RenderedContext = {
         systemText: "",
-        turns: (evalAction.messages ?? []) as import("../types.js").Message[],
+        turns: evalMsgs as import("../types.js").Message[],
       }
       for await (const evt of this.evalProvider.stream(evalContext, [], undefined)) {
         if (evt.type === "text_delta") evalText += (evt as TextDelta).delta
       }
 
-      const doneAction = pipeline.feedEvalResult(evalText)
-      if (doneAction.kind !== "done") break
-
+      const parsed = kernel.parseVerdict(evalText)
       const verdict: Verdict = {
-        passed: doneAction.passed ?? false,
-        overallScore: doneAction.overallScore ?? 0,
-        feedback: doneAction.feedback ?? "",
-        details: (doneAction.details ?? []) as CriterionResult[],
+        passed: parsed.passed,
+        overallScore: parsed.overallScore,
+        feedback: parsed.feedback,
+        details: (parsed.details ?? []) as CriterionResult[],
       }
 
       if (verdict.passed) {
@@ -146,7 +142,6 @@ export class HarnessLoop {
       yield { type: "revising", verdict }
       currentGoal = `${request.goal}\n\n[Attempt ${attempt} feedback: ${verdict.feedback}]`
       lastResult = ""
-      pipeline.reset()
     }
 
     yield { type: "max_attempts_reached" }

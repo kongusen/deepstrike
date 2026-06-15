@@ -31,7 +31,7 @@ A single runner re-using its own context to retry a failed task is vulnerable to
 ├──────────────────────────────────────────────────────────────┤
 │  Layer 1: RuntimeRunner  (SessionLog, ExecutionPlane, DreamStore) │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 0: Kernel  (ContextManager, TaskGraph, EvalPipeline)  │
+│  Layer 0: Kernel  (ContextManager, TaskGraph, gen_eval)  │
 └──────────────────────────────────────────────────────────────┘
 ```
 

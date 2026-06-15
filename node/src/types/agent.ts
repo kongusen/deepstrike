@@ -1,4 +1,5 @@
 import type { Message, ToolSchema } from "../types.js"
+import { getKernel } from "../kernel.js"
 
 export type KernelAgentRole = "explore" | "plan" | "implement" | "verify" | "custom"
 export type AgentIsolation = "shared" | "read_only" | "worktree" | "remote"
@@ -639,6 +640,40 @@ export function generateAndFilter(generators: WorkflowTaskSpec[], filter: Workfl
     dependsOn: generators.map((_, i) => i),
   })
   return { nodes }
+}
+
+/**
+ * Generate→evaluate quality gate (the EvalPipeline successor, #6): a `loop` worker node (re-run up
+ * to `maxIters`, stopping early on a `loop_continue=false` self-signal) + a bias-resistant `verify`
+ * eval node gated on it, carrying the kernel's verdict `outputSchema`. Mirrors the kernel `gen_eval`
+ * template. For the iterative retry-with-feedback variant, drive it with `HarnessLoop`.
+ */
+export function genEval(
+  worker: WorkflowTaskSpec,
+  evaluate: WorkflowTaskSpec,
+  maxIters = 3,
+  extractSkillOnPass = true,
+): WorkflowSpec {
+  const schema = JSON.parse(getKernel().verdictOutputSchema(extractSkillOnPass)) as Record<string, unknown>
+  return {
+    nodes: [
+      {
+        task: asTask(worker),
+        role: "implement",
+        isolation: "worktree",
+        contextInheritance: "full",
+        loop: { maxIters: Math.max(1, maxIters) },
+      },
+      {
+        task: asTask(evaluate),
+        role: "verify",
+        isolation: "read_only",
+        contextInheritance: "none",
+        dependsOn: [0],
+        outputSchema: schema,
+      },
+    ],
+  }
 }
 
 /**

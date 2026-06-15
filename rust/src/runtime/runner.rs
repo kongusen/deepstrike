@@ -1608,6 +1608,7 @@ impl RuntimeRunner {
                 // (node/python only), so these are observed-but-ignored here.
                 KernelObservation::WorkflowBatchSpawned { .. } => {}
                 KernelObservation::WorkflowCompleted { .. } => {}
+                KernelObservation::AgentPreempted { .. } => {}
                 // Governance flagged a tool call for user approval. The kernel does
                 // not block it; the SDK-side human-approval workflow is a follow-up.
                 KernelObservation::ToolGated { .. } => {}

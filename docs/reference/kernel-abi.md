@@ -186,7 +186,7 @@ Sub-agent isolation is a **kernel contract**, not a prompt convention.
 3. Host SDK runs the child via `SubAgentOrchestrator` / `FilteredExecutionPlane` (capability filter enforced).
 4. Host feeds `sub_agent_completed` with `SubAgentResult` back to the parent kernel.
 
-When `RuntimeOptions.subAgentHarness` is configured, the host runs the child through `HarnessLoop` + `EvalPipeline` (criteria from `AgentRunSpec.milestones.phases[].criteria`) before feeding the result back. Without it, the direct run path is used.
+When `RuntimeOptions.subAgentHarness` is configured, the host runs the child through `HarnessLoop` (kernel eval primitives `buildEvalMessages` / `parseVerdict`; criteria from `AgentRunSpec.milestones.phases[].criteria`) before feeding the result back. Without it, the direct run path is used.
 
 **SDK entry points:**
 
