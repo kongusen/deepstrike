@@ -270,6 +270,21 @@ pub enum KernelInputEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         submitter_agent_id: Option<String>,
     },
+    /// M5/G1: an agent authors a whole `WorkflowSpec` (the article's "model writes its own harness").
+    /// The agent-reachable analogue of the host-only `LoadWorkflow`: **bootstraps** the DAG when no
+    /// workflow is active, else **flattens** the spec's nodes onto the running DAG (bootstrap-or-flatten,
+    /// one kernel / one quota — never a workflow stack). Gated by `Syscall::LoadWorkflow`. Additive ABI:
+    /// a brand-new variant, byte-identical on the wire for SDKs that never send it.
+    SubmitWorkflow {
+        spec: crate::orchestration::workflow::WorkflowSpec,
+        /// Used only on bootstrap (no workflow active) to seed child session ids; ignored on flatten.
+        #[serde(default)]
+        parent_session_id: String,
+        /// G1: the authoring node's agent id (flatten case) — a quarantined author's nodes are coerced
+        /// quarantined. Additive: omitted (top-level bootstrap) → `None` → the run's own trust applies.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        submitter_agent_id: Option<String>,
+    },
     /// Feed long-term memory entries into the knowledge partition (page-in).
     /// SDK performs retrieval I/O; kernel only applies the result.
     PageIn {
@@ -479,6 +494,17 @@ pub enum KernelObservation {
         completed: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         failed: Vec<String>,
+    },
+    /// #2-B: a high-urgency `InterruptNow` signal preempted in-flight work. The kernel has already
+    /// marked these agents `Done(UserAbort)` and reclaimed the root to reason about the interrupt; the
+    /// SDK must ABORT the listed in-flight child runs and discard their results (do NOT feed their
+    /// `SubAgentCompleted`). Additive variant (`agent_preempted`) — byte-identical for SDKs that never
+    /// receive it.
+    AgentPreempted {
+        turn: u32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        agent_ids: Vec<String>,
+        reason: String,
     },
     /// A tool call needs user approval (governance `AskUser`). Not blocked by the
     /// kernel — the SDK must obtain approval before executing the named call.
@@ -861,6 +887,21 @@ impl KernelRuntime {
                 let action = self
                     .sm
                     .submit_workflow_nodes(nodes, submitter_agent_id.as_deref());
+                if matches!(action, LoopAction::AwaitingResume) {
+                    return KernelStep::empty(self.sm.take_observations());
+                }
+                return KernelStep::single(action, self.sm.take_observations());
+            }
+            KernelInputEvent::SubmitWorkflow {
+                spec,
+                parent_session_id,
+                submitter_agent_id,
+            } => {
+                let action = self.sm.submit_workflow(
+                    spec,
+                    &parent_session_id,
+                    submitter_agent_id.as_deref(),
+                );
                 if matches!(action, LoopAction::AwaitingResume) {
                     return KernelStep::empty(self.sm.take_observations());
                 }
@@ -1919,6 +1960,61 @@ mod tests {
         assert!(step.observations.iter().any(|o| matches!(
             o,
             KernelObservation::WorkflowCompleted { completed, .. } if completed.len() == 2
+        )));
+    }
+
+    #[test]
+    fn submit_workflow_input_bootstraps_a_dag_over_the_abi() {
+        // M5/G1: a top-level agent authors a whole spec over the ABI (full serde round-trip of
+        // SubmitWorkflow + WorkflowSpec) with no workflow active → the kernel bootstraps and drives it.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+        use crate::types::result::{LoopResult, SubAgentResult, TerminationReason};
+
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+            task: RuntimeTask::new("parent task"),
+            run_spec: None,
+        }));
+        runtime.state_machine_mut().take_observations();
+
+        // No LoadWorkflow first — the agent itself authors the spec.
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("authored root"),
+            AgentRole::Implement,
+        )]);
+        let event = KernelInputEvent::SubmitWorkflow {
+            spec,
+            parent_session_id: "sess".to_string(),
+            submitter_agent_id: None,
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: KernelInputEvent = serde_json::from_str(&json).expect("deserialize");
+        let step = runtime.step(KernelInput::new(parsed));
+        // The authored node bootstraps as wf-node0 in a workflow batch.
+        assert!(step.observations.iter().any(|o| matches!(
+            o,
+            KernelObservation::WorkflowBatchSpawned { nodes, .. }
+                if nodes.len() == 1 && nodes[0].agent_id == "wf-node0" && nodes[0].goal == "authored root"
+        )));
+
+        let step = runtime.step(KernelInput::new(KernelInputEvent::SubAgentCompleted {
+            result: SubAgentResult {
+                agent_id: compact_str::CompactString::new("wf-node0"),
+                result: LoopResult {
+                    termination: TerminationReason::Completed,
+                    final_message: None,
+                    turns_used: 1,
+                    total_tokens_used: 1,
+                    loop_continue: None,
+                    classify_branch: None,
+                    tournament_winner: None,
+                },
+            },
+        }));
+        assert!(step.observations.iter().any(|o| matches!(
+            o,
+            KernelObservation::WorkflowCompleted { completed, .. } if completed.len() == 1
         )));
     }
 

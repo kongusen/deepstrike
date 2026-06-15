@@ -4,6 +4,7 @@
 
     use super::*;
     use crate::context::skill_catalog::SKILL_TOOL_NAME;
+    use crate::runtime::kernel::KernelPressureAction;
     use crate::types::message::Role;
     use crate::types::skill::SkillMetadata;
 
@@ -145,6 +146,86 @@
         assert!(matches!(sm.phase, LoopPhase::Reason));
         assert!(sm.ctx.partitions.signals.iter().any(|s| s.contains("[INTERRUPT]")));
         assert_eq!(sm.ctx.partitions.history.messages.len(), history_len_before);
+    }
+
+    // ── #2-B: signal preemption ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn interrupt_now_preempts_awaited_subagent() {
+        // Critical signal while the root is suspended awaiting a sub-agent → InterruptNow → preempt:
+        // emit AgentPreempted, clear the SubAgentAwait, reclaim the root with a reason turn.
+        use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+        use crate::types::signal::{SignalSource, SignalType, Urgency};
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+        let spec = AgentRunSpec::new(
+            AgentIdentity::sub_agent("child", "child-session"),
+            AgentRole::Implement,
+            "child task",
+        );
+        sm.spawn_sub_agent(spec, "parent-sess");
+        assert!(sm.is_suspended());
+        sm.take_observations();
+
+        let sig = RuntimeSignal::new(SignalSource::Gateway, SignalType::Alert, Urgency::Critical, "stop and handle this");
+        let action = sm.signal_event(sig);
+        assert!(matches!(action, Some(LoopAction::CallLLM { .. })), "interrupt reclaims the root");
+        assert!(!sm.is_suspended(), "preemption cleared SubAgentAwait");
+        let obs = sm.take_observations();
+        assert!(obs.iter().any(|o| matches!(
+            o,
+            KernelObservation::AgentPreempted { agent_ids, .. } if agent_ids == &vec!["child".to_string()]
+        )), "AgentPreempted names the aborted child");
+    }
+
+    #[test]
+    fn interrupt_now_aborts_owning_workflow() {
+        // Critical signal while a workflow's node is running → tear the whole WorkflowRun down
+        // (§6.1a): emit WorkflowCompleted (non-completed nodes failed) + AgentPreempted, clear it.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+        use crate::types::signal::{SignalSource, SignalType, Urgency};
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(RuntimeTask::new("root node"), AgentRole::Implement)]);
+        sm.load_workflow(spec, "sess");
+        assert!(sm.workflow_active());
+        sm.take_observations();
+
+        let sig = RuntimeSignal::new(SignalSource::Gateway, SignalType::Alert, Urgency::Critical, "abort");
+        sm.signal_event(sig);
+        assert!(!sm.workflow_active(), "InterruptNow tore the workflow down");
+        let obs = sm.take_observations();
+        assert!(obs.iter().any(|o| matches!(o, KernelObservation::AgentPreempted { .. })));
+        assert!(obs.iter().any(|o| matches!(
+            o,
+            KernelObservation::WorkflowCompleted { failed, .. } if failed.contains(&"wf-node0".to_string())
+        )), "the running node is reported failed on abort");
+    }
+
+    #[test]
+    fn high_urgency_interrupt_does_not_preempt() {
+        // High (not Critical) signal while busy → soft Interrupt: record the directive, do NOT abort
+        // the running sub-agent or force a turn. Distinguishes Interrupt from InterruptNow.
+        use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+        use crate::types::signal::{SignalSource, SignalType, Urgency};
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+        let spec = AgentRunSpec::new(
+            AgentIdentity::sub_agent("child", "child-session"),
+            AgentRole::Implement,
+            "child task",
+        );
+        sm.spawn_sub_agent(spec, "parent-sess");
+        sm.take_observations();
+
+        let sig = RuntimeSignal::new(SignalSource::Gateway, SignalType::Alert, Urgency::High, "fyi handle soon");
+        let action = sm.signal_event(sig);
+        assert!(action.is_none(), "soft Interrupt does not force a turn");
+        assert!(sm.is_suspended(), "running sub-agent is NOT aborted");
+        let obs = sm.take_observations();
+        assert!(!obs.iter().any(|o| matches!(o, KernelObservation::AgentPreempted { .. })), "no preemption");
+        assert!(sm.ctx.partitions.task_state.directives.iter().any(|d| d.contains("handle soon")), "directive recorded for next boundary");
     }
 
     #[test]
@@ -1630,6 +1711,96 @@
     }
 
     #[test]
+    fn submit_workflow_bootstraps_dag_when_no_workflow_active() {
+        // M5/G1: a top-level agent (no workflow active) authors a spec → the kernel *bootstraps* the
+        // DAG in this same kernel and spawns its first batch. This is the article's headline capability.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+        assert!(!sm.workflow_active(), "no workflow before authoring");
+
+        // Two independent nodes → both spawn in the bootstrap batch.
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("a"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("b"), AgentRole::Implement),
+        ]);
+        let action = sm.submit_workflow(spec, "sess", None);
+        assert!(matches!(action, LoopAction::AwaitingResume { .. }));
+        assert!(sm.workflow_active(), "spec bootstrapped the DAG");
+        assert_eq!(count_spawned(&sm.take_observations()), 2); // wf-node0 + wf-node1
+
+        // Both complete → the agent-authored workflow finishes.
+        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") });
+        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
+        assert!(matches!(done, LoopAction::CallLLM { .. }));
+        assert!(!sm.workflow_active());
+    }
+
+    #[test]
+    fn submit_workflow_flattens_onto_active_workflow() {
+        // M5/G1: a second authoring while a workflow is active *flattens* (appends) — never stacks a
+        // child workflow. Proves bootstrap-or-flatten: one DAG, one kernel, no recursion of kernels.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("root"),
+            AgentRole::Implement,
+        )]);
+        sm.load_workflow(spec, "sess");
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node0
+
+        // Author a second spec while wf-node0 runs → its nodes flatten onto the live DAG as wf-node1.
+        let more = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("more"),
+            AgentRole::Implement,
+        )]);
+        sm.submit_workflow(more, "sess", None);
+        assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node1 appended, not a new workflow
+        assert!(sm.agent_process("wf-node1").is_some(), "flattened node spawned in the same DAG");
+
+        // The DAG finishes only after both nodes complete (2 total) — confirming a single workflow.
+        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") });
+        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
+        assert!(matches!(done, LoopAction::CallLLM { .. }));
+        assert!(!sm.workflow_active());
+    }
+
+    #[test]
+    fn submit_workflow_denied_past_max_workflow_nodes_quota() {
+        // M5/G1 governance: an authored spec that would overgrow the DAG is denied by the same
+        // max_workflow_nodes backstop as SubmitNodes — bootstrap is refused, no workflow installed.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.set_resource_quota(crate::governance::quota::ResourceQuota {
+            max_workflow_nodes: Some(2),
+            ..Default::default()
+        });
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+
+        // A 3-node spec > max(2) → denied; nothing spawns and no workflow is installed.
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("a"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("b"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("c"), AgentRole::Implement),
+        ]);
+        let action = sm.submit_workflow(spec, "sess", None);
+        assert!(matches!(action, LoopAction::AwaitingResume { .. }));
+        assert_eq!(count_spawned(&sm.take_observations()), 0);
+        assert!(!sm.workflow_active(), "denied authoring installs no workflow");
+    }
+
+    #[test]
     fn workflow_batch_spawned_carries_remaining_budget_under_quota() {
         // G4 budget-as-signal: a coordinator node reads remaining headroom to scale its submission.
         use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
@@ -1665,6 +1836,10 @@
         assert_eq!(budget.running_subagents, 1);
         assert_eq!(budget.max_concurrent_subagents, Some(3));
         assert_eq!(budget.concurrency_remaining, Some(2));
+        // M4/G5 token headroom: no tokens spent at load → used 0, remaining == the full cap.
+        assert_eq!(budget.tokens_used, 0);
+        assert!(budget.tokens_max.is_some());
+        assert_eq!(budget.tokens_remaining, budget.tokens_max);
     }
 
     #[test]

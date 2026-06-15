@@ -87,6 +87,11 @@ pub enum WaitReason {
     /// Awaiting milestone evaluation result.
     Milestone,
     /// Awaiting a routed signal at a turn boundary.
+    ///
+    /// **Descoped (v0.2.11):** Signal→Schedule integration was explicitly descoped.
+    /// The variant is tested infrastructure (~6 tests) and deserialized by `snapshot.rs`,
+    /// but is not wired into any production code path. Retained for snapshot compatibility
+    /// and future reactivation.
     Signal,
     /// Externally requested suspension.
     External,
@@ -374,6 +379,12 @@ pub fn schedule(task: &Tcb, now_ms: Option<u64>) -> ScheduleDecision {
 /// `highest_signal_urgency`: Optional urgency level (0-3) of the highest priority
 /// pending signal. When set, tasks waiting on Signal with matching or higher
 /// urgency are prioritized.
+///
+/// **Descoped (v0.2.11):** The `highest_signal_urgency` parameter is tested
+/// infrastructure only — no production caller supplies a `Some` value today.
+/// Signal→Schedule integration was explicitly descoped; the parameter is retained
+/// so the prioritization logic is exercised by unit tests and ready for future
+/// reactivation without an API change.
 pub fn schedule_multi(table: &TaskTable, now_ms: Option<u64>, highest_signal_urgency: Option<u8>) -> ScheduleDecision {
     // First pass: check all tasks for budget termination
     for task in table.all() {

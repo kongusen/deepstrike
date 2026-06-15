@@ -102,6 +102,12 @@ pub struct WorkflowNode {
     /// Control-flow kind. Default `Spawn` (run once).
     #[serde(default, skip_serializing_if = "is_spawn")]
     pub kind: NodeKind,
+    /// M4/G5: optional per-node cumulative token cap. The kernel carries it to the spawn descriptor;
+    /// the SDK sets the node's child-run `max_total_tokens` to it, so an expensive node self-terminates
+    /// at the cap (the "use N tokens" budget, applied per node). Additive: omitted on the wire when
+    /// `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<u64>,
     /// Indices into [`WorkflowSpec::nodes`] this node depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<usize>,
@@ -128,8 +134,15 @@ impl WorkflowNode {
             trust: NodeTrust::Trusted,
             output_schema: None,
             kind: NodeKind::Spawn,
+            token_budget: None,
             depends_on: Vec::new(),
         }
+    }
+
+    /// M4/G5: cap this node's child run at `tokens` cumulative tokens.
+    pub fn with_token_budget(mut self, tokens: u64) -> Self {
+        self.token_budget = Some(tokens);
+        self
     }
 
     /// Make this a loop node: re-run the agent up to `max_iters` times before completing.

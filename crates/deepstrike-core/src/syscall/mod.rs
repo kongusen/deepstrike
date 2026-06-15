@@ -37,6 +37,11 @@ pub enum Syscall {
     /// the trap lets a `ResourceQuota` backstop a runaway loop-until-done (denied past
     /// `max_workflow_nodes`); per-node spawns are still gated separately by `Spawn`.
     SubmitNodes { count: usize },
+    /// M5/G1: an agent authors a whole workflow `spec` (`node_count` nodes). Bootstraps the DAG when
+    /// none is active, else flattens onto it — either way it is gated by the same `max_workflow_nodes`
+    /// quota as `SubmitNodes` (a spec is just a node batch with a bootstrap fast-path), so an
+    /// agent-authored harness cannot overgrow the DAG past the run's budget.
+    LoadWorkflow { node_count: usize },
 }
 
 impl Syscall {
@@ -49,6 +54,7 @@ impl Syscall {
             Self::WriteMemory(_) => "write_memory",
             Self::QueryMemory(_) => "query_memory",
             Self::SubmitNodes { .. } => "submit_nodes",
+            Self::LoadWorkflow { .. } => "load_workflow",
         }
     }
 }
@@ -60,8 +66,6 @@ impl Syscall {
 pub enum Disposition {
     /// Proceed as requested.
     Allow,
-    /// Proceed, but with the kernel-rewritten call (argument transform / redaction).
-    Transform(ToolCall),
     /// Reject. `stage` names the gate stage that vetoed.
     Deny { stage: &'static str, reason: String },
     /// Suspend the calling task until an external party resolves it (e.g. human approval).
@@ -77,7 +81,6 @@ impl Disposition {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Allow => "allow",
-            Self::Transform(_) => "transform",
             Self::Deny { .. } => "deny",
             Self::Gate { .. } => "gate",
             Self::Defer { .. } => "defer",
@@ -87,7 +90,7 @@ impl Disposition {
 
     /// Whether the syscall may proceed to execution now.
     pub fn is_allowed(&self) -> bool {
-        matches!(self, Self::Allow | Self::Transform(_))
+        matches!(self, Self::Allow)
     }
 }
 

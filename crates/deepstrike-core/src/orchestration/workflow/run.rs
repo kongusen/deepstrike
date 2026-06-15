@@ -62,6 +62,24 @@ pub struct WorkflowSpawnInfo {
     /// (entrant / spawn / loop / classify) node. Additive ABI: omitted on the wire when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge_match: Option<JudgeMatch>,
+    /// Present only for a [`NodeKind::Loop`] iteration spawn (A#2 v2): the loop's `max_iters`. It
+    /// both *marks* the spawn as a loop iteration — so the SDK knows to solicit and report a
+    /// `loop_continue` stop signal from the agent — and gives the cap for the agent's prompt. `None`
+    /// for every non-loop node. Mirrors how `reducer` / `judge_match` distinguish reduce / judge
+    /// spawns. Additive ABI: omitted on the wire when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_max_iters: Option<usize>,
+    /// Present only for a [`NodeKind::Classify`] spawn (A#2): the branch labels the classifier must
+    /// choose among. Non-empty *marks* the spawn as a classifier — the SDK instructs the agent to
+    /// pick exactly one label and reports it in the result's `classify_branch`. Empty for every
+    /// non-classify node. Additive ABI: omitted on the wire when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub classify_labels: Vec<String>,
+    /// M4/G5: the node's per-node cumulative token cap, if set. The SDK sets the child run's
+    /// `max_total_tokens` to this so the node self-terminates at the cap. Additive ABI: omitted when
+    /// `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<u64>,
 }
 
 fn default_trust() -> String {
@@ -102,6 +120,18 @@ pub struct WorkflowBudget {
     /// how many of a submission's nodes can spawn *immediately* rather than deferring for a slot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency_remaining: Option<usize>,
+    /// M4/G5: cumulative tokens spent across the run so far (the scheduler's `total_tokens`).
+    /// `#[serde(default)]` keeps older JSON (without this field) deserializing to 0 — additive ABI.
+    #[serde(default)]
+    pub tokens_used: u64,
+    /// M4/G5: `SchedulerBudget::max_total_tokens` — the run's cumulative token cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_max: Option<u64>,
+    /// M4/G5: `tokens_max - tokens_used` (saturating) — how many tokens remain before the run-level
+    /// token budget terminates the workflow. Lets a coordinator scale its next submission to token
+    /// headroom (the analogue of "use 10k tokens").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_remaining: Option<u64>,
 }
 
 fn role_label(role: AgentRole) -> &'static str {
@@ -307,6 +337,17 @@ impl WorkflowRun {
             ),
             _ => (None, Vec::new()),
         };
+        // A#2 v2 / classify: surface the control-flow kind so the SDK can solicit + report the
+        // matching result signal (`loop_continue` / `classify_branch`), mirroring how `reducer` /
+        // `judge_match` distinguish reduce / judge spawns.
+        let loop_max_iters = match &n.kind {
+            NodeKind::Loop { max_iters } => Some(*max_iters),
+            _ => None,
+        };
+        let classify_labels = match &n.kind {
+            NodeKind::Classify { branches } => branches.iter().map(|b| b.label.clone()).collect(),
+            _ => Vec::new(),
+        };
         WorkflowSpawnInfo {
             agent_id: self.current_agent_id(node),
             goal: n.task.goal.clone(),
@@ -319,6 +360,9 @@ impl WorkflowRun {
             reducer,
             input_agent_ids,
             judge_match: self.judge_matches.get(&node).cloned(),
+            loop_max_iters,
+            classify_labels,
+            token_budget: n.token_budget,
         }
     }
 
@@ -640,6 +684,7 @@ impl WorkflowRun {
 
     pub fn submit_nodes(&mut self, nodes: Vec<WorkflowNode>) -> Vec<usize> {
         let base = self.nodes.len();
+        let batch_len = nodes.len();
         let mut ids = Vec::with_capacity(nodes.len());
         for (offset, mut node) in nodes.into_iter().enumerate() {
             let deps: Vec<usize> = node
@@ -649,6 +694,21 @@ impl WorkflowRun {
                 .map(|&d| base + d)
                 .collect();
             node.depends_on = deps.clone();
+            // A#2/G2: a submitted `Classify` node's branch indices are *batch-relative* — they point
+            // at other nodes in this same submission, whose absolute graph index the submitter cannot
+            // know. Remap each branch node index `d` (0-based within the batch) to its absolute index
+            // `base + d`, dropping out-of-range references. Mirrors the `depends_on` batch-relative
+            // convention; without it a runtime-submitted classifier would prune the wrong nodes.
+            if let NodeKind::Classify { branches } = &mut node.kind {
+                for branch in branches.iter_mut() {
+                    branch.nodes = branch
+                        .nodes
+                        .iter()
+                        .filter(|&&d| d < batch_len)
+                        .map(|&d| base + d)
+                        .collect();
+                }
+            }
             let idx = self.graph.add(node.task.clone(), deps);
             debug_assert_eq!(idx, self.nodes.len(), "graph/nodes index drift");
             self.nodes.push(node);
@@ -697,6 +757,21 @@ impl WorkflowRun {
                 Some(TaskStatus::Completed) => completed.push(node_agent_id(i)),
                 Some(TaskStatus::Failed) => failed.push(node_agent_id(i)),
                 _ => {}
+            }
+        }
+        (completed, failed)
+    }
+
+    /// #2-B abort: outcome when the workflow is preempted — every node that has not already
+    /// `Completed` counts as `failed` (running / ready / pending all abort). Used to emit a terminal
+    /// `WorkflowCompleted` when an `InterruptNow` tears the whole `WorkflowRun` down.
+    pub fn abort_outcome(&self) -> (Vec<String>, Vec<String>) {
+        let mut completed = Vec::new();
+        let mut failed = Vec::new();
+        for i in 0..self.graph.len() {
+            match self.graph.get(i).map(|n| n.status) {
+                Some(TaskStatus::Completed) => completed.push(node_agent_id(i)),
+                _ => failed.push(node_agent_id(i)),
             }
         }
         (completed, failed)
@@ -1019,6 +1094,110 @@ mod tests {
     }
 
     #[test]
+    fn submitted_tournament_runs_bracket_then_promotes_submitted_dependent() {
+        // M2: an agent can submit a Tournament *controller* (plus a dependent) at runtime. The
+        // controller expands into entrant children + a judge via the same bracket machinery, and the
+        // dependent's batch-relative `depends_on` links it to the submitted controller.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("root"),
+            AgentRole::Implement,
+        )]);
+        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let id0 = run.current_agent_id(0);
+        run.mark_spawned(0, &id0);
+        run.record_completion(&id0, done());
+
+        // Submit [tournament@batch0, dependent@batch1 depends_on [0]] (batch-relative).
+        let ids = run.submit_nodes(vec![
+            WorkflowNode::new(RuntimeTask::new("pick best"), AgentRole::Plan)
+                .with_tournament(vec![RuntimeTask::new("x"), RuntimeTask::new("y")]),
+            WorkflowNode::new(RuntimeTask::new("use winner"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+        ]);
+        assert_eq!(ids, vec![1, 2], "appended controller=1, dependent=2");
+
+        // Controller (node 1) expands into 2 entrant children (3,4); spawns no agent of its own.
+        let entrants = spawn_round(&mut run);
+        let entrant_nodes: Vec<usize> = entrants.iter().map(|(n, _)| *n).collect();
+        assert_eq!(entrant_nodes, vec![3, 4], "two entrant children appended after the dependent");
+        for (_, id) in &entrants {
+            run.record_completion(id, done());
+        }
+
+        // One judge over the two entrants; dependent (node 2) gated until the bracket resolves.
+        let r1 = spawn_round(&mut run);
+        assert_eq!(r1.len(), 1, "one judge for two entrants");
+        let jm = run.spawn_info(r1[0].0).judge_match.expect("judge carries a match");
+        assert_eq!(jm, JudgeMatch { left: node_agent_id(3), right: node_agent_id(4) });
+
+        // Entrant 3 wins → controller completes with the champion → dependent unblocks.
+        run.record_completion(&r1[0].1, judge_done(&node_agent_id(3)));
+        assert_eq!(run.ready_batch(), vec![2], "submitted dependent unblocks after the bracket");
+        let last = spawn_round(&mut run);
+        assert_eq!(last, vec![(2, node_agent_id(2))]);
+        run.record_completion(&last[0].1, done());
+        assert!(run.is_complete());
+    }
+
+    #[test]
+    fn submitted_classify_remaps_branch_indices_and_prunes() {
+        // M2: a submitted Classify node's branch `nodes` are batch-relative; `submit_nodes` remaps
+        // them to absolute indices so the chosen branch runs and the rest are pruned. Without the
+        // remap a runtime-submitted classifier would prune the wrong nodes.
+        use crate::orchestration::workflow::{ClassifyBranch, NodeKind, WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("root"),
+            AgentRole::Implement,
+        )]);
+        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let id0 = run.current_agent_id(0);
+        run.mark_spawned(0, &id0);
+        run.record_completion(&id0, done());
+
+        // Submit [classify@batch0 (a→[1] b→[2]), branchA@batch1 dep[0], branchB@batch2 dep[0]].
+        let ids = run.submit_nodes(vec![
+            WorkflowNode::new(RuntimeTask::new("route"), AgentRole::Plan).with_classify(vec![
+                ClassifyBranch { label: "a".into(), nodes: vec![1] },
+                ClassifyBranch { label: "b".into(), nodes: vec![2] },
+            ]),
+            WorkflowNode::new(RuntimeTask::new("branch-a"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+            WorkflowNode::new(RuntimeTask::new("branch-b"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+        ]);
+        assert_eq!(ids, vec![1, 2, 3], "classify=1, branchA=2, branchB=3");
+
+        // Branch indices were remapped batch-relative → absolute: a→[2], b→[3].
+        if let NodeKind::Classify { branches } = &run.nodes[1].kind {
+            assert_eq!(branches[0].nodes, vec![2], "branch a remapped to absolute node 2");
+            assert_eq!(branches[1].nodes, vec![3], "branch b remapped to absolute node 3");
+        } else {
+            panic!("node 1 should be a classify node");
+        }
+
+        // Classifier picks "a" → branch-a (node 2) runs, branch-b (node 3) is pruned/failed.
+        let r = spawn_round(&mut run);
+        assert_eq!(r, vec![(1, node_agent_id(1))], "classifier runs first");
+        run.record_completion(&r[0].1, LoopResult { classify_branch: Some("a".into()), ..done() });
+
+        assert_eq!(run.ready_batch(), vec![2], "only branch a is enabled");
+        let (_c, failed) = run.outcome();
+        assert!(failed.contains(&node_agent_id(3)), "branch b pruned/failed");
+
+        let last = spawn_round(&mut run);
+        assert_eq!(last, vec![(2, node_agent_id(2))]);
+        run.record_completion(&last[0].1, done());
+        assert!(run.is_complete());
+        let (completed, _f) = run.outcome();
+        assert!(completed.contains(&node_agent_id(1)) && completed.contains(&node_agent_id(2)));
+    }
+
+    #[test]
     fn loop_node_iterates_with_distinct_ids_then_promotes_dependent() {
         use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
         use crate::types::agent::AgentRole;
@@ -1183,6 +1362,52 @@ mod tests {
         let t = run.spawn_info(1);
         assert_eq!(t.trust, "trusted");
         assert_eq!(t.model_hint, None);
+    }
+
+    #[test]
+    fn spawn_info_carries_loop_and_classify_hints() {
+        use crate::orchestration::workflow::{ClassifyBranch, WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let spec = WorkflowSpec::new(vec![
+            // 0: loop node → descriptor carries the cap so the SDK knows to solicit `loop_continue`.
+            WorkflowNode::new(RuntimeTask::new("refine"), AgentRole::Implement).with_loop(3),
+            // 1: classify node → descriptor carries the branch labels so the SDK can instruct + report.
+            WorkflowNode::new(RuntimeTask::new("route"), AgentRole::Plan).with_classify(vec![
+                ClassifyBranch { label: "bug".into(), nodes: vec![] },
+                ClassifyBranch { label: "feature".into(), nodes: vec![] },
+            ]),
+            // 2: plain spawn → neither hint present.
+            WorkflowNode::new(RuntimeTask::new("act"), AgentRole::Implement),
+        ]);
+        let run = WorkflowRun::new(&spec, "sess").unwrap();
+
+        let l = run.spawn_info(0);
+        assert_eq!(l.loop_max_iters, Some(3));
+        assert!(l.classify_labels.is_empty());
+        assert_eq!(l.token_budget, None, "no token budget unless set");
+
+        let c = run.spawn_info(1);
+        assert_eq!(c.classify_labels, vec!["bug".to_string(), "feature".to_string()]);
+        assert_eq!(c.loop_max_iters, None);
+
+        let s = run.spawn_info(2);
+        assert_eq!(s.loop_max_iters, None);
+        assert!(s.classify_labels.is_empty());
+    }
+
+    #[test]
+    fn spawn_info_carries_token_budget() {
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("expensive"), AgentRole::Implement).with_token_budget(10_000),
+            WorkflowNode::new(RuntimeTask::new("plain"), AgentRole::Implement),
+        ]);
+        let run = WorkflowRun::new(&spec, "sess").unwrap();
+        assert_eq!(run.spawn_info(0).token_budget, Some(10_000));
+        assert_eq!(run.spawn_info(1).token_budget, None);
     }
 
     // ── Tournament node (A#2) ───────────────────────────────────────────────────────────────────
