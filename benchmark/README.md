@@ -33,6 +33,12 @@ into a 4-SDK consumer without re-housing later.
   - `core/runner.mjs` + `cli/bench.mjs` gain `--mode replay --fixture <run-dir> [--fixture-from <variant>]`. Replay reads each task's prior `events.json`, returns recorded LLM responses, never hits an API.
   - `MetricSet.meta.mode = "replay"` ⇒ diff renderer marks any non-zero Δ as significant (deterministic, no sample noise).
 
+- **PR #4 — BM3** (LLM-judge quality scoring via SDK `judge()`):
+  - Node SDK gains `judge({ provider, goal, criteria, result })` wrapping the kernel's `gen_eval` free functions (`buildEvalMessages` / `parseVerdict` / `verdictOutputSchema`). 9-test suite. Exports include `Criterion`, `Verdict` types.
+  - `core/runner.mjs` calls `judge()` after each session when enabled; max_turns / error runs get a structured incomplete-marker so the judge grades them honestly instead of pass-by-omission.
+  - `core/aggregator.mjs` emits `quality.successRate` (pass ratio) + `quality.overallScore` (mean 0..1).
+  - `cli/bench.mjs` gains `--judge` / `--no-judge` (default: ON in live, OFF in replay) + `--judge-provider <id>` + `--judge-model <model>`.
+
 **Deferred** (see spec §8):
 
 - BM1.2 — `--samples N` to repeat the full task list N times per variant for tighter stdev
@@ -111,6 +117,31 @@ node cli/bench.mjs gating-dwell --variants off,on --mode replay \
 Caveat: under replay the cache layer is not modeled (`cacheReadTokens = 0`,
 `cacheHitRate = 0`). Replay measures the cost floor under no-cache; for the
 cache-bust tension a mechanism may introduce, you still need a live A/B.
+
+## Quality scoring with `--judge` (PR #4 path)
+
+In live mode the bench runner calls the SDK's `judge()` over each session's
+final output, populating `quality.successRate` (pass ratio across sessions) and
+`quality.overallScore` (mean 0..1). Default: ON in live, OFF in replay
+(replayed responses are deterministic across variants — judge would produce
+identical verdicts).
+
+```bash
+# Default — judge is on:
+node cli/bench.mjs gating-dwell --variants off,on --provider deepseek --compare
+
+# Use a cheaper model for the judge to keep cost down:
+node cli/bench.mjs gating-dwell --variants off,on --provider deepseek \
+  --judge-provider openai --judge-model gpt-4o-mini --compare
+
+# Skip judge (cost-only A/B):
+node cli/bench.mjs gating-dwell --variants off,on --provider deepseek --no-judge --compare
+```
+
+Each session contributes one judge call. For incomplete runs (max_turns /
+error) the judge sees a structured `AGENT_INCOMPLETE (status=…): ran N turns,
+M tool-call rounds. Last assistant text: …` so it can grade partial work
+instead of pass-by-omission.
 
 ## Diff already-recorded runs (PR #1 path, still supported)
 

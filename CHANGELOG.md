@@ -21,6 +21,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   SDK uses interchangeably (camelCase in-memory and snake_case on-disk), so a prior `SessionLog`
   is a drop-in replay fixture. Exported from `@deepstrike/sdk`.
 
+- **`judge()` — one-shot quality scoring against goal + criteria.** Public wrapper around the
+  kernel's `gen_eval` free functions (`buildEvalMessages` / `parseVerdict` / `verdictOutputSchema`,
+  folded out of the old `EvalPipeline` class in 0.5.0). Renders the eval prompt, streams a verdict
+  from the supplied provider, parses it into a typed `Verdict { passed, overallScore, feedback,
+  details[] }`. Single LLM call, no retry loop or skill extraction — for the full retry/refine flow
+  use `HarnessLoop`. Exported types: `Criterion`, `Verdict`, `VerdictDetail`, `JudgeArgs`. The three
+  building-block functions are also exported individually for callers that want to render the
+  prompt without calling the LLM (dry-run cost estimation, fixture generation).
+
 ## [0.2.19] - 2026-06-16
 
 ### Added

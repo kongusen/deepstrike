@@ -22,6 +22,8 @@ export type { SessionLog, SessionEvent } from "./runtime/session-log.js"
 export { ReplayProvider } from "./runtime/replay-provider.js"
 export type { ReplayProviderOpts } from "./runtime/replay-provider.js"
 export { extractRecordedMessages } from "./runtime/replay-fixture.js"
+export { judge, buildEvalMessages, parseVerdict, verdictOutputSchema } from "./runtime/eval.js"
+export type { Criterion, Verdict, VerdictDetail, JudgeArgs } from "./runtime/eval.js"
 export {
   DEFAULT_NATIVE_ATTENTION_POLICY,
   DEFAULT_NATIVE_GOVERNANCE_POLICY,

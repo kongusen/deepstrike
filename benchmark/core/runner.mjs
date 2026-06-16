@@ -29,11 +29,15 @@
  * @property {Record<string, any>} [pricing]
  * @property {number} [maxTasks]               Limit to first N tasks (default: all).
  * @property {(taskId: string, evt: any) => void} [onEvent]  Stream tap for CLI logging.
+ * @property {Object} [judge]                  When set, judge each session's output via SDK.judge().
+ * @property {import("../utils/sdk.mjs").ProviderDescriptor} judge.providerDesc
+ *                                             Provider for the eval LLM call (often a cheaper model).
  *
  * @typedef {Object} RunBenchResult
  * @property {MetricSet} metricSet
  * @property {string} metricSetPath            Path written.
- * @property {Array<{ taskId: string, sessionId: string, status: string, error?: string }>} sessions
+ * @property {Array<{ taskId: string, sessionId: string, status: string, error?: string,
+ *                    passed?: boolean, overallScore?: number }>} sessions
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
@@ -55,10 +59,24 @@ export async function runBench(opts) {
   }
 
   const sdk = await loadSdk()
-  const { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane, createProvider, ReplayProvider, extractRecordedMessages } = sdk
+  const { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane, createProvider, ReplayProvider, extractRecordedMessages, judge } = sdk
   if (mode === "replay" && (!ReplayProvider || !extractRecordedMessages)) {
     throw new Error(`runBench: SDK does not export ReplayProvider / extractRecordedMessages — rebuild node SDK (mode=replay)`)
   }
+  if (opts.judge && !judge) {
+    throw new Error(`runBench: SDK does not export judge() — rebuild node SDK (judge enabled)`)
+  }
+  // Construct the judge provider once (one provider per variant — sessions share it).
+  const judgeProvider = opts.judge
+    ? createProvider({
+      provider: opts.judge.providerDesc.provider,
+      model: opts.judge.providerDesc.model,
+      apiKey: opts.judge.providerDesc.apiKey,
+      ...(opts.judge.providerDesc.baseURL ? { baseURL: opts.judge.providerDesc.baseURL } : {}),
+      ...(opts.judge.providerDesc.endpoint ? { endpoint: opts.judge.providerDesc.endpoint } : {}),
+      retry: { maxRetries: 2, baseDelay: 600 },
+    })
+    : undefined
 
   const variantDir = path.join(runRoot, `${scenario.id}.${variantId}`)
   mkdirSync(variantDir, { recursive: true })
@@ -116,6 +134,7 @@ export async function runBench(opts) {
 
     let finalStatus = "error"
     let errorMsg
+    let finalText = ""
     let wallStart = Date.now()
     const timeoutMs = scenario.timeoutMs ?? 300_000
 
@@ -127,6 +146,7 @@ export async function runBench(opts) {
           criteria: task.criteria,
         })) {
           if (evt.type === "done") finalStatus = evt.status ?? "error"
+          else if (evt.type === "text_delta") finalText += evt.delta ?? ""
           onEvent?.(task.id, evt)
         }
       })()
@@ -141,6 +161,29 @@ export async function runBench(opts) {
 
     const wallMs = Date.now() - wallStart
     const events = await sessionLog.read(sessionId)
+
+    // BM3: judge the session's output if a judge provider was set up and the task has criteria.
+    let passed
+    let overallScore
+    let judgeError
+    if (judgeProvider && task.criteria?.length) {
+      try {
+        const result = buildJudgeResult({ finalStatus, finalText, turnCount: turnMetrics.length, events })
+        const verdict = await judge({
+          provider: judgeProvider,
+          goal: task.goal,
+          criteria: task.criteria.map(c => ({ text: c, required: true })),
+          result,
+        })
+        passed = verdict.passed
+        overallScore = verdict.overallScore
+        onEvent?.(task.id, { type: "judge", passed, overallScore, feedback: verdict.feedback })
+      } catch (e) {
+        judgeError = e?.message ? String(e.message) : String(e)
+        onEvent?.(task.id, { type: "judge_error", message: judgeError })
+      }
+    }
+
     sessionRecords.push({
       sessionId,
       taskId: task.id,
@@ -148,10 +191,19 @@ export async function runBench(opts) {
       events,
       wallMs,
       finalStatus,
-      // BM3 (judge) will set passed; for now leave undefined → quality.successRate omitted.
-      passed: undefined,
+      finalText,
+      passed,
+      overallScore,
     })
-    sessionStatuses.push({ taskId: task.id, sessionId, status: finalStatus, ...(errorMsg ? { error: errorMsg } : {}) })
+    sessionStatuses.push({
+      taskId: task.id,
+      sessionId,
+      status: finalStatus,
+      ...(errorMsg ? { error: errorMsg } : {}),
+      ...(passed !== undefined ? { passed } : {}),
+      ...(overallScore !== undefined ? { overallScore } : {}),
+      ...(judgeError ? { judgeError } : {}),
+    })
 
     // Persist raw events for debugging / post-hoc replay
     try {
@@ -187,6 +239,21 @@ export async function runBench(opts) {
   writeFileSync(metricSetPath, JSON.stringify(metricSet, null, 2))
 
   return { metricSet, metricSetPath, sessions: sessionStatuses }
+}
+
+/**
+ * Build the "agent output" string fed to the judge. Bakes in run status so the judge can grade
+ * incomplete runs honestly — for max_turns / error / exception runs we still get a quality signal
+ * rather than a false-clean pass on an empty reply.
+ *
+ * @param {{ finalStatus: string, finalText: string, turnCount: number, events: any[] }} args
+ */
+function buildJudgeResult({ finalStatus, finalText, turnCount, events }) {
+  const text = finalText.trim()
+  if (finalStatus === "completed") return text || "(agent produced no text reply)"
+  const toolCount = events.filter(e => e.event?.kind === "tool_requested").length
+  const tail = text ? `\n\nLast assistant text:\n${text}` : ""
+  return `AGENT_INCOMPLETE (status=${finalStatus}): ran ${turnCount} LLM turns, ${toolCount} tool-call rounds.${tail}`
 }
 
 /**

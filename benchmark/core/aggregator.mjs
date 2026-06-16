@@ -26,7 +26,9 @@
  * @property {Array<{ seq: number, event: any }>} events
  * @property {number} wallMs
  * @property {string} finalStatus
+ * @property {string} [finalText]
  * @property {boolean} [passed]
+ * @property {number} [overallScore]
  *
  * @typedef {Object} BuildMetricSetOpts
  * @property {string} scenarioId
@@ -63,6 +65,8 @@ export function buildMetricSet(opts) {
   const compressions = perSession.map(s => s.compressions)
   const successRate = perSession.map(s => (s.passed === true ? 1 : s.passed === false ? 0 : 0.5))
   const successKnown = perSession.some(s => s.passed !== undefined)
+  const scoredSessions = perSession.filter(s => typeof s.overallScore === "number")
+  const overallScores = scoredSessions.map(s => /** @type {number} */ (s.overallScore))
 
   const dollars = computeDollars({
     pricing: opts.pricing,
@@ -116,6 +120,9 @@ export function buildMetricSet(opts) {
       ...(successKnown
         ? { successRate: meanStdev(successRate, "ratio", mode) }
         : {}),
+      ...(overallScores.length > 0
+        ? { overallScore: meanStdev(overallScores, "ratio", mode) }
+        : {}),
     },
     contextHealth: {
       peakInputTokens: meanStdev(peakInputTokens, "tokens", mode),
@@ -157,6 +164,7 @@ function aggregateSession(s, hook) {
     compressions,
     wallMs: s.wallMs,
     passed: s.passed,
+    overallScore: s.overallScore,
     mechanismOut,
   }
 }

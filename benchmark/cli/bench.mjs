@@ -97,6 +97,32 @@ if (mode === "replay") {
   }
 }
 
+// BM3 judge: default on for live mode, forced off for replay (no model behavior to evaluate).
+const judgeRequested = flags["no-judge"] === true
+  ? false
+  : flags.judge === true
+    ? true
+    : mode === "live" // implicit default
+let judgeProviderDesc
+if (judgeRequested && mode === "replay") {
+  console.error(`[bench] --judge ignored under --mode replay (replayed responses are deterministic; ` +
+    `judge would produce identical verdicts across variants).`)
+}
+if (judgeRequested && mode === "live") {
+  const judgeProviderId = typeof flags["judge-provider"] === "string"
+    ? flags["judge-provider"]
+    : providerDesc.provider
+  try {
+    judgeProviderDesc = resolveProvider(judgeProviderId)
+    if (typeof flags["judge-model"] === "string") {
+      judgeProviderDesc = { ...judgeProviderDesc, model: flags["judge-model"] }
+    }
+  } catch (e) {
+    console.error(`[bench] --judge requested but judge provider resolution failed: ${redact(e.message)}`)
+    process.exit(1)
+  }
+}
+
 const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)
 const runRoot = flags.output
   ? path.resolve(flags.output)
@@ -113,6 +139,9 @@ console.log(JSON.stringify({
   provider: providerDesc.provider,
   model: providerDesc.model,
   tasks: maxTasks ?? scenario.tasks.length,
+  ...(judgeProviderDesc
+    ? { judge: { provider: judgeProviderDesc.provider, model: judgeProviderDesc.model } }
+    : { judge: "off" }),
   ...(mode === "replay" ? {
     fixtureRoot: path.relative(repoRoot, fixtureRoot),
     fixtureFromVariant: fixtureFromVariant ?? "(per-variant)",
@@ -134,6 +163,7 @@ for (const variantId of variantIds) {
       maxTasks,
       mode,
       ...(mode === "replay" ? { fixtureRoot, ...(fixtureFromVariant ? { fixtureFromVariant } : {}) } : {}),
+      ...(judgeProviderDesc ? { judge: { providerDesc: judgeProviderDesc } } : {}),
       onEvent: (taskId, evt) => logEvent(taskId, evt),
     })
     results.push({ variantId, result })
@@ -200,6 +230,11 @@ Options:
   --fixture <dir>        REQUIRED with --mode replay: path to a prior run dir holding events.json
   --fixture-from <vid>   Pin all replay variants to read THIS variant's fixture (cross-variant pin
                          for cost-Δ measurement). Default: each variant reads its own fixture
+  --judge / --no-judge   Run SDK.judge() over each session's final output to populate
+                         quality.successRate + quality.overallScore. Default: ON in live mode,
+                         OFF in replay mode (replayed responses are deterministic across variants).
+  --judge-provider <id>  Provider for the judge LLM. Default: same as --provider.
+  --judge-model <model>  Model override for the judge LLM. Default: same as --provider's model.
   --tasks <n>            Limit task count (default: scenario default)
   --output <dir>         Output dir (default: benchmark/.runs/<scenario>-<stamp>)
   --compare              After running, diff baseline vs each other variant
@@ -255,6 +290,12 @@ function logEvent(taskId, evt) {
   } else if (evt.type === "done") {
     // SDK's `done` event omits turnsUsed; the aggregator gets turn count from turnMetrics.length.
     process.stdout.write(`    [${taskId}] done status=${evt.status ?? "?"}\n`)
+  } else if (evt.type === "judge") {
+    const pass = evt.passed ? "PASS" : "FAIL"
+    const score = typeof evt.overallScore === "number" ? evt.overallScore.toFixed(2) : "n/a"
+    process.stdout.write(`    [${taskId}] judge ${pass} score=${score}\n`)
+  } else if (evt.type === "judge_error") {
+    process.stdout.write(`    [${taskId}] judge_error ${redact(String(evt.message ?? ""))}\n`)
   }
 }
 
@@ -264,8 +305,13 @@ function summariseRun(result) {
   const exp = m.mechanism.avgToolsExposed
   const cache = m.cost.cacheHitRate
   const $ = m.cost.dollars
+  const success = m.quality?.successRate
+  const score = m.quality?.overallScore
+  const qualityBit = success || score
+    ? `  success=${fmt(success)}  score=${fmt(score)}`
+    : ""
   console.log(
-    `   summary: tokens/turn=${fmt(tpt)}  toolsExposed=${fmt(exp)}  cacheHit=${fmt(cache)}  $=${fmt($)}` +
+    `   summary: tokens/turn=${fmt(tpt)}  toolsExposed=${fmt(exp)}  cacheHit=${fmt(cache)}  $=${fmt($)}${qualityBit}` +
     `\n   → ${path.relative(repoRoot, result.metricSetPath)}`,
   )
 }
