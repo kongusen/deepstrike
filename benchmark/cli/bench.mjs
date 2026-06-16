@@ -65,13 +65,36 @@ for (const v of variantIds) {
   }
 }
 
-let providerDesc
-try {
-  providerDesc = resolveProvider(flags.provider)
-} catch (e) {
-  console.error(redact(e.message))
-  console.error(`Available providers: ${PROVIDER_IDS.join(", ")}`)
+const mode = String(flags.mode ?? "live").toLowerCase()
+if (mode !== "live" && mode !== "replay") {
+  console.error(`Unknown --mode "${mode}". Must be "live" or "replay".`)
   process.exit(1)
+}
+const fixtureRoot = typeof flags.fixture === "string" ? path.resolve(flags.fixture) : undefined
+const fixtureFromVariant = typeof flags["fixture-from"] === "string" ? flags["fixture-from"] : undefined
+if (mode === "replay" && !fixtureRoot) {
+  console.error(`--mode replay requires --fixture <run-dir> (path to a prior run's output directory)`)
+  process.exit(1)
+}
+
+let providerDesc
+if (mode === "replay") {
+  // No API key needed under replay — synthesise a metadata-only descriptor.
+  // Provider/model come from --provider (for pricing lookup + MetricSet meta) or default to "replay".
+  const fallbackPM = readFixtureProviderModel(fixtureRoot, scenarioId, fixtureFromVariant ?? variantIds[0])
+  providerDesc = {
+    provider: typeof flags.provider === "string" ? flags.provider : (fallbackPM?.provider ?? "replay"),
+    model: typeof flags.model === "string" ? flags.model : (fallbackPM?.model ?? "replay"),
+    apiKey: "(replay)",
+  }
+} else {
+  try {
+    providerDesc = resolveProvider(flags.provider)
+  } catch (e) {
+    console.error(redact(e.message))
+    console.error(`Available providers: ${PROVIDER_IDS.join(", ")}`)
+    process.exit(1)
+  }
 }
 
 const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)
@@ -85,10 +108,15 @@ const maxTasks = flags.tasks ? parseInt(String(flags.tasks), 10) : undefined
 
 console.log(JSON.stringify({
   scenario: scenarioId,
+  mode,
   variants: variantIds,
   provider: providerDesc.provider,
   model: providerDesc.model,
   tasks: maxTasks ?? scenario.tasks.length,
+  ...(mode === "replay" ? {
+    fixtureRoot: path.relative(repoRoot, fixtureRoot),
+    fixtureFromVariant: fixtureFromVariant ?? "(per-variant)",
+  } : {}),
   runRoot: path.relative(repoRoot, runRoot),
 }, null, 2))
 
@@ -104,6 +132,8 @@ for (const variantId of variantIds) {
       runRoot,
       pricing,
       maxTasks,
+      mode,
+      ...(mode === "replay" ? { fixtureRoot, ...(fixtureFromVariant ? { fixtureFromVariant } : {}) } : {}),
       onEvent: (taskId, evt) => logEvent(taskId, evt),
     })
     results.push({ variantId, result })
@@ -164,16 +194,27 @@ function printUsage(stream = process.stderr) {
 
 Options:
   --variants <a,b,...>   Variants to run. First is baseline. Default: scenario.variantOrder
-  --provider <id>        Provider id (${PROVIDER_IDS.join(" | ")}). Default: env LLM_PROVIDER
+  --mode <live|replay>   live = real LLM call; replay = SDK ReplayProvider against a fixture. Default: live
+  --provider <id>        Provider id (${PROVIDER_IDS.join(" | ")}). Default: env LLM_PROVIDER (live mode);
+                         metadata-only / pricing lookup (replay mode)
+  --fixture <dir>        REQUIRED with --mode replay: path to a prior run dir holding events.json
+  --fixture-from <vid>   Pin all replay variants to read THIS variant's fixture (cross-variant pin
+                         for cost-Δ measurement). Default: each variant reads its own fixture
   --tasks <n>            Limit task count (default: scenario default)
   --output <dir>         Output dir (default: benchmark/.runs/<scenario>-<stamp>)
   --compare              After running, diff baseline vs each other variant
   --json                 Emit JSON instead of human table (with --compare)
 
 Examples:
+  # Live A/B:
   bench gating-dwell --variants off,on --provider deepseek --compare
-  bench gating-dwell --tasks 2 --variants on --provider openai
-  bench list
+
+  # Replay A (sanity): both variants replay their own prior fixtures
+  bench gating-dwell --variants off,on --mode replay --fixture .runs/gating-dwell-<stamp> --compare
+
+  # Replay B (cross-variant cost Δ): pin behavior to off's recording, run both variants against it
+  bench gating-dwell --variants off,on --mode replay --fixture .runs/gating-dwell-<stamp> \\
+                     --fixture-from off --compare
 `)
 }
 
@@ -190,6 +231,19 @@ function printList() {
 function loadPricing() {
   try {
     return JSON.parse(readFileSync(path.join(benchRoot, "pricing", "pricing.json"), "utf8"))
+  } catch { return undefined }
+}
+
+/**
+ * For replay mode without an explicit --provider: read provider/model off the fixture's
+ * metricset.json so MetricSet metadata and pricing lookup reflect what the fixture used.
+ */
+function readFixtureProviderModel(fixtureRoot, scenarioId, variantId) {
+  if (!fixtureRoot) return undefined
+  const metricsetPath = path.join(fixtureRoot, `${scenarioId}.${variantId}`, "metricset.json")
+  try {
+    const m = JSON.parse(readFileSync(metricsetPath, "utf8"))
+    return { provider: m.meta?.provider, model: m.meta?.model }
   } catch { return undefined }
 }
 

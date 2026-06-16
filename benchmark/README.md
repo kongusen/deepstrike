@@ -28,9 +28,13 @@ into a 4-SDK consumer without re-housing later.
   - `cli/bench.mjs` — `bench <scenario> [--variants ...] [--compare]`
   - `utils/{env,sdk}.mjs` — env loading + SDK dynamic import + provider resolution
 
+- **PR #3 — BM1.1** (deterministic replay via SDK-level `ReplayProvider`):
+  - Node SDK gains `ReplayProvider` + `extractRecordedMessages` (lives at `node/src/runtime/replay-{provider,fixture}.ts`, exported from `node/src/index.ts`). 15-test determinism suite.
+  - `core/runner.mjs` + `cli/bench.mjs` gain `--mode replay --fixture <run-dir> [--fixture-from <variant>]`. Replay reads each task's prior `events.json`, returns recorded LLM responses, never hits an API.
+  - `MetricSet.meta.mode = "replay"` ⇒ diff renderer marks any non-zero Δ as significant (deterministic, no sample noise).
+
 **Deferred** (see spec §8):
 
-- BM1.1 — `--mode replay` via `seedProviderReplayFromEvents` integration
 - BM1.2 — `--samples N` to repeat the full task list N times per variant for tighter stdev
 - BM3 — `gen_eval` LLM-judge for quality (`successRate` is the empty slot in `quality{}` today)
 - BM4 — `baselines/*.json` regression gate (CI)
@@ -77,6 +81,36 @@ node cli/bench.mjs gating-dwell --variants on --tasks 2 --provider openai
 # Custom output dir:
 node cli/bench.mjs gating-dwell --variants off,on --output /tmp/bench-test --compare
 ```
+
+## Replay mode — deterministic re-runs from a prior fixture (PR #3 path)
+
+Replay reads back the `events.json` files a prior live run wrote (no API call,
+`$0`, ~milliseconds per task) and feeds them through the SDK's `ReplayProvider`.
+Two use modes:
+
+**Sanity replay** — each variant replays its own prior fixture. Use it to detect
+runner regressions and to re-cost an old run under updated pricing:
+
+```bash
+# Pre-req: a prior live run at benchmark/.runs/<stamp>
+node cli/bench.mjs gating-dwell --variants off,on --mode replay \
+  --fixture .runs/gating-dwell-<stamp> --compare
+```
+
+**Cross-variant pin** — every variant replays the SAME variant's fixture
+(`--fixture-from`). Model behavior is held constant; the only thing that
+differs between off and on is the variant's `RuntimeOptions` overlay (skill
+files, `stableCoreToolIds`, …). The resulting Δ is **purely the prompt-size
+cost of the mechanism**, free of LLM noise:
+
+```bash
+node cli/bench.mjs gating-dwell --variants off,on --mode replay \
+  --fixture .runs/gating-dwell-<stamp> --fixture-from off --compare
+```
+
+Caveat: under replay the cache layer is not modeled (`cacheReadTokens = 0`,
+`cacheHitRate = 0`). Replay measures the cost floor under no-cache; for the
+cache-bust tension a mechanism may introduce, you still need a live A/B.
 
 ## Diff already-recorded runs (PR #1 path, still supported)
 

@@ -19,6 +19,9 @@ export { LocalExecutionPlane } from "./runtime/execution-plane.js"
 export type { ExecutionPlane, RunContext } from "./runtime/execution-plane.js"
 export { InMemorySessionLog, FileSessionLog } from "./runtime/session-log.js"
 export type { SessionLog, SessionEvent } from "./runtime/session-log.js"
+export { ReplayProvider } from "./runtime/replay-provider.js"
+export type { ReplayProviderOpts } from "./runtime/replay-provider.js"
+export { extractRecordedMessages } from "./runtime/replay-fixture.js"
 export {
   DEFAULT_NATIVE_ATTENTION_POLICY,
   DEFAULT_NATIVE_GOVERNANCE_POLICY,

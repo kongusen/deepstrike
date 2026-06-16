@@ -1,8 +1,18 @@
 /**
- * runBench — execute one (scenario, variant) under live mode and return a MetricSet.
+ * runBench — execute one (scenario, variant) and return a MetricSet.
  *
- * Live-only for now. Replay mode arrives in a follow-up PR (the SDK doesn't yet ship a
- * request-skipping provider wrapper; `MetricSet.meta.mode` already supports `"replay"`).
+ * Two modes:
+ *   - "live"   → uses createProvider(providerDesc) to call a real LLM API.
+ *   - "replay" → uses the SDK's ReplayProvider against a fixture of recorded LLM responses.
+ *
+ * Replay mode reads each task's `<fixtureRoot>/<scenarioId>.<fixtureVariantId>/<taskId>.events.json`
+ * (the same files the runner writes on every live run). `fixtureVariantId` defaults to the variant
+ * being replayed (sanity mode); when set explicitly (`fixtureFromVariant`), the SAME fixture is
+ * used for every replay variant — this is the cross-variant cost-Δ test: model behavior pinned,
+ * only the variant's prompt differs.
+ *
+ * Replay mode emits MetricSet.meta.mode = "replay" so the diff renderer treats any non-zero Δ as
+ * significant (it's deterministic — no sample noise).
  *
  * @typedef {import("./scenario.mjs").BenchScenario} BenchScenario
  * @typedef {import("./metrics.mjs").MetricSet} MetricSet
@@ -12,6 +22,10 @@
  * @property {string} variantId
  * @property {import("../utils/sdk.mjs").ProviderDescriptor} providerDesc
  * @property {string} runRoot                  Per-run output directory.
+ * @property {"live" | "replay"} [mode]        Defaults to "live".
+ * @property {string} [fixtureRoot]            Required when mode="replay". Path to a prior runRoot.
+ * @property {string} [fixtureFromVariant]     When set, replay reads from this variant's events.json
+ *                                             instead of the variant being run (cross-variant pin).
  * @property {Record<string, any>} [pricing]
  * @property {number} [maxTasks]               Limit to first N tasks (default: all).
  * @property {(taskId: string, evt: any) => void} [onEvent]  Stream tap for CLI logging.
@@ -22,7 +36,7 @@
  * @property {Array<{ taskId: string, sessionId: string, status: string, error?: string }>} sessions
  */
 
-import { mkdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 
 import { loadSdk } from "../utils/sdk.mjs"
@@ -31,13 +45,20 @@ import { buildMetricSet } from "./aggregator.mjs"
 /** @param {RunBenchOpts} opts @returns {Promise<RunBenchResult>} */
 export async function runBench(opts) {
   const { scenario, variantId, providerDesc, runRoot, pricing, maxTasks, onEvent } = opts
+  const mode = opts.mode ?? "live"
   const variant = scenario.variants[variantId]
   if (!variant) {
     throw new Error(`scenario ${scenario.id}: unknown variant "${variantId}". Known: ${Object.keys(scenario.variants).join(", ")}`)
   }
+  if (mode === "replay" && !opts.fixtureRoot) {
+    throw new Error(`runBench: mode="replay" requires opts.fixtureRoot`)
+  }
 
   const sdk = await loadSdk()
-  const { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane, createProvider } = sdk
+  const { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane, createProvider, ReplayProvider, extractRecordedMessages } = sdk
+  if (mode === "replay" && (!ReplayProvider || !extractRecordedMessages)) {
+    throw new Error(`runBench: SDK does not export ReplayProvider / extractRecordedMessages — rebuild node SDK (mode=replay)`)
+  }
 
   const variantDir = path.join(runRoot, `${scenario.id}.${variantId}`)
   mkdirSync(variantDir, { recursive: true })
@@ -62,15 +83,26 @@ export async function runBench(opts) {
     for (const t of tools) plane.register(t)
 
     const turnMetrics = []
-    const runnerOpts = {
-      provider: createProvider({
+    const provider = mode === "live"
+      ? createProvider({
         provider: providerDesc.provider,
         model: providerDesc.model,
         apiKey: providerDesc.apiKey,
         ...(providerDesc.baseURL ? { baseURL: providerDesc.baseURL } : {}),
         ...(providerDesc.endpoint ? { endpoint: providerDesc.endpoint } : {}),
         retry: { maxRetries: 2, baseDelay: 600 },
-      }),
+      })
+      : buildReplayProvider({
+        fixtureRoot: opts.fixtureRoot,
+        scenarioId: scenario.id,
+        fixtureVariantId: opts.fixtureFromVariant ?? variantId,
+        taskId: task.id,
+        ReplayProvider,
+        extractRecordedMessages,
+      })
+
+    const runnerOpts = {
+      provider,
       sessionLog,
       executionPlane: plane,
       maxTokens: scenario.maxTokens,
@@ -136,20 +168,54 @@ export async function runBench(opts) {
     throw new Error(`scenario ${scenario.id} variant ${variantId}: no sessions produced (maxTasks=${maxTasks})`)
   }
 
+  const fixtureNote = mode === "replay"
+    ? ` · fixture=${path.basename(opts.fixtureRoot ?? "")}/${opts.fixtureFromVariant ?? variantId}`
+    : ""
   const metricSet = buildMetricSet({
     scenarioId: scenario.id,
     variantId,
     provider: providerDesc.provider,
     model: providerDesc.model,
-    mode: "live",
+    mode,
     sessions: sessionRecords,
     pricing,
     mechanismHook: scenario.mechanismHook,
-    notes: `runBench live · ${tasks.length} tasks · variant ${variant.description}`,
+    notes: `runBench ${mode} · ${tasks.length} tasks · variant ${variant.description}${fixtureNote}`,
   })
 
   const metricSetPath = path.join(variantDir, "metricset.json")
   writeFileSync(metricSetPath, JSON.stringify(metricSet, null, 2))
 
   return { metricSet, metricSetPath, sessions: sessionStatuses }
+}
+
+/**
+ * Build a SDK ReplayProvider for one task by reading the fixture's events.json.
+ * @param {{
+ *   fixtureRoot: string,
+ *   scenarioId: string,
+ *   fixtureVariantId: string,
+ *   taskId: string,
+ *   ReplayProvider: any,
+ *   extractRecordedMessages: any,
+ * }} args
+ */
+function buildReplayProvider(args) {
+  const eventsPath = path.join(
+    args.fixtureRoot,
+    `${args.scenarioId}.${args.fixtureVariantId}`,
+    `${args.taskId}.events.json`,
+  )
+  if (!existsSync(eventsPath)) {
+    throw new Error(
+      `replay fixture missing: ${eventsPath}. ` +
+      `Record a live run first: bench ${args.scenarioId} --variants ${args.fixtureVariantId} --provider <id>`,
+    )
+  }
+  const events = JSON.parse(readFileSync(eventsPath, "utf8"))
+  const messages = args.extractRecordedMessages(events)
+  if (messages.length === 0) {
+    throw new Error(`replay fixture has no llm_completed events: ${eventsPath}`)
+  }
+  return new args.ReplayProvider(messages)
 }

@@ -6,6 +6,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`ReplayProvider` — a request-skipping `LLMProvider` for deterministic re-runs.** Wraps a recorded
+  `Message[]` queue and emits `usage` / `text_delta` / `tool_call` stream events from each, never
+  hitting an API. Designed for benchmark cross-variant cost comparisons, deterministic CI test
+  fixtures, and golden regression checks. Distinct from `seedProviderReplay` / `peekProviderReplay`
+  (which is the unchanged session-repair reasoning-content cache and does NOT skip LLM calls).
+  Optional tokenizer hook (defaults to `chars/4`); optional `wrap` mode for loops past the fixture
+  length; `reset()` rewinds for reuse across sessions. Exported from `@deepstrike/sdk` as
+  `ReplayProvider` (class) and `ReplayProviderOpts` (type).
+- **`extractRecordedMessages(events)` — fixture helper.** Walks a session-log's `llm_completed`
+  events and produces the `Message[]` queue `ReplayProvider` consumes. Accepts both wire shapes the
+  SDK uses interchangeably (camelCase in-memory and snake_case on-disk), so a prior `SessionLog`
+  is a drop-in replay fixture. Exported from `@deepstrike/sdk`.
+
 ## [0.2.19] - 2026-06-16
 
 ### Added
