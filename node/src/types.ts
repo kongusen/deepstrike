@@ -240,6 +240,40 @@ export type ProviderProtocol =
   | "openai-responses"
   | "gemini"
 
+/**
+ * Strategy for placing Anthropic-protocol `cache_control` breakpoints across a request's
+ * static prefix (tools + system blocks) and rolling history (messages). Pass via the
+ * `extensions.cacheBreakpointStrategy` extension on every provider call; the runner already
+ * flows `RuntimeOptions.extensions` through, so setting it once on the runner propagates
+ * to every Anthropic-protocol call.
+ *
+ * Values:
+ *   - `"default"` — current production behavior: a breakpoint on the last tool (when system
+ *     is rendered as a string), one on each system block (when system blocks are present),
+ *     and the rolling message pair (last message + frozen-prefix anchor or last preceding
+ *     user turn).
+ *   - `"tools-only"` — breakpoint on the last tool only. System blocks and history go
+ *     uncached. Useful to isolate the tools-prefix cache contribution.
+ *   - `"system-only"` — breakpoints on system blocks only. No tool, no history caching.
+ *     Useful to isolate the system-prefix cache contribution.
+ *   - `"frozen-prefix"` — breakpoints on the message history only, anchored at
+ *     `frozenPrefixLen` (the compaction boundary, P1-E). Falls back to the last-message
+ *     breakpoint when no frozen prefix is set. No tools, no system caching. Useful to
+ *     stress-test the P1-E deep-anchor design.
+ *   - `"none"` — no `cache_control` anywhere. The baseline for cache-hit attribution.
+ *
+ * Strategies that disable some breakpoints still keep the structural shape (e.g. system
+ * blocks remain text blocks rather than collapsing into a single string), so the only
+ * Δ between variants is which blocks carry `cache_control`. Unrecognised strings fall
+ * back to `"default"`.
+ */
+export type CacheBreakpointStrategy =
+  | "default"
+  | "tools-only"
+  | "system-only"
+  | "frozen-prefix"
+  | "none"
+
 export interface ProviderDescriptor {
   provider: string
   protocol: ProviderProtocol

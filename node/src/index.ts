@@ -114,6 +114,7 @@ export type {
   PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   LLMProvider, RetryConfig, TokenUsage, ProviderToolSpec, ProviderRunState, ProviderReplay,
   RenderedContext, ReplayabilityAssessment,
+  CacheBreakpointStrategy,
 } from "./types.js"
 export type {
   AgentCapabilityFilter,

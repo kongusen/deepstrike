@@ -89,4 +89,5 @@ export type {
   ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
   PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   LLMProvider,
+  CacheBreakpointStrategy,
 } from "./types.js"

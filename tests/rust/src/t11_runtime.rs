@@ -101,6 +101,9 @@ fn default_runtime_opts(
         milestone_contract: None,
         run_spec: None,
         on_milestone_evaluate: None,
+        allowed_tool_ids: None,
+        on_turn_metrics: None,
+        stable_core_tool_ids: Vec::new(),
     }
 }
 

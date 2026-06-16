@@ -13,6 +13,7 @@ import { compressionStressScenario } from "./compression-stress.mjs"
 import { governanceWriteDenyScenario } from "./governance-write-deny.mjs"
 import { memoryRecallScenario } from "./memory-recall.mjs"
 import { signalInjectionScenario } from "./signal-injection.mjs"
+import { prefixCacheScenario } from "./prefix-cache.mjs"
 
 /** @type {BenchScenario[]} */
 export const SCENARIOS = [
@@ -21,6 +22,7 @@ export const SCENARIOS = [
   governanceWriteDenyScenario,
   memoryRecallScenario,
   signalInjectionScenario,
+  prefixCacheScenario,
 ]
 
 /** @param {string} id @returns {BenchScenario | undefined} */

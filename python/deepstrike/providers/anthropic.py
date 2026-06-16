@@ -78,14 +78,18 @@ class AnthropicProvider:
         knowledge = getattr(context, "system_knowledge", "") or ""
         if not stable and not knowledge:
             return context.system_text or None
+        # System cache_control is emitted under "default" and "system-only". Other strategies keep
+        # the text-block structure for protocol parity but omit cache_control.
+        emit = strategy in ("default", "system-only")
+        cc = {"cache_control": {"type": "ephemeral"}} if emit else {}
         blocks: list[dict] = []
         if stable:
-            blocks.append({"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}})
+            blocks.append({"type": "text", "text": stable, **cc})
         if knowledge:
-            blocks.append({"type": "text", "text": knowledge, "cache_control": {"type": "ephemeral"}})
+            blocks.append({"type": "text", "text": knowledge, **cc})
         return blocks or None
 
-    def _build_messages(self, turns: list[Message], state_turn=None, frozen_prefix_len=None) -> list[dict]:
+    def _build_messages(self, turns: list[Message], state_turn=None, frozen_prefix_len=None, strategy: str = "default") -> list[dict]:
         msgs = to_anthropic_messages(
             turns,
             native_replay=lambda message: self._native_assistant_blocks.get(
@@ -97,7 +101,7 @@ class AnthropicProvider:
         # state_turn is None and the state is already inside turns (rendered above).
         # frozen_prefix_len (P1-E) pins the deep breakpoint at the compaction
         # boundary; None ⇒ rolling-pair fallback.
-        _apply_message_cache_control(msgs, frozen_prefix_len)
+        _apply_message_cache_control(msgs, frozen_prefix_len, strategy)
         if state_turn is not None:
             # Render through to_anthropic_messages so assistant tool_use blocks
             # and tool-role tool_result parts are serialized correctly —
@@ -112,7 +116,7 @@ class AnthropicProvider:
             msgs.extend(state_msgs)
         return msgs
 
-    def _build_tools(self, tools: list[ToolSchema], anchor_cache: bool) -> list[dict] | None:
+    def _build_tools(self, tools: list[ToolSchema], anchor_cache: bool, strategy: str = "default") -> list[dict] | None:
         if not tools:
             return None
         defs = [
@@ -123,10 +127,9 @@ class AnthropicProvider:
             }
             for t in tools
         ]
-        # Anchor the tools-prefix cache on the final tool only when the system
-        # blocks won't carry a breakpoint (tools render before system, so a
-        # system_stable breakpoint already covers them).
-        if anchor_cache:
+        # Tool cache_control is emitted under "default" and "tools-only".
+        emit_on_last_tool = anchor_cache and strategy in ("default", "tools-only")
+        if emit_on_last_tool:
             defs[-1]["cache_control"] = {"type": "ephemeral"}
         return defs
 
@@ -141,9 +144,10 @@ class AnthropicProvider:
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
 
-        msgs = self._build_messages(context.turns, context.state_turn, context.frozen_prefix_len)
-        system = self._build_system(context)
-        tool_defs = self._build_tools(tools, anchor_cache=not isinstance(system, list))
+        strategy = _resolve_cache_breakpoint_strategy(extensions)
+        msgs = self._build_messages(context.turns, context.state_turn, context.frozen_prefix_len, strategy)
+        system = self._build_system(context, strategy)
+        tool_defs = self._build_tools(tools, anchor_cache=not isinstance(system, list), strategy=strategy)
         _assert_cache_budget(system, len(tools))
 
         last_exc = None
@@ -213,9 +217,10 @@ class AnthropicProvider:
         raise last_exc or RuntimeError("Complete failed")
 
     async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
-        msgs = self._build_messages(context.turns, context.state_turn, context.frozen_prefix_len)
-        system = self._build_system(context)
-        tool_defs = self._build_tools(tools, anchor_cache=not isinstance(system, list))
+        strategy = _resolve_cache_breakpoint_strategy(extensions)
+        msgs = self._build_messages(context.turns, context.state_turn, context.frozen_prefix_len, strategy)
+        system = self._build_system(context, strategy)
+        tool_defs = self._build_tools(tools, anchor_cache=not isinstance(system, list), strategy=strategy)
         _assert_cache_budget(system, len(tools))
 
         native_blocks: dict[int, dict] = {}
@@ -321,8 +326,22 @@ class AnthropicProvider:
 _MAX_CACHE_BREAKPOINTS = 4
 _MESSAGE_CACHE_BREAKPOINTS = 2
 
+# Recognised values for the `cacheBreakpointStrategy` extension. See node/src/types.ts
+# `CacheBreakpointStrategy` for the canonical documentation; this mirrors the same surface.
+_CACHE_BREAKPOINT_STRATEGIES = {"default", "tools-only", "system-only", "frozen-prefix", "none"}
 
-def _apply_message_cache_control(msgs: list[dict], frozen_prefix_len: "int | None" = None) -> None:
+
+def _resolve_cache_breakpoint_strategy(extensions: "dict | None") -> str:
+    """Pull `cacheBreakpointStrategy` from per-call extensions; unrecognised values → 'default'."""
+    if not extensions:
+        return "default"
+    raw = extensions.get("cacheBreakpointStrategy")
+    if isinstance(raw, str) and raw in _CACHE_BREAKPOINT_STRATEGIES:
+        return raw
+    return "default"
+
+
+def _apply_message_cache_control(msgs: list[dict], frozen_prefix_len: "int | None" = None, strategy: str = "default") -> None:
     """Place the (<=2) message-history cache breakpoints. The final message always
     gets one (writes the current full prefix). The second is placed by one of two
     strategies:
@@ -340,11 +359,14 @@ def _apply_message_cache_control(msgs: list[dict], frozen_prefix_len: "int | Non
     body is promoted to a cache-bearing text block."""
     if not msgs:
         return
+    # Message-level cache_control is emitted under "default" and "frozen-prefix" only.
+    if strategy in ("tools-only", "system-only", "none"):
+        return
     targets = {len(msgs) - 1}
     if isinstance(frozen_prefix_len, int) and 1 <= frozen_prefix_len < len(msgs):
         # Deep anchor at the frozen-prefix boundary (last frozen turn). Fixed between compactions.
         targets.add(frozen_prefix_len - 1)
-    else:
+    elif strategy == "default":
         i = len(msgs) - 2
         while i >= 0 and len(targets) < _MESSAGE_CACHE_BREAKPOINTS:
             if msgs[i].get("role") == "user":

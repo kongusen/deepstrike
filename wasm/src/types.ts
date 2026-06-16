@@ -112,6 +112,19 @@ export type ProviderProtocol =
   | "openai-responses"
   | "gemini"
 
+/**
+ * Cache_control placement strategy for the Anthropic protocol. Pass via
+ * `extensions.cacheBreakpointStrategy` on any provider call (the runner threads
+ * `RuntimeOptions.extensions` through automatically). See the Node SDK's
+ * `CacheBreakpointStrategy` for the canonical documentation; this is the WASM mirror.
+ */
+export type CacheBreakpointStrategy =
+  | "default"
+  | "tools-only"
+  | "system-only"
+  | "frozen-prefix"
+  | "none"
+
 export interface ProviderDescriptor {
   provider: string
   protocol: ProviderProtocol

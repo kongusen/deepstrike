@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk"
-import type { Message, ProviderDescriptor, ProviderReplay, ProviderRunState, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent, LLMProvider, RuntimePolicy } from "../types.js"
+import type { CacheBreakpointStrategy, Message, ProviderDescriptor, ProviderReplay, ProviderRunState, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent, LLMProvider, RuntimePolicy } from "../types.js"
 import { assistantReplayKey } from "../runtime/provider-replay.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, normalizeToolCall, omitExtensionKeys, toAnthropicContent, toAnthropicMessages } from "./base.js"
@@ -94,19 +94,24 @@ export class AnthropicProvider implements LLMProvider {
    * (tools render before system), so a redundant tool breakpoint would only burn
    * one of Anthropic's 4 cache_control slots — slots the message history needs.
    */
-  private buildTools(tools: ToolSchema[], anchorCache: boolean) {
+  private buildTools(tools: ToolSchema[], anchorCache: boolean, strategy: CacheBreakpointStrategy) {
+    // Tool cache_control is emitted under "default" and "tools-only". "system-only",
+    // "frozen-prefix", and "none" all skip it.
+    const emitOnLastTool = anchorCache &&
+      (strategy === "default" || strategy === "tools-only")
     return tools.map((t, i) => ({
       name: t.name,
       description: t.description,
       input_schema: JSON.parse(t.parameters),
-      ...(anchorCache && i === tools.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {}),
+      ...(emitOnLastTool && i === tools.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {}),
     }))
   }
 
   async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
-    const system = this.buildSystem(context)
-    const msgs = this.buildMessages(context)
+    const strategy = resolveCacheBreakpointStrategy(extensions)
+    const system = this.buildSystem(context, strategy)
+    const msgs = this.buildMessages(context, strategy)
     assertCacheBudget(system, tools.length)
     const requestExtensions = this.requestExtensions(extensions)
 
@@ -119,7 +124,7 @@ export class AnthropicProvider implements LLMProvider {
           max_tokens: typeof extensions?.max_tokens === "number" ? extensions.max_tokens : 8096,
           ...(system ? { system } : {}),
           messages: msgs,
-          ...(tools.length ? { tools: this.buildTools(tools, !Array.isArray(system)) } : {}),
+          ...(tools.length ? { tools: this.buildTools(tools, !Array.isArray(system), strategy) } : {}),
         }, extensions)
         this.circuit.recordSuccess()
         let content = ""
@@ -144,8 +149,9 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: ProviderRunState, signal?: AbortSignal): AsyncIterable<StreamEvent> {
-    const system = this.buildSystem(context)
-    const msgs = this.buildMessages(context)
+    const strategy = resolveCacheBreakpointStrategy(extensions)
+    const system = this.buildSystem(context, strategy)
+    const msgs = this.buildMessages(context, strategy)
     assertCacheBudget(system, tools.length)
     const requestExtensions = this.requestExtensions(extensions)
     const toolBlocks: Record<number, { id: string; name: string; argsBuf: string }> = {}
@@ -159,7 +165,7 @@ export class AnthropicProvider implements LLMProvider {
       max_tokens: typeof extensions?.max_tokens === "number" ? extensions.max_tokens : 8096,
       ...(system ? { system } : {}),
       messages: msgs,
-      ...(tools.length ? { tools: this.buildTools(tools, !Array.isArray(system)) } : {}),
+      ...(tools.length ? { tools: this.buildTools(tools, !Array.isArray(system), strategy) } : {}),
     }, extensions, signal)
 
     let uncachedInput = 0
@@ -258,7 +264,7 @@ export class AnthropicProvider implements LLMProvider {
     ) as unknown as AsyncIterable<any>
   }
 
-  private buildSystem(context: RenderedContext): Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }> | string | undefined {
+  private buildSystem(context: RenderedContext, strategy: CacheBreakpointStrategy): Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }> | string | undefined {
     // B3 note: the system shape is content-driven — 0 blocks (string), 1 block
     // (stable only), or 2 blocks (stable + knowledge). The first turn `systemKnowledge`
     // appears, the block count rises 1→2, which is a one-time prompt-cache invalidation
@@ -268,17 +274,21 @@ export class AnthropicProvider implements LLMProvider {
     if (!context.systemStable && !context.systemKnowledge) {
       return context.systemText || undefined
     }
-    const blocks: Array<{ type: "text"; text: string; cache_control: { type: "ephemeral" } }> = []
+    // System cache_control is emitted under "default" and "system-only". Other strategies
+    // keep the text-block structure for protocol parity but omit cache_control.
+    const emitOnSystemBlocks = strategy === "default" || strategy === "system-only"
+    const cc = { type: "ephemeral" as const }
+    const blocks: Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }> = []
     if (context.systemStable) {
-      blocks.push({ type: "text", text: context.systemStable, cache_control: { type: "ephemeral" } })
+      blocks.push({ type: "text", text: context.systemStable, ...(emitOnSystemBlocks ? { cache_control: cc } : {}) })
     }
     if (context.systemKnowledge) {
-      blocks.push({ type: "text", text: context.systemKnowledge, cache_control: { type: "ephemeral" } })
+      blocks.push({ type: "text", text: context.systemKnowledge, ...(emitOnSystemBlocks ? { cache_control: cc } : {}) })
     }
     return blocks.length ? blocks : undefined
   }
 
-  private buildMessages(context: RenderedContext): Anthropic.MessageParam[] {
+  private buildMessages(context: RenderedContext, strategy: CacheBreakpointStrategy): Anthropic.MessageParam[] {
     const msgs = toAnthropicMessages(context.turns, message =>
       this.nativeAssistantBlocks.get(assistantReplayKey(message))
     ) as unknown as Anthropic.MessageParam[]
@@ -288,7 +298,7 @@ export class AnthropicProvider implements LLMProvider {
     // across turns). On un-rebuilt bindings stateTurn is absent and the state is
     // already inside `turns` — rendered as-is above. `frozenPrefixLen` (P1-E) pins
     // the deep breakpoint at the compaction boundary; absent ⇒ rolling-pair fallback.
-    applyMessageCacheControl(msgs, context.frozenPrefixLen)
+    applyMessageCacheControl(msgs, context.frozenPrefixLen, strategy)
     if (context.stateTurn) {
       // Render through toAnthropicMessages so assistant tool_use blocks and
       // tool-role tool_result parts are serialized correctly — toAnthropicContent
@@ -314,6 +324,20 @@ export class AnthropicProvider implements LLMProvider {
     if (!message.toolCalls?.length && !blocks.some(b => b.type === "thinking")) return
     this.nativeAssistantBlocks.set(assistantReplayKey(message), blocks)
   }
+}
+
+/** Recognised cache-breakpoint strategy values; any other input (incl. undefined) falls to `"default"`. */
+const CACHE_BREAKPOINT_STRATEGIES = new Set<CacheBreakpointStrategy>([
+  "default", "tools-only", "system-only", "frozen-prefix", "none",
+])
+
+/** Pull `cacheBreakpointStrategy` from per-call extensions; unrecognised values → `"default"`. */
+function resolveCacheBreakpointStrategy(extensions?: Record<string, unknown>): CacheBreakpointStrategy {
+  const raw = extensions?.cacheBreakpointStrategy
+  if (typeof raw === "string" && CACHE_BREAKPOINT_STRATEGIES.has(raw as CacheBreakpointStrategy)) {
+    return raw as CacheBreakpointStrategy
+  }
+  return "default"
 }
 
 /** Anthropic accepts at most this many cache_control breakpoints per request. */
@@ -363,13 +387,18 @@ function assertCacheBudget(system: unknown, toolCount: number): void {
  * cache_control attaches to the last content block of each target, promoting a bare
  * string body to a text block.
  */
-function applyMessageCacheControl(msgs: Anthropic.MessageParam[], frozenPrefixLen?: number): void {
+function applyMessageCacheControl(msgs: Anthropic.MessageParam[], frozenPrefixLen: number | undefined, strategy: CacheBreakpointStrategy): void {
   if (!msgs.length) return
+  // Message-level cache_control is emitted under "default" and "frozen-prefix" only.
+  // "tools-only", "system-only", and "none" skip the history entirely.
+  if (strategy === "tools-only" || strategy === "system-only" || strategy === "none") return
   const targets = new Set<number>([msgs.length - 1])
   if (typeof frozenPrefixLen === "number" && frozenPrefixLen >= 1 && frozenPrefixLen < msgs.length) {
     // Deep anchor at the frozen-prefix boundary (last frozen turn). Fixed between compactions.
     targets.add(frozenPrefixLen - 1)
-  } else {
+  } else if (strategy === "default") {
+    // Rolling fallback is part of the default strategy only — `"frozen-prefix"` deliberately
+    // skips it so a verify can isolate the deep-anchor contribution from the rolling pair.
     for (let i = msgs.length - 2; i >= 0 && targets.size < MESSAGE_CACHE_BREAKPOINTS; i--) {
       if (msgs[i].role === "user") targets.add(i)
     }

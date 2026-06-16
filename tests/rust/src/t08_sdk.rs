@@ -179,6 +179,9 @@ fn runtime_options_can_be_constructed() {
         milestone_contract: None,
         run_spec: None,
         on_milestone_evaluate: None,
+        allowed_tool_ids: None,
+        on_turn_metrics: None,
+        stable_core_tool_ids: Vec::new(),
     });
     assert_eq!(runner.execution_plane().schemas().len(), 0);
 }

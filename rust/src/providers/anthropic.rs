@@ -54,9 +54,9 @@ impl AnthropicProvider {
             .insert(assistant_replay_key(content, tool_calls), blocks);
     }
 
-    fn context_to_anthropic(&self, context: &RenderedContext) -> (Option<Value>, Vec<Value>) {
+    fn context_to_anthropic(&self, context: &RenderedContext, strategy: CacheBreakpointStrategy) -> (Option<Value>, Vec<Value>) {
         let native = self.native_assistant_blocks.lock().unwrap();
-        context_to_anthropic(context, |content, tool_calls| {
+        context_to_anthropic(context, strategy, |content, tool_calls| {
             native
                 .get(&assistant_replay_key(content, tool_calls))
                 .cloned()
@@ -109,6 +109,7 @@ fn content_to_anthropic(content: &Content) -> Value {
 
 fn context_to_anthropic(
     context: &RenderedContext,
+    strategy: CacheBreakpointStrategy,
     native_replay: impl Fn(&str, &[ToolCall]) -> Option<Vec<Value>>,
 ) -> (Option<Value>, Vec<Value>) {
     let mut msgs = Vec::new();
@@ -172,7 +173,7 @@ fn context_to_anthropic(
         };
         msgs.push(json!({ "role": role, "content": content_to_anthropic(&message.content) }));
     }
-    apply_message_cache_control(&mut msgs);
+    apply_message_cache_control(&mut msgs, strategy);
     // The volatile State turn is rendered AFTER the cache breakpoints, so the
     // history prefix stays cacheable and the state is the cheap uncached tail.
     // (When produced by an un-rebuilt binding, state_turn is None and the state
@@ -181,7 +182,7 @@ fn context_to_anthropic(
         let role = if state.role == Role::Assistant { "assistant" } else { "user" };
         msgs.push(json!({ "role": role, "content": content_to_anthropic(&state.content) }));
     }
-    (build_system(context), msgs)
+    (build_system(context, strategy), msgs)
 }
 
 /// Anthropic accepts at most this many cache_control breakpoints per request.
@@ -189,7 +190,52 @@ const MAX_CACHE_BREAKPOINTS: usize = 4;
 /// Rolling cache breakpoints reserved for the message history (system uses ≤2).
 const MESSAGE_CACHE_BREAKPOINTS: usize = 2;
 
-fn tools_to_anthropic(tools: &[ToolSchema], anchor_cache: bool) -> Vec<Value> {
+/// Cache-control placement strategy. Mirrors the Node SDK's `CacheBreakpointStrategy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheBreakpointStrategy {
+    Default,
+    ToolsOnly,
+    SystemOnly,
+    FrozenPrefix,
+    None,
+}
+
+impl CacheBreakpointStrategy {
+    fn from_str(raw: &str) -> Self {
+        match raw {
+            "tools-only" => Self::ToolsOnly,
+            "system-only" => Self::SystemOnly,
+            "frozen-prefix" => Self::FrozenPrefix,
+            "none" => Self::None,
+            // "default" and every unrecognised value
+            _ => Self::Default,
+        }
+    }
+
+    fn emit_on_tools(self) -> bool {
+        matches!(self, Self::Default | Self::ToolsOnly)
+    }
+    fn emit_on_system(self) -> bool {
+        matches!(self, Self::Default | Self::SystemOnly)
+    }
+    fn emit_on_messages(self) -> bool {
+        matches!(self, Self::Default | Self::FrozenPrefix)
+    }
+    fn use_rolling_fallback(self) -> bool {
+        matches!(self, Self::Default)
+    }
+}
+
+/// Pull `cacheBreakpointStrategy` from per-call extensions; unrecognised → Default.
+fn resolve_cache_breakpoint_strategy(extensions: Option<&Value>) -> CacheBreakpointStrategy {
+    extensions
+        .and_then(|e| e.get("cacheBreakpointStrategy"))
+        .and_then(|v| v.as_str())
+        .map(CacheBreakpointStrategy::from_str)
+        .unwrap_or(CacheBreakpointStrategy::Default)
+}
+
+fn tools_to_anthropic(tools: &[ToolSchema], anchor_cache: bool, strategy: CacheBreakpointStrategy) -> Vec<Value> {
     let last = tools.len().saturating_sub(1);
     tools
         .iter()
@@ -203,7 +249,7 @@ fn tools_to_anthropic(tools: &[ToolSchema], anchor_cache: bool) -> Vec<Value> {
             // Anchor a tool breakpoint only when the system blocks won't carry one;
             // otherwise system_stable already caches the tools prefix (tools render
             // first) and a redundant breakpoint would overrun the 4-slot budget.
-            if anchor_cache && i == last {
+            if anchor_cache && strategy.emit_on_tools() && i == last {
                 def["cache_control"] = json!({ "type": "ephemeral" });
             }
             def
@@ -214,7 +260,7 @@ fn tools_to_anthropic(tools: &[ToolSchema], anchor_cache: bool) -> Vec<Value> {
 /// Structured system blocks with cache_control when the kernel partitioned the
 /// prompt (system_stable / system_knowledge); else the flat system_text string
 /// (no breakpoint), or None.
-fn build_system(context: &RenderedContext) -> Option<Value> {
+fn build_system(context: &RenderedContext, strategy: CacheBreakpointStrategy) -> Option<Value> {
     if context.system_stable.is_empty() && context.system_knowledge.is_empty() {
         return if context.system_text.is_empty() {
             None
@@ -222,12 +268,17 @@ fn build_system(context: &RenderedContext) -> Option<Value> {
             Some(json!(context.system_text))
         };
     }
+    let emit = strategy.emit_on_system();
     let mut blocks = Vec::new();
     if !context.system_stable.is_empty() {
-        blocks.push(json!({ "type": "text", "text": context.system_stable, "cache_control": { "type": "ephemeral" } }));
+        let mut b = json!({ "type": "text", "text": context.system_stable });
+        if emit { b["cache_control"] = json!({ "type": "ephemeral" }); }
+        blocks.push(b);
     }
     if !context.system_knowledge.is_empty() {
-        blocks.push(json!({ "type": "text", "text": context.system_knowledge, "cache_control": { "type": "ephemeral" } }));
+        let mut b = json!({ "type": "text", "text": context.system_knowledge });
+        if emit { b["cache_control"] = json!({ "type": "ephemeral" }); }
+        blocks.push(b);
     }
     if blocks.is_empty() {
         None
@@ -242,17 +293,21 @@ fn build_system(context: &RenderedContext) -> Option<Value> {
 /// re-billed at full input price every turn. Marks the final message plus the
 /// nearest preceding user turn (read anchor); a bare string body is promoted to
 /// a cache-bearing text block.
-fn apply_message_cache_control(msgs: &mut [Value]) {
-    if msgs.is_empty() {
+fn apply_message_cache_control(msgs: &mut [Value], strategy: CacheBreakpointStrategy) {
+    if msgs.is_empty() || !strategy.emit_on_messages() {
         return;
     }
     let last = msgs.len() - 1;
     let mut targets = vec![last];
-    let mut i = last;
-    while i > 0 && targets.len() < MESSAGE_CACHE_BREAKPOINTS {
-        i -= 1;
-        if msgs[i].get("role").and_then(|v| v.as_str()) == Some("user") {
-            targets.push(i);
+    // Rust SDK currently has no `frozen_prefix_len` field on RenderedContext; only the rolling
+    // fallback applies, and only under Default strategy (FrozenPrefix degrades to last-message only).
+    if strategy.use_rolling_fallback() {
+        let mut i = last;
+        while i > 0 && targets.len() < MESSAGE_CACHE_BREAKPOINTS {
+            i -= 1;
+            if msgs[i].get("role").and_then(|v| v.as_str()) == Some("user") {
+                targets.push(i);
+            }
         }
     }
     for idx in targets {
@@ -376,7 +431,8 @@ impl LLMProvider for AnthropicProvider {
         _state: Option<&super::ProviderRunState>,
     ) -> Result<Box<dyn Stream<Item = Result<StreamEvent>> + Send + Unpin>> {
         self.stream_native_blocks.lock().unwrap().clear();
-        let (system, msgs) = self.context_to_anthropic(context);
+        let strategy = resolve_cache_breakpoint_strategy(extensions);
+        let (system, msgs) = self.context_to_anthropic(context, strategy);
         // Anchor the tool breakpoint only when system is not structured blocks.
         let tool_anchor = !matches!(&system, Some(Value::Array(_)));
         assert_cache_budget(system.as_ref(), tools.len())?;
@@ -390,7 +446,7 @@ impl LLMProvider for AnthropicProvider {
             body["system"] = s;
         }
         if !tools.is_empty() {
-            body["tools"] = json!(tools_to_anthropic(tools, tool_anchor));
+            body["tools"] = json!(tools_to_anthropic(tools, tool_anchor, strategy));
         }
         if let Some(ext) = extensions {
             if ext
@@ -649,7 +705,7 @@ mod tests {
             frozen_prefix_len: None,
         };
 
-        let (system, messages) = context_to_anthropic(&context, |_, _| None);
+        let (system, messages) = context_to_anthropic(&context, CacheBreakpointStrategy::Default, |_, _| None);
         // system_stable present -> structured cache block, not a bare string.
         assert_eq!(
             system,
@@ -701,7 +757,7 @@ mod tests {
             state_turn: None,
             frozen_prefix_len: None,
         };
-        let (system, _msgs) = context_to_anthropic(&context, |_, _| None);
+        let (system, _msgs) = context_to_anthropic(&context, CacheBreakpointStrategy::Default, |_, _| None);
         // 2 system + 2 message = 4 (tool breakpoint dropped) — at the limit, ok.
         assert!(assert_cache_budget(system.as_ref(), 3).is_ok());
     }
@@ -720,7 +776,7 @@ mod tests {
             state_turn: Some(Message::user("[TASK STATE] goal: g\n\nProceed.")),
             frozen_prefix_len: None,
         };
-        let (_system, messages) = context_to_anthropic(&context, |_, _| None);
+        let (_system, messages) = context_to_anthropic(&context, CacheBreakpointStrategy::Default, |_, _| None);
         // history (2) + state (1) appended last
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[2]["role"], "user");

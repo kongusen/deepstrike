@@ -6,6 +6,31 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.22] - 2026-06-17
+
+### Added
+
+- **`cacheBreakpointStrategy` — knob for Anthropic `cache_control` placement.** Pass
+  `extensions.cacheBreakpointStrategy: "default" | "tools-only" | "system-only" | "frozen-prefix" | "none"`
+  on a runner/provider call to choose where the Anthropic provider asks the API to mark cache
+  breakpoints across the system / tools / message slots. `"default"` preserves prior behavior
+  (tools-anchored + 2 system + rolling 2-message breakpoints, total ≤4 per the Anthropic protocol
+  limit). `"none"` disables every cache_control block — useful as a cost floor when measuring the
+  contribution of caching. `"system-only"` and `"tools-only"` isolate a single cacheable slot;
+  `"frozen-prefix"` keeps system caching plus a deep message-history anchor at the compaction
+  boundary and drops the rolling pair. Unknown / unset values fall back to `"default"`, so the
+  knob is purely additive. **All four SDKs** — `CacheBreakpointStrategy` type re-exported from the
+  Node `@deepstrike/sdk`, WASM `@deepstrike/wasm-kernel`, Rust `deepstrike-sdk`, and Python
+  `deepstrike` packages. Only the Anthropic protocol honors the strategy; OpenAI-family providers
+  (DeepSeek, MiniMax, OpenAI, Qwen, Kimi) ignore the extension and continue to use automatic
+  prompt caching.
+- **`prefix-cache` benchmark scenario.** Five-variant A/B that runs the same 10-PR fetch loop under
+  each `cacheBreakpointStrategy`, surfaces per-turn `cacheReadTokens` / `cacheCreationTokens` /
+  `cacheHitRate` in the mechanism layer of the MetricSet. The system prompt is sized above the
+  Anthropic minimum cacheable-block threshold so the strategy delta is observable on Anthropic;
+  on other providers the variants degenerate to identical numbers (their auto-cache ignores
+  `cache_control`), which is itself a useful negative-control reading.
+
 ## [0.2.21] - 2026-06-17
 
 ### Added
