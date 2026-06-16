@@ -6,6 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.20] - 2026-06-16
+
 ### Added
 
 - **`ReplayProvider` — a request-skipping `LLMProvider` for deterministic re-runs.** Wraps a recorded
@@ -14,21 +16,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fixtures, and golden regression checks. Distinct from `seedProviderReplay` / `peekProviderReplay`
   (which is the unchanged session-repair reasoning-content cache and does NOT skip LLM calls).
   Optional tokenizer hook (defaults to `chars/4`); optional `wrap` mode for loops past the fixture
-  length; `reset()` rewinds for reuse across sessions. Exported from `@deepstrike/sdk` as
-  `ReplayProvider` (class) and `ReplayProviderOpts` (type).
+  length; `reset()` rewinds for reuse across sessions. **All four SDKs** — exported as
+  `ReplayProvider` (Node `@deepstrike/sdk`, WASM `@deepstrike/wasm-kernel`, Rust `deepstrike-sdk`)
+  and `ReplayProvider` Python class (in `deepstrike`).
 - **`extractRecordedMessages(events)` — fixture helper.** Walks a session-log's `llm_completed`
   events and produces the `Message[]` queue `ReplayProvider` consumes. Accepts both wire shapes the
   SDK uses interchangeably (camelCase in-memory and snake_case on-disk), so a prior `SessionLog`
-  is a drop-in replay fixture. Exported from `@deepstrike/sdk`.
+  is a drop-in replay fixture. **All four SDKs** — exported as `extractRecordedMessages`
+  (Node/WASM/Rust) and `extract_recorded_messages` (Python). Rust additionally exposes
+  `extract_recorded_messages_from_entries` for the `SessionEntry { seq, event }` wrapper shape
+  `SessionLog::read()` returns.
 
 - **`judge()` — one-shot quality scoring against goal + criteria.** Public wrapper around the
   kernel's `gen_eval` free functions (`buildEvalMessages` / `parseVerdict` / `verdictOutputSchema`,
   folded out of the old `EvalPipeline` class in 0.5.0). Renders the eval prompt, streams a verdict
   from the supplied provider, parses it into a typed `Verdict { passed, overallScore, feedback,
   details[] }`. Single LLM call, no retry loop or skill extraction — for the full retry/refine flow
-  use `HarnessLoop`. Exported types: `Criterion`, `Verdict`, `VerdictDetail`, `JudgeArgs`. The three
-  building-block functions are also exported individually for callers that want to render the
-  prompt without calling the LLM (dry-run cost estimation, fixture generation).
+  use `HarnessLoop`. **All four SDKs** — `judge` is async on every port; the building-block
+  functions (`buildEvalMessages` / `parseVerdict` / `verdictOutputSchema`, snake_case on Python)
+  are sync on Node/Python/Rust and async on WASM (lazy kernel load). Public types: `Criterion` /
+  `Verdict` / `VerdictDetail` / `JudgeArgs` (Node/WASM); same shapes as dataclasses on Python and
+  re-exports of `deepstrike_core::harness::eval` types on Rust.
 
 ## [0.2.19] - 2026-06-16
 
