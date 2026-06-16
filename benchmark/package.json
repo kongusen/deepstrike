@@ -1,0 +1,10 @@
+{
+  "name": "@deepstrike/benchmark",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Mechanism benchmark harness — scenario × variant → unified metrics → Δ diff + golden regression",
+  "type": "module",
+  "scripts": {
+    "diff": "node cli/diff.mjs"
+  }
+}

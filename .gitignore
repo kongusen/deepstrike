@@ -30,3 +30,6 @@ pkg/
 .claude
 node/examples/.gating-runs/
 node/examples/.stability-runs/
+
+# Benchmark run outputs
+benchmark/.runs/

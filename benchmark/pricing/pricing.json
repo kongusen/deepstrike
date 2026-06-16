@@ -1,0 +1,44 @@
+{
+  "_meta": {
+    "updated": "2026-06-16",
+    "currency": "USD",
+    "unit": "per million tokens",
+    "note": "Hand-maintained. Missing entries → $ metric reported as n/a. Verify against provider docs before publishing comparisons."
+  },
+  "deepseek:deepseek-chat": {
+    "inputPerM": 0.27,
+    "outputPerM": 1.10,
+    "cacheReadPerM": 0.07,
+    "cacheWritePerM": null
+  },
+  "deepseek:deepseek-reasoner": {
+    "inputPerM": 0.55,
+    "outputPerM": 2.19,
+    "cacheReadPerM": 0.14,
+    "cacheWritePerM": null
+  },
+  "openai:gpt-4o-mini": {
+    "inputPerM": 0.15,
+    "outputPerM": 0.60,
+    "cacheReadPerM": 0.075,
+    "cacheWritePerM": null
+  },
+  "openai:gpt-4o": {
+    "inputPerM": 2.50,
+    "outputPerM": 10.00,
+    "cacheReadPerM": 1.25,
+    "cacheWritePerM": null
+  },
+  "anthropic:claude-sonnet-4-6": {
+    "inputPerM": 3.00,
+    "outputPerM": 15.00,
+    "cacheReadPerM": 0.30,
+    "cacheWritePerM": 3.75
+  },
+  "anthropic:claude-opus-4-7": {
+    "inputPerM": 15.00,
+    "outputPerM": 75.00,
+    "cacheReadPerM": 1.50,
+    "cacheWritePerM": 18.75
+  }
+}
