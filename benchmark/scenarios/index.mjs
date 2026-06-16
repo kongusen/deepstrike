@@ -12,6 +12,7 @@ import { gatingDwellScenario } from "./gating-dwell.mjs"
 import { compressionStressScenario } from "./compression-stress.mjs"
 import { governanceWriteDenyScenario } from "./governance-write-deny.mjs"
 import { memoryRecallScenario } from "./memory-recall.mjs"
+import { signalInjectionScenario } from "./signal-injection.mjs"
 
 /** @type {BenchScenario[]} */
 export const SCENARIOS = [
@@ -19,6 +20,7 @@ export const SCENARIOS = [
   compressionStressScenario,
   governanceWriteDenyScenario,
   memoryRecallScenario,
+  signalInjectionScenario,
 ]
 
 /** @param {string} id @returns {BenchScenario | undefined} */
