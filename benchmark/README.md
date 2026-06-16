@@ -39,6 +39,12 @@ into a 4-SDK consumer without re-housing later.
   - `core/aggregator.mjs` emits `quality.successRate` (pass ratio) + `quality.overallScore` (mean 0..1).
   - `cli/bench.mjs` gains `--judge` / `--no-judge` (default: ON in live, OFF in replay) + `--judge-provider <id>` + `--judge-model <model>`.
 
+- **PR #5 — BM4** (golden baselines + regression gate):
+  - `core/golden.mjs` — golden save / load / check + tolerance policy. Layer defaults: replay strict (0.001%); live cost 10% / quality 0.25 abs / mechanism 5% / contextHealth 10% / latency 50%. Per-metric overrides win over per-layer; per-layer wins over mode default.
+  - `tests/golden.test.mjs` — 20-test suite under Node's built-in `--test` runner (zero new deps).
+  - `core/aggregator.mjs` — under replay mode, skip wall-clock latency metrics (process overhead, not mechanism cost; surfaces as false-positive significance under strict tolerance). Closes BM1.1 backlog #9.
+  - `cli/bench.mjs` — `--baseline-save` / `--baseline-check` / `--baseline-update` / `--baseline-dir <dir>`. `--baseline-check` exits 2 on any failure → CI-gateable.
+
 **Deferred** (see spec §8):
 
 - BM1.2 — `--samples N` to repeat the full task list N times per variant for tighter stdev
@@ -142,6 +148,63 @@ Each session contributes one judge call. For incomplete runs (max_turns /
 error) the judge sees a structured `AGENT_INCOMPLETE (status=…): ran N turns,
 M tool-call rounds. Last assistant text: …` so it can grade partial work
 instead of pass-by-omission.
+
+## Golden baselines — regression gate (PR #5 path)
+
+Goldens freeze a MetricSet as the expected shape; subsequent runs check
+against them with a tolerance policy and exit non-zero on any failure. The CI
+contract: `bench … --baseline-check` exits 2 if any metric drifts past its
+tolerance — a merge can be gated on that.
+
+```bash
+# First time: record one golden per (scenario, variant, provider, model, mode):
+node cli/bench.mjs gating-dwell --variants off,on --provider deepseek --baseline-save
+
+# Then in CI:
+node cli/bench.mjs gating-dwell --variants off,on --provider deepseek --baseline-check
+echo "exit $?"   # 0 = all goldens met, 2 = at least one failure
+
+# Refresh golden when an intentional change moves a metric:
+node cli/bench.mjs gating-dwell --variants off,on --provider deepseek --baseline-update
+```
+
+Golden files live at `benchmark/baselines/<scenarioId>/<variantId>.<provider>.<model>.<mode>.json`
+and embed the full reference MetricSet plus an optional tolerance policy:
+
+```json
+{
+  "schema": "deepstrike-bench-golden/v0",
+  "key": { "scenarioId": "gating-dwell", "variantId": "off",
+           "provider": "deepseek", "model": "deepseek-chat", "mode": "live" },
+  "captured": "2026-06-16T…",
+  "tolerance": {
+    "layers": { "cost": { "absPct": 5 } },         /* tighter than the default 10% */
+    "metrics": { "cost.cacheHitRate": { "absAbs": 0.05 } }
+  },
+  "metricSet": { /* … the frozen MetricSet … */ }
+}
+```
+
+**Tolerance defaults** (per layer, applied when no override is set):
+
+| layer         | replay mode    | live mode             |
+| ------------- | -------------- | --------------------- |
+| cost          | strict 0.001%  | 10%                   |
+| latency       | strict 0.001%  | 50% (machine-dep.)    |
+| quality       | strict 0.001%  | abs 0.25 (judge noisy)|
+| contextHealth | strict 0.001%  | 10%                   |
+| mechanism     | strict 0.001%  | 5%                    |
+
+Override lookup order: per-metric `tolerance.metrics["{layer}.{key}"]` →
+per-layer `tolerance.layers[layer]` → mode default. Human-edited tolerances
+survive `--baseline-save` (they're inherited when the saved golden carries no
+explicit policy).
+
+**Replay-mode goldens are the cheapest CI gate.** A replay run is
+deterministic + free, so the strict 0.001% tolerance catches any unintended
+behavior change in the runner / aggregator / scenario without the noise of a
+live LLM. Replay goldens depend on the fixture run that recorded them, so
+keep the fixture alongside the golden (or commit both).
 
 ## Diff already-recorded runs (PR #1 path, still supported)
 

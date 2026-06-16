@@ -12,7 +12,7 @@
  * it when `--compare` is set.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -22,6 +22,7 @@ import { findScenario, listScenarios } from "../scenarios/index.mjs"
 import { runBench } from "../core/runner.mjs"
 import { diff } from "../core/diff.mjs"
 import { renderDiff } from "../core/render.mjs"
+import { saveGolden, loadGolden, checkGolden, goldenPath, keyFromMetricSet, renderGoldenCheck } from "../core/golden.mjs"
 
 const __dir = path.dirname(fileURLToPath(import.meta.url))
 const benchRoot = path.resolve(__dir, "..")
@@ -174,6 +175,55 @@ for (const variantId of variantIds) {
   }
 }
 
+// BM4: golden baseline save / check / update.
+const baselinesDir = typeof flags["baseline-dir"] === "string"
+  ? path.resolve(flags["baseline-dir"])
+  : path.join(benchRoot, "baselines")
+const baselineSave = flags["baseline-save"] === true
+const baselineCheck = flags["baseline-check"] === true
+const baselineUpdate = flags["baseline-update"] === true
+let baselineFailures = 0
+
+if (baselineSave || baselineCheck || baselineUpdate) {
+  console.log(`\n══ baselines · ${path.relative(repoRoot, baselinesDir)} ──────────────────────────`)
+}
+for (const r of results) {
+  if (!r.result) continue
+  const set = r.result.metricSet
+  if (baselineSave) {
+    const written = saveGolden({ metricSet: set, baselinesDir })
+    console.log(`  ✓ saved golden: ${path.relative(repoRoot, written)}`)
+  }
+  if (baselineCheck || baselineUpdate) {
+    const p = goldenPath(baselinesDir, keyFromMetricSet(set))
+    if (!fsExists(p)) {
+      if (baselineUpdate) {
+        const written = saveGolden({ metricSet: set, baselinesDir })
+        console.log(`  ℹ  no golden — initialised: ${path.relative(repoRoot, written)}`)
+      } else {
+        console.error(`  ✗ no golden at ${path.relative(repoRoot, p)} (run with --baseline-save to create it)`)
+        baselineFailures++
+      }
+      continue
+    }
+    const golden = loadGolden(p)
+    const checkResult = checkGolden(set, golden)
+    console.log(renderGoldenCheck(checkResult))
+    writeFileSync(
+      path.join(runRoot, `golden-check.${r.variantId}.json`),
+      JSON.stringify(checkResult, null, 2),
+    )
+    if (!checkResult.passed) {
+      if (baselineUpdate) {
+        const written = saveGolden({ metricSet: set, baselinesDir })
+        console.log(`  ↻ updated golden after check: ${path.relative(repoRoot, written)}`)
+      } else {
+        baselineFailures++
+      }
+    }
+  }
+}
+
 if (flags.compare && results.length >= 2) {
   const baseline = results.find(r => r.result)
   if (!baseline) {
@@ -196,6 +246,10 @@ if (flags.compare && results.length >= 2) {
 }
 
 console.log(`\nDone. Outputs → ${path.relative(repoRoot, runRoot)}`)
+if (baselineFailures > 0) {
+  console.error(`\n[bench] ${baselineFailures} variant(s) failed --baseline-check (exit 2). Run with --baseline-update to refresh.`)
+  process.exit(2)
+}
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -239,6 +293,10 @@ Options:
   --output <dir>         Output dir (default: benchmark/.runs/<scenario>-<stamp>)
   --compare              After running, diff baseline vs each other variant
   --json                 Emit JSON instead of human table (with --compare)
+  --baseline-save        After each variant runs, save its MetricSet as a golden in --baseline-dir
+  --baseline-check       After each variant runs, compare against golden; exit 2 on any failure
+  --baseline-update      Like --baseline-check, but refresh the golden on failure (CI escape hatch)
+  --baseline-dir <dir>   Where goldens live (default: benchmark/baselines/)
 
 Examples:
   # Live A/B:
@@ -267,6 +325,10 @@ function loadPricing() {
   try {
     return JSON.parse(readFileSync(path.join(benchRoot, "pricing", "pricing.json"), "utf8"))
   } catch { return undefined }
+}
+
+function fsExists(p) {
+  try { return existsSync(p) } catch { return false }
 }
 
 /**

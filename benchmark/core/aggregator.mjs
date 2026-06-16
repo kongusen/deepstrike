@@ -111,11 +111,16 @@ export function buildMetricSet(opts) {
       tokensPerTurn: meanStdev(tokensPerTurn, "tokens", mode),
       ...(dollars !== null ? { dollars: mv(roundDollar(dollars), "$", mode, samples) } : {}),
     },
-    latency: {
-      wallMs: meanStdev(wallMs, "ms", mode),
-      msPerTurn: meanStdev(msPerTurn, "ms", mode),
-      turnsToDone: meanStdev(perSession.map(s => s.turnsUsed), "count", mode),
-    },
+    // Under replay, latency is process overhead (file read + Node startup), not mechanism cost.
+    // Emitting wallMs/msPerTurn there causes false-positive significance in diff + golden check
+    // (BM1.1 #9). turnsToDone IS structural — it's the kernel turn count, not a wall measurement.
+    latency: mode === "replay"
+      ? { turnsToDone: meanStdev(perSession.map(s => s.turnsUsed), "count", mode) }
+      : {
+        wallMs: meanStdev(wallMs, "ms", mode),
+        msPerTurn: meanStdev(msPerTurn, "ms", mode),
+        turnsToDone: meanStdev(perSession.map(s => s.turnsUsed), "count", mode),
+      },
     quality: {
       ...(successKnown
         ? { successRate: meanStdev(successRate, "ratio", mode) }
