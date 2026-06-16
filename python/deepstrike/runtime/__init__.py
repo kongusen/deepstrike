@@ -61,6 +61,17 @@ from deepstrike.runtime.os_profile import (
   os_profile,
   validate_declarative_policy,
 )
+from deepstrike.runtime.replay_provider import ReplayProvider, ReplayProviderOpts
+from deepstrike.runtime.replay_fixture import extract_recorded_messages
+from deepstrike.runtime.eval import (
+  Criterion,
+  Verdict,
+  VerdictDetail,
+  judge,
+  build_eval_messages,
+  parse_verdict,
+  verdict_output_schema,
+)
 
 __all__ = [
   "RuntimeRunner",
@@ -118,4 +129,14 @@ __all__ = [
   "assert_native_profile",
   "os_profile",
   "validate_declarative_policy",
+  "ReplayProvider",
+  "ReplayProviderOpts",
+  "extract_recorded_messages",
+  "Criterion",
+  "Verdict",
+  "VerdictDetail",
+  "judge",
+  "build_eval_messages",
+  "parse_verdict",
+  "verdict_output_schema",
 ]

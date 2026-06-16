@@ -43,6 +43,16 @@ from deepstrike.runtime import (
     default_sub_agent_orchestrator,
     DEFAULT_SANDBOX_POLICY,
     validate_declarative_policy,
+    ReplayProvider,
+    ReplayProviderOpts,
+    extract_recorded_messages,
+    Criterion,
+    Verdict,
+    VerdictDetail,
+    judge,
+    build_eval_messages,
+    parse_verdict,
+    verdict_output_schema,
 )
 from deepstrike.governance import Governance, GovernanceVerdict
 from deepstrike.providers import (

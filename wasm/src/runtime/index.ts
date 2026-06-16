@@ -7,6 +7,11 @@ export { RuntimeRunner, collectText } from "./runner.js"
 export { builtinReducers, resolveReducer } from "./reducers.js"
 export type { Reducer, ReducerRegistry, ReducerInput } from "./reducers.js"
 export { getKernel } from "./kernel.js"
+export { ReplayProvider } from "./replay-provider.js"
+export type { ReplayProviderOpts } from "./replay-provider.js"
+export { extractRecordedMessages } from "./replay-fixture.js"
+export { judge, buildEvalMessages, parseVerdict, verdictOutputSchema } from "./eval.js"
+export type { Criterion, Verdict, VerdictDetail, JudgeArgs } from "./eval.js"
 export {
   DEFAULT_NATIVE_ATTENTION_POLICY,
   DEFAULT_NATIVE_GOVERNANCE_POLICY,

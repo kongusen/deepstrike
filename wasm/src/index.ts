@@ -9,6 +9,19 @@ export {
   assertNativeProfile,
   osProfile,
   validateDeclarativePolicy,
+  ReplayProvider,
+  extractRecordedMessages,
+  judge,
+  buildEvalMessages,
+  parseVerdict,
+  verdictOutputSchema,
+} from "./runtime/index.js"
+export type {
+  ReplayProviderOpts,
+  Criterion,
+  Verdict,
+  VerdictDetail,
+  JudgeArgs,
 } from "./runtime/index.js"
 export type {
   NativeOsProfile,

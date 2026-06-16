@@ -39,6 +39,9 @@ pub use runtime::{
 };
 pub use runtime::{ExecutionPlane, LocalExecutionPlane};
 pub use runtime::{FileSessionLog, InMemorySessionLog, SessionEntry, SessionLog};
+pub use runtime::replay_provider::{ReplayProvider, ReplayProviderOpts};
+pub use runtime::replay_fixture::{extract_recorded_messages, extract_recorded_messages_from_entries};
+pub use runtime::eval::{judge, build_eval_messages, parse_verdict, verdict_output_schema, Criterion, Verdict};
 pub use runtime::{McpProxyPlane, McpServerConfig};
 pub use runtime::{
     AttentionPolicy, GovernancePolicy, MemoryWriteRateLimit, NativeOsProfile, OsProfile,
