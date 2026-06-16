@@ -283,6 +283,7 @@ benchmark/
 | `gating-dwell`          | tool gating + skill A/B | `off` / `on` | 4 dev tasks × ~30 tools × 4 skills; reproduces the original dwell A/B finding |
 | `compression-stress`    | context compression budget | `budget-loose` / `budget-tight` | 12-PR sequential review; surfaces compression's task-completion cost |
 | `governance-write-deny` | kernel governance policy | `unrestricted` / `write-denied` | fix-failing-test; `write_file` + `run_bash` denied → measures graceful degradation + rollback overhead |
+| `memory-recall`         | long-term memory (DreamStore) | `memory-empty` / `memory-preloaded` | diagnose-outage; pre-seeded memory cuts turns ~57% / cost ~55% at preserved quality |
 
 `bench list` prints the same data at runtime.
 
