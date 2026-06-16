@@ -71,15 +71,21 @@ export async function runBench(opts) {
     throw new Error(`runBench: SDK does not export judge() — rebuild node SDK (judge enabled)`)
   }
   // Construct the judge provider once (one provider per variant — sessions share it).
+  // Wrap it in a usage-capture so the judge's own LLM cost can be reported separately from the
+  // main run cost. Without this, --judge silently adds ~5-10% to the headline $ per A/B.
+  const judgeUsage = { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 }
   const judgeProvider = opts.judge
-    ? createProvider({
-      provider: opts.judge.providerDesc.provider,
-      model: opts.judge.providerDesc.model,
-      apiKey: opts.judge.providerDesc.apiKey,
-      ...(opts.judge.providerDesc.baseURL ? { baseURL: opts.judge.providerDesc.baseURL } : {}),
-      ...(opts.judge.providerDesc.endpoint ? { endpoint: opts.judge.providerDesc.endpoint } : {}),
-      retry: { maxRetries: 2, baseDelay: 600 },
-    })
+    ? wrapUsageCapture(
+      createProvider({
+        provider: opts.judge.providerDesc.provider,
+        model: opts.judge.providerDesc.model,
+        apiKey: opts.judge.providerDesc.apiKey,
+        ...(opts.judge.providerDesc.baseURL ? { baseURL: opts.judge.providerDesc.baseURL } : {}),
+        ...(opts.judge.providerDesc.endpoint ? { endpoint: opts.judge.providerDesc.endpoint } : {}),
+        retry: { maxRetries: 2, baseDelay: 600 },
+      }),
+      judgeUsage,
+    )
     : undefined
 
   const variantDir = path.join(runRoot, `${scenario.id}.${variantId}`)
@@ -256,12 +262,47 @@ export async function runBench(opts) {
     pricing,
     mechanismHook: scenario.mechanismHook,
     notes: `runBench ${mode} · ${tasks.length} tasks · variant ${variant.description}${fixtureNote}`,
+    ...(opts.judge ? {
+      judgeUsage,
+      judgeProvider: opts.judge.providerDesc.provider,
+      judgeModel: opts.judge.providerDesc.model,
+    } : {}),
   })
 
   const metricSetPath = path.join(variantDir, "metricset.json")
   writeFileSync(metricSetPath, JSON.stringify(metricSet, null, 2))
 
   return { metricSet, metricSetPath, sessions: sessionStatuses }
+}
+
+/**
+ * Wrap an LLMProvider so every `usage` event seen on its stream() output is also accumulated
+ * into the supplied `sink` totals. Pure pass-through for everything else.
+ *
+ * Used to track judge cost separately from the main run cost (#judge-cost backlog).
+ *
+ * @param {any} inner
+ * @param {{ inputTokens: number, outputTokens: number, cacheReadInputTokens: number, cacheCreationInputTokens: number }} sink
+ */
+function wrapUsageCapture(inner, sink) {
+  return {
+    async complete(...args) { return inner.complete(...args) },
+    async *stream(...args) {
+      for await (const evt of inner.stream(...args)) {
+        if (evt.type === "usage") {
+          sink.inputTokens += Number(evt.inputTokens) || 0
+          sink.outputTokens += Number(evt.outputTokens) || 0
+          sink.cacheReadInputTokens += Number(evt.cacheReadInputTokens) || 0
+          sink.cacheCreationInputTokens += Number(evt.cacheCreationInputTokens) || 0
+        }
+        yield evt
+      }
+    },
+    descriptor: inner.descriptor?.bind(inner),
+    runtimePolicy: inner.runtimePolicy?.bind(inner),
+    peekProviderReplay: inner.peekProviderReplay?.bind(inner),
+    seedProviderReplay: inner.seedProviderReplay?.bind(inner),
+  }
 }
 
 /**

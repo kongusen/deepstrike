@@ -45,6 +45,13 @@
  * @property {string} [notes]
  * @property {Record<string, any>} [pricing]
  * @property {(args: { events: any[], turnMetrics: any[] }) => Record<string, number>} [mechanismHook]
+ * @property {{ inputTokens: number, outputTokens: number, cacheReadInputTokens: number, cacheCreationInputTokens: number }} [judgeUsage]
+ *           Optional per-variant judge LLM usage totals (accumulated by the runner's
+ *           usage-capture wrapper). When set, `cost.judgeInputTokens` / `cost.judgeOutputTokens` /
+ *           `cost.judgeDollars` are emitted in the MetricSet so the judge's own cost is
+ *           visible separately from the main run cost.
+ * @property {string} [judgeProvider]
+ * @property {string} [judgeModel]
  */
 
 /** @param {BuildMetricSetOpts} opts @returns {MetricSet} */
@@ -82,6 +89,24 @@ export function buildMetricSet(opts) {
     cacheCreationTokens: totalCacheCreate,
   })
 
+  // BM3 #judge-cost: pull judge totals into separate cost.judge* metrics so the headline
+  // numbers above stay focused on the run itself.
+  const judgeInputTokens = Number(opts.judgeUsage?.inputTokens ?? 0)
+  const judgeOutputTokens = Number(opts.judgeUsage?.outputTokens ?? 0)
+  const judgeCacheRead = Number(opts.judgeUsage?.cacheReadInputTokens ?? 0)
+  const judgeCacheCreate = Number(opts.judgeUsage?.cacheCreationInputTokens ?? 0)
+  const judgeDollars = (judgeInputTokens || judgeOutputTokens)
+    ? computeDollars({
+      pricing: opts.pricing,
+      provider: opts.judgeProvider ?? opts.provider,
+      model: opts.judgeModel ?? opts.model,
+      inputTokens: judgeInputTokens,
+      outputTokens: judgeOutputTokens,
+      cacheReadTokens: judgeCacheRead,
+      cacheCreationTokens: judgeCacheCreate,
+    })
+    : null
+
   // Mechanism layer: collect all hook outputs across sessions, mean+stdev per key.
   /** @type {Record<string, number[]>} */
   const mechAccum = {}
@@ -114,6 +139,9 @@ export function buildMetricSet(opts) {
       cacheHitRate: meanStdev(cacheHitRate, "ratio", mode),
       tokensPerTurn: meanStdev(tokensPerTurn, "tokens", mode),
       ...(dollars !== null ? { dollars: mv(roundDollar(dollars), "$", mode, samples) } : {}),
+      ...(judgeInputTokens > 0 ? { judgeInputTokens: mv(judgeInputTokens, "tokens", mode, samples) } : {}),
+      ...(judgeOutputTokens > 0 ? { judgeOutputTokens: mv(judgeOutputTokens, "tokens", mode, samples) } : {}),
+      ...(judgeDollars !== null ? { judgeDollars: mv(roundDollar(judgeDollars), "$", mode, samples) } : {}),
     },
     // Under replay, latency is process overhead (file read + Node startup), not mechanism cost.
     // Emitting wallMs/msPerTurn there causes false-positive significance in diff + golden check
