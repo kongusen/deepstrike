@@ -7,6 +7,7 @@ from deepstrike.runtime.runner import (
   RuntimeOptions,
   RuntimeRunner,
   SubAgentHarnessConfig,
+  TurnMetrics,
   collect_text,
 )
 from deepstrike.runtime.session_log import (
@@ -64,6 +65,7 @@ from deepstrike.runtime.os_profile import (
 __all__ = [
   "RuntimeRunner",
   "RuntimeOptions",
+  "TurnMetrics",
   "ResourceQuota",
   "MemoryPolicy",
   "MemoryWriteRateLimit",

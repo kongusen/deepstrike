@@ -76,6 +76,10 @@ def skill_metadata_to_kernel(skill: Any) -> dict[str, Any]:
     out["when_to_use"] = when_to_use
   if effort is not None:
     out["effort"] = effort
+  # P1-B: forward declared tool ids (additive; omitted when empty so existing skills' wire is unchanged).
+  allowed_tools = getattr(skill, "allowed_tools", None)
+  if allowed_tools:
+    out["allowed_tools"] = list(allowed_tools)
   return out
 
 

@@ -101,6 +101,20 @@ export interface MemoryPolicy {
   maxNameLength?: number
 }
 
+/** P0-C tool-gating telemetry: per-LLM-turn metrics, emitted via `RuntimeOptions.onTurnMetrics`.
+ *  Pure observation — no behavior change. `toolsExposed` vs `toolsCalled` quantifies over-exposure;
+ *  consecutive equal `activeSkill` values measure skill dwell `D`; the cache split gives the
+ *  prompt-cache hit baseline. Mirrors the node SDK. */
+export interface TurnMetrics {
+  turn: number
+  toolsExposed: number
+  toolsCalled: number
+  activeSkill?: string
+  inputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+}
+
 export interface RuntimeOptions {
   provider: LLMProvider
   /** M1/G3 intelligence routing: resolve a per-node provider from a workflow node's `modelHint`.
@@ -145,6 +159,18 @@ export interface RuntimeOptions {
   milestoneContract?: MilestoneContract
   onMilestoneEvaluate?: (ctx: { phaseId: string; criteria: string[]; requiredEvidence: string[] }) => Promise<MilestoneCheckResult> | MilestoneCheckResult
   runSpec?: AgentRunSpec
+  /** P0-A tool gating: a static per-run tool profile — only these tool ids (plus the meta-tools)
+   *  are exposed to the model each turn. Lowers to the same `capability_filter` sub-agents use;
+   *  byte-stable across the run, so it never busts the prompt-cache prefix. Augments `runSpec`'s
+   *  filter when both set; synthesizes a minimal spec otherwise. Omitted/empty ⇒ no gating. */
+  allowedToolIds?: string[]
+  /** P0-C: optional per-turn metrics sink for tool-gating telemetry (see `TurnMetrics`). Pure
+   *  observation; invoked once per LLM turn. Never throws into the run loop (errors are swallowed). */
+  onTurnMetrics?: (metrics: TurnMetrics) => void
+  /** P1-B/D stable-core: tool ids always exposed under skill gating. Empty/absent ⇒ skills narrow
+   *  to exactly their declared tools + meta-tools. (wasm skills come from `skillContentMap`; gating
+   *  engages only once that carries per-skill tool lists.) */
+  stableCoreToolIds?: string[]
   dreamProvider?: LLMProvider
   dreamSummarizer?: DreamSummarizer
   dreamSystemPrompt?: string
@@ -514,6 +540,14 @@ export class RuntimeRunner {
       })
     }
 
+    // P1-B/D: configure stable-core tool ids (always exposed under skill gating).
+    if (this.opts.stableCoreToolIds?.length) {
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_stable_core_tools",
+        tool_ids: this.opts.stableCoreToolIds,
+      })
+    }
+
     if (this.opts.dreamStore && this.opts.agentId) {
       kernelApply(runtime, this.pendingObservations, { kind: "set_memory_enabled", enabled: true })
     }
@@ -540,10 +574,21 @@ export class RuntimeRunner {
     if (priorEvents && priorEvents.length > 0) {
       const repaired = repairEventsForRecovery(priorEvents, maxBytes)
       seedProviderReplayFromEvents(this.opts.provider, repaired)
+      const replayed = replayMessages(repaired, maxBytes)
       kernelApply(runtime, this.pendingObservations, {
         kind: "preload_history",
-        messages: replayMessages(repaired, maxBytes).map(messageToKernelMessage),
+        messages: replayed.map(messageToKernelMessage),
       })
+      // P1-B B3: rebuild active-skill gating after a wake (active_skills is not snapshotted).
+      for (const m of replayed) {
+        for (const tc of m.toolCalls ?? []) {
+          if (tc.name !== "skill") continue
+          try {
+            const name = (JSON.parse(tc.arguments || "{}") as { name?: string }).name
+            if (name) kernelApply(runtime, this.pendingObservations, { kind: "skill_activated", name })
+          } catch { /* skip */ }
+        }
+      }
     }
 
     const sessionStart = Date.now()
@@ -551,8 +596,21 @@ export class RuntimeRunner {
       kind: "start_run",
       task: { goal, criteria },
     }
-    if (this.opts.runSpec) {
-      startPayload.run_spec = agentRunSpecToKernel(this.opts.runSpec)
+    // P0-A: lower an explicit `runSpec` and/or the `allowedToolIds` profile to the kernel's
+    // `capability_filter` (reuses the existing run_spec wire — no new ABI). Unset on both ⇒ no
+    // gating (铁律: no config = old behavior).
+    const allowedToolIds = this.opts.allowedToolIds
+    const hasProfile = allowedToolIds !== undefined && allowedToolIds.length > 0
+    if (this.opts.runSpec || hasProfile) {
+      const baseSpec: AgentRunSpec = this.opts.runSpec ?? {
+        identity: { agentId: this.opts.agentId ?? "root", sessionId, isSubAgent: false },
+        role: "custom",
+        goal,
+      }
+      const spec: AgentRunSpec = hasProfile
+        ? { ...baseSpec, capabilityFilter: { ...baseSpec.capabilityFilter, allowedIds: allowedToolIds } }
+        : baseSpec
+      startPayload.run_spec = agentRunSpecToKernel(spec)
     }
     const osProfile = assertNativeProfile(this.opts.osProfile ?? "native")
     const attentionPolicy = this.opts.attentionPolicy ?? osProfile.attentionPolicy
@@ -610,6 +668,8 @@ export class RuntimeRunner {
       ? kernelAction(runtime, this.pendingObservations, { kind: "resume" })
       : kernelAction(runtime, this.pendingObservations, startPayload)
     let hasAttemptedReactiveCompact = false
+    // P0-C: the skill loaded and in effect going into the current turn → per-turn `activeSkill` metric.
+    let activeSkill: string | undefined
 
     while (!runtime.isTerminal()) {
       if (action.kind === "execute_tool") {
@@ -644,6 +704,8 @@ export class RuntimeRunner {
         let turnTokens = 0
         let turnInputTokens = 0
         let turnOutputTokens = 0
+        let turnCacheReadTokens = 0
+        let turnCacheCreationTokens = 0
         let shouldRetry = false
 
         const abortSignal = this.abortController?.signal
@@ -652,10 +714,13 @@ export class RuntimeRunner {
             // #2-B-ii: a preempting interrupt fires abortController — stop consuming the live stream.
             if (abortSignal?.aborted) break
             if (evt.type === "usage") {
-              const usageEvt = evt as { type: string; totalTokens: number; inputTokens?: number; outputTokens?: number }
+              const usageEvt = evt as { type: string; totalTokens: number; inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }
               turnTokens = usageEvt.totalTokens
               turnInputTokens = usageEvt.inputTokens ?? 0
               turnOutputTokens = usageEvt.outputTokens ?? 0
+              // P0-C: capture the prompt-cache split for the tool-gating hit-rate baseline.
+              turnCacheReadTokens = usageEvt.cacheReadInputTokens ?? 0
+              turnCacheCreationTokens = usageEvt.cacheCreationInputTokens ?? 0
               continue
             }
             yield evt
@@ -734,6 +799,29 @@ export class RuntimeRunner {
           toolCalls: finalToolCalls,
           providerReplay,
         }))
+
+        // P0-C: per-turn tool-gating telemetry. `activeSkill` reflects the skill in effect GOING INTO
+        // this turn; a `skill` call here only takes effect next turn — emit first, then advance.
+        if (this.opts.onTurnMetrics) {
+          try {
+            this.opts.onTurnMetrics({
+              turn: runtime.turn(),
+              toolsExposed: tools.length,
+              toolsCalled: finalToolCalls.length,
+              activeSkill,
+              inputTokens: turnInputTokens,
+              cacheReadTokens: turnCacheReadTokens,
+              cacheCreationTokens: turnCacheCreationTokens,
+            })
+          } catch { /* metrics must never break the run */ }
+        }
+        const skillCall = finalToolCalls.find(c => c.name === "skill")
+        if (skillCall) {
+          try {
+            const name = (JSON.parse(skillCall.arguments || "{}") as { name?: string }).name
+            if (name) activeSkill = name
+          } catch { /* malformed skill args — leave activeSkill unchanged */ }
+        }
 
       } else if (action.kind === "execute_tool") {
         const allCalls = action.calls
@@ -842,6 +930,16 @@ export class RuntimeRunner {
           if (result) {
             this.pendingSpoolOutputs.set(call.id, { tool: call.name, output: result.output })
           }
+        }
+        // P1-B B3: a successfully-resolved `skill` call activates that skill for the next turn.
+        for (const call of allCalls) {
+          if (call.name !== "skill") continue
+          const res = toolResults.find(r => r.callId === call.id)
+          if (!res || res.isError) continue
+          try {
+            const name = (JSON.parse(call.arguments || "{}") as { name?: string }).name
+            if (name) kernelApply(runtime, this.pendingObservations, { kind: "skill_activated", name })
+          } catch { /* skip */ }
         }
         action = kernelAction(runtime, this.pendingObservations, {
           kind: "tool_results",

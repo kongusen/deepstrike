@@ -36,8 +36,8 @@ pub use provider_replay::{
 pub use remote_vpc_plane::{RemoteVpcOptions, RemoteVpcPlane};
 pub use replay::{is_mid_run, repair_entries, replay_messages};
 pub use runner::{
-    MilestoneEvaluationContext, MilestoneEvaluationHandler, MilestonePolicy, RuntimeOptions,
-    RuntimeRunner, collect_text,
+    MilestoneEvaluationContext, MilestoneEvaluationHandler, MilestonePolicy, OnTurnMetricsHandler,
+    RuntimeOptions, RuntimeRunner, TurnMetrics, collect_text,
 };
 pub use sandboxed_skill::{PythonSkillPolicy, SkillKind, scan_skill_dir};
 pub use session_log::{FileSessionLog, InMemorySessionLog, SessionEntry, SessionLog};

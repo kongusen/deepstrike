@@ -306,6 +306,84 @@
         }
     }
 
+    /// P1-B B2: once a skill with declared `allowed_tools` is active, `emit_call_llm` exposes only
+    /// `meta-tools ∪ stable-core ∪ allowed_tools`. Meta-tools stay (D5); undeclared/inactive = full.
+    #[test]
+    fn active_skill_gates_exposed_tools_with_stable_core() {
+        let mut sm = sm();
+        sm.tools = vec![
+            make_tool_schema("read"),
+            make_tool_schema("write"),
+            make_tool_schema("bash"),
+            make_tool_schema("grep"),
+        ];
+        // A skill that declares only {read, grep}; stable-core keeps {bash}; `write` is gated out.
+        let mut debug = SkillMetadata::new("debug", "Debug helper");
+        debug.allowed_tools = vec![compact_str::CompactString::new("read"), compact_str::CompactString::new("grep")];
+        sm.ctx.set_available_skills(vec![debug]);
+        sm.ctx.set_stable_core_tools([compact_str::CompactString::new("bash")]);
+
+        // Before activation: all tools exposed (no narrowing).
+        match sm.start(RuntimeTask::new("go")) {
+            LoopAction::CallLLM { tools, .. } => {
+                let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+                assert!(["read", "write", "bash", "grep"].iter().all(|n| names.contains(n)));
+                // skill meta-tool present (skills registered) and must survive gating later.
+                assert!(names.contains(&SKILL_TOOL_NAME));
+            }
+            _ => panic!("expected CallLLM"),
+        }
+
+        // Activate the skill → next emit narrows.
+        sm.ctx.activate_skill("debug");
+        match sm.emit_call_llm() {
+            LoopAction::CallLLM { tools, .. } => {
+                let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+                assert!(names.contains(&"read") && names.contains(&"grep"), "declared: {names:?}");
+                assert!(names.contains(&"bash"), "stable-core kept: {names:?}");
+                assert!(names.contains(&SKILL_TOOL_NAME), "meta-tool exempt: {names:?}");
+                assert!(!names.contains(&"write"), "undeclared gated out: {names:?}");
+            }
+            _ => panic!("expected CallLLM"),
+        }
+    }
+
+    /// P1-B B4: the gated toolset is byte-stable *within* an epoch (no active-set change ⇒ identical
+    /// tools every turn — the cache prefix never churns mid-epoch) and changes only when the active
+    /// set changes (the single epoch boundary where D re-anchors the cache).
+    #[test]
+    fn gating_is_byte_stable_within_an_epoch() {
+        fn names(action: LoopAction) -> Vec<String> {
+            match action {
+                LoopAction::CallLLM { tools, .. } => {
+                    let mut n: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
+                    n.sort();
+                    n
+                }
+                _ => panic!("expected CallLLM"),
+            }
+        }
+        let mut sm = sm();
+        sm.tools = vec![make_tool_schema("read"), make_tool_schema("write"), make_tool_schema("grep")];
+        let mut debug = SkillMetadata::new("debug", "d");
+        debug.allowed_tools = vec![compact_str::CompactString::new("read")];
+        let mut review = SkillMetadata::new("review", "r");
+        review.allowed_tools = vec![compact_str::CompactString::new("grep")];
+        sm.ctx.set_available_skills(vec![debug, review]);
+
+        sm.start(RuntimeTask::new("go"));
+        sm.ctx.activate_skill("debug");
+        let n1 = names(sm.emit_call_llm());
+        let n2 = names(sm.emit_call_llm()); // no activation change → identical
+        assert_eq!(n1, n2, "toolset must be byte-stable within an epoch");
+        assert!(n1.contains(&"read".to_string()) && !n1.contains(&"write".to_string()));
+
+        sm.ctx.activate_skill("review"); // epoch boundary
+        let n3 = names(sm.emit_call_llm());
+        assert_ne!(n1, n3, "activating another skill changes the toolset");
+        assert!(n3.contains(&"grep".to_string()), "union now includes review's tools: {n3:?}");
+    }
+
     #[test]
     fn skill_tool_injected_in_call_llm_when_skills_registered() {
         let mut sm = sm();
@@ -327,6 +405,69 @@
         match action {
             LoopAction::CallLLM { tools, .. } => {
                 assert!(!tools.iter().any(|t| t.name.as_str() == SKILL_TOOL_NAME));
+            }
+            _ => panic!("expected CallLLM"),
+        }
+    }
+
+    /// P0-A (tool gating): a top-level run carrying an `AgentRunSpec` with a
+    /// capability filter must only expose the allow-listed tools each turn — the
+    /// static per-run profile. The filter is an allow-list (empty = allow all),
+    /// applied in `emit_call_llm`, and is byte-stable across the run, so it never
+    /// busts the cache prefix. Gates the same path sub-agents already use.
+    #[test]
+    fn top_level_run_capability_filter_gates_exposed_tools() {
+        use crate::types::agent::{
+            AgentCapabilityFilter, AgentIdentity, AgentRole, AgentRunSpec,
+        };
+        let mut sm = sm();
+        sm.tools = vec![
+            make_tool_schema("read"),
+            make_tool_schema("write"),
+            make_tool_schema("bash"),
+            make_tool_schema("search"),
+        ];
+        // Static profile: only `read` + `search` are exposed for this run.
+        let mut spec = AgentRunSpec::new(
+            AgentIdentity::new("root", "root-session"),
+            AgentRole::Custom,
+            "do the task",
+        );
+        spec.capability_filter = AgentCapabilityFilter {
+            allowed_kinds: Vec::new(),
+            allowed_ids: vec![
+                compact_str::CompactString::new("read"),
+                compact_str::CompactString::new("search"),
+            ],
+        };
+        sm.run_spec = Some(spec);
+
+        match sm.start(RuntimeTask::new("do the task")) {
+            LoopAction::CallLLM { tools, .. } => {
+                let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+                assert!(names.contains(&"read"), "read should be exposed: {names:?}");
+                assert!(names.contains(&"search"), "search should be exposed: {names:?}");
+                assert!(!names.contains(&"write"), "write must be gated out: {names:?}");
+                assert!(!names.contains(&"bash"), "bash must be gated out: {names:?}");
+            }
+            _ => panic!("expected CallLLM"),
+        }
+    }
+
+    /// Counterpart: with no run spec (the default top-level run), every base tool
+    /// is exposed — i.e. gating is strictly opt-in (铁律: no config = old behavior).
+    #[test]
+    fn top_level_run_without_spec_exposes_all_tools() {
+        let mut sm = sm();
+        sm.tools = vec![
+            make_tool_schema("read"),
+            make_tool_schema("write"),
+            make_tool_schema("bash"),
+        ];
+        match sm.start(RuntimeTask::new("do the task")) {
+            LoopAction::CallLLM { tools, .. } => {
+                let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+                assert!(names.contains(&"read") && names.contains(&"write") && names.contains(&"bash"));
             }
             _ => panic!("expected CallLLM"),
         }

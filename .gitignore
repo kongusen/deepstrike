@@ -28,3 +28,5 @@ pkg/
 .vscode/
 .env
 .claude
+node/examples/.gating-runs/
+node/examples/.stability-runs/

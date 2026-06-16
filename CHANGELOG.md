@@ -6,6 +6,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.19] - 2026-06-16
+
+### Added
+
+- **Skill/run tool gating — narrow the tool schemas exposed to the model.** Two opt-in, additive, zero-default-change mechanisms that cut per-turn tool-schema exposure (measured −65% on a ~30-tool surface):
+  - **Static per-run profile.** `RuntimeOptions.allowedToolIds` (Node/WASM/Python `allowedToolIds` / `allowed_tool_ids`; Rust `allowed_tool_ids`) exposes only the listed tool ids (plus the skill/memory/knowledge/update_plan meta-tools) for the whole run. It lowers to the same `AgentRunSpec.capability_filter` sub-agents already use — byte-stable across the run, so it never busts the prompt-cache prefix. **Zero new ABI** (reuses the existing run_spec wire).
+  - **Epoch skill gating.** A skill that declares `allowed_tools` in its frontmatter (Node/WASM `.md`; Python `.md`; Rust `.md` / `.json` / `.py`) narrows the exposed toolset to `meta-tools ∪ stable-core ∪ ⋃(active skills' allowed_tools)` from the turn it loads onward. The kernel tracks an active-skill set (new `SkillActivated { name }` event; the SDK emits it when a `skill` call resolves and re-emits from replayed history on wake) and resolves each skill's tools from the catalog. `RuntimeOptions.stableCoreToolIds` (new `SetStableCoreTools` kernel event) configures the always-exposed safety set. The toolset is **byte-stable within an epoch** and only changes when the active set changes, so the prompt cache busts at most once per skill load. A skill that declares no `allowed_tools` does not narrow (errs-open / back-compat).
+  - **Per-turn telemetry.** `RuntimeOptions.onTurnMetrics` (Node/WASM/Rust) / `on_turn_metrics` (Python) emits a `TurnMetrics` per LLM turn — `toolsExposed` / `toolsCalled`, the prompt-cache split (`cacheReadTokens` / `cacheCreationTokens`), `inputTokens`, and the `activeSkill` (for dwell). Pure observation; a throwing sink never breaks the run.
+
+### Fixed
+
+- **Skill `allowed_tools` was dropped end-to-end.** The frontmatter field was declared on the kernel `SkillMetadata` but never parsed (Node/Python loaders), never forwarded (`skillMetadataToKernel`), and never read. The Node and Python runners also re-mapped `SkillMetadata` field-by-field at registration, silently dropping it. The full pipe is now wired across all four SDKs.
+
 ## [0.2.18] - 2026-06-15
 
 ### Changed

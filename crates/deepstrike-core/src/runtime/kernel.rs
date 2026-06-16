@@ -115,6 +115,17 @@ pub enum KernelInputEvent {
     SetAvailableSkills {
         skills: Vec<SkillMetadata>,
     },
+    /// P1-B tool gating: the model loaded a skill (`name`). The SDK emits this when it resolves a
+    /// `skill` tool call. The kernel records it in the active-skill set and resolves the skill's
+    /// `allowed_tools` from the catalog to narrow the toolset on subsequent turns.
+    SkillActivated {
+        name: String,
+    },
+    /// P1-B/D: configure the stable-core tool ids (always exposed under skill gating). Set once by
+    /// the SDK; empty/absent ⇒ skills narrow to exactly their declared tools + meta-tools.
+    SetStableCoreTools {
+        tool_ids: Vec<String>,
+    },
     SetMemoryEnabled {
         enabled: bool,
     },
@@ -662,6 +673,16 @@ impl KernelRuntime {
                 self.sm.ctx.set_available_skills(skills);
                 return KernelStep::empty(self.sm.take_observations());
             }
+            KernelInputEvent::SkillActivated { name } => {
+                // B1: record the activation (B2 reads it in emit_call_llm to narrow tools).
+                // The returned `changed` flag is the epoch boundary for D's cache re-anchor.
+                self.sm.ctx.activate_skill(name);
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::SetStableCoreTools { tool_ids } => {
+                self.sm.ctx.set_stable_core_tools(tool_ids.into_iter().map(Into::into));
+                return KernelStep::empty(self.sm.take_observations());
+            }
             KernelInputEvent::SetMemoryEnabled { enabled } => {
                 self.sm.ctx.set_memory_enabled(enabled);
                 return KernelStep::empty(self.sm.take_observations());
@@ -1079,6 +1100,27 @@ mod tests {
 
         assert!(step.actions.is_empty());
         assert_eq!(runtime.state_machine().tools.len(), 1);
+    }
+
+    #[test]
+    fn skill_activated_input_records_active_skill() {
+        // P1-B B1: the SkillActivated event (serde `skill_activated`) records the active skill and,
+        // via the catalog's declared tools, yields a narrowing filter — without itself acting.
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut debug = SkillMetadata::new("debug", "Debug helper");
+        debug.allowed_tools = vec!["read".into(), "grep".into()];
+        runtime.step(KernelInput::new(KernelInputEvent::SetAvailableSkills {
+            skills: vec![debug],
+        }));
+
+        let step = runtime.step(KernelInput::new(KernelInputEvent::SkillActivated {
+            name: "debug".to_string(),
+        }));
+
+        assert!(step.actions.is_empty(), "activation is config, not an action");
+        assert!(runtime.state_machine().ctx.active_skills.contains("debug"));
+        let filter = runtime.state_machine().ctx.active_skill_tool_filter().unwrap();
+        assert_eq!(filter.len(), 2);
     }
 
     #[test]

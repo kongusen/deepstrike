@@ -263,6 +263,9 @@ mod tests {
             milestone_policy: crate::runtime::MilestonePolicy::Terminate,
             milestone_contract: None,
             run_spec: None,
+            allowed_tool_ids: None,
+            on_turn_metrics: None,
+            stable_core_tool_ids: vec![],
             on_milestone_evaluate: None,
         });
 
@@ -275,6 +278,233 @@ mod tests {
         let seen = states.lock().unwrap();
         assert_eq!(seen.len(), 2);
         assert_eq!(seen[0], seen[1]);
+    }
+
+    /// P0-C: a provider that emits a usage event (with a cache split) then finishes — one turn,
+    /// no tool calls.
+    struct MetricsProvider;
+
+    #[async_trait::async_trait]
+    impl crate::providers::LLMProvider for MetricsProvider {
+        async fn stream(
+            &self,
+            _context: &deepstrike_core::context::renderer::RenderedContext,
+            _tools: &[deepstrike_core::types::message::ToolSchema],
+            _extensions: Option<&serde_json::Value>,
+            _state: Option<&crate::providers::ProviderRunState>,
+        ) -> crate::Result<
+            Box<
+                dyn futures::Stream<Item = crate::Result<crate::providers::StreamEvent>>
+                    + Send
+                    + Unpin,
+            >,
+        > {
+            Ok(Box::new(futures::stream::iter(vec![
+                Ok(crate::providers::StreamEvent::Usage {
+                    total_tokens: 1050,
+                    input_tokens: 1000,
+                    output_tokens: 50,
+                    cache_read_input_tokens: 900,
+                    cache_creation_input_tokens: 100,
+                }),
+                Ok(crate::providers::StreamEvent::TextDelta {
+                    delta: "done".into(),
+                }),
+            ])))
+        }
+    }
+
+    #[tokio::test]
+    async fn on_turn_metrics_reports_exposure_and_cache_split() {
+        use crate::runtime::{
+            InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner, TurnMetrics,
+        };
+        use crate::tools::RegisteredTool;
+        use futures::StreamExt;
+        use std::sync::Arc;
+        let captured: Arc<std::sync::Mutex<Vec<TurnMetrics>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = captured.clone();
+
+        let mut plane = LocalExecutionPlane::new();
+        for name in ["read", "write"] {
+            plane.register(RegisteredTool::text(
+                name,
+                "tool",
+                serde_json::json!({ "type": "object", "properties": {} }),
+                |_args| Box::pin(async { Ok("ok".into()) }),
+            ));
+        }
+
+        let runner = RuntimeRunner::new(RuntimeOptions {
+            provider: Box::new(MetricsProvider),
+            execution_plane: Some(Box::new(plane)),
+            session_log: Some(Arc::new(InMemorySessionLog::new())),
+            compression_store: None,
+            session_id: None,
+            max_tokens: 2048,
+            max_turns: Some(2),
+            timeout_ms: None,
+            extensions: None,
+            agent_id: None,
+            system_prompt: None,
+            initial_memory: vec![],
+            skill_dir: None,
+            dream_store: None,
+            knowledge_source: None,
+            signal_source: None,
+            governance: None,
+            os_profile: None,
+            governance_policy: None,
+            attention_policy: None,
+            scheduler_budget: None,
+            resource_quota: None,
+            memory_policy: None,
+            tokenizer: None,
+            enable_plan_tool: None,
+            on_tool_suspend: None,
+            on_permission_request: None,
+            milestone_policy: crate::runtime::MilestonePolicy::Terminate,
+            milestone_contract: None,
+            run_spec: None,
+            allowed_tool_ids: None,
+            on_turn_metrics: Some(Arc::new(move |m| sink.lock().unwrap().push(m))),
+            stable_core_tool_ids: vec![],
+            on_milestone_evaluate: None,
+        });
+
+        let mut stream = runner
+            .run_streaming("go", &[], None, None)
+            .await
+            .unwrap();
+        while stream.next().await.transpose().unwrap().is_some() {}
+
+        let seen = captured.lock().unwrap();
+        assert!(!seen.is_empty(), "expected at least one turn metric");
+        let m = &seen[0];
+        assert_eq!(m.tools_exposed, 2);
+        assert_eq!(m.tools_called, 0);
+        assert_eq!(m.input_tokens, 1000);
+        assert_eq!(m.cache_read_tokens, 900);
+        assert_eq!(m.cache_creation_tokens, 100);
+        assert!(m.active_skill.is_none());
+    }
+
+    /// P1-B B3: turn 1 loads a skill (via a `skill` tool call); turn 2 finishes.
+    struct GatingProvider {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::providers::LLMProvider for GatingProvider {
+        async fn stream(
+            &self,
+            _context: &deepstrike_core::context::renderer::RenderedContext,
+            _tools: &[deepstrike_core::types::message::ToolSchema],
+            _extensions: Option<&serde_json::Value>,
+            _state: Option<&crate::providers::ProviderRunState>,
+        ) -> crate::Result<
+            Box<
+                dyn futures::Stream<Item = crate::Result<crate::providers::StreamEvent>>
+                    + Send
+                    + Unpin,
+            >,
+        > {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let evt = if n == 1 {
+                crate::providers::StreamEvent::ToolCall {
+                    id: "s1".into(),
+                    name: "skill".into(),
+                    arguments: serde_json::json!({ "name": "debug" }),
+                }
+            } else {
+                crate::providers::StreamEvent::TextDelta { delta: "done".into() }
+            };
+            Ok(Box::new(futures::stream::iter(vec![Ok(evt)])))
+        }
+    }
+
+    #[tokio::test]
+    async fn active_skill_gates_exposed_tools_e2e() {
+        use crate::runtime::{
+            InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner, TurnMetrics,
+        };
+        use crate::tools::RegisteredTool;
+        use futures::StreamExt;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::{Arc, Mutex};
+
+        let dir = std::env::temp_dir().join(format!("ds-gate-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("debug.md"),
+            "---\nname: debug\ndescription: Debug\nallowed_tools: read, grep\n---\nbody",
+        )
+        .unwrap();
+
+        let exposures: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = exposures.clone();
+
+        let mut plane = LocalExecutionPlane::new();
+        for name in ["read", "write", "bash", "grep"] {
+            plane.register(RegisteredTool::text(
+                name,
+                "tool",
+                serde_json::json!({ "type": "object", "properties": {} }),
+                |_args| Box::pin(async { Ok("ok".into()) }),
+            ));
+        }
+
+        let runner = RuntimeRunner::new(RuntimeOptions {
+            provider: Box::new(GatingProvider { calls: Arc::new(AtomicUsize::new(0)) }),
+            execution_plane: Some(Box::new(plane)),
+            session_log: Some(Arc::new(InMemorySessionLog::new())),
+            compression_store: None,
+            session_id: None,
+            max_tokens: 4096,
+            max_turns: Some(3),
+            timeout_ms: None,
+            extensions: None,
+            agent_id: None,
+            system_prompt: None,
+            initial_memory: vec![],
+            skill_dir: Some(dir.clone()),
+            dream_store: None,
+            knowledge_source: None,
+            signal_source: None,
+            governance: None,
+            os_profile: None,
+            governance_policy: None,
+            attention_policy: None,
+            scheduler_budget: None,
+            resource_quota: None,
+            memory_policy: None,
+            tokenizer: None,
+            enable_plan_tool: None,
+            on_tool_suspend: None,
+            on_permission_request: None,
+            milestone_policy: crate::runtime::MilestonePolicy::Terminate,
+            milestone_contract: None,
+            run_spec: None,
+            allowed_tool_ids: None,
+            on_turn_metrics: Some(Arc::new(move |m: TurnMetrics| {
+                sink.lock().unwrap().push(m.tools_exposed)
+            })),
+            stable_core_tool_ids: vec!["bash".to_string()],
+            on_milestone_evaluate: None,
+        });
+
+        let mut stream = runner.run_streaming("go", &[], None, None).await.unwrap();
+        while stream.next().await.transpose().unwrap().is_some() {}
+
+        let e = exposures.lock().unwrap();
+        assert!(e.len() >= 2, "expected ≥2 turns, got {e:?}");
+        // Turn 1: 4 base tools + the `skill` meta-tool = 5 (not yet narrowed).
+        assert_eq!(e[0], 5, "turn-1 exposure {e:?}");
+        // Turn 2: narrowed to read+grep (declared) ∪ bash (stable-core) ∪ skill (meta) = 4.
+        assert_eq!(*e.last().unwrap(), 4, "post-load exposure {e:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     struct TooLongThenOkProvider {
@@ -352,6 +582,9 @@ mod tests {
             milestone_policy: crate::runtime::MilestonePolicy::Terminate,
             milestone_contract: None,
             run_spec: None,
+            allowed_tool_ids: None,
+            on_turn_metrics: None,
+            stable_core_tool_ids: vec![],
             on_milestone_evaluate: None,
         });
 
@@ -527,6 +760,9 @@ mod tests {
             milestone_policy: crate::runtime::MilestonePolicy::Terminate,
             milestone_contract: None,
             run_spec: None,
+            allowed_tool_ids: None,
+            on_turn_metrics: None,
+            stable_core_tool_ids: vec![],
             on_milestone_evaluate: None,
         });
 
@@ -623,6 +859,9 @@ mod tests {
             milestone_policy: MilestonePolicy::AutoPass,
             milestone_contract: Some(contract),
             run_spec: None,
+            allowed_tool_ids: None,
+            on_turn_metrics: None,
+            stable_core_tool_ids: vec![],
             on_milestone_evaluate: None,
         });
 
@@ -697,6 +936,9 @@ mod tests {
             milestone_policy: MilestonePolicy::RequireVerifier,
             milestone_contract: Some(contract),
             run_spec: None,
+            allowed_tool_ids: None,
+            on_turn_metrics: None,
+            stable_core_tool_ids: vec![],
             on_milestone_evaluate: None,
         });
 
@@ -785,6 +1027,9 @@ mod tests {
             milestone_policy: MilestonePolicy::RequireVerifier,
             milestone_contract: Some(contract),
             run_spec: None,
+            allowed_tool_ids: None,
+            on_turn_metrics: None,
+            stable_core_tool_ids: vec![],
             on_milestone_evaluate: Some(verifier),
         });
 
@@ -971,6 +1216,9 @@ mod tests {
             milestone_policy: MilestonePolicy::AutoPass,
             milestone_contract: None,
             run_spec: None,
+            allowed_tool_ids: None,
+            on_turn_metrics: None,
+            stable_core_tool_ids: vec![],
             on_milestone_evaluate: None,
         });
 
@@ -1082,6 +1330,9 @@ mod tests {
             milestone_policy: MilestonePolicy::AutoPass,
             milestone_contract: None,
             run_spec: None,
+            allowed_tool_ids: None,
+            on_turn_metrics: None,
+            stable_core_tool_ids: vec![],
             on_milestone_evaluate: None,
         });
 
@@ -1188,6 +1439,9 @@ mod tests {
             milestone_policy: MilestonePolicy::AutoPass,
             milestone_contract: None,
             run_spec: None,
+            allowed_tool_ids: None,
+            on_turn_metrics: None,
+            stable_core_tool_ids: vec![],
             on_milestone_evaluate: None,
         });
 
@@ -1327,6 +1581,9 @@ mod tests {
             milestone_policy: MilestonePolicy::AutoPass,
             milestone_contract: None,
             run_spec: None,
+            allowed_tool_ids: None,
+            on_turn_metrics: None,
+            stable_core_tool_ids: vec![],
             on_milestone_evaluate: None,
         });
 
@@ -1412,6 +1669,9 @@ mod tests {
             milestone_policy: MilestonePolicy::AutoPass,
             milestone_contract: None,
             run_spec: None,
+            allowed_tool_ids: None,
+            on_turn_metrics: None,
+            stable_core_tool_ids: vec![],
             on_milestone_evaluate: None,
         });
 

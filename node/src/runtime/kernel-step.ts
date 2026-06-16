@@ -145,6 +145,8 @@ export function skillMetadataToKernel(skill: SkillMetadata): Record<string, unkn
   }
   if (skill.whenToUse) out.when_to_use = skill.whenToUse
   if (skill.effort !== undefined) out.effort = skill.effort
+  // P1-B: forward declared tool ids (additive; omitted when empty so existing skills' wire is unchanged).
+  if (skill.allowedTools?.length) out.allowed_tools = skill.allowedTools
   return out
 }
 

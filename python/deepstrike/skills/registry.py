@@ -18,6 +18,14 @@ def _parse_frontmatter(text: str) -> dict[str, Any]:
     return meta
 
 
+def _parse_tool_list(v: Any) -> list[str]:
+    """P1-B: parse `allowed_tools` frontmatter (`read, write` or `[read, write]`) → list of ids."""
+    if not v:
+        return []
+    s = str(v).strip().strip("[]")
+    return [t.strip().strip("\"'") for t in s.split(",") if t.strip()]
+
+
 class SkillRegistry:
     """Scans a directory of .md skill files and registers them with the kernel."""
 
@@ -34,6 +42,7 @@ class SkillRegistry:
                 name=str(name),
                 description=str(meta.get("description", "")),
                 when_to_use=str(meta.get("when_to_use", "")) or None,
+                allowed_tools=_parse_tool_list(meta.get("allowed_tools")) or None,
                 effort=int(meta["effort"]) if "effort" in meta else None,
                 estimated_tokens=int(meta.get("estimated_tokens", len(text) // 4)),
             ))

@@ -810,6 +810,20 @@ impl LoopStateMachine {
             });
         }
 
+        // P1-B epoch skill gating (applied *after* the run-level filter ③, so A is the outer bound
+        // and B narrows within it — D6). When skills are active and declare tools, expose only
+        // `meta-tools ∪ stable-core ∪ ⋃(active skills' allowed_tools)`. `None` ⇒ no active/declared
+        // skill ⇒ no narrowing (D3, errs-open). Meta-tools are always exempt (D5) so the model can
+        // still load more skills. Byte-stable within an epoch: the set only changes on activation.
+        if let Some(allowed) = self.ctx.active_skill_tool_filter() {
+            let stable = &self.ctx.stable_core_tools;
+            tools.retain(|tool| {
+                matches!(tool.name.as_str(), "skill" | "memory" | "knowledge" | "update_plan")
+                    || stable.contains(&tool.name)
+                    || allowed.contains(&tool.name)
+            });
+        }
+
         LoopAction::CallLLM { context, tools }
     }
 

@@ -31,6 +31,15 @@ pub struct ContextManager {
     pub sprint: u32,
     pub last_handoff: Option<HandoffArtifact>,
     pub skills: SkillCatalog,
+    /// P1-B tool gating: the set of skills the model has loaded this session (by name). Their
+    /// declared `allowed_tools` are unioned to narrow the exposed toolset in `emit_call_llm`.
+    /// A set (not a single value) because the model may load several skills and still needs each
+    /// one's tools (D1). v1 accumulates (no eviction). Snapshotted for wake/resume.
+    pub active_skills: std::collections::BTreeSet<CompactString>,
+    /// P1-B/D stable-core: tool ids that stay exposed even when a skill narrows the toolset (the
+    /// "everyone uses these" set — read/search/bash etc.). Configured once by the SDK; empty by
+    /// default (铁律: no config ⇒ skills narrow to exactly their declared tools + meta-tools).
+    pub stable_core_tools: std::collections::HashSet<CompactString>,
     pub capabilities: CapabilityManifest,
     pub sections: ContextSectionRegistry,
     pub memory_enabled: bool,
@@ -82,6 +91,8 @@ impl ContextManager {
             partitions, max_tokens, config, engine,
             sprint: 0, last_handoff: None,
             skills: SkillCatalog::new(),
+            active_skills: std::collections::BTreeSet::new(),
+            stable_core_tools: std::collections::HashSet::new(),
             capabilities: CapabilityManifest::new(),
             sections: ContextSectionRegistry::default_agent_sections(),
             memory_enabled: false, knowledge_enabled: false, plan_tool_enabled: false,
@@ -487,6 +498,38 @@ impl ContextManager {
         self.skills.set_available(skills);
     }
 
+    /// P1-B/D: set the stable-core tool ids (always exposed under skill gating). Replaces any prior.
+    pub fn set_stable_core_tools(&mut self, ids: impl IntoIterator<Item = CompactString>) {
+        self.stable_core_tools = ids.into_iter().collect();
+    }
+
+    /// P1-B: record that the model has loaded a skill (its content is now in context). Returns
+    /// `true` if this changed the active set — an epoch boundary the SDK can use to re-anchor the
+    /// prompt cache (D). No-op (returns false) when the skill was already active.
+    pub fn activate_skill(&mut self, name: impl Into<CompactString>) -> bool {
+        self.active_skills.insert(name.into())
+    }
+
+    /// P1-B: the tool-id allow-set to narrow the exposed toolset to, given the active skills.
+    /// Returns `None` ⇒ **do not narrow** (no skill active, or some active skill declares no
+    /// `allowed_tools` ⇒ unbounded, errs-open per D3). `Some(set)` ⇒ narrow to `set` (the union of
+    /// every active skill's declared tools). Meta-tools and stable-core are layered on in
+    /// `emit_call_llm`, not here.
+    pub fn active_skill_tool_filter(&self) -> Option<std::collections::HashSet<CompactString>> {
+        if self.active_skills.is_empty() {
+            return None;
+        }
+        let mut union = std::collections::HashSet::new();
+        for name in &self.active_skills {
+            let declared = self.skills.allowed_tools(name);
+            if declared.is_empty() {
+                return None; // an unrestricted active skill ⇒ no narrowing (D3)
+            }
+            union.extend(declared.iter().cloned());
+        }
+        Some(union)
+    }
+
     pub fn skill_tool_schema(&self) -> Option<ToolSchema> {
         self.skills.build_tool_schema()
     }
@@ -781,6 +824,39 @@ mod tests {
     fn section_registry_is_available_on_manager() {
         let mgr = ContextManager::new(1_000);
         assert!(mgr.sections.get("capabilities.inventory").is_some());
+    }
+
+    #[test]
+    fn b1_active_skill_state_and_tool_filter() {
+        let mut mgr = ContextManager::new(1_000);
+        let mut debug = SkillMetadata::new("debug", "Debug helper");
+        debug.allowed_tools = vec![CompactString::new("read"), CompactString::new("grep")];
+        let mut review = SkillMetadata::new("review", "Reviewer");
+        review.allowed_tools = vec![CompactString::new("git_diff")];
+        let plain = SkillMetadata::new("plain", "No tools declared"); // empty allowed_tools
+        mgr.set_available_skills(vec![debug, review, plain]);
+
+        // No active skill ⇒ no narrowing.
+        assert!(mgr.active_skill_tool_filter().is_none());
+
+        // Activating returns the epoch-boundary changed flag.
+        assert!(mgr.activate_skill("debug"));
+        assert!(!mgr.activate_skill("debug")); // already active ⇒ no change
+
+        // One restricted skill ⇒ narrow to its tools.
+        let f = mgr.active_skill_tool_filter().unwrap();
+        assert_eq!(f.len(), 2);
+        assert!(f.contains(&CompactString::new("read")) && f.contains(&CompactString::new("grep")));
+
+        // Second restricted skill ⇒ union (D1).
+        mgr.activate_skill("review");
+        let f = mgr.active_skill_tool_filter().unwrap();
+        assert_eq!(f.len(), 3);
+        assert!(f.contains(&CompactString::new("git_diff")));
+
+        // An active skill with NO declared tools ⇒ unbounded ⇒ do not narrow (D3, errs-open).
+        mgr.activate_skill("plain");
+        assert!(mgr.active_skill_tool_filter().is_none());
     }
 
     #[test]

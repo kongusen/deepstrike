@@ -119,6 +119,23 @@ class SchedulerBudget:
 
 
 @dataclass
+class TurnMetrics:
+  """P0-C tool-gating telemetry: per-LLM-turn metrics emitted via ``RuntimeOptions.on_turn_metrics``.
+
+  Pure observation — no behavior change. ``tools_exposed`` vs ``tools_called`` quantifies
+  over-exposure; consecutive equal ``active_skill`` values measure skill dwell ``D``; the cache split
+  gives the prompt-cache hit baseline. Mirrors the node SDK ``TurnMetrics``.
+  """
+  turn: int
+  tools_exposed: int
+  tools_called: int
+  input_tokens: int
+  cache_read_tokens: int
+  cache_creation_tokens: int
+  active_skill: str | None = None
+
+
+@dataclass
 class RuntimeOptions:
   provider: LLMProvider
   session_log: SessionLog
@@ -168,6 +185,17 @@ class RuntimeOptions:
   on_milestone_evaluate: Callable[[dict[str, Any]], Awaitable[Any] | Any] | None = None
   milestone_contract: "MilestoneContract | None" = None
   run_spec: "AgentRunSpec | None" = None
+  # P0-A tool gating: a static per-run tool profile — only these tool ids (plus the meta-tools)
+  # are exposed to the model each turn. Lowers to the same ``capability_filter`` sub-agents use;
+  # byte-stable across the run, so it never busts the prompt-cache prefix. Augments ``run_spec``'s
+  # filter when both set; synthesizes a minimal spec otherwise. None/empty => no gating.
+  allowed_tool_ids: "list[str] | None" = None
+  # P0-C: optional per-turn metrics sink for tool-gating telemetry (see ``TurnMetrics``). Pure
+  # observation; invoked once per LLM turn. Never raises into the run loop (errors are swallowed).
+  on_turn_metrics: "Callable[[TurnMetrics], None] | None" = None
+  # P1-B/D stable-core: tool ids always exposed under skill gating. Empty/None ⇒ skills narrow to
+  # exactly their declared tools + meta-tools. Opt-in: with no skill declaring tools, never engages.
+  stable_core_tool_ids: "list[str] | None" = None
   result_spool: "LargeResultSpool | None" = None
   dream_provider: LLMProvider | None = None
   dream_summarizer: Callable[[list[Any], dict[str, Any]], Awaitable[str] | str] | None = None
@@ -1164,19 +1192,19 @@ class RuntimeRunner:
     if skill_dir and skill_dir.is_dir():
       from deepstrike.skills.registry import SkillRegistry
       registry = SkillRegistry(str(skill_dir))
-      skills = [
-        SkillMetadata(
-          name=m.name,
-          description=m.description or "",
-          when_to_use=getattr(m, "when_to_use", None),
-          effort=getattr(m, "effort", None),
-          estimated_tokens=getattr(m, "estimated_tokens", 0) or 0,
-        )
-        for m in registry.scan()
-      ]
+      # P1-B: pass the scanned SkillMetadata (incl. `allowed_tools`) straight through — re-constructing
+      # it field-by-field previously dropped `allowed_tools`.
+      skills = registry.scan()
       kernel_apply(runtime, self._pending_observations, {
         "kind": "set_available_skills",
         "skills": [skill_metadata_to_kernel(skill) for skill in skills],
+      })
+
+    # P1-B/D: configure stable-core tool ids (always exposed under skill gating).
+    if self._opts.stable_core_tool_ids:
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "set_stable_core_tools",
+        "tool_ids": list(self._opts.stable_core_tool_ids),
       })
 
     if self._opts.dream_store and self._opts.agent_id:
@@ -1212,15 +1240,55 @@ class RuntimeRunner:
         "kind": "preload_history",
         "messages": [message_to_kernel(message) for message in replayed],
       })
+      # P1-B B3: rebuild active-skill gating after a wake (active_skills is not snapshotted).
+      for message in replayed:
+        for tc in (getattr(message, "tool_calls", None) or []):
+          if tc.name != "skill":
+            continue
+          try:
+            name = json.loads(tc.arguments or "{}").get("name")
+            if name:
+              kernel_apply(runtime, self._pending_observations, {"kind": "skill_activated", "name": name})
+          except Exception:
+            pass
 
     session_start = int(time.time() * 1000)
     start_payload = {
       "kind": "start_run",
       "task": {"goal": goal, "criteria": criteria},
     }
-    if self._opts.run_spec:
-      from deepstrike.types.agent import agent_run_spec_to_kernel
-      start_payload["run_spec"] = agent_run_spec_to_kernel(self._opts.run_spec)
+    # P0-A: lower an explicit ``run_spec`` and/or the ``allowed_tool_ids`` profile to the kernel's
+    # ``capability_filter`` (reuses the existing run_spec wire — no new ABI). Unset on both => no
+    # gating (铁律: no config = old behavior).
+    allowed_tool_ids = self._opts.allowed_tool_ids
+    has_profile = bool(allowed_tool_ids)
+    if self._opts.run_spec or has_profile:
+      import dataclasses
+      from deepstrike.types.agent import (
+        agent_run_spec_to_kernel,
+        AgentRunSpec,
+        AgentIdentity,
+        AgentCapabilityFilter,
+      )
+      base_spec = self._opts.run_spec or AgentRunSpec(
+        identity=AgentIdentity(
+          agent_id=self._opts.agent_id or "root", session_id=session_id, is_sub_agent=False
+        ),
+        role="custom",
+        goal=goal,
+      )
+      if has_profile:
+        base_filter = base_spec.capability_filter or AgentCapabilityFilter()
+        spec = dataclasses.replace(
+          base_spec,
+          capability_filter=AgentCapabilityFilter(
+            allowed_kinds=base_filter.allowed_kinds,
+            allowed_ids=list(allowed_tool_ids),
+          ),
+        )
+      else:
+        spec = base_spec
+      start_payload["run_spec"] = agent_run_spec_to_kernel(spec)
 
     os_profile = assert_native_profile(self._opts.os_profile or "native")
     gov_policy = self._opts.governance_policy or os_profile.governance_policy
@@ -1272,6 +1340,8 @@ class RuntimeRunner:
       else kernel_action(runtime, self._pending_observations, start_payload)
     )
     has_attempted_reactive_compact = False
+    # P0-C: the skill loaded and in effect going into the current turn → per-turn ``active_skill`` metric.
+    active_skill: str | None = None
 
     while not runtime.is_terminal():
       if action.kind == "execute_tool":
@@ -1303,6 +1373,9 @@ class RuntimeRunner:
         final_text = ""
         context = action.context or RenderedContext()
         turn_tokens = 0
+        turn_input_tokens = 0
+        turn_cache_read_tokens = 0
+        turn_cache_creation_tokens = 0
         should_retry = False
         try:
           async for evt in self._opts.provider.stream(
@@ -1316,6 +1389,10 @@ class RuntimeRunner:
               break
             if getattr(evt, "type", None) == "usage":
               turn_tokens = getattr(evt, "total_tokens", 0)
+              # P0-C: capture input + prompt-cache split for the tool-gating hit-rate baseline.
+              turn_input_tokens = getattr(evt, "input_tokens", 0) or 0
+              turn_cache_read_tokens = getattr(evt, "cache_read_input_tokens", 0) or 0
+              turn_cache_creation_tokens = getattr(evt, "cache_creation_input_tokens", 0) or 0
               continue
             yield evt
             if isinstance(evt, TextDelta):
@@ -1384,6 +1461,30 @@ class RuntimeRunner:
           token_count=turn_tokens or None,
           provider_replay=provider_replay,
         ))
+
+        # P0-C: per-turn tool-gating telemetry. ``active_skill`` reflects the skill in effect GOING
+        # INTO this turn; a ``skill`` call here only takes effect next turn — emit first, then advance.
+        if self._opts.on_turn_metrics is not None:
+          try:
+            self._opts.on_turn_metrics(TurnMetrics(
+              turn=runtime.turn(),
+              tools_exposed=len(action.tools or []),
+              tools_called=len(final_tool_calls),
+              input_tokens=turn_input_tokens,
+              cache_read_tokens=turn_cache_read_tokens,
+              cache_creation_tokens=turn_cache_creation_tokens,
+              active_skill=active_skill,
+            ))
+          except Exception:
+            pass  # metrics must never break the run
+        skill_call = next((c for c in final_tool_calls if c.name == "skill"), None)
+        if skill_call is not None:
+          try:
+            name = json.loads(skill_call.arguments or "{}").get("name")
+            if name:
+              active_skill = name
+          except Exception:
+            pass  # malformed skill args — leave active_skill unchanged
 
       elif action.kind == "execute_tool":
         all_calls = list(action.calls or [])
@@ -1500,6 +1601,19 @@ class RuntimeRunner:
           result = next((r for r in tool_results if r.call_id == call.id), None)
           if result is not None:
             self._pending_spool_outputs[call.id] = {"tool": call.name, "output": result.output}
+        # P1-B B3: a successfully-resolved `skill` call activates that skill for the next turn.
+        for call in all_calls:
+          if call.name != "skill":
+            continue
+          res = next((r for r in tool_results if r.call_id == call.id), None)
+          if res is None or res.is_error:
+            continue
+          try:
+            name = json.loads(call.arguments or "{}").get("name")
+            if name:
+              kernel_apply(runtime, self._pending_observations, {"kind": "skill_activated", "name": name})
+          except Exception:
+            pass
         action = kernel_action(runtime, self._pending_observations, {
           "kind": "tool_results",
           "results": [tool_result_to_kernel(result) for result in tool_results],

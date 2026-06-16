@@ -63,6 +63,10 @@ pub fn parse_json_skill(path: &Path) -> Option<SkillMetadata> {
     if let Some(w) = v["when_to_use"].as_str() {
         meta = meta.with_when_to_use(w);
     }
+    // P1-B: `allowed_tools` JSON array → declared tool ids for skill gating.
+    if let Some(tools) = v["allowed_tools"].as_array() {
+        meta.allowed_tools = tools.iter().filter_map(|t| t.as_str()).map(Into::into).collect();
+    }
     Some(meta)
 }
 
@@ -103,6 +107,10 @@ pub fn parse_python_skill(path: &Path) -> Option<SkillMetadata> {
     let mut meta = SkillMetadata::new(name, description);
     if let Some(w) = extract_py_meta(&content, "when_to_use") {
         meta = meta.with_when_to_use(w);
+    }
+    // P1-B: `# allowed_tools: a, b` comment → declared tool ids for skill gating.
+    if let Some(t) = extract_py_meta(&content, "allowed_tools") {
+        meta.allowed_tools = t.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).map(Into::into).collect();
     }
     Some(meta)
 }
@@ -294,7 +302,22 @@ pub fn scan_skill_dir(dir: &Path) -> Vec<SkillMetadata> {
         let meta = match kind {
             SkillKind::Prompt => {
                 if let Ok(content) = std::fs::read_to_string(&path) {
-                    Some(SkillMetadata::new(name.clone(), parse_md_description(&content)))
+                    let mut meta = SkillMetadata::new(name.clone(), parse_md_description(&content));
+                    // P1-B: `allowed_tools: a, b` (or `[a, b]`) frontmatter line → declared tool ids.
+                    if let Some(line) =
+                        content.lines().find(|l| l.trim_start().starts_with("allowed_tools:"))
+                    {
+                        let raw = line.splitn(2, ':').nth(1).unwrap_or("");
+                        meta.allowed_tools = raw
+                            .trim()
+                            .trim_matches(|c| c == '[' || c == ']')
+                            .split(',')
+                            .map(|s| s.trim().trim_matches(|c| c == '"' || c == '\''))
+                            .filter(|s| !s.is_empty())
+                            .map(Into::into)
+                            .collect();
+                    }
+                    Some(meta)
                 } else {
                     None
                 }

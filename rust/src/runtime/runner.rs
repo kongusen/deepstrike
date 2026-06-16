@@ -78,6 +78,24 @@ pub type MilestoneEvaluationHandler = std::sync::Arc<
         + Sync,
 >;
 
+/// P0-C tool-gating telemetry: per-LLM-turn metrics, delivered to [`RuntimeOptions::on_turn_metrics`].
+/// Pure observation — no behavior change. `tools_exposed` vs `tools_called` quantifies over-exposure;
+/// consecutive equal `active_skill` values measure skill dwell `D`; the cache split gives the
+/// prompt-cache hit baseline. Mirrors the node SDK `TurnMetrics`.
+#[derive(Debug, Clone)]
+pub struct TurnMetrics {
+    pub turn: u32,
+    pub tools_exposed: usize,
+    pub tools_called: usize,
+    pub active_skill: Option<String>,
+    pub input_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cache_creation_tokens: u32,
+}
+
+/// Sink for per-turn [`TurnMetrics`]. Synchronous, infallible — it must never affect the run.
+pub type OnTurnMetricsHandler = std::sync::Arc<dyn Fn(TurnMetrics) + Send + Sync>;
+
 /// Configuration for a `RuntimeRunner` (aligned with Node/Python `RuntimeOptions`).
 pub struct RuntimeOptions {
     pub provider: Box<dyn LLMProvider>,
@@ -113,7 +131,51 @@ pub struct RuntimeOptions {
     pub milestone_policy: MilestonePolicy,
     pub milestone_contract: Option<deepstrike_core::types::milestone::MilestoneContract>,
     pub run_spec: Option<deepstrike_core::types::agent::AgentRunSpec>,
+    /// P0-A tool gating: a static per-run tool profile — only these tool ids (plus the
+    /// skill/memory/knowledge/update_plan meta-tools) are exposed to the model each turn.
+    /// Lowers to the same `capability_filter` sub-agents use; byte-stable across the run, so it
+    /// never busts the prompt-cache prefix. Augments `run_spec`'s filter when both are set;
+    /// synthesizes a minimal top-level spec otherwise. `None`/empty ⇒ no gating (no config = old).
+    pub allowed_tool_ids: Option<Vec<String>>,
+    /// P0-C: optional per-turn metrics sink for tool-gating telemetry (see [`TurnMetrics`]). Pure
+    /// observation; invoked once per LLM turn. Panics are not caught — keep the sink trivial.
+    pub on_turn_metrics: Option<OnTurnMetricsHandler>,
+    /// P1-B/D stable-core: tool ids always exposed under skill gating. Empty ⇒ skills narrow to
+    /// exactly their declared tools + meta-tools. Opt-in: no skill declaring tools ⇒ never engages.
+    pub stable_core_tool_ids: Vec<String>,
     pub on_milestone_evaluate: Option<MilestoneEvaluationHandler>,
+}
+
+/// P0-A: compute the effective top-level run spec from an optional explicit `run_spec` and an
+/// optional `allowed_tool_ids` static profile. The profile sets the capability filter's allowed
+/// ids — augmenting an explicit spec, or synthesizing a minimal `custom`-role spec when none is
+/// given. Returns `None` when neither is set ⇒ no gating (no config = old behavior).
+fn build_run_spec(
+    explicit: Option<deepstrike_core::types::agent::AgentRunSpec>,
+    allowed_tool_ids: Option<&[String]>,
+    agent_id: Option<&str>,
+    session_id: &str,
+    goal: &str,
+) -> Option<deepstrike_core::types::agent::AgentRunSpec> {
+    use deepstrike_core::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+    let profile = allowed_tool_ids.filter(|ids| !ids.is_empty());
+    match (explicit, profile) {
+        (Some(mut spec), Some(ids)) => {
+            spec.capability_filter.allowed_ids = ids.iter().map(|s| s.as_str().into()).collect();
+            Some(spec)
+        }
+        (Some(spec), None) => Some(spec),
+        (None, Some(ids)) => {
+            let mut spec = AgentRunSpec::new(
+                AgentIdentity::new(agent_id.unwrap_or("root"), session_id),
+                AgentRole::Custom,
+                goal.to_string(),
+            );
+            spec.capability_filter.allowed_ids = ids.iter().map(|s| s.as_str().into()).collect();
+            Some(spec)
+        }
+        (None, None) => None,
+    }
 }
 
 /// Orchestrates the agentic turn loop via the runtime kernel + session event log.
@@ -680,6 +742,17 @@ impl RuntimeRunner {
                 );
             }
 
+            // P1-B/D: configure stable-core tool ids (always exposed under skill gating).
+            if !self.opts.stable_core_tool_ids.is_empty() {
+                kernel_apply(
+                    &mut kernel,
+                    &mut pending_observations,
+                    KernelInputEvent::SetStableCoreTools {
+                        tool_ids: self.opts.stable_core_tool_ids.clone(),
+                    },
+                );
+            }
+
             if let Some(milestones) = self.opts.milestone_contract.clone() {
                 kernel_apply(
                     &mut kernel,
@@ -721,6 +794,16 @@ impl RuntimeRunner {
                     replay_messages_with_cap(&repaired, max_bytes)
                 };
 
+                // P1-B B3: collect skill activations from the replayed history before `messages` is
+                // moved, then re-emit them after preload to rebuild gating (active_skills is not
+                // snapshotted — graceful).
+                let reactivate: Vec<String> = messages
+                    .iter()
+                    .flat_map(|m| m.tool_calls.iter())
+                    .filter(|c| c.name.as_str() == "skill")
+                    .filter_map(|c| c.arguments.get("name").and_then(|v| v.as_str()).map(str::to_string))
+                    .collect();
+
                 kernel_apply(
                     &mut kernel,
                     &mut pending_observations,
@@ -728,6 +811,14 @@ impl RuntimeRunner {
                         messages,
                     },
                 );
+
+                for name in reactivate {
+                    kernel_apply(
+                        &mut kernel,
+                        &mut pending_observations,
+                        KernelInputEvent::SkillActivated { name },
+                    );
+                }
             }
 
             let ext = merge_extensions(self.opts.extensions.as_ref(), extensions.as_ref());
@@ -735,6 +826,8 @@ impl RuntimeRunner {
             let mut router = SignalRouter::new(256);
             let mut next_archive_start = next_archived_seq_start(prior_events.as_deref());
             let mut has_attempted_reactive_compact = false;
+            // P0-C: the skill loaded and in effect going into the current turn → per-turn metric.
+            let mut active_skill: Option<String> = None;
             let session_start_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -800,12 +893,21 @@ impl RuntimeRunner {
                     },
                 )
             } else {
+                // P0-A: fold an explicit `run_spec` and/or the `allowed_tool_ids` profile into the
+                // kernel's `capability_filter` (reuses the existing run_spec wire — no new ABI).
+                let run_spec = build_run_spec(
+                    self.opts.run_spec.clone(),
+                    self.opts.allowed_tool_ids.as_deref(),
+                    self.opts.agent_id.as_deref(),
+                    &session_id,
+                    &goal,
+                );
                 kernel_action(
                     &mut kernel,
                     &mut pending_observations,
                     KernelInputEvent::StartRun {
                         task: RuntimeTask::new(&goal).with_criteria(criteria),
-                        run_spec: self.opts.run_spec.clone(),
+                        run_spec,
                     },
                 )
             };
@@ -913,6 +1015,12 @@ impl RuntimeRunner {
                         let mut final_text = String::new();
                         let mut final_tool_calls: Vec<ToolCall> = Vec::new();
                         let mut turn_tokens: u32 = 0;
+                        let mut turn_input_tokens: u32 = 0;
+                        let mut turn_cache_read_tokens: u32 = 0;
+                        let mut turn_cache_creation_tokens: u32 = 0;
+                        // P0-C: snapshot the exposed-tool count now — `tools` borrows `action`, which is
+                        // reassigned before the metrics emit below.
+                        let tools_exposed = tools.len();
 
                         let mut provider_stream = match self
                             .opts
@@ -977,8 +1085,18 @@ impl RuntimeRunner {
                                         arguments,
                                     });
                                 }
-                                StreamEvent::Usage { total_tokens, .. } => {
+                                StreamEvent::Usage {
+                                    total_tokens,
+                                    input_tokens,
+                                    cache_read_input_tokens,
+                                    cache_creation_input_tokens,
+                                    ..
+                                } => {
                                     turn_tokens = total_tokens;
+                                    // P0-C: capture input + prompt-cache split for the hit-rate baseline.
+                                    turn_input_tokens = input_tokens;
+                                    turn_cache_read_tokens = cache_read_input_tokens;
+                                    turn_cache_creation_tokens = cache_creation_input_tokens;
                                 }
                                 StreamEvent::Done => {}
                             }
@@ -1020,6 +1138,28 @@ impl RuntimeRunner {
                             },
                         )
                         .await;
+
+                        // P0-C: per-turn tool-gating telemetry. `active_skill` reflects the skill in
+                        // effect GOING INTO this turn; a `skill` call here only takes effect next turn
+                        // — emit first, then advance.
+                        if let Some(ref sink) = self.opts.on_turn_metrics {
+                            sink(TurnMetrics {
+                                turn: kernel.lock().unwrap().state_machine().turn,
+                                tools_exposed,
+                                tools_called: final_tool_calls.len(),
+                                active_skill: active_skill.clone(),
+                                input_tokens: turn_input_tokens,
+                                cache_read_tokens: turn_cache_read_tokens,
+                                cache_creation_tokens: turn_cache_creation_tokens,
+                            });
+                        }
+                        if let Some(skill_call) =
+                            final_tool_calls.iter().find(|c| c.name.as_str() == "skill")
+                        {
+                            if let Some(name) = skill_call.arguments.get("name").and_then(|v| v.as_str()) {
+                                active_skill = Some(name.to_string());
+                            }
+                        }
                     }
                     KernelAction::ExecuteTool { calls } => {
                         let tool_calls = calls.clone();
@@ -1203,6 +1343,27 @@ impl RuntimeRunner {
                                 pending_spool_outputs.insert(
                                     call.id.to_string(),
                                     (call.name.to_string(), output),
+                                );
+                            }
+                        }
+
+                        // P1-B B3: a successfully-resolved `skill` call activates that skill for the
+                        // next turn (fed before ToolResults, which computes the next action).
+                        for call in &tool_calls {
+                            if call.name.as_str() != "skill" {
+                                continue;
+                            }
+                            let ok = tool_results
+                                .iter()
+                                .any(|r| r.call_id.as_str() == call.id.as_str() && !r.is_error);
+                            if !ok {
+                                continue;
+                            }
+                            if let Some(name) = call.arguments.get("name").and_then(|v| v.as_str()) {
+                                kernel_apply(
+                                    &mut kernel,
+                                    &mut pending_observations,
+                                    KernelInputEvent::SkillActivated { name: name.to_string() },
                                 );
                             }
                         }

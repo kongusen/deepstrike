@@ -47,6 +47,16 @@ impl SkillCatalog {
         self.available.len()
     }
 
+    /// P1-B tool gating: the tool ids the named skill declares it needs. Empty when the skill is
+    /// unknown or declares none (⇒ that skill does not narrow the toolset). The kernel unions these
+    /// across the active-skill set in `emit_call_llm`.
+    pub fn allowed_tools(&self, name: &str) -> &[CompactString] {
+        self.available
+            .get(name)
+            .map(|s| s.allowed_tools.as_slice())
+            .unwrap_or(&[])
+    }
+
     pub fn is_empty(&self) -> bool {
         self.available.is_empty()
     }
@@ -151,5 +161,21 @@ mod tests {
         catalog.upsert_available(SkillMetadata::new("solo", "Solo skill"));
         assert_eq!(catalog.available_count(), 1);
         assert!(!catalog.is_empty());
+    }
+
+    #[test]
+    fn allowed_tools_round_trip_through_catalog() {
+        // P1-B B0: a skill's declared `allowed_tools` survives registration and is looked up by name.
+        let mut skill = SkillMetadata::new("debug", "Debug helper");
+        skill.allowed_tools = vec![CompactString::new("read"), CompactString::new("grep")];
+        let mut catalog = SkillCatalog::new();
+        catalog.set_available(vec![skill]);
+
+        let tools = catalog.allowed_tools("debug");
+        assert_eq!(tools.len(), 2);
+        assert!(tools.iter().any(|t| t == "read"));
+        assert!(tools.iter().any(|t| t == "grep"));
+        // Unknown skill / skill with no declaration ⇒ empty (no narrowing).
+        assert!(catalog.allowed_tools("missing").is_empty());
     }
 }

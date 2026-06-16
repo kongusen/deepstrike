@@ -7,6 +7,18 @@ export interface SkillMetadata {
   whenToUse?: string
   effort?: number
   estimatedTokens?: number
+  /** P1-B tool gating: tool ids this skill needs. When the skill is active, the kernel narrows the
+   *  exposed toolset to `stable-core ∪ allowedTools`. Parsed from `allowed_tools:` frontmatter
+   *  (comma-separated or `[a, b]`). Absent ⇒ the skill does not narrow (back-compat). */
+  allowedTools?: string[]
+}
+
+/** Parse a frontmatter tool list: `read, write` or `[read, write]` → ["read","write"]. */
+function parseToolList(v: unknown): string[] | undefined {
+  if (v == null || v === "") return undefined
+  const ids = String(v).trim().replace(/^\[|\]$/g, "").split(",")
+    .map(x => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean)
+  return ids.length ? ids : undefined
 }
 
 function parseFrontmatter(content: string): { meta: Record<string, unknown>; body: string } {
@@ -45,6 +57,7 @@ export async function scanSkillDir(skillDir: string): Promise<SkillMetadata[]> {
       whenToUse: meta.when_to_use ? String(meta.when_to_use) : undefined,
       effort: meta.effort ? Number(meta.effort) : undefined,
       estimatedTokens: meta.estimated_tokens ? Number(meta.estimated_tokens) : undefined,
+      allowedTools: parseToolList(meta.allowed_tools),
     })
   }
   return results

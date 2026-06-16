@@ -22,6 +22,9 @@ interface SkillMetadata {
   whenToUse?: string
   effort?: number
   estimatedTokens?: number
+  /** P1-B tool gating: tool ids this skill needs; when active the kernel narrows the toolset to
+   *  `stable-core ∪ allowedTools`. Absent ⇒ no narrowing (back-compat). */
+  allowedTools?: string[]
 }
 
 export const KERNEL_ABI_VERSION = 1
@@ -139,6 +142,8 @@ export function skillMetadataToKernel(skill: SkillMetadata): Record<string, unkn
   }
   if (skill.whenToUse) out.when_to_use = skill.whenToUse
   if (skill.effort !== undefined) out.effort = skill.effort
+  // P1-B: forward declared tool ids (additive; omitted when empty so existing skills' wire is unchanged).
+  if (skill.allowedTools?.length) out.allowed_tools = skill.allowedTools
   return out
 }
 

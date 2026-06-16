@@ -29,6 +29,10 @@ export function createRunner(
     asyncSummarizer?: AsyncSummarizer
     dreamSummarizer?: DreamSummarizer
     dreamProvider?: LLMProvider
+    allowedToolIds?: string[]
+    onTurnMetrics?: (m: import("../../src/runtime/runner.js").TurnMetrics) => void
+    skillDir?: string
+    stableCoreToolIds?: string[]
   } = {},
 ): { runner: RuntimeRunner; sessionLog: InMemorySessionLog; plane: LocalExecutionPlane } {
   const sessionLog = opts.sessionLog ?? new InMemorySessionLog()
@@ -51,6 +55,10 @@ export function createRunner(
     asyncSummarizer: opts.asyncSummarizer,
     dreamSummarizer: opts.dreamSummarizer,
     dreamProvider: opts.dreamProvider,
+    allowedToolIds: opts.allowedToolIds,
+    onTurnMetrics: opts.onTurnMetrics,
+    skillDir: opts.skillDir,
+    stableCoreToolIds: opts.stableCoreToolIds,
   })
   return { runner, sessionLog, plane }
 }
