@@ -7,43 +7,91 @@ token tiering). Spec: [`.local-docs/specs/benchmark-harness.md`](../.local-docs/
 This is the **independent benchmark tree**. It deliberately lives outside `node/` so it can grow
 into a 4-SDK consumer without re-housing later.
 
-## Status — PR #1 (BM0a + BM2 minimal Δ pipeline)
+## Status
 
-Done in this PR:
+**Done:**
 
-- `core/metrics.mjs` — `MetricSet` schema (5 layers: cost / latency / quality / contextHealth / mechanism), per-metric `mode` + `samples` + `stdev`
-- `core/diff.mjs` — pure baseline-vs-variant Δ with stdev-aware significance
-- `core/render.mjs` — fixed-width table renderer
-- `adapters/dwell-report.mjs` — legacy `dwell-report.json` → `MetricSet`
-- `pricing/pricing.json` — hand-maintained provider×model price list
-- `cli/diff.mjs` — single CLI: read two runs (MetricSet **or** dwell-report) → Δ table
+- **PR #1 — BM0a + BM2** (minimal Δ pipeline):
+  - `core/metrics.mjs` — `MetricSet` schema (5 layers: cost / latency / quality / contextHealth / mechanism), per-metric `mode` + `samples` + `stdev`
+  - `core/diff.mjs` — pure baseline-vs-variant Δ with stdev-aware significance
+  - `core/render.mjs` — fixed-width table renderer
+  - `adapters/dwell-report.mjs` — legacy `dwell-report.json` → `MetricSet`
+  - `pricing/pricing.json` — hand-maintained provider×model price list
+  - `cli/diff.mjs` — read two runs (MetricSet **or** dwell-report) → Δ table
 
-Deferred to later PRs (see spec §8):
+- **PR #2 — BM1 + BM0b lite** (variant runner + CLI + first scenario):
+  - `core/scenario.mjs` — `BenchScenario` / `BenchVariant` (JSDoc types)
+  - `core/runner.mjs` — `runBench(scenario, variantId, opts)` driving the SDK runtime under live mode, capturing `onTurnMetrics`
+  - `core/aggregator.mjs` — session records → MetricSet with per-session mean+stdev
+  - `scenarios/gating-dwell.mjs` — first scenario: 4 dev tasks × ~30 tools × 4 skills, variants `off` / `on`
+  - `scenarios/index.mjs` — scenario registry
+  - `cli/bench.mjs` — `bench <scenario> [--variants ...] [--compare]`
+  - `utils/{env,sdk}.mjs` — env loading + SDK dynamic import + provider resolution
 
-- BM0b — runner integration with `RuntimeOptions.onTurnMetrics` + latency timing
-- BM1 — variant runner + `bench` CLI (`--variants`, `--samples`)
-- BM1.1 — `--mode replay` for deterministic re-runs
-- BM3 — `gen_eval` LLM-judge integration for quality
+**Deferred** (see spec §8):
+
+- BM1.1 — `--mode replay` via `seedProviderReplayFromEvents` integration
+- BM1.2 — `--samples N` to repeat the full task list N times per variant for tighter stdev
+- BM3 — `gen_eval` LLM-judge for quality (`successRate` is the empty slot in `quality{}` today)
 - BM4 — `baselines/*.json` regression gate (CI)
-- BM5 — scenario library coverage (§7 matrix)
+- BM5 — scenario coverage (§7): prefix-cache, compression, memory, orchestration, signals, governance, token-tiering
 
-## Quick start — diff two existing dwell runs
+## Quick start — `bench` runner (PR #2 path)
 
 ```bash
-# 1. Run the dwell example twice (it already writes dwell-report.json):
+# 1. Build the Node SDK once (runner loads dist):
 cd ../node && npm run build
-node examples/tool-gating-dwell.mjs --tasks 4 --max-turns 12              # → run-A/dwell-report.json
-node examples/tool-gating-dwell.mjs --tasks 4 --max-turns 12 --gate       # → run-B/dwell-report.json
 
-# 2. Diff them:
+# 2. Run gating-dwell across both variants on DeepSeek, and diff:
 cd ../benchmark
+node cli/bench.mjs gating-dwell --variants off,on --provider deepseek --compare
+```
+
+Output structure:
+
+```
+benchmark/.runs/gating-dwell-<stamp>/
+├── gating-dwell.off/
+│   ├── metricset.json            ← the off-variant MetricSet
+│   ├── debug.events.json         ← raw session events per task (for debugging)
+│   ├── review.events.json
+│   ├── test.events.json
+│   └── refactor.events.json
+├── gating-dwell.on/
+│   ├── metricset.json
+│   └── ...events
+└── diff.off-vs-on.json           ← saved Δ result (when --compare)
+```
+
+The `--compare` flag prints the Δ table to stdout (or `--json` to emit a structured DiffResult).
+
+### Other examples
+
+```bash
+# List available scenarios:
+node cli/bench.mjs list
+
+# Run only one variant, only 2 tasks (smoke):
+node cli/bench.mjs gating-dwell --variants on --tasks 2 --provider openai
+
+# Custom output dir:
+node cli/bench.mjs gating-dwell --variants off,on --output /tmp/bench-test --compare
+```
+
+## Diff already-recorded runs (PR #1 path, still supported)
+
+```bash
+# Diff two MetricSet JSONs:
+node cli/diff.mjs runs/off.json runs/on.json
+
+# Or two legacy dwell-report.json files (auto-imported):
 node cli/diff.mjs \
-  ../node/examples/.gating-runs/run-<A-stamp>/dwell-report.json \
-  ../node/examples/.gating-runs/run-<B-stamp>/dwell-report.json \
+  ../node/examples/.gating-runs/run-<A>/dwell-report.json \
+  ../node/examples/.gating-runs/run-<B>/dwell-report.json \
   --baseline-id off --variant-id on --scenario gating-dwell
 ```
 
-Output (illustrative):
+Output:
 
 ```
 ══════════════════════════════════════════════════════════════════════════
@@ -74,16 +122,38 @@ caller judges by Δ%.
 benchmark/
 ├── core/
 │   ├── metrics.mjs         MetricSet schema + JSDoc types + assertMetricSet
+│   ├── scenario.mjs        BenchScenario / BenchVariant JSDoc types
+│   ├── runner.mjs          runBench: scenario × variant → live MetricSet
+│   ├── aggregator.mjs      session records → MetricSet w/ per-session stdev
 │   ├── diff.mjs            baseline vs variant Δ (pure)
 │   └── render.mjs          fixed-width table renderer
+├── scenarios/
+│   ├── gating-dwell.mjs    first scenario (gating off vs on)
+│   └── index.mjs           scenario registry
 ├── adapters/
 │   └── dwell-report.mjs    legacy dwell-report.json → MetricSet
 ├── pricing/
 │   └── pricing.json        provider:model → $/M tokens (hand-maintained)
+├── utils/
+│   ├── env.mjs             .env loader (matches existing scripts)
+│   └── sdk.mjs             loadSdk + resolveProvider
 ├── cli/
-│   └── diff.mjs            CLI entry
+│   ├── bench.mjs           runner CLI
+│   └── diff.mjs            standalone diff CLI
 └── README.md               this file
 ```
+
+## Adding a scenario
+
+A `BenchScenario` is a strategy object exposing `tasks`, `mkTools`, `systemPrompt`, and one
+`BenchVariant` per knob position. The variant's `setup` hook returns a `runtimeOverlay` merged into
+`RuntimeOptions` and an optional `cleanup` — that's where mechanism-specific config lands (skill
+files, `stableCoreToolIds`, compaction policy, etc.). See [`scenarios/gating-dwell.mjs`](scenarios/gating-dwell.mjs)
+for the canonical pattern. Register the scenario in [`scenarios/index.mjs`](scenarios/index.mjs).
+
+Mechanism-specific metrics ride in `BenchScenario.mechanismHook({ events, turnMetrics })` →
+`Record<string, number>`. The aggregator turns the per-session outputs into the `mechanism` layer of
+the resulting MetricSet with mean + stdev across sessions.
 
 ## Design rules (enforced by structure)
 
@@ -96,5 +166,5 @@ benchmark/
    providers is meaningful for Δ% only — absolutes are not comparable.
 3. **Pricing missing ⇒ `$` is `n/a`, not blocking.** The diff table omits `dollars` rather than
    computing a bogus value when `pricing/pricing.json` lacks the `provider:model` key.
-4. **No SDK imports yet.** This PR's adapter reads `dwell-report.json` as plain data — no SDK type
-   surface. BM0b introduces a typed boundary at the runner integration point.
+4. **No SDK imports yet.** PR #1's adapter reads `dwell-report.json` as plain data — no SDK type
+   surface. BM0b will introduce a typed boundary at the runner integration point.

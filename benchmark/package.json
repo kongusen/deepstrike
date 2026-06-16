@@ -5,6 +5,8 @@
   "description": "Mechanism benchmark harness — scenario × variant → unified metrics → Δ diff + golden regression",
   "type": "module",
   "scripts": {
-    "diff": "node cli/diff.mjs"
+    "bench": "node cli/bench.mjs",
+    "diff": "node cli/diff.mjs",
+    "list": "node cli/bench.mjs list"
   }
 }
