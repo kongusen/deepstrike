@@ -132,6 +132,7 @@ mkdirSync(runRoot, { recursive: true })
 
 const pricing = loadPricing()
 const maxTasks = flags.tasks ? parseInt(String(flags.tasks), 10) : undefined
+const samples = flags.samples ? Math.max(1, parseInt(String(flags.samples), 10) || 1) : 1
 
 console.log(JSON.stringify({
   scenario: scenarioId,
@@ -140,6 +141,7 @@ console.log(JSON.stringify({
   provider: providerDesc.provider,
   model: providerDesc.model,
   tasks: maxTasks ?? scenario.tasks.length,
+  samples,
   ...(judgeProviderDesc
     ? { judge: { provider: judgeProviderDesc.provider, model: judgeProviderDesc.model } }
     : { judge: "off" }),
@@ -162,6 +164,7 @@ for (const variantId of variantIds) {
       runRoot,
       pricing,
       maxTasks,
+      samples,
       mode,
       ...(mode === "replay" ? { fixtureRoot, ...(fixtureFromVariant ? { fixtureFromVariant } : {}) } : {}),
       ...(judgeProviderDesc ? { judge: { providerDesc: judgeProviderDesc } } : {}),
@@ -290,6 +293,7 @@ Options:
   --judge-provider <id>  Provider for the judge LLM. Default: same as --provider.
   --judge-model <model>  Model override for the judge LLM. Default: same as --provider's model.
   --tasks <n>            Limit task count (default: scenario default)
+  --samples <n>          Repeat the full task list N times per variant; stdev tightens (default: 1)
   --output <dir>         Output dir (default: benchmark/.runs/<scenario>-<stamp>)
   --compare              After running, diff baseline vs each other variant
   --json                 Emit JSON instead of human table (with --compare)

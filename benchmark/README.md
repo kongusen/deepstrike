@@ -49,9 +49,10 @@ into a 4-SDK consumer without re-housing later.
   - `scenarios/compression-stress.mjs` — long-loop task (review 12 PRs sequentially, then summarize). Variants `budget-loose` (maxTokens=8192) vs `budget-tight` (maxTokens=2048) force different compression regimes. mechanismHook emits per-compression-action counts + `completionRatio` (prCallCount / 12) + `summarizeCallCount`.
   - Verified live on DeepSeek: `prCallCount −66.7%`, `completionRatio −67%`, `compressions +100%`, `inputTokens −89.3%`, `dollars −87.6%` — tight budget saves 88% of cost but completes only 33% of the task. First framework-quantified cost/quality trade-off (spec §6.1's warning made measurable).
 
-**Deferred** (see spec §8):
-
-- BM1.2 — `--samples N` to repeat the full task list N times per variant for tighter stdev
+- **PR #7 — Judge tool-arg fix + governance scenario + `--samples N`** (BM3 backlog #24 + BM5 #2 + BM1.2):
+  - `core/runner.mjs` `buildJudgeResult` now folds every tool-call's name + truncated arguments (cap 1500 chars per arg) into the judge prompt — scenarios whose deliverable rides in a tool argument (e.g. `summarize_findings(summary)`) are no longer invisible to the judge. Closes BM3 backlog #24; compression-stress's `budget-loose` rerun went from judge score 0 → 0.5.
+  - `scenarios/governance-write-deny.mjs` — second BM5 scenario: "diagnose + fix the failing auth test"; variants `unrestricted` vs `write-denied` (kernel `governancePolicy.rules` denies `write_file` + `run_bash`). mechanismHook tracks executed-tool counts + `rollbacks` (the kernel's denial signal — the model's call was intercepted and the turn rolled back). Verified: quality preserved at 100% in both variants (graceful degradation), but write-denied costs +42% wallMs + 2 rollbacks + 1 extra turn.
+  - `--samples N` flag (default 1) repeats the full task list N times per variant; the aggregator pools sessions × samples so stdev tightens. Verified with `--samples 2` on the governance scenario.
 - BM3 — `gen_eval` LLM-judge for quality (`successRate` is the empty slot in `quality{}` today)
 - BM4 — `baselines/*.json` regression gate (CI)
 - BM5 — scenario coverage (§7): prefix-cache, compression, memory, orchestration, signals, governance, token-tiering
@@ -277,10 +278,11 @@ benchmark/
 
 ## Scenarios
 
-| id                    | mechanism | variants                        | notes |
-| --------------------- | --------- | ------------------------------- | ----- |
-| `gating-dwell`        | tool gating + skill A/B | `off` / `on` | 4 dev tasks × ~30 tools × 4 skills; reproduces the original dwell A/B finding |
-| `compression-stress`  | context compression budget | `budget-loose` / `budget-tight` | 12-PR sequential review; surfaces compression's task-completion cost |
+| id                      | mechanism | variants                        | notes |
+| ----------------------- | --------- | ------------------------------- | ----- |
+| `gating-dwell`          | tool gating + skill A/B | `off` / `on` | 4 dev tasks × ~30 tools × 4 skills; reproduces the original dwell A/B finding |
+| `compression-stress`    | context compression budget | `budget-loose` / `budget-tight` | 12-PR sequential review; surfaces compression's task-completion cost |
+| `governance-write-deny` | kernel governance policy | `unrestricted` / `write-denied` | fix-failing-test; `write_file` + `run_bash` denied → measures graceful degradation + rollback overhead |
 
 `bench list` prints the same data at runtime.
 

@@ -28,6 +28,10 @@
  *                                             instead of the variant being run (cross-variant pin).
  * @property {Record<string, any>} [pricing]
  * @property {number} [maxTasks]               Limit to first N tasks (default: all).
+ * @property {number} [samples]                BM1.2: repeat the full task list N times per variant
+ *                                             so stdev tightens. Each sample is a fresh session per
+ *                                             task; the aggregator pools across sessions×samples.
+ *                                             Default 1.
  * @property {(taskId: string, evt: any) => void} [onEvent]  Stream tap for CLI logging.
  * @property {Object} [judge]                  When set, judge each session's output via SDK.judge().
  * @property {import("../utils/sdk.mjs").ProviderDescriptor} judge.providerDesc
@@ -89,12 +93,18 @@ export async function runBench(opts) {
   const overlay = setup.runtimeOverlay ?? {}
 
   const tasks = (maxTasks ? scenario.tasks.slice(0, maxTasks) : scenario.tasks)
+  const samples = Math.max(1, Math.floor(opts.samples ?? 1))
   const sessionRecords = []
   /** @type {Array<{ taskId: string, sessionId: string, status: string, error?: string }>} */
   const sessionStatuses = []
 
+  // BM1.2: outer loop over samples. Each sample reruns the full task list so the aggregator pools
+  // (sample × task) sessions and stdev is computed across the whole pool. samples=1 (default) is
+  // exactly the prior behavior — one session per task.
+  for (let sampleIdx = 0; sampleIdx < samples; sampleIdx++)
   for (const task of tasks) {
-    const sessionId = `bench-${scenario.id}-${variantId}-${task.id}-${Date.now()}`
+    const sampleSuffix = samples > 1 ? `-s${sampleIdx + 1}` : ""
+    const sessionId = `bench-${scenario.id}-${variantId}-${task.id}${sampleSuffix}-${Date.now()}`
     const sessionLog = new InMemorySessionLog()
     const plane = new LocalExecutionPlane()
     const tools = await scenario.mkTools(sessionId)
@@ -205,10 +215,15 @@ export async function runBench(opts) {
       ...(judgeError ? { judgeError } : {}),
     })
 
-    // Persist raw events for debugging / post-hoc replay
+    // Persist raw events for debugging / post-hoc replay. With samples>1 each sample writes its
+    // own file so they don't clobber; samples=1 keeps the legacy `<task>.events.json` filename
+    // (which replay fixtures still read by default).
     try {
+      const eventsFilename = samples > 1
+        ? `${task.id}${sampleSuffix}.events.json`
+        : `${task.id}.events.json`
       writeFileSync(
-        path.join(variantDir, `${task.id}.events.json`),
+        path.join(variantDir, eventsFilename),
         JSON.stringify(events, null, 2),
       )
     } catch { /* best-effort */ }
@@ -246,14 +261,46 @@ export async function runBench(opts) {
  * incomplete runs honestly — for max_turns / error / exception runs we still get a quality signal
  * rather than a false-clean pass on an empty reply.
  *
+ * Includes a structured trail of every tool call the agent issued (name + truncated args). Many
+ * scenarios put the agent's actual deliverable into a tool-call argument (`summarize_findings(summary)`,
+ * `write_file(content)`, `submit_answer(answer)`) — without this trail the judge only sees the
+ * `text_delta` chatter and misses the actual work product, which is what backlog #24 was about.
+ *
+ * Arg truncation cap (`ARG_CAP`) is per-call, not per-result: a single deliverable up to ~1500 chars
+ * survives intact; longer ones get a tail marker. Keeps judge prompts bounded on long loops.
+ *
  * @param {{ finalStatus: string, finalText: string, turnCount: number, events: any[] }} args
  */
 function buildJudgeResult({ finalStatus, finalText, turnCount, events }) {
   const text = finalText.trim()
-  if (finalStatus === "completed") return text || "(agent produced no text reply)"
-  const toolCount = events.filter(e => e.event?.kind === "tool_requested").length
+  const toolCalls = extractToolCallTrail(events)
+  const trailBlock = toolCalls.length === 0
+    ? ""
+    : `\n\nTool calls (${toolCalls.length}):\n${toolCalls.map((c, i) => `  ${i + 1}. ${c.name}(${c.args})`).join("\n")}`
+
+  if (finalStatus === "completed") {
+    const body = text || "(agent produced no text reply)"
+    return `${body}${trailBlock}`
+  }
   const tail = text ? `\n\nLast assistant text:\n${text}` : ""
-  return `AGENT_INCOMPLETE (status=${finalStatus}): ran ${turnCount} LLM turns, ${toolCount} tool-call rounds.${tail}`
+  return `AGENT_INCOMPLETE (status=${finalStatus}): ran ${turnCount} LLM turns, ${toolCalls.length} tool calls.${tail}${trailBlock}`
+}
+
+const ARG_CAP = 1500
+
+function extractToolCallTrail(events) {
+  /** @type {Array<{ name: string, args: string }>} */
+  const out = []
+  for (const e of events) {
+    if (e.event?.kind !== "tool_requested") continue
+    for (const c of e.event.calls ?? []) {
+      const name = c.name ?? "?"
+      let args = typeof c.arguments === "string" ? c.arguments : JSON.stringify(c.arguments ?? {})
+      if (args.length > ARG_CAP) args = args.slice(0, ARG_CAP) + `… [${args.length - ARG_CAP} chars truncated]`
+      out.push({ name, args })
+    }
+  }
+  return out
 }
 
 /**

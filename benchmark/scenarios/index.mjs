@@ -10,11 +10,13 @@
 
 import { gatingDwellScenario } from "./gating-dwell.mjs"
 import { compressionStressScenario } from "./compression-stress.mjs"
+import { governanceWriteDenyScenario } from "./governance-write-deny.mjs"
 
 /** @type {BenchScenario[]} */
 export const SCENARIOS = [
   gatingDwellScenario,
   compressionStressScenario,
+  governanceWriteDenyScenario,
 ]
 
 /** @param {string} id @returns {BenchScenario | undefined} */
