@@ -284,7 +284,7 @@ benchmark/
 | `compression-stress`    | context compression budget | `budget-loose` / `budget-tight` | 12-PR sequential review; surfaces compression's task-completion cost |
 | `governance-write-deny` | kernel governance policy | `unrestricted` / `write-denied` | fix-failing-test; `write_file` + `run_bash` denied → measures graceful degradation + rollback overhead |
 | `memory-recall`         | long-term memory (DreamStore) | `memory-empty` / `memory-preloaded` | diagnose-outage; pre-seeded memory cuts turns ~57% / cost ~55% at preserved quality |
-| `signal-injection`      | RuntimeSignal urgency | `no-signal` / `soft-interrupt` / `hard-interrupt` | counter-based `SignalSource` injects on turn 4; revealed a separate finding (any `signalSource` cuts runs short on DeepSeek) |
+| `signal-injection`      | RuntimeSignal urgency | `no-signal` / `soft-interrupt` / `hard-interrupt` | counter-based `SignalSource` injects on turn 4; soft-interrupt completes the loop with the [SIGNAL] note acknowledged, hard-interrupt is curtailed to ~3 turns |
 
 `bench list` prints the same data at runtime.
 
@@ -300,7 +300,7 @@ calls out 8 kernel mechanisms that should each get an A/B scenario. Current stat
 | 7.3 | context compression / paging | `compression-stress` | ✅ shipped | reveals task-completion cost of tight budget |
 | 7.4 | memory / knowledge | `memory-recall` | ✅ shipped | pre-seeded `DreamStore` vs. empty; carries a scenario-local `InMemoryDreamStore` (TODO: promote to public SDK export) |
 | 7.5 | orchestration / sub-agents | — | ⏸ deferred | DAG vs. serial workflow on the same task; ~300 LOC, no SDK blocker |
-| 7.6 | signal preemption | `signal-injection` | ✅ shipped | soft `Interrupt` (High) vs. `InterruptNow` (Critical) A/B; verify surfaced an unrelated finding that `signalSource` presence alone cuts runs short — tracked in scenario header |
+| 7.6 | signal preemption | `signal-injection` | ✅ shipped | soft `Interrupt` (High) vs. `InterruptNow` (Critical) A/B; soft path keeps run going (12/12 fetches), hard path preempts at the inject turn |
 | 7.7 | governance gate | `governance-write-deny` | ✅ shipped | rollbacked-event signal documented in scenario header |
 | 7.8 | token-count tiering | — | 🚫 blocked | kernel only ships `CharApproxCounter`; `SetTokenizer` event handler is a no-op, so a `--tokenizer tiktoken` variant wouldn't change behavior. Belongs to the [kernel optimization #5](../.local-docs/specs/agent-os-status-2026-06.md) backlog |
 

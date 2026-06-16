@@ -14,11 +14,11 @@
  * mechanismHook reports the inject turn, total turns observed (so preemption latency = total -
  * inject), the final status code, and whether the model paid attention to the signal.
  *
- * ⚠ Empirical finding (DeepSeek live, 2026-06-17): merely setting `signalSource` on the runner —
- * even before any signal fires — causes the run to terminate after ~2 LLM turns with no
- * `run_terminal` event (vs. the 13-turn full-loop completion when `signalSource` is absent).
- * The scenario captures this Δ for the time being; understanding/fixing the SDK interaction is
- * tracked separately. Don't read too much into the soft/hard urgency split until that's resolved.
+ * Earlier verify reported runs ending at ~2 LLM turns even before the signal had fired — that
+ * turned out to be the kernel rejecting `RuntimeSignal.source` when it was an object literal
+ * (`{ kind: "scenario" }`). The SDK type is `RuntimeSignalSource = "cron" | "gateway" |
+ * "heartbeat" | "custom"` — a string union. The fix is `source: "custom"` below; the soft/hard
+ * urgency split now actually measures what it claims to.
  */
 
 import { loadSdk } from "../utils/sdk.mjs"
@@ -69,23 +69,24 @@ async function mkTools(_sid) {
 
 // ── one-shot signal source: returns the signal on the Nth call to nextSignal() ────────────
 /**
+ * `RuntimeSignalSource` is the string union `"cron" | "gateway" | "heartbeat" | "custom"` — NOT
+ * an object literal. Setting `source` to `{ kind: "scenario" }` caused the kernel to throw
+ * `InvalidArg` the moment the signal fired, which produced runs ending mid-loop with no
+ * `run_terminal` event in the earliest verify of this scenario.
+ *
  * @param {{ urgency: "low" | "normal" | "high" | "critical", injectAtCall: number,
  *           payloadReason: string }} cfg
  */
 function makeOneShotSignalSource(cfg) {
   let calls = 0
   let fired = false
-  /** @type {{ calls: number, firedAtCall: number | null }} */
-  const stats = { calls: 0, firedAtCall: null }
   return {
-    stats,
     async nextSignal() {
-      stats.calls = ++calls
+      calls++
       if (!fired && calls >= cfg.injectAtCall) {
         fired = true
-        stats.firedAtCall = calls
         return {
-          source: { kind: "scenario" },
+          source: "custom",
           signalType: "event",
           urgency: cfg.urgency,
           payload: { reason: cfg.payloadReason, injected_at_call: calls },
