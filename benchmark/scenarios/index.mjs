@@ -9,10 +9,12 @@
  */
 
 import { gatingDwellScenario } from "./gating-dwell.mjs"
+import { compressionStressScenario } from "./compression-stress.mjs"
 
 /** @type {BenchScenario[]} */
 export const SCENARIOS = [
   gatingDwellScenario,
+  compressionStressScenario,
 ]
 
 /** @param {string} id @returns {BenchScenario | undefined} */

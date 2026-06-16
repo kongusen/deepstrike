@@ -45,6 +45,10 @@ into a 4-SDK consumer without re-housing later.
   - `core/aggregator.mjs` — under replay mode, skip wall-clock latency metrics (process overhead, not mechanism cost; surfaces as false-positive significance under strict tolerance). Closes BM1.1 backlog #9.
   - `cli/bench.mjs` — `--baseline-save` / `--baseline-check` / `--baseline-update` / `--baseline-dir <dir>`. `--baseline-check` exits 2 on any failure → CI-gateable.
 
+- **PR #6 — BM5: compression-stress scenario** (first BM5 mechanism coverage):
+  - `scenarios/compression-stress.mjs` — long-loop task (review 12 PRs sequentially, then summarize). Variants `budget-loose` (maxTokens=8192) vs `budget-tight` (maxTokens=2048) force different compression regimes. mechanismHook emits per-compression-action counts + `completionRatio` (prCallCount / 12) + `summarizeCallCount`.
+  - Verified live on DeepSeek: `prCallCount −66.7%`, `completionRatio −67%`, `compressions +100%`, `inputTokens −89.3%`, `dollars −87.6%` — tight budget saves 88% of cost but completes only 33% of the task. First framework-quantified cost/quality trade-off (spec §6.1's warning made measurable).
+
 **Deferred** (see spec §8):
 
 - BM1.2 — `--samples N` to repeat the full task list N times per variant for tighter stdev
@@ -271,13 +275,24 @@ benchmark/
 └── README.md               this file
 ```
 
+## Scenarios
+
+| id                    | mechanism | variants                        | notes |
+| --------------------- | --------- | ------------------------------- | ----- |
+| `gating-dwell`        | tool gating + skill A/B | `off` / `on` | 4 dev tasks × ~30 tools × 4 skills; reproduces the original dwell A/B finding |
+| `compression-stress`  | context compression budget | `budget-loose` / `budget-tight` | 12-PR sequential review; surfaces compression's task-completion cost |
+
+`bench list` prints the same data at runtime.
+
 ## Adding a scenario
 
 A `BenchScenario` is a strategy object exposing `tasks`, `mkTools`, `systemPrompt`, and one
 `BenchVariant` per knob position. The variant's `setup` hook returns a `runtimeOverlay` merged into
 `RuntimeOptions` and an optional `cleanup` — that's where mechanism-specific config lands (skill
-files, `stableCoreToolIds`, compaction policy, etc.). See [`scenarios/gating-dwell.mjs`](scenarios/gating-dwell.mjs)
-for the canonical pattern. Register the scenario in [`scenarios/index.mjs`](scenarios/index.mjs).
+files, `stableCoreToolIds`, compaction policy, `extensions`, etc.). See
+[`scenarios/gating-dwell.mjs`](scenarios/gating-dwell.mjs) for the gating pattern and
+[`scenarios/compression-stress.mjs`](scenarios/compression-stress.mjs) for a single-task long-loop
+pattern. Register the scenario in [`scenarios/index.mjs`](scenarios/index.mjs).
 
 Mechanism-specific metrics ride in `BenchScenario.mechanismHook({ events, turnMetrics })` →
 `Record<string, number>`. The aggregator turns the per-session outputs into the `mechanism` layer of
