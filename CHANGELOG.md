@@ -6,6 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.21] - 2026-06-17
+
 ### Added
 
 - **`InMemoryDreamStore` — a process-local `DreamStore`.** Previously lived as `MockDreamStore` in
