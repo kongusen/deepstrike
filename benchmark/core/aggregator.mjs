@@ -24,6 +24,10 @@
  *   cacheCreationTokens: number,
  * }>} turnMetrics
  * @property {Array<{ seq: number, event: any }>} events
+ * @property {Array<{ name: string, arguments: Record<string, unknown> }>} [streamToolCalls]
+ *           Tool-call STREAM events (what the model emitted). Distinct from `events` which holds
+ *           the kernel-approved `tool_requested` log. Lets scenarios distinguish attempted vs
+ *           executed (governance, schema gating, etc.).
  * @property {number} wallMs
  * @property {string} finalStatus
  * @property {string} [finalText]
@@ -155,7 +159,9 @@ function aggregateSession(s, hook) {
   const peakInputTokens = Math.max(0, ...m.map(t => t.inputTokens || 0))
   const compressions = s.events.filter(e => e.event?.kind === "compressed").length
 
-  const mechanismOut = hook ? safeHook(hook, { events: s.events, turnMetrics: m }) : {}
+  const mechanismOut = hook
+    ? safeHook(hook, { events: s.events, turnMetrics: m, streamToolCalls: s.streamToolCalls ?? [] })
+    : {}
 
   return {
     inputTokens,

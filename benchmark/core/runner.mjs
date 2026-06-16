@@ -145,6 +145,8 @@ export async function runBench(opts) {
     let finalStatus = "error"
     let errorMsg
     let finalText = ""
+    /** @type {Array<{ name: string, arguments: Record<string, unknown> }>} */
+    const streamToolCalls = []
     let wallStart = Date.now()
     const timeoutMs = scenario.timeoutMs ?? 300_000
 
@@ -157,6 +159,11 @@ export async function runBench(opts) {
         })) {
           if (evt.type === "done") finalStatus = evt.status ?? "error"
           else if (evt.type === "text_delta") finalText += evt.delta ?? ""
+          else if (evt.type === "tool_call") {
+            // BM5 #29: model-attempted calls (governance may intercept before tool_requested
+            // lands in session log, so this is the only way to count attempts vs executed).
+            streamToolCalls.push({ name: evt.name, arguments: evt.arguments ?? {} })
+          }
           onEvent?.(task.id, evt)
         }
       })()
@@ -199,6 +206,7 @@ export async function runBench(opts) {
       taskId: task.id,
       turnMetrics,
       events,
+      streamToolCalls,
       wallMs,
       finalStatus,
       finalText,

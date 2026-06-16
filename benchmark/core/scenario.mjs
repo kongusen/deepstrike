@@ -52,10 +52,19 @@
  * @property {number} [timeoutMs]
  * @property {Record<string, BenchVariant>} variants
  * @property {string[]} [variantOrder]      Display/iteration order. Defaults to Object.keys(variants).
- * @property {(args: { events: any[], turnMetrics: any[] }) => Record<string, number>} [mechanismHook]
+ * @property {(args: {
+ *   events: any[],
+ *   turnMetrics: any[],
+ *   streamToolCalls: Array<{ name: string, arguments: Record<string, unknown> }>,
+ * }) => Record<string, number>} [mechanismHook]
  *                                          Optional: produce mechanism-specific metrics from a single
  *                                          session's events + per-turn metrics. The aggregator merges
  *                                          per-session results across sessions (mean+stdev) into the
  *                                          `mechanism` layer of MetricSet.
+ *                                          `streamToolCalls` carries what the model EMITTED (every
+ *                                          stream `tool_call` event), while `events` only carries
+ *                                          what the kernel let through (`tool_requested`). The two
+ *                                          differ when governance / capability filters / rate limits
+ *                                          intercept a call.
  */
 export {}

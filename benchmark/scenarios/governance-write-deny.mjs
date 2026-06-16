@@ -134,42 +134,49 @@ async function mkTools(_sessionId) {
 
 // ── mechanism hook ─────────────────────────────────────────────────────────
 /**
- * Counts denial-related signal from session events. The kernel's governance gate works by
- * intercepting a model's tool call AFTER it's emitted in the stream but BEFORE it lands as a
- * `tool_requested` event in the session log: a `rollbacked` event is appended instead, and the
- * model is asked to retry. So:
- *   - LLM-emitted `tool_call` stream events are NOT in the session log.
- *   - The session log records only the executed calls in `tool_requested`.
- *   - Each `rollbacked` event reflects one denial round (one or more model attempts that the
- *     kernel discarded before letting the model try again).
+ * Three sources of signal for a denial scenario:
+ *   1. `streamToolCalls` — every `tool_call` the MODEL emitted (the agent's intent).
+ *   2. `events` `tool_requested` — what the kernel actually executed.
+ *   3. `events` `rollbacked` — denial round count (one per turn where the kernel discarded ≥1 calls
+ *       and asked the model to retry).
  *
- * To approximate "attempted tools" pre-policy, the runner would need to tap the live tool_call
- * stream — but for now we report the executed picture (which IS what the agent ultimately did)
- * plus the rollback count as the denial proxy.
+ * `attempts − executed = denials` for each tool, separating "the model tried" from "the kernel let
+ * it through". That's the real governance signal — under `write-denied` the model should attempt
+ * `write_file` at least once but the executed count stays 0.
  *
- * @param {{ events: any[], turnMetrics: any[] }} args
+ * @param {{ events: any[], turnMetrics: any[], streamToolCalls: Array<{ name: string, arguments: Record<string, unknown> }> }} args
  */
-function mechanismHook({ events }) {
+function mechanismHook({ events, streamToolCalls }) {
   /** @type {Record<string, number>} */
-  const callCount = {}
+  const executed = {}
+  /** @type {Record<string, number>} */
+  const attempted = {}
   let rollbackedCount = 0
 
   for (const e of events) {
     const ev = e.event ?? e
     if (ev.kind === "tool_requested") {
-      for (const c of ev.calls ?? []) callCount[c.name] = (callCount[c.name] ?? 0) + 1
+      for (const c of ev.calls ?? []) executed[c.name] = (executed[c.name] ?? 0) + 1
     } else if (ev.kind === "rollbacked") {
       rollbackedCount++
     }
   }
+  for (const c of streamToolCalls ?? []) {
+    attempted[c.name] = (attempted[c.name] ?? 0) + 1
+  }
+
+  const denied = (name) => Math.max(0, (attempted[name] ?? 0) - (executed[name] ?? 0))
 
   return {
-    writeExecuted: callCount.write_file ?? 0,
-    bashExecuted: callCount.run_bash ?? 0,
-    readFileCount: callCount.read_file ?? 0,
-    searchCodeCount: callCount.search_code ?? 0,
-    testsRun: callCount.run_tests ?? 0,
-    listDirCount: callCount.list_dir ?? 0,
+    writeAttempts: attempted.write_file ?? 0,
+    writeExecuted: executed.write_file ?? 0,
+    writeDenied: denied("write_file"),
+    bashAttempts: attempted.run_bash ?? 0,
+    bashExecuted: executed.run_bash ?? 0,
+    bashDenied: denied("run_bash"),
+    readFileCount: executed.read_file ?? 0,
+    searchCodeCount: executed.search_code ?? 0,
+    testsRun: executed.run_tests ?? 0,
     rollbacks: rollbackedCount,
   }
 }
