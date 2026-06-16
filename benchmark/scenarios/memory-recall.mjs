@@ -133,16 +133,19 @@ function mechanismHook({ events, streamToolCalls }) {
     for (const c of ev.calls ?? []) exec[c.name] = (exec[c.name] ?? 0) + 1
   }
 
-  // Did the agent surface the pre-seeded memory? Cheap heuristic: scan the assistant text accumulated
-  // across the session for the unique PROJ ticket id only present in the preloaded entry.
-  let memoryUsed = 0
+  // Did a memory tool call return any entries? Each kernel-surfaced memory entry is rendered into
+  // the tool result as `[score=<float>] <content>`, so checking that prefix in any tool_completed
+  // result is a clean, unique signal. (The prior heuristic looked for a literal ticket id in the
+  // assistant text and missed even on the preloaded variant, because the model paraphrased.)
+  let memoryHits = 0
   for (const e of events) {
     const ev = e.event ?? e
-    if (ev.kind === "llm_completed" && typeof ev.content === "string" && ev.content.includes("PROJ-2731")) {
-      memoryUsed = 1
-      break
+    if (ev.kind !== "tool_completed") continue
+    for (const r of ev.results ?? []) {
+      if (typeof r.output === "string" && r.output.startsWith("[score=")) memoryHits++
     }
   }
+  const memoryUsed = memoryHits > 0 ? 1 : 0
 
   // Total tool ATTEMPTS (from stream) — also exposes whether memory short-circuited the loop.
   const attempts = streamToolCalls?.length ?? 0
@@ -155,6 +158,7 @@ function mechanismHook({ events, streamToolCalls }) {
     readFileCount: exec.read_file ?? 0,
     gitLogCount: exec.git_log ?? 0,
     memoryUsed,
+    memoryHits,
   }
 }
 
