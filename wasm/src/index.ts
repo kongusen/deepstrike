@@ -71,6 +71,7 @@ export { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider, KimiPr
 export { tool, executeTools } from "./tools/index.js"
 export type { RegisteredTool } from "./tools/index.js"
 export { WorkingMemory } from "./memory/index.js"
+export { InMemoryDreamStore } from "./memory/in-memory-store.js"
 export type {
   DreamStore, DreamResult, SessionStore, SessionData, SessionMessage, MemoryEntry, CurationResult, CurationStats,
 } from "./memory/index.js"

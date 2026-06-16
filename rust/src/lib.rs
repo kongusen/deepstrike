@@ -28,7 +28,7 @@ pub use governance::{Governance, GovernanceVerdict};
 pub use harness::{Harness, HarnessOutcome, HarnessRequest, QualityGate};
 pub use harness_loop::{EvalLoopHarness, HarnessLoop, SinglePassHarness};
 pub use knowledge::KnowledgeSource;
-pub use memory::{DreamResult, DreamStore, WorkingMemory};
+pub use memory::{DreamResult, DreamStore, InMemoryDreamStore, WorkingMemory};
 pub use providers::RuntimePolicy;
 pub use providers::anthropic::AnthropicProvider;
 pub use providers::openai::{OpenAIProvider, deepseek, kimi, minimax, ollama, qwen};

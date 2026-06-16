@@ -7,8 +7,7 @@
  * surface the memory entry, skip the multi-tool drill-down, and finish in fewer turns at lower
  * cost; the unloaded variant must investigate via logs / db queries.
  *
- * The scenario carries its own `InMemoryDreamStore` (cloned from the SDK's tests/MockDreamStore
- * helper) — no new SDK export, no 4-SDK parity surface.
+ * Uses `InMemoryDreamStore` from the SDK (`@deepstrike/sdk`) — public since v0.2.21.
  *
  * Variants:
  *   - `memory-empty`    (baseline) — `dreamStore` is an empty in-memory store.
@@ -22,37 +21,12 @@
 
 import { loadSdk } from "../utils/sdk.mjs"
 
-// ── local in-memory DreamStore (matches the DreamStore protocol in node SDK) ───────────────
-class InMemoryDreamStore {
-  constructor(initialMemories = []) {
-    /** @type {Map<string, any[]>} */
-    this.sessions = new Map()
-    /** @type {Map<string, Array<{ text: string, score: number, metadata: any }>>} */
-    this.memories = new Map()
-    this._initial = initialMemories
-  }
-  async loadSessions(agentId) { return this.sessions.get(agentId) ?? [] }
-  async loadMemories(agentId) {
-    if (this.memories.has(agentId)) return this.memories.get(agentId)
-    if (this._initial.length > 0) {
-      this.memories.set(agentId, [...this._initial])
-      return this.memories.get(agentId)
-    }
-    return []
-  }
-  async commit(agentId, result, existing) {
-    const kept = existing.filter((_, i) => !result.toRemoveIndices.includes(i))
-    this.memories.set(agentId, [...kept, ...result.toAdd])
-  }
-  async search(agentId, _query, topK = 5) {
-    const all = await this.loadMemories(agentId)
-    return all.slice(0, topK)
-  }
-  async saveSession(data) {
-    const list = this.sessions.get(data.agentId) ?? []
-    list.push(data)
-    this.sessions.set(data.agentId, list)
-  }
+// Lazy SDK accessor — also used by mkTools below. InMemoryDreamStore is a public SDK export
+// since v0.2.21.
+let _sdk
+async function getSdk() {
+  if (!_sdk) _sdk = await loadSdk()
+  return _sdk
 }
 
 // ── pre-seeded memory (only the `memory-preloaded` variant gets this) ─────────────────────
@@ -93,9 +67,6 @@ const SYSTEM = [
 ].join("\n")
 
 // ── tool factory (read-only investigation surface) ────────────────────────
-let _sdk
-async function getSdk() { if (!_sdk) _sdk = await loadSdk(); return _sdk }
-
 /** @param {string} _sid */
 async function mkTools(_sid) {
   const sdk = await getSdk()
@@ -179,23 +150,29 @@ export const memoryRecallScenario = {
   variants: {
     "memory-empty": {
       description: "no pre-seeded memory — agent must investigate via tools (baseline)",
-      setup: () => ({
-        runtimeOverlay: {
-          dreamStore: new InMemoryDreamStore([]),
-          agentId: AGENT_ID,
-          extensions: { degradeMissingReasoningReplay: true },
-        },
-      }),
+      setup: async () => {
+        const { InMemoryDreamStore } = await getSdk()
+        return {
+          runtimeOverlay: {
+            dreamStore: new InMemoryDreamStore([]),
+            agentId: AGENT_ID,
+            extensions: { degradeMissingReasoningReplay: true },
+          },
+        }
+      },
     },
     "memory-preloaded": {
       description: "memory store carries the actual root cause — kernel surfaces it on memory_query",
-      setup: () => ({
-        runtimeOverlay: {
-          dreamStore: new InMemoryDreamStore(PRELOADED),
-          agentId: AGENT_ID,
-          extensions: { degradeMissingReasoningReplay: true },
-        },
-      }),
+      setup: async () => {
+        const { InMemoryDreamStore } = await getSdk()
+        return {
+          runtimeOverlay: {
+            dreamStore: new InMemoryDreamStore(PRELOADED),
+            agentId: AGENT_ID,
+            extensions: { degradeMissingReasoningReplay: true },
+          },
+        }
+      },
     },
   },
 }

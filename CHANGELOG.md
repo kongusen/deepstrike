@@ -6,6 +6,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`InMemoryDreamStore` — a process-local `DreamStore`.** Previously lived as `MockDreamStore` in
+  the Node SDK test helpers; promoted to a public export so benchmarks, examples, and downstream
+  consumers can use it without copying the boilerplate. Initial-memory seeding (handy for memory
+  A/B scenarios), `addSession` / `addMemories` for test setup, `savedSessions` for assertions.
+  `search()` is a non-semantic top-K slice — the kernel ranks by score, so insertion order is what
+  surfaces; plug in a real store for semantic search. **All four SDKs** — `InMemoryDreamStore`
+  (Node `@deepstrike/sdk`, WASM `@deepstrike/wasm-kernel`, Rust `deepstrike-sdk`) and Python
+  `deepstrike.InMemoryDreamStore`.
+
 ## [0.2.20] - 2026-06-16
 
 ### Added

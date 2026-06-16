@@ -68,6 +68,7 @@ from deepstrike.tools import RegisteredTool, tool, streaming_tool, validate_tool
 from deepstrike.memory import (
     WorkingMemory,
     DreamStore, DreamResult, SessionData, MemoryEntry, CurationResult, CurationStats,
+    InMemoryDreamStore,
 )
 from deepstrike.safety import PermissionManager, PermissionMode, Permission, PermissionDecision
 from deepstrike.harness import (

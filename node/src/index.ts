@@ -83,6 +83,7 @@ export type { SkillMetadata } from "./skills/loader.js"
 
 // ── Memory ─────────────────────────────────────────────────────────────────
 export { WorkingMemory } from "./memory/working.js"
+export { InMemoryDreamStore } from "./memory/in-memory-store.js"
 export type {
   DreamStore, DreamResult, SessionData, SessionMessage, MemoryEntry, CurationResult, CurationStats,
   MemoryWriteRequest, MemoryQuery, MemoryRetrieval, MemoryMetadata, MemoryKind,
