@@ -287,6 +287,24 @@ benchmark/
 
 `bench list` prints the same data at runtime.
 
+### §7 mechanism coverage matrix
+
+The harness spec ([`benchmark-harness.md` §7](../.local-docs/specs/benchmark-harness.md))
+calls out 8 kernel mechanisms that should each get an A/B scenario. Current state:
+
+| § | mechanism | scenario | status | notes |
+| - | --------- | -------- | ------ | ----- |
+| 7.1 | tool gating | `gating-dwell` | ✅ shipped | full A/B with cache-bust tension surfaced |
+| 7.2 | prefix-cache / attention | — | 🚫 blocked | SDK currently hard-codes Anthropic breakpoint placement; need a `cacheBreakpointStrategy` option before an A/B is meaningful |
+| 7.3 | context compression / paging | `compression-stress` | ✅ shipped | reveals task-completion cost of tight budget |
+| 7.4 | memory / knowledge | `memory-recall` | ✅ shipped | pre-seeded `DreamStore` vs. empty; carries a scenario-local `InMemoryDreamStore` (TODO: promote to public SDK export) |
+| 7.5 | orchestration / sub-agents | — | ⏸ deferred | DAG vs. serial workflow on the same task; ~300 LOC, no SDK blocker |
+| 7.6 | signal preemption | — | ⏸ deferred | soft `Interrupt` (High) vs. `InterruptNow` (Critical) preempt-latency A/B; ~250 LOC, no SDK blocker |
+| 7.7 | governance gate | `governance-write-deny` | ✅ shipped | rollbacked-event signal documented in scenario header |
+| 7.8 | token-count tiering | — | 🚫 blocked | kernel only ships `CharApproxCounter`; `SetTokenizer` event handler is a no-op, so a `--tokenizer tiktoken` variant wouldn't change behavior. Belongs to the [kernel optimization #5](../.local-docs/specs/agent-os-status-2026-06.md) backlog |
+
+Legend: ✅ shipped · ⏸ deferred (no blocker, just unscheduled) · 🚫 blocked (needs SDK or kernel work first).
+
 ## Adding a scenario
 
 A `BenchScenario` is a strategy object exposing `tasks`, `mkTools`, `systemPrompt`, and one
