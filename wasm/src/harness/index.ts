@@ -6,6 +6,10 @@ export interface Criterion {
   text: string
   required: boolean
   weight?: number
+  /** I3.3 (A4): optional stable id from the host's contract layer; threaded to verdictFn. */
+  id?: string
+  /** I3.3 (A4): host hint — host has a deterministic check for this criterion. */
+  machineCheckable?: boolean
 }
 
 export interface CriterionResult {

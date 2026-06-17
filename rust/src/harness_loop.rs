@@ -89,7 +89,12 @@ impl<'a> SinglePassHarness<'a> {
     }
 }
 
-/// EvalLoopHarness — retry until QualityGate passes (deprecated, use HarnessLoop).
+/// EvalLoopHarness — retry until QualityGate passes.
+///
+/// I3.4 (A1): prefer [`HarnessLoop`] with a `verdict_fn` for host-defined judgment.
+/// `EvalLoopHarness::stream` does NOT honor the `gate` (only `run` does); `HarnessLoop` runs the
+/// eval loop uniformly across both surfaces.
+#[deprecated(since = "0.2.23", note = "Use HarnessLoop with `with_verdict_fn` for host-defined judgment. EvalLoopHarness.stream() does not honor gate.")]
 pub struct EvalLoopHarness<'a, G: QualityGate> {
     runner: &'a RuntimeRunner,
     gate: G,

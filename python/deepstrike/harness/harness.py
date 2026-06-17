@@ -16,6 +16,10 @@ class Criterion:
     text: str
     required: bool = True
     weight: float = 1.0
+    # I3.3 (A4): optional stable id from the host's contract layer (threaded to verdict_fn).
+    id: "str | None" = None
+    # I3.3 (A4): host hint — host has a deterministic check for this criterion.
+    machine_checkable: "bool | None" = None
 
 
 @dataclass
@@ -160,6 +164,9 @@ class SinglePassHarness:
 
 
 class EvalLoopHarness:
+    """I3.4 (A1): deprecated — prefer ``HarnessLoop`` with ``verdict_fn`` for host-defined
+    judgment. ``EvalLoopHarness.stream()`` does NOT honor ``gate`` (only ``.run()`` does);
+    ``HarnessLoop`` runs the eval loop uniformly across stream and run."""
     def __init__(self, runner: "RuntimeRunner", gate: "QualityGate", max_attempts: int = 3):
         self._runner = runner
         self._gate = gate

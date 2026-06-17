@@ -5,6 +5,10 @@ pub struct Criterion {
     pub text: String,
     pub required: bool,
     pub weight: f32,
+    /// I3.3 (A4): optional stable id from the host's contract layer; threaded to `VerdictFn`.
+    pub id: Option<String>,
+    /// I3.3 (A4): host hint — host has a deterministic check for this criterion.
+    pub machine_checkable: Option<bool>,
 }
 
 impl Criterion {
@@ -13,6 +17,8 @@ impl Criterion {
             text: text.into(),
             required: true,
             weight: 1.0,
+            id: None,
+            machine_checkable: None,
         }
     }
 
@@ -21,11 +27,25 @@ impl Criterion {
             text: text.into(),
             required: false,
             weight: 1.0,
+            id: None,
+            machine_checkable: None,
         }
     }
 
     pub fn with_weight(mut self, w: f32) -> Self {
         self.weight = w;
+        self
+    }
+
+    /// I3.3 (A4): attach a stable identifier so `VerdictFn` can dispatch per-criterion checks.
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// I3.3 (A4): mark this criterion as host-checkable (deterministic) for `VerdictFn` dispatch.
+    pub fn machine_checkable(mut self, on: bool) -> Self {
+        self.machine_checkable = Some(on);
         self
     }
 }

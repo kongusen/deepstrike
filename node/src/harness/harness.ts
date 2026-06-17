@@ -9,6 +9,14 @@ export interface Criterion {
   text: string
   required: boolean
   weight?: number
+  /** I3.3 (A4): optional stable identifier from the host's contract layer (e.g. an
+   *  `acceptance[].id` field). The harness does not interpret it; it just threads it through to
+   *  `verdictFn` so the host can dispatch per-criterion deterministic checks by id. */
+  id?: string
+  /** I3.3 (A4): host hint — when true, the host has a deterministic check for this criterion
+   *  and would short-circuit the LLM eval. The harness still defers to the host's `verdictFn`
+   *  for the actual decision; this is purely a transparency field on the request. */
+  machineCheckable?: boolean
 }
 
 export interface CriterionResult {
@@ -81,6 +89,14 @@ export class SinglePassHarness {
   }
 }
 
+/**
+ * @deprecated I3.4 (A1): prefer {@link HarnessLoop} with `verdictFn` for host-defined judgment.
+ * `EvalLoopHarness.stream()` does NOT honor the `gate` passed via `request.gate` (only `.run()`
+ * does), which is a long-standing footgun for streaming hosts. `HarnessLoop` runs the eval loop
+ * uniformly across both stream and run, accepts an optional `verdictFn` for short-circuiting the
+ * built-in LLM eval, and otherwise mirrors `EvalLoopHarness`'s behavior. New code should use
+ * `HarnessLoop`; existing call sites can migrate by switching the class + (if applicable)
+ * passing a `verdictFn` for the same gate logic. Slated for removal in a future major. */
 export class EvalLoopHarness {
   constructor(private runner: RuntimeRunner, private gate: QualityGate, private maxAttempts = 3) {}
 
