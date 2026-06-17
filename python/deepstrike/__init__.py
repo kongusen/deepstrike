@@ -64,7 +64,11 @@ from deepstrike.providers import (
     PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse, ToolArgumentRepairedEvent,
     RetryConfig, CircuitBreaker, TokenUsage, ProviderToolSpec,
 )
-from deepstrike.tools import RegisteredTool, tool, streaming_tool, validate_tool_arguments, execute_tools, read_file
+from deepstrike.tools import (
+    RegisteredTool, tool, streaming_tool, validate_tool_arguments, execute_tools, read_file,
+    ToolError, safe_tool, ok, fail, format_tool_error,
+)
+from deepstrike.providers.stream import ToolAuditFailedEvent
 from deepstrike.memory import (
     WorkingMemory,
     DreamStore, DreamResult, SessionData, MemoryEntry, CurationResult, CurationStats,
@@ -139,6 +143,7 @@ __all__ = [
     "PermissionRequestEvent", "PermissionResolvedEvent", "PermissionResponse", "ToolArgumentRepairedEvent",
     "RetryConfig", "CircuitBreaker", "TokenUsage", "ProviderToolSpec",
     "RegisteredTool", "tool", "streaming_tool", "validate_tool_arguments", "execute_tools", "read_file",
+    "ToolError", "safe_tool", "ok", "fail", "format_tool_error", "ToolAuditFailedEvent",
     "WorkingMemory",
     "DreamStore", "DreamResult", "SessionData", "MemoryEntry", "CurationResult", "CurationStats",
     "PermissionManager", "PermissionMode", "Permission", "PermissionDecision",

@@ -453,11 +453,12 @@ fn execute_all_local<'a>(
                 Err(e) => {
                     let (is_fatal, error_kind) = match &e {
                         crate::Error::ToolExecutionFailed { is_fatal, error_kind, .. } => (*is_fatal, *error_kind),
+                        crate::Error::ToolFail { is_fatal, error_kind, .. } => (*is_fatal, *error_kind),
                         _ => (false, Some(deepstrike_core::types::message::ToolErrorKind::Recoverable)),
                     };
                     yield RunEvent::ToolResult {
                         call_id: call_id.to_string(),
-                        content: e.to_string(),
+                        content: crate::format_tool_error(&e),
                         is_error: true,
                         is_fatal,
                         error_kind,
@@ -531,11 +532,12 @@ fn execute_all_local<'a>(
                 Err(e) => {
                     let (is_fatal, error_kind) = match &e {
                         crate::Error::ToolExecutionFailed { is_fatal, error_kind, .. } => (*is_fatal, *error_kind),
+                        crate::Error::ToolFail { is_fatal, error_kind, .. } => (*is_fatal, *error_kind),
                         _ => (false, Some(deepstrike_core::types::message::ToolErrorKind::Recoverable)),
                     };
                     yield RunEvent::ToolResult {
                         call_id: tool.call_id.to_string(),
-                        content: e.to_string(),
+                        content: crate::format_tool_error(&e),
                         is_error: true,
                         is_fatal,
                         error_kind,

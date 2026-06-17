@@ -1,10 +1,18 @@
 import type { ToolChunk, ToolSchema, ToolResult } from "../types.js"
+import { formatToolError } from "./errors.js"
 
 /** M3/G4: the runtime context a tool may read when executing. Carries the working directory the tool
  *  should operate in — set to a sub-agent's git worktree for `isolation: "worktree"` nodes. A narrow,
- *  dependency-free shape; the execution plane's `RunContext` is structurally assignable to it. */
+ *  dependency-free shape; the execution plane's `RunContext` is structurally assignable to it.
+ *
+ *  `audit` is the "best-effort post-commit side-effect" channel: wrap an audit-log write,
+ *  metrics emit, or any non-essential persistence in `await ctx.audit(label, () => store.write(...))`.
+ *  If the side-effect throws, the failure is recorded as a `tool_audit_failed` stream event and
+ *  the tool still completes successfully — avoiding the foot-gun where a transient audit-store
+ *  outage flips an already-committed write into `isError: true` and triggers a duplicate retry. */
 export interface ToolExecContext {
   cwd?: string
+  audit?: (label: string, fn: () => Promise<void> | void) => Promise<void>
 }
 
 export interface RegisteredTool {
@@ -186,9 +194,38 @@ export async function executeTools(
       }
       return { callId: c.id, output, isError: false }
     } catch (err) {
-      return { callId: c.id, output: String(err), isError: true }
+      return { callId: c.id, output: formatToolError(err), isError: true }
     }
   }))
+}
+
+/**
+ * One-shot heuristic: detect when a streaming tool yielded text that *looks* like a failure
+ * envelope. The runtime cannot block the tool from doing it, but we warn (once per tool) so
+ * the author migrates to throwing — the canonical "streaming tool fails" path. Aligns with
+ * the non-streaming tool() / safeTool() contract: failures throw, successes return data.
+ */
+const _warnedFailureShapes = new Set<string>()
+export function maybeWarnFailureShapedChunk(toolName: string, deltaText: string): void {
+  if (!deltaText || _warnedFailureShapes.has(toolName)) return
+  const trimmed = deltaText.trim()
+  if (trimmed.length < 2 || trimmed[0] !== "{") return
+  let parsed: unknown
+  try { parsed = JSON.parse(trimmed) } catch { return }
+  if (typeof parsed !== "object" || parsed === null) return
+  const obj = parsed as Record<string, unknown>
+  const looksLikeFailure =
+    obj.success === false ||
+    obj.isError === true ||
+    obj.is_error === true
+  if (!looksLikeFailure) return
+  _warnedFailureShapes.add(toolName)
+  console.warn(
+    `[deepstrike] streaming tool "${toolName}" yielded a failure-shaped chunk ` +
+    `(success:false / isError:true). Streaming tools should fail by throwing; ` +
+    `the runtime will catch and surface the error consistently. ` +
+    `Returning a failure-shaped chunk is a foot-gun: the kernel still sees isError:false.`,
+  )
 }
 
 export const readFile = tool(

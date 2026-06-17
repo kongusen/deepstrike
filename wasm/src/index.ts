@@ -69,7 +69,9 @@ export type { GovernanceVerdict } from "./governance.js"
 export { AnthropicProvider } from "./providers/anthropic.js"
 export { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider, KimiProvider } from "./providers/openai.js"
 export { tool, executeTools } from "./tools/index.js"
-export type { RegisteredTool } from "./tools/index.js"
+export type { RegisteredTool, ToolExecContext } from "./tools/index.js"
+export { safeTool, ok, fail, ToolError, formatToolError } from "./tools/errors.js"
+export type { ToolEnvelope, ToolEnvelopeOk, ToolEnvelopeFail } from "./tools/errors.js"
 export { WorkingMemory } from "./memory/index.js"
 export { InMemoryDreamStore } from "./memory/in-memory-store.js"
 export type {
@@ -86,7 +88,7 @@ export type {
   Message, ToolCall, ToolResult, ToolSchema,
   RenderedContext, ProviderRunState,
   StreamEvent, TextDelta, ThinkingDelta,
-  ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
+  ToolCallEvent, ToolResultEvent, ToolAuditFailedEvent, DoneEvent, ErrorEvent,
   PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   LLMProvider,
   CacheBreakpointStrategy,

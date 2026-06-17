@@ -101,6 +101,167 @@ mod tests {
         assert_eq!(results[0].output.as_text(), Some("5"));
     }
 
+    // ── format_tool_error ────────────────────────────────────────────────────────
+
+    #[test]
+    fn format_tool_error_strips_thiserror_prefix_for_tool_variant() {
+        let e = crate::Error::Tool("disk full".into());
+        // `e.to_string()` would produce `"tool error: disk full"`; the formatter strips the prefix
+        // so the model sees the bare message.
+        assert_eq!(crate::format_tool_error(&e), "disk full");
+    }
+
+    #[test]
+    fn format_tool_error_strips_prefix_for_tool_execution_failed() {
+        let e = crate::Error::ToolExecutionFailed {
+            output: "kaboom".into(),
+            is_fatal: false,
+            error_kind: None,
+        };
+        assert_eq!(crate::format_tool_error(&e), "kaboom");
+    }
+
+    #[test]
+    fn format_tool_error_emits_json_for_coded_tool_fail() {
+        let e = crate::tools::tool_fail(
+            "no such section",
+            Some("not_found".into()),
+            Some("call document_outline first".into()),
+        );
+        let out = crate::format_tool_error(&e);
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["message"], "no such section");
+        assert_eq!(parsed["code"], "not_found");
+        assert_eq!(parsed["hint"], "call document_outline first");
+    }
+
+    #[test]
+    fn format_tool_error_passes_through_bare_tool_fail_message() {
+        let e = crate::tools::tool_fail("bare error", None, None);
+        // No code/hint → plain message string (no JSON wrapping).
+        assert_eq!(crate::format_tool_error(&e), "bare error");
+    }
+
+    // ── safe_tool envelope ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn safe_tool_wraps_plain_data_in_ok_envelope() {
+        let tool = crate::safe_tool(
+            "echo",
+            "Echo",
+            serde_json::json!({ "type": "object" }),
+            |args| async move {
+                Ok(crate::tools::SafeToolResult::Data(args["x"].clone()))
+            },
+        );
+        let mut registry = HashMap::new();
+        registry.insert("echo".to_string(), tool);
+        let call = ToolCall {
+            id: CompactString::new("1"),
+            name: CompactString::new("echo"),
+            arguments: serde_json::json!({"x": "hi"}),
+        };
+        let results = execute_tools(&[call], &registry).await;
+        assert!(!results[0].is_error);
+        let parsed: serde_json::Value = serde_json::from_str(results[0].output.as_text().unwrap()).unwrap();
+        assert_eq!(parsed["success"], true);
+        assert_eq!(parsed["data"], "hi");
+    }
+
+    #[tokio::test]
+    async fn safe_tool_passes_through_fail_envelope() {
+        let tool = crate::safe_tool(
+            "lookup",
+            "Lookup",
+            serde_json::json!({ "type": "object" }),
+            |args| async move {
+                let id = args["id"].as_str().unwrap_or("");
+                if id == "good" {
+                    Ok(crate::ok(Some(serde_json::json!({"found": true}))).into())
+                } else {
+                    Ok(crate::fail("not_found", format!("no row {id}"), Some("list rows via /index".into())).into())
+                }
+            },
+        );
+        let mut registry = HashMap::new();
+        registry.insert("lookup".to_string(), tool);
+
+        let results = execute_tools(
+            &[ToolCall {
+                id: CompactString::new("1"),
+                name: CompactString::new("lookup"),
+                arguments: serde_json::json!({"id": "missing"}),
+            }],
+            &registry,
+        )
+        .await;
+        let parsed: serde_json::Value = serde_json::from_str(results[0].output.as_text().unwrap()).unwrap();
+        assert_eq!(parsed["success"], false);
+        assert_eq!(parsed["code"], "not_found");
+        assert_eq!(parsed["error"], "no row missing");
+        assert_eq!(parsed["hint"], "list rows via /index");
+    }
+
+    #[tokio::test]
+    async fn safe_tool_converts_tool_fail_throw_into_fail_envelope() {
+        let tool = crate::safe_tool(
+            "section_read",
+            "Read",
+            serde_json::json!({ "type": "object" }),
+            |args| async move {
+                let heading = args["heading"].as_str().unwrap_or("");
+                Err(crate::tools::tool_fail(
+                    format!(r#"no section "{heading}""#),
+                    Some("not_found".into()),
+                    Some("call document_outline first".into()),
+                ))
+            },
+        );
+        let mut registry = HashMap::new();
+        registry.insert("section_read".to_string(), tool);
+        let results = execute_tools(
+            &[ToolCall {
+                id: CompactString::new("1"),
+                name: CompactString::new("section_read"),
+                arguments: serde_json::json!({"heading": "X"}),
+            }],
+            &registry,
+        )
+        .await;
+        let parsed: serde_json::Value = serde_json::from_str(results[0].output.as_text().unwrap()).unwrap();
+        assert_eq!(parsed["success"], false);
+        assert_eq!(parsed["code"], "not_found");
+        assert_eq!(parsed["error"], r#"no section "X""#);
+        assert_eq!(parsed["hint"], "call document_outline first");
+    }
+
+    #[tokio::test]
+    async fn safe_tool_uses_internal_code_for_generic_error() {
+        let tool = crate::safe_tool(
+            "crash",
+            "Crash",
+            serde_json::json!({ "type": "object" }),
+            |_args| async move {
+                Err(crate::Error::Other("kaboom".into()))
+            },
+        );
+        let mut registry = HashMap::new();
+        registry.insert("crash".to_string(), tool);
+        let results = execute_tools(
+            &[ToolCall {
+                id: CompactString::new("1"),
+                name: CompactString::new("crash"),
+                arguments: serde_json::json!({}),
+            }],
+            &registry,
+        )
+        .await;
+        let parsed: serde_json::Value = serde_json::from_str(results[0].output.as_text().unwrap()).unwrap();
+        assert_eq!(parsed["success"], false);
+        assert_eq!(parsed["code"], "internal");
+        assert_eq!(parsed["error"], "kaboom");
+    }
+
     #[test]
     fn validate_tool_arguments_rejects_missing_required_fields() {
         let schema = serde_json::json!({

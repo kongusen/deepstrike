@@ -37,6 +37,7 @@ from deepstrike.providers.stream import (
   WorkflowNodesSubmittedEvent,
 )
 from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPlane, RunContext
+from deepstrike.tools.errors import format_tool_error
 from deepstrike.governance import governance_policy_to_kernel_event
 from deepstrike.runtime.kernel_event_log import kernel_observation_to_session_event, with_category
 from deepstrike.runtime.kernel_step import (
@@ -1449,7 +1450,7 @@ class RuntimeRunner:
                 id=evt.id, name=evt.name, arguments=json.dumps(evt.arguments),
               ))
         except Exception as exc:
-          err_msg = str(exc).lower()
+          err_msg = format_tool_error(exc).lower()
           if (
             ("413" in err_msg or "too long" in err_msg or "context length exceeded" in err_msg or "context_length_exceeded" in err_msg)
             and not has_attempted_reactive_compact
@@ -1462,7 +1463,7 @@ class RuntimeRunner:
               should_retry = True
           
           if not should_retry:
-            yield ErrorEvent(message=str(exc))
+            yield ErrorEvent(message=format_tool_error(exc))
             action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
             break
 
@@ -1716,7 +1717,7 @@ class RuntimeRunner:
     except Exception as err:
       # I0b: kernel rejection (or any other thrown error inside the loop) is observable here — emit
       # run_terminal so downstream code sees a clean end rather than mid-loop EOF.
-      err_msg = str(err)
+      err_msg = format_tool_error(err)
       is_invalid_arg = "invalidarg" in err_msg.lower() or "invalid argument" in err_msg.lower()
       reason = "invalid_arg" if is_invalid_arg else "error"
       yield ErrorEvent(message=err_msg)

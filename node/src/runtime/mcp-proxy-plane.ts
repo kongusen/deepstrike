@@ -6,6 +6,7 @@ import type { RegisteredTool } from "../tools/index.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
 import { LocalExecutionPlane } from "./execution-plane.js"
 import type { CredentialVault } from "./credential-vault.js"
+import { formatToolError } from "../tools/errors.js"
 
 export interface McpServerConfig {
   /** Executable to run (e.g. "npx", "python3", "/usr/local/bin/my-mcp-server"). */
@@ -121,7 +122,7 @@ class McpConnection {
         .join("\n")
       return { output: text || JSON.stringify(result), isError: result.isError ?? false }
     } catch (err) {
-      return { output: String(err), isError: true }
+      return { output: formatToolError(err), isError: true }
     }
   }
 

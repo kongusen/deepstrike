@@ -127,6 +127,18 @@ class ToolDeniedEvent:
 
 
 @dataclass
+class ToolAuditFailedEvent:
+    """A tool's ``ctx.audit(label, fn)`` best-effort side-effect threw. The tool itself completed
+    successfully (no ``is_error`` flip, no retry); this event lets the host log / monitor that an
+    audit-store / metrics-emit / non-essential persistence step failed."""
+    type: str = "tool_audit_failed"
+    call_id: str = ""
+    name: str = ""
+    label: str = ""
+    error: str = ""
+
+
+@dataclass
 class WorkflowNodesSubmittedEvent:
     """R3-1: a workflow node's agent called the ``submit_workflow_nodes`` tool. The runner surfaces
     the requested nodes (it cannot apply them to the child's own kernel — the workflow lives in the
@@ -149,5 +161,6 @@ StreamEvent = Union[
     PermissionResolvedEvent,
     ToolArgumentRepairedEvent,
     ToolDeniedEvent,
+    ToolAuditFailedEvent,
     WorkflowNodesSubmittedEvent,
 ]

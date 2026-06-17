@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from deepstrike._kernel import ToolSchema
+from deepstrike.tools.errors import format_tool_error
 from deepstrike.tools.registry import RegisteredTool
 from deepstrike.runtime.execution_plane import LocalExecutionPlane
 
@@ -72,7 +73,7 @@ class ProcessSandboxPlane(LocalExecutionPlane):
         combined = combined[: self._max_output_bytes] + b"\n[output truncated]"
       return combined.decode("utf-8", errors="replace"), proc.returncode != 0
     except Exception as exc:
-      return str(exc), True
+      return format_tool_error(exc), True
 
   def _make_bash_tool(self) -> RegisteredTool:
     sandbox = self

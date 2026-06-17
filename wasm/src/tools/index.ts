@@ -1,11 +1,19 @@
 import type { ToolSchema, ToolResult } from "../types.js"
+import { formatToolError } from "./errors.js"
 
 /** M3/G4: the runtime context a tool may read when executing (carries the working directory). A
  *  narrow, dependency-free shape; the execution plane's `RunContext` is structurally assignable to it.
  *  (WASM has no filesystem, so worktree isolation is N/A here — this keeps the tool ABI in parity
- *  with the Node/Python ports so a tool authored once works across all of them.) */
+ *  with the Node/Python ports so a tool authored once works across all of them.)
+ *
+ *  `audit` is the best-effort post-commit side-effect channel: wrap an audit-log write or metrics
+ *  emit in `await ctx.audit(label, () => store.write(...))`. If the side-effect throws, the failure
+ *  surfaces as a `tool_audit_failed` stream event and the tool still completes successfully —
+ *  avoiding the foot-gun where a transient audit-store outage flips an already-committed write
+ *  into `isError: true` and triggers a duplicate retry. */
 export interface ToolExecContext {
   cwd?: string
+  audit?: (label: string, fn: () => Promise<void> | void) => Promise<void>
 }
 
 export interface RegisteredTool {
@@ -36,7 +44,7 @@ export async function executeTools(
       const args = JSON.parse(c.arguments || "{}")
       return { callId: c.id, output: await t.execute(args), isError: false }
     } catch (err) {
-      return { callId: c.id, output: String(err), isError: true }
+      return { callId: c.id, output: formatToolError(err), isError: true }
     }
   }))
 }

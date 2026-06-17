@@ -77,7 +77,9 @@ export {
 
 // ── Tools & Skills ─────────────────────────────────────────────────────────
 export { tool, streamingTool, executeTools, readFile, validateToolArguments } from "./tools/index.js"
-export type { RegisteredTool } from "./tools/index.js"
+export type { RegisteredTool, ToolExecContext } from "./tools/index.js"
+export { safeTool, ok, fail, ToolError, formatToolError } from "./tools/errors.js"
+export type { ToolEnvelope, ToolEnvelopeOk, ToolEnvelopeFail } from "./tools/errors.js"
 export { scanSkillDir, readSkillFile } from "./skills/loader.js"
 export type { SkillMetadata } from "./skills/loader.js"
 
@@ -110,7 +112,7 @@ export type {
   Message, ToolCall, ToolResult, ToolSchema,
   ContentPart, TextPart, ImagePart, AudioPart,
   StreamEvent, TextDelta, ThinkingDelta,
-  ToolCallEvent, ToolChunk, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, DoneEvent, ErrorEvent,
+  ToolCallEvent, ToolChunk, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, ToolAuditFailedEvent, DoneEvent, ErrorEvent,
   PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   LLMProvider, RetryConfig, TokenUsage, ProviderToolSpec, ProviderRunState, ProviderReplay,
   RenderedContext, ReplayabilityAssessment,

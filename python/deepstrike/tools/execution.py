@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 from deepstrike._kernel import ToolCall, ToolResult
 from collections.abc import AsyncIterable
+from .errors import format_tool_error
 from .registry import RegisteredTool, tool_chunk_text, validate_tool_arguments
 
 
@@ -29,5 +30,5 @@ async def execute_tools(
                 output = "".join(chunks)
             results.append(ToolResult(call_id=call.id, output=str(output)))
         except Exception as exc:
-            results.append(ToolResult(call_id=call.id, output=str(exc), is_error=True))
+            results.append(ToolResult(call_id=call.id, output=format_tool_error(exc), is_error=True))
     return results

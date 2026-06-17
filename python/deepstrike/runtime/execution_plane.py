@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
+import warnings
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,12 +15,14 @@ from deepstrike.providers.stream import (
   PermissionResolvedEvent,
   PermissionResponse,
   StreamEvent,
+  ToolAuditFailedEvent,
   ToolDeltaEvent,
   ToolDeniedEvent,
   ToolResultEvent,
   ToolSuspendEvent,
   ToolArgumentRepairedEvent,
 )
+from deepstrike.tools.errors import format_tool_error
 from deepstrike.tools.registry import RegisteredTool, normalize_tool_chunk, tool_chunk_text, validate_tool_arguments
 
 if TYPE_CHECKING:
@@ -33,6 +37,39 @@ def _strip_frontmatter(content: str) -> str:
   return re.sub(r"^---\n.*?\n---\n?", "", content, count=1, flags=re.DOTALL)
 
 
+_WARNED_FAILURE_SHAPES: set[str] = set()
+
+
+def _maybe_warn_failure_shaped_chunk(tool_name: str, delta_text: str) -> None:
+  """One-shot heuristic: detect when a streaming tool yielded text that *looks* like a failure
+  envelope. The runtime cannot block the tool from doing it, but we warn (once per tool) so
+  the author migrates to raising — the canonical "streaming tool fails" path. Aligns with the
+  non-streaming ``tool()`` / ``safe_tool`` contract: failures raise, successes return data."""
+  if not delta_text or tool_name in _WARNED_FAILURE_SHAPES:
+    return
+  trimmed = delta_text.strip()
+  if len(trimmed) < 2 or trimmed[0] != "{":
+    return
+  try:
+    parsed = json.loads(trimmed)
+  except Exception:
+    return
+  if not isinstance(parsed, dict):
+    return
+  looks_like_failure = parsed.get("success") is False or parsed.get("isError") is True or parsed.get("is_error") is True
+  if not looks_like_failure:
+    return
+  _WARNED_FAILURE_SHAPES.add(tool_name)
+  warnings.warn(
+    f'streaming tool "{tool_name}" yielded a failure-shaped chunk '
+    "(success:false / isError:true). Streaming tools should fail by raising; the runtime will "
+    "catch and surface the error consistently. Returning a failure-shaped chunk is a foot-gun: "
+    "the kernel still sees is_error=False.",
+    RuntimeWarning,
+    stacklevel=2,
+  )
+
+
 @dataclass
 class RunContext:
   agent_id: str | None = None
@@ -45,6 +82,12 @@ class RunContext:
   # M3/G4: the working directory a sub-agent's tools should run in (the git worktree created for an
   # ``isolation: "worktree"`` node). Injected by ``WorktreeExecutionPlane``; a cwd-aware tool reads it.
   cwd: str | None = None
+  # Per-call best-effort side-effect helper (injected by the execution plane). Wrap audit-log
+  # writes, metrics emits, or any non-essential persistence in ``await ctx.audit(label, fn)``;
+  # if ``fn`` raises, the failure is surfaced as a ``ToolAuditFailedEvent`` and the tool still
+  # completes successfully — avoiding the foot-gun where a transient audit-store outage flips
+  # an already-committed write into ``is_error=True`` and triggers a duplicate retry.
+  audit: Callable[[str, Callable[[], Awaitable[None] | None]], Awaitable[None]] | None = None
 
 
 class ExecutionPlane:
@@ -174,6 +217,29 @@ class LocalExecutionPlane:
         error_kind="recoverable",
       )
       return
+    # Per-call ``audit`` helper: failures collected here are surfaced as
+    # ``ToolAuditFailedEvent`` rather than flipping the main tool result to ``is_error=True``.
+    audit_failures: list[tuple[str, str]] = []
+
+    async def _audit(label: str, fn: Callable[[], Awaitable[None] | None]) -> None:
+      try:
+        result = fn()
+        if inspect.isawaitable(result):
+          await result
+      except Exception as ae:
+        audit_failures.append((label, format_tool_error(ae)))
+
+    call_ctx = RunContext(
+      agent_id=ctx.agent_id,
+      skill_dir=ctx.skill_dir,
+      dream_store=ctx.dream_store,
+      knowledge_source=ctx.knowledge_source,
+      on_tool_suspend=ctx.on_tool_suspend,
+      on_permission_request=ctx.on_permission_request,
+      result_spool=ctx.result_spool,
+      cwd=ctx.cwd,
+      audit=_audit,
+    )
     try:
       kwargs = json.loads(call.arguments or "{}")
       original_args_str = json.dumps(kwargs)
@@ -195,8 +261,9 @@ class LocalExecutionPlane:
           original_arguments=original_args_str,
           repaired_arguments=json.dumps(kwargs),
         )
-      # M3/G4: pass the run context (incl. ``cwd``) so cwd-aware tools scope work to the worktree.
-      output = await registered(_ctx=ctx, **kwargs)
+      # M3/G4: pass the run context (incl. ``cwd``, ``audit``) so cwd-aware / audit-aware tools
+      # scope work to the worktree and route best-effort side-effects through the plane.
+      output = await registered(_ctx=call_ctx, **kwargs)
       if isinstance(output, AsyncIterable):
         combined = ""
         iterator = output.__aiter__()
@@ -234,22 +301,30 @@ class LocalExecutionPlane:
             continue
           delta = tool_chunk_text(raw)
           combined += delta
+          if delta:
+            _maybe_warn_failure_shaped_chunk(call.name, delta)
           yield ToolDeltaEvent(
             call_id=call.id, name=call.name, delta=delta,
             chunk=None if isinstance(raw, str) else chunk,
           )
+        for label, error in audit_failures:
+          yield ToolAuditFailedEvent(call_id=call.id, name=call.name, label=label, error=error)
         yield ToolResultEvent(call_id=call.id, name=call.name, content=combined, is_error=False)
         return
+      for label, error in audit_failures:
+        yield ToolAuditFailedEvent(call_id=call.id, name=call.name, label=label, error=error)
       yield ToolResultEvent(call_id=call.id, name=call.name, content=str(output), is_error=False)
     except Exception as exc:
       is_fatal = getattr(exc, "is_fatal", False)
       error_kind = getattr(exc, "error_kind", None)
       if error_kind is None:
         error_kind = "fatal" if is_fatal else "recoverable"
+      for label, error in audit_failures:
+        yield ToolAuditFailedEvent(call_id=call.id, name=call.name, label=label, error=error)
       yield ToolResultEvent(
         call_id=call.id,
         name=call.name,
-        content=str(exc),
+        content=format_tool_error(exc),
         is_error=True,
         is_fatal=is_fatal,
         error_kind=error_kind,

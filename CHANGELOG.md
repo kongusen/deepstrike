@@ -6,6 +6,61 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.24] - 2026-06-17
+
+### Added
+
+- **`safeTool` / `ToolError` / `ok()` / `fail()` — opt-in structured tool
+  envelope.** A new tool factory that wraps the body in a try/catch and returns
+  a stable `{success, code, error, hint?}` JSON envelope to the model. Replaces
+  the consumer-side `safeTool` shim users had to hand-roll: `ToolError`
+  carries `code` + self-correcting `hint` (e.g. `"call document_outline first"`);
+  plain `Error` throws fall back to `{success:false, code:"internal", error}`;
+  the classic `tool()` factory is unchanged so existing tools keep working.
+  **All four SDKs** — `safeTool` + `ToolError` (Node/WASM/Rust),
+  `safe_tool` decorator + `ToolError` exception (Python). Rust ships the
+  `safe_tool` factory + `tool_fail()` helper + `Error::ToolFail` enum variant.
+- **`ctx.audit(label, fn)` — best-effort post-commit side-effect channel
+  on `ToolExecContext`.** Wraps an audit-log write, metrics emit, or any
+  non-essential persistence in `await ctx.audit("record-patch", () => store.write(...))`.
+  If the side-effect throws, the failure surfaces as a `tool_audit_failed`
+  stream event and the tool still completes with `isError:false` — fixing the
+  foot-gun where a transient audit-store outage flipped an already-committed
+  write into a failure and triggered duplicate retries. **Node + Python + WASM**
+  (Rust deferred: tool-fn ABI in Rust takes only `Value` args, threading `ctx`
+  requires a parallel constructor — tracked separately).
+- **`ToolAuditFailedEvent` stream event.** New `StreamEvent` variant emitted
+  whenever a `ctx.audit(...)` side-effect throws. Carries `{callId, name,
+  label, error}`; the tool's `ToolResult` is emitted afterward with
+  `isError:false`, so hosts get observability into best-effort failures
+  without the kernel treating the call as failed. **Node + Python + WASM.**
+
+### Changed
+
+- **Error-aware serialization at every `String(err)` / `str(exc)` site
+  (Node + Python + WASM).** Tool catches, runner error events, MCP-proxy /
+  remote-VPC / process-sandbox planes, reducer-threw paths, and permission-
+  handler-threw paths all route through a new `formatToolError(err)` helper.
+  Concrete behavior change visible to the model: a thrown `new Error("foo")`
+  now serializes to `"foo"` (was `"Error: foo"`); a thrown plain object
+  `{code, message}` serializes to JSON (was `"[object Object]"`); a coded
+  `Error` with `.code` / `.hint` serializes to `{message, code, hint}` JSON
+  so the agent can branch on `code` instead of pattern-matching strings.
+- **Rust `format_tool_error(&Error)` free function + `Error::ToolFail` variant.**
+  Strips the `thiserror` prefix (`"tool error: "` / `"tool execution failed: "`)
+  off `Error::Tool` and `Error::ToolExecutionFailed` so the model sees the
+  bare message; emits JSON `{message, code?, hint?}` for the new coded
+  `ToolFail` variant. Wired into the 2 catch sites in
+  `runtime/execution_plane.rs`.
+- **Streaming-tool failure convention warning (Node + Python).** Streaming
+  tools that yield a chunk whose text parses as `{success:false}` or
+  `{isError:true}` now print a one-shot warning per tool name. The runtime
+  cannot block the chunk (it's the tool's own output stream), but pushes
+  authors to the canonical pattern: **streaming tools fail by throwing**, not
+  by returning a failure-shaped chunk. Matches the convention now baked into
+  `safeTool` / `tool()`. Not applicable in WASM (no streaming-tool path) or
+  Rust (statically `Result<ToolStep>`).
+
 ## [0.2.23] - 2026-06-17
 
 ### Added

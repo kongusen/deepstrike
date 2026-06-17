@@ -1,11 +1,12 @@
 import type {
-  ToolCall, ToolSchema, StreamEvent, ToolResultEvent, PermissionRequestEvent, ToolDeniedEvent,
-  PermissionResponse, PermissionResolvedEvent,
+  ToolCall, ToolSchema, StreamEvent, ToolResultEvent, ToolAuditFailedEvent,
+  PermissionRequestEvent, ToolDeniedEvent, PermissionResponse, PermissionResolvedEvent,
 } from "../types.js"
-import type { RegisteredTool } from "../tools/index.js"
+import type { RegisteredTool, ToolExecContext } from "../tools/index.js"
 import type { DreamStore, MemoryEntry } from "../memory/index.js"
 import type { KnowledgeSource } from "../knowledge/index.js"
 import { LargeResultSpool } from "./large-result-spool.js"
+import { formatToolError } from "../tools/errors.js"
 
 export interface ToolSuspendEvent {
   type: "tool_suspend"
@@ -116,18 +117,33 @@ export class LocalExecutionPlane implements ExecutionPlane {
         yield { type: "tool_result", callId: call.id, name: call.name, content: `unknown tool: ${call.name}`, isError: true, isFatal: false, errorKind: "recoverable" } as ToolResultEvent
         continue
       }
+      // Per-call `audit` helper: failures collected here are surfaced as `tool_audit_failed`
+      // events rather than flipping the main tool result to `isError: true`.
+      const auditFailures: Array<{ label: string; error: string }> = []
+      const callCtx: ToolExecContext = {
+        ...(ctx.cwd !== undefined ? { cwd: ctx.cwd } : {}),
+        audit: async (label, fn) => {
+          try { await fn() }
+          catch (err) { auditFailures.push({ label, error: formatToolError(err) }) }
+        },
+      }
       try {
         const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>
-        // M3/G4: pass the run context for tool-ABI parity with Node/Python (`RunContext` is
-        // structurally assignable to the tool's `ToolExecContext`).
-        const output = await registered.execute(args, ctx)
+        // M3/G4: pass the run context (incl. `cwd`, `audit`) for tool-ABI parity with Node/Python.
+        const output = await registered.execute(args, callCtx)
+        for (const f of auditFailures) {
+          yield { type: "tool_audit_failed", callId: call.id, name: call.name, label: f.label, error: f.error } as ToolAuditFailedEvent
+        }
         yield { type: "tool_result", callId: call.id, name: call.name, content: String(output), isError: false } as ToolResultEvent
       } catch (err) {
+        for (const f of auditFailures) {
+          yield { type: "tool_audit_failed", callId: call.id, name: call.name, label: f.label, error: f.error } as ToolAuditFailedEvent
+        }
         yield {
           type: "tool_result",
           callId: call.id,
           name: call.name,
-          content: String(err),
+          content: formatToolError(err),
           isError: true,
           isFatal: Boolean((err as any)?.isFatal),
           errorKind: (err as any)?.errorKind,
@@ -175,7 +191,7 @@ export async function resolvePermissionRequest(request: PermissionRequestEvent, 
     return {
       approved: false,
       responder: "permission_handler",
-      reason: `permission handler failed: ${String(err)}`,
+      reason: `permission handler failed: ${formatToolError(err)}`,
     }
   }
 }

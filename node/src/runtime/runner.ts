@@ -85,6 +85,7 @@ import { governancePolicyToKernelEvent, governanceFilterSchema, type GovernanceP
 import { kernelObservationToSessionEvent, withCategory } from "./kernel-event-log.js"
 import { assertNativeProfile, type NativeOsProfile, type OsProfileId } from "./os-profile.js"
 import { LargeResultSpool } from "./large-result-spool.js"
+import { formatToolError } from "../tools/errors.js"
 
 export interface SchedulerBudget {
   maxWallMs?: number
@@ -686,7 +687,7 @@ export class RuntimeRunner {
     try {
       return ok(reducer(inputs), "completed")
     } catch (err) {
-      return ok(`reducer "${node.reducer}" threw: ${err instanceof Error ? err.message : String(err)}`, "error")
+      return ok(`reducer "${node.reducer}" threw: ${formatToolError(err)}`, "error")
     }
   }
 
@@ -1500,7 +1501,7 @@ export class RuntimeRunner {
           // #2-B-ii: an aborted in-flight request surfaces as an AbortError — treat it as an interrupt
           // (the loop-top `interrupted` check converts it to a clean `timeout`/UserAbort), not a crash.
           if (abortSignal?.aborted) { this.interrupted = true }
-          const errMsg = String(err).toLowerCase()
+          const errMsg = formatToolError(err).toLowerCase()
           if (
             (errMsg.includes("413") || errMsg.includes("too long") || errMsg.includes("context length exceeded") || errMsg.includes("context_length_exceeded")) &&
             !hasAttemptedReactiveCompact
@@ -1516,7 +1517,7 @@ export class RuntimeRunner {
             }
           }
           if (!shouldRetry) {
-            yield { type: "error", message: String(err) } as ErrorEvent
+            yield { type: "error", message: formatToolError(err) } as ErrorEvent
             action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
             break
           }
@@ -1806,7 +1807,7 @@ export class RuntimeRunner {
       // Classify by NAPI status code or message pattern — `invalid_arg` for surface-shape rejects,
       // `error` for everything else — then emit run_terminal so observability sees a clean end.
       // The yield-error path mirrors what the in-flight provider-stream catch does.
-      const errMsg = err instanceof Error ? err.message : String(err)
+      const errMsg = formatToolError(err)
       const code = (err as { code?: string }).code
       const isInvalidArg = code === "InvalidArg" ||
         errMsg.toLowerCase().includes("invalidarg") ||

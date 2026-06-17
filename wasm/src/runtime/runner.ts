@@ -15,6 +15,7 @@ import { governancePolicyToKernelEvent, governanceFilterSchema, type GovernanceP
 import { getKernel } from "./kernel.js"
 import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
+import { formatToolError } from "../tools/errors.js"
 import {
   buildLlmCompletedEvent,
   buildRunTerminalEvent,
@@ -778,7 +779,7 @@ export class RuntimeRunner {
         } catch (err) {
           // #2-B-ii: an aborted in-flight request surfaces as an AbortError — treat as an interrupt.
           if (abortSignal?.aborted) { this.interrupted = true }
-          const errMsg = String(err).toLowerCase()
+          const errMsg = formatToolError(err).toLowerCase()
           if (
             (errMsg.includes("413") || errMsg.includes("too long") || errMsg.includes("context length exceeded") || errMsg.includes("context_length_exceeded")) &&
             !hasAttemptedReactiveCompact
@@ -790,7 +791,7 @@ export class RuntimeRunner {
             }
           }
           if (!shouldRetry) {
-            yield { type: "error", message: String(err) } as ErrorEvent
+            yield { type: "error", message: formatToolError(err) } as ErrorEvent
             action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
             break
           }
@@ -1032,7 +1033,7 @@ export class RuntimeRunner {
     } catch (err) {
       // I0b: kernel rejection (or any other thrown error inside the loop) is observable here —
       // emit run_terminal so downstream code sees a clean end rather than mid-loop EOF.
-      const errMsg = err instanceof Error ? err.message : String(err)
+      const errMsg = formatToolError(err)
       const code = (err as { code?: string }).code
       const isInvalidArg = code === "InvalidArg" ||
         errMsg.toLowerCase().includes("invalidarg") ||
@@ -1244,7 +1245,7 @@ export class RuntimeRunner {
     try {
       return ok(reducer(inputs), "completed")
     } catch (err) {
-      return ok(`reducer "${node.reducer}" threw: ${err instanceof Error ? err.message : String(err)}`, "error")
+      return ok(`reducer "${node.reducer}" threw: ${formatToolError(err)}`, "error")
     }
   }
 

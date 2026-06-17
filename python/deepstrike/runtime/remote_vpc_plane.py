@@ -9,6 +9,7 @@ import aiohttp
 
 from deepstrike._kernel import ToolCall, ToolSchema
 from deepstrike.providers.stream import StreamEvent, ToolResultEvent
+from deepstrike.tools.errors import format_tool_error
 from deepstrike.tools.registry import RegisteredTool
 from deepstrike.runtime.execution_plane import LocalExecutionPlane, RunContext
 from deepstrike.runtime.credential_vault import CredentialVault
@@ -97,4 +98,4 @@ class RemoteVpcPlane:
           result: dict = await resp.json()
           return result.get("output", ""), bool(result.get("isError", False))
     except Exception as exc:
-      return str(exc), True
+      return format_tool_error(exc), True

@@ -4,6 +4,7 @@ import type { RegisteredTool } from "../tools/index.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
 import { LocalExecutionPlane } from "./execution-plane.js"
 import type { CredentialVault } from "./credential-vault.js"
+import { formatToolError } from "../tools/errors.js"
 
 export interface RemoteVpcOptions {
   /**
@@ -114,7 +115,7 @@ export class RemoteVpcPlane implements ExecutionPlane {
       const result = await response.json() as { output: string; isError?: boolean }
       return { output: result.output, isError: result.isError ?? false }
     } catch (err) {
-      return { output: String(err), isError: true }
+      return { output: formatToolError(err), isError: true }
     }
   }
 }

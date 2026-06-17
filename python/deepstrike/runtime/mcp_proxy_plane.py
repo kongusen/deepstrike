@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from deepstrike._kernel import ToolCall, ToolSchema
 from deepstrike.providers.stream import StreamEvent, ToolResultEvent
+from deepstrike.tools.errors import format_tool_error
 from deepstrike.tools.registry import RegisteredTool
 from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPlane, RunContext
 from deepstrike.runtime.credential_vault import CredentialVault
@@ -126,7 +127,7 @@ class _McpConnection:
       )
       return (text or json.dumps(result)), result.get("isError", False)
     except Exception as exc:
-      return str(exc), True
+      return format_tool_error(exc), True
 
   async def stop(self) -> None:
     if self._reader_task:

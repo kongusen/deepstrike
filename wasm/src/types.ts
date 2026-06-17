@@ -92,6 +92,16 @@ export interface PermissionResolvedEvent extends StreamEvent {
   reason?: string
 }
 export interface ToolDeniedEvent extends StreamEvent { type: "tool_denied"; callId: string; toolName: string; reason: string }
+/** A tool's `ctx.audit(label, fn)` best-effort side-effect threw. The tool itself completed
+ *  successfully (no isError flip, no retry); this event lets the host log / monitor that an
+ *  audit-store / metrics-emit / non-essential persistence step failed. */
+export interface ToolAuditFailedEvent extends StreamEvent {
+  type: "tool_audit_failed"
+  callId: string
+  name: string
+  label: string
+  error: string
+}
 export interface ToolArgumentRepairedEvent extends StreamEvent {
   type: "tool_argument_repaired"
   callId: string

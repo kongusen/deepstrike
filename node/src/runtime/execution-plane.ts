@@ -1,9 +1,10 @@
 import type {
-  ToolCall, ToolResult, ToolSchema, StreamEvent, ToolSuspendEvent, ToolResultEvent, PermissionRequestEvent, ToolDeniedEvent,
-  PermissionResponse, PermissionResolvedEvent,
+  ToolCall, ToolResult, ToolSchema, StreamEvent, ToolSuspendEvent, ToolResultEvent, ToolAuditFailedEvent,
+  PermissionRequestEvent, ToolDeniedEvent, PermissionResponse, PermissionResolvedEvent,
 } from "../types.js"
-import type { RegisteredTool } from "../tools/index.js"
-import { isAsyncIterable, normalizeToolChunk, toolChunkText, validateToolArguments } from "../tools/index.js"
+import type { RegisteredTool, ToolExecContext } from "../tools/index.js"
+import { isAsyncIterable, maybeWarnFailureShapedChunk, normalizeToolChunk, toolChunkText, validateToolArguments } from "../tools/index.js"
+import { formatToolError } from "../tools/errors.js"
 import { readSkillFile } from "../skills/loader.js"
 import type { DreamStore, MemoryEntry } from "../memory/protocols.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
@@ -154,6 +155,16 @@ export class LocalExecutionPlane implements ExecutionPlane {
 
     const registered = this.tools.get(call.name)
     if (!registered) return { callId: call.id, output: `unknown tool: ${call.name}`, isError: true }
+    // `audit` failure buffer is hoisted above the try-block so the catch path can flush any
+    // best-effort failures recorded before the main throw.
+    const auditFailures: Array<{ label: string; error: string }> = []
+    const callCtx: ToolExecContext = {
+      ...(ctx.cwd !== undefined ? { cwd: ctx.cwd } : {}),
+      audit: async (label, fn) => {
+        try { await fn() }
+        catch (err) { auditFailures.push({ label, error: formatToolError(err) }) }
+      },
+    }
     try {
       const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>
       const originalArgsStr = JSON.stringify(args)
@@ -170,7 +181,8 @@ export class LocalExecutionPlane implements ExecutionPlane {
       }
       // M3/G4: pass the run context (incl. `cwd`) so cwd-aware tools scope their work to the
       // sub-agent's worktree. `RunContext` is structurally assignable to the tool's `ToolExecContext`.
-      const output = await registered.execute(args, ctx)
+      // The per-call `audit` helper (above) layers best-effort side-effect handling on top.
+      const output = await registered.execute(args, callCtx)
       if (isAsyncIterable(output)) {
         let combined = ""
         const iterator = output[Symbol.asyncIterator]()
@@ -195,15 +207,26 @@ export class LocalExecutionPlane implements ExecutionPlane {
           }
           const delta = toolChunkText(next.value)
           combined += delta
+          if (delta) maybeWarnFailureShapedChunk(call.name, delta)
           yield { type: "tool_delta", callId: call.id, name: call.name, ...(delta ? { delta } : {}), chunk } as StreamEvent
+        }
+        for (const f of auditFailures) {
+          yield { type: "tool_audit_failed", callId: call.id, name: call.name, label: f.label, error: f.error } as ToolAuditFailedEvent
         }
         return { callId: call.id, output: combined, isError: false }
       }
+      for (const f of auditFailures) {
+        yield { type: "tool_audit_failed", callId: call.id, name: call.name, label: f.label, error: f.error } as ToolAuditFailedEvent
+      }
       return { callId: call.id, output, isError: false }
     } catch (err) {
+      // Audit failures recorded before the main throw are still informational; surface them.
+      for (const f of auditFailures) {
+        yield { type: "tool_audit_failed", callId: call.id, name: call.name, label: f.label, error: f.error } as ToolAuditFailedEvent
+      }
       return {
         callId: call.id,
-        output: String(err),
+        output: formatToolError(err),
         isError: true,
         isFatal: Boolean((err as any)?.isFatal),
         errorKind: (err as any)?.errorKind,
@@ -231,7 +254,7 @@ export async function resolvePermissionRequest(request: PermissionRequestEvent, 
     return {
       approved: false,
       responder: "permission_handler",
-      reason: `permission handler failed: ${String(err)}`,
+      reason: `permission handler failed: ${formatToolError(err)}`,
     }
   }
 }

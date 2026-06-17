@@ -351,6 +351,117 @@ fn tool_result(
     }
 }
 
+// ── Structured tool envelope (safe_tool / ok / fail / tool_fail) ──────────────────────────────
+//
+// Opt-in: same shape as the Node/Python `safe_tool` + `ok()` / `fail()` envelope so a tool
+// authored once produces consistent `{success, code?, error?, hint?}` JSON for the model across
+// runtimes. The classic `RegisteredTool::text()` factory is unchanged.
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(untagged)]
+pub enum ToolEnvelope {
+    Ok(ToolEnvelopeOk),
+    Fail(ToolEnvelopeFail),
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ToolEnvelopeOk {
+    pub success: bool, // always true
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ToolEnvelopeFail {
+    pub success: bool, // always false
+    pub code: String,
+    pub error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+pub fn ok(data: impl Into<Option<Value>>) -> ToolEnvelope {
+    ToolEnvelope::Ok(ToolEnvelopeOk { success: true, data: data.into() })
+}
+
+pub fn fail(code: impl Into<String>, error: impl Into<String>, hint: Option<String>) -> ToolEnvelope {
+    ToolEnvelope::Fail(ToolEnvelopeFail {
+        success: false,
+        code: code.into(),
+        error: error.into(),
+        hint,
+    })
+}
+
+/// Build a coded tool-failure `Error` (parity with Node `new ToolError(message, {code, hint})`).
+/// Throwing this from a `safe_tool` body produces `{success:false, code, error, hint?}`; thrown
+/// from a classic `tool()` body, the catch site formats it via `format_tool_error` as JSON.
+pub fn tool_fail(message: impl Into<String>, code: Option<String>, hint: Option<String>) -> crate::Error {
+    crate::Error::ToolFail {
+        output: message.into(),
+        code,
+        hint,
+        is_fatal: false,
+        error_kind: None,
+    }
+}
+
+/// `RegisteredTool::text` equivalent that wraps the body in a structured envelope. The body
+/// returns either:
+/// - `Ok(envelope)` produced by `ok(data)` / `fail(code, msg, hint)` — passed through
+/// - `Ok(value)` of any other `Value` — auto-wrapped as `ok(value)`
+/// - `Err(crate::Error::ToolFail{..})` — converted to `fail` envelope with the carried code/hint
+/// - `Err(other)` — converted to `{success:false, code:"internal", error: format_tool_error(...)}`
+pub fn safe_tool<F, Fut>(
+    name: impl Into<compact_str::CompactString>,
+    description: impl Into<String>,
+    parameters: Value,
+    f: F,
+) -> RegisteredTool
+where
+    F: Fn(Value) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<SafeToolResult>> + Send + 'static,
+{
+    let f = Arc::new(f);
+    RegisteredTool::text(name, description, parameters, move |args| {
+        let f = Arc::clone(&f);
+        Box::pin(async move {
+            let envelope = match f(args).await {
+                Ok(SafeToolResult::Envelope(env)) => env,
+                Ok(SafeToolResult::Data(v)) => ok(Some(v)),
+                Err(e) => {
+                    let env = match &e {
+                        crate::Error::ToolFail { output, code, hint, .. } => fail(
+                            code.clone().unwrap_or_else(|| "internal".to_string()),
+                            output.clone(),
+                            hint.clone(),
+                        ),
+                        _ => fail("internal", crate::format_tool_error(&e), None),
+                    };
+                    env
+                }
+            };
+            Ok(serde_json::to_string(&envelope).unwrap_or_else(|_| String::from(r#"{"success":false,"code":"internal","error":"envelope serialization failed"}"#)))
+        })
+    })
+}
+
+/// Return type for `safe_tool` bodies. Use `ok(...)` / `fail(...)` to build an explicit envelope,
+/// or return `Data(Value)` to auto-wrap as `{success:true, data:value}`. `From<ToolEnvelope>` and
+/// `From<Value>` impls let bodies just `return Ok(env.into())` / `return Ok(value.into())`.
+#[derive(Debug, Clone)]
+pub enum SafeToolResult {
+    Envelope(ToolEnvelope),
+    Data(Value),
+}
+
+impl From<ToolEnvelope> for SafeToolResult {
+    fn from(e: ToolEnvelope) -> Self { Self::Envelope(e) }
+}
+impl From<Value> for SafeToolResult {
+    fn from(v: Value) -> Self { Self::Data(v) }
+}
+
 pub fn read_file_tool() -> RegisteredTool {
     RegisteredTool::text(
         "read_file",

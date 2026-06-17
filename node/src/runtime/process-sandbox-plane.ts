@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises"
 import { tool } from "../tools/index.js"
 import type { RegisteredTool } from "../tools/index.js"
 import { LocalExecutionPlane } from "./execution-plane.js"
+import { formatToolError } from "../tools/errors.js"
 
 export interface SandboxOptions {
   /** Working directory for all subprocesses. This is not an OS-enforced filesystem boundary. */
@@ -93,7 +94,7 @@ export class ProcessSandboxPlane extends LocalExecutionPlane {
       child.stderr.on("data", capture)
 
       child.on("close", code => settle(Buffer.concat(chunks).toString("utf8"), code !== 0))
-      child.on("error", err => settle(String(err), true))
+      child.on("error", err => settle(formatToolError(err), true))
     })
   }
 

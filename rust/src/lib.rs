@@ -61,8 +61,9 @@ pub use runtime::{RemoteVpcOptions, RemoteVpcPlane};
 pub use safety::{Permission, PermissionDecision, PermissionManager, PermissionMode};
 pub use signals::{GatewayReceiver, RuntimeSignal, ScheduledPrompt, SignalGateway, SignalSource};
 pub use tools::{
-    RegisteredTool, TextToolSession, ToolChunk, ToolSession, ToolStep, execute_tools,
-    read_file_tool, validate_tool_arguments,
+    RegisteredTool, SafeToolResult, TextToolSession, ToolChunk, ToolEnvelope, ToolEnvelopeFail,
+    ToolEnvelopeOk, ToolSession, ToolStep, execute_tools, fail, ok, read_file_tool, safe_tool,
+    tool_fail, validate_tool_arguments,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -79,8 +80,50 @@ pub enum Error {
         is_fatal: bool,
         error_kind: Option<deepstrike_core::types::message::ToolErrorKind>,
     },
+    /// Tool author signalled a structured failure with optional machine-readable `code` and a
+    /// self-correcting `hint`. Parity with the Node/Python `ToolError` + `safe_tool` envelope:
+    /// surfaced to the model as JSON `{message, code?, hint?}` (via `format_tool_error`) so the
+    /// agent can branch on `code` instead of pattern-matching a free-form string.
+    #[error("{output}")]
+    ToolFail {
+        output: String,
+        code: Option<String>,
+        hint: Option<String>,
+        is_fatal: bool,
+        error_kind: Option<deepstrike_core::types::message::ToolErrorKind>,
+    },
     #[error("{0}")]
     Other(String),
+}
+
+/// Error-aware serialization for tool-execution error paths. Replaces `e.to_string()` at the
+/// sites that hand the model a failure message:
+///
+/// - `Error::Tool(s)` → `s` (drops the `"tool error: "` prefix from `e.to_string()`).
+/// - `Error::ToolExecutionFailed { output, .. }` → `output` (drops the `"tool execution failed: "` prefix).
+/// - `Error::ToolFail { output, code:None, hint:None, .. }` → `output`.
+/// - `Error::ToolFail { output, code, hint, .. }` (either set) → JSON `{message, code?, hint?}`.
+/// - everything else → `e.to_string()` (the `thiserror`-formatted string).
+pub fn format_tool_error(e: &Error) -> String {
+    match e {
+        Error::Tool(s) => s.clone(),
+        Error::ToolExecutionFailed { output, .. } => output.clone(),
+        Error::ToolFail { output, code, hint, .. } => {
+            if code.is_none() && hint.is_none() {
+                return output.clone();
+            }
+            let mut obj = serde_json::Map::with_capacity(3);
+            obj.insert("message".to_string(), serde_json::Value::String(output.clone()));
+            if let Some(c) = code {
+                obj.insert("code".to_string(), serde_json::Value::String(c.clone()));
+            }
+            if let Some(h) = hint {
+                obj.insert("hint".to_string(), serde_json::Value::String(h.clone()));
+            }
+            serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_else(|_| output.clone())
+        }
+        _ => e.to_string(),
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
