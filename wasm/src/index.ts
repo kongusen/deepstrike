@@ -77,7 +77,7 @@ export type {
 } from "./memory/index.js"
 export type { KnowledgeSource } from "./knowledge/index.js"
 export { SinglePassHarness, HarnessLoop } from "./harness/index.js"
-export type { HarnessRequest, HarnessOutcome, HarnessLoopOptions } from "./harness/index.js"
+export type { HarnessRequest, HarnessOutcome, HarnessLoopOptions, CriterionResult, HarnessEvent } from "./harness/index.js"
 export { ScheduledPrompt } from "./signals/index.js"
 export type { RuntimeSignal, SignalSource } from "./signals/index.js"
 export { PermissionManager, PermissionMode } from "./safety/index.js"

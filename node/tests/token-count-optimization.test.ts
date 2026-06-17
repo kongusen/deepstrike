@@ -84,7 +84,11 @@ describe("Token Count Optimization", () => {
       for await (const event of provider.stream(mockContext, [])) events.push(event)
       const usage = events.filter(e => e.type === "usage").at(-1)
       // inputTokens is the FULL prompt: 200 uncached + 5000 read + 300 write.
-      expect(usage).toEqual({
+      // I1: cacheReadInputTokensBySlot may also be present when cache_control breakpoints land on
+      // any slot; this test exercises the default strategy with system_stable/knowledge so system
+      // and (rolling) message breakpoints both fire — `toMatchObject` keeps the assertion on the
+      // headline fields stable across that additive shape.
+      expect(usage).toMatchObject({
         type: "usage",
         totalTokens: 5540, // 5500 prompt + 40 output
         inputTokens: 5500,

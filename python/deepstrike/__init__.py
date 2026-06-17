@@ -75,6 +75,9 @@ from deepstrike.harness import (
     QualityGate,
     SinglePassHarness, HarnessLoop, EvalLoopHarness,
     HarnessRequest, HarnessOutcome,
+    # I3.1: surface harness types so hosts can construct verdicts and stream-event handlers
+    # without importing from deepstrike.harness.harness directly.
+    HarnessEvent, CriterionResult,
 )
 from deepstrike.skills import SkillRegistry
 from deepstrike.knowledge import KnowledgeSource
@@ -141,6 +144,7 @@ __all__ = [
     "PermissionManager", "PermissionMode", "Permission", "PermissionDecision",
     "QualityGate",
     "SinglePassHarness", "HarnessLoop", "EvalLoopHarness", "HarnessRequest", "HarnessOutcome",
+    "HarnessEvent", "CriterionResult",
     "SkillRegistry",
     "KnowledgeSource",
     "RuntimeSignal", "SignalSource", "ScheduledPrompt", "SignalGateway",

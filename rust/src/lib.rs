@@ -25,7 +25,7 @@ pub use deepstrike_core::orchestration::workflow::{
 };
 pub use deepstrike_core::orchestration::workflow::{JudgeMatch, WorkflowRun, WorkflowSpawnInfo};
 pub use governance::{Governance, GovernanceVerdict};
-pub use harness::{Harness, HarnessOutcome, HarnessRequest, QualityGate};
+pub use harness::{CriterionResult, Harness, HarnessEvent, HarnessOutcome, HarnessRequest, QualityGate};
 pub use harness_loop::{EvalLoopHarness, HarnessLoop, SinglePassHarness};
 pub use knowledge::KnowledgeSource;
 pub use memory::{DreamResult, DreamStore, InMemoryDreamStore, WorkingMemory};
