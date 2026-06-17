@@ -103,7 +103,7 @@ export type { GovernanceVerdict, GovernancePolicy, GovernanceConstraint } from "
 
 // ── Harness ────────────────────────────────────────────────────────────────
 export { SinglePassHarness, EvalLoopHarness, HarnessLoop } from "./harness/harness.js"
-export type { HarnessRequest, HarnessOutcome, HarnessLoopOptions, QualityGate, CriterionResult, HarnessEvent } from "./harness/harness.js"
+export type { HarnessRequest, HarnessOutcome, HarnessLoopOptions, QualityGate, CriterionResult, HarnessEvent, VerdictFn } from "./harness/harness.js"
 
 // ── Types ──────────────────────────────────────────────────────────────────
 export type {

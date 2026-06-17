@@ -138,12 +138,24 @@ impl<'a, G: QualityGate> EvalLoopHarness<'a, G> {
     }
 }
 
+/// I3.2 (A2/A3): host-supplied judgment for each attempt's result. Mirrors the Node SDK
+/// `VerdictFn`. Returning `Some(Verdict)` short-circuits the built-in LLM eval; returning `None`
+/// defers to it. Sync-only in Rust today — when async hosts need it, lift to a boxed future.
+pub struct VerdictCtx<'a> {
+    pub goal: &'a str,
+    pub criteria: &'a [crate::harness::Criterion],
+    pub attempt: u32,
+    pub result: &'a str,
+}
+pub type VerdictFn = std::sync::Arc<dyn Fn(VerdictCtx<'_>) -> Option<Verdict> + Send + Sync>;
+
 /// HarnessLoop — LLM-as-judge with feedback injection and skill extraction.
 pub struct HarnessLoop<'a> {
     runner: &'a RuntimeRunner,
     eval_provider: Box<dyn LLMProvider>,
     max_attempts: usize,
     skill_dir: Option<std::path::PathBuf>,
+    verdict_fn: Option<VerdictFn>,
 }
 
 impl<'a> HarnessLoop<'a> {
@@ -158,7 +170,16 @@ impl<'a> HarnessLoop<'a> {
             eval_provider: Box::new(eval_provider),
             max_attempts,
             skill_dir,
+            verdict_fn: None,
         }
+    }
+
+    /// I3.2 (A2/A3): plug in a host-supplied verdict closure. Returning `Some(Verdict)` skips the
+    /// LLM eval; returning `None` defers. Pure addition — not setting it is byte-equivalent to
+    /// the prior LLM-eval-only path.
+    pub fn with_verdict_fn(mut self, f: VerdictFn) -> Self {
+        self.verdict_fn = Some(f);
+        self
     }
 
     pub fn run_streaming<'b>(
@@ -208,39 +229,55 @@ impl<'a> HarnessLoop<'a> {
 
                 yield Ok(HarnessEvent::Supervising);
 
-                // #6 (0.5.0): eval/verdict compute is the kernel's stateless free functions (was the
-                // EvalPipeline state machine). Build the eval prompt, call the eval LLM, parse the verdict.
-                let eval_criteria: Vec<Criterion> = request.criteria.iter().map(|c| Criterion {
-                    text: c.text.clone(), required: c.required, weight: c.weight,
-                }).collect();
-                let messages = build_eval_messages(&request.goal, &eval_criteria, &last_result, attempt, true);
-
-                let mut eval_text = String::new();
-                let context = rendered_context_from_messages(messages);
-                let eval_state = self.eval_provider.create_run_state();
-                let mut eval_stream = match self.eval_provider.stream(&context, &[], None, eval_state.as_ref()).await {
-                    Ok(s) => s,
-                    Err(e) => { yield Err(e); return; }
-                };
-                while let Some(evt) = eval_stream.next().await {
-                    if let Ok(StreamEvent::TextDelta { delta }) = evt {
-                        eval_text.push_str(&delta);
-                    }
+                // I3.2 (A2/A3): host-supplied verdict_fn short-circuits the LLM eval. None ⇒ defer.
+                let mut verdict: Option<Verdict> = None;
+                let mut skill_candidate_from_eval = None;
+                if let Some(f) = self.verdict_fn.clone() {
+                    let ctx = VerdictCtx {
+                        goal: &request.goal,
+                        criteria: &request.criteria,
+                        attempt,
+                        result: &last_result,
+                    };
+                    verdict = f(ctx);
                 }
+                let verdict = if let Some(v) = verdict {
+                    v
+                } else {
+                    // #6 (0.5.0): eval/verdict compute is the kernel's stateless free functions (was the
+                    // EvalPipeline state machine). Build the eval prompt, call the eval LLM, parse the verdict.
+                    let eval_criteria: Vec<Criterion> = request.criteria.iter().map(|c| Criterion {
+                        text: c.text.clone(), required: c.required, weight: c.weight,
+                    }).collect();
+                    let messages = build_eval_messages(&request.goal, &eval_criteria, &last_result, attempt, true);
 
-                let eval_result = parse_verdict(&eval_text);
+                    let mut eval_text = String::new();
+                    let context = rendered_context_from_messages(messages);
+                    let eval_state = self.eval_provider.create_run_state();
+                    let mut eval_stream = match self.eval_provider.stream(&context, &[], None, eval_state.as_ref()).await {
+                        Ok(s) => s,
+                        Err(e) => { yield Err(e); return; }
+                    };
+                    while let Some(evt) = eval_stream.next().await {
+                        if let Ok(StreamEvent::TextDelta { delta }) = evt {
+                            eval_text.push_str(&delta);
+                        }
+                    }
 
-                let verdict = Verdict {
-                    passed: eval_result.passed,
-                    overall_score: eval_result.overall_score,
-                    feedback: eval_result.feedback.clone(),
-                    details: eval_result.details.iter().map(|d| crate::harness::CriterionResult {
-                        criterion: d.criterion.clone(), passed: d.passed, score: d.score, feedback: d.feedback.clone(),
-                    }).collect(),
+                    let eval_result = parse_verdict(&eval_text);
+                    skill_candidate_from_eval = eval_result.skill_candidate.clone();
+                    Verdict {
+                        passed: eval_result.passed,
+                        overall_score: eval_result.overall_score,
+                        feedback: eval_result.feedback.clone(),
+                        details: eval_result.details.iter().map(|d| crate::harness::CriterionResult {
+                            criterion: d.criterion.clone(), passed: d.passed, score: d.score, feedback: d.feedback.clone(),
+                        }).collect(),
+                    }
                 };
 
                 if verdict.passed {
-                    if let Some(sc) = eval_result.skill_candidate {
+                    if let Some(sc) = skill_candidate_from_eval {
                         if let Some(dir) = &self.skill_dir {
                             let mut fm = format!("---\nname: {}\ndescription: {}\n", sc.name, sc.description);
                             if let Some(wtu) = &sc.when_to_use { fm.push_str(&format!("when_to_use: {}\n", wtu)); }

@@ -186,11 +186,16 @@ class HarnessLoop:
         *,
         max_attempts: int = 3,
         skill_dir: str | None = None,
+        # I3.2 (A2/A3): host-supplied judgment. Receives kwargs (goal, criteria, attempt, result);
+        # returns Verdict to short-circuit the LLM eval, or None/Awaitable[None] to defer. Mirrors
+        # the Node SDK ``verdictFn``.
+        verdict_fn=None,
     ):
         self._runner = runner
         self._eval_provider = eval_provider
         self._max_attempts = max_attempts
         self._skill_dir = pathlib.Path(skill_dir) if skill_dir else None
+        self._verdict_fn = verdict_fn
 
     async def run(self, request: HarnessRequest) -> HarnessOutcome:
         # R3-1: collect nodes the agent submits while running under the harness (dynamic fan-out in
@@ -251,30 +256,41 @@ class HarnessLoop:
 
             yield SupervisingEvent()
 
-            # #6 (0.5.0): the eval/verdict compute is the kernel's stateless free functions (was the
-            # EvalPipeline state machine). Build the eval prompt, call the eval LLM, parse the verdict.
-            eval_msgs = build_eval_messages(request.goal, criteria, last_result, attempt, True)
-            eval_text = ""
-            eval_system = "\n\n".join(m.content for m in eval_msgs if m.role == "system")
-            eval_turns = [m for m in eval_msgs if m.role != "system"]
-            eval_context = RenderedContext(system_text=eval_system, turns=eval_turns)
-            async for evt in self._eval_provider.stream(eval_context, [], extensions=None):
-                if isinstance(evt, TextDelta):
-                    eval_text += evt.delta
+            # I3.2 (A2/A3): host-supplied verdict_fn short-circuits the LLM eval. Returning None
+            # (or awaitable None) defers to the built-in eval below — enables hybrid judgment.
+            verdict = None
+            skill_candidate = None
+            if self._verdict_fn is not None:
+                result = self._verdict_fn(goal=request.goal, criteria=criteria, attempt=attempt, result=last_result)
+                if hasattr(result, "__await__"):
+                    result = await result
+                verdict = result
+            if verdict is None:
+                # #6 (0.5.0): the eval/verdict compute is the kernel's stateless free functions (was the
+                # EvalPipeline state machine). Build the eval prompt, call the eval LLM, parse the verdict.
+                eval_msgs = build_eval_messages(request.goal, criteria, last_result, attempt, True)
+                eval_text = ""
+                eval_system = "\n\n".join(m.content for m in eval_msgs if m.role == "system")
+                eval_turns = [m for m in eval_msgs if m.role != "system"]
+                eval_context = RenderedContext(system_text=eval_system, turns=eval_turns)
+                async for evt in self._eval_provider.stream(eval_context, [], extensions=None):
+                    if isinstance(evt, TextDelta):
+                        eval_text += evt.delta
 
-            parsed = parse_verdict(eval_text)
-            verdict = Verdict(
-                passed=parsed.passed,
-                overall_score=parsed.overall_score,
-                feedback=parsed.feedback,
-                details=[
-                    CriterionResult(criterion=d.criterion, passed=d.passed, score=d.score, feedback=d.feedback)
-                    for d in (parsed.details or [])
-                ],
-            )
+                parsed = parse_verdict(eval_text)
+                verdict = Verdict(
+                    passed=parsed.passed,
+                    overall_score=parsed.overall_score,
+                    feedback=parsed.feedback,
+                    details=[
+                        CriterionResult(criterion=d.criterion, passed=d.passed, score=d.score, feedback=d.feedback)
+                        for d in (parsed.details or [])
+                    ],
+                )
+                skill_candidate = parsed.skill_candidate
 
             if verdict.passed:
-                sc = parsed.skill_candidate
+                sc = skill_candidate
                 if sc and self._skill_dir:
                     lines = ["---", f"name: {sc.name}", f"description: {sc.description}"]
                     if sc.when_to_use:

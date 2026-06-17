@@ -97,14 +97,29 @@ export class EvalLoopHarness {
   }
 }
 
+/** I3.2 (A2/A3): host-supplied judgment for each attempt's result. Returning a `Verdict` short-
+ *  circuits the built-in LLM eval (no `evalProvider.stream` call); returning `undefined` defers to
+ *  the built-in eval (enables hybrid judgment: machine-checkable items deterministic, subjective
+ *  items LLM). Pure addition — when not set, HarnessLoop.stream() is byte-equivalent to its prior
+ *  behavior. The closure owns its own context (doc reader, deterministic checks, etc.); the SDK
+ *  is intentionally agnostic about what it inspects. */
+export type VerdictFn = (ctx: {
+  goal: string
+  criteria: Criterion[]
+  attempt: number
+  result: string
+}) => Verdict | undefined | Promise<Verdict | undefined>
+
 export interface HarnessLoopOptions {
   maxAttempts?: number
   skillDir?: string
+  verdictFn?: VerdictFn
 }
 
 export class HarnessLoop {
   private maxAttempts: number
   private skillDir?: string
+  private verdictFn?: VerdictFn
 
   constructor(
     private runner: RuntimeRunner,
@@ -113,6 +128,7 @@ export class HarnessLoop {
   ) {
     this.maxAttempts = options.maxAttempts ?? 3
     this.skillDir = options.skillDir
+    this.verdictFn = options.verdictFn
   }
 
   async run(request: HarnessRequest): Promise<HarnessOutcome> {
@@ -179,29 +195,38 @@ export class HarnessLoop {
 
       yield { type: "supervising" }
 
-      // #6 (0.5.0): the eval/verdict compute is the kernel's stateless free functions (was the
-      // EvalPipeline state machine). Build the eval prompt, call the eval LLM, parse the verdict.
-      const evalMsgs = kernel.buildEvalMessages(request.goal, criteria, lastResult, attempt, true)
-      let evalText = ""
-      const evalContext = {
-        systemText: evalMsgs.filter((m: { role: string }) => m.role === "system").map((m: { content: string }) => m.content).join("\n\n"),
-        turns: evalMsgs.filter((m: { role: string }) => m.role !== "system"),
+      // I3.2 (A2/A3): host-supplied `verdictFn` short-circuits the LLM eval. When it returns a
+      // Verdict, use it; when it returns undefined, defer to the built-in eval (hybrid path).
+      let verdict: Verdict | undefined
+      let skillCandidate: ReturnType<typeof kernel.parseVerdict>["skillCandidate"]
+      if (this.verdictFn) {
+        verdict = await this.verdictFn({ goal: request.goal, criteria, attempt, result: lastResult })
       }
-      for await (const evt of this.evalProvider.stream(evalContext, [], undefined)) {
-        if (evt.type === "text_delta") evalText += (evt as TextDelta).delta
-      }
-
-      const parsed = kernel.parseVerdict(evalText)
-      const verdict: Verdict = {
-        passed: parsed.passed,
-        overallScore: parsed.overallScore,
-        feedback: parsed.feedback,
-        details: parsed.details ?? [],
+      if (!verdict) {
+        // #6 (0.5.0): the eval/verdict compute is the kernel's stateless free functions (was the
+        // EvalPipeline state machine). Build the eval prompt, call the eval LLM, parse the verdict.
+        const evalMsgs = kernel.buildEvalMessages(request.goal, criteria, lastResult, attempt, true)
+        let evalText = ""
+        const evalContext = {
+          systemText: evalMsgs.filter((m: { role: string }) => m.role === "system").map((m: { content: string }) => m.content).join("\n\n"),
+          turns: evalMsgs.filter((m: { role: string }) => m.role !== "system"),
+        }
+        for await (const evt of this.evalProvider.stream(evalContext, [], undefined)) {
+          if (evt.type === "text_delta") evalText += (evt as TextDelta).delta
+        }
+        const parsed = kernel.parseVerdict(evalText)
+        verdict = {
+          passed: parsed.passed,
+          overallScore: parsed.overallScore,
+          feedback: parsed.feedback,
+          details: parsed.details ?? [],
+        }
+        skillCandidate = parsed.skillCandidate
       }
 
       if (verdict.passed) {
-        if (parsed.skillCandidate && this.skillDir) {
-          const { name, description, whenToUse, content } = parsed.skillCandidate
+        if (skillCandidate && this.skillDir) {
+          const { name, description, whenToUse, content } = skillCandidate
           const fm = ["---", `name: ${name}`, `description: ${description}`,
             whenToUse ? `when_to_use: ${whenToUse}` : null, "---", ""]
             .filter(Boolean).join("\n")
