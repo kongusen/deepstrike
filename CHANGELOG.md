@@ -6,6 +6,117 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.23] - 2026-06-17
+
+### Added
+
+- **`HarnessLoop.verdictFn` — pluggable host-defined judgment.** Optional
+  `verdictFn` on `HarnessLoopOptions` lets hosts short-circuit the built-in LLM
+  eval with a `Verdict` (returns `Verdict`) or defer to it (returns
+  `undefined`). Enables hybrid judgment — machine-checkable criteria
+  deterministic, subjective criteria LLM — without re-implementing the loop's
+  runner forwarding / revising / done emission / skill-candidate write-back.
+  Backward-compatible: when not set, `HarnessLoop.stream()` is byte-equivalent
+  to its prior LLM-eval-only path. **All four SDKs** — `VerdictFn`
+  (Node/WASM/Rust) and `verdict_fn=` kwarg (Python). Rust exposes a chainable
+  `HarnessLoop::with_verdict_fn` builder. EvalLoopHarness now carries an
+  `@deprecated` marker — its `stream()` ignores `gate`, while HarnessLoop
+  honors it uniformly.
+- **`Criterion.id` + `Criterion.machineCheckable`.** Optional carry-through
+  fields on `Criterion` so contract-builder hosts can dispatch per-criterion
+  deterministic checks by id from inside `verdictFn`. The harness itself does
+  not read them. **All four SDKs.**
+- **`RuntimeOptions.preQueryMemory` — run-start memory pre-fetch.** Optional
+  hook called once per run before turn 1 with the request's goal. Each
+  returned query becomes a `dreamStore.search(agentId, q, 5)`, and the hits
+  page into the knowledge partition so the model sees them on turn 1 instead
+  of having to discover the same memory via the meta-tool on turn 3+.
+  DeepSeek bench (memory-recall scenario) confirms the prefetch variant tracks
+  the meta-tool-path baseline within ~1 turn and beats the empty-store baseline
+  by ~33% turns / ~30% dollars at preserved quality. **All four SDKs** —
+  Node/WASM/Python accept async; Rust is sync-only. Errs-open in every SDK.
+- **`GovernancePolicy.surfaceDeniedInSystem` — schema-level governance
+  pre-filter.** When true (default), the runner drops denied tools from the
+  schema before the provider sees them and appends a single line to
+  `systemKnowledge` listing the denied names. The model never tries the
+  denied tools and the kernel rollback path that would otherwise eat a turn
+  disappears. Set to `false` to preserve the v0.2.22 rollback-based behavior
+  verbatim (useful when the denial reason is itself the coaching signal that
+  helps the agent converge). **All four SDKs** — including
+  `governanceFilterSchema(tools, policy)` helper for hosts that want to
+  filter outside the runner. DeepSeek bench (governance-write-deny):
+  rollbacks 2 → 0; turn count rises 7 → 12, documented as a known trade-off
+  rather than a clean win (richer systemKnowledge guidance would close it).
+- **`UsageEvent.cacheReadInputTokensBySlot` + `TurnMetrics.cacheReadTokensBySlot`
+  — per-slot Anthropic cache attribution.** When the Anthropic provider's
+  request carries `cache_control` breakpoints on multiple slots (system /
+  tools / messages), the SDK now pro-rata-attributes the response's single
+  `cache_read_input_tokens` scalar across the contributing slots and surfaces
+  the split through both stream events and per-turn metrics. Estimated, not
+  authoritative — Anthropic returns a single total, not a per-block breakdown.
+  Undefined / `None` on OpenAI-family auto-cache providers as the negative
+  control. **All four SDKs** — Node/WASM/Python ship the full attribution
+  pipeline; Rust ships the type extension with the Anthropic provider's
+  per-slot estimation logic still deferred (field is reserved but always
+  `None` today).
+
+### Fixed
+
+- **`run_terminal` on hard interrupt now reports `user_abort`, not `error`.**
+  A Critical-urgency `RuntimeSignal` carries user-abort intent: the kernel
+  disposes it as `InterruptNow` and forces a Reason turn, but the SDK
+  previously left the `interrupted` flag clear in the no-sub-agent path (the
+  abortController is only fired when sub-agents are suspended). The final
+  classification in the run_terminal emit fell through to `"error"`,
+  indistinguishable from a real crash. Now marked at signal-poll time
+  (Node/WASM/Python on `sig.urgency === "critical"`; Rust on
+  `SignalDisposition::InterruptNow`) and used as the fallback when the loop
+  exits without a clean kernel-done result. `bench signal-injection` confirms
+  the fix: `hard-interrupt` mechanism.finalStatusCode 0 → 0.33.
+- **Kernel-thrown errors now reach `run_terminal` as `invalid_arg`.** Before
+  this commit, an uncaught NAPI `Status::InvalidArg` (e.g. from a malformed
+  `RuntimeSignal.source` shape) would propagate out of the runner's async
+  generator with no `run_terminal` event — the session log ended mid-loop
+  and observability could not distinguish "kernel rejected the input" from
+  "run still in progress." Now wrapped on Node/WASM/Python: the loop body's
+  try/catch classifies by error code / message (`"invalid_arg"` /
+  `"error"`), yields an `error` stream event, appends `run_terminal` with the
+  classified reason, yields a synthetic `done`, and returns. Rust skipped —
+  its kernel returns values rather than throwing.
+
+### Internal
+
+- **Bench: eviction-reference-break detector in compression-stress.** Three
+  new mechanism metrics — `evictionRefBreaks`, `evictionRefBreakRate`,
+  `evictedEntities` — that walk session events in seq order, harvest entities
+  from `archived` messages on `compressed`/`page_out` events, and count
+  subsequent references in `llm_completed.content` and `tool_requested.calls[].arguments`
+  that hit the eviction set. Directional signal, not authoritative
+  (heuristic regex set: PR #N, slashed file paths, PROJ-1234 tickets, plus
+  tool_call IDs). Implemented at the bench-mechanism-hook layer rather than
+  as a new `KernelObservation` variant, since the kernel `archived` field
+  already flows through the bench's event stream.
+- **Workspace test crate fixed for `pre_query_memory` field addition.**
+  `tests/rust/src/{t08,t09,t10,t11}.rs` and `rust/src/tests.rs` get the new
+  RuntimeOptions field (`pre_query_memory: None`), matching the v0.2.22
+  pattern for tool-gating fields.
+
+### Deferred / blocked
+
+- Anthropic prefix-cache strategy A/B verify — blocked on `ANTHROPIC_API_KEY`
+  in `.env`. The per-slot attribution metric (`cacheReadInputTokensBySlot`)
+  is in place; the verify is a one-command bench + findings doc once a key
+  is wired up.
+- Kernel-side compression task-aware priority eviction + cache-aware lazy
+  skill unload (spec items I6 + I7) — both require multi-day kernel surgery
+  (`EvictionPriority` labels, `task_state.goal_entities`, `SkillUnloaded`
+  observation, 4-SDK pattern-match coverage). A SDK-layer behavioral
+  approximation for I6 ("goal entities hint via systemKnowledge") was
+  attempted and rejected by the DeepSeek bench (completionRatio 0.33 → 0.25);
+  the hypothesis that an SDK-layer reminder can substitute for kernel
+  priority eviction did not hold. Both deferred; design preserved in
+  `.local-docs/specs/post-v0.2.22-optimization-loop.md`.
+
 ## [0.2.22] - 2026-06-17
 
 ### Added
