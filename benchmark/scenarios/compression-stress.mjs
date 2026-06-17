@@ -129,6 +129,25 @@ async function mkTools(_sessionId) {
   ]
 }
 
+// I2: heuristic entity extractor — pull "things the agent might refer to later" out of a piece
+// of text. PR numbers (`PR #N`, `PR N`), file-path-shaped tokens (with at least one slash to
+// avoid matching plain English words), and JIRA-style tickets (`PROJ-1234`). Returns a Set of
+// canonical strings. The pattern set is deliberately narrow — false positives at this layer
+// inflate the eviction-reference-break count, which is supposed to be a directional signal,
+// not an exact decision. Borrows the same regex pool the bench retrospective settled on for
+// "what would a long-loop agent actually re-mention from old turns."
+function extractEntities(text) {
+  const out = new Set()
+  if (typeof text !== "string" || text.length === 0) return out
+  // PR #12, PR12, pull request 12 (just the number form)
+  for (const m of text.matchAll(/\bPR\s*#?\s*(\d{1,4})\b/gi)) out.add(`PR#${m[1]}`)
+  // file paths with at least one slash and a recognizable extension
+  for (const m of text.matchAll(/\b[\w.-]+(?:\/[\w.-]+)+\.[a-zA-Z]{1,5}\b/g)) out.add(m[0])
+  // JIRA-style tickets PROJ-1234
+  for (const m of text.matchAll(/\b[A-Z]{2,8}-\d{2,6}\b/g)) out.add(m[0])
+  return out
+}
+
 // ── mechanism hook ─────────────────────────────────────────────────────────
 /** @param {{ events: any[], turnMetrics: any[] }} args */
 function mechanismHook({ events }) {
@@ -150,6 +169,71 @@ function mechanismHook({ events }) {
     }
   }
 
+  // I2: walk events in seq order; on each `compressed` or `page_out` event, harvest entities
+  // from `archived` messages and add them to an eviction set (entity → turn-of-eviction). On
+  // each subsequent `llm_completed.content` and `tool_requested.calls[].arguments`, scan for
+  // any evicted entity — each hit is a reference-break (the model is talking about something the
+  // kernel just dropped from its history). Counts the breaks and the ratio against total
+  // references (so a session with no references at all doesn't look identical to a session with
+  // many but no breaks). The metric stays at 0 when compaction is in-place (SnipCompact /
+  // MicroCompact emit `compressed` with `archived: []` — nothing left the context, no reference
+  // can break). It fires under ContextCollapse / AutoCompact / PageOut where messages actually
+  // leave the working set.
+  /** @type {Map<string, number>} entity → turn evicted at */
+  const evictedAt = new Map()
+  let totalReferences = 0
+  let evictionRefBreaks = 0
+  for (const e of events) {
+    const ev = e.event
+    if (!ev) continue
+    if (ev.kind === "compressed" || ev.kind === "page_out") {
+      for (const m of ev.archived ?? []) {
+        // pull entities from assistant content text + tool_call ids + tool_result outputs
+        if (typeof m.content === "string") {
+          for (const ent of extractEntities(m.content)) {
+            if (!evictedAt.has(ent)) evictedAt.set(ent, m.turn ?? 0)
+          }
+        }
+        for (const tc of m.tool_calls ?? m.toolCalls ?? []) {
+          if (typeof tc.id === "string") evictedAt.set(`call:${tc.id}`, m.turn ?? 0)
+          if (typeof tc.arguments === "string") {
+            for (const ent of extractEntities(tc.arguments)) {
+              if (!evictedAt.has(ent)) evictedAt.set(ent, m.turn ?? 0)
+            }
+          }
+        }
+        // tool messages may carry content as parts; harvest from any text-shaped fields
+        if (Array.isArray(m.content_parts ?? m.contentParts)) {
+          for (const p of (m.content_parts ?? m.contentParts)) {
+            const blob = (p.output ?? p.text ?? "")
+            if (typeof blob === "string") {
+              for (const ent of extractEntities(blob)) {
+                if (!evictedAt.has(ent)) evictedAt.set(ent, m.turn ?? 0)
+              }
+            }
+          }
+        }
+      }
+      continue
+    }
+    // gather refs from later events
+    if (ev.kind === "llm_completed" && typeof ev.content === "string") {
+      for (const ent of extractEntities(ev.content)) {
+        totalReferences++
+        if (evictedAt.has(ent)) evictionRefBreaks++
+      }
+    } else if (ev.kind === "tool_requested") {
+      for (const c of ev.calls ?? []) {
+        const args = typeof c.arguments === "string" ? c.arguments : JSON.stringify(c.arguments ?? {})
+        for (const ent of extractEntities(args)) {
+          totalReferences++
+          if (evictedAt.has(ent)) evictionRefBreaks++
+        }
+      }
+    }
+  }
+  const evictionRefBreakRate = totalReferences > 0 ? round(evictionRefBreaks / totalReferences) : 0
+
   return {
     compressionCount: compressions.length,
     prCallCount: prCalls,
@@ -159,6 +243,11 @@ function mechanismHook({ events }) {
     actionContextCollapse: actionCounts.context_collapse ?? 0,
     actionAutoCompact: actionCounts.auto_compact ?? 0,
     completionRatio: round(Math.min(1, prCalls / PR_COUNT)),
+    // I2: directional eviction-reference-break signal — counts post-compaction references to
+    // entities the kernel just evicted. Heuristic (regex-based entity set) — see extractEntities.
+    evictionRefBreaks,
+    evictionRefBreakRate,
+    evictedEntities: evictedAt.size,
   }
 }
 
