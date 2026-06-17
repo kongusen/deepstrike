@@ -1068,14 +1068,37 @@ impl RuntimeRunner {
                         let mut turn_cache_read_tokens: u32 = 0;
                         let mut turn_cache_creation_tokens: u32 = 0;
                         let mut turn_cache_read_by_slot: Option<crate::providers::CacheReadBySlot> = None;
+                        // I5: governance schema-level pre-filter. When a GovernancePolicy is loaded
+                        // and `surface_denied_in_system` is true (default), drop denied tools from
+                        // the schema before the provider sees them.
+                        let (filtered_tools, filtered_context_storage);
+                        let (provider_tools, provider_context): (&[_], &_) = if let Some(policy) = self.opts.governance_policy.as_ref() {
+                            if policy.surface_denied_in_system {
+                                let (allowed, denied) = crate::runtime::governance_filter_schema(tools, policy);
+                                if !denied.is_empty() {
+                                    filtered_tools = allowed;
+                                    let mut cloned = context.clone();
+                                    let note = format!("[governance] the following tools are denied for this run and will fail if called: {}.", denied.join(", "));
+                                    cloned.system_knowledge = if cloned.system_knowledge.is_empty() {
+                                        note
+                                    } else {
+                                        format!("{}\n\n{}", cloned.system_knowledge, note)
+                                    };
+                                    filtered_context_storage = cloned;
+                                    (&filtered_tools[..], &filtered_context_storage)
+                                } else {
+                                    (&tools[..], context)
+                                }
+                            } else { (&tools[..], context) }
+                        } else { (&tools[..], context) };
                         // P0-C: snapshot the exposed-tool count now — `tools` borrows `action`, which is
                         // reassigned before the metrics emit below.
-                        let tools_exposed = tools.len();
+                        let tools_exposed = provider_tools.len();
 
                         let mut provider_stream = match self
                             .opts
                             .provider
-                            .stream(context, tools, ext.as_ref(), provider_state.as_ref())
+                            .stream(provider_context, provider_tools, ext.as_ref(), provider_state.as_ref())
                             .await
                         {
                             Ok(s) => s,

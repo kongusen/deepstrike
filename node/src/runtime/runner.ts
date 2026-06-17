@@ -81,7 +81,7 @@ import {
   loopInstruction, classifyInstruction, judgeGoal,
   extractLoopContinue, extractClassifyBranch, extractJudgeWinner,
 } from "./workflow-control-flow.js"
-import { governancePolicyToKernelEvent, type GovernancePolicy } from "../governance.js"
+import { governancePolicyToKernelEvent, governanceFilterSchema, type GovernancePolicy } from "../governance.js"
 import { kernelObservationToSessionEvent, withCategory } from "./kernel-event-log.js"
 import { assertNativeProfile, type NativeOsProfile, type OsProfileId } from "./os-profile.js"
 import { LargeResultSpool } from "./large-result-spool.js"
@@ -1441,8 +1441,26 @@ export class RuntimeRunner {
         }
         const finalToolCalls: ToolCall[] = []
         let finalText = ""
-        const context = action.context
-        const tools = action.tools
+        // I5: governance schema-level pre-filter. When a declarative GovernancePolicy is loaded
+        // and `surfaceDeniedInSystem !== false`, drop denied tools from the schema BEFORE the
+        // model sees them — the model can't plan a call it doesn't know about, so the rollback
+        // overhead disappears. The list of denied names is appended to systemKnowledge so the
+        // model knows not to plan around them.
+        let context = action.context
+        let tools = action.tools
+        if (this.opts.governancePolicy && this.opts.governancePolicy.surfaceDeniedInSystem !== false) {
+          const { allowed, denied } = governanceFilterSchema(tools, this.opts.governancePolicy)
+          if (denied.length > 0) {
+            tools = allowed
+            const note = `[governance] the following tools are denied for this run and will fail if called: ${denied.join(", ")}.`
+            context = {
+              ...context,
+              systemKnowledge: context.systemKnowledge
+                ? `${context.systemKnowledge}\n\n${note}`
+                : note,
+            }
+          }
+        }
         let turnTokens = 0
         let turnInputTokens = 0
         let turnOutputTokens = 0

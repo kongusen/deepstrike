@@ -29,8 +29,8 @@ pub use execution_plane::{
 pub use mcp_proxy_plane::{McpProxyPlane, McpServerConfig};
 pub use os_profile::{
     AttentionPolicy, GovernancePolicy, MemoryWriteRateLimit, NativeOsProfile, OsProfile,
-    SchedulerBudget, assert_native_profile, default_native_governance_policy, os_profile,
-    DEFAULT_NATIVE_ATTENTION_POLICY,
+    SchedulerBudget, assert_native_profile, default_native_governance_policy,
+    governance_filter_schema, os_profile, DEFAULT_NATIVE_ATTENTION_POLICY,
 };
 pub use process_sandbox_plane::{ProcessSandboxPlane, SandboxOptions};
 pub use provider_replay::{

@@ -194,7 +194,7 @@ export const governanceWriteDenyScenario = {
   timeoutMs: 240_000,
   mechanismHook,
 
-  variantOrder: ["unrestricted", "write-denied"],
+  variantOrder: ["unrestricted", "write-denied", "write-denied-pre-filtered"],
   variants: {
     unrestricted: {
       description: "no governance policy — write_file + run_bash freely callable",
@@ -203,7 +203,7 @@ export const governanceWriteDenyScenario = {
       }),
     },
     "write-denied": {
-      description: "policy denies write_file + run_bash — agent must degrade to diagnose-only",
+      description: "policy denies write_file + run_bash, surface=false → kernel rollback on call (v0.2.22 baseline)",
       setup: () => ({
         runtimeOverlay: {
           governancePolicy: {
@@ -212,6 +212,27 @@ export const governanceWriteDenyScenario = {
               { pattern: "write_file", action: "deny" },
               { pattern: "run_bash", action: "deny" },
             ],
+            // I5: explicit opt-out — preserves v0.2.22 behavior so this variant is the baseline.
+            surfaceDeniedInSystem: false,
+          },
+          extensions: { degradeMissingReasoningReplay: true },
+        },
+      }),
+    },
+    // I5: same policy, but the runner now pre-filters denied tools out of the schema (and adds a
+    // note to systemKnowledge). The model never sees the denied tools and never tries them; expect
+    // rollbacks → 0, wallMs to drop toward the unrestricted baseline.
+    "write-denied-pre-filtered": {
+      description: "policy denies write_file + run_bash, schema-level pre-filter (I5) — model never tries denied tools",
+      setup: () => ({
+        runtimeOverlay: {
+          governancePolicy: {
+            defaultAction: "allow",
+            rules: [
+              { pattern: "write_file", action: "deny" },
+              { pattern: "run_bash", action: "deny" },
+            ],
+            // surfaceDeniedInSystem defaults to true → pre-filter active.
           },
           extensions: { degradeMissingReasoningReplay: true },
         },

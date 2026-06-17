@@ -11,7 +11,7 @@ import type { SignalSource, RuntimeSignal } from "../signals/index.js"
 import type { SessionLog, SessionEvent } from "./session-log.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
 import { resolvePermissionRequest } from "./execution-plane.js"
-import { governancePolicyToKernelEvent, type GovernancePolicy } from "../governance.js"
+import { governancePolicyToKernelEvent, governanceFilterSchema, type GovernancePolicy } from "../governance.js"
 import { getKernel } from "./kernel.js"
 import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
@@ -727,8 +727,22 @@ export class RuntimeRunner {
         }
         const finalToolCalls: ToolCall[] = []
         let finalText = ""
-        const context = action.context
-        const tools = action.tools
+        // I5: governance schema-level pre-filter — see Node runner for full rationale.
+        let context = action.context
+        let tools = action.tools
+        if (this.opts.governancePolicy && this.opts.governancePolicy.surfaceDeniedInSystem !== false) {
+          const { allowed, denied } = governanceFilterSchema(tools, this.opts.governancePolicy)
+          if (denied.length > 0) {
+            tools = allowed
+            const note = `[governance] the following tools are denied for this run and will fail if called: ${denied.join(", ")}.`
+            context = {
+              ...context,
+              systemKnowledge: context.systemKnowledge
+                ? `${context.systemKnowledge}\n\n${note}`
+                : note,
+            }
+          }
+        }
         let turnTokens = 0
         let turnInputTokens = 0
         let turnOutputTokens = 0

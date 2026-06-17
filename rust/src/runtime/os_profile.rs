@@ -33,6 +33,8 @@ pub struct GovernancePolicy {
     pub vetoed_tools: Vec<String>,
     pub rate_limits: Vec<RateLimitSpec>,
     pub constraints: Vec<ConstraintSpec>,
+    /// I5: when true (default), the runner pre-filters denied tools from the schema. Mirrors Node.
+    pub surface_denied_in_system: bool,
 }
 
 impl GovernancePolicy {
@@ -46,6 +48,7 @@ impl GovernancePolicy {
             vetoed_tools: vec![],
             rate_limits: vec![],
             constraints: vec![],
+            surface_denied_in_system: true,
         }
     }
 
@@ -79,6 +82,46 @@ pub const DEFAULT_NATIVE_ATTENTION_POLICY: AttentionPolicy = AttentionPolicy {
 
 pub fn default_native_governance_policy() -> GovernancePolicy {
     GovernancePolicy::allow_all()
+}
+
+/// I5: bucket tool schemas into allowed/denied per policy. Pure. Mirrors Node `governanceFilterSchema`.
+pub fn governance_filter_schema(
+    tools: &[deepstrike_core::types::message::ToolSchema],
+    policy: &GovernancePolicy,
+) -> (Vec<deepstrike_core::types::message::ToolSchema>, Vec<String>) {
+    let mut allowed = Vec::with_capacity(tools.len());
+    let mut denied = Vec::new();
+    let matches = |pat: &str, name: &str| -> bool {
+        if pat == name {
+            return true;
+        }
+        if let Some(prefix) = pat.strip_suffix('*') {
+            return name.starts_with(prefix);
+        }
+        false
+    };
+    for tool in tools {
+        let name = tool.name.as_str();
+        if policy.vetoed_tools.iter().any(|v| v == name) {
+            denied.push(name.to_string());
+            continue;
+        }
+        let mut action = policy
+            .default_action
+            .clone()
+            .unwrap_or(PolicyAction::Allow);
+        for r in &policy.rules {
+            if matches(&r.tool_pattern, name) {
+                action = r.action.clone();
+            }
+        }
+        if matches!(action, PolicyAction::Deny) {
+            denied.push(name.to_string());
+        } else {
+            allowed.push(tool.clone());
+        }
+    }
+    (allowed, denied)
 }
 
 pub fn os_profile(profile: Option<OsProfile>) -> NativeOsProfile {

@@ -1402,6 +1402,20 @@ class RuntimeRunner:
         final_tool_calls: list[ToolCall] = []
         final_text = ""
         context = action.context or RenderedContext()
+        # I5: governance schema-level pre-filter — mirrors Node. Tools that the policy denies are
+        # dropped from the schema before the provider sees them; the model never tries them.
+        turn_tools = action.tools or []
+        if self._opts.governance_policy and getattr(self._opts.governance_policy, "surface_denied_in_system", True):
+          from deepstrike.governance import governance_filter_schema as _gov_filter
+          allowed, denied = _gov_filter(turn_tools, self._opts.governance_policy)
+          if denied:
+            turn_tools = allowed
+            note = f"[governance] the following tools are denied for this run and will fail if called: {', '.join(denied)}."
+            existing = getattr(context, "system_knowledge", "") or ""
+            try:
+              context = type(context)(**{**context.__dict__, "system_knowledge": f"{existing}\n\n{note}".strip()})
+            except Exception:
+              pass  # don't break the run if the context can't be cloned
         turn_tokens = 0
         turn_input_tokens = 0
         turn_cache_read_tokens = 0
@@ -1410,7 +1424,7 @@ class RuntimeRunner:
         should_retry = False
         try:
           async for evt in self._opts.provider.stream(
-            context, action.tools or [], extensions=ext if ext else None, state=provider_state,
+            context, turn_tools, extensions=ext if ext else None, state=provider_state,
           ):
             # #2-B-ii: a preempting interrupt() stops consuming the live stream immediately; breaking
             # the `async for` closes the provider's async generator → its httpx context exits → the

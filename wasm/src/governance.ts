@@ -78,6 +78,31 @@ export interface GovernancePolicy {
   vetoes?: string[]
   rateLimits?: { tool: string; maxCalls: number; windowMs: number }[]
   constraints?: GovernanceConstraint[]
+  /** I5: when true (default), the runner pre-filters denied tools out of the schema. */
+  surfaceDeniedInSystem?: boolean
+}
+
+/** I5: bucket tools into allowed/denied per the policy. Pure. Mirrors Node. */
+export function governanceFilterSchema<T extends { name: string }>(
+  tools: T[],
+  policy: GovernancePolicy | undefined,
+): { allowed: T[]; denied: string[] } {
+  if (!policy) return { allowed: tools, denied: [] }
+  const vetoes = new Set(policy.vetoes ?? [])
+  const allowed: T[] = []
+  const denied: string[] = []
+  const matches = (pat: string, name: string): boolean =>
+    pat === name || (pat.endsWith("*") && name.startsWith(pat.slice(0, -1)))
+  for (const tool of tools) {
+    if (vetoes.has(tool.name)) { denied.push(tool.name); continue }
+    let action: GovernancePolicyAction = policy.defaultAction ?? "allow"
+    for (const r of policy.rules ?? []) {
+      if (matches(r.pattern, tool.name)) action = r.action
+    }
+    if (action === "deny") denied.push(tool.name)
+    else allowed.push(tool)
+  }
+  return { allowed, denied }
 }
 
 export type GovernanceConstraint =
