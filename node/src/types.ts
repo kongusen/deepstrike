@@ -105,6 +105,11 @@ export interface UsageEvent extends StreamEvent {
   cacheReadInputTokens?: number
   /** Prompt tokens written to cache this request (billed ~1.25x). Subset of inputTokens. */
   cacheCreationInputTokens?: number
+  /** I1: per-slot pro-rata attribution of `cacheReadInputTokens`. Estimated, not authoritative —
+   *  Anthropic returns a single cache-read total, so the SDK divides it evenly across the slots
+   *  that carried a `cache_control` breakpoint on the request. Missing when the provider doesn't
+   *  honor `cache_control` (OpenAI-family auto-cache) or when no breakpoints were placed. */
+  cacheReadInputTokensBySlot?: { system?: number; tools?: number; messages?: number }
 }
 
 export type ToolChunk =

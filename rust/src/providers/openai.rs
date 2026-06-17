@@ -413,6 +413,8 @@ fn parse_openai_sse(
                                 output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0) as u32,
                                 cache_read_input_tokens: openai_cached_prompt_tokens(usage),
                                 cache_creation_input_tokens: 0,
+                                // I1: OpenAI-family providers auto-cache; no per-slot attribution.
+                                cache_read_input_tokens_by_slot: None,
                             }),
                             (stream, buf, tool_accum, flushed),
                         ));

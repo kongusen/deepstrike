@@ -306,6 +306,7 @@ mod tests {
                     output_tokens: 50,
                     cache_read_input_tokens: 900,
                     cache_creation_input_tokens: 100,
+                    cache_read_input_tokens_by_slot: None,
                 }),
                 Ok(crate::providers::StreamEvent::TextDelta {
                     delta: "done".into(),

@@ -133,6 +133,8 @@ class TurnMetrics:
   cache_read_tokens: int
   cache_creation_tokens: int
   active_skill: str | None = None
+  # I1: pro-rata per-slot attribution of cache_read_tokens (Anthropic only). Mirrors Node.
+  cache_read_tokens_by_slot: "dict | None" = None
 
 
 @dataclass
@@ -1381,6 +1383,7 @@ class RuntimeRunner:
         turn_input_tokens = 0
         turn_cache_read_tokens = 0
         turn_cache_creation_tokens = 0
+        turn_cache_read_by_slot = None
         should_retry = False
         try:
           async for evt in self._opts.provider.stream(
@@ -1398,6 +1401,8 @@ class RuntimeRunner:
               turn_input_tokens = getattr(evt, "input_tokens", 0) or 0
               turn_cache_read_tokens = getattr(evt, "cache_read_input_tokens", 0) or 0
               turn_cache_creation_tokens = getattr(evt, "cache_creation_input_tokens", 0) or 0
+              # I1: per-slot attribution forwarded to TurnMetrics; None on non-Anthropic providers.
+              turn_cache_read_by_slot = getattr(evt, "cache_read_input_tokens_by_slot", None)
               continue
             yield evt
             if isinstance(evt, TextDelta):
@@ -1471,6 +1476,7 @@ class RuntimeRunner:
         # INTO this turn; a ``skill`` call here only takes effect next turn — emit first, then advance.
         if self._opts.on_turn_metrics is not None:
           try:
+            _tm_kwargs_by_slot = {"cache_read_tokens_by_slot": turn_cache_read_by_slot} if turn_cache_read_by_slot else {}
             self._opts.on_turn_metrics(TurnMetrics(
               turn=runtime.turn(),
               tools_exposed=len(action.tools or []),
@@ -1479,6 +1485,7 @@ class RuntimeRunner:
               cache_read_tokens=turn_cache_read_tokens,
               cache_creation_tokens=turn_cache_creation_tokens,
               active_skill=active_skill,
+              **_tm_kwargs_by_slot,
             ))
           except Exception:
             pass  # metrics must never break the run

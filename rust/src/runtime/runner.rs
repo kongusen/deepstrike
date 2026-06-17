@@ -91,6 +91,8 @@ pub struct TurnMetrics {
     pub input_tokens: u32,
     pub cache_read_tokens: u32,
     pub cache_creation_tokens: u32,
+    /// I1: pro-rata per-slot attribution of `cache_read_tokens` (Anthropic only). Mirrors Node.
+    pub cache_read_tokens_by_slot: Option<crate::providers::CacheReadBySlot>,
 }
 
 /// Sink for per-turn [`TurnMetrics`]. Synchronous, infallible — it must never affect the run.
@@ -1023,6 +1025,7 @@ impl RuntimeRunner {
                         let mut turn_input_tokens: u32 = 0;
                         let mut turn_cache_read_tokens: u32 = 0;
                         let mut turn_cache_creation_tokens: u32 = 0;
+                        let mut turn_cache_read_by_slot: Option<crate::providers::CacheReadBySlot> = None;
                         // P0-C: snapshot the exposed-tool count now — `tools` borrows `action`, which is
                         // reassigned before the metrics emit below.
                         let tools_exposed = tools.len();
@@ -1095,6 +1098,7 @@ impl RuntimeRunner {
                                     input_tokens,
                                     cache_read_input_tokens,
                                     cache_creation_input_tokens,
+                                    cache_read_input_tokens_by_slot,
                                     ..
                                 } => {
                                     turn_tokens = total_tokens;
@@ -1102,6 +1106,7 @@ impl RuntimeRunner {
                                     turn_input_tokens = input_tokens;
                                     turn_cache_read_tokens = cache_read_input_tokens;
                                     turn_cache_creation_tokens = cache_creation_input_tokens;
+                                    turn_cache_read_by_slot = cache_read_input_tokens_by_slot;
                                 }
                                 StreamEvent::Done => {}
                             }
@@ -1156,6 +1161,7 @@ impl RuntimeRunner {
                                 input_tokens: turn_input_tokens,
                                 cache_read_tokens: turn_cache_read_tokens,
                                 cache_creation_tokens: turn_cache_creation_tokens,
+                                cache_read_tokens_by_slot: turn_cache_read_by_slot.clone(),
                             });
                         }
                         if let Some(skill_call) =

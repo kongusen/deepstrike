@@ -624,6 +624,11 @@ fn parse_anthropic_sse(
                                     output_tokens: acc.3,
                                     cache_read_input_tokens: acc.1,
                                     cache_creation_input_tokens: acc.2,
+                                    // I1: per-slot attribution not yet wired in Rust Anthropic
+                                    // provider; field reserved. Mirrors the field-presence
+                                    // contract across SDKs; non-Anthropic Rust providers also
+                                    // emit None. Wiring is left for a focused Rust iteration.
+                                    cache_read_input_tokens_by_slot: None,
                                 }),
                                 (stream, buf, tool_blocks, native_blocks, acc),
                             ));

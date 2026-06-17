@@ -43,8 +43,21 @@ pub enum StreamEvent {
         cache_read_input_tokens: u32,
         /// Prompt tokens written to cache (billed ~1.25x). Subset of input_tokens.
         cache_creation_input_tokens: u32,
+        /// I1: pro-rata per-slot attribution of `cache_read_input_tokens` (Anthropic only).
+        /// `None` when the provider doesn't honor `cache_control` or when no breakpoints were
+        /// placed. Estimated (Anthropic returns a single scalar) — see helper docs.
+        cache_read_input_tokens_by_slot: Option<CacheReadBySlot>,
     },
     Done,
+}
+
+/// I1: per-slot attribution of Anthropic cache_read_input_tokens. Each field is `None` when that
+/// slot did not carry a `cache_control` breakpoint on the request. Mirrors the Node SDK shape.
+#[derive(Debug, Clone, Default)]
+pub struct CacheReadBySlot {
+    pub system: Option<u32>,
+    pub tools: Option<u32>,
+    pub messages: Option<u32>,
 }
 
 #[async_trait]

@@ -112,6 +112,8 @@ export interface TurnMetrics {
   activeSkill?: string
   inputTokens: number
   cacheReadTokens: number
+  /** I1: pro-rata per-slot attribution of `cacheReadTokens` (Anthropic only). Mirrors Node. */
+  cacheReadTokensBySlot?: { system?: number; tools?: number; messages?: number }
   cacheCreationTokens: number
 }
 
@@ -710,6 +712,7 @@ export class RuntimeRunner {
         let turnOutputTokens = 0
         let turnCacheReadTokens = 0
         let turnCacheCreationTokens = 0
+        let turnCacheReadBySlot: { system?: number; tools?: number; messages?: number } | undefined
         let shouldRetry = false
 
         const abortSignal = this.abortController?.signal
@@ -718,13 +721,15 @@ export class RuntimeRunner {
             // #2-B-ii: a preempting interrupt fires abortController — stop consuming the live stream.
             if (abortSignal?.aborted) break
             if (evt.type === "usage") {
-              const usageEvt = evt as { type: string; totalTokens: number; inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }
+              const usageEvt = evt as { type: string; totalTokens: number; inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; cacheReadInputTokensBySlot?: { system?: number; tools?: number; messages?: number } }
               turnTokens = usageEvt.totalTokens
               turnInputTokens = usageEvt.inputTokens ?? 0
               turnOutputTokens = usageEvt.outputTokens ?? 0
               // P0-C: capture the prompt-cache split for the tool-gating hit-rate baseline.
               turnCacheReadTokens = usageEvt.cacheReadInputTokens ?? 0
               turnCacheCreationTokens = usageEvt.cacheCreationInputTokens ?? 0
+              // I1: per-slot attribution forwarded to TurnMetrics; undefined on non-Anthropic providers.
+              turnCacheReadBySlot = usageEvt.cacheReadInputTokensBySlot
               continue
             }
             yield evt
@@ -816,6 +821,7 @@ export class RuntimeRunner {
               inputTokens: turnInputTokens,
               cacheReadTokens: turnCacheReadTokens,
               cacheCreationTokens: turnCacheCreationTokens,
+              ...(turnCacheReadBySlot ? { cacheReadTokensBySlot: turnCacheReadBySlot } : {}),
             })
           } catch { /* metrics must never break the run */ }
         }

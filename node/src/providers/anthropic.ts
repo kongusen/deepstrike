@@ -154,6 +154,11 @@ export class AnthropicProvider implements LLMProvider {
     const msgs = this.buildMessages(context, strategy)
     assertCacheBudget(system, tools.length)
     const requestExtensions = this.requestExtensions(extensions)
+    const builtTools = tools.length ? this.buildTools(tools, !Array.isArray(system), strategy) : undefined
+    // I1: capture which slots will carry cache_control so cache_read_input_tokens can be
+    // attributed pro-rata when the response arrives. Honest annotation: Anthropic returns one
+    // scalar (no per-slot breakdown), so this is an estimate, not authoritative.
+    const slotBp = countCacheControlSlots(system, builtTools, msgs)
     const toolBlocks: Record<number, { id: string; name: string; argsBuf: string }> = {}
     const nativeBlocks: Record<number, Record<string, unknown>> = {}
     let finalText = ""
@@ -165,7 +170,7 @@ export class AnthropicProvider implements LLMProvider {
       max_tokens: typeof extensions?.max_tokens === "number" ? extensions.max_tokens : 8096,
       ...(system ? { system } : {}),
       messages: msgs,
-      ...(tools.length ? { tools: this.buildTools(tools, !Array.isArray(system), strategy) } : {}),
+      ...(builtTools ? { tools: builtTools } : {}),
     }, extensions, signal)
 
     let uncachedInput = 0
@@ -188,6 +193,7 @@ export class AnthropicProvider implements LLMProvider {
           // context-pressure/compaction — excluding cached tokens would make a
           // cache-heavy turn look tiny and suppress compaction until a 413.
           const inputTokens = uncachedInput + cacheReadTokens + cacheCreationTokens
+          const bySlot = estimateCacheReadBySlot(cacheReadTokens, slotBp)
           yield {
             type: "usage",
             totalTokens: inputTokens + outputTokens,
@@ -195,6 +201,7 @@ export class AnthropicProvider implements LLMProvider {
             outputTokens,
             cacheReadInputTokens: cacheReadTokens,
             cacheCreationInputTokens: cacheCreationTokens,
+            ...(bySlot ? { cacheReadInputTokensBySlot: bySlot } : {}),
           } as UsageEvent
         }
       } else if (evt.type === "content_block_start") {
@@ -338,6 +345,59 @@ function resolveCacheBreakpointStrategy(extensions?: Record<string, unknown>): C
     return raw as CacheBreakpointStrategy
   }
   return "default"
+}
+
+/**
+ * I1: count which slots of the outgoing request carry a `cache_control` breakpoint. Used to
+ * pro-rata-attribute the response's `cache_read_input_tokens` (a single scalar with no per-slot
+ * breakdown) across the slots that contributed to the cache hit. Returns whether each slot has
+ * any breakpoint — not the actual count, since pro-rata only needs the contributing slot set.
+ */
+function countCacheControlSlots(
+  system: undefined | string | Array<{ cache_control?: unknown }>,
+  builtTools: undefined | Array<{ cache_control?: unknown }>,
+  msgs: Array<{ content: unknown }>,
+): { system: boolean; tools: boolean; messages: boolean } {
+  const sysBp = Array.isArray(system) && system.some(b => b?.cache_control != null)
+  const toolBp = !!builtTools && builtTools.some(t => t?.cache_control != null)
+  let msgBp = false
+  for (const m of msgs) {
+    if (Array.isArray(m.content)) {
+      if ((m.content as Array<{ cache_control?: unknown }>).some(b => b?.cache_control != null)) {
+        msgBp = true
+        break
+      }
+    }
+  }
+  return { system: sysBp, tools: toolBp, messages: msgBp }
+}
+
+/**
+ * I1: split the response's `cache_read_input_tokens` evenly across the slots that carried a
+ * cache_control breakpoint on the request. Returns undefined when there's no cache read or no
+ * contributing slot — in those cases the consumer is better off seeing the field absent than
+ * seeing all zeros. The remainder (if the total doesn't divide evenly) lands on the first
+ * contributing slot to keep the sum exact.
+ */
+function estimateCacheReadBySlot(
+  cacheRead: number,
+  slotBp: { system: boolean; tools: boolean; messages: boolean },
+): { system?: number; tools?: number; messages?: number } | undefined {
+  if (cacheRead <= 0) return undefined
+  const count = (slotBp.system ? 1 : 0) + (slotBp.tools ? 1 : 0) + (slotBp.messages ? 1 : 0)
+  if (count === 0) return undefined
+  const share = Math.floor(cacheRead / count)
+  const remainder = cacheRead - share * count
+  const out: { system?: number; tools?: number; messages?: number } = {}
+  let firstDone = false
+  const give = (): number => {
+    if (!firstDone) { firstDone = true; return share + remainder }
+    return share
+  }
+  if (slotBp.system) out.system = give()
+  if (slotBp.tools) out.tools = give()
+  if (slotBp.messages) out.messages = give()
+  return out
 }
 
 /** Anthropic accepts at most this many cache_control breakpoints per request. */

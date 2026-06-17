@@ -28,6 +28,47 @@ function resolveCacheBreakpointStrategy(extensions?: Record<string, unknown>): C
   return "default"
 }
 
+/** I1: which slots of the outgoing request carry a `cache_control` breakpoint — used to pro-rata
+ *  attribute the response's `cache_read_input_tokens` (a single scalar). Mirrors Node. */
+function countCacheControlSlots(
+  system: undefined | string | Array<{ cache_control?: unknown }>,
+  builtTools: undefined | Array<{ cache_control?: unknown }>,
+  msgs: Array<{ content: unknown }>,
+): { system: boolean; tools: boolean; messages: boolean } {
+  const sysBp = Array.isArray(system) && system.some(b => b?.cache_control != null)
+  const toolBp = !!builtTools && builtTools.some(t => t?.cache_control != null)
+  let msgBp = false
+  for (const m of msgs) {
+    if (Array.isArray(m.content)) {
+      if ((m.content as Array<{ cache_control?: unknown }>).some(b => b?.cache_control != null)) {
+        msgBp = true
+        break
+      }
+    }
+  }
+  return { system: sysBp, tools: toolBp, messages: msgBp }
+}
+
+/** I1: split `cache_read_input_tokens` evenly across contributing slots. Remainder lands on the
+ *  first contributing slot to keep the sum exact. Mirrors Node. */
+function estimateCacheReadBySlot(
+  cacheRead: number,
+  slotBp: { system: boolean; tools: boolean; messages: boolean },
+): { system?: number; tools?: number; messages?: number } | undefined {
+  if (cacheRead <= 0) return undefined
+  const count = (slotBp.system ? 1 : 0) + (slotBp.tools ? 1 : 0) + (slotBp.messages ? 1 : 0)
+  if (count === 0) return undefined
+  const share = Math.floor(cacheRead / count)
+  const remainder = cacheRead - share * count
+  const out: { system?: number; tools?: number; messages?: number } = {}
+  let firstDone = false
+  const give = (): number => { if (!firstDone) { firstDone = true; return share + remainder } return share }
+  if (slotBp.system) out.system = give()
+  if (slotBp.tools) out.tools = give()
+  if (slotBp.messages) out.messages = give()
+  return out
+}
+
 /**
  * Roll cache breakpoints across the conversation tail so the message-history
  * prefix is written once and re-read on later turns (without this the cached
@@ -154,13 +195,16 @@ export class AnthropicProvider implements LLMProvider {
     }
     assertCacheBudget(system, tools.length)
 
+    const builtTools = tools.length ? buildAnthropicTools(tools, !Array.isArray(system), strategy) : undefined
+    // I1: capture which slots will carry cache_control for pro-rata attribution at usage time.
+    const slotBp = countCacheControlSlots(system, builtTools, msgs)
     const body: Record<string, unknown> = {
       model: this.model,
       max_tokens: this.maxTokens,
       messages: msgs,
       stream: true,
       ...(system ? { system } : {}),
-      ...(tools.length ? { tools: buildAnthropicTools(tools, !Array.isArray(system), strategy) } : {}),
+      ...(builtTools ? { tools: builtTools } : {}),
     }
     if (extensions?.enable_thinking) {
       body.thinking = { type: "enabled", budget_tokens: 8000 }
@@ -218,6 +262,7 @@ export class AnthropicProvider implements LLMProvider {
               // the kernel reads it as the authoritative context size.
               const inputTokens = uncachedInput + cacheReadTokens + cacheCreationTokens
               if (inputTokens > 0 || outputTokens > 0) {
+                const bySlot = estimateCacheReadBySlot(cacheReadTokens, slotBp)
                 yield {
                   type: "usage",
                   totalTokens: inputTokens + outputTokens,
@@ -225,6 +270,7 @@ export class AnthropicProvider implements LLMProvider {
                   outputTokens,
                   cacheReadInputTokens: cacheReadTokens,
                   cacheCreationInputTokens: cacheCreationTokens,
+                  ...(bySlot ? { cacheReadInputTokensBySlot: bySlot } : {}),
                 } as UsageEvent
               }
             }

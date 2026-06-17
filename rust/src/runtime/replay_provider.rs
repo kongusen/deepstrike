@@ -186,6 +186,8 @@ impl LLMProvider for ReplayProvider {
             output_tokens,
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
+            // I1: replay provider does not model the cache layer.
+            cache_read_input_tokens_by_slot: None,
         }));
         if let Some(text) = message_text(&msg) {
             if !text.is_empty() {

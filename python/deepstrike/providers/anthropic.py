@@ -222,6 +222,8 @@ class AnthropicProvider:
         system = self._build_system(context, strategy)
         tool_defs = self._build_tools(tools, anchor_cache=not isinstance(system, list), strategy=strategy)
         _assert_cache_budget(system, len(tools))
+        # I1: capture which slots will carry cache_control for pro-rata attribution at usage time.
+        slot_bp = _count_cache_control_slots(system, tool_defs, msgs)
 
         native_blocks: dict[int, dict] = {}
         tool_blocks: dict[int, dict] = {}
@@ -254,12 +256,14 @@ class AnthropicProvider:
                         # input_tokens is the FULL prompt size (uncached + cache
                         # read + cache write) for accurate context accounting.
                         full_input = uncached_input + cache_read + cache_creation
+                        by_slot = _estimate_cache_read_by_slot(cache_read, slot_bp)
                         yield UsageEvent(
                             total_tokens=full_input + output_tokens,
                             input_tokens=full_input,
                             output_tokens=output_tokens,
                             cache_read_input_tokens=cache_read,
                             cache_creation_input_tokens=cache_creation,
+                            cache_read_input_tokens_by_slot=by_slot,
                         )
                 elif event.type == "content_block_start":
                     idx = event.index
@@ -339,6 +343,37 @@ def _resolve_cache_breakpoint_strategy(extensions: "dict | None") -> str:
     if isinstance(raw, str) and raw in _CACHE_BREAKPOINT_STRATEGIES:
         return raw
     return "default"
+
+
+def _count_cache_control_slots(system, tool_defs, msgs) -> dict:
+    """I1: which slots of the outgoing request carry a ``cache_control`` breakpoint. Mirrors Node."""
+    sys_bp = isinstance(system, list) and any((isinstance(b, dict) and b.get("cache_control") is not None) for b in system)
+    tool_bp = bool(tool_defs) and any((isinstance(t, dict) and t.get("cache_control") is not None) for t in tool_defs)
+    msg_bp = False
+    for m in msgs or []:
+        content = m.get("content") if isinstance(m, dict) else None
+        if isinstance(content, list):
+            if any((isinstance(b, dict) and b.get("cache_control") is not None) for b in content):
+                msg_bp = True
+                break
+    return {"system": sys_bp, "tools": tool_bp, "messages": msg_bp}
+
+
+def _estimate_cache_read_by_slot(cache_read: int, slot_bp: dict) -> "dict | None":
+    """I1: split ``cache_read_input_tokens`` evenly across contributing slots. Remainder lands on the
+    first contributing slot to keep the sum exact. Returns None when no cache read or no slot
+    contributed — consumers see the field absent rather than all zeros. Mirrors Node."""
+    if cache_read <= 0:
+        return None
+    contributors = [s for s in ("system", "tools", "messages") if slot_bp.get(s)]
+    if not contributors:
+        return None
+    share = cache_read // len(contributors)
+    remainder = cache_read - share * len(contributors)
+    out: dict = {}
+    for i, slot in enumerate(contributors):
+        out[slot] = share + (remainder if i == 0 else 0)
+    return out
 
 
 def _apply_message_cache_control(msgs: list[dict], frozen_prefix_len: "int | None" = None, strategy: str = "default") -> None:

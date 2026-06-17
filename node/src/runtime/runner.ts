@@ -111,6 +111,12 @@ export interface TurnMetrics {
   inputTokens: number
   /** Tokens served from the prompt cache this turn (Anthropic `cache_read_input_tokens`). */
   cacheReadTokens: number
+  /** I1: per-slot attribution of `cacheReadTokens`. Anthropic reports a single cache-read total,
+   *  not a per-block breakdown — this field is a pro-rata estimate over the slots that actually
+   *  carried a `cache_control` breakpoint on the request. Missing / empty when the provider does
+   *  not honor `cache_control` (OpenAI-family auto-cache) or when no breakpoints were placed.
+   *  Useful for diagnosing which slot is buying the cache hit when comparing strategies. */
+  cacheReadTokensBySlot?: { system?: number; tools?: number; messages?: number }
   /** Tokens written to the prompt cache this turn (Anthropic `cache_creation_input_tokens`). */
   cacheCreationTokens: number
 }
@@ -1415,6 +1421,7 @@ export class RuntimeRunner {
         let turnOutputTokens = 0
         let turnCacheReadTokens = 0
         let turnCacheCreationTokens = 0
+        let turnCacheReadBySlot: { system?: number; tools?: number; messages?: number } | undefined
         let shouldRetry = false
 
         const abortSignal = this.abortController?.signal
@@ -1425,13 +1432,16 @@ export class RuntimeRunner {
             // least stop here at the next event). The loop-top `interrupted` check then ends the run.
             if (abortSignal?.aborted) break
             if (evt.type === "usage") {
-              const usageEvt = evt as { type: string; totalTokens: number; inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }
+              const usageEvt = evt as { type: string; totalTokens: number; inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; cacheReadInputTokensBySlot?: { system?: number; tools?: number; messages?: number } }
               turnTokens = usageEvt.totalTokens
               turnInputTokens = usageEvt.inputTokens ?? 0
               turnOutputTokens = usageEvt.outputTokens ?? 0
               // P0-C: capture the prompt-cache split for the tool-gating hit-rate baseline.
               turnCacheReadTokens = usageEvt.cacheReadInputTokens ?? 0
               turnCacheCreationTokens = usageEvt.cacheCreationInputTokens ?? 0
+              // I1: per-slot attribution forwarded into TurnMetrics. Undefined when the provider
+              // doesn't honor cache_control (OpenAI-family auto-cache).
+              turnCacheReadBySlot = usageEvt.cacheReadInputTokensBySlot
               continue
             }
             yield evt
@@ -1530,6 +1540,7 @@ export class RuntimeRunner {
               inputTokens: turnInputTokens,
               cacheReadTokens: turnCacheReadTokens,
               cacheCreationTokens: turnCacheCreationTokens,
+              ...(turnCacheReadBySlot ? { cacheReadTokensBySlot: turnCacheReadBySlot } : {}),
             })
           } catch { /* metrics must never break the run */ }
         }
