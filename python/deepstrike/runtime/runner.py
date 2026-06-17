@@ -1343,7 +1343,9 @@ class RuntimeRunner:
     # P0-C: the skill loaded and in effect going into the current turn → per-turn ``active_skill`` metric.
     active_skill: str | None = None
 
-    while not runtime.is_terminal():
+    # I0b: kernel-throw safety net — see Node runner for full rationale.
+    try:
+     while not runtime.is_terminal():
       if action.kind == "execute_tool":
         await self._apply_kernel_page_in(runtime, session_id)
       next_compressed_archive_start = await self._append_observations(
@@ -1667,6 +1669,25 @@ class RuntimeRunner:
 
       elif action.kind == "done":
         break
+    except Exception as err:
+      # I0b: kernel rejection (or any other thrown error inside the loop) is observable here — emit
+      # run_terminal so downstream code sees a clean end rather than mid-loop EOF.
+      err_msg = str(err)
+      is_invalid_arg = "invalidarg" in err_msg.lower() or "invalid argument" in err_msg.lower()
+      reason = "invalid_arg" if is_invalid_arg else "error"
+      yield ErrorEvent(message=err_msg)
+      try:
+        await self._opts.session_log.append(session_id, build_run_terminal_event(
+          reason=reason,
+          turns_used=runtime.turn() or 0,
+          total_tokens=0,
+        ))
+      except Exception:
+        pass  # session log failure must not mask the original error
+      yield DoneEvent(iterations=runtime.turn() or 0, total_tokens=0, status=reason)
+      self._active_kernel = None
+      self._current_session_id = None
+      return
 
     result = action.result if action.kind == "done" else None
     # I0a: preserve preempt intent when loop exits without clean kernel-done (see Node runner for full rationale).

@@ -1354,6 +1354,13 @@ export class RuntimeRunner {
     // `skill` tool call resolves). Drives the per-turn `activeSkill` metric → dwell measurement.
     let activeSkill: string | undefined
 
+    // I0b: wrap the main loop so any uncaught kernel exception (typically a NAPI
+    // Status::InvalidArg from a malformed input — e.g. RuntimeSignal.source with a wrong shape,
+    // or an unrecognized event kind) is observable rather than silently propagating out of the
+    // async generator. Without this wrap the runner emits no `run_terminal` event, so downstream
+    // observability (session log, bench mechanism hooks) can't distinguish "the kernel rejected
+    // an input" from "the run is still in progress."
+    try {
     while (!runtime.isTerminal()) {
       // Page-in must run before appendObservations drains pending kernel observations.
       if (action.kind === "execute_tool") {
@@ -1737,6 +1744,31 @@ export class RuntimeRunner {
       } else if (action.kind === "done") {
         break
       }
+    }
+    } catch (err) {
+      // I0b: kernel rejection (or any other thrown error inside the loop) reaches us here.
+      // Classify by NAPI status code or message pattern — `invalid_arg` for surface-shape rejects,
+      // `error` for everything else — then emit run_terminal so observability sees a clean end.
+      // The yield-error path mirrors what the in-flight provider-stream catch does.
+      const errMsg = err instanceof Error ? err.message : String(err)
+      const code = (err as { code?: string }).code
+      const isInvalidArg = code === "InvalidArg" ||
+        errMsg.toLowerCase().includes("invalidarg") ||
+        errMsg.toLowerCase().includes("invalid argument")
+      const reason = isInvalidArg ? "invalid_arg" : "error"
+      yield { type: "error", message: errMsg } as ErrorEvent
+      try {
+        await this.opts.sessionLog.append(sessionId, buildRunTerminalEvent({
+          reason,
+          turnsUsed: runtime.turn() || 0,
+          totalTokens: 0,
+        }))
+      } catch { /* session log failure must not mask the original error */ }
+      yield { type: "done", iterations: runtime.turn() || 0, totalTokens: 0, status: reason } as DoneEvent
+      this.activeKernel = null
+      this.currentSessionId = null
+      this.dashboard = null
+      return
     }
 
     const result = action.kind === "done" ? action.result : undefined

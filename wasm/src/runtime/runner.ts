@@ -671,6 +671,8 @@ export class RuntimeRunner {
     // P0-C: the skill loaded and in effect going into the current turn → per-turn `activeSkill` metric.
     let activeSkill: string | undefined
 
+    // I0b: kernel-throw safety net — see Node runner for full rationale.
+    try {
     while (!runtime.isTerminal()) {
       if (action.kind === "execute_tool") {
         await this.applyKernelPageIn(runtime, sessionId)
@@ -984,6 +986,28 @@ export class RuntimeRunner {
       } else if (action.kind === "done") {
         break
       }
+    }
+    } catch (err) {
+      // I0b: kernel rejection (or any other thrown error inside the loop) is observable here —
+      // emit run_terminal so downstream code sees a clean end rather than mid-loop EOF.
+      const errMsg = err instanceof Error ? err.message : String(err)
+      const code = (err as { code?: string }).code
+      const isInvalidArg = code === "InvalidArg" ||
+        errMsg.toLowerCase().includes("invalidarg") ||
+        errMsg.toLowerCase().includes("invalid argument")
+      const reason = isInvalidArg ? "invalid_arg" : "error"
+      yield { type: "error", message: errMsg } as ErrorEvent
+      try {
+        await this.opts.sessionLog.append(sessionId, buildRunTerminalEvent({
+          reason,
+          turnsUsed: runtime.turn() || 0,
+          totalTokens: 0,
+        }))
+      } catch { /* session log failure must not mask the original error */ }
+      yield { type: "done", iterations: runtime.turn() || 0, totalTokens: 0, status: reason } as DoneEvent
+      this.activeKernel = null
+      this.currentSessionId = null
+      return
     }
 
     const result = action.kind === "done" ? action.result : undefined
