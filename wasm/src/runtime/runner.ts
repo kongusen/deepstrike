@@ -686,6 +686,8 @@ export class RuntimeRunner {
         if (sig) {
           const sigAction = kernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(sig))
           if (sigAction) action = sigAction
+          // I0a: Critical signal carries user_abort intent; see Node runner for full rationale.
+          if (sig.urgency === "critical") this.interrupted = true
         }
       }
       if (runtime.isTerminal()) break
@@ -985,7 +987,8 @@ export class RuntimeRunner {
     }
 
     const result = action.kind === "done" ? action.result : undefined
-    const status = result?.termination ?? "error"
+    // I0a: preserve preempt intent when loop exits without clean kernel-done (see Node runner for full rationale).
+    const status = result?.termination ?? (this.interrupted ? "user_abort" : "error")
     const turnsUsed = result ? Math.max(1, result.turnsUsed) : runtime.turn() || 0
     const totalTokens = result?.totalTokensUsed ?? 0
 

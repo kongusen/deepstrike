@@ -1360,6 +1360,9 @@ class RuntimeRunner:
           sig_action = kernel_maybe_action(runtime, self._pending_observations, _signal_to_kernel_event(sig))
           if sig_action:
             action = sig_action
+          # I0a: Critical signal carries user_abort intent; see Node runner for full rationale.
+          if getattr(sig, "urgency", None) == "critical":
+            self._interrupted = True
       if runtime.is_terminal():
         break
 
@@ -1666,7 +1669,8 @@ class RuntimeRunner:
         break
 
     result = action.result if action.kind == "done" else None
-    status = result.termination if result else "error"
+    # I0a: preserve preempt intent when loop exits without clean kernel-done (see Node runner for full rationale).
+    status = result.termination if result else ("user_abort" if self._interrupted else "error")
     turns_used = max(1, result.turns_used) if result else (runtime.turn() or 0)
     total_tokens = result.total_tokens_used if result else 0
 

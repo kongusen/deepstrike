@@ -1378,6 +1378,13 @@ export class RuntimeRunner {
           // ignored yields none (kernel buffers).
           const sigAction = kernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(sig))
           if (sigAction) action = sigAction
+          // I0a: a Critical-urgency signal carries user_abort intent. The kernel disposes it as
+          // InterruptNow (forces a Reason turn) but does NOT call abortController.abort() unless
+          // sub-agents are suspended — so the no-sub-agent path (e.g. the signal-injection bench
+          // scenario) wouldn't otherwise set `this.interrupted`, and the eventual run_terminal would
+          // report `reason: "error"` indistinguishable from a crash. Mark it here so the final
+          // classification in the run_terminal emit picks `user_abort`.
+          if (sig.urgency === "critical") this.interrupted = true
         }
       }
       if (runtime.isTerminal()) break
@@ -1733,7 +1740,13 @@ export class RuntimeRunner {
     }
 
     const result = action.kind === "done" ? action.result : undefined
-    const status = result?.termination ?? "error"
+    // I0a: when the loop exits without a clean kernel-done — typically because a hard interrupt
+    // aborted the in-flight LLM stream and the catch path sent `timeout` (which the kernel handles
+    // by injecting a rollback note and continuing, not by terminating) — preserve the preempt
+    // intent in the run_terminal reason. Without this, every interrupt-curtailed run reports
+    // `reason: "error"` and the bench / observability layer can't distinguish preemption from a
+    // genuine crash. Mirrors WASM/Python/Rust.
+    const status = result?.termination ?? (this.interrupted ? "user_abort" : "error")
     const turnsUsed = result ? Math.max(1, result.turnsUsed) : runtime.turn() || 0
     const totalTokens = result?.totalTokensUsed ?? 0
 

@@ -980,8 +980,13 @@ impl RuntimeRunner {
                                 .as_millis() as u64,
                         );
                         let executing = matches!(action, KernelAction::ExecuteTool { .. });
-                        match router.ingest(kernel_sig, executing) {
+                        let disposition = router.ingest(kernel_sig, executing);
+                        match disposition {
                             SignalDisposition::InterruptNow | SignalDisposition::Interrupt => {
+                                // I0a: InterruptNow carries user_abort intent; see Node runner for rationale.
+                                if matches!(disposition, SignalDisposition::InterruptNow) {
+                                    self.interrupted.store(true, Ordering::Relaxed);
+                                }
                                 kernel_apply(
                                     &mut kernel,
                                     &mut pending_observations,
@@ -1514,6 +1519,9 @@ impl RuntimeRunner {
                 )
                 .await;
 
+            // I0a: when the loop exits without a clean kernel-done, preserve preempt intent
+            // (interrupted flag set) in the run_terminal reason — otherwise an interrupt-curtailed
+            // run reports "error" indistinguishable from a real crash. Mirrors Node/WASM/Python.
             let (status, turns_used, total_tokens) = match &action {
                 KernelAction::Done { result } => (
                     format!("{:?}", result.termination).to_lowercase(),
@@ -1521,7 +1529,7 @@ impl RuntimeRunner {
                     result.total_tokens_used,
                 ),
                 _ => (
-                    "error".to_string(),
+                    if self.interrupted.load(Ordering::Relaxed) { "user_abort".to_string() } else { "error".to_string() },
                     kernel.lock().unwrap().state_machine().turn.max(1),
                     0,
                 ),
