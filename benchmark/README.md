@@ -278,33 +278,36 @@ benchmark/
 
 ## Scenarios
 
-| id                      | mechanism | variants                        | notes |
-| ----------------------- | --------- | ------------------------------- | ----- |
-| `gating-dwell`          | tool gating + skill A/B | `off` / `on` | 4 dev tasks × ~30 tools × 4 skills; reproduces the original dwell A/B finding |
-| `compression-stress`    | context compression budget | `budget-loose` / `budget-tight` | 12-PR sequential review; surfaces compression's task-completion cost |
-| `governance-write-deny` | kernel governance policy | `unrestricted` / `write-denied` | fix-failing-test; `write_file` + `run_bash` denied → measures graceful degradation + rollback overhead |
-| `memory-recall`         | long-term memory (DreamStore) | `memory-empty` / `memory-preloaded` | diagnose-outage; pre-seeded memory cuts turns ~57% / cost ~55% at preserved quality |
-| `signal-injection`      | RuntimeSignal urgency | `no-signal` / `soft-interrupt` / `hard-interrupt` | counter-based `SignalSource` injects on turn 4; soft-interrupt completes the loop with the [SIGNAL] note acknowledged, hard-interrupt is curtailed to ~3 turns |
+Each scenario is a single-variable A/B (variants differ **only** by `RuntimeOptions` overlay) so
+the metric Δ isolates one mechanism's contribution. `bench list` prints the same data at runtime.
 
-`bench list` prints the same data at runtime.
+| id                      | mechanism | variants                        | headline finding |
+| ----------------------- | --------- | ------------------------------- | ---------------- |
+| `gating-dwell`          | tool gating + skill A/B | `off` / `on` | 30-tool surface → `avgToolsExposed` **−66.6%**, `tokensPerTurn` **−32.8%**; `cacheHitRate` −9.3% (epoch-switch cache-bust tension surfaced) |
+| `compression-stress`    | context compression budget | `budget-loose` / `budget-tight` | tight saves **88%** dollars but only completes **33%** of the 12-PR review — first framework-quantified cost/quality trade-off |
+| `governance-write-deny` | kernel governance policy | `unrestricted` / `write-denied` | quality preserved at 100% (graceful degradation), `rollbacks` 0 → 2, wallMs +42%; denial signal is `rollbacked` event (NOT `tool_denied`) |
+| `memory-recall`         | long-term memory (DreamStore) | `memory-empty` / `memory-preloaded` | pre-seeded memory cuts `turnsToDone` **−57%**, `wallMs` −47%, `inputTokens` −65%, `dollars` −55% at preserved quality |
+| `signal-injection`      | RuntimeSignal urgency | `no-signal` / `soft-interrupt` / `hard-interrupt` | soft (High) injects `[SIGNAL]` and completes 12/12; hard (Critical) preempts in-flight LLM call within ~1 turn of inject |
+| `prefix-cache`          | Anthropic `cache_control` strategy | `default` / `tools-only` / `system-only` / `frozen-prefix` / `none` | DeepSeek smoke verified plumbing (no-op on auto-cache providers as designed); **Anthropic A/B verify deferred** until an `ANTHROPIC_API_KEY` is wired up — strategy delta is observable above the 1024-token cacheable-block threshold |
 
 ### §7 mechanism coverage matrix
 
 The harness spec ([`benchmark-harness.md` §7](../.local-docs/specs/benchmark-harness.md))
-calls out 8 kernel mechanisms that should each get an A/B scenario. Current state:
+calls out 8 kernel mechanisms that should each get an A/B scenario. Current state — **6 shipped,
+2 deferred** (designs preserved in [`.local-docs/specs/bench-scenarios-deferred.md`](../.local-docs/specs/bench-scenarios-deferred.md)):
 
 | § | mechanism | scenario | status | notes |
 | - | --------- | -------- | ------ | ----- |
 | 7.1 | tool gating | `gating-dwell` | ✅ shipped | full A/B with cache-bust tension surfaced |
-| 7.2 | prefix-cache / attention | — | 🚫 blocked | SDK currently hard-codes Anthropic breakpoint placement; need a `cacheBreakpointStrategy` option before an A/B is meaningful |
+| 7.2 | prefix-cache / attention | `prefix-cache` | ✅ shipped | unblocked in v0.2.22 by the `cacheBreakpointStrategy` SDK knob; 5-variant A/B over `default` / `tools-only` / `system-only` / `frozen-prefix` / `none`; Anthropic-only signal (non-Anthropic providers ignore the extension by design) |
 | 7.3 | context compression / paging | `compression-stress` | ✅ shipped | reveals task-completion cost of tight budget |
-| 7.4 | memory / knowledge | `memory-recall` | ✅ shipped | pre-seeded `DreamStore` vs. empty; carries a scenario-local `InMemoryDreamStore` (TODO: promote to public SDK export) |
-| 7.5 | orchestration / sub-agents | — | ⏸ deferred | DAG vs. serial workflow on the same task; ~300 LOC, no SDK blocker |
+| 7.4 | memory / knowledge | `memory-recall` | ✅ shipped | pre-seeded `DreamStore` vs. empty; uses the public `InMemoryDreamStore` (promoted to SDK in v0.2.21) |
+| 7.5 | orchestration / sub-agents | — | ⏸ deferred | natural variant ("did the agent dispatch in parallel?") is agent-driven, not config-driven — violates the single-variable rule. Two workable routes designed in the deferred-scenarios doc (tool-level concurrency stand-in or `submitWorkflowNodesTool`-driven fan-out) |
 | 7.6 | signal preemption | `signal-injection` | ✅ shipped | soft `Interrupt` (High) vs. `InterruptNow` (Critical) A/B; soft path keeps run going (12/12 fetches), hard path preempts at the inject turn |
 | 7.7 | governance gate | `governance-write-deny` | ✅ shipped | rollbacked-event signal documented in scenario header |
-| 7.8 | token-count tiering | — | 🚫 blocked | kernel only ships `CharApproxCounter`; `SetTokenizer` event handler is a no-op, so a `--tokenizer tiktoken` variant wouldn't change behavior. Belongs to the [kernel optimization #5](../.local-docs/specs/agent-os-status-2026-06.md) backlog |
+| 7.8 | token-count tiering | — | ⏸ deferred | no natural variant dimension that doesn't reduce to tokenizer-accuracy noise rather than run-behavior signal; framework's A/B pattern is a poor fit. Design preserved in the deferred-scenarios doc; kernel `SetTokenizer` work also pending |
 
-Legend: ✅ shipped · ⏸ deferred (no blocker, just unscheduled) · 🚫 blocked (needs SDK or kernel work first).
+Legend: ✅ shipped · ⏸ deferred (design preserved, scenario not built).
 
 ## Adding a scenario
 
