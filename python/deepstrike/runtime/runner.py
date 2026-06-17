@@ -156,6 +156,10 @@ class RuntimeOptions:
   max_total_tokens: int | None = None
   timeout_ms: int | None = None
   agent_id: str | None = None
+  # I4: run-start memory pre-fetch hook. Callable receiving kwarg `goal=`; returns a list of query
+  # strings (or None). Each query becomes a dreamStore search; hits page into the knowledge
+  # partition before turn 1. Requires dream_store + agent_id. Errs-open. Mirrors Node ``preQueryMemory``.
+  pre_query_memory: "Callable[..., Any] | None" = None
   system_prompt: str | None = None
   initial_memory: list[str] | None = None
   skill_dir: str | Path | None = None
@@ -1335,6 +1339,25 @@ class RuntimeRunner:
         "kind": "add_history_message",
         "message": {"role": "user", "content": list(attachments)},
       })
+
+    # I4: pre-fetch memory into the knowledge partition before the first LLM turn (mirrors Node).
+    if not resume_mid_run and self._opts.pre_query_memory and self._opts.dream_store and self._opts.agent_id:
+      try:
+        result = self._opts.pre_query_memory(goal=goal)
+        if hasattr(result, "__await__"):
+          result = await result
+        queries = result or []
+        entries = []
+        for q in queries:
+          if not isinstance(q, str) or not q.strip():
+            continue
+          hits = await self._opts.dream_store.search(self._opts.agent_id, q, 5)
+          for hit in hits:
+            entries.append({"content": f"[memory score={hit.score:.3f}] {hit.text}", "source": "memory"})
+        if entries:
+          kernel_apply(runtime, self._pending_observations, {"kind": "page_in", "entries": entries})
+      except Exception:
+        pass  # errs-open
 
     action = (
       kernel_action(runtime, self._pending_observations, {"kind": "resume"})

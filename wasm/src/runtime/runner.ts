@@ -131,6 +131,10 @@ export interface RuntimeOptions {
   maxTurns?: number
   timeoutMs?: number
   agentId?: string
+  /** I4: optional run-start memory pre-fetch hook (mirrors Node SDK). Called once per run before
+   *  the first LLM turn; each returned query string becomes a dreamStore search; hits page into
+   *  the knowledge partition before turn 1. Requires dreamStore + agentId. */
+  preQueryMemory?: (ctx: { goal: string }) => Promise<string[] | undefined> | string[] | undefined
   systemPrompt?: string
   initialMemory?: string[]
   /** Skill name → markdown body (WASM has no filesystem). */
@@ -664,6 +668,24 @@ export class RuntimeRunner {
         ...(m.maxContentBytes !== undefined ? { max_content_bytes: m.maxContentBytes } : {}),
         ...(m.maxNameLength !== undefined ? { max_name_length: m.maxNameLength } : {}),
       })
+    }
+
+    // I4: pre-fetch memory into the knowledge partition before the first LLM turn (mirrors Node).
+    if (!resumeMidRun && this.opts.preQueryMemory && this.opts.dreamStore && this.opts.agentId) {
+      try {
+        const queries = await this.opts.preQueryMemory({ goal })
+        const entries: Array<{ content: string; tokens?: number; source?: string }> = []
+        for (const q of queries ?? []) {
+          if (typeof q !== "string" || !q.trim()) continue
+          const hits = await this.opts.dreamStore.search(this.opts.agentId, q, 5)
+          for (const hit of hits) {
+            entries.push({ content: `[memory score=${hit.score.toFixed(3)}] ${hit.text}`, source: "memory" })
+          }
+        }
+        if (entries.length > 0) {
+          kernelApply(runtime, this.pendingObservations, { kind: "page_in", entries })
+        }
+      } catch { /* errs-open */ }
     }
 
     let action: KernelRunnerAction = resumeMidRun

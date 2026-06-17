@@ -104,6 +104,7 @@ fn default_runtime_opts(
         allowed_tool_ids: None,
         on_turn_metrics: None,
         stable_core_tool_ids: Vec::new(),
+        pre_query_memory: None,
     }
 }
 

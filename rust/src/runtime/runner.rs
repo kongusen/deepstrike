@@ -111,6 +111,12 @@ pub struct RuntimeOptions {
     pub timeout_ms: Option<u64>,
     pub extensions: Option<serde_json::Value>,
     pub agent_id: Option<String>,
+    /// I4: optional run-start memory pre-fetch hook. The runner calls this once per run, before
+    /// the first LLM turn, with the goal string; each returned query becomes a `dream_store.search`
+    /// and the resulting hits page into the knowledge partition before turn 1. Mirrors the Node
+    /// SDK `preQueryMemory`. Sync-only in Rust today — async hosts can pre-compute. Errs-open
+    /// when `dream_store` or `agent_id` is missing.
+    pub pre_query_memory: Option<std::sync::Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>>,
     pub system_prompt: Option<String>,
     pub initial_memory: Vec<String>,
     pub skill_dir: Option<std::path::PathBuf>,
@@ -883,6 +889,42 @@ impl RuntimeRunner {
                     &mut pending_observations,
                     memory_policy_event(policy),
                 );
+            }
+
+            // I4: pre-fetch memory into the knowledge partition before the first LLM turn.
+            // Mirrors Node/WASM/Python preQueryMemory. Errs-open: missing dream_store/agent_id
+            // or a faulty closure silently skip the pre-fetch.
+            if !resume_mid_run {
+                if let (Some(pre), Some(store), Some(agent_id)) = (
+                    self.opts.pre_query_memory.clone(),
+                    self.opts.dream_store.as_ref(),
+                    self.opts.agent_id.as_deref(),
+                ) {
+                    let queries = pre(goal.as_str());
+                    let mut entries: Vec<deepstrike_core::mm::PageInEntry> = Vec::new();
+                    for q in &queries {
+                        let qt = q.trim();
+                        if qt.is_empty() {
+                            continue;
+                        }
+                        if let Ok(hits) = store.search(agent_id, qt, 5).await {
+                            for hit in hits {
+                                entries.push(deepstrike_core::mm::PageInEntry {
+                                    content: format!("[memory score={:.3}] {}", hit.score, hit.text),
+                                    tokens: None,
+                                    source: Some("memory".to_string()),
+                                });
+                            }
+                        }
+                    }
+                    if !entries.is_empty() {
+                        kernel_apply(
+                            &mut kernel,
+                            &mut pending_observations,
+                            KernelInputEvent::PageIn { entries },
+                        );
+                    }
+                }
             }
 
             let mut action = if resume_mid_run {

@@ -71,6 +71,7 @@ where
         allowed_tool_ids: None,
         on_turn_metrics: None,
         stable_core_tool_ids: Vec::new(),
+        pre_query_memory: None,
     };
     setup(&mut plane, &mut opts);
     opts.execution_plane = Some(Box::new(plane));

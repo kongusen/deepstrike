@@ -146,7 +146,7 @@ export const memoryRecallScenario = {
   timeoutMs: 240_000,
   mechanismHook,
 
-  variantOrder: ["memory-empty", "memory-preloaded"],
+  variantOrder: ["memory-empty", "memory-preloaded", "memory-preloaded-via-prefetch"],
   variants: {
     "memory-empty": {
       description: "no pre-seeded memory — agent must investigate via tools (baseline)",
@@ -169,6 +169,24 @@ export const memoryRecallScenario = {
           runtimeOverlay: {
             dreamStore: new InMemoryDreamStore(PRELOADED),
             agentId: AGENT_ID,
+            extensions: { degradeMissingReasoningReplay: true },
+          },
+        }
+      },
+    },
+    // I4: same store as memory-preloaded, but instead of relying on the agent calling memory_query
+    // mid-loop, the runner's `preQueryMemory` hook pre-fetches the relevant entry into the
+    // knowledge partition before turn 1. Should track memory-preloaded on cost / turns and beat
+    // memory-empty by roughly the same margin.
+    "memory-preloaded-via-prefetch": {
+      description: "preloaded store + preQueryMemory hook surfaces it on turn 0 (no meta-tool roundtrip)",
+      setup: async () => {
+        const { InMemoryDreamStore } = await getSdk()
+        return {
+          runtimeOverlay: {
+            dreamStore: new InMemoryDreamStore(PRELOADED),
+            agentId: AGENT_ID,
+            preQueryMemory: () => ["payment service outage root cause"],
             extensions: { degradeMissingReasoningReplay: true },
           },
         }

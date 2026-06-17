@@ -182,6 +182,7 @@ fn runtime_options_can_be_constructed() {
         allowed_tool_ids: None,
         on_turn_metrics: None,
         stable_core_tool_ids: Vec::new(),
+        pre_query_memory: None,
     });
     assert_eq!(runner.execution_plane().schemas().len(), 0);
 }

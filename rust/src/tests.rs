@@ -266,6 +266,7 @@ mod tests {
             allowed_tool_ids: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
+            pre_query_memory: None,
             on_milestone_evaluate: None,
         });
 
@@ -371,6 +372,7 @@ mod tests {
             allowed_tool_ids: None,
             on_turn_metrics: Some(Arc::new(move |m| sink.lock().unwrap().push(m))),
             stable_core_tool_ids: vec![],
+            pre_query_memory: None,
             on_milestone_evaluate: None,
         });
 
@@ -493,6 +495,7 @@ mod tests {
                 sink.lock().unwrap().push(m.tools_exposed)
             })),
             stable_core_tool_ids: vec!["bash".to_string()],
+            pre_query_memory: None,
             on_milestone_evaluate: None,
         });
 
@@ -586,6 +589,7 @@ mod tests {
             allowed_tool_ids: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
+            pre_query_memory: None,
             on_milestone_evaluate: None,
         });
 
@@ -764,6 +768,7 @@ mod tests {
             allowed_tool_ids: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
+            pre_query_memory: None,
             on_milestone_evaluate: None,
         });
 
@@ -863,6 +868,7 @@ mod tests {
             allowed_tool_ids: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
+            pre_query_memory: None,
             on_milestone_evaluate: None,
         });
 
@@ -940,6 +946,7 @@ mod tests {
             allowed_tool_ids: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
+            pre_query_memory: None,
             on_milestone_evaluate: None,
         });
 
@@ -1031,6 +1038,7 @@ mod tests {
             allowed_tool_ids: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
+            pre_query_memory: None,
             on_milestone_evaluate: Some(verifier),
         });
 
@@ -1220,6 +1228,7 @@ mod tests {
             allowed_tool_ids: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
+            pre_query_memory: None,
             on_milestone_evaluate: None,
         });
 
@@ -1334,6 +1343,7 @@ mod tests {
             allowed_tool_ids: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
+            pre_query_memory: None,
             on_milestone_evaluate: None,
         });
 
@@ -1443,6 +1453,7 @@ mod tests {
             allowed_tool_ids: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
+            pre_query_memory: None,
             on_milestone_evaluate: None,
         });
 
@@ -1585,6 +1596,7 @@ mod tests {
             allowed_tool_ids: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
+            pre_query_memory: None,
             on_milestone_evaluate: None,
         });
 
@@ -1673,6 +1685,7 @@ mod tests {
             allowed_tool_ids: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
+            pre_query_memory: None,
             on_milestone_evaluate: None,
         });
 

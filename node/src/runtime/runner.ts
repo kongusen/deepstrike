@@ -142,6 +142,14 @@ export interface RuntimeOptions {
   maxTurns?: number
   timeoutMs?: number
   agentId?: string
+  /** I4: optional run-start memory pre-fetch hook. The runner calls this ONCE per run, before the
+   *  first LLM turn, with the request's goal and (optional) run-spec. Each returned query string
+   *  becomes a `dreamStore.search(agentId, q, 5)` and the resulting hits are paged into the
+   *  context's knowledge partition before turn 1, so the model sees them on first call. Returning
+   *  `undefined` / empty array is a no-op. Requires `dreamStore` + `agentId`; missing either ⇒
+   *  silently skipped (errs-open). Bench memory-recall shows -57% turns / -55% dollars when
+   *  relevant memories land on turn 1 instead of being discovered via the meta-tool on turn 3+. */
+  preQueryMemory?: (ctx: { goal: string; runSpec?: AgentRunSpec }) => Promise<string[] | undefined> | string[] | undefined
   systemPrompt?: string
   initialMemory?: string[]
   skillDir?: string
@@ -1352,6 +1360,25 @@ export class RuntimeRunner {
         message: attachmentsToKernelMessage(attachments),
       })
     }
+    // I4: pre-fetch memory into the knowledge partition before the first LLM turn. Skipped on
+    // resumes (memory was already on the prior context) and when dreamStore/agentId is absent.
+    if (!resumeMidRun && this.opts.preQueryMemory && this.opts.dreamStore && this.opts.agentId) {
+      try {
+        const queries = await this.opts.preQueryMemory({ goal, runSpec: this.opts.runSpec })
+        const entries: Array<{ content: string; tokens?: number; source?: string }> = []
+        for (const q of queries ?? []) {
+          if (typeof q !== "string" || !q.trim()) continue
+          const hits = await this.opts.dreamStore.search(this.opts.agentId, q, 5)
+          for (const hit of hits) {
+            entries.push({ content: `[memory score=${hit.score.toFixed(3)}] ${hit.text}`, source: "memory" })
+          }
+        }
+        if (entries.length > 0) {
+          kernelApply(runtime, this.pendingObservations, { kind: "page_in", entries })
+        }
+      } catch { /* errs-open — a faulty pre-fetch never breaks the run */ }
+    }
+
     let action: KernelRunnerAction = resumeMidRun
       ? kernelAction(runtime, this.pendingObservations, { kind: "resume" })
       : kernelAction(runtime, this.pendingObservations, startPayload)
