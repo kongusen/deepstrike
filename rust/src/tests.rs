@@ -307,6 +307,80 @@ mod tests {
     }
 
     #[test]
+    fn validate_tool_arguments_additional_properties_true_keeps_keys() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "bag": { "type": "object", "additionalProperties": true,
+                         "properties": { "kind": { "type": "string" } } }
+            }
+        });
+        let mut args = serde_json::json!({
+            "bag": { "kind": "a", "anyKey": { "nested": 1 }, "x": [1, 2] }
+        });
+        validate_tool_arguments(&schema, &mut args).expect("should succeed");
+        // arbitrary nested keys survive untouched
+        assert_eq!(
+            args["bag"],
+            serde_json::json!({ "kind": "a", "anyKey": { "nested": 1 }, "x": [1, 2] })
+        );
+    }
+
+    #[test]
+    fn validate_tool_arguments_additional_properties_undefined_still_strips() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "a": { "type": "string" } }
+        });
+        let mut args = serde_json::json!({ "a": "x", "extra": 1 });
+        let repaired = validate_tool_arguments(&schema, &mut args).expect("should succeed");
+        assert!(repaired);
+        assert_eq!(args, serde_json::json!({ "a": "x" })); // back-compat: extra trimmed
+    }
+
+    #[test]
+    fn validate_tool_arguments_additional_properties_subschema() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": { "type": "number" }
+        });
+        // "10" gets auto-cast by the {type:number} sub-schema → float 10.0
+        let mut args = serde_json::json!({ "a": "10", "b": 2 });
+        validate_tool_arguments(&schema, &mut args).expect("should succeed");
+        assert_eq!(args, serde_json::json!({ "a": 10.0, "b": 2 }));
+
+        let mut bad = serde_json::json!({ "a": { "not": "a number" } });
+        assert!(validate_tool_arguments(&schema, &mut bad).is_err());
+    }
+
+    #[test]
+    fn validate_tool_arguments_oneof_polymorphic() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "text": { "oneOf": [
+                    { "type": "string" },
+                    { "type": "object", "properties": { "path": { "type": "string" } },
+                      "required": ["path"] }
+                ] }
+            },
+            "required": ["text"]
+        });
+
+        let mut scalar = serde_json::json!({ "text": "hello" });
+        validate_tool_arguments(&schema, &mut scalar).expect("scalar branch");
+        assert_eq!(scalar["text"], "hello");
+
+        let mut binding = serde_json::json!({ "text": { "path": "/k" } });
+        validate_tool_arguments(&schema, &mut binding).expect("object branch");
+        assert_eq!(binding["text"], serde_json::json!({ "path": "/k" }));
+
+        let mut bad = serde_json::json!({ "text": 123 });
+        assert!(validate_tool_arguments(&schema, &mut bad).is_err());
+    }
+
+    #[test]
     fn text_tool_chunk_projects_to_text() {
         assert_eq!(ToolChunk::text("hello").text_projection(), "hello");
         assert_eq!(

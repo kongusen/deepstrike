@@ -1,4 +1,5 @@
 from __future__ import annotations
+import copy
 import inspect
 import json
 from collections.abc import AsyncIterable
@@ -83,6 +84,20 @@ def _validate_value(schema: dict[str, Any], parent: Any, key: Any, path: str, st
     value = parent[key]
     expected = schema.get("type")
 
+    # 0. 多态联合 (oneOf / anyOf) —— 先于单一 type 分支匹配
+    union = schema.get("oneOf") or schema.get("anyOf")
+    if isinstance(union, list):
+        for sub in union:
+            # 先深拷贝再试：避免某分支的 auto-cast/裁剪部分改写后又失败，污染后续分支
+            probe = {"v": copy.deepcopy(parent[key])}
+            probe_state = {"repaired": False}
+            if _validate_value(sub, probe, "v", path, probe_state) is None:
+                parent[key] = probe["v"]  # 接受首个匹配分支(连同它内部的 repair)
+                if probe_state["repaired"]:
+                    state["repaired"] = True
+                return None
+        return f"{path} does not match any allowed shape"
+
     # 1. 类型自动规整 (Auto-cast)
     if isinstance(expected, str):
         if expected == "boolean":
@@ -127,13 +142,23 @@ def _validate_value(schema: dict[str, Any], parent: Any, key: Any, path: str, st
             if not isinstance(value, dict):
                 return f"{path} must be object"
 
-            # 3a. 裁剪多余字段
+            # 3a. 裁剪多余字段 —— 尊重 additionalProperties。
+            # 缺省/False 维持旧的"裁剪"行为（所有现存工具都依赖它）；只有显式 True 或子 schema 才放行。
             properties = schema.get("properties", {})
             allowed_keys = set(properties.keys())
-            keys_to_remove = [k for k in value.keys() if k not in allowed_keys]
-            if keys_to_remove:
-                for k in keys_to_remove:
-                    del value[k]
+            additional = schema.get("additionalProperties")
+            for obj_key in list(value.keys()):
+                if obj_key in allowed_keys:
+                    continue
+                if additional is True:
+                    continue  # 任意键放行：不校验、不裁剪
+                if isinstance(additional, dict):
+                    # 用子 schema 递归校验每个额外键的值（也会 auto-cast / 补默认）
+                    err = _validate_value(additional, value, obj_key, f"{path}.{obj_key}", state)
+                    if err:
+                        return err
+                    continue
+                del value[obj_key]  # additionalProperties 缺省/False → 维持旧行为
                 state["repaired"] = True
 
             for required in schema.get("required", []):

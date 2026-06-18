@@ -76,6 +76,22 @@ function validateValue(
   let value = parent[key]
   const expectedType = schema.type
 
+  // 0. 多态联合 (oneOf / anyOf) —— 先于单一 type 分支匹配
+  const union = (schema.oneOf ?? schema.anyOf) as Record<string, unknown>[] | undefined
+  if (Array.isArray(union)) {
+    for (const sub of union) {
+      // 先克隆再试：避免某分支的 auto-cast/裁剪部分改写后又失败，污染后续分支
+      const probe = { v: structuredClone(parent[key]) }
+      const probeState = { repaired: false }
+      if (!validateValue(sub, probe, "v", path, probeState)) {
+        parent[key] = probe.v // 接受首个匹配分支(连同它内部的 repair)
+        if (probeState.repaired) state.repaired = true
+        return undefined
+      }
+    }
+    return `${path} does not match any allowed shape`
+  }
+
   // 1. 类型自动规整 (Auto-cast)
   if (typeof expectedType === "string") {
     if (expectedType === "boolean") {
@@ -130,14 +146,22 @@ function validateValue(
       if (!value || typeof value !== "object" || Array.isArray(value)) return `${path} must be object`
       const obj = value as Record<string, unknown>
 
-      // 3a. 裁剪多余字段
+      // 3a. 裁剪多余字段 —— 尊重 additionalProperties。
+      // 缺省/false 维持旧的"裁剪"行为（所有现存工具都依赖它）；只有显式 true 或子 schema 才放行。
       const properties = (schema.properties as Record<string, Record<string, unknown>> | undefined) ?? {}
       const allowedKeys = new Set(Object.keys(properties))
+      const additional = schema.additionalProperties
       for (const objKey of Object.keys(obj)) {
-        if (!allowedKeys.has(objKey)) {
-          delete obj[objKey]
-          state.repaired = true
+        if (allowedKeys.has(objKey)) continue
+        if (additional === true) continue // 任意键放行：不校验、不裁剪
+        if (additional && typeof additional === "object") {
+          // 用子 schema 递归校验每个额外键的值（也会 auto-cast / 补默认）
+          const err = validateValue(additional as Record<string, unknown>, obj, objKey, `${path}.${objKey}`, state)
+          if (err) return err
+          continue
         }
+        delete obj[objKey] // additionalProperties 缺省/false → 维持旧行为
+        state.repaired = true
       }
 
       for (const required of (schema.required as string[] | undefined) ?? []) {

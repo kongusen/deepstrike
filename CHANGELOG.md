@@ -6,6 +6,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.25] - 2026-06-18
+
+### Fixed
+
+- **Tool-argument validator no longer strips dynamic-key fields.** The
+  argument-repair step deleted *every* key not listed in `properties`,
+  silently ignoring `additionalProperties`. Any tool that declared
+  `type: "object"` had arbitrary nested keys (e.g. dynamic maps like
+  `tree` / `props` / `dataModel`) wiped out — forcing tool authors to omit
+  `type` entirely so the model lost all structural signal. The trim step now
+  honors `additionalProperties`: `true` passes arbitrary keys through
+  untouched, a sub-schema validates/repairs each extra key's value, and the
+  default (absent / `false`) keeps the existing trimming behavior — so every
+  existing tool is byte-for-byte unchanged. **Node + Python + Rust.**
+
+### Added
+
+- **Validator support for `oneOf` / `anyOf` polymorphic values.** Fields that
+  can be one of several shapes (e.g. a scalar `"text"` *or* a binding object
+  `{ "path": "/k" }`) now validate against a union of sub-schemas: each branch
+  is probed against a clone (so a non-matching branch's auto-cast/trim can't
+  pollute the next), the first match wins along with its repairs, and a value
+  matching no branch is rejected. **Node + Python + Rust.**
+
 ## [0.2.24] - 2026-06-17
 
 ### Added

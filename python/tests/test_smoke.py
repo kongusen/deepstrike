@@ -81,6 +81,74 @@ def test_validate_tool_arguments_repair():
     assert validation_invalid["error"] is not None
 
 
+def test_validate_tool_arguments_additional_properties_true_keeps_keys():
+    from deepstrike.tools import validate_tool_arguments
+    import json
+
+    schema = json.dumps({
+        "type": "object",
+        "properties": {
+            "bag": {"type": "object", "additionalProperties": True, "properties": {"kind": {"type": "string"}}}
+        },
+    })
+    args = {"bag": {"kind": "a", "anyKey": {"nested": 1}, "x": [1, 2]}}
+    validation = validate_tool_arguments(schema, args)
+    assert validation["error"] is None
+    assert args["bag"] == {"kind": "a", "anyKey": {"nested": 1}, "x": [1, 2]}  # untouched
+
+
+def test_validate_tool_arguments_additional_properties_undefined_still_strips():
+    from deepstrike.tools import validate_tool_arguments
+    import json
+
+    schema = json.dumps({"type": "object", "properties": {"a": {"type": "string"}}})
+    args = {"a": "x", "extra": 1}
+    validation = validate_tool_arguments(schema, args)
+    assert validation["error"] is None
+    assert args == {"a": "x"}  # back-compat: extra trimmed
+
+
+def test_validate_tool_arguments_additional_properties_subschema():
+    from deepstrike.tools import validate_tool_arguments
+    import json
+
+    schema = json.dumps({"type": "object", "properties": {}, "additionalProperties": {"type": "number"}})
+    args = {"a": "10", "b": 2}  # "10" auto-cast to 10
+    validation = validate_tool_arguments(schema, args)
+    assert validation["error"] is None
+    assert args == {"a": 10, "b": 2}
+
+    bad = {"a": {"not": "a number"}}
+    assert validate_tool_arguments(schema, bad)["error"] is not None
+
+
+def test_validate_tool_arguments_oneof_polymorphic():
+    from deepstrike.tools import validate_tool_arguments
+    import json
+
+    schema = json.dumps({
+        "type": "object",
+        "properties": {
+            "text": {"oneOf": [
+                {"type": "string"},
+                {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+            ]}
+        },
+        "required": ["text"],
+    })
+
+    scalar = {"text": "hello"}
+    assert validate_tool_arguments(schema, scalar)["error"] is None
+    assert scalar["text"] == "hello"
+
+    binding = {"text": {"path": "/k"}}
+    assert validate_tool_arguments(schema, binding)["error"] is None
+    assert binding["text"] == {"path": "/k"}
+
+    bad = {"text": 123}
+    assert validate_tool_arguments(schema, bad)["error"] is not None
+
+
 @pytest.mark.asyncio
 async def test_execution_plane_repairs_arguments():
     import json

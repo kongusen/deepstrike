@@ -147,6 +147,27 @@ fn validate_value(
     is_root: bool,
     repaired: &mut bool,
 ) -> std::result::Result<(), String> {
+    // 0. 多态联合 (oneOf / anyOf) —— 先于单一 type 分支匹配
+    if let Some(union) = schema
+        .get("oneOf")
+        .or_else(|| schema.get("anyOf"))
+        .and_then(Value::as_array)
+    {
+        for sub in union {
+            // 先克隆再试：避免某分支的 auto-cast/裁剪部分改写后又失败，污染后续分支
+            let mut probe = value.clone();
+            let mut probe_repaired = false;
+            if validate_value(sub, &mut probe, path, is_root, &mut probe_repaired).is_ok() {
+                *value = probe; // 接受首个匹配分支(连同它内部的 repair)
+                if probe_repaired {
+                    *repaired = true;
+                }
+                return Ok(());
+            }
+        }
+        return Err(format!("{path} does not match any allowed shape"));
+    }
+
     // 1. 类型自动规整 (Auto-cast / Repair)
     if let Some(expected) = schema.get("type").and_then(Value::as_str) {
         match expected {
@@ -204,20 +225,33 @@ fn validate_value(
                     return Err(format!("{path} must be object"));
                 };
 
-                // 3a. 裁剪 schema 未声明的多余字段
+                // 3a. 裁剪 schema 未声明的多余字段 —— 尊重 additionalProperties。
+                // 仅当显式声明了 properties 时才介入（保持原有行为：无 properties 的对象不裁剪）；
+                // 缺省/false 维持旧的"裁剪"行为（现存工具都依赖它），只有显式 true 或子 schema 才放行。
                 if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
                     let allowed_keys: std::collections::HashSet<&str> =
                         properties.keys().map(|s| s.as_str()).collect();
-                    let keys_to_remove: Vec<String> = obj
+                    let additional = schema.get("additionalProperties");
+                    let extra_keys: Vec<String> = obj
                         .keys()
                         .filter(|k| !allowed_keys.contains(k.as_str()))
                         .cloned()
                         .collect();
-                    if !keys_to_remove.is_empty() {
-                        for k in keys_to_remove {
-                            obj.remove(&k);
+                    for k in extra_keys {
+                        match additional {
+                            Some(Value::Bool(true)) => {} // 任意键放行：不校验、不裁剪
+                            Some(sub @ Value::Object(_)) => {
+                                // 用子 schema 递归校验每个额外键的值（也会 auto-cast / 补默认）
+                                if let Some(child) = obj.get_mut(&k) {
+                                    validate_value(sub, child, &format!("{path}.{k}"), false, repaired)?;
+                                }
+                            }
+                            _ => {
+                                // additionalProperties 缺省/false → 维持旧行为
+                                obj.remove(&k);
+                                *repaired = true;
+                            }
                         }
-                        *repaired = true;
                     }
                 }
 
