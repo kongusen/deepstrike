@@ -6,6 +6,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.26] - 2026-06-18
+
+### Fixed
+
+- **Malformed tool-call arguments no longer brick a parent agent.**
+  `subAgentResultToKernel` parsed a sub-agent's final-turn tool-call
+  `arguments` with an unguarded `JSON.parse`. Tool-call arguments arrive as a
+  raw model-authored string (the OpenAIChat-family non-streaming path —
+  OpenAI/DeepSeek/Qwen/MiniMax/GLM/Kimi — passes it through verbatim via
+  `normalizeToolCalls`), so a single truncated/garbled JSON string thrown by
+  the model on its final turn would throw during result serialization and take
+  down the parent run. The parse now degrades to `{}` (the validator then
+  handles empty args), mirroring the `catch→{}` guard every provider/runtime
+  parse site already uses. **Node + WASM + Python** (Rust is structurally
+  immune — its `ToolCall.arguments` is a parsed `Value`, never re-parsed).
+
 ## [0.2.25] - 2026-06-18
 
 ### Fixed

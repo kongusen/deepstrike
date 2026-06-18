@@ -20,7 +20,7 @@ from deepstrike import (
     extract_judge_winner,
 )
 from deepstrike.types.agent import sub_agent_result_to_kernel
-from deepstrike._kernel import KernelRuntime, LoopPolicy, Message
+from deepstrike._kernel import KernelRuntime, LoopPolicy, Message, ToolCall
 
 
 # ── Pure mapping ─────────────────────────────────────────────────────────────
@@ -52,6 +52,21 @@ def test_node_kind_mutual_exclusion():
         workflow_node_spec_to_kernel(
             WorkflowNodeSpec(task="x", role="plan", loop={"max_iters": 2}, reducer="concat")
         )
+
+
+def test_sub_agent_result_malformed_tool_args_does_not_brick():
+    # A model wrote a truncated/garbled arguments string on its final turn; the OpenAIChat-family
+    # non-streaming path passes it through verbatim. Serialization must degrade to {}, never raise.
+    final = Message(role="assistant", content="", tool_calls=[ToolCall(id="t1", name="do", arguments='{"a": 1, "b')])
+    res = SubAgentResult(agent_id="n0", result=LoopResult(termination="completed", turns_used=1, total_tokens_used=1, final_message=final))
+    out = sub_agent_result_to_kernel(res)  # must not raise
+    assert out["result"]["final_message"]["tool_calls"][0]["arguments"] == {}
+
+    # well-formed args still parse into an object
+    final2 = Message(role="assistant", content="", tool_calls=[ToolCall(id="t1", name="do", arguments='{"a":1}')])
+    res2 = SubAgentResult(agent_id="n0", result=LoopResult(termination="completed", turns_used=1, total_tokens_used=1, final_message=final2))
+    out2 = sub_agent_result_to_kernel(res2)
+    assert out2["result"]["final_message"]["tool_calls"][0]["arguments"] == {"a": 1}
 
 
 def test_signal_plumbing_is_additive():

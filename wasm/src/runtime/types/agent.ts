@@ -176,6 +176,19 @@ export function milestoneCheckResultToKernel(result: MilestoneCheckResult): Reco
   }
 }
 
+/** Tool-call `arguments` reach us as a raw model-authored string (e.g. the OpenAIChat-family
+ *  non-streaming path passes it through verbatim via `normalizeToolCalls`). A malformed JSON
+ *  string must degrade to empty args here, never throw — otherwise one bad tool-call on a
+ *  sub-agent's final turn bricks the parent's result serialization. Mirrors the `catch→{}`
+ *  guard every provider/runtime parse site already uses. */
+function safeParseToolArgs(raw: string | undefined): Record<string, unknown> {
+  try {
+    return JSON.parse(raw || "{}") as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
 export function subAgentResultToKernel(result: SubAgentResult): Record<string, unknown> {
   const finalMessage = result.result.finalMessage
   return {
@@ -189,7 +202,7 @@ export function subAgentResultToKernel(result: SubAgentResult): Record<string, u
             tool_calls: (finalMessage.toolCalls ?? []).map(tc => ({
               id: tc.id,
               name: tc.name,
-              arguments: JSON.parse(tc.arguments || "{}"),
+              arguments: safeParseToolArgs(tc.arguments),
             })),
             ...(finalMessage.tokenCount !== undefined ? { token_count: finalMessage.tokenCount } : {}),
           }

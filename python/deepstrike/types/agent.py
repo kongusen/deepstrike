@@ -166,6 +166,17 @@ def milestone_check_fail(phase_id: str, reason: str) -> MilestoneCheckResult:
   return MilestoneCheckResult(phase_id=phase_id, passed=False, reason=reason)
 
 
+def _safe_parse_tool_args(raw: str | None) -> dict[str, Any]:
+  """Tool-call ``arguments`` reach us as a raw model-authored string (e.g. the OpenAIChat-family
+  non-streaming path passes it through verbatim). A malformed JSON string must degrade to empty
+  args here, never raise — otherwise one bad tool-call on a sub-agent's final turn bricks the
+  parent's result serialization. Mirrors the ``except -> {}`` guard every provider parse site uses."""
+  try:
+    return json.loads(raw or "{}")
+  except (ValueError, TypeError):
+    return {}
+
+
 def sub_agent_result_to_kernel(result: SubAgentResult) -> dict[str, Any]:
   final = result.result.final_message
   final_kernel = None
@@ -175,7 +186,7 @@ def sub_agent_result_to_kernel(result: SubAgentResult) -> dict[str, Any]:
       "role": getattr(final, "role", "assistant"),
       "content": getattr(final, "content", ""),
       "tool_calls": [
-        {"id": c.id, "name": c.name, "arguments": json.loads(c.arguments or "{}")}
+        {"id": c.id, "name": c.name, "arguments": _safe_parse_tool_args(c.arguments)}
         for c in tool_calls
       ],
     }
