@@ -6,6 +6,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.27] - 2026-06-19
+
+### Added
+
+- **`coerceItemArray` — array-shaped argument auto-cast in the tool validator.**
+  LLMs routinely wrap array arguments in a single-key `{ "item": [...] }` /
+  `{ "items": [...] }` envelope, or emit a lone object where a one-element array
+  was expected. The validator's array branch now coerces all of these to an
+  array (`{ item: X }`/`{ items: X }` → `X` if already an array, else `[X]`; any
+  other lone object → `[obj]`) before validating, aligned with the existing
+  string→number/boolean auto-casts. This restores precise per-element errors
+  (e.g. `$.ops[0].op is required`) instead of a blunt `must be array` or the
+  generic `does not match any allowed shape`, killing this whole class of
+  tool-call failure for every tool at once. **Node + Python + Rust** (WASM has
+  no validator). Well-formed arrays are untouched (`repaired:false`).
+
 ## [0.2.26] - 2026-06-18
 
 ### Fixed

@@ -122,6 +122,46 @@ def test_validate_tool_arguments_additional_properties_subschema():
     assert validate_tool_arguments(schema, bad)["error"] is not None
 
 
+def test_validate_tool_arguments_coerce_item_array():
+    from deepstrike.tools import validate_tool_arguments
+    import json
+
+    schema = json.dumps({
+        "type": "object",
+        "properties": {
+            "ops": {"type": "array", "items": {
+                "type": "object", "properties": {"op": {"type": "string"}}, "required": ["op"]}}
+        },
+        "required": ["ops"],
+    })
+
+    # {"item": [...]} unwraps
+    a = {"ops": {"item": [{"op": "add"}, {"op": "remove"}]}}
+    r = validate_tool_arguments(schema, a)
+    assert r["error"] is None and r["repaired"] is True
+    assert a["ops"] == [{"op": "add"}, {"op": "remove"}]
+
+    # {"items": {obj}} wraps a single object
+    b = {"ops": {"items": {"op": "add"}}}
+    assert validate_tool_arguments(schema, b)["error"] is None
+    assert b["ops"] == [{"op": "add"}]
+
+    # lone object wraps
+    c = {"ops": {"op": "add"}}
+    assert validate_tool_arguments(schema, c)["error"] is None
+    assert c["ops"] == [{"op": "add"}]
+
+    # precise per-element error restored after coercion
+    d = {"ops": {"item": {"path": "/x"}}}
+    assert validate_tool_arguments(schema, d)["error"] == "$.ops[0].op is required"
+
+    # well-formed array untouched (no repair)
+    e = {"ops": [{"op": "add"}]}
+    re = validate_tool_arguments(schema, e)
+    assert re["error"] is None and re["repaired"] is False
+    assert e["ops"] == [{"op": "add"}]
+
+
 def test_validate_tool_arguments_oneof_polymorphic():
     from deepstrike.tools import validate_tool_arguments
     import json

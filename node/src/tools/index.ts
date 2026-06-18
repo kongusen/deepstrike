@@ -121,6 +121,23 @@ function validateValue(
           }
         }
       }
+    } else if (expectedType === "array") {
+      // coerceItemArray: LLMs commonly wrap array args in a single-key { item: X } / { items: X }
+      // envelope, or emit a lone object where a one-element array was expected. Coerce both to an
+      // array so per-element validation runs (yielding precise `$.path[i]…` errors) instead of a
+      // blunt "must be array". Aligned with the string→number/boolean casts above.
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const obj = value as Record<string, unknown>
+        const objKeys = Object.keys(obj)
+        if (objKeys.length === 1 && (objKeys[0] === "item" || objKeys[0] === "items")) {
+          const inner = obj[objKeys[0]]
+          parent[key] = Array.isArray(inner) ? inner : [inner]
+        } else {
+          parent[key] = [obj]
+        }
+        value = parent[key]
+        state.repaired = true
+      }
     }
   }
 

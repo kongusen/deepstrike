@@ -124,6 +124,20 @@ def _validate_value(schema: dict[str, Any], parent: Any, key: Any, path: str, st
                         state["repaired"] = True
                 except ValueError:
                     pass
+        elif expected == "array":
+            # coerceItemArray: LLMs commonly wrap array args in a single-key {"item": X} / {"items": X}
+            # envelope, or emit a lone object where a one-element array was expected. Coerce both to a
+            # list so per-element validation runs (yielding precise `$.path[i]…` errors) instead of a
+            # blunt "must be array". Aligned with the str→number/bool casts above.
+            if isinstance(value, dict):
+                keys = list(value.keys())
+                if len(keys) == 1 and keys[0] in ("item", "items"):
+                    inner = value[keys[0]]
+                    parent[key] = inner if isinstance(inner, list) else [inner]
+                else:
+                    parent[key] = [value]
+                value = parent[key]
+                state["repaired"] = True
 
     # 2. 补默认值 (Default Injection)
     if expected == "object":

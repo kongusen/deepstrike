@@ -100,3 +100,52 @@ describe("validateToolArguments — oneOf / anyOf", () => {
     expect(args.v).toBe("5") // string branch wins, untouched by the object branch's probe
   })
 })
+
+describe("validateToolArguments — coerceItemArray (array auto-cast)", () => {
+  const opsSchema = JSON.stringify({
+    type: "object",
+    properties: {
+      ops: { type: "array", items: { type: "object", properties: { op: { type: "string" } }, required: ["op"] } },
+    },
+    required: ["ops"],
+  })
+
+  it("unwraps { item: [...] } into the array", () => {
+    const args: any = { ops: { item: [{ op: "add" }, { op: "remove" }] } }
+    const r = validateToolArguments(opsSchema, args)
+    expect(r.error).toBeUndefined()
+    expect(r.repaired).toBe(true)
+    expect(args.ops).toEqual([{ op: "add" }, { op: "remove" }])
+  })
+
+  it("unwraps { items: [...] } too", () => {
+    const args: any = { ops: { items: [{ op: "add" }] } }
+    expect(validateToolArguments(opsSchema, args).error).toBeUndefined()
+    expect(args.ops).toEqual([{ op: "add" }])
+  })
+
+  it("wraps { item: {obj} } into a single-element array (the model's lucky guess)", () => {
+    const args: any = { ops: { item: { op: "add" } } }
+    expect(validateToolArguments(opsSchema, args).error).toBeUndefined()
+    expect(args.ops).toEqual([{ op: "add" }])
+  })
+
+  it("wraps a lone object into a single-element array", () => {
+    const args: any = { ops: { op: "add" } }
+    expect(validateToolArguments(opsSchema, args).error).toBeUndefined()
+    expect(args.ops).toEqual([{ op: "add" }])
+  })
+
+  it("restores precise per-element errors after coercion (vs blunt 'must be array')", () => {
+    const args: any = { ops: { item: { path: "/x" } } } // element missing required `op`
+    expect(validateToolArguments(opsSchema, args).error).toBe("$.ops[0].op is required")
+  })
+
+  it("leaves a well-formed array untouched", () => {
+    const args: any = { ops: [{ op: "add" }] }
+    const r = validateToolArguments(opsSchema, args)
+    expect(r.error).toBeUndefined()
+    expect(r.repaired).toBe(false)
+    expect(args.ops).toEqual([{ op: "add" }])
+  })
+})

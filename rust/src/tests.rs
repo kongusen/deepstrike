@@ -355,6 +355,46 @@ mod tests {
     }
 
     #[test]
+    fn validate_tool_arguments_coerces_item_array() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "ops": { "type": "array", "items": {
+                    "type": "object", "properties": { "op": { "type": "string" } },
+                    "required": ["op"] } }
+            },
+            "required": ["ops"]
+        });
+
+        // { item: [...] } unwraps
+        let mut a = serde_json::json!({ "ops": { "item": [{ "op": "add" }, { "op": "remove" }] } });
+        assert!(validate_tool_arguments(&schema, &mut a).expect("ok"));
+        assert_eq!(a["ops"], serde_json::json!([{ "op": "add" }, { "op": "remove" }]));
+
+        // { items: {obj} } wraps a single object
+        let mut b = serde_json::json!({ "ops": { "items": { "op": "add" } } });
+        validate_tool_arguments(&schema, &mut b).expect("ok");
+        assert_eq!(b["ops"], serde_json::json!([{ "op": "add" }]));
+
+        // lone object wraps
+        let mut c = serde_json::json!({ "ops": { "op": "add" } });
+        validate_tool_arguments(&schema, &mut c).expect("ok");
+        assert_eq!(c["ops"], serde_json::json!([{ "op": "add" }]));
+
+        // precise per-element error restored after coercion
+        let mut d = serde_json::json!({ "ops": { "item": { "path": "/x" } } });
+        assert_eq!(
+            validate_tool_arguments(&schema, &mut d).unwrap_err(),
+            "$.ops[0].op is required"
+        );
+
+        // well-formed array untouched (no repair)
+        let mut e = serde_json::json!({ "ops": [{ "op": "add" }] });
+        assert!(!validate_tool_arguments(&schema, &mut e).expect("ok"));
+        assert_eq!(e["ops"], serde_json::json!([{ "op": "add" }]));
+    }
+
+    #[test]
     fn validate_tool_arguments_oneof_polymorphic() {
         let schema = serde_json::json!({
             "type": "object",

@@ -199,6 +199,30 @@ fn validate_value(
                     }
                 }
             }
+            "array" => {
+                // coerceItemArray: LLMs commonly wrap array args in a single-key { item: X } /
+                // { items: X } envelope, or emit a lone object where a one-element array was
+                // expected. Coerce both to an array so per-element validation runs (precise
+                // `$.path[i]…` errors) instead of a blunt "must be array". Aligned with the
+                // string→number/boolean casts above.
+                if value.is_object() {
+                    let coerced = {
+                        let obj = value.as_object().unwrap();
+                        let single = if obj.len() == 1 {
+                            obj.get("item").or_else(|| obj.get("items"))
+                        } else {
+                            None
+                        };
+                        match single {
+                            Some(inner) if inner.is_array() => inner.clone(),
+                            Some(inner) => Value::Array(vec![inner.clone()]),
+                            None => Value::Array(vec![value.clone()]),
+                        }
+                    };
+                    *value = coerced;
+                    *repaired = true;
+                }
+            }
             _ => {}
         }
     }
