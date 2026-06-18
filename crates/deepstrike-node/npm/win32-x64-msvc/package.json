@@ -1,6 +1,6 @@
 {
   "name": "@deepstrike/core-win32-x64-msvc",
-  "version": "0.2.25",
+  "version": "0.2.26",
   "cpu": [
     "x64"
   ],
