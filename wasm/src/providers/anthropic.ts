@@ -33,7 +33,7 @@ function resolveCacheBreakpointStrategy(extensions?: Record<string, unknown>): C
 function countCacheControlSlots(
   system: undefined | string | Array<{ cache_control?: unknown }>,
   builtTools: undefined | Array<{ cache_control?: unknown }>,
-  msgs: Array<{ content: unknown }>,
+  msgs: Array<Record<string, unknown>>,
 ): { system: boolean; tools: boolean; messages: boolean } {
   const sysBp = Array.isArray(system) && system.some(b => b?.cache_control != null)
   const toolBp = !!builtTools && builtTools.some(t => t?.cache_control != null)

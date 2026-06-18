@@ -18,10 +18,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Dry-run publish check
-        run: |
-          cargo publish -p deepstrike-core --dry-run --allow-dirty
-          cargo publish -p deepstrike-sdk --dry-run --allow-dirty
+      - name: Dry-run publish check (core only)
+        # deepstrike-sdk depends on deepstrike-core, which is not on crates.io until the
+        # "Publish deepstrike-core" step below — so `cargo publish -p deepstrike-sdk --dry-run`
+        # always fails here with "no matching package named deepstrike-core". The sdk is fully
+        # verified during its real, post-core publish (cargo publish builds before uploading).
+        run: cargo publish -p deepstrike-core --dry-run --allow-dirty
 
       - name: Publish deepstrike-core
         run: cargo publish -p deepstrike-core
