@@ -1,10 +1,62 @@
 {
   "name": "@deepstrike/sdk",
-  "version": "0.2.28",
+  "version": "0.2.30",
   "description": "DeepStrike Node.js SDK",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./providers": {
+      "types": "./dist/providers/public.d.ts",
+      "import": "./dist/providers/public.js"
+    },
+    "./workflow": {
+      "types": "./dist/workflow/public.d.ts",
+      "import": "./dist/workflow/public.js"
+    },
+    "./planes": {
+      "types": "./dist/planes/public.d.ts",
+      "import": "./dist/planes/public.js"
+    },
+    "./memory": {
+      "types": "./dist/memory/public.d.ts",
+      "import": "./dist/memory/public.js"
+    },
+    "./harness": {
+      "types": "./dist/harness/public.d.ts",
+      "import": "./dist/harness/public.js"
+    },
+    "./os": {
+      "types": "./dist/os/public.d.ts",
+      "import": "./dist/os/public.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "providers": [
+        "./dist/providers/public.d.ts"
+      ],
+      "workflow": [
+        "./dist/workflow/public.d.ts"
+      ],
+      "planes": [
+        "./dist/planes/public.d.ts"
+      ],
+      "memory": [
+        "./dist/memory/public.d.ts"
+      ],
+      "harness": [
+        "./dist/harness/public.d.ts"
+      ],
+      "os": [
+        "./dist/os/public.d.ts"
+      ]
+    }
+  },
   "files": [
     "dist",
     "README.md"
@@ -20,7 +72,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.99.0",
-    "@deepstrike/core": "0.2.28",
+    "@deepstrike/core": "0.2.30",
     "@google/generative-ai": "^0.24.1",
     "openai": "^5.23.2"
   },

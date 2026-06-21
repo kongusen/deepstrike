@@ -1,0 +1,15 @@
+// `@deepstrike/sdk/planes` — advanced execution planes, archive stores, and credential vaults.
+// The root package exports `LocalExecutionPlane`; specialized planes live here.
+export { WorktreeExecutionPlane, GitWorktreeManager } from "../runtime/worktree-plane.js"
+export type { WorktreeManager } from "../runtime/worktree-plane.js"
+export { FilteredExecutionPlane } from "../runtime/filtered-plane.js"
+export { ProcessSandboxPlane } from "../runtime/process-sandbox-plane.js"
+export type { SandboxOptions } from "../runtime/process-sandbox-plane.js"
+export { McpProxyPlane } from "../runtime/mcp-proxy-plane.js"
+export type { McpServerConfig } from "../runtime/mcp-proxy-plane.js"
+export { RemoteVpcPlane } from "../runtime/remote-vpc-plane.js"
+export type { RemoteVpcOptions } from "../runtime/remote-vpc-plane.js"
+export { NullArchiveStore, FileArchiveStore } from "../runtime/archive.js"
+export type { ArchiveStore } from "../runtime/archive.js"
+export { EnvCredentialVault, InMemoryCredentialVault, ChainedCredentialVault } from "../runtime/credential-vault.js"
+export type { CredentialVault } from "../runtime/credential-vault.js"

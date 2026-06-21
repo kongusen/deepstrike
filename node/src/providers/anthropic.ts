@@ -20,28 +20,43 @@ interface AnthropicProviderOptions {
   authMode?: "api-key" | "bearer"
 }
 
+/** Options-object form for `AnthropicProvider` — the recommended constructor shape. */
+export interface AnthropicProviderConfig extends AnthropicProviderOptions {
+  apiKey: string
+  model?: string
+  retry?: { maxRetries: number; baseDelay: number }
+}
+
 export class AnthropicProvider implements LLMProvider {
   private client: Anthropic
   private circuit: CircuitBreaker
   private maxRetries: number
   private baseDelay: number
+  protected readonly model: string
   private nativeAssistantBlocks = new Map<string, Array<Record<string, unknown>>>()
 
+  // Accepts the options object (`new AnthropicProvider({ apiKey, model, baseURL })`) or the legacy
+  // positional form (still used by the Anthropic-compatible backend subclasses' `super(...)` calls).
   constructor(
-    apiKey: string,
-    protected readonly model = "claude-sonnet-4-6",
+    apiKeyOrConfig: string | AnthropicProviderConfig,
+    model = "claude-sonnet-4-6",
     retry = { maxRetries: 3, baseDelay: 1000 },
     options: AnthropicProviderOptions = {},
   ) {
+    const c: AnthropicProviderConfig =
+      typeof apiKeyOrConfig === "string"
+        ? { apiKey: apiKeyOrConfig, model, retry, ...options }
+        : { model: "claude-sonnet-4-6", retry: { maxRetries: 3, baseDelay: 1000 }, ...apiKeyOrConfig }
+    this.model = c.model ?? "claude-sonnet-4-6"
     this.client = withServerRuntimeGuard(() => new Anthropic({
-      ...(options.authMode === "bearer"
-        ? { authToken: apiKey, apiKey: null as unknown as string }
-        : { apiKey, authToken: null as unknown as string }),
-      ...(options.baseURL ? { baseURL: options.baseURL } : {}),
+      ...(c.authMode === "bearer"
+        ? { authToken: c.apiKey, apiKey: null as unknown as string }
+        : { apiKey: c.apiKey, authToken: null as unknown as string }),
+      ...(c.baseURL ? { baseURL: c.baseURL } : {}),
     }))
     this.circuit = new CircuitBreaker()
-    this.maxRetries = retry.maxRetries
-    this.baseDelay = retry.baseDelay
+    this.maxRetries = c.retry?.maxRetries ?? 3
+    this.baseDelay = c.retry?.baseDelay ?? 1000
   }
 
   runtimePolicy(): RuntimePolicy {

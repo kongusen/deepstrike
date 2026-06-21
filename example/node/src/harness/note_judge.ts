@@ -1,5 +1,5 @@
-import { EvalLoopHarness } from "@deepstrike/sdk"
-import type { QualityGate, HarnessRequest, HarnessOutcome } from "@deepstrike/sdk"
+import { EvalLoopHarness } from "@deepstrike/sdk/harness"
+import type { QualityGate, HarnessRequest, HarnessOutcome } from "@deepstrike/sdk/harness"
 import type { FlashNoteRuntime } from "../runtime.js"
 
 const noteGate: QualityGate = {

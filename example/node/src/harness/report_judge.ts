@@ -1,4 +1,4 @@
-import { HarnessLoop } from "@deepstrike/sdk"
+import { HarnessLoop } from "@deepstrike/sdk/harness"
 import type { LLMProvider } from "@deepstrike/sdk"
 import type { FlashNoteRuntime } from "../runtime.js"
 

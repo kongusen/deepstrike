@@ -3,7 +3,8 @@
  * reducer name + its dependency outputs, and the runner runs the registered pure function.
  */
 import { getKernel } from "../src/kernel.js"
-import { RuntimeRunner, InMemorySessionLog, builtinReducers } from "../src/index.js"
+import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
+import { builtinReducers } from "../src/workflow/public.js"
 import type { WorkflowSpec } from "../src/index.js"
 import { workflowNodeSpecToKernel } from "../src/types/agent.js"
 

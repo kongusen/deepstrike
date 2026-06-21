@@ -1,190 +1,66 @@
 // ╔══════════════════════════════════════════════════════════════════════════╗
-// ║ START HERE — the canonical entry points for the common cases.              ║
-// ║   runAgent   → one prompt, one model, the text back.                       ║
-// ║   runFanout  → run N tasks in parallel, then synthesize (kernel-gated DAG).║
-// ║   RuntimeRunner → drop down to this for streaming, tools, signals, memory, ║
-// ║                   governance, and the standalone `runWorkflow` driver.     ║
-// ║ Everything below the providers block is advanced / opt-in surface.         ║
+// ║ @deepstrike/sdk — root surface (v0.2.30).                                      ║
+// ║                                                                            ║
+// ║ This is the intent layer: run an agent, run a workflow, author a tool,     ║
+// ║ pick a provider. Advanced machinery lives behind subpaths:                 ║
+// ║   @deepstrike/sdk/providers  — backend provider classes + profiles         ║
+// ║   @deepstrike/sdk/workflow   — orchestration, reducers, contracts, specs   ║
+// ║   @deepstrike/sdk/planes     — worktree / sandbox / mcp / vpc planes        ║
+// ║   @deepstrike/sdk/memory     — dream + working memory, knowledge sources    ║
+// ║   @deepstrike/sdk/harness    — eval harnesses + judge                       ║
+// ║   @deepstrike/sdk/os         — profiles, diagnostics, signals, replay tests ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
+
+// ── Start here: the canonical entry points ─────────────────────────────────
 export { runAgent, runFanout } from "./runtime/facade.js"
 export type { RunAgentOptions, RunFanoutOptions } from "./runtime/facade.js"
-
-// ── Runtime (Layer 1.5) ────────────────────────────────────────────────────
 export { RuntimeRunner, collectText } from "./runtime/runner.js"
-export type { RuntimeOptions, SchedulerBudget } from "./runtime/runner.js"
-export { builtinReducers, resolveReducer } from "./runtime/reducers.js"
-export type { Reducer, ReducerRegistry, ReducerInput } from "./runtime/reducers.js"
-export {
-  loopInstruction, classifyInstruction, judgeGoal,
-  extractLoopContinue, extractClassifyBranch, extractJudgeWinner,
-} from "./runtime/workflow-control-flow.js"
-export { WorktreeExecutionPlane, GitWorktreeManager } from "./runtime/worktree-plane.js"
-export type { WorktreeManager } from "./runtime/worktree-plane.js"
-export { FileWorkflowStore } from "./runtime/workflow-store.js"
-export type { MemoryPolicy, MemoryWriteRateLimit, ResourceQuota } from "./kernel.js"
-export { KernelPrimitivesDashboard } from "./runtime/kernel-primitives-dashboard.js"
-export { FilteredExecutionPlane } from "./runtime/filtered-plane.js"
-export { SubAgentOrchestrator, defaultSubAgentOrchestrator, spawnStandalone } from "./runtime/sub-agent-orchestrator.js"
-export type { SubAgentRunContext } from "./runtime/sub-agent-orchestrator.js"
+export type { RuntimeOptions } from "./runtime/runner.js"
+
+// ── Execution plane + session log (the defaults) ────────────────────────────
 export { LocalExecutionPlane } from "./runtime/execution-plane.js"
 export type { ExecutionPlane, RunContext } from "./runtime/execution-plane.js"
 export { InMemorySessionLog, FileSessionLog } from "./runtime/session-log.js"
 export type { SessionLog, SessionEvent } from "./runtime/session-log.js"
-export { ReplayProvider } from "./runtime/replay-provider.js"
-export type { ReplayProviderOpts } from "./runtime/replay-provider.js"
-export { extractRecordedMessages } from "./runtime/replay-fixture.js"
-export { judge, buildEvalMessages, parseVerdict, verdictOutputSchema } from "./runtime/eval.js"
-export type { Criterion, Verdict, VerdictDetail, JudgeArgs } from "./runtime/eval.js"
-export {
-  DEFAULT_NATIVE_ATTENTION_POLICY,
-  DEFAULT_NATIVE_GOVERNANCE_POLICY,
-  assertNativeProfile,
-  osProfile,
-} from "./runtime/os-profile.js"
-export type { NativeOsProfile, OsProfileId } from "./runtime/os-profile.js"
-export {
-  rebuildOsSnapshotFromSessionEvents,
-  sessionLogHasRequiredCategories,
-} from "./runtime/os-snapshot.js"
-export type { OsSnapshot } from "./runtime/os-snapshot.js"
-export { categoryForKind, kernelObservationToSessionEvent } from "./runtime/kernel-event-log.js"
-export type { KernelEventCategory } from "./runtime/kernel-event-log.js"
-export { NullArchiveStore, FileArchiveStore } from "./runtime/archive.js"
-export type { ArchiveStore } from "./runtime/archive.js"
-export { EnvCredentialVault, InMemoryCredentialVault, ChainedCredentialVault } from "./runtime/credential-vault.js"
-export type { CredentialVault } from "./runtime/credential-vault.js"
-export { ProcessSandboxPlane } from "./runtime/process-sandbox-plane.js"
-export type { SandboxOptions } from "./runtime/process-sandbox-plane.js"
-export { McpProxyPlane } from "./runtime/mcp-proxy-plane.js"
-export type { McpServerConfig } from "./runtime/mcp-proxy-plane.js"
-export { RemoteVpcPlane } from "./runtime/remote-vpc-plane.js"
-export type { RemoteVpcOptions } from "./runtime/remote-vpc-plane.js"
 
-// ── Providers ─────────────────────────────────────────────────────────────
-export { AnthropicProvider } from "./providers/anthropic.js"
-export { OpenAIChatProvider, OpenAIProvider } from "./providers/openai.js"
-export { DeepSeekProvider, DeepSeekAnthropicProvider } from "./providers/deepseek.js"
-export { KimiProvider, KimiAnthropicProvider } from "./providers/kimi.js"
-export { QwenProvider, QwenAnthropicProvider } from "./providers/qwen.js"
-export { GLMProvider, GLMAnthropicProvider } from "./providers/glm.js"
-export { GeminiProvider } from "./providers/gemini.js"
-export { MiniMaxAnthropicProvider, MiniMaxOpenAIProvider } from "./providers/minimax.js"
-export { OllamaProvider } from "./providers/ollama.js"
-export { CircuitBreaker, normalizeToolCall } from "./providers/base.js"
-export { OpenAIChatAdapter } from "./providers/openai-chat.js"
-export { OpenAIResponsesAdapter, OpenAIResponsesProvider } from "./providers/openai-responses.js"
-export type { OpenAIResponsesRunState } from "./providers/openai-responses.js"
-export { endpointProfiles, modelProfiles, getModelProfile } from "./providers/profiles.js"
-export type { ModelProfileId, ProviderId } from "./providers/profiles.js"
-export { createProvider } from "./providers/catalog.js"
-export type { CreateProviderOptions, EndpointProfileId } from "./providers/catalog.js"
-export { ProviderReplayValidationError, DEGRADED_REASONING_PLACEHOLDER } from "./providers/replay-validator.js"
-export {
-  assessProviderReplayability,
-  peekProviderReplay,
-  seedProviderReplayFromEvents,
-  isReplayCompatibleWithProvider,
-} from "./runtime/provider-replay.js"
-
-// ── Tools & Skills ─────────────────────────────────────────────────────────
-export { tool, streamingTool, executeTools, readFile, validateToolArguments } from "./tools/index.js"
+// ── Tool authoring ──────────────────────────────────────────────────────────
+export { tool, streamingTool } from "./tools/index.js"
 export type { RegisteredTool, ToolExecContext } from "./tools/index.js"
 export { safeTool, ok, fail, ToolError, formatToolError } from "./tools/errors.js"
 export type { ToolEnvelope, ToolEnvelopeOk, ToolEnvelopeFail } from "./tools/errors.js"
-export { scanSkillDir, readSkillFile } from "./skills/loader.js"
-export type { SkillMetadata } from "./skills/loader.js"
 
-// ── Memory ─────────────────────────────────────────────────────────────────
-export { WorkingMemory } from "./memory/working.js"
-export { InMemoryDreamStore } from "./memory/in-memory-store.js"
-export type {
-  DreamStore, DreamResult, SessionData, SessionMessage, MemoryEntry, CurationResult, CurationStats,
-  MemoryWriteRequest, MemoryQuery, MemoryRetrieval, MemoryMetadata, MemoryKind,
-} from "./memory/protocols.js"
+// ── Providers (base classes + the universal factory) ────────────────────────
+// Any backend — including a custom OpenAI-compatible endpoint — is reachable via `createProvider`.
+// Backend-specific classes (DeepSeek/Kimi/Qwen/GLM/Gemini/Ollama/MiniMax) live in `@deepstrike/sdk/providers`.
+export { AnthropicProvider } from "./providers/anthropic.js"
+export type { AnthropicProviderConfig } from "./providers/anthropic.js"
+export { OpenAIProvider } from "./providers/openai.js"
+export type { OpenAIProviderOptions } from "./providers/openai.js"
+export { OpenAIResponsesProvider } from "./providers/openai-responses.js"
+export { createProvider } from "./providers/catalog.js"
+export type { CreateProviderOptions, EndpointProfileId } from "./providers/catalog.js"
 
-// ── Knowledge & Signals ────────────────────────────────────────────────────
-export type { KnowledgeSource } from "./knowledge/source.js"
-export { ScheduledPrompt } from "./signals/scheduled.js"
-export { SignalGateway } from "./signals/gateway.js"
-export type { RuntimeSignal, SignalSource } from "./signals/types.js"
-
-// ── Safety & Governance ────────────────────────────────────────────────────
-export { PermissionManager, PermissionMode } from "./safety/permissions.js"
-export type { PermissionDecision, Permission } from "./safety/permissions.js"
-export { Governance, governancePolicyToKernelEvent } from "./governance.js"
+// ── Governance ──────────────────────────────────────────────────────────────
+export { Governance } from "./governance.js"
 export type { GovernanceVerdict, GovernancePolicy, GovernanceConstraint } from "./governance.js"
 
-// ── Harness ────────────────────────────────────────────────────────────────
-export { SinglePassHarness, EvalLoopHarness, HarnessLoop } from "./harness/harness.js"
-export type { HarnessRequest, HarnessOutcome, HarnessLoopOptions, QualityGate, CriterionResult, HarnessEvent, VerdictFn } from "./harness/harness.js"
+// ── Multi-agent primitive ───────────────────────────────────────────────────
+// Parallel fan-out / sub-agent delegation. The full orchestration layer is in `@deepstrike/sdk/workflow`.
+export { AgentPool } from "./collaboration/pool.js"
 
-// ── Types ──────────────────────────────────────────────────────────────────
+// ── Signals (the `RuntimeOptions.signalSource` surface) ─────────────────────
+export type { RuntimeSignal, SignalSource } from "./signals/types.js"
+
+// ── Core data types ─────────────────────────────────────────────────────────
 export type {
   Message, ToolCall, ToolResult, ToolSchema,
   ContentPart, TextPart, ImagePart, AudioPart,
   StreamEvent, TextDelta, ThinkingDelta,
   ToolCallEvent, ToolChunk, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, ToolAuditFailedEvent, DoneEvent, ErrorEvent,
   PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
-  LLMProvider, RetryConfig, TokenUsage, ProviderToolSpec, ProviderRunState, ProviderReplay,
-  RenderedContext, ReplayabilityAssessment,
-  CacheBreakpointStrategy,
+  LLMProvider, RetryConfig, TokenUsage,
 } from "./types.js"
 export type {
-  AgentCapabilityFilter,
-  AgentIdentity,
-  AgentIsolation,
-  AgentRunSpec,
-  AgentProcessChangedObservation,
-  ContextInheritance,
-  KernelAgentRole,
-  LoopResult,
-  MilestoneCheckResult,
-  MilestoneContract,
-  MilestonePhase,
-  MilestonePolicy,
-  SubAgentResult,
-  TerminationReason,
   WorkflowSpec,
   WorkflowNodeSpec,
-  WorkflowTaskSpec,
-  WorkflowSpawnInfo,
 } from "./types/agent.js"
-export {
-  agentIdentitySub,
-  agentRunSpecToKernel,
-  milestoneCheckFail,
-  milestoneCheckPass,
-  milestoneCheckResultToKernel,
-  subAgentResultToKernel,
-  workflowSpecToKernel,
-  workflowNodeSpecToKernel,
-  submitWorkflowNodesToKernel,
-  submitWorkflowToKernel,
-  submitWorkflowNodesTool,
-  startWorkflowTool,
-  fanoutSynthesize,
-  generateAndFilter,
-  verifyRules,
-  genEval,
-} from "./types/agent.js"
-
-// ── Collaboration layer (Layer 2 + Layer 3) ────────────────────────────────
-export type {
-  AcceptanceCriterion,
-  VerificationContract,
-  ContractCheckResult,
-} from "./collaboration/contract.js"
-export {
-  ContractBuilder,
-  formatContractForSystemPrompt,
-  contractToCriteriaStrings,
-} from "./collaboration/contract.js"
-export { AgentPool } from "./collaboration/pool.js"
-export type { AgentRole, IsolatedVerifierContext, CoordinatorConfig } from "./collaboration/pool.js"
-export { KERNEL_ROLE_MAP } from "./collaboration/pool.js"
-export { ContractDrivenHarness } from "./collaboration/harness.js"
-export type { ContractOutcome, ContractHarnessOptions, Violation } from "./collaboration/harness.js"
-export { HandoffBus } from "./collaboration/handoff.js"
-export type { HandoffArtifact, ContractOutcomeInput } from "./collaboration/handoff.js"
-export { CreatorVerifierMode, OrchestrationMode } from "./collaboration/modes/creator-verifier.js"
-export type { CreatorVerifierMetrics } from "./collaboration/modes/creator-verifier.js"

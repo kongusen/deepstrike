@@ -29,23 +29,41 @@ const OPENAI_POLICIES: Record<string, RuntimePolicy> = {
   "o4-mini":       { maxTurns: 25 },
 }
 
+/** Options-object form for `OpenAIProvider` — the recommended way to construct an OpenAI-compatible
+ *  provider (custom `baseURL` no longer needs a positional hole). */
+export interface OpenAIProviderOptions {
+  apiKey: string
+  model?: string
+  retry?: { maxRetries: number; baseDelay: number }
+  /** Custom OpenAI-compatible endpoint (MiMo, DeepSeek, Kimi, …). Defaults to the OpenAI API. */
+  baseURL?: string
+}
+
 export class OpenAIChatProvider implements LLMProvider {
   protected client: OpenAI
   protected circuit: CircuitBreaker
   protected maxRetries: number
   protected baseDelay: number
+  protected readonly model: string
   protected readonly chat = new OpenAIChatAdapter()
 
+  // Accepts either the options object (`new OpenAIProvider({ apiKey, model, baseURL })`) or the legacy
+  // positional form (still used by the backend subclasses' `super(...)` calls).
   constructor(
-    apiKey: string,
-    protected readonly model = "gpt-4o",
+    apiKeyOrOptions: string | OpenAIProviderOptions,
+    model = "gpt-4o",
     retry = { maxRetries: 3, baseDelay: 1000 },
     baseURL = "https://api.openai.com/v1",
   ) {
-    this.client = withServerRuntimeGuard(() => new OpenAI({ apiKey, baseURL }))
+    const o: Required<OpenAIProviderOptions> =
+      typeof apiKeyOrOptions === "string"
+        ? { apiKey: apiKeyOrOptions, model, retry, baseURL }
+        : { model: "gpt-4o", retry: { maxRetries: 3, baseDelay: 1000 }, baseURL: "https://api.openai.com/v1", ...apiKeyOrOptions }
+    this.model = o.model
+    this.client = withServerRuntimeGuard(() => new OpenAI({ apiKey: o.apiKey, baseURL: o.baseURL }))
     this.circuit = new CircuitBreaker()
-    this.maxRetries = retry.maxRetries
-    this.baseDelay = retry.baseDelay
+    this.maxRetries = o.retry.maxRetries
+    this.baseDelay = o.retry.baseDelay
   }
 
   runtimePolicy(): RuntimePolicy {

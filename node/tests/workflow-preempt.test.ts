@@ -6,7 +6,8 @@
  * its in-flight LLM call. Real native kernel; mock orchestrator whose child blocks until aborted.
  */
 import { getKernel } from "../src/kernel.js"
-import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane, SignalGateway } from "../src/index.js"
+import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/index.js"
+import { SignalGateway } from "../src/os/public.js"
 import type { WorkflowSpec } from "../src/index.js"
 
 describe("#2-B-ii mid-flight workflow preemption", () => {

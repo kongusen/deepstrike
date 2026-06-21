@@ -97,6 +97,11 @@ export async function runFanout(opts: RunFanoutOptions): Promise<{ synthesis: st
     ],
   }
   const outcome = await runner.runWorkflow(spec, opts.sessionId ? { sessionId: opts.sessionId } : undefined)
+  // The synthesis node is the last spec node; the kernel ids nodes `wf-node{index}`. Prefer that id,
+  // but fall back to the last completed node's output so a kernel id-scheme change can't silently
+  // return an empty synthesis.
   const synthesisId = `wf-node${opts.tasks.length}`
-  return { synthesis: outcome.outputs[synthesisId] ?? "", outputs: outcome.outputs }
+  const lastCompleted = outcome.completed[outcome.completed.length - 1]
+  const synthesis = outcome.outputs[synthesisId] ?? (lastCompleted ? outcome.outputs[lastCompleted] : undefined) ?? ""
+  return { synthesis, outputs: outcome.outputs }
 }

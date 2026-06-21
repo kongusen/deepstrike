@@ -1,4 +1,5 @@
-import { OpenAIProvider, CircuitBreaker } from "@deepstrike/sdk"
+import { OpenAIProvider } from "@deepstrike/sdk"
+import { CircuitBreaker } from "@deepstrike/sdk/providers"
 
 export const breaker = new CircuitBreaker(5, 60_000)
 

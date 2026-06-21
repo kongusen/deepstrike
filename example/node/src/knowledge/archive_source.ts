@@ -1,5 +1,5 @@
 import { loadNotes } from "../archive.js"
-import type { KnowledgeSource } from "@deepstrike/sdk"
+import type { KnowledgeSource } from "@deepstrike/sdk/memory"
 
 export class ArchiveKnowledgeSource implements KnowledgeSource {
   async init(): Promise<void> {}

@@ -76,9 +76,25 @@ const reply = await collectText(runner.run({ sessionId: "chat-1", goal: "What is
 
 Use `InMemorySessionLog` for process-local sessions or `FileSessionLog` when replay should survive restarts. `wake(sessionId)` resumes from the event log without inserting a duplicate `run_started` event.
 
+### Package layout (v0.2.30)
+
+The root export is the **intent layer** — what you reach for to run an agent, run a workflow, author a tool, or pick a provider (~30 symbols). Advanced machinery lives behind subpaths, so the common surface stays small and tree-shakeable:
+
+| Import | Contains |
+|--------|----------|
+| `@deepstrike/sdk` | `runAgent` · `runFanout` · `RuntimeRunner` · `tool` · `LocalExecutionPlane` · `InMemorySessionLog`/`FileSessionLog` · `AnthropicProvider`/`OpenAIProvider`/`OpenAIResponsesProvider` · `createProvider` · `Governance` · `AgentPool` · core types |
+| `@deepstrike/sdk/providers` | backend factories (`deepseek`, `kimi`, `qwen`, `glm`, `minimax`, `gemini`, `ollama`), profiles, `CircuitBreaker` |
+| `@deepstrike/sdk/workflow` | `SubAgentOrchestrator`, `spawnStandalone`, reducers, contracts, handoff/modes, agent + spec types |
+| `@deepstrike/sdk/planes` | `WorktreeExecutionPlane`, `ProcessSandboxPlane`, `McpProxyPlane`, `RemoteVpcPlane`, archive/credential stores |
+| `@deepstrike/sdk/memory` | `DreamStore`, `WorkingMemory`, `InMemoryDreamStore`, `KnowledgeSource` |
+| `@deepstrike/sdk/harness` | `SinglePassHarness`, `EvalLoopHarness`, `HarnessLoop`, `judge` |
+| `@deepstrike/sdk/os` | profiles, `KernelPrimitivesDashboard`, signals, `PermissionManager`, replay-testing utilities |
+
+> **Migration from 0.2.x:** the kernel-lowering converters (`*ToKernel`), low-level prompt/eval builders, and the `OpenAIChatProvider` alias are no longer exported from root; backend providers, planes, memory, harness, and OS utilities moved to the subpaths above. See [`MIGRATION-v0.2.300.md`](./MIGRATION-v0.2.300.md).
+
 ### Recipes — the canonical entry points
 
-The package exports a large surface, but most apps need one of three shapes. Start with the facades and drop down to `RuntimeRunner` only when you need streaming, signals, memory, or governance hooks.
+Most apps need one of three shapes. Start with the facades and drop down to `RuntimeRunner` only when you need streaming, signals, memory, or governance hooks.
 
 ```typescript
 import { runAgent, runFanout } from "@deepstrike/sdk"
@@ -232,36 +248,44 @@ A node's `kind` selects the control-flow shape; the same executor drives them al
 
 ## Providers
 
-| Class | Backend | Notes |
-|-------|---------|-------|
-| `OpenAIChatProvider` | OpenAI Chat Completions API | SSE tool-call accumulation |
-| `OpenAIProvider` | OpenAI Chat Completions API | Compatibility alias for `OpenAIChatProvider` |
-| `OpenAIResponsesProvider` | OpenAI Responses API | Native `previous_response_id` continuation |
-| `AnthropicProvider` | Anthropic API | Native SSE, `ThinkingDelta` support |
-| `QwenProvider` | DashScope | `enable_thinking` via extensions |
-| `DeepSeekProvider` | DeepSeek API | V4 thinking controls + reasoning replay across tool turns |
-| `MiniMaxProvider` | MiniMax API | Anthropic-compatible M2.7/M2.5 path |
-| `OllamaProvider` | Local Ollama | `http://localhost:11434` default |
-| `KimiProvider` | Moonshot API | K2.6 default; K2.5 also supported |
+The root package exports the three base providers — `AnthropicProvider`, `OpenAIProvider`,
+`OpenAIResponsesProvider` — plus `createProvider`. **Every other backend is a factory function** in
+`@deepstrike/sdk/providers`: one per backend, with a `protocol` option where a backend speaks both the
+OpenAI- and Anthropic-compatible wire.
 
-All providers accept `RetryConfig` for exponential backoff and share a `CircuitBreaker`.
+```typescript
+import { deepseek, kimi, minimax } from "@deepstrike/sdk/providers"
 
-`extensions` are forwarded by every provider in both `complete()` and `stream()` while SDK-owned structural fields such as `model`, `messages`, `tools`, and streaming flags remain protected.
+const ds = deepseek({ apiKey })                          // OpenAI-compatible wire (default)
+const dsA = deepseek({ apiKey, protocol: "anthropic" })  // Anthropic-compatible wire
+const mm = minimax({ apiKey })                           // MiniMax defaults to the Anthropic wire
+```
 
-**Custom OpenAI-compatible endpoint** (MiMo, DeepSeek, Kimi, Qwen, GLM via their `/v1` base URL): use `OpenAIChatProvider` (alias `OpenAIProvider`) and pass the base URL as the **4th** argument — the 3rd is `RetryConfig`:
+| Entry | Import from | Backend |
+|-------|-------------|---------|
+| `OpenAIProvider` | root | OpenAI Chat Completions (and any OpenAI-compatible `/v1`) |
+| `OpenAIResponsesProvider` | root | OpenAI Responses API (`previous_response_id` continuation) |
+| `AnthropicProvider` | root | Anthropic Messages API (`ThinkingDelta` support) |
+| `deepseek` · `kimi` · `qwen` · `glm` · `minimax` · `gemini` · `ollama` | `@deepstrike/sdk/providers` | the respective vendor (factory functions) |
+
+Providers take an **options object** and share a `CircuitBreaker`. `extensions` are forwarded in both
+`complete()` and `stream()`; SDK-owned fields (`model`, `messages`, `tools`, streaming flags) stay protected.
+
+**Custom OpenAI-compatible endpoint** (MiMo, DeepSeek, Kimi, Qwen, GLM via their `/v1` base URL): construct
+`OpenAIProvider` with an options object — no more positional `baseURL` hole:
 
 ```typescript
 import { OpenAIProvider } from "@deepstrike/sdk"
 
-const provider = new OpenAIProvider(
+const provider = new OpenAIProvider({
   apiKey,
-  "mimo-v2.5-pro",
-  { maxRetries: 3, baseDelay: 1000 }, // RetryConfig (pass undefined for defaults)
-  "https://token-plan-cn.xiaomimimo.com/v1",
-)
+  model: "mimo-v2.5-pro",
+  baseURL: "https://token-plan-cn.xiaomimimo.com/v1",
+})
 ```
 
-Prefer a dedicated `*Provider` (e.g. `DeepSeekProvider`, `KimiProvider`) when one exists for your backend — they default the base URL and add backend-specific reasoning handling. OpenAI itself can also be selected through the provider catalog:
+Prefer a dedicated backend class from `@deepstrike/sdk/providers` when one exists — they default the base
+URL and add backend-specific reasoning handling. Any model can also be selected through the catalog: `createProvider` picks the protocol/endpoint for you:
 
 ```typescript
 import { createProvider } from "@deepstrike/sdk"

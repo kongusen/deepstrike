@@ -1,7 +1,7 @@
 import { readFile, writeFile, mkdir, readdir } from "fs/promises"
 import { join } from "path"
 import { MEMORY_DIR } from "../paths.js"
-import type { DreamStore, SessionData, MemoryEntry, CurationResult } from "@deepstrike/sdk"
+import type { DreamStore, SessionData, MemoryEntry, CurationResult } from "@deepstrike/sdk/memory"
 
 function agentDir(agentId: string) {
   return join(MEMORY_DIR, agentId)
