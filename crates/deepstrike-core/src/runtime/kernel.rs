@@ -106,6 +106,102 @@ impl KernelInput {
     }
 }
 
+/// K2: the governance sub-bundle of [`RunConfig`] — the same five fields as the `LoadGovernancePolicy`
+/// event, grouped so a run's whole governance posture travels as one value.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GovernanceConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_action: Option<PolicyAction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<PolicyRule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vetoed_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rate_limits: Vec<RateLimitSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<ConstraintSpec>,
+}
+
+/// K2: a bundle of run-setup configuration carried by the [`KernelInputEvent::ConfigureRun`] event.
+/// Each field maps 1:1 to a granular `Set*` / `Load*` event; `None`/absent leaves that aspect untouched.
+/// This is the host-side analogue of the SDK's `applyKernelPolicies` — one event for the whole setup.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RunConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ToolSchema>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_skills: Option<Vec<SkillMetadata>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stable_core_tools: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_tool_enabled: Option<bool>,
+    /// Present (any value) ⇒ reset the token engine to the char-approx estimator (see `SetTokenizer`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokenizer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub governance: Option<GovernanceConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_max_queue_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduler_max_wall_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_quota: Option<crate::governance::quota::ResourceQuota>,
+}
+
+/// Build a [`GovernancePipeline`](crate::governance::pipeline::GovernancePipeline) from the ABI policy
+/// fields. Shared by the `LoadGovernancePolicy` event and the `ConfigureRun` bundle so the two can never
+/// drift in how they interpret rules / vetoes / rate-limits / constraints.
+pub(crate) fn build_governance_pipeline(
+    default_action: Option<PolicyAction>,
+    rules: Vec<PolicyRule>,
+    vetoed_tools: Vec<String>,
+    rate_limits: Vec<RateLimitSpec>,
+    constraints: Vec<ConstraintSpec>,
+) -> crate::governance::pipeline::GovernancePipeline {
+    use crate::governance::constraint::{ConstraintRule, ParamConstraint};
+    use crate::governance::permission::PermissionRule;
+    use crate::governance::rate_limit::RateLimit;
+    let default = default_action.unwrap_or(PolicyAction::Allow).into();
+    let mut pipeline = crate::governance::pipeline::GovernancePipeline::new(default);
+    for rule in rules {
+        pipeline.permission.add_rule(PermissionRule {
+            tool_pattern: rule.tool_pattern.into(),
+            action: rule.action.into(),
+        });
+    }
+    for tool in vetoed_tools {
+        pipeline.veto.block_tool(tool);
+    }
+    for rl in rate_limits {
+        pipeline.rate_limiter.set_limit(
+            rl.tool,
+            RateLimit {
+                max_calls: rl.max_calls,
+                window_ms: rl.window_ms,
+            },
+        );
+    }
+    for c in constraints {
+        let (tool_name, param_path, rule) = match c {
+            ConstraintSpec::Required { tool, path } => (tool, path, ConstraintRule::Required),
+            ConstraintSpec::Enum { tool, path, values } => (tool, path, ConstraintRule::Enum(values)),
+            ConstraintSpec::Range { tool, path, min, max } => {
+                (tool, path, ConstraintRule::Range { min, max })
+            }
+        };
+        pipeline.constraints.add(ParamConstraint {
+            tool_name,
+            param_path,
+            rule,
+        });
+    }
+    pipeline
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum KernelInputEvent {
@@ -194,6 +290,13 @@ pub enum KernelInputEvent {
         task: RuntimeTask,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run_spec: Option<AgentRunSpec>,
+    },
+    /// K2: apply a bundle of run-setup configuration in a single event — the consolidation of the
+    /// ~10 discrete `Set*` / `Load*` config events the SDK used to fire one-by-one before `StartRun`.
+    /// Every field is optional; an absent field leaves that aspect untouched. The granular events
+    /// remain for runtime mutation (a skill mount changing tools, a mid-run budget change). ABI-additive.
+    ConfigureRun {
+        config: RunConfig,
     },
     CapabilityCommand {
         command: CapabilityCommand,
@@ -753,51 +856,74 @@ impl KernelRuntime {
                 rate_limits,
                 constraints,
             } => {
-                use crate::governance::constraint::{ConstraintRule, ParamConstraint};
-                use crate::governance::permission::PermissionRule;
-                use crate::governance::rate_limit::RateLimit;
-                let default = default_action.unwrap_or(PolicyAction::Allow).into();
-                let mut pipeline = crate::governance::pipeline::GovernancePipeline::new(default);
-                for rule in rules {
-                    pipeline.permission.add_rule(PermissionRule {
-                        tool_pattern: rule.tool_pattern.into(),
-                        action: rule.action.into(),
-                    });
+                self.sm.set_governance(build_governance_pipeline(
+                    default_action,
+                    rules,
+                    vetoed_tools,
+                    rate_limits,
+                    constraints,
+                ));
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::ConfigureRun { config } => {
+                // K2: apply a bundle of run-setup config in one event (tools / governance / attention /
+                // quota / scheduler / toggles), replacing the ~10 separate `Set*` / `Load*` events the
+                // SDK used to fire one-by-one. Each field is optional; an absent field is left untouched.
+                // The individual events remain for runtime mutation (skill mount, mid-run budget change).
+                // Each branch delegates to exactly the method its granular event uses, so the two paths
+                // can never diverge.
+                let RunConfig {
+                    tools,
+                    available_skills,
+                    stable_core_tools,
+                    memory_enabled,
+                    knowledge_enabled,
+                    plan_tool_enabled,
+                    tokenizer,
+                    governance,
+                    attention_max_queue_size,
+                    scheduler_max_wall_ms,
+                    resource_quota,
+                } = config;
+                if let Some(tools) = tools {
+                    self.sm.tools = tools;
                 }
-                for tool in vetoed_tools {
-                    pipeline.veto.block_tool(tool);
+                if let Some(skills) = available_skills {
+                    self.sm.ctx.set_available_skills(skills);
                 }
-                for rl in rate_limits {
-                    pipeline.rate_limiter.set_limit(
-                        rl.tool,
-                        RateLimit {
-                            max_calls: rl.max_calls,
-                            window_ms: rl.window_ms,
-                        },
-                    );
+                if let Some(ids) = stable_core_tools {
+                    self.sm.ctx.set_stable_core_tools(ids.into_iter().map(Into::into));
                 }
-                for c in constraints {
-                    let (tool_name, param_path, rule) = match c {
-                        ConstraintSpec::Required { tool, path } => {
-                            (tool, path, ConstraintRule::Required)
-                        }
-                        ConstraintSpec::Enum { tool, path, values } => {
-                            (tool, path, ConstraintRule::Enum(values))
-                        }
-                        ConstraintSpec::Range {
-                            tool,
-                            path,
-                            min,
-                            max,
-                        } => (tool, path, ConstraintRule::Range { min, max }),
-                    };
-                    pipeline.constraints.add(ParamConstraint {
-                        tool_name,
-                        param_path,
-                        rule,
-                    });
+                if let Some(enabled) = memory_enabled {
+                    self.sm.ctx.set_memory_enabled(enabled);
                 }
-                self.sm.set_governance(pipeline);
+                if let Some(enabled) = knowledge_enabled {
+                    self.sm.ctx.set_knowledge_enabled(enabled);
+                }
+                if let Some(enabled) = plan_tool_enabled {
+                    self.sm.ctx.set_plan_tool_enabled(enabled);
+                }
+                if tokenizer.is_some() {
+                    self.sm.ctx.engine = ContextTokenEngine::char_approx();
+                }
+                if let Some(g) = governance {
+                    self.sm.set_governance(build_governance_pipeline(
+                        g.default_action,
+                        g.rules,
+                        g.vetoed_tools,
+                        g.rate_limits,
+                        g.constraints,
+                    ));
+                }
+                if let Some(max_queue) = attention_max_queue_size {
+                    self.sm.set_attention(max_queue as usize);
+                }
+                if let Some(ms) = scheduler_max_wall_ms {
+                    self.sm.set_wall_budget(Some(ms));
+                }
+                if let Some(quota) = resource_quota {
+                    self.sm.set_resource_quota(quota);
+                }
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::SetAttentionPolicy { max_queue_size } => {
@@ -883,6 +1009,10 @@ impl KernelRuntime {
                 resumed_completed,
                 resumed_submissions,
             } => {
+                // K1: self-bootstrap the run if the host never fired `StartRun` (stateless
+                // `runWorkflow` caller). Parity with the agent-reachable `SubmitWorkflow`, which already
+                // bootstraps. Idempotent no-op once the root task has left `Ready`.
+                self.sm.ensure_started_for_workflow(&spec);
                 let action = if resumed_completed.is_empty() && resumed_submissions.is_empty() {
                     self.sm.load_workflow(spec, &parent_session_id)
                 } else {
@@ -1543,6 +1673,62 @@ mod tests {
     }
 
     #[test]
+    fn configure_run_bundle_applies_governance_equivalently_to_load_governance_policy() {
+        // K2: the consolidated `ConfigureRun` bundle must apply governance identically to the granular
+        // `LoadGovernancePolicy` event — a deny rule blocks the matching tool and re-prompts.
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+            config: RunConfig {
+                tools: Some(vec![]),
+                governance: Some(GovernanceConfig {
+                    default_action: Some(PolicyAction::Allow),
+                    rules: vec![PolicyRule {
+                        tool_pattern: "danger.*".to_string(),
+                        action: PolicyAction::Deny,
+                    }],
+                    ..GovernanceConfig::default()
+                }),
+                attention_max_queue_size: Some(32),
+                ..RunConfig::default()
+            },
+        }));
+
+        let step = run_with_tool_call(&mut runtime, "danger.delete");
+
+        assert!(
+            matches!(step.actions.as_slice(), [KernelAction::CallProvider { .. }]),
+            "bundle-configured deny should roll back and re-call provider, got {:?}",
+            step.actions
+        );
+        assert!(
+            step.observations
+                .iter()
+                .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
+            "expected a Rollbacked observation for the bundle-denied turn",
+        );
+    }
+
+    #[test]
+    fn configure_run_round_trips_over_the_abi() {
+        // The bundle must survive the versioned JSON ABI (replayable / session-loggable) like every
+        // other host event.
+        let event = KernelInputEvent::ConfigureRun {
+            config: RunConfig {
+                resource_quota: Some(crate::governance::quota::ResourceQuota {
+                    max_concurrent_subagents: Some(2),
+                    ..Default::default()
+                }),
+                scheduler_max_wall_ms: Some(60_000),
+                plan_tool_enabled: Some(true),
+                ..RunConfig::default()
+            },
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: KernelInputEvent = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(parsed, KernelInputEvent::ConfigureRun { .. }));
+    }
+
+    #[test]
     fn governance_ask_user_suspends_until_resume() {
         let mut runtime = KernelRuntime::new(LoopPolicy::default());
         runtime.step(KernelInput::new(KernelInputEvent::LoadGovernancePolicy {
@@ -1930,6 +2116,60 @@ mod tests {
         )));
 
         // Synth completes → workflow finishes.
+        let step = complete(&mut runtime, "wf-node2");
+        assert!(step.observations.iter().any(|o| matches!(
+            o,
+            KernelObservation::WorkflowCompleted { completed, .. } if completed.len() == 3
+        )));
+    }
+
+    #[test]
+    fn load_workflow_self_bootstraps_with_no_prior_start_run() {
+        // K1: a stateless `runWorkflow` caller fires `LoadWorkflow` with NO preceding `StartRun`. The
+        // host path now self-bootstraps the run (parity with the agent-reachable `SubmitWorkflow`), so
+        // the DAG installs and drives to completion exactly as the started-path test above.
+        use crate::orchestration::workflow::fanout_synthesize;
+        use crate::types::result::{LoopResult, SubAgentResult, TerminationReason};
+
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        // NOTE: deliberately no StartRun here — that is the whole point of K1.
+
+        let spec =
+            fanout_synthesize(vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")], RuntimeTask::new("synth"));
+        let step = runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow {
+            spec,
+            parent_session_id: "sess".to_string(),
+            resumed_completed: Vec::new(),
+            resumed_submissions: Vec::new(),
+        }));
+        let batch = step
+            .observations
+            .iter()
+            .find_map(|o| match o {
+                KernelObservation::WorkflowBatchSpawned { nodes, .. } => Some(nodes.clone()),
+                _ => None,
+            })
+            .expect("workflow_batch_spawned even without a prior StartRun");
+        assert_eq!(batch.len(), 2);
+
+        let complete = |runtime: &mut KernelRuntime, id: &str| {
+            runtime.step(KernelInput::new(KernelInputEvent::SubAgentCompleted {
+                result: SubAgentResult {
+                    agent_id: compact_str::CompactString::new(id),
+                    result: LoopResult {
+                        termination: TerminationReason::Completed,
+                        final_message: None,
+                        turns_used: 1,
+                        total_tokens_used: 1,
+                        loop_continue: None,
+                        classify_branch: None,
+                        tournament_winner: None,
+                    },
+                },
+            }))
+        };
+        complete(&mut runtime, "wf-node0");
+        complete(&mut runtime, "wf-node1");
         let step = complete(&mut runtime, "wf-node2");
         assert!(step.observations.iter().any(|o| matches!(
             o,
