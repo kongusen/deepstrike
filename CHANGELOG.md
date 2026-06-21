@@ -6,6 +6,39 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.30] - 2026-06-21
+
+### Changed — BREAKING: streamlined public API surface
+
+- **The SDK public API is tiered and trimmed (no back-compat shims).** The root package now exports only
+  the ~30-symbol intent layer (run an agent, run a workflow, author a tool, pick a provider); advanced
+  machinery moved behind subpath/submodule imports. Kernel-boundary plumbing (the `*ToKernel` converters,
+  low-level prompt/eval builders, adapters) is no longer exported. See **`node/MIGRATION-v0.2.30.md`** —
+  most migrations are a one-line import-path change.
+  - **Node:** `@deepstrike/sdk` root + subpaths `@deepstrike/sdk/{providers,workflow,planes,memory,harness,os}`
+    (package `exports` + `typesVersions`).
+  - **Python:** `run_agent` / `run_fanout` at top level; advanced symbols via `deepstrike.{providers,…}` submodules.
+  - **WASM:** `runAgent` / `runFanout` added (the bundle was already lean).
+- **`runAgent` / `runFanout` facades — the canonical entry points** for single-agent and parallel
+  fan-out→synthesize, on Node / Python / WASM (Rust already had `RuntimeRunner::execute`).
+- **Provider families collapsed to one factory per backend.** The dual `<Backend>Provider` /
+  `<Backend>AnthropicProvider` classes are replaced by `deepseek` / `kimi` / `qwen` / `glm` / `minimax` /
+  `gemini` / `ollama` factory functions, with a `protocol` option where a backend speaks both wires
+  (Node + Python; WASM was already single-class; Rust pioneered the pattern). Base providers
+  (`AnthropicProvider` / `OpenAIProvider` / `OpenAIResponsesProvider`) take an **options object**.
+
+### Added — kernel streamlining (K1 + K2)
+
+- **K1 — host `load_workflow` self-bootstraps.** A standalone `runWorkflow` (stateless handler) no longer
+  needs a preceding `start_run`; the host path now bootstraps the run like the agent-reachable
+  `submit_workflow` already did. Idempotent for started runs.
+- **K2 — `configure_run` bundle event.** The ~11 discrete `set_*` / `load_*` run-setup events collapse
+  into one `RunConfig` bundle (tools / governance / attention / quota / scheduler / toggles); the granular
+  events remain for runtime mutation. `build_governance_pipeline` is now shared so bundled and granular
+  governance can't drift. ABI-additive.
+- SDK adoption of K1/K2 (dropping the redundant `start_run`, sending one `configure_run`) rides on the
+  0.2.30 core binary the SDKs now depend on.
+
 ## [0.2.28] - 2026-06-21
 
 ### Added

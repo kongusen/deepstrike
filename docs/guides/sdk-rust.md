@@ -819,7 +819,7 @@ while let Some(evt) = stream.next().await {
 ### 12.2 子智能体隔离与生成 (Sub-agents)
 
 > [!NOTE]
-> Rust SDK 目前仅在底层内核支持 Isolation Manifest 与子智能体生命周期，**v0.2.x 版本暂不直接提供 SDK 层的子智能体运行编排 API (SubAgentOrchestrator)**。该功能已规划在 v0.3.0 中推出。
+> Rust SDK 目前仅在底层内核支持 Isolation Manifest 与子智能体生命周期，**v0.2.x 版本暂不直接提供 SDK 层的子智能体运行编排 API (SubAgentOrchestrator)**。该功能已规划在 v0.2.3.0 中推出。
 
 ### 12.3 产物推送 (Artifacts)
 
