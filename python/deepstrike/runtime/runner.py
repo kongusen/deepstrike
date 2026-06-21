@@ -512,19 +512,23 @@ class RuntimeRunner:
     self._active_kernel = runtime
     goal = f"workflow:{len(spec.nodes)} nodes"
 
+    # K2: lower governance / attention / scheduler in ONE `configure_run` event (resource-quota is
+    # already applied by `_create_syscall_runtime`). Requires the 0.2.30 core that ships `configure_run`.
     os_profile = assert_native_profile(self._opts.os_profile or "native")
     gov_policy = self._opts.governance_policy or os_profile.governance_policy
-    kernel_apply(runtime, self._pending_observations, governance_policy_to_kernel_event(gov_policy))
+    governance = {k: v for k, v in governance_policy_to_kernel_event(gov_policy).items() if k != "kind"}
+    config: dict[str, Any] = {"governance": governance}
     ap = self._opts.attention_policy or os_profile.attention_policy
     max_q = ap.get("max_queue_size") if isinstance(ap, dict) else getattr(ap, "max_queue_size", None)
-    kernel_apply(runtime, self._pending_observations, {
-      "kind": "set_attention_policy",
-      **({"max_queue_size": max_q} if max_q is not None else {}),
-    })
+    if max_q is not None:
+      config["attention_max_queue_size"] = max_q
     scheduler_budget = _scheduler_budget_to_kernel(self._opts.scheduler_budget)
-    if scheduler_budget is not None:
-      kernel_apply(runtime, self._pending_observations, {"kind": "set_scheduler_budget", **scheduler_budget})
-    kernel_apply(runtime, self._pending_observations, {"kind": "start_run", "task": {"goal": goal, "criteria": []}})
+    if scheduler_budget is not None and scheduler_budget.get("max_wall_ms") is not None:
+      config["scheduler_max_wall_ms"] = scheduler_budget["max_wall_ms"]
+    kernel_apply(runtime, self._pending_observations, {"kind": "configure_run", "config": config})
+    # K1: no explicit `start_run` — the host `load_workflow` (fired next by `run_workflow`) self-bootstraps
+    # the run on the 0.2.30 core, matching the agent-reachable `submit_workflow` path.
+    _ = goal
     return runtime
 
   async def _run_workflow_inner(

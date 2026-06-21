@@ -27,6 +27,15 @@ export class KernelRuntime {
         this.governanceAskUser = rules.some(r => r.action === "ask_user")
         break
       }
+      case "configure_run": {
+        // K2: the SDK now bundles governance (+ attention/scheduler/quota — no-ops in this mock) into
+        // one event. Apply governance the same way `load_governance_policy` does.
+        const config = (event.config as Record<string, unknown>) ?? {}
+        const governance = (config.governance as { rules?: Array<{ action?: string }> }) ?? {}
+        const rules = governance.rules ?? []
+        this.governanceAskUser = rules.some(r => r.action === "ask_user")
+        break
+      }
       case "set_attention_policy":
         break
       case "start_run":

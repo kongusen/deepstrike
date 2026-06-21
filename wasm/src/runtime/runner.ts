@@ -1215,41 +1215,27 @@ export class RuntimeRunner {
     const attentionPolicy = this.opts.attentionPolicy ?? osProfile.attentionPolicy
     const governancePolicy = this.opts.governancePolicy ?? osProfile.governancePolicy
 
-    kernelApply(runtime, this.pendingObservations, governancePolicyToKernelEvent(governancePolicy))
-    kernelApply(runtime, this.pendingObservations, {
-      kind: "set_attention_policy",
-      ...(attentionPolicy.maxQueueSize !== undefined
-        ? { max_queue_size: attentionPolicy.maxQueueSize }
-        : {}),
-    })
-    if (this.opts.schedulerBudget) {
-      kernelApply(runtime, this.pendingObservations, {
-        kind: "set_scheduler_budget",
-        ...(this.opts.schedulerBudget.maxWallMs !== undefined
-          ? { max_wall_ms: this.opts.schedulerBudget.maxWallMs }
-          : {}),
-      })
+    // K2: lower governance / attention / scheduler / quota in ONE `configure_run` event (the 0.2.30
+    // core applies each present field via its granular path). `set_memory_policy` stays separate below.
+    const { kind: _govKind, ...governance } = governancePolicyToKernelEvent(governancePolicy) as Record<string, unknown>
+    const config: Record<string, unknown> = { governance }
+    if (attentionPolicy.maxQueueSize !== undefined) {
+      config.attention_max_queue_size = attentionPolicy.maxQueueSize
+    }
+    if (this.opts.schedulerBudget?.maxWallMs !== undefined) {
+      config.scheduler_max_wall_ms = this.opts.schedulerBudget.maxWallMs
     }
     if (this.opts.resourceQuota) {
       const q = this.opts.resourceQuota
-      kernelApply(runtime, this.pendingObservations, {
-        kind: "set_resource_quota",
-        quota: {
-          ...(q.maxConcurrentSubagents !== undefined
-            ? { max_concurrent_subagents: q.maxConcurrentSubagents }
-            : {}),
-          ...(q.maxSpawnDepth !== undefined ? { max_spawn_depth: q.maxSpawnDepth } : {}),
-          ...(q.memoryWritesPerWindow !== undefined
-            ? {
-                memory_writes_per_window: [
-                  q.memoryWritesPerWindow.maxWrites,
-                  q.memoryWritesPerWindow.windowMs,
-                ],
-              }
-            : {}),
-        },
-      })
+      config.resource_quota = {
+        ...(q.maxConcurrentSubagents !== undefined ? { max_concurrent_subagents: q.maxConcurrentSubagents } : {}),
+        ...(q.maxSpawnDepth !== undefined ? { max_spawn_depth: q.maxSpawnDepth } : {}),
+        ...(q.memoryWritesPerWindow !== undefined
+          ? { memory_writes_per_window: [q.memoryWritesPerWindow.maxWrites, q.memoryWritesPerWindow.windowMs] }
+          : {}),
+      }
     }
+    kernelApply(runtime, this.pendingObservations, { kind: "configure_run", config })
     if (this.opts.memoryPolicy) {
       const m = this.opts.memoryPolicy
       kernelApply(runtime, this.pendingObservations, {
@@ -1297,7 +1283,9 @@ export class RuntimeRunner {
     ).catch(() => {})
 
     this.applyKernelPolicies(runtime)
-    kernelApply(runtime, this.pendingObservations, { kind: "start_run", task: { goal, criteria: [] } })
+    // K1: no explicit `start_run` — the host `load_workflow` (fired next by `runWorkflow`) self-bootstraps
+    // the run on the 0.2.30 core, matching the agent-reachable `submit_workflow` path.
+    void goal
     return runtime
   }
 

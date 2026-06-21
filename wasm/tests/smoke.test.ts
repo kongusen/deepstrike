@@ -178,7 +178,7 @@ describe("RuntimeRunner", () => {
     expect(text).toBe("hi")
   })
 
-  it("emits set_resource_quota when resourceQuota is configured", async () => {
+  it("emits configure_run with resourceQuota + schedulerBudget bundled (K2)", async () => {
     kernelEvents.length = 0
     const provider: LLMProvider = {
       async *stream() {
@@ -203,18 +203,16 @@ describe("RuntimeRunner", () => {
 
     await collectText(runner.run({ sessionId: "quota-wasm", goal: "go" }))
 
-    expect(kernelEvents).toContainEqual({
-      kind: "set_resource_quota",
-      quota: {
-        max_concurrent_subagents: 2,
-        max_spawn_depth: 1,
-        memory_writes_per_window: [3, 1000],
-      },
+    const configure = kernelEvents.find((e: { kind: string }) => e.kind === "configure_run") as
+      | { config: Record<string, unknown> }
+      | undefined
+    expect(configure).toBeDefined()
+    expect(configure!.config.resource_quota).toEqual({
+      max_concurrent_subagents: 2,
+      max_spawn_depth: 1,
+      memory_writes_per_window: [3, 1000],
     })
-    expect(kernelEvents).toContainEqual({
-      kind: "set_scheduler_budget",
-      max_wall_ms: 1234,
-    })
+    expect(configure!.config.scheduler_max_wall_ms).toBe(1234)
   })
 
   it("continues an ask_user-gated tool after host approval", async () => {
