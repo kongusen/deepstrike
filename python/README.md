@@ -55,6 +55,25 @@ asyncio.run(collect_text(runner.run(
 # => "45"
 ```
 
+### Recipes — the canonical entry points
+
+Most apps need one of two shapes. Start with the facades; drop to `RuntimeRunner` for streaming, tools, signals, memory, or governance.
+
+```python
+from deepstrike import run_agent, run_fanout
+
+# 1) Single agent — one prompt, one model, the text back.
+answer = await run_agent(provider=provider, goal="What is 17 + 28?", tools=[add])
+
+# 2) Parallel fan-out → synthesize over the kernel-gated DAG (safe from a stateless handler).
+out = await run_fanout(
+    provider=provider,
+    tasks=["Summarize the auth module", "Summarize the data layer"],
+    synthesize="Combine the findings into one summary.",
+)
+synthesis = out["synthesis"]
+```
+
 Same-session continuity is explicit via `session_id`:
 
 ```python
@@ -192,17 +211,25 @@ runner = RuntimeRunner(RuntimeOptions(
 ))
 ```
 
-| Class | Backend | Notes |
-|-------|---------|-------|
-| `OpenAIProvider` | OpenAI API | SSE tool-call accumulation |
-| `AnthropicProvider` | Anthropic API | Native SSE, `ThinkingDelta` support |
-| `QwenProvider` | DashScope | `enable_thinking` via extensions |
-| `DeepSeekProvider` | DeepSeek API | Reasoner models strip tools automatically |
-| `MiniMaxProvider` | MiniMax API | M1 reasoning via `expose_reasoning` |
-| `OllamaProvider` | Local Ollama | `http://localhost:11434` default |
-| `KimiProvider` | Moonshot API | |
+The top-level package exports the base providers `OpenAIProvider`, `OpenAIResponsesProvider`, and
+`AnthropicProvider`. **Every other backend is a factory function** in `deepstrike.providers`, with a
+`protocol` argument where a backend speaks both the OpenAI- and Anthropic-compatible wire:
 
-All providers accept `RetryConfig` for exponential backoff and share a `CircuitBreaker`.
+```python
+from deepstrike.providers import deepseek, kimi, minimax
+
+ds = deepseek(api_key="...")                          # OpenAI-compatible wire (default)
+dsA = deepseek(api_key="...", protocol="anthropic")   # Anthropic-compatible wire
+mm = minimax(api_key="...")                           # MiniMax defaults to the Anthropic wire
+```
+
+| Entry | Import from | Backend |
+|-------|-------------|---------|
+| `OpenAIProvider` / `OpenAIResponsesProvider` | `deepstrike` | OpenAI (and OpenAI-compatible) |
+| `AnthropicProvider` | `deepstrike` | Anthropic Messages API |
+| `deepseek` · `kimi` · `qwen` · `glm` · `minimax` · `gemini` · `ollama` | `deepstrike.providers` | the respective vendor (factory functions) |
+
+All providers accept `retry_config` for exponential backoff and share a `CircuitBreaker`.
 
 `extensions` are forwarded to the provider while SDK-owned structural fields remain protected.
 

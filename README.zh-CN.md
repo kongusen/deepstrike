@@ -164,7 +164,7 @@ const outcome = await runner.runWorkflow(spec)
 | Rust | `deepstrike-sdk` | `cargo add deepstrike-sdk` |
 | 浏览器 / 边缘 / WASM | `@deepstrike/wasm` | `npm install @deepstrike/wasm` |
 
-当前工作区版本:`0.2.11`。
+当前工作区版本:`0.2.30`。
 
 ## 快速开始
 
@@ -175,36 +175,28 @@ npm install @deepstrike/sdk
 ```
 
 ```ts
-import {
-  AnthropicProvider,
-  InMemorySessionLog,
-  LocalExecutionPlane,
-  RuntimeRunner,
-  collectText,
-  tool,
-} from "@deepstrike/sdk"
+import { runAgent, runFanout, AnthropicProvider, tool } from "@deepstrike/sdk"
 
-const schema = JSON.stringify({
+const add = tool("add", "两数相加。", {
   type: "object",
   properties: { x: { type: "number" }, y: { type: "number" } },
   required: ["x", "y"],
-})
+}, async ({ x, y }) => String((x as number) + (y as number)))
 
-const add = tool("add", "两数相加。", schema, async ({ x, y }) => {
-  return String((x as number) + (y as number))
-})
+const provider = new AnthropicProvider({ apiKey: process.env.ANTHROPIC_API_KEY! })
 
-const runner = new RuntimeRunner({
-  provider: new AnthropicProvider(process.env.ANTHROPIC_API_KEY!),
-  executionPlane: new LocalExecutionPlane().register(add),
-  sessionLog: new InMemorySessionLog(),
-  maxTokens: 32_000,
-})
+// 一个提示、一个模型、拿回文本。
+const answer = await runAgent({ provider, goal: "2 + 3 等于几?", tools: [add] })
 
-const answer = await collectText(
-  runner.run({ sessionId: "demo", goal: "2 + 3 等于几?" }),
-)
+// 或并行扇出 N 个任务再综合 —— 走内核门控的 DAG,无状态 handler 也安全。
+const { synthesis } = await runFanout({
+  provider,
+  tasks: ["总结鉴权模块", "总结数据层"],
+  synthesize: "把这些发现合并成一段总结。",
+})
 ```
+
+`runAgent` / `runFanout`是标准入口;需要流式、工具、信号、记忆、治理或独立 `runWorkflow` 驱动时再下沉到 `RuntimeRunner`。进阶符号在子路径 `@deepstrike/sdk/{providers,workflow,planes,memory,harness,os}`。详见 [Node SDK README](./node/README.md) 与 [MIGRATION-v0.2.30](./node/MIGRATION-v0.2.30.md)。
 
 ### Python
 
@@ -213,36 +205,27 @@ pip install deepstrike
 ```
 
 ```py
-from deepstrike import (
-    AnthropicProvider,
-    InMemorySessionLog,
-    LocalExecutionPlane,
-    RuntimeOptions,
-    RuntimeRunner,
-    collect_text,
-    tool,
-)
+from deepstrike import AnthropicProvider, run_agent, tool
 
 @tool
 def add(x: int, y: int) -> int:
     """两数相加。"""
     return x + y
 
-runner = RuntimeRunner(RuntimeOptions(
+answer = await run_agent(
     provider=AnthropicProvider(api_key="..."),
-    execution_plane=LocalExecutionPlane().register(add),
-    session_log=InMemorySessionLog(),
-    max_tokens=32_000,
-))
-
-answer = await collect_text(runner.run_streaming("2 + 3 等于几?"))
+    goal="2 + 3 等于几?",
+    tools=[add],
+)
 ```
+
+`run_agent` / `run_fanout`是标准入口;需要流式/工具/治理时再下沉到 `RuntimeRunner`。进阶符号在 `deepstrike.{providers,workflow,memory,harness}` 子模块。
 
 ### Rust
 
 ```toml
 [dependencies]
-deepstrike-sdk = "0.2.11"
+deepstrike-sdk = "0.2.30"
 ```
 
 完整示例、provider 配置、流式事件与治理钩子,见 [SDK 指南](./docs/guides/index.md)。动态工作流驱动(`runWorkflow` / `run_workflow`)见各 SDK 的 **Dynamic workflows** 小节:[Node.js](./node/README.md#dynamic-workflows) · [Python](./python/README.md#dynamic-workflows)。

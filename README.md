@@ -163,7 +163,7 @@ SDK-specific APIs and examples: [Node.js](./node/README.md#what-agent-os-gives-y
 | Rust | `deepstrike-sdk` | `cargo add deepstrike-sdk` |
 | Browser / Edge / WASM | `@deepstrike/wasm` | `npm install @deepstrike/wasm` |
 
-Current workspace version: `0.2.11`.
+Current workspace version: `0.2.30`.
 
 ## Quick start
 
@@ -174,36 +174,28 @@ npm install @deepstrike/sdk
 ```
 
 ```ts
-import {
-  AnthropicProvider,
-  InMemorySessionLog,
-  LocalExecutionPlane,
-  RuntimeRunner,
-  collectText,
-  tool,
-} from "@deepstrike/sdk"
+import { runAgent, runFanout, AnthropicProvider, tool } from "@deepstrike/sdk"
 
-const schema = JSON.stringify({
+const add = tool("add", "Add two numbers.", {
   type: "object",
   properties: { x: { type: "number" }, y: { type: "number" } },
   required: ["x", "y"],
-})
+}, async ({ x, y }) => String((x as number) + (y as number)))
 
-const add = tool("add", "Add two numbers.", schema, async ({ x, y }) => {
-  return String((x as number) + (y as number))
-})
+const provider = new AnthropicProvider({ apiKey: process.env.ANTHROPIC_API_KEY! })
 
-const runner = new RuntimeRunner({
-  provider: new AnthropicProvider(process.env.ANTHROPIC_API_KEY!),
-  executionPlane: new LocalExecutionPlane().register(add),
-  sessionLog: new InMemorySessionLog(),
-  maxTokens: 32_000,
-})
+// One prompt, one model, the text back.
+const answer = await runAgent({ provider, goal: "What is 2 + 3?", tools: [add] })
 
-const answer = await collectText(
-  runner.run({ sessionId: "demo", goal: "What is 2 + 3?" }),
-)
+// Or fan out N tasks and synthesize — over the kernel-gated DAG, safe from a stateless handler.
+const { synthesis } = await runFanout({
+  provider,
+  tasks: ["Summarize the auth module", "Summarize the data layer"],
+  synthesize: "Combine the findings into one summary.",
+})
 ```
+
+`runAgent` / `runFanout` are the canonical entry points; drop down to `RuntimeRunner` for streaming, tools, signals, memory, governance, or the standalone `runWorkflow` driver. Advanced symbols live behind subpaths — `@deepstrike/sdk/{providers,workflow,planes,memory,harness,os}`. See the [Node SDK README](./node/README.md) and [MIGRATION-v0.2.30](./node/MIGRATION-v0.2.30.md).
 
 ### Python
 
@@ -212,36 +204,27 @@ pip install deepstrike
 ```
 
 ```py
-from deepstrike import (
-    AnthropicProvider,
-    InMemorySessionLog,
-    LocalExecutionPlane,
-    RuntimeOptions,
-    RuntimeRunner,
-    collect_text,
-    tool,
-)
+from deepstrike import AnthropicProvider, run_agent, tool
 
 @tool
 def add(x: int, y: int) -> int:
     """Add two numbers."""
     return x + y
 
-runner = RuntimeRunner(RuntimeOptions(
+answer = await run_agent(
     provider=AnthropicProvider(api_key="..."),
-    execution_plane=LocalExecutionPlane().register(add),
-    session_log=InMemorySessionLog(),
-    max_tokens=32_000,
-))
-
-answer = await collect_text(runner.run_streaming("What is 2 + 3?"))
+    goal="What is 2 + 3?",
+    tools=[add],
+)
 ```
+
+`run_agent` / `run_fanout` are the canonical entry points; drop to `RuntimeRunner` for streaming/tools/governance. Advanced symbols live in `deepstrike.{providers,workflow,memory,harness}` submodules.
 
 ### Rust
 
 ```toml
 [dependencies]
-deepstrike-sdk = "0.2.28"
+deepstrike-sdk = "0.2.30"
 ```
 
 See the [SDK guides](./docs/guides/index.md) for full examples, provider configuration, streaming events, and governance hooks. For the dynamic-workflow drive (`runWorkflow` / `run_workflow`), see the per-SDK **Dynamic workflows** sections: [Node.js](./node/README.md#dynamic-workflows) · [Python](./python/README.md#dynamic-workflows).
