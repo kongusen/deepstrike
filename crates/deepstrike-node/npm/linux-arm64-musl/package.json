@@ -1,6 +1,6 @@
 {
   "name": "@deepstrike/core-linux-arm64-musl",
-  "version": "0.2.27",
+  "version": "0.2.28",
   "cpu": [
     "arm64"
   ],

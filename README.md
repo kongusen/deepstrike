@@ -241,7 +241,7 @@ answer = await collect_text(runner.run_streaming("What is 2 + 3?"))
 
 ```toml
 [dependencies]
-deepstrike-sdk = "0.2.27"
+deepstrike-sdk = "0.2.28"
 ```
 
 See the [SDK guides](./docs/guides/index.md) for full examples, provider configuration, streaming events, and governance hooks. For the dynamic-workflow drive (`runWorkflow` / `run_workflow`), see the per-SDK **Dynamic workflows** sections: [Node.js](./node/README.md#dynamic-workflows) · [Python](./python/README.md#dynamic-workflows).
