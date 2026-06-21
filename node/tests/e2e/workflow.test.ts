@@ -11,7 +11,6 @@
  */
 import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../../src/index.js"
 import type { WorkflowSpec } from "../../src/index.js"
-import { getKernel } from "../../src/kernel.js"
 import { loadProviders, anyProvider } from "./providers.js"
 
 const provider = anyProvider(loadProviders())
@@ -26,14 +25,6 @@ maybe("real-model workflow drive", () => {
       maxTokens: 8000,
       maxTurns: 4,
     })
-
-    // Establish an active parent run on a kernel (runWorkflow runs mid-run).
-    const kernel = new (getKernel().KernelRuntime)({ maxTokens: 8000 })
-    kernel.step(JSON.stringify({ version: 1, event: { kind: "start_run", task: { goal: "parent", criteria: [] } } }))
-    // The runner drives the workflow on this kernel; node specs run via the orchestrator.
-    ;(runner as any).activeKernel = kernel
-    ;(runner as any).currentSessionId = "wf-e2e"
-    ;(runner as any).pendingObservations = []
 
     const spec: WorkflowSpec = {
       nodes: [

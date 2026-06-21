@@ -76,6 +76,51 @@ const reply = await collectText(runner.run({ sessionId: "chat-1", goal: "What is
 
 Use `InMemorySessionLog` for process-local sessions or `FileSessionLog` when replay should survive restarts. `wake(sessionId)` resumes from the event log without inserting a duplicate `run_started` event.
 
+### Recipes — the canonical entry points
+
+The package exports a large surface, but most apps need one of three shapes. Start with the facades and drop down to `RuntimeRunner` only when you need streaming, signals, memory, or governance hooks.
+
+```typescript
+import { runAgent, runFanout } from "@deepstrike/sdk"
+
+// 1) Single agent — one prompt, one model, the text back.
+const answer = await runAgent({ provider, goal: "What is 17 + 28?", tools: [add] })
+
+// 2) Parallel fan-out → synthesize — N workers, then a synthesis pass, over the kernel-gated DAG.
+//    Bootstraps and tears down its own kernel, so it's safe from a stateless request handler.
+const { synthesis } = await runFanout({
+  provider,
+  tasks: [
+    "Summarize the security posture of the auth module",
+    "Summarize the data-retention posture",
+  ],
+  synthesize: "Combine the worker findings into one risk summary.",
+})
+
+// 3) Full control — sub-agents, governance, signals, streaming, resume → use RuntimeRunner directly.
+```
+
+`runFanout` is sugar over the **standalone `runWorkflow`** path: with no active `run()`, `runner.runWorkflow(spec)` auto-bootstraps a kernel that owns the DAG (governed · resumable), drives it, and tears it down — exactly what a Vercel/Lambda handler needs. See [Dynamic workflows](#dynamic-workflows). For parallel work you can also give each worker its own `RuntimeRunner`; `RuntimeRunner` carries per-run state, so **never share one instance across concurrent runs** — use a fresh instance per worker (or the `AgentPool` primitive).
+
+### Deploying to serverless / bundlers
+
+`@deepstrike/core` is a native N-API addon; its platform binary ships via `optionalDependencies`. Bundlers (Next.js/Vercel, webpack, esbuild) don't trace `.node` files by default, so the function fails at runtime with `Cannot find module '@deepstrike/core'`. Tell your bundler to treat the package as external and trace its files:
+
+```ts
+// next.config.ts (Next.js / Vercel)
+const nextConfig = {
+  serverExternalPackages: ["@deepstrike/sdk"],
+  outputFileTracingIncludes: {
+    "/api/**": ["./node_modules/@deepstrike/**/*"],
+  },
+}
+export default nextConfig
+```
+
+- **webpack:** add `@deepstrike/core` (and `@deepstrike/sdk`) to `externals`, or use `node-loader` for `.node` files.
+- **esbuild:** `--external:@deepstrike/core --external:@deepstrike/sdk` and ensure the platform binary is copied next to the bundle.
+- **Docker/standalone:** the build host's platform binary must match the runtime's (e.g. build on `linux-x64-gnu` for Vercel). Alpine images need the `-musl` binary.
+
 Streaming:
 
 ```typescript
@@ -161,8 +206,10 @@ const outcome = await runner.runWorkflow({
     { task: "Skeptic: which flags are real violations?",  role: "verify", dependsOn: [0, 1, 2] },
   ],
 })
-// → { completed: ["wf-node0", … ], failed: [] }
+// → { completed: ["wf-node0", … ], failed: [], outputs: { "wf-node3": "…" } }
 ```
+
+`runWorkflow` works **standalone** — call it on a freshly-constructed runner (e.g. inside a stateless HTTP handler) and it auto-bootstraps a kernel that owns the DAG, drives it under the same governance/quota/attention policies a full `run()` gets, and tears it down on completion. Called *during* a `run()`, it instead drives the workflow on the active kernel. Either way every node's final text comes back in `outputs`, keyed by node agent-id. To resume an interrupted standalone run, pass the prior session id: `runner.resumeWorkflow(spec, { sessionId })`.
 
 A node's `kind` selects the control-flow shape; the same executor drives them all, every spawn passing the syscall gate:
 
@@ -201,7 +248,20 @@ All providers accept `RetryConfig` for exponential backoff and share a `CircuitB
 
 `extensions` are forwarded by every provider in both `complete()` and `stream()` while SDK-owned structural fields such as `model`, `messages`, `tools`, and streaming flags remain protected.
 
-OpenAI can also be selected through the provider catalog:
+**Custom OpenAI-compatible endpoint** (MiMo, DeepSeek, Kimi, Qwen, GLM via their `/v1` base URL): use `OpenAIChatProvider` (alias `OpenAIProvider`) and pass the base URL as the **4th** argument — the 3rd is `RetryConfig`:
+
+```typescript
+import { OpenAIProvider } from "@deepstrike/sdk"
+
+const provider = new OpenAIProvider(
+  apiKey,
+  "mimo-v2.5-pro",
+  { maxRetries: 3, baseDelay: 1000 }, // RetryConfig (pass undefined for defaults)
+  "https://token-plan-cn.xiaomimimo.com/v1",
+)
+```
+
+Prefer a dedicated `*Provider` (e.g. `DeepSeekProvider`, `KimiProvider`) when one exists for your backend — they default the base URL and add backend-specific reasoning handling. OpenAI itself can also be selected through the provider catalog:
 
 ```typescript
 import { createProvider } from "@deepstrike/sdk"

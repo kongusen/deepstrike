@@ -471,6 +471,68 @@ class RuntimeRunner:
     *,
     resumed_completed: list[str] | None = None,
     resumed_submissions: list | None = None,
+    session_id: str | None = None,
+    _initial_event: dict[str, Any] | None = None,
+  ) -> dict[str, list[str]]:
+    """Run a declarative workflow DAG, standalone or mid-run.
+
+    With no active parent run (e.g. a stateless request handler) this auto-bootstraps a kernel
+    that owns the DAG — ``start_run`` plus the same governance/quota/attention policies a full
+    ``run()`` gets — drives it, and tears it down so the runner is reusable. Called during an
+    active ``run()``, it drives the workflow on that kernel instead. ``session_id`` names the
+    standalone session (defaults to a fresh uuid); it is ignored when a run is already active.
+    """
+    bootstrapped = self._active_kernel is None or self._current_session_id is None
+    if bootstrapped:
+      self._bootstrap_workflow_kernel(session_id or f"wf-{uuid.uuid4()}", spec)
+    try:
+      return await self._run_workflow_inner(
+        spec,
+        resumed_completed=resumed_completed,
+        resumed_submissions=resumed_submissions,
+        _initial_event=_initial_event,
+      )
+    finally:
+      if bootstrapped:
+        self._active_kernel = None
+        self._current_session_id = None
+        self._pending_observations = []
+
+  def _bootstrap_workflow_kernel(self, session_id: str, spec: "WorkflowSpec") -> KernelRuntime:
+    """Bootstrap a standalone kernel for a host-driven workflow with no active parent run.
+
+    Mirrors ``_execute``'s pre-run setup (governance / attention / scheduler-budget / resource-quota,
+    then ``start_run``) so DAG-node spawns are gated and quota'd exactly as a mid-run spawn. Records a
+    best-effort ``run_started`` event so the standalone run can be resumed via ``resume_workflow``.
+    """
+    self._interrupted = False
+    self._pending_observations = []
+    self._current_session_id = session_id
+    runtime = self._create_syscall_runtime()
+    self._active_kernel = runtime
+    goal = f"workflow:{len(spec.nodes)} nodes"
+
+    os_profile = assert_native_profile(self._opts.os_profile or "native")
+    gov_policy = self._opts.governance_policy or os_profile.governance_policy
+    kernel_apply(runtime, self._pending_observations, governance_policy_to_kernel_event(gov_policy))
+    ap = self._opts.attention_policy or os_profile.attention_policy
+    max_q = ap.get("max_queue_size") if isinstance(ap, dict) else getattr(ap, "max_queue_size", None)
+    kernel_apply(runtime, self._pending_observations, {
+      "kind": "set_attention_policy",
+      **({"max_queue_size": max_q} if max_q is not None else {}),
+    })
+    scheduler_budget = _scheduler_budget_to_kernel(self._opts.scheduler_budget)
+    if scheduler_budget is not None:
+      kernel_apply(runtime, self._pending_observations, {"kind": "set_scheduler_budget", **scheduler_budget})
+    kernel_apply(runtime, self._pending_observations, {"kind": "start_run", "task": {"goal": goal, "criteria": []}})
+    return runtime
+
+  async def _run_workflow_inner(
+    self,
+    spec: "WorkflowSpec",
+    *,
+    resumed_completed: list[str] | None = None,
+    resumed_submissions: list | None = None,
     _initial_event: dict[str, Any] | None = None,
   ) -> dict[str, list[str]]:
     """W0-ABI: run a declarative workflow DAG.
@@ -523,8 +585,8 @@ class RuntimeRunner:
       loop_instruction,
     )
 
-    if self._active_kernel is None or self._current_session_id is None:
-      raise RuntimeError("run_workflow requires an active parent run")
+    # The public run_workflow wrapper guarantees an active kernel here (bootstrapping one when called
+    # standalone), so no guard is needed.
     parent_session_id = self._current_session_id
     runtime = self._active_kernel
     orchestrator = self._opts.sub_agent_orchestrator or default_sub_agent_orchestrator
@@ -817,27 +879,32 @@ class RuntimeRunner:
       })
     return SimpleNamespace(kind="call_provider", context=runtime.render(), tools=action.tools)
 
-  async def resume_workflow(self, spec: "WorkflowSpec") -> dict[str, list[str]]:
-    """Resume a workflow from the parent session's completed nodes.
+  async def resume_workflow(
+    self, spec: "WorkflowSpec", *, session_id: str | None = None,
+  ) -> dict[str, list[str]]:
+    """Resume a workflow from a session's completed nodes.
 
-    Reads the session log, extracts completed workflow node agent_ids, and
-    calls run_workflow with resumed_completed so the kernel skips those nodes.
+    Reads the session log, extracts completed workflow node agent_ids, and calls run_workflow with
+    resumed_completed so the kernel skips those nodes. Pass ``session_id`` to resume an interrupted
+    standalone run from a stateless handler; omit it to resume the active session.
     """
     from deepstrike.runtime.session_repair import (
       recover_completed_workflow_nodes,
       recover_submitted_workflow_nodes,
     )
 
-    if self._current_session_id is None:
-      raise RuntimeError("resume_workflow requires an active parent run")
+    sid = session_id or self._current_session_id
+    if sid is None:
+      raise RuntimeError("resume_workflow requires an active parent run or an explicit session_id")
 
-    events = await self._opts.session_log.read(self._current_session_id)
+    events = await self._opts.session_log.read(sid)
     resumed_completed = recover_completed_workflow_nodes(events)
     resumed_submissions = recover_submitted_workflow_nodes(events)
     return await self.run_workflow(
       spec,
       resumed_completed=resumed_completed,
       resumed_submissions=resumed_submissions,
+      session_id=sid,
     )
 
   def interrupt(self) -> None:

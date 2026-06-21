@@ -1,3 +1,14 @@
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║ START HERE — the canonical entry points for the common cases.              ║
+// ║   runAgent   → one prompt, one model, the text back.                       ║
+// ║   runFanout  → run N tasks in parallel, then synthesize (kernel-gated DAG).║
+// ║   RuntimeRunner → drop down to this for streaming, tools, signals, memory, ║
+// ║                   governance, and the standalone `runWorkflow` driver.     ║
+// ║ Everything below the providers block is advanced / opt-in surface.         ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+export { runAgent, runFanout } from "./runtime/facade.js"
+export type { RunAgentOptions, RunFanoutOptions } from "./runtime/facade.js"
+
 // ── Runtime (Layer 1.5) ────────────────────────────────────────────────────
 export { RuntimeRunner, collectText } from "./runtime/runner.js"
 export type { RuntimeOptions, SchedulerBudget } from "./runtime/runner.js"

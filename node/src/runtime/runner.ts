@@ -410,6 +410,62 @@ export class RuntimeRunner {
     })
   }
 
+  /**
+   * Lower the declarative governance / attention / scheduler-budget / resource-quota policies into a
+   * freshly-created kernel. Shared by `execute()` (full agent run) and `bootstrapWorkflowKernel()`
+   * (standalone host-driven workflow) so a workflow's DAG-node spawns are gated, queued, and quota'd
+   * exactly as a mid-run spawn would be. Must run BEFORE `start_run` so the in-kernel gate enforces
+   * every policy from the first spawn. No config ⇒ the native-profile defaults (铁律: defaults only).
+   */
+  private applyKernelPolicies(runtime: KernelRuntimeInstance): void {
+    const osProfile = assertNativeProfile(this.opts.osProfile ?? "native")
+    const attentionPolicy = this.opts.attentionPolicy ?? osProfile.attentionPolicy
+    const governancePolicy = this.opts.governancePolicy ?? osProfile.governancePolicy
+
+    // Load the declarative governance policy into the kernel before the run starts,
+    // so the in-kernel gate enforces deny/veto/rate-limit/param before any tool runs.
+    kernelApply(runtime, this.pendingObservations, governancePolicyToKernelEvent(governancePolicy))
+    // Enable in-kernel signal routing so the kernel owns disposition + queuing.
+    kernelApply(runtime, this.pendingObservations, {
+      kind: "set_attention_policy",
+      ...(attentionPolicy.maxQueueSize !== undefined
+        ? { max_queue_size: attentionPolicy.maxQueueSize }
+        : {}),
+    })
+    // Set optional wall-clock budget override.
+    if (this.opts.schedulerBudget) {
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_scheduler_budget",
+        ...(this.opts.schedulerBudget.maxWallMs !== undefined
+          ? { max_wall_ms: this.opts.schedulerBudget.maxWallMs }
+          : {}),
+      })
+    }
+    // Install optional resource quotas at the syscall trap (M2). Maps the ergonomic camelCase
+    // option onto the kernel's snake_case quota shape; the write-rate window is the serde tuple
+    // `[maxWrites, windowMs]`. Omitting the option leaves spawn / memory writes unbounded.
+    if (this.opts.resourceQuota) {
+      const q = this.opts.resourceQuota
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_resource_quota",
+        quota: {
+          ...(q.maxConcurrentSubagents !== undefined
+            ? { max_concurrent_subagents: q.maxConcurrentSubagents }
+            : {}),
+          ...(q.maxSpawnDepth !== undefined ? { max_spawn_depth: q.maxSpawnDepth } : {}),
+          ...(q.memoryWritesPerWindow !== undefined
+            ? {
+                memory_writes_per_window: [
+                  q.memoryWritesPerWindow.maxWrites,
+                  q.memoryWritesPerWindow.windowMs,
+                ],
+              }
+            : {}),
+        },
+      })
+    }
+  }
+
   private async appendMemorySyscallObservations(
     sessionId: string | null | undefined,
     observations: KernelObservation[],
@@ -699,24 +755,76 @@ export class RuntimeRunner {
    */
   async runWorkflow(
     spec: WorkflowSpec,
-    opts?: { resumedCompleted?: string[]; resumedSubmissions?: Record<string, unknown>[][] },
+    opts?: {
+      resumedCompleted?: string[]
+      resumedSubmissions?: Record<string, unknown>[][]
+      /** Standalone session id when bootstrapping (no active parent run). Defaults to a fresh uuid. */
+      sessionId?: string
+    },
   ): Promise<{ completed: string[]; failed: string[]; outputs: Record<string, string> }> {
-    if (!this.activeKernel || !this.currentSessionId) {
-      throw new Error("runWorkflow requires an active parent run")
+    // Standalone entry: with no active parent run (e.g. a stateless HTTP handler), auto-bootstrap a
+    // kernel that owns the DAG — start_run + the same governance/quota/attention policies a full run
+    // gets — then tear it down on completion so the runner is reusable. Mid-run callers (activeKernel
+    // already set by an in-flight `run()`) keep the original in-place behavior with no teardown.
+    const bootstrapped = !this.activeKernel || !this.currentSessionId
+    if (bootstrapped) {
+      this.bootstrapWorkflowKernel(opts?.sessionId ?? `wf-${crypto.randomUUID()}`, spec)
     }
-    const parentSessionId = this.currentSessionId
-    const runtime = this.activeKernel
+    const parentSessionId = this.currentSessionId!
+    const runtime = this.activeKernel!
 
-    const observations = kernelApply(runtime, this.pendingObservations, {
-      kind: "load_workflow",
-      spec: workflowSpecToKernel(spec),
-      parent_session_id: parentSessionId,
-      // W0-ABI resume: skip nodes already completed before an interruption.
-      ...(opts?.resumedCompleted?.length ? { resumed_completed: opts.resumedCompleted } : {}),
-      // R3-1: re-apply recorded runtime submissions so dynamically-appended nodes are reconstructed.
-      ...(opts?.resumedSubmissions?.length ? { resumed_submissions: opts.resumedSubmissions } : {}),
-    })
-    return this.driveWorkflow(observations, parentSessionId, runtime)
+    try {
+      const observations = kernelApply(runtime, this.pendingObservations, {
+        kind: "load_workflow",
+        spec: workflowSpecToKernel(spec),
+        parent_session_id: parentSessionId,
+        // W0-ABI resume: skip nodes already completed before an interruption.
+        ...(opts?.resumedCompleted?.length ? { resumed_completed: opts.resumedCompleted } : {}),
+        // R3-1: re-apply recorded runtime submissions so dynamically-appended nodes are reconstructed.
+        ...(opts?.resumedSubmissions?.length ? { resumed_submissions: opts.resumedSubmissions } : {}),
+      })
+      return await this.driveWorkflow(observations, parentSessionId, runtime)
+    } finally {
+      if (bootstrapped) {
+        this.activeKernel = null
+        this.currentSessionId = null
+        this.pendingObservations = []
+      }
+    }
+  }
+
+  /**
+   * Bootstrap a standalone kernel for a host-driven workflow with NO active parent run — the path a
+   * stateless request handler takes when it calls `runWorkflow(spec)` directly. Mirrors `execute()`'s
+   * pre-run kernel setup (governance / attention / quota via `applyKernelPolicies`, then `start_run`)
+   * and records a `run_started` event so the standalone run is resumable from the session log. Sets
+   * `activeKernel` / `currentSessionId`; `runWorkflow` is responsible for tearing them down.
+   */
+  private bootstrapWorkflowKernel(sessionId: string, spec: WorkflowSpec): KernelRuntimeInstance {
+    this.interrupted = false
+    this.abortController = new AbortController()
+    this.pendingObservations = []
+    this.pendingSpoolOutputs.clear()
+    this.currentSessionId = sessionId
+
+    const runtime = this.createSyscallRuntime()
+    this.activeKernel = runtime
+    const goal = `workflow:${spec.nodes.length} nodes`
+
+    // Best-effort run_started log so a standalone workflow can be resumed via `resumeWorkflow`. The
+    // session log is fire-and-forget here (the kernel state, not the log, drives the DAG); a logless
+    // store simply means no resume.
+    void this.opts.sessionLog.append(sessionId, {
+      kind: "run_started",
+      run_id: crypto.randomUUID(),
+      goal,
+      criteria: [],
+      agent_id: this.opts.agentId,
+    }).catch(() => {})
+
+    this.applyKernelPolicies(runtime)
+    kernelApply(runtime, this.pendingObservations, { kind: "start_run", task: { goal, criteria: [] } })
+    return runtime
   }
 
   /**
@@ -910,14 +1018,20 @@ export class RuntimeRunner {
    * Reads the session log, extracts completed workflow node agent_ids, and
    * calls runWorkflow with resumedCompleted so the kernel skips those nodes.
    */
-  async resumeWorkflow(spec: WorkflowSpec): Promise<{ completed: string[]; failed: string[] }> {
-    if (!this.currentSessionId) {
-      throw new Error("resumeWorkflow requires an active parent run")
+  async resumeWorkflow(
+    spec: WorkflowSpec,
+    opts?: { sessionId?: string },
+  ): Promise<{ completed: string[]; failed: string[] }> {
+    // Standalone resume: a stateless handler passes the prior `sessionId` to pick up an interrupted
+    // workflow from the session log. Mid-run callers omit it and resume the active session.
+    const sessionId = opts?.sessionId ?? this.currentSessionId
+    if (!sessionId) {
+      throw new Error("resumeWorkflow requires an active parent run or an explicit sessionId")
     }
-    const events = await this.opts.sessionLog.read(this.currentSessionId)
+    const events = await this.opts.sessionLog.read(sessionId)
     const resumedCompleted = recoverCompletedWorkflowNodes(events)
     const resumedSubmissions = recoverSubmittedWorkflowNodes(events)
-    return this.runWorkflow(spec, { resumedCompleted, resumedSubmissions })
+    return this.runWorkflow(spec, { resumedCompleted, resumedSubmissions, sessionId })
   }
 
   interrupt(): void { this.interrupted = true; this.abortController?.abort() }
@@ -1305,52 +1419,7 @@ export class RuntimeRunner {
         : baseSpec
       startPayload.run_spec = agentRunSpecToKernel(spec)
     }
-    const osProfile = assertNativeProfile(this.opts.osProfile ?? "native")
-    const attentionPolicy = this.opts.attentionPolicy ?? osProfile.attentionPolicy
-    const governancePolicy = this.opts.governancePolicy ?? osProfile.governancePolicy
-
-    // Load the declarative governance policy into the kernel before the run starts,
-    // so the in-kernel gate enforces deny/veto/rate-limit/param before any tool runs.
-    kernelApply(runtime, this.pendingObservations, governancePolicyToKernelEvent(governancePolicy))
-    // Enable in-kernel signal routing so the kernel owns disposition + queuing.
-    kernelApply(runtime, this.pendingObservations, {
-      kind: "set_attention_policy",
-      ...(attentionPolicy.maxQueueSize !== undefined
-        ? { max_queue_size: attentionPolicy.maxQueueSize }
-        : {}),
-    })
-    // Set optional wall-clock budget override.
-    if (this.opts.schedulerBudget) {
-      kernelApply(runtime, this.pendingObservations, {
-        kind: "set_scheduler_budget",
-        ...(this.opts.schedulerBudget.maxWallMs !== undefined
-          ? { max_wall_ms: this.opts.schedulerBudget.maxWallMs }
-          : {}),
-      })
-    }
-    // Install optional resource quotas at the syscall trap (M2). Maps the ergonomic camelCase
-    // option onto the kernel's snake_case quota shape; the write-rate window is the serde tuple
-    // `[maxWrites, windowMs]`. Omitting the option leaves spawn / memory writes unbounded.
-    if (this.opts.resourceQuota) {
-      const q = this.opts.resourceQuota
-      kernelApply(runtime, this.pendingObservations, {
-        kind: "set_resource_quota",
-        quota: {
-          ...(q.maxConcurrentSubagents !== undefined
-            ? { max_concurrent_subagents: q.maxConcurrentSubagents }
-            : {}),
-          ...(q.maxSpawnDepth !== undefined ? { max_spawn_depth: q.maxSpawnDepth } : {}),
-          ...(q.memoryWritesPerWindow !== undefined
-            ? {
-                memory_writes_per_window: [
-                  q.memoryWritesPerWindow.maxWrites,
-                  q.memoryWritesPerWindow.windowMs,
-                ],
-              }
-            : {}),
-        },
-      })
-    }
+    this.applyKernelPolicies(runtime)
     // Multimodal upload: seed the user's attachments (images/audio) as a history
     // message before start_run pushes the "[TASK STATE]" anchor. init_task does not
     // clear history, so order becomes [attachment user msg, "Proceed…"] — both land

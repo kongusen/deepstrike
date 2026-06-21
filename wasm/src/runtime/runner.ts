@@ -619,57 +619,7 @@ export class RuntimeRunner {
         : baseSpec
       startPayload.run_spec = agentRunSpecToKernel(spec)
     }
-    const osProfile = assertNativeProfile(this.opts.osProfile ?? "native")
-    const attentionPolicy = this.opts.attentionPolicy ?? osProfile.attentionPolicy
-    const governancePolicy = this.opts.governancePolicy ?? osProfile.governancePolicy
-
-    kernelApply(runtime, this.pendingObservations, governancePolicyToKernelEvent(governancePolicy))
-    kernelApply(runtime, this.pendingObservations, {
-      kind: "set_attention_policy",
-      ...(attentionPolicy.maxQueueSize !== undefined
-        ? { max_queue_size: attentionPolicy.maxQueueSize }
-        : {}),
-    })
-    if (this.opts.schedulerBudget) {
-      kernelApply(runtime, this.pendingObservations, {
-        kind: "set_scheduler_budget",
-        ...(this.opts.schedulerBudget.maxWallMs !== undefined
-          ? { max_wall_ms: this.opts.schedulerBudget.maxWallMs }
-          : {}),
-      })
-    }
-    if (this.opts.resourceQuota) {
-      const q = this.opts.resourceQuota
-      kernelApply(runtime, this.pendingObservations, {
-        kind: "set_resource_quota",
-        quota: {
-          ...(q.maxConcurrentSubagents !== undefined
-            ? { max_concurrent_subagents: q.maxConcurrentSubagents }
-            : {}),
-          ...(q.maxSpawnDepth !== undefined ? { max_spawn_depth: q.maxSpawnDepth } : {}),
-          ...(q.memoryWritesPerWindow !== undefined
-            ? {
-                memory_writes_per_window: [
-                  q.memoryWritesPerWindow.maxWrites,
-                  q.memoryWritesPerWindow.windowMs,
-                ],
-              }
-            : {}),
-        },
-      })
-    }
-    if (this.opts.memoryPolicy) {
-      const m = this.opts.memoryPolicy
-      kernelApply(runtime, this.pendingObservations, {
-        kind: "set_memory_policy",
-        ...(m.memoryPath !== undefined ? { memory_path: m.memoryPath } : {}),
-        ...(m.staleWarningDays !== undefined ? { stale_warning_days: m.staleWarningDays } : {}),
-        ...(m.retrievalTopK !== undefined ? { retrieval_top_k: m.retrievalTopK } : {}),
-        ...(m.validationEnabled !== undefined ? { validation_enabled: m.validationEnabled } : {}),
-        ...(m.maxContentBytes !== undefined ? { max_content_bytes: m.maxContentBytes } : {}),
-        ...(m.maxNameLength !== undefined ? { max_name_length: m.maxNameLength } : {}),
-      })
-    }
+    this.applyKernelPolicies(runtime)
 
     // I4: pre-fetch memory into the knowledge partition before the first LLM turn (mirrors Node).
     if (!resumeMidRun && this.opts.preQueryMemory && this.opts.dreamStore && this.opts.agentId) {
@@ -1254,26 +1204,140 @@ export class RuntimeRunner {
    * through the syscall trap; this driver runs each kernel-emitted batch of nodes in parallel,
    * feeds their results back, and loops until the kernel reports the workflow complete.
    */
+  /**
+   * Lower the declarative governance / attention / scheduler-budget / resource-quota / memory policies
+   * into a freshly-created kernel. Shared by `execute()` (full run) and `bootstrapWorkflowKernel()`
+   * (standalone workflow) so a DAG's node spawns are gated and quota'd exactly as a mid-run spawn.
+   * Must run BEFORE `start_run`. No config ⇒ native-profile defaults.
+   */
+  private applyKernelPolicies(runtime: KernelRuntimeHandle): void {
+    const osProfile = assertNativeProfile(this.opts.osProfile ?? "native")
+    const attentionPolicy = this.opts.attentionPolicy ?? osProfile.attentionPolicy
+    const governancePolicy = this.opts.governancePolicy ?? osProfile.governancePolicy
+
+    kernelApply(runtime, this.pendingObservations, governancePolicyToKernelEvent(governancePolicy))
+    kernelApply(runtime, this.pendingObservations, {
+      kind: "set_attention_policy",
+      ...(attentionPolicy.maxQueueSize !== undefined
+        ? { max_queue_size: attentionPolicy.maxQueueSize }
+        : {}),
+    })
+    if (this.opts.schedulerBudget) {
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_scheduler_budget",
+        ...(this.opts.schedulerBudget.maxWallMs !== undefined
+          ? { max_wall_ms: this.opts.schedulerBudget.maxWallMs }
+          : {}),
+      })
+    }
+    if (this.opts.resourceQuota) {
+      const q = this.opts.resourceQuota
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_resource_quota",
+        quota: {
+          ...(q.maxConcurrentSubagents !== undefined
+            ? { max_concurrent_subagents: q.maxConcurrentSubagents }
+            : {}),
+          ...(q.maxSpawnDepth !== undefined ? { max_spawn_depth: q.maxSpawnDepth } : {}),
+          ...(q.memoryWritesPerWindow !== undefined
+            ? {
+                memory_writes_per_window: [
+                  q.memoryWritesPerWindow.maxWrites,
+                  q.memoryWritesPerWindow.windowMs,
+                ],
+              }
+            : {}),
+        },
+      })
+    }
+    if (this.opts.memoryPolicy) {
+      const m = this.opts.memoryPolicy
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "set_memory_policy",
+        ...(m.memoryPath !== undefined ? { memory_path: m.memoryPath } : {}),
+        ...(m.staleWarningDays !== undefined ? { stale_warning_days: m.staleWarningDays } : {}),
+        ...(m.retrievalTopK !== undefined ? { retrieval_top_k: m.retrievalTopK } : {}),
+        ...(m.validationEnabled !== undefined ? { validation_enabled: m.validationEnabled } : {}),
+        ...(m.maxContentBytes !== undefined ? { max_content_bytes: m.maxContentBytes } : {}),
+        ...(m.maxNameLength !== undefined ? { max_name_length: m.maxNameLength } : {}),
+      })
+    }
+  }
+
+  /**
+   * Bootstrap a standalone kernel for a host-driven workflow with no active parent run — the path a
+   * stateless handler (browser/edge worker) takes when it calls `runWorkflow(spec)` directly. Mirrors
+   * `execute()`'s pre-run setup (policies via `applyKernelPolicies`, then `start_run`) and records a
+   * best-effort `run_started` so the run is resumable. `runWorkflow` tears the kernel down afterward.
+   */
+  private async bootstrapWorkflowKernel(sessionId: string, spec: WorkflowSpec): Promise<KernelRuntimeHandle> {
+    this.interrupted = false
+    this.pendingObservations = []
+    this.pendingSpoolOutputs.clear()
+    this.currentSessionId = sessionId
+
+    const kernel = await getKernel()
+    const runtime = new kernel.KernelRuntime({
+      maxTokens: this.opts.maxTokens,
+      maxTurns: this.opts.maxTurns ?? 25,
+      ...(this.opts.maxTotalTokens !== undefined ? { maxTotalTokens: this.opts.maxTotalTokens } : {}),
+      timeoutMs: this.opts.timeoutMs !== undefined ? BigInt(this.opts.timeoutMs) : undefined,
+    })
+    this.activeKernel = runtime
+    const goal = `workflow:${spec.nodes.length} nodes`
+
+    void Promise.resolve(
+      this.opts.sessionLog.append(sessionId, {
+        kind: "run_started",
+        run_id: crypto.randomUUID(),
+        goal,
+        criteria: [],
+        ...(this.opts.agentId ? { agent_id: this.opts.agentId } : {}),
+      }),
+    ).catch(() => {})
+
+    this.applyKernelPolicies(runtime)
+    kernelApply(runtime, this.pendingObservations, { kind: "start_run", task: { goal, criteria: [] } })
+    return runtime
+  }
+
   async runWorkflow(
     spec: WorkflowSpec,
-    opts?: { resumedCompleted?: string[]; resumedSubmissions?: Record<string, unknown>[][] },
+    opts?: {
+      resumedCompleted?: string[]
+      resumedSubmissions?: Record<string, unknown>[][]
+      /** Standalone session id when bootstrapping (no active parent run). Defaults to a fresh uuid. */
+      sessionId?: string
+    },
   ): Promise<{ completed: string[]; failed: string[]; outputs: Record<string, string> }> {
-    if (!this.activeKernel || !this.currentSessionId) {
-      throw new Error("runWorkflow requires an active parent run")
+    // Standalone entry: with no active parent run, auto-bootstrap a kernel that owns the DAG (same
+    // governance/quota policies a full run gets), drive it, then tear it down so the runner is reusable.
+    // Mid-run callers keep the original in-place behavior with no teardown.
+    const bootstrapped = !this.activeKernel || !this.currentSessionId
+    if (bootstrapped) {
+      await this.bootstrapWorkflowKernel(opts?.sessionId ?? `wf-${crypto.randomUUID()}`, spec)
     }
-    const parentSessionId = this.currentSessionId
-    const runtime = this.activeKernel
+    const parentSessionId = this.currentSessionId!
+    const runtime = this.activeKernel!
 
-    const observations = kernelApply(runtime, this.pendingObservations, {
-      kind: "load_workflow",
-      spec: workflowSpecToKernel(spec),
-      parent_session_id: parentSessionId,
-      // W0-ABI resume: skip nodes already completed before an interruption.
-      ...(opts?.resumedCompleted && opts.resumedCompleted.length ? { resumed_completed: opts.resumedCompleted } : {}),
-      // R3-1: re-apply recorded runtime submissions so dynamically-appended nodes are reconstructed.
-      ...(opts?.resumedSubmissions && opts.resumedSubmissions.length ? { resumed_submissions: opts.resumedSubmissions } : {}),
-    })
-    return this.driveWorkflow(observations, parentSessionId, runtime)
+    try {
+      const observations = kernelApply(runtime, this.pendingObservations, {
+        kind: "load_workflow",
+        spec: workflowSpecToKernel(spec),
+        parent_session_id: parentSessionId,
+        // W0-ABI resume: skip nodes already completed before an interruption.
+        ...(opts?.resumedCompleted && opts.resumedCompleted.length ? { resumed_completed: opts.resumedCompleted } : {}),
+        // R3-1: re-apply recorded runtime submissions so dynamically-appended nodes are reconstructed.
+        ...(opts?.resumedSubmissions && opts.resumedSubmissions.length ? { resumed_submissions: opts.resumedSubmissions } : {}),
+      })
+      return await this.driveWorkflow(observations, parentSessionId, runtime)
+    } finally {
+      if (bootstrapped) {
+        this.activeKernel = null
+        this.currentSessionId = null
+        this.pendingObservations = []
+      }
+    }
   }
 
   /**
@@ -1443,14 +1507,19 @@ export class RuntimeRunner {
    * Reads the session log, extracts completed workflow node agent_ids, and
    * calls runWorkflow with resumedCompleted so the kernel skips those nodes.
    */
-  async resumeWorkflow(spec: WorkflowSpec): Promise<{ completed: string[]; failed: string[] }> {
-    if (!this.currentSessionId) {
-      throw new Error("resumeWorkflow requires an active parent run")
+  async resumeWorkflow(
+    spec: WorkflowSpec,
+    opts?: { sessionId?: string },
+  ): Promise<{ completed: string[]; failed: string[] }> {
+    // Standalone resume: a stateless handler passes the prior `sessionId`; mid-run callers omit it.
+    const sessionId = opts?.sessionId ?? this.currentSessionId
+    if (!sessionId) {
+      throw new Error("resumeWorkflow requires an active parent run or an explicit sessionId")
     }
-    const events = await this.opts.sessionLog.read(this.currentSessionId)
+    const events = await this.opts.sessionLog.read(sessionId)
     const resumedCompleted = recoverCompletedWorkflowNodes(events)
     const resumedSubmissions = recoverSubmittedWorkflowNodes(events)
-    return this.runWorkflow(spec, { resumedCompleted, resumedSubmissions })
+    return this.runWorkflow(spec, { resumedCompleted, resumedSubmissions, sessionId })
   }
 
   private async appendObservations(

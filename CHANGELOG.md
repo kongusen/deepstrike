@@ -6,6 +6,42 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.28] - 2026-06-21
+
+### Added
+
+- **`runWorkflow` runs standalone — no active parent run required.** Calling
+  `runner.runWorkflow(spec)` with no in-flight `run()` (e.g. from a stateless
+  HTTP / serverless handler) previously threw `runWorkflow requires an active
+  parent run`; callers had to poke `(runner as any).activeKernel` by hand. It now
+  **auto-bootstraps** a kernel that owns the DAG — `start_run` plus the same
+  governance / attention / scheduler / resource-quota policies a full run gets —
+  drives it, and tears it down so the runner is reusable. Called *during* a
+  `run()` it behaves exactly as before (drives on the active kernel, no
+  teardown). `resumeWorkflow(spec, { sessionId })` likewise resumes an
+  interrupted standalone run from the session log. The README's end-to-end
+  workflow example now runs as written. **Node + Python + WASM** (Rust SDK has
+  no `run_workflow`).
+- **`runAgent` / `runFanout` facades — the canonical entry points.** Two
+  high-level helpers so the common cases don't require assembling
+  `RuntimeRunner` + session log + execution plane + `collectText` by hand:
+  `runAgent({ provider, goal, tools })` (one prompt → text) and
+  `runFanout({ provider, tasks, synthesize })` (parallel workers → synthesis over
+  the kernel-gated DAG, safe from a stateless handler). Exported under a
+  "START HERE" tier in the package index. **Node.**
+
+### Changed
+
+- **Docs:** node README gains a *Recipes* section (the facades), a *Deploying to
+  serverless / bundlers* section (Next.js `serverExternalPackages` +
+  `outputFileTracingIncludes`, plus webpack / esbuild / Docker notes for the
+  native `.node` addon), a standalone-`runWorkflow` note, and a provider-selection
+  note for custom OpenAI-compatible endpoints (`OpenAIProvider` with the base URL
+  as the 4th argument).
+- Extracted a shared `applyKernelPolicies()` helper (governance / attention /
+  scheduler / quota) reused by the full run path and the new workflow bootstrap,
+  removing the duplicated policy-lowering block.
+
 ## [0.2.27] - 2026-06-19
 
 ### Added

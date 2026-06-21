@@ -705,3 +705,73 @@ async def test_g2_unknown_reducer_fails_node():
     ])
     outcome = await runner.run_workflow(spec)
     assert "wf-node1" in outcome["failed"]
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_bootstraps_standalone():
+    """No active run: run_workflow auto-bootstraps a kernel, drives the DAG, then tears it down."""
+    orch = _StubOrchestrator()
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=_StubProvider(),
+        session_log=InMemorySessionLog(),
+        execution_plane=LocalExecutionPlane(),
+        sub_agent_orchestrator=orch,
+        max_tokens=1000,
+    ))
+
+    spec = WorkflowSpec(nodes=[
+        WorkflowNodeSpec(task="w0", role="explore"),
+        WorkflowNodeSpec(task="w1", role="explore"),
+        WorkflowNodeSpec(task="synth", role="plan", depends_on=[0, 1]),
+    ])
+
+    # Called on a bare runner — no _active_kernel hack.
+    outcome = await runner.run_workflow(spec)
+    assert sorted(outcome["completed"]) == ["wf-node0", "wf-node1", "wf-node2"]
+    assert outcome["failed"] == []
+
+    # Bootstrapped kernel was torn down → runner is reusable.
+    assert runner._active_kernel is None
+    assert runner._current_session_id is None
+    second = await runner.run_workflow(spec)
+    assert sorted(second["completed"]) == ["wf-node0", "wf-node1", "wf-node2"]
+
+
+@pytest.mark.asyncio
+async def test_resume_workflow_standalone_by_session_id():
+    """Standalone resume reads the prior session by id; completed nodes are not re-run."""
+    orch = _StubOrchestrator()
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=_StubProvider(),
+        session_log=InMemorySessionLog(),
+        execution_plane=LocalExecutionPlane(),
+        sub_agent_orchestrator=orch,
+        max_tokens=1000,
+    ))
+    spec = WorkflowSpec(nodes=[
+        WorkflowNodeSpec(task="w0", role="explore"),
+        WorkflowNodeSpec(task="w1", role="explore"),
+        WorkflowNodeSpec(task="synth", role="plan", depends_on=[0, 1]),
+    ])
+
+    await runner.run_workflow(spec, session_id="resume-me")
+    assert len(orch.goals) == 3
+
+    resumed = await runner.resume_workflow(spec, session_id="resume-me")
+    assert sorted(resumed["completed"]) == ["wf-node0", "wf-node1", "wf-node2"]
+    # No new dispatches — every node was recovered as already complete.
+    assert len(orch.goals) == 3
+
+
+@pytest.mark.asyncio
+async def test_resume_workflow_requires_session():
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=_StubProvider(),
+        session_log=InMemorySessionLog(),
+        execution_plane=LocalExecutionPlane(),
+        sub_agent_orchestrator=_StubOrchestrator(),
+        max_tokens=1000,
+    ))
+    spec = WorkflowSpec(nodes=[WorkflowNodeSpec(task="w0", role="explore")])
+    with pytest.raises(RuntimeError, match="active parent run or an explicit session_id"):
+        await runner.resume_workflow(spec)
