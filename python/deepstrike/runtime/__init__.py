@@ -1,4 +1,5 @@
 from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPlane, RunContext
+from deepstrike.runtime.facade import run_agent, run_fanout
 from deepstrike.runtime.runner import (
   MemoryPolicy,
   MemoryWriteRateLimit,
@@ -74,6 +75,8 @@ from deepstrike.runtime.eval import (
 )
 
 __all__ = [
+  "run_agent",
+  "run_fanout",
   "RuntimeRunner",
   "RuntimeOptions",
   "TurnMetrics",

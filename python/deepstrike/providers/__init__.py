@@ -47,13 +47,15 @@ from .ollama import OllamaProvider
 from .kimi import KimiProvider, KimiAnthropicProvider
 from .gemini import GeminiProvider
 from .glm import GLMProvider, GLMAnthropicProvider
+# v0.2.3 parity: per-backend factory functions are the public surface; the dual classes above remain
+# importable for advanced subclassing but are no longer advertised in __all__.
+from .factories import deepseek, kimi, qwen, glm, minimax, gemini, ollama
 
 __all__ = [
     "LLMProvider", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
     "OpenAIResponsesProvider", "OpenAIResponsesAdapter",
-    "QwenProvider", "QwenAnthropicProvider", "DeepSeekProvider", "DeepSeekAnthropicProvider",
-    "MiniMaxAnthropicProvider", "MiniMaxOpenAIProvider", "OllamaProvider",
-    "KimiProvider", "KimiAnthropicProvider", "GeminiProvider", "GLMProvider", "GLMAnthropicProvider",
+    # Backend factories (one per backend; `protocol=` selects the wire where a backend speaks both):
+    "deepseek", "kimi", "qwen", "glm", "minimax", "gemini", "ollama",
     "RetryConfig", "CircuitBreaker", "normalize_tool_call", "parse_tool_arguments",
     "TokenUsage", "ProviderToolSpec",
     "to_anthropic_content", "to_anthropic_messages",

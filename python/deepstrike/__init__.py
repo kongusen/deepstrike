@@ -10,6 +10,8 @@ from deepstrike._kernel import (
     SkillMetadata,
 )
 from deepstrike.runtime import (
+    run_agent,
+    run_fanout,
     RuntimeRunner,
     RuntimeOptions,
     ResourceQuota,
@@ -106,6 +108,9 @@ from deepstrike.collaboration import (
     CreatorVerifierMode, OrchestrationMode, CreatorVerifierMetrics,
 )
 __all__ = [
+    # ── Start here: canonical entry points ──
+    "run_agent",
+    "run_fanout",
     "RuntimeRunner",
     "RuntimeOptions",
     "builtin_reducers",
