@@ -1,6 +1,8 @@
 export {
   RuntimeRunner,
   collectText,
+  runAgent,
+  runFanout,
   InMemorySessionLog,
   LocalExecutionPlane,
   DEFAULT_NATIVE_ATTENTION_POLICY,
