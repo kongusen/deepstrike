@@ -4,44 +4,31 @@ import json
 from typing import AsyncIterator
 
 from deepstrike._kernel import Message, ToolCall, ToolSchema
-from .anthropic import AnthropicProvider
 from .base import ProviderDescriptor, RenderedContext, RetryConfig, RuntimePolicy, normalize_tool_call, openai_cached_prompt_tokens, wire_request_extensions
 from .openai import OpenAIProvider
+from .anthropic_compatible import AnthropicCompatibleProvider
+from .vendor_profiles import MINIMAX_POLICIES as _MINIMAX_POLICIES, ANTHROPIC_VENDOR_PROFILES
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
 
-_MINIMAX_ANTHROPIC_BASE = "https://api.minimaxi.com/anthropic"
 _MINIMAX_OPENAI_BASE = "https://api.minimaxi.com/v1"
 
-_MINIMAX_POLICIES: dict[str, RuntimePolicy] = {
-    "MiniMax-M2.7": RuntimePolicy(max_turns=35),
-    "MiniMax-M2.7-highspeed": RuntimePolicy(max_turns=35),
-    "MiniMax-M2.5": RuntimePolicy(max_turns=25),
-    "MiniMax-M2.5-highspeed": RuntimePolicy(max_turns=25),
-    "MiniMax-M2.1": RuntimePolicy(max_turns=25),
-    "MiniMax-M2.1-highspeed": RuntimePolicy(max_turns=25),
-    "MiniMax-M2": RuntimePolicy(max_turns=20),
-    "MiniMax-Text-01": RuntimePolicy(max_turns=20),
-}
 
-
-class MiniMaxAnthropicProvider(AnthropicProvider):
+class MiniMaxAnthropicProvider(AnthropicCompatibleProvider):
     """MiniMax over its Anthropic-compatible endpoint. Replay is carried as
-    Anthropic ``native_blocks`` (thinking / text / tool_use)."""
+    Anthropic ``native_blocks`` (thinking / text / tool_use).
+
+    Deprecated: prefer ``minimax(protocol="anthropic")``. Data-driven via
+    ``ANTHROPIC_VENDOR_PROFILES["minimax"]``; thin shim for backward compat / isinstance.
+    """
 
     def __init__(
         self,
         api_key: str,
-        model: str = "MiniMax-M2.7",
+        model: str | None = None,
         retry_config: RetryConfig | None = None,
-        base_url: str = _MINIMAX_ANTHROPIC_BASE,
+        base_url: str | None = None,
     ):
-        super().__init__(api_key, model, retry_config, base_url=base_url)
-
-    def _provider_name(self) -> str:
-        return "minimax"
-
-    def runtime_policy(self) -> RuntimePolicy:
-        return _MINIMAX_POLICIES.get(self._model, RuntimePolicy())
+        super().__init__(ANTHROPIC_VENDOR_PROFILES["minimax"], api_key, model, retry_config, base_url)
 
 
 class MiniMaxOpenAIProvider(OpenAIProvider):

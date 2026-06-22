@@ -1,40 +1,27 @@
 from __future__ import annotations
-from .anthropic import AnthropicProvider
 from .base import RetryConfig, RuntimePolicy
 from .openai import OpenAIProvider
+from .anthropic_compatible import AnthropicCompatibleProvider
+from .vendor_profiles import GLM_POLICIES as _GLM_POLICIES, ANTHROPIC_VENDOR_PROFILES
 
-_GLM_ANTHROPIC_BASE = "https://api.z.ai/api/anthropic"
 _GLM_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 
-_GLM_POLICIES: dict[str, RuntimePolicy] = {
-    "glm-5.1": RuntimePolicy(max_turns=50),
-    "glm/glm-5.1": RuntimePolicy(max_turns=50),
-    "glm-4-plus": RuntimePolicy(max_turns=35),
-    "glm/glm-4-plus": RuntimePolicy(max_turns=35),
-    "glm-4-flash": RuntimePolicy(max_turns=15),
-    "glm/glm-4-flash": RuntimePolicy(max_turns=15),
-    "glm-4-air": RuntimePolicy(max_turns=20),
-    "glm/glm-4-air": RuntimePolicy(max_turns=20),
-}
 
+class GLMAnthropicProvider(AnthropicCompatibleProvider):
+    """GLM (Zhipu AI) over its Anthropic-compatible endpoint.
 
-class GLMAnthropicProvider(AnthropicProvider):
-    """GLM (Zhipu AI) over its Anthropic-compatible endpoint."""
+    Deprecated: prefer ``glm(protocol="anthropic")``. Data-driven via
+    ``ANTHROPIC_VENDOR_PROFILES["glm"]``; thin shim for backward compat / isinstance.
+    """
 
     def __init__(
         self,
         api_key: str,
-        model: str = "glm-5.1",
+        model: str | None = None,
         retry_config: RetryConfig | None = None,
-        base_url: str = _GLM_ANTHROPIC_BASE,
+        base_url: str | None = None,
     ):
-        super().__init__(api_key, model, retry_config, base_url=base_url)
-
-    def _provider_name(self) -> str:
-        return "glm"
-
-    def runtime_policy(self) -> RuntimePolicy:
-        return _GLM_POLICIES.get(self._model, RuntimePolicy())
+        super().__init__(ANTHROPIC_VENDOR_PROFILES["glm"], api_key, model, retry_config, base_url)
 
 
 class GLMProvider(OpenAIProvider):

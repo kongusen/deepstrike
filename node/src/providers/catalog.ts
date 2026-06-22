@@ -1,13 +1,5 @@
 import type { LLMProvider } from "../types.js"
-import { AnthropicProvider } from "./anthropic.js"
-import { OpenAIChatProvider } from "./openai.js"
-import { DeepSeekProvider, DeepSeekAnthropicProvider } from "./deepseek.js"
-import { KimiProvider, KimiAnthropicProvider } from "./kimi.js"
-import { OpenAIResponsesProvider } from "./openai-responses.js"
-import { MiniMaxAnthropicProvider, MiniMaxOpenAIProvider } from "./minimax.js"
-import { QwenProvider, QwenAnthropicProvider } from "./qwen.js"
-import { GeminiProvider } from "./gemini.js"
-import { GLMProvider, GLMAnthropicProvider } from "./glm.js"
+import { PROVIDER_REGISTRY, providerRegistryKey } from "./registry.js"
 import { endpointProfiles, getModelProfile, modelProfiles, type ModelProfileId, type ProviderId } from "./profiles.js"
 
 export type EndpointProfileId = keyof typeof endpointProfiles
@@ -50,50 +42,9 @@ export function createProvider(options: CreateProviderOptions): LLMProvider {
   const model = modelNameForProvider(options.model, providerId)
   const baseURL = options.baseURL ?? endpoint.baseURL
 
-  if (providerId === "anthropic" && endpoint.protocol === "anthropic-messages") {
-    return new AnthropicProvider(options.apiKey, model, options.retry, { baseURL })
-  }
-  if (providerId === "openai") {
-    if (endpoint.protocol === "openai-chat") {
-      return new OpenAIChatProvider(options.apiKey, model, options.retry, baseURL)
-    }
-    if (endpoint.protocol === "openai-responses") {
-      return new OpenAIResponsesProvider(options.apiKey, model, options.retry, baseURL)
-    }
-  }
-  if (providerId === "minimax" && endpoint.protocol === "anthropic-messages") {
-    return new MiniMaxAnthropicProvider(options.apiKey, model, options.retry, baseURL)
-  }
-  if (providerId === "minimax" && endpoint.protocol === "openai-chat") {
-    return new MiniMaxOpenAIProvider(options.apiKey, model, options.retry, baseURL)
-  }
-  if (providerId === "deepseek" && endpoint.protocol === "anthropic-messages") {
-    return new DeepSeekAnthropicProvider(options.apiKey, model, options.retry, baseURL)
-  }
-  if (providerId === "deepseek" && endpoint.protocol === "openai-chat") {
-    return new DeepSeekProvider(options.apiKey, model, options.retry, baseURL)
-  }
-  if (providerId === "kimi" && endpoint.protocol === "anthropic-messages") {
-    return new KimiAnthropicProvider(options.apiKey, model, options.retry, baseURL)
-  }
-  if (providerId === "kimi" && endpoint.protocol === "openai-chat") {
-    return new KimiProvider(options.apiKey, model, options.retry, baseURL)
-  }
-  if (providerId === "qwen" && endpoint.protocol === "anthropic-messages") {
-    return new QwenAnthropicProvider(options.apiKey, model, options.retry, baseURL)
-  }
-  if (providerId === "qwen" && endpoint.protocol === "openai-chat") {
-    return new QwenProvider(options.apiKey, model, options.retry, baseURL)
-  }
-  if (providerId === "gemini" && endpoint.protocol === "gemini") {
-    return new GeminiProvider(options.apiKey, model, options.retry, baseURL)
-  }
-  if (providerId === "glm" && endpoint.protocol === "anthropic-messages") {
-    return new GLMAnthropicProvider(options.apiKey, model, options.retry, baseURL)
-  }
-  if (providerId === "glm" && endpoint.protocol === "openai-chat") {
-    return new GLMProvider(options.apiKey, model, options.retry, baseURL)
-  }
+  // Single data-driven dispatch: one registry keyed by (providerId, protocol).
+  const make = PROVIDER_REGISTRY[providerRegistryKey(providerId, endpoint.protocol)]
+  if (make) return make(options.apiKey, model, options.retry, baseURL)
 
   throw new Error(`No Node provider factory for ${options.model} on ${endpoint.id}`)
 }

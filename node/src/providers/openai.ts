@@ -39,6 +39,26 @@ export interface OpenAIProviderOptions {
   baseURL?: string
 }
 
+/** Reasoning captured from a single model turn, handed to the replay-remember hooks so an
+ *  OpenAI-compatible subclass can persist whatever replay envelope its wire requires. */
+export interface OpenAIChatTurnReasoning {
+  reasoningContent: string
+  reasoningDetails?: unknown
+  nativeToolCalls: unknown[]
+}
+
+/** Rebuild OpenAI-native `tool_calls` blocks from the streamed buffers — needed by reasoning
+ *  vendors (DeepSeek/MiniMax) that persist the native blocks in their replay envelope. */
+export function nativeToolCallsFromBuffers(
+  toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }>,
+): Array<Record<string, unknown>> {
+  return Object.values(toolCallBufs).map(tb => ({
+    id: tb.id,
+    type: "function",
+    function: { name: tb.name, arguments: tb.argsBuf || "{}" },
+  }))
+}
+
 export class OpenAIChatProvider implements LLMProvider {
   protected client: OpenAI
   protected circuit: CircuitBreaker
@@ -102,6 +122,54 @@ export class OpenAIChatProvider implements LLMProvider {
     })
   }
 
+  // ── Template-Method hooks ───────────────────────────────────────────────────
+  // Defaults reproduce the plain OpenAI-chat behavior; reasoning vendors
+  // (DeepSeek/MiniMax) override these instead of duplicating complete()/stream().
+
+  /** Pre-process caller extensions before they reach buildChatMessages + the wire request
+   *  (e.g. set `__deepstrikeThinkingEnabled`). Default: pass through unchanged. */
+  protected prepareExtensions(extensions?: Record<string, unknown>): Record<string, unknown> | undefined {
+    return extensions
+  }
+
+  /** Extra top-level request-body fields merged into the chat.completions call (vendor thinking
+   *  knobs like `reasoning_effort`, `extra_body`, `reasoning_split`). Default: none. */
+  protected requestBodyExtras(_extensions?: Record<string, unknown>): Record<string, unknown> {
+    return {}
+  }
+
+  /** Request-body params controlling prompt caching. Default sends OpenAI's `prompt_cache_key`;
+   *  vendors whose endpoints reject unknown params (e.g. DeepSeek 400s) override to `{}`. */
+  protected cacheKeyParams(context: RenderedContext, tools: ToolSchema[]): Record<string, unknown> {
+    return { prompt_cache_key: this.promptCacheKey(context, tools) }
+  }
+
+  /** Whether streamed `content` may carry inline `<thinking>…</thinking>` tags to split out.
+   *  Default true (OpenAI). Reasoning vendors emit reasoning out-of-band, so they return false. */
+  protected usesInlineThinkingTags(): boolean {
+    return true
+  }
+
+  /** Whether to surface streamed `reasoning_content` as thinking_delta events. Default true;
+   *  vendors gate this behind an `exposeReasoning` extension. */
+  protected exposeReasoningDelta(_extensions?: Record<string, unknown>): boolean {
+    return true
+  }
+
+  /** Persist replay after a non-streaming turn. Default: nothing (plain OpenAI has no reasoning
+   *  to replay). Reasoning vendors override to store their envelope. */
+  protected rememberCompleteReplay(_content: string, _toolCalls: Array<{ id: string; name: string; arguments: string }>, _reasoning: OpenAIChatTurnReasoning): void {
+    /* no-op */
+  }
+
+  /** Persist replay after a streamed turn. Default: store `{ reasoning_content }` when there is a
+   *  tool-call turn or captured reasoning (the prior base behavior). Vendors override. */
+  protected rememberStreamReplay(content: string, toolCalls: Array<{ id: string; name: string; arguments: string }>, reasoning: OpenAIChatTurnReasoning): void {
+    if (toolCalls.length || reasoning.reasoningContent) {
+      this.chat.rememberReplayFields({ content, toolCalls }, { reasoning_content: reasoning.reasoningContent })
+    }
+  }
+
   /**
    * Pre-flight query: would this history validate against this provider with the
    * given extensions, without sending the request? Lets an embedder route around
@@ -129,23 +197,32 @@ export class OpenAIChatProvider implements LLMProvider {
   }
 
   async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
+    const prepared = this.prepareExtensions(extensions)
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
-    const msgs = this.buildChatMessages(context, extensions)
+    const msgs = this.buildChatMessages(context, prepared)
 
     let lastErr: unknown
     for (let i = 0; i < this.maxRetries; i++) {
       try {
         const resp = await this.client.chat.completions.create({
-          prompt_cache_key: this.promptCacheKey(context, tools),
-          ...this.requestExtensions(extensions),
+          ...this.cacheKeyParams(context, tools),
+          ...this.requestExtensions(prepared),
+          ...this.requestBodyExtras(extensions),
           model: this.model,
           messages: msgs,
           ...(tools.length ? { tools: this.chat.buildTools(tools) } : {}),
         })
         this.circuit.recordSuccess()
-        const choice = resp.choices[0].message
-        const toolCalls = this.chat.normalizeToolCalls(choice.tool_calls ?? [])
-        return { role: "assistant", content: choice.content ?? "", tokenCount: resp.usage?.completion_tokens ?? resp.usage?.total_tokens, toolCalls }
+        const choice = resp.choices[0].message as OpenAI.ChatCompletionMessage & Record<string, unknown>
+        const nativeToolCalls = choice.tool_calls ?? []
+        const toolCalls = this.chat.normalizeToolCalls(nativeToolCalls as OpenAI.ChatCompletionMessageToolCall[])
+        const content = choice.content ?? ""
+        this.rememberCompleteReplay(content, toolCalls, {
+          reasoningContent: typeof choice.reasoning_content === "string" ? choice.reasoning_content : "",
+          reasoningDetails: choice.reasoning_details,
+          nativeToolCalls: nativeToolCalls as unknown[],
+        })
+        return { role: "assistant", content, tokenCount: resp.usage?.completion_tokens ?? resp.usage?.total_tokens, toolCalls }
       } catch (err) {
         lastErr = err
         this.circuit.recordFailure()
@@ -156,16 +233,21 @@ export class OpenAIChatProvider implements LLMProvider {
   }
 
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: ProviderRunState, signal?: AbortSignal): AsyncIterable<StreamEvent> {
-    const msgs = this.buildChatMessages(context, extensions)
+    const prepared = this.prepareExtensions(extensions)
+    const msgs = this.buildChatMessages(context, prepared)
     const toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }> = {}
     const emittedToolCallIndexes = new Set<number>()
+    const useTags = this.usesInlineThinkingTags()
+    const exposeReasoning = this.exposeReasoningDelta(extensions)
     const extractor = new ThinkingTagStreamExtractor()
     let accumulatedReasoning = ""
+    let accumulatedReasoningDetails: unknown
     let accumulatedContent = ""
 
     const stream = await this.client.chat.completions.create({
-      prompt_cache_key: this.promptCacheKey(context, tools),
-      ...this.requestExtensions(extensions),
+      ...this.cacheKeyParams(context, tools),
+      ...this.requestExtensions(prepared),
+      ...this.requestBodyExtras(extensions),
       model: this.model,
       messages: msgs,
       ...(tools.length ? { tools: this.chat.buildTools(tools) } : {}),
@@ -173,6 +255,25 @@ export class OpenAIChatProvider implements LLMProvider {
       stream_options: { include_usage: true },
     // #2-B-ii: forward the abort signal so a preempt cancels the in-flight HTTP request.
     }, signal ? { signal } : undefined)
+
+    const rememberStream = () => {
+      const toolCalls = Object.values(toolCallBufs).map(tb => ({ id: tb.id, name: tb.name, arguments: tb.argsBuf || "{}" }))
+      this.rememberStreamReplay(accumulatedContent, toolCalls, {
+        reasoningContent: accumulatedReasoning,
+        reasoningDetails: accumulatedReasoningDetails,
+        nativeToolCalls: nativeToolCallsFromBuffers(toolCallBufs),
+      })
+    }
+    const emitPendingToolCalls = function* () {
+      for (const [index, tb] of Object.entries(toolCallBufs)) {
+        const idx = Number(index)
+        if (emittedToolCallIndexes.has(idx)) continue
+        let args: Record<string, unknown> = {}
+        try { args = JSON.parse(tb.argsBuf || "{}") } catch { args = {} }
+        emittedToolCallIndexes.add(idx)
+        yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
+      }
+    }
 
     let totalTokens = 0
     let inputTokens = 0
@@ -188,27 +289,33 @@ export class OpenAIChatProvider implements LLMProvider {
       }
       const choice = chunk.choices[0]
       if (!choice) continue
-      const delta = choice.delta as any
+      const delta = choice.delta as Record<string, unknown>
       if (!delta) continue
 
       if (delta.reasoning_content) {
-        accumulatedReasoning += delta.reasoning_content
-        yield { type: "thinking_delta", delta: delta.reasoning_content } as ThinkingDelta
+        accumulatedReasoning += String(delta.reasoning_content)
+        if (exposeReasoning) yield { type: "thinking_delta", delta: String(delta.reasoning_content) } as ThinkingDelta
       }
+      if (delta.reasoning_details !== undefined && delta.reasoning_details !== null) accumulatedReasoningDetails = delta.reasoning_details
 
       if (delta.content) {
-        for (const part of extractor.feed(delta.content)) {
-          if (part.type === "thinking") {
-            accumulatedReasoning += part.content
-            yield { type: "thinking_delta", delta: part.content } as ThinkingDelta
-          } else {
-            accumulatedContent += part.content
-            yield { type: "text_delta", delta: part.content } as TextDelta
+        if (useTags) {
+          for (const part of extractor.feed(String(delta.content))) {
+            if (part.type === "thinking") {
+              accumulatedReasoning += part.content
+              yield { type: "thinking_delta", delta: part.content } as ThinkingDelta
+            } else {
+              accumulatedContent += part.content
+              yield { type: "text_delta", delta: part.content } as TextDelta
+            }
           }
+        } else {
+          accumulatedContent += String(delta.content)
+          yield { type: "text_delta", delta: delta.content } as TextDelta
         }
       }
 
-      for (const tc of delta.tool_calls ?? []) {
+      for (const tc of (delta.tool_calls as OpenAI.ChatCompletionChunk.Choice.Delta.ToolCall[] | undefined) ?? []) {
         const idx = tc.index
         if (!toolCallBufs[idx]) toolCallBufs[idx] = { id: tc.id ?? "", name: "", argsBuf: "" }
         if (tc.function?.name) toolCallBufs[idx].name += tc.function.name
@@ -216,46 +323,25 @@ export class OpenAIChatProvider implements LLMProvider {
       }
 
       if (choice.finish_reason === "tool_calls") {
-        const toolCalls = Object.values(toolCallBufs).map(tb => ({
-          id: tb.id, name: tb.name, arguments: tb.argsBuf || "{}",
-        }))
-        this.chat.rememberReplayFields({ content: accumulatedContent, toolCalls }, { reasoning_content: accumulatedReasoning })
-        for (const [index, tb] of Object.entries(toolCallBufs)) {
-          const idx = Number(index)
-          if (emittedToolCallIndexes.has(idx)) continue
-          let args: Record<string, unknown> = {}
-          try { args = JSON.parse(tb.argsBuf || "{}") } catch { args = {} }
-          emittedToolCallIndexes.add(idx)
-          yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
+        rememberStream()
+        yield* emitPendingToolCalls()
+      }
+    }
+
+    if (useTags) {
+      for (const part of extractor.flush()) {
+        if (part.type === "thinking") {
+          accumulatedReasoning += part.content
+          yield { type: "thinking_delta", delta: part.content } as ThinkingDelta
+        } else {
+          accumulatedContent += part.content
+          yield { type: "text_delta", delta: part.content } as TextDelta
         }
       }
     }
 
-    for (const part of extractor.flush()) {
-      if (part.type === "thinking") {
-        accumulatedReasoning += part.content
-        yield { type: "thinking_delta", delta: part.content } as ThinkingDelta
-      } else {
-        accumulatedContent += part.content
-        yield { type: "text_delta", delta: part.content } as TextDelta
-      }
-    }
-
-    const toolCalls = Object.values(toolCallBufs).map(tb => ({
-      id: tb.id, name: tb.name, arguments: tb.argsBuf || "{}",
-    }))
-    if (toolCalls.length || accumulatedReasoning) {
-      this.chat.rememberReplayFields({ content: accumulatedContent, toolCalls }, { reasoning_content: accumulatedReasoning })
-    }
-
-    for (const [index, tb] of Object.entries(toolCallBufs)) {
-      const idx = Number(index)
-      if (emittedToolCallIndexes.has(idx)) continue
-      let args: Record<string, unknown> = {}
-      try { args = JSON.parse(tb.argsBuf || "{}") } catch { args = {} }
-      emittedToolCallIndexes.add(idx)
-      yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
-    }
+    rememberStream()
+    yield* emitPendingToolCalls()
     if (totalTokens > 0) yield { type: "usage", totalTokens, inputTokens, outputTokens, ...(cacheReadTokens > 0 ? { cacheReadInputTokens: cacheReadTokens } : {}) } as StreamEvent
   }
 

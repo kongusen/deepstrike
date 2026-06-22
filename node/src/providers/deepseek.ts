@@ -1,42 +1,34 @@
-import OpenAI from "openai"
-import type { Message, ProviderDescriptor, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, RuntimePolicy } from "../types.js"
-import { AnthropicProvider } from "./anthropic.js"
-import { OpenAIChatProvider } from "./openai.js"
+import type { ProviderDescriptor, RuntimePolicy } from "../types.js"
+import { OpenAIChatProvider, type OpenAIChatTurnReasoning } from "./openai.js"
+import { AnthropicCompatibleProvider } from "./anthropic-compatible.js"
 import { endpointProfiles } from "./profiles.js"
-import { omitExtensionKeys, openAICachedPromptTokens } from "./base.js"
-
-const DEEPSEEK_POLICIES: Record<string, RuntimePolicy> = {
-  "deepseek-chat":      { maxTurns: 25 },
-  "deepseek-reasoner":  { maxTurns: 50 },
-  "deepseek-v4-flash":  { maxTurns: 20 },
-  "deepseek-v4-pro":    { maxTurns: 35 },
-}
+import { omitExtensionKeys } from "./base.js"
+import { DEEPSEEK_POLICIES, anthropicVendorProfiles } from "./vendor-profiles.js"
 
 /**
  * DeepSeek over its Anthropic-compatible endpoint.
+ * @deprecated Prefer `deepseek({ protocol: "anthropic" })`. Behavior is now fully
+ * data-driven via `anthropicVendorProfiles.deepseek`; this thin shim is kept for
+ * backward compatibility and `instanceof` checks.
  */
-export class DeepSeekAnthropicProvider extends AnthropicProvider {
+export class DeepSeekAnthropicProvider extends AnthropicCompatibleProvider {
   constructor(
     apiKey: string,
-    model: string = "deepseek-v4-flash",
+    model?: string,
     retry?: { maxRetries: number; baseDelay: number },
-    baseURL: string = endpointProfiles["deepseek.anthropic"].baseURL,
+    baseURL?: string,
   ) {
-    super(apiKey, model, retry, {
-      baseURL,
-      authMode: "api-key",
-    })
-  }
-
-  protected override providerName(): string {
-    return "deepseek"
-  }
-
-  override runtimePolicy(): RuntimePolicy {
-    return DEEPSEEK_POLICIES[this.model] ?? {}
+    super(anthropicVendorProfiles.deepseek, apiKey, model, retry, baseURL)
   }
 }
 
+/**
+ * DeepSeek over its OpenAI-compatible endpoint. Reasoning is carried out-of-band as
+ * `reasoning_content`; replay persists DeepSeek's schema_version-2 envelope (with the
+ * native `tool_calls` blocks). Request shaping (`reasoning_effort` + `extra_body.thinking`)
+ * and replay are supplied via the OpenAIChatProvider Template-Method hooks; the streaming /
+ * tool-call machinery is inherited from the base class.
+ */
 export class DeepSeekProvider extends OpenAIChatProvider {
   constructor(
     apiKey: string,
@@ -73,130 +65,43 @@ export class DeepSeekProvider extends OpenAIChatProvider {
     return extensions?.thinking !== false
   }
 
-  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
+  // DeepSeek strictly validates the request body and 400s on unknown params, so never send
+  // OpenAI's `prompt_cache_key` (DeepSeek auto prefix-caches anyway).
+  // Ref: https://api-docs.deepseek.com/quick_start/error_codes
+  protected override cacheKeyParams(): Record<string, unknown> {
+    return {}
+  }
+
+  // Reasoning arrives out-of-band as `reasoning_content`, never as inline <thinking> tags.
+  protected override usesInlineThinkingTags(): boolean {
+    return false
+  }
+
+  protected override exposeReasoningDelta(extensions?: Record<string, unknown>): boolean {
+    return (extensions?.exposeReasoning ?? false) as boolean
+  }
+
+  protected override prepareExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
     const thinking = extensions?.thinking === false ? "disabled" : "enabled"
     const thinkingEnabled = thinking !== "disabled"
     const reasoningEffort = extensions?.reasoningEffort === "max" ? "max" : "high"
-    const requestExtensions = {
+    return {
       ...omitExtensionKeys(extensions, ["thinking", "reasoningEffort", "exposeReasoning", "extra_body", "reasoning_effort"]),
       __deepstrikeThinkingEnabled: thinkingEnabled,
-      // Re-thread the degrade control flag (omitExtensionKeys strips internal
-      // keys) so buildChatMessages can honor it; the wire-request omit drops it.
+      // Re-thread the degrade control flag (omitExtensionKeys strips internal keys) so
+      // buildChatMessages can honor it; the base requestExtensions omit keeps it off nothing.
       ...(extensions?.degradeMissingReasoningReplay === true ? { degradeMissingReasoningReplay: true } : {}),
       reasoning_effort: reasoningEffort,
       extra_body: { thinking: { type: thinking } },
     }
-    if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
-    const msgs = this.buildChatMessages(context, requestExtensions)
-
-    let lastErr: unknown
-    for (let i = 0; i < this.maxRetries; i++) {
-      try {
-        const resp = await this.client.chat.completions.create({
-          ...this.requestExtensions(requestExtensions),
-          model: this.model,
-          messages: msgs,
-          ...(tools.length ? { tools: this.chat.buildTools(tools) } : {}),
-        })
-        this.circuit.recordSuccess()
-        const choice = resp.choices[0].message as OpenAI.ChatCompletionMessage & Record<string, unknown>
-        const nativeToolCalls = choice.tool_calls ?? []
-        const toolCalls = this.chat.normalizeToolCalls(nativeToolCalls)
-        const content = choice.content ?? ""
-        this.rememberDeepSeekReplay(content, toolCalls, choice.reasoning_content, nativeToolCalls)
-        return { role: "assistant", content, tokenCount: resp.usage?.completion_tokens ?? resp.usage?.total_tokens, toolCalls }
-      } catch (err) {
-        lastErr = err
-        this.circuit.recordFailure()
-        if (i < this.maxRetries - 1) await new Promise(r => setTimeout(r, this.baseDelay * 2 ** i))
-      }
-    }
-    throw lastErr
   }
 
-  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
-    const exposeReasoning = extensions?.exposeReasoning ?? false
-    const thinking = extensions?.thinking === false ? "disabled" : "enabled"
-    const reasoningEffort = extensions?.reasoningEffort === "max" ? "max" : "high"
-    const msgs = this.buildChatMessages(context, extensions)
-    const toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }> = {}
-    const emittedToolCallIndexes = new Set<number>()
-    let reasoningContent = ""
-    let finalText = ""
+  protected override rememberCompleteReplay(content: string, toolCalls: Array<{ id: string; name: string; arguments: string }>, r: OpenAIChatTurnReasoning): void {
+    this.rememberDeepSeekReplay(content, toolCalls, r.reasoningContent, r.nativeToolCalls)
+  }
 
-    const stream = await this.client.chat.completions.create({
-      ...omitExtensionKeys(extensions, [
-        "model", "messages", "tools", "stream", "stream_options", "extra_body", "reasoning_effort",
-        "exposeReasoning", "thinking", "reasoningEffort", "__deepstrikeThinkingEnabled",
-      ]),
-      model: this.model,
-      messages: msgs,
-      ...(tools.length ? { tools: this.chat.buildTools(tools) } : {}),
-      stream: true,
-      stream_options: { include_usage: true },
-      reasoning_effort: reasoningEffort,
-      extra_body: { thinking: { type: thinking } },
-    } as OpenAI.ChatCompletionCreateParamsStreaming)
-
-    let totalTokens = 0
-    let inputTokens = 0
-    let outputTokens = 0
-    let cacheReadTokens = 0
-    for await (const chunk of stream) {
-      if (chunk.usage) {
-        totalTokens = chunk.usage.total_tokens
-        inputTokens = chunk.usage.prompt_tokens ?? 0
-        outputTokens = chunk.usage.completion_tokens ?? 0
-        cacheReadTokens = openAICachedPromptTokens(chunk.usage)
-        continue
-      }
-      const choice = chunk.choices[0]
-      if (!choice) continue
-      const delta = choice.delta as Record<string, unknown>
-      if (!delta) continue
-      if (exposeReasoning && delta.reasoning_content) {
-        yield { type: "thinking_delta", delta: delta.reasoning_content } as ThinkingDelta
-      }
-      if (delta.reasoning_content) reasoningContent += String(delta.reasoning_content)
-      if (delta.content) {
-        finalText += String(delta.content)
-        yield { type: "text_delta", delta: delta.content } as TextDelta
-      }
-      for (const tc of (delta.tool_calls as OpenAI.ChatCompletionChunk.Choice.Delta.ToolCall[] | undefined) ?? []) {
-        const idx = tc.index
-        if (!toolCallBufs[idx]) toolCallBufs[idx] = { id: tc.id ?? "", name: "", argsBuf: "" }
-        if (tc.function?.name) toolCallBufs[idx].name += tc.function.name
-        toolCallBufs[idx].argsBuf += tc.function?.arguments ?? ""
-      }
-      if (choice.finish_reason === "tool_calls") {
-        const toolCalls = Object.values(toolCallBufs).map(tb => ({
-          id: tb.id, name: tb.name, arguments: tb.argsBuf || "{}",
-        }))
-        this.rememberDeepSeekReplay(finalText, toolCalls, reasoningContent, nativeToolCallsFromBuffers(toolCallBufs))
-        for (const [index, tb] of Object.entries(toolCallBufs)) {
-          const idx = Number(index)
-          if (emittedToolCallIndexes.has(idx)) continue
-          let args: Record<string, unknown> = {}
-          try { args = JSON.parse(tb.argsBuf || "{}") } catch { args = {} }
-          emittedToolCallIndexes.add(idx)
-          yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
-        }
-      }
-    }
-
-    const toolCalls = Object.values(toolCallBufs).map(tb => ({
-      id: tb.id, name: tb.name, arguments: tb.argsBuf || "{}",
-    }))
-    this.rememberDeepSeekReplay(finalText, toolCalls, reasoningContent, nativeToolCallsFromBuffers(toolCallBufs))
-    for (const [index, tb] of Object.entries(toolCallBufs)) {
-      const idx = Number(index)
-      if (emittedToolCallIndexes.has(idx)) continue
-      let args: Record<string, unknown> = {}
-      try { args = JSON.parse(tb.argsBuf || "{}") } catch { args = {} }
-      emittedToolCallIndexes.add(idx)
-      yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
-    }
-    if (totalTokens > 0) yield { type: "usage", totalTokens, inputTokens, outputTokens, ...(cacheReadTokens > 0 ? { cacheReadInputTokens: cacheReadTokens } : {}) } as StreamEvent
+  protected override rememberStreamReplay(content: string, toolCalls: Array<{ id: string; name: string; arguments: string }>, r: OpenAIChatTurnReasoning): void {
+    this.rememberDeepSeekReplay(content, toolCalls, r.reasoningContent, r.nativeToolCalls)
   }
 
   private rememberDeepSeekReplay(
@@ -215,14 +120,4 @@ export class DeepSeekProvider extends OpenAIChatProvider {
       ...(nativeToolCalls.length ? { tool_calls: nativeToolCalls } : {}),
     })
   }
-}
-
-function nativeToolCallsFromBuffers(
-  toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }>,
-): Array<Record<string, unknown>> {
-  return Object.values(toolCallBufs).map(tb => ({
-    id: tb.id,
-    type: "function",
-    function: { name: tb.name, arguments: tb.argsBuf || "{}" },
-  }))
 }

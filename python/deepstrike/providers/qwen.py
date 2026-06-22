@@ -5,49 +5,29 @@ from typing import AsyncIterator
 from http import HTTPStatus
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
-from .anthropic import AnthropicProvider
 from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, openai_cached_prompt_tokens, to_openai_message_params
 from .replay import ReasoningReplayMixin
+from .anthropic_compatible import AnthropicCompatibleProvider
+from .vendor_profiles import QWEN_POLICIES as _QWEN_POLICIES, ANTHROPIC_VENDOR_PROFILES
 
 logger = logging.getLogger(__name__)
 
-_QWEN_POLICIES: dict[str, RuntimePolicy] = {
-    "qwen3.7-max-preview": RuntimePolicy(max_turns=45),
-    "qwen3.7-plus-preview": RuntimePolicy(max_turns=40),
-    "qwen3.6-max-preview": RuntimePolicy(max_turns=40),
-    "qwen3.6-plus": RuntimePolicy(max_turns=35),
-    "qwen3.6-flash": RuntimePolicy(max_turns=20),
-    "qwen3.6-35b-a3b": RuntimePolicy(max_turns=25),
-    "qwen3.6-27b": RuntimePolicy(max_turns=25),
-    "qwen3.5-plus": RuntimePolicy(max_turns=35),
-    "qwen3.5-flash": RuntimePolicy(max_turns=20),
-    "qwen3.5-397b-a17b": RuntimePolicy(max_turns=35),
-    "qwen3.5-122b-a10b": RuntimePolicy(max_turns=25),
-    "qwen3.5-35b-a3b": RuntimePolicy(max_turns=20),
-    "qwen3.5-27b": RuntimePolicy(max_turns=20),
-}
 
+class QwenAnthropicProvider(AnthropicCompatibleProvider):
+    """Qwen over its Anthropic-compatible endpoint.
 
-_QWEN_ANTHROPIC_BASE = "https://dashscope-intl.aliyuncs.com/apps/anthropic"
-
-
-class QwenAnthropicProvider(AnthropicProvider):
-    """Qwen over its Anthropic-compatible endpoint."""
+    Deprecated: prefer ``qwen(protocol="anthropic")``. Data-driven via
+    ``ANTHROPIC_VENDOR_PROFILES["qwen"]``; thin shim for backward compat / isinstance.
+    """
 
     def __init__(
         self,
         api_key: str,
-        model: str = "qwen3.6-plus",
+        model: str | None = None,
         retry_config: RetryConfig | None = None,
-        base_url: str = _QWEN_ANTHROPIC_BASE,
+        base_url: str | None = None,
     ):
-        super().__init__(api_key, model, retry_config, base_url=base_url)
-
-    def _provider_name(self) -> str:
-        return "qwen"
-
-    def runtime_policy(self) -> RuntimePolicy:
-        return _QWEN_POLICIES.get(self._model, RuntimePolicy())
+        super().__init__(ANTHROPIC_VENDOR_PROFILES["qwen"], api_key, model, retry_config, base_url)
 
 
 class QwenProvider(ReasoningReplayMixin):

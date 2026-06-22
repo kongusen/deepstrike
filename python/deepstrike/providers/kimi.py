@@ -1,39 +1,27 @@
 from __future__ import annotations
-from .anthropic import AnthropicProvider
 from .base import RetryConfig, RuntimePolicy
 from .openai import OpenAIProvider
+from .anthropic_compatible import AnthropicCompatibleProvider
+from .vendor_profiles import KIMI_POLICIES as _KIMI_POLICIES, ANTHROPIC_VENDOR_PROFILES
 
-_KIMI_ANTHROPIC_BASE = "https://api.moonshot.ai/anthropic"
 _MOONSHOT_BASE_URL = "https://api.moonshot.cn/v1"
 
-_KIMI_POLICIES: dict[str, RuntimePolicy] = {
-    "moonshot-v1-8k":   RuntimePolicy(max_turns=15),
-    "moonshot-v1-32k":  RuntimePolicy(max_turns=20),
-    "moonshot-v1-128k": RuntimePolicy(max_turns=30),
-    "kimi-k2.5":        RuntimePolicy(max_turns=30),
-    "kimi-k2.6":        RuntimePolicy(max_turns=35),
-    "kimi-k2-thinking": RuntimePolicy(max_turns=50),
-    "kimi-k2-thinking-turbo": RuntimePolicy(max_turns=40),
-}
 
+class KimiAnthropicProvider(AnthropicCompatibleProvider):
+    """Kimi (Moonshot AI) over its Anthropic-compatible endpoint.
 
-class KimiAnthropicProvider(AnthropicProvider):
-    """Kimi (Moonshot AI) over its Anthropic-compatible endpoint."""
+    Deprecated: prefer ``kimi(protocol="anthropic")``. Data-driven via
+    ``ANTHROPIC_VENDOR_PROFILES["kimi"]``; thin shim for backward compat / isinstance.
+    """
 
     def __init__(
         self,
         api_key: str,
-        model: str = "kimi-k2.6",
+        model: str | None = None,
         retry_config: RetryConfig | None = None,
-        base_url: str = _KIMI_ANTHROPIC_BASE,
+        base_url: str | None = None,
     ):
-        super().__init__(api_key, model, retry_config, base_url=base_url)
-
-    def _provider_name(self) -> str:
-        return "kimi"
-
-    def runtime_policy(self) -> RuntimePolicy:
-        return _KIMI_POLICIES.get(self._model, RuntimePolicy())
+        super().__init__(ANTHROPIC_VENDOR_PROFILES["kimi"], api_key, model, retry_config, base_url)
 
 
 class KimiProvider(OpenAIProvider):

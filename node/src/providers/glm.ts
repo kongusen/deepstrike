@@ -1,41 +1,23 @@
 import type { ProviderDescriptor, RuntimePolicy } from "../types.js"
-import { AnthropicProvider } from "./anthropic.js"
 import { OpenAIChatProvider } from "./openai.js"
+import { AnthropicCompatibleProvider } from "./anthropic-compatible.js"
 import { endpointProfiles } from "./profiles.js"
-
-const GLM_POLICIES: Record<string, RuntimePolicy> = {
-  "glm-5.1": { maxTurns: 50 },
-  "glm/glm-5.1": { maxTurns: 50 },
-  "glm-4-plus": { maxTurns: 35 },
-  "glm/glm-4-plus": { maxTurns: 35 },
-  "glm-4-flash": { maxTurns: 15 },
-  "glm/glm-4-flash": { maxTurns: 15 },
-  "glm-4-air": { maxTurns: 20 },
-  "glm/glm-4-air": { maxTurns: 20 },
-}
+import { GLM_POLICIES, anthropicVendorProfiles } from "./vendor-profiles.js"
 
 /**
  * GLM over its Anthropic-compatible endpoint.
+ * @deprecated Prefer `glm({ protocol: "anthropic" })`. Behavior is now fully
+ * data-driven via `anthropicVendorProfiles.glm`; this thin shim is kept for
+ * backward compatibility and `instanceof` checks.
  */
-export class GLMAnthropicProvider extends AnthropicProvider {
+export class GLMAnthropicProvider extends AnthropicCompatibleProvider {
   constructor(
     apiKey: string,
-    model: string = "glm-5.1",
+    model?: string,
     retry?: { maxRetries: number; baseDelay: number },
-    baseURL: string = endpointProfiles["glm.anthropic"].baseURL,
+    baseURL?: string,
   ) {
-    super(apiKey, model, retry, {
-      baseURL,
-      authMode: "api-key",
-    })
-  }
-
-  protected override providerName(): string {
-    return "glm"
-  }
-
-  override runtimePolicy(): RuntimePolicy {
-    return GLM_POLICIES[this.model] ?? {}
+    super(anthropicVendorProfiles.glm, apiKey, model, retry, baseURL)
   }
 }
 

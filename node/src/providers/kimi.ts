@@ -1,40 +1,23 @@
 import type { ProviderDescriptor, RuntimePolicy } from "../types.js"
-import { AnthropicProvider } from "./anthropic.js"
 import { OpenAIChatProvider } from "./openai.js"
+import { AnthropicCompatibleProvider } from "./anthropic-compatible.js"
 import { endpointProfiles } from "./profiles.js"
-
-const KIMI_POLICIES: Record<string, RuntimePolicy> = {
-  "moonshot-v1-8k":   { maxTurns: 15 },
-  "moonshot-v1-32k":  { maxTurns: 20 },
-  "moonshot-v1-128k": { maxTurns: 30 },
-  "kimi-k2.5":        { maxTurns: 30 },
-  "kimi-k2.6":        { maxTurns: 35 },
-  "kimi-k2-thinking": { maxTurns: 50 },
-  "kimi-k2-thinking-turbo": { maxTurns: 40 },
-}
+import { KIMI_POLICIES, anthropicVendorProfiles } from "./vendor-profiles.js"
 
 /**
  * Kimi over its Anthropic-compatible endpoint.
+ * @deprecated Prefer `kimi({ protocol: "anthropic" })`. Behavior is now fully
+ * data-driven via `anthropicVendorProfiles.kimi`; this thin shim is kept for
+ * backward compatibility and `instanceof` checks.
  */
-export class KimiAnthropicProvider extends AnthropicProvider {
+export class KimiAnthropicProvider extends AnthropicCompatibleProvider {
   constructor(
     apiKey: string,
-    model: string = "kimi-k2.6",
+    model?: string,
     retry?: { maxRetries: number; baseDelay: number },
-    baseURL: string = endpointProfiles["kimi.anthropic"].baseURL,
+    baseURL?: string,
   ) {
-    super(apiKey, model, retry, {
-      baseURL,
-      authMode: "api-key",
-    })
-  }
-
-  protected override providerName(): string {
-    return "kimi"
-  }
-
-  override runtimePolicy(): RuntimePolicy {
-    return KIMI_POLICIES[this.model] ?? {}
+    super(anthropicVendorProfiles.kimi, apiKey, model, retry, baseURL)
   }
 }
 
