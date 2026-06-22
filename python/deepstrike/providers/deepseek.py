@@ -2,10 +2,9 @@ from __future__ import annotations
 import json
 import logging
 from typing import AsyncIterator
-import httpx
 from deepstrike._kernel import Message, ToolCall, ToolSchema
-from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent
-from .base import RetryConfig, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, wire_request_extensions
+from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
+from .base import RetryConfig, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, openai_cached_prompt_tokens, wire_request_extensions
 from .openai import OpenAIProvider
 from .anthropic_compatible import AnthropicCompatibleProvider
 from .vendor_profiles import DEEPSEEK_POLICIES as _DEEPSEEK_POLICIES, ANTHROPIC_VENDOR_PROFILES
@@ -144,86 +143,98 @@ class DeepSeekProvider(OpenAIProvider):
 
         raise last_exc or RuntimeError("Complete failed")
 
-    def _build_body(self, messages: list[Message], tools: list[ToolSchema], stream: bool, extensions: dict | None = None) -> dict:
-        body = super()._build_body(messages, tools, stream)
-        if self._model in _REASONER_MODELS:
-            body.pop("tools", None)
-            body.pop("tool_choice", None)
-        return body
-
-    async def _stream_gen(self, messages: list[Message], tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
+    async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
         ext = extensions or {}
-        tool_calls: dict[int, dict] = {}
-        emitted_tool_call_indexes: set[int] = set()
+        msgs = self._build_messages(context, extensions)
+        # Reasoner models (deepseek-reasoner / deepseek-r1) do not support tool calling.
+        tool_defs = None if self._model in _REASONER_MODELS else self._build_tools(tools)
+        expose_reasoning = ext.get("expose_reasoning")
+        tool_call_bufs: dict[int, dict] = {}
+        emitted: set[int] = set()
         reasoning_content = ""
         final_text = ""
         final_tool_calls: list[ToolCall] = []
-        async with httpx.AsyncClient() as client:
-            async with client.stream("POST", f"{self._base_url}/chat/completions",
-                                     headers=self._headers(),
-                                     json=self._build_body(messages, tools, stream=True),
-                                     timeout=120) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    raw = line[5:].strip()
-                    if raw in ("", "[DONE]"):
-                        continue
-                    chunk = json.loads(raw)
-                    choice = (chunk.get("choices") or [{}])[0]
-                    delta = choice.get("delta", {})
-                    if reasoning := delta.get("reasoning_content"):
-                        reasoning_content += str(reasoning)
-                        if ext.get("expose_reasoning"):
-                            yield ThinkingDelta(delta=reasoning)
-                    if text := delta.get("content"):
-                        final_text += str(text)
-                        yield TextDelta(delta=text)
-                    for tc_delta in delta.get("tool_calls") or []:
-                        idx = tc_delta["index"]
-                        if idx not in tool_calls:
-                            tool_calls[idx] = {"id": tc_delta.get("id", ""), "name": "", "args_buf": ""}
-                        fn = tc_delta.get("function", {})
-                        if fn.get("name"):
-                            tool_calls[idx]["name"] += fn["name"]
-                        tool_calls[idx]["args_buf"] += fn.get("arguments", "")
-                    if choice.get("finish_reason") == "tool_calls":
-                        for idx, tb in tool_calls.items():
-                            if idx in emitted_tool_call_indexes:
-                                continue
-                            try:
-                                args = json.loads(tb["args_buf"] or "{}")
-                            except json.JSONDecodeError:
-                                args = {}
-                            tc = normalize_tool_call(tb["id"], tb["name"], args)
-                            if tc:
-                                final_tool_calls.append(tc)
-                                emitted_tool_call_indexes.add(idx)
-                                yield ToolCallEvent(id=tc.id, name=tc.name, arguments=args)
 
-        for idx, tb in tool_calls.items():
-            if idx in emitted_tool_call_indexes:
+        # Unlike the base provider we never add prompt_cache_key: DeepSeek 400s on unknown params and
+        # auto prefix-caches anyway (mirrors complete() and the Node DeepSeekProvider cacheKeyParams).
+        request_extensions = {k: v for k, v in wire_request_extensions(ext).items() if k not in {"model", "messages", "tools", "stream", "stream_options"}}
+        create_kwargs: dict = {**request_extensions, "model": self._model, "messages": msgs, "stream": True, "stream_options": {"include_usage": True}}
+        if tool_defs:
+            create_kwargs["tools"] = tool_defs
+        stream = await self._client.chat.completions.create(**create_kwargs)
+
+        async for chunk in stream:
+            if getattr(chunk, "usage", None):
+                u = chunk.usage
+                yield UsageEvent(
+                    total_tokens=getattr(u, "total_tokens", 0) or 0,
+                    input_tokens=getattr(u, "prompt_tokens", 0) or 0,
+                    output_tokens=getattr(u, "completion_tokens", 0) or 0,
+                    cache_read_input_tokens=openai_cached_prompt_tokens(u),
+                )
+                continue
+            choice = chunk.choices[0] if chunk.choices else None
+            if not choice:
+                continue
+            delta = getattr(choice, "delta", None)
+            if not delta:
+                continue
+            native_reasoning = _delta_field(delta, "reasoning_content")
+            if native_reasoning:
+                reasoning_content += str(native_reasoning)
+                if expose_reasoning:
+                    yield ThinkingDelta(delta=native_reasoning)
+            if delta.content:
+                final_text += str(delta.content)
+                yield TextDelta(delta=delta.content)
+            for tc in delta.tool_calls or []:
+                idx = tc.index
+                if idx not in tool_call_bufs:
+                    tool_call_bufs[idx] = {"id": tc.id or "", "name": "", "args_buf": ""}
+                if tc.function and tc.function.name:
+                    tool_call_bufs[idx]["name"] += tc.function.name
+                if tc.function and tc.function.arguments:
+                    tool_call_bufs[idx]["args_buf"] += tc.function.arguments
+            if choice.finish_reason == "tool_calls":
+                for idx, tb in tool_call_bufs.items():
+                    if idx in emitted:
+                        continue
+                    try:
+                        args = json.loads(tb["args_buf"] or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    tc_obj = normalize_tool_call(tb["id"], tb["name"], args)
+                    if tc_obj:
+                        final_tool_calls.append(tc_obj)
+                        emitted.add(idx)
+                        yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)
+
+        for idx, tb in tool_call_bufs.items():
+            if idx in emitted:
                 continue
             try:
                 args = json.loads(tb["args_buf"] or "{}")
             except json.JSONDecodeError:
                 args = {}
-            tc = normalize_tool_call(tb["id"], tb["name"], args)
-            if tc:
-                final_tool_calls.append(tc)
-                yield ToolCallEvent(id=tc.id, name=tc.name, arguments=args)
+            tc_obj = normalize_tool_call(tb["id"], tb["name"], args)
+            if tc_obj:
+                final_tool_calls.append(tc_obj)
+                yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)
 
         native_tool_calls = [
-            {
-                "id": tb["id"],
-                "type": "function",
-                "function": {"name": tb["name"], "arguments": tb["args_buf"] or "{}"},
-            }
-            for tb in tool_calls.values()
+            {"id": tb["id"], "type": "function", "function": {"name": tb["name"], "arguments": tb["args_buf"] or "{}"}}
+            for tb in tool_call_bufs.values()
         ]
         self._remember_deepseek_replay(final_text, final_tool_calls, reasoning_content, native_tool_calls)
 
-    def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
-        messages = self._build_messages(context, extensions)
-        return self._stream_gen(messages, tools, extensions)
+
+def _delta_field(obj: object, name: str):
+    """Read a (possibly non-standard) field off a streamed delta — direct attr first, then the
+    openai SDK's ``model_extra`` bag where vendor extensions like reasoning_content land."""
+    value = getattr(obj, name, None)
+    if value is not None:
+        return value
+    extra = getattr(obj, "model_extra", None)
+    if isinstance(extra, dict):
+        return extra.get(name)
+    return None
