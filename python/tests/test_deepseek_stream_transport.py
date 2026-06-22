@@ -128,7 +128,8 @@ async def test_stream_reasoner_model_sends_no_tools():
     fake = _wire(provider, [_chunk(_delta(content="thinking done"))])
     tool = ToolSchema(name="t", description="d", parameters="{}")
     _ = [e async for e in provider.stream(CTX, [tool])]
-    assert "tools" not in fake.last_kwargs
+    # No tool defs reach the wire (the openai SDK drops a None `tools` kwarg).
+    assert fake.last_kwargs.get("tools") is None
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,8 @@
 from __future__ import annotations
 import json
 import logging
-from typing import AsyncIterator
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterator
 from openai import AsyncOpenAI
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent, ThinkingDelta, UsageEvent
@@ -36,6 +37,34 @@ _OPENAI_POLICIES: dict[str, RuntimePolicy] = {
 }
 
 
+@dataclass
+class OpenAIChatTurnReasoning:
+    """Reasoning captured from one model turn, handed to the replay-remember hooks so a reasoning
+    vendor (DeepSeek/MiniMax) can persist whatever replay envelope its wire requires."""
+    reasoning_content: str = ""
+    reasoning_details: Any = None
+    native_tool_calls: list = field(default_factory=list)
+
+
+def _extra_field(obj: object, name: str):
+    """Read a (possibly non-standard) field off an openai SDK object — direct attr first, then the
+    ``model_extra`` bag where vendor extensions like reasoning_content / reasoning_details land."""
+    value = getattr(obj, name, None)
+    if value is not None:
+        return value
+    extra = getattr(obj, "model_extra", None)
+    if isinstance(extra, dict):
+        return extra.get(name)
+    return None
+
+
+def _native_tool_calls_from_bufs(bufs: dict[int, dict]) -> list[dict]:
+    return [
+        {"id": tb["id"], "type": "function", "function": {"name": tb["name"], "arguments": tb["args_buf"] or "{}"}}
+        for tb in bufs.values()
+    ]
+
+
 class OpenAIProvider(ReasoningReplayMixin):
     def __init__(
         self,
@@ -68,6 +97,49 @@ class OpenAIProvider(ReasoningReplayMixin):
 
     def _degrade_missing_reasoning_replay(self, extensions: dict | None) -> bool:
         return (extensions or {}).get("degrade_missing_reasoning_replay") is True
+
+    # ── Template-Method hooks ───────────────────────────────────────────────
+    # Defaults reproduce the plain OpenAI-chat behavior; reasoning vendors
+    # (DeepSeek/MiniMax) override these instead of duplicating complete()/stream().
+
+    def _prepare_extensions(self, extensions: dict | None) -> dict | None:
+        """Pre-process caller extensions before they reach the wire request body (e.g. force
+        ``reasoning_split``). Default: pass through unchanged."""
+        return extensions
+
+    def _cache_key_params(self, context: RenderedContext, tools: list[ToolSchema]) -> dict:
+        """Request-body params controlling prompt caching, merged via setdefault. Default sends
+        OpenAI's ``prompt_cache_key``; vendors whose endpoints reject unknown params (DeepSeek 400s)
+        override to ``{}``."""
+        return {"prompt_cache_key": self._prompt_cache_key(context, tools)}
+
+    def _wire_tools(self, tools: list[ToolSchema]) -> list[dict] | None:
+        """Tool defs sent on the wire. Default = all tools; DeepSeek reasoner models strip them."""
+        return self._build_tools(tools)
+
+    def _uses_inline_thinking_tags(self) -> bool:
+        """Whether streamed ``content`` may carry inline <thinking>…</thinking> tags to split out.
+        Default True (OpenAI); reasoning vendors emit reasoning out-of-band, so they return False."""
+        return True
+
+    def _expose_reasoning_delta(self, extensions: dict | None) -> bool:
+        """Whether to surface streamed ``reasoning_content`` as ThinkingDelta events. Default True;
+        vendors gate this behind an ``expose_reasoning`` extension."""
+        return True
+
+    def _capture_reasoning_details(self) -> bool:
+        """Whether to accumulate ``reasoning_details`` (split reasoning) for replay. Default False;
+        MiniMax returns True."""
+        return False
+
+    def _remember_complete_replay(self, content: str, tool_calls: list, reasoning: OpenAIChatTurnReasoning) -> None:
+        """Persist replay after a non-streaming turn. Default: nothing (plain OpenAI has no reasoning
+        to replay). Reasoning vendors override to store their envelope."""
+
+    def _remember_stream_replay(self, content: str, tool_calls: list, reasoning: OpenAIChatTurnReasoning) -> None:
+        """Persist replay after a streamed turn. Default reproduces the prior base behavior. Vendors
+        override to store their schema_v2 envelope."""
+        self.remember_reasoning_for_turn(content, tool_calls, reasoning.reasoning_content)
 
     def assess_replayability(self, context: RenderedContext, extensions: dict | None = None) -> dict:
         """Pre-flight query: would this history validate against this provider with
@@ -145,14 +217,16 @@ class OpenAIProvider(ReasoningReplayMixin):
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
 
+        prepared = self._prepare_extensions(extensions)
         msgs = self._build_messages(context, extensions)
-        tool_defs = self._build_tools(tools)
+        tool_defs = self._wire_tools(tools)
 
         last_exc = None
         for attempt in range(self._retry.max_retries):
             try:
-                request_extensions = wire_request_extensions(extensions)
-                request_extensions.setdefault("prompt_cache_key", self._prompt_cache_key(context, tools))
+                request_extensions = wire_request_extensions(prepared)
+                for k, v in self._cache_key_params(context, tools).items():
+                    request_extensions.setdefault(k, v)
                 resp = await self._client.chat.completions.create(
                     **request_extensions,
                     model=self._model,
@@ -163,12 +237,21 @@ class OpenAIProvider(ReasoningReplayMixin):
 
                 choice = resp.choices[0].message
                 content = choice.content or ""
+                native_tool_calls = choice.tool_calls or []
                 tool_calls: list[ToolCall] = []
-
-                for tc in choice.tool_calls or []:
+                for tc in native_tool_calls:
                     normalized = normalize_tool_call(tc.id, tc.function.name, tc.function.arguments)
                     if normalized:
                         tool_calls.append(normalized)
+
+                self._remember_complete_replay(content, tool_calls, OpenAIChatTurnReasoning(
+                    reasoning_content=_extra_field(choice, "reasoning_content") or "",
+                    reasoning_details=_extra_field(choice, "reasoning_details"),
+                    native_tool_calls=[
+                        {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                        for tc in native_tool_calls
+                    ],
+                ))
 
                 return Message(
                     role="assistant",
@@ -187,17 +270,30 @@ class OpenAIProvider(ReasoningReplayMixin):
         raise last_exc or RuntimeError("Complete failed")
 
     async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
+        prepared = self._prepare_extensions(extensions)
         msgs = self._build_messages(context, extensions)
-        tool_defs = self._build_tools(tools)
+        tool_defs = self._wire_tools(tools)
+        expose_reasoning = self._expose_reasoning_delta(extensions)
+        use_tags = self._uses_inline_thinking_tags()
+        capture_details = self._capture_reasoning_details()
         tool_call_bufs: dict[int, dict] = {}
         emitted_tool_call_indexes: set[int] = set()
         extractor = ThinkingTagStreamExtractor()
         accumulated_reasoning = ""
+        accumulated_details = None
         accumulated_content = ""
         final_tool_calls = []
 
-        request_extensions = wire_request_extensions(extensions)
-        request_extensions.setdefault("prompt_cache_key", self._prompt_cache_key(context, tools))
+        def _remember() -> None:
+            self._remember_stream_replay(accumulated_content, final_tool_calls, OpenAIChatTurnReasoning(
+                reasoning_content=accumulated_reasoning,
+                reasoning_details=accumulated_details,
+                native_tool_calls=_native_tool_calls_from_bufs(tool_call_bufs),
+            ))
+
+        request_extensions = wire_request_extensions(prepared)
+        for k, v in self._cache_key_params(context, tools).items():
+            request_extensions.setdefault(k, v)
         stream = await self._client.chat.completions.create(
             **request_extensions,
             model=self._model,
@@ -227,19 +323,28 @@ class OpenAIProvider(ReasoningReplayMixin):
             if not delta:
                 continue
 
-            native_reasoning = getattr(delta, "reasoning_content", None)
+            native_reasoning = _extra_field(delta, "reasoning_content")
             if native_reasoning:
-                accumulated_reasoning += native_reasoning
-                yield ThinkingDelta(delta=native_reasoning)
+                accumulated_reasoning += str(native_reasoning)
+                if expose_reasoning:
+                    yield ThinkingDelta(delta=native_reasoning)
+            if capture_details:
+                details = _extra_field(delta, "reasoning_details")
+                if details is not None:
+                    accumulated_details = details
 
             if delta.content:
-                for part in extractor.feed(delta.content):
-                    if part["type"] == "thinking":
-                        accumulated_reasoning += part["content"]
-                        yield ThinkingDelta(delta=part["content"])
-                    else:
-                        accumulated_content += part["content"]
-                        yield TextDelta(delta=part["content"])
+                if use_tags:
+                    for part in extractor.feed(delta.content):
+                        if part["type"] == "thinking":
+                            accumulated_reasoning += part["content"]
+                            yield ThinkingDelta(delta=part["content"])
+                        else:
+                            accumulated_content += part["content"]
+                            yield TextDelta(delta=part["content"])
+                else:
+                    accumulated_content += str(delta.content)
+                    yield TextDelta(delta=delta.content)
 
             for tc in delta.tool_calls or []:
                 idx = tc.index
@@ -263,15 +368,16 @@ class OpenAIProvider(ReasoningReplayMixin):
                         final_tool_calls.append(tc_obj)
                         emitted_tool_call_indexes.add(idx)
                         yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)
-                self.remember_reasoning_for_turn(accumulated_content, final_tool_calls, accumulated_reasoning)
+                _remember()
 
-        for part in extractor.flush():
-            if part["type"] == "thinking":
-                accumulated_reasoning += part["content"]
-                yield ThinkingDelta(delta=part["content"])
-            else:
-                accumulated_content += part["content"]
-                yield TextDelta(delta=part["content"])
+        if use_tags:
+            for part in extractor.flush():
+                if part["type"] == "thinking":
+                    accumulated_reasoning += part["content"]
+                    yield ThinkingDelta(delta=part["content"])
+                else:
+                    accumulated_content += part["content"]
+                    yield TextDelta(delta=part["content"])
 
         for idx, tb in tool_call_bufs.items():
             if idx in emitted_tool_call_indexes:
@@ -285,4 +391,4 @@ class OpenAIProvider(ReasoningReplayMixin):
                 final_tool_calls.append(tc_obj)
                 yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)
 
-        self.remember_reasoning_for_turn(accumulated_content, final_tool_calls, accumulated_reasoning)
+        _remember()

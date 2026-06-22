@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import json
-from typing import AsyncIterator
-
 from deepstrike._kernel import Message, ToolCall, ToolSchema
-from .base import ProviderDescriptor, RenderedContext, RetryConfig, RuntimePolicy, normalize_tool_call, openai_cached_prompt_tokens, wire_request_extensions
-from .openai import OpenAIProvider
+from .base import ProviderDescriptor, RenderedContext, RetryConfig, RuntimePolicy
+from .openai import OpenAIProvider, OpenAIChatTurnReasoning
 from .anthropic_compatible import AnthropicCompatibleProvider
 from .vendor_profiles import MINIMAX_POLICIES as _MINIMAX_POLICIES, ANTHROPIC_VENDOR_PROFILES
-from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
 
 _MINIMAX_OPENAI_BASE = "https://api.minimaxi.com/v1"
 
@@ -63,8 +59,25 @@ class MiniMaxOpenAIProvider(OpenAIProvider):
     def _require_non_empty_reasoning_replay_for_tool_turns(self, extensions: dict | None) -> bool:
         return self._reasoning_split_enabled(extensions)
 
-    def _request_extensions(self, extensions: dict | None) -> dict:
+    # ── Template-Method seams (complete()/stream() inherited from OpenAIProvider) ──
+
+    def _cache_key_params(self, context: RenderedContext, tools: list[ToolSchema]) -> dict:
+        # MiniMax auto prefix-caches and does not accept OpenAI's prompt_cache_key; omit it.
+        return {}
+
+    def _prepare_extensions(self, extensions: dict | None) -> dict:
+        # Force reasoning_split onto the wire so reasoning is returned out-of-band.
         return {**(extensions or {}), "reasoning_split": self._reasoning_split_enabled(extensions)}
+
+    def _uses_inline_thinking_tags(self) -> bool:
+        # Reasoning arrives out-of-band (reasoning_content / reasoning_details), never inline tags.
+        return False
+
+    def _expose_reasoning_delta(self, extensions: dict | None) -> bool:
+        return bool((extensions or {}).get("expose_reasoning"))
+
+    def _capture_reasoning_details(self) -> bool:
+        return True
 
     def _remember_minimax_replay(
         self,
@@ -95,153 +108,8 @@ class MiniMaxOpenAIProvider(OpenAIProvider):
             envelope,
         )
 
-    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
-        if self._circuit.is_open():
-            raise RuntimeError("Circuit breaker open")
+    def _remember_complete_replay(self, content: str, tool_calls: list, reasoning: OpenAIChatTurnReasoning) -> None:
+        self._remember_minimax_replay(content, tool_calls, reasoning.reasoning_content, reasoning.reasoning_details, reasoning.native_tool_calls)
 
-        msgs = self._build_messages(context, extensions)
-        tool_defs = self._build_tools(tools)
-        ext = self._request_extensions(extensions)
-
-        last_exc = None
-        for attempt in range(self._retry.max_retries):
-            try:
-                request_extensions = wire_request_extensions(ext)
-                resp = await self._client.chat.completions.create(
-                    **request_extensions,
-                    model=self._model,
-                    messages=msgs,
-                    tools=tool_defs,
-                )
-                self._circuit.record_success()
-
-                choice = resp.choices[0].message
-                content = choice.content or ""
-                native_tool_calls = choice.tool_calls or []
-                tool_calls: list[ToolCall] = []
-                for tc in native_tool_calls:
-                    normalized = normalize_tool_call(tc.id, tc.function.name, tc.function.arguments)
-                    if normalized:
-                        tool_calls.append(normalized)
-
-                reasoning_content = _model_field(choice, "reasoning_content")
-                reasoning_details = _model_field(choice, "reasoning_details")
-                wire_tool_calls = [
-                    {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
-                    for tc in native_tool_calls
-                ]
-                self._remember_minimax_replay(content, tool_calls, reasoning_content, reasoning_details, wire_tool_calls)
-
-                return Message(
-                    role="assistant",
-                    content=content,
-                    token_count=resp.usage.total_tokens if resp.usage else None,
-                    tool_calls=tool_calls or None,
-                )
-            except Exception as exc:
-                last_exc = exc
-                self._circuit.record_failure()
-                if attempt < self._retry.max_retries - 1:
-                    import asyncio
-                    await asyncio.sleep(self._retry.base_delay * (2 ** attempt))
-
-        raise last_exc or RuntimeError("Complete failed")
-
-    async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
-        msgs = self._build_messages(context, extensions)
-        tool_defs = self._build_tools(tools)
-        ext = self._request_extensions(extensions)
-        expose_reasoning = (extensions or {}).get("expose_reasoning")
-        tool_call_bufs: dict[int, dict] = {}
-        emitted: set[int] = set()
-        reasoning_content = ""
-        reasoning_details = None
-        final_text = ""
-        final_tool_calls: list[ToolCall] = []
-
-        request_extensions = {k: v for k, v in ext.items() if k not in {"model", "messages", "tools", "stream", "stream_options"}}
-        stream = await self._client.chat.completions.create(
-            **request_extensions,
-            model=self._model,
-            messages=msgs,
-            tools=tool_defs,
-            stream=True,
-            stream_options={"include_usage": True},
-        )
-
-        async for chunk in stream:
-            if getattr(chunk, "usage", None):
-                u = chunk.usage
-                yield UsageEvent(
-                    total_tokens=getattr(u, "total_tokens", 0) or 0,
-                    input_tokens=getattr(u, "prompt_tokens", 0) or 0,
-                    output_tokens=getattr(u, "completion_tokens", 0) or 0,
-                    cache_read_input_tokens=openai_cached_prompt_tokens(u),
-                )
-                continue
-            choice = chunk.choices[0] if chunk.choices else None
-            if not choice:
-                continue
-            delta = getattr(choice, "delta", None)
-            if not delta:
-                continue
-            native_reasoning = _model_field(delta, "reasoning_content")
-            if native_reasoning:
-                reasoning_content += str(native_reasoning)
-                if expose_reasoning:
-                    yield ThinkingDelta(delta=native_reasoning)
-            details = _model_field(delta, "reasoning_details")
-            if details is not None:
-                reasoning_details = details
-            if delta.content:
-                final_text += delta.content
-                yield TextDelta(delta=delta.content)
-            for tc in delta.tool_calls or []:
-                idx = tc.index
-                if idx not in tool_call_bufs:
-                    tool_call_bufs[idx] = {"id": tc.id or "", "name": "", "args_buf": ""}
-                if tc.function and tc.function.name:
-                    tool_call_bufs[idx]["name"] += tc.function.name
-                if tc.function and tc.function.arguments:
-                    tool_call_bufs[idx]["args_buf"] += tc.function.arguments
-            if choice.finish_reason == "tool_calls":
-                for idx, tb in tool_call_bufs.items():
-                    if idx in emitted:
-                        continue
-                    try:
-                        args = json.loads(tb["args_buf"] or "{}")
-                    except json.JSONDecodeError:
-                        args = {}
-                    tc_obj = normalize_tool_call(tb["id"], tb["name"], args)
-                    if tc_obj:
-                        final_tool_calls.append(tc_obj)
-                        emitted.add(idx)
-                        yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)
-
-        for idx, tb in tool_call_bufs.items():
-            if idx in emitted:
-                continue
-            try:
-                args = json.loads(tb["args_buf"] or "{}")
-            except json.JSONDecodeError:
-                args = {}
-            tc_obj = normalize_tool_call(tb["id"], tb["name"], args)
-            if tc_obj:
-                final_tool_calls.append(tc_obj)
-                yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)
-
-        native_tool_calls = [
-            {"id": tb["id"], "type": "function", "function": {"name": tb["name"], "arguments": tb["args_buf"] or "{}"}}
-            for tb in tool_call_bufs.values()
-        ]
-        self._remember_minimax_replay(final_text, final_tool_calls, reasoning_content, reasoning_details, native_tool_calls)
-
-
-def _model_field(obj: object, name: str):
-    value = getattr(obj, name, None)
-    if value is not None:
-        return value
-    extra = getattr(obj, "model_extra", None)
-    if isinstance(extra, dict):
-        return extra.get(name)
-    return None
+    def _remember_stream_replay(self, content: str, tool_calls: list, reasoning: OpenAIChatTurnReasoning) -> None:
+        self._remember_minimax_replay(content, tool_calls, reasoning.reasoning_content, reasoning.reasoning_details, reasoning.native_tool_calls)
