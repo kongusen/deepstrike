@@ -182,6 +182,12 @@ pub struct RuntimeSignal {
     pub payload: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dedupe_key: Option<String>,
+    /// Target a specific session loop (sessionId). Omitted ⇒ broadcast.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
+    /// Optional pub/sub topic (carried through; routing deferred).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
     pub timestamp_ms: f64,
 }
 
@@ -210,6 +216,12 @@ fn runtime_signal_to_rust(s: RuntimeSignal) -> RustRuntimeSignal {
         .with_timestamp(s.timestamp_ms as u64);
     if let Some(key) = s.dedupe_key {
         sig = sig.with_dedupe(key.as_str());
+    }
+    if let Some(recipient) = s.recipient {
+        sig = sig.with_recipient(recipient.as_str());
+    }
+    if let Some(topic) = s.topic {
+        sig = sig.with_topic(topic.as_str());
     }
     sig
 }
@@ -240,6 +252,8 @@ fn runtime_signal_from_rust(s: &RustRuntimeSignal) -> RuntimeSignal {
         summary: s.summary.to_string(),
         payload: serde_json::to_string(&s.payload).unwrap_or_else(|_| "null".into()),
         dedupe_key: s.dedupe_key.as_ref().map(|k| k.to_string()),
+        recipient: s.recipient.as_ref().map(|r| r.to_string()),
+        topic: s.topic.as_ref().map(|t| t.to_string()),
         timestamp_ms: s.timestamp_ms as f64,
     }
 }
@@ -575,6 +589,16 @@ impl SignalRouter {
     #[wasm_bindgen]
     pub fn next(&mut self) -> Option<RuntimeSignal> {
         self.inner.next().as_ref().map(runtime_signal_from_rust)
+    }
+
+    /// Pull the next queued signal visible to `recipient` (broadcasts plus signals
+    /// addressed to it); other recipients' signals stay queued. Omit ⇒ no filter.
+    #[wasm_bindgen(js_name = nextFor)]
+    pub fn next_for(&mut self, recipient: Option<String>) -> Option<RuntimeSignal> {
+        self.inner
+            .next_for(recipient.as_deref())
+            .as_ref()
+            .map(runtime_signal_from_rust)
     }
 
     #[wasm_bindgen]

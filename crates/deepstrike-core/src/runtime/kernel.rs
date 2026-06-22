@@ -150,6 +150,16 @@ pub struct RunConfig {
     pub scheduler_max_wall_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_quota: Option<crate::governance::quota::ResourceQuota>,
+    /// L1 (RunGroup): cumulative tokens already spent by *other* members of this run's governance
+    /// domain, seeded at boot so the run-level token cap (`max_total_tokens`) is enforced across the
+    /// whole group, not per-vehicle. `None`/0 ⇒ no group (N=1) ⇒ pre-L1 per-kernel behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_tokens_base: Option<u64>,
+    /// L1 (RunGroup): sub-agents already spawned by *other* members of this run's governance domain,
+    /// seeded at boot so `ResourceQuota::max_total_subagents` is enforced across the whole group.
+    /// `None`/0 ⇒ no group (N=1) ⇒ pre-L1 per-vehicle behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_spawns_base: Option<u32>,
 }
 
 /// Build a [`GovernancePipeline`](crate::governance::pipeline::GovernancePipeline) from the ABI policy
@@ -766,6 +776,12 @@ impl KernelRuntime {
         self.sm.is_terminal()
     }
 
+    /// L1 (RunGroup): this vehicle's cumulative sub-agent spawns this run, read back by the SDK at run
+    /// end to charge the group ledger (so the next member's cumulative spawn cap is seeded correctly).
+    pub fn local_subagents_spawned(&self) -> u32 {
+        self.sm.local_subagents_spawned()
+    }
+
     pub fn step(&mut self, input: KernelInput) -> KernelStep {
         let action = match input.event {
             KernelInputEvent::SetTools { tools } => {
@@ -884,6 +900,8 @@ impl KernelRuntime {
                     attention_max_queue_size,
                     scheduler_max_wall_ms,
                     resource_quota,
+                    group_tokens_base,
+                    group_spawns_base,
                 } = config;
                 if let Some(tools) = tools {
                     self.sm.tools = tools;
@@ -923,6 +941,12 @@ impl KernelRuntime {
                 }
                 if let Some(quota) = resource_quota {
                     self.sm.set_resource_quota(quota);
+                }
+                if let Some(base) = group_tokens_base {
+                    self.sm.seed_group_budget(base);
+                }
+                if let Some(base) = group_spawns_base {
+                    self.sm.seed_group_spawns(base);
                 }
                 return KernelStep::empty(self.sm.take_observations());
             }
@@ -1394,6 +1418,111 @@ mod tests {
         )));
         assert!(runtime.state_machine().agent_process("worker").is_none());
         assert!(!runtime.state_machine().is_suspended());
+    }
+
+    #[test]
+    fn group_budget_base_enforces_shared_token_cap() {
+        use crate::types::message::{Content, Message, ToolCall, ToolResult};
+
+        // Drive one tool-calling turn under a 100-token run cap, with `group_base` already spent by
+        // other members of the governance domain. The token-budget axis is checked after the tool
+        // results, against `group_base + local`.
+        fn run_one_turn(group_base: Option<u64>) -> KernelStep {
+            let mut runtime = KernelRuntime::new(LoopPolicy {
+                max_total_tokens: 100,
+                ..LoopPolicy::default()
+            });
+            runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+                config: RunConfig { group_tokens_base: group_base, ..RunConfig::default() },
+            }));
+            runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+                task: RuntimeTask::new("task"),
+                run_spec: None,
+            }));
+            let mut msg = Message::assistant("");
+            msg.token_count = Some(10); // this vehicle's local spend this turn
+            msg.tool_calls.push(ToolCall {
+                id: "c1".into(),
+                name: "echo".into(),
+                arguments: serde_json::json!({}),
+            });
+            runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
+                message: msg,
+                observed_input_tokens: None,
+                observed_output_tokens: None,
+                now_ms: None,
+            }));
+            runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
+                results: vec![ToolResult {
+                    call_id: "c1".into(),
+                    output: Content::Text("ok".into()),
+                    is_error: false,
+                    is_fatal: false,
+                    error_kind: None,
+                    token_count: None,
+                }],
+            }))
+        }
+
+        let exceeded = |step: &KernelStep| {
+            step.observations.iter().any(|o| {
+                matches!(o, KernelObservation::BudgetExceeded { budget, .. } if budget == "token_budget")
+            })
+        };
+
+        // Group already spent 95; this vehicle's 10 pushes the domain to 105 > 100 → shared cap fires.
+        assert!(
+            exceeded(&run_one_turn(Some(95))),
+            "group token budget must span the whole domain"
+        );
+        // N=1 / no group (base 0): local 10 is far under the cap → pre-L1 behavior unchanged.
+        assert!(
+            !exceeded(&run_one_turn(None)),
+            "no group seed ⇒ per-vehicle budget, well under cap"
+        );
+    }
+
+    #[test]
+    fn group_spawns_base_enforces_cumulative_spawn_cap() {
+        use crate::governance::quota::ResourceQuota;
+        use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+        // Cumulative cap of 2 sub-agents across the domain. Other members already spawned 2 (seeded),
+        // so this vehicle's very first spawn is denied — the cap spans the whole group.
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+            config: RunConfig {
+                resource_quota: Some(ResourceQuota {
+                    max_total_subagents: Some(2),
+                    ..ResourceQuota::default()
+                }),
+                group_spawns_base: Some(2),
+                ..RunConfig::default()
+            },
+        }));
+        runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+            task: RuntimeTask::new("task"),
+            run_spec: None,
+        }));
+        runtime.state_machine_mut().take_observations();
+
+        let spec = AgentRunSpec::new(
+            AgentIdentity::sub_agent("worker", "worker-session"),
+            AgentRole::Implement,
+            "do work",
+        );
+        let step = runtime.step(KernelInput::new(KernelInputEvent::SpawnSubAgent {
+            spec,
+            parent_session_id: "parent-session".to_string(),
+        }));
+
+        // Denied: domain already at the cumulative cap → rolled back, no process registered.
+        assert!(matches!(
+            step.actions.as_slice(),
+            [KernelAction::CallProvider { .. }]
+        ));
+        assert!(runtime.state_machine().agent_process("worker").is_none());
+        assert_eq!(runtime.local_subagents_spawned(), 0);
     }
 
     #[test]

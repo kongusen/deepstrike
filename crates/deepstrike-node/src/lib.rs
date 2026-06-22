@@ -227,6 +227,10 @@ pub struct RuntimeSignal {
     /// JSON-encoded payload.
     pub payload: String,
     pub dedupe_key: Option<String>,
+    /// Target a specific session loop (sessionId). Omitted ⇒ broadcast.
+    pub recipient: Option<String>,
+    /// Optional pub/sub topic (carried through; routing deferred).
+    pub topic: Option<String>,
     pub timestamp_ms: f64,
 }
 
@@ -255,6 +259,12 @@ fn runtime_signal_to_rust(s: RuntimeSignal) -> Result<RustRuntimeSignal> {
         .with_timestamp(s.timestamp_ms as u64);
     if let Some(key) = s.dedupe_key {
         sig = sig.with_dedupe(key.as_str());
+    }
+    if let Some(recipient) = s.recipient {
+        sig = sig.with_recipient(recipient.as_str());
+    }
+    if let Some(topic) = s.topic {
+        sig = sig.with_topic(topic.as_str());
     }
     Ok(sig)
 }
@@ -285,6 +295,8 @@ fn runtime_signal_from_rust(s: &RustRuntimeSignal) -> RuntimeSignal {
         summary: s.summary.to_string(),
         payload: serde_json::to_string(&s.payload).unwrap_or_else(|_| "null".into()),
         dedupe_key: s.dedupe_key.as_ref().map(|k| k.to_string()),
+        recipient: s.recipient.as_ref().map(|r| r.to_string()),
+        topic: s.topic.as_ref().map(|t| t.to_string()),
         timestamp_ms: s.timestamp_ms as f64,
     }
 }
@@ -602,6 +614,12 @@ impl KernelRuntime {
         self.inner.state_machine().turn
     }
 
+    /// L1 (RunGroup): cumulative sub-agent spawns this run, for charging the group ledger at run end.
+    #[napi]
+    pub fn local_subagents_spawned(&self) -> u32 {
+        self.inner.local_subagents_spawned()
+    }
+
     #[napi]
     pub fn recovery_content_bytes(&self) -> u32 {
         let sm = self.inner.state_machine();
@@ -664,6 +682,16 @@ impl SignalRouter {
     #[napi]
     pub fn next(&mut self) -> Option<RuntimeSignal> {
         self.inner.next().as_ref().map(runtime_signal_from_rust)
+    }
+
+    /// Pull the next queued signal visible to `recipient` (broadcasts plus signals
+    /// addressed to it); other recipients' signals stay queued. Omit ⇒ no filter.
+    #[napi]
+    pub fn next_for(&mut self, recipient: Option<String>) -> Option<RuntimeSignal> {
+        self.inner
+            .next_for(recipient.as_deref())
+            .as_ref()
+            .map(runtime_signal_from_rust)
     }
 
     #[napi]

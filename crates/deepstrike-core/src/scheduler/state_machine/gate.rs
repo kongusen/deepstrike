@@ -85,6 +85,9 @@ impl LoopStateMachine {
         // M4/G5 token headroom: the run-level cumulative token cap is always set on the scheduler
         // budget, so a coordinator always sees how many tokens remain (the "use 10k tokens" signal).
         let tokens_max = self.policy.max_total_tokens;
+        // L1: report the governance domain's cumulative token spend (this vehicle + other members'
+        // seeded base) so a coordinator scales submissions to the group's remaining headroom.
+        let tokens_used = self.total_tokens.saturating_add(self.group_tokens_base);
         Some(crate::orchestration::workflow::WorkflowBudget {
             nodes_used,
             nodes_max,
@@ -93,9 +96,9 @@ impl LoopStateMachine {
             max_concurrent_subagents,
             concurrency_remaining: max_concurrent_subagents
                 .map(|m| m.saturating_sub(running_subagents)),
-            tokens_used: self.total_tokens,
+            tokens_used,
             tokens_max: Some(tokens_max),
-            tokens_remaining: Some(tokens_max.saturating_sub(self.total_tokens)),
+            tokens_remaining: Some(tokens_max.saturating_sub(tokens_used)),
         })
     }
 
@@ -119,6 +122,17 @@ impl LoopStateMachine {
                     reason: format!(
                         "max_concurrent_subagents={max} reached ({running} running)"
                     ),
+                };
+            }
+        }
+        if let Some(max) = quota.max_total_subagents {
+            // L1: cumulative across the whole governance domain (other members' seeded base + this
+            // vehicle's spawns ever). A hard Deny — a completed sibling never frees a cumulative slot.
+            let total = self.group_spawns_base + self.local_subagents_spawned();
+            if total >= max {
+                return Disposition::Deny {
+                    stage: "quota",
+                    reason: format!("max_total_subagents={max} reached ({total} spawned in domain)"),
                 };
             }
         }
@@ -159,6 +173,16 @@ impl LoopStateMachine {
             if running >= max {
                 // Transient: a running sibling will complete and free a slot → defer and retry.
                 return Disposition::Defer { slot: running };
+            }
+        }
+        if let Some(max) = quota.max_total_subagents {
+            // Cumulative cap is permanent (no sibling completion frees a slot) → hard Deny, not Defer.
+            let total = self.group_spawns_base + self.local_subagents_spawned();
+            if total >= max {
+                return Disposition::Deny {
+                    stage: "quota",
+                    reason: format!("max_total_subagents={max} reached ({total} spawned in domain)"),
+                };
             }
         }
         if let Some(max) = quota.max_spawn_depth {

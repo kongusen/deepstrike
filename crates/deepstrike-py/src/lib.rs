@@ -91,13 +91,17 @@ struct RuntimeSignal {
     #[pyo3(get, set)]
     dedupe_key: Option<String>,
     #[pyo3(get, set)]
+    recipient: Option<String>,
+    #[pyo3(get, set)]
+    topic: Option<String>,
+    #[pyo3(get, set)]
     timestamp_ms: f64,
 }
 
 #[pymethods]
 impl RuntimeSignal {
     #[new]
-    #[pyo3(signature = (source, urgency, summary, signal_type="event", payload="null", dedupe_key=None, timestamp_ms=0.0))]
+    #[pyo3(signature = (source, urgency, summary, signal_type="event", payload="null", dedupe_key=None, timestamp_ms=0.0, recipient=None, topic=None))]
     fn new(
         source: String,
         urgency: String,
@@ -106,6 +110,8 @@ impl RuntimeSignal {
         payload: &str,
         dedupe_key: Option<String>,
         timestamp_ms: f64,
+        recipient: Option<String>,
+        topic: Option<String>,
     ) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -115,6 +121,8 @@ impl RuntimeSignal {
             signal_type: signal_type.into(),
             payload: payload.into(),
             dedupe_key,
+            recipient,
+            topic,
             timestamp_ms,
         }
     }
@@ -154,6 +162,12 @@ impl RuntimeSignal {
         if let Some(ref key) = self.dedupe_key {
             sig = sig.with_dedupe(key.as_str());
         }
+        if let Some(ref recipient) = self.recipient {
+            sig = sig.with_recipient(recipient.as_str());
+        }
+        if let Some(ref topic) = self.topic {
+            sig = sig.with_topic(topic.as_str());
+        }
         sig
     }
 
@@ -183,6 +197,8 @@ impl RuntimeSignal {
             summary: s.summary.to_string(),
             payload: serde_json::to_string(&s.payload).unwrap_or_else(|_| "null".into()),
             dedupe_key: s.dedupe_key.as_ref().map(|k| k.to_string()),
+            recipient: s.recipient.as_ref().map(|r| r.to_string()),
+            topic: s.topic.as_ref().map(|t| t.to_string()),
             timestamp_ms: s.timestamp_ms as f64,
         }
     }
@@ -865,6 +881,11 @@ impl KernelRuntime {
         self.inner.state_machine().turn
     }
 
+    /// L1 (RunGroup): cumulative sub-agent spawns this run, for charging the group ledger at run end.
+    fn local_subagents_spawned(&self) -> u32 {
+        self.inner.local_subagents_spawned()
+    }
+
     fn recovery_content_bytes(&self) -> u32 {
         let sm = self.inner.state_machine();
         let tokens = sm.ctx.config.recovery_content_tokens(sm.ctx.max_tokens);
@@ -920,6 +941,16 @@ impl SignalRouter {
     /// Pull the next queued signal (highest priority first).
     fn next(&mut self) -> Option<RuntimeSignal> {
         self.inner.next().as_ref().map(RuntimeSignal::from_rust)
+    }
+
+    /// Pull the next queued signal visible to `recipient` (broadcasts plus signals
+    /// addressed to it); other recipients' signals stay queued. None ⇒ no filter.
+    #[pyo3(signature = (recipient=None))]
+    fn next_for(&mut self, recipient: Option<String>) -> Option<RuntimeSignal> {
+        self.inner
+            .next_for(recipient.as_deref())
+            .as_ref()
+            .map(RuntimeSignal::from_rust)
     }
 
     fn depth(&self) -> usize {

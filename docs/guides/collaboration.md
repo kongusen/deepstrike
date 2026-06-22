@@ -2,6 +2,11 @@
 
 DeepStrike's collaboration layer lets you wire multiple runners together into structured multi-runner workflows. It sits between the RuntimeRunner layer (Layer 1) and your application (Layer 4) as two composable layers of primitives.
 
+> **Peers vs. parent→sub-agent.** The shapes below are hierarchical (a coordinator spawns/drives
+> sub-agents). For a long-lived set of **equal-status peer personas** over a shared event stream — a
+> multi-NPC live session, debate, classroom, or simulation — use a **`ReactiveSession`** instead. See
+> [peer-agents-shared-stream.md](peer-agents-shared-stream.md).
+
 ---
 
 ## Why multi-runner?

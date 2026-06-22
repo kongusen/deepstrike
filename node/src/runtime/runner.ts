@@ -20,6 +20,7 @@ import type { SessionLog, SessionEvent, RollbackReason } from "./session-log.js"
 import type { ArchiveStore } from "./archive.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
 import { resolvePermissionRequest } from "./execution-plane.js"
+import type { RunGroup, GroupLedger } from "./run-group.js"
 import { getKernel, type KernelRuntimeInstance, type MemoryPolicy, type ResourceQuota } from "../kernel.js"
 import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
@@ -185,6 +186,14 @@ export interface RuntimeOptions {
    * and memory-write syscalls are admitted unconditionally (pre-M2 behavior).
    */
   resourceQuota?: ResourceQuota
+  /**
+   * L1 (RunGroup): bind this runner to a governance domain shared by N peer sessions of one logical
+   * run. Members pass the same `id` + `budgetStore`; the kernel's run-level token cap is then enforced
+   * against the group's cumulative spend (seeded at boot, charged at run end) rather than per-vehicle.
+   * Unset ⇒ N=1, pre-L1 per-run budget (byte-identical). Only cumulative budget is shared; instantaneous
+   * concurrency stays vehicle-scoped (spec §2.5).
+   */
+  runGroup?: RunGroup
   /**
    * Optional long-term memory policy (`set_memory_policy`). Tunes the kernel's memory subsystem
    * (retrieval top-k, stale-warning age, write validation, memory path). Unset leaves the kernel
@@ -417,7 +426,11 @@ export class RuntimeRunner {
    * exactly as a mid-run spawn would be. Must run BEFORE `start_run` so the in-kernel gate enforces
    * every policy from the first spawn. No config ⇒ the native-profile defaults (铁律: defaults only).
    */
-  private applyKernelPolicies(runtime: KernelRuntimeInstance): void {
+  private applyKernelPolicies(
+    runtime: KernelRuntimeInstance,
+    groupTokensBase?: number,
+    groupSpawnsBase?: number,
+  ): void {
     // K2: lower governance / attention / scheduler / quota in ONE `configure_run` event instead of
     // the previous 2–4 separate `set_*` / `load_governance_policy` events. The kernel applies each
     // present field via the same path its granular event uses; absent fields are left untouched.
@@ -441,11 +454,19 @@ export class RuntimeRunner {
       const q = this.opts.resourceQuota
       config.resource_quota = {
         ...(q.maxConcurrentSubagents !== undefined ? { max_concurrent_subagents: q.maxConcurrentSubagents } : {}),
+        ...(q.maxTotalSubagents !== undefined ? { max_total_subagents: q.maxTotalSubagents } : {}),
         ...(q.maxSpawnDepth !== undefined ? { max_spawn_depth: q.maxSpawnDepth } : {}),
         ...(q.memoryWritesPerWindow !== undefined
           ? { memory_writes_per_window: [q.memoryWritesPerWindow.maxWrites, q.memoryWritesPerWindow.windowMs] }
           : {}),
       }
+    }
+
+    if (groupTokensBase !== undefined && groupTokensBase > 0) {
+      config.group_tokens_base = groupTokensBase
+    }
+    if (groupSpawnsBase !== undefined && groupSpawnsBase > 0) {
+      config.group_spawns_base = groupSpawnsBase
     }
 
     kernelApply(runtime, this.pendingObservations, { kind: "configure_run", config })
@@ -880,7 +901,7 @@ export class RuntimeRunner {
     const source = this.opts.signalSource
     if (!source) return null
     while (!batchState.settled) {
-      const sig = await source.nextSignal()
+      const sig = await source.nextSignal(this.currentSessionId ?? undefined)
       if (batchState.settled) break
       if (!sig) { await new Promise(resolve => setTimeout(resolve, 5)); continue }
       const obs = kernelApply(runtime, this.pendingObservations, signalToKernelEvent(sig))
@@ -1260,6 +1281,7 @@ export class RuntimeRunner {
       maxTokens: this.opts.maxTokens,
       maxTurns: effectiveMaxTurns,
       timeoutMs: effectiveTimeoutMs !== undefined ? BigInt(effectiveTimeoutMs) : undefined,
+      maxTotalTokens: this.opts.maxTotalTokens !== undefined ? BigInt(this.opts.maxTotalTokens) : undefined,
     })
     this.activeKernel = runtime
     this.nextArchiveStart = nextCompressedArchiveStart
@@ -1405,7 +1427,16 @@ export class RuntimeRunner {
         : baseSpec
       startPayload.run_spec = agentRunSpecToKernel(spec)
     }
-    this.applyKernelPolicies(runtime)
+    // L1: seed the kernel with the group's cumulative spend so the run-level token cap + cumulative
+    // spawn cap span the whole governance domain (other members' prior spend). No group ⇒ per-run.
+    // Also register this session as a member so the run's lineage (R2) spans personas/invocations.
+    let groupLedger: GroupLedger | undefined
+    if (this.opts.runGroup) {
+      const g = this.opts.runGroup
+      groupLedger = await g.budgetStore.read(g.id)
+      await g.budgetStore.join(g.id, { sessionId, role: this.opts.agentId })
+    }
+    this.applyKernelPolicies(runtime, groupLedger?.tokensSpent, groupLedger?.subagentsSpawned)
     // Multimodal upload: seed the user's attachments (images/audio) as a history
     // message before start_run pushes the "[TASK STATE]" anchor. init_task does not
     // clear history, so order becomes [attachment user msg, "Proceed…"] — both land
@@ -1467,7 +1498,7 @@ export class RuntimeRunner {
       }
 
       if (this.opts.signalSource) {
-        const sig = await this.opts.signalSource.nextSignal()
+        const sig = await this.opts.signalSource.nextSignal(this.currentSessionId ?? undefined)
         if (sig) {
           // Kernel-routed: the kernel decides disposition (dedup/queue/interrupt) and emits
           // `signal_disposed`. An actionable disposition yields a new action to adopt; queued/observed/
@@ -1904,6 +1935,15 @@ export class RuntimeRunner {
       turnsUsed,
       totalTokens,
     }))
+
+    // L1: charge this vehicle's local spend (tokens + sub-agent spawns) back to the governance domain
+    // so the next member is seeded with the updated cumulative totals.
+    if (this.opts.runGroup) {
+      const subagents = runtime.localSubagentsSpawned?.() ?? 0
+      if (totalTokens > 0 || subagents > 0) {
+        await this.opts.runGroup.budgetStore.charge(this.opts.runGroup.id, { tokens: totalTokens, subagents })
+      }
+    }
 
     if (this.opts.dreamStore && this.opts.agentId) {
       const newMsgs = runtime.drainNewMessages().map(m => ({
@@ -2373,6 +2413,8 @@ function signalToKernelEvent(sig: RuntimeSignal): Record<string, unknown> {
       summary: String((sig.payload as Record<string, unknown>)?.goal ?? sig.kind ?? "signal"),
       payload: sig.payload ?? {},
       ...(sig.dedupeKey ? { dedupe_key: sig.dedupeKey } : {}),
+      ...(sig.recipient ? { recipient: sig.recipient } : {}),
+      ...(sig.topic ? { topic: sig.topic } : {}),
       timestamp_ms: Date.now(),
     },
   }

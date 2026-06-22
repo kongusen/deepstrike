@@ -157,6 +157,14 @@ pub struct LoopStateMachine {
     pub observations: Vec<KernelObservation>,
     pub(super) policy: LoopPolicy,
     pub(super) total_tokens: u64,
+    /// L1 (RunGroup): cumulative tokens spent by *other* members of this run's governance domain,
+    /// seeded at boot via `seed_group_budget`. The run-level token cap is enforced against
+    /// `group_tokens_base + total_tokens` so the budget spans the whole group, not one vehicle.
+    /// 0 (default) ⇒ no group (N=1) ⇒ pre-L1 per-kernel behavior (byte-identical).
+    pub(super) group_tokens_base: u64,
+    /// L1 (RunGroup): sub-agents spawned by *other* members of this run's governance domain, seeded
+    /// at boot. `max_total_subagents` is enforced against `group_spawns_base + local spawns`. 0 ⇒ N=1.
+    pub(super) group_spawns_base: u32,
     /// When set, the next LLM call strips tools to force a text response,
     /// then terminates with this reason once the response arrives.
     pub(super) pending_termination: Option<TerminationReason>,
@@ -234,6 +242,8 @@ impl LoopStateMachine {
             observations: Vec::new(),
             policy,
             total_tokens: 0,
+            group_tokens_base: 0,
+            group_spawns_base: 0,
             pending_termination: None,
             session_history_baseline: 0,
             checkpoint: TurnCheckpoint::default(),
@@ -293,7 +303,9 @@ impl LoopStateMachine {
     fn root_tcb(&self) -> Tcb {
         let mut tcb = Tcb::root("root", self.policy.clone());
         tcb.budget.turns = self.turn;
-        tcb.budget.total_tokens = self.total_tokens;
+        // L1: the token-budget axis is evaluated against the whole governance domain's cumulative
+        // spend (this vehicle's `total_tokens` plus other members' `group_tokens_base`).
+        tcb.budget.total_tokens = self.total_tokens.saturating_add(self.group_tokens_base);
         tcb.budget.started_at_ms = self.started_at_ms;
         tcb.state = self.lifecycle();
         tcb
@@ -316,6 +328,26 @@ impl LoopStateMachine {
     /// the quota at the trap. Not setting it (the default) leaves them unconditionally allowed.
     pub fn set_resource_quota(&mut self, quota: crate::governance::quota::ResourceQuota) {
         self.resource_quota = Some(quota);
+    }
+
+    /// L1 (RunGroup): seed the cumulative tokens already spent by other members of this run's
+    /// governance domain. The run-level token cap is then enforced against the group total. Seeding
+    /// 0 (the default) preserves pre-L1 per-vehicle behavior.
+    pub fn seed_group_budget(&mut self, tokens_spent: u64) {
+        self.group_tokens_base = tokens_spent;
+    }
+
+    /// L1 (RunGroup): seed the sub-agents already spawned by other members of this run's governance
+    /// domain. `max_total_subagents` is then enforced against the group total. 0 ⇒ pre-L1 behavior.
+    pub fn seed_group_spawns(&mut self, subagents_spawned: u32) {
+        self.group_spawns_base = subagents_spawned;
+    }
+
+    /// L1: this vehicle's cumulative sub-agent spawns this run — every child task ever registered in
+    /// the `TaskTable` (running + completed), distinct from the *instantaneous* running count. Used
+    /// for the cumulative spawn quota and read back by the SDK to charge the group ledger at run end.
+    pub fn local_subagents_spawned(&self) -> u32 {
+        self.tasks.all().iter().filter(|t| t.proc.is_some()).count() as u32
     }
 
     /// Install the long-term memory policy (`set_memory_policy`). Once set it gates `write_memory`
@@ -723,6 +755,9 @@ impl LoopStateMachine {
             observations: Vec::new(),
             policy,
             total_tokens: snap.total_tokens,
+            // Re-seeded from the replayed `ConfigureRun` (strategy is data, not serialized state).
+            group_tokens_base: 0,
+            group_spawns_base: 0,
             pending_termination: None,
             session_history_baseline: 0,
             checkpoint: TurnCheckpoint::default(),

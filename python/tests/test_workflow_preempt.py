@@ -44,7 +44,7 @@ class _SigSource:
     def __init__(self, sigs):
         self._sigs = list(sigs)
 
-    async def next_signal(self):
+    async def next_signal(self, recipient=None):
         return self._sigs.pop(0) if self._sigs else None
 
 

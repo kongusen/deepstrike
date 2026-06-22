@@ -63,6 +63,7 @@ from deepstrike.runtime.session_repair import (
 from deepstrike.runtime.session_log import SessionEntry, SessionEvent, SessionLog
 from deepstrike.runtime.archive import ArchiveStore
 from deepstrike.runtime.os_profile import assert_native_profile
+from deepstrike.runtime.run_group import RunGroup
 
 if TYPE_CHECKING:
   from deepstrike.governance import Governance, GovernancePolicy
@@ -91,7 +92,10 @@ class MemoryWriteRateLimit:
 @dataclass
 class ResourceQuota:
   """M2 resource quotas installed through the kernel JSON event ABI."""
-  max_concurrent_subagents: int | None = None
+  max_concurrent_subagents: int | None = None  # instantaneous; vehicle-scoped
+  # L1 (RunGroup): max sub-agents spawned cumulatively across the governance domain; with a
+  # run_group this spans N stateless top-level runs (seeded/charged via the group ledger).
+  max_total_subagents: int | None = None
   max_spawn_depth: int | None = None
   memory_writes_per_window: MemoryWriteRateLimit | tuple[int, int] | None = None
 
@@ -173,6 +177,10 @@ class RuntimeOptions:
   attention_policy: "AttentionPolicy | dict | None" = None
   scheduler_budget: SchedulerBudget | dict[str, Any] | None = None
   resource_quota: ResourceQuota | dict[str, Any] | None = None
+  # L1 (RunGroup): bind this runner to a governance domain shared by N peer sessions of one logical
+  # run. Members pass the same RunGroup; the run-level token cap is enforced against the group's
+  # cumulative spend (seeded at boot, charged at run end) rather than per-vehicle. None ⇒ N=1.
+  run_group: "RunGroup | None" = None
   memory_policy: MemoryPolicy | dict[str, Any] | None = None
   os_profile: "OsProfile | None" = None
   tokenizer: str | None = None
@@ -783,7 +791,7 @@ class RuntimeRunner:
         if source is None:
           return
         while not all(t.done() for t in tasks.values()):
-          sig = await source.next_signal()
+          sig = await source.next_signal(self._current_session_id)
           if all(t.done() for t in tasks.values()):
             break
           if sig is None:
@@ -1396,6 +1404,26 @@ class RuntimeRunner:
         "quota": _resource_quota_to_kernel(self._opts.resource_quota),
       })
 
+    # L1: seed the kernel with the group's cumulative spend so the run-level token cap + cumulative
+    # spawn cap span the whole governance domain. No group ⇒ no seed ⇒ per-vehicle budget (unchanged).
+    # Also register this session as a member so the run's lineage (R2) spans personas/invocations.
+    if self._opts.run_group is not None:
+      from deepstrike.runtime.run_group import GroupMember
+      await self._opts.run_group.budget_store.join(
+        self._opts.run_group.id, GroupMember(session_id, self._opts.agent_id),
+      )
+      ledger = await self._opts.run_group.budget_store.read(self._opts.run_group.id)
+      seed_config: dict[str, Any] = {}
+      if ledger.tokens_spent > 0:
+        seed_config["group_tokens_base"] = ledger.tokens_spent
+      if ledger.subagents_spawned > 0:
+        seed_config["group_spawns_base"] = ledger.subagents_spawned
+      if seed_config:
+        kernel_apply(runtime, self._pending_observations, {
+          "kind": "configure_run",
+          "config": seed_config,
+        })
+
     if self._opts.memory_policy is not None:
       kernel_apply(runtime, self._pending_observations, {
         "kind": "set_memory_policy",
@@ -1454,7 +1482,7 @@ class RuntimeRunner:
         break
 
       if self._opts.signal_source:
-        sig = await self._opts.signal_source.next_signal()
+        sig = await self._opts.signal_source.next_signal(self._current_session_id)
         if sig:
           sig_action = kernel_maybe_action(runtime, self._pending_observations, _signal_to_kernel_event(sig))
           if sig_action:
@@ -1820,6 +1848,15 @@ class RuntimeRunner:
       total_tokens=total_tokens,
     ))
 
+    # L1: charge this vehicle's local spend (tokens + sub-agent spawns) back to the governance domain
+    # so the next member is seeded with the updated cumulative totals.
+    if self._opts.run_group is not None:
+      spawned = runtime.local_subagents_spawned() if hasattr(runtime, "local_subagents_spawned") else 0
+      if total_tokens > 0 or spawned > 0:
+        await self._opts.run_group.budget_store.charge(
+          self._opts.run_group.id, tokens=total_tokens, subagents=spawned,
+        )
+
     if self._opts.dream_store and self._opts.agent_id:
       new_msgs = list(runtime.drain_new_messages())
       if new_msgs:
@@ -2160,16 +2197,20 @@ def _next_archived_seq_start(events: list[SessionEntry] | None) -> int:
 def _resource_quota_to_kernel(quota: ResourceQuota | dict[str, Any]) -> dict[str, Any]:
   if isinstance(quota, dict):
     max_concurrent = quota.get("max_concurrent_subagents")
+    max_total = quota.get("max_total_subagents")
     max_depth = quota.get("max_spawn_depth")
     rate = quota.get("memory_writes_per_window")
   else:
     max_concurrent = quota.max_concurrent_subagents
+    max_total = quota.max_total_subagents
     max_depth = quota.max_spawn_depth
     rate = quota.memory_writes_per_window
 
   out: dict[str, Any] = {}
   if max_concurrent is not None:
     out["max_concurrent_subagents"] = max_concurrent
+  if max_total is not None:
+    out["max_total_subagents"] = max_total
   if max_depth is not None:
     out["max_spawn_depth"] = max_depth
   if rate is not None:
@@ -2362,6 +2403,8 @@ def _signal_to_kernel_event(sig) -> dict:
       "summary": str(sig.payload.get("goal") or sig.kind),
       "payload": sig.payload,
       **({"dedupe_key": sig.dedupe_key} if sig.dedupe_key else {}),
+      **({"recipient": sig.recipient} if getattr(sig, "recipient", None) else {}),
+      **({"topic": sig.topic} if getattr(sig, "topic", None) else {}),
       "timestamp_ms": int(time.time() * 1000),
     },
   }

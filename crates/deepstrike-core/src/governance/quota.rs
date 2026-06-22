@@ -17,8 +17,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResourceQuota {
     /// Max sub-agents in the `Running` state at once. Further `Spawn`s are denied while at cap.
+    /// *Instantaneous* — vehicle-scoped (cannot span stateless replicas; spec §2.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrent_subagents: Option<u32>,
+    /// L1 (RunGroup): max sub-agents spawned *cumulatively* over the whole governance domain. Unlike
+    /// `max_concurrent_subagents` this counts every spawn ever (running + completed), seeded across
+    /// members via `group_spawns_base`, so it spans N stateless top-level runs. A hard `Deny` at cap
+    /// (a completed sibling never frees a cumulative slot).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_subagents: Option<u32>,
     /// Max sub-agent nesting depth (direct children of the root loop are depth 1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_spawn_depth: Option<u32>,
@@ -37,6 +44,7 @@ impl ResourceQuota {
     /// Whether any limit is actually set (used to short-circuit the gate when fully open).
     pub fn is_open(&self) -> bool {
         self.max_concurrent_subagents.is_none()
+            && self.max_total_subagents.is_none()
             && self.max_spawn_depth.is_none()
             && self.memory_writes_per_window.is_none()
             && self.max_workflow_nodes.is_none()

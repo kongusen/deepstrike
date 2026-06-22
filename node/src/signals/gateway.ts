@@ -20,9 +20,17 @@ export class SignalGateway implements SignalSource {
 
   // ── SignalSource interface (pull model) ─────────────────────────────────────
 
-  /** Called by the agent loop each turn. Returns the oldest queued signal or null. */
-  async nextSignal(): Promise<RuntimeSignal | null> {
-    return this.queue.shift() ?? null
+  /**
+   * Called by the agent loop each turn. Returns the oldest queued signal or null.
+   * When `recipient` is given, returns only the oldest signal addressed to it (plus
+   * unaddressed broadcasts); signals addressed to other recipients stay queued, so one
+   * shared gateway can serve N peer loops. Omit ⇒ legacy FIFO drain (any signal).
+   */
+  async nextSignal(recipient?: string): Promise<RuntimeSignal | null> {
+    if (recipient === undefined) return this.queue.shift() ?? null
+    const idx = this.queue.findIndex(s => s.recipient === undefined || s.recipient === recipient)
+    if (idx === -1) return null
+    return this.queue.splice(idx, 1)[0]
   }
 
   // ── Push API ────────────────────────────────────────────────────────────────

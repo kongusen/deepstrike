@@ -12,6 +12,14 @@ pub struct RuntimeSignal {
     pub payload: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dedupe_key: Option<CompactString>,
+    /// Target a specific agent/session loop. `None` ⇒ broadcast (drained by any puller).
+    /// The canonical key is the recipient's `sessionId` (see R1 / L0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<CompactString>,
+    /// Optional topic for pub/sub-style fan-out. Carried through for subscribers;
+    /// multi-subscriber routing is deferred (field-only this phase).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<CompactString>,
     pub timestamp_ms: u64,
 }
 
@@ -56,12 +64,24 @@ impl RuntimeSignal {
             summary: summary.into(),
             payload: serde_json::Value::Null,
             dedupe_key: None,
+            recipient: None,
+            topic: None,
             timestamp_ms: 0,
         }
     }
 
     pub fn with_dedupe(mut self, key: impl Into<CompactString>) -> Self {
         self.dedupe_key = Some(key.into());
+        self
+    }
+
+    pub fn with_recipient(mut self, recipient: impl Into<CompactString>) -> Self {
+        self.recipient = Some(recipient.into());
+        self
+    }
+
+    pub fn with_topic(mut self, topic: impl Into<CompactString>) -> Self {
+        self.topic = Some(topic.into());
         self
     }
 

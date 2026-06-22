@@ -24,8 +24,12 @@ export interface MemoryWriteRateLimit {
 }
 
 export interface ResourceQuota {
-  /** Max sub-agents in the `running` state at once; further spawns are denied while at cap. */
+  /** Max sub-agents in the `running` state at once; further spawns are denied while at cap.
+   *  Instantaneous — vehicle-scoped (cannot span stateless replicas). */
   maxConcurrentSubagents?: number
+  /** L1 (RunGroup): max sub-agents spawned *cumulatively* across the governance domain. With a
+   *  `runGroup`, this spans N stateless top-level runs (seeded/charged via the group ledger). */
+  maxTotalSubagents?: number
   /** Max sub-agent nesting depth (direct children of the root loop are depth 1). */
   maxSpawnDepth?: number
   /** Rolling-window memory-write rate limit: at most `maxWrites` per any `windowMs` span. */
@@ -147,6 +151,8 @@ export interface KernelRuntimeInstance {
   step(inputJson: string): string
   isTerminal(): boolean
   turn(): number
+  /** L1 (RunGroup): cumulative sub-agent spawns this run, for charging the group ledger at run end. */
+  localSubagentsSpawned(): number
   recoveryContentBytes(): number
   render(): RenderedContext
   drainNewMessages(): Message[]

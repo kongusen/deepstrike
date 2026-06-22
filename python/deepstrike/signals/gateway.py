@@ -66,9 +66,20 @@ class SignalGateway:
         """Ingest a raw external signal (e.g. from a webhook handler)."""
         self._emit(signal)
 
-    async def next_signal(self) -> RuntimeSignal | None:
-        """Return the next pending signal so the gateway can be passed directly to RuntimeRunner."""
-        return self._pending.popleft() if self._pending else None
+    async def next_signal(self, recipient: str | None = None) -> RuntimeSignal | None:
+        """Return the next pending signal so the gateway can be passed directly to RuntimeRunner.
+
+        When ``recipient`` is given, return only the oldest signal addressed to it (plus
+        unaddressed broadcasts); signals addressed to other recipients stay queued, so one
+        shared gateway can serve N peer loops. None ⇒ legacy FIFO drain (any signal).
+        """
+        if recipient is None:
+            return self._pending.popleft() if self._pending else None
+        for i, sig in enumerate(self._pending):
+            if sig.recipient is None or sig.recipient == recipient:
+                del self._pending[i]
+                return sig
+        return None
 
     def destroy(self) -> None:
         """Cancel all pending scheduled tasks."""

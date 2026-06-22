@@ -13,6 +13,10 @@ class RuntimeSignal:
     signal_type: str = "event"
     urgency: str = "normal"
     dedupe_key: str | None = None
+    # Target a specific session loop (its session_id). None ⇒ broadcast (any puller).
+    recipient: str | None = None
+    # Optional pub/sub topic (carried through; multi-subscriber routing deferred).
+    topic: str | None = None
     priority: int | None = None
 
     def __post_init__(self) -> None:
@@ -46,12 +50,19 @@ class RuntimeSignal:
             json.dumps(self.payload),
             self.dedupe_key,
             float(int(time.time() * 1000)),
+            self.recipient,
+            self.topic,
         )
 
 
 @runtime_checkable
 class SignalSource(Protocol):
     """Implement this to feed signals into a RuntimeRunner from any external source."""
-    async def next_signal(self) -> RuntimeSignal | None:
-        """Return the next pending signal, or None if none available."""
+    async def next_signal(self, recipient: str | None = None) -> RuntimeSignal | None:
+        """Return the next pending signal, or None if none available.
+
+        When ``recipient`` is given, return only signals addressed to it (plus
+        unaddressed broadcasts); other recipients' signals stay queued. None ⇒
+        legacy FIFO drain (any signal).
+        """
         ...
