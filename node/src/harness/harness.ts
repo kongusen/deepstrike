@@ -3,7 +3,7 @@ import { collectText } from "../runtime/runner.js"
 import type { DoneEvent, StreamEvent, TextDelta } from "../types.js"
 import { writeFile } from "fs/promises"
 import path from "path"
-import { getKernel } from "../kernel.js"
+import { type AttemptJudge, HybridJudge, VerdictFnJudge, LlmEvalJudge } from "./judge.js"
 
 export interface Criterion {
   text: string
@@ -135,16 +135,21 @@ export interface HarnessLoopOptions {
 export class HarnessLoop {
   private maxAttempts: number
   private skillDir?: string
-  private verdictFn?: VerdictFn
+  /** How each attempt is judged. Hybrid (host verdictFn → LLM eval) when a verdictFn is supplied,
+   *  otherwise the built-in LLM eval. The loop just calls `this.judge.judge(...)`. */
+  private judge: AttemptJudge
 
   constructor(
     private runner: RuntimeRunner,
-    private evalProvider: import("../types.js").LLMProvider,
+    evalProvider: import("../types.js").LLMProvider,
     options: HarnessLoopOptions = {},
   ) {
     this.maxAttempts = options.maxAttempts ?? 3
     this.skillDir = options.skillDir
-    this.verdictFn = options.verdictFn
+    const llmJudge = new LlmEvalJudge(evalProvider)
+    this.judge = options.verdictFn
+      ? new HybridJudge(new VerdictFnJudge(options.verdictFn), llmJudge)
+      : llmJudge
   }
 
   async run(request: HarnessRequest): Promise<HarnessOutcome> {
@@ -171,7 +176,6 @@ export class HarnessLoop {
   }
 
   async *stream(request: HarnessRequest): AsyncIterable<HarnessEvent> {
-    const kernel = getKernel()
     const criteria = request.criteria ?? []
 
     let currentGoal = request.goal
@@ -211,34 +215,12 @@ export class HarnessLoop {
 
       yield { type: "supervising" }
 
-      // I3.2 (A2/A3): host-supplied `verdictFn` short-circuits the LLM eval. When it returns a
-      // Verdict, use it; when it returns undefined, defer to the built-in eval (hybrid path).
-      let verdict: Verdict | undefined
-      let skillCandidate: ReturnType<typeof kernel.parseVerdict>["skillCandidate"]
-      if (this.verdictFn) {
-        verdict = await this.verdictFn({ goal: request.goal, criteria, attempt, result: lastResult })
-      }
-      if (!verdict) {
-        // #6 (0.5.0): the eval/verdict compute is the kernel's stateless free functions (was the
-        // EvalPipeline state machine). Build the eval prompt, call the eval LLM, parse the verdict.
-        const evalMsgs = kernel.buildEvalMessages(request.goal, criteria, lastResult, attempt, true)
-        let evalText = ""
-        const evalContext = {
-          systemText: evalMsgs.filter((m: { role: string }) => m.role === "system").map((m: { content: string }) => m.content).join("\n\n"),
-          turns: evalMsgs.filter((m: { role: string }) => m.role !== "system"),
-        }
-        for await (const evt of this.evalProvider.stream(evalContext, [], undefined)) {
-          if (evt.type === "text_delta") evalText += (evt as TextDelta).delta
-        }
-        const parsed = kernel.parseVerdict(evalText)
-        verdict = {
-          passed: parsed.passed,
-          overallScore: parsed.overallScore,
-          feedback: parsed.feedback,
-          details: parsed.details ?? [],
-        }
-        skillCandidate = parsed.skillCandidate
-      }
+      // I3.2 (A2/A3): the judge Strategy encapsulates "host verdictFn short-circuit → built-in LLM
+      // eval". HarnessLoop's judge always terminates in LlmEvalJudge, so a verdict is guaranteed.
+      const judged = await this.judge.judge({ goal: request.goal, criteria, attempt, result: lastResult })
+      const verdict = judged?.verdict
+      const skillCandidate = judged?.skillCandidate
+      if (!verdict) throw new Error("HarnessLoop: judge produced no verdict")
 
       if (verdict.passed) {
         if (skillCandidate && this.skillDir) {
