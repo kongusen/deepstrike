@@ -2,10 +2,8 @@ from __future__ import annotations
 import pathlib
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Protocol, TYPE_CHECKING, Union, runtime_checkable
-from deepstrike._kernel import build_eval_messages, parse_verdict
 from deepstrike.providers.stream import DoneEvent as _ProviderDoneEvent, TextDelta
 
-from deepstrike.providers.base import RenderedContext
 if TYPE_CHECKING:
     from deepstrike.runtime import RuntimeRunner
     from deepstrike.providers.base import LLMProvider
@@ -203,6 +201,13 @@ class HarnessLoop:
         self._max_attempts = max_attempts
         self._skill_dir = pathlib.Path(skill_dir) if skill_dir else None
         self._verdict_fn = verdict_fn
+        # P4 (Node parity): how each attempt is judged is a named Strategy. Hybrid (host verdict_fn
+        # short-circuit → built-in LLM eval) when a verdict_fn is supplied, otherwise the built-in
+        # LLM eval. The loop just calls ``self._judge.judge(...)``. Deferred import breaks the
+        # harness <-> judge module cycle (judge constructs this module's Verdict/CriterionResult).
+        from .judge import HybridJudge, LlmEvalJudge, VerdictFnJudge
+        llm_judge = LlmEvalJudge(eval_provider)
+        self._judge = HybridJudge(VerdictFnJudge(verdict_fn), llm_judge) if verdict_fn is not None else llm_judge
 
     async def run(self, request: HarnessRequest) -> HarnessOutcome:
         # R3-1: collect nodes the agent submits while running under the harness (dynamic fan-out in
@@ -263,38 +268,13 @@ class HarnessLoop:
 
             yield SupervisingEvent()
 
-            # I3.2 (A2/A3): host-supplied verdict_fn short-circuits the LLM eval. Returning None
-            # (or awaitable None) defers to the built-in eval below — enables hybrid judgment.
-            verdict = None
-            skill_candidate = None
-            if self._verdict_fn is not None:
-                result = self._verdict_fn(goal=request.goal, criteria=criteria, attempt=attempt, result=last_result)
-                if hasattr(result, "__await__"):
-                    result = await result
-                verdict = result
-            if verdict is None:
-                # #6 (0.5.0): the eval/verdict compute is the kernel's stateless free functions (was the
-                # EvalPipeline state machine). Build the eval prompt, call the eval LLM, parse the verdict.
-                eval_msgs = build_eval_messages(request.goal, criteria, last_result, attempt, True)
-                eval_text = ""
-                eval_system = "\n\n".join(m.content for m in eval_msgs if m.role == "system")
-                eval_turns = [m for m in eval_msgs if m.role != "system"]
-                eval_context = RenderedContext(system_text=eval_system, turns=eval_turns)
-                async for evt in self._eval_provider.stream(eval_context, [], extensions=None):
-                    if isinstance(evt, TextDelta):
-                        eval_text += evt.delta
-
-                parsed = parse_verdict(eval_text)
-                verdict = Verdict(
-                    passed=parsed.passed,
-                    overall_score=parsed.overall_score,
-                    feedback=parsed.feedback,
-                    details=[
-                        CriterionResult(criterion=d.criterion, passed=d.passed, score=d.score, feedback=d.feedback)
-                        for d in (parsed.details or [])
-                    ],
-                )
-                skill_candidate = parsed.skill_candidate
+            # I3.2 (A2/A3) + P4: the judge Strategy encapsulates "host verdict_fn short-circuit →
+            # built-in LLM eval". HarnessLoop's judge always terminates in LlmEvalJudge, so a verdict
+            # is guaranteed (judged is never None). Judging uses the original goal, not current_goal.
+            from .judge import JudgeContext
+            judged = await self._judge.judge(JudgeContext(goal=request.goal, criteria=criteria, attempt=attempt, result=last_result))
+            verdict = judged.verdict
+            skill_candidate = judged.skill_candidate
 
             if verdict.passed:
                 sc = skill_candidate
