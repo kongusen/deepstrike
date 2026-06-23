@@ -106,8 +106,13 @@ class QwenProvider(ReasoningReplayMixin):
                     kwargs["enable_thinking"] = True
                     if "thinking_budget" in ext or "thinkingBudget" in ext:
                         kwargs["thinking_budget"] = int(ext.get("thinking_budget", ext.get("thinkingBudget")))
+                # DashScope web search (Qwen vendor feature): enable_search + optional search_options.
+                if ext.get("enable_search"):
+                    kwargs["enable_search"] = True
+                    if ext.get("search_options") is not None:
+                        kwargs["search_options"] = ext["search_options"]
                 for key, value in ext.items():
-                    if key not in {"model", "messages", "tools", "stream", "enable_thinking", "enableThinking", "thinking_budget", "thinkingBudget"}:
+                    if key not in {"model", "messages", "tools", "stream", "enable_thinking", "enableThinking", "thinking_budget", "thinkingBudget", "enable_search", "search_options"}:
                         kwargs[key] = value
                 resp = await self._generation.call(**kwargs)
                 if resp.status_code != HTTPStatus.OK:
@@ -157,6 +162,11 @@ class QwenProvider(ReasoningReplayMixin):
             kwargs["enable_thinking"] = True
             if "thinking_budget" in ext or "thinkingBudget" in ext:
                 kwargs["thinking_budget"] = int(ext.get("thinking_budget", ext.get("thinkingBudget")))
+        # DashScope web search (Qwen vendor feature) — was dropped on the stream path before.
+        if ext.get("enable_search"):
+            kwargs["enable_search"] = True
+            if ext.get("search_options") is not None:
+                kwargs["search_options"] = ext["search_options"]
 
         tool_call_bufs: dict[int, dict] = {}
         emitted_tool_call_indexes: set[int] = set()
