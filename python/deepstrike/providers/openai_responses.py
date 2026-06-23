@@ -200,8 +200,26 @@ class OpenAIResponsesProvider:
     def _request_extensions(self, extensions: dict | None) -> dict:
         return wire_request_extensions(
             extensions,
-            extra_omit=("input", "instructions", "previous_response_id"),
+            extra_omit=("input", "instructions", "previous_response_id", "web_search", "builtin_tools"),
         )
+
+    def _builtin_tools(self, extensions: dict | None) -> list[dict]:
+        """Responses API built-in server tools from extensions (sit in the same tools[] list as
+        function tools): `web_search: True` or a config dict; and a `builtin_tools` list passed through
+        verbatim for file_search ({"type":"file_search","vector_store_ids":[...]}) / code_interpreter
+        ({"type":"code_interpreter","container":{"type":"auto"}})."""
+        ext = extensions or {}
+        out: list[dict] = []
+        ws = ext.get("web_search")
+        if ws:
+            out.append({"type": "web_search", **ws} if isinstance(ws, dict) else {"type": "web_search"})
+        out.extend(ext.get("builtin_tools") or [])
+        return out
+
+    def _all_tools(self, tools: list[ToolSchema], extensions: dict | None) -> list[dict]:
+        defs = list(self._responses.build_tools(tools)) if tools else []
+        defs.extend(self._builtin_tools(extensions))
+        return defs
 
     async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
         if self._circuit.is_open():
@@ -218,8 +236,9 @@ class OpenAIResponsesProvider:
                 }
                 if instructions:
                     req["instructions"] = instructions
-                if tools:
-                    req["tools"] = self._responses.build_tools(tools)
+                all_tools = self._all_tools(tools, extensions)
+                if all_tools:
+                    req["tools"] = all_tools
                 resp = await self._client.responses.create(**req)
                 self._circuit.record_success()
                 output = getattr(resp, "output", None) or []
@@ -266,8 +285,9 @@ class OpenAIResponsesProvider:
             req["instructions"] = instructions
         if run_state.get("previous_response_id"):
             req["previous_response_id"] = run_state["previous_response_id"]
-        if tools:
-            req["tools"] = self._responses.build_tools(tools)
+        all_tools = self._all_tools(tools, extensions)
+        if all_tools:
+            req["tools"] = all_tools
 
         stream = await self._client.responses.create(**req)
 
