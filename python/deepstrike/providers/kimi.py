@@ -35,3 +35,9 @@ class KimiProvider(OpenAIProvider):
 
     def runtime_policy(self) -> RuntimePolicy:
         return _KIMI_POLICIES.get(self._model, RuntimePolicy())
+
+    def _cache_key_params(self, context, tools) -> dict:
+        # Moonshot caches automatically and does not document accepting OpenAI's prompt_cache_key
+        # (accept-vs-400 unconfirmed) — safest to omit it. Use the OpenAI-side Context Caching API for
+        # explicit caching instead (TODO: surface it as a first-class feature).
+        return {}

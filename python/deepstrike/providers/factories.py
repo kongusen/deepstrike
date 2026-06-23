@@ -18,8 +18,10 @@ from .glm import GLMProvider, GLMAnthropicProvider
 from .minimax import MiniMaxOpenAIProvider, MiniMaxAnthropicProvider
 from .gemini import GeminiProvider
 from .ollama import OllamaProvider
+from .vendor_profiles import resolve_vendor_endpoint
 
 Protocol = Literal["openai", "anthropic"]
+Region = Literal["cn", "global"]
 
 
 def _build(cls, api_key, model, base_url, retry_config):
@@ -39,9 +41,13 @@ def deepseek(*, api_key, model=None, base_url=None, retry_config=None, protocol:
     return _build(cls, api_key, model, base_url, retry_config)
 
 
-def kimi(*, api_key, model=None, base_url=None, retry_config=None, protocol: Protocol = "openai"):
-    """Moonshot Kimi. Defaults to the OpenAI-compatible wire."""
+def kimi(*, api_key, model=None, base_url=None, retry_config=None, protocol: Protocol = "openai", region: Region | None = None):
+    """Moonshot Kimi. Defaults to the OpenAI-compatible wire. ``region`` ("cn"|"global") selects the
+    mainland vs international endpoint for the chosen protocol (supply that region's API key); an
+    explicit ``base_url`` overrides it. Both protocols exist in both regions."""
     cls = KimiAnthropicProvider if protocol == "anthropic" else KimiProvider
+    if base_url is None and region is not None:
+        base_url = resolve_vendor_endpoint("kimi", region, protocol)
     return _build(cls, api_key, model, base_url, retry_config)
 
 
@@ -51,9 +57,13 @@ def qwen(*, api_key, model=None, base_url=None, retry_config=None, protocol: Pro
     return _build(cls, api_key, model, base_url, retry_config)
 
 
-def glm(*, api_key, model=None, base_url=None, retry_config=None, protocol: Protocol = "openai"):
-    """Zhipu GLM. Defaults to the OpenAI-compatible wire."""
+def glm(*, api_key, model=None, base_url=None, retry_config=None, protocol: Protocol = "openai", region: Region | None = None):
+    """Zhipu GLM. Defaults to the OpenAI-compatible wire. ``region`` ("cn"|"global") selects the
+    mainland (bigmodel.cn) vs international (z.ai) endpoint for the chosen protocol (supply that
+    region's API key); an explicit ``base_url`` overrides it. Both protocols exist in both regions."""
     cls = GLMAnthropicProvider if protocol == "anthropic" else GLMProvider
+    if base_url is None and region is not None:
+        base_url = resolve_vendor_endpoint("glm", region, protocol)
     return _build(cls, api_key, model, base_url, retry_config)
 
 

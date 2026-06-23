@@ -82,6 +82,44 @@ MINIMAX_POLICIES: dict[str, RuntimePolicy] = {
     "MiniMax-Text-01": RuntimePolicy(max_turns=20),
 }
 
+# (vendor, region, protocol) -> base URL. The CN vendors serve BOTH mainland and international users
+# on BOTH an OpenAI-compatible and an Anthropic-compatible wire; region and protocol are independent
+# axes. Region-specific: a region also has its own API key (caller supplies the matching key) — region
+# selection rebinds the endpoint, not the credential. Cells that don't exist are simply absent
+# (verified 2026): Qwen has NO mainland Anthropic endpoint (DashScope's Anthropic wire is Singapore-
+# only), so mainland Qwen must use the OpenAI-compatible wire. Vendor signature features
+# (Moonshot Context Caching, GLM web_search, Qwen enable_search/multimodal) live ONLY on the
+# OpenAI/native wire — never on the Anthropic wire — so neither protocol can be dropped.
+VENDOR_ENDPOINTS: dict[tuple[str, str, str], str] = {
+    ("kimi", "cn",     "openai"):    "https://api.moonshot.cn/v1",
+    ("kimi", "cn",     "anthropic"): "https://api.moonshot.cn/anthropic",
+    ("kimi", "global", "openai"):    "https://api.moonshot.ai/v1",
+    ("kimi", "global", "anthropic"): "https://api.moonshot.ai/anthropic",
+    ("glm",  "cn",     "openai"):    "https://open.bigmodel.cn/api/paas/v4",
+    ("glm",  "cn",     "anthropic"): "https://open.bigmodel.cn/api/anthropic",
+    ("glm",  "global", "openai"):    "https://api.z.ai/api/paas/v4",
+    ("glm",  "global", "anthropic"): "https://api.z.ai/api/anthropic",
+    ("qwen", "cn",     "openai"):    "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    ("qwen", "global", "openai"):    "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    ("qwen", "global", "anthropic"): "https://dashscope-intl.aliyuncs.com/apps/anthropic",
+    # ("qwen","cn","anthropic") intentionally absent — Singapore/international-only.
+}
+
+
+def resolve_vendor_endpoint(vendor: str, region: str, protocol: str) -> str:
+    """Base URL for a (vendor, region, protocol) cell. Raises with the available cells if the
+    combination does not exist (e.g. mainland Qwen over the Anthropic wire)."""
+    url = VENDOR_ENDPOINTS.get((vendor, region, protocol))
+    if url is None:
+        available = sorted({(r, p) for (v, r, p) in VENDOR_ENDPOINTS if v == vendor})
+        raise ValueError(
+            f"No {vendor!r} endpoint for region={region!r} protocol={protocol!r}. "
+            f"Available (region, protocol) for {vendor!r}: {available}. "
+            f"Note: each region needs its own API key."
+        )
+    return url
+
+
 ANTHROPIC_VENDOR_PROFILES: dict[str, AnthropicVendorProfile] = {
     "deepseek": AnthropicVendorProfile("deepseek", "deepseek-v4-flash", "https://api.deepseek.com/anthropic", DEEPSEEK_POLICIES),
     "kimi":     AnthropicVendorProfile("kimi", "kimi-k2.6", "https://api.moonshot.ai/anthropic", KIMI_POLICIES),

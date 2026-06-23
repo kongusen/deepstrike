@@ -35,3 +35,9 @@ class GLMProvider(OpenAIProvider):
 
     def runtime_policy(self) -> RuntimePolicy:
         return _GLM_POLICIES.get(self._model, RuntimePolicy())
+
+    def _cache_key_params(self, context, tools) -> dict:
+        # GLM caches automatically and does not document accepting OpenAI's prompt_cache_key
+        # (accept-vs-400 unconfirmed) — safest to omit it. GLM's web_search tool lives on this
+        # OpenAI-side wire (TODO: surface it as a first-class feature).
+        return {}
