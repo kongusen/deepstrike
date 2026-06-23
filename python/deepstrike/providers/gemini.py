@@ -122,15 +122,59 @@ class GeminiProvider:
         ]
         return [{"function_declarations": declarations}]
 
-    def _build_config(self, system: str | None, tools: list[ToolSchema]) -> dict | None:
+    def _build_config(self, system: str | None, tools: list[ToolSchema], extensions: dict | None = None) -> dict | None:
+        ext = extensions or {}
         config: dict = {}
         if system:
             config["system_instruction"] = system
-        tool_defs = self._build_tools(tools)
+        tool_defs = list(self._build_tools(tools) or [])
+        # Google Search grounding (server tool; gemini-2.0+). Coexists with function tools on current
+        # models. `google_search` truthy → default tool; a dict passes config through.
+        gs = ext.get("google_search")
+        if gs:
+            tool_defs.append({"google_search": gs if isinstance(gs, dict) else {}})
         if tool_defs:
             config["tools"] = tool_defs
             config["automatic_function_calling"] = {"disable": True}
+        # Thinking (gemini-2.5 / 3 only; caller-provided budget/include_thoughts — 0=off, -1=auto).
+        if ext.get("thinking_config") is not None:
+            config["thinking_config"] = ext["thinking_config"]
+        # Structured output (not combinable with google_search — the API rejects that pairing).
+        if ext.get("response_mime_type") is not None:
+            config["response_mime_type"] = ext["response_mime_type"]
+        if ext.get("response_schema") is not None:
+            config["response_schema"] = ext["response_schema"]
+        # Explicit context cache reference (the `cachedContents/…` name from create_context_cache()).
+        if ext.get("cached_content") is not None:
+            config["cached_content"] = ext["cached_content"]
         return config or None
+
+    async def create_context_cache(
+        self,
+        *,
+        system_instruction: str | None = None,
+        contents: list | None = None,
+        tools: list | None = None,
+        ttl: str = "3600s",
+        display_name: str | None = None,
+        model: str | None = None,
+    ):
+        """Create a Gemini explicit context cache; returns the ``CachedContent`` (pass its ``.name`` as
+        ``extensions={"cached_content": name}`` on later calls). ``ttl`` is a ``"<seconds>s"`` string.
+        Explicit caches have a per-model minimum input-token floor (~1024 flash / ~4096 pro)."""
+        client = self._require_client()
+        # Plain-dict config (the SDK dict-coerces it to CreateCachedContentConfig), consistent with the
+        # generate_content config this provider already passes as a dict.
+        cfg: dict = {"ttl": ttl}
+        if system_instruction is not None:
+            cfg["system_instruction"] = system_instruction
+        if contents is not None:
+            cfg["contents"] = contents
+        if tools is not None:
+            cfg["tools"] = tools
+        if display_name is not None:
+            cfg["display_name"] = display_name
+        return await client.aio.caches.create(model=model or self._model_name, config=cfg)
 
     def _response_parts(self, response) -> list:
         if getattr(response, "parts", None):
@@ -171,7 +215,7 @@ class GeminiProvider:
 
         system = context.system_text or None
         contents = self._build_contents(turns_with_state_appended(context))
-        config = self._build_config(system, tools)
+        config = self._build_config(system, tools, extensions)
 
         last_exc = None
         for attempt in range(self._retry.max_retries):
@@ -220,7 +264,7 @@ class GeminiProvider:
     async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
         system = context.system_text or None
         contents = self._build_contents(turns_with_state_appended(context))
-        config = self._build_config(system, tools)
+        config = self._build_config(system, tools, extensions)
 
         tool_calls: list[dict] = []
         last_usage = None
