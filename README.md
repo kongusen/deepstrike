@@ -224,7 +224,7 @@ answer = await run_agent(
 
 ```toml
 [dependencies]
-deepstrike-sdk = "0.2.30"
+deepstrike-sdk = "0.2.31"
 ```
 
 See the [SDK guides](./docs/guides/index.md) for full examples, provider configuration, streaming events, and governance hooks. For the dynamic-workflow drive (`runWorkflow` / `run_workflow`), see the per-SDK **Dynamic workflows** sections: [Node.js](./node/README.md#dynamic-workflows) · [Python](./python/README.md#dynamic-workflows).
