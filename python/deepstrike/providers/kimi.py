@@ -68,9 +68,12 @@ class KimiProvider(OpenAIProvider):
         """Create a Moonshot Context Cache and return the cache object (incl. ``id``). Reference the
         returned id on later complete()/stream() via ``extensions={"context_cache_id": <id>}`` (or a
         ``context_cache_tag``), optionally ``context_cache_reset_ttl``. ``ttl`` is seconds (relative);
-        pass ``expired_at`` (epoch seconds) instead for an absolute expiry. Explicit caching is a
-        moonshot-v1-* feature."""
-        body: dict = {"model": model or self._model, "messages": messages}
+        pass ``expired_at`` (epoch seconds) instead for an absolute expiry.
+
+        Explicit caching is a moonshot-v1 feature, and the create call wants the model FAMILY
+        (``moonshot-v1``), not a sized variant — `moonshot-v1-8k` 400s with "model family is invalid".
+        We derive the family from the provider model; pass ``model`` to override."""
+        body: dict = {"model": model or self._cache_model_family(), "messages": messages}
         if tools is not None:
             body["tools"] = tools
         if name is not None:
@@ -90,6 +93,11 @@ class KimiProvider(OpenAIProvider):
             )
             resp.raise_for_status()
             return resp.json()
+
+    def _cache_model_family(self) -> str:
+        # The /caching create endpoint wants the model family. Only moonshot-v1 supports explicit
+        # caching (kimi-k2* auto-cache); sized variants like moonshot-v1-8k are rejected.
+        return "moonshot-v1" if self._model.startswith("moonshot-v1") else self._model
 
     async def resolve_cache_tag(self, tag: str) -> dict:
         """Resolve a cache tag to its current cache object (``{"tag","cache_id"}``). GET

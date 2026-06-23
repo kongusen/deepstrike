@@ -56,13 +56,23 @@ async def test_create_context_cache_posts_to_caching(monkeypatch):
     post = cap["post"]
     assert post["url"] == "https://api.moonshot.cn/v1/caching"
     assert post["headers"]["Authorization"] == "Bearer KEY"
+    # create wants the model FAMILY (moonshot-v1), not the sized variant moonshot-v1-128k.
     assert post["json"] == {
-        "model": "moonshot-v1-128k",
+        "model": "moonshot-v1",
         "messages": [{"role": "system", "content": "big prompt"}],
         "name": "C",
         "tags": ["t1"],
         "ttl": 600,
     }
+
+
+@pytest.mark.asyncio
+async def test_create_context_cache_explicit_model_overrides_family(monkeypatch):
+    cap: dict = {}
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _FakeClient({"id": "cache-x"}, cap))
+    p = KimiProvider("k", model="moonshot-v1-8k")
+    await p.create_context_cache([{"role": "system", "content": "x"}], model="moonshot-v1")
+    assert cap["post"]["json"]["model"] == "moonshot-v1"
 
 
 @pytest.mark.asyncio
