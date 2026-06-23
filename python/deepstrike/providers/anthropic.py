@@ -70,7 +70,7 @@ class AnthropicProvider:
         if reconstructed:
             self._native_assistant_blocks[self._assistant_replay_key_parts(content, tool_calls)] = reconstructed
 
-    def _build_system(self, context: RenderedContext):
+    def _build_system(self, context: RenderedContext, strategy: str = "default", cache_control: dict | None = None):
         """Structured system blocks with cache_control when the kernel partitioned
         the prompt (system_stable / system_knowledge); else the flat system_text
         string (no cache breakpoint), or None."""
@@ -81,7 +81,7 @@ class AnthropicProvider:
         # System cache_control is emitted under "default" and "system-only". Other strategies keep
         # the text-block structure for protocol parity but omit cache_control.
         emit = strategy in ("default", "system-only")
-        cc = {"cache_control": {"type": "ephemeral"}} if emit else {}
+        cc = {"cache_control": dict(cache_control or {"type": "ephemeral"})} if emit else {}
         blocks: list[dict] = []
         if stable:
             blocks.append({"type": "text", "text": stable, **cc})
@@ -89,7 +89,7 @@ class AnthropicProvider:
             blocks.append({"type": "text", "text": knowledge, **cc})
         return blocks or None
 
-    def _build_messages(self, turns: list[Message], state_turn=None, frozen_prefix_len=None, strategy: str = "default") -> list[dict]:
+    def _build_messages(self, turns: list[Message], state_turn=None, frozen_prefix_len=None, strategy: str = "default", cache_control: dict | None = None) -> list[dict]:
         msgs = to_anthropic_messages(
             turns,
             native_replay=lambda message: self._native_assistant_blocks.get(
@@ -101,7 +101,7 @@ class AnthropicProvider:
         # state_turn is None and the state is already inside turns (rendered above).
         # frozen_prefix_len (P1-E) pins the deep breakpoint at the compaction
         # boundary; None ⇒ rolling-pair fallback.
-        _apply_message_cache_control(msgs, frozen_prefix_len, strategy)
+        _apply_message_cache_control(msgs, frozen_prefix_len, strategy, cache_control)
         if state_turn is not None:
             # Render through to_anthropic_messages so assistant tool_use blocks
             # and tool-role tool_result parts are serialized correctly —
@@ -116,7 +116,7 @@ class AnthropicProvider:
             msgs.extend(state_msgs)
         return msgs
 
-    def _build_tools(self, tools: list[ToolSchema], anchor_cache: bool, strategy: str = "default") -> list[dict] | None:
+    def _build_tools(self, tools: list[ToolSchema], anchor_cache: bool, strategy: str = "default", cache_control: dict | None = None) -> list[dict] | None:
         if not tools:
             return None
         defs = [
@@ -130,7 +130,7 @@ class AnthropicProvider:
         # Tool cache_control is emitted under "default" and "tools-only".
         emit_on_last_tool = anchor_cache and strategy in ("default", "tools-only")
         if emit_on_last_tool:
-            defs[-1]["cache_control"] = {"type": "ephemeral"}
+            defs[-1]["cache_control"] = dict(cache_control or {"type": "ephemeral"})
         return defs
 
     def _remember_native_blocks(self, content: str, tool_calls: list[ToolCall], blocks: list[dict]) -> None:
@@ -145,15 +145,16 @@ class AnthropicProvider:
             raise RuntimeError("Circuit breaker open")
 
         strategy = _resolve_cache_breakpoint_strategy(extensions)
-        msgs = self._build_messages(context.turns, context.state_turn, context.frozen_prefix_len, strategy)
-        system = self._build_system(context, strategy)
-        tool_defs = self._build_tools(tools, anchor_cache=not isinstance(system, list), strategy=strategy)
+        cc = _resolve_cache_control(extensions)
+        msgs = self._build_messages(context.turns, context.state_turn, context.frozen_prefix_len, strategy, cc)
+        system = self._build_system(context, strategy, cc)
+        tool_defs = self._build_tools(tools, anchor_cache=not isinstance(system, list), strategy=strategy, cache_control=cc)
         _assert_cache_budget(system, len(tools))
 
         last_exc = None
         for attempt in range(self._retry.max_retries):
             try:
-                request_extensions = {k: v for k, v in (extensions or {}).items() if k not in {"model", "messages", "system", "tools", "stream", "max_tokens"}}
+                request_extensions = {k: v for k, v in (extensions or {}).items() if k not in {"model", "messages", "system", "tools", "stream", "max_tokens", *_CACHE_CONTROL_EXTENSION_KEYS}}
                 resp = await self._client.messages.create(
                     **request_extensions,
                     model=self._model,
@@ -218,9 +219,10 @@ class AnthropicProvider:
 
     async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
         strategy = _resolve_cache_breakpoint_strategy(extensions)
-        msgs = self._build_messages(context.turns, context.state_turn, context.frozen_prefix_len, strategy)
-        system = self._build_system(context, strategy)
-        tool_defs = self._build_tools(tools, anchor_cache=not isinstance(system, list), strategy=strategy)
+        cc = _resolve_cache_control(extensions)
+        msgs = self._build_messages(context.turns, context.state_turn, context.frozen_prefix_len, strategy, cc)
+        system = self._build_system(context, strategy, cc)
+        tool_defs = self._build_tools(tools, anchor_cache=not isinstance(system, list), strategy=strategy, cache_control=cc)
         _assert_cache_budget(system, len(tools))
         # I1: capture which slots will carry cache_control for pro-rata attribution at usage time.
         slot_bp = _count_cache_control_slots(system, tool_defs, msgs)
@@ -234,7 +236,7 @@ class AnthropicProvider:
         cache_creation = 0
         output_tokens = 0
 
-        request_extensions = {k: v for k, v in (extensions or {}).items() if k not in {"model", "messages", "system", "tools", "stream", "max_tokens"}}
+        request_extensions = {k: v for k, v in (extensions or {}).items() if k not in {"model", "messages", "system", "tools", "stream", "max_tokens", *_CACHE_CONTROL_EXTENSION_KEYS}}
         async with self._client.messages.stream(
             **request_extensions,
             model=self._model,
@@ -345,6 +347,20 @@ def _resolve_cache_breakpoint_strategy(extensions: "dict | None") -> str:
     return "default"
 
 
+# Control extensions that shape caching but must never be echoed as wire params.
+_CACHE_CONTROL_EXTENSION_KEYS = ("cacheBreakpointStrategy", "cacheTtl")
+
+
+def _resolve_cache_control(extensions: "dict | None") -> dict:
+    """The cache_control marker applied to every breakpoint this request. `cacheTtl="1h"` opts into
+    Anthropic's extended 1-hour cache (GA on the first-party Claude API — no beta header); anything
+    else is the default 5-minute ephemeral. A single TTL for the whole request sidesteps the
+    "1h breakpoints must precede 5m" ordering rule."""
+    if (extensions or {}).get("cacheTtl") == "1h":
+        return {"type": "ephemeral", "ttl": "1h"}
+    return {"type": "ephemeral"}
+
+
 def _count_cache_control_slots(system, tool_defs, msgs) -> dict:
     """I1: which slots of the outgoing request carry a ``cache_control`` breakpoint. Mirrors Node."""
     sys_bp = isinstance(system, list) and any((isinstance(b, dict) and b.get("cache_control") is not None) for b in system)
@@ -376,7 +392,7 @@ def _estimate_cache_read_by_slot(cache_read: int, slot_bp: dict) -> "dict | None
     return out
 
 
-def _apply_message_cache_control(msgs: list[dict], frozen_prefix_len: "int | None" = None, strategy: str = "default") -> None:
+def _apply_message_cache_control(msgs: list[dict], frozen_prefix_len: "int | None" = None, strategy: str = "default", cache_control: dict | None = None) -> None:
     """Place the (<=2) message-history cache breakpoints. The final message always
     gets one (writes the current full prefix). The second is placed by one of two
     strategies:
@@ -408,11 +424,11 @@ def _apply_message_cache_control(msgs: list[dict], frozen_prefix_len: "int | Non
                 targets.add(i)
             i -= 1
     for idx in targets:
-        _mark_last_block_cacheable(msgs[idx])
+        _mark_last_block_cacheable(msgs[idx], cache_control)
 
 
-def _mark_last_block_cacheable(msg: dict) -> None:
-    cache_control = {"type": "ephemeral"}
+def _mark_last_block_cacheable(msg: dict, cache_control: dict | None = None) -> None:
+    cache_control = dict(cache_control or {"type": "ephemeral"})
     content = msg.get("content")
     if isinstance(content, str):
         if not content:
