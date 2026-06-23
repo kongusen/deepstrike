@@ -35,7 +35,7 @@ class KimiProvider(OpenAIProvider):
     Models: kimi-k2.6, kimi-k2.5, kimi-k2-thinking, kimi-k2-thinking-turbo, moonshot-v1-*
     """
 
-    def __init__(self, api_key: str, model: str = "moonshot-v1-8k", retry_config: RetryConfig | None = None, base_url: str = _MOONSHOT_BASE_URL):
+    def __init__(self, api_key: str, model: str = "kimi-k2.6", retry_config: RetryConfig | None = None, base_url: str = _MOONSHOT_BASE_URL):
         super().__init__(api_key=api_key, model=model, retry_config=retry_config, base_url=base_url)
 
     def runtime_policy(self) -> RuntimePolicy:
