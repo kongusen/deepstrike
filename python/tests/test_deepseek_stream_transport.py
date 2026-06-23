@@ -145,3 +145,38 @@ async def test_stream_replay_envelope_includes_native_tool_calls():
     assert env is not None
     assert env["reasoning_content"] == "why"
     assert env["tool_calls"] == [{"id": "c1", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}]
+
+
+# ── Audit P0: DeepSeek-native thinking control (reasoning_effort + extra_body.thinking) ──
+# Vendor-aware: sent only for reasoning models; deepseek-chat passes through clean.
+
+@pytest.mark.asyncio
+async def test_reasoning_model_sends_thinking_params_and_strips_control_keys():
+    provider = DeepSeekProvider("k", model="deepseek-reasoner")
+    fake = _wire(provider, [_chunk(_delta(content="ok"))])
+    _ = [e async for e in provider.stream(CTX, [], {"thinking": True, "expose_reasoning": True})]
+    assert fake.last_kwargs.get("reasoning_effort") == "high"
+    assert fake.last_kwargs.get("extra_body") == {"thinking": {"type": "enabled"}}
+    # control keys must not leak as top-level wire params
+    for k in ("thinking", "expose_reasoning", "reasoningEffort"):
+        assert k not in fake.last_kwargs
+
+
+@pytest.mark.asyncio
+async def test_thinking_false_disables_and_reasoning_effort_max_honored():
+    provider = DeepSeekProvider("k", model="deepseek-v4-pro")
+    fake = _wire(provider, [_chunk(_delta(content="ok"))])
+    _ = [e async for e in provider.stream(CTX, [], {"thinking": False, "reasoning_effort": "max"})]
+    assert fake.last_kwargs.get("reasoning_effort") == "max"
+    assert fake.last_kwargs.get("extra_body") == {"thinking": {"type": "disabled"}}
+
+
+@pytest.mark.asyncio
+async def test_non_reasoning_model_no_thinking_params():
+    # deepseek-chat is non-reasoning: never send reasoning_effort / extra_body (DeepSeek 400s on
+    # unknown params), pass extensions through untouched.
+    provider = DeepSeekProvider("k", model="deepseek-chat")
+    fake = _wire(provider, [_chunk(_delta(content="ok"))])
+    _ = [e async for e in provider.stream(CTX, [], {"thinking": True})]
+    assert "reasoning_effort" not in fake.last_kwargs
+    assert "extra_body" not in fake.last_kwargs

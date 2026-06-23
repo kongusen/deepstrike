@@ -101,6 +101,23 @@ class DeepSeekProvider(OpenAIProvider):
             return None
         return super()._wire_tools(tools)
 
+    def _prepare_extensions(self, extensions: dict | None) -> dict:
+        # DeepSeek-native thinking control (reasoning_effort + extra_body.thinking), mirroring the Node
+        # DeepSeekProvider. Vendor-aware: only the reasoning models accept it, and DeepSeek 400s on
+        # unknown params — so deepseek-chat (non-reasoning) gets a clean pass-through. The thinking
+        # CONTROL keys are stripped from the wire (re-expressed as reasoning_effort / extra_body);
+        # `thinking` stays readable on the raw extensions for _require_non_empty_… (which reads them).
+        # [verify] reasoning_effort acceptance against current DeepSeek docs before a live ship.
+        ext = dict(extensions or {})
+        if self._model not in _DEEPSEEK_REASONING_MODELS:
+            return ext
+        thinking = "disabled" if ext.get("thinking") is False else "enabled"
+        reasoning_effort = "max" if (ext.get("reasoning_effort") or ext.get("reasoningEffort")) == "max" else "high"
+        cleaned = {k: v for k, v in ext.items() if k not in {"thinking", "reasoning_effort", "reasoningEffort", "expose_reasoning", "extra_body"}}
+        cleaned["reasoning_effort"] = reasoning_effort
+        cleaned["extra_body"] = {"thinking": {"type": thinking}}
+        return cleaned
+
     def _uses_inline_thinking_tags(self) -> bool:
         # Reasoning arrives out-of-band as reasoning_content, never as inline <thinking> tags.
         return False
