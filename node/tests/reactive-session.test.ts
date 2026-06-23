@@ -118,6 +118,23 @@ describe("ReactiveSession orchestration (L2 §6.2)", () => {
     expect(store.read("scenario").tokensSpent).toBeGreaterThan(0)
   })
 
+  it("react seam overrides the turn body (DAG-in-Peer enabler, L2 §6.2)", async () => {
+    const { session } = makeSession(reactByMention())
+    session.addPeer("alice", {
+      role: "buyer",
+      react: async ({ personaId, runner, event }) => {
+        expect(runner).toBeDefined()
+        expect(event).toBeDefined()
+        return `custom:${personaId}`
+      },
+    })
+    session.addPeer("bob", { role: "seller" }) // default body (run())
+
+    const reactions = await session.emit({ payload: "alice, your move", source: "director" })
+    expect(reactions.map(r => r.personaId)).toEqual(["alice"])
+    expect(reactions[0].output).toBe("custom:alice") // routed to the override, not run()
+  })
+
   it("respects blackboard visibility: an unaddressed peer never reacts", async () => {
     const { session } = makeSession(roundRobin())
     session.addPeer("coach", { channels: [] })

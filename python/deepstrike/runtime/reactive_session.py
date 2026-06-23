@@ -30,10 +30,29 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class ReactorContext:
+    """Context for one reactive turn. ``runner`` is wired to the shared RunGroup / signal gateway /
+    blackboard, so whatever the turn body drives (e.g. ``runner.run_workflow``) stays under one
+    governance domain."""
+    persona_id: str
+    goal: str
+    event: BlackboardEvent
+    runner: "RuntimeRunner"
+
+
+# A turn body: given the context, return the persona's reaction text. Override to make a peer's turn a
+# different orchestration form (DAG via ``run_workflow``, nested ensemble, …). Default = one ``run()``.
+ReactorTurn = Callable[["ReactorContext"], Awaitable[str]]
+
+
+@dataclass
 class ReactivePeerSpec:
     goal: str | None = None
     role: str | None = None
     channels: list[str] = field(default_factory=list)
+    # Turn-body seam (the DAG-in-Peer enabler): override this persona's reaction body. Defaults to the
+    # session ``react_with``, then to a single ``run()`` agent turn.
+    react: ReactorTurn | None = None
 
 
 @dataclass
@@ -56,6 +75,7 @@ class ReactiveSession:
         event_stream: EventStream | None = None,
         signal_gateway: SignalGateway | None = None,
         goal_for: Callable[[str, BlackboardEvent], str] | None = None,
+        react_with: ReactorTurn | None = None,
     ) -> None:
         self._run_group = run_group
         self._turn_policy = turn_policy
@@ -63,13 +83,14 @@ class ReactiveSession:
         self._event_stream = event_stream or InMemoryEventStream()
         self._gateway = signal_gateway or SignalGateway()
         self._goal_for = goal_for
+        self._react_with = react_with
         self._peer_specs: dict[str, ReactivePeerSpec] = {}
         self._runners: dict[str, "RuntimeRunner"] = {}
         self._policy_state: dict[str, Any] = {}
 
     def add_peer(self, persona_id: str, *, goal: str | None = None, role: str | None = None,
-                 channels: list[str] | None = None) -> None:
-        self._peer_specs[persona_id] = ReactivePeerSpec(goal, role, channels or [])
+                 channels: list[str] | None = None, react: ReactorTurn | None = None) -> None:
+        self._peer_specs[persona_id] = ReactivePeerSpec(goal, role, channels or [], react)
 
     def peers(self) -> list[str]:
         return list(self._peer_specs.keys())
@@ -127,6 +148,11 @@ class ReactiveSession:
             or self._peer_specs[persona_id].goal
             or "React to the latest events on the shared blackboard."
         )
+        # Turn-body seam (DAG-in-Peer): per-peer ``react`` wins, then session ``react_with``, else the
+        # default single agent turn. The body's runner inherits the shared RunGroup.
+        react = self._peer_specs[persona_id].react or self._react_with
+        if react is not None:
+            return await react(ReactorContext(persona_id, goal, event, runner))
         return await collect_text(runner.run(session_id=persona_id, goal=goal))
 
     @staticmethod

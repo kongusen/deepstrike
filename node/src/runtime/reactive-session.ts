@@ -21,11 +21,33 @@ import type { TurnPolicy, PeerView } from "./turn-policy.js"
 import { tool } from "../tools/index.js"
 import type { RegisteredTool } from "../tools/index.js"
 
-/** Per-persona registration: its base reaction goal, role, and channel subscriptions. */
+/**
+ * How a persona executes one reactive turn. The default body is a single `runner.run(...)` agent turn;
+ * override it to make a persona's turn a *different orchestration form* — e.g. drive a DAG via
+ * `ctx.runner.runWorkflow(spec)` (DAG-in-Peer) or any composite. The runner is already wired to the
+ * shared `RunGroup`, so whatever the body spawns stays under one governance domain. Must return the
+ * persona's reaction text.
+ */
+export interface ReactorContext {
+  personaId: string
+  goal: string
+  event: BlackboardEvent
+  /** The persona's runner — wired to the shared RunGroup / signal gateway / blackboard. */
+  runner: RuntimeRunner
+}
+export type ReactorTurn = (ctx: ReactorContext) => Promise<string>
+
+/** Per-persona registration: its base reaction goal, role, channel subscriptions, and turn body. */
 export interface ReactivePeerSpec {
   goal?: string
   role?: string
   channels?: string[]
+  /**
+   * Override this persona's turn body (the seam for composing other mechanisms into a peer). Defaults
+   * to the session `reactWith`, then to a single `run()` agent turn. Use to make this peer's reaction
+   * a workflow DAG, a nested ensemble, etc. — all under the shared `RunGroup`.
+   */
+  react?: ReactorTurn
 }
 
 /** What the caller appends to the blackboard via `emit`. */
@@ -56,6 +78,11 @@ export interface ReactiveSessionOptions {
   ) => RuntimeRunner
   /** Goal for a persona's reactive turn. Defaults to a generic "react to the blackboard" prompt. */
   goalFor?: (personaId: string, event: BlackboardEvent) => string
+  /**
+   * Default turn body for peers that don't set their own `react`. Defaults to a single `run()` agent
+   * turn. Override to make every peer's turn a different orchestration form (e.g. a workflow DAG).
+   */
+  reactWith?: ReactorTurn
 }
 
 /** A persona's reaction to an emitted event. */
@@ -156,6 +183,11 @@ export class ReactiveSession {
       this.opts.goalFor?.(personaId, event) ??
       this.peerSpecs.get(personaId)?.goal ??
       "React to the latest events on the shared blackboard."
+    // Turn-body seam (the DAG-in-Peer enabler): a persona's reaction can be any orchestration form,
+    // not just a single agent turn. Per-peer `react` wins, then session `reactWith`, else the default
+    // `run()`. Whatever the body drives (e.g. `runner.runWorkflow`) inherits the shared RunGroup.
+    const react = this.peerSpecs.get(personaId)?.react ?? this.opts.reactWith
+    if (react) return react({ personaId, goal, event, runner })
     // run() with the persona's stable sessionId replays its prior turns from the SessionLog, so this
     // is continuity-preserving whether or not the persona has acted before (stateless-handler safe).
     return collectText(runner.run({ sessionId: personaId, goal }))

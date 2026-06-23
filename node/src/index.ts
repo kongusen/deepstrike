@@ -29,7 +29,7 @@ export type { EventStream, BlackboardEvent, EventViewer } from "./runtime/event-
 export { reactByMention, directorDriven, roundRobin, firstNonEmpty, union } from "./runtime/turn-policy.js"
 export type { TurnPolicy, PeerView } from "./runtime/turn-policy.js"
 export { ReactiveSession, readRecentTool } from "./runtime/reactive-session.js"
-export type { ReactiveSessionOptions, ReactivePeerSpec, EmitEvent, Reaction } from "./runtime/reactive-session.js"
+export type { ReactiveSessionOptions, ReactivePeerSpec, EmitEvent, Reaction, ReactorTurn, ReactorContext } from "./runtime/reactive-session.js"
 
 // ── Tool authoring ──────────────────────────────────────────────────────────
 export { tool, streamingTool } from "./tools/index.js"

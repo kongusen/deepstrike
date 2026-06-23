@@ -492,7 +492,21 @@ class RuntimeRunner:
     """
     bootstrapped = self._active_kernel is None or self._current_session_id is None
     if bootstrapped:
-      self._bootstrap_workflow_kernel(session_id or f"wf-{uuid.uuid4()}", spec)
+      sid = session_id or f"wf-{uuid.uuid4()}"
+      # L1: a standalone workflow is a member of its runner's governance domain. Seed the bootstrap
+      # kernel from the group's cumulative spend (so the cumulative spawn/token cap bites while
+      # scheduling DAG nodes) and register membership — mirroring ``_execute``. Mid-run callers skip
+      # this: their parent ``run()`` already seeds + counts the nodes via ``local_subagents_spawned``.
+      group_tokens_base: int | None = None
+      group_spawns_base: int | None = None
+      if self._opts.run_group is not None:
+        from deepstrike.runtime.run_group import GroupMember
+        g = self._opts.run_group
+        await g.budget_store.join(g.id, GroupMember(sid, self._opts.agent_id))
+        ledger = await g.budget_store.read(g.id)
+        group_tokens_base = ledger.tokens_spent
+        group_spawns_base = ledger.subagents_spawned
+      self._bootstrap_workflow_kernel(sid, spec, group_tokens_base, group_spawns_base)
     try:
       return await self._run_workflow_inner(
         spec,
@@ -502,11 +516,32 @@ class RuntimeRunner:
       )
     finally:
       if bootstrapped:
+        # L1: charge the standalone workflow's node spawns back to the group so the cumulative spawn
+        # cap (``max_total_subagents``) counts workflow nodes — they are member runs whose own
+        # ``_execute`` charge contributes 0 spawns. The envelope kernel's TaskTable holds one proc per
+        # scheduled node, so ``local_subagents_spawned()`` is exactly that node count.
+        if self._opts.run_group is not None:
+          runtime = self._active_kernel
+          spawned = (
+            runtime.local_subagents_spawned()
+            if runtime is not None and hasattr(runtime, "local_subagents_spawned")
+            else 0
+          )
+          if spawned > 0:
+            await self._opts.run_group.budget_store.charge(
+              self._opts.run_group.id, tokens=0, subagents=spawned,
+            )
         self._active_kernel = None
         self._current_session_id = None
         self._pending_observations = []
 
-  def _bootstrap_workflow_kernel(self, session_id: str, spec: "WorkflowSpec") -> KernelRuntime:
+  def _bootstrap_workflow_kernel(
+    self,
+    session_id: str,
+    spec: "WorkflowSpec",
+    group_tokens_base: int | None = None,
+    group_spawns_base: int | None = None,
+  ) -> KernelRuntime:
     """Bootstrap a standalone kernel for a host-driven workflow with no active parent run.
 
     Mirrors ``_execute``'s pre-run setup (governance / attention / scheduler-budget / resource-quota,
@@ -533,6 +568,11 @@ class RuntimeRunner:
     scheduler_budget = _scheduler_budget_to_kernel(self._opts.scheduler_budget)
     if scheduler_budget is not None and scheduler_budget.get("max_wall_ms") is not None:
       config["scheduler_max_wall_ms"] = scheduler_budget["max_wall_ms"]
+    # L1: seed the group's cumulative spend so the cumulative spawn/token cap spans the domain (§2.4).
+    if group_tokens_base is not None and group_tokens_base > 0:
+      config["group_tokens_base"] = group_tokens_base
+    if group_spawns_base is not None and group_spawns_base > 0:
+      config["group_spawns_base"] = group_spawns_base
     kernel_apply(runtime, self._pending_observations, {"kind": "configure_run", "config": config})
     # K1: no explicit `start_run` — the host `load_workflow` (fired next by `run_workflow`) self-bootstraps
     # the run on the 0.2.30 core, matching the agent-reachable `submit_workflow` path.

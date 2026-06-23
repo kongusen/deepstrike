@@ -120,6 +120,24 @@ async def test_emit_drives_selected_peers_under_shared_governance():
 
 
 @pytest.mark.asyncio
+async def test_react_seam_overrides_turn_body():
+    """Gap-b: a peer's turn body can be overridden via `react` (the DAG-in-Peer seam). The default is a
+    single run(); a peer with `react` runs that callback instead, with a runner wired to the group."""
+    session, store = _make_session(react_by_mention())
+
+    async def custom(ctx):
+        assert ctx.runner is not None and ctx.event is not None
+        return f"custom:{ctx.persona_id}"
+
+    session.add_peer("alice", role="buyer", react=custom)
+    session.add_peer("bob", role="seller")  # default body (run())
+
+    reactions = await session.emit("alice, your move", source="director")
+    assert reactions[0].persona_id == "alice"
+    assert reactions[0].output == "custom:alice"  # seam routed to the override, not run()
+
+
+@pytest.mark.asyncio
 async def test_visibility_gates_reactions():
     session, _ = _make_session(round_robin())
     session.add_peer("coach", channels=[])

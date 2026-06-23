@@ -75,6 +75,35 @@ def test_workflow_templates_shapes():
 
 
 @pytest.mark.asyncio
+async def test_standalone_workflow_charges_node_count_to_group():
+    """Gap-a: a standalone (bootstrapped) run_workflow under a RunGroup counts its nodes toward the
+    cumulative spawn axis. Nodes are member runs whose own charge is 0 spawns; the envelope kernel's
+    TaskTable holds one proc per node, so its local_subagents_spawned() is exactly the node count."""
+    from deepstrike import RunGroup, InMemoryGroupBudgetStore
+
+    store = InMemoryGroupBudgetStore()
+    group = RunGroup(id="wf-group", budget_store=store)
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=_StubProvider(),
+        session_log=InMemorySessionLog(),
+        execution_plane=LocalExecutionPlane(),
+        sub_agent_orchestrator=_StubOrchestrator(),
+        max_tokens=1000,
+        run_group=group,
+    ))
+    spec = WorkflowSpec(nodes=[
+        WorkflowNodeSpec(task="w0", role="explore"),
+        WorkflowNodeSpec(task="w1", role="explore"),
+    ])
+    outcome = await runner.run_workflow(spec)
+
+    assert sorted(outcome["completed"]) == ["wf-node0", "wf-node1"]
+    ledger = await store.read("wf-group")
+    assert ledger.subagents_spawned >= 2  # gap-a: the 2 nodes are counted as cumulative spawns
+    assert len(await store.members("wf-group")) >= 1  # standalone workflow session joined (lineage)
+
+
+@pytest.mark.asyncio
 async def test_run_workflow_drives_fanout_to_completion():
     orch = _StubOrchestrator()
     runner = RuntimeRunner(RuntimeOptions(

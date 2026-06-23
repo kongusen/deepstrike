@@ -46,6 +46,8 @@ from deepstrike.runtime.reactive_session import (
   ReactivePeerSpec,
   ReactiveSession,
   Reaction,
+  ReactorContext,
+  ReactorTurn,
   read_recent_tool,
 )
 from deepstrike.runtime.provider_replay import (
@@ -155,6 +157,8 @@ __all__ = [
   "ReactiveSession",
   "ReactivePeerSpec",
   "Reaction",
+  "ReactorContext",
+  "ReactorTurn",
   "read_recent_tool",
   "SessionEvent",
   "SessionEntry",

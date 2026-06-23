@@ -774,7 +774,18 @@ export class RuntimeRunner {
     // already set by an in-flight `run()`) keep the original in-place behavior with no teardown.
     const bootstrapped = !this.activeKernel || !this.currentSessionId
     if (bootstrapped) {
-      this.bootstrapWorkflowKernel(opts?.sessionId ?? `wf-${crypto.randomUUID()}`, spec)
+      const sessionId = opts?.sessionId ?? `wf-${crypto.randomUUID()}`
+      // L1: a standalone workflow is a member of its runner's governance domain too. Seed the
+      // bootstrap kernel with the group's cumulative spend (so the cumulative spawn/token cap bites
+      // while scheduling DAG nodes) and register membership — mirroring `execute()`. Mid-run callers
+      // skip this: their parent `run()` already seeds + counts the nodes via `localSubagentsSpawned()`.
+      let groupLedger: GroupLedger | undefined
+      if (this.opts.runGroup) {
+        const g = this.opts.runGroup
+        groupLedger = await g.budgetStore.read(g.id)
+        await g.budgetStore.join(g.id, { sessionId, role: this.opts.agentId })
+      }
+      this.bootstrapWorkflowKernel(sessionId, spec, groupLedger?.tokensSpent, groupLedger?.subagentsSpawned)
     }
     const parentSessionId = this.currentSessionId!
     const runtime = this.activeKernel!
@@ -792,6 +803,17 @@ export class RuntimeRunner {
       return await this.driveWorkflow(observations, parentSessionId, runtime)
     } finally {
       if (bootstrapped) {
+        // L1: charge the standalone workflow's node spawns back to the group so the cumulative spawn
+        // cap (`maxTotalSubagents`) counts workflow nodes — they are member runs whose own
+        // `execute()` charge contributes 0 spawns, so without this the node count is invisible to the
+        // group. The envelope kernel's TaskTable holds one proc per scheduled node, so
+        // `localSubagentsSpawned()` is exactly that node count (the envelope itself burns no tokens).
+        if (this.opts.runGroup) {
+          const subagents = runtime.localSubagentsSpawned?.() ?? 0
+          if (subagents > 0) {
+            await this.opts.runGroup.budgetStore.charge(this.opts.runGroup.id, { subagents })
+          }
+        }
         this.activeKernel = null
         this.currentSessionId = null
         this.pendingObservations = []
@@ -806,7 +828,12 @@ export class RuntimeRunner {
    * and records a `run_started` event so the standalone run is resumable from the session log. Sets
    * `activeKernel` / `currentSessionId`; `runWorkflow` is responsible for tearing them down.
    */
-  private bootstrapWorkflowKernel(sessionId: string, spec: WorkflowSpec): KernelRuntimeInstance {
+  private bootstrapWorkflowKernel(
+    sessionId: string,
+    spec: WorkflowSpec,
+    groupTokensBase?: number,
+    groupSpawnsBase?: number,
+  ): KernelRuntimeInstance {
     this.interrupted = false
     this.abortController = new AbortController()
     this.pendingObservations = []
@@ -828,7 +855,7 @@ export class RuntimeRunner {
       agent_id: this.opts.agentId,
     }).catch(() => {})
 
-    this.applyKernelPolicies(runtime)
+    this.applyKernelPolicies(runtime, groupTokensBase, groupSpawnsBase)
     // K1: no explicit `start_run` — the host `load_workflow` (fired next by `runWorkflow`) self-bootstraps
     // the run on the 0.2.30 core, matching the agent-reachable `submit_workflow` path.
     return runtime
