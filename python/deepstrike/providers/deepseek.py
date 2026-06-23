@@ -95,11 +95,11 @@ class DeepSeekProvider(OpenAIProvider):
         # (mirrors the Node DeepSeekProvider.cacheKeyParams).
         return {}
 
-    def _wire_tools(self, tools: list[ToolSchema]) -> list[dict] | None:
+    def _wire_tools(self, tools: list[ToolSchema], extensions: dict | None = None) -> list[dict] | None:
         # Reasoner models (deepseek-reasoner / deepseek-r1) do not support tool calling.
         if self._model in _REASONER_MODELS:
             return None
-        return super()._wire_tools(tools)
+        return super()._wire_tools(tools, extensions)
 
     def _prepare_extensions(self, extensions: dict | None) -> dict:
         # DeepSeek-native thinking control (reasoning_effort + extra_body.thinking), mirroring the Node

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from deepstrike._kernel import ToolSchema
 from .base import RetryConfig, RuntimePolicy
 from .openai import OpenAIProvider
 from .anthropic_compatible import AnthropicCompatibleProvider
@@ -38,6 +39,24 @@ class GLMProvider(OpenAIProvider):
 
     def _cache_key_params(self, context, tools) -> dict:
         # GLM caches automatically and does not document accepting OpenAI's prompt_cache_key
-        # (accept-vs-400 unconfirmed) — safest to omit it. GLM's web_search tool lives on this
-        # OpenAI-side wire (TODO: surface it as a first-class feature).
+        # (accept-vs-400 unconfirmed) — safest to omit it.
         return {}
+
+    # ── GLM web_search (vendor server tool; OpenAI-wire only) ──
+    # Enable Zhipu's built-in web search by `extensions={"web_search": True}` (default config) or
+    # `{"web_search": {...}}` (passthrough config: search_engine/search_pro, search_recency_filter,
+    # search_domain_filter, search_result, count, …). Injected as a `{"type":"web_search",...}` entry
+    # in the tools array (executed server-side); the selector is stripped from the wire params.
+
+    def _wire_tools(self, tools: list[ToolSchema], extensions: dict | None = None) -> list[dict] | None:
+        defs = list(super()._wire_tools(tools, extensions) or [])
+        ws = (extensions or {}).get("web_search")
+        if ws:
+            defs.append({"type": "web_search", "web_search": ws if isinstance(ws, dict) else {}})
+        return defs or None
+
+    def _prepare_extensions(self, extensions: dict | None) -> dict:
+        ext = extensions or {}
+        if "web_search" not in ext:
+            return dict(ext)
+        return {k: v for k, v in ext.items() if k != "web_search"}

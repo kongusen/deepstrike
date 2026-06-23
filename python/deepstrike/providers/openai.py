@@ -113,8 +113,9 @@ class OpenAIProvider(ReasoningReplayMixin):
         override to ``{}``."""
         return {"prompt_cache_key": self._prompt_cache_key(context, tools)}
 
-    def _wire_tools(self, tools: list[ToolSchema]) -> list[dict] | None:
-        """Tool defs sent on the wire. Default = all tools; DeepSeek reasoner models strip them."""
+    def _wire_tools(self, tools: list[ToolSchema], extensions: dict | None = None) -> list[dict] | None:
+        """Tool defs sent on the wire. Default = the caller's function tools; DeepSeek reasoner models
+        strip them, GLM appends its server-side web_search tool when enabled via extensions."""
         return self._build_tools(tools)
 
     def _uses_inline_thinking_tags(self) -> bool:
@@ -219,7 +220,7 @@ class OpenAIProvider(ReasoningReplayMixin):
 
         prepared = self._prepare_extensions(extensions)
         msgs = self._build_messages(context, extensions)
-        tool_defs = self._wire_tools(tools)
+        tool_defs = self._wire_tools(tools, extensions)
 
         last_exc = None
         for attempt in range(self._retry.max_retries):
@@ -272,7 +273,7 @@ class OpenAIProvider(ReasoningReplayMixin):
     async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
         prepared = self._prepare_extensions(extensions)
         msgs = self._build_messages(context, extensions)
-        tool_defs = self._wire_tools(tools)
+        tool_defs = self._wire_tools(tools, extensions)
         expose_reasoning = self._expose_reasoning_delta(extensions)
         use_tags = self._uses_inline_thinking_tags()
         capture_details = self._capture_reasoning_details()
