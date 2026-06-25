@@ -115,11 +115,14 @@ export class GeminiProvider implements LLMProvider {
     let lastErr: unknown
     for (let i = 0; i < this.maxRetries; i++) {
       try {
+        const vc = this.vendorConfig(extensions)
+        const allTools = [...geminiTools, ...((vc.tools as Tool[] | undefined) ?? [])]
         const m = this.genAI.getGenerativeModel({
           ...this.modelExtensions(extensions),
           model: this.model,
           ...(system ? { systemInstruction: system } : {}),
-          ...(geminiTools.length ? { tools: geminiTools } : {}),
+          ...(allTools.length ? { tools: allTools } : {}),
+          ...(vc.generationConfig ? { generationConfig: vc.generationConfig } : {}),
         }, this.requestOptions)
         const resp = await m.generateContent({ contents })
         this.circuit.recordSuccess()
@@ -154,11 +157,14 @@ export class GeminiProvider implements LLMProvider {
     const contents = buildContents(turnsWithStateAppended(context))
     const geminiTools = buildTools(tools)
 
+    const vc = this.vendorConfig(extensions)
+    const allTools = [...geminiTools, ...((vc.tools as Tool[] | undefined) ?? [])]
     const m = this.genAI.getGenerativeModel({
       ...this.modelExtensions(extensions),
       model: this.model,
       ...(system ? { systemInstruction: system } : {}),
-      ...(geminiTools.length ? { tools: geminiTools } : {}),
+      ...(allTools.length ? { tools: allTools } : {}),
+      ...(vc.generationConfig ? { generationConfig: vc.generationConfig } : {}),
     }, this.requestOptions)
 
     const result = await m.generateContentStream({ contents })
@@ -195,7 +201,38 @@ export class GeminiProvider implements LLMProvider {
 
   private modelExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
     if (!extensions) return {}
-    const { model: _model, systemInstruction: _systemInstruction, tools: _tools, ...rest } = extensions
+    // Strip keys handled explicitly elsewhere (incl. the vendor server-tool / structured-output keys
+    // consumed by `vendorConfig`) so they never leak raw into getGenerativeModel.
+    // Strip keys handled explicitly: the SDK fields set below + the named vendor keys consumed by
+    // `vendorConfig`. A caller-provided raw `generationConfig` still passes through (and is merged with
+    // any structured-output config at the call site).
+    const {
+      model: _model, systemInstruction: _systemInstruction, tools: _tools,
+      google_search: _gs, response_mime_type: _rmt, response_schema: _rs,
+      ...rest
+    } = extensions
     return rest
+  }
+
+  /**
+   * Gemini vendor features from extensions, mapped to the Node SDK shape (mirrors the Python provider's
+   * extension keys for a consistent cross-SDK API):
+   *  - `google_search` (truthy → default, object → config): Google Search grounding server tool
+   *    (gemini-2.0+), appended to tools[].
+   *  - `response_mime_type` / `response_schema`: structured output → `generationConfig` (the API rejects
+   *    pairing this with google_search).
+   */
+  vendorConfig(extensions?: Record<string, unknown>): { tools?: unknown[]; generationConfig?: Record<string, unknown> } {
+    const ext = extensions ?? {}
+    const tools: unknown[] = []
+    if (ext.google_search) tools.push({ googleSearch: typeof ext.google_search === "object" ? ext.google_search : {} })
+    // Seed from any caller-provided raw generationConfig, then layer the named structured-output keys.
+    const gc: Record<string, unknown> = { ...(ext.generationConfig as Record<string, unknown> | undefined) }
+    if (ext.response_mime_type != null) gc.responseMimeType = ext.response_mime_type
+    if (ext.response_schema != null) gc.responseSchema = ext.response_schema
+    return {
+      ...(tools.length ? { tools } : {}),
+      ...(Object.keys(gc).length ? { generationConfig: gc } : {}),
+    }
   }
 }

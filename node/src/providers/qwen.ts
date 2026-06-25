@@ -70,15 +70,27 @@ export class QwenProvider extends OpenAIChatProvider {
   }
 
   protected override requestBodyExtras(extensions?: Record<string, unknown>): Record<string, unknown> {
-    const extraBody = this.thinkingExtraBody(extensions)
-    return extraBody ? { extra_body: extraBody } : {}
+    // DashScope vendor knobs travel under `extra_body` in OpenAI-compat mode: thinking + web search.
+    const extraBody = { ...this.thinkingExtraBody(extensions), ...this.searchExtraBody(extensions) }
+    return Object.keys(extraBody).length ? { extra_body: extraBody } : {}
   }
 
   protected override requestExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
     return omitExtensionKeys(extensions, [
       "model", "messages", "tools", "stream", "stream_options", "extra_body",
       "enableThinking", "enable_thinking", "thinkingBudget", "thinking_budget",
+      "enable_search", "search_options",
     ])
+  }
+
+  // DashScope web search (Qwen vendor feature): `extensions={ enable_search: true }` + optional
+  // `search_options` (forced_search / search_strategy / enable_citation …). Mirrors the Python provider.
+  private searchExtraBody(extensions?: Record<string, unknown>): Record<string, unknown> {
+    if (!extensions?.enable_search) return {}
+    return {
+      enable_search: true,
+      ...(extensions.search_options != null ? { search_options: extensions.search_options } : {}),
+    }
   }
 
   override peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {

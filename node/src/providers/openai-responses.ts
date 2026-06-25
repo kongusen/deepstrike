@@ -204,7 +204,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
           model: this.model,
           input: this.responses.buildInput(context) as unknown as OpenAI.Responses.ResponseInput,
           ...(instructions ? { instructions } : {}),
-          ...(tools.length ? { tools: this.responses.buildTools(tools) as OpenAI.Responses.Tool[] } : {}),
+          ...((t => t ? { tools: t } : {})(this.allTools(tools, extensions))),
         })
         this.circuit.recordSuccess()
         const decoded = this.responses.decodeOutput(resp.output as unknown as Array<Record<string, unknown>>)
@@ -240,7 +240,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
       input: this.responses.buildInput(context, runState) as unknown as OpenAI.Responses.ResponseInput,
       ...(instructions ? { instructions } : {}),
       ...(runState.previousResponseId ? { previous_response_id: runState.previousResponseId } : {}),
-      ...(tools.length ? { tools: this.responses.buildTools(tools) as OpenAI.Responses.Tool[] } : {}),
+      ...((t => t ? { tools: t } : {})(this.allTools(tools, extensions))),
       stream: true,
     })
 
@@ -290,7 +290,27 @@ export class OpenAIResponsesProvider implements LLMProvider {
   private requestExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
     return omitExtensionKeys(extensions, [
       "model", "input", "instructions", "tools", "stream", "previous_response_id",
+      "web_search", "builtin_tools",
     ])
+  }
+
+  /** Responses API built-in server tools from extensions (live in the same tools[] as function tools):
+   *  `web_search: true` (or a config object), plus a `builtin_tools` list passed through verbatim for
+   *  file_search / code_interpreter. They run server-side; results return inline. Mirrors py. */
+  private builtinTools(extensions?: Record<string, unknown>): Record<string, unknown>[] {
+    const ext = extensions ?? {}
+    const out: Record<string, unknown>[] = []
+    const ws = ext.web_search
+    if (ws) out.push(typeof ws === "object" ? { type: "web_search", ...ws } : { type: "web_search" })
+    if (Array.isArray(ext.builtin_tools)) out.push(...(ext.builtin_tools as Record<string, unknown>[]))
+    return out
+  }
+
+  /** Function tools + built-in server tools merged into the wire tools[] (undefined when empty). */
+  private allTools(tools: ToolSchema[], extensions?: Record<string, unknown>): OpenAI.Responses.Tool[] | undefined {
+    const fnTools = tools.length ? (this.responses.buildTools(tools) as OpenAI.Responses.Tool[]) : []
+    const all = [...fnTools, ...this.builtinTools(extensions)] as OpenAI.Responses.Tool[]
+    return all.length ? all : undefined
   }
 
   private asRunState(state?: ProviderRunState): OpenAIResponsesRunState {
