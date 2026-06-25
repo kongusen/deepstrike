@@ -70,6 +70,8 @@ export const GLM_POLICIES: Record<string, RuntimePolicy> = {
 }
 
 export const MINIMAX_POLICIES: Record<string, RuntimePolicy> = {
+  "MiniMax-M3":             { maxTurns: 35 },
+  "MiniMax-M3-highspeed":   { maxTurns: 35 },
   "MiniMax-M2.7":           { maxTurns: 35 },
   "MiniMax-M2.7-highspeed": { maxTurns: 35 },
   "MiniMax-M2.5":           { maxTurns: 25 },
@@ -85,7 +87,7 @@ export const anthropicVendorProfiles = {
   kimi:     { providerId: "kimi",     defaultModel: "kimi-k2.6",         baseURLProfileKey: "kimi.anthropic",     policies: KIMI_POLICIES },
   qwen:     { providerId: "qwen",     defaultModel: "qwen3.6-plus",      baseURLProfileKey: "qwen.anthropic",     policies: QWEN_POLICIES },
   glm:      { providerId: "glm",      defaultModel: "glm-5.1",           baseURLProfileKey: "glm.anthropic",      policies: GLM_POLICIES },
-  minimax:  { providerId: "minimax",  defaultModel: "MiniMax-M2.7",      baseURLProfileKey: "minimax.anthropic",  policies: MINIMAX_POLICIES },
+  minimax:  { providerId: "minimax",  defaultModel: "MiniMax-M3",        baseURLProfileKey: "minimax.anthropic",  policies: MINIMAX_POLICIES },
 } satisfies Record<string, AnthropicVendorProfile>
 
 export type AnthropicVendorId = keyof typeof anthropicVendorProfiles

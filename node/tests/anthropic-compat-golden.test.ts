@@ -55,8 +55,9 @@ const CASES: Case[] = [
     },
   },
   {
-    name: "minimax", Ctor: MiniMaxAnthropicProvider, defaultModel: "MiniMax-M2.7",
+    name: "minimax", Ctor: MiniMaxAnthropicProvider, defaultModel: "MiniMax-M3",
     policies: {
+      "MiniMax-M3": 35, "MiniMax-M3-highspeed": 35,
       "MiniMax-M2.7": 35, "MiniMax-M2.7-highspeed": 35, "MiniMax-M2.5": 25, "MiniMax-M2.5-highspeed": 25,
       "MiniMax-M2.1": 25, "MiniMax-M2.1-highspeed": 25, "MiniMax-M2": 20, "MiniMax-Text-01": 20,
     },

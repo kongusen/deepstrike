@@ -383,6 +383,20 @@ export const modelProfiles = {
     tools: { supported: false }, reasoning: { supported: false, preserveAcrossToolTurns: false },
   },
   // ── MiniMax ────────────────────────────────────────────────────────────────
+  "minimax/MiniMax-M3": {
+    id: "minimax/MiniMax-M3", providerId: "minimax", defaultEndpointId: "minimax.anthropic",
+    contextWindow: 204_800,
+    modalities: { input: ["text"], output: ["text"] },
+    tools: { supported: true }, reasoning: { supported: true, preserveAcrossToolTurns: true },
+    policy: { maxTurns: 35 },
+  },
+  "minimax/MiniMax-M3-highspeed": {
+    id: "minimax/MiniMax-M3-highspeed", providerId: "minimax", defaultEndpointId: "minimax.anthropic",
+    contextWindow: 204_800,
+    modalities: { input: ["text"], output: ["text"] },
+    tools: { supported: true }, reasoning: { supported: true, preserveAcrossToolTurns: true },
+    policy: { maxTurns: 35 },
+  },
   "minimax/MiniMax-M2.7": {
     id: "minimax/MiniMax-M2.7", providerId: "minimax", defaultEndpointId: "minimax.anthropic",
     contextWindow: 204_800,

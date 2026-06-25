@@ -35,7 +35,7 @@ class MiniMaxOpenAIProvider(OpenAIProvider):
     def __init__(
         self,
         api_key: str,
-        model: str = "MiniMax-M2.7",
+        model: str = "MiniMax-M3",
         retry_config: RetryConfig | None = None,
         base_url: str = _MINIMAX_OPENAI_BASE,
     ):

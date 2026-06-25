@@ -35,7 +35,7 @@ export class MiniMaxAnthropicProvider extends AnthropicCompatibleProvider {
 export class MiniMaxOpenAIProvider extends OpenAIChatProvider {
   constructor(
     apiKey: string,
-    model: string = "MiniMax-M2.7",
+    model: string = "MiniMax-M3",
     retry?: { maxRetries: number; baseDelay: number },
     baseURL: string = endpointProfiles["minimax.openai"].baseURL,
   ) {

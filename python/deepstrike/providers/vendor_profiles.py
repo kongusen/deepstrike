@@ -72,6 +72,8 @@ GLM_POLICIES: dict[str, RuntimePolicy] = {
 }
 
 MINIMAX_POLICIES: dict[str, RuntimePolicy] = {
+    "MiniMax-M3": RuntimePolicy(max_turns=35),
+    "MiniMax-M3-highspeed": RuntimePolicy(max_turns=35),
     "MiniMax-M2.7": RuntimePolicy(max_turns=35),
     "MiniMax-M2.7-highspeed": RuntimePolicy(max_turns=35),
     "MiniMax-M2.5": RuntimePolicy(max_turns=25),
@@ -125,5 +127,5 @@ ANTHROPIC_VENDOR_PROFILES: dict[str, AnthropicVendorProfile] = {
     "kimi":     AnthropicVendorProfile("kimi", "kimi-k2.6", "https://api.moonshot.ai/anthropic", KIMI_POLICIES),
     "qwen":     AnthropicVendorProfile("qwen", "qwen3.6-plus", "https://dashscope-intl.aliyuncs.com/apps/anthropic", QWEN_POLICIES),
     "glm":      AnthropicVendorProfile("glm", "glm-5.1", "https://api.z.ai/api/anthropic", GLM_POLICIES),
-    "minimax":  AnthropicVendorProfile("minimax", "MiniMax-M2.7", "https://api.minimaxi.com/anthropic", MINIMAX_POLICIES),
+    "minimax":  AnthropicVendorProfile("minimax", "MiniMax-M3", "https://api.minimaxi.com/anthropic", MINIMAX_POLICIES),
 }

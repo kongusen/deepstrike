@@ -33,7 +33,8 @@ CASES = {
         "glm-5.1": 50, "glm/glm-5.1": 50, "glm-4-plus": 35, "glm/glm-4-plus": 35,
         "glm-4-flash": 15, "glm/glm-4-flash": 15, "glm-4-air": 20, "glm/glm-4-air": 20,
     }),
-    "minimax": (MiniMaxAnthropicProvider, "MiniMax-M2.7", {
+    "minimax": (MiniMaxAnthropicProvider, "MiniMax-M3", {
+        "MiniMax-M3": 35, "MiniMax-M3-highspeed": 35,
         "MiniMax-M2.7": 35, "MiniMax-M2.7-highspeed": 35, "MiniMax-M2.5": 25, "MiniMax-M2.5-highspeed": 25,
         "MiniMax-M2.1": 25, "MiniMax-M2.1-highspeed": 25, "MiniMax-M2": 20, "MiniMax-Text-01": 20,
     }),
