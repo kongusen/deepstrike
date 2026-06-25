@@ -138,6 +138,23 @@ export class OpenAIChatProvider implements LLMProvider {
     return {}
   }
 
+  /** Vendor server tools (e.g. web search) injected into the `tools[]` array alongside the function
+   *  tools, driven by caller `extensions`. These run server-side — the model invokes them and the
+   *  results come back inline, with no client tool-loop round-trip. Default: none. Vendors that ship
+   *  built-in tools (GLM web_search, …) override this and strip the consumed key in `prepareExtensions`
+   *  so it does not also leak into the request body. */
+  protected serverTools(_extensions?: Record<string, unknown>): unknown[] {
+    return []
+  }
+
+  /** Merge function tools + vendor server tools into the wire `tools[]` (undefined when empty). Server
+   *  tools (e.g. web_search) are non-standard wire entries, so the array is cast to the SDK tool type. */
+  protected assembleTools(tools: ToolSchema[], extensions?: Record<string, unknown>): OpenAI.Chat.Completions.ChatCompletionTool[] | undefined {
+    const fnTools = tools.length ? this.chat.buildTools(tools) : []
+    const all = [...fnTools, ...this.serverTools(extensions)]
+    return all.length ? (all as OpenAI.Chat.Completions.ChatCompletionTool[]) : undefined
+  }
+
   /** Request-body params controlling prompt caching. Default sends OpenAI's `prompt_cache_key`;
    *  vendors whose endpoints reject unknown params (e.g. DeepSeek 400s) override to `{}`. */
   protected cacheKeyParams(context: RenderedContext, tools: ToolSchema[]): Record<string, unknown> {
@@ -210,7 +227,7 @@ export class OpenAIChatProvider implements LLMProvider {
           ...this.requestBodyExtras(extensions),
           model: this.model,
           messages: msgs,
-          ...(tools.length ? { tools: this.chat.buildTools(tools) } : {}),
+          ...((t => t ? { tools: t } : {})(this.assembleTools(tools, extensions))),
         })
         this.circuit.recordSuccess()
         const choice = resp.choices[0].message as OpenAI.ChatCompletionMessage & Record<string, unknown>
@@ -250,7 +267,7 @@ export class OpenAIChatProvider implements LLMProvider {
       ...this.requestBodyExtras(extensions),
       model: this.model,
       messages: msgs,
-      ...(tools.length ? { tools: this.chat.buildTools(tools) } : {}),
+      ...((t => t ? { tools: t } : {})(this.assembleTools(tools, extensions))),
       stream: true,
       stream_options: { include_usage: true },
     // #2-B-ii: forward the abort signal so a preempt cancels the in-flight HTTP request.

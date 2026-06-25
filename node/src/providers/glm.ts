@@ -42,4 +42,22 @@ export class GLMProvider extends OpenAIChatProvider {
       model: this.model,
     }
   }
+
+  // ── GLM web_search (Zhipu vendor server tool; OpenAI-wire only) ──────────────
+  // Enable with `extensions={ web_search: true }` (default config) or `{ web_search: {...} }`
+  // (passthrough: search_engine, search_recency_filter, search_domain_filter, count, …). Injected as a
+  // `{ type: "web_search", web_search: {...} }` entry in tools[]; the model searches server-side and
+  // the results come back inline (no client tool-loop). Mirrors the Python GLM provider.
+  protected override serverTools(extensions?: Record<string, unknown>): unknown[] {
+    const ws = extensions?.web_search
+    if (!ws) return []
+    return [{ type: "web_search", web_search: typeof ws === "object" ? ws : {} }]
+  }
+
+  // Strip `web_search` from the passthrough so it shapes tools[] only, never leaks as a body field.
+  protected override prepareExtensions(extensions?: Record<string, unknown>): Record<string, unknown> | undefined {
+    if (!extensions || !("web_search" in extensions)) return extensions
+    const { web_search: _omit, ...rest } = extensions
+    return rest
+  }
 }
