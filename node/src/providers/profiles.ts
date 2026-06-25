@@ -386,14 +386,15 @@ export const modelProfiles = {
   "minimax/MiniMax-M3": {
     id: "minimax/MiniMax-M3", providerId: "minimax", defaultEndpointId: "minimax.anthropic",
     contextWindow: 204_800,
-    modalities: { input: ["text"], output: ["text"] },
+    // Natively multimodal — image input verified live via the Anthropic image-block path.
+    modalities: { input: ["text", "image"], output: ["text"] },
     tools: { supported: true }, reasoning: { supported: true, preserveAcrossToolTurns: true },
     policy: { maxTurns: 35 },
   },
   "minimax/MiniMax-M3-highspeed": {
     id: "minimax/MiniMax-M3-highspeed", providerId: "minimax", defaultEndpointId: "minimax.anthropic",
     contextWindow: 204_800,
-    modalities: { input: ["text"], output: ["text"] },
+    modalities: { input: ["text", "image"], output: ["text"] },
     tools: { supported: true }, reasoning: { supported: true, preserveAcrossToolTurns: true },
     policy: { maxTurns: 35 },
   },
