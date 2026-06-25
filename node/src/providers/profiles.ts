@@ -725,6 +725,13 @@ export const modelProfiles = {
     tools: { supported: false }, reasoning: { supported: false, preserveAcrossToolTurns: false },
   },
   // ── GLM ────────────────────────────────────────────────────────────────────
+  "glm/glm-5.2": {
+    id: "glm/glm-5.2", providerId: "glm", defaultEndpointId: "glm.anthropic",
+    contextWindow: 200_000,
+    modalities: { input: ["text"], output: ["text"] },
+    tools: { supported: true }, reasoning: { supported: true, preserveAcrossToolTurns: true },
+    policy: { maxTurns: 50 },
+  },
   "glm/glm-5.1": {
     id: "glm/glm-5.1", providerId: "glm", defaultEndpointId: "glm.anthropic",
     contextWindow: 200_000,

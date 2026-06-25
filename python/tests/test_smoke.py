@@ -268,7 +268,7 @@ def test_provider_instantiation():
     assert OllamaProvider(model="llama3")._model == "llama3"
     assert AnthropicProvider(api_key="test", model="claude-opus-4-7")._model == "claude-opus-4-7"
     from deepstrike.providers import GLMProvider
-    assert GLMProvider(api_key="test")._model == "glm-5.1"
+    assert GLMProvider(api_key="test")._model == "glm-5.2"
     assert GLMProvider(api_key="test", model="glm/glm-4-plus").runtime_policy().max_turns == 35
     from deepstrike.providers import GeminiProvider, KimiProvider, MiniMaxAnthropicProvider, QwenProvider
     assert AnthropicProvider(api_key="test", model="claude-opus-4-1").runtime_policy().max_turns == 50

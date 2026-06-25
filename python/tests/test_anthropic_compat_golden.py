@@ -29,7 +29,8 @@ CASES = {
         "qwen3.5-plus": 35, "qwen3.5-flash": 20, "qwen3.5-397b-a17b": 35,
         "qwen3.5-122b-a10b": 25, "qwen3.5-35b-a3b": 20, "qwen3.5-27b": 20,
     }),
-    "glm": (GLMAnthropicProvider, "glm-5.1", {
+    "glm": (GLMAnthropicProvider, "glm-5.2", {
+        "glm-5.2": 50, "glm/glm-5.2": 50,
         "glm-5.1": 50, "glm/glm-5.1": 50, "glm-4-plus": 35, "glm/glm-4-plus": 35,
         "glm-4-flash": 15, "glm/glm-4-flash": 15, "glm-4-air": 20, "glm/glm-4-air": 20,
     }),

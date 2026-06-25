@@ -48,8 +48,9 @@ const CASES: Case[] = [
     },
   },
   {
-    name: "glm", Ctor: GLMAnthropicProvider, defaultModel: "glm-5.1",
+    name: "glm", Ctor: GLMAnthropicProvider, defaultModel: "glm-5.2",
     policies: {
+      "glm-5.2": 50, "glm/glm-5.2": 50,
       "glm-5.1": 50, "glm/glm-5.1": 50, "glm-4-plus": 35, "glm/glm-4-plus": 35,
       "glm-4-flash": 15, "glm/glm-4-flash": 15, "glm-4-air": 20, "glm/glm-4-air": 20,
     },

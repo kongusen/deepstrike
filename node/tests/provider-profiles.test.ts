@@ -111,7 +111,7 @@ describe("provider profiles", () => {
     expect(modelProfiles["deepseek/deepseek-v4-pro"]).toBeDefined()
   })
 
-  it("registers GLM 5.1 and GLM 4 profiles on the Anthropic-compatible endpoint", () => {
+  it("registers GLM 5.x and GLM 4 profiles on the Anthropic-compatible endpoint", () => {
     expect(Object.keys(modelProfiles).filter(id => id.startsWith("glm/")).sort()).toEqual([
       "glm/embedding-2",
       "glm/embedding-3",
@@ -119,6 +119,7 @@ describe("provider profiles", () => {
       "glm/glm-4-flash",
       "glm/glm-4-plus",
       "glm/glm-5.1",
+      "glm/glm-5.2",
     ])
     expect(modelProfiles["glm/glm-5.1"]).toMatchObject({
       providerId: "glm",

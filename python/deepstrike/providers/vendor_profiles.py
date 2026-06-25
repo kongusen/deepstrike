@@ -61,6 +61,8 @@ QWEN_POLICIES: dict[str, RuntimePolicy] = {
 }
 
 GLM_POLICIES: dict[str, RuntimePolicy] = {
+    "glm-5.2": RuntimePolicy(max_turns=50),
+    "glm/glm-5.2": RuntimePolicy(max_turns=50),
     "glm-5.1": RuntimePolicy(max_turns=50),
     "glm/glm-5.1": RuntimePolicy(max_turns=50),
     "glm-4-plus": RuntimePolicy(max_turns=35),
@@ -126,6 +128,6 @@ ANTHROPIC_VENDOR_PROFILES: dict[str, AnthropicVendorProfile] = {
     "deepseek": AnthropicVendorProfile("deepseek", "deepseek-v4-flash", "https://api.deepseek.com/anthropic", DEEPSEEK_POLICIES),
     "kimi":     AnthropicVendorProfile("kimi", "kimi-k2.6", "https://api.moonshot.ai/anthropic", KIMI_POLICIES),
     "qwen":     AnthropicVendorProfile("qwen", "qwen3.6-plus", "https://dashscope-intl.aliyuncs.com/apps/anthropic", QWEN_POLICIES),
-    "glm":      AnthropicVendorProfile("glm", "glm-5.1", "https://api.z.ai/api/anthropic", GLM_POLICIES),
+    "glm":      AnthropicVendorProfile("glm", "glm-5.2", "https://api.z.ai/api/anthropic", GLM_POLICIES),
     "minimax":  AnthropicVendorProfile("minimax", "MiniMax-M3", "https://api.minimaxi.com/anthropic", MINIMAX_POLICIES),
 }

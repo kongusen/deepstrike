@@ -24,7 +24,7 @@ export class GLMAnthropicProvider extends AnthropicCompatibleProvider {
 export class GLMProvider extends OpenAIChatProvider {
   constructor(
     apiKey: string,
-    model: string = "glm-5.1",
+    model: string = "glm-5.2",
     retry?: { maxRetries: number; baseDelay: number },
     baseURL: string = endpointProfiles["glm.openai"].baseURL,
   ) {

@@ -28,10 +28,10 @@ class GLMAnthropicProvider(AnthropicCompatibleProvider):
 class GLMProvider(OpenAIProvider):
     """GLM (Zhipu AI) provider — OpenAI-compatible.
 
-    Models: glm-5.1, glm-4-plus, glm-4-flash, glm-4-air
+    Models: glm-5.2 (default), glm-5.1, glm-4-plus, glm-4-flash, glm-4-air
     """
 
-    def __init__(self, api_key: str, model: str = "glm-5.1", retry_config: RetryConfig | None = None, base_url: str = _GLM_BASE_URL):
+    def __init__(self, api_key: str, model: str = "glm-5.2", retry_config: RetryConfig | None = None, base_url: str = _GLM_BASE_URL):
         super().__init__(api_key=api_key, model=model, retry_config=retry_config, base_url=base_url)
 
     def runtime_policy(self) -> RuntimePolicy:

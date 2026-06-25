@@ -59,6 +59,8 @@ export const QWEN_POLICIES: Record<string, RuntimePolicy> = {
 }
 
 export const GLM_POLICIES: Record<string, RuntimePolicy> = {
+  "glm-5.2": { maxTurns: 50 },
+  "glm/glm-5.2": { maxTurns: 50 },
   "glm-5.1": { maxTurns: 50 },
   "glm/glm-5.1": { maxTurns: 50 },
   "glm-4-plus": { maxTurns: 35 },
@@ -86,7 +88,7 @@ export const anthropicVendorProfiles = {
   deepseek: { providerId: "deepseek", defaultModel: "deepseek-v4-flash", baseURLProfileKey: "deepseek.anthropic", policies: DEEPSEEK_POLICIES },
   kimi:     { providerId: "kimi",     defaultModel: "kimi-k2.6",         baseURLProfileKey: "kimi.anthropic",     policies: KIMI_POLICIES },
   qwen:     { providerId: "qwen",     defaultModel: "qwen3.6-plus",      baseURLProfileKey: "qwen.anthropic",     policies: QWEN_POLICIES },
-  glm:      { providerId: "glm",      defaultModel: "glm-5.1",           baseURLProfileKey: "glm.anthropic",      policies: GLM_POLICIES },
+  glm:      { providerId: "glm",      defaultModel: "glm-5.2",           baseURLProfileKey: "glm.anthropic",      policies: GLM_POLICIES },
   minimax:  { providerId: "minimax",  defaultModel: "MiniMax-M3",        baseURLProfileKey: "minimax.anthropic",  policies: MINIMAX_POLICIES },
 } satisfies Record<string, AnthropicVendorProfile>
 
