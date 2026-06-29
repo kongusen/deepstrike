@@ -502,14 +502,18 @@ impl ContextManager {
     }
 
     /// 2b: record this turn's tool activity into the task-state recency log (kernel-derived progress
-    /// that feeds the State-turn footer). Control-plane meta-tools (plan/skill/memory/knowledge/
-    /// workflow authoring) are noise, not task progress — they are filtered out. A turn with only
-    /// meta-tool calls records nothing.
-    pub fn note_tool_actions(&mut self, names: &[String]) {
-        let summary = names
+    /// that feeds the State-turn footer). Each entry is `(name, compact_args)`; the rendered signature
+    /// is `name(args)` (or bare `name` for no-arg calls) so the no-progress STOP keys on the WHOLE
+    /// call — same tool with different args (a legit loop over items) reads as distinct progress, not
+    /// a repeat. Control-plane meta-tools (plan/skill/memory/knowledge/workflow authoring) are noise,
+    /// not task progress — filtered by name. A turn with only meta-tool calls records nothing.
+    pub fn note_tool_actions(&mut self, calls: &[(String, String)]) {
+        let summary = calls
             .iter()
-            .map(|s| s.as_str())
-            .filter(|n| !is_meta_tool(n))
+            .filter(|(name, _)| !is_meta_tool(name))
+            .map(|(name, args)| {
+                if args.is_empty() { name.clone() } else { format!("{name}({args})") }
+            })
             .collect::<Vec<_>>()
             .join(", ");
         self.partitions.task_state.note_actions(summary);
@@ -664,6 +668,38 @@ mod tests {
     use crate::context::task_state::PlanStep;
     use crate::types::message::Message;
     use crate::types::skill::SkillMetadata;
+
+    #[test]
+    fn note_tool_actions_keys_on_name_and_args_so_legit_loops_dont_false_stop() {
+        // Same tool, DIFFERENT args across turns = real progress (e.g. process item 1, 2, 3) —
+        // must NOT trip the no-progress STOP backstop.
+        let mut mgr = ContextManager::new(100_000);
+        mgr.init_task("process items".to_string(), vec![]);
+        mgr.note_tool_actions(&[("step".to_string(), "{\"n\":1}".to_string())]);
+        mgr.note_tool_actions(&[("step".to_string(), "{\"n\":2}".to_string())]);
+        mgr.note_tool_actions(&[("step".to_string(), "{\"n\":3}".to_string())]);
+        assert_eq!(
+            mgr.partitions.task_state.recent_actions,
+            ["step({\"n\":1})", "step({\"n\":2})", "step({\"n\":3})"]
+        );
+        let txt = mgr.render().state_turn.unwrap().content.as_text().unwrap().to_string();
+        assert!(!txt.contains("STOP:"), "same-tool/diff-args loop must not trip STOP: {txt}");
+
+        // Genuine stall — same tool, SAME args repeated — DOES trip the STOP.
+        let mut mgr2 = ContextManager::new(100_000);
+        mgr2.init_task("g".to_string(), vec![]);
+        for _ in 0..3 {
+            mgr2.note_tool_actions(&[("document_read".to_string(), "{\"id\":\"x\"}".to_string())]);
+        }
+        let txt2 = mgr2.render().state_turn.unwrap().content.as_text().unwrap().to_string();
+        assert!(txt2.contains("STOP:"), "identical repeated call must trip STOP: {txt2}");
+
+        // Meta-tools are control plane, not task progress — filtered out entirely.
+        let mut mgr3 = ContextManager::new(100_000);
+        mgr3.init_task("g".to_string(), vec![]);
+        mgr3.note_tool_actions(&[("update_plan".to_string(), "{\"current_step\":1}".to_string())]);
+        assert!(mgr3.partitions.task_state.recent_actions.is_empty());
+    }
 
     #[test]
     fn manager_renew_uses_task_state_goal() {

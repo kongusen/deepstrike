@@ -143,24 +143,28 @@ fn salience_footer(ts: &TaskState) -> Option<String> {
     }
     let mut clauses: Vec<String> = Vec::new();
 
-    // What just happened — so the peak-attention slot shows motion, not a blank restart.
+    // What just happened — display tool NAMES only. The full `name(args)` signatures are kept in
+    // `recent_actions` for the repeat check below, but rendering them every turn bloats the volatile
+    // footer; the names alone show motion at the peak-attention slot.
     let recent = ts.recent_actions.as_slice();
+    let action_name = |entry: &str| entry.split('(').next().unwrap_or(entry).to_string();
     if let Some(last) = recent.last() {
         let start = recent.len().saturating_sub(3);
-        clauses.push(format!("just did: {}", recent[start..].join(" → ")));
+        let names = recent[start..].iter().map(|e| action_name(e)).collect::<Vec<_>>().join(" → ");
+        clauses.push(format!("did: {names}"));
 
-        // No-progress backstop: the same action repeated on the last ≥2 turns is a stall. Surface an
-        // explicit stop so the model breaks the loop instead of re-narrating the same plan.
+        // No-progress backstop: the SAME call — name AND args — repeated on the last ≥2 turns is a
+        // stall (a legit loop varies its args, so it reads as distinct progress, not a repeat).
         let trailing_repeat = recent.iter().rev().take_while(|a| *a == last).count();
         if trailing_repeat >= 2 {
             clauses.push(format!(
-                "STOP: `{last}` repeated {trailing_repeat}× with no progress — take a DIFFERENT \
-                 concrete action or report the blocker; do not repeat it"
+                "STOP: `{}` repeated {trailing_repeat}× unchanged — do something different or report",
+                action_name(last)
             ));
         }
     }
 
-    // What to do next — the active plan step if the model maintains one, else a forward nudge.
+    // What to do next — the active plan step if the model maintains one, else a short forward nudge.
     let active_step = ts
         .current_step
         .and_then(|i| ts.plan.get(i).map(|s| (i, s)))
@@ -168,9 +172,7 @@ fn salience_footer(ts: &TaskState) -> Option<String> {
     if let Some((i, step)) = active_step {
         clauses.push(format!("next: step {} — {}", i + 1, step.label));
     } else if !recent.is_empty() {
-        clauses.push(
-            "next: take the next concrete action toward the goal; do not re-state the plan".to_string(),
-        );
+        clauses.push("next: advance the goal".to_string());
     }
 
     if let Some(d) = ts.directives.last() {
@@ -642,8 +644,8 @@ mod tests {
         let rc = render(&c, 100_000, &engine(), 4);
         let footer = rc.state_turn.unwrap().content.as_text().unwrap()
             .rsplit_once("\n\nProceed.").unwrap().0.rsplit("\n\n").next().unwrap().to_string();
-        assert!(footer.contains("just did: module_list → module_read"), "got: {footer}");
-        assert!(footer.contains("next: take the next concrete action"), "got: {footer}");
+        assert!(footer.contains("did: module_list → module_read"), "got: {footer}");
+        assert!(footer.contains("next: advance the goal"), "got: {footer}");
         assert!(!footer.contains("focus: rebuild §4.4 as SVG"), "goal must not lead the footer");
     }
 

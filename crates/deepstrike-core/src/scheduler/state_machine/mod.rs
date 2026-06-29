@@ -21,6 +21,26 @@ use crate::types::result::{LoopResult, TerminationReason};
 use crate::types::signal::RuntimeSignal;
 use crate::types::task::RuntimeTask;
 
+/// Compact digest of a tool call's arguments for the recency log (2b). Kept short and CJK-safe — it
+/// only needs to make `same-tool / different-args` calls distinguishable (so a legit loop isn't
+/// flagged as a no-progress repeat) and to read sensibly in the "just did: …" footer. Empty for
+/// no-arg / `{}` calls. Lives in the volatile State turn, so length here never churns the cache.
+fn compact_tool_args(args: &serde_json::Value) -> String {
+    if args.is_null() {
+        return String::new();
+    }
+    let s = args.to_string();
+    if s == "{}" {
+        return String::new();
+    }
+    const MAX: usize = 48;
+    if s.chars().count() <= MAX {
+        s
+    } else {
+        format!("{}…", s.chars().take(MAX).collect::<String>())
+    }
+}
+
 /// The *turn step* of the L* execution loop (M1d).
 ///
 /// Schedulability (`Ready/Running/Blocked/Suspended/Done`) is no longer carried here — it lives
@@ -489,9 +509,16 @@ impl LoopStateMachine {
                 // nudge / STOP, so progress is kernel-derived and never depends on the model
                 // remembering to call `update_plan`. Tool *names* live only on the request (results
                 // carry call_id only), so this is the turn to capture them.
-                let action_names: Vec<String> =
-                    calls.iter().map(|c| c.name.to_string()).collect();
-                self.ctx.note_tool_actions(&action_names);
+                //
+                // Capture name AND a compact arg digest: the no-progress STOP keys on whether the
+                // SAME call repeats, and a legit loop (same tool, DIFFERENT args — e.g. processing 20
+                // items) is real progress, not a stall. Keying on the name alone false-positives those
+                // loops; including args distinguishes "step(n=1), step(n=2)…" from a true repeat.
+                let action_sigs: Vec<(String, String)> = calls
+                    .iter()
+                    .map(|c| (c.name.to_string(), compact_tool_args(&c.arguments)))
+                    .collect();
+                self.ctx.note_tool_actions(&action_sigs);
 
                 match self.gate_tool_calls(&calls) {
                     GateToolOutcome::Blocked(action) => return action,
