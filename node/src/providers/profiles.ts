@@ -88,11 +88,17 @@ export const endpointProfiles = {
     protocol: "openai-chat",
     baseURL: "https://api.deepseek.com",
   },
+  // CN vendors (Kimi/GLM) are region-split: mainland (.cn hosts) and international (.ai/z.ai) are
+  // SEPARATE accounts with SEPARATE keys — a mainland key 401s on the international host & vice-versa.
+  // There is no `region` concept in this SDK: baseURL IS the host axis. These ids carry the DEFAULT =
+  // mainland (cn); international users pass their own `baseURL` (with their international key). Keeping
+  // both wires on the same region (cn) also fixes the prior split where openai=cn but anthropic=intl,
+  // which 401'd a mainland key on the default anthropic wire.
   "kimi.anthropic": {
     id: "kimi.anthropic",
     providerId: "kimi",
     protocol: "anthropic-messages",
-    baseURL: "https://api.moonshot.ai/anthropic",
+    baseURL: "https://api.moonshot.cn/anthropic",
   },
   "kimi.openai": {
     id: "kimi.openai",
@@ -140,7 +146,9 @@ export const endpointProfiles = {
     id: "glm.anthropic",
     providerId: "glm",
     protocol: "anthropic-messages",
-    baseURL: "https://api.z.ai/api/anthropic",
+    // Default = mainland (consistent with the already-mainland glm.openai). International: pass baseURL
+    // "https://api.z.ai/api/anthropic" with an international (z.ai) key.
+    baseURL: "https://open.bigmodel.cn/api/anthropic",
   },
   "glm.openai": {
     id: "glm.openai",
