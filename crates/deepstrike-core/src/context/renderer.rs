@@ -124,27 +124,67 @@ fn build_system_knowledge(partitions: &ContextPartitions) -> String {
         .join("\n\n")
 }
 
-/// P1-F: a one-line recency footer restating the current focus — goal, active plan step, and the
-/// most recent standing directive. It is rendered as the *last* content before the "Proceed."
-/// anchor, the highest-attention position in the prompt (the model attends most to the final
-/// tokens). The full TASK STATE block still leads the turn for primacy + reference; this footer
-/// just re-surfaces "what to do right now" where attention peaks. `None` when there is no goal.
+/// P1-F (+ 2b/2c): a one-line recency footer at the *last* content before the "Proceed." anchor —
+/// the highest-attention position in the prompt (the model attends most to the final tokens).
+///
+/// It LEADS WITH FORWARD MOTION (what just happened · what to do next · the standing directive), not
+/// a verbatim restatement of the goal. Re-injecting the bare goal at this peak-attention slot every
+/// turn primes the model to *re-narrate intent* ("好的，我来将<goal>…") instead of acting — an
+/// undamped repetition trap when there is no plan/progress to advance. The full goal still LEADS the
+/// TASK STATE block above (primacy + reference), so goal-adherence is preserved; the footer restates
+/// the goal only when nothing has happened yet (e.g. turn 1, no actions). `None` when there is no goal.
+///
+/// The "just did" clause is kernel-derived from `recent_actions` (real tool activity), and a trailing
+/// run of an identical action raises an explicit STOP — a cheap no-progress backstop that breaks the
+/// read→re-read→re-narrate loop in-band, at the position the model weights most.
 fn salience_footer(ts: &TaskState) -> Option<String> {
     if ts.goal.is_empty() {
         return None;
     }
-    let mut s = format!("→ focus: {}", ts.goal);
-    if let Some(i) = ts.current_step {
-        if let Some(step) = ts.plan.get(i) {
-            if !step.done {
-                s.push_str(&format!(" · step {}: {}", i + 1, step.label));
-            }
+    let mut clauses: Vec<String> = Vec::new();
+
+    // What just happened — so the peak-attention slot shows motion, not a blank restart.
+    let recent = ts.recent_actions.as_slice();
+    if let Some(last) = recent.last() {
+        let start = recent.len().saturating_sub(3);
+        clauses.push(format!("just did: {}", recent[start..].join(" → ")));
+
+        // No-progress backstop: the same action repeated on the last ≥2 turns is a stall. Surface an
+        // explicit stop so the model breaks the loop instead of re-narrating the same plan.
+        let trailing_repeat = recent.iter().rev().take_while(|a| *a == last).count();
+        if trailing_repeat >= 2 {
+            clauses.push(format!(
+                "STOP: `{last}` repeated {trailing_repeat}× with no progress — take a DIFFERENT \
+                 concrete action or report the blocker; do not repeat it"
+            ));
         }
     }
-    if let Some(d) = ts.directives.last() {
-        s.push_str(&format!(" · must: {d}"));
+
+    // What to do next — the active plan step if the model maintains one, else a forward nudge.
+    let active_step = ts
+        .current_step
+        .and_then(|i| ts.plan.get(i).map(|s| (i, s)))
+        .filter(|(_, s)| !s.done);
+    if let Some((i, step)) = active_step {
+        clauses.push(format!("next: step {} — {}", i + 1, step.label));
+    } else if !recent.is_empty() {
+        clauses.push(
+            "next: take the next concrete action toward the goal; do not re-state the plan".to_string(),
+        );
     }
-    Some(s)
+
+    if let Some(d) = ts.directives.last() {
+        clauses.push(format!("must: {d}"));
+    }
+
+    // Lead with the goal only when no forward clause fills the footer (turn 1, nothing done yet);
+    // otherwise the forward clauses carry the salience and the goal stays in the block above.
+    let body = if clauses.is_empty() {
+        format!("→ focus: {}", ts.goal)
+    } else {
+        format!("→ {}", clauses.join(" · "))
+    };
+    Some(body)
 }
 
 /// Build the State turn (the volatile tail): task_state + signals + a recency focus footer +
@@ -194,6 +234,37 @@ fn collapse_preview(output: &str) -> String {
     )
 }
 
+/// Stub substituted for a collapsed assistant preamble. Carries no goal text (that would re-seed the
+/// very repetition this removes) and points the model at the authoritative State turn instead.
+const NARRATION_STUB: &str = "[earlier narration collapsed; tool call(s) preserved below — current progress is in the TASK STATE block]";
+
+/// Minimum narration length (chars, CJK-aware) worth collapsing. Short preambles aren't worth a
+/// stub substitution (and the one-time cache churn it costs as the turn ages out of the window).
+const NARRATION_COLLAPSE_MIN_CHARS: usize = 40;
+
+/// Method 1: read-time collapse of an OLD assistant turn's narration. Targets exactly the
+/// "preamble before action" turns — `Role::Assistant`, a `Content::Text` body, AND a non-empty
+/// `tool_calls` (the model narrated intent, then acted). Returns a projected copy whose text is
+/// replaced by [`NARRATION_STUB`] while `tool_calls` (and thus tool_use/tool_result pairing) are
+/// left intact; the original full text stays in `partitions.history`, so the projection reverses if
+/// the flag is turned off. `None` when the message isn't a collapsible narration turn or the flag is
+/// off. Caller restricts this to messages already past the protected recent window.
+fn project_assistant_narration(msg: &Message, enabled: bool) -> Option<Message> {
+    if !enabled || msg.role != Role::Assistant || msg.tool_calls.is_empty() {
+        return None;
+    }
+    let Content::Text(text) = &msg.content else {
+        return None;
+    };
+    if text == NARRATION_STUB || text.chars().count() < NARRATION_COLLAPSE_MIN_CHARS {
+        return None;
+    }
+    let mut projected = msg.clone();
+    projected.content = Content::Text(NARRATION_STUB.to_string());
+    projected.token_count = None; // recomputed against the smaller stub
+    Some(projected)
+}
+
 /// If any of `msg`'s tool-result parts is `Collapsed` per the handle table, return a projected
 /// copy with those parts previewed; `None` if nothing is collapsed (render the message as-is).
 fn project_message(msg: &Message, handles: &HandleTable) -> Option<Message> {
@@ -240,7 +311,9 @@ pub fn render(
     engine: &ContextTokenEngine,
     preserve_recent_msgs: usize,
 ) -> RenderedContext {
-    render_projected(partitions, budget, engine, preserve_recent_msgs, &HandleTable::new(), 0)
+    // The convenience wrapper renders history verbatim (no narration collapse) — callers that want
+    // Method-1 collapse drive `render_projected` with the flag (the kernel passes it from config).
+    render_projected(partitions, budget, engine, preserve_recent_msgs, &HandleTable::new(), 0, false)
 }
 
 /// Render with Layer-4 read-time projection driven by `handles`: tool results whose handle is
@@ -258,6 +331,7 @@ pub fn render_projected(
     preserve_recent_msgs: usize,
     handles: &HandleTable,
     frozen_history_len: usize,
+    collapse_narration: bool,
 ) -> RenderedContext {
     let system_stable = build_system_stable(partitions);
     let system_knowledge = build_system_knowledge(partitions);
@@ -275,8 +349,14 @@ pub fn render_projected(
     // message: a collapsed tool result renders as a preview and is costed at its reduced size.
     let mut kept_rev: Vec<Message> = Vec::new();
     for msg in partitions.history.messages.iter().rev() {
-        // `projected` is `Some` only when read-time projection shrank the message.
-        let projected = project_message(msg, handles);
+        let is_protected = kept_rev.len() < preserve_recent_msgs;
+        // `projected` is `Some` only when read-time projection shrank the message. Two disjoint
+        // sources: a `Collapsed` tool-result preview (handle-driven, any age) OR — once the turn has
+        // aged past the protected recent window — an assistant-narration stub (Method 1). A message
+        // is either a tool-result Parts message or an assistant Text+tool_calls message, never both.
+        let projected = project_message(msg, handles).or_else(|| {
+            if is_protected { None } else { project_assistant_narration(msg, collapse_narration) }
+        });
         let effective = projected.as_ref().unwrap_or(msg);
         let tokens = match &projected {
             Some(p) => engine.count_message(p),
@@ -284,7 +364,6 @@ pub fn render_projected(
         };
         if tokens == 0 { continue; }
 
-        let is_protected = kept_rev.len() < preserve_recent_msgs;
         if is_protected {
             kept_rev.push(effective.clone());
             remaining = remaining.saturating_sub(tokens);
@@ -455,7 +534,7 @@ mod tests {
         h.residency = Residency::Collapsed;
         handles.insert(h);
 
-        let rc = render_projected(&c, 10_000, &engine(), 4, &handles, 0);
+        let rc = render_projected(&c, 10_000, &engine(), 4, &handles, 0, false);
         let rendered: String = rc
             .turns
             .iter()
@@ -498,7 +577,7 @@ mod tests {
         let mut handles = HandleTable::new();
         handles.insert(Handle::resident_for(1, HandleKind::ToolResult, 60, "c2"));
 
-        let rc = render_projected(&c, 10_000, &engine(), 4, &handles, 0);
+        let rc = render_projected(&c, 10_000, &engine(), 4, &handles, 0, false);
         let rendered: String = rc
             .turns
             .iter()
@@ -518,7 +597,7 @@ mod tests {
     // ── P1-F: state-turn recency footer ───────────────────────────────────
 
     #[test]
-    fn state_turn_ends_with_salience_footer_before_proceed() {
+    fn state_turn_footer_leads_with_next_step_not_bare_goal() {
         let mut c = ctx();
         c.task_state = TaskState {
             goal: "ship the cache work".to_string(),
@@ -530,14 +609,56 @@ mod tests {
         let rc = render(&c, 100_000, &engine(), 4);
         let text = rc.state_turn.unwrap().content.as_text().unwrap().to_string();
 
-        // The full TASK STATE block still leads (primacy) ...
+        // The full TASK STATE block still LEADS (primacy) — goal-adherence preserved ...
         assert!(text.starts_with("[TASK STATE] goal: ship the cache work"));
-        // ... and the very last block before "Proceed." is the focus footer (recency).
+        // ... but the peak-attention footer leads with the forward action, not a goal restatement.
         let before_proceed = text.rsplit_once("\n\nProceed.").expect("ends with Proceed").0;
         let last_block = before_proceed.rsplit("\n\n").next().unwrap();
-        assert!(last_block.starts_with("→ focus: ship the cache work"), "got: {last_block}");
-        assert!(last_block.contains("step 1: do E"));
+        assert!(last_block.starts_with("→ next: step 1 — do E"), "got: {last_block}");
         assert!(last_block.contains("must: don't break ABI"));
+        // The bare goal must NOT be re-injected at the peak-attention tail (the repetition fuel).
+        assert!(!last_block.contains("focus: ship the cache work"), "got: {last_block}");
+    }
+
+    #[test]
+    fn footer_falls_back_to_focus_goal_when_nothing_done_yet() {
+        // Turn 1: no actions, no plan — the footer surfaces the goal so the model knows the objective.
+        let mut c = ctx();
+        c.task_state = TaskState { goal: "build the thing".to_string(), ..Default::default() };
+        let rc = render(&c, 100_000, &engine(), 4);
+        let text = rc.state_turn.unwrap().content.as_text().unwrap().to_string();
+        let footer = text.rsplit_once("\n\nProceed.").unwrap().0.rsplit("\n\n").next().unwrap();
+        assert_eq!(footer, "→ focus: build the thing");
+    }
+
+    #[test]
+    fn footer_shows_recent_actions_and_forward_nudge_without_a_plan() {
+        // No curated plan, but real tool activity (2b) → the footer shows motion + a forward nudge,
+        // and the goal is NOT restated at the tail.
+        let mut c = ctx();
+        c.task_state = TaskState { goal: "rebuild §4.4 as SVG".to_string(), ..Default::default() };
+        c.task_state.note_actions("module_list");
+        c.task_state.note_actions("module_read");
+        let rc = render(&c, 100_000, &engine(), 4);
+        let footer = rc.state_turn.unwrap().content.as_text().unwrap()
+            .rsplit_once("\n\nProceed.").unwrap().0.rsplit("\n\n").next().unwrap().to_string();
+        assert!(footer.contains("just did: module_list → module_read"), "got: {footer}");
+        assert!(footer.contains("next: take the next concrete action"), "got: {footer}");
+        assert!(!footer.contains("focus: rebuild §4.4 as SVG"), "goal must not lead the footer");
+    }
+
+    #[test]
+    fn footer_raises_stop_on_repeated_action() {
+        // The same action on the last ≥2 turns ⇒ explicit STOP backstop (breaks the read-loop in-band).
+        let mut c = ctx();
+        c.task_state = TaskState { goal: "g".to_string(), ..Default::default() };
+        c.task_state.note_actions("document_read");
+        c.task_state.note_actions("document_read");
+        c.task_state.note_actions("document_read");
+        let rc = render(&c, 100_000, &engine(), 4);
+        let footer = rc.state_turn.unwrap().content.as_text().unwrap()
+            .rsplit_once("\n\nProceed.").unwrap().0.rsplit("\n\n").next().unwrap().to_string();
+        assert!(footer.contains("STOP: `document_read` repeated 3×"), "got: {footer}");
     }
 
     #[test]
@@ -627,11 +748,85 @@ mod tests {
         let mut h = Handle::resident_for(1, HandleKind::ToolResult, 250, "c1");
         h.residency = Residency::Collapsed;
         handles.insert(h);
-        let collapsed = render_projected(&c, 100_000, &engine(), 4, &handles, 0).prefix_fingerprint();
+        let collapsed = render_projected(&c, 100_000, &engine(), 4, &handles, 0, false).prefix_fingerprint();
 
         // turn 0 ("start") is byte-stable; the collapsed tool result at turn 1 drifts.
         assert_eq!(collapsed.common_turn_prefix(&resident), 1, "drift begins at the collapsed turn");
         assert!(!collapsed.extends(&resident));
+    }
+
+    // ── Method 1: assistant-narration collapse ─────────────────────────────
+
+    fn assistant_with_call(text: &str) -> Message {
+        let mut m = Message::assistant(text);
+        m.tool_calls = vec![crate::types::message::ToolCall {
+            id: "c1".into(),
+            name: "module_read".into(),
+            arguments: serde_json::json!({}),
+        }];
+        m
+    }
+
+    #[test]
+    fn old_assistant_narration_collapses_keeping_tool_calls() {
+        let mut c = ctx();
+        // Oldest = a long preamble + a tool call; then enough recent turns to push it past the window.
+        c.history.push(assistant_with_call(&"好的，我来将 §4.4 的 Mermaid 部署架构图重新构建为 SVG 版本。先找到当前 Mermaid 模块的位置。".repeat(1)), 60);
+        for i in 0..5 { c.history.push(Message::user(format!("recent {i}")), 5); }
+
+        // collapse ON (preserve window = 4, so the oldest narration turn is past it)
+        let rc = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, true);
+        let narration = rc
+            .turns
+            .iter()
+            .find(|m| m.content.as_text() == Some(NARRATION_STUB))
+            .expect("old narration replaced by stub");
+        assert_eq!(narration.tool_calls.len(), 1, "tool call (pairing) preserved");
+        assert_eq!(narration.tool_calls[0].name, "module_read");
+        // No verbatim preamble survives in the rendered prefix.
+        assert!(!rc.turns.iter().any(|m| m.content.as_text().map(|t| t.contains("先找到当前 Mermaid")).unwrap_or(false)));
+        // Original history is untouched (non-destructive projection).
+        assert!(c.history.messages[0].content.as_text().unwrap().contains("先找到当前 Mermaid"));
+
+        // collapse OFF → verbatim narration survives.
+        let rc_off = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, false);
+        assert!(rc_off.turns.iter().any(|m| m.content.as_text().map(|t| t.contains("先找到当前 Mermaid")).unwrap_or(false)));
+    }
+
+    #[test]
+    fn recent_assistant_narration_within_window_is_not_collapsed() {
+        let mut c = ctx();
+        // Only 2 turns, preserve window = 4 → the narration turn is protected → never collapsed.
+        c.history.push(assistant_with_call(&"好的，我来将 §4.4 重新构建为 SVG。先定位模块位置确认范围读取内容。".to_string()), 60);
+        c.history.push(Message::user("ok"), 5);
+        let rc = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, true);
+        assert!(rc.turns.iter().any(|m| m.content.as_text().map(|t| t.contains("先定位模块位置")).unwrap_or(false)), "recent narration kept verbatim");
+    }
+
+    #[test]
+    fn assistant_without_tool_calls_is_never_collapsed() {
+        let mut c = ctx();
+        // A pure final answer (no tool calls) is substantive — must survive even when old.
+        c.history.push(Message::assistant("这是给用户的最终结论，包含实质内容，不应被折叠掉以免丢信息。"), 40);
+        for i in 0..5 { c.history.push(Message::user(format!("r{i}")), 5); }
+        let rc = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, true);
+        assert!(rc.turns.iter().any(|m| m.content.as_text().map(|t| t.contains("最终结论")).unwrap_or(false)), "answer-only turns are not narration");
+    }
+
+    #[test]
+    fn collapsing_narration_drifts_only_that_turn_in_the_cache_prefix() {
+        // The cost made visible: collapsing rewrites that one turn in place → the prefix hash drifts
+        // at its position (one-time, as it ages past the window), but earlier turns stay reusable.
+        let mut c = ctx();
+        c.history.push(Message::user("start"), 5);
+        c.history.push(assistant_with_call(&"好的，我来将 §4.4 重新构建为 SVG 版本。先找到 Mermaid 模块的确切位置再读取其内容。".to_string()), 60);
+        for i in 0..4 { c.history.push(Message::user(format!("recent {i}")), 5); }
+
+        let verbatim = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, false).prefix_fingerprint();
+        let collapsed = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, true).prefix_fingerprint();
+        // turn 0 ("start") is byte-stable; drift begins at the collapsed narration turn (index 1).
+        assert_eq!(collapsed.common_turn_prefix(&verbatim), 1, "only the collapsed turn drifts");
+        assert!(!collapsed.extends(&verbatim));
     }
 
     #[test]

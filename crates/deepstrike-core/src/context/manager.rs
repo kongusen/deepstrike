@@ -18,6 +18,21 @@ use compact_str::CompactString;
 pub const MEMORY_TOOL_NAME: &str = "memory";
 pub const KNOWLEDGE_TOOL_NAME: &str = "knowledge";
 
+/// Control-plane meta-tools: kernel-handled tools that drive state/capabilities rather than do task
+/// work. Excluded from the `recent_actions` progress log (2b) so the footer reflects real progress.
+const META_TOOL_NAMES: &[&str] = &[
+    "update_plan",
+    "skill",
+    MEMORY_TOOL_NAME,
+    KNOWLEDGE_TOOL_NAME,
+    "submit_workflow_nodes",
+    "start_workflow",
+];
+
+fn is_meta_tool(name: &str) -> bool {
+    META_TOOL_NAMES.contains(&name)
+}
+
 /// Internal context engine backing [`crate::runtime::KernelRuntime`].
 ///
 /// Exposed for in-crate use and tests; external callers should drive the kernel
@@ -411,6 +426,7 @@ impl ContextManager {
             self.config.preserve_recent_msgs,
             &self.handles,
             self.frozen_history_len,
+            self.config.collapse_assistant_narration,
         )
     }
 
@@ -483,6 +499,20 @@ impl ContextManager {
 
     pub fn update_task(&mut self, update: TaskUpdate) {
         self.partitions.task_state.apply(update);
+    }
+
+    /// 2b: record this turn's tool activity into the task-state recency log (kernel-derived progress
+    /// that feeds the State-turn footer). Control-plane meta-tools (plan/skill/memory/knowledge/
+    /// workflow authoring) are noise, not task progress — they are filtered out. A turn with only
+    /// meta-tool calls records nothing.
+    pub fn note_tool_actions(&mut self, names: &[String]) {
+        let summary = names
+            .iter()
+            .map(|s| s.as_str())
+            .filter(|n| !is_meta_tool(n))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.partitions.task_state.note_actions(summary);
     }
 
     // ── Section pinning ───────────────────────────────────────────────────────

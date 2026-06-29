@@ -49,6 +49,15 @@ pub struct ContextConfig {
     /// Defaults to false; uses concise natural-language notes instead.
     pub verbose_control_notes: bool,
 
+    /// Collapse the *narration* text of OLD assistant turns (those past the
+    /// `preserve_recent_msgs` window that also carry tool calls) to a short stub at render time —
+    /// non-destructively (the full text stays in `partitions.history`). The model's user-facing
+    /// preamble ("好的，我来…先X") has no value once it has aged out of the recent window, but
+    /// re-feeding it verbatim every turn primes the model to keep emitting the same preamble (an
+    /// in-context repetition trap). Tool calls and pairing are untouched; current progress lives in
+    /// the TASK STATE turn. Defaults to true.
+    pub collapse_assistant_narration: bool,
+
     // ── Layer 3: Time-based decay ───────────────────────────────────────
 
     /// Minutes of inactivity before triggering Micro-Compact (Layer 3).
@@ -104,6 +113,7 @@ impl Default for ContextConfig {
             preserve_recent_turns: 2,
             render_dashboard: false,
             verbose_control_notes: false,
+            collapse_assistant_narration: true,
             micro_compact_idle_minutes: 60,
             preserved_tool_results: 5,
             autocompact_buffer: 13_000,

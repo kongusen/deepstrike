@@ -41,6 +41,13 @@ pub struct TaskState {
     /// Call IDs or artifact hashes that must be preserved from compression.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preserved_refs: Vec<String>,
+    /// Rolling log of recent *task* activity — one entry per turn, each a compact summary of that
+    /// turn's tool calls (e.g. "module_read, module_list"). Kernel-maintained from REAL tool
+    /// activity (not model-curated), so the State turn always shows forward motion even when the
+    /// model never maintains `plan`. Lives in the volatile State turn (out of the cacheable prefix),
+    /// so updating it never churns the prompt cache. Bounded + recency-ordered; newest last.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_actions: Vec<String>,
     /// Append-only log of all compression events. Never overwritten.
     /// Rendered into systemVolatile so the model always sees compression history.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -64,6 +71,9 @@ impl PlanStep {
 
 /// Maximum durable directives retained; past this the oldest is dropped (recency window).
 pub const MAX_DIRECTIVES: usize = 8;
+
+/// Maximum recent action-turns retained for the recency footer (bounded ring).
+pub const MAX_RECENT_ACTIONS: usize = 6;
 
 /// Partial update applied by the SDK or via `update_plan` meta-tool.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -158,6 +168,21 @@ impl TaskState {
         if self.directives.len() > MAX_DIRECTIVES {
             let overflow = self.directives.len() - MAX_DIRECTIVES;
             self.directives.drain(0..overflow);
+        }
+    }
+
+    /// Record one turn's tool activity into the recency log (kernel-driven). `summary` is a compact
+    /// string of the turn's task tool names; blank input is ignored. Bounded at
+    /// [`MAX_RECENT_ACTIONS`] (oldest dropped past the cap).
+    pub fn note_actions(&mut self, summary: impl Into<String>) {
+        let summary = summary.into();
+        if summary.trim().is_empty() {
+            return;
+        }
+        self.recent_actions.push(summary);
+        if self.recent_actions.len() > MAX_RECENT_ACTIONS {
+            let overflow = self.recent_actions.len() - MAX_RECENT_ACTIONS;
+            self.recent_actions.drain(0..overflow);
         }
     }
 

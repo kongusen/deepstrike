@@ -484,6 +484,15 @@ impl LoopStateMachine {
                     self.ctx.record_activity(now_ms);
                 }
 
+                // 2b: record this turn's tool activity into the task-state recency log (meta-tools
+                // filtered inside). The State-turn footer renders it as "just did: …" + a forward
+                // nudge / STOP, so progress is kernel-derived and never depends on the model
+                // remembering to call `update_plan`. Tool *names* live only on the request (results
+                // carry call_id only), so this is the turn to capture them.
+                let action_names: Vec<String> =
+                    calls.iter().map(|c| c.name.to_string()).collect();
+                self.ctx.note_tool_actions(&action_names);
+
                 match self.gate_tool_calls(&calls) {
                     GateToolOutcome::Blocked(action) => return action,
                     GateToolOutcome::Suspended => return LoopAction::AwaitingResume,
