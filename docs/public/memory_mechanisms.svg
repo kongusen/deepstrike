@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="100%" height="100%" style="background-color: #0b0f19; font-family: system-ui, -apple-system, sans-serif;">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b0f19" />
+      <stop offset="50%" stop-color="#111827" />
+      <stop offset="100%" stop-color="#070a13" />
+    </linearGradient>
+    <linearGradient id="boxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    
+    <!-- Arrows -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#bd00ff" />
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#10b981" />
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="480" fill="url(#bgGrad)" />
+  <rect width="800" height="480" fill="none" stroke="#1e293b" stroke-width="2" />
+
+  <!-- Grid lines -->
+  <path d="M 0 60 L 800 60 M 0 120 L 800 120 M 0 180 L 800 180 M 0 240 L 800 240 M 0 300 L 800 300 M 0 360 L 800 360 M 0 420 L 800 420" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+  <path d="M 100 0 L 100 480 M 200 0 L 200 480 M 300 0 L 300 480 M 400 0 L 400 480 M 500 0 L 500 480 M 600 0 L 600 480 M 700 0 L 700 480" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+
+  <!-- Title -->
+  <text x="400" y="35" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="700" letter-spacing="2">MEMORY MECHANISMS &amp; LAYERS</text>
+  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-size="11">Working, Session &amp; Durable Memory Gated Paths</text>
+
+  <!-- LEFT: KERNEL SPACE (Context VM &amp; Syscall Gate) -->
+  <g transform="translate(30, 80)">
+    <rect width="260" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
+    <rect width="260" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
+    <text x="130" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">DeepStrike Core (Kernel)</text>
+
+    <!-- Context slots in relation to memory -->
+    <!-- system_knowledge -->
+    <g transform="translate(15, 55)">
+      <rect width="230" height="60" rx="4" fill="#111827" stroke="#10b981" stroke-width="1.2" />
+      <text x="10" y="16" fill="#10b981" font-size="10.5" font-weight="bold">Knowledge Slot (Address Space)</text>
+      <text x="10" y="32" fill="#e2e8f0" font-size="8.5">Reads paged-in Durable Memories</text>
+      <text x="10" y="44" fill="#94a3b8" font-size="8">→ Injected dynamically during Query path</text>
+    </g>
+
+    <!-- turns (chat history) -->
+    <g transform="translate(15, 125)">
+      <rect width="230" height="60" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="16" fill="#60a5fa" font-size="10.5" font-weight="bold">Turns History Slot (Working Memory)</text>
+      <text x="10" y="32" fill="#e2e8f0" font-size="8.5">Stores transient scratch pad conversations</text>
+      <text x="10" y="44" fill="#94a3b8" font-size="8">→ Cleared and reset across runs</text>
+    </g>
+
+    <!-- Syscall Traps -->
+    <g transform="translate(15, 205)">
+      <rect width="230" height="135" rx="6" fill="#111827" stroke="#bd00ff" stroke-width="1.2" />
+      <rect x="0" y="0" width="230" height="24" rx="6" fill="#bd00ff" opacity="0.1" />
+      <text x="115" y="16" text-anchor="middle" fill="#c084fc" font-size="10.5" font-weight="bold">Memory Syscall Trap</text>
+      
+      <!-- Write memory gate -->
+      <g transform="translate(10, 35)">
+        <rect width="210" height="35" rx="3" fill="#1e293b" stroke="#334155" />
+        <text x="8" y="15" fill="#f87171" font-size="9" font-weight="bold">Syscall::WriteMemory</text>
+        <text x="8" y="26" fill="#94a3b8" font-size="7.5">Performs schema policy validation &amp; rate limit</text>
+      </g>
+      
+      <!-- Query memory gate -->
+      <g transform="translate(10, 80)">
+        <rect width="210" height="35" rx="3" fill="#1e293b" stroke="#334155" />
+        <text x="8" y="15" fill="#38bdf8" font-size="9" font-weight="bold">Syscall::QueryMemory</text>
+        <text x="8" y="26" fill="#94a3b8" font-size="7.5">Checks retrieve permission &amp; scopes queries</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- MIDDLE: MEMORY LAYERS -->
+  <g transform="translate(325, 80)">
+    <rect width="180" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
+    <rect width="180" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
+    <text x="90" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">Memory Layers</text>
+
+    <!-- Working -->
+    <g transform="translate(10, 55)">
+      <rect width="160" height="70" rx="6" fill="#111827" stroke="#60a5fa" stroke-dasharray="1" />
+      <text x="10" y="20" fill="#60a5fa" font-size="10.5" font-weight="bold">1. Working Memory</text>
+      <text x="10" y="38" fill="#e2e8f0" font-size="8.5">Scratch pad / Chat turns</text>
+      <text x="10" y="50" fill="#94a3b8" font-size="7.5">▪ Dynamic in-run context</text>
+      <text x="10" y="60" fill="#94a3b8" font-size="7.5">▪ Volatile: reset on close</text>
+    </g>
+
+    <!-- Session -->
+    <g transform="translate(10, 145)">
+      <rect width="160" height="80" rx="6" fill="#111827" stroke="#bd00ff" />
+      <text x="10" y="20" fill="#c084fc" font-size="10.5" font-weight="bold">2. Session Memory</text>
+      <text x="10" y="38" fill="#e2e8f0" font-size="8.5">Evidence &amp; Trace audit</text>
+      <text x="10" y="52" fill="#94a3b8" font-size="7.5">▪ Orderly appended events</text>
+      <text x="10" y="62" fill="#94a3b8" font-size="7.5">▪ Saved to SessionLog</text>
+      <text x="10" y="72" fill="#94a3b8" font-size="7.5">▪ Essential for Wake/Replay</text>
+    </g>
+
+    <!-- Durable -->
+    <g transform="translate(10, 245)">
+      <rect width="160" height="95" rx="6" fill="#111827" stroke="#10b981" stroke-width="1.5" />
+      <text x="10" y="20" fill="#34d399" font-size="10.5" font-weight="bold">3. Durable Memory</text>
+      <text x="10" y="38" fill="#e2e8f0" font-size="8.5">DreamStore knowledge</text>
+      <text x="10" y="52" fill="#94a3b8" font-size="7.5">▪ Long-term storage</text>
+      <text x="10" y="62" fill="#94a3b8" font-size="7.5">▪ Vector retrieval indices</text>
+      <text x="10" y="72" fill="#94a3b8" font-size="7.5">▪ Cross-session shareable</text>
+      <text x="10" y="82" fill="#94a3b8" font-size="7.5">▪ Organized by idle pipeline</text>
+    </g>
+  </g>
+
+  <!-- RIGHT: HOST SDK STORE (DreamStore &amp; Session Store) -->
+  <g transform="translate(540, 80)">
+    <rect width="230" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
+    <rect width="230" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
+    <text x="115" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">Host SDK Storage</text>
+
+    <!-- Session log database -->
+    <g transform="translate(15, 60)">
+      <rect width="200" height="80" rx="6" fill="#111827" stroke="#bd00ff" stroke-width="1" />
+      <text x="10" y="20" fill="#ffffff" font-size="11" font-weight="bold">Session Log Store</text>
+      <text x="10" y="35" fill="#94a3b8" font-size="8.5">Appends allowed written metadata</text>
+      <text x="10" y="47" fill="#94a3b8" font-size="8.5">FileSessionLog / DB Store</text>
+      <rect x="10" y="57" width="180" height="15" rx="2.5" fill="#bd00ff" opacity="0.1" />
+      <text x="100" y="68" text-anchor="middle" fill="#c084fc" font-size="7.5" font-weight="bold">Evidence Commit (Session Log)</text>
+    </g>
+
+    <!-- DreamStore (Semantic index database) -->
+    <g transform="translate(15, 180)">
+      <rect width="200" height="140" rx="6" fill="#111827" stroke="#10b981" stroke-width="1.5" />
+      <text x="10" y="20" fill="#ffffff" font-size="11" font-weight="bold">DreamStore (Vector DB)</text>
+      <text x="10" y="35" fill="#94a3b8" font-size="8.5">Stores embeddings &amp; query matches</text>
+
+      <!-- DB icons -->
+      <g transform="translate(10, 50)">
+        <rect width="180" height="30" rx="3" fill="#1e293b" stroke="#334155" />
+        <text x="10" y="18" fill="#e2e8f0" font-size="9" font-family="monospace">Vector Index search()</text>
+        <path d="M 170,15 L 140,15" stroke="#10b981" stroke-width="1" marker-end="url(#arrowGreen)" />
+      </g>
+      <g transform="translate(10, 90)">
+        <rect width="180" height="30" rx="3" fill="#1e293b" stroke="#334155" />
+        <text x="10" y="18" fill="#e2e8f0" font-size="9" font-family="monospace">Semantic commit()</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Connectors -->
+  <!-- Write Path -->
+  <!-- Syscall write to Gate -> Session Store & DreamStore -->
+  <path d="M 135,340 C 135,420 620,420 620,323" fill="none" stroke="#bd00ff" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrowPurple)" />
+  <text x="360" y="415" text-anchor="middle" fill="#c084fc" font-size="9.5" font-weight="bold">Write Path: Gated Syscall → Commit in DreamStore &amp; SessionLog</text>
+
+  <!-- Query Path -->
+  <!-- DreamStore search -> Injects into Knowledge Slot -->
+  <path d="M 640,175 C 640,25 130,25 130,50" fill="none" stroke="#10b981" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrowGreen)" />
+  <text x="360" y="18" text-anchor="middle" fill="#34d399" font-size="9.5" font-weight="bold">Query Path: Search DreamStore → Inject into Context VM Knowledge Slot</text>
+</svg>

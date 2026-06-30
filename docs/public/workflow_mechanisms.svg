@@ -1,0 +1,188 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="100%" height="100%" style="background-color: #0b0f19; font-family: system-ui, -apple-system, sans-serif;">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b0f19" />
+      <stop offset="50%" stop-color="#111827" />
+      <stop offset="100%" stop-color="#070a13" />
+    </linearGradient>
+    <linearGradient id="boxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    
+    <!-- Arrows -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#bd00ff" />
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="480" fill="url(#bgGrad)" />
+  <rect width="800" height="480" fill="none" stroke="#1e293b" stroke-width="2" />
+
+  <!-- Grid lines -->
+  <path d="M 0 60 L 800 60 M 0 120 L 800 120 M 0 180 L 800 180 M 0 240 L 800 240 M 0 300 L 800 300 M 0 360 L 800 360 M 0 420 L 800 420" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+  <path d="M 100 0 L 100 480 M 200 0 L 200 480 M 300 0 L 300 480 M 400 0 L 400 480 M 500 0 L 500 480 M 600 0 L 600 480 M 700 0 L 700 480" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+
+  <!-- Title -->
+  <text x="400" y="35" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="700" letter-spacing="2">DYNAMIC WORKFLOW MECHANISMS</text>
+  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-size="11">DAG Extension, Control Flow &amp; Process Scheduling</text>
+
+  <!-- SECTION 1: RUNTIME DAG EXTENSION (Left) -->
+  <g transform="translate(30, 80)">
+    <rect width="230" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
+    <rect width="230" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
+    <text x="115" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">1. DAG Definition &amp; Growth</text>
+    
+    <!-- Static Spec Box -->
+    <g transform="translate(15, 55)">
+      <rect width="200" height="110" rx="6" fill="#111827" stroke="#334155" />
+      <text x="10" y="20" fill="#ffffff" font-size="11" font-weight="bold">Static WorkflowSpec</text>
+      
+      <!-- Mini nodes diagram -->
+      <rect x="20" y="45" width="40" height="20" rx="3" fill="#1e293b" stroke="#00f0ff" stroke-width="0.8" />
+      <text x="40" y="58" text-anchor="middle" fill="#e2e8f0" font-size="9">Node A</text>
+      
+      <path d="M 60,55 L 90,55" fill="none" stroke="#00f0ff" stroke-width="1.5" marker-end="url(#arrow)" />
+      
+      <rect x="95" y="45" width="40" height="20" rx="3" fill="#1e293b" stroke="#00f0ff" stroke-width="0.8" />
+      <text x="115" y="58" text-anchor="middle" fill="#e2e8f0" font-size="9">Node B</text>
+      
+      <text x="10" y="98" fill="#94a3b8" font-size="9">Initial task graph loaded on startup</text>
+    </g>
+
+    <!-- Dynamic Append Box -->
+    <g transform="translate(15, 185)">
+      <rect width="200" height="165" rx="6" fill="#111827" stroke="#bd00ff" stroke-width="1" />
+      <text x="10" y="20" fill="#ffffff" font-size="11" font-weight="bold">Dynamic Append (Runtime)</text>
+      
+      <!-- Dynamic mini nodes -->
+      <rect x="15" y="40" width="40" height="18" rx="3" fill="#1e293b" stroke="#00f0ff" stroke-width="0.8" />
+      <text x="35" y="52" text-anchor="middle" fill="#e2e8f0" font-size="8">Node B</text>
+      
+      <path d="M 55,49 L 85,69" fill="none" stroke="#bd00ff" stroke-width="1.5" stroke-dasharray="2 2" marker-end="url(#arrowPurple)" />
+      
+      <rect x="90" y="65" width="45" height="18" rx="3" fill="#111827" stroke="#bd00ff" stroke-width="1.2" stroke-dasharray="2 2" />
+      <text x="112" y="77" text-anchor="middle" fill="#c084fc" font-size="8" font-weight="bold">Node C [NEW]</text>
+      
+      <rect x="15" y="90" width="70" height="14" rx="3" fill="#bd00ff" opacity="0.15" />
+      <text x="50" y="100" text-anchor="middle" fill="#c084fc" font-size="7" font-weight="bold">Syscall::SubmitNodes</text>
+      
+      <text x="10" y="125" fill="#94a3b8" font-size="9">Allows LLM planning loops to</text>
+      <text x="10" y="137" fill="#94a3b8" font-size="9">dynamically insert downstream tasks</text>
+      <text x="10" y="149" fill="#94a3b8" font-size="9">bounded by max_workflow_nodes.</text>
+    </g>
+  </g>
+
+  <!-- SECTION 2: CONTROL FLOW NODES (Center) -->
+  <g transform="translate(285, 80)">
+    <rect width="230" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
+    <rect width="230" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
+    <text x="115" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">2. Harness Control Nodes</text>
+
+    <!-- Classify Node -->
+    <g transform="translate(15, 55)">
+      <rect width="200" height="85" rx="6" fill="#111827" stroke="#334155" />
+      <text x="10" y="16" fill="#ffffff" font-size="11" font-weight="bold">Classify &amp; Prune</text>
+      <path d="M 25,45 L 60,35 M 25,45 L 60,60" stroke="#94a3b8" stroke-width="1" />
+      <!-- Selected branch -->
+      <circle cx="60" cy="35" r="4" fill="#10b981" />
+      <line x1="64" y1="35" x2="85" y2="35" stroke="#10b981" stroke-width="1.5" marker-end="url(#arrow)" />
+      <!-- Pruned branch -->
+      <circle cx="60" cy="60" r="4" fill="#ef4444" />
+      <line x1="64" y1="60" x2="85" y2="60" stroke="#ef4444" stroke-width="1" stroke-dasharray="2 2" />
+      <text x="65" y="70" fill="#f87171" font-size="8">[Pruned]</text>
+      
+      <text x="100" y="32" fill="#94a3b8" font-size="9">Selects active branch</text>
+      <text x="100" y="44" fill="#94a3b8" font-size="9">and aggressively</text>
+      <text x="100" y="56" fill="#94a3b8" font-size="9">prunes dead ends</text>
+    </g>
+
+    <!-- Loop Node -->
+    <g transform="translate(15, 155)">
+      <rect width="200" height="90" rx="6" fill="#111827" stroke="#334155" />
+      <text x="10" y="16" fill="#ffffff" font-size="11" font-weight="bold">Loop Until Done</text>
+      <!-- Circular path -->
+      <path d="M 40,55 A 15,15 0 1,1 55,40" fill="none" stroke="#eab308" stroke-width="1.5" marker-end="url(#arrow)" />
+      <text x="42" y="53" text-anchor="middle" fill="#eab308" font-size="8" font-weight="bold">L</text>
+      <text x="100" y="30" fill="#94a3b8" font-size="9">Runs loops with</text>
+      <text x="100" y="42" fill="#eab308" font-size="9" font-weight="bold">loop_continue</text>
+      <text x="100" y="54" fill="#94a3b8" font-size="9">signal, stopped by</text>
+      <text x="100" y="66" fill="#94a3b8" font-size="9">max_iters limit.</text>
+    </g>
+
+    <!-- Tournament Node -->
+    <g transform="translate(15, 260)">
+      <rect width="200" height="95" rx="6" fill="#111827" stroke="#334155" />
+      <text x="10" y="16" fill="#ffffff" font-size="11" font-weight="bold">Tournament Bracket</text>
+      <!-- Brackets layout -->
+      <path d="M 20,35 L 45,35 L 45,47 L 70,47 M 20,60 L 45,60 L 45,48 L 70,48" fill="none" stroke="#94a3b8" stroke-width="1" />
+      <rect x="70" y="40" width="30" height="15" rx="2" fill="#1e293b" stroke="#00f0ff" stroke-width="0.8" />
+      <text x="85" y="51" text-anchor="middle" fill="#e2e8f0" font-size="8">Judge</text>
+      <text x="110" y="35" fill="#94a3b8" font-size="9">Entrants run in</text>
+      <text x="110" y="47" fill="#94a3b8" font-size="9">parallel; judge</text>
+      <text x="110" y="59" fill="#94a3b8" font-size="9">decides winner</text>
+      <text x="110" y="71" fill="#94a3b8" font-size="9">deterministically.</text>
+    </g>
+  </g>
+
+  <!-- SECTION 3: SCHEDULER & CONSTRAINTS (Right) -->
+  <g transform="translate(540, 80)">
+    <rect width="230" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
+    <rect width="230" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
+    <text x="115" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">3. Scheduler &amp; Quota</text>
+
+    <!-- TaskTable Box -->
+    <g transform="translate(15, 55)">
+      <rect width="200" height="135" rx="6" fill="#111827" stroke="#334155" />
+      <text x="10" y="20" fill="#ffffff" font-size="11" font-weight="bold">TaskTable Lifecycle</text>
+      
+      <!-- Lifecycle stages -->
+      <g transform="translate(15, 35)">
+        <rect width="45" height="18" rx="3" fill="#1e293b" stroke="#38bdf8" />
+        <text x="22.5" y="47" text-anchor="middle" fill="#38bdf8" font-size="9">Ready</text>
+        <path d="M 60,44 L 75,44" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)" />
+        
+        <rect x="80" y="35" width="45" height="18" rx="3" fill="#3b82f6" opacity="0.3" stroke="#60a5fa" />
+        <text x="102.5" y="47" text-anchor="middle" fill="#93c5fd" font-size="9">Running</text>
+        
+        <path d="M 125,44 L 140,44" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)" />
+        
+        <rect x="145" y="35" width="40" height="18" rx="3" fill="#10b981" opacity="0.3" stroke="#34d399" />
+        <text x="165" y="47" text-anchor="middle" fill="#34d399" font-size="9">Done</text>
+
+        <!-- Blocked / Suspended branch -->
+        <path d="M 102.5,53 C 102.5,70 50,70 50,85" fill="none" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)" />
+        <rect x="25" y="85" width="55" height="18" rx="3" fill="#ef4444" opacity="0.2" stroke="#f87171" />
+        <text x="52.5" y="97" text-anchor="middle" fill="#f87171" font-size="8">Suspended</text>
+        <text x="90" y="97" fill="#94a3b8" font-size="8">Waiting AskUser/Join</text>
+      </g>
+    </g>
+
+    <!-- Quotas & Isolation Box -->
+    <g transform="translate(15, 205)">
+      <rect width="200" height="145" rx="6" fill="#111827" stroke="#334155" />
+      <text x="10" y="20" fill="#ffffff" font-size="11" font-weight="bold">Resource Quota &amp; Security</text>
+      
+      <!-- Detail lines -->
+      <g transform="translate(10, 35)">
+        <text x="5" y="15" fill="#34d399" font-size="9.5" font-weight="bold">✓ BudgetLedger</text>
+        <text x="15" y="27" fill="#94a3b8" font-size="9">Max token deduction &amp; wall-clock limit</text>
+
+        <text x="5" y="52" fill="#34d399" font-size="9.5" font-weight="bold">✓ Isolation Modes</text>
+        <text x="15" y="64" fill="#94a3b8" font-size="9">worktree | context_inheritance: none</text>
+        
+        <text x="5" y="89" fill="#f87171" font-size="9.5" font-weight="bold">✗ Quarantine Boundary</text>
+        <text x="15" y="101" fill="#94a3b8" font-size="9">Tainted nodes cannot escalate permissions</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Flow Arrows connecting Sections -->
+  <path d="M 260,180 L 285,180" stroke="#00f0ff" stroke-width="2" marker-end="url(#arrow)" />
+  <path d="M 515,180 L 540,180" stroke="#bd00ff" stroke-width="2" marker-end="url(#arrowPurple)" />
+</svg>

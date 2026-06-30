@@ -1,0 +1,38 @@
+name: Docs Drift Check
+
+# Keeps the docs/ narrative grounded in real code. Fires on BOTH doc changes and
+# changes to the source surfaces the docs reference — so a code rename that orphans
+# a doc fails the *code* PR, not just doc PRs. See
+# .local-docs/specs/docs-code-narrative-sync.md.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'scripts/check-docs-drift.mjs'
+      - 'scripts/extract-symbol-manifest.mjs'
+      - 'node/src/index.ts'
+      - 'python/deepstrike/__init__.py'
+      - 'python/deepstrike/runtime/runner.py'
+      - 'crates/deepstrike-core/src/lib.rs'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'scripts/check-docs-drift.mjs'
+      - 'scripts/extract-symbol-manifest.mjs'
+      - 'node/src/index.ts'
+      - 'python/deepstrike/__init__.py'
+      - 'python/deepstrike/runtime/runner.py'
+      - 'crates/deepstrike-core/src/lib.rs'
+  workflow_dispatch:
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Check docs ↔ code drift
+        run: node scripts/check-docs-drift.mjs

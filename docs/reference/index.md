@@ -1,11 +1,23 @@
-# Reference
+# 参考文档
 
-Stable contracts and runtime reference material.
+API 与配置的结构化参考。SDK 详细用法见各语言 README。
 
-| Reference | Covers |
-| --- | --- |
-| [Kernel ABI](./kernel-abi.md) | `KernelInput`, `KernelAction`, `KernelObservation`, memory syscalls, and JSON ABI rules |
-| [Runtime v2 Lifecycle](./runtime-v2-lifecycle.md) | Runtime lifecycle, wake, rollback, and recovery behavior |
-| [SDK OS Parity](../sdk-os-parity.md) | Cross-language Agent OS capability matrix and CI gates |
+## 章节
 
-Conceptual overview: [Agent OS](../concepts/agent-os.md).
+| 文档 | 内容 |
+|------|------|
+| [RuntimeOptions](./runtime-options) | Python runner 全部配置项 |
+| [WorkflowNodeSpec](./workflow-node-spec) | 工作流节点字段 |
+| [Python API](./python-api) | `deepstrike` 包导出索引 |
+
+## 源码索引
+
+| 主题 | 路径 |
+|------|------|
+| Kernel ABI | `crates/deepstrike-core/src/runtime/kernel.rs` |
+| Context | `crates/deepstrike-core/src/context/` |
+| Python 导出 | `python/deepstrike/__init__.py` |
+
+## 跨语言
+
+Node SDK 与 Python SDK 在 OS 能力上保持 parity，详见仓库 `node/README.md` 与 `python/README.md`。

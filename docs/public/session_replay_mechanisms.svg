@@ -1,0 +1,162 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="100%" height="100%" style="background-color: #0b0f19; font-family: system-ui, -apple-system, sans-serif;">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b0f19" />
+      <stop offset="50%" stop-color="#111827" />
+      <stop offset="100%" stop-color="#070a13" />
+    </linearGradient>
+    <linearGradient id="boxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    
+    <!-- Arrows -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#bd00ff" />
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#10b981" />
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="480" fill="url(#bgGrad)" />
+  <rect width="800" height="480" fill="none" stroke="#1e293b" stroke-width="2" />
+
+  <!-- Grid lines -->
+  <path d="M 0 60 L 800 60 M 0 120 L 800 120 M 0 180 L 800 180 M 0 240 L 800 240 M 0 300 L 800 300 M 0 360 L 800 360 M 0 420 L 800 420" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+  <path d="M 100 0 L 100 480 M 200 0 L 200 480 M 300 0 L 300 480 M 400 0 L 400 480 M 500 0 L 500 480 M 600 0 L 600 480 M 700 0 L 700 480" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+
+  <!-- Title -->
+  <text x="400" y="35" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="700" letter-spacing="2">SESSION REPLAY &amp; RECOVERY</text>
+  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-size="11">Append-only Evidence Stream Journal, Replay &amp; Resume Paths</text>
+
+  <!-- LEFT: LIVE EXECUTION (Generates events) -->
+  <g transform="translate(30, 90)">
+    <rect width="220" height="340" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
+    <rect width="220" height="35" rx="8" fill="#bd00ff" opacity="0.08" />
+    <text x="110" y="22" text-anchor="middle" fill="#c084fc" font-size="12" font-weight="bold">Live Run Loop</text>
+    
+    <!-- Step blocks -->
+    <g transform="translate(15, 50)">
+      <rect width="190" height="40" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="16" fill="#ffffff" font-size="10" font-weight="bold">1. Start Runner</text>
+      <text x="10" y="28" fill="#94a3b8" font-size="8">Trigger run(goal)</text>
+    </g>
+
+    <g transform="translate(15, 105)">
+      <rect width="190" height="40" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="16" fill="#ffffff" font-size="10" font-weight="bold">2. LLM Call</text>
+      <text x="10" y="28" fill="#94a3b8" font-size="8">Streams texts &amp; tool_calls</text>
+    </g>
+
+    <g transform="translate(15, 160)">
+      <rect width="190" height="40" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="16" fill="#ffffff" font-size="10" font-weight="bold">3. Execute Approved Tool</text>
+      <text x="10" y="28" fill="#94a3b8" font-size="8">Runs in Local/Sandbox Cwd</text>
+    </g>
+
+    <g transform="translate(15, 215)">
+      <rect width="190" height="40" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="16" fill="#ffffff" font-size="10" font-weight="bold">4. Delta Compact</text>
+      <text x="10" y="28" fill="#94a3b8" font-size="8">Context VM token compaction</text>
+    </g>
+    
+    <!-- Logging Arrow out -->
+    <path d="M 205,270 L 232,270" stroke="#bd00ff" stroke-width="2" marker-end="url(#arrowPurple)" />
+    <text x="145" y="282" fill="#c084fc" font-size="8.5" font-weight="bold">Log Observations →</text>
+  </g>
+
+  <!-- MIDDLE: JOURNAL FILE (SessionLog) -->
+  <g transform="translate(290, 80)">
+    <rect width="220" height="360" rx="8" fill="url(#boxGrad)" stroke="#bd00ff" stroke-width="1.5" />
+    <rect width="220" height="35" rx="8" fill="#bd00ff" opacity="0.1" />
+    <text x="110" y="22" text-anchor="middle" fill="#c084fc" font-size="12" font-weight="bold">SessionLog (Evidence Journal)</text>
+
+    <!-- JSONL Entries stack -->
+    <g transform="translate(15, 50)">
+      <rect width="190" height="280" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="18" fill="#94a3b8" font-size="9" font-family="monospace">Append-only JSONL stream</text>
+
+      <!-- Row 1 -->
+      <rect x="8" y="28" width="174" height="35" rx="2.5" fill="#1e293b" />
+      <text x="14" y="42" fill="#c084fc" font-size="7.5" font-family="monospace">{"kind": "run_started", ...}</text>
+      <text x="14" y="52" fill="#94a3b8" font-size="6.5">Initial session boundary</text>
+
+      <!-- Row 2 -->
+      <rect x="8" y="70" width="174" height="35" rx="2.5" fill="#1e293b" />
+      <text x="14" y="84" fill="#38bdf8" font-size="7.5" font-family="monospace">{"kind": "tool_invoked", ...}</text>
+      <text x="14" y="94" fill="#94a3b8" font-size="6.5">Gated Syscall execution logs</text>
+
+      <!-- Row 3 -->
+      <rect x="8" y="112" width="174" height="35" rx="2.5" fill="#1e293b" />
+      <text x="14" y="126" fill="#38bdf8" font-size="7.5" font-family="monospace">{"kind": "provider_result", ...}</text>
+      <text x="14" y="136" fill="#94a3b8" font-size="6.5">LLM raw completions &amp; tool_calls</text>
+
+      <!-- Row 4 -->
+      <rect x="8" y="154" width="174" height="35" rx="2.5" fill="#1e293b" />
+      <text x="14" y="168" fill="#38bdf8" font-size="7.5" font-family="monospace">{"kind": "tool_results", ...}</text>
+      <text x="14" y="178" fill="#94a3b8" font-size="6.5">Outcome data fed back to kernel</text>
+
+      <!-- Row 5 -->
+      <rect x="8" y="196" width="174" height="35" rx="2.5" fill="#1e293b" />
+      <text x="14" y="210" fill="#fb923c" font-size="7.5" font-family="monospace">{"kind": "pressure_compact", ...}</text>
+      <text x="14" y="220" fill="#94a3b8" font-size="6.5">Delta compaction validation trace</text>
+
+      <!-- Row 6 -->
+      <rect x="8" y="238" width="174" height="35" rx="2.5" fill="#1e293b" />
+      <text x="14" y="252" fill="#f87171" font-size="7.5" font-family="monospace">{"kind": "run_terminal", ...}</text>
+      <text x="14" y="262" fill="#94a3b8" font-size="6.5">Outcome status complete trace</text>
+    </g>
+  </g>
+
+  <!-- RIGHT: TELEMETRY PATHS -->
+
+  <!-- Path A: Wake & Resume (Top Right) -->
+  <g transform="translate(540, 90)">
+    <rect width="230" height="150" rx="8" fill="url(#boxGrad)" stroke="#10b981" stroke-width="1.5" />
+    <rect width="230" height="30" rx="8" fill="#10b981" opacity="0.1" />
+    <text x="115" y="19" text-anchor="middle" fill="#34d399" font-size="12" font-weight="bold">Wake / Resume Path</text>
+    
+    <g transform="translate(12, 40)">
+      <text x="5" y="15" fill="#e2e8f0" font-size="9.5" font-weight="bold">State Reconstruction Flow:</text>
+      <text x="10" y="30" fill="#94a3b8" font-size="8.5">1. Reads append-only journal stream</text>
+      <text x="10" y="42" fill="#94a3b8" font-size="8.5">2. Folds observations sequentially</text>
+      <text x="10" y="54" fill="#94a3b8" font-size="8.5">3. Recreates kernel TCB &amp; state</text>
+      
+      <!-- Resume text -->
+      <rect x="5" y="65" width="195" height="30" rx="3" fill="#10b981" opacity="0.1" />
+      <text x="102.5" y="84" text-anchor="middle" fill="#34d399" font-size="9" font-weight="bold">Resumes exactly at suspended turn</text>
+    </g>
+  </g>
+
+  <!-- Path B: Deterministic Replay (Bottom Right) -->
+  <g transform="translate(540, 260)">
+    <rect width="230" height="180" rx="8" fill="url(#boxGrad)" stroke="#00f0ff" stroke-width="1.5" />
+    <rect width="230" height="30" rx="8" fill="#00f0ff" opacity="0.1" />
+    <text x="115" y="19" text-anchor="middle" fill="#38bdf8" font-size="12" font-weight="bold">Deterministic Replay Path</text>
+    
+    <g transform="translate(12, 40)">
+      <text x="5" y="15" fill="#e2e8f0" font-size="9.5" font-weight="bold">ReplayProvider Testing:</text>
+      <text x="10" y="32" fill="#94a3b8" font-size="8.5">1. Intercepts LLM Call requests</text>
+      <text x="10" y="45" fill="#94a3b8" font-size="8.5">2. Reads recorded provider_results</text>
+      <text x="10" y="58" fill="#94a3b8" font-size="8.5">3. Feeds static completions back</text>
+      
+      <!-- Replay box -->
+      <rect x="5" y="70" width="195" height="55" rx="3" fill="#00f0ff" opacity="0.1" />
+      <text x="102.5" y="86" text-anchor="middle" fill="#38bdf8" font-size="9.5" font-weight="bold">No network API dependency</text>
+      <text x="102.5" y="100" text-anchor="middle" fill="#ffffff" font-size="8">Allows unit &amp; integration test validation</text>
+      <text x="102.5" y="112" text-anchor="middle" fill="#ffffff" font-size="8">without costing cloud LLM tokens</text>
+    </g>
+  </g>
+
+  <!-- Connectors -->
+  <!-- Journal -> Recovery -->
+  <path d="M 440,80 C 440,25 655,25 655,87" fill="none" stroke="#10b981" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrowGreen)" />
+  <!-- Journal -> Replay -->
+  <path d="M 500,290 L 532,290" stroke="#00f0ff" stroke-width="1.5" marker-end="url(#arrow)" />
+</svg>

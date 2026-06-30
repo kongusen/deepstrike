@@ -1,0 +1,123 @@
+# Signals 与 Reactive Session
+
+Signals 是 Agent OS 的 **Attention / Signal Plane**。cron、webhook、用户 interrupt 和 peer 事件不会直接改写历史，而是进入 `state_turn`，由 runner 在下一轮把它们呈现给合适的 agent。
+
+**代码**：
+- `python/deepstrike/signals/gateway.py`
+- `python/deepstrike/runtime/reactive_session.py`
+- Kernel：`crates/deepstrike-core/src/signals/`
+
+---
+
+## 在 Agent OS 中的位置
+
+| 组件 | OS 语义 |
+|------|---------|
+| `SignalGateway` | 外部事件队列，负责 schedule / ingest / recipient filter |
+| `state_turn` | 当前轮注意力输入，和长期 history 分离 |
+| `ReactiveSession` | 多 agent 共享黑板、SignalGateway 和 RunGroup 预算 |
+| `TurnPolicy` | 决定哪个 agent 对哪个事件响应 |
+
+Signal 面解决的是“外部世界如何打断或唤醒 agent”，ReactiveSession 解决的是“多个 agent 如何在同一个治理域中协作”。
+
+![Signals & Reactive Mechanisms](/signals_mechanisms.svg)
+
+## 概念
+
+```
+SignalGateway
+  ├── schedule(ScheduledPrompt)  # cron
+  ├── ingest(RuntimeSignal)      # webhook
+  └── next_signal(recipient?)    # runner 消费
+
+ReactiveSession
+  ├── RunGroup        # 共享预算
+  ├── EventStream     # 黑板
+  ├── SignalGateway   # recipient 路由
+  └── TurnPolicy      # 谁响应哪个事件
+```
+
+Signal 进入 kernel context 的 **signals 分区**（`state_turn`）。
+
+---
+
+## Level 1：定时 Prompt
+
+```python
+import time
+from deepstrike import SignalGateway, ScheduledPrompt, RuntimeOptions, RuntimeRunner
+
+gateway = SignalGateway()
+gateway.schedule(ScheduledPrompt(
+    goal="检查部署状态并汇报",
+    run_at_ms=int(time.time() * 1000) + 60_000,
+))
+
+runner = RuntimeRunner(RuntimeOptions(
+    ...,
+    signal_source=gateway,
+))
+
+async for event in runner.run("开始监控"):
+    ...
+```
+
+---
+
+## Level 2：Webhook 注入
+
+```python
+from deepstrike import RuntimeSignal
+
+# HTTP handler 中
+gateway.ingest(RuntimeSignal(
+    kind="external",
+    payload={"event": "deploy_done", "version": "1.2.3"},
+))
+```
+
+---
+
+## Level 3：Recipient 路由
+
+共享 gateway 服务多个 peer 时，按 `recipient` 过滤：
+
+```python
+sig = await gateway.next_signal(recipient="analyst-1")
+```
+
+测试：`python/tests/test_signal_addressing.py`
+
+---
+
+## Level 4：ReactiveSession
+
+```python
+from deepstrike import (
+    ReactiveSession, ReactivePeerSpec, RunGroup,
+    InMemoryGroupBudgetStore, react_by_mention,
+)
+
+group = RunGroup(id="team-1", budget_store=InMemoryGroupBudgetStore())
+session = ReactiveSession(
+    run_group=group,
+    turn_policy=react_by_mention,
+    make_runner=make_runner_fn,
+    signal_gateway=SignalGateway(),
+)
+
+await session.emit(BlackboardEvent(author="user", text="@analyst 分析这个数据"))
+reactions = await session.run_turns()
+```
+
+每个 persona 是一次 `runner.run(session_id=...)`，continuity 来自 SessionLog。
+
+Stateless-friendly：`emit` 可在 HTTP handler 中调用；`resume` 从 RunGroup membership 重建 peer 集。
+
+---
+
+## 延伸阅读
+
+- [Sub-Agent 与协作](./sub-agents-and-collaboration)
+- [RunGroup 预算](../concepts/run-group-budget)
+- 测试：`python/tests/test_reactive_session.py`

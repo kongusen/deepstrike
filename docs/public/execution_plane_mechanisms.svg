@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="100%" height="100%" style="background-color: #0b0f19; font-family: system-ui, -apple-system, sans-serif;">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b0f19" />
+      <stop offset="50%" stop-color="#111827" />
+      <stop offset="100%" stop-color="#070a13" />
+    </linearGradient>
+    <linearGradient id="boxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    
+    <!-- Arrows -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#bd00ff" />
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="480" fill="url(#bgGrad)" />
+  <rect width="800" height="480" fill="none" stroke="#1e293b" stroke-width="2" />
+
+  <!-- Grid lines -->
+  <path d="M 0 60 L 800 60 M 0 120 L 800 120 M 0 180 L 800 180 M 0 240 L 800 240 M 0 300 L 800 300 M 0 360 L 800 360 M 0 420 L 800 420" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+  <path d="M 100 0 L 100 480 M 200 0 L 200 480 M 300 0 L 300 480 M 400 0 L 400 480 M 500 0 L 500 480 M 600 0 L 600 480 M 700 0 L 700 480" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+
+  <!-- Title -->
+  <text x="400" y="35" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="700" letter-spacing="2">EXECUTION PLANE &amp; TOOLS</text>
+  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-size="11">Tool Execution, Sandboxing &amp; Spooling</text>
+
+  <!-- INPUT: APPROVED SYS CALL (Left) -->
+  <g transform="translate(30, 160)">
+    <rect width="180" height="150" rx="8" fill="url(#boxGrad)" stroke="#bd00ff" stroke-width="1.5" />
+    <rect width="180" height="30" rx="8" fill="#bd00ff" opacity="0.1" />
+    <text x="90" y="19" text-anchor="middle" fill="#c084fc" font-size="11" font-weight="bold">Approved Syscall</text>
+    
+    <g transform="translate(10, 45)">
+      <rect width="160" height="85" rx="4" fill="#111827" stroke="#334155" />
+      <text x="12" y="20" fill="#e2e8f0" font-size="10" font-weight="bold" font-family="monospace">Syscall::Invoke(call)</text>
+      <text x="12" y="38" fill="#94a3b8" font-size="8.5">▪ Tool name &amp; args</text>
+      <text x="12" y="50" fill="#94a3b8" font-size="8.5">▪ Caller TCB context</text>
+      <text x="12" y="62" fill="#94a3b8" font-size="8.5">▪ Scoped capability filters</text>
+      <text x="12" y="74" fill="#10b981" font-size="8" font-weight="bold">✓ Governance Approved</text>
+    </g>
+  </g>
+
+  <!-- MIDDLE: EXECUTION PLANE ROUTER -->
+  <g transform="translate(250, 80)">
+    <rect width="280" height="320" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
+    <rect width="280" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
+    <text x="140" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">ExecutionPlane Router</text>
+
+    <!-- Sub Planes Stack -->
+    <!-- Local Python -->
+    <g transform="translate(15, 50)">
+      <rect width="250" height="50" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="18" fill="#ffffff" font-size="10" font-weight="bold">LocalExecutionPlane (Python Registry)</text>
+      <text x="10" y="32" fill="#94a3b8" font-size="8">Binds Python async functions decorated with @tool</text>
+      <text x="10" y="42" fill="#94a3b8" font-size="8">Runs in host process environment</text>
+    </g>
+
+    <!-- Worktree Plane -->
+    <g transform="translate(15, 110)">
+      <rect width="250" height="50" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="18" fill="#ffffff" font-size="10" font-weight="bold">WorktreePlane (Cwd Isolation)</text>
+      <text x="10" y="32" fill="#94a3b8" font-size="8">Injects git worktree cwd to restrict filesystem access</text>
+      <text x="10" y="42" fill="#94a3b8" font-size="8">Guarantees branch workspace safety</text>
+    </g>
+
+    <!-- Process Sandbox -->
+    <g transform="translate(15, 170)">
+      <rect width="250" height="50" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="18" fill="#ffffff" font-size="10" font-weight="bold">ProcessSandboxPlane (CLI Sandboxing)</text>
+      <text x="10" y="32" fill="#94a3b8" font-size="8">Spawns external commands in isolation containers</text>
+      <text x="10" y="42" fill="#94a3b8" font-size="8">Captures stdout, stderr, and resource limits</text>
+    </g>
+
+    <!-- Remote VPC -->
+    <g transform="translate(15, 230)">
+      <rect width="250" height="50" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="18" fill="#ffffff" font-size="10" font-weight="bold">RemoteVpcPlane (VPC Agent API)</text>
+      <text x="10" y="32" fill="#94a3b8" font-size="8">Dispatches execution to secure remote sandboxes</text>
+      <text x="10" y="42" fill="#94a3b8" font-size="8">Executes safely outside host SDK environment</text>
+    </g>
+  </g>
+
+  <!-- OUTPUT PLANE: RESULT HANDLERS (Right) -->
+  
+  <!-- Path A: Normal Output -->
+  <g transform="translate(570, 95)">
+    <rect width="200" height="90" rx="6" fill="#10b981" opacity="0.1" stroke="#10b981" stroke-width="1.2" />
+    <text x="100" y="24" text-anchor="middle" fill="#34d399" font-size="11" font-weight="bold">Normal Result ( &lt; threshold )</text>
+    <text x="100" y="44" text-anchor="middle" fill="#ffffff" font-size="9" font-weight="bold">Direct Feedback</text>
+    <text x="100" y="58" text-anchor="middle" fill="#94a3b8" font-size="8">Appends directly as plain text observation</text>
+    <text x="100" y="70" text-anchor="middle" fill="#94a3b8" font-size="8">into the Context VM History</text>
+  </g>
+
+  <!-- Path B: Large Output -->
+  <g transform="translate(570, 265)">
+    <rect width="200" height="120" rx="6" fill="#ef4444" opacity="0.1" stroke="#ef4444" stroke-width="1.2" />
+    <text x="100" y="24" text-anchor="middle" fill="#f87171" font-size="11" font-weight="bold">Large Result ( &gt; threshold )</text>
+    
+    <!-- Spooler detail -->
+    <rect x="15" y="38" width="170" height="65" rx="4" fill="#111827" stroke="#ef4444" stroke-width="0.8" />
+    <text x="100" y="52" text-anchor="middle" fill="#fca5a5" font-size="9.5" font-weight="bold">LargeResultSpool</text>
+    <text x="25" y="68" fill="#94a3b8" font-size="7.5">1. Spools payload to Disk / Store</text>
+    <text x="25" y="78" fill="#94a3b8" font-size="7.5">2. Returns Handle SHA-256 identifier</text>
+    <text x="25" y="88" fill="#f87171" font-size="7.5" font-weight="bold">3. Replaces direct text to prevent VM crash</text>
+  </g>
+
+  <!-- Connectors -->
+  <!-- Syscall -> Router -->
+  <path d="M 210,235 L 242,235" stroke="#bd00ff" stroke-width="2" marker-end="url(#arrowPurple)" />
+  
+  <!-- Router -> Normal Result -->
+  <path d="M 530,140 L 562,140" stroke="#10b981" stroke-width="2" marker-end="url(#arrow)" />
+  
+  <!-- Router -> Large Result -->
+  <path d="M 530,325 L 562,325" stroke="#ef4444" stroke-width="2" marker-end="url(#arrow)" />
+</svg>

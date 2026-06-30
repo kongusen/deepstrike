@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://github.com/kongusen/deepstrike">
+    <img src="https://raw.githubusercontent.com/kongusen/deepstrike/main/docs/public/banner.png" alt="DeepStrike" width="420" />
+  </a>
+</p>
+
 # DeepStrike WASM SDK
 
 Runtime framework built on a Rust kernel compiled to WebAssembly. Runs in browsers, Cloudflare Workers, Deno Deploy, and Vercel Edge — anywhere that supports `fetch` and WASM.

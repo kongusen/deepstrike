@@ -6,7 +6,9 @@
   "scripts": {
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:preview": "vitepress preview docs",
+    "docs:drift": "node scripts/check-docs-drift.mjs",
+    "docs:manifest": "node scripts/extract-symbol-manifest.mjs"
   },
   "devDependencies": {
     "vitepress": "^1.5.0",

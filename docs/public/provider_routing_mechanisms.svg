@@ -1,0 +1,139 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="100%" height="100%" style="background-color: #0b0f19; font-family: system-ui, -apple-system, sans-serif;">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b0f19" />
+      <stop offset="50%" stop-color="#111827" />
+      <stop offset="100%" stop-color="#070a13" />
+    </linearGradient>
+    <linearGradient id="boxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    
+    <!-- Arrows -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#bd00ff" />
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="480" fill="url(#bgGrad)" />
+  <rect width="800" height="480" fill="none" stroke="#1e293b" stroke-width="2" />
+
+  <!-- Grid lines -->
+  <path d="M 0 60 L 800 60 M 0 120 L 800 120 M 0 180 L 800 180 M 0 240 L 800 240 M 0 300 L 800 300 M 0 360 L 800 360 M 0 420 L 800 420" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+  <path d="M 100 0 L 100 480 M 200 0 L 200 480 M 300 0 L 300 480 M 400 0 L 400 480 M 500 0 L 500 480 M 600 0 L 600 480 M 700 0 L 700 480" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+
+  <!-- Title -->
+  <text x="400" y="35" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="700" letter-spacing="2">PROVIDER ROUTING</text>
+  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-size="11">Decoupled LLM Providers &amp; Runtime Model Handlers</text>
+
+  <!-- LEFT: KERNEL ORCHESTRATION (model_hint allocation) -->
+  <g transform="translate(30, 90)">
+    <rect width="240" height="340" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
+    <rect width="240" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
+    <text x="120" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">DeepStrike Core (Kernel)</text>
+    
+    <!-- Explanatory note -->
+    <text x="15" y="58" fill="#94a3b8" font-size="9">Kernel has NO access to API keys or credentials</text>
+    <text x="15" y="70" fill="#94a3b8" font-size="9">It only processes abstract capabilities hints</text>
+
+    <!-- Workflow Node specs containing hints -->
+    <!-- Node 1 -->
+    <g transform="translate(15, 90)">
+      <rect width="210" height="60" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="16" fill="#ffffff" font-size="10.5" font-weight="bold">WorkflowNodeSpec (Explore)</text>
+      <text x="10" y="32" fill="#94a3b8" font-size="8.5">task = "Gather facts on ticket"</text>
+      <text x="10" y="47" fill="#fb923c" font-size="9" font-weight="bold" font-family="monospace">model_hint = "fast"</text>
+    </g>
+
+    <!-- Node 2 -->
+    <g transform="translate(15, 165)">
+      <rect width="210" height="60" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="16" fill="#ffffff" font-size="10.5" font-weight="bold">WorkflowNodeSpec (Code Build)</text>
+      <text x="10" y="32" fill="#94a3b8" font-size="8.5">task = "Refactor payment code"</text>
+      <text x="10" y="47" fill="#c084fc" font-size="9" font-weight="bold" font-family="monospace">model_hint = "deep"</text>
+    </g>
+
+    <!-- Node 3 -->
+    <g transform="translate(15, 240)">
+      <rect width="210" height="60" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="16" fill="#ffffff" font-size="10.5" font-weight="bold">WorkflowNodeSpec (Review)</text>
+      <text x="10" y="32" fill="#94a3b8" font-size="8.5">task = "Verify syntax check"</text>
+      <text x="10" y="47" fill="#94a3b8" font-size="9" font-family="monospace">model_hint = None (default)</text>
+    </g>
+  </g>
+
+  <!-- MIDDLE: ABI TRANSITION (SpawnDescriptor with hint) -->
+  <g transform="translate(290, 160)">
+    <rect width="180" height="150" rx="6" fill="#111827" stroke="#bd00ff" stroke-width="1.2" />
+    <rect width="180" height="24" rx="6" fill="#bd00ff" opacity="0.1" />
+    <text x="90" y="16" text-anchor="middle" fill="#c084fc" font-size="10" font-weight="bold">ABI SpawnDescriptor</text>
+    
+    <g transform="translate(10, 35)">
+      <text x="5" y="15" fill="#e2e8f0" font-size="9">Passes abstract model descriptor:</text>
+      
+      <rect x="5" y="30" width="150" height="42" rx="3" fill="#1e293b" stroke="#bd00ff" stroke-dasharray="2" stroke-width="0.8" />
+      <text x="12" y="46" fill="#c084fc" font-size="8.5" font-family="monospace">{</text>
+      <text x="12" y="58" fill="#c084fc" font-size="8.5" font-family="monospace">  "model_hint": "fast"</text>
+      <text x="12" y="68" fill="#c084fc" font-size="8.5" font-family="monospace">}</text>
+
+      <text x="5" y="95" fill="#94a3b8" font-size="8.5">Decouples core orchestration</text>
+      <text x="5" y="105" fill="#94a3b8" font-size="8.5">from cloud vendor keys</text>
+    </g>
+  </g>
+
+  <!-- RIGHT: HOST SDK ROUTER (provider_for mapping) -->
+  <g transform="translate(490, 90)">
+    <rect width="280" height="340" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
+    <rect width="280" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
+    <text x="140" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">Host SDK (provider_for)</text>
+
+    <!-- Resolver Factory -->
+    <g transform="translate(15, 50)">
+      <rect width="250" height="65" rx="6" fill="#111827" stroke="#334155" />
+      <text x="10" y="18" fill="#ffffff" font-size="10.5" font-weight="bold">provider_for(hint: str) callback</text>
+      <text x="10" y="32" fill="#94a3b8" font-size="8">Resolves hint string to actual cloud model client</text>
+      <text x="10" y="44" fill="#94a3b8" font-size="8">Holds API credentials, rate limits, proxy settings</text>
+      <text x="10" y="56" fill="#38bdf8" font-size="8.5" font-weight="bold">→ Maps "fast" | "deep" | None</text>
+    </g>
+
+    <!-- Targets stack -->
+    <!-- fast path -->
+    <g transform="translate(15, 130)">
+      <rect width="250" height="55" rx="4" fill="#111827" stroke="#fb923c" stroke-width="1.2" />
+      <text x="10" y="18" fill="#fb923c" font-size="10" font-weight="bold">OpenAIProvider</text>
+      <text x="10" y="32" fill="#e2e8f0" font-size="8.5">model = "gpt-4.1-mini"</text>
+      <text x="10" y="45" fill="#94a3b8" font-size="8">High-speed, low-cost token consumption</text>
+    </g>
+
+    <!-- deep path -->
+    <g transform="translate(15, 195)">
+      <rect width="250" height="55" rx="4" fill="#111827" stroke="#c084fc" stroke-width="1.2" />
+      <text x="10" y="18" fill="#c084fc" font-size="10" font-weight="bold">AnthropicProvider</text>
+      <text x="10" y="32" fill="#e2e8f0" font-size="8.5">model = "claude-sonnet-4-5"</text>
+      <text x="10" y="45" fill="#94a3b8" font-size="8">High-intelligence, complex coding/reasoning</text>
+    </g>
+
+    <!-- default path -->
+    <g transform="translate(15, 260)">
+      <rect width="250" height="55" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="18" fill="#ffffff" font-size="10" font-weight="bold">Default Provider</text>
+      <text x="10" y="32" fill="#e2e8f0" font-size="8.5">model = "claude-sonnet-4-5"</text>
+      <text x="10" y="45" fill="#94a3b8" font-size="8">Standard fallback client for unspecified nodes</text>
+    </g>
+  </g>
+
+  <!-- Connectors -->
+  <!-- Node fast -> ABI -> OpenAI -->
+  <path d="M 240,150 L 290,180" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="2" marker-end="url(#arrow)" />
+  <!-- Node deep -> ABI -> Anthropic -->
+  <path d="M 240,210 L 290,210" stroke="#c084fc" stroke-width="1.5" stroke-dasharray="2" marker-end="url(#arrow)" />
+  
+  <!-- ABI -> Host Resolver -->
+  <path d="M 470,235 L 485,235" stroke="#bd00ff" stroke-width="1.5" marker-end="url(#arrowPurple)" />
+</svg>

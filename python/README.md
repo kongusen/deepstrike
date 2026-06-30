@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://github.com/kongusen/deepstrike">
+    <img src="https://raw.githubusercontent.com/kongusen/deepstrike/main/docs/public/banner.png" alt="DeepStrike" width="420" />
+  </a>
+</p>
+
 # DeepStrike Python SDK
 
 Runtime framework built on a Rust kernel. The kernel owns loop control, context compression, governance, signal routing, and memory paging — the SDK owns all I/O (LLM calls, tool execution, disk, long-term memory).

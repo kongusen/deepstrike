@@ -33,3 +33,8 @@ node/examples/.stability-runs/
 
 # Benchmark run outputs
 benchmark/.runs/
+
+# Docs
+.wiki-sync/
+docs/.vitepress/cache/
+docs/.vitepress/dist/

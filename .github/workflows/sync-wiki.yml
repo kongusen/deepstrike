@@ -1,0 +1,55 @@
+name: Sync Docs to Wiki
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+      - 'scripts/sync-docs-to-wiki.py'
+      - '.github/workflows/sync-wiki.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Hard gate: never publish a narrative that has drifted from the code.
+      - name: Check docs ↔ code drift
+        run: node scripts/check-docs-drift.mjs
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Sync docs to wiki checkout
+        run: python3 scripts/sync-docs-to-wiki.py .wiki-sync
+
+      - name: Push to GitHub Wiki
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd .wiki-sync
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.wiki.git"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No wiki changes to push"
+            exit 0
+          fi
+          git commit -m "docs: sync from ${{ github.sha }}"
+          git push origin HEAD:master --force

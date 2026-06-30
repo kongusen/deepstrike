@@ -1,0 +1,143 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="100%" height="100%" style="background-color: #0b0f19; font-family: system-ui, -apple-system, sans-serif;">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b0f19" />
+      <stop offset="50%" stop-color="#111827" />
+      <stop offset="100%" stop-color="#070a13" />
+    </linearGradient>
+    <linearGradient id="boxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    
+    <!-- Arrows -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#10b981" />
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="480" fill="url(#bgGrad)" />
+  <rect width="800" height="480" fill="none" stroke="#1e293b" stroke-width="2" />
+
+  <!-- Grid lines -->
+  <path d="M 0 60 L 800 60 M 0 120 L 800 120 M 0 180 L 800 180 M 0 240 L 800 240 M 0 300 L 800 300 M 0 360 L 800 360 M 0 420 L 800 420" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+  <path d="M 100 0 L 100 480 M 200 0 L 200 480 M 300 0 L 300 480 M 400 0 L 400 480 M 500 0 L 500 480 M 600 0 L 600 480 M 700 0 L 700 480" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+
+  <!-- Title -->
+  <text x="400" y="35" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="700" letter-spacing="2">MILESTONES &amp; ACCEPTANCE STATE MACHINE</text>
+  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-size="11">Phased Execution, Evidence Collection &amp; Capability Unlocking</text>
+
+  <!-- STATE MACHINE FLOW -->
+
+  <!-- Phase 1: Design (Passed) -->
+  <g transform="translate(40, 100)">
+    <rect width="210" height="260" rx="8" fill="url(#boxGrad)" stroke="#10b981" stroke-width="1.5" />
+    <rect width="210" height="35" rx="8" fill="#10b981" opacity="0.1" />
+    <text x="105" y="22" text-anchor="middle" fill="#34d399" font-size="12" font-weight="bold">Phase 1: design (PASSED)</text>
+
+    <!-- Details -->
+    <g transform="translate(10, 45)">
+      <!-- Criteria -->
+      <text x="5" y="15" fill="#34d399" font-size="10" font-weight="bold">Criteria:</text>
+      <text x="15" y="28" fill="#e2e8f0" font-size="9">✓ Design document completed</text>
+      <text x="15" y="40" fill="#e2e8f0" font-size="9">✓ Architecture review passed</text>
+
+      <!-- Evidence -->
+      <text x="5" y="65" fill="#34d399" font-size="10" font-weight="bold">Evidence collected:</text>
+      <text x="15" y="78" fill="#94a3b8" font-size="8.5" font-family="monospace">docs/architecture/design.md</text>
+
+      <!-- Verifier -->
+      <text x="5" y="105" fill="#34d399" font-size="10" font-weight="bold">Verifier:</text>
+      <text x="15" y="118" fill="#94a3b8" font-size="8.5">Static checker (FileExists)</text>
+
+      <!-- Lock status -->
+      <rect x="5" y="145" width="180" height="50" rx="4" fill="#10b981" opacity="0.1" />
+      <text x="95" y="165" text-anchor="middle" fill="#34d399" font-size="9" font-weight="bold">UNLOCKED CAPABILITY:</text>
+      <text x="95" y="180" text-anchor="middle" fill="#ffffff" font-size="9.5" font-weight="bold">Allows Spawn(implementer)</text>
+    </g>
+  </g>
+
+  <!-- Arrow 1 to 2 -->
+  <path d="M 260,230 L 285,230" fill="none" stroke="#10b981" stroke-width="2" marker-end="url(#arrowGreen)" />
+  <text x="272.5" y="215" text-anchor="middle" fill="#34d399" font-size="8" font-weight="bold">Unlock</text>
+
+  <!-- Phase 2: Impl (Active) -->
+  <g transform="translate(295, 100)">
+    <!-- Active Glow -->
+    <rect x="-2" y="-2" width="214" height="264" rx="10" fill="none" stroke="#00f0ff" stroke-width="3" opacity="0.3" />
+    
+    <rect width="210" height="260" rx="8" fill="url(#boxGrad)" stroke="#00f0ff" stroke-width="1.5" />
+    <rect width="210" height="35" rx="8" fill="#00f0ff" opacity="0.1" />
+    <text x="105" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">Phase 2: impl (ACTIVE)</text>
+
+    <!-- Details -->
+    <g transform="translate(10, 45)">
+      <!-- Criteria -->
+      <text x="5" y="15" fill="#00f0ff" font-size="10" font-weight="bold">Criteria:</text>
+      <text x="15" y="28" fill="#e2e8f0" font-size="9">▪ Core business logic coded</text>
+      <text x="15" y="40" fill="#e2e8f0" font-size="9">▪ Compiles successfully</text>
+
+      <!-- Evidence -->
+      <text x="5" y="65" fill="#00f0ff" font-size="10" font-weight="bold">Required Evidence:</text>
+      <text x="15" y="78" fill="#94a3b8" font-size="8.5" font-family="monospace">src/lib.rs, cargo build output</text>
+
+      <!-- Verifier -->
+      <text x="5" y="105" fill="#00f0ff" font-size="10" font-weight="bold">Verifier:</text>
+      <text x="15" y="118" fill="#94a3b8" font-size="8.5">Compilation check verifier</text>
+
+      <!-- Status -->
+      <rect x="5" y="145" width="180" height="50" rx="4" fill="#00f0ff" opacity="0.08" stroke="#00f0ff" stroke-dasharray="2 2" stroke-width="0.8" />
+      <text x="95" y="165" text-anchor="middle" fill="#38bdf8" font-size="9" font-weight="bold">ACTIVE IN PROGRESS</text>
+      <text x="95" y="180" text-anchor="middle" fill="#ffffff" font-size="8" >Exposes file modification tools</text>
+    </g>
+  </g>
+
+  <!-- Arrow 2 to 3 -->
+  <path d="M 515,230 L 540,230" fill="none" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)" />
+  <text x="527.5" y="215" text-anchor="middle" fill="#94a3b8" font-size="8">Pending</text>
+
+  <!-- Phase 3: Test (Locked) -->
+  <g transform="translate(550, 100)">
+    <rect width="210" height="260" rx="8" fill="url(#boxGrad)" stroke="#334155" stroke-width="1.2" opacity="0.6" />
+    <rect width="210" height="35" rx="8" fill="#334155" opacity="0.3" />
+    <text x="105" y="22" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="bold">Phase 3: test (LOCKED)</text>
+
+    <!-- Details -->
+    <g transform="translate(10, 45)" opacity="0.5">
+      <!-- Criteria -->
+      <text x="5" y="15" fill="#94a3b8" font-size="10" font-weight="bold">Criteria:</text>
+      <text x="15" y="28" fill="#94a3b8" font-size="9">▪ 100% unit tests pass</text>
+      <text x="15" y="40" fill="#94a3b8" font-size="9">▪ Integration verification</text>
+
+      <!-- Evidence -->
+      <text x="5" y="65" fill="#94a3b8" font-size="10" font-weight="bold">Required Evidence:</text>
+      <text x="15" y="78" fill="#94a3b8" font-size="8.5" font-family="monospace">pytest/cargo test logs</text>
+
+      <!-- Verifier -->
+      <text x="5" y="105" fill="#94a3b8" font-size="10" font-weight="bold">Verifier:</text>
+      <text x="15" y="118" fill="#94a3b8" font-size="8.5">Test runner exit code verifier</text>
+
+      <!-- Lock status -->
+      <rect x="5" y="145" width="180" height="50" rx="4" fill="#334155" opacity="0.2" />
+      <text x="95" y="175" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="bold">🔒 LOCKED</text>
+    </g>
+    
+    <!-- Big Padlock Icon Overlay -->
+    <path d="M 105,190 C 97,190 91,196 91,204 L 91,215 L 96,215 L 96,204 C 96,199 100,195 105,195 C 110,195 114,199 114,204 L 114,215 L 119,215 L 119,204 C 119,196 113,190 105,190 Z" fill="#64748b" />
+    <rect x="85" y="215" width="40" height="30" rx="4" fill="#64748b" />
+    <circle cx="105" cy="227" r="3" fill="#0b0f19" />
+    <line x1="105" y1="230" x2="105" y2="238" stroke="#0b0f19" stroke-width="1.5" />
+  </g>
+
+  <!-- KERNEL STATE TRACKER (Bottom) -->
+  <g transform="translate(40, 390)">
+    <rect width="720" height="60" rx="6" fill="#111827" stroke="#334155" />
+    <text x="15" y="22" fill="#94a3b8" font-size="10.5" font-weight="bold">Kernel MilestoneTracker Engine:</text>
+    <text x="15" y="38" fill="#ffffff" font-size="11">Monitors the evidence stream via observations. On `Syscall::milestone_result` (evidence submitted), verifiers are evaluated. If successful, updates state to PASSED, unlocking downstreams.</text>
+  </g>
+</svg>

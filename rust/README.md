@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://github.com/kongusen/deepstrike">
+    <img src="https://raw.githubusercontent.com/kongusen/deepstrike/main/docs/public/banner.png" alt="DeepStrike" width="420" />
+  </a>
+</p>
+
 # DeepStrike Rust SDK
 
 Runtime framework built on `deepstrike-core`. The kernel handles loop control, context compression, skill routing, governance, signal prioritization — the SDK handles all I/O.

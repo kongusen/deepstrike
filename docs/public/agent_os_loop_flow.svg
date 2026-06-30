@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="100%" height="100%" style="background-color: #0b0f19; font-family: system-ui, -apple-system, sans-serif;">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b0f19" />
+      <stop offset="50%" stop-color="#111827" />
+      <stop offset="100%" stop-color="#070a13" />
+    </linearGradient>
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    
+    <!-- Arrows -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#bd00ff" />
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#ef4444" />
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="480" fill="url(#bgGrad)" />
+  <rect width="800" height="480" fill="none" stroke="#1e293b" stroke-width="2" />
+
+  <!-- Grid lines -->
+  <path d="M 0 60 L 800 60 M 0 120 L 800 120 M 0 180 L 800 180 M 0 240 L 800 240 M 0 300 L 800 300 M 0 360 L 800 360 M 0 420 L 800 420" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+  <path d="M 100 0 L 100 480 M 200 0 L 200 480 M 300 0 L 300 480 M 400 0 L 400 480 M 500 0 L 500 480 M 600 0 L 600 480 M 700 0 L 700 480" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+
+  <!-- Title -->
+  <text x="400" y="35" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="700" letter-spacing="2">L* LOOP &amp; SYSCALL TRAP</text>
+  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-size="11">Single Task Turn Lifecycle</text>
+
+  <!-- REASON CARD (Top Left) -->
+  <g transform="translate(60, 80)">
+    <rect width="250" height="110" rx="10" fill="url(#cardGrad)" stroke="#00f0ff" stroke-width="1.5" />
+    <!-- Step Indicator -->
+    <rect x="15" y="-12" width="80" height="24" rx="12" fill="#00f0ff" />
+    <text x="55" y="4" text-anchor="middle" fill="#0b0f19" font-size="10" font-weight="bold">1. REASON</text>
+    
+    <text x="15" y="35" fill="#ffffff" font-size="13" font-weight="600">Context VM Render</text>
+    <text x="15" y="55" fill="#94a3b8" font-size="10.5">▪ Merges Ident/Know/Hist/State partitions</text>
+    <text x="15" y="72" fill="#94a3b8" font-size="10.5">▪ Narrows down tool schemas dynamically</text>
+    <text x="15" y="89" fill="#38bdf8" font-size="10.5" font-weight="bold">→ Output: KernelAction::CallLLM</text>
+  </g>
+
+  <!-- ACT CARD (Top Right) -->
+  <g transform="translate(420, 80)">
+    <rect width="250" height="110" rx="10" fill="url(#cardGrad)" stroke="#bd00ff" stroke-width="1.5" />
+    <!-- Step Indicator -->
+    <rect x="15" y="-12" width="60" height="24" rx="12" fill="#bd00ff" />
+    <text x="45" y="4" text-anchor="middle" fill="#ffffff" font-size="10" font-weight="bold">2. ACT</text>
+
+    <text x="15" y="35" fill="#ffffff" font-size="13" font-weight="600">Syscall Trap &amp; Dispatch</text>
+    <text x="15" y="55" fill="#94a3b8" font-size="10.5">▪ LLM returns response and tool_calls</text>
+    <text x="15" y="72" fill="#94a3b8" font-size="10.5">▪ Intercepted by Syscall Gate immediately</text>
+    <text x="15" y="89" fill="#c084fc" font-size="10.5" font-weight="bold">→ Output: Syscall::Invoke / Spawn</text>
+  </g>
+
+  <!-- OBSERVE CARD (Bottom Right) -->
+  <g transform="translate(420, 310)">
+    <rect width="250" height="110" rx="10" fill="url(#cardGrad)" stroke="#10b981" stroke-width="1.5" />
+    <!-- Step Indicator -->
+    <rect x="15" y="-12" width="85" height="24" rx="12" fill="#10b981" />
+    <text x="57" y="4" text-anchor="middle" fill="#0b0f19" font-size="10" font-weight="bold">3. OBSERVE</text>
+
+    <text x="15" y="35" fill="#ffffff" font-size="13" font-weight="600">Observation Injection</text>
+    <text x="15" y="55" fill="#94a3b8" font-size="10.5">▪ Host SDK runs approved tool actions</text>
+    <text x="15" y="72" fill="#94a3b8" font-size="10.5">▪ Feed tool/provider outcomes back</text>
+    <text x="15" y="89" fill="#34d399" font-size="10.5" font-weight="bold">→ Output: KernelObservation Log</text>
+  </g>
+
+  <!-- DELTA CARD (Bottom Left) -->
+  <g transform="translate(60, 310)">
+    <rect width="250" height="110" rx="10" fill="url(#cardGrad)" stroke="#eab308" stroke-width="1.5" />
+    <!-- Step Indicator -->
+    <rect x="15" y="-12" width="70" height="24" rx="12" fill="#eab308" />
+    <text x="50" y="4" text-anchor="middle" fill="#0b0f19" font-size="10" font-weight="bold">4. DELTA</text>
+
+    <text x="15" y="35" fill="#ffffff" font-size="13" font-weight="600">Compaction &amp; Renewal</text>
+    <text x="15" y="55" fill="#94a3b8" font-size="10.5">▪ Analyzes Context VM token pressure</text>
+    <text x="15" y="72" fill="#94a3b8" font-size="10.5">▪ Runs Snip / Drop / Summarize pipeline</text>
+    <text x="15" y="89" fill="#fde047" font-size="10.5" font-weight="bold">→ Output: Prompt Cache alignment</text>
+  </g>
+
+  <!-- SYSCALL TRAP CALLOUT (Far Right Side Detail) -->
+  <g transform="translate(680, 110)">
+    <line x1="-10" y1="25" x2="-25" y2="25" stroke="#bd00ff" stroke-width="1.5" stroke-dasharray="2 2" />
+    <!-- Syscall Gate Box -->
+    <rect x="0" y="0" width="100" height="280" rx="8" fill="#111827" stroke="#334155" />
+    <text x="50" y="20" text-anchor="middle" fill="#94a3b8" font-size="9" font-weight="bold">GOVERNANCE</text>
+    <text x="50" y="35" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="bold">Syscall Gate</text>
+    
+    <!-- Gated Options -->
+    <!-- Allow -->
+    <g transform="translate(10, 55)">
+      <rect width="80" height="40" rx="4" fill="#10b981" opacity="0.15" stroke="#10b981" stroke-width="1" />
+      <text x="40" y="24" text-anchor="middle" fill="#34d399" font-size="11" font-weight="bold">ALLOW</text>
+      <text x="40" y="34" text-anchor="middle" fill="#a7f3d0" font-size="7">Exec tools directly</text>
+    </g>
+    
+    <!-- Deny -->
+    <g transform="translate(10, 110)">
+      <rect width="80" height="40" rx="4" fill="#ef4444" opacity="0.15" stroke="#ef4444" stroke-width="1" />
+      <text x="40" y="24" text-anchor="middle" fill="#f87171" font-size="11" font-weight="bold">DENY</text>
+      <text x="40" y="34" text-anchor="middle" fill="#fca5a5" font-size="7">Write rollback to VM</text>
+    </g>
+    
+    <!-- Ask User -->
+    <g transform="translate(10, 165)">
+      <rect width="80" height="45" rx="4" fill="#f59e0b" opacity="0.15" stroke="#f59e0b" stroke-width="1" />
+      <text x="40" y="22" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="bold">GATE</text>
+      <text x="40" y="32" text-anchor="middle" fill="#fef08a" font-size="7">Suspend task &amp;</text>
+      <text x="40" y="40" text-anchor="middle" fill="#fef08a" font-size="7">Prompt User</text>
+    </g>
+    
+    <!-- RateLimit -->
+    <g transform="translate(10, 225)">
+      <rect width="80" height="40" rx="4" fill="#3b82f6" opacity="0.15" stroke="#3b82f6" stroke-width="1" />
+      <text x="40" y="24" text-anchor="middle" fill="#60a5fa" font-size="10" font-weight="bold">LIMIT</text>
+      <text x="40" y="34" text-anchor="middle" fill="#bfdbfe" font-size="7">Throttle invocation</text>
+    </g>
+  </g>
+
+  <!-- Connectors -->
+  <!-- Reason -> Act -->
+  <path d="M 310,135 L 410,135" fill="none" stroke="#00f0ff" stroke-width="2" marker-end="url(#arrow)" />
+  <!-- Act -> Observe -->
+  <path d="M 545,190 L 545,298" fill="none" stroke="#bd00ff" stroke-width="2" marker-end="url(#arrowPurple)" />
+  <!-- Observe -> Delta -->
+  <path d="M 420,365 L 320,365" fill="none" stroke="#10b981" stroke-width="2" marker-end="url(#arrow)" />
+  <!-- Delta -> Reason -->
+  <path d="M 185,310 L 185,202" fill="none" stroke="#eab308" stroke-width="2" marker-end="url(#arrow)" />
+
+  <!-- Act to Syscall Gate Arrow -->
+  <path d="M 670,135 L 678,135" fill="none" stroke="#bd00ff" stroke-width="1.5" />
+  
+  <!-- Return path from Syscall Gate to Host (Observe) -->
+  <path d="M 730,95 C 730,70 545,70 545,78" fill="none" stroke="#10b981" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrow)" />
+  <text x="640" y="65" text-anchor="middle" fill="#10b981" font-size="8.5">Allowed invocation goes to SDK ExecutionPlane</text>
+</svg>

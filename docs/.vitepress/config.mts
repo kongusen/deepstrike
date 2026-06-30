@@ -1,91 +1,58 @@
 import { defineConfig } from 'vitepress'
+import { enNav, enSidebar, zhNav, zhSidebar } from './shared'
 
 export default defineConfig({
   title: 'DeepStrike',
-  description: 'Agent OS microkernel for cross-language agent runtimes',
-  
-  // Clean URLs are nicer: /getting-started/quick-start instead of /getting-started/quick-start.html
+  description: 'Cross-language agent runtime kernel',
   cleanUrls: true,
+  ignoreDeadLinks: [/^https?:\/\/localhost/],
 
   head: [
-    ['link', { rel: 'icon', type: 'image/png', href: '/banner.png' }]
+    ['link', { rel: 'icon', type: 'image/png', href: '/banner.png' }],
   ],
 
   themeConfig: {
     logo: '/banner.png',
-    
     socialLinks: [
       { icon: 'github', link: 'https://github.com/kongusen/deepstrike' },
-      { icon: 'discord', link: 'https://discord.gg/cwS3RBYCv' }
+      { icon: 'discord', link: 'https://discord.gg/cwS3RBYCv' },
     ],
+    search: { provider: 'local' },
+  },
 
-    nav: [
-      { text: 'Home', link: '/' },
-      { text: 'Agent OS', link: '/concepts/agent-os' },
-      { text: 'Workflows', link: '/concepts/dynamic-workflows' },
-      { text: 'Quick Start', link: '/getting-started/quick-start' },
-      { text: 'Concepts', link: '/concepts/core-concepts' },
-      { text: 'Guides', link: '/guides/sdk-nodejs' }
-    ],
-
-    sidebar: [
-      {
-        text: '⚡ Getting Started',
-        items: [
-          { text: 'Introduction', link: '/getting-started/' },
-          { text: 'Quick Start', link: '/getting-started/quick-start' }
-        ]
+  locales: {
+    root: {
+      label: '简体中文',
+      lang: 'zh-CN',
+      title: 'DeepStrike',
+      description: '跨语言 Agent 运行时内核 — 可重放状态、受治理工具、动态工作流',
+      themeConfig: {
+        nav: zhNav,
+        sidebar: zhSidebar,
+        footer: {
+          message: 'MIT License',
+          copyright: 'Copyright © 2026 DeepStrike Authors',
+        },
+        docFooter: { prev: '上一页', next: '下一页' },
+        outline: { label: '目录' },
       },
-      {
-        text: '🧠 Concepts',
-        items: [
-          { text: 'Overview', link: '/concepts/' },
-          { text: 'Agent OS (0.2.6+)', link: '/concepts/agent-os' },
-          { text: 'Dynamic Workflows (0.2.11+)', link: '/concepts/dynamic-workflows' },
-          { text: 'Core Concepts', link: '/concepts/core-concepts' },
-          { text: 'Context Slots & Compression', link: '/concepts/context-slots-compression' }
-        ]
+    },
+    en: {
+      label: 'English',
+      lang: 'en-US',
+      link: '/en/',
+      title: 'DeepStrike',
+      description: 'Cross-language agent runtime — replayable state, governed tools, dynamic workflows',
+      themeConfig: {
+        nav: enNav,
+        sidebar: enSidebar,
+        footer: {
+          message: 'Released under the MIT License.',
+          copyright: 'Copyright © 2026 DeepStrike Authors',
+        },
+        docFooter: { prev: 'Previous', next: 'Next' },
+        outline: { label: 'On this page' },
       },
-      {
-        text: '🔌 SDK Guides',
-        items: [
-          { text: 'Overview', link: '/guides/' },
-          { text: 'Node.js / TS SDK', link: '/guides/sdk-nodejs' },
-          { text: 'Python SDK', link: '/guides/sdk-python' },
-          { text: 'Rust SDK', link: '/guides/sdk-rust' },
-          { text: 'Providers & Streams', link: '/guides/providers' },
-          { text: 'Collaboration & Pools', link: '/guides/collaboration' }
-        ]
-      },
-      {
-        text: '🏛️ Architecture',
-        items: [
-          { text: 'Overview', link: '/architecture/' },
-          { text: 'Runtime & Kernel Design', link: '/architecture/overview' }
-        ]
-      },
-      {
-        text: '📚 Reference',
-        items: [
-          { text: 'Overview', link: '/reference/' },
-          { text: 'Kernel ABI', link: '/reference/kernel-abi' },
-          { text: 'Runtime V2 Lifecycle', link: '/reference/runtime-v2-lifecycle' },
-          { text: 'SDK OS Parity', link: '/sdk-os-parity' }
-        ]
-      },
-      {
-        text: '⚙️ Operations',
-        items: [
-          { text: 'Overview', link: '/operations/' },
-          { text: 'Release Runbook', link: '/operations/release-runbook' },
-          { text: 'Release SOP', link: '/operations/release-sop' }
-        ]
-      }
-    ],
-
-    footer: {
-      message: 'Released under the MIT License.',
-      copyright: 'Copyright © 2026 DeepStrike Authors'
-    }
-  }
+    },
+  },
 })

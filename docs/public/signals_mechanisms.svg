@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="100%" height="100%" style="background-color: #0b0f19; font-family: system-ui, -apple-system, sans-serif;">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b0f19" />
+      <stop offset="50%" stop-color="#111827" />
+      <stop offset="100%" stop-color="#070a13" />
+    </linearGradient>
+    <linearGradient id="boxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    
+    <!-- Arrows -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#bd00ff" />
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="480" fill="url(#bgGrad)" />
+  <rect width="800" height="480" fill="none" stroke="#1e293b" stroke-width="2" />
+
+  <!-- Grid lines -->
+  <path d="M 0 60 L 800 60 M 0 120 L 800 120 M 0 180 L 800 180 M 0 240 L 800 240 M 0 300 L 800 300 M 0 360 L 800 360 M 0 420 L 800 420" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+  <path d="M 100 0 L 100 480 M 200 0 L 200 480 M 300 0 L 300 480 M 400 0 L 400 480 M 500 0 L 500 480 M 600 0 L 600 480 M 700 0 L 700 480" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+
+  <!-- Title -->
+  <text x="400" y="35" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="700" letter-spacing="2">SIGNALS &amp; REACTIVE SESSION</text>
+  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-size="11">External Interrupts Ingestion Gateway &amp; Multilateral Run Coordination</text>
+
+  <!-- LEFT: EXTERNAL EVENT SOURCES -->
+  <g transform="translate(30, 80)">
+    <rect width="180" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
+    <rect width="180" height="35" rx="8" fill="#bd00ff" opacity="0.08" />
+    <text x="90" y="22" text-anchor="middle" fill="#c084fc" font-size="12" font-weight="bold">External Event sources</text>
+
+    <!-- Cron -->
+    <g transform="translate(10, 50)">
+      <rect width="160" height="50" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="18" fill="#ffffff" font-size="10.5" font-weight="bold">Cron / Timed Prompts</text>
+      <text x="10" y="32" fill="#94a3b8" font-size="8">gateway.schedule(ScheduledPrompt)</text>
+      <text x="10" y="42" fill="#94a3b8" font-size="8">Triggers periodically (e.g. check status)</text>
+    </g>
+
+    <!-- Webhooks -->
+    <g transform="translate(10, 115)">
+      <rect width="160" height="50" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="18" fill="#ffffff" font-size="10.5" font-weight="bold">Webhooks / API Notify</text>
+      <text x="10" y="32" fill="#94a3b8" font-size="8">gateway.ingest(RuntimeSignal)</text>
+      <text x="10" y="42" fill="#94a3b8" font-size="8">Pushes code updates / build failures</text>
+    </g>
+
+    <!-- User Interrupt -->
+    <g transform="translate(10, 180)">
+      <rect width="160" height="50" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="18" fill="#ffffff" font-size="10.5" font-weight="bold">User Interrupt / Chat</text>
+      <text x="10" y="32" fill="#94a3b8" font-size="8">Manual pause or cancellation</text>
+      <text x="10" y="42" fill="#94a3b8" font-size="8">Sends cancel signal to running process</text>
+    </g>
+
+    <!-- Peer Communication -->
+    <g transform="translate(10, 245)">
+      <rect width="160" height="50" rx="4" fill="#111827" stroke="#334155" />
+      <text x="10" y="18" fill="#ffffff" font-size="10.5" font-weight="bold">Peer Messages</text>
+      <text x="10" y="32" fill="#94a3b8" font-size="8">Signals from sibling sub-agents</text>
+      <text x="10" y="42" fill="#94a3b8" font-size="8">Carries progress reports or handoffs</text>
+    </g>
+  </g>
+
+  <!-- MIDDLE: SIGNAL GATEWAY (Queue &amp; Recipient Filter) -->
+  <g transform="translate(240, 80)">
+    <rect width="240" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
+    <rect width="240" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
+    <text x="120" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">SignalGateway Engine</text>
+
+    <!-- Queue Box -->
+    <g transform="translate(15, 55)">
+      <rect width="210" height="150" rx="6" fill="#111827" stroke="#334155" />
+      <text x="10" y="20" fill="#ffffff" font-size="11" font-weight="bold">Attention Signal Queue</text>
+      
+      <!-- Ingest funnel -->
+      <g transform="translate(10, 35)">
+        <rect width="190" height="24" rx="2" fill="#1e293b" stroke="#334155" />
+        <text x="8" y="15" fill="#e2e8f0" font-size="8.5">Signal #01 (cron)  → recipient: "explorer"</text>
+      </g>
+      <g transform="translate(10, 65)">
+        <rect width="190" height="24" rx="2" fill="#1e293b" stroke="#334155" />
+        <text x="8" y="15" fill="#e2e8f0" font-size="8.5">Signal #02 (webhook) → recipient: "builder"</text>
+      </g>
+      <g transform="translate(10, 95)">
+        <rect width="190" height="24" rx="2" fill="#1e293b" stroke="#334155" />
+        <text x="8" y="15" fill="#e2e8f0" font-size="8.5">Signal #03 (user)    → recipient: "runner"</text>
+      </g>
+    </g>
+
+    <!-- Recipient routing filter -->
+    <g transform="translate(15, 220)">
+      <rect width="210" height="125" rx="6" fill="#111827" stroke="#00f0ff" stroke-width="1.2" />
+      <text x="10" y="20" fill="#00f0ff" font-size="11" font-weight="bold">Routing &amp; Attention Policy</text>
+      <text x="10" y="38" fill="#94a3b8" font-size="8.5">1. Pop signal from priority gateway queue</text>
+      <text x="10" y="50" fill="#94a3b8" font-size="8.5">2. Match recipient_id of target agent process</text>
+      <text x="10" y="62" fill="#94a3b8" font-size="8.5">3. Route and insert event payload into target</text>
+      
+      <rect x="10" y="80" width="190" height="35" rx="3.5" fill="#00f0ff" opacity="0.1" />
+      <text x="105" y="93" text-anchor="middle" fill="#38bdf8" font-size="9" font-weight="bold">Injects to Context VM Slot 4</text>
+      <text x="105" y="105" text-anchor="middle" fill="#ffffff" font-size="8">(state_turn.signals partition)</text>
+    </g>
+  </g>
+
+  <!-- RIGHT: MULTI-AGENT REACTIVE SESSION (Coordination) -->
+  <g transform="translate(510, 80)">
+    <rect width="260" height="370" rx="8" fill="url(#boxGrad)" stroke="#bd00ff" stroke-width="1.5" />
+    <rect width="260" height="35" rx="8" fill="#bd00ff" opacity="0.1" />
+    <text x="130" y="22" text-anchor="middle" fill="#c084fc" font-size="12" font-weight="bold">ReactiveSession Plane</text>
+
+    <!-- RunGroup budget -->
+    <g transform="translate(15, 55)">
+      <rect width="230" height="70" rx="6" fill="#111827" stroke="#ef4444" stroke-width="1.2" />
+      <text x="10" y="20" fill="#f87171" font-size="11" font-weight="bold">RunGroup (Shared Budget)</text>
+      <text x="10" y="38" fill="#94a3b8" font-size="8.5">Coordinates token counts &amp; wall-clock bounds</text>
+      <text x="10" y="50" fill="#94a3b8" font-size="8.5">across multiple concurrent agent processes</text>
+      <text x="10" y="60" fill="#ffffff" font-size="8" font-weight="bold">→ Prevents budget runaway in group run loops</text>
+    </g>
+
+    <!-- Shared event blackboard -->
+    <g transform="translate(15, 140)">
+      <rect width="230" height="85" rx="6" fill="#111827" stroke="#334155" />
+      <text x="10" y="20" fill="#ffffff" font-size="11" font-weight="bold">EventStream (Blackboard)</text>
+      <text x="10" y="38" fill="#e2e8f0" font-size="8.5">Shared blackboard registry:</text>
+      
+      <rect x="10" y="47" width="210" height="28" rx="2.5" fill="#1e293b" stroke="#334155" />
+      <text x="16" y="60" fill="#94a3b8" font-size="7.5" font-family="monospace">peer_report: "design completed successfully"</text>
+      <text x="16" y="69" fill="#34d399" font-size="6.5">Visible to all peer group members</text>
+    </g>
+
+    <!-- TurnPolicy -->
+    <g transform="translate(15, 240)">
+      <rect width="230" height="105" rx="6" fill="#111827" stroke="#334155" />
+      <text x="10" y="20" fill="#ffffff" font-size="11" font-weight="bold">TurnPolicy Selector</text>
+      <text x="10" y="38" fill="#94a3b8" font-size="8.5">Determines process execution orders:</text>
+      
+      <!-- Logic list -->
+      <g transform="translate(10, 50)">
+        <text x="0" y="12" fill="#e2e8f0" font-size="8.5">▪ Reactive: runs agent matching signal recipient</text>
+        <text x="0" y="24" fill="#e2e8f0" font-size="8.5">▪ Collaborative: passes handoff tokens</text>
+        <text x="0" y="36" fill="#94a3b8" font-size="8.5">▪ Suspends when no signals are queued</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Connectors -->
+  <!-- Webhook -> Gateway -->
+  <path d="M 210,210 C 220,210 220,180 232,180" stroke="#c084fc" stroke-width="1.5" marker-end="url(#arrowPurple)" />
+  
+  <!-- Gateway -> Blackboard -->
+  <path d="M 480,265 C 495,265 495,190 510,190" stroke="#00f0ff" stroke-width="1.5" marker-end="url(#arrow)" />
+</svg>
