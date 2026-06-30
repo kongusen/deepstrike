@@ -14,6 +14,11 @@ pub enum TerminationReason {
     Error,
     /// Milestone phase retry budget exhausted and rollback_policy = Terminate.
     MilestoneExceeded,
+    /// Reactive recovery ladder exhausted on a provider context-overflow (prompt-too-long /
+    /// 413): the kernel compacted as hard as it could and the prompt still won't fit. Distinct
+    /// from `Timeout` (which the SDK used to fabricate for this case) so embedders can tell an
+    /// unrecoverable overflow from a wall-clock deadline.
+    ContextOverflow,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

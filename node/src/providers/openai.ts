@@ -296,6 +296,11 @@ export class OpenAIChatProvider implements LLMProvider {
     let inputTokens = 0
     let outputTokens = 0
     let cacheReadTokens = 0
+    // Phase 4: OpenAI signals an output-cap truncation via finish_reason="length", which arrives on
+    // a `choices` frame separate from the trailing `usage` frame — so capture it and attach it to the
+    // usage event the runner reads. The kernel treats "length" as a truncation (== Anthropic
+    // "max_tokens"); other reasons ("stop"/"tool_calls") pass through harmlessly.
+    let finishReason: string | undefined
     for await (const chunk of stream) {
       if (chunk.usage) {
         totalTokens = chunk.usage.total_tokens
@@ -306,6 +311,7 @@ export class OpenAIChatProvider implements LLMProvider {
       }
       const choice = chunk.choices[0]
       if (!choice) continue
+      if (choice.finish_reason) finishReason = choice.finish_reason
       const delta = choice.delta as Record<string, unknown>
       if (!delta) continue
 
@@ -359,7 +365,7 @@ export class OpenAIChatProvider implements LLMProvider {
 
     rememberStream()
     yield* emitPendingToolCalls()
-    if (totalTokens > 0) yield { type: "usage", totalTokens, inputTokens, outputTokens, ...(cacheReadTokens > 0 ? { cacheReadInputTokens: cacheReadTokens } : {}) } as StreamEvent
+    if (totalTokens > 0) yield { type: "usage", totalTokens, inputTokens, outputTokens, ...(cacheReadTokens > 0 ? { cacheReadInputTokens: cacheReadTokens } : {}), ...(finishReason ? { stopReason: finishReason } : {}) } as StreamEvent
   }
 
   /**

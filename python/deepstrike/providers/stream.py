@@ -66,6 +66,9 @@ class UsageEvent:
     # I1: pro-rata per-slot attribution of cache_read_input_tokens (Anthropic only). None when the
     # provider doesn't honor cache_control. Shape: {"system": int?, "tools": int?, "messages": int?}.
     cache_read_input_tokens_by_slot: "dict | None" = None
+    # Provider stop reason — "max_tokens" (Anthropic) / "length" (OpenAI) flag an output-cap
+    # truncation that drives the kernel's max-output-tokens recovery. None when not reported.
+    stop_reason: "str | None" = None
 
 
 @dataclass

@@ -44,7 +44,6 @@ from deepstrike.runtime.kernel_step import (
   capability_marker,
   capability_skill,
   capability_tool,
-  force_compact,
   kernel_action,
   kernel_apply,
   kernel_maybe_action,
@@ -1504,7 +1503,6 @@ class RuntimeRunner:
       if resume_mid_run
       else kernel_action(runtime, self._pending_observations, start_payload)
     )
-    has_attempted_reactive_compact = False
     # P0-C: the skill loaded and in effect going into the current turn → per-turn ``active_skill`` metric.
     active_skill: str | None = None
 
@@ -1561,7 +1559,7 @@ class RuntimeRunner:
         turn_cache_read_tokens = 0
         turn_cache_creation_tokens = 0
         turn_cache_read_by_slot = None
-        should_retry = False
+        turn_stop_reason = None
         try:
           async for evt in self._opts.provider.stream(
             context, turn_tools, extensions=ext if ext else None, state=provider_state,
@@ -1580,6 +1578,10 @@ class RuntimeRunner:
               turn_cache_creation_tokens = getattr(evt, "cache_creation_input_tokens", 0) or 0
               # I1: per-slot attribution forwarded to TurnMetrics; None on non-Anthropic providers.
               turn_cache_read_by_slot = getattr(evt, "cache_read_input_tokens_by_slot", None)
+              # Phase 4: stop_reason drives the kernel's max-output-tokens recovery; keep the last
+              # non-empty value seen this turn (the closing usage frame carries it).
+              if getattr(evt, "stop_reason", None):
+                turn_stop_reason = evt.stop_reason
               continue
             yield evt
             if isinstance(evt, TextDelta):
@@ -1589,35 +1591,33 @@ class RuntimeRunner:
                 id=evt.id, name=evt.name, arguments=json.dumps(evt.arguments),
               ))
         except Exception as exc:
-          err_msg = format_tool_error(exc).lower()
-          if (
-            ("413" in err_msg or "too long" in err_msg or "context length exceeded" in err_msg or "context_length_exceeded" in err_msg)
-            and not has_attempted_reactive_compact
-          ):
-            has_attempted_reactive_compact = True
-            if force_compact(runtime, self._pending_observations):
-              next_compressed_archive_start = await self._append_observations(
-                session_id, runtime, next_compressed_archive_start,
-              )
-              should_retry = True
-          
-          if not should_retry:
-            yield ErrorEvent(message=format_tool_error(exc))
-            action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
-            break
+          if self._interrupted:
+            # An interrupt raced with an in-flight error — handled as a clean preempt by the
+            # post-stream `_interrupted` check below (timeout → kernel rollback), not a provider error.
+            pass
+          else:
+            # Reactive recovery is now a kernel decision. Forward the raw provider error and dispatch
+            # whatever the kernel returns: `call_provider` to retry with a freshly compacted context, or
+            # `done` to terminate with an honest `ContextOverflow`. The classify + compact + retry +
+            # give-up policy lives in the kernel (one place), not duplicated across the four SDK runners.
+            # `continue` re-enters the loop: a recovered turn persists its compaction archive via the
+            # loop-top _append_observations, and a terminal `done` exits through `is_terminal()`.
+            action = kernel_action(runtime, self._pending_observations, {
+              "kind": "provider_error",
+              "message": format_tool_error(exc),
+            })
+            # Withholding (query.ts parity): surface the raw provider error only when the kernel
+            # could NOT recover (it returned a terminal). On a recovered retry (call_provider) the
+            # error stays hidden, so embedders that terminate on `error` events don't see a phantom
+            # failure mid-recovery.
+            if getattr(action, "kind", None) == "done":
+              yield ErrorEvent(message=format_tool_error(exc))
+            continue
 
         # #2-B-ii: stream aborted (preempt/interrupt) via the break path — end the turn now.
         if self._interrupted:
           action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
           break
-
-        if should_retry:
-          action = SimpleNamespace(
-            kind="call_provider",
-            context=runtime.render(),
-            tools=action.tools or [],
-          )
-          continue
 
         assistant_message = Message(
           role="assistant", content=final_text, tool_calls=final_tool_calls,
@@ -1627,6 +1627,7 @@ class RuntimeRunner:
           "kind": "provider_result",
           "message": message_to_kernel(assistant_message),
           "now_ms": int(time.time() * 1000),
+          **({"stop_reason": turn_stop_reason} if turn_stop_reason else {}),
         }
         next_action = kernel_maybe_action(runtime, self._pending_observations, provider_event)
         if not next_action and any(o.get("kind") == "suspended" for o in self._pending_observations):

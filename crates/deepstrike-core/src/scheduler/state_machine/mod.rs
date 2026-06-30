@@ -188,6 +188,21 @@ pub struct LoopStateMachine {
     /// When set, the next LLM call strips tools to force a text response,
     /// then terminates with this reason once the response arrives.
     pub(super) pending_termination: Option<TerminationReason>,
+    /// Reactive context-overflow recovery: consecutive compact-and-retry attempts since the last
+    /// successful provider turn. Bounds the recovery ladder (anti-spiral) and resets to 0 on any
+    /// `LLMResponse`, mirroring the per-turn `hasAttemptedReactiveCompact` reset the SDK runners
+    /// used to own. See `recover_from_provider_error`.
+    pub(super) recovery_attempts: u8,
+    /// Max-output-tokens recovery: consecutive continue-and-retry turns since the model last
+    /// finished a response WITHOUT hitting the output cap. When a turn is cut off at the cap
+    /// (provider `stop_reason` = max_tokens/length) the kernel keeps the partial, nudges the model
+    /// to resume mid-thought, and re-calls — bounded by `MAX_OUTPUT_RECOVERY` (mirrors query.ts's
+    /// MAX_OUTPUT_TOKENS_RECOVERY_LIMIT). Resets to 0 on any non-truncated response.
+    pub(super) output_recovery_attempts: u8,
+    /// Transient carrier for the provider `stop_reason` of the in-flight response, set by the
+    /// kernel ABI just before `feed(LLMResponse)` and taken (cleared) inside it. `None` when the
+    /// SDK/provider doesn't report one (every non-Anthropic provider today ⇒ no-op).
+    pub(super) pending_stop_reason: Option<String>,
     /// Number of history messages present at session start (after preload_history).
     /// drain_new_messages() returns the slice from this offset onward.
     pub(super) session_history_baseline: usize,
@@ -265,6 +280,9 @@ impl LoopStateMachine {
             group_tokens_base: 0,
             group_spawns_base: 0,
             pending_termination: None,
+            recovery_attempts: 0,
+            output_recovery_attempts: 0,
+            pending_stop_reason: None,
             session_history_baseline: 0,
             checkpoint: TurnCheckpoint::default(),
             milestone: MilestoneTracker::new(),
@@ -393,6 +411,12 @@ impl LoopStateMachine {
         }
     }
 
+    /// Stash the in-flight response's provider `stop_reason` so `feed(LLMResponse)` can detect an
+    /// output-cap truncation. Set by the kernel ABI right before feeding the result; `None` clears it.
+    pub fn set_pending_stop_reason(&mut self, stop_reason: Option<String>) {
+        self.pending_stop_reason = stop_reason;
+    }
+
     /// Pre-populate the history partition with messages from a prior session.
     ///
     /// Call **before** `start()` when resuming a conversation. Sets the baseline
@@ -464,14 +488,41 @@ impl LoopStateMachine {
             LoopEvent::Start { task } => self.start(task),
 
             LoopEvent::LLMResponse { message } => {
+                // A response arrived ⇒ the prompt fit ⇒ the overflow recovery ladder is reset.
+                self.recovery_attempts = 0;
                 let tokens = self.message_tokens(&message);
                 self.total_tokens += tokens as u64;
+
+                // Max-output-tokens recovery (mirrors query.ts): a response cut off at the output
+                // cap reports stop_reason = max_tokens (Anthropic) / length (OpenAI). A clean finish
+                // resets the ladder.
+                const MAX_OUTPUT_RECOVERY: u8 = 3;
+                const OUTPUT_TRUNCATION_NUDGE: &str = "Output token limit hit. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.";
+                let truncated = matches!(
+                    self.pending_stop_reason.take().as_deref(),
+                    Some("max_tokens") | Some("length"),
+                );
+                if !truncated {
+                    self.output_recovery_attempts = 0;
+                }
 
                 if let Some(reason) = self.pending_termination.take() {
                     return self.terminate(reason, Some(message));
                 }
 
                 if message.tool_calls.is_empty() {
+                    // The model was cut off at the output cap with no tool call. Keep the partial,
+                    // nudge it to resume mid-thought, and re-call — instead of mistaking the
+                    // truncation for a finished turn. Bounded by MAX_OUTPUT_RECOVERY; once exhausted
+                    // the partial stands and the turn terminates normally below. (A truncated
+                    // *tool-call* turn isn't handled here — it falls through to tool execution.)
+                    if truncated && self.output_recovery_attempts < MAX_OUTPUT_RECOVERY {
+                        self.output_recovery_attempts += 1;
+                        self.ctx.push_history(message, tokens);
+                        self.ctx.push_signal(OUTPUT_TRUNCATION_NUDGE.to_string());
+                        self.phase = LoopPhase::Reason;
+                        return self.emit_call_llm();
+                    }
                     // When a milestone contract is active and not yet complete,
                     // request evaluation instead of terminating.
                     if !self.milestone.is_complete() {
@@ -795,6 +846,9 @@ impl LoopStateMachine {
             group_tokens_base: 0,
             group_spawns_base: 0,
             pending_termination: None,
+            recovery_attempts: 0,
+            output_recovery_attempts: 0,
+            pending_stop_reason: None,
             session_history_baseline: 0,
             checkpoint: TurnCheckpoint::default(),
             milestone: crate::scheduler::milestone::MilestoneTracker::new(),

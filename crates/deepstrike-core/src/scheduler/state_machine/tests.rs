@@ -537,6 +537,145 @@
         assert!(obs.iter().any(|o| matches!(o, KernelObservation::PageOut { .. })));
     }
 
+    // ---- Reactive recovery ladder (lifted from the SDK runners into the kernel) ----
+
+    fn compactible_machine() -> LoopStateMachine {
+        let mut sm = LoopStateMachine::new(LoopPolicy {
+            max_tokens: 100,
+            max_turns: 100,
+            ..LoopPolicy::default()
+        });
+        sm.start(RuntimeTask::new("test"));
+        for i in 0..10 {
+            sm.ctx.push_history(Message::user(format!("filler {i}")), 50);
+        }
+        sm
+    }
+
+    #[test]
+    fn recover_overflow_compacts_and_retries() {
+        let mut sm = compactible_machine();
+        let action = sm.recover_from_provider_error("HTTP 413: prompt is too long");
+        // Recovered headroom ⇒ retry the provider with a freshly compacted context.
+        assert!(matches!(action, LoopAction::CallLLM { .. }));
+        assert_eq!(sm.recovery_attempts, 1);
+        // The eviction rode out as observations so the SDK still archives the evicted messages.
+        let obs = sm.take_observations();
+        assert!(obs.iter().any(|o| matches!(o, KernelObservation::Compressed { .. })));
+    }
+
+    #[test]
+    fn recover_overflow_exhausted_terminates_context_overflow() {
+        // Fresh machine with nothing compactible ⇒ force_compact saves 0 ⇒ honest terminal.
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("test"));
+        let action = sm.recover_from_provider_error("context_length_exceeded");
+        match action {
+            LoopAction::Done { result } => {
+                assert_eq!(result.termination, TerminationReason::ContextOverflow);
+            }
+            other => panic!("expected Done(ContextOverflow), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recover_non_overflow_terminates_error() {
+        let mut sm = compactible_machine();
+        let action = sm.recover_from_provider_error("500 Internal Server Error");
+        match action {
+            LoopAction::Done { result } => {
+                assert_eq!(result.termination, TerminationReason::Error);
+            }
+            other => panic!("expected Done(Error), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recover_attempt_cap_is_bounded() {
+        // Even a provider that 413s forever must terminate, not loop. Drive past the cap and
+        // assert a terminal appears within a bounded number of attempts.
+        let mut sm = compactible_machine();
+        let mut terminated = false;
+        for _ in 0..6 {
+            if let LoopAction::Done { result } = sm.recover_from_provider_error("413 too long") {
+                assert_eq!(result.termination, TerminationReason::ContextOverflow);
+                terminated = true;
+                break;
+            }
+        }
+        assert!(terminated, "recovery ladder must terminate under repeated overflow");
+    }
+
+    #[test]
+    fn recovery_attempts_reset_on_successful_response() {
+        let mut sm = compactible_machine();
+        let action = sm.recover_from_provider_error("413 too long");
+        assert!(matches!(action, LoopAction::CallLLM { .. }));
+        assert_eq!(sm.recovery_attempts, 1);
+        // A response that fits resets the ladder (mirrors the per-turn SDK guard reset).
+        sm.feed(LoopEvent::LLMResponse { message: Message::assistant("recovered") });
+        assert_eq!(sm.recovery_attempts, 0);
+    }
+
+    #[test]
+    fn is_prompt_too_long_classifier() {
+        use super::eviction::is_prompt_too_long;
+        assert!(is_prompt_too_long("Error 413"));
+        assert!(is_prompt_too_long("prompt is TOO LONG"));
+        assert!(is_prompt_too_long("context_length_exceeded"));
+        assert!(!is_prompt_too_long("429 rate limited"));
+        assert!(!is_prompt_too_long("connection reset"));
+    }
+
+    // ---- Max-output-tokens recovery (Phase 4) ----
+
+    #[test]
+    fn truncated_response_continues_then_resets() {
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("write a long thing"));
+        // Cut off at the output cap with no tool call ⇒ keep the partial and re-call (don't finish).
+        sm.set_pending_stop_reason(Some("max_tokens".into()));
+        let action = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("partial...") });
+        assert!(matches!(action, LoopAction::CallLLM { .. }));
+        assert_eq!(sm.output_recovery_attempts, 1);
+        // A clean finish (no stop_reason) terminates normally AND resets the ladder.
+        let action = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("...the rest. done") });
+        match action {
+            LoopAction::Done { result } => assert_eq!(result.termination, TerminationReason::Completed),
+            other => panic!("expected Done(Completed), got {other:?}"),
+        }
+        assert_eq!(sm.output_recovery_attempts, 0);
+    }
+
+    #[test]
+    fn truncation_recovery_is_bounded() {
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("write forever"));
+        // 3 attempts continue; the 4th consecutive truncation gives up and accepts the partial.
+        for _ in 0..3 {
+            sm.set_pending_stop_reason(Some("length".into()));
+            let action = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("more") });
+            assert!(matches!(action, LoopAction::CallLLM { .. }));
+        }
+        sm.set_pending_stop_reason(Some("length".into()));
+        let action = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("more") });
+        match action {
+            LoopAction::Done { result } => assert_eq!(result.termination, TerminationReason::Completed),
+            other => panic!("expected Done(Completed) after the cap, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_stop_reason_terminates_normally() {
+        // The no-op safety path: a provider that never reports stop_reason (every non-Anthropic
+        // provider today) finishes the turn as before — no spurious continue.
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("answer"));
+        let action = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("the answer") });
+        assert!(matches!(action, LoopAction::Done { .. }));
+        assert_eq!(sm.output_recovery_attempts, 0);
+    }
+
     // ---- Layer 5: AutoCompact → semantic page-out (SDK does the LLM summary) ----
     //
     // Contract: AutoCompact keeps a structural summary in-context (sync, zero-I/O) and pages the

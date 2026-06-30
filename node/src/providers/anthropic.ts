@@ -209,6 +209,9 @@ export class AnthropicProvider implements LLMProvider {
           // cache-heavy turn look tiny and suppress compaction until a 413.
           const inputTokens = uncachedInput + cacheReadTokens + cacheCreationTokens
           const bySlot = estimateCacheReadBySlot(cacheReadTokens, slotBp)
+          // stop_reason is only present on message_delta (the closing frame). `max_tokens` drives
+          // the kernel's output-cap recovery; other reasons (end_turn/tool_use) are informational.
+          const stopReason = (evt as { delta?: { stop_reason?: string | null } }).delta?.stop_reason
           yield {
             type: "usage",
             totalTokens: inputTokens + outputTokens,
@@ -217,6 +220,7 @@ export class AnthropicProvider implements LLMProvider {
             cacheReadInputTokens: cacheReadTokens,
             cacheCreationInputTokens: cacheCreationTokens,
             ...(bySlot ? { cacheReadInputTokensBySlot: bySlot } : {}),
+            ...(stopReason ? { stopReason } : {}),
           } as UsageEvent
         }
       } else if (evt.type === "content_block_start") {

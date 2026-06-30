@@ -263,6 +263,8 @@ export class AnthropicProvider implements LLMProvider {
               const inputTokens = uncachedInput + cacheReadTokens + cacheCreationTokens
               if (inputTokens > 0 || outputTokens > 0) {
                 const bySlot = estimateCacheReadBySlot(cacheReadTokens, slotBp)
+                // stop_reason rides on message_delta; "max_tokens" drives output-cap recovery.
+                const stopReason = (evt as { delta?: { stop_reason?: string | null } }).delta?.stop_reason
                 yield {
                   type: "usage",
                   totalTokens: inputTokens + outputTokens,
@@ -271,6 +273,7 @@ export class AnthropicProvider implements LLMProvider {
                   cacheReadInputTokens: cacheReadTokens,
                   cacheCreationInputTokens: cacheCreationTokens,
                   ...(bySlot ? { cacheReadInputTokensBySlot: bySlot } : {}),
+                  ...(stopReason ? { stopReason } : {}),
                 } as UsageEvent
               }
             }

@@ -47,6 +47,9 @@ pub enum StreamEvent {
         /// `None` when the provider doesn't honor `cache_control` or when no breakpoints were
         /// placed. Estimated (Anthropic returns a single scalar) — see helper docs.
         cache_read_input_tokens_by_slot: Option<CacheReadBySlot>,
+        /// Provider stop reason — `max_tokens` (Anthropic) / `length` (OpenAI) flag an output-cap
+        /// truncation that drives the kernel's max-output-tokens recovery. `None` when not reported.
+        stop_reason: Option<String>,
     },
     Done,
 }

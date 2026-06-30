@@ -188,6 +188,8 @@ impl LLMProvider for ReplayProvider {
             cache_creation_input_tokens: 0,
             // I1: replay provider does not model the cache layer.
             cache_read_input_tokens_by_slot: None,
+            // Replay never truncates — a recorded transcript is already complete.
+            stop_reason: None,
         }));
         if let Some(text) = message_text(&msg) {
             if !text.is_empty() {

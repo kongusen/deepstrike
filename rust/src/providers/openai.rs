@@ -371,8 +371,11 @@ fn parse_openai_sse(
         std::collections::HashMap::new();
 
     futures::stream::unfold(
-        (Box::pin(byte_stream), String::new(), tool_accum, false),
-        move |(mut stream, mut buf, mut tool_accum, mut flushed)| async move {
+        // 5th element: the last finish_reason seen — "length" flags an output-cap truncation, which
+        // arrives on a choices frame before the trailing usage frame, so it's carried in state and
+        // attached to the Usage event the runner reads.
+        (Box::pin(byte_stream), String::new(), tool_accum, false, None::<String>),
+        move |(mut stream, mut buf, mut tool_accum, mut flushed, mut finish_reason)| async move {
             if flushed {
                 return None;
             }
@@ -396,7 +399,7 @@ fn parse_openai_sse(
                                 arguments,
                             };
                             flushed = true;
-                            return Some((Ok(evt), (stream, buf, tool_accum, flushed)));
+                            return Some((Ok(evt), (stream, buf, tool_accum, flushed, finish_reason)));
                         }
                         return None;
                     }
@@ -404,6 +407,11 @@ fn parse_openai_sse(
                     let Ok(chunk) = serde_json::from_str::<Value>(data) else {
                         continue;
                     };
+                    // Capture finish_reason from choices frames; the usage frame (empty choices)
+                    // leaves it untouched, preserving a "length" seen earlier this turn.
+                    if let Some(fr) = chunk["choices"][0]["finish_reason"].as_str() {
+                        finish_reason = Some(fr.to_string());
+                    }
                     if let Some(total) = chunk["usage"]["total_tokens"].as_u64() {
                         let usage = &chunk["usage"];
                         return Some((
@@ -415,8 +423,11 @@ fn parse_openai_sse(
                                 cache_creation_input_tokens: 0,
                                 // I1: OpenAI-family providers auto-cache; no per-slot attribution.
                                 cache_read_input_tokens_by_slot: None,
+                                // finish_reason="length" (captured from an earlier choices frame)
+                                // flags an output-cap truncation and drives the kernel's recovery.
+                                stop_reason: finish_reason.clone(),
                             }),
-                            (stream, buf, tool_accum, flushed),
+                            (stream, buf, tool_accum, flushed, finish_reason),
                         ));
                     }
                     let delta = &chunk["choices"][0]["delta"];
@@ -427,7 +438,7 @@ fn parse_openai_sse(
                                     Ok(StreamEvent::ThinkingDelta {
                                         delta: reasoning.to_string(),
                                     }),
-                                    (stream, buf, tool_accum, flushed),
+                                    (stream, buf, tool_accum, flushed, finish_reason),
                                 ));
                             }
                         }
@@ -438,7 +449,7 @@ fn parse_openai_sse(
                                 Ok(StreamEvent::TextDelta {
                                     delta: content.to_string(),
                                 }),
-                                (stream, buf, tool_accum, flushed),
+                                (stream, buf, tool_accum, flushed, finish_reason),
                             ));
                         }
                     }
@@ -465,7 +476,7 @@ fn parse_openai_sse(
                     Some(Err(e)) => {
                         return Some((
                             Err(Error::Provider(e.to_string())),
-                            (stream, buf, tool_accum, flushed),
+                            (stream, buf, tool_accum, flushed, finish_reason),
                         ));
                     }
                     None => return None,

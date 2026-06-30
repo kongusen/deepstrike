@@ -47,6 +47,9 @@ export class OpenAIProvider implements LLMProvider {
     const reader = resp.body!.getReader()
     const decoder = new TextDecoder()
     let buf = ""
+    // Phase 4: OpenAI signals an output-cap truncation via finish_reason="length"; the kernel
+    // treats it as a truncation (== Anthropic "max_tokens") and drives output-cap recovery.
+    let finishReason: string | undefined
 
     while (true) {
       const { done, value } = await reader.read()
@@ -57,9 +60,15 @@ export class OpenAIProvider implements LLMProvider {
       for (const line of lines) {
         if (!line.startsWith("data: ")) continue
         const data = line.slice(6).trim()
-        if (data === "[DONE]") return
+        if (data === "[DONE]") {
+          // Surface an output-cap truncation (finish_reason="length") to the runner/kernel. Emitted
+          // as a usage frame (the channel the runner reads stopReason from) before the early return.
+          if (finishReason) yield { type: "usage", totalTokens: 0, stopReason: finishReason } as unknown as StreamEvent
+          return
+        }
         try {
-          const chunk = JSON.parse(data) as { choices: Array<{ delta: Record<string, unknown> }> }
+          const chunk = JSON.parse(data) as { choices: Array<{ delta: Record<string, unknown>; finish_reason?: string | null }> }
+          if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason ?? undefined
           const delta = chunk.choices?.[0]?.delta
           if (!delta) continue
           if (exposeReasoning && typeof delta.reasoning_content === "string" && delta.reasoning_content)

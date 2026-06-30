@@ -617,6 +617,13 @@ fn parse_anthropic_sse(
                             acc.2 = acc.2.max(cache_creation);
                             acc.3 = acc.3.max(output);
                             let full_input = acc.0 + acc.1 + acc.2;
+                            // stop_reason rides on message_delta (the closing frame); `max_tokens`
+                            // drives the kernel's output-cap recovery.
+                            let stop_reason = evt
+                                .get("delta")
+                                .and_then(|d| d.get("stop_reason"))
+                                .and_then(|s| s.as_str())
+                                .map(|s| s.to_string());
                             return Some((
                                 Ok(StreamEvent::Usage {
                                     total_tokens: full_input + acc.3,
@@ -629,6 +636,7 @@ fn parse_anthropic_sse(
                                     // contract across SDKs; non-Anthropic Rust providers also
                                     // emit None. Wiring is left for a focused Rust iteration.
                                     cache_read_input_tokens_by_slot: None,
+                                    stop_reason,
                                 }),
                                 (stream, buf, tool_blocks, native_blocks, acc),
                             ));

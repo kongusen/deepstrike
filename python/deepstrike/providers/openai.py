@@ -304,6 +304,10 @@ class OpenAIProvider(ReasoningReplayMixin):
             stream_options={"include_usage": True},
         )
 
+        # Phase 4: OpenAI signals an output-cap truncation via finish_reason="length", which arrives
+        # on a choices frame BEFORE the trailing usage frame — capture it and attach it to the usage
+        # event. The kernel treats "length" as a truncation (== Anthropic "max_tokens").
+        finish_reason_seen: "str | None" = None
         async for chunk in stream:
             usage = getattr(chunk, "usage", None)
             if usage:
@@ -314,11 +318,14 @@ class OpenAIProvider(ReasoningReplayMixin):
                     input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
                     output_tokens=getattr(usage, "completion_tokens", 0) or 0,
                     cache_read_input_tokens=openai_cached_prompt_tokens(usage),
+                    stop_reason=finish_reason_seen,
                 )
                 continue
             choice = chunk.choices[0] if chunk.choices else None
             if not choice:
                 continue
+            if choice.finish_reason:
+                finish_reason_seen = choice.finish_reason
 
             delta = getattr(choice, "delta", None)
             if not delta:

@@ -259,6 +259,9 @@ class AnthropicProvider:
                         # read + cache write) for accurate context accounting.
                         full_input = uncached_input + cache_read + cache_creation
                         by_slot = _estimate_cache_read_by_slot(cache_read, slot_bp)
+                        # stop_reason is only present on message_delta (the closing frame);
+                        # "max_tokens" drives the kernel's output-cap recovery.
+                        stop_reason = getattr(getattr(event, "delta", None), "stop_reason", None)
                         yield UsageEvent(
                             total_tokens=full_input + output_tokens,
                             input_tokens=full_input,
@@ -266,6 +269,7 @@ class AnthropicProvider:
                             cache_read_input_tokens=cache_read,
                             cache_creation_input_tokens=cache_creation,
                             cache_read_input_tokens_by_slot=by_slot,
+                            stop_reason=stop_reason,
                         )
                 elif event.type == "content_block_start":
                     idx = event.index

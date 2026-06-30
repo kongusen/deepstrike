@@ -1,12 +1,63 @@
 //! MM / eviction execution impl for [`super::LoopStateMachine`].
 
-use super::{KernelObservation, LoopStateMachine};
+use super::{KernelObservation, LoopAction, LoopPhase, LoopStateMachine};
 use crate::context::pressure::PressureAction;
 use crate::mm::{page_in_requests_from_calls, tier_hint_for_compress};
 use crate::runtime::kernel::KernelPressureAction;
 use crate::types::message::{Message, ToolCall};
+use crate::types::result::TerminationReason;
+
+/// Max consecutive compact-and-retry attempts before a context overflow is declared
+/// unrecoverable. Bounds the reactive recovery ladder (anti-spiral); resets on any successful
+/// provider turn. The `force_compress` "nothing left to save" check is the real terminator —
+/// this is the belt-and-suspenders cap so a degenerate provider that 413s forever still ends.
+const MAX_RECOVERY_ATTEMPTS: u8 = 2;
+
+/// Classify a provider error message as a context-overflow (prompt-too-long / 413). Centralizes
+/// the case-insensitive string match the four SDK runners (node/python/rust/wasm) each used to
+/// own, so the recovery vocabulary lives in exactly one place.
+pub(crate) fn is_prompt_too_long(message: &str) -> bool {
+    let msg = message.to_lowercase();
+    msg.contains("413")
+        || msg.contains("too long")
+        || msg.contains("prompt too long")
+        || msg.contains("context length exceeded")
+        || msg.contains("context_length_exceeded")
+}
 
 impl LoopStateMachine {
+    /// Reactive recovery for a provider error the SDK reports via [`KernelInputEvent::ProviderError`].
+    /// Owns the policy the SDK runners used to duplicate: classify → compact-and-retry on overflow
+    /// (bounded, anti-spiral) → honest terminal when the ladder is exhausted. Returns the next
+    /// [`LoopAction`] so the kernel's normal action tail dispatches it: `CallLLM` to retry the
+    /// provider with a freshly compacted context, or `Done { ContextOverflow }` to give up.
+    ///
+    /// This is the reactive twin of the proactive eviction checkpoint in `feed` — same execution
+    /// funnel (`force_compact` → `EvictionOp`s), now driven by a real provider 413 instead of an
+    /// rho threshold, and surfaced as a kernel decision rather than SDK control flow.
+    pub fn recover_from_provider_error(&mut self, message: &str) -> LoopAction {
+        self.observations.clear();
+        if !is_prompt_too_long(message) {
+            // Non-overflow provider failures aren't recoverable here — terminate with `Error`,
+            // the same outcome the runners produced, minus the fabricated `timeout`.
+            return self.terminate(TerminationReason::Error, None);
+        }
+        if self.recovery_attempts >= MAX_RECOVERY_ATTEMPTS {
+            return self.terminate(TerminationReason::ContextOverflow, None);
+        }
+        self.recovery_attempts += 1;
+        if self.force_compact() {
+            // Recovered headroom: re-render and retry as a normal turn (tools intact). The
+            // Compressed/PageOut observations pushed by `force_compact` ride out in this same
+            // step, so the SDK still archives the evicted messages.
+            self.phase = LoopPhase::Reason;
+            self.emit_call_llm()
+        } else {
+            // Nothing left to compact — the prompt genuinely won't fit. Honest terminal.
+            self.terminate(TerminationReason::ContextOverflow, None)
+        }
+    }
+
     /// 强行进行一次最大力度的压缩归档。通常用于收到模型 API 413 (Prompt too long) 时做兜底重试。
     pub fn force_compact(&mut self) -> bool {
         let action = PressureAction::AutoCompact;

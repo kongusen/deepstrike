@@ -833,7 +833,6 @@ impl RuntimeRunner {
             let provider_state = self.opts.provider.create_run_state();
             let mut router = SignalRouter::new(256);
             let mut next_archive_start = next_archived_seq_start(prior_events.as_deref());
-            let mut has_attempted_reactive_compact = false;
             // P0-C: the skill loaded and in effect going into the current turn → per-turn metric.
             let mut active_skill: Option<String> = None;
             let session_start_ms = std::time::SystemTime::now()
@@ -1068,6 +1067,7 @@ impl RuntimeRunner {
                         let mut turn_cache_read_tokens: u32 = 0;
                         let mut turn_cache_creation_tokens: u32 = 0;
                         let mut turn_cache_read_by_slot: Option<crate::providers::CacheReadBySlot> = None;
+                        let mut turn_stop_reason: Option<String> = None;
                         // I5: governance schema-level pre-filter. When a GovernancePolicy is loaded
                         // and `surface_denied_in_system` is true (default), drop denied tools from
                         // the schema before the provider sees them.
@@ -1103,41 +1103,28 @@ impl RuntimeRunner {
                         {
                             Ok(s) => s,
                             Err(e) => {
-                                if is_prompt_too_long_error(&e)
-                                    && !has_attempted_reactive_compact
-                                {
-                                    has_attempted_reactive_compact = true;
-                                    let compact_step = kernel.lock().unwrap().step(KernelInput::new(
-                                        KernelInputEvent::ForceCompact,
-                                    ));
-                                    let compacted = compact_step.observations.iter().any(|obs| {
-                                        matches!(obs, KernelObservation::Compressed { .. })
-                                    });
-                                    pending_observations.extend(compact_step.observations);
-                                    if compacted {
-                                        next_archive_start = self
-                                            .append_observations(
-                                                &session_id,
-                                                &kernel,
-                                                &mut pending_observations,
-                                                &mut pending_spool_outputs,
-                                                next_archive_start,
-                                            )
-                                            .await;
-                                        action = KernelAction::CallProvider {
-                                            context: kernel.lock().unwrap().state_machine().ctx.render(),
-                                            tools: tools.clone(),
-                                        };
-                                        continue;
-                                    }
-                                }
-                                yield RunEvent::Error(e.to_string());
-                                kernel_apply(
+                                // Reactive recovery is now a kernel decision. Forward the raw
+                                // provider error and dispatch whatever the kernel returns:
+                                // CallProvider to retry with a freshly compacted context, or Done to
+                                // terminate with an honest ContextOverflow. The classify + compact +
+                                // retry + give-up policy lives in the kernel (one place), not
+                                // duplicated across the four SDK runners.
+                                let msg = e.to_string();
+                                action = kernel_action(
                                     &mut kernel,
                                     &mut pending_observations,
-                                    KernelInputEvent::Timeout,
+                                    KernelInputEvent::ProviderError { message: msg.clone() },
                                 );
-                                break;
+                                // Withholding (query.ts parity): surface the raw provider error only
+                                // when the kernel could NOT recover (it returned a terminal). On a
+                                // recovered retry (CallProvider) the error stays hidden. `continue`
+                                // re-enters the loop: a recovered turn persists its compaction
+                                // archive at the loop's normal append point, and a terminal Done
+                                // exits through `is_terminal()` into the run_terminal emit.
+                                if matches!(action, KernelAction::Done { .. }) {
+                                    yield RunEvent::Error(msg);
+                                }
+                                continue;
                             }
                         };
 
@@ -1164,6 +1151,7 @@ impl RuntimeRunner {
                                     cache_read_input_tokens,
                                     cache_creation_input_tokens,
                                     cache_read_input_tokens_by_slot,
+                                    stop_reason,
                                     ..
                                 } => {
                                     turn_tokens = total_tokens;
@@ -1172,6 +1160,8 @@ impl RuntimeRunner {
                                     turn_cache_read_tokens = cache_read_input_tokens;
                                     turn_cache_creation_tokens = cache_creation_input_tokens;
                                     turn_cache_read_by_slot = cache_read_input_tokens_by_slot;
+                                    // Phase 4: keep the last non-empty stop_reason for output-cap recovery.
+                                    if stop_reason.is_some() { turn_stop_reason = stop_reason; }
                                 }
                                 StreamEvent::Done => {}
                             }
@@ -1202,6 +1192,8 @@ impl RuntimeRunner {
                                 // COMPAT(gov-clock): rust SDK does not yet drive the in-kernel
                                 // governance gate, so no clock is fed. Set once it adopts governancePolicy.
                                 now_ms: None,
+                                // Phase 4: stop_reason drives the kernel's max-output-tokens recovery.
+                                stop_reason: turn_stop_reason.clone(),
                             },
                         );
                         self.log(
@@ -2287,15 +2279,6 @@ fn merge_extensions(
         (None, Some(o)) => Some(o.clone()),
         (None, None) => None,
     }
-}
-
-fn is_prompt_too_long_error(error: &Error) -> bool {
-    let msg = error.to_string().to_lowercase();
-    msg.contains("413")
-        || msg.contains("too long")
-        || msg.contains("prompt too long")
-        || msg.contains("context length exceeded")
-        || msg.contains("context_length_exceeded")
 }
 
 fn effective_wall_budget(

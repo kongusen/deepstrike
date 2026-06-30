@@ -9,6 +9,9 @@ export class KernelRuntime {
   private messages: unknown[] = []
   private governanceAskUser = false
   private resumedAfterAsk = false
+  // Mirrors the real kernel's bounded reactive-recovery ladder (see eviction.rs
+  // MAX_RECOVERY_ATTEMPTS): compact-and-retry up to the cap, then terminate ContextOverflow.
+  private recoveryAttempts = 0
 
   constructor(policy: { maxTokens: number; maxTurns?: number }) {
     this.maxTurns = policy.maxTurns ?? 25
@@ -59,9 +62,32 @@ export class KernelRuntime {
         }
         break
       }
+      case "provider_error": {
+        // Reactive recovery mirror of the real kernel: classify the error, compact-and-retry on a
+        // bounded overflow ladder, else terminate with an honest reason.
+        const msg = String(event.message ?? "").toLowerCase()
+        const isOverflow =
+          msg.includes("413") || msg.includes("too long") ||
+          msg.includes("context length exceeded") || msg.includes("context_length_exceeded")
+        if (!isOverflow) {
+          this.terminal = true
+          actions.push({ kind: "done", result: { turns_used: this.turn(), total_tokens_used: 0, termination: "error" } })
+        } else if (this.recoveryAttempts >= 2) {
+          this.terminal = true
+          actions.push({ kind: "done", result: { turns_used: this.turn(), total_tokens_used: 0, termination: "context_overflow" } })
+        } else {
+          this.recoveryAttempts += 1
+          observations.push({ kind: "compressed", action: "auto_compact", rho_after: 0.4, summary: null, archived: [] })
+          this.rendered = { systemText: "", turns: [{ role: "user", content: "retry" }] }
+          actions.push({ kind: "call_provider", context: this.rendered, tools: [] })
+        }
+        break
+      }
       case "provider_result": {
         const message = (event.message as Record<string, unknown>) ?? {}
         this.messages.push(message)
+        // A response arrived ⇒ the prompt fit ⇒ reset the overflow recovery ladder.
+        this.recoveryAttempts = 0
         const toolCalls = (message.tool_calls as Array<{ id?: string; name?: string }>) ?? []
         if (this.phase === 0 && toolCalls.length > 0 && this.governanceAskUser && !this.resumedAfterAsk) {
           const call = toolCalls[0]

@@ -346,9 +346,23 @@ pub enum KernelInputEvent {
         // on a 0 clock (effectively unlimited). Can become required once all SDKs feed time.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         now_ms: Option<u64>,
+        /// Provider stop_reason for this response — `max_tokens` (Anthropic) / `length` (OpenAI)
+        /// signal an output-cap truncation, which drives the kernel's max-output-tokens recovery.
+        /// Additive: omitted by providers/SDKs that don't report it (no-op recovery).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stop_reason: Option<String>,
     },
     ToolResults {
         results: Vec<ToolResult>,
+    },
+    /// Reactive recovery entry point: the SDK's provider stream failed. The kernel classifies the
+    /// error (context-overflow vs other) and runs the bounded compact-and-retry recovery ladder,
+    /// returning `CallProvider` to retry with a freshly compacted context or `Done` to terminate.
+    /// The runners forward the raw provider error text and dispatch the result, instead of each
+    /// owning the classify + compact + retry + give-up policy. Additive ABI: a brand-new variant,
+    /// byte-identical on the wire for SDKs that never send it.
+    ProviderError {
+        message: String,
     },
     Signal {
         signal: RuntimeSignal,
@@ -994,6 +1008,7 @@ impl KernelRuntime {
                 observed_input_tokens,
                 observed_output_tokens: _,
                 now_ms,
+                stop_reason,
             } => {
                 if let Some(tokens) = observed_input_tokens {
                     self.sm.ctx.set_observed_prompt_tokens(tokens);
@@ -1003,10 +1018,17 @@ impl KernelRuntime {
                 if let Some(ms) = now_ms {
                     self.sm.set_observed_time(ms);
                 }
+                // Stash stop_reason so `feed` can detect an output-cap truncation and drive recovery.
+                self.sm.set_pending_stop_reason(stop_reason);
                 self.sm.feed(LoopEvent::LLMResponse { message })
             }
             KernelInputEvent::ToolResults { results } => {
                 self.sm.feed(LoopEvent::ToolResults { results })
+            }
+            KernelInputEvent::ProviderError { message } => {
+                // Reactive recovery is a kernel decision: classify + bounded compact-and-retry,
+                // returning the next action (retry or honest terminal) through the common tail.
+                self.sm.recover_from_provider_error(&message)
             }
             KernelInputEvent::Signal { signal } => match self.sm.signal_event(signal) {
                 Some(action) => action,
@@ -1232,6 +1254,7 @@ mod tests {
             message: Message::assistant("done"),
             observed_input_tokens: None,
             observed_output_tokens: None,
+            stop_reason: None,
             now_ms: None,
         }));
 
@@ -1450,6 +1473,7 @@ mod tests {
                 message: msg,
                 observed_input_tokens: None,
                 observed_output_tokens: None,
+                stop_reason: None,
                 now_ms: None,
             }));
             runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
@@ -1717,6 +1741,7 @@ mod tests {
             message: msg,
             observed_input_tokens: None,
             observed_output_tokens: None,
+            stop_reason: None,
             now_ms: Some(100),
         }));
         let step = runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
@@ -1767,6 +1792,7 @@ mod tests {
             message: assistant_calling(tool),
             observed_input_tokens: None,
             observed_output_tokens: None,
+            stop_reason: None,
             now_ms: None,
         }))
     }
@@ -1992,6 +2018,7 @@ mod tests {
             message: assistant_calling("fetch"),
             observed_input_tokens: None,
             observed_output_tokens: None,
+            stop_reason: None,
             now_ms: Some(1_000),
         }));
         assert!(
@@ -2011,6 +2038,7 @@ mod tests {
             message: assistant_calling("fetch"),
             observed_input_tokens: None,
             observed_output_tokens: None,
+            stop_reason: None,
             now_ms: Some(1_001),
         }));
         assert!(

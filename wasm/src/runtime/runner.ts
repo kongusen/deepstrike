@@ -26,7 +26,6 @@ import {
   repairEventsForRecovery,
 } from "./session-repair.js"
 import {
-  forceCompact,
   kernelAction,
   kernelApply,
   kernelMaybeAction,
@@ -642,7 +641,6 @@ export class RuntimeRunner {
     let action: KernelRunnerAction = resumeMidRun
       ? kernelAction(runtime, this.pendingObservations, { kind: "resume" })
       : kernelAction(runtime, this.pendingObservations, startPayload)
-    let hasAttemptedReactiveCompact = false
     // P0-C: the skill loaded and in effect going into the current turn → per-turn `activeSkill` metric.
     let activeSkill: string | undefined
 
@@ -700,7 +698,7 @@ export class RuntimeRunner {
         let turnCacheReadTokens = 0
         let turnCacheCreationTokens = 0
         let turnCacheReadBySlot: { system?: number; tools?: number; messages?: number } | undefined
-        let shouldRetry = false
+        let turnStopReason: string | undefined
 
         const abortSignal = this.abortController?.signal
         try {
@@ -708,7 +706,7 @@ export class RuntimeRunner {
             // #2-B-ii: a preempting interrupt fires abortController — stop consuming the live stream.
             if (abortSignal?.aborted) break
             if (evt.type === "usage") {
-              const usageEvt = evt as { type: string; totalTokens: number; inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; cacheReadInputTokensBySlot?: { system?: number; tools?: number; messages?: number } }
+              const usageEvt = evt as { type: string; totalTokens: number; inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; cacheReadInputTokensBySlot?: { system?: number; tools?: number; messages?: number }; stopReason?: string }
               turnTokens = usageEvt.totalTokens
               turnInputTokens = usageEvt.inputTokens ?? 0
               turnOutputTokens = usageEvt.outputTokens ?? 0
@@ -717,6 +715,8 @@ export class RuntimeRunner {
               turnCacheCreationTokens = usageEvt.cacheCreationInputTokens ?? 0
               // I1: per-slot attribution forwarded to TurnMetrics; undefined on non-Anthropic providers.
               turnCacheReadBySlot = usageEvt.cacheReadInputTokensBySlot
+              // Phase 4: stop_reason drives the kernel's max-output-tokens recovery.
+              if (usageEvt.stopReason) turnStopReason = usageEvt.stopReason
               continue
             }
             yield evt
@@ -727,23 +727,30 @@ export class RuntimeRunner {
             }
           }
         } catch (err) {
-          // #2-B-ii: an aborted in-flight request surfaces as an AbortError — treat as an interrupt.
-          if (abortSignal?.aborted) { this.interrupted = true }
-          const errMsg = formatToolError(err).toLowerCase()
-          if (
-            (errMsg.includes("413") || errMsg.includes("too long") || errMsg.includes("context length exceeded") || errMsg.includes("context_length_exceeded")) &&
-            !hasAttemptedReactiveCompact
-          ) {
-            hasAttemptedReactiveCompact = true
-            if (forceCompact(runtime, this.pendingObservations)) {
-              nextCompressedArchiveStart = await this.appendObservations(sessionId, runtime, nextCompressedArchiveStart)
-              shouldRetry = true
+          if (abortSignal?.aborted) {
+            // #2-B-ii: an aborted in-flight request surfaces as an AbortError — treat it as an
+            // interrupt (the post-stream `aborted` check below converts it to a clean
+            // timeout/UserAbort), not a crash or a provider error.
+            this.interrupted = true
+          } else {
+            // Reactive recovery is now a kernel decision. Forward the raw provider error and
+            // dispatch whatever the kernel returns: `call_provider` to retry with a freshly
+            // compacted context, or `done` to terminate with an honest `ContextOverflow`. The
+            // classify + compact + retry + give-up policy lives in the kernel (one place), not
+            // duplicated across the four SDK runners.
+            action = kernelAction(runtime, this.pendingObservations, {
+              kind: "provider_error",
+              message: formatToolError(err),
+            })
+            // Withholding (query.ts parity): surface the raw provider error only when the kernel
+            // could NOT recover (it returned a terminal). On a recovered retry (`call_provider`)
+            // the error stays hidden. `continue` re-enters the loop: a recovered turn persists its
+            // compaction archive via the loop-top appendObservations, and a terminal `done` exits
+            // through `isTerminal()`.
+            if (action.kind === "done") {
+              yield { type: "error", message: formatToolError(err) } as ErrorEvent
             }
-          }
-          if (!shouldRetry) {
-            yield { type: "error", message: formatToolError(err) } as ErrorEvent
-            action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
-            break
+            continue
           }
         }
 
@@ -751,15 +758,6 @@ export class RuntimeRunner {
         if (abortSignal?.aborted) {
           action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
           break
-        }
-
-        if (shouldRetry) {
-          action = {
-            kind: "call_provider",
-            context: runtime.render(),
-            tools,
-          }
-          continue
         }
 
         const assistantMessage: Message = {
@@ -774,6 +772,7 @@ export class RuntimeRunner {
           ...(turnInputTokens > 0 ? { observed_input_tokens: turnInputTokens } : {}),
           ...(turnOutputTokens > 0 ? { observed_output_tokens: turnOutputTokens } : {}),
           now_ms: Date.now(),
+          ...(turnStopReason ? { stop_reason: turnStopReason } : {}),
         }
         let nextAction = kernelMaybeAction(runtime, this.pendingObservations, providerEvent)
         const hasSuspended = this.pendingObservations.some(o => o.kind === "suspended")

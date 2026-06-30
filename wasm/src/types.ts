@@ -73,7 +73,7 @@ export interface RenderedContext {
 
 export interface StreamEvent { type: string }
 export interface TextDelta extends StreamEvent { type: "text_delta"; delta: string }
-export interface UsageEvent extends StreamEvent { type: "usage"; totalTokens: number; inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; cacheReadInputTokensBySlot?: { system?: number; tools?: number; messages?: number } }
+export interface UsageEvent extends StreamEvent { type: "usage"; totalTokens: number; inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; cacheReadInputTokensBySlot?: { system?: number; tools?: number; messages?: number }; /** Provider stop reason — `max_tokens` (Anthropic) / `length` (OpenAI) flag an output-cap truncation driving the kernel's max-output-tokens recovery. */ stopReason?: string }
 export interface ThinkingDelta extends StreamEvent { type: "thinking_delta"; delta: string }
 export interface ToolCallEvent extends StreamEvent { type: "tool_call"; id: string; name: string; arguments: Record<string, unknown> }
 export interface ToolResultEvent extends StreamEvent { type: "tool_result"; callId: string; name: string; content: string; isError: boolean; isFatal?: boolean; errorKind?: ToolErrorKind }
