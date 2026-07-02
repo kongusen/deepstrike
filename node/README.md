@@ -187,7 +187,7 @@ The mechanisms above are not internal refactors — they change what you can bui
 Tool calls, spawns, compression, and signals pass through one kernel gate with an explicit lifecycle (Ready / Running / Blocked / Suspended). You implement I/O; the kernel decides *when* and *whether*. Node, Python, and Rust share the same decision path, so `wake(sessionId)` and cross-language tooling see consistent behavior.
 
 **Longer, sturdier sessions (Layer-1 spool + semantic page-out)**  
-Oversized tool results (> 50 KB) stay in context as a preview plus a `.spool/` reference — the model reads the full payload on demand via ordinary file tools. When pressure triggers semantic eviction, the SDK summarizes archived content into `DreamStore` and satisfies `page_in_requested` on the way back in. Long tasks survive token pressure instead of failing mid-run.
+Oversized tool results (> 50 KB) stay in context as a preview plus a `.spool/` reference — the model reads the full payload on demand via ordinary file tools. When pressure triggers semantic eviction, the SDK summarizes archived content into `DreamStore`. Long tasks survive token pressure instead of failing mid-run.
 
 **Safety and governance by default (OS native profile)**  
 Every run loads declarative `governancePolicy` (deny / ask_user / rate-limit / param rules) and in-kernel signal routing (`attentionPolicy`, default queue 64). Dangerous tools, external interrupts, and approval flows are policy — not ad-hoc `if` checks in your handlers.
@@ -311,7 +311,7 @@ The kernel renders context as four LLM API slots — only **history** is compres
 | Slot | Source | Role |
 |------|--------|------|
 | `systemStable` | system partition | Identity, rules — never changes within a run |
-| `systemKnowledge` | knowledge partition | Preloaded memory, skill defs — low frequency |
+| `systemKnowledge` | knowledge partition | Skill bodies, `initialMemory`, host-pinned durable refs — keyed, boundary-evicted, budgeted |
 | `turns[0]` | `task_state` + signals | Goal, plan, progress, compression log, runtime signals |
 | `turns[1..N]` | history | Conversation transcript |
 
@@ -495,15 +495,15 @@ effort: 1
 2. Express each as a concise bullet
 ```
 
+A loaded skill's body is pinned into the durable `knowledge` slot (keyed `skill:<name>`) and its `allowed_tools` narrow the exposed toolset. Activation is **not** permanent: `runner.deactivateSkill(name)` re-widens the toolset at the next provider call and unpins the body at the next boundary, and `skillLeaseTurns` auto-deactivates every skill N turns after it loads — so a long multi-phase run doesn't monotonically accumulate early-phase skills. There is deliberately no model-facing unload (deactivation is host-driven only).
+
 ---
 
 ## Knowledge
 
-Implement `KnowledgeSource` to connect any RAG system. The kernel injects a `knowledge` meta-tool that the LLM calls on demand. Runtime retrieval results land in **history** as tool results.
+Implement `KnowledgeSource` to connect any RAG system. The kernel injects a `knowledge` meta-tool that the LLM calls on demand. Runtime retrieval results land in **history** as tool results (single-use fact content that decays with the compression pyramid) — not in the durable `knowledge` partition.
 
-To inject durable knowledge at startup (Slot 2, cacheable on Anthropic), use `initialMemory` or `runner.pushKnowledge()`.
-
-Before tool execution the kernel may emit `page_in_requested`; the SDK satisfies it from `DreamStore`, `KnowledgeSource`, and a local semantic page-out cache, then feeds `page_in` back to the kernel.
+To inject durable knowledge at startup (Slot 2, cacheable on Anthropic), use `initialMemory` or `runner.pushKnowledge(content, tokens?, { key, pinned })`. A **keyed** entry upserts on a repeated key and can be removed with `runner.removeKnowledge(key)`; both take effect at the next compaction/renewal boundary (where the `system[1]` cache prefix is rewritten anyway). Set `knowledgeBudgetRatio` (default 0.25 of `maxTokens`, 0 disables) to cap the partition — over budget, the oldest unpinned, non-skill entries are evicted at boundaries while `pinned: true` entries survive.
 
 ```typescript
 const runner = new RuntimeRunner({

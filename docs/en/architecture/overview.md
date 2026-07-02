@@ -63,8 +63,8 @@ while not done:
 | Partition | Contents |
 |-----------|----------|
 | system | Identity, stable system prompt |
-| knowledge | Memory retrieval, skill body, knowledge source |
-| history | Turns (compressible, frozen prefix) |
+| knowledge | Skill body, `initial_memory`, host-pinned durable refs (keyed + boundary eviction + budget) |
+| history | Turns + runtime memory/knowledge retrieval hits + prefetch (compressible, frozen prefix) |
 | state | task_state, signals, plan footer |
 
 `mm::HandleTable` pages large tool results by residency.

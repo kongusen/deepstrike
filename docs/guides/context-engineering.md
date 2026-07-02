@@ -26,8 +26,8 @@ Context 工程是 Agent OS 的 **Context VM 运行面**。它不只是把 messag
 | 槽位 | 内容 | 缓存策略 |
 |------|------|----------|
 | `system_stable` | Identity / system prompt | 长期 cache |
-| `system_knowledge` | Memory 检索、Skill 正文、Knowledge | 中期 cache |
-| `turns` | 对话历史 | 前缀 frozen，尾部增长 |
+| `system_knowledge` | Skill 正文、`initial_memory`、宿主钉住的耐久参考（见 Level 5） | 中期 cache |
+| `turns` | 对话历史（含运行时 memory/knowledge 检索命中与预取） | 前缀 frozen，尾部增长 |
 | `state_turn` | task_state + signals | 每 turn 重建，不 cache |
 
 `state_turn` 与 history 分离，保证 history 前缀 **字节稳定**，利于 Anthropic prompt cache。

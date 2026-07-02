@@ -113,10 +113,10 @@ Syscall::Spawn(manifest)
 
 ```text
 Syscall::WriteMemory → 内核校验 metadata → observation memory_written → SDK commit DreamStore
-Syscall::QueryMemory  → SDK search DreamStore → 内核 emit retrieval → 注入 knowledge 分区
+Syscall::QueryMemory  → SDK search DreamStore → 检索命中作为普通轮次进入 history（单次使用、随压缩衰减）
 ```
 
-Memory **不** 绕过 governance validation。
+Memory **不** 绕过 governance validation。检索结果落 `history` 而非 `knowledge`——只有 skill 正文、`initial_memory`、宿主显式钉住的参考材料才进耐久的 knowledge 分区（见 [Context 工程 · Level 5](../guides/context-engineering.md)）。
 
 ## 挂起与恢复
 

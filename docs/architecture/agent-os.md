@@ -48,7 +48,7 @@ Agent OS 把它拆开：
 | **系统调用 (syscall)** | 一切副作用请求先进 trap：`Invoke`、`Spawn`、`WriteMemory`、`SubmitNodes`… | `crates/deepstrike-core/src/syscall/` |
 | **进程 / 线程** | 每个 agent run 是一个 **TCB**（Task Control Block）；sub-agent = 子任务 | `scheduler/tcb.rs`、`proc/` |
 | **调度器** | `TaskState`（Ready/Running/Blocked/Suspended/Done）+ `BudgetLedger` | `scheduler/` |
-| **虚拟内存** | Context 分区 + Handle 表 + page-in/out（大工具结果、memory 检索） | `context/`、`mm/` |
+| **虚拟内存** | Context 分区 + Handle 表 + page-in/out（大工具结果）+ knowledge 生命周期（键控条目、边界驱逐、预算、skill 租约） | `context/`、`mm/` |
 | **IPC / 信号** | `RuntimeSignal` 注入 state 分区；ReactiveSession 黑板 | `signals/` |
 | **安全模块** | Governance pipeline：Allow / Deny / Gate(AskUser) / RateLimited | `governance/` |
 | **作业调度 (DAG)** | Workflow 节点 spawn 经同一 gate；Reduce 节点零 token 确定性归约 | `orchestration/workflow/` |

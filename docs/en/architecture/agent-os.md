@@ -48,7 +48,7 @@ Traditional agent frameworks scatter loop, memory, and governance across SDKs. D
 | **Syscall** | Every side effect enters the trap: `Invoke`, `Spawn`, `WriteMemory`, `SubmitNodes`… | `syscall/` |
 | **Process** | Each agent run is a **TCB**; sub-agents are child tasks | `scheduler/tcb.rs`, `proc/` |
 | **Scheduler** | `TaskState` + `BudgetLedger` | `scheduler/` |
-| **Virtual memory** | Context partitions + handle table + page-in/out | `context/`, `mm/` |
+| **Virtual memory** | Context partitions + handle table + page-in/out (large tool results) + knowledge lifecycle (keyed entries, boundary eviction, budget, skill leases) | `context/`, `mm/` |
 | **Signals / IPC** | `RuntimeSignal` into state partition; ReactiveSession blackboard | `signals/` |
 | **Security module** | Governance: Allow / Deny / Gate / RateLimited | `governance/` |
 | **Job scheduler (DAG)** | Workflow nodes through same gate; Reduce nodes at zero tokens | `orchestration/workflow/` |

@@ -99,8 +99,8 @@ while not done:
 | 分区 | 内容 |
 |------|------|
 | system | Identity、稳定 system prompt |
-| knowledge | Memory 检索、Skill 正文、Knowledge source |
-| history | 对话 turns（可压缩、可 frozen prefix） |
+| knowledge | Skill 正文、`initial_memory`、宿主钉住的耐久参考（键控 + 边界驱逐 + 预算） |
+| history | 对话 turns + 运行时 memory/knowledge 检索命中 + 预取（可压缩、可 frozen prefix） |
 | state | task_state、signals、plan、recent_actions footer |
 
 `mm::HandleTable`：大 tool result 以 handle 引用，按 **Residency** page-in/out，避免单条 message 撑爆窗口。

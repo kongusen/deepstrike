@@ -26,8 +26,8 @@ In OS terms, the Context VM is the agent's virtual memory manager: it decides wh
 | Slot | Contents | Cache strategy |
 |------|----------|----------------|
 | `system_stable` | Identity / system prompt | Long-lived cache |
-| `system_knowledge` | Memory retrieval, skill body, knowledge | Medium-term cache |
-| `turns` | Conversation history | Frozen prefix, growing tail |
+| `system_knowledge` | Skill body, `initial_memory`, host-pinned durable refs (see Level 5) | Medium-term cache |
+| `turns` | Conversation history (incl. runtime memory/knowledge retrieval hits & prefetch) | Frozen prefix, growing tail |
 | `state_turn` | task_state + signals | Rebuilt each turn, not cached |
 
 `state_turn` is separated from history so the history prefix stays **byte-stable** — a requirement for Anthropic prompt cache.

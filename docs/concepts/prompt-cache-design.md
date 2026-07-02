@@ -16,8 +16,8 @@ DeepStrike 的 Context 渲染不是把 messages 简单拼起来，而是把 prom
 
 ```text
 system_stable       Identity / stable system prompt
-system_knowledge    Memory retrievals / Skill definitions / Knowledge
-turns               History only; cacheable message prefix
+system_knowledge    Skill definitions / initial_memory / host-pinned durable knowledge
+turns               History (incl. runtime memory-tool hits & prefetch); cacheable prefix
 state_turn          TASK STATE + signals + recency footer; volatile tail
 ```
 

@@ -136,7 +136,7 @@ The mechanisms above are not internal refactors — they change what you can bui
 Tool calls, spawns, compression, and signals pass through one kernel gate with an explicit lifecycle (Ready / Running / Blocked / Suspended). You implement I/O; the kernel decides *when* and *whether*. Node, Python, and Rust share the same decision path, so `wake(session_id)` and cross-language tooling see consistent behavior.
 
 **Longer, sturdier sessions (Layer-1 spool + semantic page-out)**  
-Oversized tool results (> 50 KB) stay in context as a preview plus a `.spool/` reference — the model reads the full payload on demand via ordinary file tools. When pressure triggers semantic eviction, the SDK summarizes archived content into `DreamStore` and satisfies `page_in_requested` on the way back in. Long tasks survive token pressure instead of failing mid-run.
+Oversized tool results (> 50 KB) stay in context as a preview plus a `.spool/` reference — the model reads the full payload on demand via ordinary file tools. When pressure triggers semantic eviction, the SDK summarizes archived content into `DreamStore`. Long tasks survive token pressure instead of failing mid-run.
 
 **Safety and governance by default (OS native profile)**  
 Every run loads declarative `governance_policy` (deny / ask_user / rate-limit / param rules) and in-kernel signal routing (`attention_policy`, default queue 64). Dangerous tools, external interrupts, and approval flows are policy — not ad-hoc checks in your handlers.
@@ -430,9 +430,9 @@ effort: 1
 
 ## Knowledge
 
-Implement `KnowledgeSource` — the kernel injects a `knowledge` meta-tool. Runtime retrieval results land in **history** as tool results. Use `initial_memory` for durable preload into Slot 2.
+Implement `KnowledgeSource` — the kernel injects a `knowledge` meta-tool. Runtime retrieval results land in **history** as tool results (single-use fact content that decays with compaction), not in the durable `knowledge` partition. Use `initial_memory` for durable preload into Slot 2.
 
-Before tool execution the kernel may emit `page_in_requested`; the SDK satisfies it from `DreamStore`, `KnowledgeSource`, and a local semantic page-out cache, then feeds `page_in` back to the kernel.
+For durable content at runtime use `runner.push_knowledge(content, key=..., pinned=...)` — a **keyed** entry upserts on a repeated key and `runner.remove_knowledge(key)` removes it, both applied at the next compaction/renewal boundary. `knowledge_budget_ratio` (default 0.25, 0 disables) caps the partition: over budget, the oldest unpinned, non-skill entries are evicted at boundaries while `pinned=True` entries survive. A loaded skill's body is pinned here as `skill:<name>` and unpinned by `runner.deactivate_skill(name)` or a `skill_lease_turns` expiry.
 
 ```python
 from deepstrike import KnowledgeSource

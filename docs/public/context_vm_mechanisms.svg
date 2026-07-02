@@ -50,7 +50,7 @@
     <g transform="translate(12, 110)">
       <rect width="226" height="55" rx="4" fill="#111827" stroke="#10b981" stroke-width="1" />
       <text x="12" y="18" fill="#10b981" font-size="10.5" font-weight="bold">Slot 2: system_knowledge</text>
-      <text x="12" y="32" fill="#e2e8f0" font-size="9">Skills, memory queries, injected knowledge</text>
+      <text x="12" y="32" fill="#e2e8f0" font-size="9">Skill bodies, initial_memory, host-pinned refs</text>
       <text x="12" y="45" fill="#94a3b8" font-size="8">→ Medium-term prompt cache target</text>
     </g>
 

@@ -16,8 +16,8 @@ Main implementation entry points:
 
 ```text
 system_stable       identity / stable system prompt
-system_knowledge    memory retrievals / skill definitions / knowledge
-turns               history only; cacheable message prefix
+system_knowledge    skill definitions / initial_memory / host-pinned durable knowledge
+turns               history (incl. runtime memory-tool hits & prefetch); cacheable prefix
 state_turn          TASK STATE + signals + recency footer; volatile tail
 ```
 
