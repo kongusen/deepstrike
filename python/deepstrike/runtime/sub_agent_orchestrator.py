@@ -38,7 +38,7 @@ def _termination_from_status(status: str) -> str:
   normalized = status.lower()
   known = {
     "completed", "max_turns", "token_budget", "timeout",
-    "user_abort", "error", "milestone_exceeded",
+    "user_abort", "error", "milestone_exceeded", "context_overflow", "no_progress",
   }
   return normalized if normalized in known else status
 

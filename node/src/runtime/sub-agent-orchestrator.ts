@@ -40,7 +40,9 @@ function terminationFromStatus(status: string): TerminationReason | string {
     normalized === "timeout" ||
     normalized === "user_abort" ||
     normalized === "error" ||
-    normalized === "milestone_exceeded"
+    normalized === "milestone_exceeded" ||
+    normalized === "context_overflow" ||
+    normalized === "no_progress"
   ) {
     return normalized as TerminationReason
   }

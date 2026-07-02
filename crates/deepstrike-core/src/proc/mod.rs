@@ -85,6 +85,7 @@ impl AgentProcess {
             TerminationReason::Error => "error",
             TerminationReason::MilestoneExceeded => "milestone_exceeded",
             TerminationReason::ContextOverflow => "context_overflow",
+            TerminationReason::NoProgress => "no_progress",
         })
     }
 }

@@ -19,6 +19,11 @@ pub enum TerminationReason {
     /// from `Timeout` (which the SDK used to fabricate for this case) so embedders can tell an
     /// unrecoverable overflow from a wall-clock deadline.
     ContextOverflow,
+    /// Repeat-fuse escalation: the agent kept re-issuing the same tool call (same name AND args)
+    /// past the governance `terminate_after` threshold — a stall, not forward motion. Distinct
+    /// from `MaxTurns` (which a productive run can also hit) so embedders can tell "looped with
+    /// no progress" from "ran out of turns doing real work".
+    NoProgress,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

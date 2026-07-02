@@ -11,6 +11,11 @@ export type TerminationReason =
   | "user_abort"
   | "error"
   | "milestone_exceeded"
+  /** v0.2.35 recovery ladder: compaction exhausted and the prompt still exceeds the provider window. */
+  | "context_overflow"
+  /** Repeat-fuse escalation: the same tool call (name AND args) re-issued past `terminateAfter` —
+   *  a stall, distinct from `max_turns` which productive runs can also hit. */
+  | "no_progress"
 
 export type MilestonePolicy = "require_verifier" | "terminate" | "auto_pass"
 

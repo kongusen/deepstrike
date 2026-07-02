@@ -10,6 +10,10 @@ ContextInheritance = Literal["none", "system_only", "full"]
 NodeTrust = Literal["trusted", "quarantined"]
 TerminationReason = Literal[
   "completed", "max_turns", "token_budget", "timeout", "user_abort", "error", "milestone_exceeded",
+  # v0.2.35 recovery ladder: compaction exhausted, prompt still exceeds the provider window.
+  "context_overflow",
+  # Repeat-fuse escalation: same tool call (name AND args) re-issued past terminate_after — a stall.
+  "no_progress",
 ]
 MilestonePolicy = Literal["require_verifier", "terminate", "auto_pass"]
 
