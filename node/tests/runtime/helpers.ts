@@ -35,6 +35,8 @@ export function createRunner(
     stableCoreToolIds?: string[]
     repeatFuse?: { denyAfter?: number; terminateAfter?: number } | false
     criteriaGate?: boolean
+    knowledgeBudgetRatio?: number
+    skillLeaseTurns?: number
   } = {},
 ): { runner: RuntimeRunner; sessionLog: InMemorySessionLog; plane: LocalExecutionPlane } {
   const sessionLog = opts.sessionLog ?? new InMemorySessionLog()
@@ -63,6 +65,8 @@ export function createRunner(
     stableCoreToolIds: opts.stableCoreToolIds,
     repeatFuse: opts.repeatFuse,
     criteriaGate: opts.criteriaGate,
+    knowledgeBudgetRatio: opts.knowledgeBudgetRatio,
+    skillLeaseTurns: opts.skillLeaseTurns,
   })
   return { runner, sessionLog, plane }
 }

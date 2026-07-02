@@ -518,6 +518,8 @@ impl LoopStateMachine {
     pub fn feed(&mut self, event: LoopEvent) -> LoopAction {
         self.observations.clear();
         self.sweep_expired_leases();
+        // K3: skill leases expire on the same head-of-event cadence as capability leases.
+        self.ctx.sweep_expired_skill_leases(self.turn);
 
         match event {
             LoopEvent::Start { task } => self.start(task),

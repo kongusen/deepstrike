@@ -826,7 +826,7 @@ impl RuntimeRunner {
                     kernel_apply(
                         &mut kernel,
                         &mut pending_observations,
-                        KernelInputEvent::SkillActivated { name },
+                        KernelInputEvent::SkillActivated { name, lease_turns: None },
                     );
                 }
             }
@@ -1435,7 +1435,7 @@ impl RuntimeRunner {
                                 kernel_apply(
                                     &mut kernel,
                                     &mut pending_observations,
-                                    KernelInputEvent::SkillActivated { name: name.to_string() },
+                                    KernelInputEvent::SkillActivated { name: name.to_string(), lease_turns: None },
                                 );
                             }
                         }

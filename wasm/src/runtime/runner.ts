@@ -172,6 +172,9 @@ export interface RuntimeOptions {
    *  warn-once observation + oldest unpinned non-skill entries evicted at the next boundary.
    *  Pinned/skill entries are exempt. `0` disables. Default: kernel's 0.25. */
   knowledgeBudgetRatio?: number
+  /** K3: default lease (in turns) for every skill activation — auto-deactivates after N turns
+   *  (toolset re-widens, knowledge pin boundary-swept). Absent ⇒ permanent (default). */
+  skillLeaseTurns?: number
   /** O5 (PreToolUse-hook analog): stateful host veto over each kernel-approved call; return
    *  `{ block: true, reason }` to deny — the reason reaches the model as a denied result. Errs-open. */
   onToolCall?: (call: { callId: string; name: string; arguments: string }) =>
@@ -317,6 +320,14 @@ export class RuntimeRunner {
   removeKnowledge(key: string): void {
     if (!this.activeKernel) return
     kernelApply(this.activeKernel, this.pendingObservations, { kind: "remove_knowledge", key })
+  }
+
+  /** K3: host-driven skill deactivation — toolset re-widens at the next provider call, the
+   *  skill's knowledge pin drops at the next boundary. Errs-open: not-active is a no-op. */
+  deactivateSkill(name: string): void {
+    if (!this.activeKernel) return
+    kernelApply(this.activeKernel, this.pendingObservations, { kind: "skill_deactivated", name })
+    this.knowledgePushedSkills.delete(name)
   }
 
   private async resolveKernelSuspend(
@@ -674,7 +685,11 @@ export class RuntimeRunner {
           try {
             const name = (JSON.parse(tc.arguments || "{}") as { name?: string }).name
             if (!name) continue
-            kernelApply(runtime, this.pendingObservations, { kind: "skill_activated", name })
+            kernelApply(runtime, this.pendingObservations, {
+              kind: "skill_activated",
+              name,
+              ...(this.opts.skillLeaseTurns !== undefined ? { lease_turns: this.opts.skillLeaseTurns } : {}),
+            })
             const output = toolResultByCallId.get(tc.id)
             if (output && !this.knowledgePushedSkills.has(name)) {
               this.knowledgePushedSkills.add(name)
@@ -1088,8 +1103,14 @@ export class RuntimeRunner {
           try {
             const name = (JSON.parse(call.arguments || "{}") as { name?: string }).name
             if (!name) continue
-            kernelApply(runtime, this.pendingObservations, { kind: "skill_activated", name })
-            if (!this.knowledgePushedSkills.has(name)) {
+            kernelApply(runtime, this.pendingObservations, {
+              kind: "skill_activated",
+              name,
+              ...(this.opts.skillLeaseTurns !== undefined ? { lease_turns: this.opts.skillLeaseTurns } : {}),
+            })
+            // With a lease configured, skip the Set optimization: an expired-then-reloaded skill
+            // must re-pin — only the kernel knows the lease state; its upsert dedupes anyway.
+            if (this.opts.skillLeaseTurns !== undefined || !this.knowledgePushedSkills.has(name)) {
               this.knowledgePushedSkills.add(name)
               // K1: keyed `skill:<name>` — the kernel-side upsert dedupes across runner instances.
               this.pushKnowledge({ role: "system", content: res.output }, undefined, { key: `skill:${name}` })

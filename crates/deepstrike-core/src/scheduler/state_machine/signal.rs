@@ -37,6 +37,8 @@ impl LoopStateMachine {
     pub fn signal_event(&mut self, signal: RuntimeSignal) -> Option<LoopAction> {
         self.observations.clear();
         self.sweep_expired_leases();
+        // K3: skill leases expire on the same head-of-event cadence as capability leases.
+        self.ctx.sweep_expired_skill_leases(self.turn);
         self.dispatch_signal(signal)
     }
 

@@ -54,6 +54,43 @@ describe("skill content is pinned into durable knowledge on activation", () => {
   })
 })
 
+describe("skill lease + deactivation events reach the kernel (K3)", () => {
+  it("skillLeaseTurns rides on skill_activated; deactivateSkill emits skill_deactivated", async () => {
+    kernelEvents.length = 0
+    let runnerRef: RuntimeRunner | undefined
+    const provider: LLMProvider = {
+      async complete(): Promise<Message> {
+        return { role: "assistant", content: "unused", toolCalls: [] }
+      },
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "tool_call", id: "s1", name: "skill", arguments: { name: "debug" } }
+      },
+    }
+
+    const runner = new RuntimeRunner({
+      provider,
+      sessionLog: new InMemorySessionLog(),
+      executionPlane: new LocalExecutionPlane(),
+      maxTokens: 2048,
+      maxTurns: 6,
+      skillContentMap: new Map([["debug", "---\nname: debug\n---\nDebug guidance."]]),
+      skillLeaseTurns: 3,
+    })
+    runnerRef = runner
+
+    for await (const e of runner.run({ sessionId: "skill-lease", goal: "debug it" })) {
+      // Deactivate as soon as the skill result comes back (mid-run, kernel active).
+      if (e.type === "tool_result" && runnerRef) runnerRef.deactivateSkill("debug")
+    }
+
+    const activated = kernelEvents.find((e: { kind?: string }) => e.kind === "skill_activated") as
+      | { lease_turns?: number }
+      | undefined
+    expect(activated?.lease_turns).toBe(3)
+    expect(kernelEvents.some((e: { kind?: string }) => e.kind === "skill_deactivated")).toBe(true)
+  })
+})
+
 describe("knowledgeBudgetRatio reaches the kernel via configure_run (K2)", () => {
   it("carries knowledge_budget_ratio in the configure_run bundle", async () => {
     kernelEvents.length = 0

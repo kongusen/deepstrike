@@ -194,6 +194,11 @@ class RuntimeOptions:
   # unpinned, non-skill entries at the next compaction/renewal boundary. Pinned entries and skill
   # pins are never budget-evicted. 0 disables. None ⇒ kernel default (0.25).
   knowledge_budget_ratio: float | None = None
+  # K3: default lease (in turns) for every skill activation. After that many turns the kernel
+  # auto-deactivates the skill — toolset re-widens, knowledge pin boundary-swept — exactly like an
+  # explicit deactivate_skill(). None ⇒ activations are permanent (default). A repeat skill(name)
+  # call refreshes the lease.
+  skill_lease_turns: int | None = None
   # L1 (RunGroup): bind this runner to a governance domain shared by N peer sessions of one logical
   # run. Members pass the same RunGroup; the run-level token cap is enforced against the group's
   # cumulative spend (seeded at boot, charged at run end) rather than per-vehicle. None ⇒ N=1.
@@ -1037,6 +1042,21 @@ class RuntimeRunner:
       "key": key,
     })
 
+  def deactivate_skill(self, name: str) -> None:
+    """K3: host-driven skill deactivation (deliberately no model-facing unload — it invites
+    thrash). The toolset re-widens at the next provider call; the skill's knowledge pin drops at
+    the next compaction/renewal boundary. A later ``skill(name)`` call re-activates and re-pins
+    fresh content. Errs-open: not-active is a kernel-side no-op.
+    """
+    if self._active_kernel is None:
+      return
+    kernel_apply(self._active_kernel, self._pending_observations, {
+      "kind": "skill_deactivated",
+      "name": name,
+    })
+    # Re-arm the SDK-side push guard so a re-activation re-pins the content.
+    self._knowledge_pushed_skills.discard(name)
+
   def inject_note(self, text: str, urgency: str = "normal") -> None:
     """Push a contextual note into the run's signal stream (the system-reminder channel).
 
@@ -1537,7 +1557,10 @@ class RuntimeRunner:
             name = json.loads(tc.arguments or "{}").get("name")
             if not name:
               continue
-            kernel_apply(runtime, self._pending_observations, {"kind": "skill_activated", "name": name})
+            activated: dict[str, Any] = {"kind": "skill_activated", "name": name}
+            if self._opts.skill_lease_turns is not None:
+              activated["lease_turns"] = int(self._opts.skill_lease_turns)
+            kernel_apply(runtime, self._pending_observations, activated)
             output = tool_result_by_call_id.get(tc.id)
             if output and name not in self._knowledge_pushed_skills:
               self._knowledge_pushed_skills.add(name)
@@ -2085,8 +2108,13 @@ class RuntimeRunner:
             name = json.loads(call.arguments or "{}").get("name")
             if not name:
               continue
-            kernel_apply(runtime, self._pending_observations, {"kind": "skill_activated", "name": name})
-            if name not in self._knowledge_pushed_skills:
+            activated: dict[str, Any] = {"kind": "skill_activated", "name": name}
+            if self._opts.skill_lease_turns is not None:
+              activated["lease_turns"] = int(self._opts.skill_lease_turns)
+            kernel_apply(runtime, self._pending_observations, activated)
+            # With a lease configured, skip the set optimization: an expired-then-reloaded skill
+            # must re-pin, and only the kernel knows the lease state — its upsert dedupes anyway.
+            if self._opts.skill_lease_turns is not None or name not in self._knowledge_pushed_skills:
               self._knowledge_pushed_skills.add(name)
               # K1: keyed `skill:<name>` — the kernel-side upsert dedupes across runner instances
               # (wake re-push of an already-pinned skill upserts instead of duplicating).

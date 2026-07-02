@@ -237,6 +237,18 @@ pub enum KernelInputEvent {
     /// `allowed_tools` from the catalog to narrow the toolset on subsequent turns.
     SkillActivated {
         name: String,
+        /// K3: auto-deactivate after this many turns (`None` = permanent, the default). On expiry
+        /// the toolset re-widens and the skill's knowledge pin is boundary-swept — same path as
+        /// an explicit `SkillDeactivated`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease_turns: Option<u32>,
+    },
+    /// K3: host-driven skill deactivation (there is deliberately NO model-facing unload — it
+    /// invites thrash). The toolset re-widens at the next provider call (an epoch event, same
+    /// cache cost class as activation); the `skill:<name>` knowledge pin drops at the next
+    /// boundary sweep. Errs-open: not-active is a no-op.
+    SkillDeactivated {
+        name: String,
     },
     /// P1-B/D: configure the stable-core tool ids (always exposed under skill gating). Set once by
     /// the SDK; empty/absent ⇒ skills narrow to exactly their declared tools + meta-tools.
@@ -881,10 +893,16 @@ impl KernelRuntime {
                 self.sm.ctx.set_available_skills(skills);
                 return KernelStep::empty(self.sm.take_observations());
             }
-            KernelInputEvent::SkillActivated { name } => {
+            KernelInputEvent::SkillActivated { name, lease_turns } => {
                 // B1: record the activation (B2 reads it in emit_call_llm to narrow tools).
                 // The returned `changed` flag is the epoch boundary for D's cache re-anchor.
-                self.sm.ctx.activate_skill(name);
+                // K3: a lease converts to an absolute expiry turn here (the manager is turn-blind).
+                let expires_at_turn = lease_turns.map(|n| self.sm.turn.saturating_add(n));
+                self.sm.ctx.activate_skill_leased(name, expires_at_turn);
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::SkillDeactivated { name } => {
+                self.sm.ctx.deactivate_skill(&name);
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::SetStableCoreTools { tool_ids } => {
@@ -1408,12 +1426,98 @@ mod tests {
 
         let step = runtime.step(KernelInput::new(KernelInputEvent::SkillActivated {
             name: "debug".to_string(),
+            lease_turns: None,
         }));
 
         assert!(step.actions.is_empty(), "activation is config, not an action");
-        assert!(runtime.state_machine().ctx.active_skills.contains("debug"));
+        assert!(runtime.state_machine().ctx.active_skills.contains_key("debug"));
         let filter = runtime.state_machine().ctx.active_skill_tool_filter().unwrap();
         assert_eq!(filter.len(), 2);
+    }
+
+    #[test]
+    fn skill_deactivated_rewidens_toolset_and_unpins_knowledge() {
+        // K3: deactivation removes the skill from the active set (filter back to None ⇒ no
+        // narrowing) and marks its `skill:<name>` knowledge pin for the next boundary sweep.
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut debug = SkillMetadata::new("debug", "Debug helper");
+        debug.allowed_tools = vec!["read".into(), "grep".into()];
+        runtime.step(KernelInput::new(KernelInputEvent::SetAvailableSkills {
+            skills: vec![debug],
+        }));
+        runtime.step(KernelInput::new(KernelInputEvent::SkillActivated {
+            name: "debug".to_string(),
+            lease_turns: None,
+        }));
+        runtime.step(KernelInput::new(KernelInputEvent::AddKnowledgeMessage {
+            content: "debug skill content".to_string(),
+            tokens: 5,
+            key: Some("skill:debug".to_string()),
+            pinned: false,
+        }));
+        assert!(runtime.state_machine().ctx.active_skill_tool_filter().is_some());
+
+        runtime.step(KernelInput::new(KernelInputEvent::SkillDeactivated {
+            name: "debug".to_string(),
+        }));
+        let sm = runtime.state_machine();
+        assert!(!sm.ctx.active_skills.contains_key("debug"));
+        assert!(sm.ctx.active_skill_tool_filter().is_none(), "toolset re-widens");
+        assert!(
+            sm.ctx.partitions.knowledge.entries[0].evict_at_boundary,
+            "knowledge pin marked for the boundary sweep"
+        );
+    }
+
+    #[test]
+    fn skill_lease_expires_after_turns_and_reactivation_renarrows() {
+        // K3: `lease_turns: 1` expires once the turn counter passes activation+1 — the head-of-
+        // event sweep deactivates it exactly like an explicit SkillDeactivated. A later
+        // re-activation re-narrows.
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut debug = SkillMetadata::new("debug", "Debug helper");
+        debug.allowed_tools = vec!["read".into(), "grep".into()];
+        runtime.step(KernelInput::new(KernelInputEvent::SetAvailableSkills {
+            skills: vec![debug],
+        }));
+        runtime.step(KernelInput::new(KernelInputEvent::SkillActivated {
+            name: "debug".to_string(),
+            lease_turns: Some(1),
+        }));
+        assert!(runtime.state_machine().ctx.active_skill_tool_filter().is_some());
+
+        // One full tool round advances the turn; the sweep runs at the HEAD of the next loop
+        // event, so the following provider turn is what actually expires the lease.
+        run_with_tool_call(&mut runtime, "read");
+        runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
+            results: vec![ToolResult {
+                call_id: "call-1".into(),
+                output: crate::types::message::Content::Text("ok".into()),
+                is_error: false,
+                is_fatal: false,
+                error_kind: None,
+                token_count: None,
+            }],
+        }));
+        runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
+            message: Message::assistant("done"),
+            observed_input_tokens: None,
+            observed_output_tokens: None,
+            stop_reason: None,
+            now_ms: None,
+        }));
+        assert!(
+            !runtime.state_machine().ctx.active_skills.contains_key("debug"),
+            "lease expired after the turn advanced"
+        );
+        assert!(runtime.state_machine().ctx.active_skill_tool_filter().is_none());
+
+        // Re-activation works and re-narrows.
+        runtime.step(KernelInput::new(KernelInputEvent::SkillActivated {
+            name: "debug".to_string(),
+            lease_turns: None,
+        }));
+        assert!(runtime.state_machine().ctx.active_skill_tool_filter().is_some());
     }
 
     #[test]

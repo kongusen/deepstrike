@@ -51,11 +51,14 @@ pub struct ContextManager {
     pub sprint: u32,
     pub last_handoff: Option<HandoffArtifact>,
     pub skills: SkillCatalog,
-    /// P1-B tool gating: the set of skills the model has loaded this session (by name). Their
-    /// declared `allowed_tools` are unioned to narrow the exposed toolset in `emit_call_llm`.
-    /// A set (not a single value) because the model may load several skills and still needs each
-    /// one's tools (D1). v1 accumulates (no eviction). Snapshotted for wake/resume.
-    pub active_skills: std::collections::BTreeSet<CompactString>,
+    /// P1-B tool gating: the skills the model has loaded this session (by name), each with an
+    /// optional lease expiry turn (K3: `None` = permanent, today's default). Their declared
+    /// `allowed_tools` are unioned to narrow the exposed toolset in `emit_call_llm`. A map (not a
+    /// single value) because the model may load several skills and still needs each one's tools
+    /// (D1). K3 adds eviction: explicit `deactivate_skill` or lease expiry — both also unpin the
+    /// skill's `skill:<name>` knowledge entry (boundary-swept). NOT snapshotted — rebuilt on wake
+    /// by replaying `skill` tool calls (graceful).
+    pub active_skills: std::collections::BTreeMap<CompactString, Option<u32>>,
     /// P1-B/D stable-core: tool ids that stay exposed even when a skill narrows the toolset (the
     /// "everyone uses these" set — read/search/bash etc.). Configured once by the SDK; empty by
     /// default (铁律: no config ⇒ skills narrow to exactly their declared tools + meta-tools).
@@ -119,7 +122,7 @@ impl ContextManager {
             partitions, max_tokens, config, engine,
             sprint: 0, last_handoff: None,
             skills: SkillCatalog::new(),
-            active_skills: std::collections::BTreeSet::new(),
+            active_skills: std::collections::BTreeMap::new(),
             stable_core_tools: std::collections::HashSet::new(),
             capabilities: CapabilityManifest::new(),
             sections: ContextSectionRegistry::default_agent_sections(),
@@ -642,9 +645,45 @@ impl ContextManager {
 
     /// P1-B: record that the model has loaded a skill (its content is now in context). Returns
     /// `true` if this changed the active set — an epoch boundary the SDK can use to re-anchor the
-    /// prompt cache (D). No-op (returns false) when the skill was already active.
+    /// prompt cache (D). Re-activating an already-active skill refreshes its lease (K3) but
+    /// returns false (no epoch change).
     pub fn activate_skill(&mut self, name: impl Into<CompactString>) -> bool {
-        self.active_skills.insert(name.into())
+        self.activate_skill_leased(name, None)
+    }
+
+    /// K3: activate with an optional lease expiry turn (`None` = permanent). Same epoch semantics
+    /// as [`Self::activate_skill`]; a re-activation overwrites the prior lease (latest wins).
+    pub fn activate_skill_leased(
+        &mut self,
+        name: impl Into<CompactString>,
+        expires_at_turn: Option<u32>,
+    ) -> bool {
+        self.active_skills.insert(name.into(), expires_at_turn).is_none()
+    }
+
+    /// K3: deactivate a skill — the toolset re-widens at the next `emit_call_llm` (an epoch event,
+    /// same cache cost class as activation) and the skill's `skill:<name>` knowledge pin is marked
+    /// for the next boundary sweep. Errs-open: not-active is a no-op (returns false).
+    pub fn deactivate_skill(&mut self, name: &str) -> bool {
+        if self.active_skills.remove(name).is_none() {
+            return false;
+        }
+        self.partitions.knowledge.remove(&format!("skill:{name}"));
+        true
+    }
+
+    /// K3: expire skill leases whose turn has passed (mirrors the capability lease sweep — runs at
+    /// the head of every event). Each expiry takes the same path as an explicit deactivation.
+    pub fn sweep_expired_skill_leases(&mut self, current_turn: u32) {
+        let expired: Vec<CompactString> = self
+            .active_skills
+            .iter()
+            .filter(|(_, lease)| lease.is_some_and(|t| current_turn >= t))
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in expired {
+            self.deactivate_skill(&name);
+        }
     }
 
     /// P1-B: the tool-id allow-set to narrow the exposed toolset to, given the active skills.
@@ -657,7 +696,7 @@ impl ContextManager {
             return None;
         }
         let mut union = std::collections::HashSet::new();
-        for name in &self.active_skills {
+        for name in self.active_skills.keys() {
             let declared = self.skills.allowed_tools(name);
             if declared.is_empty() {
                 return None; // an unrestricted active skill ⇒ no narrowing (D3)

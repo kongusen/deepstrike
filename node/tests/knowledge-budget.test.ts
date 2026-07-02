@@ -71,8 +71,11 @@ describe("knowledge budget (K2)", () => {
       async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {
         call += 1
         if (call === 1) {
+          // 180 tokens — clearly over the default budget (120) so this test would FAIL if the
+          // ratio-0 knob didn't reach the kernel.
           runner.pushKnowledge({ role: "system", content: `${EVICTABLE}1`.padEnd(240, "x"), toolCalls: [] }, 60, { key: "old1" })
           runner.pushKnowledge({ role: "system", content: `${EVICTABLE}2`.padEnd(240, "y"), toolCalls: [] }, 60, { key: "old2" })
+          runner.pushKnowledge({ role: "system", content: `${EVICTABLE}3`.padEnd(240, "w"), toolCalls: [] }, 60, { key: "old3" })
           yield { type: "tool_call", id: `b${call}`, name: "bulk", arguments: {} }
           return
         }
