@@ -249,9 +249,12 @@ class RuntimeRunner:
     self._current_session_id: str | None = None
     # O2 (system-reminder channel): host-pushed notes awaiting the next turn-boundary drain.
     self._injected_signals: list[RuntimeSignal] = []
+    # Skill names whose content has already been pushed into the durable `knowledge` slot this
+    # run — guards against re-pushing a duplicate entry if the model calls skill(name) again for
+    # an already-active skill (loading is idempotent; the knowledge push should be too).
+    self._knowledge_pushed_skills: set[str] = set()
     self._next_archive_start: int = 0
     self._pending_spool_outputs: dict[str, dict[str, str]] = {}
-    self._local_page_out_cache: list[Any] = []
     # M5 v2.1: sub-workflow specs a top-level agent authored via ``start_workflow``, awaiting auto-drive
     # at the next safe point (after the tool turn resolves, kernel back in Reason — not suspended).
     self._pending_authored_workflows: list[Any] = []
@@ -1474,14 +1477,30 @@ class RuntimeRunner:
         "messages": [message_to_kernel(message) for message in replayed],
       })
       # P1-B B3: rebuild active-skill gating after a wake (active_skills is not snapshotted).
+      # `knowledge` isn't snapshotted either (same graceful-reset philosophy) — best-effort re-push
+      # the skill's content from its replayed tool_result so the durable copy survives a wake too.
+      tool_result_by_call_id: dict[str, str] = {}
+      for message in replayed:
+        for part in (getattr(message, "content_parts", None) or []):
+          if getattr(part, "type", None) == "tool_result":
+            tool_result_by_call_id[part.call_id] = part.output
       for message in replayed:
         for tc in (getattr(message, "tool_calls", None) or []):
           if tc.name != "skill":
             continue
           try:
             name = json.loads(tc.arguments or "{}").get("name")
-            if name:
-              kernel_apply(runtime, self._pending_observations, {"kind": "skill_activated", "name": name})
+            if not name:
+              continue
+            kernel_apply(runtime, self._pending_observations, {"kind": "skill_activated", "name": name})
+            output = tool_result_by_call_id.get(tc.id)
+            if output and name not in self._knowledge_pushed_skills:
+              self._knowledge_pushed_skills.add(name)
+              kernel_apply(runtime, self._pending_observations, {
+                "kind": "add_knowledge_message",
+                "content": output,
+                "tokens": max(1, len(output) // 4),
+              })
           except Exception:
             pass
 
@@ -1607,22 +1626,29 @@ class RuntimeRunner:
         "message": {"role": "user", "content": list(attachments)},
       })
 
-    # I4: pre-fetch memory into the knowledge partition before the first LLM turn (mirrors Node).
+    # I4: pre-fetch memory before the first LLM turn so the model sees it on turn 1 instead of
+    # discovering it via the memory tool on turn 3+ (mirrors Node). Strict dynamic context control:
+    # this is single-use retrieval content, not a stable method/skill — so it lands in `history` as
+    # an ordinary turn (exactly like a real `memory` tool result would) and decays with the
+    # compression pyramid over subsequent turns, instead of pinning itself in `knowledge` forever.
     if not resume_mid_run and self._opts.pre_query_memory and self._opts.dream_store and self._opts.agent_id:
       try:
         result = self._opts.pre_query_memory(goal=goal)
         if hasattr(result, "__await__"):
           result = await result
         queries = result or []
-        entries = []
+        lines = []
         for q in queries:
           if not isinstance(q, str) or not q.strip():
             continue
           hits = await self._opts.dream_store.search(self._opts.agent_id, q, 5)
           for hit in hits:
-            entries.append({"content": f"[memory score={hit.score:.3f}] {hit.text}", "source": "memory"})
-        if entries:
-          kernel_apply(runtime, self._pending_observations, {"kind": "page_in", "entries": entries})
+            lines.append(f"[memory score={hit.score:.3f}] {hit.text}")
+        if lines:
+          kernel_apply(runtime, self._pending_observations, {
+            "kind": "add_history_message",
+            "message": {"role": "user", "content": "\n".join(lines)},
+          })
       except Exception:
         pass  # errs-open
 
@@ -1637,8 +1663,6 @@ class RuntimeRunner:
     # I0b: kernel-throw safety net — see Node runner for full rationale.
     try:
      while not runtime.is_terminal():
-      if action.kind == "execute_tool":
-        await self._apply_kernel_page_in(runtime, session_id)
       next_compressed_archive_start = await self._append_observations(
         session_id, runtime, next_compressed_archive_start,
       )
@@ -1989,6 +2013,13 @@ class RuntimeRunner:
           if result is not None:
             self._pending_spool_outputs[call.id] = {"tool": call.name, "output": result.output}
         # P1-B B3: a successfully-resolved `skill` call activates that skill for the next turn.
+        #
+        # Strict dynamic context control: a skill is METHOD content — how to do something — reused
+        # for the rest of the run, unlike a one-off memory/knowledge lookup (fact content, relevant
+        # for the moment it's used). So its text ALSO goes into the durable `knowledge` slot here
+        # (in addition to the ordinary tool_result already headed for `history`, where it will decay
+        # with the compression pyramid like any other tool output — that's fine, the permanent copy
+        # now lives in `knowledge`). First activation only (see `_knowledge_pushed_skills`).
         for call in all_calls:
           if call.name != "skill":
             continue
@@ -1997,8 +2028,16 @@ class RuntimeRunner:
             continue
           try:
             name = json.loads(call.arguments or "{}").get("name")
-            if name:
-              kernel_apply(runtime, self._pending_observations, {"kind": "skill_activated", "name": name})
+            if not name:
+              continue
+            kernel_apply(runtime, self._pending_observations, {"kind": "skill_activated", "name": name})
+            if name not in self._knowledge_pushed_skills:
+              self._knowledge_pushed_skills.add(name)
+              kernel_apply(runtime, self._pending_observations, {
+                "kind": "add_knowledge_message",
+                "content": res.output,
+                "tokens": max(1, len(res.output) // 4),
+              })
           except Exception:
             pass
         action = kernel_action(runtime, self._pending_observations, {
@@ -2114,60 +2153,6 @@ class RuntimeRunner:
     self._current_session_id = None
     yield DoneEvent(iterations=turns_used, total_tokens=total_tokens, status=status)
 
-  async def _apply_kernel_page_in(self, runtime: KernelRuntime, session_id: str) -> None:
-    """Phase 4: satisfy kernel page-in requests before meta-tool execution."""
-    requests = [
-      o for o in self._pending_observations
-      if o.get("kind") == "page_in_requested" and isinstance(o.get("tool"), str)
-    ]
-    if not requests:
-      return
-    entries: list[dict[str, Any]] = []
-    for req in requests:
-      query = req.get("query") if isinstance(req.get("query"), str) else ""
-      top_k = req.get("top_k") if isinstance(req.get("top_k"), int) else 5
-      tool = req.get("tool")
-      if tool == "memory":
-        local_hits = []
-        for m in self._local_page_out_cache:
-          content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
-          if isinstance(content, str) and query.lower() in content.lower():
-            local_hits.append(m)
-        local_hits = local_hits[:top_k]
-
-        for hit in local_hits:
-          if isinstance(hit, dict):
-            role = hit.get("role") or "system"
-            content = hit.get("content") or ""
-          else:
-            role = getattr(hit, "role", "system") or "system"
-            content = getattr(hit, "content", "") or ""
-          entries.append({
-            "content": f"[local semantic cache] {role}: {content}",
-            "source": "semantic_cache",
-          })
-
-        remaining_k = top_k - len(entries)
-        if remaining_k > 0 and self._opts.dream_store and self._opts.agent_id:
-          hits = await self._opts.dream_store.search(self._opts.agent_id, query, remaining_k)
-          for hit in hits:
-            entries.append({
-              "content": f"[memory score={hit.score:.3f}] {hit.text}",
-              "source": "memory",
-            })
-      elif tool == "knowledge" and self._opts.knowledge_source:
-        snippets = await self._opts.knowledge_source.retrieve(query, top_k)
-        for snippet in snippets:
-          entries.append({"content": snippet, "source": "knowledge"})
-    if not entries:
-      return
-    kernel_apply(runtime, self._pending_observations, {"kind": "page_in", "entries": entries})
-    await self._opts.session_log.append(session_id, with_category({
-      "kind": "page_in",
-      "turn": runtime.turn(),
-      "entry_count": len(entries),
-    }))
-
   async def _append_observations(
     self,
     session_id: str,
@@ -2193,9 +2178,6 @@ class RuntimeRunner:
               archive_ref = path_ref
           except Exception:
             pass
-
-      if obs.get("kind") == "page_out" and obs.get("archived"):
-        self._local_page_out_cache.extend(obs["archived"])
 
       if obs.get("kind") == "large_result_spooled":
         call_id = obs.get("call_id") if isinstance(obs.get("call_id"), str) else ""
