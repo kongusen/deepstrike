@@ -17,6 +17,8 @@ use compact_str::CompactString;
 
 pub const MEMORY_TOOL_NAME: &str = "memory";
 pub const KNOWLEDGE_TOOL_NAME: &str = "knowledge";
+/// O7: the evicted-result re-fetch meta-tool (see `read_result_tool_schema`).
+pub const READ_RESULT_TOOL_NAME: &str = "read_result";
 
 /// Control-plane meta-tools: kernel-handled tools that drive state/capabilities rather than do task
 /// work. Excluded from the `recent_actions` progress log (2b) so the footer reflects real progress.
@@ -25,6 +27,7 @@ const META_TOOL_NAMES: &[&str] = &[
     "skill",
     MEMORY_TOOL_NAME,
     KNOWLEDGE_TOOL_NAME,
+    READ_RESULT_TOOL_NAME,
     "submit_workflow_nodes",
     "start_workflow",
 ];
@@ -610,8 +613,40 @@ impl ContextManager {
         if let Some(t) = self.memory_tool_schema() { tools.push(t); }
         if let Some(t) = self.knowledge_tool_schema() { tools.push(t); }
         if let Some(t) = self.plan_tool_schema() { tools.push(t); }
+        if let Some(t) = self.read_result_tool_schema() { tools.push(t); }
         tools.sort_by(|a, b| a.name.cmp(&b.name));
         tools
+    }
+
+    /// O7: the `read_result` meta-tool — re-fetch a tool result the kernel evicted from context
+    /// (spooled to disk / collapsed / paged out). Exposed DYNAMICALLY: only once at least one
+    /// handle has actually left residency, so runs that never evict see an unchanged toolset
+    /// (progressive disclosure; golden fixtures and cache prefixes stay byte-stable). Content is
+    /// host-resolved (spool file / session log) — the kernel only advertises the capability.
+    pub fn read_result_tool_schema(&self) -> Option<ToolSchema> {
+        let any_evicted = self
+            .handles
+            .all()
+            .iter()
+            .any(|h| !h.residency.occupies_context());
+        if !any_evicted { return None; }
+        Some(ToolSchema {
+            name: CompactString::new(READ_RESULT_TOOL_NAME),
+            description: "Re-read a tool result that was evicted from context (you see a \
+                          placeholder like '[…tool result spooled…]' or a collapsed entry). \
+                          Pass the tool call's call_id; use offset/max_bytes to page through \
+                          large content."
+                .to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "call_id": { "type": "string" },
+                    "offset": { "type": "integer", "description": "Byte offset to start from (default 0)." },
+                    "max_bytes": { "type": "integer", "description": "Max bytes to return (default 4000)." }
+                },
+                "required": ["call_id"]
+            }),
+        })
     }
 
     pub fn plan_tool_schema(&self) -> Option<ToolSchema> {

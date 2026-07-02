@@ -55,8 +55,11 @@ def _all_text(calls) -> str:
         if st is not None and getattr(st, "content", None):
             parts.append(st.content)
         for m in c.turns:
-            parts.append(repr(getattr(m, "content", "")))
-            parts.append(repr(getattr(m, "content_parts", "")))
+            parts.append(str(getattr(m, "content", "") or ""))
+            for cp in getattr(m, "content_parts", None) or []:
+                # tool_result parts carry the payload in `output`; ContentPart repr hides it.
+                parts.append(str(getattr(cp, "output", "") or ""))
+                parts.append(str(getattr(cp, "text", "") or ""))
     return "\n".join(parts)
 
 
