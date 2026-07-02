@@ -83,6 +83,16 @@ pub struct ContextConfig {
 
     /// Preview byte budget kept in context when a tool result is spooled. Default: 2 KiB.
     pub spool_preview_bytes: u32,
+
+    // ── K2: knowledge budget ─────────────────────────────────────────────
+
+    /// Max share of `max_tokens` the knowledge partition may occupy. Exceeding it emits a
+    /// `KnowledgeBudgetExceeded` observation (once per cache generation) and marks the OLDEST
+    /// unpinned, non-skill entries for eviction at the next compaction/renewal boundary until the
+    /// projected usage fits. Pinned entries and `skill:`-keyed pins are never budget-evicted
+    /// (skills are governed by deactivation/lease, not the budget). `0.0` disables (no cap).
+    /// Default: 0.25.
+    pub knowledge_budget_ratio: f64,
 }
 
 fn default_micro_compact_idle_minutes() -> u32 {
@@ -119,6 +129,7 @@ impl Default for ContextConfig {
             autocompact_buffer: 13_000,
             spool_threshold_bytes: 50 * 1024,
             spool_preview_bytes: 2 * 1024,
+            knowledge_budget_ratio: 0.25,
         }
     }
 }

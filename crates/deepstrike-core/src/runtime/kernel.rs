@@ -167,6 +167,10 @@ pub struct RunConfig {
     /// O4: enable/disable the turn-end criteria gate. Absent ⇒ enabled (kernel default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub criteria_gate: Option<bool>,
+    /// K2: max share of `max_tokens` the knowledge partition may occupy (see
+    /// `ContextConfig::knowledge_budget_ratio`). Absent ⇒ kernel default (0.25); `0.0` disables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_budget_ratio: Option<f64>,
 }
 
 /// Build a [`GovernancePipeline`](crate::governance::pipeline::GovernancePipeline) from the ABI policy
@@ -341,6 +345,11 @@ pub enum KernelInputEvent {
     },
     /// O4: enable/disable the turn-end criteria gate (default enabled; no-op for runs without
     /// criteria). Additive ABI.
+    /// K2: set the knowledge-budget ratio at runtime (granular sibling of
+    /// `RunConfig::knowledge_budget_ratio`). `0.0` disables the cap.
+    SetKnowledgeBudget {
+        ratio: f64,
+    },
     SetCriteriaGate {
         enabled: bool,
     },
@@ -597,6 +606,14 @@ pub enum KernelObservation {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         removed_keys: Vec<String>,
         tokens_freed: u32,
+    },
+    /// K2: the knowledge partition exceeds its configured budget share. Fired at most once per
+    /// cache generation; the over-budget unpinned entries are already marked for the next
+    /// boundary sweep. Pinned/skill weight that cannot be evicted keeps the warning standing.
+    KnowledgeBudgetExceeded {
+        turn: u32,
+        used: u32,
+        budget: u32,
     },
     Rollbacked {
         turn: u32,
@@ -989,6 +1006,7 @@ impl KernelRuntime {
                     group_spawns_base,
                     repeat_fuse,
                     criteria_gate,
+                    knowledge_budget_ratio,
                 } = config;
                 if let Some(tools) = tools {
                     self.sm.tools = tools;
@@ -1041,6 +1059,9 @@ impl KernelRuntime {
                 if let Some(enabled) = criteria_gate {
                     self.sm.set_criteria_gate(enabled);
                 }
+                if let Some(ratio) = knowledge_budget_ratio {
+                    self.sm.ctx.config.knowledge_budget_ratio = ratio;
+                }
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::SetAttentionPolicy { max_queue_size } => {
@@ -1084,6 +1105,10 @@ impl KernelRuntime {
             }
             KernelInputEvent::SetCriteriaGate { enabled } => {
                 self.sm.set_criteria_gate(enabled);
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::SetKnowledgeBudget { ratio } => {
+                self.sm.ctx.config.knowledge_budget_ratio = ratio;
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::SetRepeatFuse { enabled, deny_after, terminate_after } => {
@@ -1423,6 +1448,67 @@ mod tests {
             runtime.state_machine().ctx.partitions.knowledge.len(),
             1
         );
+    }
+
+    #[test]
+    fn knowledge_budget_exceeded_observed_in_live_loop() {
+        // K2: the per-turn budget check runs in the LLMResponse path; an over-budget knowledge
+        // partition (40 tokens > 100 × 0.25 default) surfaces as a KnowledgeBudgetExceeded
+        // observation. Raising the ratio via SetKnowledgeBudget silences it.
+        let mut runtime = KernelRuntime::new(LoopPolicy {
+            max_tokens: 100,
+            ..LoopPolicy::default()
+        });
+        runtime.step(KernelInput::new(KernelInputEvent::AddKnowledgeMessage {
+            content: "reference".to_string(),
+            tokens: 40,
+            key: None,
+            pinned: false,
+        }));
+        run_with_tool_call(&mut runtime, "search");
+        // The check runs at the turn boundary (ToolResults handling), not on the proposal.
+        let step = runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
+            results: vec![ToolResult {
+                call_id: "call-1".into(),
+                output: crate::types::message::Content::Text("ok".into()),
+                is_error: false,
+                is_fatal: false,
+                error_kind: None,
+                token_count: None,
+            }],
+        }));
+        assert!(step.observations.iter().any(|o| matches!(
+            o,
+            KernelObservation::KnowledgeBudgetExceeded { used: 40, budget: 25, .. }
+        )));
+
+        // Runtime knob: a generous ratio ⇒ under budget ⇒ no warning on the next turn.
+        let mut runtime2 = KernelRuntime::new(LoopPolicy {
+            max_tokens: 100,
+            ..LoopPolicy::default()
+        });
+        runtime2.step(KernelInput::new(KernelInputEvent::SetKnowledgeBudget { ratio: 0.9 }));
+        runtime2.step(KernelInput::new(KernelInputEvent::AddKnowledgeMessage {
+            content: "reference".to_string(),
+            tokens: 40,
+            key: None,
+            pinned: false,
+        }));
+        run_with_tool_call(&mut runtime2, "search");
+        let step2 = runtime2.step(KernelInput::new(KernelInputEvent::ToolResults {
+            results: vec![ToolResult {
+                call_id: "call-1".into(),
+                output: crate::types::message::Content::Text("ok".into()),
+                is_error: false,
+                is_fatal: false,
+                error_kind: None,
+                token_count: None,
+            }],
+        }));
+        assert!(!step2.observations.iter().any(|o| matches!(
+            o,
+            KernelObservation::KnowledgeBudgetExceeded { .. }
+        )));
     }
 
     #[test]

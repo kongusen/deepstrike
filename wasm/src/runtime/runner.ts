@@ -168,6 +168,10 @@ export interface RuntimeOptions {
   /** O4: turn-end criteria gate — one kernel-injected self-check turn before accepting completion
    *  while `criteria` stand. Default enabled; `false` accepts the first finish unconditionally. */
   criteriaGate?: boolean
+  /** K2: max share of `maxTokens` the durable knowledge partition may occupy. Over budget ⇒
+   *  warn-once observation + oldest unpinned non-skill entries evicted at the next boundary.
+   *  Pinned/skill entries are exempt. `0` disables. Default: kernel's 0.25. */
+  knowledgeBudgetRatio?: number
   /** O5 (PreToolUse-hook analog): stateful host veto over each kernel-approved call; return
    *  `{ block: true, reason }` to deny — the reason reaches the model as a denied result. Errs-open. */
   onToolCall?: (call: { callId: string; name: string; arguments: string }) =>
@@ -1399,6 +1403,10 @@ export class RuntimeRunner {
     // O4: turn-end criteria gate toggle (absent ⇒ kernel default: enabled).
     if (this.opts.criteriaGate !== undefined) {
       config.criteria_gate = this.opts.criteriaGate
+    }
+    // K2: knowledge budget ratio (absent ⇒ kernel default 0.25; 0 disables).
+    if (this.opts.knowledgeBudgetRatio !== undefined) {
+      config.knowledge_budget_ratio = this.opts.knowledgeBudgetRatio
     }
     kernelApply(runtime, this.pendingObservations, { kind: "configure_run", config })
     if (this.opts.memoryPolicy) {

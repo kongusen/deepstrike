@@ -215,6 +215,13 @@ export interface RuntimeOptions {
    */
   criteriaGate?: boolean
   /**
+   * K2: max share of `maxTokens` the durable knowledge partition may occupy. Exceeding it emits a
+   * `knowledge_budget_exceeded` observation (once per cache generation) and evicts the OLDEST
+   * unpinned, non-skill entries at the next compaction/renewal boundary until usage fits. Pinned
+   * entries and skill pins are never budget-evicted. `0` disables. Default: kernel's 0.25.
+   */
+  knowledgeBudgetRatio?: number
+  /**
    * O5 (the PreToolUse-hook analog): called for each kernel-APPROVED tool call just before it
    * executes. Return `{ block: true, reason }` to veto — the call never runs and the reason is fed
    * back to the model as a denied tool result. This is the seam for STATEFUL host policy (count
@@ -528,6 +535,10 @@ export class RuntimeRunner {
     // O4: turn-end criteria gate toggle (absent ⇒ kernel default: enabled).
     if (this.opts.criteriaGate !== undefined) {
       config.criteria_gate = this.opts.criteriaGate
+    }
+    // K2: knowledge budget ratio (absent ⇒ kernel default 0.25; 0 disables).
+    if (this.opts.knowledgeBudgetRatio !== undefined) {
+      config.knowledge_budget_ratio = this.opts.knowledgeBudgetRatio
     }
 
     kernelApply(runtime, this.pendingObservations, { kind: "configure_run", config })

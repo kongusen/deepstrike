@@ -189,6 +189,11 @@ class RuntimeOptions:
   # at most once per run; runs without criteria are untouched. None ⇒ kernel default (enabled);
   # False accepts the first finish unconditionally.
   criteria_gate: bool | None = None
+  # K2: max share of max_tokens the durable knowledge partition may occupy. Exceeding it emits a
+  # knowledge_budget_exceeded observation (once per cache generation) and evicts the OLDEST
+  # unpinned, non-skill entries at the next compaction/renewal boundary. Pinned entries and skill
+  # pins are never budget-evicted. 0 disables. None ⇒ kernel default (0.25).
+  knowledge_budget_ratio: float | None = None
   # L1 (RunGroup): bind this runner to a governance domain shared by N peer sessions of one logical
   # run. Members pass the same RunGroup; the run-level token cap is enforced against the group's
   # cumulative spend (seeded at boot, charged at run end) rather than per-vehicle. None ⇒ N=1.
@@ -1632,6 +1637,12 @@ class RuntimeRunner:
     if self._opts.criteria_gate is not None:
       kernel_apply(runtime, self._pending_observations, {
         "kind": "set_criteria_gate", "enabled": bool(self._opts.criteria_gate),
+      })
+
+    # K2: knowledge budget ratio (absent ⇒ kernel default 0.25; 0 disables).
+    if self._opts.knowledge_budget_ratio is not None:
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "set_knowledge_budget", "ratio": float(self._opts.knowledge_budget_ratio),
       })
 
     # L1: seed the kernel with the group's cumulative spend so the run-level token cap + cumulative

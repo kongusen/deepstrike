@@ -755,6 +755,16 @@ impl LoopStateMachine {
 
                 // Layer 4 read-time projection: recompute handle residency on the post-time-decay rho.
                 self.ctx.recompute_handle_residency();
+                // K2: knowledge budget check — marks over-budget unpinned entries for the next
+                // boundary sweep (marks are idempotent; drops only apply there) and stashes a
+                // warn-once-per-generation notice, drained into an observation here.
+                if let Some((used, budget)) = self.ctx.enforce_knowledge_budget() {
+                    self.observations.push(KernelObservation::KnowledgeBudgetExceeded {
+                        turn: self.turn,
+                        used,
+                        budget,
+                    });
+                }
                 self.phase = LoopPhase::Delta {
                     pressure: self.ctx.rho(),
                 };

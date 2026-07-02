@@ -1828,6 +1828,7 @@ impl RuntimeRunner {
                 }
                 KernelObservation::Renewed { .. } => {}
                 KernelObservation::KnowledgeSwept { .. } => {}
+                KernelObservation::KnowledgeBudgetExceeded { .. } => {}
                 KernelObservation::RepeatFuseTripped { .. } => {}
                 KernelObservation::CriteriaGateFired { .. } => {}
                 KernelObservation::CheckpointTaken { turn, history_len } => {

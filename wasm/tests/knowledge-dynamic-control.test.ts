@@ -54,6 +54,35 @@ describe("skill content is pinned into durable knowledge on activation", () => {
   })
 })
 
+describe("knowledgeBudgetRatio reaches the kernel via configure_run (K2)", () => {
+  it("carries knowledge_budget_ratio in the configure_run bundle", async () => {
+    kernelEvents.length = 0
+    const provider: LLMProvider = {
+      async complete(): Promise<Message> {
+        return { role: "assistant", content: "unused", toolCalls: [] }
+      },
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "text_delta", delta: "done" }
+      },
+    }
+
+    const runner = new RuntimeRunner({
+      provider,
+      sessionLog: new InMemorySessionLog(),
+      executionPlane: new LocalExecutionPlane(),
+      maxTokens: 2048,
+      knowledgeBudgetRatio: 0.1,
+    })
+
+    for await (const _e of runner.run({ sessionId: "budget-knob", goal: "noop" })) { /* drain */ }
+
+    const configure = kernelEvents.find((e: { kind?: string }) => e.kind === "configure_run") as
+      | { config?: { knowledge_budget_ratio?: number } }
+      | undefined
+    expect(configure?.config?.knowledge_budget_ratio).toBe(0.1)
+  })
+})
+
 describe("preQueryMemory prefetch lands in history, not knowledge", () => {
   it("emits add_history_message, never add_knowledge_message or page_in", async () => {
     kernelEvents.length = 0

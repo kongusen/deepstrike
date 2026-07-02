@@ -99,6 +99,10 @@ pub struct ContextManager {
     /// K1: boundary-sweep results awaiting drain into `KnowledgeSwept` observations. Not
     /// snapshotted (observation-only bookkeeping, same class as `frozen_history_len`).
     pending_knowledge_sweeps: Vec<crate::context::partitions::KnowledgeSweep>,
+
+    /// K2: whether the budget warning already fired this cache generation (warn-once; reset by
+    /// the boundary sweep). Not snapshotted — a resume re-warns at most once, harmless.
+    knowledge_budget_warned: bool,
 }
 
 impl ContextManager {
@@ -128,6 +132,7 @@ impl ContextManager {
             next_handle_id: 0,
             frozen_history_len: 0,
             pending_knowledge_sweeps: Vec::new(),
+            knowledge_budget_warned: false,
         }
     }
 
@@ -526,6 +531,49 @@ impl ContextManager {
         if sweep.changed {
             self.pending_knowledge_sweeps.push(sweep);
         }
+        // K2: a boundary starts a fresh cache generation — the budget warning may fire again.
+        self.knowledge_budget_warned = false;
+    }
+
+    /// K2: knowledge-budget check, run per turn before render. Over budget ⇒ mark the OLDEST
+    /// unpinned, non-skill entries for eviction at the next boundary until the projected usage
+    /// (used − already-marked) fits, and return `Some((used, budget))` ONCE per cache generation
+    /// for the `KnowledgeBudgetExceeded` observation (marking itself is idempotent and repeats
+    /// harmlessly). Skill pins are exempt — deactivation/lease governs them, the budget never
+    /// silently unloads a skill the model believes is active. If marking every eligible entry
+    /// still exceeds the budget, the warning stands and the overweight remainder is the host's
+    /// explicit choice (errs-open). `knowledge_budget_ratio <= 0.0` disables.
+    pub fn enforce_knowledge_budget(&mut self) -> Option<(u32, u32)> {
+        let ratio = self.config.knowledge_budget_ratio;
+        if ratio <= 0.0 {
+            return None;
+        }
+        let budget = (self.max_tokens as f64 * ratio) as u32;
+        let used = self.partitions.knowledge.token_count;
+        if used <= budget {
+            return None;
+        }
+        let entries = &mut self.partitions.knowledge.entries;
+        let marked: u32 = entries.iter().filter(|e| e.evict_at_boundary).map(|e| e.tokens).sum();
+        let mut projected = used.saturating_sub(marked);
+        for entry in entries.iter_mut() {
+            if projected <= budget {
+                break;
+            }
+            if entry.evict_at_boundary || entry.pinned {
+                continue;
+            }
+            if entry.key.as_deref().is_some_and(|k| k.starts_with("skill:")) {
+                continue;
+            }
+            entry.evict_at_boundary = true;
+            projected = projected.saturating_sub(entry.tokens);
+        }
+        if self.knowledge_budget_warned {
+            return None;
+        }
+        self.knowledge_budget_warned = true;
+        Some((used, budget))
     }
 
     /// K1: drain boundary-sweep results (state-machine side turns these into observations).
@@ -1299,5 +1347,57 @@ mod tests {
         );
         assert_eq!(mgr.handles.residency_for_source("c0"), Some(&Residency::Collapsed));
         assert_eq!(mgr.handles.residency_for_source("c5"), Some(&Residency::Resident));
+    }
+
+    // ── K2: knowledge budget ─────────────────────────────────────────────────
+
+    #[test]
+    fn knowledge_budget_marks_oldest_unpinned_first_and_warns_once() {
+        // max_tokens 100 × default ratio 0.25 ⇒ budget 25. Four 10-token entries (40 used):
+        // two evictable, one pinned, one skill pin.
+        let mut mgr = ContextManager::new(100);
+        mgr.push_knowledge(Message::system("oldest unkeyed"), 10);
+        mgr.push_knowledge_entry(Some("a".into()), Message::system("keyed"), 10, false);
+        mgr.push_knowledge_entry(Some("p".into()), Message::system("pinned"), 10, true);
+        mgr.push_knowledge_entry(Some("skill:x".into()), Message::system("skill"), 10, false);
+
+        let warn = mgr.enforce_knowledge_budget();
+        assert_eq!(warn, Some((40, 25)));
+        // Oldest-first: unkeyed (10) then "a" (10) marked ⇒ projected 20 ≤ 25 stops there.
+        let e = &mgr.partitions.knowledge.entries;
+        assert!(e[0].evict_at_boundary);
+        assert!(e[1].evict_at_boundary);
+        assert!(!e[2].evict_at_boundary, "pinned exempt");
+        assert!(!e[3].evict_at_boundary, "skill pin exempt");
+
+        // Warn-once per generation; marking stays idempotent.
+        assert_eq!(mgr.enforce_knowledge_budget(), None);
+
+        // The boundary sweep drops the marked entries and re-arms the warning.
+        let sweep = mgr.partitions.knowledge.sweep_at_boundary();
+        assert_eq!(sweep.tokens_freed, 20);
+        assert_eq!(mgr.partitions.knowledge.token_count, 20);
+        // Back under budget ⇒ no further warning even though it re-armed.
+        assert_eq!(mgr.enforce_knowledge_budget(), None);
+    }
+
+    #[test]
+    fn knowledge_budget_warning_stands_when_only_exempt_weight_remains() {
+        let mut mgr = ContextManager::new(100);
+        mgr.push_knowledge_entry(Some("p".into()), Message::system("pinned heavy"), 30, true);
+        mgr.push_knowledge_entry(Some("skill:x".into()), Message::system("skill heavy"), 30, false);
+
+        // Over budget (60 > 25) but nothing evictable — warning fires, nothing marked.
+        assert_eq!(mgr.enforce_knowledge_budget(), Some((60, 25)));
+        assert!(mgr.partitions.knowledge.entries.iter().all(|e| !e.evict_at_boundary));
+    }
+
+    #[test]
+    fn knowledge_budget_ratio_zero_disables() {
+        let mut mgr = ContextManager::new(100);
+        mgr.config.knowledge_budget_ratio = 0.0;
+        mgr.push_knowledge(Message::system("huge"), 90);
+        assert_eq!(mgr.enforce_knowledge_budget(), None);
+        assert!(!mgr.partitions.knowledge.entries[0].evict_at_boundary);
     }
 }
