@@ -7,7 +7,7 @@
 <h1 align="center">DeepStrike</h1>
 
 <p align="center">
-  <strong>面向动态工作流的 Agent 内核 —— Claude 写 harness,内核让它可重放、受治理、跨语言。</strong>
+  <strong>面向动态工作流、受治理工具、可重放会话与跨语言 Agent Runtime 的 Agent OS 微内核。</strong>
 </p>
 
 <p align="center">
@@ -26,145 +26,83 @@
 
 <p align="center">
   <a href="./docs/index.md">文档</a>
-  · <a href="./docs/getting-started/quick-start.md">快速开始</a>
-  · <a href="./docs/guides/index.md">SDK 指南</a>
-  · <a href="./docs/architecture/index.md">架构</a>
+  · <a href="./docs/getting-started/hello-agent.md">Hello Agent</a>
+  · <a href="./docs/architecture/agent-os.md">Agent OS</a>
+  · <a href="./docs/guides/workflow.md">动态工作流</a>
   · <a href="https://discord.gg/cwS3RBYCv">Discord</a>
 </p>
 
 ---
 
-> "Claude can now write its own harness on the fly, custom-built for the task at hand."
-> （Claude 现在能即时写出自己的 harness,为手头的任务量身定制。）
->
-> —— Thariq Shihipar & Sid Bidasaria,Anthropic Claude Code 团队,*A harness for every task: dynamic workflows in Claude Code*
+DeepStrike 把 Agent 的「harness」升级为内核原语。
 
-那篇文章点出了一个真实的转变:面对一个困难任务,模型不再在同一个长上下文窗口里**既规划又执行**,而是写一个 **动态工作流(dynamic workflow)**——一个小小的 harness,用来 spawn 并协调一组各自独立的子 agent,每个都拥有自己干净的上下文和聚焦的目标。
+复杂任务里的现代 Agent 越来越像在写一个小型工作流：先分类，再扇出给多个子 Agent，校验输出，循环直到完成，最后综合结果。脚本里的 harness 很灵活，但也很脆：状态常在进程内存里，治理靠临时判断，中断恢复困难，每种语言还要重复实现一遍语义。
 
-这之所以重要,是因为单个长上下文窗口会稳定地撞上三种失败模式(沿用文章的原始术语):
+DeepStrike 把控制面放进 `deepstrike-core` 这个纯 Rust 状态机。宿主 SDK 仍然拥有所有真实 I/O：LLM 调用、工具、文件、worktree、网络、长期记忆与存储。内核决定 effect 何时、是否、在什么预算内发生；宿主执行获批的 effect，再把 observation 回灌给内核。
 
-- **Agentic laziness(执行惰性)** —— 模型在完成部分进度后就停下(50 项安全审查只做了 20 项),宣布完工。
-- **Self-preferential bias(自我偏好偏差)** —— 被要求按 rubric 验证或评判自己的产出时,它倾向于偏袒自己。
-- **Goal drift(目标漂移)** —— 跨越多轮后对初始目标的忠实度逐渐流失,尤其在有损压缩(compaction)之后(“不要做 X” 这类约束会悄悄消失)。
+<p align="center">
+  <img src="docs/public/readme_agent_os_map_zh.svg" alt="DeepStrike Agent OS 能力地图" width="100%" />
+</p>
 
-解法是结构性的:用 **各自拥有独立上下文窗口、目标隔离的 agent** 去编排。在 Claude Code 里,这个 harness 是一个易失的 JavaScript 文件——所以它的编排状态不可重放、不受治理、也无法跨语言。
+## 你会得到什么
 
-**DeepStrike 把这个 harness 做成了内核原语。** 一个工作流做两件事——*控制流*(classify / fan-out / loop / barrier / tournament)与 *I/O*(跑 agent、搜网页、读 Slack)。DeepStrike 把控制流作为 **调度决策** 放进纯 Rust 内核,把 I/O 留在你的宿主 SDK:
+| 能力 | DeepStrike 提供什么 |
+| :--- | :--- |
+| **动态工作流调度器** | 声明式 DAG 加运行时 `SubmitNodes`；一等支持 `Loop`、`Classify`、`Tournament`、`Reduce`、fan-out、synthesize、generate-filter、verifier 等模式。 |
+| **统一 syscall 治理** | 工具调用、子 Agent spawn、workflow 增长、memory 写入都走同一个 gate，得到 allow / deny / ask-user / rate-limit / quota 裁决。 |
+| **Context VM** | 四槽位渲染（`system_stable`、`system_knowledge`、`turns`、`state_turn`）、压力压缩、大工具结果 handle 分页、prompt-cache 友好的稳定前缀。 |
+| **Sub-agent 隔离** | role、上下文继承、capability filter、worktree / read-only / remote 隔离、进程 lineage、contract 与 handoff artifact。 |
+| **重放与恢复** | append-only `SessionLog`、provider replay envelope、kernel observation、workflow resume、`wake(session_id)`、OS snapshot 与 repair 工具。 |
+| **Memory 作为 OS 设备** | 内核校验的 `write_memory` / `query_memory`、DreamStore 集成、检索闭环、idle consolidation、memory 写入配额。 |
+| **Provider 路由** | 内核只携带 `model_hint`；宿主把它解析到 OpenAI、Anthropic、Gemini、DeepSeek、Kimi、Qwen、GLM、Minimax、Ollama 或自定义 provider。 |
+| **跨语言运行时** | 同一 Kernel ABI，在 Node.js、Python、Rust、WASM 中保持一致语义。 |
+
+## 为什么是内核？
+
+Agent OS 的分层边界很窄：
 
 ```text
-LLM 产出结构化计划
-        │
-        ▼
-deepstrike-core  ──  调度节点:经门控 · 有预算 · 可重放 · 可恢复 · 跨语言
-        │
-        ▼
-宿主 SDK(Node · Python · Rust · WASM)  ──  真正运行 agent、工具、worktree、provider、I/O
+LLM 产出计划或工具请求
+        |
+        v
+deepstrike-core 决定：调度、门控、预算、压缩、快照
+        |
+        v
+宿主 SDK 执行：provider、工具、文件、worktree、存储、webhook
+        |
+        v
+Observation 回到内核与 SessionLog
 ```
 
-每一次节点 spawn 都和一次工具调用走同一个 syscall gate,所以配额、信任边界、token 预算 **对每个节点自动生效**。编排状态可序列化、可快照恢复,并在四种宿主语言里行为一致——这比一个脚本严格地更强。
+这个边界带来的是脚本 harness 很难稳定获得的工程属性：
 
-## 六种 harness 模式,作为一等内核节点
+| 属性 | 脚本 harness | DeepStrike 内核 |
+| :--- | :--- | :--- |
+| 可重放 | 状态常在闭包变量或临时文件里 | control-flow observation 与 snapshot 可重建运行 |
+| 受治理 | 每条工具路径各自写检查逻辑 | 一个 syscall gate 覆盖工具、spawn、memory、workflow append |
+| 可恢复 | 中断后常要重跑 | SessionLog + `KernelSnapshot` 恢复挂起的 workflow |
+| 跨语言 | SDK 之间语义容易漂移 | Rust 内核驱动所有宿主 |
+| I/O 归属 | 控制流与凭据、副作用混在一起 | 内核纯计算；凭据和副作用归宿主 |
 
-文章列举了六种可组合的模式。每一种在 DeepStrike 里都是一等原语,由同一个工作流执行器驱动:
+## 运行时分层
 
-| Harness 模式(文章) | 在 DeepStrike 中的一等原语 |
-| :--- | :--- |
-| **Classify-and-act** —— 分类器把任务路由到不同 agent | `NodeKind::Classify` —— 分类器节点的结果选中一条分支,其余分支在运行前就被剪除 |
-| **Fan-out-and-synthesize** —— 拆分、每步跑一个 agent、在 barrier 处汇总 | `fanout_synthesize` —— N 个并行只读 worker → 一个 synthesize barrier,等齐所有人后合并它们的结构化输出 |
-| **Adversarial verification** —— 按 rubric 对每个产出做对抗式验证 | `verify_rules` —— 每条规则一个全新上下文的 verifier,各自在独立 TCB 中运行、**不继承作者上下文**,因此无法走过场盖章 |
-| **Generate-and-filter** —— 生成点子,按 rubric 过滤、去重 | `generate_and_filter` —— N 个 generator → 一个 `Verify` 过滤/去重 barrier |
-| **Tournament** —— 让 agent 互相竞争,两两评判选出胜者 | `NodeKind::Tournament` —— 一个控制器节点生成 N 个参赛者,再跑两两评判 bracket 直到决出唯一胜者(比较式评判优于绝对打分;确定性循环持有整个对阵表) |
-| **Loop until done** —— 循环直到满足停止条件,而非固定轮数 | `NodeKind::Loop` —— 反复运行直到节点报告完成(`loop_continue`),并带一个硬性 `max_iters` 兜底。对*未知规模*的发现,运行中的节点还能用 `SubmitNodes` syscall 向活动 DAG 追加新节点(真正的 loop-until-done · 按项扇出) |
+| 层 | 负责 | 不负责 |
+| :--- | :--- | :--- |
+| **Kernel (`deepstrike-core`)** | 状态机、调度、syscall disposition、governance、workflow DAG、预算账本、context 渲染、memory 校验、observation | HTTP、文件系统、provider client、向量存储、子进程 |
+| **宿主 SDK** | runtime loop、provider 调用、工具执行、session 持久化、DreamStore、ArchiveStore、worktree 与 sandbox 集成 | 重写 spawn gate 或 workflow 语义 |
+| **Provider** | 厂商协议适配、流式事件、replay envelope、模型 runtime policy | 策略裁决 |
+| **ExecutionPlane** | 本地工具、流式工具、suspend/resume、worktree cwd 注入、进程沙箱、远程 VPC 工具、大结果 spool | Context 压缩 |
 
-## 三种失败模式,用结构来治
-
-harness 的意义就是用结构去击败单上下文的失败模式。DeepStrike 把这些缓解手段直接落在内核里强制执行:
-
-| 单上下文失败模式 | DeepStrike 的结构性解法 |
-| :--- | :--- |
-| **Agentic laziness** —— 完成部分进度后就退出 | 每个节点在隔离的 **TCB** 中运行、各自带 token 预算;`Loop` 节点同时携带显式停止条件 **和** 硬性 `max_iters` 上限,于是“做完全部 50 项”由结构强制,而非靠指望 |
-| **Self-preferential bias** —— 评判时偏袒自己的产出 | verifier 与 tournament judge 都在 **独立 TCB** 中运行、不继承作者上下文;信任边界使节点无法给自己的活儿打分 |
-| **Goal drift** —— 压缩后丢失目标 | 持久的 `task_state` 外加一条 **directives 通道**,能熬过 renewal/compaction —— 而易失信号(以及“不要做 X”约束)恰恰会在那里被丢弃 |
-
-## ……以及文章点名的其他构件
-
-文章还点出了模式之外的机制。DeepStrike 在内核里逐一实现:
-
-- **Quarantine(隔离区),且无逃逸口** —— triage 模式禁止读取*不可信公开内容*的 agent 执行高权限动作。DeepStrike 在内核内强制:一个 `Quarantined` 节点若申请可写隔离级别,会在 **syscall gate 被拒绝**(`NodeTrust`)。而且,既然隔离节点可能读过对抗性内容,*它请求的拓扑本身也不可信*:它在运行时提交的任何节点都会被强制降级为 `Quarantined`(污点传递),所以它无法靠 spawn 一个“可信”子节点来逃出沙箱。
-- **阶段之间的确定性计算** —— 不是每一步都需要 LLM。`NodeKind::Reduce` 节点不跑 agent:内核像调度 spawn 一样调度它,SDK 把它路由到一个纯函数(`dedupe_lines` / `merge_json_arrays` / `concat` / `count`,或你自定义的)作用于其依赖的输出。这就是脚本里“阶段之间的普通代码”做的 dedupe/filter/merge——但作为一个受治理、可重放的 DAG 节点,且零 token 消耗。
-- **结构化输出,带校验** —— 节点可声明 `output_schema`;内核把它带到 spawn 描述符,SDK 指示 agent、对结果做校验,并在不符合时把错误回喂、重跑一次。始终不符合的节点会**失败**(其依赖被饿死),而不是把垃圾喂给下游。
-- **预算是信号,不只是墙** —— token/节点预算在每次 spawn 时强制(`BudgetLedger`、`max_workflow_nodes`),*同时*每个 spawn 出来的节点都能得知自己剩余的余量(`WorkflowBudget`),于是协调者可以按剩余预算来定下一轮扇出的规模,而不是盲目撞上限。
-- **模型与智能路由** —— 每个节点携带 `model_hint`;一个 Classify 节点可以先调研任务、再把它路由到更便宜或更强的模型(文章里的 Sonnet vs Opus 例子)。
-- **中断后恢复** —— 中途退出终端,工作流也能从断点续上——包括运行时追加的节点(已记录并回放)——靠 `WorkflowRun::resume` 与可重建的 `KernelSnapshot`。
-
-## 为什么是内核,而不是脚本
-
-把动态工作流写成一个 JavaScript harness 很强,但它是易失的。把控制流提升进内核,能换来脚本拿不到的性质:
-
-- **可重放** —— 控制流状态是可序列化的状态机;重放能重建一次运行,并在重建 LLM 消息时剥离审计事件。
-- **受治理** —— 每次节点 spawn 和一次工具调用走同一套内核策略:配额、能力检查、信任、否决、限流、审计。
-- **可恢复** —— 被中断的 DAG 从 session log / `KernelSnapshot` 恢复,而非从头再来。
-- **跨语言** —— 同一个内核以一致语义驱动 Node、Python、Rust、WASM 宿主。
-- **I/O 归宿主所有** —— provider、工具、worktree、网络、存储都留在你的 SDK;内核只决定*何时*与*是否*。
-
-## 一个完整的动态工作流
-
-文章的 *memory & rule-adherence* 用例——“逐条验证每个技术声明,每条规则一个 verifier,外加一个 skeptic”——就是一张交给内核的工作流 DAG。宿主运行 agent;内核门控每次 spawn、在 join 处挂起、并在完成时推进:
-
-```ts
-import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "@deepstrike/sdk"
-import { AnthropicProvider } from "@deepstrike/sdk"
-
-const runner = new RuntimeRunner({
-  provider: new AnthropicProvider(process.env.ANTHROPIC_API_KEY!),
-  executionPlane: new LocalExecutionPlane(),
-  sessionLog: new InMemorySessionLog(),
-  maxTokens: 32_000,
-})
-
-// 每条规则一个全新上下文的 verifier(不继承作者上下文 → 无法盖章放行),
-// 然后一个 skeptic 复核它们的标记,抑制误报。
-const spec = {
-  nodes: [
-    { task: "规则:金额必须是整数分 —— 代码里是否违反?", role: "verify" },
-    { task: "规则:所有错误都要向上传播 —— 是否违反?",   role: "verify" },
-    { task: "规则:时间戳必须是 UTC —— 是否违反?",       role: "verify" },
-    { task: "Skeptic:上面这些标记里,哪些是真正的违规?", role: "verify", dependsOn: [0, 1, 2] },
-  ],
-}
-
-// 内核把 3 个 verifier 作为一个受门控的批次 spawn,在 join 处挂起,
-// 等它们完成后再运行 skeptic —— 可重放、可恢复、可审计。
-const outcome = await runner.runWorkflow(spec)
-```
-
-把某个节点的 `kind` 换成 `{ type: "loop", maxIters: 5 }`、`{ type: "classify", branches: [...] }`、`{ type: "tournament", entrants: [...] }` 或 `{ type: "reduce", reducer: "dedupe_lines" }`,同一个执行器就能驱动循环、条件路由、两两对阵与无 token 的宿主计算——每个节点依旧过 syscall gate。把 `submit_workflow_nodes` 工具交给某个节点,它就能在运行中扩展 DAG(为发现的每条 claim 派一个 verifier)。
-
-**0.2.11** — 动态工作流变得“运行时动态”:`SubmitNodes` syscall 让运行中的节点扩展 DAG(真正的 loop-until-done · 按项扇出),外加确定性的 `Reduce` 节点、按节点的 `output_schema`、预算即信号,以及一道 quarantine 无逃逸闸门。详见 [CHANGELOG](./CHANGELOG.md)。
-
-## 构建在 Agent OS 底座之上
-
-让这套工作流叙事站得住脚的,是它底下的内核——门控一次工具调用的同一套机制,也门控一次节点 spawn:
-
-- **内核中介运行时(M0–M4)** —— 工具调用、spawn、压缩、信号都过同一个 syscall gate,并有显式生命周期(Ready / Running / Blocked / Suspended)。你实现 I/O;内核决定*何时*与*是否*。
-- **更长、更稳的会话** —— 超大工具结果以预览 + 一个 `.spool/` 引用的形式留在上下文里;语义换页(page-out)把摘要归档进长期记忆,并在回程时服务 page-in。
-- **默认安全与治理** —— 每次运行都加载声明式治理(deny / ask_user / 限流 / 参数规则)与内核内信号处置(Interrupt / Queue / Observe / Dropped)。是策略,不是临时判断。
-- **长期记忆即 syscall** —— `writeMemory` / `queryMemory`,提交前做校验,搜索 → 选择 → 取回闭环可审计。
-- **进程表与多信号编排** —— 子 agent 注册进内核进程表;父任务挂起直到 join;外部信号与主循环组合,而非与之竞争。
-- **像 OS 日志一样可观测** —— spool、page-out、信号、进程、预算、记忆事件按类别(`syscall` · `sched` · `mm` · `proc` · `ipc`)落入 session log;可从单一事件流重建 OS 快照。
-
-各 SDK 的具体 API 与示例:[Node.js](./node/README.md#what-agent-os-gives-you) · [Python](./python/README.md#what-agent-os-gives-you) · [Rust](./docs/guides/sdk-rust.md)
-
-## 语言与运行时支持
+## 安装
 
 | 运行时 | 包 | 安装 |
 | :--- | :--- | :--- |
 | Node.js / TypeScript | `@deepstrike/sdk` | `npm install @deepstrike/sdk` |
 | Python | `deepstrike` | `pip install deepstrike` |
 | Rust | `deepstrike-sdk` | `cargo add deepstrike-sdk` |
-| 浏览器 / 边缘 / WASM | `@deepstrike/wasm` | `npm install @deepstrike/wasm` |
+| Browser / Edge / WASM | `@deepstrike/wasm` | `npm install @deepstrike/wasm` |
 
-当前工作区版本:`0.2.30`。
+当前工作区 SDK 版本：`0.2.35`。
 
 ## 快速开始
 
@@ -175,28 +113,36 @@ npm install @deepstrike/sdk
 ```
 
 ```ts
-import { runAgent, runFanout, AnthropicProvider, tool } from "@deepstrike/sdk"
+import { OpenAIProvider, runAgent, runFanout, tool } from "@deepstrike/sdk"
 
 const add = tool("add", "两数相加。", {
   type: "object",
   properties: { x: { type: "number" }, y: { type: "number" } },
   required: ["x", "y"],
-}, async ({ x, y }) => String((x as number) + (y as number)))
+}, async ({ x, y }) => String(Number(x) + Number(y)))
 
-const provider = new AnthropicProvider({ apiKey: process.env.ANTHROPIC_API_KEY! })
+const provider = new OpenAIProvider({
+  apiKey: process.env.OPENAI_API_KEY!,
+  model: "gpt-4.1-mini",
+})
 
-// 一个提示、一个模型、拿回文本。
-const answer = await runAgent({ provider, goal: "2 + 3 等于几?", tools: [add] })
+const answer = await runAgent({
+  provider,
+  goal: "17 + 28 等于几？",
+  tools: [add],
+})
 
-// 或并行扇出 N 个任务再综合 —— 走内核门控的 DAG,无状态 handler 也安全。
 const { synthesis } = await runFanout({
   provider,
-  tasks: ["总结鉴权模块", "总结数据层"],
-  synthesize: "把这些发现合并成一段总结。",
+  tasks: [
+    "总结鉴权模块的风险画像。",
+    "总结数据层的风险画像。",
+  ],
+  synthesize: "把这些发现合并成一份简洁审查结论。",
 })
 ```
 
-`runAgent` / `runFanout`是标准入口;需要流式、工具、信号、记忆、治理或独立 `runWorkflow` 驱动时再下沉到 `RuntimeRunner`。进阶符号在子路径 `@deepstrike/sdk/{providers,workflow,planes,memory,harness,os}`。详见 [Node SDK README](./node/README.md) 与 [MIGRATION-v0.2.30](./node/MIGRATION-v0.2.30.md)。
+简单场景用 `runAgent`，无状态 handler 里的并行工作流用 `runFanout`，需要流式事件、SessionLog 持久化、工具、治理、signals、memory 或显式 workflow 控制时再下沉到 `RuntimeRunner`。
 
 ### Python
 
@@ -205,53 +151,87 @@ pip install deepstrike
 ```
 
 ```py
-from deepstrike import AnthropicProvider, run_agent, tool
+from deepstrike import OpenAIProvider, run_agent, run_fanout, tool
 
 @tool
-def add(x: int, y: int) -> int:
+async def add(x: int, y: int) -> str:
     """两数相加。"""
-    return x + y
+    return str(x + y)
+
+provider = OpenAIProvider(api_key="sk-...", model="gpt-4.1-mini")
 
 answer = await run_agent(
-    provider=AnthropicProvider(api_key="..."),
-    goal="2 + 3 等于几?",
+    provider=provider,
+    goal="17 + 28 等于几？",
     tools=[add],
 )
-```
 
-`run_agent` / `run_fanout`是标准入口;需要流式/工具/治理时再下沉到 `RuntimeRunner`。进阶符号在 `deepstrike.{providers,workflow,memory,harness}` 子模块。
+out = await run_fanout(
+    provider=provider,
+    tasks=[
+        "总结鉴权模块的风险画像。",
+        "总结数据层的风险画像。",
+    ],
+    synthesize="把这些发现合并成一份简洁审查结论。",
+)
+synthesis = out["synthesis"]
+```
 
 ### Rust
 
 ```toml
 [dependencies]
-deepstrike-sdk = "0.2.30"
+deepstrike-sdk = "0.2.35"
 ```
 
-完整示例、provider 配置、流式事件与治理钩子,见 [SDK 指南](./docs/guides/index.md)。动态工作流驱动(`runWorkflow` / `run_workflow`)见各 SDK 的 **Dynamic workflows** 小节:[Node.js](./node/README.md#dynamic-workflows) · [Python](./python/README.md#dynamic-workflows)。
+### WASM
+
+```bash
+npm install @deepstrike/wasm
+```
+
+完整示例见各运行时 README：[Node.js](./node/README.md)、[Python](./python/README.md)、[Rust](./rust/README.md)、[WASM](./wasm/README.md)。
+
+## 动态工作流模式
+
+DeepStrike 把常见 harness 模式实现为一等 workflow 节点，而不是只靠 prompt 约定。
+
+| 模式 | Kernel / SDK 表达 |
+| :--- | :--- |
+| Classify and act | `classify` 节点选择一个分支，并剪掉其余分支 |
+| Fan out and synthesize | `runFanout` / `fanout_synthesize`：N 个 worker 加 synthesis barrier |
+| Adversarial verification | `verify_rules`：每条规则一个全新上下文 verifier |
+| Generate and filter | `generate_and_filter`：并行 generator 加 verifier barrier |
+| Tournament | `tournament` 节点，两两 judge |
+| Loop until done | `loop` 节点，带 `loop_continue`、`max_iters` 与运行时 `SubmitNodes` |
+| Deterministic compute | `Reduce` 节点，内置 `concat`、`dedupe_lines`、`merge_json_arrays`、`count` 等 reducer |
+
+详见：[动态工作流](./docs/guides/workflow.md)。
 
 ## 文档
 
 | 阅读路径 | 从这里开始 |
 | :--- | :--- |
-| 新用户 | [快速开始](./docs/getting-started/quick-start.md) |
-| SDK 用户 | [Node.js](./docs/guides/sdk-nodejs.md)、[Python](./docs/guides/sdk-python.md)、[Rust](./docs/guides/sdk-rust.md)、[WASM](./docs/guides/index.md) |
-| 运行时设计者 | [Agent OS](./docs/concepts/agent-os.md) · [核心概念](./docs/concepts/core-concepts.md) |
-| 架构评审者 | [架构总览](./docs/architecture/overview.md) |
-| 集成者 | [Provider 指南](./docs/guides/providers.md) 与 [Kernel ABI](./docs/reference/kernel-abi.md) |
-| 运维 | [发布手册](./docs/operations/release-runbook.md) |
-| 贡献者 | [贡献指南](./CONTRIBUTING.md) |
+| 新用户 | [Hello Agent](./docs/getting-started/hello-agent.md) 与 [API 选型](./docs/getting-started/run-agent-vs-runner.md) |
+| Runtime 设计者 | [什么是 Agent OS](./docs/architecture/agent-os.md)、[内核与宿主分层](./docs/architecture/overview.md)、[执行模型](./docs/architecture/execution-model.md) |
+| Workflow 构建者 | [动态工作流](./docs/guides/workflow.md)、[Sub-Agent 与协作](./docs/guides/sub-agents-and-collaboration.md)、[结构化输出与 Reducer](./docs/guides/structured-output-and-reducers.md) |
+| 生产集成者 | [执行平面与工具](./docs/guides/execution-plane-and-tools.md)、[Governance](./docs/guides/governance.md)、[Provider 路由](./docs/guides/provider-routing.md) |
+| 长上下文 Agent | [Context 工程](./docs/guides/context-engineering.md)、[Memory](./docs/guides/memory.md)、[Prompt Cache 设计](./docs/concepts/prompt-cache-design.md) |
+| 重放与运维 | [Session、Replay 与恢复](./docs/guides/session-replay-and-recovery.md)、[OS Profile 与运行时快照](./docs/guides/os-profile-and-snapshots.md)、[Signals 与 Reactive](./docs/guides/signals-and-reactive.md) |
+| 参考 | [RuntimeOptions](./docs/reference/runtime-options.md)、[WorkflowNodeSpec](./docs/reference/workflow-node-spec.md)、[Python API](./docs/reference/python-api.md)、[Kernel ABI](./docs/architecture/kernel-abi.md) |
+
+本地运行文档站：
 
 ```bash
 npm install
-npm run docs:dev      # 本地文档站
-npm run docs:build    # 静态构建
+npm run docs:dev
+npm run docs:build
 ```
 
 ## 仓库结构
 
 ```text
-crates/deepstrike-core/   纯 Rust 内核状态机(工作流执行器在此)
+crates/deepstrike-core/   纯 Rust 内核状态机
 crates/deepstrike-node/   Node.js 原生绑定
 crates/deepstrike-py/     Python 原生绑定
 crates/deepstrike-wasm/   WASM 绑定
@@ -266,7 +246,7 @@ scripts/                  发布与校验自动化
 
 ## 本地开发
 
-环境要求:Rust 1.85+ · Node.js 18+ · Python 3.10+
+环境要求：Rust 1.85+ · Node.js 18+ · Python 3.10+
 
 ```bash
 cargo build && cargo test
@@ -287,11 +267,11 @@ cd wasm && npm install && npm run build && npm test
 
 ## 社区
 
-- 加入开发者社区:[Discord](https://discord.gg/cwS3RBYCv)。
-- 报告问题或提需求:[GitHub Issues](https://github.com/kongusen/deepstrike/issues)。
+- 加入开发者社区：[Discord](https://discord.gg/cwS3RBYCv)。
+- 报告问题或提交需求：[GitHub Issues](https://github.com/kongusen/deepstrike/issues)。
 - 提交 PR 前请先阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)。
 - 安全问题请通过 [SECURITY.md](./SECURITY.md) 中的流程报告。
 
 ## 许可证
 
-DeepStrike 以 [MIT 许可证](./LICENSE) 发布。DeepStrike 是一个独立的开源项目,受 Anthropic 公开发表的 Claude Code 动态工作流工作启发;与 Anthropic 无隶属关系,也未获其背书。
+DeepStrike 以 [MIT 许可证](./LICENSE) 发布。DeepStrike 是一个独立开源项目，受公开发表的 Agent 编码工具动态工作流工作启发；与 Anthropic 无隶属关系，也未获其背书。
