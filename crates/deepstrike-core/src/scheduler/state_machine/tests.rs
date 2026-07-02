@@ -2661,3 +2661,201 @@
         assert_eq!(restored.ctx.max_tokens, 64_000);
         assert_eq!(restored.ctx.sprint, 2);
     }
+
+    // ── O6: RepeatFuse — the hard rungs above the 2c soft STOP ────────────────────────────────
+
+    /// An assistant turn proposing exactly one tool call.
+    fn fuse_tool_turn(name: &str, args: serde_json::Value) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: Content::Text("".into()),
+            tool_calls: vec![ToolCall {
+                id: compact_str::CompactString::new("c1"),
+                name: compact_str::CompactString::new(name),
+                arguments: args,
+            }],
+            token_count: Some(3),
+        }
+    }
+
+    fn fuse_tool_result() -> ToolResult {
+        ToolResult {
+            call_id: compact_str::CompactString::new("c1"),
+            output: Content::Text("unchanged".into()),
+            is_error: false,
+            is_fatal: false,
+            error_kind: None,
+            token_count: Some(2),
+        }
+    }
+
+    /// Drive one full identical tool turn; returns the action from the LLMResponse feed.
+    fn fuse_drive_turn(sm: &mut LoopStateMachine, args: serde_json::Value) -> LoopAction {
+        let action = sm.feed(LoopEvent::LLMResponse { message: fuse_tool_turn("set_title", args) });
+        if matches!(action, LoopAction::ExecuteTools { .. }) {
+            return sm.feed(LoopEvent::ToolResults { results: vec![fuse_tool_result()] });
+        }
+        action
+    }
+
+    #[test]
+    fn repeat_fuse_denies_at_threshold_and_feeds_directive_back() {
+        let mut sm = sm();
+        sm.set_repeat_fuse(crate::governance::repeat_fuse::RepeatFuseConfig {
+            enabled: true,
+            deny_after: 3,
+            terminate_after: 0, // deny rung only
+        });
+        sm.start(RuntimeTask::new("set the title"));
+
+        // Turns 1–2: identical call executes normally (streak 1, 2 < deny_after).
+        for _ in 0..2 {
+            let a = fuse_drive_turn(&mut sm, serde_json::json!({"title": "same"}));
+            assert!(matches!(a, LoopAction::CallLLM { .. }), "turn should complete and re-call");
+            assert!(
+                !sm.observations.iter().any(|o| matches!(o, KernelObservation::RepeatFuseTripped { .. })),
+                "fuse must not trip below the threshold"
+            );
+        }
+
+        // Turn 3: streak hits deny_after ⇒ turn rolled back, directive note in signals.
+        let a = sm.feed(LoopEvent::LLMResponse {
+            message: fuse_tool_turn("set_title", serde_json::json!({"title": "same"})),
+        });
+        assert!(matches!(a, LoopAction::CallLLM { .. }), "deny re-calls with the note, got {a:?}");
+        assert!(sm.observations.iter().any(|o| matches!(
+            o,
+            KernelObservation::RepeatFuseTripped { action, count, .. } if action == "deny" && *count == 3
+        )));
+        assert!(
+            sm.ctx.partitions.signals.iter().any(|s| s.contains("repeat fuse")),
+            "directive note must reach the model: {:?}",
+            sm.ctx.partitions.signals
+        );
+        assert!(!sm.is_terminal(), "deny rung must not terminate the run");
+    }
+
+    #[test]
+    fn repeat_fuse_ignores_same_tool_with_different_args() {
+        let mut sm = sm();
+        sm.set_repeat_fuse(crate::governance::repeat_fuse::RepeatFuseConfig {
+            enabled: true,
+            deny_after: 3,
+            terminate_after: 5,
+        });
+        sm.start(RuntimeTask::new("process items"));
+
+        // A legit loop: same tool, DIFFERENT args every turn — never trips any rung.
+        for i in 0..6 {
+            let a = fuse_drive_turn(&mut sm, serde_json::json!({"n": i}));
+            assert!(matches!(a, LoopAction::CallLLM { .. }));
+        }
+        assert!(
+            !sm.observations.iter().any(|o| matches!(o, KernelObservation::RepeatFuseTripped { .. })),
+            "args-varying iteration is progress, not a stall"
+        );
+    }
+
+    #[test]
+    fn repeat_fuse_escalates_to_no_progress_termination() {
+        let mut sm = sm();
+        sm.set_repeat_fuse(crate::governance::repeat_fuse::RepeatFuseConfig {
+            enabled: true,
+            deny_after: 2,
+            terminate_after: 3,
+        });
+        sm.start(RuntimeTask::new("set the title"));
+
+        // Turn 1 executes; turn 2 hits the deny rung; turn 3 (model ignores the note and
+        // re-issues the same call) hits the terminate rung.
+        let _ = fuse_drive_turn(&mut sm, serde_json::json!({"title": "same"}));
+        let _ = sm.feed(LoopEvent::LLMResponse {
+            message: fuse_tool_turn("set_title", serde_json::json!({"title": "same"})),
+        });
+        let a = sm.feed(LoopEvent::LLMResponse {
+            message: fuse_tool_turn("set_title", serde_json::json!({"title": "same"})),
+        });
+        // Terminate rung: one final no-tools report turn…
+        match a {
+            LoopAction::CallLLM { tools, .. } => assert!(tools.is_empty(), "final turn must strip tools"),
+            other => panic!("expected final report CallLLM, got {other:?}"),
+        }
+        assert!(sm.observations.iter().any(|o| matches!(
+            o,
+            KernelObservation::RepeatFuseTripped { action, count, .. } if action == "terminate" && *count == 3
+        )));
+        // …then the run terminates NoProgress on the model's text response.
+        let done = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("stuck: title already set") });
+        match done {
+            LoopAction::Done { result } => {
+                assert_eq!(result.termination, TerminationReason::NoProgress);
+            }
+            other => panic!("expected Done(NoProgress), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repeat_fuse_disabled_lets_identical_calls_run() {
+        let mut sm = sm();
+        sm.set_repeat_fuse(crate::governance::repeat_fuse::RepeatFuseConfig {
+            enabled: false,
+            deny_after: 2,
+            terminate_after: 3,
+        });
+        sm.start(RuntimeTask::new("poll status"));
+        for _ in 0..5 {
+            let a = fuse_drive_turn(&mut sm, serde_json::json!({"id": "x"}));
+            assert!(matches!(a, LoopAction::CallLLM { .. }));
+        }
+        assert!(
+            !sm.observations.iter().any(|o| matches!(o, KernelObservation::RepeatFuseTripped { .. }))
+        );
+    }
+
+    // ── O4: turn-end criteria gate (the Stop-hook analog) ─────────────────────────────────────
+
+    #[test]
+    fn criteria_gate_injects_one_self_check_before_completed() {
+        let mut sm = sm();
+        let mut task = RuntimeTask::new("ship the fix");
+        task.criteria = vec!["tests pass".into(), "docs updated".into()];
+        sm.start(task);
+
+        // First finish attempt: gate fires — one more turn, with the check in signals.
+        let a = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("done, I think") });
+        assert!(matches!(a, LoopAction::CallLLM { .. }), "gate must re-call, got {a:?}");
+        assert!(!sm.is_terminal());
+        assert!(sm.observations.iter().any(|o| matches!(o, KernelObservation::CriteriaGateFired { .. })));
+        assert!(
+            sm.ctx.partitions.signals.iter().any(|s| s.contains("[CRITERIA CHECK]") && s.contains("tests pass")),
+            "self-check must land in signals: {:?}",
+            sm.ctx.partitions.signals
+        );
+
+        // Second finish attempt: gate already fired — run completes normally.
+        let done = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("verified: all criteria met") });
+        match done {
+            LoopAction::Done { result } => assert_eq!(result.termination, TerminationReason::Completed),
+            other => panic!("expected Done(Completed), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn criteria_gate_is_a_noop_without_criteria() {
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("say hello"));
+        let a = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("hello") });
+        assert!(matches!(a, LoopAction::Done { .. }), "no criteria ⇒ no gate, got {a:?}");
+        assert!(!sm.observations.iter().any(|o| matches!(o, KernelObservation::CriteriaGateFired { .. })));
+    }
+
+    #[test]
+    fn criteria_gate_can_be_disabled() {
+        let mut sm = sm();
+        sm.set_criteria_gate(false);
+        let mut task = RuntimeTask::new("g");
+        task.criteria = vec!["c1".into()];
+        sm.start(task);
+        let a = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("done") });
+        assert!(matches!(a, LoopAction::Done { .. }));
+    }

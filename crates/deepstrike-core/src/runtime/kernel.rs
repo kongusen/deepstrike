@@ -160,6 +160,13 @@ pub struct RunConfig {
     /// `None`/0 ⇒ no group (N=1) ⇒ pre-L1 per-vehicle behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_spawns_base: Option<u32>,
+    /// O6: repeat-fuse thresholds (see `SetRepeatFuse`). Absent ⇒ kernel defaults
+    /// (enabled, deny_after=5, terminate_after=8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat_fuse: Option<crate::governance::repeat_fuse::RepeatFuseConfig>,
+    /// O4: enable/disable the turn-end criteria gate. Absent ⇒ enabled (kernel default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub criteria_gate: Option<bool>,
 }
 
 /// Build a [`GovernancePipeline`](crate::governance::pipeline::GovernancePipeline) from the ABI policy
@@ -319,6 +326,21 @@ pub enum KernelInputEvent {
         approved_calls: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         denied_calls: Vec<String>,
+    },
+    /// O4: enable/disable the turn-end criteria gate (default enabled; no-op for runs without
+    /// criteria). Additive ABI.
+    SetCriteriaGate {
+        enabled: bool,
+    },
+    /// O6: tune or disable the repeat fuse (defaults: enabled, deny_after=5, terminate_after=8).
+    /// Each field is optional — an absent field keeps the current value. Additive ABI.
+    SetRepeatFuse {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deny_after: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        terminate_after: Option<u32>,
     },
     /// Adjust the wall-clock budget at runtime (e.g. to extend or set a deadline
     /// after a run has already started). Additive: omit to keep the value from
@@ -599,6 +621,21 @@ pub enum KernelObservation {
     CheckpointTaken {
         turn: u32,
         history_len: u32,
+    },
+    /// O6: the repeat fuse tripped — the same turn signature (non-meta tool name AND args) was
+    /// re-issued `count`x consecutively. `action` = `"deny"` (turn rolled back, directive note fed
+    /// back) or `"terminate"` (run ends `no_progress` after one final report turn). Additive ABI.
+    RepeatFuseTripped {
+        turn: u32,
+        signature: String,
+        count: u32,
+        action: String,
+    },
+    /// O4: the turn-end criteria gate fired — the model tried to finish while acceptance criteria
+    /// stand; the kernel injected one self-check turn before accepting `Completed`. Additive ABI.
+    CriteriaGateFired {
+        turn: u32,
+        criteria: Vec<String>,
     },
     /// Kernel process table changed for a spawned sub-agent.
     AgentProcessChanged {
@@ -916,6 +953,8 @@ impl KernelRuntime {
                     resource_quota,
                     group_tokens_base,
                     group_spawns_base,
+                    repeat_fuse,
+                    criteria_gate,
                 } = config;
                 if let Some(tools) = tools {
                     self.sm.tools = tools;
@@ -962,6 +1001,12 @@ impl KernelRuntime {
                 if let Some(base) = group_spawns_base {
                     self.sm.seed_group_spawns(base);
                 }
+                if let Some(fuse) = repeat_fuse {
+                    self.sm.set_repeat_fuse(fuse);
+                }
+                if let Some(enabled) = criteria_gate {
+                    self.sm.set_criteria_gate(enabled);
+                }
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::SetAttentionPolicy { max_queue_size } => {
@@ -1001,6 +1046,18 @@ impl KernelRuntime {
             }
             KernelInputEvent::SetResourceQuota { quota } => {
                 self.sm.set_resource_quota(quota);
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::SetCriteriaGate { enabled } => {
+                self.sm.set_criteria_gate(enabled);
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::SetRepeatFuse { enabled, deny_after, terminate_after } => {
+                let mut cfg = self.sm.repeat_fuse_config();
+                if let Some(e) = enabled { cfg.enabled = e; }
+                if let Some(d) = deny_after { cfg.deny_after = d; }
+                if let Some(t) = terminate_after { cfg.terminate_after = t; }
+                self.sm.set_repeat_fuse(cfg);
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::ProviderResult {

@@ -61,6 +61,12 @@ class AgentRunSpec:
   model_hint: str | None = None
   # M4/G5: cumulative token cap for this sub-agent's run (sets the child kernel's max_total_tokens).
   token_budget: int | None = None
+  # O3: per-child turn cap (sets the child runner's max_turns; falls back to the parent's). A child
+  # that exhausts it terminates "max_turns" — the parent reads the termination and decides retry/skip.
+  max_turns: int | None = None
+  # O3: per-child wall-clock cap in ms (sets the child runner's timeout_ms; falls back to the
+  # parent's). A hung child terminates "timeout" instead of stalling the parent indefinitely.
+  max_wall_ms: int | None = None
 
 
 @dataclass

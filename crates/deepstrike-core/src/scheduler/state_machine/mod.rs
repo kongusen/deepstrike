@@ -6,6 +6,7 @@ use super::tcb::{ScheduleDecision, TaskState, TaskTable, Tcb, WaitReason};
 use crate::AgentRunSpec;
 use crate::context::manager::ContextManager;
 use crate::governance::pipeline::GovernancePipeline;
+use crate::governance::repeat_fuse::RepeatFuseConfig;
 use crate::signals::router::SignalRouter;
 use crate::types::result::SubAgentResult;
 use crate::context::renderer::RenderedContext;
@@ -245,6 +246,21 @@ pub struct LoopStateMachine {
     /// gated batches (each through `evaluate_syscall(Syscall::Spawn)`) and advances on
     /// completions. `None` (default) preserves the single-spawn `spawn_sub_agent` behavior.
     pub(super) workflow: Option<crate::orchestration::workflow::WorkflowRun>,
+    /// O6: repeat-fuse thresholds (the hard rungs above the 2c soft STOP). Default enabled with
+    /// generous thresholds; tune/disable via `SetRepeatFuse` / `ConfigureRun.repeat_fuse`.
+    pub(super) repeat_fuse: RepeatFuseConfig,
+    /// O6: the previous turn's action signature (non-meta `name(args)` joined — the same key the
+    /// 2c STOP uses). NOT part of the turn checkpoint: a fuse deny's rollback must not launder
+    /// the streak it just tripped on.
+    pub(super) repeat_sig: Option<String>,
+    /// O6: consecutive turns whose signature equalled `repeat_sig` (1 = first occurrence).
+    pub(super) repeat_count: u32,
+    /// O4: turn-end criteria gate (the Stop-hook analog). When the model finishes (no tool calls)
+    /// while explicit acceptance criteria stand, inject ONE bounded self-check turn before
+    /// accepting `Completed`. 2c guards "won't stop"; this guards "stops too early".
+    pub(super) criteria_gate_enabled: bool,
+    /// O4: whether the gate already fired this run (it fires at most once — no nag loops).
+    pub(super) criteria_gate_fired: bool,
 }
 
 mod signal;
@@ -298,7 +314,27 @@ impl LoopStateMachine {
             suspend_state: None,
             pending_denied_results: Vec::new(),
             workflow: None,
+            repeat_fuse: RepeatFuseConfig::default(),
+            repeat_sig: None,
+            repeat_count: 0,
+            criteria_gate_enabled: true,
+            criteria_gate_fired: false,
         }
+    }
+
+    /// O4: enable/disable the turn-end criteria gate (default enabled; no-op without criteria).
+    pub fn set_criteria_gate(&mut self, enabled: bool) {
+        self.criteria_gate_enabled = enabled;
+    }
+
+    /// O6: tune or disable the repeat fuse (see [`RepeatFuseConfig`]).
+    pub fn set_repeat_fuse(&mut self, config: RepeatFuseConfig) {
+        self.repeat_fuse = config;
+    }
+
+    /// O6: the active repeat-fuse config (for read-modify-write from the ABI event).
+    pub fn repeat_fuse_config(&self) -> RepeatFuseConfig {
+        self.repeat_fuse
     }
 
     /// The authoritative schedulability lifecycle of the loop (root task state). Replaces the
@@ -544,6 +580,31 @@ impl LoopStateMachine {
                             required_evidence,
                         };
                     }
+                    // O4 criteria gate (the Stop-hook analog): the model is finishing while explicit
+                    // acceptance criteria stand. Before accepting `Completed`, inject ONE bounded
+                    // self-check at the peak-attention slot — verify each criterion, continue if any
+                    // is unmet, else confirm. Fires at most once per run (no nag loop); runs with no
+                    // criteria are untouched. 2c guards "won't stop"; this guards "stops too early".
+                    if self.criteria_gate_enabled
+                        && !self.criteria_gate_fired
+                        && !self.ctx.partitions.task_state.criteria.is_empty()
+                    {
+                        self.criteria_gate_fired = true;
+                        let criteria = self.ctx.partitions.task_state.criteria.clone();
+                        self.ctx.push_history(message, tokens);
+                        self.ctx.push_signal(format!(
+                            "[CRITERIA CHECK] You are about to finish. Verify each acceptance \
+                             criterion first: {}. If any is NOT met, continue working on it now. \
+                             If all are met, give the final answer.",
+                            criteria.join(" | ")
+                        ));
+                        self.observations.push(KernelObservation::CriteriaGateFired {
+                            turn: self.turn,
+                            criteria,
+                        });
+                        self.phase = LoopPhase::Reason;
+                        return self.emit_call_llm();
+                    }
                     return self.terminate(TerminationReason::Completed, Some(message));
                 }
 
@@ -570,6 +631,14 @@ impl LoopStateMachine {
                     .map(|c| (c.name.to_string(), compact_tool_args(&c.arguments)))
                     .collect();
                 self.ctx.note_tool_actions(&action_sigs);
+
+                // O6 RepeatFuse: the hard rungs above the 2c soft STOP. Runs BEFORE the governance
+                // gate and independent of whether a policy is loaded — a batteries-included kernel
+                // protection, not a policy feature. Deny rolls the turn back with a directive note;
+                // the terminate rung ends the run `NoProgress` after one final no-tools report turn.
+                if let Some(action) = self.check_repeat_fuse(&calls) {
+                    return action;
+                }
 
                 match self.gate_tool_calls(&calls) {
                     GateToolOutcome::Blocked(action) => return action,
@@ -864,6 +933,13 @@ impl LoopStateMachine {
             suspend_state: None,
             pending_denied_results: Vec::new(),
             workflow: None,
+            // Re-seeded from the replayed `ConfigureRun` / `SetRepeatFuse` (config, not state);
+            // the streak itself intentionally restarts on restore (stale across a suspend).
+            repeat_fuse: RepeatFuseConfig::default(),
+            repeat_sig: None,
+            repeat_count: 0,
+            criteria_gate_enabled: true,
+            criteria_gate_fired: false,
         }
     }
 

@@ -149,6 +149,13 @@ export interface RuntimeOptions {
   attentionPolicy?: { maxQueueSize?: number }
   schedulerBudget?: SchedulerBudget
   resourceQuota?: ResourceQuota
+  /** O6: the in-kernel repeat fuse — identical tool call (same name AND args) `denyAfter` turns in a
+   *  row ⇒ deny + directive note; `terminateAfter` ⇒ run ends `no_progress`. Defaults 5/8; `false`
+   *  disables. Same-tool/different-args loops never trip it. */
+  repeatFuse?: { denyAfter?: number; terminateAfter?: number } | false
+  /** O4: turn-end criteria gate — one kernel-injected self-check turn before accepting completion
+   *  while `criteria` stand. Default enabled; `false` accepts the first finish unconditionally. */
+  criteriaGate?: boolean
   memoryPolicy?: MemoryPolicy
   tokenizer?: string
   enablePlanTool?: boolean
@@ -1253,6 +1260,17 @@ export class RuntimeRunner {
           ? { memory_writes_per_window: [q.memoryWritesPerWindow.maxWrites, q.memoryWritesPerWindow.windowMs] }
           : {}),
       }
+    }
+    // O6: tune/disable the in-kernel repeat fuse (absent ⇒ kernel defaults: enabled, 5/8).
+    if (this.opts.repeatFuse !== undefined) {
+      const rf = this.opts.repeatFuse
+      config.repeat_fuse = rf === false
+        ? { enabled: false, deny_after: 0, terminate_after: 0 }
+        : { enabled: true, deny_after: rf.denyAfter ?? 5, terminate_after: rf.terminateAfter ?? 8 }
+    }
+    // O4: turn-end criteria gate toggle (absent ⇒ kernel default: enabled).
+    if (this.opts.criteriaGate !== undefined) {
+      config.criteria_gate = this.opts.criteriaGate
     }
     kernelApply(runtime, this.pendingObservations, { kind: "configure_run", config })
     if (this.opts.memoryPolicy) {

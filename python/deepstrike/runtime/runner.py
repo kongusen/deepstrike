@@ -177,6 +177,17 @@ class RuntimeOptions:
   attention_policy: "AttentionPolicy | dict | None" = None
   scheduler_budget: SchedulerBudget | dict[str, Any] | None = None
   resource_quota: ResourceQuota | dict[str, Any] | None = None
+  # O6: the in-kernel repeat fuse — hard rungs above the soft no-progress STOP. When the model
+  # re-issues the IDENTICAL tool call (same name AND args) deny_after turns in a row the kernel
+  # denies it with a directive note; at terminate_after the run ends "no_progress". Same-tool/
+  # different-args loops never trip it. None ⇒ kernel defaults (enabled, 5/8); a dict overrides
+  # {"deny_after": int, "terminate_after": int}; False disables (legit fixed-argument polling).
+  repeat_fuse: dict[str, int] | bool | None = None
+  # O4: the turn-end criteria gate (the Stop-hook analog). When the model tries to finish while the
+  # run's criteria stand, the kernel injects ONE self-check turn before accepting completion. Fires
+  # at most once per run; runs without criteria are untouched. None ⇒ kernel default (enabled);
+  # False accepts the first finish unconditionally.
+  criteria_gate: bool | None = None
   # L1 (RunGroup): bind this runner to a governance domain shared by N peer sessions of one logical
   # run. Members pass the same RunGroup; the run-level token cap is enforced against the group's
   # cumulative spend (seeded at boot, charged at run end) rather than per-vehicle. None ⇒ N=1.
@@ -1467,6 +1478,26 @@ class RuntimeRunner:
       kernel_apply(runtime, self._pending_observations, {
         "kind": "set_resource_quota",
         "quota": _resource_quota_to_kernel(self._opts.resource_quota),
+      })
+
+    # O6: tune/disable the in-kernel repeat fuse (absent ⇒ kernel defaults: enabled, 5/8).
+    if self._opts.repeat_fuse is not None:
+      rf = self._opts.repeat_fuse
+      if rf is False:
+        payload: dict[str, Any] = {"enabled": False}
+      else:
+        payload = {"enabled": True}
+        if isinstance(rf, dict):
+          if rf.get("deny_after") is not None:
+            payload["deny_after"] = rf["deny_after"]
+          if rf.get("terminate_after") is not None:
+            payload["terminate_after"] = rf["terminate_after"]
+      kernel_apply(runtime, self._pending_observations, {"kind": "set_repeat_fuse", **payload})
+
+    # O4: turn-end criteria gate toggle (absent ⇒ kernel default: enabled).
+    if self._opts.criteria_gate is not None:
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "set_criteria_gate", "enabled": bool(self._opts.criteria_gate),
       })
 
     # L1: seed the kernel with the group's cumulative spend so the run-level token cap + cumulative

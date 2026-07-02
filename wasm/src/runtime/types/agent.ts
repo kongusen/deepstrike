@@ -45,6 +45,10 @@ export interface AgentRunSpec {
   modelHint?: string
   /** M4/G5: cumulative token cap for this sub-agent's run (sets the child kernel's `maxTotalTokens`). */
   tokenBudget?: number
+  /** O3: per-child turn cap (sets the child runner's `maxTurns`; falls back to the parent's). */
+  maxTurns?: number
+  /** O3: per-child wall-clock cap in ms (sets the child runner's `timeoutMs`; falls back to the parent's). */
+  maxWallMs?: number
 }
 
 /** Kernel process-table observation (Phase 3 canonical spawn signal). */

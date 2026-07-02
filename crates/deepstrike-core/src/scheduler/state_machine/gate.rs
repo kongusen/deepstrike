@@ -221,6 +221,97 @@ impl LoopStateMachine {
         Disposition::Allow
     }
 
+    /// O6 RepeatFuse: track consecutive identical turn signatures (non-meta `name(args)` joined —
+    /// the SAME key the 2c soft STOP uses, so the ladder's rungs agree on what "a repeat" is) and
+    /// escalate: `deny_after` ⇒ roll the turn back with a directive note; `terminate_after` ⇒ end
+    /// the run [`TerminationReason::NoProgress`] after one final no-tools report turn. Returns
+    /// `Some(action)` when a rung fires, `None` to proceed. A meta-tool-only turn records no
+    /// signature and neither advances nor resets the streak (control-plane chatter must not
+    /// launder a stall). The streak state is deliberately NOT checkpointed — a deny's rollback
+    /// must not erase the very streak it tripped on.
+    pub(super) fn check_repeat_fuse(&mut self, calls: &[ToolCall]) -> Option<LoopAction> {
+        if !self.repeat_fuse.enabled {
+            return None;
+        }
+        let sig = calls
+            .iter()
+            .filter(|c| !crate::context::manager::is_meta_tool(c.name.as_str()))
+            .map(|c| {
+                let args = super::compact_tool_args(&c.arguments);
+                if args.is_empty() { c.name.to_string() } else { format!("{}({})", c.name, args) }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        if sig.is_empty() {
+            return None;
+        }
+        if self.repeat_sig.as_deref() == Some(sig.as_str()) {
+            self.repeat_count += 1;
+        } else {
+            self.repeat_sig = Some(sig.clone());
+            self.repeat_count = 1;
+            return None;
+        }
+
+        let fuse = self.repeat_fuse;
+        let count = self.repeat_count;
+        let tool_name = calls
+            .first()
+            .map(|c| c.name.to_string())
+            .unwrap_or_default();
+
+        if fuse.terminate_after > 0 && count >= fuse.terminate_after {
+            self.observations.push(KernelObservation::RepeatFuseTripped {
+                turn: self.turn,
+                signature: sig.clone(),
+                count,
+                action: "terminate".to_string(),
+            });
+            // Roll the dangling tool-call turn back (an assistant tool_use with no results is
+            // wire-invalid on several vendors), then force one final no-tools report turn.
+            let rb = RollbackReason::GovernanceDenied {
+                tool_name,
+                reason: format!("repeat fuse: `{sig}` re-issued {count}x consecutively"),
+            };
+            self.rollback(rb);
+            self.ctx.push_signal(format!(
+                "[NO-PROGRESS] `{sig}` was re-issued {count}x consecutively with no new outcome. \
+                 The run is terminating. Report what was accomplished and what remains, in plain text."
+            ));
+            self.pending_termination = Some(crate::types::result::TerminationReason::NoProgress);
+            self.phase = LoopPhase::Reason;
+            return Some(self.emit_call_llm());
+        }
+
+        if fuse.deny_after > 0 && count >= fuse.deny_after {
+            self.observations.push(KernelObservation::RepeatFuseTripped {
+                turn: self.turn,
+                signature: sig.clone(),
+                count,
+                action: "deny".to_string(),
+            });
+            let rb = RollbackReason::GovernanceDenied {
+                tool_name,
+                reason: format!(
+                    "repeat fuse: this exact call (same tool, same arguments) has been issued \
+                     {count}x consecutively with no new outcome — do something DIFFERENT: change \
+                     the arguments, use another tool, or report the task state as it stands"
+                ),
+            };
+            let note = Message::user(super::super::rollback::build_rollback_note(
+                &rb,
+                self.ctx.config.verbose_control_notes,
+            ));
+            self.rollback(rb);
+            self.ctx
+                .push_signal(note.content.as_text().unwrap_or_default().to_string());
+            self.phase = LoopPhase::Reason;
+            return Some(self.emit_call_llm());
+        }
+
+        None
+    }
+
     /// Evaluate proposed tool calls through the syscall trap (governance gate).
     pub(super) fn gate_tool_calls(&mut self, calls: &[ToolCall]) -> GateToolOutcome {
         if self.governance.is_none() {

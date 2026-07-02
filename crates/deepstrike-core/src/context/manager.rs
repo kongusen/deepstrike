@@ -29,7 +29,9 @@ const META_TOOL_NAMES: &[&str] = &[
     "start_workflow",
 ];
 
-fn is_meta_tool(name: &str) -> bool {
+/// Control-plane meta-tools are noise, not task progress — filtered out of the recency log (2b)
+/// and out of the O6 repeat-fuse signature (the two must agree on what "an action" is).
+pub(crate) fn is_meta_tool(name: &str) -> bool {
     META_TOOL_NAMES.contains(&name)
 }
 

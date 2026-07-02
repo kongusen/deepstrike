@@ -153,8 +153,9 @@ def _build_child_opts(
     session_log=ctx.session_log,
     execution_plane=filtered_plane,
     max_tokens=ctx.parent_opts.max_tokens,
-    max_turns=ctx.parent_opts.max_turns,
-    timeout_ms=ctx.parent_opts.timeout_ms,
+    # O3: per-child turn / wall-clock caps (fall back to the inherited limits).
+    max_turns=getattr(ctx.spec, "max_turns", None) or ctx.parent_opts.max_turns,
+    timeout_ms=getattr(ctx.spec, "max_wall_ms", None) or ctx.parent_opts.timeout_ms,
     agent_id=ctx.spec.identity.agent_id,
     system_prompt=system_prompt,
     initial_memory=ctx.parent_opts.initial_memory,

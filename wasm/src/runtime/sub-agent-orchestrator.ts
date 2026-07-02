@@ -95,6 +95,9 @@ export class SubAgentOrchestrator {
       provider: resolveProvider(ctx.parentOpts, ctx.spec.modelHint),
       // M4/G5: cap the child run at the node's token budget (falls back to the inherited cap).
       maxTotalTokens: ctx.spec.tokenBudget ?? ctx.parentOpts.maxTotalTokens,
+      // O3: per-child turn / wall-clock caps (fall back to the inherited limits).
+      maxTurns: ctx.spec.maxTurns ?? ctx.parentOpts.maxTurns,
+      timeoutMs: ctx.spec.maxWallMs ?? ctx.parentOpts.timeoutMs,
       executionPlane: filteredPlane,
       agentId: ctx.spec.identity.agentId,
       systemPrompt,

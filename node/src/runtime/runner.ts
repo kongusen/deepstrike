@@ -122,6 +122,20 @@ export interface TurnMetrics {
   cacheCreationTokens: number
 }
 
+/** O5: decision returned by `onToolCall` — `block: true` denies this call before it executes; the
+ *  `reason` is fed back to the model as a governance-denied tool result (so it can redirect). */
+export interface ToolCallHookDecision {
+  block?: boolean
+  reason?: string
+}
+
+/** O5: decision returned by `onToolResult` — `replaceOutput` swaps the result the model (and the
+ *  session log) sees; `note` is injected into the signal stream (see `injectNote`). */
+export interface ToolResultHookDecision {
+  replaceOutput?: string
+  note?: string
+}
+
 export interface RuntimeOptions {
   provider: LLMProvider
   /** M4/G5: cumulative token cap for this run (the kernel's `max_total_tokens`). A workflow node's
@@ -185,6 +199,38 @@ export interface RuntimeOptions {
    * and memory-write syscalls are admitted unconditionally (pre-M2 behavior).
    */
   resourceQuota?: ResourceQuota
+  /**
+   * O6: the in-kernel repeat fuse — the hard rungs above the soft no-progress STOP. When the model
+   * re-issues the IDENTICAL tool call (same name AND args) `denyAfter` turns in a row, the kernel
+   * denies it and feeds a directive note back; at `terminateAfter` the run ends `no_progress`.
+   * Same-tool/different-args loops never trip it. Defaults: enabled, denyAfter 5, terminateAfter 8.
+   * Pass `false` to disable (e.g. legit fixed-argument polling loops).
+   */
+  repeatFuse?: { denyAfter?: number; terminateAfter?: number } | false
+  /**
+   * O4: the turn-end criteria gate (the Stop-hook analog). When the model tries to finish while the
+   * run's `criteria` stand, the kernel injects ONE self-check turn ("verify each criterion; continue
+   * if any is unmet") before accepting completion. Fires at most once per run; runs without criteria
+   * are untouched. Default enabled — set `false` to accept the first finish unconditionally.
+   */
+  criteriaGate?: boolean
+  /**
+   * O5 (the PreToolUse-hook analog): called for each kernel-APPROVED tool call just before it
+   * executes. Return `{ block: true, reason }` to veto — the call never runs and the reason is fed
+   * back to the model as a denied tool result. This is the seam for STATEFUL host policy (count
+   * repeats, budget writes per resource, project-specific rules); keep static allow/deny in
+   * `governancePolicy`. Errs-open: a throwing hook never blocks the run.
+   */
+  onToolCall?: (call: { callId: string; name: string; arguments: string }) =>
+    Promise<ToolCallHookDecision | undefined | void> | ToolCallHookDecision | undefined | void
+  /**
+   * O5 (the PostToolUse-hook analog): called for each executed tool result before it reaches the
+   * kernel. Return `{ replaceOutput }` to swap the result the model sees (redact / annotate), and/or
+   * `{ note }` to push a contextual note into the signal stream (same channel as `injectNote` —
+   * e.g. "that write was a no-op, stop repeating it"). Errs-open: a throwing hook changes nothing.
+   */
+  onToolResult?: (result: { callId: string; name: string; arguments: string; output: string; isError: boolean }) =>
+    Promise<ToolResultHookDecision | undefined | void> | ToolResultHookDecision | undefined | void
   /**
    * L1 (RunGroup): bind this runner to a governance domain shared by N peer sessions of one logical
    * run. Members pass the same `id` + `budgetStore`; the kernel's run-level token cap is then enforced
@@ -468,6 +514,18 @@ export class RuntimeRunner {
     }
     if (groupSpawnsBase !== undefined && groupSpawnsBase > 0) {
       config.group_spawns_base = groupSpawnsBase
+    }
+    // O6: tune/disable the in-kernel repeat fuse. `false` disables; an object overrides thresholds.
+    // Absent ⇒ kernel defaults (enabled, deny_after=5, terminate_after=8).
+    if (this.opts.repeatFuse !== undefined) {
+      const rf = this.opts.repeatFuse
+      config.repeat_fuse = rf === false
+        ? { enabled: false, deny_after: 0, terminate_after: 0 }
+        : { enabled: true, deny_after: rf.denyAfter ?? 5, terminate_after: rf.terminateAfter ?? 8 }
+    }
+    // O4: turn-end criteria gate toggle (absent ⇒ kernel default: enabled).
+    if (this.opts.criteriaGate !== undefined) {
+      config.criteria_gate = this.opts.criteriaGate
     }
 
     kernelApply(runtime, this.pendingObservations, { kind: "configure_run", config })
