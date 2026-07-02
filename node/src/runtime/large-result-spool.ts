@@ -191,6 +191,29 @@ omitted: ${omitted} chars
   }
 
   /**
+   * O7: locate a spooled output by the tool call's id (the `read_result` meta-tool only knows
+   * `call_id`, not the content-hashed file name `persistOutput` chose). Scans the spool directory
+   * for the `${callId}-*.txt` naming convention; returns `undefined` if nothing was ever spooled
+   * for that call (e.g. it never actually exceeded the threshold, or the spool dir was cleaned up).
+   */
+  async findByCallId(callId: string): Promise<string | undefined> {
+    let files: string[]
+    try {
+      files = await fs.readdir(this.spoolDir)
+    } catch {
+      return undefined
+    }
+    const prefix = `${callId}-`
+    const match = files.find(f => f.startsWith(prefix) && f.endsWith('.txt'))
+    if (!match) return undefined
+    try {
+      return await fs.readFile(path.join(this.spoolDir, match), 'utf-8')
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
    * Clean up old spool files (optional maintenance).
    */
   async cleanup(maxAgeMs?: number): Promise<number> {

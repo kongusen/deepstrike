@@ -1293,6 +1293,65 @@ class RuntimeRunner:
 
     return approved, denied, events
 
+  async def _resolve_read_result(
+    self,
+    session_id: str,
+    args_json: str,
+  ) -> tuple[str, bool]:
+    """O7: resolve a ``read_result`` meta-tool call to the full text of a previously-evicted tool
+    output. Resolution order: (a) this turn's in-memory ``_pending_spool_outputs`` map, (b) the
+    on-disk result spool (persisted once the kernel observation ``large_result_spooled`` was
+    processed), (c) a session-log scan for the original ``tool_completed`` event carrying that
+    ``call_id``. Slices the resolved text by ``[offset, offset + max_bytes)`` (plain string slice —
+    "bytes-ish")."""
+    call_id = ""
+    offset = 0
+    max_bytes = 4000
+    try:
+      args = json.loads(args_json or "{}")
+      if isinstance(args.get("call_id"), str):
+        call_id = args["call_id"]
+      if isinstance(args.get("offset"), (int, float)):
+        offset = int(args["offset"])
+      if isinstance(args.get("max_bytes"), (int, float)):
+        max_bytes = int(args["max_bytes"])
+    except Exception:
+      pass  # malformed arguments — call_id stays empty, falls through to "not found" below
+
+    full: str | None = None
+    pending = self._pending_spool_outputs.get(call_id)
+    if pending is not None:
+      full = pending.get("output")
+
+    if full is None:
+      from deepstrike.runtime.large_result_spool import LargeResultSpool
+      spool = self._opts.result_spool or LargeResultSpool()
+      try:
+        full = await spool.find_by_call_id(call_id)
+      except Exception:
+        full = None
+
+    if full is None:
+      try:
+        events = await self._opts.session_log.read(session_id)
+        for entry in events:
+          event = entry.event
+          if event.get("kind") != "tool_completed":
+            continue
+          for r in event.get("results", []):
+            if getattr(r, "call_id", None) == call_id:
+              full = r.output
+      except Exception:
+        full = None
+
+    if full is None:
+      return f'no stored output for call_id "{call_id}"', True
+
+    start = max(0, offset)
+    end = min(len(full), start + max(0, max_bytes))
+    text_slice = full[start:end]
+    return f"[read_result {call_id}: chars {start}–{end} of {len(full)}]\n{text_slice}", False
+
   async def _execute(
     self,
     session_id: str,
@@ -1762,9 +1821,16 @@ class RuntimeRunner:
         )
         tool_results: list[ToolResult] = []
         # M5 v1: `start_workflow` (author a sub-workflow) flattens to the same append path.
-        normal_calls = [c for c in all_calls if c.name not in ("update_plan", "submit_workflow_nodes", "start_workflow")]
+        normal_calls = [
+          c for c in all_calls
+          if c.name not in ("update_plan", "submit_workflow_nodes", "start_workflow", "read_result")
+        ]
         plan_calls = [c for c in all_calls if c.name == "update_plan"]
         submit_calls = [c for c in all_calls if c.name in ("submit_workflow_nodes", "start_workflow")]
+        # O7: `read_result` re-fetches a tool output the kernel evicted from context. Content is
+        # host-resolved: (a) this turn's in-memory pending spool map, (b) the on-disk result spool,
+        # (c) a session-log scan for the original `tool_completed` event.
+        read_result_calls = [c for c in all_calls if c.name == "read_result"]
 
         for call in plan_calls:
           update = _parse_update_plan_args(call.arguments)
@@ -1775,6 +1841,11 @@ class RuntimeRunner:
           result = ToolResult(call_id=call.id, output="success", is_error=False)
           tool_results.append(result)
           yield ToolResultEvent(call_id=call.id, content="success", is_error=False)
+
+        for call in read_result_calls:
+          text, is_error = await self._resolve_read_result(session_id, call.arguments)
+          tool_results.append(ToolResult(call_id=call.id, output=text, is_error=is_error))
+          yield ToolResultEvent(call_id=call.id, content=text, is_error=is_error)
 
         # R3-1: `submit_workflow_nodes` cannot be applied to this runner's kernel — when this runner
         # is a workflow node, the workflow lives in the *parent* kernel. Surface the requested nodes

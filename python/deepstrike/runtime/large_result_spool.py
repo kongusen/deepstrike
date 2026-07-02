@@ -39,6 +39,26 @@ class LargeResultSpool:
       return path.read_text(encoding="utf-8")
     return await asyncio.get_running_loop().run_in_executor(None, _read)
 
+  async def find_by_call_id(self, call_id: str) -> str | None:
+    """O7: locate a spooled output by the tool call's id (the ``read_result`` meta-tool only
+    knows ``call_id``, not the content-hashed file name ``persist_output`` chose). Scans the
+    spool directory for the ``{call_id}-*.txt`` naming convention; returns ``None`` if nothing
+    was ever spooled for that call."""
+    if not self._spool_dir.is_dir():
+      return None
+
+    def _find() -> Path | None:
+      matches = sorted(self._spool_dir.glob(f"{call_id}-*.txt"))
+      return matches[0] if matches else None
+
+    match = await asyncio.get_running_loop().run_in_executor(None, _find)
+    if match is None:
+      return None
+
+    def _read():
+      return match.read_text(encoding="utf-8")
+    return await asyncio.get_running_loop().run_in_executor(None, _read)
+
   async def cleanup(self, max_age_seconds: int | None = None) -> int:
     limit = max_age_seconds if max_age_seconds is not None else self._max_age_seconds
     if limit is None:

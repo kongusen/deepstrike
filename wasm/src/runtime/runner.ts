@@ -439,6 +439,65 @@ export class RuntimeRunner {
     return { approved, denied, events }
   }
 
+  /**
+   * O7: resolve a `read_result` meta-tool call to the full text of a previously-evicted tool
+   * output. Resolution order: (a) this turn's in-memory `pendingSpoolOutputs` map, (b) the result
+   * spool (persisted once the kernel observation `large_result_spooled` was processed), (c) a
+   * session-log scan for the original `tool_completed` event carrying that `call_id`. Slices the
+   * resolved text by `[offset, offset + maxBytes)` (plain string slice — "bytes-ish").
+   */
+  private async resolveReadResult(
+    sessionId: string,
+    argsJson: string,
+  ): Promise<{ text: string; isError: boolean }> {
+    let callId = ""
+    let offset = 0
+    let maxBytes = 4000
+    try {
+      const args = JSON.parse(argsJson || "{}") as { call_id?: string; offset?: number; max_bytes?: number }
+      callId = typeof args.call_id === "string" ? args.call_id : ""
+      if (typeof args.offset === "number" && Number.isFinite(args.offset)) offset = args.offset
+      if (typeof args.max_bytes === "number" && Number.isFinite(args.max_bytes)) maxBytes = args.max_bytes
+    } catch {
+      // malformed arguments — callId stays empty, falls through to "not found" below
+    }
+
+    let full: string | undefined = this.pendingSpoolOutputs.get(callId)?.output
+
+    if (full === undefined && this.opts.resultSpool) {
+      try {
+        full = await this.opts.resultSpool.findByCallId(callId)
+      } catch {
+        full = undefined
+      }
+    }
+
+    if (full === undefined) {
+      try {
+        const events = await this.opts.sessionLog.read(sessionId)
+        for (const { event } of events) {
+          if (event.kind !== "tool_completed") continue
+          const match = event.results.find(r => r.call_id === callId)
+          if (match) full = match.output
+        }
+      } catch {
+        full = undefined
+      }
+    }
+
+    if (full === undefined) {
+      return { text: `no stored output for call_id "${callId}"`, isError: true }
+    }
+
+    const start = Math.max(0, offset)
+    const end = Math.min(full.length, start + Math.max(0, maxBytes))
+    const slice = full.slice(start, end)
+    return {
+      text: `[read_result ${callId}: chars ${start}–${end} of ${full.length}]\n${slice}`,
+      isError: false,
+    }
+  }
+
   async dream(agentId: string, nowMs = Date.now()): Promise<DreamResult> {
     if (!this.opts.dreamStore) throw new Error("dreamStore not configured")
     const kernel = await getKernel()
@@ -885,7 +944,18 @@ export class RuntimeRunner {
         // the orchestrator collects them and `runWorkflow` sends them to the parent kernel.
         // M5 v1: `start_workflow` (author a sub-workflow) flattens to the same append path.
         const submitCalls = allCalls.filter(c => c.name === "submit_workflow_nodes" || c.name === "start_workflow")
-        const normalCalls = allCalls.filter(c => c.name !== "submit_workflow_nodes" && c.name !== "start_workflow")
+        // O7: `read_result` re-fetches a tool output the kernel evicted from context. Content is
+        // host-resolved: (a) this turn's in-memory pending spool map, (b) the on-disk result spool,
+        // (c) a session-log scan for the original `tool_completed` event.
+        const readResultCalls = allCalls.filter(c => c.name === "read_result")
+        const normalCalls = allCalls.filter(
+          c => c.name !== "submit_workflow_nodes" && c.name !== "start_workflow" && c.name !== "read_result",
+        )
+        for (const call of readResultCalls) {
+          const out = await this.resolveReadResult(sessionId, call.arguments)
+          toolResults.push({ callId: call.id, output: out.text, isError: out.isError })
+          yield { type: "tool_result", callId: call.id, content: out.text, isError: out.isError } as ToolResultEvent
+        }
         for (const call of submitCalls) {
           // M5 v2.1: a TOP-LEVEL agent authoring a whole sub-workflow via `start_workflow` — record the
           // spec and AUTO-PIVOT once this tool turn resolves. A workflow-NODE's `start_workflow` (and

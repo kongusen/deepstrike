@@ -161,6 +161,29 @@ omitted: ${omitted} chars
     return this.driver.read(spoolRef)
   }
 
+  /**
+   * O7: locate a spooled output by the tool call's id (the `read_result` meta-tool only knows
+   * `call_id`, not the content-hashed key `persistOutput` chose). Scans the driver's key list for
+   * the `.spool/${callId}-*.txt` naming convention; returns `undefined` if nothing was ever
+   * spooled for that call.
+   */
+  async findByCallId(callId: string): Promise<string | undefined> {
+    let keys: string[]
+    try {
+      keys = await this.driver.list()
+    } catch {
+      return undefined
+    }
+    const prefix = `.spool/${callId}-`
+    const match = keys.find(k => k.startsWith(prefix) && k.endsWith('.txt'))
+    if (!match) return undefined
+    try {
+      return await this.driver.read(match)
+    } catch {
+      return undefined
+    }
+  }
+
   async cleanup(maxAgeMs?: number): Promise<number> {
     const limit = maxAgeMs ?? this.config.maxAgeMs ?? 7 * 24 * 60 * 60 * 1000
     try {

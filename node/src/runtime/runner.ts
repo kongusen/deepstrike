@@ -1364,6 +1364,67 @@ export class RuntimeRunner {
     return { approved, denied, events }
   }
 
+  /**
+   * O7: resolve a `read_result` meta-tool call to the full text of a previously-evicted tool
+   * output. Resolution order: (a) this turn's in-memory `pendingSpoolOutputs` map (a call spooled
+   * earlier in the SAME tool-turn, before the session-log write lands), (b) the on-disk result
+   * spool (persisted once the kernel observation `large_result_spooled` was processed), (c) a
+   * session-log scan for the original `tool_completed` event carrying that `call_id`. Slices the
+   * resolved text by `[offset, offset + maxBytes)` (plain string slice — "bytes-ish").
+   */
+  private async resolveReadResult(
+    sessionId: string,
+    argsJson: string,
+  ): Promise<{ text: string; isError: boolean }> {
+    let callId = ""
+    let offset = 0
+    let maxBytes = 4000
+    try {
+      const args = JSON.parse(argsJson || "{}") as { call_id?: string; offset?: number; max_bytes?: number }
+      callId = typeof args.call_id === "string" ? args.call_id : ""
+      if (typeof args.offset === "number" && Number.isFinite(args.offset)) offset = args.offset
+      if (typeof args.max_bytes === "number" && Number.isFinite(args.max_bytes)) maxBytes = args.max_bytes
+    } catch {
+      // malformed arguments — callId stays empty, falls through to "not found" below
+    }
+
+    let full: string | undefined = this.pendingSpoolOutputs.get(callId)?.output
+
+    if (full === undefined) {
+      const spool = this.opts.resultSpool ?? new LargeResultSpool()
+      try {
+        full = await spool.findByCallId(callId)
+      } catch {
+        full = undefined
+      }
+    }
+
+    if (full === undefined) {
+      try {
+        const events = await this.opts.sessionLog.read(sessionId)
+        for (const { event } of events) {
+          if (event.kind !== "tool_completed") continue
+          const match = event.results.find(r => r.call_id === callId)
+          if (match) full = match.output
+        }
+      } catch {
+        full = undefined
+      }
+    }
+
+    if (full === undefined) {
+      return { text: `no stored output for call_id "${callId}"`, isError: true }
+    }
+
+    const start = Math.max(0, offset)
+    const end = Math.min(full.length, start + Math.max(0, maxBytes))
+    const slice = full.slice(start, end)
+    return {
+      text: `[read_result ${callId}: chars ${start}–${end} of ${full.length}]\n${slice}`,
+      isError: false,
+    }
+  }
+
   private async *execute(
     sessionId: string,
     goal: string,
@@ -1810,12 +1871,18 @@ export class RuntimeRunner {
 
         const toolResults: ToolResult[] = []
         const normalCalls = allCalls.filter(
-          c => c.name !== "update_plan" && c.name !== "submit_workflow_nodes" && c.name !== "start_workflow",
+          c => c.name !== "update_plan" && c.name !== "submit_workflow_nodes" && c.name !== "start_workflow"
+            && c.name !== "read_result",
         )
         const planCalls = allCalls.filter(c => c.name === "update_plan")
         // M5 v1: `start_workflow` (author a sub-workflow) flattens to the same append path as
         // `submit_workflow_nodes` — a `WorkflowSpec` is a node batch. (v2 adds top-level bootstrap.)
         const submitCalls = allCalls.filter(c => c.name === "submit_workflow_nodes" || c.name === "start_workflow")
+        // O7: `read_result` re-fetches a tool output the kernel evicted from context. Content is
+        // host-resolved: (a) this turn's in-memory pending spool map, (b) the on-disk result spool
+        // (persisted once the kernel observes `large_result_spooled`), (c) a session-log scan for
+        // the original `tool_completed` event. The kernel only advertises the capability.
+        const readResultCalls = allCalls.filter(c => c.name === "read_result")
 
         for (const call of planCalls) {
           const update = parseUpdatePlanArgs(call.arguments)
@@ -1826,6 +1893,12 @@ export class RuntimeRunner {
           const result = { callId: call.id, output: "success", isError: false }
           toolResults.push(result)
           yield { type: "tool_result", callId: call.id, content: "success", isError: false } as ToolResultEvent
+        }
+
+        for (const call of readResultCalls) {
+          const out = await this.resolveReadResult(sessionId, call.arguments)
+          toolResults.push({ callId: call.id, output: out.text, isError: out.isError })
+          yield { type: "tool_result", callId: call.id, content: out.text, isError: out.isError } as ToolResultEvent
         }
 
         // R3-1: `submit_workflow_nodes` cannot be applied to this runner's kernel — when this runner
