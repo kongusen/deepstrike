@@ -50,9 +50,9 @@ async function seedWakeSession(
 }
 
 describe("long-session memory paging integration", () => {
-  it("compress → page_out → archive_ref, then memory tool page_in fills knowledge", async () => {
+  it("compress → page_out → archive_ref, then a memory tool call's result flows through history (not a permanent knowledge pin)", async () => {
     let providerCalls = 0
-    let sawRecallInKnowledge = false
+    let sawRecallInContext = false
 
     const provider: LLMProvider = {
       async complete(): Promise<Message> {
@@ -60,9 +60,13 @@ describe("long-session memory paging integration", () => {
       },
       async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {
         providerCalls += 1
-        if (context.systemKnowledge?.includes(RECALL_MARKER)) {
-          sawRecallInKnowledge = true
+        // Strict dynamic context control: a memory-tool hit is single-use retrieval content, not a
+        // stable skill — it must appear via the ordinary history/turns path (where it can later
+        // decay with the compression pyramid), NOT get pinned into the permanent systemKnowledge slot.
+        if (JSON.stringify(context.turns).includes(RECALL_MARKER)) {
+          sawRecallInContext = true
         }
+        expect(context.systemKnowledge ?? "").not.toContain(RECALL_MARKER)
         if (providerCalls <= 9) {
           yield { type: "tool_call", id: `bulk${providerCalls}`, name: "bulk", arguments: {} }
           return
@@ -105,7 +109,9 @@ describe("long-session memory paging integration", () => {
     const events = await sessionLog.read(sessionId)
     expect(events.some(e => e.event.kind === "compressed")).toBe(true)
     expect(events.some(e => e.event.kind === "page_out")).toBe(true)
-    expect(events.some(e => e.event.kind === "page_in")).toBe(true)
+    // The live memory-tool-call page-in side channel was retired: no `page_in` event should fire
+    // for an ordinary tool call anymore — its result travels through the normal tool_result path.
+    expect(events.some(e => e.event.kind === "page_in")).toBe(false)
 
     const pageOut = events.find(e => e.event.kind === "page_out")
     expect(pageOut).toBeDefined()
@@ -121,10 +127,10 @@ describe("long-session memory paging integration", () => {
       expect(archived.length).toBeGreaterThan(0)
     }
 
-    expect(sawRecallInKnowledge).toBe(true)
+    expect(sawRecallInContext).toBe(true)
   })
 
-  it("wake after compression replays history and page_in on memory tool", async () => {
+  it("wake after compression replays history; a memory tool call on wake still flows through history, not knowledge", async () => {
     let compressCalls = 0
     let wakeStreamCalls = 0
     let sawRecallOnWake = false
@@ -189,7 +195,7 @@ describe("long-session memory paging integration", () => {
       },
       async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {
         wakeStreamCalls += 1
-        if (context.systemKnowledge?.includes(RECALL_MARKER)) {
+        if (JSON.stringify(context.turns).includes(RECALL_MARKER)) {
           sawRecallOnWake = true
         }
         if (wakeStreamCalls === 1) {
@@ -222,7 +228,7 @@ describe("long-session memory paging integration", () => {
     expect(text).toBe("woke")
 
     const afterWake = await sharedLog.read(wakeSession)
-    expect(afterWake.some(e => e.event.kind === "page_in")).toBe(true)
+    expect(afterWake.some(e => e.event.kind === "page_in")).toBe(false)
     expect(sawRecallOnWake).toBe(true)
     expect(afterWake.some(e => e.event.kind === "run_terminal")).toBe(true)
   })
