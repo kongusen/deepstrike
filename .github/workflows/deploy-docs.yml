@@ -20,10 +20,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  # Split build/deploy into two jobs (the canonical GitHub Pages pattern): the
+  # `github-pages` artifact is uploaded ONCE by `build`, so "Re-run failed jobs"
+  # only re-runs `deploy` and never stacks a duplicate artifact on the run
+  # (the cause of the "Multiple artifacts named github-pages" failure).
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -34,7 +35,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -48,6 +49,13 @@ jobs:
         with:
           path: docs/.vitepress/dist
 
+  deploy:
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
