@@ -5,13 +5,23 @@
  * pending map → on-disk result spool → session-log scan). This mirrors the Layer-1 spool
  * integration test (`runner-spool-integration.test.ts`) but drives the meta-tool call itself.
  */
+import * as fs from "fs/promises"
+import * as os from "os"
 import * as path from "path"
 import { LargeResultSpool } from "../src/runtime/large-result-spool.js"
 import { createRunner, tool } from "./runtime/helpers.js"
 import type { LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 
 describe("read_result meta-tool", () => {
-  const testSpoolDir = path.join(process.cwd(), ".spool-read-result-test")
+  let testSpoolDir: string
+
+  beforeEach(async () => {
+    testSpoolDir = await fs.mkdtemp(path.join(os.tmpdir(), "ds-read-result-"))
+  })
+
+  afterEach(async () => {
+    await fs.rm(testSpoolDir, { recursive: true, force: true })
+  })
 
   it("re-fetches the full output of a spooled tool result by call_id", async () => {
     const huge = "y".repeat(100 * 1024)
