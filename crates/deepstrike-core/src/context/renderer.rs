@@ -117,8 +117,7 @@ fn build_system_stable(partitions: &ContextPartitions) -> String {
 }
 
 fn build_system_knowledge(partitions: &ContextPartitions) -> String {
-    partitions.knowledge.messages
-        .iter()
+    partitions.knowledge.messages()
         .filter_map(|m| m.content.as_text())
         .collect::<Vec<_>>()
         .join("\n\n")

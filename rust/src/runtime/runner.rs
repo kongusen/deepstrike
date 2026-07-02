@@ -735,6 +735,8 @@ impl RuntimeRunner {
                     KernelInputEvent::AddKnowledgeMessage {
                         content: mem.clone(),
                         tokens,
+                        key: None,
+                        pinned: false,
                     },
                 );
             }
@@ -912,6 +914,8 @@ impl RuntimeRunner {
                                     content: format!("[memory score={:.3}] {}", hit.score, hit.text),
                                     tokens: None,
                                     source: Some("memory".to_string()),
+                                    key: None,
+                                    pinned: false,
                                 });
                             }
                         }
@@ -1823,6 +1827,9 @@ impl RuntimeRunner {
                     .await;
                 }
                 KernelObservation::Renewed { .. } => {}
+                KernelObservation::KnowledgeSwept { .. } => {}
+                KernelObservation::RepeatFuseTripped { .. } => {}
+                KernelObservation::CriteriaGateFired { .. } => {}
                 KernelObservation::CheckpointTaken { turn, history_len } => {
                     self.log(
                         session_id,
@@ -2058,6 +2065,8 @@ impl RuntimeRunner {
                         content: format!("[local semantic cache] {}: {}", role_str, content_str),
                         tokens: None,
                         source: Some("semantic_cache".to_string()),
+                        key: None,
+                        pinned: false,
                     });
                 }
 
@@ -2070,6 +2079,8 @@ impl RuntimeRunner {
                                     content: format!("[memory score={:.3}] {}", hit.score, hit.text),
                                     tokens: None,
                                     source: Some("memory".to_string()),
+                                    key: None,
+                                    pinned: false,
                                 });
                             }
                         }
@@ -2083,6 +2094,8 @@ impl RuntimeRunner {
                                 content: snippet,
                                 tokens: None,
                                 source: Some("knowledge".to_string()),
+                                key: None,
+                                pinned: false,
                             });
                         }
                     }

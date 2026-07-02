@@ -85,6 +85,9 @@ impl LoopStateMachine {
             archived: archived.clone(),
             invalidates_prefix_at,
         });
+        // K1: surface any boundary knowledge sweep that ran inside this compaction (before the
+        // archived-empty early-return — an in-place compaction can still have swept knowledge).
+        self.emit_knowledge_sweep_observations();
         if archived.is_empty() {
             return;
         }
@@ -97,6 +100,19 @@ impl LoopStateMachine {
             archived,
             tier_hint,
         });
+    }
+
+    /// K1: drain boundary knowledge sweeps (deferred upserts applied / marked entries dropped
+    /// inside the compaction that just ran) into `KnowledgeSwept` observations. Called from the
+    /// compression funnel above and after renewal — the only two places sweeps occur.
+    pub(super) fn emit_knowledge_sweep_observations(&mut self) {
+        for sweep in self.ctx.take_knowledge_sweeps() {
+            self.observations.push(KernelObservation::KnowledgeSwept {
+                turn: self.turn,
+                removed_keys: sweep.removed_keys,
+                tokens_freed: sweep.tokens_freed,
+            });
+        }
     }
 
     /// Execute one [`EvictionOp`] from an [`EvictionPlan`] — the single compaction execution
@@ -185,7 +201,12 @@ impl LoopStateMachine {
             let tokens = entry
                 .tokens
                 .unwrap_or_else(|| self.ctx.engine.count(&entry.content).max(1));
-            self.ctx.push_knowledge(Message::system(entry.content.clone()), tokens);
+            self.ctx.push_knowledge_entry(
+                entry.key.as_deref().map(compact_str::CompactString::new),
+                Message::system(entry.content.clone()),
+                tokens,
+                entry.pinned,
+            );
         }
     }
 }

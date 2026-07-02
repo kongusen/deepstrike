@@ -543,6 +543,53 @@
         assert!(obs.iter().any(|o| matches!(o, KernelObservation::PageOut { .. })));
     }
 
+    #[test]
+    fn knowledge_remove_sweeps_at_compaction_boundary_and_observes() {
+        // K1: a RemoveKnowledge mark leaves the entry rendered (system[1] bytes untouched) until
+        // a compaction boundary, where the sweep drops it and a KnowledgeSwept observation fires.
+        let mut sm = LoopStateMachine::new(LoopPolicy {
+            max_tokens: 100,
+            max_turns: 100,
+            ..LoopPolicy::default()
+        });
+        sm.start(RuntimeTask::new("test"));
+        sm.ctx.push_knowledge_entry(Some("ref".into()), Message::system("REFDOC"), 5, false);
+        sm.ctx.remove_knowledge("ref");
+        assert!(sm.ctx.render().system_knowledge.contains("REFDOC"), "still rendered pre-boundary");
+
+        for i in 0..10 {
+            sm.ctx.push_history(Message::user(format!("filler {i}")), 50);
+        }
+        assert!(sm.force_compact());
+        assert!(!sm.ctx.render().system_knowledge.contains("REFDOC"), "swept at the boundary");
+        let obs = sm.take_observations();
+        assert!(obs.iter().any(|o| matches!(
+            o,
+            KernelObservation::KnowledgeSwept { removed_keys, .. } if removed_keys.contains(&"ref".to_string())
+        )));
+    }
+
+    #[test]
+    fn knowledge_upsert_applies_at_renewal_boundary() {
+        // K1: renewal is a boundary too — a staged same-key upsert lands there, and entry
+        // identity (the key) survives the renewal's wholesale knowledge carry-over.
+        let mut sm = LoopStateMachine::new(LoopPolicy {
+            max_tokens: 100,
+            max_turns: 100,
+            ..LoopPolicy::default()
+        });
+        sm.start(RuntimeTask::new("test"));
+        sm.ctx.push_knowledge_entry(Some("ref".into()), Message::system("V1"), 5, false);
+        sm.ctx.push_knowledge_entry(Some("ref".into()), Message::system("V2"), 5, false);
+        assert!(sm.ctx.render().system_knowledge.contains("V1"));
+
+        sm.ctx.renew();
+        let rendered = sm.ctx.render().system_knowledge;
+        assert!(rendered.contains("V2"), "upsert applied at renewal");
+        assert!(!rendered.contains("V1"));
+        assert_eq!(sm.ctx.partitions.knowledge.len(), 1, "keyed identity carried, not duplicated");
+    }
+
     // ---- Reactive recovery ladder (lifted from the SDK runners into the kernel) ----
 
     fn compactible_machine() -> LoopStateMachine {
@@ -743,8 +790,10 @@
             content: "skill: debugging playbook".to_string(),
             tokens: Some(3),
             source: Some("skill".to_string()),
+            key: None,
+            pinned: false,
         }]);
-        assert!(!sm.ctx.partitions.knowledge.messages.is_empty());
+        assert!(!sm.ctx.partitions.knowledge.is_empty());
     }
 
     #[test]

@@ -258,6 +258,18 @@ pub enum KernelInputEvent {
     AddKnowledgeMessage {
         content: String,
         tokens: u32,
+        /// K1: entry identity. `Some` ⇒ upsert semantics (same key replaces at the next
+        /// boundary); `None` ⇒ legacy unkeyed append. Additive — old logs replay unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        /// K1: host-pinned entries are exempt from the K2 budget sweep.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pinned: bool,
+    },
+    /// K1: mark a keyed knowledge entry for removal at the next compaction/renewal boundary.
+    /// Errs-open: unknown key is a no-op.
+    RemoveKnowledge {
+        key: String,
     },
     AddHistoryMessage {
         message: Message,
@@ -577,6 +589,15 @@ pub enum KernelObservation {
     Renewed {
         sprint: u32,
     },
+    /// K1: a boundary sweep of the knowledge partition applied deferred upserts and/or dropped
+    /// marked entries. `removed_keys` lists keyed removals (unkeyed drops count only in
+    /// `tokens_freed`); an upsert-only sweep has empty `removed_keys`.
+    KnowledgeSwept {
+        turn: u32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        removed_keys: Vec<String>,
+        tokens_freed: u32,
+    },
     Rollbacked {
         turn: u32,
         checkpoint_history_len: u32,
@@ -880,7 +901,7 @@ impl KernelRuntime {
                     .push(Message::system(content), tokens.max(1));
                 return KernelStep::empty(self.sm.take_observations());
             }
-            KernelInputEvent::AddKnowledgeMessage { content, tokens } => {
+            KernelInputEvent::AddKnowledgeMessage { content, tokens, key, pinned } => {
                 // P1-B2 cache contract: the knowledge partition renders into the cached system[1]
                 // block. Appending here is the right home for *stable* reference material (skill
                 // defs, durable artifacts) — it's append-only, so the existing prefix stays
@@ -889,7 +910,20 @@ impl KernelRuntime {
                 // through here: each would rewrite the cached block and invalidate it plus the
                 // history cache every turn. Volatile per-turn context belongs on the signal/tail
                 // path (`push_signal` → state_turn), which is uncached *and* high-attention (P1-F).
-                self.sm.ctx.partitions.knowledge.push(Message::system(content), tokens.max(1));
+                //
+                // K1: a `key` gives the entry identity — a same-key push stages a boundary-deferred
+                // upsert instead of appending a duplicate (the cache contract above is why the swap
+                // waits for the next compaction/renewal boundary).
+                self.sm.ctx.push_knowledge_entry(
+                    key.map(compact_str::CompactString::from),
+                    Message::system(content),
+                    tokens.max(1),
+                    pinned,
+                );
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::RemoveKnowledge { key } => {
+                self.sm.ctx.remove_knowledge(&key);
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::AddHistoryMessage { message, tokens } => {
@@ -1380,13 +1414,48 @@ mod tests {
         let step = runtime.step(KernelInput::new(KernelInputEvent::AddKnowledgeMessage {
             content: "skill: debug".to_string(),
             tokens: 10,
+            key: None,
+            pinned: false,
         }));
 
         assert!(step.actions.is_empty());
         assert_eq!(
-            runtime.state_machine().ctx.partitions.knowledge.messages.len(),
+            runtime.state_machine().ctx.partitions.knowledge.len(),
             1
         );
+    }
+
+    #[test]
+    fn keyed_add_knowledge_dedupes_and_remove_marks() {
+        // K1 event-level: a same-key AddKnowledgeMessage stages an upsert (one entry, original
+        // bytes rendered mid-generation); RemoveKnowledge marks for the boundary sweep. Both
+        // decoded from the serde wire shape SDKs feed.
+        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        for content in ["v1", "v2"] {
+            let ev: KernelInputEvent = serde_json::from_value(serde_json::json!({
+                "kind": "add_knowledge_message",
+                "content": content,
+                "tokens": 5,
+                "key": "skill:debug",
+            }))
+            .unwrap();
+            runtime.step(KernelInput::new(ev));
+        }
+        let knowledge = &runtime.state_machine().ctx.partitions.knowledge;
+        assert_eq!(knowledge.len(), 1);
+        assert_eq!(
+            knowledge.messages().next().and_then(|m| m.content.as_text()),
+            Some("v1"),
+            "upsert deferred to boundary — original bytes still rendered"
+        );
+
+        let ev: KernelInputEvent = serde_json::from_value(serde_json::json!({
+            "kind": "remove_knowledge",
+            "key": "skill:debug",
+        }))
+        .unwrap();
+        runtime.step(KernelInput::new(ev));
+        assert!(runtime.state_machine().ctx.partitions.knowledge.entries[0].evict_at_boundary);
     }
 
     #[test]
@@ -2220,27 +2289,17 @@ mod tests {
         runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled {
             enabled: true,
         }));
-        let before = runtime
-            .state_machine()
-            .ctx
-            .partitions
-            .knowledge
-            .messages
-            .len();
+        let before = runtime.state_machine().ctx.partitions.knowledge.len();
         runtime.step(KernelInput::new(KernelInputEvent::PageIn {
             entries: vec![crate::mm::PageInEntry {
                 content: "[memory] prior fix".to_string(),
                 tokens: Some(10),
                 source: Some("memory".to_string()),
+                key: None,
+                pinned: false,
             }],
         }));
-        let after = runtime
-            .state_machine()
-            .ctx
-            .partitions
-            .knowledge
-            .messages
-            .len();
+        let after = runtime.state_machine().ctx.partitions.knowledge.len();
         assert!(after > before, "page-in should add knowledge messages");
     }
 

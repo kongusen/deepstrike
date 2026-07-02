@@ -59,11 +59,26 @@ pub struct ResultSnapshot {
     pub termination: String,
 }
 
+/// K1: per-entry knowledge identity, parallel to `knowledge_messages` by index. Absent/short
+/// vectors (old snapshots) restore as unkeyed/unpinned — graceful, additive.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct KnowledgeEntryMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+}
+
 /// Snapshot of context state (simplified representation).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ContextSnapshot {
     pub system_messages: Vec<Message>,
     pub knowledge_messages: Vec<Message>,
+    /// K1: identity metadata for `knowledge_messages` (index-parallel). `#[serde(default)]` keeps
+    /// pre-K1 snapshots loadable; pending upserts/eviction marks are deliberately NOT snapshotted
+    /// (graceful reset, same philosophy as `frozen_history_len`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub knowledge_entries_meta: Vec<KnowledgeEntryMeta>,
     pub task_goal: Option<String>,
     pub task_plan: Option<String>,
     pub task_progress: Option<String>,
@@ -89,7 +104,17 @@ impl ContextSnapshot {
 
         Self {
             system_messages: ctx.partitions.system.messages.clone(),
-            knowledge_messages: ctx.partitions.knowledge.messages.clone(),
+            knowledge_messages: ctx.partitions.knowledge.messages().cloned().collect(),
+            knowledge_entries_meta: ctx
+                .partitions
+                .knowledge
+                .entries
+                .iter()
+                .map(|e| KnowledgeEntryMeta {
+                    key: e.key.as_ref().map(|k| k.to_string()),
+                    pinned: e.pinned,
+                })
+                .collect(),
             task_goal: Some(ctx.partitions.task_state.goal.clone()),
             task_plan,
             task_progress: Some(ctx.partitions.task_state.progress.clone()),
@@ -503,5 +528,66 @@ mod tests {
             "unexpected state: {}",
             records[0].state
         );
+    }
+
+    #[test]
+    fn pre_k1_snapshot_without_entries_meta_still_loads() {
+        // K1 back-compat: a snapshot serialized before `knowledge_entries_meta` existed must
+        // deserialize (serde default) and restore every knowledge entry unkeyed/unpinned.
+        let json = serde_json::json!({
+            "system_messages": [],
+            "knowledge_messages": [
+                { "role": "system", "content": "legacy knowledge" }
+            ],
+            "task_goal": "g",
+            "task_plan": null,
+            "task_progress": "p",
+            "task_open_steps": [],
+            "history_messages": [],
+            "signals": [],
+            "max_tokens": 1000,
+            "sprint": 0
+        });
+        let snap: ContextSnapshot = serde_json::from_value(json).expect("old snapshot loads");
+        assert!(snap.knowledge_entries_meta.is_empty());
+
+        let kernel_snap = KernelSnapshot {
+            turn: 0,
+            total_tokens: 0,
+            tasks: vec![],
+            context: snap,
+            run_spec: None,
+        };
+        let sm = crate::scheduler::state_machine::LoopStateMachine::restore(&kernel_snap);
+        assert_eq!(sm.ctx.partitions.knowledge.len(), 1);
+        let entry = &sm.ctx.partitions.knowledge.entries[0];
+        assert!(entry.key.is_none());
+        assert!(!entry.pinned);
+    }
+
+    #[test]
+    fn keyed_pinned_knowledge_round_trips_through_snapshot() {
+        // K1: key + pinned survive snapshot → restore (index-parallel meta vec).
+        let mut ctx = crate::context::manager::ContextManager::new(1000);
+        ctx.push_knowledge_entry(Some("ref".into()), Message::system("keyed doc"), 5, true);
+        ctx.push_knowledge(Message::system("legacy"), 3);
+
+        let context_snap = ContextSnapshot::from_context(&ctx);
+        assert_eq!(context_snap.knowledge_entries_meta.len(), 2);
+
+        let kernel_snap = KernelSnapshot {
+            turn: 0,
+            total_tokens: 0,
+            tasks: vec![],
+            context: context_snap,
+            run_spec: None,
+        };
+        let sm = crate::scheduler::state_machine::LoopStateMachine::restore(&kernel_snap);
+        let entries = &sm.ctx.partitions.knowledge.entries;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].key.as_deref(), Some("ref"));
+        assert!(entries[0].pinned);
+        assert!(entries[1].key.is_none());
+        assert!(!entries[1].pinned);
     }
 }

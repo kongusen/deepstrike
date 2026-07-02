@@ -791,6 +791,8 @@ impl LoopStateMachine {
                     self.observations.push(KernelObservation::Renewed {
                         sprint: self.ctx.sprint,
                     });
+                    // K1: renewal is a boundary — surface the knowledge sweep it just ran.
+                    self.emit_knowledge_sweep_observations();
                 }
 
                 // Turn boundary: drain any kernel-queued signals into context so they
@@ -875,9 +877,17 @@ impl LoopStateMachine {
             let tokens = ctx.engine.count_message(msg);
             ctx.partitions.system.push(msg.clone(), tokens);
         }
-        for msg in &snap.context.knowledge_messages {
+        // K1: restore entry identity (key/pinned) from the index-parallel meta vec; pre-K1
+        // snapshots have no meta ⇒ every entry restores unkeyed/unpinned (graceful).
+        for (i, msg) in snap.context.knowledge_messages.iter().enumerate() {
             let tokens = ctx.engine.count_message(msg);
-            ctx.partitions.knowledge.push(msg.clone(), tokens);
+            let meta = snap.context.knowledge_entries_meta.get(i);
+            ctx.partitions.knowledge.push_entry(
+                meta.and_then(|m| m.key.as_deref()).map(compact_str::CompactString::new),
+                msg.clone(),
+                tokens,
+                meta.map(|m| m.pinned).unwrap_or(false),
+            );
         }
         for msg in &snap.context.history_messages {
             let tokens = ctx.engine.count_message(msg);

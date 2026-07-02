@@ -64,6 +64,12 @@ pub struct PageInEntry {
     pub tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// K1: entry identity — a keyed page-in upserts instead of appending a duplicate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// K1: pinned entries are exempt from the K2 budget sweep.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 #[cfg(test)]

@@ -71,9 +71,10 @@ impl RenewalPolicy {
         for msg in &partitions.system.messages {
             renewed.system.push(msg.clone(), msg.token_count.unwrap_or(0));
         }
-        for msg in &partitions.knowledge.messages {
-            renewed.knowledge.push(msg.clone(), msg.token_count.unwrap_or(0));
-        }
+        // Cloned wholesale (not re-pushed message-by-message) so entry identity — keys, pins,
+        // pending upserts, boundary-eviction marks — survives renewal; the caller sweeps right
+        // after (renewal IS a boundary).
+        renewed.knowledge = partitions.knowledge.clone();
 
         // State: carry task_state (goal/plan/progress), clear scratchpad.
         renewed.task_state = partitions.task_state.clone();
@@ -103,7 +104,7 @@ impl RenewalPolicy {
             open_tasks: partitions.task_state.open_steps(),
             context_snapshot: serde_json::json!({
                 "history_len": partitions.history.messages.len(),
-                "knowledge_len": partitions.knowledge.messages.len(),
+                "knowledge_len": partitions.knowledge.len(),
             }),
             contract_status: Vec::new(),
             drift_rate_24h: 0.0,

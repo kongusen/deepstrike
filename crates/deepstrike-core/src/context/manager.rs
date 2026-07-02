@@ -95,6 +95,10 @@ pub struct ContextManager {
     /// compaction (no frozen region yet). Not snapshotted: on resume it resets to 0 and rebuilds at
     /// the next compaction (graceful — only the deep-cache durability lapses, never correctness).
     frozen_history_len: usize,
+
+    /// K1: boundary-sweep results awaiting drain into `KnowledgeSwept` observations. Not
+    /// snapshotted (observation-only bookkeeping, same class as `frozen_history_len`).
+    pending_knowledge_sweeps: Vec<crate::context::partitions::KnowledgeSweep>,
 }
 
 impl ContextManager {
@@ -123,6 +127,7 @@ impl ContextManager {
             handles: HandleTable::new(),
             next_handle_id: 0,
             frozen_history_len: 0,
+            pending_knowledge_sweeps: Vec::new(),
         }
     }
 
@@ -316,6 +321,9 @@ impl ContextManager {
             // Compaction rewrote the history prefix — start a fresh collapse generation so
             // surviving handles re-evaluate from Resident (P0-C: the one cache-free un-collapse point).
             self.reset_collapse_generation();
+            // K1: the prompt-cache prefix is being rebuilt anyway — the one cache-free moment to
+            // apply deferred knowledge upserts/removals (rewriting system[1] bytes).
+            self.sweep_knowledge_at_boundary();
         }
         // P2-D × P1-E: re-anchor the frozen-prefix boundary only when the compaction actually broke
         // the prompt-cache prefix (`result.3` = the planner's per-step `cache_at` cost, `Some` ⇒ a
@@ -340,6 +348,9 @@ impl ContextManager {
             // Compaction rewrote the history prefix — start a fresh collapse generation so
             // surviving handles re-evaluate from Resident (P0-C: the one cache-free un-collapse point).
             self.reset_collapse_generation();
+            // K1: the prompt-cache prefix is being rebuilt anyway — the one cache-free moment to
+            // apply deferred knowledge upserts/removals (rewriting system[1] bytes).
+            self.sweep_knowledge_at_boundary();
         }
         // P2-D × P1-E: re-anchor the frozen-prefix boundary only when the compaction actually broke
         // the prompt-cache prefix (`result.3` = the planner's per-step `cache_at` cost, `Some` ⇒ a
@@ -378,6 +389,9 @@ impl ContextManager {
             // Compaction rewrote the history prefix — start a fresh collapse generation so
             // surviving handles re-evaluate from Resident (P0-C: the one cache-free un-collapse point).
             self.reset_collapse_generation();
+            // K1: the prompt-cache prefix is being rebuilt anyway — the one cache-free moment to
+            // apply deferred knowledge upserts/removals (rewriting system[1] bytes).
+            self.sweep_knowledge_at_boundary();
         }
         // P2-D × P1-E: re-anchor the frozen-prefix boundary only when the compaction actually broke
         // the prompt-cache prefix (`result.3` = the planner's per-step `cache_at` cost, `Some` ⇒ a
@@ -417,6 +431,8 @@ impl ContextManager {
         // and start a fresh collapse generation (P0-C) since the whole prefix changed.
         self.prune_orphaned_handles();
         self.reset_collapse_generation();
+        // K1: renewal is a boundary — apply deferred knowledge upserts/removals now.
+        self.sweep_knowledge_at_boundary();
         // P1-E: the renewed history is the new frozen base.
         self.frozen_history_len = self.partitions.history.messages.len();
     }
@@ -443,7 +459,7 @@ impl ContextManager {
         ContextSnapshot {
             turn,
             system_messages: self.partitions.system.messages.clone(),
-            knowledge_messages: self.partitions.knowledge.messages.clone(),
+            knowledge_messages: self.partitions.knowledge.messages().cloned().collect(),
             history_messages: self.partitions.history.messages.clone(),
             task_state: self.partitions.task_state.clone(),
         }
@@ -481,6 +497,40 @@ impl ContextManager {
     /// Push content into the Knowledge slot (memory retrievals, skill defs, artifacts).
     pub fn push_knowledge(&mut self, msg: Message, tokens: u32) {
         self.partitions.knowledge.push(msg, tokens);
+    }
+
+    /// K1: keyed knowledge push — fresh key appends immediately (cache-cheap direction), an
+    /// existing key stages a boundary-deferred upsert. `pinned` entries are exempt from the
+    /// K2 budget sweep.
+    pub fn push_knowledge_entry(
+        &mut self,
+        key: Option<CompactString>,
+        msg: Message,
+        tokens: u32,
+        pinned: bool,
+    ) {
+        self.partitions.knowledge.push_entry(key, msg, tokens, pinned);
+    }
+
+    /// K1: mark a keyed knowledge entry for removal at the next compaction/renewal boundary.
+    /// Errs-open: unknown key is a no-op (returns false).
+    pub fn remove_knowledge(&mut self, key: &str) -> bool {
+        self.partitions.knowledge.remove(key)
+    }
+
+    /// K1: run the boundary sweep (apply pending upserts, drop marked entries) and stash the
+    /// result for the state machine to drain into a `KnowledgeSwept` observation. Called only
+    /// from the compaction/renewal boundary blocks — the one place system[1] bytes may change.
+    fn sweep_knowledge_at_boundary(&mut self) {
+        let sweep = self.partitions.knowledge.sweep_at_boundary();
+        if sweep.changed {
+            self.pending_knowledge_sweeps.push(sweep);
+        }
+    }
+
+    /// K1: drain boundary-sweep results (state-machine side turns these into observations).
+    pub fn take_knowledge_sweeps(&mut self) -> Vec<crate::context::partitions::KnowledgeSweep> {
+        std::mem::take(&mut self.pending_knowledge_sweeps)
     }
 
     /// Push a runtime signal into the current turn's State slot.
