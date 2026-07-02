@@ -99,6 +99,38 @@ RuntimeOptions(..., on_turn_metrics=on_metrics)
 
 ---
 
+## Level 5：Knowledge 生命周期（严格动态控制）
+
+`knowledge` 分区是**耐久槽位**（渲染进带缓存断点的 `system[1]`），但耐久 ≠ 永生。内容按生命周期路由：
+
+| 内容类型 | 去向 | 生命周期 |
+| ------ | ------ | ------ |
+| Skill 正文（方法类，整个 run 复用） | `knowledge`，键 `skill:<name>` | 常驻，直到 deactivate / lease 到期 |
+| memory / knowledge 工具检索命中（事实类，用完即弃） | `history` 普通轮次 | 随压缩金字塔自然衰减 |
+| `pre_query_memory` 预取 | `history` 普通轮次 | 同上；renewal 后自动重查 |
+| 宿主钉住的参考材料 | `knowledge`（`push_knowledge(key=..., pinned=True)`） | pinned 不受预算驱逐 |
+
+**键控条目（K1）**：`push_knowledge(content, key="ref")` 同键重推为 upsert，`remove_knowledge("ref")` 定向移除。两者都**延迟到下一个 compaction/renewal 边界生效** —— `system[1]` 的既有字节只在 prompt-cache 前缀反正要重写的时刻改动（追加除外：追加只是延长缓存前缀，立即可见）。
+
+**知识预算（K2）**：`knowledge_budget_ratio`（默认 0.25 × max_tokens，0 关闭）。超限时发出一次 `knowledge_budget_exceeded` observation，并把**最旧的未钉住、非 skill** 条目标记为边界驱逐；pinned 与 skill 钉永不被预算驱逐。
+
+**Skill 卸载 / 租约（K3）**：`deactivate_skill(name)`（仅宿主驱动，无模型侧 unload）—— 工具集在下一次 provider 调用回宽，knowledge 钉在下一个边界摘除；`skill_lease_turns=N` 让每次激活 N 轮后自动走同一条路径。多阶段长任务不再单调累积早期阶段的 skill。
+
+**Renewal 记忆重查（K4）**：sprint renewal 会整体重建 history（连同早先的 memory 命中一起丢弃），`pre_query_memory` 钩子会以 `phase="renewal"` 自动重发一次，让新 sprint 从新鲜的召回开始（turn-1 那次为 `phase="initial"`）。
+
+```python
+RuntimeOptions(
+    ...,
+    knowledge_budget_ratio=0.2,   # K2：knowledge 最多占窗口 20%
+    skill_lease_turns=8,          # K3：skill 激活 8 轮后自动卸载
+)
+runner.push_knowledge("API 速查表…", key="api-ref", pinned=True)   # K1：键控 + 钉住
+runner.remove_knowledge("api-ref")                                  # 下一边界移除
+runner.deactivate_skill("debug")                                    # K3：显式卸载
+```
+
+---
+
 ## 内核行为摘要
 
 1. **压缩**：`SnipCompactor` 截断 oversized message → `DropCompactor` 丢弃旧 turn → `SummarizeCompactor` LLM 摘要（SDK 侧 summarizer）
