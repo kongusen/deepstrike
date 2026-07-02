@@ -219,8 +219,11 @@ export class RuntimeRunner {
   private currentSessionId: string | null = null
   /** O2 (system-reminder channel): host-pushed notes awaiting the next turn-boundary drain. */
   private injectedSignals: RuntimeSignal[] = []
+  /** Skill names whose content has already been pushed into the durable `knowledge` slot this
+   *  run — guards against re-pushing a duplicate entry if the model calls `skill(name)` again for
+   *  an already-active skill (loading is idempotent; the knowledge push should be too). */
+  private knowledgePushedSkills = new Set<string>()
   private nextArchiveStart = 0
-  private localPageOutCache: Message[] = []
   /** M5 v2.1: sub-workflow specs a top-level agent authored via `start_workflow`, awaiting auto-drive
    *  at the next safe point (after the tool turn resolves, kernel back in Reason). */
   private pendingAuthoredWorkflows: WorkflowSpec[] = []
@@ -298,59 +301,6 @@ export class RuntimeRunner {
       content: message.content ?? "",
       tokens: tokens ?? Math.max(1, Math.ceil((message.content?.length ?? 0) / 4)),
     })
-  }
-
-  /** Phase 4: satisfy kernel page-in requests before meta-tool execution. */
-  private async applyKernelPageIn(
-    runtime: KernelRuntimeHandle,
-    sessionId: string,
-  ): Promise<void> {
-    const requests = this.pendingObservations.filter(
-      (o): o is KernelObservation & { kind: "page_in_requested"; tool: string; query: string; top_k?: number } =>
-        o.kind === "page_in_requested" && typeof o.tool === "string",
-    )
-    if (requests.length === 0) return
-
-    const entries: Array<{ content: string; tokens?: number; source?: string }> = []
-    for (const req of requests) {
-      const query = typeof req.query === "string" ? req.query : ""
-      const topK = typeof req.top_k === "number" ? req.top_k : 5
-      if (req.tool === "memory") {
-        const localHits = this.localPageOutCache.filter(m =>
-          typeof m.content === "string" && m.content.toLowerCase().includes(query.toLowerCase())
-        ).slice(0, topK)
-
-        for (const hit of localHits) {
-          entries.push({
-            content: `[local semantic cache] ${hit.role}: ${hit.content}`,
-            source: "semantic_cache",
-          })
-        }
-
-        const remainingK = topK - entries.length
-        if (remainingK > 0 && this.opts.dreamStore && this.opts.agentId) {
-          const hits = await this.opts.dreamStore.search(this.opts.agentId, query, remainingK)
-          for (const hit of hits) {
-            entries.push({
-              content: `[memory score=${hit.score.toFixed(3)}] ${hit.text}`,
-              source: "memory",
-            })
-          }
-        }
-      } else if (req.tool === "knowledge" && this.opts.knowledgeSource) {
-        const snippets = await this.opts.knowledgeSource.retrieve(query, topK)
-        for (const snippet of snippets) {
-          entries.push({ content: snippet, source: "knowledge" })
-        }
-      }
-    }
-    if (entries.length === 0) return
-    kernelApply(runtime, this.pendingObservations, { kind: "page_in", entries })
-    await this.opts.sessionLog.append(sessionId, withCategory({
-      kind: "page_in",
-      turn: runtime.turn(),
-      entry_count: entries.length,
-    }))
   }
 
   private async resolveKernelSuspend(
@@ -692,12 +642,28 @@ export class RuntimeRunner {
         messages: replayed.map(messageToKernelMessage),
       })
       // P1-B B3: rebuild active-skill gating after a wake (active_skills is not snapshotted).
+      // `knowledge` isn't snapshotted either (same graceful-reset philosophy) — best-effort re-push
+      // the skill's content from its replayed tool_result so the durable copy survives a wake too.
+      const toolResultByCallId = new Map<string, string>()
+      for (const m of replayed) {
+        for (const part of m.contentParts ?? []) {
+          if (part.type === "tool_result" && part.callId && part.output !== undefined) {
+            toolResultByCallId.set(part.callId, part.output)
+          }
+        }
+      }
       for (const m of replayed) {
         for (const tc of m.toolCalls ?? []) {
           if (tc.name !== "skill") continue
           try {
             const name = (JSON.parse(tc.arguments || "{}") as { name?: string }).name
-            if (name) kernelApply(runtime, this.pendingObservations, { kind: "skill_activated", name })
+            if (!name) continue
+            kernelApply(runtime, this.pendingObservations, { kind: "skill_activated", name })
+            const output = toolResultByCallId.get(tc.id)
+            if (output && !this.knowledgePushedSkills.has(name)) {
+              this.knowledgePushedSkills.add(name)
+              this.pushKnowledge({ role: "system", content: output })
+            }
           } catch { /* skip */ }
         }
       }
@@ -726,20 +692,26 @@ export class RuntimeRunner {
     }
     this.applyKernelPolicies(runtime)
 
-    // I4: pre-fetch memory into the knowledge partition before the first LLM turn (mirrors Node).
+    // I4: pre-fetch memory before the first LLM turn (mirrors Node). Strict dynamic context
+    // control: single-use retrieval content, not a stable skill — lands in `history` like an
+    // ordinary `memory` tool result, so it decays with the compression pyramid instead of
+    // pinning itself in `knowledge` forever.
     if (!resumeMidRun && this.opts.preQueryMemory && this.opts.dreamStore && this.opts.agentId) {
       try {
         const queries = await this.opts.preQueryMemory({ goal })
-        const entries: Array<{ content: string; tokens?: number; source?: string }> = []
+        const lines: string[] = []
         for (const q of queries ?? []) {
           if (typeof q !== "string" || !q.trim()) continue
           const hits = await this.opts.dreamStore.search(this.opts.agentId, q, 5)
           for (const hit of hits) {
-            entries.push({ content: `[memory score=${hit.score.toFixed(3)}] ${hit.text}`, source: "memory" })
+            lines.push(`[memory score=${hit.score.toFixed(3)}] ${hit.text}`)
           }
         }
-        if (entries.length > 0) {
-          kernelApply(runtime, this.pendingObservations, { kind: "page_in", entries })
+        if (lines.length > 0) {
+          kernelApply(runtime, this.pendingObservations, {
+            kind: "add_history_message",
+            message: { role: "user", content: lines.join("\n") },
+          })
         }
       } catch { /* errs-open */ }
     }
@@ -753,9 +725,6 @@ export class RuntimeRunner {
     // I0b: kernel-throw safety net — see Node runner for full rationale.
     try {
     while (!runtime.isTerminal()) {
-      if (action.kind === "execute_tool") {
-        await this.applyKernelPageIn(runtime, sessionId)
-      }
       nextCompressedArchiveStart = await this.appendObservations(sessionId, runtime, nextCompressedArchiveStart)
       if (this.interrupted) {
         action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
@@ -1089,13 +1058,24 @@ export class RuntimeRunner {
           }
         }
         // P1-B B3: a successfully-resolved `skill` call activates that skill for the next turn.
+        //
+        // Strict dynamic context control: a skill is METHOD content — how to do something — reused
+        // for the rest of the run, unlike a one-off memory/knowledge lookup (fact content, relevant
+        // for the moment it's used). So its text ALSO goes into the durable `knowledge` slot here
+        // (in addition to the ordinary tool_result already headed for `history`, where it will decay
+        // with the compression pyramid like any other tool output). First activation only.
         for (const call of allCalls) {
           if (call.name !== "skill") continue
           const res = toolResults.find(r => r.callId === call.id)
           if (!res || res.isError) continue
           try {
             const name = (JSON.parse(call.arguments || "{}") as { name?: string }).name
-            if (name) kernelApply(runtime, this.pendingObservations, { kind: "skill_activated", name })
+            if (!name) continue
+            kernelApply(runtime, this.pendingObservations, { kind: "skill_activated", name })
+            if (!this.knowledgePushedSkills.has(name)) {
+              this.knowledgePushedSkills.add(name)
+              this.pushKnowledge({ role: "system", content: res.output })
+            }
           } catch { /* skip */ }
         }
         action = kernelAction(runtime, this.pendingObservations, {
@@ -1720,10 +1700,6 @@ export class RuntimeRunner {
         compressionAction,
       })
       if (!event) continue
-
-      if (obs.kind === "page_out" && obs.archived) {
-        this.localPageOutCache.push(...(obs.archived as Message[]))
-      }
 
       const compressedSeq = await this.opts.sessionLog.append(sessionId, event)
       if (event.kind === "compressed") {
