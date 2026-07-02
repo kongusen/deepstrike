@@ -117,6 +117,18 @@ export interface TurnMetrics {
   cacheCreationTokens: number
 }
 
+/** O5: decision returned by `onToolCall` — `block: true` denies this call before it executes. */
+export interface ToolCallHookDecision {
+  block?: boolean
+  reason?: string
+}
+
+/** O5: decision returned by `onToolResult` — replace the output and/or inject a signal note. */
+export interface ToolResultHookDecision {
+  replaceOutput?: string
+  note?: string
+}
+
 export interface RuntimeOptions {
   provider: LLMProvider
   /** M1/G3 intelligence routing: resolve a per-node provider from a workflow node's `modelHint`.
@@ -156,6 +168,14 @@ export interface RuntimeOptions {
   /** O4: turn-end criteria gate — one kernel-injected self-check turn before accepting completion
    *  while `criteria` stand. Default enabled; `false` accepts the first finish unconditionally. */
   criteriaGate?: boolean
+  /** O5 (PreToolUse-hook analog): stateful host veto over each kernel-approved call; return
+   *  `{ block: true, reason }` to deny — the reason reaches the model as a denied result. Errs-open. */
+  onToolCall?: (call: { callId: string; name: string; arguments: string }) =>
+    Promise<ToolCallHookDecision | undefined | void> | ToolCallHookDecision | undefined | void
+  /** O5 (PostToolUse-hook analog): inspect each executed result; `{ replaceOutput }` swaps what the
+   *  model sees, `{ note }` injects a signal note (the `injectNote` channel). Errs-open. */
+  onToolResult?: (result: { callId: string; name: string; arguments: string; output: string; isError: boolean }) =>
+    Promise<ToolResultHookDecision | undefined | void> | ToolResultHookDecision | undefined | void
   memoryPolicy?: MemoryPolicy
   tokenizer?: string
   enablePlanTool?: boolean
@@ -887,7 +907,32 @@ export class RuntimeRunner {
           toolResults.push({ callId: call.id, output: "submitted", isError: false })
           yield { type: "tool_result", callId: call.id, content: "submitted", isError: false } as ToolResultEvent
         }
-        for await (const evt of this.opts.executionPlane.executeAll(normalCalls, runCtx)) {
+        // O5 (PreToolUse-hook analog): stateful host veto over each kernel-approved call.
+        // A blocked call never executes; its reason reaches the model as a denied result.
+        let executableCalls = normalCalls
+        if (this.opts.onToolCall) {
+          const allowed: ToolCall[] = []
+          for (const call of normalCalls) {
+            let decision: ToolCallHookDecision | undefined | void
+            try {
+              decision = await this.opts.onToolCall({ callId: call.id, name: call.name, arguments: call.arguments })
+            } catch { decision = undefined }
+            if (decision?.block) {
+              const reason = decision.reason ?? "blocked by host onToolCall hook"
+              yield { type: "tool_denied", callId: call.id, toolName: call.name, reason } as ToolDeniedEvent
+              await this.opts.sessionLog.append(sessionId, {
+                kind: "tool_denied", turn: runtime.turn(), call_id: call.id, tool_name: call.name, reason,
+              })
+              const out = `blocked by host hook: ${reason}`
+              toolResults.push({ callId: call.id, output: out, isError: true, errorKind: "governance_denied" })
+              yield { type: "tool_result", callId: call.id, name: call.name, content: out, isError: true } as ToolResultEvent
+              continue
+            }
+            allowed.push(call)
+          }
+          executableCalls = allowed
+        }
+        for await (const evt of this.opts.executionPlane.executeAll(executableCalls, runCtx)) {
           yield evt
           if (evt.type === "tool_result") {
             const tre = evt as ToolResultEvent
@@ -935,6 +980,25 @@ export class RuntimeRunner {
               approved: resolved.approved,
               responder: resolved.responder,
             })
+          }
+        }
+
+        // O5 (PostToolUse-hook analog): host inspection of each executed result before it reaches
+        // the kernel/session-log — replace the output and/or inject a signal note. Errs-open.
+        if (this.opts.onToolResult) {
+          for (const r of toolResults) {
+            const call = executableCalls.find(c => c.id === r.callId)
+            if (!call) continue
+            let decision: ToolResultHookDecision | undefined | void
+            try {
+              decision = await this.opts.onToolResult({
+                callId: r.callId, name: call.name, arguments: call.arguments,
+                output: r.output, isError: r.isError,
+              })
+            } catch { decision = undefined }
+            if (!decision) continue
+            if (typeof decision.replaceOutput === "string") r.output = decision.replaceOutput
+            if (decision.note) this.injectNote(decision.note)
           }
         }
 

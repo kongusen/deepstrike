@@ -1858,8 +1858,35 @@ export class RuntimeRunner {
           yield { type: "tool_result", callId: call.id, content: "submitted", isError: false } as ToolResultEvent
         }
 
-        if (normalCalls.length > 0) {
-          for await (const evt of this.opts.executionPlane.executeAll(normalCalls, runCtx)) {
+        // O5 (PreToolUse-hook analog): give the host a STATEFUL veto over each kernel-approved
+        // call. A blocked call never executes; its reason reaches the model as a governance-denied
+        // tool result (the kernel rolls the turn back with the note). Errs-open on hook throw.
+        let executableCalls = normalCalls
+        if (this.opts.onToolCall) {
+          const allowed: ToolCall[] = []
+          for (const call of normalCalls) {
+            let decision: ToolCallHookDecision | undefined | void
+            try {
+              decision = await this.opts.onToolCall({ callId: call.id, name: call.name, arguments: call.arguments })
+            } catch { decision = undefined }
+            if (decision?.block) {
+              const reason = decision.reason ?? "blocked by host onToolCall hook"
+              yield { type: "tool_denied", callId: call.id, toolName: call.name, reason } as ToolDeniedEvent
+              await this.opts.sessionLog.append(sessionId, {
+                kind: "tool_denied", turn: runtime.turn(), call_id: call.id, tool_name: call.name, reason,
+              })
+              const out = `blocked by host hook: ${reason}`
+              toolResults.push({ callId: call.id, output: out, isError: true, errorKind: "governance_denied" })
+              yield { type: "tool_result", callId: call.id, name: call.name, content: out, isError: true } as ToolResultEvent
+              continue
+            }
+            allowed.push(call)
+          }
+          executableCalls = allowed
+        }
+
+        if (executableCalls.length > 0) {
+          for await (const evt of this.opts.executionPlane.executeAll(executableCalls, runCtx)) {
             yield evt
             if (evt.type === "tool_result") {
               const tre = evt as ToolResultEvent
@@ -1909,11 +1936,31 @@ export class RuntimeRunner {
               })
             }
           }
-          const names = normalCalls.map(c => c.name).join(", ")
+          const names = executableCalls.map(c => c.name).join(", ")
           kernelApply(runtime, this.pendingObservations, {
             kind: "update_task",
             update: taskUpdateToKernel({ progress: `Executed tools: ${names}` }),
           })
+        }
+
+        // O5 (PostToolUse-hook analog): let the host inspect each executed result BEFORE it
+        // reaches the kernel/session-log — replace the output (redact/annotate) and/or push a
+        // contextual note into the signal stream. Errs-open on hook throw.
+        if (this.opts.onToolResult) {
+          for (const r of toolResults) {
+            const call = executableCalls.find(c => c.id === r.callId)
+            if (!call) continue // plan/submit synthetics and hook-blocked calls are not host results
+            let decision: ToolResultHookDecision | undefined | void
+            try {
+              decision = await this.opts.onToolResult({
+                callId: r.callId, name: call.name, arguments: call.arguments,
+                output: r.output, isError: r.isError,
+              })
+            } catch { decision = undefined }
+            if (!decision) continue
+            if (typeof decision.replaceOutput === "string") r.output = decision.replaceOutput
+            if (decision.note) this.injectNote(decision.note)
+          }
         }
 
         await this.opts.sessionLog.append(sessionId, {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import time
 import uuid
@@ -197,6 +198,17 @@ class RuntimeOptions:
   tokenizer: str | None = None
   enable_plan_tool: bool | None = None
   on_tool_suspend: Callable[[ToolSuspendEvent], Awaitable[Any] | Any] | None = None
+  # O5 (PreToolUse-hook analog): called for each kernel-APPROVED tool call just before it executes,
+  # with {"call_id", "name", "arguments"}. Return {"block": True, "reason": ...} to veto — the call
+  # never runs and the reason is fed back to the model as a denied tool result. The seam for
+  # STATEFUL host policy (count repeats, per-resource budgets); keep static allow/deny in
+  # governance_policy. Errs-open: a raising hook never blocks the run. Sync or async.
+  on_tool_call: Callable[[dict], Awaitable[dict | None] | dict | None] | None = None
+  # O5 (PostToolUse-hook analog): called for each executed result with {"call_id", "name",
+  # "arguments", "output", "is_error"}. Return {"replace_output": str} to swap what the model sees
+  # and/or {"note": str} to push a contextual note into the signal stream (same channel as
+  # inject_note). Errs-open. Sync or async.
+  on_tool_result: Callable[[dict], Awaitable[dict | None] | dict | None] | None = None
   on_permission_request: Callable[[PermissionRequestEvent], Awaitable[PermissionResponse | bool | dict[str, Any]] | PermissionResponse | bool | dict[str, Any]] | None = None
   sub_agent_orchestrator: Any | None = None
   # M5 v2.1: marks this runner as a workflow node (child of the workflow driver). A workflow node's
@@ -1791,8 +1803,41 @@ class RuntimeRunner:
           tool_results.append(ToolResult(call_id=call.id, output="submitted", is_error=False))
           yield ToolResultEvent(call_id=call.id, content="submitted", is_error=False)
 
-        if normal_calls:
-          async for evt in self._plane.execute_all(normal_calls, run_ctx):
+        # O5 (PreToolUse-hook analog): give the host a STATEFUL veto over each kernel-approved
+        # call. A blocked call never executes; its reason reaches the model as a governance-denied
+        # tool result (the kernel rolls the turn back with the note). Errs-open on hook throw.
+        executable_calls = normal_calls
+        if self._opts.on_tool_call is not None:
+          allowed = []
+          for call in normal_calls:
+            decision = None
+            try:
+              decision = self._opts.on_tool_call({
+                "call_id": call.id, "name": call.name, "arguments": call.arguments,
+              })
+              if inspect.isawaitable(decision):
+                decision = await decision
+            except Exception:
+              decision = None
+            if decision and decision.get("block"):
+              reason = decision.get("reason") or "blocked by host on_tool_call hook"
+              yield ToolDeniedEvent(call_id=call.id, tool_name=call.name, reason=reason)
+              await self._opts.session_log.append(session_id, {
+                "kind": "tool_denied", "turn": runtime.turn(),
+                "call_id": call.id, "tool_name": call.name, "reason": reason,
+              })
+              out = f"blocked by host hook: {reason}"
+              blocked = ToolResult(call_id=call.id, output=out, is_error=True)
+              if hasattr(blocked, "error_kind"):
+                blocked.error_kind = "governance_denied"
+              tool_results.append(blocked)
+              yield ToolResultEvent(call_id=call.id, content=out, is_error=True)
+              continue
+            allowed.append(call)
+          executable_calls = allowed
+
+        if executable_calls:
+          async for evt in self._plane.execute_all(executable_calls, run_ctx):
             yield evt
             if isinstance(evt, ToolResultEvent):
               result = ToolResult(call_id=evt.call_id, output=evt.content, is_error=evt.is_error)
@@ -1835,11 +1880,35 @@ class RuntimeRunner:
                 "approved": evt.approved,
                 "responder": evt.responder,
               })
-          names = ", ".join(c.name for c in normal_calls)
+          names = ", ".join(c.name for c in executable_calls)
           kernel_apply(runtime, self._pending_observations, {
             "kind": "update_task",
             "update": task_update_to_kernel(TaskUpdate(progress=f"Executed tools: {names}")),
           })
+
+        # O5 (PostToolUse-hook analog): let the host inspect each executed result BEFORE it reaches
+        # the kernel/session-log — replace the output and/or inject a signal note. Errs-open.
+        if self._opts.on_tool_result is not None:
+          for r in tool_results:
+            call = next((c for c in executable_calls if c.id == r.call_id), None)
+            if call is None:
+              continue  # plan/submit synthetics and hook-blocked calls are not host results
+            decision = None
+            try:
+              decision = self._opts.on_tool_result({
+                "call_id": r.call_id, "name": call.name, "arguments": call.arguments,
+                "output": r.output, "is_error": r.is_error,
+              })
+              if inspect.isawaitable(decision):
+                decision = await decision
+            except Exception:
+              decision = None
+            if not decision:
+              continue
+            if isinstance(decision.get("replace_output"), str):
+              r.output = decision["replace_output"]
+            if decision.get("note"):
+              self.inject_note(str(decision["note"]))
 
         await self._opts.session_log.append(session_id, {
           "kind": "tool_completed", "turn": runtime.turn(), "results": tool_results,
