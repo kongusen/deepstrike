@@ -992,6 +992,46 @@ class RuntimeRunner:
   def interrupt(self) -> None:
     self._interrupted = True
 
+  def push_knowledge(
+    self,
+    content: str,
+    tokens: int | None = None,
+    *,
+    key: str | None = None,
+    pinned: bool = False,
+  ) -> None:
+    """Push content into the durable Knowledge slot (skill definitions, reference artifacts).
+
+    K1: ``key`` gives the entry identity — a same-key push upserts (applied at the next
+    compaction/renewal boundary, where the cached system[1] block is rewritten anyway) instead of
+    appending a duplicate. ``pinned`` exempts the entry from the knowledge-budget sweep.
+    No-op when no run is active.
+    """
+    if self._active_kernel is None:
+      return
+    event: dict[str, Any] = {
+      "kind": "add_knowledge_message",
+      "content": content,
+      "tokens": tokens if tokens is not None else max(1, len(content) // 4),
+    }
+    if key is not None:
+      event["key"] = key
+    if pinned:
+      event["pinned"] = True
+    kernel_apply(self._active_kernel, self._pending_observations, event)
+
+  def remove_knowledge(self, key: str) -> None:
+    """K1: mark a keyed knowledge entry for removal at the next compaction/renewal boundary.
+
+    Errs-open: an unknown key is a kernel-side no-op. No-op when no run is active.
+    """
+    if self._active_kernel is None:
+      return
+    kernel_apply(self._active_kernel, self._pending_observations, {
+      "kind": "remove_knowledge",
+      "key": key,
+    })
+
   def inject_note(self, text: str, urgency: str = "normal") -> None:
     """Push a contextual note into the run's signal stream (the system-reminder channel).
 
@@ -1496,10 +1536,14 @@ class RuntimeRunner:
             output = tool_result_by_call_id.get(tc.id)
             if output and name not in self._knowledge_pushed_skills:
               self._knowledge_pushed_skills.add(name)
+              # K1: keyed — the kernel-side upsert is the authoritative dedup, so a wake re-push
+              # of a skill already pinned live can never double-pin (the in-run set resets with
+              # each runner instance; the key does not).
               kernel_apply(runtime, self._pending_observations, {
                 "kind": "add_knowledge_message",
                 "content": output,
                 "tokens": max(1, len(output) // 4),
+                "key": f"skill:{name}",
               })
           except Exception:
             pass
@@ -2033,10 +2077,13 @@ class RuntimeRunner:
             kernel_apply(runtime, self._pending_observations, {"kind": "skill_activated", "name": name})
             if name not in self._knowledge_pushed_skills:
               self._knowledge_pushed_skills.add(name)
+              # K1: keyed `skill:<name>` — the kernel-side upsert dedupes across runner instances
+              # (wake re-push of an already-pinned skill upserts instead of duplicating).
               kernel_apply(runtime, self._pending_observations, {
                 "kind": "add_knowledge_message",
                 "content": res.output,
                 "tokens": max(1, len(res.output) // 4),
+                "key": f"skill:{name}",
               })
           except Exception:
             pass

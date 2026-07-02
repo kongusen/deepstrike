@@ -20,7 +20,11 @@ describe("memory paging (Phase 4)", () => {
     expect(text).toContain("recalled fact")
   })
 
-  it("memory tool proposal emits page_in_requested", () => {
+  it("memory tool proposal does NOT emit page_in_requested (retired side channel)", () => {
+    // The automatic page-in-to-knowledge producer for live memory/knowledge tool calls was
+    // retired (strict dynamic control): the tool's result flows to `history` via the normal
+    // tool-result path only, decaying with the compression pyramid instead of living forever
+    // in `knowledge`. The call itself still executes normally.
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
     step(rt, { kind: "set_memory_enabled", enabled: true })
     step(rt, { kind: "start_run", task: { goal: "recall", criteria: [] } })
@@ -36,7 +40,7 @@ describe("memory paging (Phase 4)", () => {
         }],
       },
     })
-    expect(s.observations.some(o => o.kind === "page_in_requested" && o.tool === "memory")).toBe(true)
+    expect(s.observations.some(o => o.kind === "page_in_requested")).toBe(false)
     expect(s.actions[0]).toMatchObject({ kind: "execute_tool" })
   })
 })

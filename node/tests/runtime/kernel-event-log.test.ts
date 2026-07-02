@@ -77,6 +77,9 @@ describe("kernel event log (Phase 5)", () => {
   })
 
   it("mm-paging session events carry mm category", async () => {
+    // The live memory-tool page-in side channel was retired (strict dynamic control): a memory
+    // call no longer emits page_in_requested. The category mapping itself remains (`page_in`
+    // stays a valid host-driven event kind for stable pins), so it still classifies as mm.
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
     const step = (event: Record<string, unknown>) =>
       JSON.parse(rt.step(JSON.stringify({ version: 1, event }))) as {
@@ -93,7 +96,7 @@ describe("kernel event log (Phase 5)", () => {
         tool_calls: [{ id: "m1", name: "memory", arguments: { query: "x", top_k: 1 } }],
       },
     })
-    expect(s.observations.some(o => o.kind === "page_in_requested")).toBe(true)
+    expect(s.observations.some(o => o.kind === "page_in_requested")).toBe(false)
     expect(categoryForKind("page_in_requested")).toBe("mm")
   })
 })

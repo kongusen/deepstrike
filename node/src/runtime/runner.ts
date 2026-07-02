@@ -579,14 +579,26 @@ export class RuntimeRunner {
   }
 
 
-  /** Push content into the Knowledge slot (memory retrievals, skill definitions, artifacts). */
-  pushKnowledge(message: Message, tokens?: number): void {
+  /** Push content into the Knowledge slot (memory retrievals, skill definitions, artifacts).
+   *  K1: `opts.key` gives the entry identity — a same-key push upserts (applied at the next
+   *  compaction/renewal boundary, where the cached system[1] block is rewritten anyway) instead
+   *  of appending a duplicate. `opts.pinned` exempts the entry from the knowledge-budget sweep. */
+  pushKnowledge(message: Message, tokens?: number, opts?: { key?: string; pinned?: boolean }): void {
     if (!this.activeKernel) return
     kernelApply(this.activeKernel, this.pendingObservations, {
       kind: "add_knowledge_message",
       content: message.content ?? "",
       tokens: tokens ?? Math.max(1, Math.ceil((message.content?.length ?? 0) / 4)),
+      ...(opts?.key !== undefined ? { key: opts.key } : {}),
+      ...(opts?.pinned ? { pinned: true } : {}),
     })
+  }
+
+  /** K1: mark a keyed knowledge entry for removal at the next compaction/renewal boundary.
+   *  Errs-open: an unknown key is a kernel-side no-op. */
+  removeKnowledge(key: string): void {
+    if (!this.activeKernel) return
+    kernelApply(this.activeKernel, this.pendingObservations, { kind: "remove_knowledge", key })
   }
 
   /**
@@ -1534,7 +1546,10 @@ export class RuntimeRunner {
             const output = toolResultByCallId.get(tc.id)
             if (output && !this.knowledgePushedSkills.has(name)) {
               this.knowledgePushedSkills.add(name)
-              this.pushKnowledge({ role: "system", content: output, toolCalls: [] })
+              // K1: keyed — the kernel-side upsert is the authoritative dedup, so a wake re-push
+              // of a skill already pinned live can never double-pin (the in-run Set resets with
+              // each runner instance; the key does not).
+              this.pushKnowledge({ role: "system", content: output, toolCalls: [] }, undefined, { key: `skill:${name}` })
             }
           } catch { /* malformed skill args — skip */ }
         }
@@ -2039,7 +2054,9 @@ export class RuntimeRunner {
             kernelApply(runtime, this.pendingObservations, { kind: "skill_activated", name })
             if (!this.knowledgePushedSkills.has(name)) {
               this.knowledgePushedSkills.add(name)
-              this.pushKnowledge({ role: "system", content: res.output, toolCalls: [] })
+              // K1: keyed `skill:<name>` — the kernel-side upsert dedupes across runner instances
+              // (wake re-push of an already-pinned skill upserts instead of duplicating).
+              this.pushKnowledge({ role: "system", content: res.output, toolCalls: [] }, undefined, { key: `skill:${name}` })
             }
           } catch { /* malformed skill args — skip activation */ }
         }

@@ -47,6 +47,9 @@ describe("skill content is pinned into durable knowledge on activation", () => {
     const knowledgePushes = kernelEvents.filter((e: { kind?: string }) => e.kind === "add_knowledge_message")
     expect(knowledgePushes.length).toBe(1)
     expect((knowledgePushes[0] as { content?: string }).content).toContain("Debug guidance.")
+    // K1: the pin is keyed `skill:<name>` so the kernel-side upsert dedupes across runner
+    // instances (e.g. a wake re-push of an already-pinned skill).
+    expect((knowledgePushes[0] as { key?: string }).key).toBe("skill:debug")
     expect(kernelEvents.some((e: { kind?: string }) => e.kind === "skill_activated")).toBe(true)
   })
 })

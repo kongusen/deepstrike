@@ -66,6 +66,9 @@ export interface KernelObservation {
   phase_id?: string
   capabilities_unlocked?: string[]
   evidence?: string[]
+  // K1 `knowledge_swept`: keyed entries dropped by a boundary sweep of the knowledge partition.
+  removed_keys?: string[]
+  tokens_freed?: number
   // `reason` is a RollbackReason for rollback observations, but a plain string
   // for `tool_gated` (governance AskUser) — consumers narrow by `kind`.
   reason?: RollbackReason | string
