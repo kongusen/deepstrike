@@ -63,6 +63,7 @@ from deepstrike.runtime.session_log import SessionEntry, SessionEvent, SessionLo
 from deepstrike.runtime.archive import ArchiveStore
 from deepstrike.runtime.os_profile import assert_native_profile
 from deepstrike.runtime.run_group import RunGroup
+from deepstrike.signals.types import RuntimeSignal
 
 if TYPE_CHECKING:
   from deepstrike.governance import Governance, GovernancePolicy
@@ -223,6 +224,8 @@ class RuntimeRunner:
     self._active_kernel: KernelRuntime | None = None
     self._pending_observations: list[dict] = []
     self._current_session_id: str | None = None
+    # O2 (system-reminder channel): host-pushed notes awaiting the next turn-boundary drain.
+    self._injected_signals: list[RuntimeSignal] = []
     self._next_archive_start: int = 0
     self._pending_spool_outputs: dict[str, dict[str, str]] = {}
     self._local_page_out_cache: list[Any] = []
@@ -830,7 +833,9 @@ class RuntimeRunner:
         if source is None:
           return
         while not all(t.done() for t in tasks.values()):
-          sig = await source.next_signal(self._current_session_id)
+          # O2: injected notes participate in the monitor too, so a host inject_note mid-batch is
+          # not stranded until the batch settles (drain order matches _next_inbound_signal).
+          sig = self._injected_signals.pop(0) if self._injected_signals else await source.next_signal(self._current_session_id)
           if all(t.done() for t in tasks.values()):
             break
           if sig is None:
@@ -960,6 +965,27 @@ class RuntimeRunner:
 
   def interrupt(self) -> None:
     self._interrupted = True
+
+  def inject_note(self, text: str, urgency: str = "normal") -> None:
+    """Push a contextual note into the run's signal stream (the system-reminder channel).
+
+    It drains at the next turn boundary, routes through the kernel attention policy, and — once
+    acted on — renders as a ``[SIGNAL] <text>`` line in the volatile state turn plus a durable
+    directive. Use it to feed host-detected events back to the model mid-run (e.g. "that write was
+    a no-op — stop repeating it") without wiring a full ``SignalSource``. ``urgency`` maps to the
+    kernel disposition ladder: ``"normal"`` queues for the next boundary (default), ``"high"``
+    soft-interrupts, ``"critical"`` preempts.
+    """
+    self._injected_signals.append(RuntimeSignal(kind="note", payload={"goal": text}, urgency=urgency))
+
+  async def _next_inbound_signal(self) -> "RuntimeSignal | None":
+    """Injected-note drain shared with the main loop's per-turn poll: injected notes first (FIFO),
+    then the configured ``signal_source`` — one code path so the two channels never drift."""
+    if self._injected_signals:
+      return self._injected_signals.pop(0)
+    if self._opts.signal_source is None:
+      return None
+    return await self._opts.signal_source.next_signal(self._current_session_id)
 
   def mount_tool(self, schema: dict) -> None:
     """Mount a tool capability on the active run. No-op if not running."""
@@ -1519,8 +1545,8 @@ class RuntimeRunner:
         action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
         break
 
-      if self._opts.signal_source:
-        sig = await self._opts.signal_source.next_signal(self._current_session_id)
+      if self._opts.signal_source or self._injected_signals:
+        sig = await self._next_inbound_signal()
         if sig:
           sig_action = kernel_maybe_action(runtime, self._pending_observations, _signal_to_kernel_event(sig))
           if sig_action:

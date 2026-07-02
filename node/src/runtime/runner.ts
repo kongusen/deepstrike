@@ -15,7 +15,7 @@ import type {
 } from "../memory/protocols.js"
 import { memoriesToIndex, selectMemories } from "../memory/agent.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
-import type { SignalSource, RuntimeSignal } from "../signals/types.js"
+import type { SignalSource, RuntimeSignal, RuntimeSignalUrgency } from "../signals/types.js"
 import type { SessionLog, SessionEvent, RollbackReason } from "./session-log.js"
 import type { ArchiveStore } from "./archive.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
@@ -284,6 +284,8 @@ export class RuntimeRunner {
   private activeKernel: KernelRuntimeInstance | null = null
   private pendingObservations: KernelObservation[] = []
   private currentSessionId: string | null = null
+  /** O2 (system-reminder channel): host-pushed notes awaiting the next turn-boundary drain. */
+  private injectedSignals: RuntimeSignal[] = []
   private nextArchiveStart = 0
   /** Full tool outputs keyed by call_id until Layer-1 spool observations are logged. */
   private pendingSpoolOutputs = new Map<string, { tool: string; output: string }>()
@@ -927,7 +929,10 @@ export class RuntimeRunner {
     const source = this.opts.signalSource
     if (!source) return null
     while (!batchState.settled) {
-      const sig = await source.nextSignal(this.currentSessionId ?? undefined)
+      // O2: injected notes participate in the monitor too, so a host `injectNote` mid-batch is not
+      // stranded until the batch settles (the drain order matches `nextInboundSignal`).
+      const sig = this.injectedSignals.shift()
+        ?? await source.nextSignal(this.currentSessionId ?? undefined)
       if (batchState.settled) break
       if (!sig) { await new Promise(resolve => setTimeout(resolve, 5)); continue }
       const obs = kernelApply(runtime, this.pendingObservations, signalToKernelEvent(sig))
@@ -1068,6 +1073,30 @@ export class RuntimeRunner {
   }
 
   interrupt(): void { this.interrupted = true; this.abortController?.abort() }
+
+  /** Push a contextual note into the run's signal stream (the system-reminder channel): it drains at
+   *  the next turn boundary, routes through the kernel attention policy, and — once acted on — renders
+   *  as a `[SIGNAL] <text>` line in the volatile state turn plus a durable directive. Use it to feed
+   *  host-detected events back to the model mid-run (e.g. "that write was a no-op — stop repeating it")
+   *  without wiring a full `SignalSource`. `urgency` maps to the kernel disposition ladder: `"normal"`
+   *  queues for the next boundary (default), `"high"` soft-interrupts, `"critical"` preempts. */
+  injectNote(text: string, urgency: RuntimeSignalUrgency = "normal"): void {
+    this.injectedSignals.push({
+      source: "custom",
+      signalType: "event",
+      urgency,
+      payload: { goal: text },
+    })
+  }
+
+  /** Injected-note drain shared by the main loop's per-turn poll: injected notes first (FIFO), then
+   *  the configured `signalSource`. Keeps the two inbound channels on one code path so they never drift. */
+  private async nextInboundSignal(): Promise<RuntimeSignal | null> {
+    const injected = this.injectedSignals.shift()
+    if (injected) return injected
+    if (!this.opts.signalSource) return null
+    return this.opts.signalSource.nextSignal(this.currentSessionId ?? undefined)
+  }
 
   async *run(req: {
     sessionId: string
@@ -1522,8 +1551,8 @@ export class RuntimeRunner {
         break
       }
 
-      if (this.opts.signalSource) {
-        const sig = await this.opts.signalSource.nextSignal(this.currentSessionId ?? undefined)
+      if (this.opts.signalSource || this.injectedSignals.length > 0) {
+        const sig = await this.nextInboundSignal()
         if (sig) {
           // Kernel-routed: the kernel decides disposition (dedup/queue/interrupt) and emits
           // `signal_disposed`. An actionable disposition yields a new action to adopt; queued/observed/

@@ -190,6 +190,8 @@ export class RuntimeRunner {
   private pendingObservations: KernelObservation[] = []
   private activeKernel: KernelRuntimeHandle | null = null
   private currentSessionId: string | null = null
+  /** O2 (system-reminder channel): host-pushed notes awaiting the next turn-boundary drain. */
+  private injectedSignals: RuntimeSignal[] = []
   private nextArchiveStart = 0
   private localPageOutCache: Message[] = []
   /** M5 v2.1: sub-workflow specs a top-level agent authored via `start_workflow`, awaiting auto-drive
@@ -202,6 +204,24 @@ export class RuntimeRunner {
   get hostOptions(): RuntimeOptions { return this.opts }
 
   interrupt(): void { this.interrupted = true; this.abortController?.abort() }
+
+  /** Push a contextual note into the run's signal stream (the system-reminder channel): it drains at
+   *  the next turn boundary, routes through the kernel attention policy, and — once acted on — renders
+   *  as a `[SIGNAL] <text>` line in the volatile state turn plus a durable directive. `urgency` maps to
+   *  the kernel disposition ladder: `"normal"` queues (default), `"high"` soft-interrupts, `"critical"`
+   *  preempts. */
+  injectNote(text: string, urgency: RuntimeSignal["urgency"] = "normal"): void {
+    this.injectedSignals.push({ source: "custom", signalType: "event", urgency, payload: { goal: text } })
+  }
+
+  /** Injected-note drain shared with the main loop's per-turn poll: injected notes first (FIFO), then
+   *  the configured `signalSource` — one code path so the two inbound channels never drift. */
+  private async nextInboundSignal(): Promise<RuntimeSignal | null> {
+    const injected = this.injectedSignals.shift()
+    if (injected) return injected
+    if (!this.opts.signalSource) return null
+    return this.opts.signalSource.nextSignal()
+  }
 
   async *run(req: {
     sessionId: string
@@ -656,8 +676,8 @@ export class RuntimeRunner {
         break
       }
 
-      if (this.opts.signalSource) {
-        const sig = await this.opts.signalSource.nextSignal()
+      if (this.opts.signalSource || this.injectedSignals.length > 0) {
+        const sig = await this.nextInboundSignal()
         if (sig) {
           const sigAction = kernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(sig))
           if (sigAction) action = sigAction
@@ -1387,7 +1407,8 @@ export class RuntimeRunner {
     const source = this.opts.signalSource
     if (!source) return null
     while (!batchState.settled) {
-      const sig = await source.nextSignal()
+      // O2: injected notes participate in the monitor too (drain order matches nextInboundSignal).
+      const sig = this.injectedSignals.shift() ?? await source.nextSignal()
       if (batchState.settled) break
       if (!sig) { await new Promise(resolve => setTimeout(resolve, 5)); continue }
       const obs = kernelApply(runtime, this.pendingObservations, signalToKernelEvent(sig))
