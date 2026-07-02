@@ -110,6 +110,51 @@ See [Prompt Cache Design](/en/concepts/prompt-cache-design) for slot boundaries 
 
 ---
 
+## Level 5: Knowledge lifecycle (strict dynamic control)
+
+The `knowledge` partition is the **durable slot** (rendered into `system[1]` behind a cache
+breakpoint) — but durable ≠ immortal. Content routes by lifecycle:
+
+| Content type | Destination | Lifecycle |
+| ------ | ------ | ------ |
+| Skill body (method content, reused all run) | `knowledge`, key `skill:<name>` | Resident until deactivated / lease expiry |
+| `memory` / `knowledge` tool retrieval hits (facts, use-once) | `history` as an ordinary turn | Decays with the compression pyramid |
+| `pre_query_memory` prefetch | `history` as an ordinary turn | Same; auto re-queried after renewal |
+| Host-pinned reference material | `knowledge` (`push_knowledge(key=..., pinned=True)`) | Pinned — exempt from budget eviction |
+
+**Keyed entries (K1):** `push_knowledge(content, key="ref")` upserts on a repeated key;
+`remove_knowledge("ref")` removes by key. Both are **deferred to the next compaction/renewal
+boundary** — existing `system[1]` bytes only change at the moment the prompt-cache prefix is
+being rewritten anyway (appends are exempt: they merely extend the cached prefix and are visible
+immediately).
+
+**Knowledge budget (K2):** `knowledge_budget_ratio` (default 0.25 × max_tokens, 0 disables).
+Exceeding it emits one `knowledge_budget_exceeded` observation per cache generation and marks
+the **oldest unpinned, non-skill** entries for boundary eviction; pinned entries and skill pins
+are never budget-evicted.
+
+**Skill deactivation / lease (K3):** `deactivate_skill(name)` (host-driven only — no model-facing
+unload) re-widens the toolset at the next provider call and unpins the knowledge entry at the
+next boundary; `skill_lease_turns=N` walks the same path automatically after N turns. Long
+multi-phase runs no longer monotonically accumulate early-phase skills.
+
+**Renewal memory re-query (K4):** a sprint renewal rebuilds history wholesale — dropping earlier
+memory hits with it — so the `pre_query_memory` hook re-fires with `phase="renewal"`, giving the
+new sprint a fresh recall pass (the turn-1 fetch passes `phase="initial"`).
+
+```python
+RuntimeOptions(
+    ...,
+    knowledge_budget_ratio=0.2,   # K2: knowledge may occupy at most 20% of the window
+    skill_lease_turns=8,          # K3: skills auto-deactivate 8 turns after activation
+)
+runner.push_knowledge("API cheat sheet…", key="api-ref", pinned=True)  # K1: keyed + pinned
+runner.remove_knowledge("api-ref")                                      # dropped at next boundary
+runner.deactivate_skill("debug")                                        # K3: explicit unload
+```
+
+---
+
 ## Kernel behavior summary
 
 1. **Compression:** `SnipCompactor` truncates oversized messages → `DropCompactor` drops old turns → `SummarizeCompactor` LLM summary (SDK-side summarizer)

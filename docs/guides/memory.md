@@ -95,10 +95,12 @@ RuntimeOptions(
 
 ---
 
-## Level 3：Run 前预取
+## Level 3：Run 前预取（+ Renewal 重查）
 
 ```python
-def pre_query(goal: str):
+def pre_query(goal: str, phase: str | None = None):
+    # phase == "initial"：turn-1 前的一次性预取
+    # phase == "renewal"：sprint renewal 之后自动重发（旧 history 连同早先的命中已被丢弃）
     return ["user preferences", "project conventions"]
 
 RuntimeOptions(
@@ -109,7 +111,7 @@ RuntimeOptions(
 )
 ```
 
-启动前 search dream store，hits 注入 knowledge 分区。
+启动前 search dream store，hits 作为**普通轮次注入 history**（单次使用的事实内容，随压缩金字塔自然衰减——不钉进 knowledge 分区）。sprint renewal 会整体重建 history，钩子随即以 `phase="renewal"` 重发一次，让新 sprint 从新鲜召回开始。不接受 `phase` 参数的旧钩子（`lambda goal: [...]`）继续照常工作。
 
 ---
 

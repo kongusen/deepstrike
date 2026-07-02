@@ -109,10 +109,13 @@ On validation failure the kernel emits an observation and **does not commit** to
 
 ---
 
-## Level 3: Pre-fetch before run
+## Level 3: Pre-fetch before run (+ renewal re-query)
 
 ```python
-def pre_query(goal: str):
+def pre_query(goal: str, phase: str | None = None):
+    # phase == "initial": the one-shot pre-turn-1 fetch
+    # phase == "renewal": auto re-fired after a sprint renewal (the old history —
+    #                     including earlier hits — was just dropped)
     return ["user preferences", "project conventions"]
 
 RuntimeOptions(
@@ -123,7 +126,11 @@ RuntimeOptions(
 )
 ```
 
-Before turn 1, searches the dream store; hits are injected into the knowledge partition.
+Before turn 1, searches the dream store; hits land in **history as an ordinary turn** —
+single-use fact content that decays with the compression pyramid, never pinned into the
+knowledge partition. A sprint renewal rebuilds history wholesale, so the hook re-fires with
+`phase="renewal"`, giving the new sprint a fresh recall pass. Pre-existing hooks that don't
+accept `phase` (`lambda goal: [...]`) keep working unchanged.
 
 ---
 

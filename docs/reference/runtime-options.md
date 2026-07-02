@@ -3,7 +3,7 @@
 code_refs:
   node: [RuntimeRunner, LLMProvider, SessionLog, Governance]
   fields:
-    "python:RuntimeOptions": [provider, session_log, execution_plane, max_tokens, max_turns, max_total_tokens, timeout_ms, system_prompt, agent_id, compression_store, result_spool, initial_memory, tokenizer, enable_plan_tool, skill_dir, stable_core_tool_ids, dream_store, memory_policy, pre_query_memory, knowledge_source, dream_provider, dream_summarizer, governance, governance_policy, resource_quota, scheduler_budget, run_group, attention_policy, allowed_tool_ids, on_permission_request, provider_for, worktree_manager, sub_agent_orchestrator, sub_agent_harness, is_workflow_node, reducers, milestone_policy, milestone_contract, on_milestone_evaluate, signal_source, os_profile, on_turn_metrics, on_tool_suspend, extensions]
+    "python:RuntimeOptions": [provider, session_log, execution_plane, max_tokens, max_turns, max_total_tokens, timeout_ms, system_prompt, agent_id, compression_store, result_spool, initial_memory, tokenizer, enable_plan_tool, knowledge_budget_ratio, skill_dir, stable_core_tool_ids, skill_lease_turns, dream_store, memory_policy, pre_query_memory, knowledge_source, dream_provider, dream_summarizer, governance, governance_policy, resource_quota, scheduler_budget, run_group, attention_policy, allowed_tool_ids, on_permission_request, repeat_fuse, criteria_gate, provider_for, worktree_manager, sub_agent_orchestrator, sub_agent_harness, is_workflow_node, reducers, milestone_policy, milestone_contract, on_milestone_evaluate, signal_source, os_profile, on_turn_metrics, on_tool_suspend, extensions]
 ---
 
 # RuntimeOptions 参考
@@ -39,6 +39,7 @@ Python `RuntimeRunner` 的配置中心。定义：`python/deepstrike/runtime/run
 | `initial_memory` | 启动注入 knowledge |
 | `tokenizer` | token 计数器选择 |
 | `enable_plan_tool` | 启用 `update_plan` meta-tool |
+| `knowledge_budget_ratio` | K2：knowledge 分区最大占窗口比例（默认 0.25，0 关闭）；超限边界驱逐最旧未钉住非 skill 条目 |
 
 ## Skill / Memory / Knowledge
 
@@ -46,6 +47,7 @@ Python `RuntimeRunner` 的配置中心。定义：`python/deepstrike/runtime/run
 |------|------|
 | `skill_dir` | Skill `.md` 目录 |
 | `stable_core_tool_ids` | Skill 门控下始终暴露的工具 |
+| `skill_lease_turns` | K3：skill 激活 N 轮后自动卸载（工具集回宽 + knowledge 钉边界摘除）；None=永久 |
 | `dream_store` | 长期记忆 store |
 | `memory_policy` | 校验与 retrieval 配置 |
 | `pre_query_memory` | run 前 memory 预取钩子 |
@@ -65,6 +67,8 @@ Python `RuntimeRunner` 的配置中心。定义：`python/deepstrike/runtime/run
 | `attention_policy` | 信号注意力策略 |
 | `allowed_tool_ids` | 静态工具 profile（P0-A） |
 | `on_permission_request` | ask_user 回调 |
+| `repeat_fuse` | O6：同签名重复调用熔断（默认开；dict 调阈值，False 关闭） |
+| `criteria_gate` | O4：完成前 criteria 自检门（默认开；False 无条件接受首次完成） |
 
 ## Workflow / Sub-Agent
 

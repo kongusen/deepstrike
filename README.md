@@ -50,7 +50,7 @@ DeepStrike moves the control plane into `deepstrike-core`, a pure Rust state mac
 | :--- | :--- |
 | **Dynamic workflow scheduler** | Declarative DAGs plus runtime `SubmitNodes`; first-class `Loop`, `Classify`, `Tournament`, `Reduce`, fan-out, synthesize, generate-filter, and verifier patterns. |
 | **Unified syscall governance** | Tool calls, sub-agent spawn, workflow growth, and memory writes pass one gate with allow / deny / ask-user / rate-limit / quota dispositions. |
-| **Context VM** | Four-slot rendering (`system_stable`, `system_knowledge`, `turns`, `state_turn`), pressure compression, handle paging for large tool results, and prompt-cache-aware stable prefixes. |
+| **Context VM** | Four-slot rendering (`system_stable`, `system_knowledge`, `turns`, `state_turn`), pressure compression, handle paging for large tool results, prompt-cache-aware stable prefixes, and a governed knowledge lifecycle (keyed entries, boundary-deferred eviction, knowledge budget, skill leases). |
 | **Sub-agent isolation** | Roles, context inheritance, capability filters, worktree / read-only / remote isolation, process lineage, contracts, and handoff artifacts. |
 | **Replay and recovery** | Append-only `SessionLog`, provider replay envelopes, kernel observations, workflow resume, `wake(session_id)`, OS snapshots, and repair utilities. |
 | **Memory as an OS device** | Kernel-validated `write_memory` / `query_memory`, DreamStore integration, retrieval closure, idle consolidation, and memory write quotas. |

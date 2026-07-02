@@ -3,7 +3,7 @@
 code_refs:
   node: [RuntimeRunner, LLMProvider, SessionLog, Governance]
   fields:
-    "python:RuntimeOptions": [provider, session_log, execution_plane, max_tokens, max_turns, max_total_tokens, timeout_ms, system_prompt, agent_id, compression_store, result_spool, initial_memory, tokenizer, enable_plan_tool, skill_dir, stable_core_tool_ids, dream_store, memory_policy, pre_query_memory, knowledge_source, dream_provider, dream_summarizer, governance, governance_policy, resource_quota, scheduler_budget, run_group, attention_policy, allowed_tool_ids, on_permission_request, provider_for, worktree_manager, sub_agent_orchestrator, sub_agent_harness, is_workflow_node, reducers, milestone_policy, milestone_contract, on_milestone_evaluate, signal_source, os_profile, on_turn_metrics, on_tool_suspend, extensions]
+    "python:RuntimeOptions": [provider, session_log, execution_plane, max_tokens, max_turns, max_total_tokens, timeout_ms, system_prompt, agent_id, compression_store, result_spool, initial_memory, tokenizer, enable_plan_tool, knowledge_budget_ratio, skill_dir, stable_core_tool_ids, skill_lease_turns, dream_store, memory_policy, pre_query_memory, knowledge_source, dream_provider, dream_summarizer, governance, governance_policy, resource_quota, scheduler_budget, run_group, attention_policy, allowed_tool_ids, on_permission_request, repeat_fuse, criteria_gate, provider_for, worktree_manager, sub_agent_orchestrator, sub_agent_harness, is_workflow_node, reducers, milestone_policy, milestone_contract, on_milestone_evaluate, signal_source, os_profile, on_turn_metrics, on_tool_suspend, extensions]
 ---
 
 # RuntimeOptions Reference
@@ -39,6 +39,7 @@ Configuration hub for Python `RuntimeRunner`. Definition: `python/deepstrike/run
 | `initial_memory` | Knowledge injected at startup |
 | `tokenizer` | Token counter selection |
 | `enable_plan_tool` | Enable `update_plan` meta-tool |
+| `knowledge_budget_ratio` | K2: max share of the window the knowledge partition may occupy (default 0.25, 0 disables); over budget evicts oldest unpinned non-skill entries at boundaries |
 
 ## Skill / Memory / Knowledge
 
@@ -46,6 +47,7 @@ Configuration hub for Python `RuntimeRunner`. Definition: `python/deepstrike/run
 |-------|-------------|
 | `skill_dir` | Skill `.md` directory |
 | `stable_core_tool_ids` | Tools always exposed under Skill gating |
+| `skill_lease_turns` | K3: auto-deactivate a skill N turns after activation (toolset re-widens + knowledge pin boundary-swept); None = permanent |
 | `dream_store` | Long-term memory store |
 | `memory_policy` | Validation and retrieval config |
 | `pre_query_memory` | Pre-run memory prefetch hook |
@@ -65,6 +67,8 @@ Configuration hub for Python `RuntimeRunner`. Definition: `python/deepstrike/run
 | `attention_policy` | Signal attention policy |
 | `allowed_tool_ids` | Static tool profile (P0-A) |
 | `on_permission_request` | ask_user callback |
+| `repeat_fuse` | O6: identical-signature repeat-call fuse (default on; dict tunes thresholds, False disables) |
+| `criteria_gate` | O4: pre-completion criteria self-check gate (default on; False accepts the first finish unconditionally) |
 
 ## Workflow / Sub-Agent
 

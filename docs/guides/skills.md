@@ -91,6 +91,23 @@ RuntimeOptions(..., on_turn_metrics=on_metrics)
 
 ---
 
+## Level 4：卸载与租约（K3）
+
+激活不再是单程票。多阶段长任务里，早期阶段的 skill 正文不必永久占据 knowledge 槽位：
+
+```python
+RuntimeOptions(..., skill_lease_turns=8)   # 每次激活 8 轮后自动卸载
+runner.deactivate_skill("code-review")     # 或宿主显式卸载
+```
+
+- 卸载后工具集在下一次 provider 调用**回宽**（与激活同为 epoch 事件，缓存成本同级）
+- Skill 正文的 knowledge 钉（键 `skill:<name>`）在下一个 compaction/renewal 边界摘除（缓存安全）
+- 之后模型再调 `skill(name)` 会重新激活并重新钉入正文
+- **刻意不提供模型侧 unload 工具** —— 卸载只由宿主驱动，避免模型反复装卸抖动
+- 租约到期与显式卸载走同一条路径；清扫节奏与 capability lease 相同（每个事件头部）
+
+---
+
 ## SkillMetadata 字段
 
 | 字段 | 说明 |
@@ -107,7 +124,8 @@ RuntimeOptions(..., on_turn_metrics=on_metrics)
 ## 内核行为
 
 - Catalog **不存正文** — 仅 `build_tool_schema()` 生成 meta-tool
-- `active_skills` 是 `BTreeSet`，v1 **只增不减**（多 skill 并存时 union tools）
+- `active_skills` 是 `BTreeMap<name, Option<expires_at_turn>>`（多 skill 并存时 union tools；K3 起支持卸载/租约，见 Level 4）
+- Skill 正文加载成功后额外钉入 knowledge 分区（键 `skill:<name>`，内核 upsert 跨 wake 去重）
 - Skill 是 meta-tool，不计入 `recent_actions` progress log
 
 ---

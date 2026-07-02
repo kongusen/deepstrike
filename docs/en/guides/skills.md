@@ -112,7 +112,29 @@ Compare `tools_exposed` vs `tools_called` to quantify over-exposure; consecutive
 
 ---
 
-## Level 4: SkillMetadata fields
+## Level 4: Deactivation and leases (K3)
+
+Activation is no longer a one-way ticket. In long multi-phase runs, an early phase's skill body
+does not have to occupy the knowledge slot forever:
+
+```python
+RuntimeOptions(..., skill_lease_turns=8)   # auto-deactivate 8 turns after each activation
+runner.deactivate_skill("code-review")     # or explicit host-driven unload
+```
+
+- After deactivation the toolset **re-widens** at the next provider call (an epoch event, same
+  cache cost class as activation)
+- The skill body's knowledge pin (key `skill:<name>`) is dropped at the next compaction/renewal
+  boundary (cache-safe)
+- A later `skill(name)` call re-activates and re-pins fresh content
+- **Deliberately no model-facing unload tool** — deactivation is host-driven only, avoiding
+  load/unload thrash
+- Lease expiry and explicit deactivation share one path; the sweep runs on the same cadence as
+  capability leases (head of every event)
+
+---
+
+## Level 5: SkillMetadata fields
 
 | Field | Description |
 |-------|-------------|
@@ -128,7 +150,8 @@ Compare `tools_exposed` vs `tools_called` to quantify over-exposure; consecutive
 ## Kernel behavior
 
 - The catalog **does not store body text** — only `build_tool_schema()` generates the meta-tool
-- `active_skills` is a `BTreeSet`; v1 **only grows** (multiple skills union their tools)
+- `active_skills` is a `BTreeMap<name, Option<expires_at_turn>>` (multiple skills union their tools; deactivation/leases since K3 — see Level 4)
+- A successfully loaded skill body is additionally pinned into the knowledge partition (key `skill:<name>`; the kernel upsert dedupes across wakes)
 - Skills are meta-tools and do not count toward `recent_actions` progress log
 
 ---
