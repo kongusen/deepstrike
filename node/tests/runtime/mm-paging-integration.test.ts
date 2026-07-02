@@ -92,6 +92,9 @@ describe("long-session memory paging integration", () => {
         agentId: AGENT_ID,
         dreamStore: pagingDreamStore(),
         compressionStore: archiveStore,
+        // The script deliberately repeats an identical `bulk()` call 9 turns in a row to force
+        // compression/paging — incidental to the repeat fuse's intent, so disabled for this test.
+        repeatFuse: false,
       },
     )
 
@@ -164,6 +167,9 @@ describe("long-session memory paging integration", () => {
         dreamStore,
         compressionStore: archiveStore,
         sessionLog: sharedLog,
+        // The script deliberately repeats an identical `bulk()` call 9 turns in a row to force
+        // compression/paging — incidental to the repeat fuse's intent, so disabled for this test.
+        repeatFuse: false,
       },
     ).runner
 

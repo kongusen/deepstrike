@@ -99,8 +99,10 @@ describe("MicroCompact — tool result placeholder retains call_id", () => {
         // ~900 tokens per result — above micro_compact's 200-token threshold
         tool("heavy", "heavy", { type: "object", properties: {} }, () => "y".repeat(3600)),
       ],
-      // Large enough budget that snip/micro fire before collapse/auto
-      { maxTokens: 8192, maxTurns: 20 },
+      // Large enough budget that snip/micro fire before collapse/auto. The script deliberately
+      // repeats an identical `heavy()` call every turn to build up rho — incidental to the repeat
+      // fuse's intent, so it's disabled for this test.
+      { maxTokens: 8192, maxTurns: 20, repeatFuse: false },
     )
 
     await collectText(runner.run({ sessionId: "micro-test", goal: "heavy then verify" }))

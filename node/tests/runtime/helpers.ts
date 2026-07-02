@@ -33,6 +33,8 @@ export function createRunner(
     onTurnMetrics?: (m: import("../../src/runtime/runner.js").TurnMetrics) => void
     skillDir?: string
     stableCoreToolIds?: string[]
+    repeatFuse?: { denyAfter?: number; terminateAfter?: number } | false
+    criteriaGate?: boolean
   } = {},
 ): { runner: RuntimeRunner; sessionLog: InMemorySessionLog; plane: LocalExecutionPlane } {
   const sessionLog = opts.sessionLog ?? new InMemorySessionLog()
@@ -59,6 +61,8 @@ export function createRunner(
     onTurnMetrics: opts.onTurnMetrics,
     skillDir: opts.skillDir,
     stableCoreToolIds: opts.stableCoreToolIds,
+    repeatFuse: opts.repeatFuse,
+    criteriaGate: opts.criteriaGate,
   })
   return { runner, sessionLog, plane }
 }

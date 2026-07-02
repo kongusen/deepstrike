@@ -78,7 +78,7 @@ function toolResultText(context: RenderedContext): string {
 function createMechanismRunner(
   provider: LLMProvider,
   tools: RegisteredTool[] = [],
-  opts: { maxTokens?: number; maxTurns?: number } = {},
+  opts: { maxTokens?: number; maxTurns?: number; repeatFuse?: { denyAfter?: number; terminateAfter?: number } | false } = {},
 ) {
   const sessionLog = new InMemorySessionLog()
   const plane = new LocalExecutionPlane()
@@ -89,6 +89,7 @@ function createMechanismRunner(
     executionPlane: plane,
     maxTokens: opts.maxTokens ?? 8192,
     maxTurns: opts.maxTurns ?? 25,
+    repeatFuse: opts.repeatFuse,
   })
   return { runner, sessionLog }
 }
@@ -471,7 +472,10 @@ describe("E2E mechanism contract tests", () => {
           return char.repeat(size)
         }),
       ],
-      { maxTokens: 4000, maxTurns: 60 },
+      // The compression-ladder script deliberately repeats identical `fill` calls (same args) many
+      // turns in a row to build up rho through each tier — incidental to the repeat fuse's intent
+      // (detecting a STUCK agent), so it's disabled for this test.
+      { maxTokens: 4000, maxTurns: 60, repeatFuse: false },
     )
 
     const text = await collectText(runner.run({ sessionId: "k09-mechanism", goal: "ladder compression" }))
