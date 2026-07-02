@@ -1947,7 +1947,6 @@ class RuntimeRunner:
             session_id, runtime, next_compressed_archive_start,
           )
         elif self._opts.on_milestone_evaluate is not None:
-          import inspect
           from deepstrike.types.agent import milestone_check_result_to_kernel
           check = self._opts.on_milestone_evaluate({
             "phaseId": action.phase_id,
@@ -2175,7 +2174,6 @@ class RuntimeRunner:
       return
     try:
       if self._opts.dream_summarizer:
-        import inspect
         result = self._opts.dream_summarizer(archived, {"action": action})
         summary = await result if inspect.isawaitable(result) else result
       else:
