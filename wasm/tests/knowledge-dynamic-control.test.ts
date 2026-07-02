@@ -11,6 +11,12 @@
  * asserting on rendered context — which the mock can't produce faithfully — these tests inspect
  * the mock's captured `kernelEvents` stream to prove the SDK emits the correct kernel event for
  * each content class, exactly as `smoke.test.ts`'s `configure_run` test does.
+ *
+ * NOT covered here (mock limitation): the K4 renewal-boundary memory re-query. The mock's
+ * 2-phase FSM never emits a `renewed` observation (that requires genuine context pressure), and
+ * simulating one is not a trivial mock extension. The runner code path is identical to Node's,
+ * which covers it end-to-end against the real kernel in tests/renewal-memory-requery.test.ts
+ * (mirrored in Python).
  */
 import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
 import type { DreamStore, MemoryEntry } from "../src/memory/index.js"

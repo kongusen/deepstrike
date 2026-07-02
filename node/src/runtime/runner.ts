@@ -164,7 +164,14 @@ export interface RuntimeOptions {
    *  `undefined` / empty array is a no-op. Requires `dreamStore` + `agentId`; missing either ⇒
    *  silently skipped (errs-open). Bench memory-recall shows -57% turns / -55% dollars when
    *  relevant memories land on turn 1 instead of being discovered via the meta-tool on turn 3+. */
-  preQueryMemory?: (ctx: { goal: string; runSpec?: AgentRunSpec }) => Promise<string[] | undefined> | string[] | undefined
+  preQueryMemory?: (ctx: {
+    goal: string
+    runSpec?: AgentRunSpec
+    /** K4: `"initial"` = the once-per-run pre-turn-1 fetch; `"renewal"` = re-fired after a sprint
+     *  renewal (renewal drops the old history INCLUDING earlier memory hits, so the new sprint
+     *  gets a fresh recall pass). Hooks that ignore it keep the pre-K4 behavior. */
+    phase?: "initial" | "renewal"
+  }) => Promise<string[] | undefined> | string[] | undefined
   systemPrompt?: string
   initialMemory?: string[]
   skillDir?: string
@@ -351,6 +358,8 @@ export class RuntimeRunner {
    *  an already-active skill (loading is idempotent; the knowledge push should be too). */
   private knowledgePushedSkills = new Set<string>()
   private nextArchiveStart = 0
+  /** K4: the active run's goal, kept for the renewal-boundary memory re-query. */
+  private currentGoal = ""
   /** Full tool outputs keyed by call_id until Layer-1 spool observations are logged. */
   private pendingSpoolOutputs = new Map<string, { tool: string; output: string }>()
   /** M5 v2.1: sub-workflow specs a top-level agent authored via `start_workflow`, awaiting auto-drive
@@ -1639,24 +1648,9 @@ export class RuntimeRunner {
     // THIS run's goal right now), not a stable method/skill — so it lands in `history` as an
     // ordinary turn, exactly like a real `memory` tool result would, and decays with the
     // compression pyramid over subsequent turns instead of pinning itself in `knowledge` forever.
-    if (!resumeMidRun && this.opts.preQueryMemory && this.opts.dreamStore && this.opts.agentId) {
-      try {
-        const queries = await this.opts.preQueryMemory({ goal, runSpec: this.opts.runSpec })
-        const lines: string[] = []
-        for (const q of queries ?? []) {
-          if (typeof q !== "string" || !q.trim()) continue
-          const hits = await this.opts.dreamStore.search(this.opts.agentId, q, 5)
-          for (const hit of hits) {
-            lines.push(`[memory score=${hit.score.toFixed(3)}] ${hit.text}`)
-          }
-        }
-        if (lines.length > 0) {
-          kernelApply(runtime, this.pendingObservations, {
-            kind: "add_history_message",
-            message: { role: "user", content: lines.join("\n") },
-          })
-        }
-      } catch { /* errs-open — a faulty pre-fetch never breaks the run */ }
+    this.currentGoal = goal
+    if (!resumeMidRun) {
+      await this.prefetchMemoryIntoHistory(runtime, "initial")
     }
 
     let action: KernelRunnerAction = resumeMidRun
@@ -2238,6 +2232,39 @@ export class RuntimeRunner {
     this.dashboard = null
   }
 
+  /** I4 + K4: fetch long-term memory hits for the current goal and land them in `history` as an
+   *  ordinary user turn — single-use retrieval content that decays with the compression pyramid,
+   *  never pinned into `knowledge`. Called once before turn 1 (`phase: "initial"`) and re-fired
+   *  after each sprint renewal (`phase: "renewal"`): renewal drops the old history INCLUDING the
+   *  earlier memory hits, so the new sprint gets a fresh recall pass. Errs-open throughout. */
+  private async prefetchMemoryIntoHistory(
+    runtime: KernelRuntimeInstance,
+    phase: "initial" | "renewal",
+  ): Promise<void> {
+    if (!this.opts.preQueryMemory || !this.opts.dreamStore || !this.opts.agentId) return
+    try {
+      const queries = await this.opts.preQueryMemory({
+        goal: this.currentGoal,
+        runSpec: this.opts.runSpec,
+        phase,
+      })
+      const lines: string[] = []
+      for (const q of queries ?? []) {
+        if (typeof q !== "string" || !q.trim()) continue
+        const hits = await this.opts.dreamStore.search(this.opts.agentId, q, 5)
+        for (const hit of hits) {
+          lines.push(`[memory score=${hit.score.toFixed(3)}] ${hit.text}`)
+        }
+      }
+      if (lines.length > 0) {
+        kernelApply(runtime, this.pendingObservations, {
+          kind: "add_history_message",
+          message: { role: "user", content: lines.join("\n") },
+        })
+      }
+    } catch { /* errs-open — a faulty pre-fetch never breaks the run */ }
+  }
+
   private async appendObservations(
     sessionId: string,
     runtime: KernelRuntimeInstance,
@@ -2311,6 +2338,12 @@ export class RuntimeRunner {
         && obs.archived.length > 0
       ) {
         void this.archiveSemanticPageOut(obs.archived as Message[], compressionAction(obs.action))
+      }
+      // K4: a sprint renewal dropped the old history — including any earlier memory hits — so
+      // re-run the preQueryMemory prefetch for the new sprint (live observations only: this
+      // consumer sits on the live drain path, same placement as the semantic page-out archival).
+      if (obs.kind === "renewed") {
+        await this.prefetchMemoryIntoHistory(runtime, "renewal")
       }
     }
     return nextArchiveStart

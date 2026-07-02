@@ -256,6 +256,8 @@ class RuntimeRunner:
     self._plane = opts.execution_plane or LocalExecutionPlane()
     self._active_kernel: KernelRuntime | None = None
     self._pending_observations: list[dict] = []
+    # K4: the active run's goal, kept for the renewal-boundary memory re-query.
+    self._current_goal = ""
     self._current_session_id: str | None = None
     # O2 (system-reminder channel): host-pushed notes awaiting the next turn-boundary drain.
     self._injected_signals: list[RuntimeSignal] = []
@@ -1709,26 +1711,10 @@ class RuntimeRunner:
     # this is single-use retrieval content, not a stable method/skill — so it lands in `history` as
     # an ordinary turn (exactly like a real `memory` tool result would) and decays with the
     # compression pyramid over subsequent turns, instead of pinning itself in `knowledge` forever.
-    if not resume_mid_run and self._opts.pre_query_memory and self._opts.dream_store and self._opts.agent_id:
-      try:
-        result = self._opts.pre_query_memory(goal=goal)
-        if hasattr(result, "__await__"):
-          result = await result
-        queries = result or []
-        lines = []
-        for q in queries:
-          if not isinstance(q, str) or not q.strip():
-            continue
-          hits = await self._opts.dream_store.search(self._opts.agent_id, q, 5)
-          for hit in hits:
-            lines.append(f"[memory score={hit.score:.3f}] {hit.text}")
-        if lines:
-          kernel_apply(runtime, self._pending_observations, {
-            "kind": "add_history_message",
-            "message": {"role": "user", "content": "\n".join(lines)},
-          })
-      except Exception:
-        pass  # errs-open
+    # K4: the same prefetch re-fires after each sprint renewal (see _prefetch_memory_into_history).
+    self._current_goal = goal
+    if not resume_mid_run:
+      await self._prefetch_memory_into_history(runtime, "initial")
 
     action = (
       kernel_action(runtime, self._pending_observations, {"kind": "resume"})
@@ -2306,7 +2292,52 @@ class RuntimeRunner:
       ):
         import asyncio
         asyncio.create_task(self._archive_semantic_page_out(list(obs["archived"]), _compression_action(obs.get("action"))))
+      # K4: a sprint renewal dropped the old history — including any earlier memory hits — so
+      # re-run the pre_query_memory prefetch for the new sprint (live observations only: this
+      # consumer sits on the live drain path, same placement as the semantic page-out archival).
+      if obs.get("kind") == "renewed":
+        await self._prefetch_memory_into_history(runtime, "renewal")
     return next_archive_start
+
+  async def _prefetch_memory_into_history(self, runtime: KernelRuntime, phase: str) -> None:
+    """I4 + K4: fetch long-term memory hits for the current goal and land them in ``history`` as
+    an ordinary user turn — single-use retrieval content that decays with the compression
+    pyramid, never pinned into ``knowledge``. Called once before turn 1 (``phase="initial"``) and
+    re-fired after each sprint renewal (``phase="renewal"``): renewal drops the old history
+    INCLUDING the earlier memory hits, so the new sprint gets a fresh recall pass. Errs-open.
+
+    The ``phase`` kwarg is passed only when the hook's signature accepts it, so pre-K4 hooks
+    (``lambda goal: [...]``) keep working unchanged.
+    """
+    hook = self._opts.pre_query_memory
+    if not (hook and self._opts.dream_store and self._opts.agent_id):
+      return
+    try:
+      try:
+        params = inspect.signature(hook).parameters
+        accepts_phase = "phase" in params or any(
+          p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+      except (TypeError, ValueError):
+        accepts_phase = False
+      result = hook(goal=self._current_goal, phase=phase) if accepts_phase else hook(goal=self._current_goal)
+      if hasattr(result, "__await__"):
+        result = await result
+      queries = result or []
+      lines = []
+      for q in queries:
+        if not isinstance(q, str) or not q.strip():
+          continue
+        hits = await self._opts.dream_store.search(self._opts.agent_id, q, 5)
+        for hit in hits:
+          lines.append(f"[memory score={hit.score:.3f}] {hit.text}")
+      if lines:
+        kernel_apply(runtime, self._pending_observations, {
+          "kind": "add_history_message",
+          "message": {"role": "user", "content": "\n".join(lines)},
+        })
+    except Exception:
+      pass  # errs-open — a faulty pre-fetch never breaks the run
 
   async def _archive_semantic_page_out(self, archived: list[Any], action: str | None = None) -> None:
     if not self._opts.dream_store or not self._opts.agent_id:

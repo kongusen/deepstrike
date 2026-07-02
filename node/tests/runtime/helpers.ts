@@ -37,6 +37,7 @@ export function createRunner(
     criteriaGate?: boolean
     knowledgeBudgetRatio?: number
     skillLeaseTurns?: number
+    preQueryMemory?: import("../../src/runtime/runner.js").RuntimeOptions["preQueryMemory"]
   } = {},
 ): { runner: RuntimeRunner; sessionLog: InMemorySessionLog; plane: LocalExecutionPlane } {
   const sessionLog = opts.sessionLog ?? new InMemorySessionLog()
@@ -67,6 +68,7 @@ export function createRunner(
     criteriaGate: opts.criteriaGate,
     knowledgeBudgetRatio: opts.knowledgeBudgetRatio,
     skillLeaseTurns: opts.skillLeaseTurns,
+    preQueryMemory: opts.preQueryMemory,
   })
   return { runner, sessionLog, plane }
 }
