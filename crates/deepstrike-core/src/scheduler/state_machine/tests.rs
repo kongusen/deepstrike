@@ -49,7 +49,12 @@
     }
 
     #[test]
-    fn resume_after_preload_emits_page_in_requested_for_pending_memory() {
+    fn resume_after_preload_does_not_page_in_pending_memory() {
+        // A live memory/knowledge tool call's result already lands in `history` via the normal
+        // tool-result path once executed (decaying with the compression pyramid like any other
+        // tool output). Resuming a pending call must NOT also permanently push it into `knowledge`
+        // — that would make single-use retrieval content immortal, defeating the "use it, then
+        // let it go" policy `knowledge` now enforces (only skills / host-pinned content belong there).
         let mut sm = sm();
         sm.ctx.set_memory_enabled(true);
         sm.preload_history(vec![
@@ -65,8 +70,9 @@
                 token_count: Some(5),
             },
         ]);
-        let _action = sm.resume_after_preload();
-        assert!(sm.observations.iter().any(|o| {
+        let action = sm.resume_after_preload();
+        assert!(matches!(action, LoopAction::ExecuteTools { .. }), "must still resume the pending call");
+        assert!(!sm.observations.iter().any(|o| {
             matches!(
                 o,
                 KernelObservation::PageInRequested { tool, query, .. }
@@ -707,7 +713,11 @@
     }
 
     #[test]
-    fn memory_tool_proposal_emits_page_in_requested() {
+    fn memory_tool_proposal_does_not_page_in() {
+        // A proposed `memory`/`knowledge` tool call is executed normally (ExecuteTools) and its
+        // eventual result lands in `history` like any other tool result — it must NOT also trigger
+        // a `PageInRequested`/permanent-knowledge side channel (removed: that made single-use
+        // retrievals immortal). `knowledge` is reserved for skills / host-pinned content now.
         let mut sm = sm();
         sm.ctx.set_memory_enabled(true);
         sm.start(RuntimeTask::new("test"));
@@ -720,21 +730,19 @@
         let action = sm.feed(LoopEvent::LLMResponse { message: msg });
         assert!(matches!(action, LoopAction::ExecuteTools { .. }));
         let obs = sm.take_observations();
-        assert!(obs.iter().any(|o| matches!(
-            o,
-            KernelObservation::PageInRequested { tool, query, .. }
-            if tool == "memory" && query == "bugs"
-        )));
+        assert!(!obs.iter().any(|o| matches!(o, KernelObservation::PageInRequested { .. })));
     }
 
     #[test]
-    fn apply_page_in_populates_knowledge() {
+    fn apply_page_in_still_populates_knowledge_for_stable_pins() {
+        // `apply_page_in` itself remains a valid mechanism for genuinely durable content (a host
+        // explicitly pinning reference material, or the SDK pushing loaded skill text) — only the
+        // automatic per-tool-call producer was retired, not the sink.
         let mut sm = sm();
-        sm.ctx.set_memory_enabled(true);
         sm.apply_page_in(&[crate::mm::PageInEntry {
-            content: "recalled".to_string(),
+            content: "skill: debugging playbook".to_string(),
             tokens: Some(3),
-            source: Some("memory".to_string()),
+            source: Some("skill".to_string()),
         }]);
         assert!(!sm.ctx.partitions.knowledge.messages.is_empty());
     }

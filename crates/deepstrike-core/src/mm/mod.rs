@@ -5,9 +5,7 @@
 //!
 //! Phase 7 extends this module with memory classification and validation rules.
 
-use crate::context::manager::{KNOWLEDGE_TOOL_NAME, MEMORY_TOOL_NAME};
 use crate::context::pressure::PressureAction;
-use crate::types::message::ToolCall;
 use serde::{Deserialize, Serialize};
 
 pub mod handle;
@@ -45,45 +43,17 @@ pub fn tier_hint_for_compress(action: PressureAction) -> MemoryTierHint {
     }
 }
 
-/// Whether a tool name triggers an explicit page-in request (memory / knowledge meta-tools).
-pub fn is_page_in_tool(name: &str) -> bool {
-    name == MEMORY_TOOL_NAME || name == KNOWLEDGE_TOOL_NAME
-}
-
-/// Parsed arguments for a page-in meta-tool call.
+/// Parsed arguments for a page-in meta-tool call. Retained as the payload type for
+/// [`crate::syscall::Syscall::PageIn`]; the request-extraction helper that used to build these
+/// from live tool calls was removed when the automatic memory/knowledge tool-call page-in path
+/// was retired (that content now flows through the normal tool-result → history path instead —
+/// see `apply_page_in`'s doc comment).
 #[derive(Debug, Clone, Default)]
 pub struct PageInRequest {
     pub call_id: String,
     pub tool: String,
     pub query: String,
     pub top_k: u32,
-}
-
-/// Extract page-in requests from proposed tool calls (pure parse, no I/O).
-pub fn page_in_requests_from_calls(calls: &[ToolCall]) -> Vec<PageInRequest> {
-    let mut out = Vec::new();
-    for call in calls {
-        if !is_page_in_tool(call.name.as_str()) {
-            continue;
-        }
-        let args = &call.arguments;
-        let query = args
-            .get("query")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let top_k = args
-            .get("top_k")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(5) as u32;
-        out.push(PageInRequest {
-            call_id: call.id.to_string(),
-            tool: call.name.to_string(),
-            query,
-            top_k: top_k.max(1),
-        });
-    }
-    out
 }
 
 /// One knowledge entry supplied by the SDK after a long-term fetch (page-in).
@@ -99,7 +69,6 @@ pub struct PageInEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compact_str::CompactString;
 
     #[test]
     fn tier_hint_maps_auto_compact_to_semantic() {
@@ -113,17 +82,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn page_in_requests_from_memory_call() {
-        use crate::types::message::ToolCall;
-        let calls = vec![ToolCall {
-            id: CompactString::new("c1"),
-            name: CompactString::new("memory"),
-            arguments: serde_json::json!({"query": "past bugs", "top_k": 3}),
-        }];
-        let reqs = page_in_requests_from_calls(&calls);
-        assert_eq!(reqs.len(), 1);
-        assert_eq!(reqs[0].query, "past bugs");
-        assert_eq!(reqs[0].top_k, 3);
-    }
 }

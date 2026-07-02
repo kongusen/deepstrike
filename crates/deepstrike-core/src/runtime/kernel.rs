@@ -2245,7 +2245,10 @@ mod tests {
     }
 
     #[test]
-    fn memory_tool_emits_page_in_requested() {
+    fn memory_tool_does_not_emit_page_in_requested() {
+        // The automatic PageInRequested producer for live memory/knowledge tool calls was retired:
+        // a memory-tool result now flows to `history` via the normal tool-result path only, so it
+        // decays with the compression pyramid instead of living forever in `knowledge`.
         let mut runtime = KernelRuntime::new(LoopPolicy::default());
         runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled {
             enabled: true,
@@ -2257,10 +2260,7 @@ mod tests {
         runtime.state_machine_mut().take_observations();
 
         let step = run_with_tool_call(&mut runtime, "memory");
-        assert!(step.observations.iter().any(|o| matches!(
-            o,
-            KernelObservation::PageInRequested { tool, .. } if tool == "memory"
-        )));
+        assert!(!step.observations.iter().any(|o| matches!(o, KernelObservation::PageInRequested { .. })));
     }
 
     #[test]

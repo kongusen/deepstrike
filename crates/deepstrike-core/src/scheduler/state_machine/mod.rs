@@ -476,7 +476,6 @@ impl LoopStateMachine {
             &self.ctx.partitions.history.messages,
         );
         if !calls.is_empty() {
-            self.emit_page_in_requested(&calls);
             self.phase = LoopPhase::Act {
                 tool_calls: calls.clone(),
             };
@@ -645,7 +644,6 @@ impl LoopStateMachine {
                     GateToolOutcome::Suspended => return LoopAction::AwaitingResume,
                     GateToolOutcome::Proceed => {}
                 }
-                self.emit_page_in_requested(&calls);
                 self.phase = LoopPhase::Act {
                     tool_calls: calls.clone(),
                 };

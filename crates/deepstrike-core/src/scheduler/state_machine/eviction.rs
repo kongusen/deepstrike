@@ -2,9 +2,9 @@
 
 use super::{KernelObservation, LoopAction, LoopPhase, LoopStateMachine};
 use crate::context::pressure::PressureAction;
-use crate::mm::{page_in_requests_from_calls, tier_hint_for_compress};
+use crate::mm::tier_hint_for_compress;
 use crate::runtime::kernel::KernelPressureAction;
-use crate::types::message::{Message, ToolCall};
+use crate::types::message::Message;
 use crate::types::result::TerminationReason;
 
 /// Max consecutive compact-and-retry attempts before a context overflow is declared
@@ -173,19 +173,13 @@ impl LoopStateMachine {
         }
     }
 
-    pub(super) fn emit_page_in_requested(&mut self, calls: &[ToolCall]) {
-        for req in page_in_requests_from_calls(calls) {
-            self.observations.push(KernelObservation::PageInRequested {
-                turn: self.turn,
-                call_id: req.call_id,
-                tool: req.tool,
-                query: req.query,
-                top_k: req.top_k,
-            });
-        }
-    }
-
-    /// Apply SDK-fetched long-term entries into the knowledge partition (page-in).
+    /// Apply SDK-fetched entries into the knowledge partition — the durable, non-evicted slot.
+    /// Reserved for genuinely stable content (skill definitions, host-pinned reference material),
+    /// NOT single-use retrieval hits: a live `memory`/`knowledge` tool call's result already lands
+    /// in `history` via the normal tool-result path and decays with the compression pyramid like
+    /// any other tool output — pushing the SAME content here on top would make it immortal, which
+    /// defeats the "use it, then let it go" policy this partition now enforces by construction
+    /// (nothing routes ephemeral content here anymore; see the removed `PageInRequested` producer).
     pub fn apply_page_in(&mut self, entries: &[crate::mm::PageInEntry]) {
         for entry in entries {
             let tokens = entry
