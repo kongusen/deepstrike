@@ -40,10 +40,12 @@ const CHECKS = [
     patterns: ["categoryForKind", "kernelObservationToSessionEvent"],
   },
   {
-    id: "node-page-in-timing",
+    // I4/K4 memory recall: run-start prefetch into decaying history + renewal re-query.
+    // (The old applyKernelPageIn side-channel was retired with the PageInRequested observation.)
+    id: "node-memory-recall",
     lang: "node",
     path: "node/src/runtime/runner.ts",
-    patterns: ["applyKernelPageIn", 'action.kind === "execute_tool"'],
+    patterns: ["prefetchMemoryIntoHistory", 'action.kind === "execute_tool"'],
   },
   {
     // M2 资源配额 — Node is the reference: quotas flow into the kernel via the JSON event ABI.
@@ -55,8 +57,8 @@ const CHECKS = [
   {
     id: "node-public-api-shape",
     lang: "node",
-    path: "node/src/index.ts",
-    patterns: ["MemoryWriteRateLimit", "ResourceQuota", "SchedulerBudget", "NativeOsProfile", "OsProfileId"],
+    path: "node/src/os/public.ts",
+    patterns: ["MemoryWriteRateLimit", "ResourceQuota", "NativeOsProfile", "OsProfileId"],
   },
   {
     id: "python-resource-quota",
@@ -86,7 +88,7 @@ const CHECKS = [
     id: "wasm-resource-quota",
     lang: "wasm",
     path: "wasm/src/runtime/runner.ts",
-    patterns: ["resourceQuota", "set_resource_quota", "max_concurrent_subagents", "SchedulerBudget"],
+    patterns: ["resourceQuota", "resource_quota", "max_concurrent_subagents"],
   },
   {
     id: "wasm-public-api-shape",
@@ -150,7 +152,7 @@ const CHECKS = [
     id: "wasm-runner-native",
     lang: "wasm",
     path: "wasm/src/runtime/runner.ts",
-    patterns: ["osProfile", "assertNativeProfile", "kernelMaybeAction", "applyKernelPageIn"],
+    patterns: ["osProfile", "assertNativeProfile", "kernelMaybeAction", "prefetchMemoryIntoHistory"],
   },
   {
     id: "python-os-profile",
@@ -168,7 +170,7 @@ const CHECKS = [
     id: "python-runner-native",
     lang: "python",
     path: "python/deepstrike/runtime/runner.py",
-    patterns: ["os_profile", "assert_native_profile", "kernel_maybe_action", "_apply_kernel_page_in"],
+    patterns: ["os_profile", "assert_native_profile", "kernel_maybe_action", "_prefetch_memory_into_history"],
   },
   {
     id: "core-replay",

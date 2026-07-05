@@ -61,7 +61,7 @@ export type {
   WorkflowTaskSpec,
   WorkflowSpawnInfo,
 } from "./runtime/types/agent.js"
-export { workflowSpecToKernel, workflowNodeSpecToKernel, submitWorkflowNodesToKernel, submitWorkflowToKernel, submitWorkflowNodesTool, startWorkflowTool, fanoutSynthesize, generateAndFilter, verifyRules } from "./runtime/types/agent.js"
+export { workflowSpecToKernel, workflowNodeSpecToKernel, submitWorkflowNodesToKernel, submitWorkflowToKernel, submitWorkflowNodesTool, startWorkflowTool, fanoutSynthesize, generateAndFilter, genEval, verifyRules } from "./runtime/types/agent.js"
 export {
   loopInstruction, classifyInstruction, judgeGoal,
   extractLoopContinue, extractClassifyBranch, extractJudgeWinner,

@@ -1,4 +1,5 @@
 import type { Message, ToolSchema } from "../../types.js"
+import { getKernel } from "../kernel.js"
 
 export type KernelAgentRole = "explore" | "plan" | "implement" | "verify" | "custom"
 export type AgentIsolation = "shared" | "read_only" | "worktree" | "remote"
@@ -624,4 +625,38 @@ export function verifyRules(rules: WorkflowTaskSpec[], skeptic?: WorkflowTaskSpe
     })
   }
   return { nodes }
+}
+
+/**
+ * Generate → evaluate loop template (parity with node/python `genEval`): a worker Loop node
+ * (worktree isolation, full context) feeding a fresh-context verifier whose output is pinned
+ * to the kernel's verdict schema. Async because the wasm kernel module loads lazily.
+ */
+export async function genEval(
+  worker: WorkflowTaskSpec,
+  evaluate: WorkflowTaskSpec,
+  maxIters = 3,
+  extractSkillOnPass = true,
+): Promise<WorkflowSpec> {
+  const kernel = await getKernel()
+  const schema = JSON.parse(kernel.verdictOutputSchema(extractSkillOnPass)) as Record<string, unknown>
+  return {
+    nodes: [
+      {
+        task: asTask(worker),
+        role: "implement",
+        isolation: "worktree",
+        contextInheritance: "full",
+        loop: { maxIters: Math.max(1, maxIters) },
+      },
+      {
+        task: asTask(evaluate),
+        role: "verify",
+        isolation: "read_only",
+        contextInheritance: "none",
+        dependsOn: [0],
+        outputSchema: schema,
+      },
+    ],
+  }
 }
