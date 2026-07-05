@@ -40,6 +40,11 @@ export interface GroupCharge {
 export interface GroupMember {
   sessionId: string
   role?: string
+  /** W-N5: what this member IS in the lineage — a `"peer"` persona (ReactiveSession.addPeer) vs a
+   *  `"vehicle"` session (run()/runWorkflow envelopes, workflow-node children, loop iterations).
+   *  `ReactiveSession.resume()` rebuilds the peer set from `"peer"` members only, so DAG-in-Peer
+   *  usage can't resurrect phantom `wf-node*` personas. Absent (legacy) = unknown. */
+  kind?: "peer" | "vehicle"
 }
 
 export interface GroupBudgetStore {
@@ -120,6 +125,7 @@ export class SessionLogGroupBudgetStore implements GroupBudgetStore {
       kind: "group_member_joined",
       session_id: member.sessionId,
       ...(member.role ? { role: member.role } : {}),
+      ...(member.kind ? { member_kind: member.kind } : {}),
     })
   }
 
@@ -127,7 +133,11 @@ export class SessionLogGroupBudgetStore implements GroupBudgetStore {
     const seen = new Map<string, GroupMember>()
     for (const { event } of await this.log.read(groupId)) {
       if (event.kind === "group_member_joined") {
-        seen.set(event.session_id, { sessionId: event.session_id, role: event.role })
+        seen.set(event.session_id, {
+          sessionId: event.session_id,
+          role: event.role,
+          ...(event.member_kind ? { kind: event.member_kind } : {}),
+        })
       }
     }
     return [...seen.values()]

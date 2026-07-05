@@ -25,6 +25,13 @@ export interface SubAgentRunContext {
    *  the child runner so a nested `start_workflow` FLATTENS to the parent kernel rather than
    *  auto-pivoting into its own bootstrap (which would fragment the one-kernel/one-quota governance). */
   isWorkflowNode?: boolean
+  /** W-N1 tool exposure. The kernel omits an EMPTY `permitted_capability_ids` on the wire, so a
+   *  grant-less workflow node is indistinguishable from a zero-cap spawn at the manifest — the
+   *  caller states intent instead: `"inherit"` = run on the parent's execution plane with its
+   *  meta-tool availability (trusted workflow nodes — they carried no grant list by design, and
+   *  filtering on the missing list ran every DAG node TOOL-LESS); `"filtered"` (default) = filter
+   *  to the manifest grants, empty ⇒ deny-all (spawn path, quarantined nodes). */
+  toolAccess?: "inherit" | "filtered"
   /** #2-B-ii: parent-controlled abort. When this fires (the kernel preempted this node via
    *  `InterruptNow` → `AgentPreempted`), the orchestrator interrupts the child runner, cancelling its
    *  in-flight LLM call. */
@@ -92,14 +99,39 @@ function deriveMetaTools(permitted: Set<string>, opts: RuntimeOptions): Set<stri
   return metaTools
 }
 
+/** W-N1: meta-tools by source availability alone — a `toolAccess: "inherit"` child gets the same
+ *  meta surface a top-level run of these options would. */
+function availableMetaTools(opts: RuntimeOptions): Set<string> {
+  const metaTools = new Set<string>()
+  if (opts.skillDir) metaTools.add("skill")
+  if (opts.dreamStore) metaTools.add("memory")
+  if (opts.knowledgeSource) metaTools.add("knowledge")
+  if (opts.enablePlanTool) metaTools.add("update_plan")
+  return metaTools
+}
+
 /** Host-side driver for kernel-isolated sub-agent runs. */
 export class SubAgentOrchestrator {
-  async *stream(ctx: SubAgentRunContext): AsyncIterable<StreamEvent> {
+  /** W-N4: the ONE child-runner construction shared by the direct-stream and harness paths — tool
+   *  grant resolution (W-N1), worktree wrapping, inherited system prompt / events, per-node caps.
+   *  The two used to be near-identical copies that had already drifted (the harness path silently
+   *  dropped context inheritance). */
+  private async buildChild(ctx: SubAgentRunContext): Promise<{
+    childRunner: import("./runner.js").RuntimeRunner
+    inheritEvents?: Array<{ seq: number; event: SessionEvent }>
+    cleanupWorktree: () => Promise<void>
+  }> {
+    // W-N1: "inherit" runs the child on the parent's plane with availability-derived meta-tools
+    // (trusted workflow nodes); "filtered" (default) filters to the manifest grants, empty ⇒
+    // deny-all (spawn path, quarantined nodes).
+    const inherit = ctx.toolAccess === "inherit"
     const permitted = new Set(ctx.manifest.permitted_capability_ids ?? [])
-    const metaTools = deriveMetaTools(permitted, ctx.parentOpts)
-    const filteredPlane = new FilteredExecutionPlane(ctx.parentOpts.executionPlane, permitted, metaTools)
-    // M3/G4: a worktree node runs inside its own git worktree (created here, removed in `finally`).
-    const { plane: execPlane, cleanup: cleanupWorktree } = withWorktree(ctx, filteredPlane)
+    const metaTools = inherit ? availableMetaTools(ctx.parentOpts) : deriveMetaTools(permitted, ctx.parentOpts)
+    const basePlane = inherit
+      ? ctx.parentOpts.executionPlane
+      : new FilteredExecutionPlane(ctx.parentOpts.executionPlane, permitted, metaTools)
+    // M3/G4: a worktree node runs inside its own git worktree (created here, removed by the caller).
+    const { plane: execPlane, cleanup: cleanupWorktree } = withWorktree(ctx, basePlane)
 
     let systemPrompt = ctx.parentOpts.systemPrompt
     let inheritEvents: Array<{ seq: number; event: SessionEvent }> | undefined
@@ -138,7 +170,11 @@ export class SubAgentOrchestrator {
     // #2-B-ii: when the parent preempts this node (kernel `AgentPreempted`), interrupt the child —
     // cancelling its in-flight LLM call. Handle an already-aborted signal too (creation race).
     linkAbort(ctx.abortSignal, childRunner)
+    return { childRunner, inheritEvents, cleanupWorktree }
+  }
 
+  async *stream(ctx: SubAgentRunContext): AsyncIterable<StreamEvent> {
+    const { childRunner, inheritEvents, cleanupWorktree } = await this.buildChild(ctx)
     try {
       yield* childRunner.run({
         sessionId: ctx.spec.identity.sessionId,
@@ -152,34 +188,12 @@ export class SubAgentOrchestrator {
 
   async run(ctx: SubAgentRunContext): Promise<SubAgentResult> {
     if (ctx.harness) {
-      const { RuntimeRunner } = await import("./runner.js")
       const { HarnessLoop } = await import("../harness/harness.js")
-      const permitted = new Set(ctx.manifest.permitted_capability_ids ?? [])
-      const metaTools = deriveMetaTools(permitted, ctx.parentOpts)
-      const filteredPlane = new FilteredExecutionPlane(ctx.parentOpts.executionPlane, permitted, metaTools)
-      // M3/G4: worktree isolation for a worktree node (cleaned up in `finally` below).
-      const { plane: execPlane, cleanup: cleanupWorktree } = withWorktree(ctx, filteredPlane)
-      const childRunner = new RuntimeRunner({
-        ...ctx.parentOpts,
-        // M1/G3: route to the node's hinted model (falls back to the parent provider).
-        provider: resolveProvider(ctx.parentOpts, ctx.spec.modelHint),
-        // M4/G5: cap the child run at the node's token budget (falls back to the inherited cap).
-        maxTotalTokens: ctx.spec.tokenBudget ?? ctx.parentOpts.maxTotalTokens,
-        // O3: per-child turn / wall-clock caps (fall back to the inherited limits).
-        maxTurns: ctx.spec.maxTurns ?? ctx.parentOpts.maxTurns,
-        timeoutMs: ctx.spec.maxWallMs ?? ctx.parentOpts.timeoutMs,
-        executionPlane: execPlane,
-        agentId: ctx.spec.identity.agentId,
-        sessionLog: ctx.sessionLog,
-        skillDir: metaTools.has("skill") ? ctx.parentOpts.skillDir : undefined,
-        dreamStore: metaTools.has("memory") ? ctx.parentOpts.dreamStore : undefined,
-        knowledgeSource: metaTools.has("knowledge") ? ctx.parentOpts.knowledgeSource : undefined,
-        enablePlanTool: metaTools.has("update_plan") ? ctx.parentOpts.enablePlanTool : undefined,
-        // M5 v2.1: a workflow node's `start_workflow` flattens to the parent kernel (no nested pivot).
-        isWorkflowNode: ctx.isWorkflowNode,
-      })
-      // #2-B-ii: parent preempt → interrupt the child (cancels its in-flight LLM call).
-      linkAbort(ctx.abortSignal, childRunner)
+      // W-N4: same construction as the direct path — the harness child now honors the inherited
+      // system prompt (`system_only`). NOTE: `full` inheritance is NOT consumable under a harness
+      // (HarnessLoop mints its own per-attempt session ids, so parent events can't be replayed) —
+      // the inherited events are dropped here by construction, not by drift.
+      const { childRunner, cleanupWorktree } = await this.buildChild(ctx)
       const loop = new HarnessLoop(childRunner, ctx.harness.evalProvider, {
         maxAttempts: ctx.harness.maxAttempts ?? 3,
       })

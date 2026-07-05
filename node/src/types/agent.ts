@@ -296,6 +296,10 @@ export interface WorkflowNodeSpec {
   tournament?: { entrants: WorkflowTaskSpec[] }
   /** M4/G5: cap this node's child run at `tokenBudget` cumulative tokens (the per-node "use N tokens"). */
   tokenBudget?: number
+  /** O3: cap this node's child run at `maxTurns` provider turns (falls back to the parent's). */
+  maxTurns?: number
+  /** O3: cap this node's child run at `maxWallMs` wall-clock milliseconds. */
+  maxWallMs?: number
   /** Indices of nodes this node depends on. */
   dependsOn?: number[]
 }
@@ -319,7 +323,8 @@ export interface WorkflowSpawnInfo {
   output_schema?: Record<string, unknown>
   /** G2: for a reduce node, the name of the registered host function to run (no LLM). */
   reducer?: string
-  /** G2: the dependency agent ids whose outputs a reduce node consumes. */
+  /** The dependency agent ids for EVERY dependent node (W-N2: a DAG edge carries data). A reduce
+   *  node's registered function consumes them; every other node gets its deps' outputs in context. */
   input_agent_ids?: string[]
   /** A#2: present only for a tournament *judge* spawn — the two entrant agent ids whose produced
    *  outputs this judge compares. The runner looks them up and reports the winner as `tournamentWinner`. */
@@ -332,6 +337,10 @@ export interface WorkflowSpawnInfo {
   classify_labels?: string[]
   /** M4/G5: the node's per-node cumulative token cap, if set — the runner caps the child run here. */
   token_budget?: number
+  /** O3: per-node turn cap → the child run's `maxTurns`. */
+  max_turns?: number
+  /** O3: per-node wall-clock cap (ms) → the child run's timeout. */
+  max_wall_ms?: number
 }
 
 /** G4 budget-as-signal: the workflow's remaining headroom under the active quota, carried on the
@@ -419,6 +428,9 @@ export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): Record<string, un
     ...(kind ? { kind } : {}),
     // M4/G5: per-node token cap (additive; omitted when unset).
     ...(n.tokenBudget != null ? { token_budget: n.tokenBudget } : {}),
+    // O3: per-node turn / wall-clock caps (additive; omitted when unset).
+    ...(n.maxTurns != null ? { max_turns: n.maxTurns } : {}),
+    ...(n.maxWallMs != null ? { max_wall_ms: n.maxWallMs } : {}),
     ...(n.dependsOn && n.dependsOn.length ? { depends_on: n.dependsOn } : {}),
   }
 }
@@ -626,6 +638,9 @@ export function workflowNodeToSpec(node: WorkflowSpawnInfo, parentSessionId: str
     ...(node.model_hint ? { modelHint: node.model_hint } : {}),
     // M4/G5: carry the node's token cap so the orchestrator can bound the child run.
     ...(node.token_budget != null ? { tokenBudget: node.token_budget } : {}),
+    // O3: carry the node's turn / wall-clock caps (the orchestrator already honors these).
+    ...(node.max_turns != null ? { maxTurns: node.max_turns } : {}),
+    ...(node.max_wall_ms != null ? { maxWallMs: node.max_wall_ms } : {}),
   }
 }
 

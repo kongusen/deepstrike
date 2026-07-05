@@ -172,16 +172,20 @@ describe("resume persistence", () => {
     // category and primitive are added by the logging layer (withCategory)
   })
 
-  it("recoverCompletedWorkflowNodes extracts completed agent_ids", () => {
+  it("recoverCompletedWorkflowNodes extracts completed records with their control signals", () => {
     const events = [
       { seq: 0, event: { kind: "run_started", run_id: "s1", goal: "test", criteria: [] } },
-      { seq: 1, event: buildWorkflowNodeCompletedEvent({ turn: 1, agentId: "wf-node0", termination: "completed" }) },
+      { seq: 1, event: buildWorkflowNodeCompletedEvent({ turn: 1, agentId: "wf-node0", termination: "completed", classifyBranch: "a", output: "picked a" }) },
       { seq: 2, event: buildWorkflowNodeCompletedEvent({ turn: 2, agentId: "wf-node1", termination: "failed" }) },
       { seq: 3, event: buildWorkflowNodeCompletedEvent({ turn: 3, agentId: "wf-node2", termination: "completed" }) },
       { seq: 4, event: { kind: "run_terminal", reason: "done", turns_used: 3, total_tokens: 10 } },
     ]
     const completed = recoverCompletedWorkflowNodes(events)
-    expect(completed).toEqual(["wf-node0", "wf-node2"])
+    // W-1: records (not bare ids) — signals + output ride along for faithful control-flow replay.
+    expect(completed).toEqual([
+      { agentId: "wf-node0", classifyBranch: "a", output: "picked a" },
+      { agentId: "wf-node2" },
+    ])
   })
 
   it("recoverCompletedWorkflowNodes returns empty for empty stream", () => {

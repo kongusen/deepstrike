@@ -106,7 +106,13 @@ export class ReactiveSession {
   /** Register a peer persona and record it in the group membership (lineage). */
   addPeer(personaId: string, spec: ReactivePeerSpec = {}): void {
     this.peerSpecs.set(personaId, spec)
-    void this.opts.runGroup.budgetStore.join(this.opts.runGroup.id, { sessionId: personaId, role: spec.role })
+    // W-N5: tagged "peer" so resume() can tell personas apart from vehicle sessions (workflow
+    // envelopes / wf-node children / loop iterations) that share the same governance domain.
+    void this.opts.runGroup.budgetStore.join(this.opts.runGroup.id, {
+      sessionId: personaId,
+      role: spec.role,
+      kind: "peer",
+    })
   }
 
   peers(): string[] {
@@ -194,14 +200,20 @@ export class ReactiveSession {
   }
 
   /**
-   * Rebuild a session from a persisted `RunGroup`: load its members (lineage) as peers. The blackboard
-   * continuity comes from the (persistent) `EventStream`. Turn-policy cursor state is not restored.
+   * Rebuild a session from a persisted `RunGroup`: load its PEER members (lineage) as peers. The
+   * blackboard continuity comes from the (persistent) `EventStream`. Turn-policy cursor state is not
+   * restored. W-N5: vehicle members (workflow envelopes, `wf-node*` children, loop iterations) share
+   * the governance domain but are NOT personas — resuming them as peers would resurrect phantoms.
+   * A legacy membership with no kind tags falls back to resuming every member.
    */
   static async resume(
     opts: ReactiveSessionOptions & { peerSpecs?: Record<string, ReactivePeerSpec> },
   ): Promise<ReactiveSession> {
     const session = new ReactiveSession(opts)
-    for (const member of await opts.runGroup.budgetStore.members(opts.runGroup.id)) {
+    const members = await opts.runGroup.budgetStore.members(opts.runGroup.id)
+    const anyTagged = members.some(m => m.kind !== undefined)
+    for (const member of members) {
+      if (anyTagged && member.kind !== "peer") continue
       session.peerSpecs.set(member.sessionId, opts.peerSpecs?.[member.sessionId] ?? { role: member.role })
     }
     return session

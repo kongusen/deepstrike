@@ -32,6 +32,7 @@ import {
   recoverCompletedWorkflowNodes,
   recoverSubmittedWorkflowNodes,
   repairEventsForRecovery,
+  type RecoveredNodeCompletion,
 } from "./session-repair.js"
 import { KernelPrimitivesDashboard } from "./kernel-primitives-dashboard.js"
 import {
@@ -78,7 +79,7 @@ import {
 } from "./output-schema.js"
 import { resolveReducer, type ReducerRegistry } from "./reducers.js"
 import {
-  loopInstruction, classifyInstruction, judgeGoal,
+  loopInstruction, classifyInstruction, judgeGoal, dependencyOutputsNote,
   extractLoopContinue, extractClassifyBranch, extractJudgeWinner,
 } from "./workflow-control-flow.js"
 import { governancePolicyToKernelEvent, governanceFilterSchema, type GovernancePolicy } from "../governance.js"
@@ -713,7 +714,11 @@ export class RuntimeRunner {
     // G4: surface the workflow's remaining budget to the node's agent so a coordinator can size its
     // `submit_workflow_nodes` batch to what is available (empty string ⇒ unbounded, no note).
     const budgetNote = workflowBudgetNote(budget)
-    const withBudget = (goal: string) => (budgetNote ? `${goal}\n\n${budgetNote}` : goal)
+    // W-N2: a DAG edge carries data — every dependent node sees its dependencies' outputs (the
+    // kernel sends `input_agent_ids` for all dependents; judges/reduce keep their special paths).
+    const depsNote = dependencyOutputsNote(node.input_agent_ids, outputs)
+    const withBudget = (goal: string) =>
+      [goal, depsNote, budgetNote].filter(Boolean).join("\n\n")
     const mkCtx = (goal: string) => ({
       parentOpts: this.opts,
       parentSessionId,
@@ -723,6 +728,10 @@ export class RuntimeRunner {
       // M5 v2.1: this child IS a workflow node — its `start_workflow` flattens to this kernel (the
       // workflow it would author joins the running DAG) rather than bootstrapping a nested pivot.
       isWorkflowNode: true,
+      // W-N1: trusted workflow nodes run on the parent's execution plane (they carry no grant list
+      // by design — filtering on the missing list ran every DAG node TOOL-LESS); quarantined nodes
+      // stay deny-all filtered (they read untrusted content).
+      toolAccess: (node.trust === "quarantined" ? "filtered" : "inherit") as "filtered" | "inherit",
       // #2-B-ii: the per-node abort signal the driver fires when the kernel preempts this node.
       ...(abortSignal ? { abortSignal } : {}),
       ...(this.opts.subAgentHarness ? { harness: this.opts.subAgentHarness } : {}),
@@ -827,9 +836,15 @@ export class RuntimeRunner {
     spec: WorkflowSpec,
     opts?: {
       resumedCompleted?: string[]
+      /** W-1: recovered completions WITH control signals (classify branch / loop stop) — lowered to
+       *  the kernel's `resumed_results` so control flow replays faithfully. Supersedes
+       *  `resumedCompleted` for ids present in both. */
+      resumedResults?: RecoveredNodeCompletion[]
       resumedSubmissions?: Record<string, unknown>[][]
       /** R3-1: original base index per submission batch (parallel to resumedSubmissions). */
       resumedSubmissionBases?: number[]
+      /** W-1: recovered node outputs (agent id → output text) to pre-seed the driver's outputs map. */
+      resumedOutputs?: Map<string, string>
       /** Standalone session id when bootstrapping (no active parent run). Defaults to a fresh uuid. */
       sessionId?: string
     },
@@ -849,7 +864,7 @@ export class RuntimeRunner {
       if (this.opts.runGroup) {
         const g = this.opts.runGroup
         groupLedger = await g.budgetStore.read(g.id)
-        await g.budgetStore.join(g.id, { sessionId, role: this.opts.agentId })
+        await g.budgetStore.join(g.id, { sessionId, role: this.opts.agentId, kind: "vehicle" })
       }
       this.bootstrapWorkflowKernel(sessionId, spec, groupLedger?.tokensSpent, groupLedger?.subagentsSpawned)
     }
@@ -863,11 +878,22 @@ export class RuntimeRunner {
         parent_session_id: parentSessionId,
         // W0-ABI resume: skip nodes already completed before an interruption.
         ...(opts?.resumedCompleted?.length ? { resumed_completed: opts.resumedCompleted } : {}),
+        // W-1: signal-carrying completion records (classify branch / loop stop replay).
+        ...(opts?.resumedResults?.length
+          ? {
+              resumed_results: opts.resumedResults.map(r => ({
+                agent_id: r.agentId,
+                ...(r.classifyBranch !== undefined ? { classify_branch: r.classifyBranch } : {}),
+                ...(r.tournamentWinner !== undefined ? { tournament_winner: r.tournamentWinner } : {}),
+                ...(r.loopContinue !== undefined ? { loop_continue: r.loopContinue } : {}),
+              })),
+            }
+          : {}),
         // R3-1: re-apply recorded runtime submissions so dynamically-appended nodes are reconstructed.
         ...(opts?.resumedSubmissions?.length ? { resumed_submissions: opts.resumedSubmissions } : {}),
         ...(opts?.resumedSubmissionBases?.length ? { resumed_submission_bases: opts.resumedSubmissionBases } : {}),
       })
-      return await this.driveWorkflow(observations, parentSessionId, runtime)
+      return await this.driveWorkflow(observations, parentSessionId, runtime, opts?.resumedOutputs)
     } finally {
       if (bootstrapped) {
         // L1: charge the standalone workflow's node spawns back to the group so the cumulative spawn
@@ -951,6 +977,20 @@ export class RuntimeRunner {
       this.pendingObservations,
       submitWorkflowToKernel(spec, parentSessionId, opts?.submitterAgentId),
     )
+    // W-3: persist the agent-authored batch (bootstrap base 0 / flatten base N — the kernel now
+    // announces BOTH) so an interrupted authored workflow reconstructs on resume; the host never
+    // had this spec, unlike the `runWorkflow` path.
+    const submitted = observations.find(o => o.kind === "workflow_nodes_submitted") as
+      | { base?: number }
+      | undefined
+    if (submitted) {
+      await this.opts.sessionLog.append(parentSessionId, buildWorkflowNodesSubmittedEvent({
+        turn: runtime.turn(),
+        nodes: (workflowSpecToKernel(spec).nodes as Record<string, unknown>[]) ?? [],
+        baseIndex: submitted.base,
+        submitterAgentId: opts?.submitterAgentId,
+      }))
+    }
     return this.driveWorkflow(observations, parentSessionId, runtime)
   }
 
@@ -1022,6 +1062,7 @@ export class RuntimeRunner {
     initial: KernelObservation[],
     parentSessionId: string,
     runtime: KernelRuntimeInstance,
+    seedOutputs?: Map<string, string>,
   ): Promise<{ completed: string[]; failed: string[]; outputs: Record<string, string> }> {
     let observations = initial
     const orchestrator = this.opts.subAgentOrchestrator ?? defaultSubAgentOrchestrator
@@ -1045,7 +1086,9 @@ export class RuntimeRunner {
     // G2: each completed node's output, keyed by agent id — a reduce node reads its dependencies'
     // outputs from here. Deps always complete in an earlier round than the reduce node that needs
     // them (the kernel keeps the reduce node un-ready until its deps finish), so this is populated.
-    const outputs = new Map<string, string>()
+    // W-1: on resume it is pre-seeded from the persisted node outputs, so post-resume dependents
+    // still see their (pre-crash) dependencies' outputs.
+    const outputs = new Map<string, string>(seedOutputs ?? [])
 
     for (;;) {
       if (nodes.length === 0) return { completed: [], failed: [], outputs: Object.fromEntries(outputs) } // nothing to run (e.g. all gated)
@@ -1077,7 +1120,12 @@ export class RuntimeRunner {
       for (const result of results) {
         // G2: record this node's output so a downstream reduce node can consume it.
         const outContent = result.result.finalMessage?.content
-        outputs.set(result.agentId, typeof outContent === "string" ? outContent : outContent != null ? JSON.stringify(outContent) : "")
+        const outText = typeof outContent === "string" ? outContent : outContent != null ? JSON.stringify(outContent) : ""
+        outputs.set(result.agentId, outText)
+        // A loop iteration completes under `wf-node{N}-i{k}` but its dependents consume the STABLE
+        // node id `wf-node{N}` — alias it so the LAST iteration's output is what dependents see.
+        const stableId = result.agentId.replace(/-i\d+$/, "")
+        if (stableId !== result.agentId) outputs.set(stableId, outText)
         // R3-1: if this node's agent submitted more nodes, append them to the parent DAG BEFORE
         // reporting the node's completion — the workflow is still active (the kernel hasn't seen this
         // node finish), so even a submission from the last running node keeps the DAG alive. The
@@ -1090,7 +1138,8 @@ export class RuntimeRunner {
           nextNodes.push(...collectNodes(subObs))
           budget = collectBudget(subObs) ?? budget
           // R3-1: persist the submission (kernel-shape nodes) + its kernel-reported base index
-          // so resume can re-apply the batch at the exact original graph position.
+          // so resume can re-apply the batch at the exact original graph position. W-N3: also the
+          // submitter, so resume drops batches whose submitter re-runs (it will re-submit).
           const submitted = subObs.find(o => o.kind === "workflow_nodes_submitted") as
             | { base?: number }
             | undefined
@@ -1098,6 +1147,7 @@ export class RuntimeRunner {
             turn: runtime.turn(),
             nodes: (submitEvent.nodes as Record<string, unknown>[]) ?? [],
             baseIndex: submitted?.base,
+            submitterAgentId: result.agentId,
           }))
         }
         const obs = kernelApply(runtime, this.pendingObservations, {
@@ -1108,11 +1158,17 @@ export class RuntimeRunner {
         budget = collectBudget(obs) ?? budget
         const d = findDone(obs)
         if (d) done = d
-        // Persist node completion for resume recovery.
+        // Persist node completion for resume recovery. W-1: the result-borne control signals ride
+        // along (a resumed classifier re-prunes; a recorded loop stop is honored) plus the output
+        // text (post-resume dependents/reduce still see this node's output).
         await this.opts.sessionLog.append(parentSessionId, buildWorkflowNodeCompletedEvent({
           turn: runtime.turn(),
           agentId: result.agentId,
           termination: result.result.termination,
+          classifyBranch: result.result.classifyBranch,
+          tournamentWinner: result.result.tournamentWinner,
+          loopContinue: result.result.loopContinue,
+          ...(result.result.termination === "completed" && outText ? { output: outText } : {}),
         }))
       }
       if (done && nextNodes.length === 0) {
@@ -1124,8 +1180,9 @@ export class RuntimeRunner {
 
   /**
    * Resume a workflow from the parent session's completed nodes.
-   * Reads the session log, extracts completed workflow node agent_ids, and
-   * calls runWorkflow with resumedCompleted so the kernel skips those nodes.
+   * Reads the session log, extracts completed workflow node records (with their W-1 control
+   * signals + outputs), and calls runWorkflow so the kernel skips those nodes, replays control
+   * flow (classify prune / loop stop), and the driver re-seeds its outputs map.
    */
   async resumeWorkflow(
     spec: WorkflowSpec,
@@ -1138,12 +1195,33 @@ export class RuntimeRunner {
       throw new Error("resumeWorkflow requires an active parent run or an explicit sessionId")
     }
     const events = await this.opts.sessionLog.read(sessionId)
-    const resumedCompleted = recoverCompletedWorkflowNodes(events)
+    const resumedResults = recoverCompletedWorkflowNodes(events)
+    const completedIds = new Set(resumedResults.map(r => r.agentId))
     const recovered = recoverSubmittedWorkflowNodes(events)
+    // W-N3: DROP batches whose submitter did NOT complete — that node re-runs on resume and will
+    // re-submit its batch; replaying the logged copy too would duplicate its nodes in the DAG.
+    // Only safe with exact bases (the dropped batch's slots become inert placeholders); a legacy
+    // order-only log keeps every batch, since dropping would shift all later indices.
+    let { submissions, bases } = recovered
+    if (bases.length === submissions.length && submissions.length > 0) {
+      const keep = recovered.submitters.map(s => s === undefined || completedIds.has(s))
+      submissions = submissions.filter((_, i) => keep[i])
+      bases = bases.filter((_, i) => keep[i])
+    }
+    const resumedOutputs = new Map(
+      resumedResults.filter(r => r.output).map(r => [r.agentId, r.output as string]),
+    )
+    // Alias loop iterations onto their stable node id (last iteration wins) — dependents consume
+    // `wf-node{N}`, not `wf-node{N}-i{k}`.
+    for (const r of resumedResults) {
+      const stableId = r.agentId.replace(/-i\d+$/, "")
+      if (stableId !== r.agentId && r.output) resumedOutputs.set(stableId, r.output)
+    }
     return this.runWorkflow(spec, {
-      resumedCompleted,
-      resumedSubmissions: recovered.submissions,
-      resumedSubmissionBases: recovered.bases,
+      resumedResults,
+      resumedSubmissions: submissions,
+      resumedSubmissionBases: bases,
+      resumedOutputs,
       sessionId,
     })
   }
@@ -1647,7 +1725,7 @@ export class RuntimeRunner {
     if (this.opts.runGroup) {
       const g = this.opts.runGroup
       groupLedger = await g.budgetStore.read(g.id)
-      await g.budgetStore.join(g.id, { sessionId, role: this.opts.agentId })
+      await g.budgetStore.join(g.id, { sessionId, role: this.opts.agentId, kind: "vehicle" })
     }
     this.applyKernelPolicies(runtime, groupLedger?.tokensSpent, groupLedger?.subagentsSpawned, groupLedger?.roundsCompleted)
     // Multimodal upload: seed the user's attachments (images/audio) as a history

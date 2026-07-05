@@ -18,6 +18,27 @@ export function loopInstruction(maxIters: number): string {
   )
 }
 
+/** W-N2: dependency outputs appended to a dependent node's goal — a DAG edge carries data, not
+ *  just ordering (fan-out→synthesize was an uninformed synthesis without this). Each dependency's
+ *  output is clipped so a chain of large nodes can't blow the child's context; empty/unknown
+ *  outputs are skipped. Returns "" when the node has no dependencies. */
+export function dependencyOutputsNote(
+  inputAgentIds: string[] | undefined,
+  outputs: Map<string, string> | undefined,
+  maxPerDep = 8_000,
+): string {
+  if (!inputAgentIds?.length || !outputs) return ""
+  const blocks = inputAgentIds
+    .map(id => {
+      const out = outputs.get(id) ?? ""
+      if (!out) return ""
+      const clipped = out.length > maxPerDep ? `${out.slice(0, maxPerDep)}\n…[truncated]` : out
+      return `[dependency ${id} output]\n${clipped}`
+    })
+    .filter(Boolean)
+  return blocks.join("\n\n")
+}
+
 /** Instruction appended to a classify node's goal: pick exactly one of the kernel's branch labels. */
 export function classifyInstruction(labels: string[]): string {
   return (
