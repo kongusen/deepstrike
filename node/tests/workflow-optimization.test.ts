@@ -155,6 +155,66 @@ describe("W-N1: workflow nodes get tools (trusted inherit; quarantined stay deny
   })
 })
 
+describe("DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable session", () => {
+  /** Per ITERATION the child makes two calls: propose a pace verb, then file the report turn. */
+  function pacingLoopProvider(verbs: string[]): LLMProvider {
+    let call = 0
+    return {
+      async complete(): Promise<Message> {
+        return { role: "assistant", content: "done", toolCalls: [] }
+      },
+      async *stream(): AsyncIterable<StreamEvent> {
+        call += 1
+        const iteration = Math.ceil(call / 2) - 1
+        if (call % 2 === 1) {
+          yield {
+            type: "tool_call", id: `pace-${call}`, name: "pace",
+            arguments: { next: verbs[Math.min(iteration, verbs.length - 1)], reason: `iter ${iteration}` },
+          }
+          return
+        }
+        yield { type: "text_delta", delta: `iteration ${iteration} report` }
+      },
+    }
+  }
+
+  it("pace continue→stop drives the iterations; the transcript accumulates under one session id", async () => {
+    const { runner, sessionLog } = createRunner(pacingLoopProvider(["continue", "stop"]))
+    const outcome = await runner.runWorkflow(
+      { nodes: [{ task: "polish until done", role: "implement", loop: { maxIters: 5 } }] },
+      { sessionId: "wfloop" },
+    )
+    expect(outcome.completed).toEqual(["wf-node0"])
+    // The pace verb ended the loop at 2 iterations, well before maxIters=5.
+    const loopSession = await sessionLog.read("wfloop-wf-node0")
+    const starts = loopSession.filter(e => e.event.kind === "run_started")
+    expect(starts.length).toBe(2) // W-N6: BOTH iterations ran under the ONE stable session id
+    // No per-iteration session fragments.
+    expect(await sessionLog.read("wfloop-wf-node0-i0")).toEqual([])
+    expect(await sessionLog.read("wfloop-wf-node0-i1")).toEqual([])
+  })
+
+  it("an iteration that never paces completes the loop (silence = done, not run-to-cap)", async () => {
+    const silent: LLMProvider = {
+      async complete(): Promise<Message> {
+        return { role: "assistant", content: "done", toolCalls: [] }
+      },
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "text_delta", delta: "all done in one pass" }
+      },
+    }
+    const { runner, sessionLog } = createRunner(silent)
+    const outcome = await runner.runWorkflow(
+      { nodes: [{ task: "one-shot polish", role: "implement", loop: { maxIters: 4 } }] },
+      { sessionId: "wfsilent" },
+    )
+    expect(outcome.completed).toEqual(["wf-node0"])
+    // default_action=stop: exactly ONE iteration ran (the kernel's pace fallback said stop).
+    const starts = (await sessionLog.read("wfsilent-wf-node0")).filter(e => e.event.kind === "run_started")
+    expect(starts.length).toBe(1)
+  })
+})
+
 describe("W-N5: ReactiveSession.resume rebuilds peers, not vehicles", () => {
   it("filters vehicle members and keeps legacy untagged memberships whole", async () => {
     const store = new InMemoryGroupBudgetStore()

@@ -123,6 +123,11 @@ export interface LoopResult {
   classifyBranch?: string
   /** A#2 tournament verdict: a judge reports the winning entrant's agent id here. Sent only when set. */
   tournamentWinner?: string
+  /** ③ loop-agent pacing: the kernel-adjudicated after-round decision, surfaced by the orchestrator
+   *  from the child's done event. For a loop-node iteration this is the PRIMARY continuation
+   *  vocabulary (stop → loopContinue=false); the legacy text-sniffed signal is the fallback.
+   *  SDK-internal — stripped by `subAgentResultToKernel`. */
+  paceDecision?: import("../runtime/kernel-step.js").PaceDecision
 }
 
 export interface SubAgentResult {
@@ -624,10 +629,15 @@ export const startWorkflowTool: ToolSchema = {
 
 /** Build a sub-agent run spec for a kernel-generated workflow node. */
 export function workflowNodeToSpec(node: WorkflowSpawnInfo, parentSessionId: string): AgentRunSpec {
+  // W-N6 transcript-as-carry: a loop node's iterations share ONE stable session id (the `-i{k}`
+  // suffix names the spawn, not the session), so iteration k replays the transcript of 0..k-1 —
+  // "do the next increment" actually sees the previous increments. The agent_id keeps the
+  // per-iteration suffix (kernel completion routing).
+  const sessionNodeId = node.loop_max_iters != null ? node.agent_id.replace(/-i\d+$/, "") : node.agent_id
   return {
     identity: {
       agentId: node.agent_id,
-      sessionId: `${parentSessionId}-${node.agent_id}`,
+      sessionId: `${parentSessionId}-${sessionNodeId}`,
       isSubAgent: true,
       parentSessionId,
     },
@@ -641,6 +651,11 @@ export function workflowNodeToSpec(node: WorkflowSpawnInfo, parentSessionId: str
     // O3: carry the node's turn / wall-clock caps (the orchestrator already honors these).
     ...(node.max_turns != null ? { maxTurns: node.max_turns } : {}),
     ...(node.max_wall_ms != null ? { maxWallMs: node.max_wall_ms } : {}),
+    // DW-3 one continuation vocabulary: a loop ITERATION runs with the pacing trap armed, so the
+    // agent signals continue/stop through the kernel-adjudicated `pace` meta-tool instead of a
+    // text-sniffed JSON blob. One iteration = one round; the DAG (not max_rounds) caps iterations,
+    // and default stop means "ended without pacing" = done — the CC silence-is-completion contract.
+    ...(node.loop_max_iters != null ? { loopRound: { defaultAction: "stop" as const } } : {}),
   }
 }
 

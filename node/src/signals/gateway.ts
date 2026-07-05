@@ -35,9 +35,15 @@ export class SignalGateway implements SignalSource {
 
   // ── Push API ────────────────────────────────────────────────────────────────
 
-  /** Register a listener that is called synchronously whenever a signal is emitted. */
-  onSignal(listener: (sig: RuntimeSignal) => void): void {
+  /** Register a listener that is called synchronously whenever a signal is emitted.
+   *  Returns an unsubscribe function — long-lived consumers (e.g. a loop's
+   *  `signalAwareSleeper`, re-registered per sleep) must call it or the listener leaks. */
+  onSignal(listener: (sig: RuntimeSignal) => void): () => void {
     this.listeners.push(listener)
+    return () => {
+      const idx = this.listeners.indexOf(listener)
+      if (idx !== -1) this.listeners.splice(idx, 1)
+    }
   }
 
   /** Schedule a ScheduledPrompt to fire at its `runAtMs`. Idempotent by goal+time. */

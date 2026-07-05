@@ -756,10 +756,19 @@ export class RuntimeRunner {
       return withSignal(result, { tournamentWinner: winnerId })
     }
 
-    // A#2 v2 loop iteration: run the increment, then extract a stop signal so the kernel can end the
-    // loop early (`loopContinue: false`). No signal ⇒ run to `max_iters`.
+    // A#2 v2 loop iteration: run the increment under the armed pacing trap (workflowNodeToSpec set
+    // `loopRound`, and the iteration resumes the loop's stable session — transcript-as-carry).
+    // DW-3 one vocabulary: the kernel-adjudicated `pace` verb IS the continuation signal
+    // (stop → loopContinue=false); the legacy text-sniffed JSON blob survives only as the fallback
+    // when no pace decision arrives (stub orchestrators, harness children), where no signal still
+    // means "run to max_iters" (v1).
     if (node.loop_max_iters != null) {
-      const result = await orchestrator.run(mkCtx(`${baseSpec.goal}\n\n${loopInstruction(node.loop_max_iters)}`))
+      const iteration = Number(/-i(\d+)$/.exec(node.agent_id)?.[1] ?? "0")
+      const result = await orchestrator.run(
+        mkCtx(`${baseSpec.goal}\n\n${loopInstruction(node.loop_max_iters, iteration)}`),
+      )
+      const pace = result.result.paceDecision
+      if (pace) return withSignal(result, { loopContinue: pace.action !== "stop" })
       const cont = extractLoopContinue(textOf(result))
       return cont === undefined ? result : withSignal(result, { loopContinue: cont })
     }

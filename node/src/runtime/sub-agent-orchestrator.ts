@@ -166,6 +166,13 @@ export class SubAgentOrchestrator {
       enablePlanTool: metaTools.has("update_plan") ? ctx.parentOpts.enablePlanTool : undefined,
       // M5 v2.1: a workflow node's `start_workflow` flattens to the parent kernel (no nested pivot).
       isWorkflowNode: ctx.isWorkflowNode,
+      // The child runs under ITS OWN spec, never the parent's: the spread above would otherwise
+      // leak the parent's `runSpec` (identity, capability filter — and a LoopDriver's armed
+      // `loopRound`, giving every child a phantom pace tool). A loop-node iteration carries its
+      // own minimal spec to arm the pacing trap (DW-3); everything else runs spec-less as before.
+      runSpec: ctx.spec.loopRound
+        ? { identity: ctx.spec.identity, role: ctx.spec.role, goal: ctx.spec.goal, loopRound: ctx.spec.loopRound }
+        : undefined,
     })
     // #2-B-ii: when the parent preempts this node (kernel `AgentPreempted`), interrupt the child —
     // cancelling its in-flight LLM call. Handle an already-aborted signal too (creation race).
@@ -239,6 +246,9 @@ export class SubAgentOrchestrator {
       turnsUsed: done?.iterations ?? 0,
       totalTokensUsed: done?.totalTokens ?? 0,
       ...(finalText ? { finalMessage: { role: "assistant", content: finalText, toolCalls: [] } } : {}),
+      // DW-3: surface the kernel-adjudicated pace decision (loop-node iterations consume it as the
+      // continuation vocabulary). SDK-internal; stripped by subAgentResultToKernel.
+      ...(done?.paceDecision ? { paceDecision: done.paceDecision } : {}),
     }
     return {
       agentId: ctx.spec.identity.agentId,

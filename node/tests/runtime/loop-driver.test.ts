@@ -1,5 +1,6 @@
 import { createRunner } from "./helpers.js"
-import { LoopDriver, foldLoopState, runLoop } from "../../src/runtime/loop-driver.js"
+import { LoopDriver, foldLoopState, runLoop, signalAwareSleeper } from "../../src/runtime/loop-driver.js"
+import { SignalGateway } from "../../src/os/public.js"
 import type { LLMProvider, Message, StreamEvent } from "../../src/types.js"
 
 /** Scripted loop provider: each ROUND proposes a pace verb, then files its round report. */
@@ -149,6 +150,56 @@ describe("③ dynamic loop agent — LoopDriver over the kernel pacing trap", ()
     expect(outcome.lastPace?.reason).toContain("max_rounds")
     const events = (await sessionLog.read("loop-cap")).map(e => e.event)
     expect(events.filter(e => e.kind === "round_started").length).toBe(2)
+  })
+
+  it("DW-5: the verdict override budget folds from the log — a restart grants no fresh overrides", async () => {
+    const provider = scriptedLoopProvider([{ next: "stop" }])
+    const { runner, sessionLog } = createRunner(provider, [])
+    // Simulate a pre-crash trail: 2 rounds whose stops were already overridden by the judge.
+    await sessionLog.append("loop-refold", { kind: "round_started", round: 1, goal: "g" })
+    await sessionLog.append("loop-refold", {
+      kind: "round_paced", round: 1, action: "continue",
+      reason: "verdict override 1: tests are still red", coerced_from: "stop (done)",
+    })
+    await sessionLog.append("loop-refold", { kind: "round_started", round: 2, goal: "g" })
+    await sessionLog.append("loop-refold", {
+      kind: "round_paced", round: 2, action: "continue",
+      reason: "verdict override 2: still red", coerced_from: "stop (done)",
+    })
+
+    const judged: number[] = []
+    const outcome = await new LoopDriver(runner, {
+      loopId: "loop-refold",
+      goal: "ship the fix",
+      maxVerdictOverrides: 2,
+      verdictFn: ({ round }) => {
+        judged.push(round)
+        return { pass: false, feedback: "no" }
+      },
+    }).run()
+    // Budget exhausted by the folded trail: the judge is never consulted, the stop stands.
+    expect(judged).toEqual([])
+    expect(outcome.stopped).toBe(true)
+    expect(outcome.roundsCompleted).toBe(3)
+  })
+
+  it("DW-6: signalAwareSleeper wakes a sleeping loop on its recipient-addressed signal", async () => {
+    const gateway = new SignalGateway()
+    const sleeper = signalAwareSleeper(gateway, "loop-wake")
+    const t0 = Date.now()
+    const sleeping = sleeper(60_000, t0 + 60_000)
+    // A signal addressed to ANOTHER loop must not wake us.
+    gateway.ingest({ source: "custom", signalType: "event", urgency: "normal", payload: {}, recipient: "someone-else" })
+    // The completion→wake bridge: a signal addressed to THIS loop ends the sleep immediately.
+    setTimeout(() => {
+      gateway.ingest({ source: "custom", signalType: "event", urgency: "normal", payload: { goal: "wf done" }, recipient: "loop-wake" })
+    }, 10)
+    const woke = await sleeping
+    expect(woke).toBe(true)
+    expect(Date.now() - t0).toBeLessThan(5_000)
+    // The wake signal stays queued for the next round's kernel signal path (visible to the model).
+    expect(gateway.depth).toBe(2)
+    gateway.destroy()
   })
 
   it("a round that never calls pace falls back to the kernel default_action", async () => {

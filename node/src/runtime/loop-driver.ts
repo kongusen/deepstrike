@@ -60,23 +60,55 @@ export interface LoopOutcome {
   wakeAtMs?: number
 }
 
-/** Fold the loop's session log into resumable pacing state — zero new storage. */
+/** Fold the loop's session log into resumable pacing state — zero new storage. DW-5: the judge's
+ *  override budget folds too, so a crash/restart can't grant the verdictFn fresh overrides. */
 export function foldLoopState(events: Array<{ seq: number; event: SessionEvent }>): {
   roundsCompleted: number
   pendingWakeAtMs?: number
   lastPace?: { action: string; reason: string }
+  overridesUsed: number
 } {
   let roundsCompleted = 0
   let pendingWakeAtMs: number | undefined
   let lastPace: { action: string; reason: string } | undefined
+  let overridesUsed = 0
   for (const { event } of events) {
     if (event.kind === "round_paced") {
       roundsCompleted = Math.max(roundsCompleted, event.round)
       lastPace = { action: event.action, reason: event.reason }
       pendingWakeAtMs = event.action === "sleep" ? event.wake_at_ms : undefined
+      if (event.reason.startsWith("verdict override")) overridesUsed += 1
     }
   }
-  return { roundsCompleted, pendingWakeAtMs, lastPace }
+  return { roundsCompleted, pendingWakeAtMs, lastPace, overridesUsed }
+}
+
+/**
+ * DW-6 completion→wake bridge, composed from two existing seams (zero new mechanism): a `sleeper`
+ * that races the timer against an L0 recipient-addressed signal on the shared gateway. Ingest a
+ * signal with `recipient: loopId` (a subagent/workflow completion, a webhook) and the sleeping loop
+ * wakes into its next round immediately — where the SAME queued signal then reaches the model
+ * through the kernel's normal signal path, so the wake reason is visible in-round.
+ */
+export function signalAwareSleeper(
+  gateway: { onSignal(listener: (sig: { recipient?: string }) => void): () => void },
+  loopId: string,
+): NonNullable<LoopSpec["sleeper"]> {
+  return (delayMs: number) =>
+    new Promise<boolean>(resolve => {
+      let settled = false
+      const settle = (v: boolean) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        unsubscribe()
+        resolve(v)
+      }
+      const unsubscribe = gateway.onSignal(sig => {
+        if (sig.recipient === loopId) settle(true)
+      })
+      const timer = setTimeout(() => settle(true), Math.max(0, delayMs))
+    })
 }
 
 export class LoopDriver {
@@ -96,9 +128,11 @@ export class LoopDriver {
     const { loopId } = this.spec
     const log = this.runner.hostOptions.sessionLog
 
-    // Resume: fold prior rounds + pending wake from the transcript.
+    // Resume: fold prior rounds + pending wake + the judge's used overrides from the transcript
+    // (DW-5: a crash/restart must not refill the verdictFn's override budget).
     const prior = foldLoopState(await log.read(loopId))
     let round = prior.roundsCompleted
+    this.overridesUsed = Math.max(this.overridesUsed, prior.overridesUsed)
     if (prior.pendingWakeAtMs !== undefined) {
       const remaining = prior.pendingWakeAtMs - Date.now()
       if (remaining > 0) {
