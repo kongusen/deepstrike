@@ -196,6 +196,58 @@ const CHECKS = [
     path: "tests/fixtures/session/os_snapshot_ask_user.json",
     patterns: ["tool_gated_count", "ask_user"],
   },
+  // ── dynamic workflow surface (W-audit): pinned as live invariants across the 3 driver SDKs. ──
+  {
+    // Index-faithful resume + W-1 signal replay + W-N3 submitter-aware batch drop.
+    id: "core-workflow-resume",
+    lang: "core",
+    path: "crates/deepstrike-core/src/orchestration/workflow/run.rs",
+    patterns: ["ResumedCompletion", "resumed_result", "parse_loop_iteration_id"],
+  },
+  {
+    id: "core-workflow-submit-gate",
+    lang: "core",
+    path: "crates/deepstrike-core/src/scheduler/state_machine/workflow.rs",
+    patterns: ["append_nodes_gated", "WorkflowNodesSubmitted", "submit_nodes_from"],
+  },
+  {
+    id: "node-workflow-driver",
+    lang: "node",
+    path: "node/src/runtime/runner.ts",
+    patterns: ["resumed_results", "recoverSubmittedWorkflowNodes", "dependencyOutputsNote", "buildWorkflowNodeCompletedEvent"],
+  },
+  {
+    id: "node-workflow-loop-pace",
+    lang: "node",
+    path: "node/src/types/agent.ts",
+    patterns: ["loopRound", "loop_round"],
+  },
+  {
+    id: "node-loop-driver",
+    lang: "node",
+    path: "node/src/runtime/loop-driver.ts",
+    patterns: ["foldLoopState", "signalAwareSleeper", "round_paced"],
+  },
+  {
+    id: "python-workflow-driver",
+    lang: "python",
+    path: "python/deepstrike/runtime/runner.py",
+    patterns: ["resumed_results", "recover_submitted_workflow_nodes", "dependency_outputs_note"],
+  },
+  {
+    id: "python-loop-driver",
+    lang: "python",
+    path: "python/deepstrike/runtime/loop_driver.py",
+    patterns: ["fold_loop_state", "round_paced"],
+  },
+  {
+    id: "wasm-workflow-driver",
+    lang: "wasm",
+    path: "wasm/src/runtime/runner.ts",
+    patterns: ["resumed_results", "recoverSubmittedWorkflowNodes", "dependencyOutputsNote"],
+  },
+  // wasm LoopDriver: EXPLICIT node+python-first decision (edge cron loops re-arm via wake_at_ms
+  // from the host today); revisit when a wasm host needs in-process pacing.
 ]
 
 let failed = 0

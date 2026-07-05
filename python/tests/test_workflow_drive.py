@@ -155,13 +155,19 @@ def test_recover_completed_workflow_nodes_extracts_completed():
 
     events = [
         SessionEntry(seq=0, event={"kind": "run_started", "run_id": "s1", "goal": "test", "criteria": []}),
-        SessionEntry(seq=1, event=build_workflow_node_completed_event(turn=1, agent_id="wf-node0", termination="completed")),
+        SessionEntry(seq=1, event=build_workflow_node_completed_event(
+            turn=1, agent_id="wf-node0", termination="completed", classify_branch="a", output="picked a",
+        )),
         SessionEntry(seq=2, event=build_workflow_node_completed_event(turn=2, agent_id="wf-node1", termination="failed")),
         SessionEntry(seq=3, event=build_workflow_node_completed_event(turn=3, agent_id="wf-node2", termination="completed")),
         SessionEntry(seq=4, event={"kind": "run_terminal", "reason": "done", "turns_used": 3, "total_tokens": 10}),
     ]
     completed = recover_completed_workflow_nodes(events)
-    assert sorted(completed) == ["wf-node0", "wf-node2"]
+    # W-1: records (not bare ids) — signals + output ride along for faithful control-flow replay.
+    assert [r.agent_id for r in completed] == ["wf-node0", "wf-node2"]
+    assert completed[0].classify_branch == "a"
+    assert completed[0].output == "picked a"
+    assert completed[1].classify_branch is None and completed[1].output is None
 
 
 def test_recover_completed_workflow_nodes_empty_stream():
@@ -381,19 +387,24 @@ def test_recover_submitted_workflow_nodes_in_order():
 
     e1 = build_workflow_nodes_submitted_event(turn=1, nodes=[{"task": {"goal": "a"}}])
     e2 = build_workflow_nodes_submitted_event(turn=2, nodes=[{"task": {"goal": "b"}}])
-    submissions, bases = recover_submitted_workflow_nodes([e1, e2])
+    submissions, bases, submitters = recover_submitted_workflow_nodes([e1, e2])
     assert submissions == [
         [{"task": {"goal": "a"}}],
         [{"task": {"goal": "b"}}],
     ]
     assert bases == []  # legacy records carry no base
+    assert submitters == [None, None]  # legacy records carry no submitter
 
     # Recorded bases come back parallel; a mixed log degrades to order-only for safety.
-    b1 = build_workflow_nodes_submitted_event(turn=1, nodes=[{"task": {"goal": "a"}}], base_index=3)
+    # W-N3: submitters come back parallel too (None = host/bootstrap submission).
+    b1 = build_workflow_nodes_submitted_event(
+        turn=1, nodes=[{"task": {"goal": "a"}}], base_index=3, submitter_agent_id="wf-node0",
+    )
     b2 = build_workflow_nodes_submitted_event(turn=2, nodes=[{"task": {"goal": "b"}}], base_index=5)
-    _, bases_full = recover_submitted_workflow_nodes([b1, b2])
+    _, bases_full, submitters_full = recover_submitted_workflow_nodes([b1, b2])
     assert bases_full == [3, 5]
-    _, bases_mixed = recover_submitted_workflow_nodes([b1, e2])
+    assert submitters_full == ["wf-node0", None]
+    _, bases_mixed, _ = recover_submitted_workflow_nodes([b1, e2])
     assert bases_mixed == []
 
 

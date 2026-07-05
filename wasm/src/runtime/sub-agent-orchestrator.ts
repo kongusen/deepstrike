@@ -18,6 +18,13 @@ export interface SubAgentRunContext {
   /** M5 v2.1: set when this child is a workflow node — propagated so a nested `start_workflow`
    *  FLATTENS to the parent kernel rather than auto-pivoting into its own bootstrap. */
   isWorkflowNode?: boolean
+  /** W-N1 tool exposure. The kernel omits an EMPTY `permitted_capability_ids` on the wire, so a
+   *  grant-less workflow node is indistinguishable from a zero-cap spawn at the manifest — the
+   *  caller states intent instead: `"inherit"` = run on the parent's execution plane with its
+   *  meta-tool availability (trusted workflow nodes — they carried no grant list by design, and
+   *  filtering on the missing list ran every DAG node TOOL-LESS); `"filtered"` (default) = filter
+   *  to the manifest grants, empty ⇒ deny-all (spawn path, quarantined nodes). */
+  toolAccess?: "inherit" | "filtered"
   /** #2-B-ii: parent-controlled abort — when the kernel preempts this node (`AgentPreempted`), the
    *  orchestrator interrupts the child runner, cancelling its in-flight LLM call. */
   abortSignal?: AbortSignal
@@ -68,12 +75,29 @@ function deriveMetaTools(permitted: Set<string>, opts: RuntimeOptions): Set<stri
   return metaTools
 }
 
+/** W-N1: meta-tools by source availability alone — a `toolAccess: "inherit"` child gets the same
+ *  meta surface a top-level run of these options would. */
+function availableMetaTools(opts: RuntimeOptions): Set<string> {
+  const metaTools = new Set<string>()
+  if (opts.skillContentMap?.size) metaTools.add("skill")
+  if (opts.dreamStore) metaTools.add("memory")
+  if (opts.knowledgeSource) metaTools.add("knowledge")
+  if (opts.enablePlanTool) metaTools.add("update_plan")
+  return metaTools
+}
+
 /** Host-side driver for kernel-isolated sub-agent runs. */
 export class SubAgentOrchestrator {
   async run(ctx: SubAgentRunContext): Promise<SubAgentResult> {
+    // W-N1: "inherit" runs the child on the parent's plane with availability-derived meta-tools
+    // (trusted workflow nodes); "filtered" (default) filters to the manifest grants, empty ⇒
+    // deny-all (spawn path, quarantined nodes).
+    const inherit = ctx.toolAccess === "inherit"
     const permitted = new Set(ctx.manifest.permitted_capability_ids ?? [])
-    const metaTools = deriveMetaTools(permitted, ctx.parentOpts)
-    const filteredPlane = new FilteredExecutionPlane(ctx.parentOpts.executionPlane, permitted, metaTools)
+    const metaTools = inherit ? availableMetaTools(ctx.parentOpts) : deriveMetaTools(permitted, ctx.parentOpts)
+    const execPlane = inherit
+      ? ctx.parentOpts.executionPlane
+      : new FilteredExecutionPlane(ctx.parentOpts.executionPlane, permitted, metaTools)
 
     let systemPrompt = ctx.parentOpts.systemPrompt
     let inheritEvents: Array<{ seq: number; event: SessionEvent }> | undefined
@@ -98,7 +122,7 @@ export class SubAgentOrchestrator {
       // O3: per-child turn / wall-clock caps (fall back to the inherited limits).
       maxTurns: ctx.spec.maxTurns ?? ctx.parentOpts.maxTurns,
       timeoutMs: ctx.spec.maxWallMs ?? ctx.parentOpts.timeoutMs,
-      executionPlane: filteredPlane,
+      executionPlane: execPlane,
       agentId: ctx.spec.identity.agentId,
       systemPrompt,
       sessionLog: ctx.sessionLog,
@@ -108,6 +132,13 @@ export class SubAgentOrchestrator {
       enablePlanTool: metaTools.has("update_plan") ? ctx.parentOpts.enablePlanTool : undefined,
       // M5 v2.1: a workflow node's `start_workflow` flattens to the parent kernel (no nested pivot).
       isWorkflowNode: ctx.isWorkflowNode,
+      // The child runs under ITS OWN spec, never the parent's: the spread above would otherwise
+      // leak the parent's `runSpec` (identity, capability filter — and an armed `loopRound`,
+      // giving every child a phantom pace tool). A loop-node iteration carries its own minimal
+      // spec to arm the pacing trap (DW-3); everything else runs spec-less as before.
+      runSpec: ctx.spec.loopRound
+        ? { identity: ctx.spec.identity, role: ctx.spec.role, goal: ctx.spec.goal, loopRound: ctx.spec.loopRound }
+        : undefined,
     })
     // #2-B-ii: parent preempt → interrupt the child (cancels its in-flight LLM call).
     linkAbort(ctx.abortSignal, childRunner)
@@ -132,6 +163,9 @@ export class SubAgentOrchestrator {
       ...(finalText
         ? { finalMessage: { role: "assistant", content: finalText, toolCalls: [] } }
         : {}),
+      // DW-3: surface the kernel-adjudicated pace decision (loop-node iterations consume it as the
+      // continuation vocabulary). SDK-internal; stripped by subAgentResultToKernel.
+      ...(done?.paceDecision ? { paceDecision: done.paceDecision } : {}),
     }
 
     return {

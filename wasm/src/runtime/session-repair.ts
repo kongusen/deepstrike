@@ -72,31 +72,58 @@ export function buildRunTerminalEvent(input: {
   }
 }
 
+/** Build workflow_node_completed for persistence after a node finishes. W-1: carries the
+ *  result-borne control signals + output so resume replays control flow and re-seeds outputs. */
 export function buildWorkflowNodeCompletedEvent(input: {
   turn: number
   agentId: string
   termination: string
+  classifyBranch?: string
+  tournamentWinner?: string
+  loopContinue?: boolean
+  output?: string
 }): Extract<SessionEvent, { kind: "workflow_node_completed" }> {
   return {
     kind: "workflow_node_completed",
     turn: input.turn,
     agent_id: input.agentId,
     termination: input.termination,
+    ...(input.classifyBranch !== undefined ? { classify_branch: input.classifyBranch } : {}),
+    ...(input.tournamentWinner !== undefined ? { tournament_winner: input.tournamentWinner } : {}),
+    ...(input.loopContinue !== undefined ? { loop_continue: input.loopContinue } : {}),
+    ...(input.output ? { output: input.output } : {}),
   }
 }
 
+/** One recovered node completion: the agent id plus its persisted control signals and output. */
+export interface RecoveredNodeCompletion {
+  agentId: string
+  classifyBranch?: string
+  tournamentWinner?: string
+  loopContinue?: boolean
+  output?: string
+}
+
 /**
- * Recover completed workflow node agent_ids from a session event stream.
- * Scans for workflow_node_completed events and returns the agent_ids whose
- * termination was "completed". Used to rebuild resumedCompleted for resumeWorkflow.
+ * Recover completed workflow node records from a session event stream. Scans for
+ * workflow_node_completed events with termination "completed" and returns them WITH their
+ * result-borne control signals (W-1) — resumeWorkflow lowers these to the kernel's
+ * `resumed_results` so a classifier re-prunes and a loop stop is honored, and re-seeds the
+ * driver's outputs map from the persisted output text.
  */
 export function recoverCompletedWorkflowNodes(
   events: Array<{ seq: number; event: SessionEvent }>,
-): string[] {
-  const completed: string[] = []
+): RecoveredNodeCompletion[] {
+  const completed: RecoveredNodeCompletion[] = []
   for (const { event } of events) {
     if (event.kind === "workflow_node_completed" && event.termination === "completed") {
-      completed.push(event.agent_id)
+      completed.push({
+        agentId: event.agent_id,
+        ...(event.classify_branch !== undefined ? { classifyBranch: event.classify_branch } : {}),
+        ...(event.tournament_winner !== undefined ? { tournamentWinner: event.tournament_winner } : {}),
+        ...(event.loop_continue !== undefined ? { loopContinue: event.loop_continue } : {}),
+        ...(event.output !== undefined ? { output: event.output } : {}),
+      })
     }
   }
   return completed
@@ -108,27 +135,34 @@ export function buildWorkflowNodesSubmittedEvent(input: {
   turn: number
   nodes: Record<string, unknown>[]
   baseIndex?: number
+  submitterAgentId?: string
 }): Extract<SessionEvent, { kind: "workflow_nodes_submitted" }> {
   return {
     kind: "workflow_nodes_submitted",
     turn: input.turn,
     nodes: input.nodes,
     ...(input.baseIndex !== undefined ? { base_index: input.baseIndex } : {}),
+    ...(input.submitterAgentId !== undefined ? { submitter_agent_id: input.submitterAgentId } : {}),
   }
 }
 
 /** R3-1: recover the runtime submission batches (in order) to rebuild `resumed_submissions` for
- *  resumeWorkflow, so dynamically-appended nodes are reconstructed. */
+ *  resumeWorkflow, so dynamically-appended nodes are reconstructed.
+ *  `submitters` is parallel to `submissions` (undefined = host/bootstrap submission). */
 export function recoverSubmittedWorkflowNodes(
   events: Array<{ seq: number; event: SessionEvent }>,
-): { submissions: Record<string, unknown>[][]; bases: number[] } {
+): { submissions: Record<string, unknown>[][]; bases: number[]; submitters: Array<string | undefined> } {
   const submissions: Record<string, unknown>[][] = []
   const bases: number[] = []
+  const submitters: Array<string | undefined> = []
   for (const { event } of events) {
     if (event.kind === "workflow_nodes_submitted") {
       submissions.push(event.nodes)
+      submitters.push(event.submitter_agent_id)
+      // Absent on legacy logs → order-only replay (bases array stays parallel-short only
+      // if ALL records carry it; a mixed log degrades to order-only for safety).
       if (event.base_index !== undefined) bases.push(event.base_index)
     }
   }
-  return { submissions, bases: bases.length === submissions.length ? bases : [] }
+  return { submissions, bases: bases.length === submissions.length ? bases : [], submitters }
 }

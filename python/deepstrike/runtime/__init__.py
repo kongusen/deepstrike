@@ -78,11 +78,21 @@ from deepstrike.runtime.worktree_plane import (
 )
 from deepstrike.runtime.workflow_control_flow import (
   classify_instruction,
+  dependency_outputs_note,
   extract_classify_branch,
   extract_judge_winner,
   extract_loop_continue,
   judge_goal,
   loop_instruction,
+)
+# ③ dynamic loop agents: self-pacing rounds over the kernel pacing trap.
+from deepstrike.runtime.loop_driver import (
+  LoopDriver,
+  LoopOutcome,
+  LoopSpec,
+  fold_loop_state,
+  run_loop,
+  signal_aware_sleeper,
 )
 from deepstrike.runtime.os_profile import (
   AttentionPolicy,
@@ -125,10 +135,17 @@ __all__ = [
   "WorktreeManager",
   "loop_instruction",
   "classify_instruction",
+  "dependency_outputs_note",
   "judge_goal",
   "extract_loop_continue",
   "extract_classify_branch",
   "extract_judge_winner",
+  "LoopDriver",
+  "LoopOutcome",
+  "LoopSpec",
+  "fold_loop_state",
+  "run_loop",
+  "signal_aware_sleeper",
   "collect_text",
   "LocalExecutionPlane",
   "ExecutionPlane",

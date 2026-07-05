@@ -78,7 +78,11 @@ export class InMemoryGroupBudgetStore implements GroupBudgetStore {
 
   join(groupId: string, member: GroupMember): void {
     if (!this.memberships.has(groupId)) this.memberships.set(groupId, new Map())
-    this.memberships.get(groupId)!.set(member.sessionId, member)
+    // First join wins (idempotent by sessionId) — the same contract as SessionLogGroupBudgetStore.
+    // A persona registered as "peer" then re-joining through its own run() as "vehicle" must not
+    // lose its peer tag (W-N5), and the two stores must agree on which record survives.
+    const members = this.memberships.get(groupId)!
+    if (!members.has(member.sessionId)) members.set(member.sessionId, member)
   }
 
   members(groupId: string): GroupMember[] {

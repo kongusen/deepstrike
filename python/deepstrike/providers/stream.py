@@ -78,6 +78,9 @@ class DoneEvent:
     total_tokens: int = 0
     status: str = "success"  # mirrors LoopResult.termination: completed/max_turns/token_budget/timeout/user_abort/error
     dream_result: "Any | None" = None
+    # ③ loop-agent pacing: the kernel-adjudicated after-round decision, snake_case dict
+    # {"action", "delay_ms"?, "reason", "coerced_from"?}. None on non-loop runs.
+    pace_decision: "Any | None" = None
 
 
 @dataclass

@@ -17,14 +17,38 @@ from typing import Any
 from deepstrike.runtime.output_schema import extract_json_value
 
 
-def loop_instruction(max_iters: int) -> str:
-  """Instruction appended to a loop node's goal: do the next increment, and signal when done."""
+def loop_instruction(max_iters: int, iteration: int = 0) -> str:
+  """Instruction appended to a loop iteration's goal. DW-3: the continuation verb is the
+  kernel-adjudicated ``pace`` meta-tool (armed on every iteration run), not a text blob — one
+  vocabulary shared with the round-level loop agent. Iterations share one session, so "the work
+  so far" is simply the visible transcript."""
   return (
-    f"This task runs as a LOOP (up to {max_iters} iterations total). Do the next increment of work "
-    'now. When you judge the overall task COMPLETE and no further iterations are needed, end your '
-    'response with a JSON object {"loop_continue": false}. To request another iteration, omit it or '
-    'return {"loop_continue": true}.'
+    f"This task runs as a LOOP — this is iteration {iteration + 1} of up to {max_iters}. Your prior "
+    "iterations' work (if any) is visible above; do the NEXT increment now. Then call the `pace` tool: "
+    '`{"next": "continue"}` to request another iteration, or `{"next": "stop"}` when the overall '
+    "task is complete. Ending without calling `pace` also completes the loop."
   )
+
+
+def dependency_outputs_note(
+  input_agent_ids: list[str] | None,
+  outputs: dict[str, str] | None,
+  max_per_dep: int = 8_000,
+) -> str:
+  """W-N2: dependency outputs appended to a dependent node's goal — a DAG edge carries data, not
+  just ordering (fan-out→synthesize was an uninformed synthesis without this). Each dependency's
+  output is clipped so a chain of large nodes can't blow the child's context; empty/unknown
+  outputs are skipped. Returns "" when the node has no dependencies."""
+  if not input_agent_ids or outputs is None:
+    return ""
+  blocks: list[str] = []
+  for dep_id in input_agent_ids:
+    out = outputs.get(dep_id) or ""
+    if not out:
+      continue
+    clipped = f"{out[:max_per_dep]}\n…[truncated]" if len(out) > max_per_dep else out
+    blocks.append(f"[dependency {dep_id} output]\n{clipped}")
+  return "\n\n".join(blocks)
 
 
 def classify_instruction(labels: list[str]) -> str:

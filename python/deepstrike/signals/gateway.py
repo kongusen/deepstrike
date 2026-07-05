@@ -30,8 +30,21 @@ class SignalGateway:
         self._tasks: dict[str, asyncio.Task] = {}
         self._pending: deque[RuntimeSignal] = deque()
 
-    def on_signal(self, listener: Callable[[RuntimeSignal], None]) -> None:
+    def on_signal(self, listener: Callable[[RuntimeSignal], None]) -> Callable[[], None]:
+        """Register a listener that is called synchronously whenever a signal is emitted.
+
+        Returns an unsubscribe function — long-lived consumers (e.g. a loop's
+        ``signal_aware_sleeper``, re-registered per sleep) must call it or the listener leaks.
+        """
         self._listeners.append(listener)
+
+        def _unsubscribe() -> None:
+            try:
+                self._listeners.remove(listener)
+            except ValueError:
+                pass
+
+        return _unsubscribe
 
     def schedule(self, prompt: ScheduledPrompt) -> None:
         """Schedule a ScheduledPrompt to fire at its run_at_ms. Idempotent by goal+time."""

@@ -39,10 +39,20 @@ export interface KernelRuntimeHandle {
   preservedRefs(): string[]
 }
 
+export interface PaceDecision {
+  action: "continue" | "sleep" | "stop"
+  delayMs?: number
+  reason: string
+  /** Set when the kernel trap coerced the model's proposal (clamped delay / forced stop). */
+  coercedFrom?: string
+}
+
 export interface KernelLoopResult {
   termination: string
   turnsUsed: number
   totalTokensUsed: number
+  /** ③ loop-agent: the kernel-adjudicated after-round decision (absent on non-loop runs). */
+  paceDecision?: PaceDecision
 }
 
 export type KernelRunnerAction =
@@ -284,12 +294,26 @@ function mapKernelAction(raw: Record<string, unknown>): KernelRunnerAction {
       }
     case "done": {
       const result = (raw.result as Record<string, unknown>) ?? {}
+      const pace = result.pace_decision as
+        | { action?: string; delay_ms?: number; reason?: string; coerced_from?: string }
+        | undefined
       return {
         kind: "done",
         result: {
           termination: String(result.termination ?? "error"),
           turnsUsed: Number(result.turns_used ?? 0),
           totalTokensUsed: Number(result.total_tokens_used ?? 0),
+          // ③ loop-agent: the kernel-adjudicated after-round decision (absent on non-loop runs).
+          ...(pace
+            ? {
+                paceDecision: {
+                  action: (pace.action ?? "stop") as "continue" | "sleep" | "stop",
+                  delayMs: pace.delay_ms,
+                  reason: pace.reason ?? "",
+                  coercedFrom: pace.coerced_from,
+                },
+              }
+            : {}),
         },
       }
     }

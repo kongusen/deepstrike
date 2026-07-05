@@ -19,6 +19,11 @@ pub use deepstrike_core::governance::quota::ResourceQuota;
 pub use deepstrike_core::mm::memory::{
     MemoryKind, MemoryMetadata, MemoryPolicy, MemoryQuery, MemoryRetrieval, MemoryWriteRequest,
 };
+// Workflow surface (DELIBERATE floor, not a gap): the Rust SDK has no `run_workflow` driver — the
+// node/python/wasm SDKs own async node execution. These re-exports are for MANUAL driving: build a
+// spec with the templates, hold a `WorkflowRun` (a pure state machine), call `ready_batch()` /
+// `spawn_info()` / `record_completion()` from your own executor. Everything the drivers do is
+// reachable this way; a batteries-included Rust driver lands only when a real consumer needs it.
 pub use deepstrike_core::orchestration::workflow::{
     fanout_synthesize, gen_eval, generate_and_filter, verify_rules, WorkflowNode, WorkflowSpec,
 };

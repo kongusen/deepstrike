@@ -78,6 +78,14 @@ export type SessionEvent =
       turn: number
       agent_id: string
       termination: string
+      /** W-1: result-borne control signals, persisted so resume replays control flow faithfully —
+       *  a classifier re-prunes its rejected branches, a recorded loop stop is honored. */
+      classify_branch?: string
+      tournament_winner?: string
+      loop_continue?: boolean
+      /** W-1: the node's final output text — resume re-seeds the driver's outputs map from it so
+       *  post-resume reduce/judge/dependent nodes still see their dependencies' outputs. */
+      output?: string
     }
   | {
       kind: "workflow_nodes_submitted"
@@ -87,6 +95,9 @@ export type SessionEvent =
       /** R3-1: graph base index the batch was appended at (from the kernel's
        *  WorkflowNodesSubmitted observation) — lets resume rebuild exact indices. */
       base_index?: number
+      /** W-N3: the submitting node's agent id (absent = host/bootstrap). Resume DROPS batches whose
+       *  submitter re-runs — it will re-submit — instead of duplicating their nodes. */
+      submitter_agent_id?: string
     }
   | {
       kind: "workflow_batch_spawned"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -516,8 +517,14 @@ class RuntimeRunner:
     spec: "WorkflowSpec",
     *,
     resumed_completed: list[str] | None = None,
+    # W-1: recovered completions WITH control signals (classify branch / loop stop) — lowered to
+    # the kernel's ``resumed_results`` so control flow replays faithfully. Supersedes
+    # ``resumed_completed`` for ids present in both.
+    resumed_results: "list | None" = None,
     resumed_submissions: list | None = None,
     resumed_submission_bases: list[int] | None = None,
+    # W-1: recovered node outputs (agent id → output text) to pre-seed the driver's outputs map.
+    resumed_outputs: dict[str, str] | None = None,
     session_id: str | None = None,
     _initial_event: dict[str, Any] | None = None,
   ) -> dict[str, list[str]]:
@@ -541,17 +548,34 @@ class RuntimeRunner:
       if self._opts.run_group is not None:
         from deepstrike.runtime.run_group import GroupMember
         g = self._opts.run_group
-        await g.budget_store.join(g.id, GroupMember(sid, self._opts.agent_id))
+        # W-N5: tagged "vehicle" — an execution envelope, not a persona (ReactiveSession.resume
+        # rebuilds peers only).
+        await g.budget_store.join(g.id, GroupMember(sid, self._opts.agent_id, kind="vehicle"))
         ledger = await g.budget_store.read(g.id)
         group_tokens_base = ledger.tokens_spent
         group_spawns_base = ledger.subagents_spawned
       self._bootstrap_workflow_kernel(sid, spec, group_tokens_base, group_spawns_base)
+      # Best-effort run_started log so a standalone workflow can be resumed via ``resume_workflow``
+      # (node parity: runner.ts bootstrapWorkflowKernel). The kernel state, not the log, drives the
+      # DAG; a logless store simply means no resume.
+      try:
+        await self._opts.session_log.append(sid, {
+          "kind": "run_started",
+          "run_id": str(uuid.uuid4()),
+          "goal": f"workflow:{len(spec.nodes)} nodes",
+          "criteria": [],
+          "agent_id": self._opts.agent_id,
+        })
+      except Exception:
+        pass
     try:
       return await self._run_workflow_inner(
         spec,
         resumed_completed=resumed_completed,
+        resumed_results=resumed_results,
         resumed_submissions=resumed_submissions,
         resumed_submission_bases=resumed_submission_bases,
+        resumed_outputs=resumed_outputs,
         _initial_event=_initial_event,
       )
     finally:
@@ -585,8 +609,9 @@ class RuntimeRunner:
     """Bootstrap a standalone kernel for a host-driven workflow with no active parent run.
 
     Mirrors ``_execute``'s pre-run setup (governance / attention / scheduler-budget / resource-quota,
-    then ``start_run``) so DAG-node spawns are gated and quota'd exactly as a mid-run spawn. Records a
-    best-effort ``run_started`` event so the standalone run can be resumed via ``resume_workflow``.
+    then ``start_run``) so DAG-node spawns are gated and quota'd exactly as a mid-run spawn. The
+    caller (``run_workflow``) appends the best-effort ``run_started`` event right after this returns,
+    so the standalone run can be resumed via ``resume_workflow``.
     """
     self._interrupted = False
     self._pending_observations = []
@@ -624,8 +649,10 @@ class RuntimeRunner:
     spec: "WorkflowSpec",
     *,
     resumed_completed: list[str] | None = None,
+    resumed_results: "list | None" = None,
     resumed_submissions: list | None = None,
     resumed_submission_bases: list[int] | None = None,
+    resumed_outputs: dict[str, str] | None = None,
     _initial_event: dict[str, Any] | None = None,
   ) -> dict[str, list[str]]:
     """W0-ABI: run a declarative workflow DAG.
@@ -671,6 +698,7 @@ class RuntimeRunner:
     )
     from deepstrike.runtime.workflow_control_flow import (
       classify_instruction,
+      dependency_outputs_note,
       extract_classify_branch,
       extract_judge_winner,
       extract_loop_continue,
@@ -696,6 +724,17 @@ class RuntimeRunner:
       # Only include resumed_completed if non-empty (kernel uses presence to detect resume mode).
       if resumed_completed and len(resumed_completed) > 0:
         load_event["resumed_completed"] = resumed_completed
+      # W-1: signal-carrying completion records (classify branch / loop stop replay).
+      if resumed_results and len(resumed_results) > 0:
+        load_event["resumed_results"] = [
+          {
+            "agent_id": r.agent_id,
+            **({"classify_branch": r.classify_branch} if r.classify_branch is not None else {}),
+            **({"tournament_winner": r.tournament_winner} if r.tournament_winner is not None else {}),
+            **({"loop_continue": r.loop_continue} if r.loop_continue is not None else {}),
+          }
+          for r in resumed_results
+        ]
       # R3-1: re-apply recorded runtime submissions so dynamically-appended nodes are reconstructed.
       if resumed_submissions and len(resumed_submissions) > 0:
         load_event["resumed_submissions"] = resumed_submissions
@@ -704,9 +743,29 @@ class RuntimeRunner:
 
     observations = kernel_apply(runtime, self._pending_observations, load_event)
 
+    # W-3: persist the agent-authored batch (bootstrap base 0 / flatten base N — the kernel
+    # announces BOTH) so an interrupted authored workflow reconstructs on resume; the host never
+    # had this spec on the ``bootstrap_workflow`` path, unlike ``run_workflow``.
+    if _initial_event is not None and _initial_event.get("kind") == "submit_workflow":
+      _submitted = next(
+        (o for o in observations if o.get("kind") == "workflow_nodes_submitted"), None
+      )
+      if _submitted is not None:
+        await self._opts.session_log.append(
+          parent_session_id,
+          build_workflow_nodes_submitted_event(
+            turn=runtime.turn(),
+            nodes=workflow_spec_to_kernel(spec).get("nodes") or [],
+            base_index=_submitted.get("base"),
+            submitter_agent_id=_initial_event.get("submitter_agent_id"),
+          ),
+        )
+
     # G2: each completed node's output keyed by agent id — a reduce node reads its dependencies'
-    # outputs from here. Deps always complete in an earlier round than the reduce node consuming them.
-    outputs: dict[str, str] = {}
+    # outputs from here. Deps always complete in an earlier round than the reduce node consuming
+    # them. W-1: on resume it is pre-seeded from the persisted node outputs, so post-resume
+    # dependents still see their (pre-crash) dependencies' outputs.
+    outputs: dict[str, str] = dict(resumed_outputs or {})
 
     def _run_reduce_node(raw: dict) -> Any:
       from deepstrike.runtime.reducers import resolve_reducer
@@ -747,15 +806,29 @@ class RuntimeRunner:
         isolation=raw["isolation"],
         context_inheritance=raw["context_inheritance"],
         model_hint=raw.get("model_hint"),
+        trust=raw.get("trust"),
         output_schema=raw.get("output_schema"),
+        # W-N2: the dependency agent ids — a DAG edge carries data, not just ordering.
+        input_agent_ids=list(raw.get("input_agent_ids") or []),
+        # A#2 v2: marks a loop-iteration spawn — workflow_node_to_spec keys the W-N6 stable
+        # session id and the DW-3 loop_round pacing trap off it.
+        loop_max_iters=raw.get("loop_max_iters"),
+        # M4/G5: without this the per-node token cap never reaches the child run (node parity).
+        token_budget=raw.get("token_budget"),
+        # W-N7: per-node turn / wall-clock caps (same hops as token_budget).
+        max_turns=raw.get("max_turns"),
+        max_wall_ms=raw.get("max_wall_ms"),
       )
       base_spec = workflow_node_to_spec(node, parent_session_id)
       manifest = workflow_node_to_manifest(node, parent_session_id)
       # G4: surface remaining workflow budget so a coordinator node can size its submission.
       budget_note = workflow_budget_note(budget)
+      # W-N2: every dependent node sees its dependencies' outputs (the kernel sends
+      # ``input_agent_ids`` for all dependents; judges/reduce keep their special paths).
+      deps_note = dependency_outputs_note(node.input_agent_ids, outputs)
 
       async def _run(goal: str) -> Any:
-        final_goal = f"{goal}\n\n{budget_note}" if budget_note else goal
+        final_goal = "\n\n".join(s for s in (goal, deps_note, budget_note) if s)
         return await orchestrator.run(SubAgentRunContext(
           parent_opts=self._opts,
           parent_session_id=parent_session_id,
@@ -765,6 +838,10 @@ class RuntimeRunner:
           harness=self._opts.sub_agent_harness,
           # M5 v2.1: this child IS a workflow node — its `start_workflow` flattens to this kernel.
           is_workflow_node=True,
+          # W-N1: trusted workflow nodes run on the parent's execution plane (they carry no grant
+          # list by design — filtering on the missing list ran every DAG node TOOL-LESS);
+          # quarantined nodes stay deny-all filtered (they read untrusted content).
+          tool_access="filtered" if raw.get("trust") == "quarantined" else "inherit",
         ))
 
       def _text(result: Any) -> str:
@@ -785,10 +862,20 @@ class RuntimeRunner:
         winner_id = judge["right"] if winner == "right" else judge["left"]
         return _with_signal(result, tournament_winner=winner_id)
 
-      # A#2 v2 loop iteration: run the increment, then extract a stop signal. No signal ⇒ run to cap.
+      # A#2 v2 loop iteration: run the increment under the armed pacing trap (workflow_node_to_spec
+      # set ``loop_round``, and the iteration resumes the loop's stable session — transcript-as-
+      # carry). DW-3 one vocabulary: the kernel-adjudicated `pace` verb IS the continuation signal
+      # (stop → loop_continue=False); the legacy text-sniffed JSON blob survives only as the
+      # fallback when no pace decision arrives (stub orchestrators, harness children), where no
+      # signal still means "run to max_iters" (v1).
       loop_max = raw.get("loop_max_iters")
       if loop_max is not None:
-        result = await _run(f"{base_spec.goal}\n\n{loop_instruction(loop_max)}")
+        m = re.search(r"-i(\d+)$", raw["agent_id"])
+        iteration = int(m.group(1)) if m else 0
+        result = await _run(f"{base_spec.goal}\n\n{loop_instruction(loop_max, iteration)}")
+        pace = getattr(result.result, "pace_decision", None)
+        if pace:
+          return _with_signal(result, loop_continue=pace.get("action") != "stop")
         cont = extract_loop_continue(_text(result))
         return result if cont is None else _with_signal(result, loop_continue=cont)
 
@@ -914,7 +1001,13 @@ class RuntimeRunner:
       for result in results:
         # G2: record this node's output so a downstream reduce node can consume it.
         _final = result.result.final_message
-        outputs[result.agent_id] = getattr(_final, "content", "") if _final is not None else ""
+        out_text = getattr(_final, "content", "") if _final is not None else ""
+        outputs[result.agent_id] = out_text
+        # A loop iteration completes under `wf-node{N}-i{k}` but its dependents consume the STABLE
+        # node id `wf-node{N}` — alias it so the LAST iteration's output is what dependents see.
+        stable_id = re.sub(r"-i\d+$", "", result.agent_id)
+        if stable_id != result.agent_id:
+          outputs[stable_id] = out_text
         # R3-1: if this node's agent submitted more nodes, append them to the parent DAG BEFORE
         # reporting the node's completion — the workflow is still active (the kernel hasn't seen this
         # node finish), so even a last-node submission keeps the DAG alive.
@@ -928,7 +1021,8 @@ class RuntimeRunner:
           next_nodes.extend(_collect_nodes(sub_obs))
           budget = _collect_budget(sub_obs) or budget
           # R3-1: persist the submission (kernel-shape nodes) + the kernel-reported base index
-          # so resume can re-apply the batch at the exact original graph position.
+          # so resume can re-apply the batch at the exact original graph position. W-N3: also the
+          # submitter, so resume drops batches whose submitter re-runs (it will re-submit).
           _submitted = next(
             (o for o in sub_obs if o.get("kind") == "workflow_nodes_submitted"), None
           )
@@ -938,6 +1032,7 @@ class RuntimeRunner:
               turn=runtime.turn(),
               nodes=submit_event.get("nodes") or [],
               base_index=_submitted.get("base") if _submitted else None,
+              submitter_agent_id=result.agent_id,
             ),
           )
         obs = kernel_apply(runtime, self._pending_observations, {
@@ -949,13 +1044,19 @@ class RuntimeRunner:
         d = _find_done(obs)
         if d is not None:
           done = d
-        # Persist node completion for resume recovery.
+        # Persist node completion for resume recovery. W-1: the result-borne control signals ride
+        # along (a resumed classifier re-prunes; a recorded loop stop is honored) plus the output
+        # text (post-resume dependents/reduce still see this node's output).
         await self._opts.session_log.append(
           parent_session_id,
           build_workflow_node_completed_event(
             turn=runtime.turn(),
             agent_id=result.agent_id,
             termination=result.result.termination,
+            classify_branch=getattr(result.result, "classify_branch", None),
+            tournament_winner=getattr(result.result, "tournament_winner", None),
+            loop_continue=getattr(result.result, "loop_continue", None),
+            output=out_text if result.result.termination == "completed" and out_text else None,
           ),
         )
       if done is not None and not next_nodes:
@@ -986,9 +1087,11 @@ class RuntimeRunner:
   ) -> dict[str, list[str]]:
     """Resume a workflow from a session's completed nodes.
 
-    Reads the session log, extracts completed workflow node agent_ids, and calls run_workflow with
-    resumed_completed so the kernel skips those nodes. Pass ``session_id`` to resume an interrupted
-    standalone run from a stateless handler; omit it to resume the active session.
+    Reads the session log, extracts completed workflow node records (with their W-1 control
+    signals + outputs), and calls run_workflow so the kernel skips those nodes, replays control
+    flow (classify prune / loop stop), and the driver re-seeds its outputs map. Pass
+    ``session_id`` to resume an interrupted standalone run from a stateless handler; omit it to
+    resume the active session.
     """
     from deepstrike.runtime.session_repair import (
       recover_completed_workflow_nodes,
@@ -1000,13 +1103,30 @@ class RuntimeRunner:
       raise RuntimeError("resume_workflow requires an active parent run or an explicit session_id")
 
     events = await self._opts.session_log.read(sid)
-    resumed_completed = recover_completed_workflow_nodes(events)
-    resumed_submissions, resumed_bases = recover_submitted_workflow_nodes(events)
+    resumed_results = recover_completed_workflow_nodes(events)
+    completed_ids = {r.agent_id for r in resumed_results}
+    submissions, bases, submitters = recover_submitted_workflow_nodes(events)
+    # W-N3: DROP batches whose submitter did NOT complete — that node re-runs on resume and will
+    # re-submit its batch; replaying the logged copy too would duplicate its nodes in the DAG.
+    # Only safe with exact bases (the dropped batch's slots become inert placeholders); a legacy
+    # order-only log keeps every batch, since dropping would shift all later indices.
+    if len(bases) == len(submissions) and len(submissions) > 0:
+      keep = [s is None or s in completed_ids for s in submitters]
+      submissions = [sub for sub, k in zip(submissions, keep) if k]
+      bases = [b for b, k in zip(bases, keep) if k]
+    resumed_outputs = {r.agent_id: r.output for r in resumed_results if r.output}
+    # Alias loop iterations onto their stable node id (last iteration wins) — dependents consume
+    # `wf-node{N}`, not `wf-node{N}-i{k}`.
+    for rec in resumed_results:
+      stable = re.sub(r"-i\d+$", "", rec.agent_id)
+      if stable != rec.agent_id and rec.output:
+        resumed_outputs[stable] = rec.output
     return await self.run_workflow(
       spec,
-      resumed_completed=resumed_completed,
-      resumed_submissions=resumed_submissions,
-      resumed_submission_bases=resumed_bases,
+      resumed_results=resumed_results,
+      resumed_submissions=submissions,
+      resumed_submission_bases=bases,
+      resumed_outputs=resumed_outputs,
       session_id=sid,
     )
 
@@ -1684,8 +1804,9 @@ class RuntimeRunner:
     # Also register this session as a member so the run's lineage (R2) spans personas/invocations.
     if self._opts.run_group is not None:
       from deepstrike.runtime.run_group import GroupMember
+      # W-N5: tagged "vehicle" — an execution envelope, not a persona.
       await self._opts.run_group.budget_store.join(
-        self._opts.run_group.id, GroupMember(session_id, self._opts.agent_id),
+        self._opts.run_group.id, GroupMember(session_id, self._opts.agent_id, kind="vehicle"),
       )
       ledger = await self._opts.run_group.budget_store.read(self._opts.run_group.id)
       seed_config: dict[str, Any] = {}
@@ -1693,6 +1814,9 @@ class RuntimeRunner:
         seed_config["group_tokens_base"] = ledger.tokens_spent
       if ledger.subagents_spawned > 0:
         seed_config["group_spawns_base"] = ledger.subagents_spawned
+      # ③ loop-agent: completed-round count seeds the pacing trap's max_rounds coercion.
+      if getattr(ledger, "rounds_completed", 0) > 0:
+        seed_config["group_rounds_base"] = ledger.rounds_completed
       if seed_config:
         kernel_apply(runtime, self._pending_observations, {
           "kind": "configure_run",
@@ -2232,7 +2356,13 @@ class RuntimeRunner:
 
     self._active_kernel = None
     self._current_session_id = None
-    yield DoneEvent(iterations=turns_used, total_tokens=total_tokens, status=status)
+    yield DoneEvent(
+      iterations=turns_used,
+      total_tokens=total_tokens,
+      status=status,
+      # ③ loop-agent: surface the kernel-adjudicated after-round decision to the driver.
+      pace_decision=getattr(result, "pace_decision", None) if result else None,
+    )
 
   async def _append_observations(
     self,
@@ -2415,7 +2545,19 @@ def _compression_action(action: str | None) -> str | None:
 
 
 def _is_mid_run(events: list[SessionEntry]) -> bool:
-  return bool(events) and not any(e.event.get("kind") == "run_terminal" for e in events)
+  # Mid-run ⇔ the LAST run_started has no run_terminal after it. Pairing (not mere
+  # presence) matters on multi-round loop sessions: round 1's terminal must not make a
+  # crashed round 2 look fresh, and driver-level round_* records must not make a fresh
+  # round look interrupted.
+  last_started = -1
+  last_terminal = -1
+  for i, entry in enumerate(events):
+    kind = entry.event.get("kind")
+    if kind == "run_started":
+      last_started = i
+    elif kind == "run_terminal":
+      last_terminal = i
+  return last_started >= 0 and last_started > last_terminal
 
 
 def _replay_messages(events: list[SessionEntry], max_bytes: int | None = None) -> list[Message]:

@@ -67,6 +67,10 @@ class AgentRunSpec:
   # O3: per-child wall-clock cap in ms (sets the child runner's timeout_ms; falls back to the
   # parent's). A hung child terminates "timeout" instead of stalling the parent indefinitely.
   max_wall_ms: int | None = None
+  # ③ loop-agent pacing: arms the kernel's after-round pacing trap (`pace` meta-tool). Snake_case
+  # dict: {"max_rounds"?, "min_sleep_ms"?, "max_sleep_ms"?, "default_action"?}. Only set keys are
+  # lowered to the kernel; None ⇒ no trap (a plain run).
+  loop_round: dict[str, Any] | None = None
 
 
 @dataclass
@@ -97,6 +101,11 @@ class LoopResult:
   classify_branch: str | None = None
   # A#2 tournament verdict: a judge reports the winning entrant's agent id. Sent only when set.
   tournament_winner: str | None = None
+  # ③ loop-agent pacing: the kernel-adjudicated after-round decision, surfaced by the orchestrator
+  # from the child's done event ({"action", "delay_ms"?, "reason", "coerced_from"?}). For a loop-node
+  # iteration this is the PRIMARY continuation vocabulary (stop → loop_continue=False); the legacy
+  # text-sniffed signal is the fallback. SDK-internal — stripped by ``sub_agent_result_to_kernel``.
+  pace_decision: Any | None = None
 
 
 @dataclass
@@ -145,6 +154,14 @@ def agent_run_spec_to_kernel(spec: AgentRunSpec) -> dict[str, Any]:
   }
   if spec.verification_contract_id:
     out["verification_contract_id"] = spec.verification_contract_id
+  # ③ loop-agent pacing: lower only the set knobs (kernel defaults fill the rest).
+  if getattr(spec, "loop_round", None):
+    lr = spec.loop_round or {}
+    out["loop_round"] = {
+      k: lr[k]
+      for k in ("max_rounds", "min_sleep_ms", "max_sleep_ms", "default_action")
+      if lr.get(k) is not None
+    }
   if spec.milestones:
     out["milestones"] = {
       "phases": [
@@ -250,6 +267,10 @@ class WorkflowNodeSpec:
   tournament: dict[str, Any] | None = None
   # M4/G5: cap this node's child run at ``token_budget`` cumulative tokens (the per-node "use N tokens").
   token_budget: int | None = None
+  # O3: cap this node's child run at ``max_turns`` provider turns (falls back to the parent's).
+  max_turns: int | None = None
+  # O3: cap this node's child run at ``max_wall_ms`` wall-clock milliseconds.
+  max_wall_ms: int | None = None
   depends_on: list[int] = field(default_factory=list)
 
 
@@ -270,10 +291,14 @@ class WorkflowSpawnInfo:
   isolation: str
   context_inheritance: str
   model_hint: str | None = None
+  # W3 trust level: "trusted" | "quarantined" (W-N1: quarantined nodes stay deny-all filtered).
+  trust: str | None = None
   # G3: JSON Schema the node's output must conform to (carried verbatim from the spec).
   output_schema: dict[str, Any] | None = None
-  # G2: for a reduce node, the registered reducer name + the dependency agent ids it consumes.
+  # G2: for a reduce node, the registered reducer name.
   reducer: str | None = None
+  # The dependency agent ids for EVERY dependent node (W-N2: a DAG edge carries data). A reduce
+  # node's registered function consumes them; every other node gets its deps' outputs in context.
   input_agent_ids: list[str] = field(default_factory=list)
   # A#2: present only for a tournament *judge* spawn — the two entrant agent ids whose outputs this
   # judge compares (``{"left", "right"}``). The runner reports the winner as ``tournament_winner``.
@@ -285,6 +310,10 @@ class WorkflowSpawnInfo:
   classify_labels: list[str] = field(default_factory=list)
   # M4/G5: the node's per-node cumulative token cap, if set — the runner caps the child run here.
   token_budget: int | None = None
+  # O3: per-node turn cap → the child run's ``max_turns``.
+  max_turns: int | None = None
+  # O3: per-node wall-clock cap (ms) → the child run's timeout.
+  max_wall_ms: int | None = None
 
 
 def workflow_budget_note(budget: dict[str, Any] | None) -> str:
@@ -373,6 +402,11 @@ def workflow_node_spec_to_kernel(n: WorkflowNodeSpec) -> dict[str, Any]:
   # M4/G5: per-node token cap (additive; omitted when unset).
   if getattr(n, "token_budget", None) is not None:
     node["token_budget"] = n.token_budget
+  # O3: per-node turn / wall-clock caps (additive; omitted when unset).
+  if getattr(n, "max_turns", None) is not None:
+    node["max_turns"] = n.max_turns
+  if getattr(n, "max_wall_ms", None) is not None:
+    node["max_wall_ms"] = n.max_wall_ms
   if n.depends_on:
     node["depends_on"] = list(n.depends_on)
   return node
@@ -530,10 +564,18 @@ start_workflow_tool: dict[str, Any] = {
 
 def workflow_node_to_spec(node: WorkflowSpawnInfo, parent_session_id: str) -> AgentRunSpec:
   """Build a sub-agent run spec for a kernel-generated workflow node."""
+  import re
+
+  # W-N6 transcript-as-carry: a loop node's iterations share ONE stable session id (the ``-i{k}``
+  # suffix names the spawn, not the session), so iteration k replays the transcript of 0..k-1 —
+  # "do the next increment" actually sees the previous increments. The agent_id keeps the
+  # per-iteration suffix (kernel completion routing).
+  is_loop_iteration = getattr(node, "loop_max_iters", None) is not None
+  session_node_id = re.sub(r"-i\d+$", "", node.agent_id) if is_loop_iteration else node.agent_id
   return AgentRunSpec(
     identity=AgentIdentity(
       agent_id=node.agent_id,
-      session_id=f"{parent_session_id}-{node.agent_id}",
+      session_id=f"{parent_session_id}-{session_node_id}",
       is_sub_agent=True,
       parent_session_id=parent_session_id,
     ),
@@ -544,6 +586,14 @@ def workflow_node_to_spec(node: WorkflowSpawnInfo, parent_session_id: str) -> Ag
     model_hint=getattr(node, "model_hint", None),
     # M4/G5: carry the node's token cap so the orchestrator can bound the child run.
     token_budget=getattr(node, "token_budget", None),
+    # O3: carry the node's turn / wall-clock caps (the orchestrator already honors these).
+    max_turns=getattr(node, "max_turns", None),
+    max_wall_ms=getattr(node, "max_wall_ms", None),
+    # DW-3 one continuation vocabulary: a loop ITERATION runs with the pacing trap armed, so the
+    # agent signals continue/stop through the kernel-adjudicated `pace` meta-tool instead of a
+    # text-sniffed JSON blob. One iteration = one round; the DAG (not max_rounds) caps iterations,
+    # and default stop means "ended without pacing" = done — the CC silence-is-completion contract.
+    loop_round={"default_action": "stop"} if is_loop_iteration else None,
   )
 
 

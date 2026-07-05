@@ -252,12 +252,25 @@ def _action_from_kernel(raw: dict[str, Any]) -> KernelRunnerAction:
     )
   if kind == "done":
     result = raw.get("result") or {}
+    # ③ loop-agent: the kernel-adjudicated after-round decision (absent on non-loop runs).
+    pace = result.get("pace_decision")
+    pace_decision = (
+      {
+        "action": str(pace.get("action") or "stop"),
+        "delay_ms": pace.get("delay_ms"),
+        "reason": str(pace.get("reason") or ""),
+        "coerced_from": pace.get("coerced_from"),
+      }
+      if isinstance(pace, dict)
+      else None
+    )
     return KernelRunnerAction(
       kind="done",
       result=SimpleNamespace(
         termination=str(result.get("termination") or "error"),
         turns_used=int(result.get("turns_used") or 0),
         total_tokens_used=int(result.get("total_tokens_used") or 0),
+        pace_decision=pace_decision,
       ),
     )
   raise RuntimeError(f"unknown KernelAction kind: {kind}")

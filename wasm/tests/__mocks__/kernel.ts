@@ -12,6 +12,11 @@ export class KernelRuntime {
   // Mirrors the real kernel's bounded reactive-recovery ladder (see eviction.rs
   // MAX_RECOVERY_ATTEMPTS): compact-and-retry up to the cap, then terminate ContextOverflow.
   private recoveryAttempts = 0
+  // ③ loop-agent pacing trap (DW-3): armed by `start_run.run_spec.loop_round`. A `pace` tool call
+  // is trapped in-kernel (never forwarded to the host plane); the adjudicated decision rides the
+  // done result as `pace_decision`. Silence = the spec's default_action ("stop" = CC contract).
+  private loopRound: { default_action?: string } | null = null
+  private paceProposal: { action: string; reason: string } | null = null
 
   constructor(policy: { maxTokens: number; maxTurns?: number }) {
     this.maxTurns = policy.maxTurns ?? 25
@@ -45,6 +50,9 @@ export class KernelRuntime {
         this.phase = 0
         this.terminal = false
         this.resumedAfterAsk = false
+        // DW-3: arm the pacing trap when the run spec carries `loop_round` (loop-node iterations).
+        this.loopRound = ((event.run_spec as { loop_round?: { default_action?: string } } | undefined)?.loop_round) ?? null
+        this.paceProposal = null
         this.rendered = { systemText: "", turns: [{ role: "user", content: "test" }] }
         actions.push({ kind: "call_provider", context: this.rendered, tools: [] })
         break
@@ -88,7 +96,18 @@ export class KernelRuntime {
         this.messages.push(message)
         // A response arrived ⇒ the prompt fit ⇒ reset the overflow recovery ladder.
         this.recoveryAttempts = 0
-        const toolCalls = (message.tool_calls as Array<{ id?: string; name?: string }>) ?? []
+        const toolCalls = (message.tool_calls as Array<{ id?: string; name?: string; arguments?: unknown }>) ?? []
+        // ③ pacing trap: a `pace` call on an armed run is adjudicated in-kernel — record the
+        // proposal and resume the reason loop; the verb never reaches the host execution plane.
+        const paceCall = this.loopRound ? toolCalls.find(tc => tc.name === "pace") : undefined
+        if (paceCall) {
+          const rawArgs = paceCall.arguments
+          const args = (typeof rawArgs === "string" ? JSON.parse(rawArgs || "{}") : rawArgs ?? {}) as { next?: string; reason?: string }
+          this.paceProposal = { action: args.next ?? "stop", reason: args.reason ?? "" }
+          this.rendered = { systemText: "", turns: [{ role: "user", content: "paced" }] }
+          actions.push({ kind: "call_provider", context: this.rendered, tools: [] })
+          break
+        }
         if (this.phase === 0 && toolCalls.length > 0 && this.governanceAskUser && !this.resumedAfterAsk) {
           const call = toolCalls[0]
           observations.push(
@@ -115,7 +134,20 @@ export class KernelRuntime {
           this.terminal = true
           actions.push({
             kind: "done",
-            result: { turns_used: 2, total_tokens_used: 100, termination: "completed" },
+            result: {
+              turns_used: 2,
+              total_tokens_used: 100,
+              termination: "completed",
+              // ③ armed run: the adjudicated pace decision rides the done result. Silence = the
+              // default action (stop for loop-node iterations — the CC silence-is-done contract).
+              ...(this.loopRound
+                ? {
+                    pace_decision: this.paceProposal
+                      ? { action: this.paceProposal.action, reason: this.paceProposal.reason }
+                      : { action: this.loopRound.default_action ?? "stop", reason: "no pace call (default)" },
+                  }
+                : {}),
+            },
           })
         }
         break

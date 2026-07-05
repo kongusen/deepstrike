@@ -8,6 +8,7 @@ import type { SessionLog } from "./session-log.js"
 import type { LLMProvider } from "../types.js"
 import type { RegisteredTool } from "../tools/index.js"
 import type { WorkflowSpec, WorkflowTaskSpec, KernelAgentRole } from "./types/agent.js"
+import { fanoutSynthesize } from "./types/agent.js"
 
 export interface RunAgentOptions {
   provider: LLMProvider
@@ -59,13 +60,14 @@ export async function runFanout(opts: RunFanoutOptions): Promise<{ synthesis: st
     maxTokens: opts.maxTokens ?? 32_000,
     ...(opts.maxTurns !== undefined ? { maxTurns: opts.maxTurns } : {}),
   })
-  const workerRole = opts.workerRole ?? "explore"
-  const spec: WorkflowSpec = {
-    nodes: [
-      ...opts.tasks.map(task => ({ task, role: workerRole })),
-      { task: opts.synthesize, role: opts.synthesisRole ?? "plan", dependsOn: opts.tasks.map((_, i) => i) },
-    ],
+  // W-N8: build the spec via the ONE fanout template (it pins the pattern's isolation /
+  // context-inheritance choices — read-only system-only workers, full-context synthesizer — which
+  // this facade used to silently drop), then apply the caller's role overrides on top.
+  const spec: WorkflowSpec = fanoutSynthesize(opts.tasks, opts.synthesize)
+  if (opts.workerRole) {
+    for (const node of spec.nodes.slice(0, opts.tasks.length)) node.role = opts.workerRole
   }
+  if (opts.synthesisRole) spec.nodes[spec.nodes.length - 1].role = opts.synthesisRole
   const outcome = await runner.runWorkflow(spec, opts.sessionId ? { sessionId: opts.sessionId } : undefined)
   const synthesisId = `wf-node${opts.tasks.length}`
   const lastCompleted = outcome.completed[outcome.completed.length - 1]

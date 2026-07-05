@@ -8,14 +8,38 @@
 
 import { extractJsonValue } from "./output-schema.js"
 
-/** Instruction appended to a loop node's goal: do the next increment, and signal when done. */
-export function loopInstruction(maxIters: number): string {
+/** Instruction appended to a loop iteration's goal. DW-3: the continuation verb is the
+ *  kernel-adjudicated `pace` meta-tool (armed on every iteration run), not a text blob — one
+ *  vocabulary shared with the round-level loop agent. Iterations share one session, so "the work
+ *  so far" is simply the visible transcript. */
+export function loopInstruction(maxIters: number, iteration = 0): string {
   return (
-    `This task runs as a LOOP (up to ${maxIters} iterations total). Do the next increment of work now. ` +
-    `When you judge the overall task COMPLETE and no further iterations are needed, end your response ` +
-    `with a JSON object {"loop_continue": false}. To request another iteration, omit it or return ` +
-    `{"loop_continue": true}.`
+    `This task runs as a LOOP — this is iteration ${iteration + 1} of up to ${maxIters}. Your prior ` +
+    `iterations' work (if any) is visible above; do the NEXT increment now. Then call the \`pace\` tool: ` +
+    `\`{"next": "continue"}\` to request another iteration, or \`{"next": "stop"}\` when the overall ` +
+    `task is complete. Ending without calling \`pace\` also completes the loop.`
   )
+}
+
+/** W-N2: dependency outputs appended to a dependent node's goal — a DAG edge carries data, not
+ *  just ordering (fan-out→synthesize was an uninformed synthesis without this). Each dependency's
+ *  output is clipped so a chain of large nodes can't blow the child's context; empty/unknown
+ *  outputs are skipped. Returns "" when the node has no dependencies. */
+export function dependencyOutputsNote(
+  inputAgentIds: string[] | undefined,
+  outputs: Map<string, string> | undefined,
+  maxPerDep = 8_000,
+): string {
+  if (!inputAgentIds?.length || !outputs) return ""
+  const blocks = inputAgentIds
+    .map(id => {
+      const out = outputs.get(id) ?? ""
+      if (!out) return ""
+      const clipped = out.length > maxPerDep ? `${out.slice(0, maxPerDep)}\n…[truncated]` : out
+      return `[dependency ${id} output]\n${clipped}`
+    })
+    .filter(Boolean)
+  return blocks.join("\n\n")
 }
 
 /** Instruction appended to a classify node's goal: pick exactly one of the kernel's branch labels. */

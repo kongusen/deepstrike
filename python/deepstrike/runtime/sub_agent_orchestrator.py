@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any
 
 from deepstrike._kernel import KernelRuntime, LoopPolicy
 from deepstrike.providers.stream import DoneEvent, TextDelta, WorkflowNodesSubmittedEvent
@@ -32,6 +32,13 @@ class SubAgentRunContext:
   # M5 v2.1: set when this child is a workflow node — propagated so a nested ``start_workflow``
   # FLATTENS to the parent kernel rather than auto-pivoting into its own bootstrap.
   is_workflow_node: bool = False
+  # W-N1 tool exposure. The kernel omits an EMPTY ``permitted_capability_ids`` on the wire, so a
+  # grant-less workflow node is indistinguishable from a zero-cap spawn at the manifest — the
+  # caller states intent instead: "inherit" = run on the parent's execution plane with its
+  # meta-tool availability (trusted workflow nodes — they carried no grant list by design, and
+  # filtering on the missing list ran every DAG node TOOL-LESS); "filtered" (default) = filter
+  # to the manifest grants, empty ⇒ deny-all (spawn path, quarantined nodes).
+  tool_access: str = "filtered"  # "inherit" | "filtered"
 
 
 def _termination_from_status(status: str) -> str:
@@ -109,6 +116,36 @@ def _derive_meta_tools(permitted: set[str], opts: RuntimeOptions) -> frozenset[s
   return frozenset(meta)
 
 
+def _available_meta_tools(opts: RuntimeOptions) -> frozenset[str]:
+  """W-N1: meta-tools by source availability alone — a ``tool_access="inherit"`` child gets the
+  same meta surface a top-level run of these options would."""
+  meta: set[str] = set()
+  if opts.skill_dir:
+    meta.add("skill")
+  if opts.dream_store:
+    meta.add("memory")
+  if opts.knowledge_source:
+    meta.add("knowledge")
+  if opts.enable_plan_tool:
+    meta.add("update_plan")
+  return frozenset(meta)
+
+
+def _resolve_tool_grants(ctx: SubAgentRunContext) -> tuple[Any, frozenset[str]]:
+  """W-N1 (+W-N4: the ONE grant-resolution seam for the direct and harness paths): "inherit" runs
+  the child on the parent's plane with availability-derived meta-tools (trusted workflow nodes);
+  "filtered" (default) filters to the manifest grants, empty ⇒ deny-all (spawn path, quarantined
+  nodes)."""
+  from deepstrike.runtime.execution_plane import LocalExecutionPlane
+
+  plane = ctx.parent_opts.execution_plane or LocalExecutionPlane()
+  if ctx.tool_access == "inherit":
+    return plane, _available_meta_tools(ctx.parent_opts)
+  permitted = set(ctx.manifest.permitted_capability_ids)
+  meta_tools = _derive_meta_tools(permitted, ctx.parent_opts)
+  return FilteredExecutionPlane(plane, permitted, meta_tools), meta_tools
+
+
 def _resolve_provider(opts: RuntimeOptions, model_hint: str | None):
   """M1/G3 intelligence routing: resolve the provider for a sub-agent from its spec's ``model_hint``.
 
@@ -143,35 +180,42 @@ def _build_child_opts(
   filtered_plane,
   meta_tools: frozenset[str],
 ) -> RuntimeOptions:
-  return RuntimeOptions(
-    # M1/G3: route to the node's hinted model (falls back to the parent provider);
-    # propagate the hook so nested sub-agents route too.
+  # Inherit-everything like node's `{...ctx.parentOpts, ...overrides}` spread, so the child stays in
+  # the parent's governance domain (`run_group`) and sees `reducers` / `worktree_manager` / every
+  # future option without this list drifting. Only the per-child contract fields are overridden.
+  return replace(
+    ctx.parent_opts,
+    # M1/G3: route to the node's hinted model (falls back to the parent provider).
     provider=_resolve_provider(ctx.parent_opts, getattr(ctx.spec, "model_hint", None)),
-    provider_for=ctx.parent_opts.provider_for,
     # M4/G5: cap the child run at the node's token budget (falls back to the inherited cap).
     max_total_tokens=getattr(ctx.spec, "token_budget", None) or ctx.parent_opts.max_total_tokens,
     session_log=ctx.session_log,
     execution_plane=filtered_plane,
-    max_tokens=ctx.parent_opts.max_tokens,
     # O3: per-child turn / wall-clock caps (fall back to the inherited limits).
     max_turns=getattr(ctx.spec, "max_turns", None) or ctx.parent_opts.max_turns,
     timeout_ms=getattr(ctx.spec, "max_wall_ms", None) or ctx.parent_opts.timeout_ms,
     agent_id=ctx.spec.identity.agent_id,
     system_prompt=system_prompt,
-    initial_memory=ctx.parent_opts.initial_memory,
     skill_dir=ctx.parent_opts.skill_dir if "skill" in meta_tools else None,
     dream_store=ctx.parent_opts.dream_store if "memory" in meta_tools else None,
     knowledge_source=ctx.parent_opts.knowledge_source if "knowledge" in meta_tools else None,
-    signal_source=ctx.parent_opts.signal_source,
-    extensions=ctx.parent_opts.extensions,
-    governance=ctx.parent_opts.governance,
-    tokenizer=ctx.parent_opts.tokenizer,
     enable_plan_tool=ctx.parent_opts.enable_plan_tool if "update_plan" in meta_tools else None,
-    compression_store=ctx.parent_opts.compression_store,
-    on_tool_suspend=ctx.parent_opts.on_tool_suspend,
-    on_permission_request=ctx.parent_opts.on_permission_request,
     # M5 v2.1: a workflow node's `start_workflow` flattens to the parent kernel (no nested pivot).
     is_workflow_node=ctx.is_workflow_node,
+    # The child runs under ITS OWN spec, never the parent's: the replace() above would otherwise
+    # leak the parent's ``run_spec`` (identity, capability filter — and a LoopDriver's armed
+    # ``loop_round``, giving every child a phantom pace tool). A loop-node iteration carries its
+    # own minimal spec to arm the pacing trap (DW-3); everything else runs spec-less as before.
+    run_spec=(
+      AgentRunSpec(
+        identity=ctx.spec.identity,
+        role=ctx.spec.role,
+        goal=ctx.spec.goal,
+        loop_round=getattr(ctx.spec, "loop_round", None),
+      )
+      if getattr(ctx.spec, "loop_round", None)
+      else None
+    ),
   )
 
 
@@ -201,14 +245,10 @@ class SubAgentOrchestrator:
   async def _run_with_harness(self, ctx: SubAgentRunContext) -> SubAgentResult:
     from deepstrike.harness.harness import HarnessLoop, HarnessRequest
 
-    permitted = set(ctx.manifest.permitted_capability_ids)
-    meta_tools = _derive_meta_tools(permitted, ctx.parent_opts)
-    from deepstrike.runtime.execution_plane import LocalExecutionPlane
-
-    plane = ctx.parent_opts.execution_plane or LocalExecutionPlane()
-    filtered = FilteredExecutionPlane(plane, permitted, meta_tools)
+    # W-N1: same grant resolution as the direct path (inherit vs filtered).
+    base_plane, meta_tools = _resolve_tool_grants(ctx)
     # M3/G4: worktree isolation for a worktree node (cleaned up in `finally` below).
-    exec_plane, cleanup_worktree = _wrap_worktree(ctx, filtered)
+    exec_plane, cleanup_worktree = _wrap_worktree(ctx, base_plane)
     child_runner = RuntimeRunner(_build_child_opts(
       ctx,
       system_prompt=ctx.parent_opts.system_prompt,
@@ -248,16 +288,13 @@ class SubAgentOrchestrator:
     )
 
   async def _run_direct(self, ctx: SubAgentRunContext) -> SubAgentResult:
-    permitted = set(ctx.manifest.permitted_capability_ids)
-    meta_tools = _derive_meta_tools(permitted, ctx.parent_opts)
+    # W-N1: "inherit" runs the child on the parent's plane (trusted workflow nodes); "filtered"
+    # (default) filters to the manifest grants, empty ⇒ deny-all.
+    base_plane, meta_tools = _resolve_tool_grants(ctx)
     system_prompt, inherit_events = await _resolve_inheritance(ctx)
 
-    from deepstrike.runtime.execution_plane import LocalExecutionPlane
-
-    plane = ctx.parent_opts.execution_plane or LocalExecutionPlane()
-    filtered = FilteredExecutionPlane(plane, permitted, meta_tools)
     # M3/G4: a worktree node runs inside its own git worktree (created here, removed in `finally`).
-    exec_plane, cleanup_worktree = _wrap_worktree(ctx, filtered)
+    exec_plane, cleanup_worktree = _wrap_worktree(ctx, base_plane)
     child_runner = RuntimeRunner(_build_child_opts(
       ctx,
       system_prompt=system_prompt,
@@ -294,6 +331,9 @@ class SubAgentOrchestrator:
       turns_used=done.iterations if done else 0,
       total_tokens_used=done.total_tokens if done else 0,
       final_message=final_message,
+      # DW-3: surface the kernel-adjudicated pace decision (loop-node iterations consume it as the
+      # continuation vocabulary). SDK-internal; stripped by ``sub_agent_result_to_kernel``.
+      pace_decision=getattr(done, "pace_decision", None) if done else None,
     )
     return SubAgentResult(
       agent_id=ctx.spec.identity.agent_id,

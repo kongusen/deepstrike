@@ -16,7 +16,7 @@ from typing import Any
 from .runner import RuntimeRunner, RuntimeOptions, collect_text
 from .execution_plane import LocalExecutionPlane
 from .session_log import InMemorySessionLog
-from ..types.agent import WorkflowSpec, WorkflowNodeSpec
+from ..types.agent import WorkflowSpec, fanout_synthesize
 
 
 async def run_agent(
@@ -75,10 +75,13 @@ async def run_fanout(
         **({"max_turns": max_turns} if max_turns is not None else {}),
     )
     runner = RuntimeRunner(opts)
-    spec = WorkflowSpec(
-        nodes=[WorkflowNodeSpec(task=t, role=worker_role) for t in tasks]
-        + [WorkflowNodeSpec(task=synthesize, role=synthesis_role, depends_on=list(range(len(tasks))))],
-    )
+    # W-N8: build the spec via the ONE fanout template (it pins the pattern's isolation /
+    # context-inheritance choices — read-only system-only workers, full-context synthesizer — which
+    # this facade used to silently drop), then apply the caller's role overrides on top.
+    spec: WorkflowSpec = fanout_synthesize(list(tasks), synthesize)
+    for node in spec.nodes[: len(tasks)]:
+        node.role = worker_role
+    spec.nodes[-1].role = synthesis_role
     outcome = await runner.run_workflow(spec, **({"session_id": session_id} if session_id else {}))
     outputs = outcome.get("outputs", {})
     completed = outcome.get("completed", [])

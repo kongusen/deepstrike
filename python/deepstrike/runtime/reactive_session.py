@@ -101,9 +101,11 @@ class ReactiveSession:
     async def emit(self, payload: Any, *, source: str | None = None,
                    channel: str | None = None, audience: list[str] | None = None) -> list[Reaction]:
         bb = await self._event_stream.append(payload, source=source, channel=channel, audience=audience)
-        # Record lineage for all registered peers (idempotent).
+        # Record lineage for all registered peers (idempotent). W-N5: tagged "peer" so resume() can
+        # tell personas apart from vehicle sessions (workflow envelopes / wf-node children / loop
+        # iterations) that share the same governance domain.
         for pid, spec in self._peer_specs.items():
-            await self._run_group.budget_store.join(self._run_group.id, GroupMember(pid, spec.role))
+            await self._run_group.budget_store.join(self._run_group.id, GroupMember(pid, spec.role, kind="peer"))
 
         candidates = [
             PeerView(pid, spec.role, spec.channels)
@@ -165,7 +167,14 @@ class ReactiveSession:
             run_group=run_group, turn_policy=turn_policy,
             make_runner=make_runner, event_stream=event_stream,
         )
-        for member in await run_group.budget_store.members(run_group.id):
+        # W-N5: vehicle members (workflow envelopes, ``wf-node*`` children, loop iterations) share
+        # the governance domain but are NOT personas — resuming them as peers would resurrect
+        # phantoms. A legacy membership with no kind tags falls back to resuming every member.
+        members = await run_group.budget_store.members(run_group.id)
+        any_tagged = any(getattr(m, "kind", None) is not None for m in members)
+        for member in members:
+            if any_tagged and getattr(member, "kind", None) != "peer":
+                continue
             spec = (peer_specs or {}).get(member.session_id) or ReactivePeerSpec(role=member.role)
             session._peer_specs[member.session_id] = spec
         return session

@@ -258,6 +258,14 @@ class WorkflowNodeCompletedEvent(TypedDict, total=False):
     turn: int
     agent_id: str
     termination: str
+    # W-1: result-borne control signals, persisted so resume replays control flow faithfully —
+    # a classifier re-prunes its rejected branches, a recorded loop stop is honored.
+    classify_branch: str
+    tournament_winner: str
+    loop_continue: bool
+    # W-1: the node's final output text — resume re-seeds the driver's outputs map from it so
+    # post-resume reduce/judge/dependent nodes still see their dependencies' outputs.
+    output: str
 
 
 class WorkflowBatchSpawnedEvent(TypedDict, total=False):
