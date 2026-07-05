@@ -1,5 +1,5 @@
 use super::partitions::ContextPartitions;
-use super::snapshot::stable_hash;
+use super::fault::stable_hash;
 use super::task_state::TaskState;
 use super::token_engine::ContextTokenEngine;
 use crate::mm::handle::{HandleTable, Residency};

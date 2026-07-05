@@ -39,7 +39,6 @@ pub mod types;
 
 // Re-export key types at crate root for convenience
 pub use context::renewal::{ContractCheckResult, HandoffArtifact};
-pub use context::snapshot::ContextSnapshotHint;
 pub use governance::tool_decision::{
     ToolDecision, ToolDecisionContext, ToolDecisionPipeline, ToolDecisionStage,
 };

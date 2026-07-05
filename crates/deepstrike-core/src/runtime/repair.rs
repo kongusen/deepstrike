@@ -120,7 +120,7 @@ pub fn reconstruct_messages_with_fallback<F>(
     mut load_archive: F,
 ) -> Vec<Message>
 where
-    F: FnMut(&str) -> Result<Vec<Message>, crate::context::snapshot::ContextFault>,
+    F: FnMut(&str) -> Result<Vec<Message>, crate::context::fault::ContextFault>,
 {
     let mut messages = Vec::new();
     for event in events {
@@ -315,7 +315,7 @@ mod tests {
             },
         ];
         let messages = reconstruct_messages_with_fallback(&events, "s1", 0, |_| {
-            Err(crate::context::snapshot::ContextFault::MissingArchive {
+            Err(crate::context::fault::ContextFault::MissingArchive {
                 session_id: "s1".into(),
                 seq: 0,
             })

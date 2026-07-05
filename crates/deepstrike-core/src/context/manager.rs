@@ -4,8 +4,6 @@ use super::partitions::ContextPartitions;
 use super::pressure::{PressureAction, PressureMonitor};
 use super::renderer::RenderedContext;
 use super::renewal::{HandoffArtifact, RenewalPolicy};
-use super::sections::{ContextSectionPartition, ContextSectionRegistry};
-use super::snapshot::{ContextSnapshotHint, ContextSnapshot};
 use super::skill_catalog::SkillCatalog;
 use super::task_state::{TaskState, TaskUpdate};
 use super::token_engine::ContextTokenEngine;
@@ -64,7 +62,6 @@ pub struct ContextManager {
     /// default (铁律: no config ⇒ skills narrow to exactly their declared tools + meta-tools).
     pub stable_core_tools: std::collections::HashSet<CompactString>,
     pub capabilities: CapabilityManifest,
-    pub sections: ContextSectionRegistry,
     pub memory_enabled: bool,
     pub knowledge_enabled: bool,
     pub plan_tool_enabled: bool,
@@ -125,7 +122,6 @@ impl ContextManager {
             active_skills: std::collections::BTreeMap::new(),
             stable_core_tools: std::collections::HashSet::new(),
             capabilities: CapabilityManifest::new(),
-            sections: ContextSectionRegistry::default_agent_sections(),
             memory_enabled: false, knowledge_enabled: false, plan_tool_enabled: false,
             last_observed_prompt_tokens: None,
             compression, pressure, renewal,
@@ -309,89 +305,33 @@ impl ContextManager {
         action: PressureAction,
         now_ms: Option<u64>,
     ) -> (u32, Option<String>, Vec<Message>, Option<usize>) {
-        if self.sections.is_partition_pinned(ContextSectionPartition::History) {
-            return (0, None, vec![], None);
-        }
-
-        let result = {
-            let target = self.config.target_tokens(self.max_tokens);
-            self.compression.compress(&mut self.partitions, action, self.max_tokens, target, &self.engine)
-        };
-
-        // Record compression timestamp if provided
-        if let Some(ts) = now_ms {
-            self.last_compact_ms = Some(ts);
-        }
-
-        // Archived messages have left history — drop their now-orphaned handles (bounds the table).
-        if !result.2.is_empty() {
-            self.prune_orphaned_handles();
-            // Compaction rewrote the history prefix — start a fresh collapse generation so
-            // surviving handles re-evaluate from Resident (P0-C: the one cache-free un-collapse point).
-            self.reset_collapse_generation();
-            // K1: the prompt-cache prefix is being rebuilt anyway — the one cache-free moment to
-            // apply deferred knowledge upserts/removals (rewriting system[1] bytes).
-            self.sweep_knowledge_at_boundary();
-        }
-        // P2-D × P1-E: re-anchor the frozen-prefix boundary only when the compaction actually broke
-        // the prompt-cache prefix (`result.3` = the planner's per-step `cache_at` cost, `Some` ⇒ a
-        // prefix break). A prefix-safe compaction (late Snip/Excerpt that touches no early message)
-        // leaves `[0..frozen]` byte-stable, so the deep cache survives the compaction and the boundary
-        // holds — strictly more precise than the old `archived`-keyed reset, which missed an early
-        // in-place Snip and needlessly re-anchored after a prefix-safe pass.
-        if result.3.is_some() {
-            self.frozen_history_len = self.partitions.history.messages.len();
-        }
-
-        result
+        let target = self.config.target_tokens(self.max_tokens);
+        self.compress_with_target(action, target, now_ms)
     }
 
     pub fn force_compress(&mut self) -> (u32, Option<String>, Vec<Message>, Option<usize>) {
-        if self.sections.is_partition_pinned(ContextSectionPartition::History) {
-            return (0, None, vec![], None);
-        }
-        let result = self.compression.compress(&mut self.partitions, PressureAction::AutoCompact, self.max_tokens, 0, &self.engine);
-        if !result.2.is_empty() {
-            self.prune_orphaned_handles();
-            // Compaction rewrote the history prefix — start a fresh collapse generation so
-            // surviving handles re-evaluate from Resident (P0-C: the one cache-free un-collapse point).
-            self.reset_collapse_generation();
-            // K1: the prompt-cache prefix is being rebuilt anyway — the one cache-free moment to
-            // apply deferred knowledge upserts/removals (rewriting system[1] bytes).
-            self.sweep_knowledge_at_boundary();
-        }
-        // P2-D × P1-E: re-anchor the frozen-prefix boundary only when the compaction actually broke
-        // the prompt-cache prefix (`result.3` = the planner's per-step `cache_at` cost, `Some` ⇒ a
-        // prefix break). A prefix-safe compaction (late Snip/Excerpt that touches no early message)
-        // leaves `[0..frozen]` byte-stable, so the deep cache survives the compaction and the boundary
-        // holds — strictly more precise than the old `archived`-keyed reset, which missed an early
-        // in-place Snip and needlessly re-anchored after a prefix-safe pass.
-        if result.3.is_some() {
-            self.frozen_history_len = self.partitions.history.messages.len();
-        }
-        result
+        self.compress_with_target(PressureAction::AutoCompact, 0, None)
     }
 
     /// W1-1 收口: run one compaction `action` toward an **explicit** `target_tokens`, instead of
     /// re-deriving the target from config. This is what lets `EvictionOp::Collapse { target_tokens }`
     /// flow from the planner (the single decision point) straight to the executor — the compactor no
-    /// longer re-decides the target. `compress_with_time` remains the config-derived convenience used
-    /// by the other layers (Snip/Micro), whose target equals `config.target_tokens(max_tokens)`.
+    /// longer re-decides the target. This is the single compaction implementation;
+    /// `compress_with_time` (config-derived target) and `force_compress` (AutoCompact, target 0)
+    /// are thin delegations.
     pub fn compress_with_target(
         &mut self,
         action: PressureAction,
         target_tokens: u32,
         now_ms: Option<u64>,
     ) -> (u32, Option<String>, Vec<Message>, Option<usize>) {
-        if self.sections.is_partition_pinned(ContextSectionPartition::History) {
-            return (0, None, vec![], None);
-        }
         let result =
             self.compression
                 .compress(&mut self.partitions, action, self.max_tokens, target_tokens, &self.engine);
         if let Some(ts) = now_ms {
             self.last_compact_ms = Some(ts);
         }
+        // Archived messages have left history — drop their now-orphaned handles (bounds the table).
         if !result.2.is_empty() {
             self.prune_orphaned_handles();
             // Compaction rewrote the history prefix — start a fresh collapse generation so
@@ -457,20 +397,6 @@ impl ContextManager {
             self.frozen_history_len,
             self.config.collapse_assistant_narration,
         )
-    }
-
-    pub fn snapshot_hint(&self) -> ContextSnapshotHint {
-        ContextSnapshotHint::from_parts(&self.sections, &self.capabilities)
-    }
-
-    pub fn take_snapshot(&self, turn: u32) -> ContextSnapshot {
-        ContextSnapshot {
-            turn,
-            system_messages: self.partitions.system.messages.clone(),
-            knowledge_messages: self.partitions.knowledge.messages().cloned().collect(),
-            history_messages: self.partitions.history.messages.clone(),
-            task_state: self.partitions.task_state.clone(),
-        }
     }
 
     // ── History / Knowledge ───────────────────────────────────────────────────
@@ -627,8 +553,6 @@ impl ContextManager {
 
     // ── Section pinning ───────────────────────────────────────────────────────
 
-    pub fn pin_section(&mut self, id: &str) -> bool { self.sections.pin(id) }
-    pub fn unpin_section(&mut self, id: &str) -> bool { self.sections.unpin(id) }
 
     // ── Skills ────────────────────────────────────────────────────────────────
 
@@ -958,36 +882,6 @@ mod tests {
         assert_eq!(artifact.open_tasks, vec!["pending"]);
     }
 
-    #[test]
-    fn pinned_history_section_skips_compression() {
-        let mut mgr = ContextManager::new(1_000);
-        for _ in 0..30 { mgr.push_history(Message::user("filler message for pinning test"), 50); }
-        let tokens_before = mgr.partitions.history.token_count;
-        mgr.pin_section("history.rolling");
-        let (saved, _, _, _) = mgr.compress(PressureAction::AutoCompact);
-        assert_eq!(saved, 0);
-        assert_eq!(mgr.partitions.history.token_count, tokens_before);
-    }
-
-    #[test]
-    fn unpinned_history_section_allows_compression() {
-        let mut mgr = ContextManager::new(1_000);
-        for _ in 0..30 { mgr.push_history(Message::user("filler"), 50); }
-        mgr.pin_section("history.rolling");
-        mgr.unpin_section("history.rolling");
-        let (saved, _, _, _) = mgr.compress(PressureAction::AutoCompact);
-        assert!(saved > 0);
-    }
-
-    #[test]
-    fn force_compress_also_skips_when_history_pinned() {
-        let mut mgr = ContextManager::new(1_000);
-        for _ in 0..10 { mgr.push_history(Message::user("filler"), 50); }
-        mgr.pin_section("history.rolling");
-        let (saved, _, _, _) = mgr.force_compress();
-        assert_eq!(saved, 0);
-    }
-
     // ── W1-1 完成态 regression gates (Step 0). RED until the planner/pure-executor rewrite. ──
 
     #[test]
@@ -1061,12 +955,6 @@ mod tests {
     }
 
     #[test]
-    fn section_registry_is_available_on_manager() {
-        let mgr = ContextManager::new(1_000);
-        assert!(mgr.sections.get("capabilities.inventory").is_some());
-    }
-
-    #[test]
     fn b1_active_skill_state_and_tool_filter() {
         let mut mgr = ContextManager::new(1_000);
         let mut debug = SkillMetadata::new("debug", "Debug helper");
@@ -1097,15 +985,6 @@ mod tests {
         // An active skill with NO declared tools ⇒ unbounded ⇒ do not narrow (D3, errs-open).
         mgr.activate_skill("plain");
         assert!(mgr.active_skill_tool_filter().is_none());
-    }
-
-    #[test]
-    fn snapshot_hint_changes_when_capabilities_change() {
-        let mut mgr = ContextManager::new(1_000);
-        let before = mgr.snapshot_hint();
-        mgr.set_memory_enabled(true);
-        let after = mgr.snapshot_hint();
-        assert_ne!(before.capability_manifest_hash, after.capability_manifest_hash);
     }
 
     #[test]
