@@ -1,16 +1,13 @@
 use crate::context::pressure::PressureAction;
 use crate::types::message::{Message, Role};
 
-pub trait Summarizer: Send + Sync {
-    /// Produce a summary of `messages` that fits within `max_tokens`.
-    fn summarize(&self, messages: &[Message], action: PressureAction, max_tokens: u32) -> String;
-}
-
-/// Deterministic rule-based summariser — no LLM required.
+/// Deterministic rule-based summariser — no LLM required. The compression
+/// pipeline is its only consumer; richer (LLM) summaries are an SDK concern.
 pub struct RuleSummarizer;
 
-impl Summarizer for RuleSummarizer {
-    fn summarize(&self, messages: &[Message], action: PressureAction, _max_tokens: u32) -> String {
+impl RuleSummarizer {
+    /// Produce a summary of `messages` (the `max_tokens` budget is currently advisory).
+    pub fn summarize(&self, messages: &[Message], action: PressureAction, _max_tokens: u32) -> String {
         let n = messages.len();
         let tokens: u32 = messages.iter().map(|m| m.token_count.unwrap_or(0)).sum();
         let mut tool_names: Vec<String> = messages

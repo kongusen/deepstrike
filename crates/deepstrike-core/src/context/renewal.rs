@@ -1,32 +1,7 @@
-use serde::{Deserialize, Serialize};
-
 use super::config::ContextConfig;
 use super::partitions::ContextPartitions;
 use super::pressure::PressureMonitor;
 use super::token_engine::ContextTokenEngine;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContractCheckResult {
-    pub criterion_id: String,
-    pub passed: bool,
-    pub evidence: Option<String>,
-}
-
-/// Structured state passed between sprints.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HandoffArtifact {
-    pub goal: String,
-    pub sprint: u32,
-    pub progress_summary: String,
-    pub open_tasks: Vec<String>,
-    pub context_snapshot: serde_json::Value,
-    #[serde(default)]
-    pub contract_status: Vec<ContractCheckResult>,
-    #[serde(default)]
-    pub drift_rate_24h: f64,
-    #[serde(default)]
-    pub blocked_on: Vec<String>,
-}
 
 pub struct RenewalPolicy {
     pub renewal_threshold: f64,
@@ -56,10 +31,8 @@ impl RenewalPolicy {
     pub fn renew(
         &self,
         partitions: &ContextPartitions,
-        goal: &str,
-        sprint: u32,
         max_tokens: u32,
-    ) -> (ContextPartitions, HandoffArtifact) {
+    ) -> ContextPartitions {
         let config = ContextConfig {
             carryover_ratio: self.carryover_ratio,
             renewal_threshold: self.renewal_threshold,
@@ -97,21 +70,7 @@ impl RenewalPolicy {
             renewed.history.push(msg, t);
         }
 
-        let artifact = HandoffArtifact {
-            goal: goal.to_string(),
-            sprint,
-            progress_summary: partitions.task_state.progress.clone(),
-            open_tasks: partitions.task_state.open_steps(),
-            context_snapshot: serde_json::json!({
-                "history_len": partitions.history.messages.len(),
-                "knowledge_len": partitions.knowledge.len(),
-            }),
-            contract_status: Vec::new(),
-            drift_rate_24h: 0.0,
-            blocked_on: partitions.task_state.blocked_on.clone(),
-        };
-
-        (renewed, artifact)
+        renewed
     }
 }
 
@@ -137,7 +96,7 @@ mod tests {
         let mut ctx = ContextPartitions::new(&cfg);
         ctx.system.push(Message::system("rules"), 10);
         ctx.knowledge.push(Message::system("skill: debug"), 20);
-        let (renewed, _) = make_policy(0.05).renew(&ctx, "goal", 0, 1_000);
+        let renewed = make_policy(0.05).renew(&ctx, 1_000);
         assert_eq!(renewed.system.len(), 1);
         assert_eq!(renewed.knowledge.len(), 1);
     }
@@ -147,7 +106,7 @@ mod tests {
         let cfg = ContextConfig::default();
         let mut ctx = ContextPartitions::new(&cfg);
         ctx.signals.push("[ROLLBACK] failed".to_string());
-        let (renewed, _) = make_policy(0.05).renew(&ctx, "goal", 0, 1_000);
+        let renewed = make_policy(0.05).renew(&ctx, 1_000);
         assert!(renewed.signals.is_empty());
     }
 
@@ -158,7 +117,7 @@ mod tests {
         for i in 0..10 {
             ctx.history.push(Message::user(format!("msg {i}")), 100);
         }
-        let (renewed, _) = make_policy(0.05).renew(&ctx, "goal", 0, 1_000);
+        let renewed = make_policy(0.05).renew(&ctx, 1_000);
         assert!(renewed.history.token_count <= 100);
     }
 
@@ -171,9 +130,8 @@ mod tests {
             scratchpad: "temp data".to_string(),
             ..Default::default()
         };
-        let (renewed, artifact) = make_policy(0.05).renew(&ctx, "build", 0, 1_000);
+        let renewed = make_policy(0.05).renew(&ctx, 1_000);
         assert_eq!(renewed.task_state.goal, "build");
         assert!(renewed.task_state.scratchpad.is_empty());
-        assert_eq!(artifact.goal, "build");
     }
 }

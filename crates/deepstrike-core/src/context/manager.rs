@@ -3,7 +3,7 @@ use super::config::ContextConfig;
 use super::partitions::ContextPartitions;
 use super::pressure::{PressureAction, PressureMonitor};
 use super::renderer::RenderedContext;
-use super::renewal::{HandoffArtifact, RenewalPolicy};
+use super::renewal::RenewalPolicy;
 use super::skill_catalog::SkillCatalog;
 use super::task_state::{TaskState, TaskUpdate};
 use super::token_engine::ContextTokenEngine;
@@ -47,7 +47,6 @@ pub struct ContextManager {
     pub config: ContextConfig,
     pub engine: ContextTokenEngine,
     pub sprint: u32,
-    pub last_handoff: Option<HandoffArtifact>,
     pub skills: SkillCatalog,
     /// P1-B tool gating: the skills the model has loaded this session (by name), each with an
     /// optional lease expiry turn (K3: `None` = permanent, today's default). Their declared
@@ -117,7 +116,7 @@ impl ContextManager {
         let partitions = ContextPartitions::new(&config);
         Self {
             partitions, max_tokens, config, engine,
-            sprint: 0, last_handoff: None,
+            sprint: 0,
             skills: SkillCatalog::new(),
             active_skills: std::collections::BTreeMap::new(),
             stable_core_tools: std::collections::HashSet::new(),
@@ -255,29 +254,10 @@ impl ContextManager {
     /// **Raw** rho — full partition weight (or provider-observed tokens when available). This is the
     /// projection-decision rho: [`Self::recompute_handle_residency`] marks the Resident↔Collapsed set
     /// from *this* value, so it must NOT discount paged content (else collapse → rho drops →
-    /// un-collapse would oscillate). Compaction/renewal triggers use [`Self::effective_rho`] instead.
+    /// un-collapse would oscillate).
     pub fn rho(&self) -> f64 {
         self.pressure
             .pressure(&self.partitions, &self.engine, self.last_observed_prompt_tokens)
-    }
-
-    /// **Effective** rho — the pressure that actually drives compaction/renewal, made paging-aware.
-    ///
-    /// When provider usage is authoritative (`observed_prompt_tokens` set), the rendered prompt was
-    /// already collapsed (the renderer emits previews for `Collapsed` handles), so the observed count
-    /// already reflects paging — raw rho is exact and returned as-is. In the **estimate** path
-    /// (no observed tokens) we estimate from `partitions`, which still carry the full weight of
-    /// paged-out tool results (collapse is non-destructive); we subtract the non-resident handle
-    /// tokens so that collapsing/spooling a result immediately relieves pressure, rather than only
-    /// after the next provider round-trip. With no paged handles this equals [`Self::rho`], so the
-    /// pre-paging behavior is preserved exactly.
-    pub fn effective_rho(&self) -> f64 {
-        if self.max_tokens == 0 || self.last_observed_prompt_tokens.is_some() {
-            return self.rho();
-        }
-        let total = self.partitions.total_tokens(&self.engine);
-        let effective = total.saturating_sub(self.handles.non_resident_tokens());
-        effective as f64 / self.max_tokens as f64
     }
 
     pub fn set_observed_prompt_tokens(&mut self, tokens: u32) {
@@ -285,14 +265,11 @@ impl ContextManager {
     }
 
     pub fn should_compress(&self) -> PressureAction {
-        // Compaction-tier recommendation runs on **raw** rho. The paging-aware `effective_rho` was
-        // wired here during W1-1 but it over-relieved pressure: once `micro_compact` paged out
-        // tool-result handles, effective rho fell below the collapse/auto_compact thresholds, so the
-        // heavy tiers never fired — violating W1-1's own DoD ("既有压缩 golden 不变" /
-        // "AutoCompact 后 wake 注入语义摘要"). Until the full cache-aware planner lands (the planner
-        // that scores prefix-invalidation per op, `effective_rho` reserved for it), the tier trigger
-        // must use raw rho so escalation is preserved. `effective_rho` stays defined + tested for
-        // that work; it is intentionally not consulted by the trigger today.
+        // Compaction-tier recommendation runs on **raw** rho. A paging-aware discount
+        // (`effective_rho`) was tried during W1-1 and over-relieved pressure: once
+        // `micro_compact` paged out tool-result handles, the discounted rho fell below the
+        // collapse/auto_compact thresholds and the heavy tiers never fired. Raw rho keeps
+        // escalation intact (recoverable from git if a cache-aware planner ever lands).
         self.pressure.recommend(self.rho())
     }
 
@@ -370,10 +347,7 @@ impl ContextManager {
     }
 
     pub fn renew(&mut self) {
-        let goal = self.partitions.task_state.goal.clone();
-        let (renewed, artifact) = self.renewal.renew(&self.partitions, &goal, self.sprint, self.max_tokens);
-        self.partitions = renewed;
-        self.last_handoff = Some(artifact);
+        self.partitions = self.renewal.renew(&self.partitions, self.max_tokens);
         self.sprint += 1;
         // History was rebuilt wholesale — drop handles anchored to messages it no longer carries,
         // and start a fresh collapse generation (P0-C) since the whole prefix changed.
@@ -800,14 +774,13 @@ mod tests {
     }
 
     #[test]
-    fn manager_renew_uses_task_state_goal() {
+    fn manager_renew_advances_sprint_and_keeps_goal() {
         let mut mgr = ContextManager::new(1_000);
         mgr.init_task("test goal".to_string(), vec![]);
         mgr.partitions.system.push(Message::system("rules"), 10);
         for i in 0..10 { mgr.push_history(Message::user(format!("msg {i}")), 50); }
         mgr.renew();
-        let artifact = mgr.last_handoff.as_ref().unwrap();
-        assert_eq!(artifact.goal, "test goal");
+        assert_eq!(mgr.partitions.task_state.goal, "test goal");
         assert_eq!(mgr.sprint, 1);
     }
 
@@ -870,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn renewal_open_tasks_from_task_state() {
+    fn renewal_keeps_open_plan_steps_in_task_state() {
         let mut mgr = ContextManager::new(1_000);
         mgr.init_task("g".to_string(), vec![]);
         mgr.partitions.task_state.plan = vec![
@@ -878,8 +851,7 @@ mod tests {
             PlanStep { label: "pending".to_string(), done: false },
         ];
         mgr.renew();
-        let artifact = mgr.last_handoff.as_ref().unwrap();
-        assert_eq!(artifact.open_tasks, vec!["pending"]);
+        assert_eq!(mgr.partitions.task_state.open_steps(), vec!["pending"]);
     }
 
     // ── W1-1 完成态 regression gates (Step 0). RED until the planner/pure-executor rewrite. ──
@@ -1144,39 +1116,6 @@ mod tests {
             output: output.to_string(),
             is_error: false,
         }])
-    }
-
-    #[test]
-    fn effective_rho_discounts_paged_out_handles() {
-        let mut mgr = ContextManager::new(1_000);
-        // A large tool-result output so its handle carries a real token weight.
-        let big = "data ".repeat(200);
-        let tok = mgr.engine.count(&big);
-        mgr.push_history(tool_result_msg("c0", &big), tok);
-        mgr.push_history(Message::user("u"), 50);
-
-        let raw = mgr.rho();
-        // Everything resident → effective equals raw (behavior-preserving when nothing is paged).
-        assert_eq!(mgr.handles.non_resident_tokens(), 0);
-        assert!((mgr.effective_rho() - raw).abs() < f64::EPSILON);
-
-        // Page the tool result out of working context.
-        mgr.mark_spooled("c0", "disk://c0");
-        let paged = mgr.handles.non_resident_tokens();
-        assert!(paged > 0, "handle is now non-resident with a real token weight");
-
-        // Raw rho is unchanged (partitions are untouched by the non-destructive projection)...
-        assert!((mgr.rho() - raw).abs() < f64::EPSILON, "raw rho unchanged by paging");
-        // ...but effective rho drops by exactly the paged tokens — paging relieves pressure now.
-        let total = mgr.partitions.total_tokens(&mgr.engine);
-        let expected = total.saturating_sub(paged) as f64 / 1_000.0;
-        assert!((mgr.effective_rho() - expected).abs() < f64::EPSILON);
-        assert!(mgr.effective_rho() < raw, "effective pressure relieved by paging");
-
-        // When provider usage is authoritative, the rendered prompt was already collapsed, so
-        // effective falls back to raw (no double-discount).
-        mgr.set_observed_prompt_tokens(900);
-        assert!((mgr.effective_rho() - mgr.rho()).abs() < f64::EPSILON);
     }
 
     #[test]

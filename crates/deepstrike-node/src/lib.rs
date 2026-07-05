@@ -168,27 +168,6 @@ pub struct VerificationContract {
     pub evidence_required: Vec<String>,
 }
 
-#[napi(object)]
-#[derive(Clone)]
-pub struct ContractCheckResult {
-    pub criterion_id: String,
-    pub passed: bool,
-    pub evidence: Option<String>,
-}
-
-#[napi(object)]
-#[derive(Clone)]
-pub struct HandoffArtifact {
-    pub goal: String,
-    pub sprint: u32,
-    pub progress_summary: String,
-    pub open_tasks: Vec<String>,
-    /// JSON-encoded context snapshot.
-    pub context_snapshot: String,
-    pub contract_status: Vec<ContractCheckResult>,
-    pub drift_rate_24h: f64,
-    pub blocked_on: Vec<String>,
-}
 
 #[napi(object)]
 #[derive(Clone)]

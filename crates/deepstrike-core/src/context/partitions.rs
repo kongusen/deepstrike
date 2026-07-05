@@ -75,18 +75,9 @@ pub struct KnowledgePartition {
 impl KnowledgePartition {
     pub fn new() -> Self { Self::default() }
 
-    /// Legacy unkeyed append (initialMemory, snapshot restore) — immediate, never upserts.
-    pub fn push(&mut self, mut msg: Message, token_count: u32) {
-        msg.token_count = Some(token_count);
-        self.token_count += token_count;
-        self.entries.push(KnowledgeEntry {
-            key: None,
-            message: msg,
-            tokens: token_count,
-            pinned: false,
-            evict_at_boundary: false,
-            pending: None,
-        });
+    /// Unkeyed immediate append — exactly `push_entry(None, msg, tokens, false)`.
+    pub fn push(&mut self, msg: Message, token_count: u32) {
+        self.push_entry(None, msg, token_count, false);
     }
 
     /// Keyed push: a fresh key (or `None`) appends immediately; an existing key stages a
@@ -173,7 +164,8 @@ impl KnowledgePartition {
     pub fn is_empty(&self) -> bool { self.entries.is_empty() }
 }
 
-/// Three-partition context model aligned with LLM API slots:
+/// Four-slot context model aligned with LLM API slots (five fields — slot 3 spans
+/// `task_state` + `signals`):
 ///
 ///   Slot 1 — Identity  (system):    who the agent is; role, rules, constraints.
 ///                                    Maps to: Anthropic system[0] cache_control, OpenAI system role.

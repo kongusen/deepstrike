@@ -1,7 +1,6 @@
 use super::config::ContextConfig;
 use super::partitions::ContextPartitions;
 use super::pressure::PressureAction;
-use super::summarizer::Summarizer;
 use super::token_engine::ContextTokenEngine;
 use crate::types::message::{Content, ContentPart, Message};
 
@@ -28,7 +27,6 @@ pub trait Compressor: Send + Sync {
         target_tokens: u32,
         max_tokens: u32,
         preserve_k: usize,
-        summarizer: &dyn Summarizer,
         engine: &ContextTokenEngine,
     ) -> CompressResult;
 }
@@ -45,7 +43,6 @@ impl Compressor for SnipCompactor {
         _target_tokens: u32,
         max_tokens: u32,
         preserve_k: usize,
-        _summarizer: &dyn Summarizer,
         engine: &ContextTokenEngine,
     ) -> CompressResult {
         let per_msg_limit = ((max_tokens as f64 * self.per_msg_ratio) as u32).max(50);
@@ -63,40 +60,17 @@ impl Compressor for SnipCompactor {
         for &i in &indices {
             let msg = &mut partition.messages[i];
             let original_tokens = msg.token_count.unwrap_or_else(|| engine.count_message(msg));
-            if let Content::Text(ref t) = msg.content {
-                let head_limit = per_msg_limit / 2;
-                let tail_limit = per_msg_limit.saturating_sub(head_limit);
-                let head_text = engine.truncate(t, head_limit);
-
-                let chars: Vec<char> = t.chars().collect();
-                let mut low = head_text.chars().count();
-                let mut high = chars.len();
-                let mut suffix_start = chars.len();
-                while low <= high {
-                    let mid = (low + high) / 2;
-                    if mid >= chars.len() {
-                        break;
-                    }
-                    let candidate: String = chars[mid..].iter().collect();
-                    let tokens = engine.count(&candidate);
-                    if tokens <= tail_limit {
-                        suffix_start = mid;
-                        if mid == 0 {
-                            break;
-                        }
-                        high = mid - 1;
-                    } else {
-                        low = mid + 1;
-                    }
-                }
-                let tail_text: String = chars[suffix_start..].iter().collect();
-                let omitted = original_tokens
-                    .saturating_sub(head_limit)
-                    .saturating_sub(tail_limit);
-                msg.content = Content::Text(format!(
-                    "{}… [… {} tokens omitted …] …{}",
-                    head_text, omitted, tail_text
-                ));
+            let head_limit = per_msg_limit / 2;
+            let tail_limit = per_msg_limit.saturating_sub(head_limit);
+            // Same head/tail elision as excerpt_text; the omitted count comes from the recorded
+            // token metadata (not a recount) so the elision marker matches the saved accounting.
+            let snipped = if let Content::Text(ref t) = msg.content {
+                Some(excerpt_text_with_total(t, head_limit, tail_limit, engine, original_tokens))
+            } else {
+                None
+            };
+            if let Some(text) = snipped {
+                msg.content = Content::Text(text);
                 msg.token_count = Some(per_msg_limit);
                 saved += original_tokens.saturating_sub(per_msg_limit);
             }
@@ -208,7 +182,18 @@ fn excerpt_text(
     tail_tokens: u32,
     engine: &ContextTokenEngine,
 ) -> String {
-    let total_tokens = engine.count(text);
+    excerpt_text_with_total(text, head_tokens, tail_tokens, engine, engine.count(text))
+}
+
+/// [`excerpt_text`] with the total token count supplied by the caller (e.g. from recorded
+/// message metadata) instead of recounted — the count only feeds the elision marker.
+fn excerpt_text_with_total(
+    text: &str,
+    head_tokens: u32,
+    tail_tokens: u32,
+    engine: &ContextTokenEngine,
+    total_tokens: u32,
+) -> String {
     if total_tokens <= head_tokens + tail_tokens {
         return text.to_string();
     }
@@ -288,7 +273,6 @@ impl Compressor for MicroCompactor {
         _target_tokens: u32,
         _max_tokens: u32,
         preserve_k: usize,
-        _summarizer: &dyn Summarizer,
         engine: &ContextTokenEngine,
     ) -> CompressResult {
         let find_tool_name = |call_id: &str, msgs: &[Message]| -> Option<String> {
@@ -409,7 +393,6 @@ impl Compressor for CollapseCompactor {
         target_tokens: u32,
         _max_tokens: u32,
         preserve_k: usize,
-        _summarizer: &dyn Summarizer,
         engine: &ContextTokenEngine,
     ) -> CompressResult {
         let partition = &mut partitions.history;
@@ -445,7 +428,6 @@ impl Compressor for AutoCompactor {
         _target_tokens: u32,
         _max_tokens: u32,
         preserve_k: usize,
-        _summarizer: &dyn Summarizer,
         engine: &ContextTokenEngine,
     ) -> CompressResult {
         let partition = &mut partitions.history;
@@ -487,47 +469,6 @@ impl Compressor for AutoCompactor {
             ..Default::default()
         }
     }
-}
-
-// ─── Cache-aware compaction (W1-1 step 2) ───────────────────────────────────────────────────────
-// Additive cost model: introduced + tested before it drives the cascade, so the behavior-changing
-// wiring (prefix-safe-first selection + batching, with golden updates) is a separate, reviewable step.
-
-/// A fully-specified compaction step the cache-aware planner emits; the executor applies it
-/// mechanically (all *selection* already done by the planner via the pure helpers above).
-#[derive(Debug, Clone, PartialEq)]
-pub enum CompactionStep {
-    /// Excerpt the tool results at these history-message indices. Prefix-safe in practice: tool
-    /// results are interleaved mid/late, so the earliest touched index is rarely the cache prefix.
-    Excerpt { msg_idx: Vec<usize> },
-    /// Cap the oversized text messages at these indices to `per_msg_limit`.
-    Snip { msg_idx: Vec<usize>, per_msg_limit: u32 },
-    /// Drop the `count` oldest messages (the pipeline summarizes them). Prefix-breaking at index 0.
-    DropOldest { count: usize },
-}
-
-impl CompactionStep {
-    /// The earliest history-message index this step rewrites or removes — i.e. where it invalidates
-    /// the prompt-cache prefix. `None` = prefix-safe (touches nothing). A lower index is a higher
-    /// cache cost (Anthropic keys the cache off the first N messages), so the planner prefers `None`
-    /// or a later index, and escalates to a prefix-breaking drop only when the safe steps can't free
-    /// enough.
-    pub fn invalidates_prefix_at(&self) -> Option<usize> {
-        match self {
-            CompactionStep::Excerpt { msg_idx } | CompactionStep::Snip { msg_idx, .. } => {
-                msg_idx.iter().min().copied()
-            }
-            CompactionStep::DropOldest { count } => (*count > 0).then_some(0),
-        }
-    }
-}
-
-/// The prompt-cache-invalidation index of a whole plan = the earliest break across its steps (an
-/// earlier break invalidates everything after it, so the minimum dominates the cost). `None` means
-/// the plan is entirely prefix-safe and preserves the prompt cache — the cache-aware planner's goal
-/// whenever the safe steps can free enough.
-pub fn plan_cache_cost(steps: &[CompactionStep]) -> Option<usize> {
-    steps.iter().filter_map(|s| s.invalidates_prefix_at()).min()
 }
 
 /// Compression pipeline — operates on history partition but can reference full partitions.
@@ -583,7 +524,6 @@ impl CompressionPipeline {
                     target_tokens,
                     max_tokens,
                     self.preserve_recent_turns,
-                    &summarizer,
                     engine,
                 );
                 total_saved += res.tokens_saved;
@@ -640,7 +580,7 @@ mod tests {
         let mut ctx = ContextPartitions::new(&cfg);
         ctx.history.push(Message::user("a".repeat(800)), 200);
         // preserve_k=0: exercise the truncation transform directly (no cache-prefix protection).
-        let result = compactor.compress(&mut ctx, 0, MAX, 0, &summarizer(), &engine());
+        let result = compactor.compress(&mut ctx, 0, MAX, 0, &engine());
         assert!(result.tokens_saved > 0);
         if let Content::Text(ref t) = ctx.history.messages[0].content {
             assert!(t.contains("… [… 100 tokens omitted …] …"), "got: {t}");
@@ -658,7 +598,7 @@ mod tests {
         };
         let mut ctx = ContextPartitions::new(&cfg);
         ctx.history.push(Message::user("short"), 5);
-        let result = compactor.compress(&mut ctx, 0, MAX, 2, &summarizer(), &engine());
+        let result = compactor.compress(&mut ctx, 0, MAX, 2, &engine());
         assert_eq!(result.tokens_saved, 0);
     }
 
@@ -684,7 +624,7 @@ mod tests {
         ctx.history.token_count = 300;
 
         // preserve_k=0: exercise the excerpt transform directly (no cache-prefix protection).
-        let result = compactor.compress(&mut ctx, 0, MAX, 0, &summarizer(), &engine());
+        let result = compactor.compress(&mut ctx, 0, MAX, 0, &engine());
         assert!(result.tokens_saved > 0);
         let text = ctx.history.messages[0].content.as_text().unwrap();
         assert!(
@@ -700,7 +640,7 @@ mod tests {
         for _ in 0..8 {
             ctx.history.push(Message::user("msg"), 50);
         }
-        let result = compactor.compress(&mut ctx, 250, MAX, 2, &summarizer(), &engine());
+        let result = compactor.compress(&mut ctx, 250, MAX, 2, &engine());
         assert!(result.tokens_saved > 0);
         assert!(ctx.history.messages.len() < 8);
         // Pure executor: returns the drained messages; summary + log attribution is the pipeline's
@@ -757,7 +697,7 @@ mod tests {
         ctx.history.messages.push(msg);
         ctx.history.token_count = 300;
 
-        let result = compactor.compress(&mut ctx, 0, MAX, 2, &summarizer(), &engine());
+        let result = compactor.compress(&mut ctx, 0, MAX, 2, &engine());
         // Since call_id "keep_me" is in preserved_refs, it should not be replaced!
         assert_eq!(result.tokens_saved, 0);
         let text_opt = ctx.history.messages[0].content.as_text();
@@ -774,7 +714,7 @@ mod tests {
         for i in 0..10 {
             ctx.history.push(Message::user(format!("msg {i}")), 10);
         }
-        let result = compactor.compress(&mut ctx, 0, MAX, 2, &summarizer(), &engine());
+        let result = compactor.compress(&mut ctx, 0, MAX, 2, &engine());
         assert!(result.tokens_saved > 0);
         assert_eq!(ctx.history.messages.len(), 4); // kept last 2 turns = 4 messages
         // Pure executor: returns the drained messages; the pipeline summarizes + logs under the
@@ -811,36 +751,6 @@ mod tests {
         assert_eq!(prefix_keep_for(5, 2), 0, "len 5 < 6 → would leave an untouchable message");
         assert_eq!(prefix_keep_for(3, 2), 0);
         assert_eq!(prefix_keep_for(0, 2), 0);
-    }
-
-    #[test]
-    fn compaction_step_prefix_cost() {
-        // Excerpt/Snip cost = the earliest touched message index; DropOldest breaks the prefix at 0.
-        assert_eq!(CompactionStep::Excerpt { msg_idx: vec![5, 8] }.invalidates_prefix_at(), Some(5));
-        assert_eq!(
-            CompactionStep::Snip { msg_idx: vec![3, 9], per_msg_limit: 50 }.invalidates_prefix_at(),
-            Some(3)
-        );
-        assert_eq!(CompactionStep::DropOldest { count: 4 }.invalidates_prefix_at(), Some(0));
-        assert_eq!(CompactionStep::DropOldest { count: 0 }.invalidates_prefix_at(), None);
-        // An empty selection touches nothing → prefix-safe.
-        assert_eq!(CompactionStep::Excerpt { msg_idx: vec![] }.invalidates_prefix_at(), None);
-    }
-
-    #[test]
-    fn plan_cache_cost_is_the_earliest_break() {
-        // Cost of a plan = the earliest message any step touches (an earlier break dominates).
-        let late = vec![
-            CompactionStep::Excerpt { msg_idx: vec![6] },
-            CompactionStep::Snip { msg_idx: vec![7], per_msg_limit: 50 },
-        ];
-        assert_eq!(plan_cache_cost(&late), Some(6));
-        // Escalating to a DropOldest breaks the prefix at 0 — the whole plan's cost collapses to 0.
-        let mut with_drop = late.clone();
-        with_drop.push(CompactionStep::DropOldest { count: 3 });
-        assert_eq!(plan_cache_cost(&with_drop), Some(0));
-        // An empty plan preserves the cache entirely.
-        assert_eq!(plan_cache_cost(&[]), None);
     }
 
     #[test]

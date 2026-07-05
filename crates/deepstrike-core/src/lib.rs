@@ -38,7 +38,6 @@ pub mod syscall;
 pub mod types;
 
 // Re-export key types at crate root for convenience
-pub use context::renewal::{ContractCheckResult, HandoffArtifact};
 pub use governance::quota::ResourceQuota;
 pub use mm::{
     plan_eviction, EvictionOp, EvictionPlan, Handle, HandleId, HandleKind, HandleTable,

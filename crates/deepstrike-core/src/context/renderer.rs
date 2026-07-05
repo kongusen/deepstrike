@@ -54,7 +54,7 @@ pub struct RenderedContext {
 /// match *and* one's `turn_hashes` is a prefix of the other's. Pure and derived —
 /// never stored in snapshots, session logs, or event logs.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrefixFingerprint {
+pub(crate) struct PrefixFingerprint {
     pub system_stable_hash: u64,
     pub system_knowledge_hash: u64,
     /// One stable hash per history turn, in order. The longest common prefix with a
@@ -67,7 +67,7 @@ impl PrefixFingerprint {
     /// identical system segments and `prev.turn_hashes` is a prefix of
     /// `self.turn_hashes`. This is exactly the KV / prompt-cache reuse condition —
     /// no drift anywhere in the prefix, only growth at the tail.
-    pub fn extends(&self, prev: &PrefixFingerprint) -> bool {
+    pub(crate) fn extends(&self, prev: &PrefixFingerprint) -> bool {
         self.system_stable_hash == prev.system_stable_hash
             && self.system_knowledge_hash == prev.system_knowledge_hash
             && prev.turn_hashes.len() <= self.turn_hashes.len()
@@ -77,7 +77,7 @@ impl PrefixFingerprint {
     /// Number of leading turns byte-identical to `prev` — the reusable turn-prefix
     /// length. A drop below `prev.turn_hashes.len()` signals mid-prefix churn (a
     /// turn rewritten in place, e.g. an in-place collapse) that invalidates cache.
-    pub fn common_turn_prefix(&self, prev: &PrefixFingerprint) -> usize {
+    pub(crate) fn common_turn_prefix(&self, prev: &PrefixFingerprint) -> usize {
         self.turn_hashes
             .iter()
             .zip(prev.turn_hashes.iter())
@@ -99,7 +99,7 @@ fn hash_turn(msg: &Message) -> u64 {
 impl RenderedContext {
     /// Compute the [`PrefixFingerprint`] for this render. See its docs for the
     /// cache-reuse contract it certifies.
-    pub fn prefix_fingerprint(&self) -> PrefixFingerprint {
+    pub(crate) fn prefix_fingerprint(&self) -> PrefixFingerprint {
         PrefixFingerprint {
             system_stable_hash: stable_hash(self.system_stable.as_bytes()),
             system_knowledge_hash: stable_hash(self.system_knowledge.as_bytes()),
@@ -221,7 +221,8 @@ fn normalize_turn_prefix(turns: &mut Vec<Message>) {
 
 /// Layer-4 read-time projection: replace the body of a `Collapsed` tool result with a short
 /// preview, leaving a marker. Non-destructive — the full output stays in `partitions.history`;
-/// only the rendered copy shrinks, so the projection reverses when pressure drops.
+/// only the rendered copy shrinks. Un-collapse is boundary-only (P0-C): handles re-evaluate
+/// from Resident at the next compaction/renewal, never mid-generation (cache-safe monotonic).
 fn collapse_preview(output: &str) -> String {
     const PREVIEW_BYTES: usize = 160;
     let mut end = PREVIEW_BYTES.min(output.len());
@@ -306,7 +307,8 @@ fn project_message(msg: &Message, handles: &HandleTable) -> Option<Message> {
 ///
 /// Equivalent to [`render_projected`] with an empty handle table (no Layer-4 projection) and no
 /// frozen-prefix boundary (`frozen_history_len = 0` → `frozen_prefix_len` is always `None`).
-pub fn render(
+/// Test convenience — the production path is `ContextManager::render` → [`render_projected`].
+pub(crate) fn render(
     partitions: &ContextPartitions,
     budget: u32,
     engine: &ContextTokenEngine,
