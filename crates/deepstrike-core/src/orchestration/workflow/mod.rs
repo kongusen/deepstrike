@@ -65,6 +65,12 @@ pub enum NodeKind {
     Loop { max_iters: usize },
     /// Run the node's agent once as a classifier; its `classify_branch` result selects one branch
     /// to run and prunes the others. Branch nodes must `depends_on` this classify node.
+    ///
+    /// NOTE (W-11): prefer expressing classify-and-act via *runtime submission* — run the
+    /// classifier as a plain node and have it `submit_workflow_nodes` only the chosen branch. That
+    /// form needs no branch pre-declaration, prune bookkeeping, or resume branch-replay, and is the
+    /// CC-parity model-driven shape. `Classify` stays for declaratively auditable topologies (the
+    /// full branch set is visible up front) but should not grow new capabilities.
     Classify { branches: Vec<ClassifyBranch> },
     /// A *controller* node (spawns no agent of its own): it generates `entrants` candidates in
     /// parallel, then runs a single-elimination bracket of pairwise judges (reusing
@@ -109,6 +115,13 @@ pub struct WorkflowNode {
     /// `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<u64>,
+    /// O3 per-node turn cap: the SDK sets the child run's `max_turns` (falls back to the parent's).
+    /// Mirrors `token_budget` — same hop chain, additive ABI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+    /// O3 per-node wall-clock cap (ms): the SDK sets the child run's timeout. Additive ABI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_wall_ms: Option<u64>,
     /// Indices into [`WorkflowSpec::nodes`] this node depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<usize>,
@@ -136,6 +149,8 @@ impl WorkflowNode {
             output_schema: None,
             kind: NodeKind::Spawn,
             token_budget: None,
+            max_turns: None,
+            max_wall_ms: None,
             depends_on: Vec::new(),
         }
     }
@@ -143,6 +158,18 @@ impl WorkflowNode {
     /// M4/G5: cap this node's child run at `tokens` cumulative tokens.
     pub fn with_token_budget(mut self, tokens: u64) -> Self {
         self.token_budget = Some(tokens);
+        self
+    }
+
+    /// O3: cap this node's child run at `turns` provider turns.
+    pub fn with_max_turns(mut self, turns: u32) -> Self {
+        self.max_turns = Some(turns);
+        self
+    }
+
+    /// O3: cap this node's child run at `ms` wall-clock milliseconds.
+    pub fn with_max_wall_ms(mut self, ms: u64) -> Self {
+        self.max_wall_ms = Some(ms);
         self
     }
 
@@ -419,10 +446,6 @@ pub fn gen_eval(
     .with_output_schema(crate::harness::verdict_output_schema(extract_skill_on_pass));
     WorkflowSpec::new(vec![worker_node, eval_node])
 }
-
-// ---------------------------------------------------------------------------
-// Pattern 3 — Classify-and-act
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

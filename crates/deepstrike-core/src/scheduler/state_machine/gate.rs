@@ -117,6 +117,16 @@ impl LoopStateMachine {
             return Disposition::Allow;
         };
         if let Some(max) = quota.max_concurrent_subagents {
+            // W-6: a zero-slot pool can never free a slot — Defer would park every workflow node
+            // forever and the drive loop would fall through to an empty "completed" outcome. A
+            // permanent impossibility is a hard Deny on both caller paths.
+            if max == 0 {
+                return Disposition::Deny {
+                    stage: "quota",
+                    reason: "max_concurrent_subagents=0 permits no spawn (misconfigured quota)"
+                        .to_string(),
+                };
+            }
             let running = self
                 .tasks
                 .all()

@@ -59,17 +59,43 @@ impl LoopStateMachine {
         if nodes.is_empty() || self.workflow.is_none() {
             return LoopAction::AwaitingResume;
         }
+        self.append_nodes_gated(
+            nodes,
+            submitter_agent_id,
+            Syscall::SubmitNodes { count: 0 },
+            "submit_workflow_nodes",
+        )
+    }
+
+    /// W-7: the ONE gated append shared by `submit_workflow_nodes` and `submit_workflow`'s flatten
+    /// arm — gate → deny-note → trust-aware append → `WorkflowNodesSubmitted` observation → drive.
+    /// `syscall` names the gate variant (its count is filled from `nodes.len()` here so the two
+    /// entry points cannot disagree on what they meter).
+    fn append_nodes_gated(
+        &mut self,
+        nodes: Vec<crate::orchestration::workflow::WorkflowNode>,
+        submitter_agent_id: Option<&str>,
+        syscall: Syscall,
+        tool_label: &str,
+    ) -> LoopAction {
+        let syscall = match syscall {
+            Syscall::SubmitNodes { .. } => Syscall::SubmitNodes { count: nodes.len() },
+            Syscall::LoadWorkflow { .. } => Syscall::LoadWorkflow {
+                node_count: nodes.len(),
+            },
+            other => other,
+        };
         // R3-1 governance: gate DAG growth through the syscall trap. A `max_workflow_nodes` quota
         // denies a submission that would grow the workflow past the cap (runaway loop-until-done
         // backstop); the workflow continues with its existing nodes and a rollback note is surfaced.
-        let disposition = self.evaluate_syscall(&Syscall::SubmitNodes { count: nodes.len() });
+        let disposition = self.evaluate_syscall(&syscall);
         if !disposition.is_allowed() {
             let reason = match &disposition {
                 Disposition::Deny { reason, .. } => reason.clone(),
                 _ => "workflow node submission denied".to_string(),
             };
             let rb = RollbackReason::GovernanceDenied {
-                tool_name: "submit_workflow_nodes".to_string(),
+                tool_name: tool_label.to_string(),
                 reason,
             };
             let note = Message::user(super::super::rollback::build_rollback_note(
@@ -91,6 +117,7 @@ impl LoopStateMachine {
                     turn: self.turn,
                     base: base as u32,
                     count: appended.len() as u32,
+                    submitter: submitter_agent_id.map(str::to_string),
                 });
             }
         }
@@ -116,56 +143,69 @@ impl LoopStateMachine {
         if spec.nodes.is_empty() {
             return LoopAction::AwaitingResume;
         }
-        let disposition = self.evaluate_syscall(&Syscall::LoadWorkflow {
-            node_count: spec.nodes.len(),
-        });
-        if !disposition.is_allowed() {
-            let reason = match &disposition {
-                Disposition::Deny { reason, .. } => reason.clone(),
-                _ => "workflow authoring denied".to_string(),
-            };
-            let rb = RollbackReason::GovernanceDenied {
-                tool_name: "start_workflow".to_string(),
-                reason,
-            };
-            let note = Message::user(super::super::rollback::build_rollback_note(
-                &rb,
-                self.ctx.config.verbose_control_notes,
-            ));
-            self.ctx
-                .push_signal(note.content.as_text().unwrap_or_default().to_string());
-            return LoopAction::AwaitingResume;
-        }
-        match self.workflow.as_mut() {
+        if self.workflow.is_some() {
             // Flatten: caller is a workflow node; grow the existing DAG (G1 coercion applies).
-            Some(run) => {
-                let appended = run.submit_nodes_from(submitter_agent_id, spec.nodes);
-                if let Some(&base) = appended.first() {
-                    self.observations.push(KernelObservation::WorkflowNodesSubmitted {
-                        turn: self.turn,
-                        base: base as u32,
-                        count: appended.len() as u32,
-                    });
-                }
-                self.drive_workflow(None)
-            }
+            // Same gate + append + observation as `submit_workflow_nodes` (W-7: one decision).
+            self.append_nodes_gated(
+                spec.nodes,
+                submitter_agent_id,
+                Syscall::LoadWorkflow { node_count: 0 },
+                "start_workflow",
+            )
+        } else {
             // Bootstrap: top-level agent starts a brand-new workflow in this same kernel.
-            None => self.install_workflow(crate::orchestration::workflow::WorkflowRun::new(
-                &spec,
-                parent_session_id,
-            )),
+            {
+                let disposition = self.evaluate_syscall(&Syscall::LoadWorkflow {
+                    node_count: spec.nodes.len(),
+                });
+                if !disposition.is_allowed() {
+                    let reason = match &disposition {
+                        Disposition::Deny { reason, .. } => reason.clone(),
+                        _ => "workflow authoring denied".to_string(),
+                    };
+                    let rb = RollbackReason::GovernanceDenied {
+                        tool_name: "start_workflow".to_string(),
+                        reason,
+                    };
+                    let note = Message::user(super::super::rollback::build_rollback_note(
+                        &rb,
+                        self.ctx.config.verbose_control_notes,
+                    ));
+                    self.ctx
+                        .push_signal(note.content.as_text().unwrap_or_default().to_string());
+                    return LoopAction::AwaitingResume;
+                }
+                // W-3: announce the bootstrap batch like any other submission (base 0), so the SDK
+                // can persist an agent-authored workflow's nodes and reconstruct them on resume —
+                // the host never had this spec, unlike the `load_workflow` path.
+                let node_count = spec.nodes.len();
+                let built =
+                    crate::orchestration::workflow::WorkflowRun::new(&spec, parent_session_id);
+                if built.is_ok() {
+                    self.observations
+                        .push(KernelObservation::WorkflowNodesSubmitted {
+                            turn: self.turn,
+                            base: 0,
+                            count: node_count as u32,
+                            submitter: submitter_agent_id.map(str::to_string),
+                        });
+                }
+                self.install_workflow(built)
+            }
         }
     }
 
-    /// W0-ABI resume: load a workflow whose listed node agent-ids already completed (recovered from
-    /// the session log after an interruption); the kernel continues the DAG from the remaining work.
+    /// W0-ABI resume: load a workflow whose listed node completions were recovered from the session
+    /// log after an interruption; the kernel continues the DAG from the remaining work. `completed`
+    /// carries per-node result signals (classify branch / loop stop) so control flow replays
+    /// faithfully — see [`crate::orchestration::workflow::ResumedCompletion`].
     pub fn load_workflow_resumed(
         &mut self,
         spec: crate::orchestration::workflow::WorkflowSpec,
         parent_session_id: &str,
         submissions: &[Vec<crate::orchestration::workflow::WorkflowNode>],
         submission_bases: &[u32],
-        completed: &[String],
+        completed: &[crate::orchestration::workflow::ResumedCompletion],
     ) -> LoopAction {
         self.install_workflow(crate::orchestration::workflow::WorkflowRun::resume(
             &spec,

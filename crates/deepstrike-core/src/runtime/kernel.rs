@@ -453,6 +453,12 @@ pub enum KernelInputEvent {
         /// `resumed_submissions`); absent/short = legacy order-only replay.
         #[serde(default)]
         resumed_submission_bases: Vec<u32>,
+        /// W-1: recovered completions WITH their result-borne control signals (classify branch /
+        /// loop stop), so a resumed classifier re-prunes and a semantic loop stop is honored.
+        /// Additive: SDKs that only send `resumed_completed` (bare ids) get signal-less replay.
+        /// When both fields name the same agent id, this one wins.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        resumed_results: Vec<crate::orchestration::workflow::ResumedCompletion>,
     },
     /// Feed a completed sub-agent result back into the parent loop.
     SubAgentCompleted {
@@ -749,6 +755,10 @@ pub enum KernelObservation {
         turn: u32,
         base: u32,
         count: u32,
+        /// W-N3: the submitting node's agent id (`None` = host/bootstrap). Persisted so resume can
+        /// DROP batches whose submitter re-runs (it will re-submit) instead of duplicating them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        submitter: Option<String>,
     },
     /// A tool call needs user approval (governance `AskUser`). Not blocked by the
     /// kernel — the SDK must obtain approval before executing the named call.
@@ -1183,20 +1193,32 @@ impl KernelRuntime {
                 resumed_completed,
                 resumed_submissions,
                 resumed_submission_bases,
+                resumed_results,
             } => {
                 // K1: self-bootstrap the run if the host never fired `StartRun` (stateless
                 // `runWorkflow` caller). Parity with the agent-reachable `SubmitWorkflow`, which already
                 // bootstraps. Idempotent no-op once the root task has left `Ready`.
                 self.sm.ensure_started_for_workflow(&spec);
-                if resumed_completed.is_empty() && resumed_submissions.is_empty() {
+                if resumed_completed.is_empty()
+                    && resumed_results.is_empty()
+                    && resumed_submissions.is_empty()
+                {
                     self.sm.load_workflow(spec, &parent_session_id)
                 } else {
+                    // W-1: merge legacy bare ids with signal-carrying records (records win).
+                    use crate::orchestration::workflow::ResumedCompletion;
+                    let mut completed: Vec<ResumedCompletion> = resumed_completed
+                        .iter()
+                        .filter(|id| resumed_results.iter().all(|r| &r.agent_id != *id))
+                        .map(ResumedCompletion::bare)
+                        .collect();
+                    completed.extend(resumed_results);
                     self.sm.load_workflow_resumed(
                         spec,
                         &parent_session_id,
                         &resumed_submissions,
                         &resumed_submission_bases,
-                        &resumed_completed,
+                        &completed,
                     )
                 }
             }
@@ -2517,6 +2539,7 @@ mod tests {
             resumed_completed: Vec::new(),
             resumed_submissions: Vec::new(),
             resumed_submission_bases: Vec::new(),
+            resumed_results: Vec::new(),
         };
         let json = serde_json::to_string(&event).expect("serialize");
         let parsed: KernelInputEvent = serde_json::from_str(&json).expect("deserialize");
@@ -2591,6 +2614,7 @@ mod tests {
             resumed_completed: Vec::new(),
             resumed_submissions: Vec::new(),
             resumed_submission_bases: Vec::new(),
+            resumed_results: Vec::new(),
         }));
         let batch = step
             .observations
@@ -2654,6 +2678,7 @@ mod tests {
             resumed_completed: Vec::new(),
             resumed_submissions: Vec::new(),
             resumed_submission_bases: Vec::new(),
+            resumed_results: Vec::new(),
         }));
         runtime.state_machine_mut().take_observations();
 
@@ -2774,6 +2799,7 @@ mod tests {
             resumed_completed: vec!["wf-node0".to_string()],
             resumed_submissions: Vec::new(),
             resumed_submission_bases: Vec::new(),
+            resumed_results: Vec::new(),
         }));
 
         // Only the remaining worker is re-spawned (node 0 is not re-run).

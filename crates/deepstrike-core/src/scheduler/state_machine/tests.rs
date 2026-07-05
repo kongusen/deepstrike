@@ -2147,6 +2147,88 @@
     }
 
     #[test]
+    fn submit_workflow_bootstrap_announces_batch_with_submitter() {
+        // W-3/W-N3: the bootstrap arm emits WorkflowNodesSubmitted{base:0, submitter} exactly like
+        // the flatten arm — so the SDK can persist an agent-authored workflow's nodes and resume
+        // them (the host never had this spec), and resume can drop batches whose submitter re-runs.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("a"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("b"), AgentRole::Implement),
+        ]);
+        sm.submit_workflow(spec, "sess", Some("author-agent"));
+        let obs = sm.take_observations();
+        let submitted = obs
+            .iter()
+            .find_map(|o| match o {
+                KernelObservation::WorkflowNodesSubmitted { base, count, submitter, .. } => {
+                    Some((*base, *count, submitter.clone()))
+                }
+                _ => None,
+            })
+            .expect("bootstrap announces its batch");
+        assert_eq!(submitted, (0, 2, Some("author-agent".to_string())));
+
+        // Flatten while active: the appended batch is announced at its real base with the submitter.
+        let more = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("c"),
+            AgentRole::Implement,
+        )]);
+        sm.submit_workflow(more, "sess", Some("wf-node0"));
+        let obs = sm.take_observations();
+        let flattened = obs
+            .iter()
+            .find_map(|o| match o {
+                KernelObservation::WorkflowNodesSubmitted { base, count, submitter, .. } => {
+                    Some((*base, *count, submitter.clone()))
+                }
+                _ => None,
+            })
+            .expect("flatten announces its batch");
+        assert_eq!(flattened, (2, 1, Some("wf-node0".to_string())));
+    }
+
+    #[test]
+    fn zero_concurrency_quota_denies_workflow_spawns_instead_of_stalling() {
+        // W-6: max_concurrent_subagents=0 can never free a slot; Defer would park every node
+        // forever and the drive loop would emit an empty "completed" outcome. Nodes must FAIL.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut sm = sm();
+        sm.set_resource_quota(crate::governance::quota::ResourceQuota {
+            max_concurrent_subagents: Some(0),
+            ..Default::default()
+        });
+        sm.start(RuntimeTask::new("parent"));
+        sm.take_observations();
+
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("a"),
+            AgentRole::Implement,
+        )]);
+        sm.load_workflow(spec, "sess");
+        let obs = sm.take_observations();
+        assert_eq!(count_spawned(&obs), 0, "nothing spawns under a zero-slot pool");
+        let completed = obs.iter().find_map(|o| match o {
+            KernelObservation::WorkflowCompleted { completed, failed, .. } => {
+                Some((completed.clone(), failed.clone()))
+            }
+            _ => None,
+        });
+        if let Some((completed, failed)) = completed {
+            assert!(completed.is_empty());
+            assert_eq!(failed, vec!["wf-node0".to_string()], "node denied, not silently skipped");
+        }
+    }
+
+    #[test]
     fn workflow_batch_spawned_carries_remaining_budget_under_quota() {
         // G4 budget-as-signal: a coordinator node reads remaining headroom to scale its submission.
         use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};

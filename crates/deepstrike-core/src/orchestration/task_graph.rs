@@ -36,8 +36,12 @@ impl TaskGraph {
         }
     }
 
-    /// Add a task, returns its ID.
-    pub fn add(&mut self, task: RuntimeTask, dependencies: Vec<usize>) -> usize {
+    /// Add a task, returns its ID. Duplicate dependency entries are collapsed: `in_degree` counts
+    /// entries but [`complete`](Self::complete) decrements once per completed dependency, so a
+    /// duplicated entry would leave the node permanently below its own in-degree (a silent stall).
+    pub fn add(&mut self, task: RuntimeTask, mut dependencies: Vec<usize>) -> usize {
+        let mut seen = std::collections::HashSet::new();
+        dependencies.retain(|d| seen.insert(*d));
         let id = self.nodes.len();
         let deg = dependencies.len();
         self.nodes.push(TaskNode {
@@ -112,11 +116,19 @@ impl TaskGraph {
     }
 
     /// Mark a task as completed; promote dependents whose in-degree reaches 0.
+    ///
+    /// Idempotent: a task already terminal (Completed/Failed) is left untouched — a duplicate
+    /// completion (at-least-once event delivery, resume replay) must not double-decrement its
+    /// dependents' in-degree, which would underflow (debug panic) or over-promote gated nodes.
     pub fn complete(&mut self, task_id: usize, result: LoopResult) {
-        if let Some(node) = self.nodes.get_mut(task_id) {
-            node.status = TaskStatus::Completed;
-            node.result = Some(result);
+        let Some(node) = self.nodes.get_mut(task_id) else {
+            return;
+        };
+        if matches!(node.status, TaskStatus::Completed | TaskStatus::Failed) {
+            return;
         }
+        node.status = TaskStatus::Completed;
+        node.result = Some(result);
         // Collect dependents first to avoid borrow conflict
         let dependents: Vec<usize> = self
             .nodes
@@ -136,10 +148,14 @@ impl TaskGraph {
         }
     }
 
-    /// Mark a task as failed (dependents remain Pending — caller decides policy).
+    /// Mark a task as failed (dependents remain Pending — caller decides policy). Terminal states
+    /// are sticky: failing an already-completed task must not un-complete it (idempotency twin of
+    /// [`complete`](Self::complete)).
     pub fn fail(&mut self, task_id: usize) {
         if let Some(node) = self.nodes.get_mut(task_id) {
-            node.status = TaskStatus::Failed;
+            if !matches!(node.status, TaskStatus::Completed | TaskStatus::Failed) {
+                node.status = TaskStatus::Failed;
+            }
         }
     }
 
@@ -251,5 +267,34 @@ mod tests {
             },
         );
         assert_eq!(g.nodes[b].status, TaskStatus::Ready);
+    }
+
+    #[test]
+    fn duplicate_complete_is_idempotent() {
+        use crate::types::result::{LoopResult, TerminationReason};
+        let result = || LoopResult {
+            termination: TerminationReason::Completed,
+            final_message: None,
+            turns_used: 1,
+            total_tokens_used: 0,
+            loop_continue: None,
+            classify_branch: None,
+            tournament_winner: None,
+            pace_decision: None,
+        };
+        // b gates on BOTH a and c; a duplicate completion of `a` must not stand in for `c`.
+        let mut g = TaskGraph::new();
+        let a = g.add(RuntimeTask::new("A"), vec![]);
+        let c = g.add(RuntimeTask::new("C"), vec![]);
+        let b = g.add(RuntimeTask::new("B"), vec![a, c]);
+
+        g.complete(a, result());
+        g.complete(a, result()); // duplicate delivery — no double decrement, no panic
+        assert_eq!(g.nodes[b].status, TaskStatus::Pending);
+        g.complete(c, result());
+        assert_eq!(g.nodes[b].status, TaskStatus::Ready);
+        // Terminal states are sticky both ways.
+        g.fail(a);
+        assert_eq!(g.nodes[a].status, TaskStatus::Completed);
     }
 }
