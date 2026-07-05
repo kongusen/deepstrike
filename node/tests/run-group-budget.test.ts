@@ -97,15 +97,15 @@ describe("RunGroup cumulative token budget (L1/R2)", () => {
   // the SDK-side ledger that seeds/charges it carries both axes independently.
   it("the group ledger accumulates tokens and sub-agent spawns independently", () => {
     const store = new InMemoryGroupBudgetStore()
-    expect(store.read("g")).toEqual({ tokensSpent: 0, subagentsSpawned: 0 })
+    expect(store.read("g")).toEqual({ tokensSpent: 0, subagentsSpawned: 0, roundsCompleted: 0 })
 
     store.charge("g", { tokens: 100 })
     store.charge("g", { subagents: 2 })
     store.charge("g", { tokens: 50, subagents: 1 })
 
-    expect(store.read("g")).toEqual({ tokensSpent: 150, subagentsSpawned: 3 })
+    expect(store.read("g")).toEqual({ tokensSpent: 150, subagentsSpawned: 3, roundsCompleted: 0 })
     // Distinct groups stay isolated.
-    expect(store.read("other")).toEqual({ tokensSpent: 0, subagentsSpawned: 0 })
+    expect(store.read("other")).toEqual({ tokensSpent: 0, subagentsSpawned: 0, roundsCompleted: 0 })
   })
 
   it("tracks membership (lineage) across the personas of one logical run", async () => {
@@ -130,7 +130,7 @@ describe("RunGroup cumulative token budget (L1/R2)", () => {
     await writer.charge("run-x", { tokens: 800, subagents: 1 })
 
     const reader = new SessionLogGroupBudgetStore(log) // different instance, same log
-    expect(await reader.read("run-x")).toEqual({ tokensSpent: 2000, subagentsSpawned: 3 })
+    expect(await reader.read("run-x")).toEqual({ tokensSpent: 2000, subagentsSpawned: 3, roundsCompleted: 0 })
     expect((await reader.members("run-x")).map(m => m.sessionId)).toEqual(["director"])
 
     // Idempotent join: re-joining the same session does not duplicate the lineage entry.

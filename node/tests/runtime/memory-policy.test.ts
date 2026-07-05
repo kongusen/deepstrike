@@ -46,7 +46,7 @@ describe("kernel memory policy", () => {
     memory: { metadata: { name: "note", description: "desc" }, content: "代码模式: foo" },
   }
 
-  it("validation_enabled:false admits a write that default rules would reject", () => {
+  it("validation_enabled:false admits any structurally valid write", () => {
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
     step(rt, { kind: "set_memory_policy", validation_enabled: false })
     const out = step(rt, FORBIDDEN_WRITE)
@@ -54,10 +54,12 @@ describe("kernel memory policy", () => {
     expect(out.observations.some(o => o.kind === "memory_validation_failed")).toBe(false)
   })
 
-  it("default (no policy) still validates and rejects the forbidden write", () => {
+  it("default (no policy) accepts content hosts have not forbidden", () => {
+    // P13: no baked-in forbidden patterns — content judgment belongs to hosts/models.
+    // Structural validation (name/description/size) still applies.
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
     const out = step(rt, FORBIDDEN_WRITE)
-    expect(out.observations.some(o => o.kind === "memory_validation_failed")).toBe(true)
+    expect(out.observations.some(o => o.kind === "memory_written")).toBe(true)
   })
 
   it("max_content_bytes override rejects an oversized write", () => {

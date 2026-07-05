@@ -160,6 +160,10 @@ pub struct RunConfig {
     /// `None`/0 ⇒ no group (N=1) ⇒ pre-L1 per-vehicle behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_spawns_base: Option<u32>,
+    /// ③ loop-agent: rounds completed across the loop before this run (seeds the
+    /// pacing trap's max_rounds coercion). Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_rounds_base: Option<u32>,
     /// O6: repeat-fuse thresholds (see `SetRepeatFuse`). Absent ⇒ kernel defaults
     /// (enabled, deny_after=5, terminate_after=8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1016,6 +1020,7 @@ impl KernelRuntime {
                     resource_quota,
                     group_tokens_base,
                     group_spawns_base,
+                    group_rounds_base,
                     repeat_fuse,
                     criteria_gate,
                     knowledge_budget_ratio,
@@ -1064,6 +1069,9 @@ impl KernelRuntime {
                 }
                 if let Some(base) = group_spawns_base {
                     self.sm.seed_group_spawns(base);
+                }
+                if let Some(base) = group_rounds_base {
+                    self.sm.seed_group_rounds(base);
                 }
                 if let Some(fuse) = repeat_fuse {
                     self.sm.set_repeat_fuse(fuse);

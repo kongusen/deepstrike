@@ -32,6 +32,17 @@ export interface AgentCapabilityFilter {
   allowedIds?: string[]
 }
 
+export interface LoopRoundSpec {
+  /** Hard round cap across the loop's lifetime; continue/sleep at the cap is coerced to stop. */
+  maxRounds?: number
+  /** Sleep clamp floor (ms). */
+  minSleepMs?: number
+  /** Sleep clamp ceiling (ms). */
+  maxSleepMs?: number
+  /** Fallback when a round ends without a pace call: "stop" (goal loops, default) | "sleep" (cron loops). */
+  defaultAction?: "stop" | "sleep"
+}
+
 export interface AgentRunSpec {
   identity: AgentIdentity
   role: KernelAgentRole
@@ -41,6 +52,9 @@ export interface AgentRunSpec {
   capabilityFilter?: AgentCapabilityFilter
   milestones?: MilestoneContract
   metadata?: Record<string, unknown>
+  /** ③ loop-agent rounds: presence makes this run ONE round of a paced loop (gates the
+   *  kernel `pace` meta-tool and arms the pacing trap). */
+  loopRound?: LoopRoundSpec
   /** M1/G3: per-agent model preference (e.g. "opus"/"sonnet"/"haiku"); the host resolves it to a
    *  provider via `RuntimeOptions.providerFor`. Host-side routing only — not sent to the kernel. */
   modelHint?: string
@@ -167,6 +181,14 @@ export function agentRunSpecToKernel(spec: AgentRunSpec): Record<string, unknown
   }
   if (spec.verificationContractId) out.verification_contract_id = spec.verificationContractId
   if (spec.milestones) out.milestones = milestoneContractToKernel(spec.milestones)
+  if (spec.loopRound) {
+    out.loop_round = {
+      ...(spec.loopRound.maxRounds !== undefined ? { max_rounds: spec.loopRound.maxRounds } : {}),
+      ...(spec.loopRound.minSleepMs !== undefined ? { min_sleep_ms: spec.loopRound.minSleepMs } : {}),
+      ...(spec.loopRound.maxSleepMs !== undefined ? { max_sleep_ms: spec.loopRound.maxSleepMs } : {}),
+      ...(spec.loopRound.defaultAction !== undefined ? { default_action: spec.loopRound.defaultAction } : {}),
+    }
+  }
   return out
 }
 

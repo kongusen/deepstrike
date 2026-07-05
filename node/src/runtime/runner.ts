@@ -504,6 +504,7 @@ export class RuntimeRunner {
     runtime: KernelRuntimeInstance,
     groupTokensBase?: number,
     groupSpawnsBase?: number,
+    groupRoundsBase?: number,
   ): void {
     // K2: lower governance / attention / scheduler / quota in ONE `configure_run` event instead of
     // the previous 2–4 separate `set_*` / `load_governance_policy` events. The kernel applies each
@@ -541,6 +542,10 @@ export class RuntimeRunner {
     }
     if (groupSpawnsBase !== undefined && groupSpawnsBase > 0) {
       config.group_spawns_base = groupSpawnsBase
+    }
+    if (groupRoundsBase !== undefined && groupRoundsBase > 0) {
+      // ③ loop-agent: completed-round count seeds the pacing trap's max_rounds coercion.
+      config.group_rounds_base = groupRoundsBase
     }
     // O6: tune/disable the in-kernel repeat fuse. `false` disables; an object overrides thresholds.
     // Absent ⇒ kernel defaults (enabled, deny_after=5, terminate_after=8).
@@ -1644,7 +1649,7 @@ export class RuntimeRunner {
       groupLedger = await g.budgetStore.read(g.id)
       await g.budgetStore.join(g.id, { sessionId, role: this.opts.agentId })
     }
-    this.applyKernelPolicies(runtime, groupLedger?.tokensSpent, groupLedger?.subagentsSpawned)
+    this.applyKernelPolicies(runtime, groupLedger?.tokensSpent, groupLedger?.subagentsSpawned, groupLedger?.roundsCompleted)
     // Multimodal upload: seed the user's attachments (images/audio) as a history
     // message before start_run pushes the "[TASK STATE]" anchor. init_task does not
     // clear history, so order becomes [attachment user msg, "Proceed…"] — both land
@@ -2241,7 +2246,14 @@ export class RuntimeRunner {
       }
     }
 
-    yield { type: "done", iterations: turnsUsed, totalTokens, status } as DoneEvent
+    yield {
+      type: "done",
+      iterations: turnsUsed,
+      totalTokens,
+      status,
+      // ③ loop-agent: surface the kernel-adjudicated after-round decision to the driver.
+      ...(result?.paceDecision ? { paceDecision: result.paceDecision } : {}),
+    } as DoneEvent
     this.activeKernel = null
     this.currentSessionId = null
     this.dashboard = null
@@ -2440,7 +2452,18 @@ export class RuntimeRunner {
 }
 
 function isMidRun(events: Array<{ seq: number; event: SessionEvent }>): boolean {
-  return events.length > 0 && !events.some(e => e.event.kind === "run_terminal")
+  // Mid-run ⇔ the LAST run_started has no run_terminal after it. Pairing (not mere
+  // presence) matters on multi-round loop sessions: round 1's terminal must not make a
+  // crashed round 2 look fresh, and driver-level round_* records must not make a fresh
+  // round look interrupted.
+  let lastStarted = -1
+  let lastTerminal = -1
+  for (let i = 0; i < events.length; i++) {
+    const k = events[i].event.kind
+    if (k === "run_started") lastStarted = i
+    else if (k === "run_terminal") lastTerminal = i
+  }
+  return lastStarted >= 0 && lastStarted > lastTerminal
 }
 
 /**

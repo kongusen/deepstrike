@@ -19,6 +19,8 @@ import type { SessionLog } from "./session-log.js"
 
 /** Cumulative resources spent across a run group. */
 export interface GroupLedger {
+  /** ③ loop-agent rounds completed across the group (seeds the pacing trap's max_rounds). */
+  roundsCompleted?: number
   /** Total tokens spent by all members. */
   tokensSpent: number
   /** Total sub-agents spawned by all members (running + completed). */
@@ -26,9 +28,12 @@ export interface GroupLedger {
 }
 
 /** A member's contribution to charge back to the group ledger. */
+// (rounds: ③ loop-agent — one per completed round.)
 export interface GroupCharge {
   tokens?: number
   subagents?: number
+  /** ③ loop-agent: completed rounds to add to the group's round count. */
+  rounds?: number
 }
 
 /** A persona session that participated in the logical run (process-table lineage). */
@@ -54,7 +59,7 @@ export class InMemoryGroupBudgetStore implements GroupBudgetStore {
   private readonly memberships = new Map<string, Map<string, GroupMember>>()
 
   read(groupId: string): GroupLedger {
-    return this.ledgers.get(groupId) ?? { tokensSpent: 0, subagentsSpawned: 0 }
+    return this.ledgers.get(groupId) ?? { tokensSpent: 0, subagentsSpawned: 0, roundsCompleted: 0 }
   }
 
   charge(groupId: string, delta: GroupCharge): void {
@@ -62,6 +67,7 @@ export class InMemoryGroupBudgetStore implements GroupBudgetStore {
     this.ledgers.set(groupId, {
       tokensSpent: cur.tokensSpent + Math.max(0, delta.tokens ?? 0),
       subagentsSpawned: cur.subagentsSpawned + Math.max(0, delta.subagents ?? 0),
+      roundsCompleted: (cur.roundsCompleted ?? 0) + Math.max(0, delta.rounds ?? 0),
     })
   }
 
@@ -86,18 +92,21 @@ export class SessionLogGroupBudgetStore implements GroupBudgetStore {
   async read(groupId: string): Promise<GroupLedger> {
     let tokensSpent = 0
     let subagentsSpawned = 0
+    let roundsCompleted = 0
     for (const { event } of await this.log.read(groupId)) {
       if (event.kind === "group_budget_charged") {
+        roundsCompleted += (event as { rounds?: number }).rounds ?? 0
         tokensSpent += event.tokens
         subagentsSpawned += event.subagents
       }
     }
-    return { tokensSpent, subagentsSpawned }
+    return { tokensSpent, subagentsSpawned, roundsCompleted }
   }
 
   async charge(groupId: string, delta: GroupCharge): Promise<void> {
     await this.log.append(groupId, {
       kind: "group_budget_charged",
+      ...(delta.rounds !== undefined ? { rounds: delta.rounds } : {}),
       tokens: Math.max(0, delta.tokens ?? 0),
       subagents: Math.max(0, delta.subagents ?? 0),
     })

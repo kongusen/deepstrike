@@ -13,6 +13,9 @@
 
 // ── Start here: the canonical entry points ─────────────────────────────────
 export { runAgent, runFanout } from "./runtime/facade.js"
+// ③ dynamic loop agents: self-pacing rounds over the kernel pacing trap.
+export { runLoop, LoopDriver, foldLoopState } from "./runtime/loop-driver.js"
+export type { LoopSpec, LoopOutcome } from "./runtime/loop-driver.js"
 export type { RunAgentOptions, RunFanoutOptions } from "./runtime/facade.js"
 export { RuntimeRunner, collectText } from "./runtime/runner.js"
 export type { RuntimeOptions } from "./runtime/runner.js"

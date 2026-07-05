@@ -1848,6 +1848,9 @@ impl RuntimeRunner {
                 // R3-1: submission bookkeeping — the rust SDK has no workflow driver, so the
                 // base-index observation has no session record to enrich here.
                 KernelObservation::WorkflowNodesSubmitted { .. } => {}
+                // ③ loop-agent pacing: the rust SDK has no loop driver yet; the decision also
+                // rides LoopResult.pace_decision for embedders that want it.
+                KernelObservation::RoundPaced { .. } => {}
                 KernelObservation::MemoryWritten {
                     turn,
                     memory_id,

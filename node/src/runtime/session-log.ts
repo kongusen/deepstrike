@@ -111,7 +111,23 @@ export type SessionEvent =
   // L1 (RunGroup): group-ledger events, appended under a group-anchor key (= the group id) so the
   // governance domain's cumulative budget + membership (lineage) persist and rebuild by fold-on-read.
   | { kind: "group_member_joined"; session_id: string; role?: string }
-  | { kind: "group_budget_charged"; tokens: number; subagents: number }
+  | { kind: "group_budget_charged"; tokens: number; subagents: number; rounds?: number }
+  | {
+      kind: "round_started"
+      /** 1-based round number within the loop. */
+      round: number
+      goal: string
+    }
+  | {
+      kind: "round_paced"
+      round: number
+      action: "continue" | "sleep" | "stop"
+      delay_ms?: number
+      /** Absolute wake time for sleep — lets a stateless host re-arm from the log alone. */
+      wake_at_ms?: number
+      reason: string
+      coerced_from?: string
+    }
 
 export interface SessionLog {
   append(sessionId: string, event: SessionEvent): Promise<number>

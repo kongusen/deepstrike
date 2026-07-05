@@ -165,6 +165,8 @@ export interface DoneEvent extends StreamEvent {
   totalTokens: number
   status: string
   dreamResult?: import("./memory/protocols.js").DreamResult
+  /** ③ loop-agent: the kernel-adjudicated after-round decision (absent on non-loop runs). */
+  paceDecision?: import("./runtime/kernel-step.js").PaceDecision
 }
 
 export interface ErrorEvent extends StreamEvent {
