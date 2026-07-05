@@ -13,7 +13,6 @@ fn context_manager_new_defaults() {
     assert_eq!(mgr.max_tokens, 128_000);
     assert!(mgr.partitions.task_state.goal.is_empty());
     assert_eq!(mgr.sprint, 0);
-    assert!(mgr.last_handoff.is_none());
     assert!(!mgr.memory_enabled);
     assert!(!mgr.knowledge_enabled);
 }
@@ -105,7 +104,7 @@ fn render_includes_system_and_history() {
 // ─── Renewal ────────────────────────────────────────────────────────────────
 
 #[test]
-fn renew_produces_handoff_artifact() {
+fn renew_advances_sprint_and_preserves_goal() {
     let mut mgr = ContextManager::new(500);
     mgr.partitions.task_state.goal = "test goal".to_string();
     mgr.partitions.system.push(Message::system("rules"), 10);
@@ -115,9 +114,7 @@ fn renew_produces_handoff_artifact() {
     assert_eq!(mgr.sprint, 0);
     mgr.renew();
     assert_eq!(mgr.sprint, 1);
-    let artifact = mgr.last_handoff.as_ref().unwrap();
-    assert_eq!(artifact.goal, "test goal");
-    assert_eq!(artifact.sprint, 0);
+    assert_eq!(mgr.partitions.task_state.goal, "test goal");
 }
 
 // ─── Skill catalog ──────────────────────────────────────────────────────────
