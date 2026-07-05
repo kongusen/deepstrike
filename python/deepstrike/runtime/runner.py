@@ -359,33 +359,23 @@ class RuntimeRunner:
         retrieval["selection_rationale"] = f"DreamStore.search returned {len(hits)} hit(s)"
 
     await self._append_memory_syscall_observations(resolved_session_id, observations)
-    await self._log_memory_retrieval_result(resolved_session_id, runtime, retrieval)
+    await self._log_memory_retrieval_result(resolved_session_id, retrieval)
     return hits
 
   async def _log_memory_retrieval_result(
     self,
     session_id: str | None,
-    runtime: KernelRuntime,
     retrieval: dict[str, Any],
   ) -> None:
     if not session_id:
       return
+    # The session-log record is the durable audit artifact; the kernel needs no
+    # acknowledgment (the former kernel event was a no-op and was removed).
     await self._opts.session_log.append(session_id, {
       "kind": "memory_retrieval_result",
       "selected_memory_ids": list(retrieval.get("selected_memory_ids") or []),
       "selection_rationale": str(retrieval.get("selection_rationale") or ""),
     })
-    try:
-      kernel_apply(runtime, [], {
-        "kind": "memory_retrieval_result",
-        "retrieval": {
-          "selected_memory_ids": list(retrieval.get("selected_memory_ids") or []),
-          "selection_rationale": str(retrieval.get("selection_rationale") or ""),
-        },
-      })
-    except ValueError:
-      # Native extension may lag core ABI; session log is the audit source of truth.
-      pass
 
   def _create_syscall_runtime(self) -> KernelRuntime:
     # M4/G5: only override the cumulative token cap when set, else keep the kernel default.

@@ -14,10 +14,8 @@ use deepstrike_core::runtime::kernel::{
 use deepstrike_core::runtime::event_log::{category_for_kind, primitive_for_kind};
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::scheduler::policy::SchedulerBudget as KernelBudget;
-use deepstrike_core::signals::router::SignalRouter;
 use deepstrike_core::types::message::{Message, ToolCall};
 use deepstrike_core::types::milestone::MilestoneCheckResult;
-use deepstrike_core::types::policy::SignalDisposition;
 use deepstrike_core::types::signal::{
     RuntimeSignal as KernelSignal, SignalSource as KernelSignalSource,
     SignalType as KernelSignalType, Urgency,
@@ -338,14 +336,13 @@ impl RuntimeRunner {
         let Some(session_id) = session_id.or(self.opts.session_id.as_deref()) else {
             return;
         };
+        // The session-log record is the durable audit artifact; the kernel needs no
+        // acknowledgment (the former kernel event was a no-op and was removed).
         self.log(
             session_id,
-            SessionEvent::MemoryRetrievalResult {
-                retrieval: retrieval.clone(),
-            },
+            SessionEvent::MemoryRetrievalResult { retrieval },
         )
         .await;
-        self.apply_memory_syscall(KernelInputEvent::MemoryRetrievalResult { retrieval });
     }
 
     fn apply_memory_syscall(&self, event: KernelInputEvent) -> Vec<KernelObservation> {
@@ -833,7 +830,6 @@ impl RuntimeRunner {
 
             let ext = merge_extensions(self.opts.extensions.as_ref(), extensions.as_ref());
             let provider_state = self.opts.provider.create_run_state();
-            let mut router = SignalRouter::new(256);
             let mut next_archive_start = next_archived_seq_start(prior_events.as_deref());
             // P0-C: the skill loaded and in effect going into the current turn → per-turn metric.
             let mut active_skill: Option<String> = None;
@@ -1017,37 +1013,25 @@ impl RuntimeRunner {
                                 .unwrap_or_default()
                                 .as_millis() as u64,
                         );
-                        let executing = matches!(action, KernelAction::ExecuteTool { .. });
-                        let disposition = router.ingest(kernel_sig, executing);
-                        match disposition {
-                            SignalDisposition::InterruptNow | SignalDisposition::Interrupt => {
-                                // I0a: InterruptNow carries user_abort intent; see Node runner for rationale.
-                                if matches!(disposition, SignalDisposition::InterruptNow) {
-                                    self.interrupted.store(true, Ordering::Relaxed);
-                                }
-                                kernel_apply(
-                                    &mut kernel,
-                                    &mut pending_observations,
-                                    KernelInputEvent::Timeout,
-                                );
-                                break;
-                            }
-                            _ => {}
+                        // Kernel-routed (parity with node/py): the kernel's attention policy decides
+                        // the disposition (dedup / queue / interrupt / preempt) and emits
+                        // `signal_disposed`; an actionable disposition yields the next action to
+                        // adopt (e.g. a forced Reason turn on Critical), queued/observed yields none.
+                        let mut kguard = kernel.lock().unwrap();
+                        let mut step = kguard.step(KernelInput::new(KernelInputEvent::Signal {
+                            signal: kernel_sig,
+                        }));
+                        drop(kguard);
+                        pending_observations.append(&mut step.observations);
+                        if let Some(sig_action) = step.actions.pop() {
+                            action = sig_action;
+                        }
+                        // I0a: a Critical signal carries user_abort intent — mark it so the final
+                        // run_terminal classification reports `user_abort`, not a generic error.
+                        if urgency == Urgency::Critical {
+                            self.interrupted.store(true, Ordering::Relaxed);
                         }
                     }
-                }
-
-                let mut queued = router.next();
-                while let Some(sig) = queued {
-                    if sig.urgency == Urgency::Critical {
-                        kernel_apply(
-                            &mut kernel,
-                            &mut pending_observations,
-                            KernelInputEvent::Timeout,
-                        );
-                        break;
-                    }
-                    queued = router.next();
                 }
                 if kernel.lock().unwrap().is_terminal() {
                     break;

@@ -456,27 +456,21 @@ export class RuntimeRunner {
     }
 
     await this.appendMemorySyscallObservations(sessionId, observations)
-    await this.logMemoryRetrievalResult(sessionId, runtime, retrieval)
+    await this.logMemoryRetrievalResult(sessionId, retrieval)
     return hits
   }
 
   private async logMemoryRetrievalResult(
     sessionId: string | null | undefined,
-    runtime: KernelRuntimeInstance,
     retrieval: MemoryRetrieval,
   ): Promise<void> {
     if (!sessionId) return
+    // The session-log record is the durable audit artifact; the kernel needs no
+    // acknowledgment (the former kernel event was a no-op and was removed).
     await this.opts.sessionLog.append(sessionId, {
       kind: "memory_retrieval_result",
       selected_memory_ids: retrieval.selected_memory_ids,
       selection_rationale: retrieval.selection_rationale,
-    })
-    kernelApply(runtime, [], {
-      kind: "memory_retrieval_result",
-      retrieval: {
-        selected_memory_ids: retrieval.selected_memory_ids,
-        selection_rationale: retrieval.selection_rationale,
-      },
     })
   }
 
