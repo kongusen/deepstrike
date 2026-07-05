@@ -1,7 +1,7 @@
 //! Workflow orchestration impl for [`super::LoopStateMachine`].
 
 use super::{KernelObservation, LoopAction, LoopPhase, LoopStateMachine, SuspendState};
-use super::super::tcb::{TaskState, Tcb, WaitReason};
+use super::super::tcb::{TaskLifecycle, Tcb, WaitReason};
 use crate::proc::AgentProcess;
 use crate::runtime::session::RollbackReason;
 use crate::syscall::{Disposition, Syscall};
@@ -24,7 +24,7 @@ impl LoopStateMachine {
     /// discarded — the workflow drives nodes, not a root provider turn, exactly as the SDK's previous
     /// `start_run` + `load_workflow` sequence already did.
     pub fn ensure_started_for_workflow(&mut self, spec: &crate::orchestration::workflow::WorkflowSpec) {
-        if !matches!(self.lifecycle(), TaskState::Ready) {
+        if !matches!(self.lifecycle(), TaskLifecycle::Ready) {
             return;
         }
         let goal = format!("workflow:{} nodes", spec.nodes.len());
@@ -309,7 +309,7 @@ impl LoopStateMachine {
                 }
                 _ => Vec::new(),
             };
-            self.set_lifecycle(TaskState::Suspended, Some(WaitReason::SubAgentJoin(wait_ids)));
+            self.set_lifecycle(TaskLifecycle::Suspended, Some(WaitReason::SubAgentJoin(wait_ids)));
             self.observations.push(KernelObservation::Suspended {
                 turn: self.turn,
                 reason: "workflow_batch".to_string(),

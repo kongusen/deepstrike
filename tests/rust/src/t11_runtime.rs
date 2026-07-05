@@ -8,7 +8,7 @@ use compact_str::CompactString;
 use deepstrike_core::context::renderer::RenderedContext;
 use deepstrike_core::governance::permission::PermissionAction;
 use deepstrike_core::runtime::session::SessionEvent;
-use deepstrike_core::scheduler::policy::LoopPolicy;
+use deepstrike_core::scheduler::policy::SchedulerBudget;
 use deepstrike_core::scheduler::state_machine::{KernelObservation, LoopStateMachine};
 use deepstrike_core::types::capability::{CapabilityDescriptor, CapabilityKind};
 use deepstrike_core::types::message::{Content, Message, Role, ToolCall, ToolResult, ToolSchema};
@@ -580,9 +580,9 @@ async fn milestone_pass_writes_session_event() {
         MilestoneCheckResult, MilestoneContract, MilestonePhase,
     };
 
-    let mut sm = LoopStateMachine::new(LoopPolicy {
+    let mut sm = LoopStateMachine::new(SchedulerBudget {
         max_tokens: 128_000,
-        ..LoopPolicy::default()
+        ..SchedulerBudget::default()
     });
 
     let contract = MilestoneContract::new()
@@ -654,9 +654,9 @@ async fn milestone_block_writes_session_event() {
     };
     use deepstrike_core::types::task::RuntimeTask;
 
-    let mut sm = LoopStateMachine::new(LoopPolicy {
+    let mut sm = LoopStateMachine::new(SchedulerBudget {
         max_tokens: 128_000,
-        ..LoopPolicy::default()
+        ..SchedulerBudget::default()
     });
 
     sm.load_milestone_contract(MilestoneContract::new().phase(MilestonePhase::new("verify")));
@@ -716,9 +716,9 @@ async fn milestone_block_writes_session_event() {
 /// LLM provider is needed.
 #[tokio::test]
 async fn capability_mount_emits_capability_changed_session_event() {
-    let mut sm = LoopStateMachine::new(LoopPolicy {
+    let mut sm = LoopStateMachine::new(SchedulerBudget {
         max_tokens: 128_000,
-        ..LoopPolicy::default()
+        ..SchedulerBudget::default()
     });
 
     let schema = ToolSchema {
@@ -796,9 +796,9 @@ async fn capability_mount_emits_capability_changed_session_event() {
 
 #[tokio::test]
 async fn capability_unmount_emits_capability_changed_session_event() {
-    let mut sm = LoopStateMachine::new(LoopPolicy {
+    let mut sm = LoopStateMachine::new(SchedulerBudget {
         max_tokens: 128_000,
-        ..LoopPolicy::default()
+        ..SchedulerBudget::default()
     });
 
     // Mount first so there is something to remove.

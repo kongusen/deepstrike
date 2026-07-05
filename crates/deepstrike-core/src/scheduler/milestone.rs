@@ -1,23 +1,16 @@
 //! Milestone contract tracking extracted from LoopStateMachine.
-//!
-//! This module holds the milestone contract state (contract, current phase,
-//! blocked count) to reduce bloat in the main state machine. The complex
-//! handling logic remains in LoopStateMachine for now.
 
-use crate::types::milestone::MilestoneContract;
+use crate::types::milestone::{MilestoneContract, MilestonePhase};
 
-/// Tracks milestone contract progress.
-///
-/// Extracted from `LoopStateMachine` to reduce state machine bloat.
-/// This struct only holds state; the actual milestone evaluation logic
-/// remains in `LoopStateMachine::handle_milestone_result`.
+/// Tracks milestone contract progress and owns its phase-cursor transitions;
+/// `LoopStateMachine::handle_milestone_result` drives it via `advance`/`record_block`.
 pub struct MilestoneTracker {
     /// Optional milestone contract loaded before the run starts.
-    pub(crate) contract: Option<MilestoneContract>,
+    contract: Option<MilestoneContract>,
     /// Index of the current (not-yet-passed) phase within `contract`.
-    pub(crate) current_phase: usize,
+    current_phase: usize,
     /// How many times the current phase has been blocked (reset on advance).
-    pub(crate) blocked_count: usize,
+    blocked_count: usize,
 }
 
 impl MilestoneTracker {
@@ -37,22 +30,38 @@ impl MilestoneTracker {
         self.blocked_count = 0;
     }
 
-    /// Returns the ID of the current (not-yet-passed) phase, or `None` when
-    /// no contract is loaded or all phases are complete.
-    pub fn current_phase_id(&self) -> Option<&str> {
+    /// The full current (not-yet-passed) phase, or `None` when no contract is
+    /// loaded or all phases are complete. Callers read verifier/criteria/unlocks/
+    /// rollback_policy from here instead of re-deriving from raw indices.
+    pub fn current_phase(&self) -> Option<&MilestonePhase> {
         self.contract
             .as_ref()
             .and_then(|c| c.phases.get(self.current_phase))
-            .map(|p| p.id.as_str())
+    }
+
+    /// Returns the ID of the current (not-yet-passed) phase, or `None` when
+    /// no contract is loaded or all phases are complete.
+    pub fn current_phase_id(&self) -> Option<&str> {
+        self.current_phase().map(|p| p.id.as_str())
     }
 
     /// Returns the acceptance criteria of the current phase as a slice.
     pub fn current_criteria(&self) -> &[String] {
-        self.contract
-            .as_ref()
-            .and_then(|c| c.phases.get(self.current_phase))
+        self.current_phase()
             .map(|p| p.criteria.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// A phase passed: move the cursor to the next phase and reset the block counter.
+    pub fn advance(&mut self) {
+        self.current_phase += 1;
+        self.blocked_count = 0;
+    }
+
+    /// The current phase was blocked; returns the updated consecutive-block count.
+    pub fn record_block(&mut self) -> usize {
+        self.blocked_count += 1;
+        self.blocked_count
     }
 
     /// Returns `true` when there is no contract or all phases have passed.
@@ -137,9 +146,9 @@ mod tests {
         tracker.load_contract(contract);
 
         assert_eq!(tracker.current_phase_id(), Some("phase1"));
-        tracker.current_phase += 1; // Simulate phase advance
+        tracker.advance();
         assert_eq!(tracker.current_phase_id(), Some("phase2"));
-        tracker.current_phase += 1;
+        tracker.advance();
         assert!(tracker.is_complete());
         assert_eq!(tracker.current_phase_id(), None);
     }

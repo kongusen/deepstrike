@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use super::milestone::MilestoneTracker;
-use super::policy::LoopPolicy;
-use super::tcb::{ScheduleDecision, TaskState, TaskTable, Tcb, WaitReason};
+use super::policy::SchedulerBudget;
+use super::tcb::{TaskLifecycle, TaskTable, Tcb, WaitReason};
 use crate::AgentRunSpec;
 use crate::context::manager::ContextManager;
 use crate::governance::pipeline::GovernancePipeline;
@@ -19,7 +19,6 @@ use crate::types::message::{
 };
 use crate::types::milestone::MilestoneCheckResult;
 use crate::types::result::{LoopResult, TerminationReason};
-use crate::types::signal::RuntimeSignal;
 use crate::types::task::RuntimeTask;
 
 /// Compact digest of a tool call's arguments for the recency log (2b). Kept short and CJK-safe — it
@@ -45,7 +44,7 @@ fn compact_tool_args(args: &serde_json::Value) -> String {
 /// The *turn step* of the L* execution loop (M1d).
 ///
 /// Schedulability (`Ready/Running/Blocked/Suspended/Done`) is no longer carried here — it lives
-/// on the root task's [`TaskState`] in the kernel's `TaskTable`, queried via
+/// on the root task's [`TaskLifecycle`] in the kernel's `TaskTable`, queried via
 /// [`LoopStateMachine::lifecycle`]. `LoopPhase` is now orthogonal: it only records *which step of a
 /// running turn* the loop is in. When the task is `Ready/Suspended/Done`, the phase value is
 /// inert (left at its last step) and ignored.
@@ -53,45 +52,16 @@ fn compact_tool_args(args: &serde_json::Value) -> String {
 pub enum LoopPhase {
     Reason,
     Act { tool_calls: Vec<ToolCall> },
-    Observe { results: Vec<ToolResult> },
-    Delta { pressure: f64 },
-}
-
-/// Why the loop entered `Suspended` state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SuspendReason {
-    /// Governance `AskUser` — waiting for SDK to resolve human approval.
-    AskUser,
-    /// Sub-agent spawned — waiting for sub-agent to complete.
-    SubAgentAwait,
-    /// Externally requested suspension.
-    External,
-}
-
-/// What the loop is blocked waiting for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlockReason {
-    /// Awaiting a tool's continuation (tool suspend pattern).
-    ToolSuspend,
-    /// Awaiting milestone evaluation result.
-    MilestoneAwait,
 }
 
 /// Events fed into the state machine from the SDK layer.
 #[derive(Debug)]
 pub enum LoopEvent {
-    Start {
-        task: RuntimeTask,
-    },
     LLMResponse {
         message: Message,
     },
     ToolResults {
         results: Vec<ToolResult>,
-    },
-    /// Inbound signal from SignalRouter — Critical/High urgency may interrupt.
-    Signal {
-        signal: RuntimeSignal,
     },
     /// Result of evaluating the current milestone phase's criteria.
     /// Feed this back after handling `LoopAction::EvaluateMilestone`.
@@ -176,7 +146,7 @@ pub struct LoopStateMachine {
     pub ctx: ContextManager,
     pub tools: Vec<ToolSchema>,
     pub observations: Vec<KernelObservation>,
-    pub(super) policy: LoopPolicy,
+    pub(super) policy: SchedulerBudget,
     pub(super) total_tokens: u64,
     /// L1 (RunGroup): cumulative tokens spent by *other* members of this run's governance domain,
     /// seeded at boot via `seed_group_budget`. The run-level token cap is enforced against
@@ -229,10 +199,9 @@ pub struct LoopStateMachine {
     /// Optional long-term memory policy (`set_memory_policy`). `None` (default) preserves
     /// pre-policy behavior: default-rule validation + verbatim retrieval `top_k`.
     pub(super) memory_policy: Option<crate::mm::memory::MemoryPolicy>,
-    /// Optional in-kernel signal router. When set, inbound signals are routed
-    /// through dedup + attention policy + queue here (the kernel owns disposition).
-    /// `None` (default) keeps the legacy hardcoded urgency handling in `feed`.
-    pub(super) signal_router: Option<SignalRouter>,
+    /// Kernel-owned signal routing: dedup set + attention policy + bounded queue.
+    /// Always initialized; `set_attention` rebuilds it with a new queue size.
+    pub(super) signal_router: SignalRouter,
     /// Wall-clock timestamp of the first `ProviderResult.now_ms` received.
     /// Used by the wall-time budget axis in `SchedulerBudget::should_terminate`.
     pub(super) started_at_ms: Option<u64>,
@@ -278,7 +247,7 @@ impl LoopStateMachine {
             .unwrap_or_else(|| self.ctx.engine.count_message(message))
     }
 
-    pub fn new(policy: LoopPolicy) -> Self {
+    pub fn new(policy: SchedulerBudget) -> Self {
         let mut tasks = TaskTable::new();
         // M1d: the root task carries the authoritative schedulability lifecycle. It starts
         // `Ready`; `start()`/`resume_*` flip it to `Running`, suspends set `Suspended`, and
@@ -308,7 +277,7 @@ impl LoopStateMachine {
             resource_quota: None,
             memory_write_times: Vec::new(),
             memory_policy: None,
-            signal_router: Some(SignalRouter::new(64)),
+            signal_router: SignalRouter::new(64),
             started_at_ms: None,
             last_now_ms: None,
             suspend_state: None,
@@ -339,8 +308,8 @@ impl LoopStateMachine {
 
     /// The authoritative schedulability lifecycle of the loop (root task state). Replaces the
     /// removed `LoopPhase::{Idle,Suspended,Blocked,Terminal}` reads.
-    pub fn lifecycle(&self) -> TaskState {
-        self.tasks.get("root").map(|t| t.state).unwrap_or(TaskState::Ready)
+    pub fn lifecycle(&self) -> TaskLifecycle {
+        self.tasks.get("root").map(|t| t.state).unwrap_or(TaskLifecycle::Ready)
     }
 
     /// The wait reason while suspended/blocked, if any.
@@ -350,16 +319,16 @@ impl LoopStateMachine {
 
     /// Whether the loop has terminated.
     pub fn is_terminal(&self) -> bool {
-        matches!(self.lifecycle(), TaskState::Done(_))
+        matches!(self.lifecycle(), TaskLifecycle::Done(_))
     }
 
     /// Whether the loop is suspended awaiting external resolution.
     pub fn is_suspended(&self) -> bool {
-        matches!(self.lifecycle(), TaskState::Suspended)
+        matches!(self.lifecycle(), TaskLifecycle::Suspended)
     }
 
     /// Set the root task's lifecycle (and wait reason). Single mutation point for schedulability.
-    fn set_lifecycle(&mut self, state: TaskState, wait: Option<WaitReason>) {
+    fn set_lifecycle(&mut self, state: TaskLifecycle, wait: Option<WaitReason>) {
         if let Some(root) = self.tasks.get_mut("root") {
             root.state = state;
             root.wait = wait;
@@ -479,7 +448,7 @@ impl LoopStateMachine {
             self.phase = LoopPhase::Act {
                 tool_calls: calls.clone(),
             };
-            self.set_lifecycle(TaskState::Running, None);
+            self.set_lifecycle(TaskLifecycle::Running, None);
             return LoopAction::ExecuteTools { calls };
         }
         self.phase = LoopPhase::Reason;
@@ -522,7 +491,6 @@ impl LoopStateMachine {
         self.ctx.sweep_expired_skill_leases(self.turn);
 
         match event {
-            LoopEvent::Start { task } => self.start(task),
 
             LoopEvent::LLMResponse { message } => {
                 // A response arrived ⇒ the prompt fit ⇒ the overflow recovery ladder is reset.
@@ -567,9 +535,7 @@ impl LoopStateMachine {
                         let criteria = self.milestone.current_criteria().to_vec();
                         let (verifier, required_evidence) = self
                             .milestone
-                            .contract
-                            .as_ref()
-                            .and_then(|c| c.phases.get(self.milestone.current_phase))
+                            .current_phase()
                             .map(|p| (p.verifier.clone(), p.required_evidence.clone()))
                             .unwrap_or_default();
                         // `tokens` was already computed for this message above.
@@ -649,7 +615,7 @@ impl LoopStateMachine {
                 self.phase = LoopPhase::Act {
                     tool_calls: calls.clone(),
                 };
-                self.set_lifecycle(TaskState::Running, None);
+                self.set_lifecycle(TaskLifecycle::Running, None);
                 LoopAction::ExecuteTools { calls }
             }
 
@@ -727,9 +693,7 @@ impl LoopStateMachine {
                 // M1 收口: the pure `schedule()` is now the single budget decision point.
                 // It evaluates the same three axes (turn/token/wall) via `BudgetLedger`, which
                 // delegates to `SchedulerBudget::should_terminate` internally — one source of truth.
-                if let ScheduleDecision::Terminate { reason: term, .. } =
-                    super::tcb::schedule(&self.root_tcb(), self.last_now_ms)
-                {
+                if let Some(term) = super::tcb::budget_verdict(&self.root_tcb(), self.last_now_ms) {
                     let budget = match term {
                         TerminationReason::MaxTurns => "max_turns",
                         TerminationReason::Timeout => "wall_time",
@@ -767,10 +731,6 @@ impl LoopStateMachine {
                         budget,
                     });
                 }
-                self.phase = LoopPhase::Delta {
-                    pressure: self.ctx.rho(),
-                };
-
                 // Layers 2/4/5: execute the pressure-driven ops from the plan (skip TimeDecayMicro
                 // if already executed). The plan carries specific ops stamped with real config-derived
                 // params (W1-1 収口 — no magic-number placeholders), not the umbrella `Pressure` wrapper.
@@ -797,9 +757,7 @@ impl LoopStateMachine {
                     // A new sprint is a session boundary for signal identity: clear the dedup set so
                     // it cannot grow unbounded across a long run, and so a signal seen in a prior
                     // sprint may legitimately re-fire in the new one.
-                    if let Some(router) = self.signal_router.as_mut() {
-                        router.clear_dedup();
-                    }
+                    self.signal_router.clear_dedup();
                     self.observations.push(KernelObservation::Renewed {
                         sprint: self.ctx.sprint,
                     });
@@ -813,14 +771,6 @@ impl LoopStateMachine {
 
                 self.phase = LoopPhase::Reason;
                 self.emit_call_llm()
-            }
-
-            LoopEvent::Signal { signal } => {
-                // `feed` always returns an action; non-actionable dispositions
-                // (queue/observe/ignore) fall back to a plain provider call here.
-                // The kernel-routed path (`dispatch_signal`) is driven via the ABI.
-                self.dispatch_signal(signal)
-                    .unwrap_or_else(|| self.emit_call_llm())
             }
 
             LoopEvent::MilestoneResult { result } => self.handle_milestone_result(result),
@@ -867,7 +817,7 @@ impl LoopStateMachine {
             classify_branch: None,
             tournament_winner: None,
         };
-        self.set_lifecycle(TaskState::Done(termination), None);
+        self.set_lifecycle(TaskLifecycle::Done(termination), None);
         LoopAction::Done { result }
     }
 
@@ -878,7 +828,7 @@ impl LoopStateMachine {
     fn emit_call_llm(&mut self) -> LoopAction {
         // Calling the provider is definitionally "running" — the single funnel for entering the
         // Running lifecycle (covers start, resume, signal-driven turns, budget final-call).
-        self.set_lifecycle(TaskState::Running, None);
+        self.set_lifecycle(TaskLifecycle::Running, None);
         self.checkpoint.history_len = self.ctx.partitions.history.messages.len();
         self.checkpoint.signals_len = self.ctx.partitions.signals.len();
         self.checkpoint.task_state = Some(self.ctx.partitions.task_state.clone());

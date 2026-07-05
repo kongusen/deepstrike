@@ -49,7 +49,3 @@ impl SchedulerBudget {
     }
 }
 
-// COMPAT(sched-policy-rename): LoopPolicy was the original name. All SDK/test
-// code that constructs `LoopPolicy { .. }` keeps compiling without changes.
-// Remove this alias once all callers use SchedulerBudget directly.
-pub type LoopPolicy = SchedulerBudget;

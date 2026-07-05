@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use super::super::tcb::{TaskState, WaitReason};
+use super::super::tcb::{TaskLifecycle, WaitReason};
 use super::{
     GateToolOutcome, KernelObservation, LoopAction, LoopEvent, LoopPhase, LoopStateMachine,
     SuspendState,
@@ -78,7 +78,7 @@ impl LoopStateMachine {
             .tasks
             .all()
             .iter()
-            .filter(|t| t.proc.is_some() && matches!(t.state, TaskState::Running))
+            .filter(|t| t.proc.is_some() && matches!(t.state, TaskLifecycle::Running))
             .count();
         let nodes_max = quota.max_workflow_nodes;
         let max_concurrent_subagents = quota.max_concurrent_subagents.map(|m| m as usize);
@@ -102,10 +102,18 @@ impl LoopStateMachine {
         })
     }
 
-    /// Spawn quota: deny once the running sub-agent count hits `max_concurrent_subagents`, or the
-    /// new child's nesting depth would exceed `max_spawn_depth`. Reads only the kernel's own
-    /// `TaskTable` — no I/O. A denied spawn rolls the turn back like a denied tool call.
-    pub(super) fn evaluate_spawn_quota(&self) -> Disposition {
+    /// Spawn quota over the kernel's own `TaskTable` — no I/O.
+    ///
+    /// One evaluator, two callers with different failure modes for the **transient**
+    /// concurrency axis:
+    /// - synchronous spawn (`concurrency_transient = false`): a blocking spawn that can't
+    ///   run *now* can only be rolled back → `Deny`;
+    /// - workflow run queue (`concurrency_transient = true`): the node stays `Ready` and is
+    ///   `Defer`red — the spawn round ends and the batch is retried on the next completion
+    ///   event, when a running sibling has freed a slot.
+    /// The **permanent** axes (cumulative total, depth) are always a hard `Deny`: a completed
+    /// sibling never frees a cumulative slot, and more nesting never becomes available.
+    fn evaluate_spawn_quota_inner(&self, concurrency_transient: bool) -> Disposition {
         let Some(quota) = self.resource_quota.as_ref() else {
             return Disposition::Allow;
         };
@@ -114,14 +122,18 @@ impl LoopStateMachine {
                 .tasks
                 .all()
                 .iter()
-                .filter(|t| t.proc.is_some() && matches!(t.state, TaskState::Running))
+                .filter(|t| t.proc.is_some() && matches!(t.state, TaskLifecycle::Running))
                 .count() as u32;
             if running >= max {
-                return Disposition::Deny {
-                    stage: "quota",
-                    reason: format!(
-                        "max_concurrent_subagents={max} reached ({running} running)"
-                    ),
+                return if concurrency_transient {
+                    Disposition::Defer { slot: running }
+                } else {
+                    Disposition::Deny {
+                        stage: "quota",
+                        reason: format!(
+                            "max_concurrent_subagents={max} reached ({running} running)"
+                        ),
+                    }
                 };
             }
         }
@@ -150,51 +162,14 @@ impl LoopStateMachine {
         Disposition::Allow
     }
 
-    /// W2-1: spawn-quota evaluation for a **deferrable** caller (the workflow run queue). Unlike the
-    /// synchronous `evaluate_spawn_quota` — where a blocking spawn that can't run *now* can only be
-    /// rolled back (`Deny`) — a run-queue node that hits the **transient** concurrency limit is
-    /// `Defer`red: it stays `Ready`, gets a `deferred_until` backoff, and is retried by the scheduler
-    /// once a running sibling frees a slot. A **permanent** depth limit is still a hard `Deny` (more
-    /// nesting will never become available). This is the first **real producer** of
-    /// `Disposition::Defer` — resolving diagnostic A's dead variant for the run-queue path. The
-    /// synchronous path keeps using `evaluate_spawn_quota`, so its `Deny`-on-quota behavior (and the
-    /// golden/tests pinning it) is unchanged.
+    /// Synchronous spawn path: quota misses roll the turn back like a denied tool call.
+    pub(super) fn evaluate_spawn_quota(&self) -> Disposition {
+        self.evaluate_spawn_quota_inner(false)
+    }
+
+    /// W2-1 workflow run-queue path: the transient concurrency axis defers instead of denying.
     pub(super) fn evaluate_spawn_quota_deferrable(&self) -> Disposition {
-        let Some(quota) = self.resource_quota.as_ref() else {
-            return Disposition::Allow;
-        };
-        if let Some(max) = quota.max_concurrent_subagents {
-            let running = self
-                .tasks
-                .all()
-                .iter()
-                .filter(|t| t.proc.is_some() && matches!(t.state, TaskState::Running))
-                .count() as u32;
-            if running >= max {
-                // Transient: a running sibling will complete and free a slot → defer and retry.
-                return Disposition::Defer { slot: running };
-            }
-        }
-        if let Some(max) = quota.max_total_subagents {
-            // Cumulative cap is permanent (no sibling completion frees a slot) → hard Deny, not Defer.
-            let total = self.group_spawns_base + self.local_subagents_spawned();
-            if total >= max {
-                return Disposition::Deny {
-                    stage: "quota",
-                    reason: format!("max_total_subagents={max} reached ({total} spawned in domain)"),
-                };
-            }
-        }
-        if let Some(max) = quota.max_spawn_depth {
-            let depth = 1u32;
-            if depth > max {
-                return Disposition::Deny {
-                    stage: "quota",
-                    reason: format!("max_spawn_depth={max} exceeded (depth {depth})"),
-                };
-            }
-        }
-        Disposition::Allow
+        self.evaluate_spawn_quota_inner(true)
     }
 
     /// Memory-write quota: a rolling-window rate limit. Prunes timestamps older than the window,
@@ -378,7 +353,7 @@ impl LoopStateMachine {
             calls: calls.to_vec(),
             gated_reasons,
         });
-        self.set_lifecycle(TaskState::Suspended, Some(WaitReason::Approval));
+        self.set_lifecycle(TaskLifecycle::Suspended, Some(WaitReason::Approval));
         self.observations.push(KernelObservation::Suspended {
             turn: self.turn,
             reason: "ask_user".to_string(),
@@ -451,14 +426,14 @@ impl LoopStateMachine {
         if to_execute.is_empty() {
             let results = std::mem::take(&mut self.pending_denied_results);
             self.phase = LoopPhase::Reason;
-            self.set_lifecycle(TaskState::Running, None);
+            self.set_lifecycle(TaskLifecycle::Running, None);
             return self.feed(LoopEvent::ToolResults { results });
         }
 
         self.phase = LoopPhase::Act {
             tool_calls: to_execute.clone(),
         };
-        self.set_lifecycle(TaskState::Running, None);
+        self.set_lifecycle(TaskLifecycle::Running, None);
         LoopAction::ExecuteTools {
             calls: to_execute,
         }

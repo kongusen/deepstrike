@@ -117,13 +117,13 @@ fn test_observation_milestone_evidence_fixture() {
 #[test]
 fn spawn_sub_agent_fixture_updates_process_table_via_kernel() {
     use deepstrike_core::runtime::{KernelInput, KernelInputEvent, KernelObservation, KernelRuntime};
-    use deepstrike_core::scheduler::policy::LoopPolicy;
+    use deepstrike_core::scheduler::policy::SchedulerBudget;
     use deepstrike_core::types::task::RuntimeTask;
 
     let raw = load_fixture("input_spawn_sub_agent.json");
     let input: KernelInput = serde_json::from_str(&raw).expect("deserialize spawn input");
 
-    let mut runtime = KernelRuntime::new(LoopPolicy::default());
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
     runtime.step(KernelInput::new(KernelInputEvent::StartRun {
         task: RuntimeTask::new("parent"),
         run_spec: None,

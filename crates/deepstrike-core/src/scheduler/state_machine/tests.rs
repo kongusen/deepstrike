@@ -3,15 +3,16 @@
 //! `state_machine` and retains access to its private items.
 
     use super::*;
+    use crate::types::signal::RuntimeSignal;
     use crate::context::skill_catalog::SKILL_TOOL_NAME;
     use crate::runtime::kernel::KernelPressureAction;
     use crate::types::message::Role;
     use crate::types::skill::SkillMetadata;
 
     fn sm() -> LoopStateMachine {
-        LoopStateMachine::new(LoopPolicy {
+        LoopStateMachine::new(SchedulerBudget {
             max_tokens: 128_000,
-            ..LoopPolicy::default()
+            ..SchedulerBudget::default()
         })
     }
 
@@ -147,7 +148,7 @@
         let history_len_before = sm.ctx.partitions.history.messages.len();
 
         let sig = RuntimeSignal::new(SignalSource::Gateway, SignalType::Alert, Urgency::Critical, "fire");
-        let action = sm.feed(LoopEvent::Signal { signal: sig });
+        let action = sm.signal_event(sig).expect("critical signal drives a turn");
         assert!(matches!(action, LoopAction::CallLLM { .. }));
         assert!(matches!(sm.phase, LoopPhase::Reason));
         assert!(sm.ctx.partitions.signals.iter().any(|s| s.contains("[INTERRUPT]")));
@@ -241,10 +242,10 @@
         // copy, which renewal clears. This is the fix for "latest command loses salience across
         // consecutive contexts".
         use crate::types::signal::{SignalSource, SignalType, Urgency};
-        let mut sm = LoopStateMachine::new(LoopPolicy {
+        let mut sm = LoopStateMachine::new(SchedulerBudget {
             max_tokens: 100,
             max_turns: 100,
-            ..LoopPolicy::default()
+            ..SchedulerBudget::default()
         });
         sm.start(RuntimeTask::new("ship the feature"));
 
@@ -254,7 +255,7 @@
             Urgency::Critical,
             "do NOT modify the migration files",
         );
-        sm.feed(LoopEvent::Signal { signal: sig });
+        sm.signal_event(sig).expect("critical signal drives a turn");
         assert!(
             sm.ctx.partitions.task_state.directives.iter().any(|d| d.contains("migration files")),
             "acted-on signal is promoted to a durable directive"
@@ -280,10 +281,10 @@
 
     #[test]
     fn max_turns_emits_final_toolless_call_then_terminates() {
-        let mut sm = LoopStateMachine::new(LoopPolicy {
+        let mut sm = LoopStateMachine::new(SchedulerBudget {
             max_tokens: 128_000,
             max_turns: 1,
-            ..LoopPolicy::default()
+            ..SchedulerBudget::default()
         });
         sm.start(RuntimeTask::new("test"));
 
@@ -481,10 +482,10 @@
 
     #[test]
     fn compression_emits_observation() {
-        let mut sm = LoopStateMachine::new(LoopPolicy {
+        let mut sm = LoopStateMachine::new(SchedulerBudget {
             max_tokens: 100,
             max_turns: 100,
-            ..LoopPolicy::default()
+            ..SchedulerBudget::default()
         });
         sm.start(RuntimeTask::new("test"));
         for i in 0..10 {
@@ -504,10 +505,10 @@
         // Renewal fires only when pressure stays > 0.98 even AFTER compression.
         // Compression only targets history + skill, so we saturate the system
         // partition (non-compressible) to keep rho above the threshold.
-        let mut sm = LoopStateMachine::new(LoopPolicy {
+        let mut sm = LoopStateMachine::new(SchedulerBudget {
             max_tokens: 100,
             max_turns: 100,
-            ..LoopPolicy::default()
+            ..SchedulerBudget::default()
         });
         sm.start(RuntimeTask::new("test"));
         // 10 system messages × 10 tokens = 100 tokens in non-compressible partition.
@@ -528,10 +529,10 @@
 
     #[test]
     fn force_compact_emits_page_out_when_archived() {
-        let mut sm = LoopStateMachine::new(LoopPolicy {
+        let mut sm = LoopStateMachine::new(SchedulerBudget {
             max_tokens: 100,
             max_turns: 100,
-            ..LoopPolicy::default()
+            ..SchedulerBudget::default()
         });
         sm.start(RuntimeTask::new("test"));
         for i in 0..10 {
@@ -547,10 +548,10 @@
     fn knowledge_remove_sweeps_at_compaction_boundary_and_observes() {
         // K1: a RemoveKnowledge mark leaves the entry rendered (system[1] bytes untouched) until
         // a compaction boundary, where the sweep drops it and a KnowledgeSwept observation fires.
-        let mut sm = LoopStateMachine::new(LoopPolicy {
+        let mut sm = LoopStateMachine::new(SchedulerBudget {
             max_tokens: 100,
             max_turns: 100,
-            ..LoopPolicy::default()
+            ..SchedulerBudget::default()
         });
         sm.start(RuntimeTask::new("test"));
         sm.ctx.push_knowledge_entry(Some("ref".into()), Message::system("REFDOC"), 5, false);
@@ -573,10 +574,10 @@
     fn knowledge_upsert_applies_at_renewal_boundary() {
         // K1: renewal is a boundary too — a staged same-key upsert lands there, and entry
         // identity (the key) survives the renewal's wholesale knowledge carry-over.
-        let mut sm = LoopStateMachine::new(LoopPolicy {
+        let mut sm = LoopStateMachine::new(SchedulerBudget {
             max_tokens: 100,
             max_turns: 100,
-            ..LoopPolicy::default()
+            ..SchedulerBudget::default()
         });
         sm.start(RuntimeTask::new("test"));
         sm.ctx.push_knowledge_entry(Some("ref".into()), Message::system("V1"), 5, false);
@@ -593,10 +594,10 @@
     // ---- Reactive recovery ladder (lifted from the SDK runners into the kernel) ----
 
     fn compactible_machine() -> LoopStateMachine {
-        let mut sm = LoopStateMachine::new(LoopPolicy {
+        let mut sm = LoopStateMachine::new(SchedulerBudget {
             max_tokens: 100,
             max_turns: 100,
-            ..LoopPolicy::default()
+            ..SchedulerBudget::default()
         });
         sm.start(RuntimeTask::new("test"));
         for i in 0..10 {
@@ -737,10 +738,10 @@
     // kernel never calls an LLM — it only decides WHEN/WHAT to page out.
     #[test]
     fn autocompact_pages_out_to_semantic_tier_for_llm_summary() {
-        let mut sm = LoopStateMachine::new(LoopPolicy {
+        let mut sm = LoopStateMachine::new(SchedulerBudget {
             max_tokens: 100,
             max_turns: 100,
-            ..LoopPolicy::default()
+            ..SchedulerBudget::default()
         });
         sm.start(RuntimeTask::new("test"));
         for i in 0..10 {
@@ -1273,10 +1274,10 @@
 
     #[test]
     fn budget_exceeded_observation_on_max_turns() {
-        let mut sm = LoopStateMachine::new(LoopPolicy {
+        let mut sm = LoopStateMachine::new(SchedulerBudget {
             max_tokens: 128_000,
             max_turns: 1,
-            ..LoopPolicy::default()
+            ..SchedulerBudget::default()
         });
         sm.start(RuntimeTask::new("test"));
         let action = sm.feed(LoopEvent::ToolResults { results: vec![] });
@@ -1297,14 +1298,14 @@
     // Pins the canonical `LoopPhase::lifecycle()` / `wait_reason()` projection
     // across real driven transitions. This is the bridge contract that M1d must
     // preserve when `LoopPhase` is split and schedulability moves onto the TCB.
-    // If any of these break, the phase→TaskState mapping has drifted.
+    // If any of these break, the phase→TaskLifecycle mapping has drifted.
 
     #[test]
     fn lifecycle_idle_before_start_is_ready() {
         let sm = sm();
         // M1d: schedulability lives on the root task; before start it is `Ready` and the
         // turn-step `phase` is an inert placeholder.
-        assert_eq!(sm.lifecycle(), TaskState::Ready);
+        assert_eq!(sm.lifecycle(), TaskLifecycle::Ready);
         assert_eq!(sm.wait_reason(), None);
     }
 
@@ -1313,7 +1314,7 @@
         let mut sm = sm();
         sm.start(RuntimeTask::new("hi"));
         assert!(matches!(sm.phase, LoopPhase::Reason));
-        assert_eq!(sm.lifecycle(), TaskState::Running);
+        assert_eq!(sm.lifecycle(), TaskLifecycle::Running);
         assert_eq!(sm.wait_reason(), None);
     }
 
@@ -1329,7 +1330,7 @@
         });
         sm.feed(LoopEvent::LLMResponse { message: msg });
         assert!(sm.is_suspended());
-        assert_eq!(sm.lifecycle(), TaskState::Suspended);
+        assert_eq!(sm.lifecycle(), TaskLifecycle::Suspended);
         assert_eq!(sm.wait_reason(), Some(WaitReason::Approval));
     }
 
@@ -1346,7 +1347,7 @@
         );
         sm.spawn_sub_agent(spec, "parent-sess");
         assert!(sm.is_suspended());
-        assert_eq!(sm.lifecycle(), TaskState::Suspended);
+        assert_eq!(sm.lifecycle(), TaskLifecycle::Suspended);
         assert!(matches!(
             sm.wait_reason(),
             Some(WaitReason::SubAgentJoin(_))
@@ -1377,11 +1378,11 @@
             arguments: serde_json::json!({}),
         });
         sm.feed(LoopEvent::LLMResponse { message: msg });
-        assert_eq!(sm.lifecycle(), TaskState::Suspended);
+        assert_eq!(sm.lifecycle(), TaskLifecycle::Suspended);
 
         sm.resume_from_suspend(vec!["call_a".to_string()], vec![]);
         // After resume the loop is driving a turn again — back to a runnable lifecycle.
-        assert_eq!(sm.lifecycle(), TaskState::Running);
+        assert_eq!(sm.lifecycle(), TaskLifecycle::Running);
         assert_eq!(sm.wait_reason(), None);
     }
 
@@ -1395,10 +1396,10 @@
     #[test]
     fn budget_exceeded_observation_on_token_budget() {
         use crate::types::result::TerminationReason;
-        let mut sm = LoopStateMachine::new(LoopPolicy {
+        let mut sm = LoopStateMachine::new(SchedulerBudget {
             max_tokens: 128_000,
             max_total_tokens: 10,
-            ..LoopPolicy::default()
+            ..SchedulerBudget::default()
         });
         sm.start(RuntimeTask::new("test"));
         sm.take_observations();
@@ -1431,10 +1432,10 @@
     #[test]
     fn budget_exceeded_observation_on_wall_time() {
         use crate::types::result::TerminationReason;
-        let mut sm = LoopStateMachine::new(LoopPolicy {
+        let mut sm = LoopStateMachine::new(SchedulerBudget {
             max_tokens: 128_000,
             max_wall_ms: Some(1_000),
-            ..LoopPolicy::default()
+            ..SchedulerBudget::default()
         });
         sm.set_observed_time(0); // anchors started_at_ms
         sm.start(RuntimeTask::new("test"));
@@ -1691,10 +1692,10 @@
         let mut sm = sm();
         // M1d: the root task is seeded `Ready` at construction.
         assert_eq!(sm.task_table().all().len(), 1);
-        assert_eq!(sm.task_table().get("root").unwrap().state, TaskState::Ready);
+        assert_eq!(sm.task_table().get("root").unwrap().state, TaskLifecycle::Ready);
         sm.start(RuntimeTask::new("hi"));
         let root = sm.task_table().get("root").expect("root task");
-        assert_eq!(root.state, TaskState::Running);
+        assert_eq!(root.state, TaskLifecycle::Running);
         assert!(root.parent.is_none());
         assert_eq!(sm.task_table().all().len(), 1);
     }
@@ -1717,7 +1718,7 @@
 
         // Child task registered under root, running, mirroring the process row.
         let child = sm.task_table().get("child").expect("child task");
-        assert_eq!(child.state, TaskState::Running);
+        assert_eq!(child.state, TaskLifecycle::Running);
         assert_eq!(child.parent.as_deref(), Some("root"));
         assert_eq!(sm.task_table().children_of("root").len(), 1);
         assert_eq!(sm.task_table().all().len(), 2); // root + child
@@ -1739,7 +1740,7 @@
 
         // Join mirrored onto the task lifecycle.
         let child = sm.task_table().get("child").expect("child task");
-        assert_eq!(child.state, TaskState::Done(TerminationReason::Completed));
+        assert_eq!(child.state, TaskLifecycle::Done(TerminationReason::Completed));
     }
 
     // ---- W0: kernel-resident workflow executor -----------------------------

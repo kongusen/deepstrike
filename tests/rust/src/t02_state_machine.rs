@@ -4,18 +4,18 @@ use compact_str::CompactString;
 use deepstrike_core::context::manager::{KNOWLEDGE_TOOL_NAME, MEMORY_TOOL_NAME};
 use deepstrike_core::context::skill_catalog::SKILL_TOOL_NAME;
 use deepstrike_core::runtime::session::RollbackReason;
-use deepstrike_core::scheduler::policy::LoopPolicy;
+use deepstrike_core::scheduler::policy::SchedulerBudget;
 use deepstrike_core::scheduler::state_machine::*;
-use deepstrike_core::scheduler::tcb::TaskState;
+use deepstrike_core::scheduler::tcb::TaskLifecycle;
 use deepstrike_core::types::message::*;
 use deepstrike_core::types::result::TerminationReason;
 use deepstrike_core::types::skill::SkillMetadata;
 use deepstrike_core::types::task::RuntimeTask;
 
 fn default_sm() -> LoopStateMachine {
-    LoopStateMachine::new(LoopPolicy {
+    LoopStateMachine::new(SchedulerBudget {
         max_tokens: 128_000,
-        ..LoopPolicy::default()
+        ..SchedulerBudget::default()
     })
 }
 
@@ -24,7 +24,7 @@ fn default_sm() -> LoopStateMachine {
 #[test]
 fn starts_ready_before_run() {
     let sm = default_sm();
-    assert_eq!(sm.lifecycle(), TaskState::Ready);
+    assert_eq!(sm.lifecycle(), TaskLifecycle::Ready);
     assert_eq!(sm.turn, 0);
 }
 
@@ -114,10 +114,10 @@ fn tool_results_advance_turn_and_emit_call_llm() {
 
 #[test]
 fn max_turns_triggers_pending_termination_then_done() {
-    let mut sm = LoopStateMachine::new(LoopPolicy {
+    let mut sm = LoopStateMachine::new(SchedulerBudget {
         max_tokens: 128_000,
         max_turns: 1,
-        ..LoopPolicy::default()
+        ..SchedulerBudget::default()
     });
     sm.start(RuntimeTask::new("test"));
 
@@ -323,7 +323,7 @@ fn critical_signal_injects_interrupt_and_re_reasons() {
         Urgency::Critical,
         "fire",
     );
-    let action = sm.feed(LoopEvent::Signal { signal: sig });
+    let action = sm.signal_event(sig).expect("critical signal drives a turn");
     assert!(matches!(action, LoopAction::CallLLM { .. }));
 
     let has_interrupt = sm.ctx.partitions.signals.iter().any(|t| t.contains("[INTERRUPT]"));
@@ -343,12 +343,13 @@ fn high_urgency_signal_injects_note() {
         Urgency::High,
         "alert",
     );
-    let action = sm.feed(LoopEvent::Signal { signal: sig });
-    assert!(matches!(action, LoopAction::CallLLM { .. }));
+    // High urgency is a *soft* interrupt: the kernel records a `[SIGNAL]` note (handled at the
+    // next turn boundary) and does not force a provider call. The hard `[INTERRUPT]` marker is
+    // reserved for Critical/`InterruptNow` (see `signals::attention::UrgencyBasedPolicy` +
+    // `dispatch_signal`).
+    let action = sm.signal_event(sig);
+    assert!(action.is_none(), "soft interrupt does not force a turn");
 
-    // High urgency is a *soft* interrupt: the kernel records a `[SIGNAL]` note (handled at the next
-    // turn boundary). The hard `[INTERRUPT]` marker is reserved for Critical/`InterruptNow` (see
-    // `signals::attention::UrgencyBasedPolicy` + `dispatch_signal`).
     let has_signal_note = sm.ctx.partitions.signals.iter().any(|t| t.contains("[SIGNAL]"));
     assert!(has_signal_note);
     let has_interrupt = sm.ctx.partitions.signals.iter().any(|t| t.contains("[INTERRUPT]"));
@@ -434,10 +435,10 @@ fn take_observations_drains() {
 
 #[test]
 fn compression_emits_compressed_observation() {
-    let mut sm = LoopStateMachine::new(LoopPolicy {
+    let mut sm = LoopStateMachine::new(SchedulerBudget {
         max_tokens: 100,
         max_turns: 100,
-        ..LoopPolicy::default()
+        ..SchedulerBudget::default()
     });
     sm.start(RuntimeTask::new("test"));
     for i in 0..10 {

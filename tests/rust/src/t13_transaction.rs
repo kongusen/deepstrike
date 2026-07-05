@@ -7,15 +7,15 @@ use compact_str::CompactString;
 use deepstrike_core::context::fault::ContextFault;
 use deepstrike_core::runtime::repair::reconstruct_messages_with_fallback;
 use deepstrike_core::runtime::session::{RollbackReason, SessionEvent};
-use deepstrike_core::scheduler::policy::LoopPolicy;
+use deepstrike_core::scheduler::policy::SchedulerBudget;
 use deepstrike_core::scheduler::state_machine::*;
 use deepstrike_core::types::message::*;
 use deepstrike_core::types::task::RuntimeTask;
 
 fn default_sm() -> LoopStateMachine {
-    LoopStateMachine::new(LoopPolicy {
+    LoopStateMachine::new(SchedulerBudget {
         max_tokens: 128_000,
-        ..LoopPolicy::default()
+        ..SchedulerBudget::default()
     })
 }
 

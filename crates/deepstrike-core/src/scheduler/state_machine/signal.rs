@@ -6,7 +6,7 @@ use crate::types::policy::SignalDisposition;
 use crate::types::result::TerminationReason;
 use crate::types::signal::RuntimeSignal;
 
-use super::super::tcb::TaskState;
+use super::super::tcb::TaskLifecycle;
 
 /// Stable snake_case label for a signal disposition, used in `SignalDisposed`
 /// observations (part of the observation wire format).
@@ -27,7 +27,7 @@ impl LoopStateMachine {
     /// policy and a bounded queue. Once set, inbound signals are dispatched through
     /// the kernel (dedup + disposition + queue) instead of the legacy `feed` path.
     pub fn set_attention(&mut self, max_queue_size: usize) {
-        self.signal_router = Some(SignalRouter::new(max_queue_size));
+        self.signal_router = SignalRouter::new(max_queue_size);
     }
 
     /// ABI entry for an inbound signal: clears observations, sweeps leases, then
@@ -45,8 +45,8 @@ impl LoopStateMachine {
     /// Route a signal and decide whether it drives a turn now. Assumes the caller
     /// has already cleared observations / swept leases (see `feed` and `signal_event`).
     pub(super) fn dispatch_signal(&mut self, signal: RuntimeSignal) -> Option<LoopAction> {
-        let is_running = !matches!(self.lifecycle(), TaskState::Ready | TaskState::Done(_));
-        let router = self.signal_router.as_mut().expect("signal_router is always initialized");
+        let is_running = !matches!(self.lifecycle(), TaskLifecycle::Ready | TaskLifecycle::Done(_));
+        let router = &mut self.signal_router;
         let signal_id = signal.id.to_string();
         let summary = signal.summary.to_string();
         let disposition = router.ingest(signal, is_running);
@@ -118,7 +118,7 @@ impl LoopStateMachine {
         // Mark each preempted child terminal (UserAbort); rebuild its `AgentProcess` view row.
         for id in &agent_ids {
             let process = if let Some(task) = self.tasks.get_mut(id.as_str()) {
-                task.state = TaskState::Done(TerminationReason::UserAbort);
+                task.state = TaskLifecycle::Done(TerminationReason::UserAbort);
                 crate::proc::AgentProcess::from_tcb(task)
             } else {
                 None
@@ -156,7 +156,7 @@ impl LoopStateMachine {
     /// Called at turn boundaries.
     pub(super) fn drain_queued_signals(&mut self) {
         let mut out = Vec::new();
-        let router = self.signal_router.as_mut().expect("signal_router is always initialized");
+        let router = &mut self.signal_router;
         while let Some(sig) = router.next() {
             out.push(sig.summary.to_string());
         }

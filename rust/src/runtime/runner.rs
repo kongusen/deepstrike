@@ -13,7 +13,7 @@ use deepstrike_core::runtime::kernel::{
 };
 use deepstrike_core::runtime::event_log::{category_for_kind, primitive_for_kind};
 use deepstrike_core::runtime::session::SessionEvent;
-use deepstrike_core::scheduler::policy::LoopPolicy;
+use deepstrike_core::scheduler::policy::SchedulerBudget as KernelBudget;
 use deepstrike_core::signals::router::SignalRouter;
 use deepstrike_core::types::message::{Message, ToolCall};
 use deepstrike_core::types::milestone::MilestoneCheckResult;
@@ -355,7 +355,7 @@ impl RuntimeRunner {
             return step.observations;
         }
 
-        let mut kernel = KernelRuntime::new(LoopPolicy {
+        let mut kernel = KernelRuntime::new(KernelBudget {
             max_tokens: self.opts.max_tokens,
             max_turns: self.opts.max_turns.unwrap_or(25),
             max_wall_ms: effective_wall_budget(self.opts.scheduler_budget, self.opts.timeout_ms),
@@ -640,7 +640,7 @@ impl RuntimeRunner {
             let effective_timeout = self.opts.timeout_ms.or(provider_policy.timeout_ms);
             let effective_wall_budget = effective_wall_budget(self.opts.scheduler_budget, effective_timeout);
 
-            let policy = LoopPolicy {
+            let policy = KernelBudget {
                 max_tokens: self.opts.max_tokens,
                 max_turns: effective_max_turns,
                 max_wall_ms: effective_wall_budget,

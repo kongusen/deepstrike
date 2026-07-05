@@ -31,67 +31,54 @@ impl LoopStateMachine {
 
         if result.passed {
             // Advance phase: mount unlocked capabilities with milestone provenance.
-            let mut unlocked: Vec<String> = Vec::new();
-            if let Some(contract) = &self.milestone.contract.clone() {
-                if let Some(phase) = contract.phases.get(self.milestone.current_phase) {
-                    let mounted_by = Some(format!("milestone:{}", phase.id));
-                    for cap in phase.unlocks.clone() {
-                        let kind_str = cap.kind.label();
-                        let id = cap.id.to_string();
-                        unlocked.push(format!("{}:{}", kind_str, id));
-                        self.mount_capability(
-                            cap,
-                            mounted_by.clone(),
-                            Some("phase_advance".to_string()),
-                        );
-                    }
-                    self.observations.push(KernelObservation::MilestoneAdvanced {
-                        turn: self.turn,
-                        phase_id: phase.id.clone(),
-                        capabilities_unlocked: unlocked,
-                    });
+            if let Some(phase) = self.milestone.current_phase().cloned() {
+                let mounted_by = Some(format!("milestone:{}", phase.id));
+                let mut unlocked: Vec<String> = Vec::new();
+                for cap in phase.unlocks {
+                    unlocked.push(format!("{}:{}", cap.kind.label(), cap.id));
+                    self.mount_capability(
+                        cap,
+                        mounted_by.clone(),
+                        Some("phase_advance".to_string()),
+                    );
                 }
+                self.observations.push(KernelObservation::MilestoneAdvanced {
+                    turn: self.turn,
+                    phase_id: phase.id,
+                    capabilities_unlocked: unlocked,
+                });
             }
-            self.milestone.current_phase += 1;
-            self.milestone.blocked_count = 0;
+            self.milestone.advance();
 
             if self.is_milestone_complete() {
                 return self.terminate(TerminationReason::Completed, None);
             }
 
             // Prompt the LLM with the next phase context.
-            if let Some(criteria) = self
-                .milestone
-                .contract
-                .as_ref()
-                .and_then(|c| c.phases.get(self.milestone.current_phase))
-                .map(|p| {
-                    if p.criteria.is_empty() {
-                        format!("[NEXT MILESTONE PHASE: {}]", p.id)
-                    } else {
-                        format!(
-                            "[NEXT MILESTONE PHASE: {} — Criteria: {}]",
-                            p.id,
-                            p.criteria.join("; ")
-                        )
-                    }
-                })
-            {
+            if let Some(criteria) = self.milestone.current_phase().map(|p| {
+                if p.criteria.is_empty() {
+                    format!("[NEXT MILESTONE PHASE: {}]", p.id)
+                } else {
+                    format!(
+                        "[NEXT MILESTONE PHASE: {} — Criteria: {}]",
+                        p.id,
+                        p.criteria.join("; ")
+                    )
+                }
+            }) {
                 self.ctx.push_signal(criteria);
             }
             self.phase = LoopPhase::Reason;
             self.emit_call_llm()
         } else {
             // Phase blocked — increment retry count.
-            self.milestone.blocked_count += 1;
+            let blocked_count = self.milestone.record_block();
             let reason = result.reason.as_deref().unwrap_or("milestone criteria not met");
 
             // Retrieve the rollback_policy and retry budget for the current phase.
             let (rollback_policy, max_attempts) = self
                 .milestone
-                .contract
-                .as_ref()
-                .and_then(|c| c.phases.get(self.milestone.current_phase))
+                .current_phase()
                 .map(|p| {
                     let max = p
                         .retry_policy
@@ -103,8 +90,7 @@ impl LoopStateMachine {
                 .unwrap_or_default();
 
             // Check retry budget (0 = unlimited).
-            let budget_exceeded = max_attempts > 0
-                && self.milestone.blocked_count as u32 >= max_attempts;
+            let budget_exceeded = max_attempts > 0 && blocked_count as u32 >= max_attempts;
 
             if budget_exceeded {
                 use crate::types::milestone::MilestoneRollbackPolicy;

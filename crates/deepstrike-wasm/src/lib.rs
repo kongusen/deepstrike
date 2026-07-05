@@ -17,7 +17,7 @@ use deepstrike_core::harness::eval::{
 use deepstrike_core::runtime::{
     KernelInput as RustKernelInput, KernelRuntime as RustKernelRuntime,
 };
-use deepstrike_core::scheduler::policy::LoopPolicy as RustLoopPolicy;
+use deepstrike_core::scheduler::policy::SchedulerBudget as RustLoopPolicy;
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
 use deepstrike_core::types::agent::AgentIdentity;
 use deepstrike_core::types::message::{

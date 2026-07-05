@@ -4,9 +4,9 @@
 // G7 gate: sub-agent isolation + lineage replay
 
 use compact_str::CompactString;
-use deepstrike_core::scheduler::policy::LoopPolicy;
+use deepstrike_core::scheduler::policy::SchedulerBudget;
 use deepstrike_core::scheduler::state_machine::*;
-use deepstrike_core::scheduler::tcb::{TaskState, WaitReason};
+use deepstrike_core::scheduler::tcb::{TaskLifecycle, WaitReason};
 use deepstrike_core::proc::ProcessState;
 use deepstrike_core::types::agent::{
     AgentCapabilityFilter, AgentIdentity, AgentIsolation, AgentRole, AgentRunSpec,
@@ -18,7 +18,7 @@ use deepstrike_core::types::result::{LoopResult, SubAgentResult, TerminationReas
 use deepstrike_core::types::task::RuntimeTask;
 
 fn default_sm() -> LoopStateMachine {
-    LoopStateMachine::new(LoopPolicy { max_tokens: 128_000, ..LoopPolicy::default() })
+    LoopStateMachine::new(SchedulerBudget { max_tokens: 128_000, ..SchedulerBudget::default() })
 }
 
 fn text_response() -> LoopEvent {
@@ -128,7 +128,7 @@ fn spawn_sub_agent_emits_process_observation() {
     );
     let action = sm.spawn_sub_agent(spec, "parent-session-001");
     assert!(matches!(action, LoopAction::AwaitingResume));
-    assert_eq!(sm.lifecycle(), TaskState::Suspended);
+    assert_eq!(sm.lifecycle(), TaskLifecycle::Suspended);
     assert!(matches!(sm.wait_reason(), Some(WaitReason::SubAgentJoin(_))));
 
     let obs = sm.take_observations();
@@ -260,7 +260,7 @@ fn sub_agent_completed_updates_kernel_process() {
     sm.spawn_sub_agent(spec, "parent-session-001");
     sm.take_observations();
 
-    assert_eq!(sm.lifecycle(), TaskState::Suspended);
+    assert_eq!(sm.lifecycle(), TaskLifecycle::Suspended);
     assert!(matches!(sm.wait_reason(), Some(WaitReason::SubAgentJoin(_))));
 
     let result = SubAgentResult {

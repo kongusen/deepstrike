@@ -1,7 +1,7 @@
 //! Sub-agent process lifecycle impl for [`super::LoopStateMachine`].
 
 use super::{KernelObservation, LoopAction, LoopPhase, LoopStateMachine, SuspendState};
-use super::super::tcb::{TaskState, TaskTable, Tcb, WaitReason};
+use super::super::tcb::{TaskLifecycle, TaskTable, Tcb, WaitReason};
 use crate::proc::AgentProcess;
 use crate::runtime::session::RollbackReason;
 use crate::syscall::{Disposition, Syscall};
@@ -59,7 +59,7 @@ impl LoopStateMachine {
             agent_ids: vec![agent_id.clone()],
         });
         self.set_lifecycle(
-            TaskState::Suspended,
+            TaskLifecycle::Suspended,
             Some(WaitReason::SubAgentJoin(vec![manifest.agent_id.clone()])),
         );
         self.observations.push(KernelObservation::Suspended {
@@ -73,14 +73,14 @@ impl LoopStateMachine {
     pub(super) fn handle_sub_agent_completed(&mut self, result: SubAgentResult) -> LoopAction {
         // M1 収口: record the join on the child task itself (the source of truth) — both the
         // terminal lifecycle and the result payload — then rebuild the `AgentProcess` view row.
-        // The terminal `TaskState` preserves the legacy `ProcessState`→`TaskState` mapping
+        // The terminal `TaskLifecycle` preserves the legacy `ProcessState`→`TaskLifecycle` mapping
         // (`Completed`→`Done(Completed)`, anything else→`Done(Error)`).
         let process = if let Some(task) = self.tasks.get_mut(result.agent_id.as_str()) {
             let process_state = match result.result.termination {
                 TerminationReason::Completed => crate::proc::ProcessState::Joined,
                 _ => crate::proc::ProcessState::Failed,
             };
-            task.state = TaskState::from(process_state);
+            task.state = TaskLifecycle::from(process_state);
             if let Some(info) = task.proc.as_mut() {
                 info.result = Some(result.clone());
             }

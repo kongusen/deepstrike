@@ -24,13 +24,13 @@ impl ProcessState {
 }
 
 /// Project a task's schedulability onto the coarser process lifecycle exposed in the
-/// `AgentProcess` view. Inverse of `impl From<ProcessState> for TaskState`: a child task is
+/// `AgentProcess` view. Inverse of `impl From<ProcessState> for TaskLifecycle`: a child task is
 /// `Joined` once it completed successfully, `Failed` on any other terminal reason, else `Running`.
-fn process_state_of(state: crate::scheduler::tcb::TaskState) -> ProcessState {
-    use crate::scheduler::tcb::TaskState;
+fn process_state_of(state: crate::scheduler::tcb::TaskLifecycle) -> ProcessState {
+    use crate::scheduler::tcb::TaskLifecycle;
     match state {
-        TaskState::Done(TerminationReason::Completed) => ProcessState::Joined,
-        TaskState::Done(_) => ProcessState::Failed,
+        TaskLifecycle::Done(TerminationReason::Completed) => ProcessState::Joined,
+        TaskLifecycle::Done(_) => ProcessState::Failed,
         _ => ProcessState::Running,
     }
 }
@@ -94,7 +94,7 @@ impl AgentProcess {
 mod tests {
     use super::*;
     use crate::scheduler::policy::SchedulerBudget;
-    use crate::scheduler::tcb::{Tcb, TaskState};
+    use crate::scheduler::tcb::{Tcb, TaskLifecycle};
     use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec, IsolationManifest};
     use crate::types::capability::CapabilityManifest;
 
@@ -127,17 +127,17 @@ mod tests {
 
     #[test]
     fn process_state_of_maps_terminal_task_states() {
-        assert_eq!(process_state_of(TaskState::Running), ProcessState::Running);
+        assert_eq!(process_state_of(TaskLifecycle::Running), ProcessState::Running);
         assert_eq!(
-            process_state_of(TaskState::Done(TerminationReason::Completed)),
+            process_state_of(TaskLifecycle::Done(TerminationReason::Completed)),
             ProcessState::Joined
         );
         assert_eq!(
-            process_state_of(TaskState::Done(TerminationReason::Error)),
+            process_state_of(TaskLifecycle::Done(TerminationReason::Error)),
             ProcessState::Failed
         );
         assert_eq!(
-            process_state_of(TaskState::Done(TerminationReason::Timeout)),
+            process_state_of(TaskLifecycle::Done(TerminationReason::Timeout)),
             ProcessState::Failed
         );
     }

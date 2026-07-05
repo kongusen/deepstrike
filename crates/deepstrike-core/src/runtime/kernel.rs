@@ -12,7 +12,7 @@ use crate::context::renderer::RenderedContext;
 use crate::context::task_state::TaskUpdate;
 use crate::context::token_engine::ContextTokenEngine;
 use crate::runtime::session::RollbackReason;
-use crate::scheduler::policy::LoopPolicy;
+use crate::scheduler::policy::SchedulerBudget;
 use crate::scheduler::state_machine::{LoopAction, LoopEvent, LoopStateMachine};
 use crate::types::agent::AgentRunSpec;
 use crate::types::capability::{CapabilityCommand, CapabilityDescriptor, CapabilityKind};
@@ -377,7 +377,7 @@ pub enum KernelInputEvent {
     },
     /// Adjust the wall-clock budget at runtime (e.g. to extend or set a deadline
     /// after a run has already started). Additive: omit to keep the value from
-    /// `LoopPolicy` passed at construction.
+    /// `SchedulerBudget` passed at construction.
     SetSchedulerBudget {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_wall_ms: Option<u64>,
@@ -859,7 +859,7 @@ pub struct KernelRuntime {
 }
 
 impl KernelRuntime {
-    pub fn new(policy: LoopPolicy) -> Self {
+    pub fn new(policy: SchedulerBudget) -> Self {
         Self {
             sm: LoopStateMachine::new(policy),
         }
@@ -1364,7 +1364,7 @@ mod tests {
 
     #[test]
     fn start_run_returns_versioned_provider_action() {
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         let step = runtime.step(KernelInput::new(KernelInputEvent::StartRun {
             task: RuntimeTask::new("ship it"),
             run_spec: None,
@@ -1379,7 +1379,7 @@ mod tests {
 
     #[test]
     fn provider_text_response_returns_done() {
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::StartRun {
             task: RuntimeTask::new("ship it"),
             run_spec: None,
@@ -1400,7 +1400,7 @@ mod tests {
 
     #[test]
     fn config_inputs_mutate_runtime_without_actions() {
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         let step = runtime.step(KernelInput::new(KernelInputEvent::SetTools {
             tools: vec![ToolSchema {
                 name: "echo".into(),
@@ -1417,7 +1417,7 @@ mod tests {
     fn skill_activated_input_records_active_skill() {
         // P1-B B1: the SkillActivated event (serde `skill_activated`) records the active skill and,
         // via the catalog's declared tools, yields a narrowing filter — without itself acting.
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         let mut debug = SkillMetadata::new("debug", "Debug helper");
         debug.allowed_tools = vec!["read".into(), "grep".into()];
         runtime.step(KernelInput::new(KernelInputEvent::SetAvailableSkills {
@@ -1439,7 +1439,7 @@ mod tests {
     fn skill_deactivated_rewidens_toolset_and_unpins_knowledge() {
         // K3: deactivation removes the skill from the active set (filter back to None ⇒ no
         // narrowing) and marks its `skill:<name>` knowledge pin for the next boundary sweep.
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         let mut debug = SkillMetadata::new("debug", "Debug helper");
         debug.allowed_tools = vec!["read".into(), "grep".into()];
         runtime.step(KernelInput::new(KernelInputEvent::SetAvailableSkills {
@@ -1474,7 +1474,7 @@ mod tests {
         // K3: `lease_turns: 1` expires once the turn counter passes activation+1 — the head-of-
         // event sweep deactivates it exactly like an explicit SkillDeactivated. A later
         // re-activation re-narrows.
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         let mut debug = SkillMetadata::new("debug", "Debug helper");
         debug.allowed_tools = vec!["read".into(), "grep".into()];
         runtime.step(KernelInput::new(KernelInputEvent::SetAvailableSkills {
@@ -1522,7 +1522,7 @@ mod tests {
 
     #[test]
     fn update_task_input_mutates_task_state() {
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         let step = runtime.step(KernelInput::new(KernelInputEvent::UpdateTask {
             update: TaskUpdate {
                 progress: Some("tools executed".to_string()),
@@ -1539,7 +1539,7 @@ mod tests {
 
     #[test]
     fn add_knowledge_message_enters_knowledge_partition() {
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         let step = runtime.step(KernelInput::new(KernelInputEvent::AddKnowledgeMessage {
             content: "skill: debug".to_string(),
             tokens: 10,
@@ -1559,9 +1559,9 @@ mod tests {
         // K2: the per-turn budget check runs in the LLMResponse path; an over-budget knowledge
         // partition (40 tokens > 100 × 0.25 default) surfaces as a KnowledgeBudgetExceeded
         // observation. Raising the ratio via SetKnowledgeBudget silences it.
-        let mut runtime = KernelRuntime::new(LoopPolicy {
+        let mut runtime = KernelRuntime::new(SchedulerBudget {
             max_tokens: 100,
-            ..LoopPolicy::default()
+            ..SchedulerBudget::default()
         });
         runtime.step(KernelInput::new(KernelInputEvent::AddKnowledgeMessage {
             content: "reference".to_string(),
@@ -1587,9 +1587,9 @@ mod tests {
         )));
 
         // Runtime knob: a generous ratio ⇒ under budget ⇒ no warning on the next turn.
-        let mut runtime2 = KernelRuntime::new(LoopPolicy {
+        let mut runtime2 = KernelRuntime::new(SchedulerBudget {
             max_tokens: 100,
-            ..LoopPolicy::default()
+            ..SchedulerBudget::default()
         });
         runtime2.step(KernelInput::new(KernelInputEvent::SetKnowledgeBudget { ratio: 0.9 }));
         runtime2.step(KernelInput::new(KernelInputEvent::AddKnowledgeMessage {
@@ -1620,7 +1620,7 @@ mod tests {
         // K1 event-level: a same-key AddKnowledgeMessage stages an upsert (one entry, original
         // bytes rendered mid-generation); RemoveKnowledge marks for the boundary sweep. Both
         // decoded from the serde wire shape SDKs feed.
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         for content in ["v1", "v2"] {
             let ev: KernelInputEvent = serde_json::from_value(serde_json::json!({
                 "kind": "add_knowledge_message",
@@ -1650,7 +1650,7 @@ mod tests {
 
     #[test]
     fn capability_mount_emits_observation() {
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         let step = runtime.step(KernelInput::new(KernelInputEvent::MountCapability {
             capability: CapabilityDescriptor::marker(
                 CapabilityKind::McpServer,
@@ -1670,7 +1670,7 @@ mod tests {
     fn spawn_sub_agent_input_registers_process() {
         use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
 
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::StartRun {
             task: RuntimeTask::new("parent task"),
             run_spec: None,
@@ -1722,7 +1722,7 @@ mod tests {
         use crate::governance::quota::ResourceQuota;
         use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
 
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         // Quota flows in through the same versioned JSON event ABI as governance/scheduler config.
         let step = runtime.step(KernelInput::new(KernelInputEvent::SetResourceQuota {
             quota: ResourceQuota { max_spawn_depth: Some(0), ..ResourceQuota::default() },
@@ -1767,9 +1767,9 @@ mod tests {
         // other members of the governance domain. The token-budget axis is checked after the tool
         // results, against `group_base + local`.
         fn run_one_turn(group_base: Option<u64>) -> KernelStep {
-            let mut runtime = KernelRuntime::new(LoopPolicy {
+            let mut runtime = KernelRuntime::new(SchedulerBudget {
                 max_total_tokens: 100,
-                ..LoopPolicy::default()
+                ..SchedulerBudget::default()
             });
             runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
                 config: RunConfig { group_tokens_base: group_base, ..RunConfig::default() },
@@ -1829,7 +1829,7 @@ mod tests {
 
         // Cumulative cap of 2 sub-agents across the domain. Other members already spawned 2 (seeded),
         // so this vehicle's very first spawn is denied — the cap spans the whole group.
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
             config: RunConfig {
                 resource_quota: Some(ResourceQuota {
@@ -1870,7 +1870,7 @@ mod tests {
         use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
 
         // No SetResourceQuota event => pre-M2 behavior: spawn is unconditionally admitted.
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::StartRun {
             task: RuntimeTask::new("parent task"),
             run_spec: None,
@@ -1898,7 +1898,7 @@ mod tests {
     fn agent_process_changed_locks_multiword_wire_form() {
         use crate::types::agent::{AgentIdentity, AgentIsolation, AgentRole, AgentRunSpec};
 
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::StartRun {
             task: RuntimeTask::new("parent task"),
             run_spec: None,
@@ -1951,7 +1951,7 @@ mod tests {
     #[test]
     fn memory_policy_validation_disabled_admits_forbidden_write() {
         // "代码模式:" is a forbidden pattern under default validation; disabling validation admits it.
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::SetMemoryPolicy {
             memory_path: String::new(),
             stale_warning_days: 2,
@@ -1974,7 +1974,7 @@ mod tests {
     #[test]
     fn default_runtime_validates_forbidden_write() {
         // No policy installed => default validation rejects the forbidden pattern (pre-policy behavior).
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         let step = write_memory(&mut runtime, "note", "代码模式: foo");
         assert!(step
             .observations
@@ -1984,7 +1984,7 @@ mod tests {
 
     #[test]
     fn memory_policy_size_override_rejects_oversized_write() {
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::SetMemoryPolicy {
             memory_path: String::new(),
             stale_warning_days: 2,
@@ -2004,7 +2004,7 @@ mod tests {
     #[test]
     fn memory_policy_clamps_retrieval_top_k() {
         use crate::mm::memory::MemoryQuery;
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::SetMemoryPolicy {
             memory_path: String::new(),
             stale_warning_days: 2,
@@ -2026,7 +2026,7 @@ mod tests {
     #[test]
     fn default_runtime_uses_requested_top_k_verbatim() {
         use crate::mm::memory::MemoryQuery;
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         let step = runtime.step(KernelInput::new(KernelInputEvent::QueryMemory {
             query: MemoryQuery { top_k: 50, ..Default::default() },
         }));
@@ -2039,9 +2039,9 @@ mod tests {
 
     #[test]
     fn provider_result_now_ms_drives_wall_time_budget() {
-        let mut runtime = KernelRuntime::new(LoopPolicy {
+        let mut runtime = KernelRuntime::new(SchedulerBudget {
             max_wall_ms: Some(10),
-            ..LoopPolicy::default()
+            ..SchedulerBudget::default()
         });
         runtime.step(KernelInput::new(KernelInputEvent::StartRun {
             task: RuntimeTask::new("ship it"),
@@ -2097,7 +2097,7 @@ mod tests {
     fn run_with_tool_call_named(
         runtime: &mut KernelRuntime,
         tool: &str,
-        call_id: &str,
+        _call_id: &str,
     ) -> KernelStep {
         runtime.step(KernelInput::new(KernelInputEvent::StartRun {
             task: RuntimeTask::new("do the thing"),
@@ -2115,7 +2115,7 @@ mod tests {
 
     #[test]
     fn governance_deny_blocks_tool_and_reprompts() {
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::LoadGovernancePolicy {
             default_action: Some(PolicyAction::Allow),
             rules: vec![PolicyRule {
@@ -2147,7 +2147,7 @@ mod tests {
     fn configure_run_bundle_applies_governance_equivalently_to_load_governance_policy() {
         // K2: the consolidated `ConfigureRun` bundle must apply governance identically to the granular
         // `LoadGovernancePolicy` event — a deny rule blocks the matching tool and re-prompts.
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
             config: RunConfig {
                 tools: Some(vec![]),
@@ -2201,7 +2201,7 @@ mod tests {
 
     #[test]
     fn governance_ask_user_suspends_until_resume() {
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::LoadGovernancePolicy {
             default_action: Some(PolicyAction::Allow),
             rules: vec![PolicyRule {
@@ -2255,7 +2255,7 @@ mod tests {
 
     #[test]
     fn governance_ask_user_resume_all_denied_feeds_tool_results() {
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::LoadGovernancePolicy {
             default_action: Some(PolicyAction::Allow),
             rules: vec![PolicyRule {
@@ -2282,7 +2282,7 @@ mod tests {
 
     #[test]
     fn no_governance_policy_executes_all_tools() {
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         let step = run_with_tool_call(&mut runtime, "danger.delete");
 
         // Without a policy the gate is a no-op — behavior is unchanged.
@@ -2311,7 +2311,7 @@ mod tests {
 
     #[test]
     fn governance_rate_limit_blocks_second_call() {
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::LoadGovernancePolicy {
             default_action: Some(PolicyAction::Allow),
             rules: vec![],
@@ -2372,7 +2372,7 @@ mod tests {
 
     #[test]
     fn governance_constraint_required_param_denies() {
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::LoadGovernancePolicy {
             default_action: Some(PolicyAction::Allow),
             rules: vec![],
@@ -2407,7 +2407,7 @@ mod tests {
     }
 
     fn started_runtime_with_attention(max_queue: u32) -> KernelRuntime {
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::SetAttentionPolicy {
             max_queue_size: max_queue,
         }));
@@ -2473,9 +2473,8 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn page_in_populates_knowledge_partition() {
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled {
             enabled: true,
         }));
@@ -2498,7 +2497,7 @@ mod tests {
         // The automatic PageInRequested producer for live memory/knowledge tool calls was retired:
         // a memory-tool result now flows to `history` via the normal tool-result path only, so it
         // decays with the compression pyramid instead of living forever in `knowledge`.
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled {
             enabled: true,
         }));
@@ -2517,7 +2516,7 @@ mod tests {
         use crate::orchestration::workflow::fanout_synthesize;
         use crate::types::result::{LoopResult, SubAgentResult, TerminationReason};
 
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::StartRun {
             task: RuntimeTask::new("parent task"),
             run_spec: None,
@@ -2594,7 +2593,7 @@ mod tests {
         use crate::orchestration::workflow::fanout_synthesize;
         use crate::types::result::{LoopResult, SubAgentResult, TerminationReason};
 
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         // NOTE: deliberately no StartRun here — that is the whole point of K1.
 
         let spec =
@@ -2648,7 +2647,7 @@ mod tests {
         use crate::types::agent::AgentRole;
         use crate::types::result::{LoopResult, SubAgentResult, TerminationReason};
 
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::StartRun {
             task: RuntimeTask::new("parent task"),
             run_spec: None,
@@ -2716,7 +2715,7 @@ mod tests {
         use crate::types::agent::AgentRole;
         use crate::types::result::{LoopResult, SubAgentResult, TerminationReason};
 
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::StartRun {
             task: RuntimeTask::new("parent task"),
             run_spec: None,
@@ -2767,7 +2766,7 @@ mod tests {
     fn load_workflow_resumes_from_completed_nodes() {
         use crate::orchestration::workflow::fanout_synthesize;
 
-        let mut runtime = KernelRuntime::new(LoopPolicy::default());
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         runtime.step(KernelInput::new(KernelInputEvent::StartRun {
             task: RuntimeTask::new("parent task"),
             run_spec: None,

@@ -6,5 +6,5 @@ pub mod tcb;
 
 pub use milestone::MilestoneTracker;
 pub use tcb::{
-    BudgetLedger, BudgetSlice, ScheduleDecision, TaskId, TaskState, TaskTable, Tcb, WaitReason,
+    BudgetLedger, TaskId, TaskLifecycle, TaskTable, Tcb, WaitReason,
 };

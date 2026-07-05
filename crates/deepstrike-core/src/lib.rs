@@ -45,9 +45,7 @@ pub use mm::{
     MemoryTierHint, PageInEntry, PageInRequest, Residency,
 };
 pub use proc::{AgentProcess, ProcessState};
-pub use scheduler::tcb::{
-    BudgetLedger, BudgetSlice, ScheduleDecision, TaskId, TaskState, TaskTable, Tcb, WaitReason,
-};
+pub use scheduler::tcb::{BudgetLedger, TaskId, TaskLifecycle, TaskTable, Tcb, WaitReason};
 pub use syscall::{Disposition, Syscall};
 pub use runtime::session::SessionEvent;
 pub use runtime::{

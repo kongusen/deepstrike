@@ -287,10 +287,10 @@ fn reconstruct_messages_with_fallback_success_and_degrade() {
 #[test]
 fn execute_capability_command_mount_unmount_replace_pin() {
     use deepstrike_core::scheduler::state_machine::LoopStateMachine;
-    use deepstrike_core::scheduler::policy::LoopPolicy;
+    use deepstrike_core::scheduler::policy::SchedulerBudget;
     use deepstrike_core::types::capability::{CapabilityCommand, CapabilityDescriptor, CapabilityKind};
 
-    let mut sm = LoopStateMachine::new(LoopPolicy::default());
+    let mut sm = LoopStateMachine::new(SchedulerBudget::default());
 
     // 1. Mount capability
     let desc = CapabilityDescriptor::marker(CapabilityKind::Command, "doctor", "system doctor")
@@ -365,10 +365,10 @@ fn execute_capability_command_mount_unmount_replace_pin() {
 #[test]
 fn capability_lease_auto_revokes() {
     use deepstrike_core::scheduler::state_machine::{LoopStateMachine, LoopEvent};
-    use deepstrike_core::scheduler::policy::LoopPolicy;
+    use deepstrike_core::scheduler::policy::SchedulerBudget;
     use deepstrike_core::types::capability::{CapabilityCommand, CapabilityDescriptor, CapabilityKind, CapabilityLease};
 
-    let mut sm = LoopStateMachine::new(LoopPolicy::default());
+    let mut sm = LoopStateMachine::new(SchedulerBudget::default());
     let lease = CapabilityLease { expires_at_turn: 2 };
     let desc = CapabilityDescriptor::marker(CapabilityKind::McpServer, "mcp1", "mcp 1 server")
         .with_lease(lease);
@@ -411,13 +411,13 @@ fn capability_lease_auto_revokes() {
 #[test]
 fn agent_run_spec_capability_filter_enforcement() {
     use deepstrike_core::scheduler::state_machine::LoopStateMachine;
-    use deepstrike_core::scheduler::policy::LoopPolicy;
+    use deepstrike_core::scheduler::policy::SchedulerBudget;
     use deepstrike_core::types::agent::{AgentRunSpec, AgentIdentity, AgentRole, AgentCapabilityFilter};
     use deepstrike_core::types::capability::{CapabilityDescriptor, CapabilityKind};
     use deepstrike_core::types::message::ToolSchema;
     use compact_str::CompactString;
 
-    let mut sm = LoopStateMachine::new(LoopPolicy::default());
+    let mut sm = LoopStateMachine::new(SchedulerBudget::default());
     sm.tools = vec![
         ToolSchema {
             name: CompactString::new("read_file"),
@@ -443,9 +443,7 @@ fn agent_run_spec_capability_filter_enforcement() {
 
     sm.run_spec = Some(spec);
 
-    let action = sm.feed(deepstrike_core::scheduler::state_machine::LoopEvent::Start {
-        task: deepstrike_core::types::task::RuntimeTask::new("goal"),
-    });
+    let action = sm.start(deepstrike_core::types::task::RuntimeTask::new("goal"));
 
     if let deepstrike_core::scheduler::state_machine::LoopAction::CallLLM { tools, .. } = action {
         assert_eq!(tools.len(), 1);

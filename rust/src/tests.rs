@@ -1518,7 +1518,7 @@ mod tests {
         }];
 
         let kernel = std::sync::Mutex::new(deepstrike_core::runtime::kernel::KernelRuntime::new(
-            deepstrike_core::scheduler::policy::LoopPolicy::default(),
+            deepstrike_core::scheduler::policy::SchedulerBudget::default(),
         ));
         let mut pending_spools = std::collections::HashMap::new();
 
