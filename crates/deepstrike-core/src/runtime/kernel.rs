@@ -596,6 +596,7 @@ pub enum KernelObservation {
     /// context (what the retired separate PageOut observation used to duplicate);
     /// `tier_hint` then names the recommended long-term tier for the archived batch.
     Compressed {
+        #[serde(default)]
         turn: u32,
         action: KernelPressureAction,
         rho_after: f64,

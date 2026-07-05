@@ -13,12 +13,13 @@ describe("kernel event log (Phase 5)", () => {
     expect(categoryForKind("suspended")).toBe("sched")
   })
 
-  it("kernelObservationToSessionEvent attaches category", () => {
+  it("kernelObservationToSessionEvent maps kinds (classification derived from kind)", () => {
     const ev = kernelObservationToSessionEvent(
       { kind: "budget_exceeded", turn: 2, budget: "max_turns" },
       2,
     )
-    expect(ev).toMatchObject({ kind: "budget_exceeded", category: "sched", budget: "max_turns" })
+    expect(ev).toMatchObject({ kind: "budget_exceeded", budget: "max_turns" })
+    expect(categoryForKind(ev!.kind)).toBe("sched")
   })
 
   it("maps signal_disposed to ipc session event", () => {
@@ -34,13 +35,12 @@ describe("kernel event log (Phase 5)", () => {
     )
     expect(ev).toMatchObject({
       kind: "signal_disposed",
-      category: "ipc",
       disposition: "queue",
       queue_depth: 2,
     })
   })
 
-  it("governance suspend logs syscall/sched kernel events with category", async () => {
+  it("governance suspend logs syscall/sched kernel events", async () => {
     let providerCalls = 0
     const provider: LLMProvider = {
       async complete(): Promise<Message> {
@@ -71,9 +71,9 @@ describe("kernel event log (Phase 5)", () => {
     const gated = events.find(e => e.event.kind === "tool_gated")
     const suspended = events.find(e => e.event.kind === "suspended")
     expect(gated).toBeDefined()
-    expect((gated!.event as { category?: string }).category).toBe("syscall")
+    expect(categoryForKind(gated!.event.kind)).toBe("syscall")
     expect(suspended).toBeDefined()
-    expect((suspended!.event as { category?: string }).category).toBe("sched")
+    expect(categoryForKind(suspended!.event.kind)).toBe("sched")
   })
 
   it("mm-paging session events carry mm category", async () => {

@@ -1508,13 +1508,16 @@ mod tests {
             on_milestone_evaluate: None,
         });
 
-        let mut obs = vec![KernelObservation::PageOut {
+        // One compaction = one observation: the semantic-archive branch is now driven by
+        // Compressed.tier_hint (the separate PageOut observation was removed).
+        let mut obs = vec![KernelObservation::Compressed {
             turn: 1,
             action: KernelPressureAction::AutoCompact,
             rho_after: 0.5,
             summary: Some("PageOut summary".to_string()),
             archived: vec![Message::user("Hello memory")],
-            tier_hint: "semantic".to_string(),
+            invalidates_prefix_at: Some(0),
+            tier_hint: Some("semantic".to_string()),
         }];
 
         let kernel = std::sync::Mutex::new(deepstrike_core::runtime::kernel::KernelRuntime::new(

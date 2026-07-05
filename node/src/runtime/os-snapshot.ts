@@ -130,17 +130,3 @@ export function rebuildOsSnapshotFromSessionEvents(
   return snap
 }
 
-export function sessionLogHasRequiredCategories(events: SessionEvent[]): boolean {
-  for (const event of events) {
-    if (!KERNEL_KINDS.has(event.kind)) continue
-    const cat = (event as { category?: KernelEventCategory }).category
-    if (!cat) return false
-    if (cat !== categoryForKind(event.kind)) return false
-
-    const prim = (event as { primitive?: KernelPrimitive }).primitive
-    if (prim !== undefined) {
-      if (prim !== primitiveForKind(event.kind)) return false
-    }
-  }
-  return true
-}

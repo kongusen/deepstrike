@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::runtime::event_log::{category_for_kind, KernelEventCategory, Primitive};
+
 use crate::types::message::{Message, ToolCall, ToolResult};
 
 /// Provider-native replay payload persisted in `llm_completed` for wake/preload recovery.
@@ -66,10 +66,6 @@ pub enum SessionEvent {
         turn: u32,
         archived_seq_range: (u64, u64),
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         action: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
@@ -84,10 +80,6 @@ pub enum SessionEvent {
     PageOut {
         turn: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         action: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
@@ -99,19 +91,11 @@ pub enum SessionEvent {
     /// Long-term entries injected into knowledge partition (SDK `page_in`).
     PageIn {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
         entry_count: u32,
     },
     /// Large tool result spooled to disk by the SDK (kernel Layer 1).
     LargeResultSpooled {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
         call_id: String,
         tool: String,
         original_size: u32,
@@ -158,10 +142,6 @@ pub enum SessionEvent {
     /// Model-visible capabilities dynamically updated (e.g., loading skills or mounting MCPs).
     CapabilityChanged {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         added: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -180,10 +160,6 @@ pub enum SessionEvent {
     /// Context reset and sprint rotated after a context boundary handoff.
     ContextRenewed {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
         sprint: u32,
         handoff_ref: String,
     },
@@ -191,10 +167,6 @@ pub enum SessionEvent {
     /// Execution paused (waiting for human-in-the-loop interaction or long-running tasks).
     Suspended {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
         reason: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         pending_calls: Vec<String>,
@@ -202,10 +174,6 @@ pub enum SessionEvent {
     /// Execution resumed.
     Resumed {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         approved: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -214,10 +182,6 @@ pub enum SessionEvent {
     /// Kernel governance gate: tool requires approval before execution.
     ToolGated {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
         call_id: String,
         tool: String,
         reason: String,
@@ -225,10 +189,6 @@ pub enum SessionEvent {
     /// In-kernel signal disposition (attention policy).
     SignalDisposed {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
         signal_id: String,
         disposition: String,
         queue_depth: u32,
@@ -236,28 +196,16 @@ pub enum SessionEvent {
     /// Scheduler budget axis exhausted.
     BudgetExceeded {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
         budget: String,
     },
     /// Checkpoint taken at the start of a turn transaction (before LLM call).
     CheckpointTaken {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
         history_len: u32,
     },
     /// Transaction rollback indicating state was restored to a checkpoint.
     Rollbacked {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
         checkpoint_history_len: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<RollbackReason>,
@@ -267,10 +215,6 @@ pub enum SessionEvent {
     /// Kernel process table changed for a spawned sub-agent.
     AgentProcessChanged {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
         agent_id: String,
         parent_session_id: String,
         role: String,
@@ -287,10 +231,6 @@ pub enum SessionEvent {
     /// Milestone phase criteria passed — capabilities unlocked, phase advanced.
     MilestoneAdvanced {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
         phase_id: String,
         #[serde(default)]
         capabilities_unlocked: Vec<String>,
@@ -298,10 +238,6 @@ pub enum SessionEvent {
     /// Milestone phase criteria not met — run continues without advancing the phase.
     MilestoneBlocked {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
         phase_id: String,
         reason: String,
     },
@@ -310,10 +246,6 @@ pub enum SessionEvent {
     /// Memory entry written successfully (SDK → kernel acknowledgment).
     MemoryWritten {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
         memory_id: String,
         memory_kind: String,
         size_bytes: u32,
@@ -321,10 +253,6 @@ pub enum SessionEvent {
     /// Memory query request (kernel → SDK; SDK should respond asynchronously).
     MemoryQueried {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
         query_context: String,
         requested_k: usize,
         requires_async_response: bool,
@@ -332,10 +260,6 @@ pub enum SessionEvent {
     /// Memory validation failed (kernel rejected a write request).
     MemoryValidationFailed {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
         memory_id: String,
         error: String,
     },
@@ -379,33 +303,6 @@ impl SessionEvent {
             Self::MemoryValidationFailed { .. } => "memory_validation_failed",
             Self::MemoryRetrievalResult { .. } => "memory_retrieval_result",
         }
-    }
-
-    /// OS event category; uses embedded `category` when present, else infers from `kind`.
-    pub fn event_category(&self) -> KernelEventCategory {
-        let embedded = match self {
-            Self::Compressed { category, .. }
-            | Self::PageOut { category, .. }
-            | Self::PageIn { category, .. }
-            | Self::LargeResultSpooled { category, .. }
-            | Self::CapabilityChanged { category, .. }
-            | Self::ContextRenewed { category, .. }
-            | Self::Suspended { category, .. }
-            | Self::Resumed { category, .. }
-            | Self::ToolGated { category, .. }
-            | Self::SignalDisposed { category, .. }
-            | Self::BudgetExceeded { category, .. }
-            | Self::CheckpointTaken { category, .. }
-            | Self::Rollbacked { category, .. }
-            | Self::AgentProcessChanged { category, .. }
-            | Self::MilestoneAdvanced { category, .. }
-            | Self::MilestoneBlocked { category, .. }
-            | Self::MemoryWritten { category, .. }
-            | Self::MemoryQueried { category, .. }
-            | Self::MemoryValidationFailed { category, .. } => *category,
-            _ => None,
-        };
-        embedded.unwrap_or_else(|| category_for_kind(self.kind_str()))
     }
 
     /// Whether this event is a kernel OS decision (replay ignores for message reconstruction).

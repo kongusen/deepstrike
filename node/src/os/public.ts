@@ -7,7 +7,7 @@ export {
   osProfile,
 } from "../runtime/os-profile.js"
 export type { NativeOsProfile, OsProfileId } from "../runtime/os-profile.js"
-export { rebuildOsSnapshotFromSessionEvents, sessionLogHasRequiredCategories } from "../runtime/os-snapshot.js"
+export { rebuildOsSnapshotFromSessionEvents } from "../runtime/os-snapshot.js"
 export type { OsSnapshot } from "../runtime/os-snapshot.js"
 export type { KernelEventCategory } from "../runtime/kernel-event-log.js"
 export { KernelPrimitivesDashboard } from "../runtime/kernel-primitives-dashboard.js"

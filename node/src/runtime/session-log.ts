@@ -1,9 +1,9 @@
 import { createWriteStream, createReadStream } from "node:fs"
+import type { KernelPrimitive } from "./kernel-event-log.js"
 import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { createInterface } from "node:readline"
 import type { ContentPart, ProviderReplay, ToolCall, ToolErrorKind } from "../types.js"
-import type { KernelEventCategory, KernelPrimitive } from "./kernel-event-log.js"
 import { primitiveForKind } from "./kernel-event-log.js"
 
 export type RollbackReason =
@@ -26,8 +26,6 @@ export type SessionEvent =
   | {
       kind: "compressed"
       turn: number
-      category?: KernelEventCategory
-      primitive?: KernelPrimitive
       archived_seq_range: [number, number]
       action?: "snip_compact" | "micro_compact" | "context_collapse" | "auto_compact"
       summary?: string
@@ -38,41 +36,35 @@ export type SessionEvent =
   | {
       kind: "page_out"
       turn: number
-      category?: KernelEventCategory
-      primitive?: KernelPrimitive
       action?: "snip_compact" | "micro_compact" | "context_collapse" | "auto_compact"
       summary?: string
       tier_hint?: string
       message_count?: number
     }
-  | { kind: "page_in"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; entry_count: number }
+  | { kind: "page_in"; turn: number; entry_count: number }
   | {
       kind: "large_result_spooled"
       turn: number
-      category?: KernelEventCategory
-      primitive?: KernelPrimitive
       call_id: string
       tool: string
       original_size: number
       preview_size: number
       spool_ref?: string
     }
-  | { kind: "rollbacked"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; checkpoint_history_len: number; reason?: RollbackReason }
-  | { kind: "capability_changed"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; added: string[]; removed: string[]; change_kind?: string; capability_id?: string; version?: string; mounted_by?: string; mount_reason?: string }
-  | { kind: "context_renewed"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; sprint: number; handoff_ref: string }
-  | { kind: "suspended"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; reason: string; pending_calls?: string[] }
-  | { kind: "resumed"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; approved?: string[]; denied?: string[] }
-  | { kind: "tool_gated"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; call_id: string; tool: string; reason: string }
-  | { kind: "signal_disposed"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; signal_id: string; disposition: string; queue_depth: number }
-  | { kind: "budget_exceeded"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; budget: string }
-  | { kind: "milestone_advanced"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; phase_id: string; capabilities_unlocked: string[] }
-  | { kind: "milestone_blocked"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; phase_id: string; reason: string }
-  | { kind: "checkpoint_taken"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; history_len: number }
+  | { kind: "rollbacked"; turn: number; checkpoint_history_len: number; reason?: RollbackReason }
+  | { kind: "capability_changed"; turn: number; added: string[]; removed: string[]; change_kind?: string; capability_id?: string; version?: string; mounted_by?: string; mount_reason?: string }
+  | { kind: "context_renewed"; turn: number; sprint: number; handoff_ref: string }
+  | { kind: "suspended"; turn: number; reason: string; pending_calls?: string[] }
+  | { kind: "resumed"; turn: number; approved?: string[]; denied?: string[] }
+  | { kind: "tool_gated"; turn: number; call_id: string; tool: string; reason: string }
+  | { kind: "signal_disposed"; turn: number; signal_id: string; disposition: string; queue_depth: number }
+  | { kind: "budget_exceeded"; turn: number; budget: string }
+  | { kind: "milestone_advanced"; turn: number; phase_id: string; capabilities_unlocked: string[] }
+  | { kind: "milestone_blocked"; turn: number; phase_id: string; reason: string }
+  | { kind: "checkpoint_taken"; turn: number; history_len: number }
   | {
       kind: "agent_process_changed"
       turn: number
-      category?: KernelEventCategory
-      primitive?: KernelPrimitive
       agent_id: string
       parent_session_id: string
       role: string
@@ -82,39 +74,31 @@ export type SessionEvent =
       permitted_capability_ids: string[]
       result_termination?: string
     }
-  | { kind: "memory_written"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; memory_id: string; memory_kind: string; size_bytes: number }
-  | { kind: "memory_queried"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; query_context: string; requested_k: number; requires_async_response: boolean }
-  | { kind: "memory_validation_failed"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; memory_id: string; error: string }
+  | { kind: "memory_written"; turn: number; memory_id: string; memory_kind: string; size_bytes: number }
+  | { kind: "memory_queried"; turn: number; query_context: string; requested_k: number; requires_async_response: boolean }
+  | { kind: "memory_validation_failed"; turn: number; memory_id: string; error: string }
   | { kind: "memory_retrieval_result"; selected_memory_ids: string[]; selection_rationale: string }
   | {
       kind: "workflow_node_completed"
       turn: number
-      category?: KernelEventCategory
-      primitive?: KernelPrimitive
       agent_id: string
       termination: string
     }
   | {
       kind: "workflow_nodes_submitted"
       turn: number
-      category?: KernelEventCategory
-      primitive?: KernelPrimitive
       /** Kernel-shape (snake_case) submitted node specs — persisted so resume can re-apply them. */
       nodes: Record<string, unknown>[]
     }
   | {
       kind: "workflow_batch_spawned"
       turn: number
-      category?: KernelEventCategory
-      primitive?: KernelPrimitive
       node_count: number
       node_ids: string[]
     }
   | {
       kind: "workflow_completed"
       turn: number
-      category?: KernelEventCategory
-      primitive?: KernelPrimitive
       completed: string[]
       failed: string[]
       total_nodes: number

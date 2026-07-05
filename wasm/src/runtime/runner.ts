@@ -64,7 +64,7 @@ import {
   loopInstruction, classifyInstruction, judgeGoal,
   extractLoopContinue, extractClassifyBranch, extractJudgeWinner,
 } from "./workflow-control-flow.js"
-import { kernelObservationToSessionEvent, withCategory } from "./kernel-event-log.js"
+import { kernelObservationToSessionEvent } from "./kernel-event-log.js"
 import { assertNativeProfile, type NativeOsProfile, type OsProfileId } from "./os-profile.js"
 import { LargeResultSpool } from "./large-result-spool.js"
 
@@ -1743,14 +1743,14 @@ export class RuntimeRunner {
         // session-log format and OsSnapshot page_out_count.
         const archived = obs.archived
         if (obs.tier_hint && Array.isArray(archived) && archived.length > 0) {
-          await this.opts.sessionLog.append(sessionId, withCategory({
+          await this.opts.sessionLog.append(sessionId, {
             kind: "page_out" as const,
             turn: (obs.turn as number | undefined) ?? turn,
             action: compressionAction(obs.action),
             summary: obs.summary as string | undefined,
             tier_hint: (obs.tier_hint as string) ?? "durable",
             message_count: archived.length,
-          }))
+          })
           if (obs.tier_hint === "semantic") {
             void this.archiveSemanticPageOut(archived as Message[], compressionAction(obs.action))
           }

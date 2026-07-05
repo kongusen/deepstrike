@@ -1,5 +1,6 @@
 {
   "kind": "compressed",
+  "turn": 3,
   "action": "auto_compact",
   "rho_after": 0.45,
   "summary": "Compacted history",
@@ -8,5 +9,6 @@
       "role": "user",
       "content": "Filler message"
     }
-  ]
+  ],
+  "tier_hint": "semantic"
 }

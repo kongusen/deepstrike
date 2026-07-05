@@ -7,8 +7,6 @@ from typing import Literal, Protocol, TypedDict
 
 from deepstrike._kernel import ToolCall, ToolResult
 from deepstrike.runtime.kernel_event_log import (
-    KernelEventCategory,
-    KernelPrimitive,
     primitive_for_kind,
 )
 
@@ -91,8 +89,6 @@ class PermissionResolvedEvent(TypedDict, total=False):
 class CompressedEvent(TypedDict, total=False):
     kind: Literal["compressed"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     archived_seq_range: tuple[int, int]
     action: str
     summary: str
@@ -111,8 +107,6 @@ class RunTerminalEvent(TypedDict, total=False):
 class RollbackedEvent(TypedDict, total=False):
     kind: Literal["rollbacked"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     checkpoint_history_len: int
     reason: RollbackReason
 
@@ -120,8 +114,6 @@ class RollbackedEvent(TypedDict, total=False):
 class CapabilityChangedEvent(TypedDict, total=False):
     kind: Literal["capability_changed"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     added: list[str]
     removed: list[str]
     change_kind: str
@@ -134,8 +126,6 @@ class CapabilityChangedEvent(TypedDict, total=False):
 class MilestoneAdvancedEvent(TypedDict, total=False):
     kind: Literal["milestone_advanced"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     phase_id: str
     capabilities_unlocked: list[str]
 
@@ -143,8 +133,6 @@ class MilestoneAdvancedEvent(TypedDict, total=False):
 class MilestoneBlockedEvent(TypedDict, total=False):
     kind: Literal["milestone_blocked"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     phase_id: str
     reason: str
 
@@ -152,16 +140,12 @@ class MilestoneBlockedEvent(TypedDict, total=False):
 class CheckpointTakenEvent(TypedDict, total=False):
     kind: Literal["checkpoint_taken"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     history_len: int
 
 
 class AgentProcessChangedEvent(TypedDict, total=False):
     kind: Literal["agent_process_changed"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     agent_id: str
     parent_session_id: str
     role: str
@@ -175,8 +159,6 @@ class AgentProcessChangedEvent(TypedDict, total=False):
 class PageOutEvent(TypedDict, total=False):
     kind: Literal["page_out"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     action: str
     summary: str
     tier_hint: str
@@ -186,16 +168,12 @@ class PageOutEvent(TypedDict, total=False):
 class PageInEvent(TypedDict, total=False):
     kind: Literal["page_in"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     entry_count: int
 
 
 class LargeResultSpooledEvent(TypedDict, total=False):
     kind: Literal["large_result_spooled"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     call_id: str
     tool: str
     original_size: int
@@ -206,8 +184,6 @@ class LargeResultSpooledEvent(TypedDict, total=False):
 class SuspendedEvent(TypedDict, total=False):
     kind: Literal["suspended"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     reason: str
     pending_calls: list[str]
 
@@ -215,8 +191,6 @@ class SuspendedEvent(TypedDict, total=False):
 class ResumedEvent(TypedDict, total=False):
     kind: Literal["resumed"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     approved: list[str]
     denied: list[str]
 
@@ -224,8 +198,6 @@ class ResumedEvent(TypedDict, total=False):
 class ToolGatedEvent(TypedDict, total=False):
     kind: Literal["tool_gated"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     call_id: str
     tool: str
     reason: str
@@ -234,8 +206,6 @@ class ToolGatedEvent(TypedDict, total=False):
 class SignalDisposedEvent(TypedDict, total=False):
     kind: Literal["signal_disposed"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     signal_id: str
     disposition: str
     queue_depth: int
@@ -244,16 +214,12 @@ class SignalDisposedEvent(TypedDict, total=False):
 class BudgetExceededEvent(TypedDict, total=False):
     kind: Literal["budget_exceeded"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     budget: str
 
 
 class ContextRenewedEvent(TypedDict, total=False):
     kind: Literal["context_renewed"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     sprint: int
     handoff_ref: str
 
@@ -261,8 +227,6 @@ class ContextRenewedEvent(TypedDict, total=False):
 class MemoryWrittenEvent(TypedDict, total=False):
     kind: Literal["memory_written"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     memory_id: str
     memory_kind: str
     size_bytes: int
@@ -271,8 +235,6 @@ class MemoryWrittenEvent(TypedDict, total=False):
 class MemoryQueriedEvent(TypedDict, total=False):
     kind: Literal["memory_queried"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     query_context: str
     requested_k: int
     requires_async_response: bool
@@ -281,8 +243,6 @@ class MemoryQueriedEvent(TypedDict, total=False):
 class MemoryValidationFailedEvent(TypedDict, total=False):
     kind: Literal["memory_validation_failed"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     memory_id: str
     error: str
 
@@ -296,8 +256,6 @@ class MemoryRetrievalResultEvent(TypedDict, total=False):
 class WorkflowNodeCompletedEvent(TypedDict, total=False):
     kind: Literal["workflow_node_completed"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     agent_id: str
     termination: str
 
@@ -305,8 +263,6 @@ class WorkflowNodeCompletedEvent(TypedDict, total=False):
 class WorkflowBatchSpawnedEvent(TypedDict, total=False):
     kind: Literal["workflow_batch_spawned"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     node_count: int
     node_ids: list[str]
 
@@ -314,8 +270,6 @@ class WorkflowBatchSpawnedEvent(TypedDict, total=False):
 class WorkflowCompletedEvent(TypedDict, total=False):
     kind: Literal["workflow_completed"]
     turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
     completed: list[str]
     failed: list[str]
     total_nodes: int

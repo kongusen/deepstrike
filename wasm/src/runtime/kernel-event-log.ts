@@ -29,17 +29,6 @@ export function categoryForKind(kind: string): KernelEventCategory {
   }
 }
 
-export function withCategory<T extends { kind: string }>(
-  event: T,
-): T & { category: KernelEventCategory; primitive: KernelPrimitive } {
-  const category = categoryForKind(event.kind)
-  return {
-    ...event,
-    category,
-    primitive: primitiveForCategory(category),
-  }
-}
-
 type CompressionAction = Extract<SessionEvent, { kind: "compressed" }>["action"]
 
 export function kernelObservationToSessionEvent(
@@ -62,7 +51,7 @@ export function kernelObservationToSessionEvent(
       const latest = opts.latestSeq ?? -1
       const start = opts.nextArchiveStart ?? 0
       if (latest < start) return null
-      return withCategory({
+      return {
         kind: "compressed" as const,
         turn: t,
         archived_seq_range: [start, latest] as [number, number],
@@ -71,24 +60,24 @@ export function kernelObservationToSessionEvent(
         summary_tokens: obs.summary ? Math.max(1, Math.ceil(obs.summary.length / 4)) : undefined,
         archive_ref: opts.archiveRef,
         preserved_refs: opts.preservedRefs ?? [],
-      })
+      }
     }
     case "renewed":
-      return withCategory({
+      return {
         kind: "context_renewed" as const,
         turn: t,
         sprint: obs.sprint ?? 0,
         handoff_ref: "",
-      })
+      }
     case "rollbacked":
-      return withCategory({
+      return {
         kind: "rollbacked" as const,
         turn: t,
         checkpoint_history_len: obs.checkpoint_history_len ?? 0,
         reason: obs.reason as RollbackReason | undefined,
-      })
+      }
     case "capability_changed":
-      return withCategory({
+      return {
         kind: "capability_changed" as const,
         turn: t,
         added: obs.added ?? [],
@@ -98,29 +87,29 @@ export function kernelObservationToSessionEvent(
         ...(obs.version != null && { version: obs.version }),
         ...(obs.mounted_by != null && { mounted_by: obs.mounted_by }),
         ...(obs.mount_reason != null && { mount_reason: obs.mount_reason }),
-      })
+      }
     case "milestone_advanced":
-      return withCategory({
+      return {
         kind: "milestone_advanced" as const,
         turn: t,
         phase_id: obs.phase_id ?? "",
         capabilities_unlocked: obs.capabilities_unlocked ?? [],
-      })
+      }
     case "milestone_blocked":
-      return withCategory({
+      return {
         kind: "milestone_blocked" as const,
         turn: t,
         phase_id: obs.phase_id ?? "",
         reason: typeof obs.reason === "string" ? obs.reason : "",
-      })
+      }
     case "checkpoint_taken":
-      return withCategory({
+      return {
         kind: "checkpoint_taken" as const,
         turn: t,
         history_len: obs.history_len ?? 0,
-      })
+      }
     case "agent_process_changed":
-      return withCategory({
+      return {
         kind: "agent_process_changed" as const,
         turn: t,
         agent_id: obs.agent_id ?? "",
@@ -133,47 +122,47 @@ export function kernelObservationToSessionEvent(
         ...((obs as { result_termination?: string }).result_termination
           ? { result_termination: (obs as { result_termination?: string }).result_termination }
           : {}),
-      })
+      }
     case "tool_gated":
-      return withCategory({
+      return {
         kind: "tool_gated" as const,
         turn: t,
         call_id: obs.call_id ?? "",
         tool: obs.tool ?? "",
         reason: typeof obs.reason === "string" ? obs.reason : "",
-      })
+      }
     case "signal_disposed":
-      return withCategory({
+      return {
         kind: "signal_disposed" as const,
         turn: t,
         signal_id: obs.signal_id ?? "",
         disposition: obs.disposition ?? "",
         queue_depth: obs.queue_depth ?? 0,
-      })
+      }
     case "budget_exceeded":
-      return withCategory({
+      return {
         kind: "budget_exceeded" as const,
         turn: t,
         budget: obs.budget ?? "",
-      })
+      }
     case "suspended":
-      return withCategory({
+      return {
         kind: "suspended" as const,
         turn: t,
         reason: typeof obs.reason === "string" ? obs.reason : "",
         pending_calls: obs.pending_calls ?? [],
-      })
+      }
     case "resumed":
-      return withCategory({
+      return {
         kind: "resumed" as const,
         turn: t,
         approved: obs.approved ?? [],
         denied: obs.denied ?? [],
-      })
+      }
     case "page_in_requested":
       return null
     case "large_result_spooled":
-      return withCategory({
+      return {
         kind: "large_result_spooled" as const,
         turn: t,
         call_id: obs.call_id ?? "",
@@ -181,49 +170,49 @@ export function kernelObservationToSessionEvent(
         original_size: obs.original_size ?? 0,
         preview_size: obs.preview_size ?? 0,
         spool_ref: opts.spoolRef,
-      })
+      }
     case "memory_written":
-      return withCategory({
+      return {
         kind: "memory_written" as const,
         turn: t,
         memory_id: obs.memory_id ?? "",
         memory_kind: obs.memory_kind ?? "",
         size_bytes: obs.size_bytes ?? 0,
-      })
+      }
     case "memory_queried":
-      return withCategory({
+      return {
         kind: "memory_queried" as const,
         turn: t,
         query_context: obs.query_context ?? "",
         requested_k: obs.requested_k ?? 0,
         requires_async_response: obs.requires_async_response ?? false,
-      })
+      }
     case "memory_validation_failed":
-      return withCategory({
+      return {
         kind: "memory_validation_failed" as const,
         turn: t,
         memory_id: obs.memory_id ?? "",
         error: obs.error ?? "",
-      })
+      }
     case "workflow_batch_spawned": {
       const nodes = (obs as any).nodes ?? []
-      return withCategory({
+      return {
         kind: "workflow_batch_spawned" as const,
         turn: t,
         node_count: nodes.length,
         node_ids: nodes.map((n: any) => n.agent_id ?? ""),
-      })
+      }
     }
     case "workflow_completed": {
       const completed = (obs as any).completed ?? []
       const failed = (obs as any).failed ?? []
-      return withCategory({
+      return {
         kind: "workflow_completed" as const,
         turn: t,
         completed,
         failed,
         total_nodes: completed.length + failed.length,
-      })
+      }
     }
     default:
       return null

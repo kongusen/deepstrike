@@ -49,8 +49,8 @@ pub use syscall::{Disposition, Syscall};
 pub use runtime::session::SessionEvent;
 pub use runtime::{
     category_for_kind, primitive_for_kind, reconstruct_messages_with_fallback,
-    rebuild_os_snapshot_from_events, session_log_has_required_categories, KernelEventCategory,
-    Primitive, KERNEL_ABI_VERSION, KERNEL_OBSERVATION_KINDS, KernelAction, KernelInput, OsSnapshot,
+    rebuild_os_snapshot_from_events, KernelEventCategory,
+    Primitive, KERNEL_ABI_VERSION, KernelAction, KernelInput, OsSnapshot,
     KernelInputEvent, KernelObservation, KernelPressureAction, KernelRuntime, KernelStep,
 };
 pub use types::agent::{

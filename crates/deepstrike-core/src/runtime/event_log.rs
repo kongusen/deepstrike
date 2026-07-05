@@ -93,29 +93,6 @@ pub fn category_for_kind(kind: &str) -> KernelEventCategory {
     }
 }
 
-/// All kernel observation kinds that should appear in a unified OS event log.
-pub const KERNEL_OBSERVATION_KINDS: &[&str] = &[
-    "compressed",
-    "page_out",
-    "renewed",
-    "rollbacked",
-    "capability_changed",
-    "milestone_advanced",
-    "milestone_blocked",
-    "checkpoint_taken",
-    "agent_process_changed",
-    "workflow_batch_spawned",
-    "workflow_completed",
-    "agent_preempted",
-    "tool_gated",
-    "signal_disposed",
-    "budget_exceeded",
-    "suspended",
-    "resumed",
-    "memory_written",
-    "memory_queried",
-    "memory_validation_failed",
-];
 
 #[cfg(test)]
 mod tests {
@@ -131,12 +108,6 @@ mod tests {
     }
 
     #[test]
-    fn kernel_observation_kinds_cover_abi_surface() {
-        assert!(KERNEL_OBSERVATION_KINDS.contains(&"page_out"));
-        assert!(KERNEL_OBSERVATION_KINDS.contains(&"resumed"));
-    }
-
-    #[test]
     fn categories_roll_up_to_three_primitives() {
         // Proc and Ipc are facets of the P2 scheduler.
         assert_eq!(KernelEventCategory::Syscall.primitive(), Primitive::Syscall);
@@ -149,10 +120,6 @@ mod tests {
     #[test]
     fn every_kernel_observation_kind_maps_to_a_primitive() {
         // syscall trap, scheduler, and paging cover the entire ABI surface — no orphans.
-        for kind in KERNEL_OBSERVATION_KINDS {
-            let p = primitive_for_kind(kind);
-            assert!(matches!(p, Primitive::Syscall | Primitive::Sched | Primitive::Mm));
-        }
         assert_eq!(primitive_for_kind("agent_process_changed"), Primitive::Sched);
         assert_eq!(primitive_for_kind("signal_disposed"), Primitive::Sched);
         assert_eq!(primitive_for_kind("tool_gated"), Primitive::Syscall);

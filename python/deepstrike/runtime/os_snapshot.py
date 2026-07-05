@@ -110,18 +110,3 @@ def rebuild_os_snapshot_from_session_events(events: list[dict[str, Any]]) -> OsS
     return snap
 
 
-def session_log_has_required_categories(events: list[dict[str, Any]]) -> bool:
-    for event in events:
-        kind = event.get("kind")
-        if kind not in _KERNEL_KINDS:
-            continue
-        cat = event.get("category")
-        if not cat:
-            return False
-        if cat != category_for_kind(kind):
-            return False
-        prim = event.get("primitive")
-        if prim is not None:
-            if prim != primitive_for_kind(kind):
-                return False
-    return True

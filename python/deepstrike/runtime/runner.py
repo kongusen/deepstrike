@@ -40,7 +40,7 @@ from deepstrike.providers.stream import (
 from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPlane, RunContext
 from deepstrike.tools.errors import format_tool_error
 from deepstrike.governance import governance_policy_to_kernel_event
-from deepstrike.runtime.kernel_event_log import kernel_observation_to_session_event, with_category
+from deepstrike.runtime.kernel_event_log import kernel_observation_to_session_event
 from deepstrike.runtime.kernel_step import (
   capability_marker,
   capability_skill,
@@ -2280,14 +2280,14 @@ class RuntimeRunner:
         archived = obs.get("archived")
         tier_hint = obs.get("tier_hint")
         if tier_hint and isinstance(archived, list) and archived:
-          await self._opts.session_log.append(session_id, with_category({
+          await self._opts.session_log.append(session_id, {
             "kind": "page_out",
             "turn": obs.get("turn") or turn,
             "action": _compression_action(obs.get("action")),
             "summary": obs.get("summary"),
             "tier_hint": tier_hint,
             "message_count": len(archived),
-          }))
+          })
           if tier_hint == "semantic":
             import asyncio
             asyncio.create_task(self._archive_semantic_page_out(list(archived), _compression_action(obs.get("action"))))

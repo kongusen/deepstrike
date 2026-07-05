@@ -19,7 +19,6 @@ from deepstrike.runtime.os_profile import (
 )
 from deepstrike.runtime.os_snapshot import (
     rebuild_os_snapshot_from_session_events,
-    session_log_has_required_categories,
 )
 
 
@@ -58,7 +57,6 @@ async def test_native_profile_writes_categorized_kernel_events():
     ))
     await collect_text(runner.run(session_id="native-ok", goal="work"))
     events = [e.event for e in await runner._opts.session_log.read("native-ok")]
-    assert session_log_has_required_categories(events)
     snap = rebuild_os_snapshot_from_session_events(events)
     assert snap.page_out_count >= 0
 
@@ -87,8 +85,11 @@ async def test_native_profile_ask_user_emits_syscall_sched_events():
     ))
     await collect_text(runner.run(session_id="native-gov", goal="go"))
     events = [e.event for e in await runner._opts.session_log.read("native-gov")]
-    assert any(e.get("kind") == "tool_gated" and e.get("category") == "syscall" for e in events)
-    assert any(e.get("kind") == "suspended" and e.get("category") == "sched" for e in events)
-    assert session_log_has_required_categories(events)
+    # Classification is derived from `kind` (single taxonomy), no longer embedded per event.
+    from deepstrike.runtime.kernel_event_log import category_for_kind
+    assert any(e.get("kind") == "tool_gated" for e in events)
+    assert any(e.get("kind") == "suspended" for e in events)
+    assert category_for_kind("tool_gated") == "syscall"
+    assert category_for_kind("suspended") == "sched"
     snap = rebuild_os_snapshot_from_session_events(events)
     assert snap.tool_gated_count >= 1

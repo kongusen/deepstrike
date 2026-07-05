@@ -241,8 +241,6 @@ fn reconstruct_messages_with_fallback_success_and_degrade() {
         SessionEvent::Compressed {
             turn: 1,
             archived_seq_range: (0, 1),
-            category: None,
-            primitive: None,
             action: Some("auto_compact".to_string()),
             summary: Some("Compressed turn 1 summary".to_string()),
             summary_tokens: Some(10),
@@ -252,8 +250,6 @@ fn reconstruct_messages_with_fallback_success_and_degrade() {
         SessionEvent::Compressed {
             turn: 2,
             archived_seq_range: (2, 3),
-            category: None,
-            primitive: None,
             action: Some("auto_compact".to_string()),
             summary: Some("Compressed turn 2 summary".to_string()),
             summary_tokens: Some(10),

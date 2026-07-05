@@ -8,7 +8,6 @@ import {
 } from "../src/runtime/os-profile.js"
 import {
   rebuildOsSnapshotFromSessionEvents,
-  sessionLogHasRequiredCategories,
 } from "../src/runtime/os-snapshot.js"
 import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
 
@@ -58,7 +57,6 @@ describe("OS Native Profile (Phase 6)", () => {
     })
     await collectText(runner.run({ sessionId: "native-ok", goal: "work" }))
     const events = (await sessionLog.read("native-ok")).map(e => e.event)
-    expect(sessionLogHasRequiredCategories(events)).toBe(true)
     expect(rebuildOsSnapshotFromSessionEvents(events).pageOutCount).toBeGreaterThanOrEqual(0)
   })
 
@@ -87,9 +85,9 @@ describe("OS Native Profile (Phase 6)", () => {
     )
     await collectText(runner.run({ sessionId: "native-gov", goal: "go" }))
     const events = (await sessionLog.read("native-gov")).map(e => e.event)
-    expect(events.some(e => e.kind === "tool_gated" && e.category === "syscall")).toBe(true)
-    expect(events.some(e => e.kind === "suspended" && e.category === "sched")).toBe(true)
-    expect(sessionLogHasRequiredCategories(events)).toBe(true)
+    // Classification is derived from `kind` (single taxonomy), no longer embedded per event.
+    expect(events.some(e => e.kind === "tool_gated")).toBe(true)
+    expect(events.some(e => e.kind === "suspended")).toBe(true)
     expect(rebuildOsSnapshotFromSessionEvents(events).toolGatedCount).toBeGreaterThanOrEqual(1)
   })
 })

@@ -3,7 +3,6 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   rebuildOsSnapshotFromSessionEvents,
-  sessionLogHasRequiredCategories,
 } from "../../src/runtime/os-snapshot.js"
 import type { SessionEvent } from "../../src/runtime/session-log.js"
 
@@ -46,14 +45,12 @@ function expectSnapMatchesFixture(
 describe("OS snapshot golden fixtures (Phase 6)", () => {
   it("spawn lifecycle session events → OsSnapshot", () => {
     const events = loadJson<SessionEvent[]>("events_spawn_lifecycle.json")
-    expect(sessionLogHasRequiredCategories(events)).toBe(true)
     const snap = rebuildOsSnapshotFromSessionEvents(events)
     expectSnapMatchesFixture(snap, loadJson<SnapFixture>("os_snapshot_spawn_lifecycle.json"))
   })
 
   it("ask_user governance session events → OsSnapshot", () => {
     const events = loadJson<SessionEvent[]>("events_ask_user.json")
-    expect(sessionLogHasRequiredCategories(events)).toBe(true)
     const snap = rebuildOsSnapshotFromSessionEvents(events)
     expectSnapMatchesFixture(snap, loadJson<SnapFixture>("os_snapshot_ask_user.json"))
   })

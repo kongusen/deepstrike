@@ -2,7 +2,6 @@
   {
     "kind": "tool_gated",
     "turn": 2,
-    "category": "syscall",
     "call_id": "c1",
     "tool": "needs_approval",
     "reason": "ask_user"
@@ -10,15 +9,17 @@
   {
     "kind": "suspended",
     "turn": 2,
-    "category": "sched",
     "reason": "ask_user",
-    "pending_calls": ["c1"]
+    "pending_calls": [
+      "c1"
+    ]
   },
   {
     "kind": "resumed",
     "turn": 3,
-    "category": "sched",
-    "approved": ["c1"],
+    "approved": [
+      "c1"
+    ],
     "denied": []
   }
 ]

@@ -626,8 +626,6 @@ async fn milestone_pass_writes_session_event() {
                     session_id,
                     SessionEvent::MilestoneAdvanced {
                         turn: *turn,
-                        category: None,
-                        primitive: None,
                         phase_id: phase_id.clone(),
                         capabilities_unlocked: capabilities_unlocked.clone(),
                     },
@@ -686,8 +684,6 @@ async fn milestone_block_writes_session_event() {
                     session_id,
                     SessionEvent::MilestoneBlocked {
                         turn: *turn,
-                        category: None,
-                        primitive: None,
                         phase_id: phase_id.clone(),
                         reason: reason.clone(),
                     },
@@ -756,8 +752,6 @@ async fn capability_mount_emits_capability_changed_session_event() {
                     session_id,
                     SessionEvent::CapabilityChanged {
                         turn: *turn,
-                        category: None,
-                        primitive: None,
                         added: added.clone(),
                         removed: removed.clone(),
                         change_kind: change_kind.clone(),
@@ -838,8 +832,6 @@ async fn capability_unmount_emits_capability_changed_session_event() {
                     session_id,
                     SessionEvent::CapabilityChanged {
                         turn: *turn,
-                        category: None,
-                        primitive: None,
                         added: added.clone(),
                         removed: removed.clone(),
                         change_kind: change_kind.clone(),

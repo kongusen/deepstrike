@@ -5,7 +5,6 @@ import pytest
 
 from deepstrike.runtime.os_snapshot import (
     rebuild_os_snapshot_from_session_events,
-    session_log_has_required_categories,
 )
 
 FIXTURES = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "session"
@@ -24,7 +23,6 @@ def _load(name: str):
 )
 def test_os_snapshot_golden_fixtures(events_file: str, snapshot_file: str):
     events = _load(events_file)
-    assert session_log_has_required_categories(events)
     snap = rebuild_os_snapshot_from_session_events(events)
     expected = _load(snapshot_file)
 

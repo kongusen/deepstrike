@@ -157,45 +157,15 @@ pub fn rebuild_os_snapshot_from_events(events: &[SessionEvent]) -> OsSnapshot {
     snap
 }
 
-/// Returns true if every kernel OS event in the log carries an explicit category (Phase 6 native).
-pub fn session_log_has_required_categories(events: &[SessionEvent]) -> bool {
-    events.iter().all(|e| {
-        if !e.is_kernel_os_event() {
-            return true;
-        }
-        match e {
-            SessionEvent::Compressed { category, .. }
-            | SessionEvent::PageOut { category, .. }
-            | SessionEvent::PageIn { category, .. }
-            | SessionEvent::CapabilityChanged { category, .. }
-            | SessionEvent::ContextRenewed { category, .. }
-            | SessionEvent::Suspended { category, .. }
-            | SessionEvent::Resumed { category, .. }
-            | SessionEvent::ToolGated { category, .. }
-            | SessionEvent::SignalDisposed { category, .. }
-            | SessionEvent::BudgetExceeded { category, .. }
-            | SessionEvent::CheckpointTaken { category, .. }
-            | SessionEvent::Rollbacked { category, .. }
-            | SessionEvent::AgentProcessChanged { category, .. }
-            | SessionEvent::MilestoneAdvanced { category, .. }
-            | SessionEvent::MilestoneBlocked { category, .. } => category.is_some(),
-            _ => true,
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::event_log::KernelEventCategory;
 
     #[test]
     fn rebuild_tracks_process_and_signals() {
         let events = vec![
             SessionEvent::AgentProcessChanged {
                 turn: 1,
-                category: Some(KernelEventCategory::Proc),
-                primitive: None,
                 agent_id: "child-1".into(),
                 parent_session_id: "parent".into(),
                 role: "worker".into(),
@@ -207,23 +177,17 @@ mod tests {
             },
             SessionEvent::SignalDisposed {
                 turn: 2,
-                category: Some(KernelEventCategory::Ipc),
-                primitive: None,
                 signal_id: "sig-a".into(),
                 disposition: "queue".into(),
                 queue_depth: 1,
             },
             SessionEvent::Suspended {
                 turn: 3,
-                category: Some(KernelEventCategory::Sched),
-                primitive: None,
                 reason: "ask_user".into(),
                 pending_calls: vec!["c1".into()],
             },
             SessionEvent::AgentProcessChanged {
                 turn: 4,
-                category: Some(KernelEventCategory::Proc),
-                primitive: None,
                 agent_id: "child-1".into(),
                 parent_session_id: "parent".into(),
                 role: "worker".into(),
@@ -252,7 +216,6 @@ mod tests {
     fn assert_golden(events_file: &str, snapshot_file: &str) {
         let events: Vec<SessionEvent> =
             serde_json::from_str(&load_fixture(events_file)).expect("events json");
-        assert!(session_log_has_required_categories(&events));
         let snap = rebuild_os_snapshot_from_events(&events);
         let expected: OsSnapshot =
             serde_json::from_str(&load_fixture(snapshot_file)).expect("snapshot json");

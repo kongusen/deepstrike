@@ -11,7 +11,6 @@ use deepstrike_core::runtime::kernel::{
     KernelAction, KernelInput, KernelInputEvent, KernelObservation, KernelPressureAction,
     KernelRuntime, KernelStep,
 };
-use deepstrike_core::runtime::event_log::{category_for_kind, primitive_for_kind};
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::scheduler::policy::SchedulerBudget as KernelBudget;
 use deepstrike_core::types::message::{Message, ToolCall};
@@ -406,8 +405,6 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::MemoryWritten {
                             turn,
-                            category: Some(category_for_kind("memory_written")),
-                            primitive: Some(primitive_for_kind("memory_written")),
                             memory_id,
                             memory_kind,
                             size_bytes,
@@ -425,8 +422,6 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::MemoryQueried {
                             turn,
-                            category: Some(category_for_kind("memory_queried")),
-                            primitive: Some(primitive_for_kind("memory_queried")),
                             query_context,
                             requested_k,
                             requires_async_response,
@@ -443,8 +438,6 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::MemoryValidationFailed {
                             turn,
-                            category: Some(category_for_kind("memory_validation_failed")),
-                            primitive: Some(primitive_for_kind("memory_validation_failed")),
                             memory_id,
                             error,
                         },
@@ -1688,8 +1681,6 @@ impl RuntimeRunner {
                             SessionEvent::Compressed {
                                 turn,
                                 archived_seq_range: (next_archive_start, end),
-                                category: Some(category_for_kind("compressed")),
-                                primitive: Some(primitive_for_kind("compressed")),
                                 action: Some(action_str),
                                 summary: summary.clone(),
                                 summary_tokens,
@@ -1717,8 +1708,6 @@ impl RuntimeRunner {
                                 session_id,
                                 SessionEvent::PageOut {
                                     turn: obs_turn,
-                                    category: Some(category_for_kind("page_out")),
-                                    primitive: Some(primitive_for_kind("page_out")),
                                     action: Some(action_str2.clone()),
                                     summary,
                                     tier_hint: Some(tier.clone()),
@@ -1742,8 +1731,6 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::Rollbacked {
                             turn,
-                            category: Some(category_for_kind("rollbacked")),
-                            primitive: Some(primitive_for_kind("rollbacked")),
                             checkpoint_history_len,
                             reason,
                         },
@@ -1764,8 +1751,6 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::CapabilityChanged {
                             turn,
-                            category: Some(category_for_kind("capability_changed")),
-                            primitive: Some(primitive_for_kind("capability_changed")),
                             added,
                             removed,
                             change_kind,
@@ -1786,8 +1771,6 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::MilestoneAdvanced {
                             turn,
-                            category: Some(category_for_kind("milestone_advanced")),
-                            primitive: Some(primitive_for_kind("milestone_advanced")),
                             phase_id,
                             capabilities_unlocked,
                         },
@@ -1803,8 +1786,6 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::MilestoneBlocked {
                             turn,
-                            category: Some(category_for_kind("milestone_blocked")),
-                            primitive: Some(primitive_for_kind("milestone_blocked")),
                             phase_id,
                             reason,
                         },
@@ -1821,8 +1802,6 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::CheckpointTaken {
                             turn,
-                            category: Some(category_for_kind("checkpoint_taken")),
-                            primitive: Some(primitive_for_kind("checkpoint_taken")),
                             history_len,
                         },
                     )
@@ -1854,8 +1833,6 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::MemoryWritten {
                             turn,
-                            category: Some(category_for_kind("memory_written")),
-                            primitive: Some(primitive_for_kind("memory_written")),
                             memory_id,
                             memory_kind,
                             size_bytes,
@@ -1873,8 +1850,6 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::MemoryQueried {
                             turn,
-                            category: Some(category_for_kind("memory_queried")),
-                            primitive: Some(primitive_for_kind("memory_queried")),
                             query_context,
                             requested_k,
                             requires_async_response,
@@ -1892,8 +1867,6 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::MemoryValidationFailed {
                             turn,
-                            category: Some(category_for_kind("memory_validation_failed")),
-                            primitive: Some(primitive_for_kind("memory_validation_failed")),
                             memory_id,
                             error,
                         },
@@ -1924,8 +1897,6 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::LargeResultSpooled {
                             turn,
-                            category: Some(category_for_kind("large_result_spooled")),
-                            primitive: Some(primitive_for_kind("large_result_spooled")),
                             call_id,
                             tool: tool_name,
                             original_size,

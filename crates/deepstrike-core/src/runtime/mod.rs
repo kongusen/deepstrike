@@ -18,10 +18,10 @@ pub use repair::{
     sanitize_recovery_text, sanitize_recovery_text_bounded,
 };
 pub use event_log::{
-    category_for_kind, primitive_for_kind, KernelEventCategory, Primitive, KERNEL_OBSERVATION_KINDS,
+    category_for_kind, primitive_for_kind, KernelEventCategory, Primitive,
 };
 pub use replay::{
-    rebuild_os_snapshot_from_events, session_log_has_required_categories, BudgetExceededRecord,
+    rebuild_os_snapshot_from_events, BudgetExceededRecord,
     OsSnapshot, ProcessRecord, SignalDisposedRecord, SuspendRecord,
 };
 pub use session::{ProviderReplay, SessionEvent};
