@@ -962,15 +962,6 @@ impl RuntimeRunner {
             let mut last_skill_version: u64 = skill_watcher.as_ref().map(|w| w.version()).unwrap_or(0);
 
             while !kernel.lock().unwrap().is_terminal() {
-                if let KernelAction::ExecuteTool { .. } = &action {
-                    self.apply_kernel_page_in(
-                        &session_id,
-                        &kernel,
-                        &mut pending_observations,
-                    )
-                    .await;
-                }
-
                 // Hot-reload: refresh skill catalog if the watcher detected changes.
                 if let (Some(watcher), Some(skill_dir)) =
                     (&skill_watcher, &self.opts.skill_dir)
@@ -1901,7 +1892,6 @@ impl RuntimeRunner {
                             .await;
                     }
                 }
-                KernelObservation::PageInRequested { .. } => {}
                 KernelObservation::MemoryWritten {
                     turn,
                     memory_id,
@@ -2010,123 +2000,6 @@ impl RuntimeRunner {
         if let Some(log) = &self.opts.session_log {
             let _ = log.append(session_id, event).await;
         }
-    }
-
-    async fn apply_kernel_page_in(
-        &self,
-        session_id: &str,
-        kernel_mutex: &std::sync::Mutex<KernelRuntime>,
-        observations: &mut Vec<KernelObservation>,
-    ) {
-        let requests: Vec<_> = observations
-            .iter()
-            .filter_map(|obs| match obs {
-                KernelObservation::PageInRequested {
-                    turn: _,
-                    call_id,
-                    tool,
-                    query,
-                    top_k,
-                } => Some((call_id.clone(), tool.clone(), query.clone(), *top_k)),
-                _ => None,
-            })
-            .collect();
-
-        if requests.is_empty() {
-            return;
-        }
-
-        let mut entries = Vec::new();
-        for (_call_id, tool, query, top_k) in requests {
-            let top_k = top_k as usize;
-            if tool == "memory" {
-                // Priority 1: Local Page-Out Cache (keyword matching)
-                let local_hits = {
-                    let cache = self.local_page_out_cache.lock().unwrap();
-                    cache
-                        .iter()
-                        .filter(|m| {
-                            let content_str = message_content_as_text(&m.content);
-                            content_str.to_lowercase().contains(&query.to_lowercase())
-                        })
-                        .cloned()
-                        .take(top_k)
-                        .collect::<Vec<_>>()
-                };
-
-                for hit in &local_hits {
-                    let role_str = match hit.role {
-                        deepstrike_core::types::message::Role::System => "system",
-                        deepstrike_core::types::message::Role::User => "user",
-                        deepstrike_core::types::message::Role::Assistant => "assistant",
-                        deepstrike_core::types::message::Role::Tool => "tool",
-                    };
-                    let content_str = message_content_as_text(&hit.content);
-                    entries.push(deepstrike_core::mm::PageInEntry {
-                        content: format!("[local semantic cache] {}: {}", role_str, content_str),
-                        tokens: None,
-                        source: Some("semantic_cache".to_string()),
-                        key: None,
-                        pinned: false,
-                    });
-                }
-
-                let remaining_k = top_k.saturating_sub(local_hits.len());
-                if remaining_k > 0 {
-                    if let (Some(store), Some(agent_id)) = (&self.opts.dream_store, &self.opts.agent_id) {
-                        if let Ok(hits) = store.search(agent_id, &query, remaining_k).await {
-                            for hit in hits {
-                                entries.push(deepstrike_core::mm::PageInEntry {
-                                    content: format!("[memory score={:.3}] {}", hit.score, hit.text),
-                                    tokens: None,
-                                    source: Some("memory".to_string()),
-                                    key: None,
-                                    pinned: false,
-                                });
-                            }
-                        }
-                    }
-                }
-            } else if tool == "knowledge" {
-                if let Some(source) = &self.opts.knowledge_source {
-                    if let Ok(snippets) = source.retrieve(&query, top_k).await {
-                        for snippet in snippets {
-                            entries.push(deepstrike_core::mm::PageInEntry {
-                                content: snippet,
-                                tokens: None,
-                                source: Some("knowledge".to_string()),
-                                key: None,
-                                pinned: false,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        if entries.is_empty() {
-            return;
-        }
-
-        // Apply back to the kernel
-        let mut kernel = kernel_mutex.lock().unwrap();
-        let turn = kernel.state_machine().turn;
-        let step = kernel.step(KernelInput::new(KernelInputEvent::PageIn {
-            entries: entries.clone(),
-        }));
-        observations.extend(step.observations);
-
-        // Append PageIn event to session log
-        self.log(
-            session_id,
-            SessionEvent::PageIn {
-                turn,
-                category: Some(category_for_kind("page_in")),
-                primitive: Some(primitive_for_kind("page_in")),
-                entry_count: entries.len() as u32,
-            },
-        )
-        .await;
     }
 
     async fn archive_semantic_page_out(&self, archived: Vec<Message>, action: Option<String>) {

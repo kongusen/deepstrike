@@ -64,15 +64,11 @@ pub fn rebuild_os_snapshot_from_events(events: &[SessionEvent]) -> OsSnapshot {
         std::collections::HashMap::new();
 
     for event in events {
+        // `is_kernel_os_event` covers every counted OS event; `MemoryRetrievalResult` is an
+        // SDK-written acknowledgment counted here too (parity with the node/python rebuilds,
+        // which special-case it before their filters).
         if !event.is_kernel_os_event()
-            && !matches!(
-                event,
-                SessionEvent::ToolGated { .. }
-                    | SessionEvent::SignalDisposed { .. }
-                    | SessionEvent::BudgetExceeded { .. }
-                    | SessionEvent::Suspended { .. }
-                    | SessionEvent::Resumed { .. }
-            )
+            && !matches!(event, SessionEvent::MemoryRetrievalResult { .. })
         {
             continue;
         }

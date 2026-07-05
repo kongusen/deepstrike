@@ -73,12 +73,10 @@
         ]);
         let action = sm.resume_after_preload();
         assert!(matches!(action, LoopAction::ExecuteTools { .. }), "must still resume the pending call");
-        assert!(!sm.observations.iter().any(|o| {
-            matches!(
-                o,
-                KernelObservation::PageInRequested { tool, query, .. }
-                    if tool == "memory" && query == "archived"
-            )
+        // No page-in side channel fires on resume (the PageInRequested observation was
+        // deleted with its retired producer); the pending call resuming is the whole contract.
+        assert!(sm.observations.is_empty() || !sm.observations.iter().any(|o| {
+            serde_json::to_string(o).unwrap_or_default().contains("page_in_requested")
         }));
     }
 
@@ -778,7 +776,9 @@
         let action = sm.feed(LoopEvent::LLMResponse { message: msg });
         assert!(matches!(action, LoopAction::ExecuteTools { .. }));
         let obs = sm.take_observations();
-        assert!(!obs.iter().any(|o| matches!(o, KernelObservation::PageInRequested { .. })));
+        assert!(!obs.iter().any(|o| {
+            serde_json::to_string(o).unwrap_or_default().contains("page_in_requested")
+        }));
     }
 
     #[test]

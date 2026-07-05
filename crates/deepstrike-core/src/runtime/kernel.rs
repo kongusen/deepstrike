@@ -355,13 +355,13 @@ pub enum KernelInputEvent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         denied_calls: Vec<String>,
     },
-    /// O4: enable/disable the turn-end criteria gate (default enabled; no-op for runs without
-    /// criteria). Additive ABI.
     /// K2: set the knowledge-budget ratio at runtime (granular sibling of
     /// `RunConfig::knowledge_budget_ratio`). `0.0` disables the cap.
     SetKnowledgeBudget {
         ratio: f64,
     },
+    /// O4: enable/disable the turn-end criteria gate (default enabled; no-op for runs without
+    /// criteria). Additive ABI.
     SetCriteriaGate {
         enabled: bool,
     },
@@ -774,14 +774,6 @@ pub enum KernelObservation {
         archived: Vec<Message>,
         tier_hint: String,
     },
-    /// Kernel requests SDK to fetch long-term memory for a meta-tool call.
-    PageInRequested {
-        turn: u32,
-        call_id: String,
-        tool: String,
-        query: String,
-        top_k: u32,
-    },
     /// Memory entry written successfully (Phase 7).
     MemoryWritten {
         turn: u32,
@@ -810,23 +802,6 @@ pub enum KernelObservation {
         original_size: u32,
         preview_size: u32,
         spool_ref: Option<String>,
-    },
-}
-
-/// Transaction-boundary observations emitted by the kernel.
-///
-/// A turn transaction lifecycle looks like:
-///   `CheckpointTaken` (before LLM call) → … → `Rollbacked` (if fatal) or
-///   implicit commit (clean `ToolCompleted` + turn increment).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum TransactionObservation {
-    CheckpointTaken { turn: u32, history_len: u32 },
-    Rollbacked {
-        turn: u32,
-        checkpoint_history_len: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        reason: Option<crate::runtime::session::RollbackReason>,
     },
 }
 
@@ -884,6 +859,21 @@ impl KernelRuntime {
     }
 
     pub fn step(&mut self, input: KernelInput) -> KernelStep {
+        // The ABI version stamped by `KernelInput::new` is checked, not ceremonial: a payload
+        // built against a different kernel ABI is rejected instead of being silently
+        // reinterpreted under this version's semantics.
+        if input.version != KERNEL_ABI_VERSION {
+            self.sm.observations.push(KernelObservation::ToolGated {
+                turn: self.sm.turn,
+                call_id: String::new(),
+                tool: "kernel_abi".to_string(),
+                reason: format!(
+                    "kernel ABI version mismatch: input v{}, kernel v{}",
+                    input.version, KERNEL_ABI_VERSION
+                ),
+            });
+            return KernelStep::empty(self.sm.take_observations());
+        }
         let action = match input.event {
             KernelInputEvent::SetTools { tools } => {
                 self.sm.tools = tools;
@@ -1107,11 +1097,7 @@ impl KernelRuntime {
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::Resume { approved_calls, denied_calls } => {
-                let action = self.sm.resume_from_suspend(approved_calls, denied_calls);
-                if matches!(action, LoopAction::AwaitingResume) {
-                    return KernelStep::empty(self.sm.take_observations());
-                }
-                return KernelStep::single(action, self.sm.take_observations());
+                self.sm.resume_from_suspend(approved_calls, denied_calls)
             }
             KernelInputEvent::SetSchedulerBudget { max_wall_ms } => {
                 self.sm.set_wall_budget(max_wall_ms);
@@ -1177,11 +1163,7 @@ impl KernelRuntime {
                 spec,
                 parent_session_id,
             } => {
-                let action = self.sm.spawn_sub_agent(spec, &parent_session_id);
-                if matches!(action, LoopAction::AwaitingResume) {
-                    return KernelStep::empty(self.sm.take_observations());
-                }
-                return KernelStep::single(action, self.sm.take_observations());
+                self.sm.spawn_sub_agent(spec, &parent_session_id)
             }
             KernelInputEvent::LoadWorkflow {
                 spec,
@@ -1193,7 +1175,7 @@ impl KernelRuntime {
                 // `runWorkflow` caller). Parity with the agent-reachable `SubmitWorkflow`, which already
                 // bootstraps. Idempotent no-op once the root task has left `Ready`.
                 self.sm.ensure_started_for_workflow(&spec);
-                let action = if resumed_completed.is_empty() && resumed_submissions.is_empty() {
+                if resumed_completed.is_empty() && resumed_submissions.is_empty() {
                     self.sm.load_workflow(spec, &parent_session_id)
                 } else {
                     self.sm.load_workflow_resumed(
@@ -1202,11 +1184,7 @@ impl KernelRuntime {
                         &resumed_submissions,
                         &resumed_completed,
                     )
-                };
-                if matches!(action, LoopAction::AwaitingResume) {
-                    return KernelStep::empty(self.sm.take_observations());
                 }
-                return KernelStep::single(action, self.sm.take_observations());
             }
             KernelInputEvent::SubAgentCompleted { result } => {
                 self.sm.feed(LoopEvent::SubAgentCompleted { result })
@@ -1215,28 +1193,19 @@ impl KernelRuntime {
                 nodes,
                 submitter_agent_id,
             } => {
-                let action = self
-                    .sm
-                    .submit_workflow_nodes(nodes, submitter_agent_id.as_deref());
-                if matches!(action, LoopAction::AwaitingResume) {
-                    return KernelStep::empty(self.sm.take_observations());
-                }
-                return KernelStep::single(action, self.sm.take_observations());
+                self.sm
+                    .submit_workflow_nodes(nodes, submitter_agent_id.as_deref())
             }
             KernelInputEvent::SubmitWorkflow {
                 spec,
                 parent_session_id,
                 submitter_agent_id,
             } => {
-                let action = self.sm.submit_workflow(
+                self.sm.submit_workflow(
                     spec,
                     &parent_session_id,
                     submitter_agent_id.as_deref(),
-                );
-                if matches!(action, LoopAction::AwaitingResume) {
-                    return KernelStep::empty(self.sm.take_observations());
-                }
-                return KernelStep::single(action, self.sm.take_observations());
+                )
             }
             KernelInputEvent::SetMemoryPolicy {
                 memory_path,
@@ -2508,7 +2477,7 @@ mod tests {
         runtime.state_machine_mut().take_observations();
 
         let step = run_with_tool_call(&mut runtime, "memory");
-        assert!(!step.observations.iter().any(|o| matches!(o, KernelObservation::PageInRequested { .. })));
+        // (the PageInRequested observation itself was deleted with its retired producer)
     }
 
     #[test]
