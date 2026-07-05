@@ -11,8 +11,8 @@ pub enum ContextFault {
     InvalidReplay { turn: u32, reason: String },
 }
 
-/// FNV-1a 64-bit. The kernel's one stable, dependency-free content hash, used by
-/// the render layer's [`super::renderer::PrefixFingerprint`].
+/// FNV-1a 64-bit — the render layer's cache-stability test fingerprint dialect.
+#[cfg(test)]
 pub(crate) fn stable_hash(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in bytes {

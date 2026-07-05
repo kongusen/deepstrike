@@ -767,6 +767,7 @@ impl WorkflowRun {
         /// Test instrument: true when no node is currently `Running` — the spawned batch has
     /// fully reported back. Derived from the graph; the executor's in-flight truth is
     /// `SuspendState::SubAgentAwait.agent_ids`.
+    #[cfg(test)]
     pub(crate) fn batch_drained(&self) -> bool {
         !(0..self.graph.len()).any(|i| {
             matches!(self.graph.get(i).map(|n| &n.status), Some(crate::orchestration::task_graph::TaskStatus::Running))
@@ -777,6 +778,7 @@ impl WorkflowRun {
     /// nothing is running. NOTE the executor's own finish rule is looser — "nothing
     /// running && nothing newly spawnable" — so a stalled DAG (dependents of a denied
     /// node stay `Pending` forever) terminates the run while this stays false.
+    #[cfg(test)]
     pub(crate) fn is_complete(&self) -> bool {
         self.graph.all_done()
     }

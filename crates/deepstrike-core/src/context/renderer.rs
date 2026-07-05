@@ -1,4 +1,5 @@
 use super::partitions::ContextPartitions;
+#[cfg(test)]
 use super::fault::stable_hash;
 use super::task_state::TaskState;
 use super::token_engine::ContextTokenEngine;
@@ -53,6 +54,7 @@ pub struct RenderedContext {
 /// two renders share a reusable KV / prompt-cache prefix iff their system hashes
 /// match *and* one's `turn_hashes` is a prefix of the other's. Pure and derived —
 /// never stored in snapshots, session logs, or event logs.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PrefixFingerprint {
     pub system_stable_hash: u64,
@@ -62,6 +64,7 @@ pub(crate) struct PrefixFingerprint {
     pub turn_hashes: Vec<u64>,
 }
 
+#[cfg(test)]
 impl PrefixFingerprint {
     /// True when `self`'s cacheable prefix is a byte-stable *extension* of `prev`:
     /// identical system segments and `prev.turn_hashes` is a prefix of
@@ -90,12 +93,14 @@ impl PrefixFingerprint {
 /// `token_count` (kernel-only metadata that never reaches the provider). Serialised
 /// through serde so every content variant and tool-call argument is covered with a
 /// deterministic field order.
+#[cfg(test)]
 fn hash_turn(msg: &Message) -> u64 {
     let material =
         serde_json::to_vec(&(&msg.role, &msg.content, &msg.tool_calls)).unwrap_or_default();
     stable_hash(&material)
 }
 
+#[cfg(test)]
 impl RenderedContext {
     /// Compute the [`PrefixFingerprint`] for this render. See its docs for the
     /// cache-reuse contract it certifies.
@@ -308,6 +313,7 @@ fn project_message(msg: &Message, handles: &HandleTable) -> Option<Message> {
 /// Equivalent to [`render_projected`] with an empty handle table (no Layer-4 projection) and no
 /// frozen-prefix boundary (`frozen_history_len = 0` → `frozen_prefix_len` is always `None`).
 /// Test convenience — the production path is `ContextManager::render` → [`render_projected`].
+#[cfg(test)]
 pub(crate) fn render(
     partitions: &ContextPartitions,
     budget: u32,
