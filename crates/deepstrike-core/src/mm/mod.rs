@@ -43,19 +43,6 @@ pub fn tier_hint_for_compress(action: PressureAction) -> MemoryTierHint {
     }
 }
 
-/// Parsed arguments for a page-in meta-tool call. Retained as the payload type for
-/// [`crate::syscall::Syscall::PageIn`]; the request-extraction helper that used to build these
-/// from live tool calls was removed when the automatic memory/knowledge tool-call page-in path
-/// was retired (that content now flows through the normal tool-result → history path instead —
-/// see `apply_page_in`'s doc comment).
-#[derive(Debug, Clone, Default)]
-pub struct PageInRequest {
-    pub call_id: String,
-    pub tool: String,
-    pub query: String,
-    pub top_k: u32,
-}
-
 /// One knowledge entry supplied by the SDK after a long-term fetch (page-in).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageInEntry {

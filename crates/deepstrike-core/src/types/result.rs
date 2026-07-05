@@ -26,6 +26,24 @@ pub enum TerminationReason {
     NoProgress,
 }
 
+impl TerminationReason {
+    /// Canonical snake_case wire label, kept in lockstep with the serde rename —
+    /// the single source for session logs, observations, and FFI bindings.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::MaxTurns => "max_turns",
+            Self::TokenBudget => "token_budget",
+            Self::Timeout => "timeout",
+            Self::UserAbort => "user_abort",
+            Self::Error => "error",
+            Self::MilestoneExceeded => "milestone_exceeded",
+            Self::ContextOverflow => "context_overflow",
+            Self::NoProgress => "no_progress",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopResult {
     pub termination: TerminationReason,
@@ -60,4 +78,27 @@ pub struct RunResult {
 pub struct SubAgentResult {
     pub agent_id: CompactString,
     pub result: LoopResult,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_matches_serde_rename() {
+        for r in [
+            TerminationReason::Completed,
+            TerminationReason::MaxTurns,
+            TerminationReason::TokenBudget,
+            TerminationReason::Timeout,
+            TerminationReason::UserAbort,
+            TerminationReason::Error,
+            TerminationReason::MilestoneExceeded,
+            TerminationReason::ContextOverflow,
+            TerminationReason::NoProgress,
+        ] {
+            let serde_name = serde_json::to_value(r).unwrap();
+            assert_eq!(serde_name.as_str().unwrap(), r.label());
+        }
+    }
 }

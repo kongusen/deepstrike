@@ -1,24 +1,24 @@
-use crate::types::policy::{AttentionPolicy, SignalDisposition};
+use crate::types::policy::SignalDisposition;
 use crate::types::signal::{RuntimeSignal, Urgency};
 
 /// Default attention policy based on signal urgency.
 pub struct UrgencyBasedPolicy;
 
-impl AttentionPolicy for UrgencyBasedPolicy {
-    fn evaluate(&self, signal: &RuntimeSignal, is_running: bool) -> SignalDisposition {
+impl UrgencyBasedPolicy {
+    pub fn evaluate(&self, signal: &RuntimeSignal, is_running: bool) -> SignalDisposition {
         match signal.urgency {
             Urgency::Critical => {
                 if is_running {
                     SignalDisposition::InterruptNow
                 } else {
-                    SignalDisposition::Run { priority: 255 }
+                    SignalDisposition::Run
                 }
             }
             Urgency::High => {
                 if is_running {
                     SignalDisposition::Interrupt
                 } else {
-                    SignalDisposition::Run { priority: 100 }
+                    SignalDisposition::Run
                 }
             }
             Urgency::Normal => SignalDisposition::Queue,

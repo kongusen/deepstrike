@@ -16,7 +16,7 @@ impl LoopStateMachine {
     /// P1 (M2): the single syscall trap. Every effectful request the SDK proposes is adjudicated
     /// here, returning a unified [`Disposition`]. Tool calls run the governance pipeline (mapping
     /// its verdict via `GovernanceVerdict -> Disposition`); `Spawn` and `WriteMemory` additionally
-    /// pass the resource quota (concurrency / depth / write rate). `PageIn`/`QueryMemory` carry no
+    /// pass the resource quota (concurrency / depth / write rate). Variants with no
     /// quota yet and default to `Allow` — but route through the *same* trap so a policy can attach
     /// later without a new ABI.
     pub(super) fn evaluate_syscall(&mut self, sys: &Syscall) -> Disposition {
@@ -37,7 +37,6 @@ impl LoopStateMachine {
             Syscall::SubmitNodes { count } => self.evaluate_submit_nodes_quota(*count),
             // M5/G1: an agent-authored spec grows the DAG by `node_count`; same backstop as SubmitNodes.
             Syscall::LoadWorkflow { node_count } => self.evaluate_submit_nodes_quota(*node_count),
-            Syscall::PageIn(_) | Syscall::QueryMemory(_) => Disposition::Allow,
         }
     }
 

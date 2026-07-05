@@ -42,7 +42,7 @@ pub use context::renewal::{ContractCheckResult, HandoffArtifact};
 pub use governance::quota::ResourceQuota;
 pub use mm::{
     plan_eviction, EvictionOp, EvictionPlan, Handle, HandleId, HandleKind, HandleTable,
-    MemoryTierHint, PageInEntry, PageInRequest, Residency,
+    MemoryTierHint, PageInEntry, Residency,
 };
 pub use proc::{AgentProcess, ProcessState};
 pub use scheduler::tcb::{BudgetLedger, TaskId, TaskLifecycle, TaskTable, Tcb, WaitReason};

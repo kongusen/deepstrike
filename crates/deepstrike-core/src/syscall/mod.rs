@@ -10,8 +10,7 @@
 //! ([`crate::types::policy::GovernanceVerdict`] and `SignalDisposition`). Tool/spawn/memory
 //! decisions converge on [`Disposition`]; signals feed the P2 scheduler instead.
 
-use crate::mm::PageInRequest;
-use crate::mm::memory::{MemoryQuery, MemoryWriteRequest};
+use crate::mm::memory::MemoryWriteRequest;
 use crate::scheduler::tcb::WaitReason;
 use crate::types::agent::IsolationManifest;
 use crate::types::message::ToolCall;
@@ -27,12 +26,8 @@ pub enum Syscall {
     Invoke(ToolCall),
     /// Spawn a sub-agent (today: bypasses the gate).
     Spawn(IsolationManifest),
-    /// Page long-term memory into working context (today: bypasses the gate).
-    PageIn(PageInRequest),
     /// Persist a long-term memory entry.
     WriteMemory(MemoryWriteRequest),
-    /// Retrieve long-term memory entries.
-    QueryMemory(MemoryQuery),
     /// R3-1: append `count` nodes to the in-flight workflow DAG at runtime. Gating DAG growth through
     /// the trap lets a `ResourceQuota` backstop a runaway loop-until-done (denied past
     /// `max_workflow_nodes`); per-node spawns are still gated separately by `Spawn`.
@@ -42,21 +37,6 @@ pub enum Syscall {
     /// quota as `SubmitNodes` (a spec is just a node batch with a bootstrap fast-path), so an
     /// agent-authored harness cannot overgrow the DAG past the run's budget.
     LoadWorkflow { node_count: usize },
-}
-
-impl Syscall {
-    /// Stable opcode label for audit/event-log categorization.
-    pub fn opcode(&self) -> &'static str {
-        match self {
-            Self::Invoke(_) => "invoke",
-            Self::Spawn(_) => "spawn",
-            Self::PageIn(_) => "page_in",
-            Self::WriteMemory(_) => "write_memory",
-            Self::QueryMemory(_) => "query_memory",
-            Self::SubmitNodes { .. } => "submit_nodes",
-            Self::LoadWorkflow { .. } => "load_workflow",
-        }
-    }
 }
 
 /// The kernel's adjudication of a [`Syscall`]. Generalizes [`GovernanceVerdict`]:
@@ -78,16 +58,6 @@ pub enum Disposition {
 }
 
 impl Disposition {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Allow => "allow",
-            Self::Deny { .. } => "deny",
-            Self::Gate { .. } => "gate",
-            Self::Defer { .. } => "defer",
-            Self::RateLimited { .. } => "rate_limited",
-        }
-    }
-
     /// Whether the syscall may proceed to execution now.
     pub fn is_allowed(&self) -> bool {
         matches!(self, Self::Allow)
@@ -120,7 +90,6 @@ mod tests {
     fn verdict_allow_maps_to_allow() {
         let d: Disposition = GovernanceVerdict::Allow.into();
         assert!(d.is_allowed());
-        assert_eq!(d.label(), "allow");
     }
 
     #[test]
@@ -159,14 +128,4 @@ mod tests {
         assert!(matches!(d, Disposition::RateLimited { retry_after_ms: 500 }));
     }
 
-    #[test]
-    fn syscall_opcode_labels() {
-        use crate::types::message::ToolCall;
-        let call = ToolCall {
-            id: "c1".into(),
-            name: "read".into(),
-            arguments: serde_json::json!({}),
-        };
-        assert_eq!(Syscall::Invoke(call).opcode(), "invoke");
-    }
 }

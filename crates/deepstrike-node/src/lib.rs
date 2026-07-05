@@ -302,15 +302,7 @@ fn runtime_signal_from_rust(s: &RustRuntimeSignal) -> RuntimeSignal {
 }
 
 fn disposition_to_str(d: RustSignalDisposition) -> &'static str {
-    match d {
-        RustSignalDisposition::Ignore => "ignore",
-        RustSignalDisposition::Observe => "observe",
-        RustSignalDisposition::Queue => "queue",
-        RustSignalDisposition::Run { .. } => "run",
-        RustSignalDisposition::Interrupt => "interrupt",
-        RustSignalDisposition::InterruptNow => "interrupt_now",
-        RustSignalDisposition::Dropped => "dropped",
-    }
+    d.label()
 }
 
 #[napi(object)]
@@ -682,16 +674,6 @@ impl SignalRouter {
     #[napi]
     pub fn next(&mut self) -> Option<RuntimeSignal> {
         self.inner.next().as_ref().map(runtime_signal_from_rust)
-    }
-
-    /// Pull the next queued signal visible to `recipient` (broadcasts plus signals
-    /// addressed to it); other recipients' signals stay queued. Omit ⇒ no filter.
-    #[napi]
-    pub fn next_for(&mut self, recipient: Option<String>) -> Option<RuntimeSignal> {
-        self.inner
-            .next_for(recipient.as_deref())
-            .as_ref()
-            .map(runtime_signal_from_rust)
     }
 
     #[napi]

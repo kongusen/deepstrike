@@ -4,26 +4,22 @@ use compact_str::CompactString;
 
 use super::attention::UrgencyBasedPolicy;
 use super::queue::SignalQueue;
-use crate::types::policy::{AttentionPolicy, SignalDisposition};
+use crate::types::policy::SignalDisposition;
 use crate::types::signal::RuntimeSignal;
 
-/// High-performance signal router with deduplication and priority queuing.
+/// Signal router: dedup set + urgency-based attention + bounded priority queue.
 pub struct SignalRouter {
     seen: HashSet<CompactString>,
     queue: SignalQueue,
-    attention: Box<dyn AttentionPolicy>,
+    attention: UrgencyBasedPolicy,
 }
 
 impl SignalRouter {
     pub fn new(max_queue_size: usize) -> Self {
-        Self::with_policy(max_queue_size, Box::new(UrgencyBasedPolicy))
-    }
-
-    pub fn with_policy(max_queue_size: usize, policy: Box<dyn AttentionPolicy>) -> Self {
         Self {
             seen: HashSet::new(),
             queue: SignalQueue::new(max_queue_size),
-            attention: policy,
+            attention: UrgencyBasedPolicy,
         }
     }
 
@@ -52,12 +48,6 @@ impl SignalRouter {
     /// Pull next queued signal.
     pub fn next(&mut self) -> Option<RuntimeSignal> {
         self.queue.pop()
-    }
-
-    /// Pull the next queued signal visible to `recipient` (broadcasts plus signals
-    /// addressed to it); other recipients' signals stay queued. `None` ⇒ no filter.
-    pub fn next_for(&mut self, recipient: Option<&str>) -> Option<RuntimeSignal> {
-        self.queue.pop_for(recipient)
     }
 
     /// Number of queued signals.
@@ -143,49 +133,6 @@ mod tests {
 
         assert_eq!(router.ingest(s1, false), SignalDisposition::Queue);
         assert_eq!(router.ingest(s2, false), SignalDisposition::Dropped);
-    }
-
-    #[test]
-    fn next_for_drains_recipient_plus_broadcast_only() {
-        let mut router = SignalRouter::new(100);
-        let to_a = RuntimeSignal::new(SignalSource::Gateway, SignalType::Event, Urgency::Normal, "a")
-            .with_recipient("sess-a")
-            .with_timestamp(1);
-        let to_b = RuntimeSignal::new(SignalSource::Gateway, SignalType::Event, Urgency::Normal, "b")
-            .with_recipient("sess-b")
-            .with_timestamp(2);
-        let broadcast =
-            RuntimeSignal::new(SignalSource::Cron, SignalType::Job, Urgency::Normal, "all")
-                .with_timestamp(3);
-        router.ingest(to_a, false);
-        router.ingest(to_b, false);
-        router.ingest(broadcast, false);
-
-        // Puller "sess-a" sees only its own + the broadcast, never sess-b's.
-        let first = router.next_for(Some("sess-a")).unwrap();
-        let second = router.next_for(Some("sess-a")).unwrap();
-        let mut got: Vec<_> = [first.summary.as_str(), second.summary.as_str()]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        got.sort();
-        assert_eq!(got, vec!["a".to_string(), "all".to_string()]);
-        assert!(router.next_for(Some("sess-a")).is_none());
-
-        // sess-b's signal is still queued for its own puller.
-        assert_eq!(router.next_for(Some("sess-b")).unwrap().summary.as_str(), "b");
-    }
-
-    #[test]
-    fn next_for_none_drains_anything() {
-        let mut router = SignalRouter::new(100);
-        router.ingest(
-            RuntimeSignal::new(SignalSource::Gateway, SignalType::Event, Urgency::Normal, "x")
-                .with_recipient("sess-a"),
-            false,
-        );
-        // No recipient filter ⇒ back-compat: drains the addressed signal too.
-        assert_eq!(router.next_for(None).unwrap().summary.as_str(), "x");
     }
 
     #[test]

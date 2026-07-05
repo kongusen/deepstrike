@@ -1,5 +1,4 @@
 use super::agent::AgentIdentity;
-use super::signal::RuntimeSignal;
 
 /// Caller identity passed through the governance pipeline.
 /// Wraps AgentIdentity for unified agent identification.
@@ -11,9 +10,7 @@ pub enum SignalDisposition {
     Ignore,
     Observe,
     Queue,
-    Run {
-        priority: u8,
-    },
+    Run,
     Interrupt,
     InterruptNow,
     /// Router accepted the signal but the queue is full; signal was dropped.
@@ -21,9 +18,20 @@ pub enum SignalDisposition {
     Dropped,
 }
 
-/// Trait for attention policies — SDK layer provides concrete implementations.
-pub trait AttentionPolicy: Send + Sync {
-    fn evaluate(&self, signal: &RuntimeSignal, is_running: bool) -> SignalDisposition;
+impl SignalDisposition {
+    /// Canonical snake_case wire label — the single source for kernel events,
+    /// session logs, and all FFI bindings.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Ignore => "ignore",
+            Self::Observe => "observe",
+            Self::Queue => "queue",
+            Self::Run => "run",
+            Self::Interrupt => "interrupt",
+            Self::InterruptNow => "interrupt_now",
+            Self::Dropped => "dropped",
+        }
+    }
 }
 
 /// Governance verdict for a tool call.

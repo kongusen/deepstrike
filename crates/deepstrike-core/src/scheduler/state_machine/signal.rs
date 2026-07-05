@@ -8,24 +8,10 @@ use crate::types::signal::RuntimeSignal;
 
 use super::super::tcb::TaskLifecycle;
 
-/// Stable snake_case label for a signal disposition, used in `SignalDisposed`
-/// observations (part of the observation wire format).
-pub(super) fn disposition_label(d: &SignalDisposition) -> &'static str {
-    match d {
-        SignalDisposition::Ignore => "ignore",
-        SignalDisposition::Observe => "observe",
-        SignalDisposition::Queue => "queue",
-        SignalDisposition::Run { .. } => "run",
-        SignalDisposition::Interrupt => "interrupt",
-        SignalDisposition::InterruptNow => "interrupt_now",
-        SignalDisposition::Dropped => "dropped",
-    }
-}
-
 impl LoopStateMachine {
-    /// Enable in-kernel signal routing with the default urgency-based attention
-    /// policy and a bounded queue. Once set, inbound signals are dispatched through
-    /// the kernel (dedup + disposition + queue) instead of the legacy `feed` path.
+    /// Rebuild the signal router with a new bounded queue size. Inbound signals
+    /// are always dispatched through the kernel router (dedup + disposition + queue);
+    /// this only resizes the `feed` path.
     pub fn set_attention(&mut self, max_queue_size: usize) {
         self.signal_router = SignalRouter::new(max_queue_size);
     }
@@ -54,7 +40,7 @@ impl LoopStateMachine {
         self.observations.push(KernelObservation::SignalDisposed {
             turn: self.turn,
             signal_id,
-            disposition: disposition_label(&disposition).to_string(),
+            disposition: disposition.label().to_string(),
             queue_depth,
         });
         // Acted-on external signals are user/agent directives: also promote into the durable
@@ -80,15 +66,17 @@ impl LoopStateMachine {
                 self.ctx.push_signal(format!("[SIGNAL] {summary}"));
                 None
             }
-            SignalDisposition::Run { .. } => {
+            SignalDisposition::Run => {
                 self.ctx.record_directive(summary.clone());
                 self.ctx.push_signal(format!("[SIGNAL] {summary}"));
                 self.phase = LoopPhase::Reason;
                 Some(self.emit_call_llm())
             }
-            // Observe: note it in context but don't force a turn.
+            // Observe (Low urgency): ephemeral note only — no durable directive, no forced
+            // turn. Durability is monotone in urgency: Low = ephemeral note, Normal = queued
+            // ephemeral note, High = durable directive handled at the next boundary,
+            // Critical = durable directive + immediate preempt.
             SignalDisposition::Observe => {
-                self.ctx.record_directive(summary.clone());
                 self.ctx.push_signal(format!("[SIGNAL] {summary}"));
                 None
             }

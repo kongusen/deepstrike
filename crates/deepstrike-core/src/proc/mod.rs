@@ -75,18 +75,7 @@ impl AgentProcess {
     }
 
     pub fn result_termination_label(&self) -> Option<&'static str> {
-        let result = self.result.as_ref()?;
-        Some(match result.result.termination {
-            TerminationReason::Completed => "completed",
-            TerminationReason::MaxTurns => "max_turns",
-            TerminationReason::TokenBudget => "token_budget",
-            TerminationReason::Timeout => "timeout",
-            TerminationReason::UserAbort => "user_abort",
-            TerminationReason::Error => "error",
-            TerminationReason::MilestoneExceeded => "milestone_exceeded",
-            TerminationReason::ContextOverflow => "context_overflow",
-            TerminationReason::NoProgress => "no_progress",
-        })
+        Some(self.result.as_ref()?.result.termination.label())
     }
 }
 

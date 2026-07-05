@@ -65,41 +65,8 @@ impl SignalQueue {
         self.heap.pop().map(|ps| ps.signal)
     }
 
-    /// Pop the highest-priority signal visible to `recipient`: broadcasts
-    /// (`signal.recipient == None`) plus those addressed to `recipient`.
-    /// Non-matching entries are retained (re-pushed) so heap ordering is preserved.
-    /// `recipient == None` ⇒ no filtering (drains anything; back-compat with `pop`).
-    pub(super) fn pop_for(&mut self, recipient: Option<&str>) -> Option<RuntimeSignal> {
-        let Some(recipient) = recipient else {
-            return self.pop();
-        };
-        let mut skipped: Vec<PrioritizedSignal> = Vec::new();
-        let mut found = None;
-        while let Some(ps) = self.heap.pop() {
-            let visible = ps
-                .signal
-                .recipient
-                .as_deref()
-                .is_none_or(|r| r == recipient);
-            if visible {
-                found = Some(ps.signal);
-                break;
-            }
-            skipped.push(ps);
-        }
-        for ps in skipped {
-            self.heap.push(ps);
-        }
-        found
-    }
-
     pub(super) fn len(&self) -> usize {
         self.heap.len()
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn is_empty(&self) -> bool {
-        self.heap.is_empty()
     }
 }
 
