@@ -1649,11 +1649,13 @@ impl RuntimeRunner {
         for (index, obs) in drained.into_iter().enumerate() {
             match obs {
                 KernelObservation::Compressed {
+                    turn: obs_turn,
                     action,
                     rho_after: _,
                     summary,
                     archived,
                     invalidates_prefix_at: _,
+                    tier_hint,
                 } => {
                     let Some(log) = &self.opts.session_log else {
                         continue;
@@ -1678,13 +1680,7 @@ impl RuntimeRunner {
                     }
 
                     let summary_tokens = summary_tokens_by_index.get(index).copied().flatten();
-                    let action_str = match action {
-                        KernelPressureAction::None => "none".to_string(),
-                        KernelPressureAction::SnipCompact => "snip_compact".to_string(),
-                        KernelPressureAction::MicroCompact => "micro_compact".to_string(),
-                        KernelPressureAction::ContextCollapse => "context_collapse".to_string(),
-                        KernelPressureAction::AutoCompact => "auto_compact".to_string(),
-                    };
+                    let action_str = action_str_of(action);
 
                     if let Ok(compressed_seq) = log
                         .append(
@@ -1704,6 +1700,37 @@ impl RuntimeRunner {
                         .await
                     {
                         next_archive_start = compressed_seq + 1;
+                    }
+
+                    // One compaction = one kernel observation: the page_out session record,
+                    // the local page-out cache, and the semantic-archive branch are DERIVED
+                    // from Compressed.tier_hint (the retired PageOut observation used to
+                    // duplicate summary + the full archived set across the FFI boundary).
+                    if let Some(tier) = tier_hint {
+                        if !archived.is_empty() {
+                            self.local_page_out_cache
+                                .lock()
+                                .unwrap()
+                                .extend(archived.clone());
+                            let action_str2 = action_str_of(action);
+                            self.log(
+                                session_id,
+                                SessionEvent::PageOut {
+                                    turn: obs_turn,
+                                    category: Some(category_for_kind("page_out")),
+                                    primitive: Some(primitive_for_kind("page_out")),
+                                    action: Some(action_str2.clone()),
+                                    summary,
+                                    tier_hint: Some(tier.clone()),
+                                    message_count: archived.len() as u32,
+                                },
+                            )
+                            .await;
+                            if tier == "semantic" {
+                                self.archive_semantic_page_out(archived, Some(action_str2))
+                                    .await;
+                            }
+                        }
                     }
                 }
                 KernelObservation::Rollbacked {
@@ -1784,23 +1811,6 @@ impl RuntimeRunner {
                     )
                     .await;
                 }
-                KernelObservation::MilestoneEvidence {
-                    turn,
-                    phase_id,
-                    evidence,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::MilestoneEvidence {
-                            turn,
-                            category: Some(category_for_kind("milestone_evidence")),
-                            primitive: Some(primitive_for_kind("milestone_evidence")),
-                            phase_id,
-                            evidence,
-                        },
-                    )
-                    .await;
-                }
                 KernelObservation::Renewed { .. } => {}
                 KernelObservation::KnowledgeSwept { .. } => {}
                 KernelObservation::KnowledgeBudgetExceeded { .. } => {}
@@ -1834,48 +1844,6 @@ impl RuntimeRunner {
                 KernelObservation::BudgetExceeded { .. } => {}
                 KernelObservation::Suspended { .. } => {}
                 KernelObservation::Resumed { .. } => {}
-                KernelObservation::PageOut {
-                    turn,
-                    action,
-                    rho_after: _,
-                    summary,
-                    archived,
-                    tier_hint,
-                } => {
-                    if !archived.is_empty() {
-                        self.local_page_out_cache
-                            .lock()
-                            .unwrap()
-                            .extend(archived.clone());
-                    }
-
-                    let action_str = match action {
-                        KernelPressureAction::None => "none".to_string(),
-                        KernelPressureAction::SnipCompact => "snip_compact".to_string(),
-                        KernelPressureAction::MicroCompact => "micro_compact".to_string(),
-                        KernelPressureAction::ContextCollapse => "context_collapse".to_string(),
-                        KernelPressureAction::AutoCompact => "auto_compact".to_string(),
-                    };
-
-                    self.log(
-                        session_id,
-                        SessionEvent::PageOut {
-                            turn,
-                            category: Some(category_for_kind("page_out")),
-                            primitive: Some(primitive_for_kind("page_out")),
-                            action: Some(action_str.clone()),
-                            summary: summary.clone(),
-                            tier_hint: Some(tier_hint.clone()),
-                            message_count: archived.len() as u32,
-                        },
-                    )
-                    .await;
-
-                    if tier_hint == "semantic" && !archived.is_empty() {
-                        self.archive_semantic_page_out(archived, Some(action_str))
-                            .await;
-                    }
-                }
                 KernelObservation::MemoryWritten {
                     turn,
                     memory_id,
@@ -2092,6 +2060,17 @@ fn message_content_as_text(content: &deepstrike_core::types::message::Content) -
             })
             .collect::<Vec<_>>()
             .join("\n"),
+    }
+}
+
+
+fn action_str_of(action: KernelPressureAction) -> String {
+    match action {
+        KernelPressureAction::None => "none".to_string(),
+        KernelPressureAction::SnipCompact => "snip_compact".to_string(),
+        KernelPressureAction::MicroCompact => "micro_compact".to_string(),
+        KernelPressureAction::ContextCollapse => "context_collapse".to_string(),
+        KernelPressureAction::AutoCompact => "auto_compact".to_string(),
     }
 }
 

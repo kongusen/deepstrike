@@ -43,7 +43,6 @@ def test_observation_agent_process_changed_fixture_fields() -> None:
     ("observation_capability_changed.json", {"kind": "capability_changed", "turn": 1, "capability_id": "write_file"}),
     ("observation_milestone_advanced.json", {"kind": "milestone_advanced", "turn": 3, "phase_id": "phase-1"}),
     ("observation_milestone_blocked.json",  {"kind": "milestone_blocked",  "turn": 3, "phase_id": "phase-1"}),
-    ("observation_milestone_evidence.json", {"kind": "milestone_evidence", "turn": 3, "phase_id": "phase-1"}),
 ])
 def test_observation_fixture_fields(filename: str, expected: dict) -> None:
     obs = _load(filename)

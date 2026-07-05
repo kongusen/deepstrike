@@ -149,15 +149,6 @@ class MilestoneBlockedEvent(TypedDict, total=False):
     reason: str
 
 
-class MilestoneEvidenceEvent(TypedDict, total=False):
-    kind: Literal["milestone_evidence"]
-    turn: int
-    category: KernelEventCategory
-    primitive: KernelPrimitive
-    phase_id: str
-    evidence: list[str]
-
-
 class CheckpointTakenEvent(TypedDict, total=False):
     kind: Literal["checkpoint_taken"]
     turn: int
@@ -344,7 +335,6 @@ SessionEvent = (
     | CapabilityChangedEvent
     | MilestoneAdvancedEvent
     | MilestoneBlockedEvent
-    | MilestoneEvidenceEvent
     | CheckpointTakenEvent
     | AgentProcessChangedEvent
     | PageOutEvent

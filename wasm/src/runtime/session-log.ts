@@ -63,7 +63,6 @@ export type SessionEvent =
   | { kind: "budget_exceeded"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; budget: string }
   | { kind: "milestone_advanced"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; phase_id: string; capabilities_unlocked: string[] }
   | { kind: "milestone_blocked"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; phase_id: string; reason: string }
-  | { kind: "milestone_evidence"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; phase_id: string; evidence: string[] }
   | { kind: "checkpoint_taken"; turn: number; category?: KernelEventCategory; primitive?: KernelPrimitive; history_len: number }
   | {
       kind: "agent_process_changed"

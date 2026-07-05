@@ -78,28 +78,23 @@ impl LoopStateMachine {
         invalidates_prefix_at: Option<usize>,
     ) {
         let rho_after = self.ctx.rho();
+        // One compaction = ONE observation (the former separate PageOut duplicated summary +
+        // the full archived set across the FFI boundary). `tier_hint` rides along only when
+        // content actually left working context.
+        let tier_hint = (!archived.is_empty())
+            .then(|| tier_hint_for_compress(action).label().to_string());
         self.observations.push(KernelObservation::Compressed {
-            action: KernelPressureAction::from(action),
-            rho_after,
-            summary: summary.clone(),
-            archived: archived.clone(),
-            invalidates_prefix_at,
-        });
-        // K1: surface any boundary knowledge sweep that ran inside this compaction (before the
-        // archived-empty early-return — an in-place compaction can still have swept knowledge).
-        self.emit_knowledge_sweep_observations();
-        if archived.is_empty() {
-            return;
-        }
-        let tier_hint = tier_hint_for_compress(action).label().to_string();
-        self.observations.push(KernelObservation::PageOut {
             turn: self.turn,
             action: KernelPressureAction::from(action),
             rho_after,
             summary,
             archived,
+            invalidates_prefix_at,
             tier_hint,
         });
+        // K1: surface any boundary knowledge sweep that ran inside this compaction (an
+        // in-place compaction can still have swept knowledge).
+        self.emit_knowledge_sweep_observations();
     }
 
     /// K1: drain boundary knowledge sweeps (deferred upserts applied / marked entries dropped

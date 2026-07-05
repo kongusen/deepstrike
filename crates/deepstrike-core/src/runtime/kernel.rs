@@ -592,11 +592,17 @@ impl From<LoopAction> for KernelAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum KernelObservation {
+    /// One compaction = one observation. `archived` non-empty ⇒ content left working
+    /// context (what the retired separate PageOut observation used to duplicate);
+    /// `tier_hint` then names the recommended long-term tier for the archived batch.
     Compressed {
+        turn: u32,
         action: KernelPressureAction,
         rho_after: f64,
         summary: Option<String>,
         archived: Vec<Message>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier_hint: Option<String>,
         /// W1-1 cache-awareness: the message index at which this compression invalidated the
         /// prompt cache prefix (if any). `None` = prefix-safe. SDK/telemetry can use this to
         /// quantify "tokens saved vs cache rebuild cost". Additive ABI field with default.
@@ -655,13 +661,6 @@ pub enum KernelObservation {
         turn: u32,
         phase_id: String,
         reason: String,
-    },
-    /// Evidence collected by the verifier during milestone evaluation.
-    MilestoneEvidence {
-        turn: u32,
-        phase_id: String,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        evidence: Vec<String>,
     },
     /// Checkpoint taken at the start of a turn transaction (before LLM call).
     CheckpointTaken {
@@ -758,17 +757,6 @@ pub enum KernelObservation {
         approved: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         denied: Vec<String>,
-    },
-    /// Working memory archived for long-term storage (page-out decision).
-    PageOut {
-        turn: u32,
-        action: KernelPressureAction,
-        rho_after: f64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        summary: Option<String>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        archived: Vec<Message>,
-        tier_hint: String,
     },
     /// Memory entry written successfully (Phase 7).
     MemoryWritten {

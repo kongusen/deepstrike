@@ -26,7 +26,6 @@ _KERNEL_KINDS = frozenset({
     "agent_process_changed",
     "milestone_advanced",
     "milestone_blocked",
-    "milestone_evidence",
     "memory_written",
     "memory_queried",
     "memory_validation_failed",

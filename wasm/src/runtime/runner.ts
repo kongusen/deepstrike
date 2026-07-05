@@ -1738,14 +1738,23 @@ export class RuntimeRunner {
       const compressedSeq = await this.opts.sessionLog.append(sessionId, event)
       if (event.kind === "compressed") {
         nextArchiveStart = compressedSeq + 1
-      }
-      if (
-        obs.kind === "page_out"
-        && obs.tier_hint === "semantic"
-        && Array.isArray(obs.archived)
-        && obs.archived.length > 0
-      ) {
-        void this.archiveSemanticPageOut(obs.archived as Message[], compressionAction(obs.action))
+        // One compaction = one kernel observation: the page_out session record (and the
+        // semantic-archive branch) is DERIVED from Compressed.tier_hint, preserving the
+        // session-log format and OsSnapshot page_out_count.
+        const archived = obs.archived
+        if (obs.tier_hint && Array.isArray(archived) && archived.length > 0) {
+          await this.opts.sessionLog.append(sessionId, withCategory({
+            kind: "page_out" as const,
+            turn: (obs.turn as number | undefined) ?? turn,
+            action: compressionAction(obs.action),
+            summary: obs.summary as string | undefined,
+            tier_hint: (obs.tier_hint as string) ?? "durable",
+            message_count: archived.length,
+          }))
+          if (obs.tier_hint === "semantic") {
+            void this.archiveSemanticPageOut(archived as Message[], compressionAction(obs.action))
+          }
+        }
       }
       // K4: a sprint renewal dropped the old history — including any earlier memory hits — so
       // re-run the preQueryMemory prefetch for the new sprint (live observations only).

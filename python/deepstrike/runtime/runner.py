@@ -2274,14 +2274,23 @@ class RuntimeRunner:
       compressed_seq = await self._opts.session_log.append(session_id, event)
       if event.get("kind") == "compressed":
         next_archive_start = compressed_seq + 1
-      if (
-        obs.get("kind") == "page_out"
-        and obs.get("tier_hint") == "semantic"
-        and isinstance(obs.get("archived"), list)
-        and obs["archived"]
-      ):
-        import asyncio
-        asyncio.create_task(self._archive_semantic_page_out(list(obs["archived"]), _compression_action(obs.get("action"))))
+        # One compaction = one kernel observation: the page_out session record (and the
+        # semantic-archive branch) is DERIVED from Compressed.tier_hint, preserving the
+        # session-log format and OsSnapshot page_out_count.
+        archived = obs.get("archived")
+        tier_hint = obs.get("tier_hint")
+        if tier_hint and isinstance(archived, list) and archived:
+          await self._opts.session_log.append(session_id, with_category({
+            "kind": "page_out",
+            "turn": obs.get("turn") or turn,
+            "action": _compression_action(obs.get("action")),
+            "summary": obs.get("summary"),
+            "tier_hint": tier_hint,
+            "message_count": len(archived),
+          }))
+          if tier_hint == "semantic":
+            import asyncio
+            asyncio.create_task(self._archive_semantic_page_out(list(archived), _compression_action(obs.get("action"))))
       # K4: a sprint renewal dropped the old history — including any earlier memory hits — so
       # re-run the pre_query_memory prefetch for the new sprint (live observations only: this
       # consumer sits on the live drain path, same placement as the semantic page-out archival).

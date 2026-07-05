@@ -262,11 +262,6 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<RollbackReason>,
     },
-    /// Host-level resources (temporary workspace trees, MCP child processes) garbage-collected.
-    CleanupCompleted {
-        run_id: String,
-        freed_resources: Vec<String>,
-    },
 
     // ─── 4. Process Table ───
     /// Kernel process table changed for a spawned sub-agent.
@@ -309,17 +304,6 @@ pub enum SessionEvent {
         primitive: Option<Primitive>,
         phase_id: String,
         reason: String,
-    },
-    /// Evidence collected by the verifier during milestone evaluation.
-    MilestoneEvidence {
-        turn: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        category: Option<KernelEventCategory>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        primitive: Option<Primitive>,
-        phase_id: String,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        evidence: Vec<String>,
     },
 
     // ─── 6. Long-Term Memory (Phase 7) ───
@@ -387,11 +371,9 @@ impl SessionEvent {
             Self::BudgetExceeded { .. } => "budget_exceeded",
             Self::CheckpointTaken { .. } => "checkpoint_taken",
             Self::Rollbacked { .. } => "rollbacked",
-            Self::CleanupCompleted { .. } => "cleanup_completed",
             Self::AgentProcessChanged { .. } => "agent_process_changed",
             Self::MilestoneAdvanced { .. } => "milestone_advanced",
             Self::MilestoneBlocked { .. } => "milestone_blocked",
-            Self::MilestoneEvidence { .. } => "milestone_evidence",
             Self::MemoryWritten { .. } => "memory_written",
             Self::MemoryQueried { .. } => "memory_queried",
             Self::MemoryValidationFailed { .. } => "memory_validation_failed",
@@ -418,7 +400,6 @@ impl SessionEvent {
             | Self::AgentProcessChanged { category, .. }
             | Self::MilestoneAdvanced { category, .. }
             | Self::MilestoneBlocked { category, .. }
-            | Self::MilestoneEvidence { category, .. }
             | Self::MemoryWritten { category, .. }
             | Self::MemoryQueried { category, .. }
             | Self::MemoryValidationFailed { category, .. } => *category,
@@ -447,7 +428,6 @@ impl SessionEvent {
                 | Self::AgentProcessChanged { .. }
                 | Self::MilestoneAdvanced { .. }
                 | Self::MilestoneBlocked { .. }
-                | Self::MilestoneEvidence { .. }
                 | Self::MemoryWritten { .. }
                 | Self::MemoryQueried { .. }
                 | Self::MemoryValidationFailed { .. }

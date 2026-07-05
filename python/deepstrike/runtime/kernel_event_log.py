@@ -67,16 +67,6 @@ def kernel_observation_to_session_event(
     to_action = compression_action or (lambda _a: None)
 
     kind = obs.get("kind")
-    if kind == "page_out":
-        archived = obs.get("archived")
-        return with_category({
-            "kind": "page_out",
-            "turn": t,
-            "action": to_action(obs.get("action")),
-            "summary": obs.get("summary"),
-            "tier_hint": obs.get("tier_hint") or "durable",
-            "message_count": len(archived) if isinstance(archived, list) else 0,
-        })
     if kind == "compressed":
         latest = latest_seq if latest_seq is not None else -1
         if latest < next_archive_start:
@@ -130,13 +120,6 @@ def kernel_observation_to_session_event(
             "turn": t,
             "phase_id": obs.get("phase_id") or "",
             "reason": obs.get("reason") or "",
-        })
-    if kind == "milestone_evidence":
-        return with_category({
-            "kind": "milestone_evidence",
-            "turn": t,
-            "phase_id": obs.get("phase_id") or "",
-            "evidence": obs.get("evidence") or [],
         })
     if kind == "checkpoint_taken":
         return with_category({

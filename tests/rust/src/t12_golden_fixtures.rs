@@ -110,11 +110,6 @@ fn test_observation_milestone_blocked_fixture() {
 }
 
 #[test]
-fn test_observation_milestone_evidence_fixture() {
-    assert_roundtrip::<KernelObservation>("observation_milestone_evidence.json");
-}
-
-#[test]
 fn spawn_sub_agent_fixture_updates_process_table_via_kernel() {
     use deepstrike_core::runtime::{KernelInput, KernelInputEvent, KernelObservation, KernelRuntime};
     use deepstrike_core::scheduler::policy::SchedulerBudget;

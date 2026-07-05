@@ -18,7 +18,6 @@ const KERNEL_KINDS = new Set([
   "agent_process_changed",
   "milestone_advanced",
   "milestone_blocked",
-  "milestone_evidence",
 ])
 
 export interface OsSnapshot {

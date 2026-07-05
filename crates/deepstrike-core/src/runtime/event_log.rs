@@ -78,13 +78,11 @@ pub fn category_for_kind(kind: &str) -> KernelEventCategory {
         | "checkpoint_taken"
         | "rollbacked"
         | "milestone_advanced"
-        | "milestone_blocked"
-        | "milestone_evidence" => KernelEventCategory::Sched,
+        | "milestone_blocked" => KernelEventCategory::Sched,
         "compressed"
         | "page_out"
         | "page_in"
-        | "page_in_requested"
-        |         "renewed"
+        | "renewed"
         | "context_renewed"
         | "large_result_spooled" => KernelEventCategory::Mm,
         "agent_process_changed" | "agent_spawned" | "workflow_batch_spawned"
@@ -99,13 +97,11 @@ pub fn category_for_kind(kind: &str) -> KernelEventCategory {
 pub const KERNEL_OBSERVATION_KINDS: &[&str] = &[
     "compressed",
     "page_out",
-    "page_in_requested",
     "renewed",
     "rollbacked",
     "capability_changed",
     "milestone_advanced",
     "milestone_blocked",
-    "milestone_evidence",
     "checkpoint_taken",
     "agent_process_changed",
     "workflow_batch_spawned",

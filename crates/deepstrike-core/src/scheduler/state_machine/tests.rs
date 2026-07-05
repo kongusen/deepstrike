@@ -539,7 +539,11 @@
         }
         assert!(sm.force_compact());
         let obs = sm.take_observations();
-        assert!(obs.iter().any(|o| matches!(o, KernelObservation::PageOut { .. })));
+        // One compaction = one observation: archived content + tier hint ride on Compressed.
+        assert!(obs.iter().any(|o| matches!(
+            o,
+            KernelObservation::Compressed { archived, tier_hint: Some(_), .. } if !archived.is_empty()
+        )));
     }
 
     #[test]
@@ -749,12 +753,12 @@
         let obs = sm.take_observations();
         let semantic_pageout = obs.iter().any(|o| matches!(
             o,
-            KernelObservation::PageOut { tier_hint, archived, action: KernelPressureAction::AutoCompact, .. }
-                if tier_hint == "semantic" && !archived.is_empty()
+            KernelObservation::Compressed { tier_hint: Some(tier), archived, action: KernelPressureAction::AutoCompact, .. }
+                if tier == "semantic" && !archived.is_empty()
         ));
         assert!(
             semantic_pageout,
-            "AutoCompact must page archived messages to the semantic tier for SDK LLM summary"
+            "AutoCompact must hint the semantic tier for the archived batch (SDK LLM summary)"
         );
     }
 

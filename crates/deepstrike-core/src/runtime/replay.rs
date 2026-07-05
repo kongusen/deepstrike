@@ -178,8 +178,7 @@ pub fn session_log_has_required_categories(events: &[SessionEvent]) -> bool {
             | SessionEvent::Rollbacked { category, .. }
             | SessionEvent::AgentProcessChanged { category, .. }
             | SessionEvent::MilestoneAdvanced { category, .. }
-            | SessionEvent::MilestoneBlocked { category, .. }
-            | SessionEvent::MilestoneEvidence { category, .. } => category.is_some(),
+            | SessionEvent::MilestoneBlocked { category, .. } => category.is_some(),
             _ => true,
         }
     })

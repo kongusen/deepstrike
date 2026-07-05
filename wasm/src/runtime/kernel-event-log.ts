@@ -58,15 +58,6 @@ export function kernelObservationToSessionEvent(
   const compressionAction = opts.compressionAction ?? (() => undefined)
 
   switch (obs.kind) {
-    case "page_out":
-      return withCategory({
-        kind: "page_out" as const,
-        turn: t,
-        action: compressionAction(obs.action),
-        summary: obs.summary,
-        tier_hint: obs.tier_hint ?? "durable",
-        message_count: Array.isArray(obs.archived) ? obs.archived.length : 0,
-      })
     case "compressed": {
       const latest = opts.latestSeq ?? -1
       const start = opts.nextArchiveStart ?? 0
@@ -121,13 +112,6 @@ export function kernelObservationToSessionEvent(
         turn: t,
         phase_id: obs.phase_id ?? "",
         reason: typeof obs.reason === "string" ? obs.reason : "",
-      })
-    case "milestone_evidence":
-      return withCategory({
-        kind: "milestone_evidence" as const,
-        turn: t,
-        phase_id: obs.phase_id ?? "",
-        evidence: obs.evidence ?? [],
       })
     case "checkpoint_taken":
       return withCategory({
