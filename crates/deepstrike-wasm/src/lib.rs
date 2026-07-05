@@ -14,6 +14,13 @@ use deepstrike_core::harness::eval::{
     build_eval_messages as rust_build_eval_messages, parse_verdict as rust_parse_verdict,
     verdict_output_schema as rust_verdict_output_schema, Criterion as RustCriterion,
 };
+use deepstrike_core::memory::curator::CurationResult as RustCurationResult;
+use deepstrike_core::memory::durable::SessionData as RustSessionData;
+use deepstrike_core::memory::idle_pipeline::{
+    IdleAction as RustIdleAction, IdleEvent as RustIdleEvent, IdlePipeline as RustIdlePipeline,
+    IdlePolicy as RustIdlePolicy,
+};
+use deepstrike_core::memory::semantic::MemoryEntry as RustMemoryEntry;
 use deepstrike_core::runtime::{
     KernelInput as RustKernelInput, KernelRuntime as RustKernelRuntime,
 };
@@ -770,5 +777,270 @@ impl Governance {
         };
         let caller = AgentIdentity::new(&self.agent_id, &self.session_id);
         governance_verdict_from_rust(self.inner.evaluate(&call, &caller))
+    }
+}
+
+
+// ────────────────────────────── Dream / idle consolidation pipeline ──────────────────────────────
+// Parity with the napi/pyo3 IdlePipeline (the wasm SDK's Agent.dream() drives this; the ambient
+// wasm-kernel.d.ts already promised this class).
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionData {
+    pub session_id: String,
+    pub agent_id: String,
+    pub messages: Vec<Message>,
+    /// JSON-encoded metadata blob.
+    pub metadata: String,
+    pub created_at_ms: f64,
+    pub updated_at_ms: f64,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEntry {
+    pub text: String,
+    pub score: f64,
+    /// JSON-encoded metadata blob.
+    pub metadata: String,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct CurationStats {
+    pub insights_processed: u32,
+    pub duplicates_removed: u32,
+    pub conflicts_resolved: u32,
+    pub entries_added: u32,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct CurationResult {
+    pub to_add: Vec<MemoryEntry>,
+    /// Indices into the `existingMemories` slice passed to `feedTrigger`.
+    pub to_remove_indices: Vec<u32>,
+    pub stats: CurationStats,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct IdleRunResult {
+    pub sessions_processed: u32,
+    pub insights_extracted: u32,
+}
+
+/// Discriminated union returned by `IdlePipeline` methods. Inspect `kind`:
+/// - `"synthesize_insights"` → `messages` (SDK must call the LLM, then `feedSynthesisResult`)
+/// - `"commit_memories"`     → `agentId`, `curationResult`, `runResult`
+/// - `"noop"` | `"aborted"`
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct IdlePipelineAction {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub messages: Option<Vec<Message>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curation_result: Option<CurationResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_result: Option<IdleRunResult>,
+}
+
+fn role_str_to_rust(role: &str) -> Result<Role, JsValue> {
+    match role {
+        "system" => Ok(Role::System),
+        "user" => Ok(Role::User),
+        "assistant" => Ok(Role::Assistant),
+        "tool" => Ok(Role::Tool),
+        other => Err(JsValue::from_str(&format!("invalid role: {other}"))),
+    }
+}
+
+fn content_part_to_rust(p: ContentPartObj) -> ContentPart {
+    match p.r#type.as_str() {
+        "image" => ContentPart::Image {
+            url: p.url,
+            data: p.data,
+            media_type: p.media_type,
+            detail: p.detail,
+        },
+        "audio" => ContentPart::Audio {
+            data: p.data.unwrap_or_default(),
+            media_type: p.media_type.unwrap_or_else(|| "audio/wav".into()),
+        },
+        "tool_result" => ContentPart::ToolResult {
+            call_id: CompactString::new(&p.call_id.unwrap_or_default()),
+            output: p.output.unwrap_or_default(),
+            is_error: p.is_error.unwrap_or(false),
+        },
+        _ => ContentPart::Text {
+            text: p.text.unwrap_or_default(),
+        },
+    }
+}
+
+fn message_to_rust(m: Message) -> Result<RustMessage, JsValue> {
+    let role = role_str_to_rust(&m.role)?;
+    let tool_calls: Vec<RustToolCall> = m
+        .tool_calls
+        .into_iter()
+        .map(|c| {
+            let args: serde_json::Value =
+                serde_json::from_str(&c.arguments).unwrap_or(serde_json::Value::Null);
+            RustToolCall {
+                id: CompactString::new(&c.id),
+                name: CompactString::new(&c.name),
+                arguments: args,
+            }
+        })
+        .collect();
+    let content = match m.content_parts {
+        Some(parts) if !parts.is_empty() => {
+            Content::Parts(parts.into_iter().map(content_part_to_rust).collect())
+        }
+        _ => Content::Text(m.content),
+    };
+    Ok(RustMessage {
+        role,
+        content,
+        tool_calls,
+        token_count: m.token_count,
+    })
+}
+
+fn session_data_to_rust(s: SessionData) -> Result<RustSessionData, JsValue> {
+    let messages: Vec<RustMessage> = s
+        .messages
+        .into_iter()
+        .map(message_to_rust)
+        .collect::<Result<_, _>>()?;
+    let metadata: serde_json::Value =
+        serde_json::from_str(&s.metadata).unwrap_or(serde_json::Value::Null);
+    Ok(RustSessionData {
+        session_id: s.session_id,
+        agent_id: s.agent_id,
+        messages,
+        metadata,
+        created_at_ms: s.created_at_ms as u64,
+        updated_at_ms: s.updated_at_ms as u64,
+    })
+}
+
+fn memory_entry_to_rust(e: MemoryEntry) -> RustMemoryEntry {
+    let metadata: serde_json::Value =
+        serde_json::from_str(&e.metadata).unwrap_or(serde_json::Value::Null);
+    RustMemoryEntry { text: e.text, score: e.score, metadata }
+}
+
+fn memory_entry_from_rust(e: &RustMemoryEntry) -> MemoryEntry {
+    MemoryEntry {
+        text: e.text.clone(),
+        score: e.score,
+        metadata: serde_json::to_string(&e.metadata).unwrap_or_else(|_| "null".into()),
+    }
+}
+
+fn curation_result_from_rust(r: RustCurationResult) -> CurationResult {
+    CurationResult {
+        to_add: r.to_add.iter().map(memory_entry_from_rust).collect(),
+        to_remove_indices: r.to_remove_indices.iter().map(|&i| i as u32).collect(),
+        stats: CurationStats {
+            insights_processed: r.stats.insights_processed as u32,
+            duplicates_removed: r.stats.duplicates_removed as u32,
+            conflicts_resolved: r.stats.conflicts_resolved as u32,
+            entries_added: r.stats.entries_added as u32,
+        },
+    }
+}
+
+fn idle_pipeline_action_from_rust(a: RustIdleAction) -> IdlePipelineAction {
+    match a {
+        RustIdleAction::SynthesizeInsights { messages } => IdlePipelineAction {
+            kind: "synthesize_insights".into(),
+            messages: Some(messages.iter().map(message_from_rust).collect()),
+            agent_id: None,
+            curation_result: None,
+            run_result: None,
+        },
+        RustIdleAction::CommitMemories { agent_id, result, run_result } => IdlePipelineAction {
+            kind: "commit_memories".into(),
+            messages: None,
+            agent_id: Some(agent_id),
+            curation_result: Some(curation_result_from_rust(result)),
+            run_result: Some(IdleRunResult {
+                sessions_processed: run_result.sessions_processed as u32,
+                insights_extracted: run_result.insights_extracted as u32,
+            }),
+        },
+        RustIdleAction::Noop => IdlePipelineAction {
+            kind: "noop".into(),
+            messages: None,
+            agent_id: None,
+            curation_result: None,
+            run_result: None,
+        },
+        RustIdleAction::Aborted => IdlePipelineAction {
+            kind: "aborted".into(),
+            messages: None,
+            agent_id: None,
+            curation_result: None,
+            run_result: None,
+        },
+    }
+}
+
+/// Two-phase offline dream pipeline (parity with the napi/pyo3 exports):
+/// 1. `feedTrigger(sessions, existingMemories, nowMs)` → `"synthesize_insights"` + prompt messages
+/// 2. Call the LLM with those messages, collect the text response
+/// 3. `feedSynthesisResult(text)` → `"commit_memories"` with the curation delta
+#[wasm_bindgen]
+pub struct IdlePipeline {
+    inner: RustIdlePipeline,
+}
+
+#[wasm_bindgen]
+impl IdlePipeline {
+    #[wasm_bindgen(constructor)]
+    pub fn new(agent_id: String) -> Self {
+        Self {
+            inner: RustIdlePipeline::new(RustIdlePolicy::new(agent_id)),
+        }
+    }
+
+    #[wasm_bindgen(js_name = feedTrigger)]
+    pub fn feed_trigger(
+        &mut self,
+        sessions: Vec<SessionData>,
+        existing_memories: Vec<MemoryEntry>,
+        now_ms: f64,
+    ) -> Result<IdlePipelineAction, JsValue> {
+        let rust_sessions: Vec<RustSessionData> = sessions
+            .into_iter()
+            .map(session_data_to_rust)
+            .collect::<Result<_, _>>()?;
+        let rust_memories: Vec<RustMemoryEntry> = existing_memories
+            .into_iter()
+            .map(memory_entry_to_rust)
+            .collect();
+        let action = self.inner.feed(RustIdleEvent::Trigger {
+            sessions: rust_sessions,
+            existing_memories: rust_memories,
+            now_ms: now_ms as u64,
+        });
+        Ok(idle_pipeline_action_from_rust(action))
+    }
+
+    #[wasm_bindgen(js_name = feedSynthesisResult)]
+    pub fn feed_synthesis_result(&mut self, content: String) -> IdlePipelineAction {
+        idle_pipeline_action_from_rust(self.inner.feed(RustIdleEvent::SynthesisResult { content }))
     }
 }
