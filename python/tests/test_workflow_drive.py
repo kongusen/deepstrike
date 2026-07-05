@@ -381,10 +381,20 @@ def test_recover_submitted_workflow_nodes_in_order():
 
     e1 = build_workflow_nodes_submitted_event(turn=1, nodes=[{"task": {"goal": "a"}}])
     e2 = build_workflow_nodes_submitted_event(turn=2, nodes=[{"task": {"goal": "b"}}])
-    assert recover_submitted_workflow_nodes([e1, e2]) == [
+    submissions, bases = recover_submitted_workflow_nodes([e1, e2])
+    assert submissions == [
         [{"task": {"goal": "a"}}],
         [{"task": {"goal": "b"}}],
     ]
+    assert bases == []  # legacy records carry no base
+
+    # Recorded bases come back parallel; a mixed log degrades to order-only for safety.
+    b1 = build_workflow_nodes_submitted_event(turn=1, nodes=[{"task": {"goal": "a"}}], base_index=3)
+    b2 = build_workflow_nodes_submitted_event(turn=2, nodes=[{"task": {"goal": "b"}}], base_index=5)
+    _, bases_full = recover_submitted_workflow_nodes([b1, b2])
+    assert bases_full == [3, 5]
+    _, bases_mixed = recover_submitted_workflow_nodes([b1, e2])
+    assert bases_mixed == []
 
 
 @pytest.mark.asyncio

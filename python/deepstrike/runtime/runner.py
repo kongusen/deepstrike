@@ -509,6 +509,7 @@ class RuntimeRunner:
     *,
     resumed_completed: list[str] | None = None,
     resumed_submissions: list | None = None,
+    resumed_submission_bases: list[int] | None = None,
     session_id: str | None = None,
     _initial_event: dict[str, Any] | None = None,
   ) -> dict[str, list[str]]:
@@ -542,6 +543,7 @@ class RuntimeRunner:
         spec,
         resumed_completed=resumed_completed,
         resumed_submissions=resumed_submissions,
+        resumed_submission_bases=resumed_submission_bases,
         _initial_event=_initial_event,
       )
     finally:
@@ -615,6 +617,7 @@ class RuntimeRunner:
     *,
     resumed_completed: list[str] | None = None,
     resumed_submissions: list | None = None,
+    resumed_submission_bases: list[int] | None = None,
     _initial_event: dict[str, Any] | None = None,
   ) -> dict[str, list[str]]:
     """W0-ABI: run a declarative workflow DAG.
@@ -688,6 +691,8 @@ class RuntimeRunner:
       # R3-1: re-apply recorded runtime submissions so dynamically-appended nodes are reconstructed.
       if resumed_submissions and len(resumed_submissions) > 0:
         load_event["resumed_submissions"] = resumed_submissions
+      if resumed_submission_bases and len(resumed_submission_bases) > 0:
+        load_event["resumed_submission_bases"] = resumed_submission_bases
 
     observations = kernel_apply(runtime, self._pending_observations, load_event)
 
@@ -914,12 +919,17 @@ class RuntimeRunner:
           sub_obs = kernel_apply(runtime, self._pending_observations, submit_event)
           next_nodes.extend(_collect_nodes(sub_obs))
           budget = _collect_budget(sub_obs) or budget
-          # R3-1: persist the submission (kernel-shape nodes) so resume can re-apply it.
+          # R3-1: persist the submission (kernel-shape nodes) + the kernel-reported base index
+          # so resume can re-apply the batch at the exact original graph position.
+          _submitted = next(
+            (o for o in sub_obs if o.get("kind") == "workflow_nodes_submitted"), None
+          )
           await self._opts.session_log.append(
             parent_session_id,
             build_workflow_nodes_submitted_event(
               turn=runtime.turn(),
               nodes=submit_event.get("nodes") or [],
+              base_index=_submitted.get("base") if _submitted else None,
             ),
           )
         obs = kernel_apply(runtime, self._pending_observations, {
@@ -983,11 +993,12 @@ class RuntimeRunner:
 
     events = await self._opts.session_log.read(sid)
     resumed_completed = recover_completed_workflow_nodes(events)
-    resumed_submissions = recover_submitted_workflow_nodes(events)
+    resumed_submissions, resumed_bases = recover_submitted_workflow_nodes(events)
     return await self.run_workflow(
       spec,
       resumed_completed=resumed_completed,
       resumed_submissions=resumed_submissions,
+      resumed_submission_bases=resumed_bases,
       session_id=sid,
     )
 

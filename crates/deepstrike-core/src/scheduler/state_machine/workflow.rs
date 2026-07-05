@@ -83,7 +83,16 @@ impl LoopStateMachine {
         if let Some(run) = self.workflow.as_mut() {
             // G1: route through the trust-aware entry point — a quarantined submitter's nodes are
             // coerced to quarantined in-kernel before append (no topological privilege escalation).
-            run.submit_nodes_from(submitter_agent_id, nodes);
+            let appended = run.submit_nodes_from(submitter_agent_id, nodes);
+            if let Some(&base) = appended.first() {
+                // R3-1: surface the batch's base index so the SDK-persisted
+                // `workflow_nodes_submitted` record lets resume rebuild exact indices.
+                self.observations.push(KernelObservation::WorkflowNodesSubmitted {
+                    turn: self.turn,
+                    base: base as u32,
+                    count: appended.len() as u32,
+                });
+            }
         }
         self.drive_workflow(None)
     }
@@ -130,7 +139,14 @@ impl LoopStateMachine {
         match self.workflow.as_mut() {
             // Flatten: caller is a workflow node; grow the existing DAG (G1 coercion applies).
             Some(run) => {
-                run.submit_nodes_from(submitter_agent_id, spec.nodes);
+                let appended = run.submit_nodes_from(submitter_agent_id, spec.nodes);
+                if let Some(&base) = appended.first() {
+                    self.observations.push(KernelObservation::WorkflowNodesSubmitted {
+                        turn: self.turn,
+                        base: base as u32,
+                        count: appended.len() as u32,
+                    });
+                }
                 self.drive_workflow(None)
             }
             // Bootstrap: top-level agent starts a brand-new workflow in this same kernel.
@@ -148,12 +164,14 @@ impl LoopStateMachine {
         spec: crate::orchestration::workflow::WorkflowSpec,
         parent_session_id: &str,
         submissions: &[Vec<crate::orchestration::workflow::WorkflowNode>],
+        submission_bases: &[u32],
         completed: &[String],
     ) -> LoopAction {
         self.install_workflow(crate::orchestration::workflow::WorkflowRun::resume(
             &spec,
             parent_session_id,
             submissions,
+            submission_bases,
             completed,
         ))
     }

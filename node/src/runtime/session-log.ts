@@ -89,6 +89,9 @@ export type SessionEvent =
       turn: number
       /** Kernel-shape (snake_case) submitted node specs — persisted so resume can re-apply them. */
       nodes: Record<string, unknown>[]
+      /** R3-1: graph base index the batch was appended at (from the kernel's
+       *  WorkflowNodesSubmitted observation) — lets resume rebuild exact indices. */
+      base_index?: number
     }
   | {
       kind: "workflow_batch_spawned"

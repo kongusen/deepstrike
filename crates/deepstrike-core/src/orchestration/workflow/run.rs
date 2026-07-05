@@ -17,6 +17,8 @@ use crate::orchestration::task_graph::{TaskGraph, TaskStatus};
 use crate::orchestration::tournament::{EntrantId, Match, Tournament, TournamentAction};
 use super::{NodeKind, NodeTrust, WorkflowNode, WorkflowSpec};
 use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance, IsolationManifest};
+use crate::types::error::DeepStrikeError;
+use crate::types::task::RuntimeTask;
 use crate::types::error::Result;
 use crate::types::result::{LoopResult, TerminationReason};
 
@@ -249,14 +251,13 @@ impl WorkflowRun {
     /// continues the DAG from where it left off.
     ///
     /// R3-1: `submissions` are the runtime [`Self::submit_nodes`] batches recorded (in order) before
-    /// the interruption. They are re-applied **first**, reconstructing dynamically-appended nodes.
-    /// This reproduces the pre-interruption graph when submissions were the only runtime appends.
-    /// KNOWN LIMIT: tournament entrant/judge children are runtime appends that are NOT recorded as
-    /// submissions — if the original run interleaved a tournament bracket between submission
-    /// batches, replayed batches shift onto the children's old indices and a child's completed id
-    /// could mark the wrong node. Fixing that needs the submission's base index on the
-    /// `workflow_nodes_submitted` event (additive ABI, cross-SDK batch); until then an interrupted
-    /// bracket restarts and unknown ids are ignored.
+    /// the interruption, re-applied **first** so dynamically-appended nodes reconstruct. When
+    /// `submission_bases` records each batch's original base index (from the
+    /// `WorkflowNodesSubmitted` observation), batches are re-applied at those EXACT indices,
+    /// gap-filling any interleaved runtime children (tournament entrants/judges) with inert
+    /// completed placeholders — so a later batch never shifts onto a child's old index and every
+    /// completed id maps to the node it originally named. Without bases (legacy logs) batches
+    /// replay in order, which is exact only when submissions were the sole runtime appends.
     ///
     /// Loop iterations complete under `wf-node{N}-i{k}`: replay advances the iteration cursor to
     /// the highest recorded `k+1` instead of discarding the finished work — the node re-arms at the
@@ -266,10 +267,34 @@ impl WorkflowRun {
         spec: &WorkflowSpec,
         parent_session_id: &str,
         submissions: &[Vec<WorkflowNode>],
+        submission_bases: &[u32],
         completed: &[String],
     ) -> Result<Self> {
         let mut run = Self::new(spec, parent_session_id)?;
-        for batch in submissions {
+        for (i, batch) in submissions.iter().enumerate() {
+            if let Some(&base) = submission_bases.get(i) {
+                let base = base as usize;
+                if base < run.nodes.len() {
+                    return Err(DeepStrikeError::InvalidConfig(format!(
+                        "resume: submission {i} base {base} below reconstructed graph len {} —                          corrupt submission record",
+                        run.nodes.len()
+                    )));
+                }
+                // Gap = runtime children appended between batches (a restarting bracket).
+                // Fill with inert completed placeholders so indices stay faithful; a child's
+                // completed id then lands on its placeholder instead of a shifted later batch.
+                while run.nodes.len() < base {
+                    let idx = run.nodes.len();
+                    let node = WorkflowNode::new(
+                        RuntimeTask::new("[resume placeholder: runtime child slot]"),
+                        AgentRole::Implement,
+                    );
+                    run.graph.add(node.task.clone(), Vec::new());
+                    run.nodes.push(node);
+                    run.graph.start(idx);
+                    run.graph.complete(idx, resumed_result());
+                }
+            }
             run.submit_nodes(batch.clone());
         }
         let n = run.graph.len();
@@ -1332,7 +1357,7 @@ mod tests {
             vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
             RuntimeTask::new("synth"),
         );
-        let run = WorkflowRun::resume(&spec, "sess", &[], &[node_agent_id(0)]).unwrap();
+        let run = WorkflowRun::resume(&spec, "sess", &[], &[], &[node_agent_id(0)]).unwrap();
         // only the remaining worker (node 1) is ready; node 0 is already complete, synth still gated.
         assert_eq!(run.ready_batch(), vec![1]);
         assert!(!run.is_complete());
@@ -1342,9 +1367,53 @@ mod tests {
     fn resume_with_all_done_completes() {
         let spec = fanout_synthesize(vec![RuntimeTask::new("w0")], RuntimeTask::new("synth"));
         // both nodes (worker 0, synth 1) recovered as done.
-        let run = WorkflowRun::resume(&spec, "sess", &[], &[node_agent_id(0), node_agent_id(1)]).unwrap();
+        let run = WorkflowRun::resume(&spec, "sess", &[], &[], &[node_agent_id(0), node_agent_id(1)]).unwrap();
         assert!(run.ready_batch().is_empty());
         assert!(run.is_complete());
+    }
+
+    #[test]
+    fn resume_applies_submissions_at_recorded_bases_with_placeholder_gap_fill() {
+        // The interleave bug: original run = spec [node0] → tournament children at 1,2 →
+        // runtime submission at base 3. Without bases, the submission replays at index 1 and
+        // the child's completed id "wf-node2" would mark the WRONG node. With the recorded
+        // base, indices stay faithful: 1,2 become inert completed placeholders, the batch
+        // lands at 3, and every completed id maps to the node it originally named.
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("root"),
+            AgentRole::Implement,
+        )]);
+        let submission = vec![WorkflowNode::new(
+            RuntimeTask::new("late batch"),
+            AgentRole::Implement,
+        )];
+        let run = WorkflowRun::resume(
+            &spec,
+            "sess",
+            &[submission],
+            &[3],
+            &["wf-node2".to_string(), "wf-node3".to_string()],
+        )
+        .unwrap();
+        assert_eq!(run.graph.len(), 4, "spec node + 2 placeholders + 1 submitted");
+        // The submitted node (3) is complete because ITS id was recorded — not shifted.
+        assert!(run.ready_batch() == vec![0], "only the spec node remains to run");
+        // A base below the reconstructed length is corrupt, not silently reinterpreted.
+        let spec2 = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("a"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("b"), AgentRole::Implement),
+        ]);
+        let bad = WorkflowRun::resume(
+            &spec2,
+            "sess",
+            &[vec![WorkflowNode::new(RuntimeTask::new("x"), AgentRole::Implement)]],
+            &[1],
+            &[],
+        );
+        assert!(bad.is_err(), "base inside the spec range is a corrupt record");
     }
 
     #[test]
@@ -1357,11 +1426,7 @@ mod tests {
         let mut node = WorkflowNode::new(RuntimeTask::new("polish until done"), AgentRole::Implement);
         node.kind = NodeKind::Loop { max_iters: 3 };
         let spec = WorkflowSpec::new(vec![node]);
-        let run = WorkflowRun::resume(
-            &spec,
-            "sess",
-            &[],
-            &["wf-node0-i0".to_string(), "wf-node0-i1".to_string()],
+        let run = WorkflowRun::resume(&spec, "sess", &[], &[], &["wf-node0-i0".to_string(), "wf-node0-i1".to_string()],
         )
         .unwrap();
         assert_eq!(run.ready_batch(), vec![0], "loop node re-armed, not complete");
@@ -1377,11 +1442,7 @@ mod tests {
         let mut node = WorkflowNode::new(RuntimeTask::new("polish"), AgentRole::Implement);
         node.kind = NodeKind::Loop { max_iters: 2 };
         let spec = WorkflowSpec::new(vec![node]);
-        let run = WorkflowRun::resume(
-            &spec,
-            "sess",
-            &[],
-            &["wf-node0-i0".to_string(), "wf-node0-i1".to_string()],
+        let run = WorkflowRun::resume(&spec, "sess", &[], &[], &["wf-node0-i0".to_string(), "wf-node0-i1".to_string()],
         )
         .unwrap();
         assert!(run.ready_batch().is_empty());
@@ -1403,14 +1464,14 @@ mod tests {
         let submission = vec![WorkflowNode::new(RuntimeTask::new("discovered"), AgentRole::Implement)];
 
         // root done, submission re-applied, but the appended node not yet completed.
-        let run = WorkflowRun::resume(&spec, "sess", &[submission.clone()], &[node_agent_id(0)]).unwrap();
+        let run = WorkflowRun::resume(&spec, "sess", &[submission.clone()], &[], &[node_agent_id(0)]).unwrap();
         assert_eq!(run.len(), 2, "base node + re-applied submitted node");
         assert_eq!(run.ready_batch(), vec![1], "the re-applied appended node is the remaining work");
         assert!(!run.is_complete());
 
         // both recovered as done → resume finishes.
         let run2 =
-            WorkflowRun::resume(&spec, "sess", &[submission], &[node_agent_id(0), node_agent_id(1)]).unwrap();
+            WorkflowRun::resume(&spec, "sess", &[submission], &[], &[node_agent_id(0), node_agent_id(1)]).unwrap();
         assert!(run2.ready_batch().is_empty());
         assert!(run2.is_complete());
     }

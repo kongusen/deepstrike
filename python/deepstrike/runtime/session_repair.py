@@ -104,18 +104,27 @@ def recover_completed_workflow_nodes(events: list[Any]) -> list[str]:
   return completed
 
 
-def build_workflow_nodes_submitted_event(*, turn: int, nodes: list) -> dict[str, Any]:
+def build_workflow_nodes_submitted_event(
+  *, turn: int, nodes: list, base_index: int | None = None,
+) -> dict[str, Any]:
   """R3-1: build a workflow_nodes_submitted event for persistence after a runtime submission, so
-  resume can re-apply it. ``nodes`` is the kernel-shape (snake_case) submitted node array."""
-  return {"kind": "workflow_nodes_submitted", "turn": turn, "nodes": nodes}
+  resume can re-apply it. ``nodes`` is the kernel-shape (snake_case) submitted node array;
+  ``base_index`` is the kernel-reported graph position (WorkflowNodesSubmitted observation)."""
+  event: dict[str, Any] = {"kind": "workflow_nodes_submitted", "turn": turn, "nodes": nodes}
+  if base_index is not None:
+    event["base_index"] = base_index
+  return event
 
 
-def recover_submitted_workflow_nodes(events: list[Any]) -> list:
-  """R3-1: recover the runtime submission batches (in order) from a session event stream, to rebuild
-  ``resumed_submissions`` for resume_workflow so dynamically-appended nodes are reconstructed."""
+def recover_submitted_workflow_nodes(events: list[Any]) -> tuple[list, list[int]]:
+  """R3-1: recover the runtime submission batches (in order) plus their recorded base indices.
+  A mixed log (some records without ``base_index``) degrades to order-only replay (empty bases)."""
   submissions: list = []
+  bases: list[int] = []
   for entry in events:
     event = entry.event if hasattr(entry, "event") else entry
     if event.get("kind") == "workflow_nodes_submitted":
       submissions.append(event.get("nodes") or [])
-  return submissions
+      if event.get("base_index") is not None:
+        bases.append(int(event["base_index"]))
+  return submissions, (bases if len(bases) == len(submissions) else [])

@@ -1479,6 +1479,8 @@ export class RuntimeRunner {
     opts?: {
       resumedCompleted?: string[]
       resumedSubmissions?: Record<string, unknown>[][]
+      /** R3-1: original base index per submission batch (parallel to resumedSubmissions). */
+      resumedSubmissionBases?: number[]
       /** Standalone session id when bootstrapping (no active parent run). Defaults to a fresh uuid. */
       sessionId?: string
     },
@@ -1502,6 +1504,7 @@ export class RuntimeRunner {
         ...(opts?.resumedCompleted && opts.resumedCompleted.length ? { resumed_completed: opts.resumedCompleted } : {}),
         // R3-1: re-apply recorded runtime submissions so dynamically-appended nodes are reconstructed.
         ...(opts?.resumedSubmissions && opts.resumedSubmissions.length ? { resumed_submissions: opts.resumedSubmissions } : {}),
+        ...(opts?.resumedSubmissionBases && opts.resumedSubmissionBases.length ? { resumed_submission_bases: opts.resumedSubmissionBases } : {}),
       })
       return await this.driveWorkflow(observations, parentSessionId, runtime)
     } finally {
@@ -1648,10 +1651,15 @@ export class RuntimeRunner {
           const subObs = kernelApply(runtime, this.pendingObservations, submitEvent)
           nextNodes.push(...collectNodes(subObs))
           budget = collectBudget(subObs) ?? budget
-          // R3-1: persist the submission (kernel-shape nodes) so resume can re-apply it.
+          // R3-1: persist the submission (kernel-shape nodes) + its kernel-reported base index
+          // so resume can re-apply the batch at the exact original graph position.
+          const submitted = subObs.find(o => o.kind === "workflow_nodes_submitted") as
+            | { base?: number }
+            | undefined
           await this.opts.sessionLog.append(parentSessionId, buildWorkflowNodesSubmittedEvent({
             turn: runtime.turn(),
             nodes: (submitEvent.nodes as Record<string, unknown>[]) ?? [],
+            baseIndex: submitted?.base,
           }))
         }
         const obs = kernelApply(runtime, this.pendingObservations, {
@@ -1692,8 +1700,13 @@ export class RuntimeRunner {
     }
     const events = await this.opts.sessionLog.read(sessionId)
     const resumedCompleted = recoverCompletedWorkflowNodes(events)
-    const resumedSubmissions = recoverSubmittedWorkflowNodes(events)
-    return this.runWorkflow(spec, { resumedCompleted, resumedSubmissions, sessionId })
+    const recovered = recoverSubmittedWorkflowNodes(events)
+    return this.runWorkflow(spec, {
+      resumedCompleted,
+      resumedSubmissions: recovered.submissions,
+      resumedSubmissionBases: recovered.bases,
+      sessionId,
+    })
   }
 
   private async appendObservations(

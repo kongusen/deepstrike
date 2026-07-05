@@ -107,18 +107,28 @@ export function recoverCompletedWorkflowNodes(
 export function buildWorkflowNodesSubmittedEvent(input: {
   turn: number
   nodes: Record<string, unknown>[]
+  baseIndex?: number
 }): Extract<SessionEvent, { kind: "workflow_nodes_submitted" }> {
-  return { kind: "workflow_nodes_submitted", turn: input.turn, nodes: input.nodes }
+  return {
+    kind: "workflow_nodes_submitted",
+    turn: input.turn,
+    nodes: input.nodes,
+    ...(input.baseIndex !== undefined ? { base_index: input.baseIndex } : {}),
+  }
 }
 
 /** R3-1: recover the runtime submission batches (in order) to rebuild `resumed_submissions` for
  *  resumeWorkflow, so dynamically-appended nodes are reconstructed. */
 export function recoverSubmittedWorkflowNodes(
   events: Array<{ seq: number; event: SessionEvent }>,
-): Record<string, unknown>[][] {
+): { submissions: Record<string, unknown>[][]; bases: number[] } {
   const submissions: Record<string, unknown>[][] = []
+  const bases: number[] = []
   for (const { event } of events) {
-    if (event.kind === "workflow_nodes_submitted") submissions.push(event.nodes)
+    if (event.kind === "workflow_nodes_submitted") {
+      submissions.push(event.nodes)
+      if (event.base_index !== undefined) bases.push(event.base_index)
+    }
   }
-  return submissions
+  return { submissions, bases: bases.length === submissions.length ? bases : [] }
 }

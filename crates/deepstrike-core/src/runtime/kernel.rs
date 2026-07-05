@@ -445,6 +445,10 @@ pub enum KernelInputEvent {
         /// empty for a fresh run or a resume without dynamic submissions.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         resumed_submissions: Vec<Vec<crate::orchestration::workflow::WorkflowNode>>,
+        /// R3-1: base graph index recorded for each submission batch (parallel to
+        /// `resumed_submissions`); absent/short = legacy order-only replay.
+        #[serde(default)]
+        resumed_submission_bases: Vec<u32>,
     },
     /// Feed a completed sub-agent result back into the parent loop.
     SubAgentCompleted {
@@ -726,6 +730,15 @@ pub enum KernelObservation {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         agent_ids: Vec<String>,
         reason: String,
+    },
+    /// R3-1: a runtime node submission was appended to the in-flight DAG at `base`
+    /// (the graph length before the append). The SDK records `base` on the
+    /// `workflow_nodes_submitted` session event so resume can re-apply the batch at
+    /// the exact original indices (gap-filling any interleaved runtime children).
+    WorkflowNodesSubmitted {
+        turn: u32,
+        base: u32,
+        count: u32,
     },
     /// A tool call needs user approval (governance `AskUser`). Not blocked by the
     /// kernel — the SDK must obtain approval before executing the named call.
@@ -1155,6 +1168,7 @@ impl KernelRuntime {
                 parent_session_id,
                 resumed_completed,
                 resumed_submissions,
+                resumed_submission_bases,
             } => {
                 // K1: self-bootstrap the run if the host never fired `StartRun` (stateless
                 // `runWorkflow` caller). Parity with the agent-reachable `SubmitWorkflow`, which already
@@ -1167,6 +1181,7 @@ impl KernelRuntime {
                         spec,
                         &parent_session_id,
                         &resumed_submissions,
+                        &resumed_submission_bases,
                         &resumed_completed,
                     )
                 }
@@ -2481,6 +2496,7 @@ mod tests {
             parent_session_id: "sess".to_string(),
             resumed_completed: Vec::new(),
             resumed_submissions: Vec::new(),
+            resumed_submission_bases: Vec::new(),
         };
         let json = serde_json::to_string(&event).expect("serialize");
         let parsed: KernelInputEvent = serde_json::from_str(&json).expect("deserialize");
@@ -2553,6 +2569,7 @@ mod tests {
             parent_session_id: "sess".to_string(),
             resumed_completed: Vec::new(),
             resumed_submissions: Vec::new(),
+            resumed_submission_bases: Vec::new(),
         }));
         let batch = step
             .observations
@@ -2614,6 +2631,7 @@ mod tests {
             parent_session_id: "sess".to_string(),
             resumed_completed: Vec::new(),
             resumed_submissions: Vec::new(),
+            resumed_submission_bases: Vec::new(),
         }));
         runtime.state_machine_mut().take_observations();
 
@@ -2731,6 +2749,7 @@ mod tests {
             parent_session_id: "sess".to_string(),
             resumed_completed: vec!["wf-node0".to_string()],
             resumed_submissions: Vec::new(),
+            resumed_submission_bases: Vec::new(),
         }));
 
         // Only the remaining worker is re-spawned (node 0 is not re-run).

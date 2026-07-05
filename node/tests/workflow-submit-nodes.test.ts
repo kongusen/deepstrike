@@ -152,10 +152,22 @@ describe("resume reconstructs dynamically-appended nodes", () => {
     const e1 = buildWorkflowNodesSubmittedEvent({ turn: 1, nodes: [{ task: { goal: "a", criteria: [] } }] })
     const e2 = buildWorkflowNodesSubmittedEvent({ turn: 2, nodes: [{ task: { goal: "b", criteria: [] } }] })
     const events = [{ seq: 0, event: e1 }, { seq: 1, event: e2 }]
-    expect(recoverSubmittedWorkflowNodes(events)).toEqual([
+    expect(recoverSubmittedWorkflowNodes(events).submissions).toEqual([
       [{ task: { goal: "a", criteria: [] } }],
       [{ task: { goal: "b", criteria: [] } }],
     ])
+  })
+
+  it("recovers recorded base indices, degrading to order-only on mixed logs", () => {
+    const withBase = buildWorkflowNodesSubmittedEvent({ turn: 1, nodes: [{ task: { goal: "a", criteria: [] } }], baseIndex: 3 })
+    const withBase2 = buildWorkflowNodesSubmittedEvent({ turn: 2, nodes: [{ task: { goal: "b", criteria: [] } }], baseIndex: 5 })
+    const legacy = buildWorkflowNodesSubmittedEvent({ turn: 3, nodes: [{ task: { goal: "c", criteria: [] } }] })
+    const full = recoverSubmittedWorkflowNodes([{ seq: 0, event: withBase }, { seq: 1, event: withBase2 }])
+    expect(full.bases).toEqual([3, 5])
+    // A mixed log (one record without base) degrades to order-only replay for safety.
+    const mixed = recoverSubmittedWorkflowNodes([{ seq: 0, event: withBase }, { seq: 1, event: legacy }])
+    expect(mixed.bases).toEqual([])
+    expect(mixed.submissions.length).toBe(2)
   })
 
   it("load_workflow with resumed_submissions re-applies the appended node over the ABI", () => {
