@@ -1,6 +1,5 @@
 pub mod compression;
 pub mod config;
-pub mod dashboard;
 pub mod manager;
 pub mod partitions;
 pub mod pressure;

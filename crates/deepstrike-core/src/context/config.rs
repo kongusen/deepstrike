@@ -41,10 +41,6 @@ pub struct ContextConfig {
     pub preserve_recent_turns: usize,
 
     // ── Noise reduction ──────────────────────────────────────────────────────
-    /// Include the dashboard block in the rendered system context.
-    /// Defaults to false; enable only in explicit agent-os mode.
-    pub render_dashboard: bool,
-
     /// Use verbose internal control notes (e.g. "[SYSTEM] Transaction rollback: …").
     /// Defaults to false; uses concise natural-language notes instead.
     pub verbose_control_notes: bool,
@@ -95,18 +91,6 @@ pub struct ContextConfig {
     pub knowledge_budget_ratio: f64,
 }
 
-fn default_micro_compact_idle_minutes() -> u32 {
-    60
-}
-
-fn default_preserved_tool_results() -> usize {
-    5
-}
-
-fn default_autocompact_buffer() -> u32 {
-    13_000
-}
-
 impl Default for ContextConfig {
     fn default() -> Self {
         Self {
@@ -121,7 +105,6 @@ impl Default for ContextConfig {
             recovery_content_ratio: 0.25,
             preserve_recent_msgs: 4,
             preserve_recent_turns: 2,
-            render_dashboard: false,
             verbose_control_notes: false,
             collapse_assistant_narration: true,
             micro_compact_idle_minutes: 60,
@@ -170,7 +153,6 @@ mod tests {
     #[test]
     fn noise_reduction_defaults_to_quiet() {
         let c = ContextConfig::default();
-        assert!(!c.render_dashboard, "dashboard should be off by default");
         assert!(!c.verbose_control_notes, "verbose notes should be off by default");
     }
 
