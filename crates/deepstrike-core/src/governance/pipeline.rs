@@ -1,39 +1,28 @@
-use serde::{Deserialize, Serialize};
-
-use super::audit::AuditLog;
 use super::constraint::ConstraintValidator;
 use super::permission::{PermissionAction, PermissionManager};
 use super::rate_limit::RateLimiter;
-use super::sandbox::{SandboxPolicy, SandboxProfile};
-use super::tool_decision::{ToolDecision, ToolDecisionPipeline, ToolDecisionStage};
 use super::veto::VetoAuthority;
-use crate::types::capability::CapabilityDescriptor;
 use crate::types::message::ToolCall;
 use crate::types::policy::{CallerContext, GovernanceVerdict};
-use crate::AgentRunSpec;
 
-/// Security policy snapshot for auditing/inspection.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SecurityPolicySnapshot {
-    pub default_permission: String,
-    pub rule_count: usize,
-    pub veto_count: usize,
-    pub rate_limit_count: usize,
-    pub constraint_count: usize,
-    pub has_sandbox_profile: bool,
-}
-
-/// Full governance pipeline: CapabilityCheck -> ConstraintCheck -> PermissionCheck -> VetoCheck -> RateLimit -> SandboxPolicy
-/// Any stage can deny; all must pass for Allow.
+/// Governance pipeline: Constraint -> Permission -> Veto -> RateLimit.
+/// Every stage runs; the most severe verdict wins (Deny > AskUser > RateLimited > Allow),
+/// with the earliest stage winning ties — so a veto Deny can never be softened by a
+/// later or earlier Allow, and an AskUser survives any number of passing stages.
 pub struct GovernancePipeline {
     pub permission: PermissionManager,
     pub veto: VetoAuthority,
     pub rate_limiter: RateLimiter,
     pub constraints: ConstraintValidator,
-    pub audit: AuditLog,
-    pub sandbox: SandboxPolicy,
-    pub capabilities: Option<Vec<CapabilityDescriptor>>,
-    pub run_spec: Option<AgentRunSpec>,
+}
+
+fn severity(v: &GovernanceVerdict) -> u8 {
+    match v {
+        GovernanceVerdict::Deny { .. } => 3,
+        GovernanceVerdict::AskUser { .. } => 2,
+        GovernanceVerdict::RateLimited { .. } => 1,
+        GovernanceVerdict::Allow => 0,
+    }
 }
 
 impl GovernancePipeline {
@@ -43,169 +32,29 @@ impl GovernancePipeline {
             veto: VetoAuthority::new(),
             rate_limiter: RateLimiter::default(),
             constraints: ConstraintValidator::new(),
-            audit: AuditLog::new(),
-            sandbox: SandboxPolicy::new(),
-            capabilities: None,
-            run_spec: None,
         }
     }
 
-    /// Set sandbox profile
-    pub fn set_sandbox_profile(&mut self, profile: SandboxProfile) {
-        self.sandbox.profile = Some(profile);
-    }
-
-    /// Set capabilities list
-    pub fn set_capabilities(&mut self, capabilities: Vec<CapabilityDescriptor>) {
-        self.capabilities = Some(capabilities);
-    }
-
-    /// Set agent run spec
-    pub fn set_run_spec(&mut self, run_spec: AgentRunSpec) {
-        self.run_spec = Some(run_spec);
-    }
-
-    /// Expose current policy snapshot
-    pub fn take_policy_snapshot(&self) -> SecurityPolicySnapshot {
-        let default_perm = match self.permission.default_action() {
-            PermissionAction::Allow => "allow",
-            PermissionAction::Deny => "deny",
-            PermissionAction::AskUser => "ask_user",
-        };
-        SecurityPolicySnapshot {
-            default_permission: default_perm.to_string(),
-            rule_count: self.permission.rule_count(),
-            veto_count: self.veto.blocked_count() + self.veto.custom_count(),
-            rate_limit_count: self.rate_limiter.limit_count(),
-            constraint_count: self.constraints.constraint_count(),
-            has_sandbox_profile: self.sandbox.profile.is_some(),
-        }
-    }
-
-    /// Set the current timestamp for rate limiting and audit.
+    /// Set the current timestamp for rate limiting.
     pub fn set_time(&mut self, now_ms: u64) {
         self.rate_limiter.set_time(now_ms);
-        self.audit.set_time(now_ms);
     }
 
     /// Evaluate a tool call through the full pipeline.
-    pub fn evaluate(&mut self, call: &ToolCall, caller: &CallerContext) -> GovernanceVerdict {
-        let mut decisions = Vec::new();
-
-        // 1. Classifier
-        decisions.push(ToolDecision::allow(ToolDecisionStage::Classifier));
-
-        // 2. CapabilityCheck
-        let capability_verdict = self.check_capability(call);
-        decisions.push(match capability_verdict {
-            Some(v) => ToolDecision {
-                stage: ToolDecisionStage::CapabilityCheck,
-                verdict: v,
-            },
-            None => ToolDecision::allow(ToolDecisionStage::CapabilityCheck),
-        });
-
-        // 3. ConstraintCheck
-        let constraint_verdict = self.constraints.validate(call);
-        decisions.push(match constraint_verdict {
-            Some(v) => ToolDecision {
-                stage: ToolDecisionStage::ConstraintCheck,
-                verdict: v,
-            },
-            None => ToolDecision::allow(ToolDecisionStage::ConstraintCheck),
-        });
-
-        // 4. PermissionCheck
-        let permission_verdict = self.permission.check(call, caller);
-        decisions.push(match permission_verdict {
-            Some(v) => ToolDecision {
-                stage: ToolDecisionStage::PermissionCheck,
-                verdict: v,
-            },
-            None => ToolDecision::allow(ToolDecisionStage::PermissionCheck),
-        });
-
-        // 5. VetoCheck
-        let veto_verdict = self.veto.check(call, caller);
-        decisions.push(match veto_verdict {
-            Some(v) => ToolDecision {
-                stage: ToolDecisionStage::VetoCheck,
-                verdict: v,
-            },
-            None => ToolDecision::allow(ToolDecisionStage::VetoCheck),
-        });
-
-        // 6. RateLimit
-        let rate_verdict = self.rate_limiter.check(call);
-        decisions.push(match rate_verdict {
-            Some(v) => ToolDecision {
-                stage: ToolDecisionStage::RateLimit,
-                verdict: v,
-            },
-            None => ToolDecision::allow(ToolDecisionStage::RateLimit),
-        });
-
-        // 7. SandboxPolicy
-        let sandbox_verdict = self.sandbox.check(call);
-        decisions.push(match sandbox_verdict {
-            Some(v) => ToolDecision {
-                stage: ToolDecisionStage::SandboxPolicy,
-                verdict: v,
-            },
-            None => ToolDecision::allow(ToolDecisionStage::SandboxPolicy),
-        });
-
-        // 8. Audit (we reduce first and then audit the final verdict)
-        let final_verdict = ToolDecisionPipeline::reduce(&decisions);
-
-        match final_verdict {
-            GovernanceVerdict::Allow => {
-                self.audit.record_allow(call);
-            }
-            ref other => {
-                self.audit.record_deny(call, other);
+    pub fn evaluate(&mut self, call: &ToolCall, _caller: &CallerContext) -> GovernanceVerdict {
+        let mut worst = GovernanceVerdict::Allow;
+        let verdicts = [
+            self.constraints.validate(call),
+            self.permission.check(call),
+            self.veto.check(call),
+            self.rate_limiter.check(call),
+        ];
+        for verdict in verdicts.into_iter().flatten() {
+            if severity(&verdict) > severity(&worst) {
+                worst = verdict;
             }
         }
-
-        final_verdict
-    }
-
-    fn check_capability(&self, call: &ToolCall) -> Option<GovernanceVerdict> {
-        // If capabilities manifest is mounted, check it
-        if let Some(ref caps) = self.capabilities {
-            let found = caps.iter().any(|c| {
-                c.kind == crate::types::capability::CapabilityKind::Tool && c.id == call.name.as_str()
-            });
-            if !found {
-                return Some(GovernanceVerdict::Deny {
-                    stage: "capability_check",
-                    reason: format!(
-                        "tool '{}' is not mounted in the current capabilities manifest",
-                        call.name
-                    ),
-                });
-            }
-        }
-
-        // If run_spec is set, check run_spec filter
-        if let Some(ref spec) = self.run_spec {
-            let desc = crate::types::capability::CapabilityDescriptor::marker(
-                crate::types::capability::CapabilityKind::Tool,
-                call.name.clone(),
-                "",
-            );
-            if !spec.capability_filter.allows(&desc) {
-                return Some(GovernanceVerdict::Deny {
-                    stage: "capability_check",
-                    reason: format!(
-                        "tool '{}' is blocked by agent run specification capability filter",
-                        call.name
-                    ),
-                });
-            }
-        }
-
-        None
+        worst
     }
 }
 
@@ -244,7 +93,6 @@ mod tests {
         pipeline.set_time(1000);
         let v = pipeline.evaluate(&call("read_file"), &caller());
         assert!(matches!(v, GovernanceVerdict::Allow));
-        assert_eq!(pipeline.audit.len(), 1);
     }
 
     #[test]
@@ -299,6 +147,37 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ─── Verdict-severity fold invariants (ported from the ToolDecision reduce tests) ────────
+
+    #[test]
+    fn deny_beats_ask_user_regardless_of_stage_order() {
+        // Permission says AskUser (earlier stage), veto says Deny (later stage):
+        // the more severe Deny must win even though it arrives later.
+        let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
+        pipeline.permission.add_rule(PermissionRule {
+            tool_pattern: "nuke".into(),
+            action: PermissionAction::AskUser,
+        });
+        pipeline.veto.block_tool("nuke");
+
+        let v = pipeline.evaluate(&call("nuke"), &caller());
+        assert!(matches!(v, GovernanceVerdict::Deny { stage: "veto", .. }));
+    }
+
+    #[test]
+    fn ask_user_survives_later_passing_stages() {
+        // AskUser from permission must not be downgraded by veto/rate-limit passing (None).
+        let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
+        pipeline.set_time(1000);
+        pipeline.permission.add_rule(PermissionRule {
+            tool_pattern: "sensitive".into(),
+            action: PermissionAction::AskUser,
+        });
+
+        let v = pipeline.evaluate(&call("sensitive"), &caller());
+        assert!(matches!(v, GovernanceVerdict::AskUser { .. }));
     }
 
     // ─── Monotonic Veto invariant ──────────────────────────────────────────

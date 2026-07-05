@@ -39,30 +39,3 @@ pub struct ResourceQuota {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_workflow_nodes: Option<usize>,
 }
-
-impl ResourceQuota {
-    /// Whether any limit is actually set (used to short-circuit the gate when fully open).
-    pub fn is_open(&self) -> bool {
-        self.max_concurrent_subagents.is_none()
-            && self.max_total_subagents.is_none()
-            && self.max_spawn_depth.is_none()
-            && self.memory_writes_per_window.is_none()
-            && self.max_workflow_nodes.is_none()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_quota_is_open() {
-        assert!(ResourceQuota::default().is_open());
-    }
-
-    #[test]
-    fn any_set_limit_closes_the_quota() {
-        let q = ResourceQuota { max_concurrent_subagents: Some(2), ..Default::default() };
-        assert!(!q.is_open());
-    }
-}

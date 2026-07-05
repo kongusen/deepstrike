@@ -1,7 +1,7 @@
 use compact_str::CompactString;
 
 use crate::types::message::ToolCall;
-use crate::types::policy::{CallerContext, GovernanceVerdict};
+use crate::types::policy::GovernanceVerdict;
 
 /// Permission action for a tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,15 +52,11 @@ impl PermissionManager {
         self.rules.push(rule);
     }
 
-    pub fn rule_count(&self) -> usize {
-        self.rules.len()
-    }
-
     pub fn default_action(&self) -> &PermissionAction {
         &self.default
     }
 
-    pub fn check(&self, call: &ToolCall, _caller: &CallerContext) -> Option<GovernanceVerdict> {
+    pub fn check(&self, call: &ToolCall) -> Option<GovernanceVerdict> {
         for rule in &self.rules {
             if rule.matches(&call.name) {
                 return match rule.action {
@@ -104,19 +100,11 @@ mod tests {
         }
     }
 
-    fn test_caller() -> CallerContext {
-        CallerContext {
-            agent_id: "test".into(),
-            session_id: "s1".into(),
-            is_sub_agent: false,
-            parent_session_id: None,
-        }
-    }
 
     #[test]
     fn allow_by_default() {
         let pm = PermissionManager::new(PermissionAction::Allow);
-        assert!(pm.check(&test_call("anything"), &test_caller()).is_none());
+        assert!(pm.check(&test_call("anything")).is_none());
     }
 
     #[test]
@@ -126,7 +114,7 @@ mod tests {
             tool_pattern: "db.*".into(),
             action: PermissionAction::Deny,
         });
-        assert!(pm.check(&test_call("db.drop"), &test_caller()).is_some());
-        assert!(pm.check(&test_call("file.read"), &test_caller()).is_none());
+        assert!(pm.check(&test_call("db.drop")).is_some());
+        assert!(pm.check(&test_call("file.read")).is_none());
     }
 }

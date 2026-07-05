@@ -157,13 +157,6 @@ fn oversized_text_message_indices(
         .collect()
 }
 
-/// 获取当前UTC时间戳
-fn utc_now() -> String {
-    // 在实际使用中，这应该从ProviderResult.now_ms获取
-    // 这里简化为占位符
-    format!("{:?}", std::time::SystemTime::now())
-}
-
 /// Helper to extract key fields and info from JSON strings.
 fn extract_json_excerpt(output: &str) -> Option<String> {
     let val: serde_json::Value = serde_json::from_str(output).ok()?;

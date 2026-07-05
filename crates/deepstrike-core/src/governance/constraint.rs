@@ -5,7 +5,7 @@ use crate::types::policy::GovernanceVerdict;
 ///
 /// **Scope**: built-in rules cover the structural validation cases
 /// (required / range / enum). For pattern matching or custom predicates,
-/// register a `VetoCheck` instead — keeps the kernel free of regex deps
+/// do richer matching SDK-side — keeps the kernel free of regex deps
 /// and lets the SDK use whatever pattern engine suits its host language.
 #[derive(Debug, Clone)]
 pub struct ParamConstraint {
@@ -39,10 +39,6 @@ impl ConstraintValidator {
     pub fn add(&mut self, constraint: ParamConstraint) {
         self.constraints.push(constraint);
      }
-
-    pub fn constraint_count(&self) -> usize {
-        self.constraints.len()
-    }
 
     pub fn validate(&self, call: &ToolCall) -> Option<GovernanceVerdict> {
         for c in &self.constraints {

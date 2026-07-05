@@ -210,22 +210,8 @@ fn push_knowledge_updates_token_count() {
 // ─── Virtual Context Memory & Replay (Phase 2) ───────────────────────────────
 
 #[test]
-fn take_snapshot_creates_valid_state() {
-    let mut mgr = ContextManager::new(10_000);
-    mgr.init_task("goal 1".to_string(), vec![]);
-    mgr.push_history(Message::user("hello history"), 20);
-    mgr.push_knowledge(Message::user("hello knowledge"), 30);
-
-    let snapshot = mgr.take_snapshot(2);
-    assert_eq!(snapshot.turn, 2);
-    assert_eq!(snapshot.history_messages.len(), 1);
-    assert_eq!(snapshot.knowledge_messages.len(), 1);
-    assert_eq!(snapshot.task_state.goal, "goal 1");
-}
-
-#[test]
 fn context_fault_serialization_roundtrip() {
-    use deepstrike_core::context::snapshot::ContextFault;
+    use deepstrike_core::context::fault::ContextFault;
     let fault = ContextFault::MissingArchive {
         session_id: "session-123".to_string(),
         seq: 42,
@@ -245,7 +231,7 @@ fn context_fault_serialization_roundtrip() {
 fn reconstruct_messages_with_fallback_success_and_degrade() {
     use deepstrike_core::runtime::session::SessionEvent;
     use deepstrike_core::runtime::reconstruct_messages_with_fallback;
-    use deepstrike_core::context::snapshot::ContextFault;
+    use deepstrike_core::context::fault::ContextFault;
 
     let events = vec![
         SessionEvent::RunStarted {

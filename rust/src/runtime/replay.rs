@@ -37,7 +37,7 @@ pub fn replay_messages(entries: &[SessionEntry]) -> Vec<Message> {
 pub fn replay_messages_with_cap(entries: &[SessionEntry], max_bytes: usize) -> Vec<Message> {
     replay_messages_with_cap_and_loader(entries, max_bytes, |_| {
         Err(
-            deepstrike_core::context::snapshot::ContextFault::MissingArchive {
+            deepstrike_core::context::fault::ContextFault::MissingArchive {
                 session_id: String::new(),
                 seq: 0,
             },
@@ -51,7 +51,7 @@ pub fn replay_messages_with_cap_and_loader<F>(
     load_archive: F,
 ) -> Vec<Message>
 where
-    F: FnMut(&str) -> Result<Vec<Message>, deepstrike_core::context::snapshot::ContextFault>,
+    F: FnMut(&str) -> Result<Vec<Message>, deepstrike_core::context::fault::ContextFault>,
 {
     let events: Vec<SessionEvent> = entries.iter().map(|e| e.event.clone()).collect();
     reconstruct_messages_with_fallback(&events, "", max_bytes, load_archive)

@@ -4,7 +4,7 @@
 // G5 gate: recoverable error 不 rollback；replay 精确截断
 
 use compact_str::CompactString;
-use deepstrike_core::context::snapshot::ContextFault;
+use deepstrike_core::context::fault::ContextFault;
 use deepstrike_core::runtime::repair::reconstruct_messages_with_fallback;
 use deepstrike_core::runtime::session::{RollbackReason, SessionEvent};
 use deepstrike_core::scheduler::policy::LoopPolicy;

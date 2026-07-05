@@ -64,7 +64,7 @@ pub struct RateLimitSpec {
 
 /// Parameter constraint for the governance ABI.
 /// Maps to [`crate::governance::constraint::ConstraintRule`] (structural rules only;
-/// pattern/predicate matching stays in the SDK via `VetoCheck`).
+/// pattern/predicate matching stays in the SDK execution layer).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ConstraintSpec {

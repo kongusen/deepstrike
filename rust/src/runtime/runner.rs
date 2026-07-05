@@ -794,7 +794,7 @@ impl RuntimeRunner {
                     let store_clone = store.clone();
                     replay_messages_with_cap_and_loader(&repaired, max_bytes, move |archive_ref| {
                         store_clone.read(archive_ref).map_err(|_| {
-                            deepstrike_core::context::snapshot::ContextFault::MissingArchive {
+                            deepstrike_core::context::fault::ContextFault::MissingArchive {
                                 session_id: String::new(),
                                 seq: 0,
                             }

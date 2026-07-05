@@ -44,10 +44,6 @@ impl RateLimiter {
         self.limits.insert(tool_name.into(), limit);
     }
 
-    pub fn limit_count(&self) -> usize {
-        self.limits.len()
-    }
-
     /// Must be called before each check to provide current time.
     pub fn set_time(&mut self, now_ms: u64) {
         self.current_time_ms = now_ms;

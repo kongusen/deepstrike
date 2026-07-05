@@ -4,7 +4,7 @@ use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
 use deepstrike_core::governance::pipeline::GovernancePipeline;
 use deepstrike_core::governance::rate_limit::RateLimit;
 use deepstrike_core::types::message::ToolCall;
-use deepstrike_core::types::policy::{CallerContext, GovernanceVerdict, VetoCheck};
+use deepstrike_core::types::policy::{CallerContext, GovernanceVerdict};
 
 fn call(name: &str) -> ToolCall {
     ToolCall {
@@ -26,14 +26,6 @@ fn default_allow_pipeline_allows_all() {
     pipeline.set_time(1000);
     let v = pipeline.evaluate(&call("anything"), &caller());
     assert!(matches!(v, GovernanceVerdict::Allow));
-}
-
-#[test]
-fn default_allow_pipeline_records_audit() {
-    let mut pipeline = GovernancePipeline::default();
-    pipeline.set_time(1000);
-    pipeline.evaluate(&call("test"), &caller());
-    assert_eq!(pipeline.audit.len(), 1);
 }
 
 // ─── Permission rules ──────────────────────────────────────────────────────
@@ -107,53 +99,6 @@ fn veto_blocks_tool() {
 
     let v = pipeline.evaluate(&call("nuke"), &caller());
     assert!(matches!(v, GovernanceVerdict::Deny { stage: "veto", .. }));
-}
-
-#[test]
-fn veto_closure_check() {
-    let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
-    pipeline.veto.add_check(|c: &ToolCall, _: &CallerContext| {
-        if c.name.as_str().starts_with("danger_") {
-            Some(format!("blocked: {}", c.name))
-        } else {
-            None
-        }
-    });
-    pipeline.set_time(1000);
-
-    let v = pipeline.evaluate(&call("danger_exec"), &caller());
-    assert!(matches!(v, GovernanceVerdict::Deny { stage: "veto", .. }));
-    assert!(matches!(
-        pipeline.evaluate(&call("safe_read"), &caller()),
-        GovernanceVerdict::Allow
-    ));
-}
-
-#[test]
-fn veto_trait_impl_check() {
-    struct BlockNet;
-    impl VetoCheck for BlockNet {
-        fn check(&self, call: &ToolCall, _caller: &CallerContext) -> Option<String> {
-            if call.name.as_str().contains("net") {
-                Some("network access vetoed".into())
-            } else {
-                None
-            }
-        }
-    }
-
-    let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
-    pipeline.veto.add_check(BlockNet);
-    pipeline.set_time(1000);
-
-    assert!(matches!(
-        pipeline.evaluate(&call("http_net_get"), &caller()),
-        GovernanceVerdict::Deny { stage: "veto", .. }
-    ));
-    assert!(matches!(
-        pipeline.evaluate(&call("read_file"), &caller()),
-        GovernanceVerdict::Allow
-    ));
 }
 
 // ─── Rate limiting ──────────────────────────────────────────────────────────
@@ -253,24 +198,6 @@ fn veto_stops_before_rate_limit() {
 
 // ─── Audit ──────────────────────────────────────────────────────────────────
 
-#[test]
-fn audit_records_multiple_evaluations() {
-    let mut pipeline = GovernancePipeline::default();
-    pipeline.set_time(1000);
-    pipeline.evaluate(&call("a"), &caller());
-    pipeline.evaluate(&call("b"), &caller());
-    pipeline.evaluate(&call("c"), &caller());
-    assert_eq!(pipeline.audit.len(), 3);
-}
-
-#[test]
-fn audit_records_denials() {
-    let mut pipeline = GovernancePipeline::new(PermissionAction::Deny);
-    pipeline.set_time(1000);
-    pipeline.evaluate(&call("blocked"), &caller());
-    assert_eq!(pipeline.audit.len(), 1);
-}
-
 // ─── Wildcard patterns ──────────────────────────────────────────────────────
 
 #[test]
@@ -330,174 +257,6 @@ fn prefix_wildcard_matches() {
     ));
 }
 
-#[test]
-fn sandbox_policy_enforces_directories() {
-    use deepstrike_core::governance::sandbox::SandboxProfile;
-
-    let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
-    pipeline.set_sandbox_profile(SandboxProfile {
-        allow_network: true,
-        allow_fs_read: vec!["/tmp/safe".to_string()],
-        allow_fs_write: vec!["/tmp/safe/write".to_string()],
-    });
-    pipeline.set_time(1000);
-
-    // 1. Safe read
-    let call_read_safe = ToolCall {
-        id: CompactString::new("c1"),
-        name: CompactString::new("read_file"),
-        arguments: serde_json::json!({ "path": "/tmp/safe/file.txt" }),
-    };
-    assert!(matches!(
-        pipeline.evaluate(&call_read_safe, &caller()),
-        GovernanceVerdict::Allow
-    ));
-
-    // 2. Unsafe read
-    let call_read_unsafe = ToolCall {
-        id: CompactString::new("c2"),
-        name: CompactString::new("read_file"),
-        arguments: serde_json::json!({ "path": "/etc/passwd" }),
-    };
-    let v_read = pipeline.evaluate(&call_read_unsafe, &caller());
-    assert!(
-        matches!(v_read, GovernanceVerdict::Deny { stage: "sandbox_policy", .. }),
-        "Expected sandbox_policy deny for /etc/passwd: got {:?}", v_read
-    );
-
-    // 3. Safe write
-    let call_write_safe = ToolCall {
-        id: CompactString::new("c3"),
-        name: CompactString::new("write_file"),
-        arguments: serde_json::json!({ "path": "/tmp/safe/write/output.txt" }),
-    };
-    assert!(matches!(
-        pipeline.evaluate(&call_write_safe, &caller()),
-        GovernanceVerdict::Allow
-    ));
-
-    // 4. Unsafe write
-    let call_write_unsafe = ToolCall {
-        id: CompactString::new("c4"),
-        name: CompactString::new("write_file"),
-        arguments: serde_json::json!({ "path": "/tmp/safe/file.txt" }),
-    };
-    let v_write = pipeline.evaluate(&call_write_unsafe, &caller());
-    assert!(
-        matches!(v_write, GovernanceVerdict::Deny { stage: "sandbox_policy", .. }),
-        "Expected sandbox_policy deny for write to /tmp/safe/file.txt: got {:?}", v_write
-    );
-}
-
-#[test]
-fn sandbox_policy_blocks_network() {
-    use deepstrike_core::governance::sandbox::SandboxProfile;
-
-    let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
-    pipeline.set_sandbox_profile(SandboxProfile {
-        allow_network: false,
-        allow_fs_read: Vec::new(),
-        allow_fs_write: Vec::new(),
-    });
-    pipeline.set_time(1000);
-
-    let call_net = ToolCall {
-        id: CompactString::new("c1"),
-        name: CompactString::new("http_net_get"),
-        arguments: serde_json::json!({ "url": "https://google.com" }),
-    };
-    let v = pipeline.evaluate(&call_net, &caller());
-    assert!(
-        matches!(v, GovernanceVerdict::Deny { stage: "sandbox_policy", .. }),
-        "Expected sandbox_policy deny for network call: got {:?}", v
-    );
-}
-
-#[test]
-fn capability_check_stage() {
-    use deepstrike_core::types::capability::{CapabilityDescriptor, CapabilityKind};
-    use deepstrike_core::types::agent::{AgentRunSpec, AgentIdentity, AgentRole, AgentCapabilityFilter};
-
-    let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
-    pipeline.set_time(1000);
-
-    // Mounted capabilities
-    pipeline.set_capabilities(vec![
-        CapabilityDescriptor::marker(CapabilityKind::Tool, "allowed_tool", "an allowed tool")
-    ]);
-
-    // 1. Mounted tool allowed
-    let call_ok = ToolCall {
-        id: CompactString::new("c1"),
-        name: CompactString::new("allowed_tool"),
-        arguments: serde_json::Value::Null,
-    };
-    assert!(matches!(
-        pipeline.evaluate(&call_ok, &caller()),
-        GovernanceVerdict::Allow
-    ));
-
-    // 2. Unmounted tool denied
-    let call_not_mounted = ToolCall {
-        id: CompactString::new("c2"),
-        name: CompactString::new("unmounted_tool"),
-        arguments: serde_json::Value::Null,
-    };
-    let v_mount = pipeline.evaluate(&call_not_mounted, &caller());
-    assert!(
-        matches!(v_mount, GovernanceVerdict::Deny { stage: "capability_check", .. }),
-        "Expected capability_check deny: got {:?}", v_mount
-    );
-
-    // 3. Blocked by agent run spec filter
-    let spec = AgentRunSpec::new(
-        AgentIdentity::new("sub", "session-1"),
-        AgentRole::Implement,
-        "test goal"
-    ).with_capability_filter(AgentCapabilityFilter {
-        allowed_kinds: vec![CapabilityKind::Tool],
-        allowed_ids: vec![compact_str::CompactString::new("some_other_tool")],
-    });
-    pipeline.set_run_spec(spec);
-    let v_spec = pipeline.evaluate(&call_ok, &caller());
-    assert!(
-        matches!(v_spec, GovernanceVerdict::Deny { stage: "capability_check", .. }),
-        "Expected capability_check spec deny: got {:?}", v_spec
-    );
-}
-
-#[test]
-fn policy_snapshot_creation() {
-    let mut pipeline = GovernancePipeline::new(PermissionAction::Deny);
-    pipeline.permission.add_rule(PermissionRule {
-        tool_pattern: "read_*".into(),
-        action: PermissionAction::Allow,
-    });
-    pipeline.veto.block_tool("unsafe_tool");
-    pipeline.rate_limiter.set_limit("read_file", RateLimit { max_calls: 10, window_ms: 1000 });
-    pipeline.constraints.add(deepstrike_core::governance::constraint::ParamConstraint {
-        tool_name: "write_file".to_string(),
-        param_path: "path".to_string(),
-        rule: deepstrike_core::governance::constraint::ConstraintRule::Required,
-    });
-
-    let snapshot = pipeline.take_policy_snapshot();
-    assert_eq!(snapshot.default_permission, "deny");
-    assert_eq!(snapshot.rule_count, 1);
-    assert_eq!(snapshot.veto_count, 1);
-    assert_eq!(snapshot.rate_limit_count, 1);
-    assert_eq!(snapshot.constraint_count, 1);
-    assert!(!snapshot.has_sandbox_profile);
-
-    pipeline.set_sandbox_profile(deepstrike_core::governance::sandbox::SandboxProfile {
-        allow_network: false,
-        allow_fs_read: vec![],
-        allow_fs_write: vec![],
-    });
-    let snapshot2 = pipeline.take_policy_snapshot();
-    assert!(snapshot2.has_sandbox_profile);
-}
-
 // ─── ask_user verdict ────────────────────────────────────────────────────────
 
 #[test]
@@ -523,32 +282,35 @@ fn ask_user_verdict_is_distinct_from_deny() {
 }
 
 #[test]
-fn ask_user_is_not_denied_by_reduce_alone() {
-    use deepstrike_core::governance::tool_decision::{ToolDecision, ToolDecisionPipeline, ToolDecisionStage};
-
-    let decisions = vec![
-        ToolDecision::allow(ToolDecisionStage::Classifier),
-        ToolDecision::ask_user(ToolDecisionStage::PermissionCheck, "needs approval"),
-    ];
-    let v = ToolDecisionPipeline::reduce(&decisions);
+fn ask_user_is_not_downgraded_by_passing_stages() {
+    // AskUser must survive evaluation when no Deny is present (severity fold keeps it).
+    let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
+    pipeline.set_time(1000);
+    pipeline.permission.add_rule(PermissionRule {
+        tool_pattern: "sensitive_op".into(),
+        action: PermissionAction::AskUser,
+    });
+    let v = pipeline.evaluate(&call("sensitive_op"), &caller());
     assert!(
         matches!(v, GovernanceVerdict::AskUser { .. }),
-        "AskUser must survive reduction when no Deny present",
+        "AskUser must survive when no Deny present",
     );
 }
 
 #[test]
-fn deny_overrides_ask_user_in_reduce() {
-    use deepstrike_core::governance::tool_decision::{ToolDecision, ToolDecisionPipeline, ToolDecisionStage};
-
-    let decisions = vec![
-        ToolDecision::deny(ToolDecisionStage::VetoCheck, "hard veto"),
-        ToolDecision::ask_user(ToolDecisionStage::PermissionCheck, "wants approval"),
-    ];
-    let v = ToolDecisionPipeline::reduce(&decisions);
+fn deny_overrides_ask_user() {
+    // A veto Deny must override a permission AskUser on the same call.
+    let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
+    pipeline.set_time(1000);
+    pipeline.permission.add_rule(PermissionRule {
+        tool_pattern: "sensitive_op".into(),
+        action: PermissionAction::AskUser,
+    });
+    pipeline.veto.block_tool("sensitive_op");
+    let v = pipeline.evaluate(&call("sensitive_op"), &caller());
     assert!(
         matches!(v, GovernanceVerdict::Deny { stage: "veto", .. }),
-        "Deny must override AskUser in reduction",
+        "Deny must override AskUser",
     );
 }
 

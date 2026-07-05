@@ -1,5 +1,4 @@
 use super::agent::AgentIdentity;
-use super::message::ToolCall;
 use super::signal::RuntimeSignal;
 
 /// Caller identity passed through the governance pipeline.
@@ -36,25 +35,3 @@ pub enum GovernanceVerdict {
     AskUser { reason: String },
 }
 
-/// Trait for custom permission checks injected from SDK layer.
-pub trait PermissionCheck: Send + Sync {
-    fn check(&self, call: &ToolCall, caller: &CallerContext) -> Option<GovernanceVerdict>;
-}
-
-/// Trait for custom veto checks injected from SDK layer.
-/// Returns `Some(reason)` to veto the call, `None` to pass.
-/// FFI-friendly: SDK implements this trait directly rather than passing closures.
-pub trait VetoCheck: Send + Sync {
-    fn check(&self, call: &ToolCall, caller: &CallerContext) -> Option<String>;
-}
-
-/// Blanket impl so plain closures still work in the in-process Rust API
-/// without the SDK having to define a struct for each check.
-impl<F> VetoCheck for F
-where
-    F: Fn(&ToolCall, &CallerContext) -> Option<String> + Send + Sync,
-{
-    fn check(&self, call: &ToolCall, caller: &CallerContext) -> Option<String> {
-        (self)(call, caller)
-    }
-}
