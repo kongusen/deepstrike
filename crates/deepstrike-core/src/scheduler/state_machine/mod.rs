@@ -153,6 +153,11 @@ pub struct LoopStateMachine {
     /// `group_tokens_base + total_tokens` so the budget spans the whole group, not one vehicle.
     /// 0 (default) ⇒ no group (N=1) ⇒ pre-L1 per-kernel behavior (byte-identical).
     pub(super) group_tokens_base: u64,
+    /// ③ loop-agent: rounds completed across the loop BEFORE this run (seeded like the
+    /// token/spawn bases); this round's completion makes it `group_rounds_base + 1`.
+    pub(super) group_rounds_base: u32,
+    /// ③ the adjudicated `pace` decision awaiting attachment to this round's LoopResult.
+    pub(super) pending_pace: Option<crate::types::result::PaceDecision>,
     /// L1 (RunGroup): sub-agents spawned by *other* members of this run's governance domain, seeded
     /// at boot. `max_total_subagents` is enforced against `group_spawns_base + local spawns`. 0 ⇒ N=1.
     pub(super) group_spawns_base: u32,
@@ -263,6 +268,8 @@ impl LoopStateMachine {
             policy,
             total_tokens: 0,
             group_tokens_base: 0,
+            group_rounds_base: 0,
+            pending_pace: None,
             group_spawns_base: 0,
             pending_termination: None,
             recovery_attempts: 0,
@@ -382,6 +389,12 @@ impl LoopStateMachine {
 
     /// L1 (RunGroup): seed the sub-agents already spawned by other members of this run's governance
     /// domain. `max_total_subagents` is then enforced against the group total. 0 ⇒ pre-L1 behavior.
+    /// ③ seed the loop's completed-round count (parallel to the token/spawn bases) so
+    /// the pacing trap can coerce continue/sleep to stop at `max_rounds`.
+    pub fn seed_group_rounds(&mut self, rounds_completed: u32) {
+        self.group_rounds_base = rounds_completed;
+    }
+
     pub fn seed_group_spawns(&mut self, subagents_spawned: u32) {
         self.group_spawns_base = subagents_spawned;
     }
@@ -581,6 +594,16 @@ impl LoopStateMachine {
                 // ━━ 记录活动时间（Layer 3时间衰减使用）
                 if let Some(now_ms) = self.last_now_ms {
                     self.ctx.record_activity(now_ms);
+                }
+
+                // ③ pacing trap: a `pace` call is a kernel-adjudicated round-end proposal,
+                // never an SDK tool. Handled before the fuse/gate — it is a control verb,
+                // not task work.
+                if self.run_spec.as_ref().and_then(|r| r.loop_round.as_ref()).is_some() {
+                    if let Some(pace_call) = calls.iter().find(|c| c.name.as_str() == "pace") {
+                        let call = pace_call.clone();
+                        return self.handle_pace_call(call);
+                    }
                 }
 
                 // 2b: record this turn's tool activity into the task-state recency log (meta-tools
@@ -797,6 +820,150 @@ impl LoopStateMachine {
         std::mem::take(&mut self.observations)
     }
 
+    /// ③ the pacing trap. The model PROPOSES `pace(next, delay_ms?, reason)`; the kernel
+    /// ADJUDICATES: malformed → governance-style rollback note; sleep delay clamped into
+    /// the spec's [min,max]; continue/sleep at the round cap coerced to stop("max_rounds");
+    /// stop with standing acceptance criteria routes through the O4 criteria gate ONCE
+    /// (one bounded self-check turn) before being honored. An allowed pace ends the round:
+    /// the decision is stashed for LoopResult, a synthetic tool result closes the
+    /// transcript pair, and the strip-tools final-report turn finishes the round.
+    fn handle_pace_call(&mut self, call: ToolCall) -> LoopAction {
+        use crate::types::result::{PaceAction, PaceDecision};
+
+        let spec = self
+            .run_spec
+            .as_ref()
+            .and_then(|r| r.loop_round.as_ref())
+            .cloned()
+            .unwrap_or_default();
+
+        let next = call.arguments.get("next").and_then(|v| v.as_str()).unwrap_or("");
+        let reason = call
+            .arguments
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let proposed_delay = call.arguments.get("delay_ms").and_then(|v| v.as_u64());
+
+        let mut action = match next {
+            "continue" => PaceAction::Continue,
+            "sleep" => PaceAction::Sleep,
+            "stop" => PaceAction::Stop,
+            other => {
+                // Malformed proposal: governance-style directive note + fresh reason turn.
+                let rb = RollbackReason::GovernanceDenied {
+                    tool_name: "pace".to_string(),
+                    reason: format!(
+                        "invalid pace next={other:?} (expected continue|sleep|stop)"
+                    ),
+                };
+                let note = Message::user(super::rollback::build_rollback_note(
+                    &rb,
+                    self.ctx.config.verbose_control_notes,
+                ));
+                self.push_synthetic_tool_result(
+                    &call.id,
+                    "pace rejected: next must be continue|sleep|stop",
+                );
+                self.ctx
+                    .push_signal(note.content.as_text().unwrap_or_default().to_string());
+                self.phase = LoopPhase::Reason;
+                return self.emit_call_llm();
+            }
+        };
+        let mut coerced_from: Option<String> = None;
+
+        // Round-cap coercion: this round's completion is group_rounds_base + 1.
+        if action != PaceAction::Stop {
+            if let Some(max) = spec.max_rounds {
+                if self.group_rounds_base.saturating_add(1) >= max {
+                    coerced_from = Some(format!("{} (max_rounds={max})", action.label()));
+                    action = PaceAction::Stop;
+                }
+            }
+        }
+
+        // O4 routing: a stop with standing criteria takes the existing criteria-gate
+        // self-check turn first; the model re-decides with the checklist in view.
+        if action == PaceAction::Stop
+            && self.criteria_gate_enabled
+            && !self.criteria_gate_fired
+            && !self.ctx.partitions.task_state.criteria.is_empty()
+        {
+            self.criteria_gate_fired = true;
+            let criteria = self.ctx.partitions.task_state.criteria.clone();
+            self.push_synthetic_tool_result(
+                &call.id,
+                "pace(stop) noted — verify the acceptance criteria first, then pace again.",
+            );
+            self.ctx.push_signal(format!(
+                "[CRITERIA CHECK] You proposed stopping the loop. Verify each acceptance \
+                 criterion first: {}. If any is NOT met, continue working (or pace(continue)). \
+                 If all are met, call pace(stop) again.",
+                criteria.join(" | ")
+            ));
+            self.observations.push(KernelObservation::CriteriaGateFired {
+                turn: self.turn,
+                criteria,
+            });
+            self.phase = LoopPhase::Reason;
+            return self.emit_call_llm();
+        }
+
+        // Sleep clamp into [min, max].
+        let delay_ms = if action == PaceAction::Sleep {
+            let raw = proposed_delay.unwrap_or(spec.min_sleep_ms.unwrap_or(60_000));
+            let mut clamped = raw;
+            if let Some(min) = spec.min_sleep_ms {
+                clamped = clamped.max(min);
+            }
+            if let Some(max) = spec.max_sleep_ms {
+                clamped = clamped.min(max);
+            }
+            if clamped != raw && coerced_from.is_none() {
+                coerced_from = Some(format!("sleep {raw}ms (clamped)"));
+            }
+            Some(clamped)
+        } else {
+            None
+        };
+
+        let decision = PaceDecision { action, delay_ms, reason, coerced_from };
+        self.observations.push(KernelObservation::RoundPaced {
+            turn: self.turn,
+            round: self.group_rounds_base.saturating_add(1),
+            decision: decision.clone(),
+        });
+        self.push_synthetic_tool_result(
+            &call.id,
+            &format!(
+                "pace acknowledged: {}{} — wrap up with a brief round report.",
+                decision.action.label(),
+                decision
+                    .delay_ms
+                    .map(|d| format!(" {d}ms"))
+                    .unwrap_or_default()
+            ),
+        );
+        self.pending_pace = Some(decision);
+        self.pending_termination = Some(TerminationReason::Completed);
+        self.phase = LoopPhase::Reason;
+        self.emit_call_llm()
+    }
+
+    /// Close a kernel-handled tool call's transcript pair with a synthetic result so
+    /// providers always see call → result.
+    fn push_synthetic_tool_result(&mut self, call_id: &str, output: &str) {
+        let msg = Message::tool(vec![crate::types::message::ContentPart::ToolResult {
+            call_id: call_id.into(),
+            output: output.to_string(),
+            is_error: false,
+        }]);
+        let tokens = self.message_tokens(&msg);
+        self.ctx.push_history(msg, tokens);
+    }
+
     fn terminate(
         &mut self,
         termination: TerminationReason,
@@ -808,6 +975,35 @@ impl LoopStateMachine {
             let tokens = self.message_tokens(msg);
             self.ctx.push_history(msg.clone(), tokens);
         }
+        // ③ attach the round's pacing decision. Stashed by the trap when the model
+        // called `pace`; otherwise the spec's default_action ("stop" for goal loops,
+        // "sleep" for cron loops) — but ONLY on a clean Completed. NoProgress /
+        // ContextOverflow / Error rounds stop and surface (nothing nags the model).
+        let pace_decision = self.pending_pace.take().or_else(|| {
+            let spec = self.run_spec.as_ref()?.loop_round.as_ref()?;
+            if termination != TerminationReason::Completed {
+                return Some(crate::types::result::PaceDecision {
+                    action: crate::types::result::PaceAction::Stop,
+                    delay_ms: None,
+                    reason: format!("round terminated: {}", termination.label()),
+                    coerced_from: None,
+                });
+            }
+            match spec.default_action.as_deref() {
+                Some("sleep") => Some(crate::types::result::PaceDecision {
+                    action: crate::types::result::PaceAction::Sleep,
+                    delay_ms: spec.min_sleep_ms.or(Some(60_000)),
+                    reason: "default_action: sleep (cron loop)".to_string(),
+                    coerced_from: None,
+                }),
+                _ => Some(crate::types::result::PaceDecision {
+                    action: crate::types::result::PaceAction::Stop,
+                    delay_ms: None,
+                    reason: "default_action: stop (no pace call this round)".to_string(),
+                    coerced_from: None,
+                }),
+            }
+        });
         let result = LoopResult {
             termination,
             final_message,
@@ -816,6 +1012,7 @@ impl LoopStateMachine {
             loop_continue: None,
             classify_branch: None,
             tournament_winner: None,
+            pace_decision,
         };
         self.set_lifecycle(TaskLifecycle::Done(termination), None);
         LoopAction::Done { result }
@@ -879,6 +1076,14 @@ impl LoopStateMachine {
             });
         }
 
+        // ③ pace meta-tool: exposed ONLY when this run is a round of a paced loop
+        // (run_spec.loop_round present) — the same conditional-exposure pattern as
+        // skill/memory/read_result. Pushed after every filter: pacing is kernel-owned
+        // and must never be narrowed away by skills or capability filters.
+        if self.run_spec.as_ref().and_then(|r| r.loop_round.as_ref()).is_some() {
+            tools.push(pace_tool_schema());
+        }
+
         LoopAction::CallLLM { context, tools }
     }
 
@@ -939,3 +1144,22 @@ impl LoopStateMachine {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+/// ③ the `pace` meta-tool schema — exposed only on loop-round runs.
+fn pace_tool_schema() -> crate::types::message::ToolSchema {
+    crate::types::message::ToolSchema {
+        name: compact_str::CompactString::new("pace"),
+        description: "End this round and decide what happens next: continue immediately, \
+sleep then run another round, or stop the loop. Call this when the round's work is done."
+            .to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "next": { "type": "string", "enum": ["continue", "sleep", "stop"] },
+                "delay_ms": { "type": "integer", "minimum": 0 },
+                "reason": { "type": "string" }
+            },
+            "required": ["next", "reason"]
+        }),
+    }
+}

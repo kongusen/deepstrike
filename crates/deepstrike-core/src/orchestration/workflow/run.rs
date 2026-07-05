@@ -190,6 +190,7 @@ fn resumed_result() -> LoopResult {
         loop_continue: None,
         classify_branch: None,
         tournament_winner: None,
+        pace_decision: None,
     }
 }
 
@@ -688,6 +689,7 @@ impl WorkflowRun {
             loop_continue: None,
             classify_branch: None,
             tournament_winner: winner,
+            pace_decision: None,
         };
         self.graph.complete(controller, result);
     }
@@ -861,6 +863,7 @@ mod tests {
             loop_continue: None,
             classify_branch: None,
             tournament_winner: None,
+            pace_decision: None,
         }
     }
 

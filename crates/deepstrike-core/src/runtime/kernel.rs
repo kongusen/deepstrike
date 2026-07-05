@@ -731,6 +731,12 @@ pub enum KernelObservation {
         agent_ids: Vec<String>,
         reason: String,
     },
+    /// ③ loop-agent pacing: the kernel adjudicated a `pace` proposal for this round.
+    RoundPaced {
+        turn: u32,
+        round: u32,
+        decision: crate::types::result::PaceDecision,
+    },
     /// R3-1: a runtime node submission was appended to the in-flight DAG at `base`
     /// (the graph length before the append). The SDK records `base` on the
     /// `workflow_nodes_submitted` session event so resume can re-apply the batch at
@@ -2535,6 +2541,7 @@ mod tests {
                         loop_continue: None,
                         classify_branch: None,
                         tournament_winner: None,
+                        pace_decision: None,
                     },
                 },
             }))
@@ -2599,6 +2606,7 @@ mod tests {
                         loop_continue: None,
                         classify_branch: None,
                         tournament_winner: None,
+                        pace_decision: None,
                     },
                 },
             }))
@@ -2668,6 +2676,7 @@ mod tests {
                         loop_continue: None,
                         classify_branch: None,
                         tournament_winner: None,
+                        pace_decision: None,
                     },
                 },
             }))
@@ -2727,6 +2736,7 @@ mod tests {
                     loop_continue: None,
                     classify_branch: None,
                     tournament_winner: None,
+                    pace_decision: None,
                 },
             },
         }));

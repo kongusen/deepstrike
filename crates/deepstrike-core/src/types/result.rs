@@ -44,6 +44,43 @@ impl TerminationReason {
     }
 }
 
+/// What the loop agent proposed to do after this round (`pace` meta-tool verb).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaceAction {
+    /// Start the next round immediately.
+    Continue,
+    /// Sleep `delay_ms`, then start the next round.
+    Sleep,
+    /// The loop is done (goal met, budget spent, or nothing left to do).
+    Stop,
+}
+
+impl PaceAction {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Continue => "continue",
+            Self::Sleep => "sleep",
+            Self::Stop => "stop",
+        }
+    }
+}
+
+/// The kernel-adjudicated outcome of a `pace` proposal: the model PROPOSES, the trap
+/// clamps/coerces (delay bounds, max_rounds), and `coerced_from` records any override
+/// so the decision stays auditable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaceDecision {
+    pub action: PaceAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay_ms: Option<u64>,
+    pub reason: String,
+    /// The model's original proposal when the trap changed it (e.g. "sleep 5" clamped,
+    /// or "continue" forced to stop at max_rounds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coerced_from: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopResult {
     pub termination: TerminationReason,
@@ -60,6 +97,10 @@ pub struct LoopResult {
     /// branch label here; the kernel runs that branch and prunes the others. Additive ABI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classify_branch: Option<String>,
+    /// Loop-agent pacing (③): the adjudicated after-round decision. `None` for every
+    /// non-loop run. Additive ABI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pace_decision: Option<PaceDecision>,
     /// Tournament-node judge verdict (A#2): a judge sub-agent of a `NodeKind::Tournament` node
     /// reports the winning entrant's agent id here (one of the match's two entrants). The kernel
     /// advances the bracket with it; the controller node's final result carries the champion's id

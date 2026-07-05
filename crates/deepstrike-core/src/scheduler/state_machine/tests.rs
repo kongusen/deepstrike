@@ -1262,6 +1262,7 @@
                 loop_continue: None,
                 classify_branch: None,
                 tournament_winner: None,
+                pace_decision: None,
             },
         };
         let resumed = sm.feed(LoopEvent::SubAgentCompleted { result });
@@ -1506,6 +1507,7 @@
                     loop_continue: None,
                     classify_branch: None,
                     tournament_winner: None,
+                    pace_decision: None,
                 },
             },
         });
@@ -1738,6 +1740,7 @@
                     loop_continue: None,
                     classify_branch: None,
                     tournament_winner: None,
+                    pace_decision: None,
                 },
             },
         });
@@ -1761,6 +1764,7 @@
                 loop_continue: None,
                 classify_branch: None,
                 tournament_winner: None,
+                pace_decision: None,
             },
         }
     }
@@ -2739,3 +2743,157 @@
         let a = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("done") });
         assert!(matches!(a, LoopAction::Done { .. }));
     }
+    // ─── ③ loop-agent pacing trap ────────────────────────────────────────────
+
+    fn loop_sm(spec: crate::types::agent::LoopRoundSpec) -> LoopStateMachine {
+        use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+        let mut sm = sm();
+        let mut run_spec = AgentRunSpec::new(
+            AgentIdentity::new("loop-agent", "loop-sess"),
+            AgentRole::Implement,
+            "iterate until done",
+        );
+        run_spec.loop_round = Some(spec);
+        sm.run_spec = Some(run_spec);
+        sm.start(RuntimeTask::new("iterate until done"));
+        sm
+    }
+
+    fn pace_turn(next: &str, delay_ms: Option<u64>) -> Message {
+        let mut args = serde_json::json!({ "next": next, "reason": "round done" });
+        if let Some(d) = delay_ms {
+            args["delay_ms"] = serde_json::json!(d);
+        }
+        fuse_tool_turn("pace", args)
+    }
+
+    #[test]
+    fn pace_tool_exposed_only_on_loop_rounds() {
+        // No loop_round ⇒ no pace tool.
+        let mut plain = sm();
+        let action = plain.start(RuntimeTask::new("t"));
+        if let LoopAction::CallLLM { tools, .. } = action {
+            assert!(!tools.iter().any(|t| t.name.as_str() == "pace"));
+        } else {
+            panic!("expected CallLLM");
+        }
+        // loop_round present ⇒ exposed.
+        let mut sm = loop_sm(crate::types::agent::LoopRoundSpec::default());
+        let action = sm.emit_call_llm();
+        if let LoopAction::CallLLM { tools, .. } = action {
+            assert!(tools.iter().any(|t| t.name.as_str() == "pace"));
+        } else {
+            panic!("expected CallLLM");
+        }
+    }
+
+    #[test]
+    fn pace_sleep_is_clamped_and_records_coercion() {
+        let mut sm = loop_sm(crate::types::agent::LoopRoundSpec {
+            min_sleep_ms: Some(10_000),
+            max_sleep_ms: Some(600_000),
+            ..Default::default()
+        });
+        // Proposes 5ms — clamped up to the 10s floor, coercion recorded.
+        let action = sm.feed(LoopEvent::LLMResponse { message: pace_turn("sleep", Some(5)) });
+        assert!(matches!(action, LoopAction::CallLLM { ref tools, .. } if tools.is_empty()),
+            "an allowed pace strips tools for the final report turn");
+        let done = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("round report") });
+        match done {
+            LoopAction::Done { result } => {
+                let pace = result.pace_decision.expect("pace attached");
+                assert_eq!(pace.action, crate::types::result::PaceAction::Sleep);
+                assert_eq!(pace.delay_ms, Some(10_000));
+                assert!(pace.coerced_from.as_deref().unwrap_or("").contains("clamped"));
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pace_continue_coerced_to_stop_at_max_rounds() {
+        let mut sm = loop_sm(crate::types::agent::LoopRoundSpec {
+            max_rounds: Some(3),
+            ..Default::default()
+        });
+        sm.seed_group_rounds(2); // two rounds already done; this one is the third
+        sm.feed(LoopEvent::LLMResponse { message: pace_turn("continue", None) });
+        let done = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("report") });
+        match done {
+            LoopAction::Done { result } => {
+                let pace = result.pace_decision.expect("pace attached");
+                assert_eq!(pace.action, crate::types::result::PaceAction::Stop);
+                assert!(pace.coerced_from.as_deref().unwrap_or("").contains("max_rounds"));
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pace_stop_routes_through_criteria_gate_then_honors_the_redecision() {
+        let mut sm = loop_sm(crate::types::agent::LoopRoundSpec::default());
+        sm.ctx.partitions.task_state.criteria =
+            vec!["tests green".to_string(), "docs updated".to_string()];
+        // First stop proposal → the O4 self-check turn, NOT a round end.
+        let action = sm.feed(LoopEvent::LLMResponse { message: pace_turn("stop", None) });
+        assert!(matches!(action, LoopAction::CallLLM { ref tools, .. } if !tools.is_empty()),
+            "criteria check is a normal working turn, tools stay");
+        assert!(sm.ctx.partitions.signals.iter().any(|s| s.contains("[CRITERIA CHECK]")));
+        assert!(sm.take_observations().iter().any(|o| matches!(o, KernelObservation::CriteriaGateFired { .. })));
+        // The model re-decides stop → honored this time (gate fires once per round).
+        sm.feed(LoopEvent::LLMResponse { message: pace_turn("stop", None) });
+        let done = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("final") });
+        match done {
+            LoopAction::Done { result } => {
+                let pace = result.pace_decision.expect("pace attached");
+                assert_eq!(pace.action, crate::types::result::PaceAction::Stop);
+                assert!(pace.coerced_from.is_none());
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn round_without_pace_call_falls_back_to_default_action() {
+        // Goal loop (default): stop.
+        let mut sm = loop_sm(crate::types::agent::LoopRoundSpec::default());
+        let done = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("all done") });
+        match done {
+            LoopAction::Done { result } => {
+                let pace = result.pace_decision.expect("default pace attached");
+                assert_eq!(pace.action, crate::types::result::PaceAction::Stop);
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        // Cron loop: default_action=sleep uses min_sleep_ms as the interval.
+        let mut sm = loop_sm(crate::types::agent::LoopRoundSpec {
+            default_action: Some("sleep".to_string()),
+            min_sleep_ms: Some(300_000),
+            ..Default::default()
+        });
+        let done = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("tick done") });
+        match done {
+            LoopAction::Done { result } => {
+                let pace = result.pace_decision.expect("default pace attached");
+                assert_eq!(pace.action, crate::types::result::PaceAction::Sleep);
+                assert_eq!(pace.delay_ms, Some(300_000));
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pace_emits_round_paced_observation_with_seeded_round_number() {
+        let mut sm = loop_sm(crate::types::agent::LoopRoundSpec::default());
+        sm.seed_group_rounds(4);
+        sm.feed(LoopEvent::LLMResponse { message: pace_turn("continue", None) });
+        let obs = sm.take_observations();
+        let paced = obs.iter().find_map(|o| match o {
+            KernelObservation::RoundPaced { round, decision, .. } => Some((*round, decision.clone())),
+            _ => None,
+        });
+        let (round, decision) = paced.expect("RoundPaced emitted");
+        assert_eq!(round, 5, "this round = seeded base + 1");
+        assert_eq!(decision.action, crate::types::result::PaceAction::Continue);
+    }
+

@@ -55,7 +55,7 @@ pub use runtime::{
 };
 pub use types::agent::{
     AgentCapabilityFilter, AgentIdentity, AgentIsolation, AgentRole, AgentRunSpec,
-    ContextInheritance, IsolationManifest,
+    ContextInheritance, IsolationManifest, LoopRoundSpec,
 };
 pub use types::capability::{
     CapabilityCommand, CapabilityDescriptor, CapabilityKind, CapabilityLease, CapabilityManifest,

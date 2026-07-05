@@ -21,6 +21,7 @@ pub const READ_RESULT_TOOL_NAME: &str = "read_result";
 /// Control-plane meta-tools: kernel-handled tools that drive state/capabilities rather than do task
 /// work. Excluded from the `recent_actions` progress log (2b) so the footer reflects real progress.
 const META_TOOL_NAMES: &[&str] = &[
+    "pace",
     "update_plan",
     "skill",
     MEMORY_TOOL_NAME,

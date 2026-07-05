@@ -247,6 +247,7 @@ mod tests {
                 loop_continue: None,
                 classify_branch: None,
                 tournament_winner: None,
+                pace_decision: None,
             },
         );
         assert_eq!(g.nodes[b].status, TaskStatus::Ready);

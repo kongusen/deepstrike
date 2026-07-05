@@ -158,6 +158,30 @@ pub struct AgentRunSpec {
     pub milestones: Option<MilestoneContract>,
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub metadata: serde_json::Value,
+    /// ③ loop-agent rounds: presence turns this run into ONE round of a paced loop —
+    /// it gates exposure of the `pace` meta-tool and arms the pacing trap. Additive ABI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_round: Option<LoopRoundSpec>,
+}
+
+/// Round/pacing bounds for a loop-agent run (all optional; the kernel clamps and
+/// coerces the model's `pace` proposals against them at the syscall trap).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LoopRoundSpec {
+    /// Hard round cap across the loop's lifetime (seeded via `seed_group_rounds`);
+    /// a continue/sleep proposal at the cap is coerced to stop("max_rounds").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rounds: Option<u32>,
+    /// Sleep clamp floor (ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_sleep_ms: Option<u64>,
+    /// Sleep clamp ceiling (ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_sleep_ms: Option<u64>,
+    /// Fallback when the round finishes without a `pace` call: "stop" (goal loops,
+    /// the default) or "sleep" (cron loops — sleeps `min_sleep_ms`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_action: Option<String>,
 }
 
 impl AgentRunSpec {
@@ -171,6 +195,7 @@ impl AgentRunSpec {
             capability_filter: AgentCapabilityFilter::default(),
             milestones: None,
             metadata: serde_json::Value::Null,
+            loop_round: None,
         }
     }
 
