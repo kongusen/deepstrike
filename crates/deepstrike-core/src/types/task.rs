@@ -1,17 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-/// Freeform parallelism / classification hint for task scheduling.
+/// Freeform classification label carried on a task, round-tripped transparently.
 ///
-/// The kernel transparently round-trips any string the caller sets.  Well-known
-/// constants are provided for the built-in workflow templates:
-///
-/// - `"orchestrate"` — serial, produces contracts; runs one at a time
-/// - `"implement"`   — serial, DAG chain; `TaskGraph::ready_tasks` enforces max 1
-/// - `"retrieve"`    — parallelisable; no mutual exclusion
-/// - `"verify"`      — parallelisable, isolated agent context
-///
-/// Callers may use any other value (e.g. `"prd-fill"`, `"eval"`) without kernel
-/// changes — the field is a transparent label, not a scheduling gate.
+/// This is a pass-through label for host-side bookkeeping — the kernel attaches
+/// NO scheduling semantics to it (`TaskGraph::ready_tasks` filters by status
+/// only). Callers may use any value (e.g. `"prd-fill"`, `"eval"`); the constants
+/// below are conventional names, not gates.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(transparent)]
 pub struct TaskLane(pub String);

@@ -25,6 +25,16 @@ pub fn node_agent_id(node: usize) -> String {
     format!("wf-node{node}")
 }
 
+/// Parse a loop-iteration agent id `wf-node{N}-i{k}` into `(N, k)`; `None` for plain
+/// node ids, malformed ids, or an out-of-range node index.
+fn parse_loop_iteration_id(id: &str, n_nodes: usize) -> Option<(usize, usize)> {
+    let rest = id.strip_prefix("wf-node")?;
+    let (node_s, k_s) = rest.split_once("-i")?;
+    let node: usize = node_s.parse().ok()?;
+    let k: usize = k_s.parse().ok()?;
+    (node < n_nodes).then_some((node, k))
+}
+
 /// Enough to run one spawned workflow node, carried to the SDK in the `WorkflowBatchSpawned`
 /// observation. Role/isolation/inheritance are canonical snake_case strings (serde names) so the
 /// host SDK can rebuild an agent run spec — the kernel generates these specs internally, so this
@@ -207,8 +217,6 @@ pub struct WorkflowRun {
     parent_session_id: String,
     /// Completed-event lookup: kernel agent id → DAG node index.
     node_of_agent: HashMap<String, usize>,
-    /// Nodes spawned in the current batch, awaiting completion.
-    batch: Vec<usize>,
     /// Completed-iteration count per `Loop` node (absent / 0 = no iterations finished yet). The
     /// in-flight iteration's agent id is `wf-node{N}-i{iter_counts[N]}`.
     iter_counts: HashMap<usize, usize>,
@@ -223,13 +231,11 @@ pub struct WorkflowRun {
 impl WorkflowRun {
     /// Build from a spec. Validates dependency indices + acyclicity (reuses `WorkflowSpec`).
     pub fn new(spec: &WorkflowSpec, parent_session_id: &str) -> Result<Self> {
-        spec.validate()?;
         Ok(Self {
-            graph: spec.to_task_graph()?,
+            graph: spec.validate()?,
             nodes: spec.nodes.clone(),
             parent_session_id: parent_session_id.to_string(),
             node_of_agent: HashMap::new(),
-            batch: Vec::new(),
             iter_counts: HashMap::new(),
             tournaments: HashMap::new(),
             child_controller: HashMap::new(),
@@ -240,14 +246,22 @@ impl WorkflowRun {
     /// W0-ABI resume: rebuild an in-flight run by replaying which node agent-ids already completed
     /// (e.g. recovered from the session log after an interruption). Those nodes are pre-marked
     /// done so [`ready_batch`](Self::ready_batch) returns only the remaining work — the kernel then
-    /// continues the DAG from where it left off. Unknown ids are ignored.
+    /// continues the DAG from where it left off.
     ///
     /// R3-1: `submissions` are the runtime [`Self::submit_nodes`] batches recorded (in order) before
-    /// the interruption. They are re-applied **first**, reconstructing dynamically-appended nodes at
-    /// the same indices/ids they had originally — `submit_nodes` appends by order alone (independent
-    /// of completion state), so re-applying every submission up front and then marking completions
-    /// reproduces the exact pre-interruption graph. Without this, appended nodes (not in the spec)
-    /// would vanish on resume and their completed ids would match nothing.
+    /// the interruption. They are re-applied **first**, reconstructing dynamically-appended nodes.
+    /// This reproduces the pre-interruption graph when submissions were the only runtime appends.
+    /// KNOWN LIMIT: tournament entrant/judge children are runtime appends that are NOT recorded as
+    /// submissions — if the original run interleaved a tournament bracket between submission
+    /// batches, replayed batches shift onto the children's old indices and a child's completed id
+    /// could mark the wrong node. Fixing that needs the submission's base index on the
+    /// `workflow_nodes_submitted` event (additive ABI, cross-SDK batch); until then an interrupted
+    /// bracket restarts and unknown ids are ignored.
+    ///
+    /// Loop iterations complete under `wf-node{N}-i{k}`: replay advances the iteration cursor to
+    /// the highest recorded `k+1` instead of discarding the finished work — the node re-arms at the
+    /// next iteration, and completes only when `max_iters` is provably exhausted (a semantic stop
+    /// via `loop_continue` cannot be proven from ids alone, so the final iteration re-runs then).
     pub fn resume(
         spec: &WorkflowSpec,
         parent_session_id: &str,
@@ -263,6 +277,26 @@ impl WorkflowRun {
             if let Some(node) = (0..n).find(|&i| node_agent_id(i) == *id) {
                 run.graph.start(node);
                 run.graph.complete(node, resumed_result());
+                continue;
+            }
+            if let Some((node, k)) = parse_loop_iteration_id(id, n) {
+                if let NodeKind::Loop { max_iters } = run.nodes[node].kind {
+                    let done = run
+                        .iter_counts
+                        .get(&node)
+                        .copied()
+                        .unwrap_or(0)
+                        .max(k + 1);
+                    run.iter_counts.insert(node, done);
+                    if done >= max_iters {
+                        run.graph.start(node);
+                        run.graph.complete(node, resumed_result());
+                    } else {
+                        // Re-arm at the recorded cursor: the next spawn round runs
+                        // `wf-node{node}-i{done}` instead of restarting from i0.
+                        run.graph.set_ready(node);
+                    }
+                }
             }
         }
         Ok(run)
@@ -309,11 +343,7 @@ impl WorkflowRun {
     }
 
     /// The goal text for a node (for the spawn's run spec / context injection).
-    pub fn goal_of(&self, node: usize) -> &str {
-        &self.nodes[node].task.goal
-    }
-
-    /// W3 quarantine invariant: a quarantined node reads untrusted content and must run read-only.
+        /// W3 quarantine invariant: a quarantined node reads untrusted content and must run read-only.
     /// Returns `true` if the node is `Quarantined` yet declares a write-capable isolation
     /// (`Shared`/`Worktree`/`Remote`) — a privilege contradiction the kernel refuses to spawn,
     /// turning the SDK's "self-discipline" quarantine into an in-kernel, auditable enforcement.
@@ -366,11 +396,11 @@ impl WorkflowRun {
         }
     }
 
-    /// Mark a node as spawned: start it in the graph, record it in the live batch, and map its
-    /// kernel agent id back to the node for completion routing.
+    /// Mark a node as spawned: start it in the graph and map its kernel agent id back
+    /// to the node for completion routing. (The live in-flight set is the executor's
+    /// `SuspendState::SubAgentAwait.agent_ids` — the single source of in-flight truth.)
     pub fn mark_spawned(&mut self, node: usize, agent_id: &str) {
         self.graph.start(node);
-        self.batch.push(node);
         self.node_of_agent.insert(agent_id.to_string(), node);
     }
 
@@ -381,7 +411,7 @@ impl WorkflowRun {
     }
 
     /// Record a completed sub-agent against its node. Returns the node index if `agent_id`
-    /// belonged to this workflow (and removes it from the live batch), else `None`.
+    /// belonged to this workflow, else `None`.
     ///
     /// For a `Loop` node this counts the finished iteration: while more iterations remain
     /// (`< max_iters`) the node is re-armed (`set_ready`) — so the next `ready_batch`/spawn round
@@ -389,7 +419,6 @@ impl WorkflowRun {
     /// Only when the loop is exhausted is the node `complete`d, promoting its dependents.
     pub fn record_completion(&mut self, agent_id: &str, result: LoopResult) -> Option<usize> {
         let node = *self.node_of_agent.get(agent_id)?;
-        self.batch.retain(|&n| n != node);
 
         // A tournament entrant/judge child: route the completion into its controller's bracket
         // rather than treating it as an ordinary node (it has no dependents of its own).
@@ -733,18 +762,23 @@ impl WorkflowRun {
     }
 
     /// The parent session id for this workflow (stamped on each node's manifest).
-    pub fn parent_session_id(&self) -> &str {
-        &self.parent_session_id
+        /// True once the current batch has drained (every spawned node reported back).
+        /// True once every node is terminal (completed or failed) and nothing is in flight.
+        /// Test instrument: true when no node is currently `Running` — the spawned batch has
+    /// fully reported back. Derived from the graph; the executor's in-flight truth is
+    /// `SuspendState::SubAgentAwait.agent_ids`.
+    pub(crate) fn batch_drained(&self) -> bool {
+        !(0..self.graph.len()).any(|i| {
+            matches!(self.graph.get(i).map(|n| &n.status), Some(crate::orchestration::task_graph::TaskStatus::Running))
+        })
     }
 
-    /// True once the current batch has drained (every spawned node reported back).
-    pub fn batch_drained(&self) -> bool {
-        self.batch.is_empty()
-    }
-
-    /// True once every node is terminal (completed or failed) and nothing is in flight.
-    pub fn is_complete(&self) -> bool {
-        self.graph.all_done() && self.batch.is_empty()
+    /// Test instrument: every node reached a terminal status (completed or failed) and
+    /// nothing is running. NOTE the executor's own finish rule is looser — "nothing
+    /// running && nothing newly spawnable" — so a stalled DAG (dependents of a denied
+    /// node stay `Pending` forever) terminates the run while this stays false.
+    pub(crate) fn is_complete(&self) -> bool {
+        self.graph.all_done()
     }
 
     /// Outcome at finish: `(completed_agent_ids, failed_agent_ids)` by node. Nodes left
@@ -782,10 +816,7 @@ impl WorkflowRun {
         self.graph.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.graph.is_empty()
     }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1312,6 +1343,47 @@ mod tests {
         let run = WorkflowRun::resume(&spec, "sess", &[], &[node_agent_id(0), node_agent_id(1)]).unwrap();
         assert!(run.ready_batch().is_empty());
         assert!(run.is_complete());
+    }
+
+    #[test]
+    fn resume_restores_loop_iteration_cursor_instead_of_restarting() {
+        // A 3-iteration loop with iterations 0 and 1 already finished pre-interruption:
+        // resume must re-arm the node at i2 (not silently restart from i0).
+        use crate::orchestration::workflow::{NodeKind, WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut node = WorkflowNode::new(RuntimeTask::new("polish until done"), AgentRole::Implement);
+        node.kind = NodeKind::Loop { max_iters: 3 };
+        let spec = WorkflowSpec::new(vec![node]);
+        let run = WorkflowRun::resume(
+            &spec,
+            "sess",
+            &[],
+            &["wf-node0-i0".to_string(), "wf-node0-i1".to_string()],
+        )
+        .unwrap();
+        assert_eq!(run.ready_batch(), vec![0], "loop node re-armed, not complete");
+        assert_eq!(run.current_agent_id(0), "wf-node0-i2", "cursor advanced past finished work");
+        assert!(!run.is_complete());
+    }
+
+    #[test]
+    fn resume_completes_loop_when_all_iterations_recorded() {
+        use crate::orchestration::workflow::{NodeKind, WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let mut node = WorkflowNode::new(RuntimeTask::new("polish"), AgentRole::Implement);
+        node.kind = NodeKind::Loop { max_iters: 2 };
+        let spec = WorkflowSpec::new(vec![node]);
+        let run = WorkflowRun::resume(
+            &spec,
+            "sess",
+            &[],
+            &["wf-node0-i0".to_string(), "wf-node0-i1".to_string()],
+        )
+        .unwrap();
+        assert!(run.ready_batch().is_empty());
+        assert!(run.is_complete(), "max_iters provably exhausted -> node complete");
     }
 
     #[test]

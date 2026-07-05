@@ -20,8 +20,7 @@ pub use deepstrike_core::mm::memory::{
     MemoryKind, MemoryMetadata, MemoryPolicy, MemoryQuery, MemoryRetrieval, MemoryWriteRequest,
 };
 pub use deepstrike_core::orchestration::workflow::{
-    ClassifyAndAct, WorkflowNode, WorkflowSpec, classify_and_act, fanout_synthesize,
-    generate_and_filter,
+    fanout_synthesize, gen_eval, generate_and_filter, verify_rules, WorkflowNode, WorkflowSpec,
 };
 pub use deepstrike_core::orchestration::workflow::{JudgeMatch, WorkflowRun, WorkflowSpawnInfo};
 pub use governance::{Governance, GovernanceVerdict};

@@ -2476,7 +2476,7 @@ mod tests {
         }));
         runtime.state_machine_mut().take_observations();
 
-        let step = run_with_tool_call(&mut runtime, "memory");
+        let _step = run_with_tool_call(&mut runtime, "memory");
         // (the PageInRequested observation itself was deleted with its retired producer)
     }
 

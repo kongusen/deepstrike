@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use super::task_graph::TaskGraph;
 use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance};
 use crate::types::error::{DeepStrikeError, Result};
-use crate::types::task::{RuntimeTask, TaskLane};
+use crate::types::task::RuntimeTask;
 
 /// The kernel-resident execution state for an in-flight [`WorkflowSpec`] — the DAG run-queue,
 /// tournament bracket advancement, and per-node spawn descriptors. Was `scheduler/workflow_run.rs`;
@@ -185,12 +185,7 @@ impl WorkflowNode {
         self
     }
 
-    pub fn with_context_inheritance(mut self, inheritance: ContextInheritance) -> Self {
-        self.context_inheritance = inheritance;
-        self
-    }
-
-    pub fn with_model_hint(mut self, hint: impl Into<String>) -> Self {
+        pub fn with_model_hint(mut self, hint: impl Into<String>) -> Self {
         self.model_hint = Some(hint.into());
         self
     }
@@ -240,7 +235,7 @@ impl WorkflowSpec {
     }
 
     /// Validate dependency indices are in range and the graph is acyclic.
-    pub fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<TaskGraph> {
         let n = self.nodes.len();
         for (i, node) in self.nodes.iter().enumerate() {
             if let NodeKind::Loop { max_iters: 0 } = node.kind {
@@ -289,8 +284,11 @@ impl WorkflowSpec {
                 }
             }
         }
-        // Reuse the executor's cycle detection.
-        self.to_task_graph()?.topological_sort().map(|_| ())
+        // Reuse the executor's cycle detection; hand the built graph back so callers
+        // that need it (WorkflowRun::new) don't lower + range-check a second time.
+        let graph = self.to_task_graph()?;
+        graph.topological_sort()?;
+        Ok(graph)
     }
 
     /// Lower into an executable [`TaskGraph`] (preserves node order as task ids).
@@ -321,11 +319,11 @@ impl WorkflowSpec {
 pub fn fanout_synthesize(workers: Vec<RuntimeTask>, synthesize: RuntimeTask) -> WorkflowSpec {
     let mut nodes: Vec<WorkflowNode> = workers
         .into_iter()
-        .map(|t| WorkflowNode::new(t.with_lane(TaskLane::new(TaskLane::RETRIEVE)), AgentRole::Explore))
+        .map(|t| WorkflowNode::new(t, AgentRole::Explore))
         .collect();
     let worker_ids: Vec<usize> = (0..nodes.len()).collect();
     nodes.push(
-        WorkflowNode::new(synthesize.with_lane(TaskLane::new(TaskLane::ORCHESTRATE)), AgentRole::Plan)
+        WorkflowNode::new(synthesize, AgentRole::Plan)
             .with_depends_on(worker_ids),
     );
     WorkflowSpec::new(nodes)
@@ -343,11 +341,11 @@ pub fn fanout_synthesize(workers: Vec<RuntimeTask>, synthesize: RuntimeTask) -> 
 pub fn generate_and_filter(generators: Vec<RuntimeTask>, filter: RuntimeTask) -> WorkflowSpec {
     let mut nodes: Vec<WorkflowNode> = generators
         .into_iter()
-        .map(|t| WorkflowNode::new(t.with_lane(TaskLane::new(TaskLane::RETRIEVE)), AgentRole::Implement))
+        .map(|t| WorkflowNode::new(t, AgentRole::Implement))
         .collect();
     let gen_ids: Vec<usize> = (0..nodes.len()).collect();
     nodes.push(
-        WorkflowNode::new(filter.with_lane(TaskLane::new(TaskLane::VERIFY)), AgentRole::Verify)
+        WorkflowNode::new(filter, AgentRole::Verify)
             .with_depends_on(gen_ids),
     );
     WorkflowSpec::new(nodes)
@@ -372,12 +370,12 @@ pub fn generate_and_filter(generators: Vec<RuntimeTask>, filter: RuntimeTask) ->
 pub fn verify_rules(rules: Vec<RuntimeTask>, skeptic: Option<RuntimeTask>) -> WorkflowSpec {
     let mut nodes: Vec<WorkflowNode> = rules
         .into_iter()
-        .map(|t| WorkflowNode::new(t.with_lane(TaskLane::new(TaskLane::VERIFY)), AgentRole::Verify))
+        .map(|t| WorkflowNode::new(t, AgentRole::Verify))
         .collect();
     if let Some(skeptic) = skeptic {
         let verifier_ids: Vec<usize> = (0..nodes.len()).collect();
         nodes.push(
-            WorkflowNode::new(skeptic.with_lane(TaskLane::new(TaskLane::VERIFY)), AgentRole::Verify)
+            WorkflowNode::new(skeptic, AgentRole::Verify)
                 .with_depends_on(verifier_ids),
         );
     }
@@ -409,12 +407,12 @@ pub fn gen_eval(
     extract_skill_on_pass: bool,
 ) -> WorkflowSpec {
     let worker_node = WorkflowNode::new(
-        worker.with_lane(TaskLane::new(TaskLane::ORCHESTRATE)),
+        worker,
         AgentRole::Implement,
     )
     .with_loop(max_iters.max(1));
     let eval_node = WorkflowNode::new(
-        eval.with_lane(TaskLane::new(TaskLane::VERIFY)),
+        eval,
         AgentRole::Verify,
     )
     .with_depends_on(vec![0])
@@ -425,42 +423,6 @@ pub fn gen_eval(
 // ---------------------------------------------------------------------------
 // Pattern 3 — Classify-and-act
 // ---------------------------------------------------------------------------
-
-/// A classifier followed by labeled branches, exactly one of which runs.
-///
-/// This is **conditional**, so it is not a static DAG: the SDK runs the classifier, reads
-/// its label, then [`route`](ClassifyAndAct::route)s to the single branch to spawn. The
-/// kernel-side part is the routing table — no I/O.
-#[derive(Debug, Clone)]
-pub struct ClassifyAndAct {
-    pub classifier: WorkflowNode,
-    /// `(label, action)` branches; `route` matches a classifier label to its action.
-    pub branches: Vec<(String, WorkflowNode)>,
-}
-
-impl ClassifyAndAct {
-    /// Return the branch action for a classifier label, if one matches.
-    pub fn route(&self, label: &str) -> Option<&WorkflowNode> {
-        self.branches
-            .iter()
-            .find(|(l, _)| l == label)
-            .map(|(_, node)| node)
-    }
-}
-
-/// Build a classify-and-act workflow: a `Plan` classifier plus labeled `Implement` branches.
-pub fn classify_and_act(
-    classifier: RuntimeTask,
-    branches: Vec<(String, RuntimeTask)>,
-) -> ClassifyAndAct {
-    ClassifyAndAct {
-        classifier: WorkflowNode::new(classifier, AgentRole::Plan),
-        branches: branches
-            .into_iter()
-            .map(|(label, task)| (label, WorkflowNode::new(task, AgentRole::Implement)))
-            .collect(),
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -572,21 +534,6 @@ mod tests {
         assert_eq!(spec.nodes.len(), 1);
         assert!(spec.nodes[0].depends_on.is_empty());
         spec.validate().unwrap();
-    }
-
-    #[test]
-    fn classify_and_act_routes() {
-        let c = classify_and_act(
-            task("classify the ticket"),
-            vec![
-                ("bug".into(), task("attempt fix")),
-                ("question".into(), task("answer it")),
-            ],
-        );
-        assert_eq!(c.classifier.role, AgentRole::Plan);
-        assert_eq!(c.route("bug").unwrap().task.goal, "attempt fix");
-        assert_eq!(c.route("question").unwrap().task.goal, "answer it");
-        assert!(c.route("unknown").is_none());
     }
 
     #[test]

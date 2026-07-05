@@ -146,10 +146,7 @@ impl Tournament {
         }
     }
 
-    pub fn is_done(&self) -> bool {
-        self.done
     }
-}
 
 #[cfg(test)]
 mod tests {
@@ -177,7 +174,6 @@ mod tests {
             }
             _ => panic!("expected immediate Done"),
         }
-        assert!(t.is_done());
     }
 
     #[test]
