@@ -1272,9 +1272,14 @@ impl KernelRuntime {
                         self.sm.observations.push(KernelObservation::MemoryWritten {
                             turn,
                             memory_id: memory.metadata.name.clone(),
-                            memory_kind: memory.metadata.kind.map(|k| k.label()).unwrap_or_else(|| {
-                                crate::mm::memory::MemoryKind::infer_from_metadata(&memory.metadata).label()
-                            }).to_string(),
+                            // Kind is an optional caller-supplied label; the kernel does not
+                            // guess taxonomy from metadata (P13: heuristic classifier deleted).
+                            memory_kind: memory
+                                .metadata
+                                .kind
+                                .map(|k| k.label())
+                                .unwrap_or("unclassified")
+                                .to_string(),
                             size_bytes: memory.content.len() as u32,
                         });
                     }
@@ -1937,14 +1942,15 @@ mod tests {
     }
 
     #[test]
-    fn default_runtime_validates_forbidden_write() {
-        // No policy installed => default validation rejects the forbidden pattern (pre-policy behavior).
+    fn default_runtime_accepts_content_hosts_have_not_forbidden() {
+        // P13: no baked-in forbidden patterns — with no policy installed, a structurally
+        // valid write passes; content judgment belongs to hosts/models, not the kernel.
         let mut runtime = KernelRuntime::new(SchedulerBudget::default());
         let step = write_memory(&mut runtime, "note", "代码模式: foo");
         assert!(step
             .observations
             .iter()
-            .any(|o| matches!(o, KernelObservation::MemoryValidationFailed { .. })));
+            .any(|o| matches!(o, KernelObservation::MemoryWritten { .. })));
     }
 
     #[test]

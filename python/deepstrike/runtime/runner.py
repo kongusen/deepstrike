@@ -295,16 +295,24 @@ class RuntimeRunner:
     if any(o.get("kind") == "memory_written" for o in observations):
       from deepstrike.memory.protocols import CurationResult, CurationStats, MemoryEntry
       existing = await self._opts.dream_store.load_memories(resolved_agent_id)
+      content = str(memory.get("content") or "")
+      # Curator-style jaccard dedup at the single write path: a near-duplicate of an
+      # existing entry is dropped (the observation is still logged for audit).
+      if any(_jaccard_similarity(e.text, content) >= 0.9 for e in existing):
+        await self._append_memory_syscall_observations(resolved_session_id, observations)
+        return
+      meta = memory.get("metadata") if isinstance(memory.get("metadata"), dict) else {}
+      score = meta.get("score") if isinstance(meta.get("score"), (int, float)) else 1.0
       await self._opts.dream_store.commit(
         resolved_agent_id,
         CurationResult(
           to_add=[
             MemoryEntry(
-              text=str(memory.get("content") or ""),
-              score=1.0,
+              text=content,
+              score=float(score),
               metadata={
-                **(memory.get("metadata") if isinstance(memory.get("metadata"), dict) else {}),
-                "source": "write_memory_syscall",
+                **meta,
+                "source": meta.get("source") or "write_memory_syscall",
               },
             )
           ],
@@ -2319,8 +2327,10 @@ class RuntimeRunner:
     The ``phase`` kwarg is passed only when the hook's signature accepts it, so pre-K4 hooks
     (``lambda goal: [...]``) keep working unchanged.
     """
-    hook = self._opts.pre_query_memory
-    if not (hook and self._opts.dream_store and self._opts.agent_id):
+    # P10: recall is default-on (CC session-start recall) — with no hook configured,
+    # the goal itself is the query. pre_query_memory stays as the targeting override.
+    hook = self._opts.pre_query_memory or (lambda goal: [goal])
+    if not (self._opts.dream_store and self._opts.agent_id):
       return
     try:
       try:
@@ -2358,17 +2368,20 @@ class RuntimeRunner:
         summary = await result if inspect.isawaitable(result) else result
       else:
         summary = await self._summarize_for_long_term_memory(archived)
-      existing = await self._opts.dream_store.load_memories(self._opts.agent_id)
-      from deepstrike.memory.protocols import CurationResult, CurationStats, MemoryEntry
-      await self._opts.dream_store.commit(
-        self._opts.agent_id,
-        CurationResult(
-          to_add=[MemoryEntry(text=summary, score=1.0, metadata={"source": "semantic_page_out", "action": action})],
-          to_remove_indices=[],
-          stats=CurationStats(insights_processed=1, entries_added=1),
-        ),
-        existing,
-      )
+      # P2 write-funnel: route through the ONE gated write_memory syscall so validation,
+      # the rolling write quota, dedup, and the memory_written audit all apply. Score is
+      # advisory (0.6) — an automatic summary must never outrank curated content.
+      import time as _time
+      await self.write_memory({
+        "content": summary,
+        "metadata": {
+          "name": f"page-out-{int(_time.time() * 1000)}",
+          "description": f"auto summary of {action or 'compaction'} archive",
+          "source": "semantic_page_out",
+          "action": action,
+          "score": 0.6,
+        },
+      })
     except Exception:
       pass
 
@@ -2753,3 +2766,13 @@ def _signal_to_kernel_event(sig) -> dict:
       "timestamp_ms": int(time.time() * 1000),
     },
   }
+
+def _jaccard_similarity(a: str, b: str) -> float:
+  """Word-set jaccard — the curator's dedup rule as a pure helper at the write funnel."""
+  sa = set(w for w in a.split() if w)
+  sb = set(w for w in b.split() if w)
+  if not sa and not sb:
+    return 1.0
+  inter = len(sa & sb)
+  union = len(sa | sb)
+  return inter / union if union else 0.0

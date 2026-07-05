@@ -1787,9 +1787,13 @@ export class RuntimeRunner {
     runtime: KernelRuntimeHandle,
     phase: "initial" | "renewal",
   ): Promise<void> {
-    if (!this.opts.preQueryMemory || !this.opts.dreamStore || !this.opts.agentId) return
+    if (!this.opts.dreamStore || !this.opts.agentId) return
+    // P10: recall is default-on (CC session-start recall) — with no hook configured,
+    // the goal itself is the query. preQueryMemory stays as the targeting override.
+    const preQuery = this.opts.preQueryMemory
+      ?? ((ctx: { goal: string }) => [ctx.goal])
     try {
-      const queries = await this.opts.preQueryMemory({ goal: this.currentGoal, phase })
+      const queries = await preQuery({ goal: this.currentGoal, phase })
       const lines: string[] = []
       for (const q of queries ?? []) {
         if (typeof q !== "string" || !q.trim()) continue
@@ -1818,8 +1822,11 @@ export class RuntimeRunner {
           this.opts.dreamSystemPrompt,
         )
       const existing = await this.opts.dreamStore.loadMemories(this.opts.agentId)
+      // P2 write-funnel (wasm surface has no kernel write gate yet): jaccard dedup +
+      // advisory 0.6 score — an automatic summary must never outrank curated content.
+      if (existing.some(e => jaccardSimilarity(e.text, summary) >= 0.9)) return
       await this.opts.dreamStore.commit(this.opts.agentId, {
-        toAdd: [{ text: summary, score: 1.0, metadata: { source: "semantic_page_out", action } }],
+        toAdd: [{ text: summary, score: 0.6, metadata: { source: "semantic_page_out", action } }],
         toRemoveIndices: [],
         stats: {
           insightsProcessed: 1,
@@ -1832,6 +1839,17 @@ export class RuntimeRunner {
       // non-fatal
     }
   }
+}
+
+/** Word-set jaccard similarity — the curator's dedup rule at the write funnel. */
+function jaccardSimilarity(a: string, b: string): number {
+  const sa = new Set(a.split(/\s+/).filter(Boolean))
+  const sb = new Set(b.split(/\s+/).filter(Boolean))
+  if (sa.size === 0 && sb.size === 0) return 1
+  let inter = 0
+  for (const w of sa) if (sb.has(w)) inter++
+  const union = sa.size + sb.size - inter
+  return union === 0 ? 0 : inter / union
 }
 
 async function summarizeForLongTermMemory(

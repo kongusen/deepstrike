@@ -432,6 +432,15 @@ impl ContextManager {
     fn sweep_knowledge_at_boundary(&mut self) {
         let sweep = self.partitions.knowledge.sweep_at_boundary();
         if sweep.changed {
+            // P9: the model must not have knowledge silently vanish under it. The boundary
+            // already broke the prompt-cache prefix, so a one-line ephemeral tail note is
+            // cache-free; keyed removals name what left and how to get it back.
+            if !sweep.removed_keys.is_empty() {
+                self.partitions.signals.push(format!(
+                    "[KNOWLEDGE] entries removed at this boundary: {} — re-fetch via the memory tool if still needed.",
+                    sweep.removed_keys.join(", ")
+                ));
+            }
             self.pending_knowledge_sweeps.push(sweep);
         }
         // K2: a boundary starts a fresh cache generation — the budget warning may fire again.
@@ -581,6 +590,10 @@ impl ContextManager {
             .collect();
         for name in expired {
             self.deactivate_skill(&name);
+            // P9: lease expiry re-widens the toolset invisibly otherwise — tell the model.
+            self.partitions.signals.push(format!(
+                "[SKILL] lease expired: {name} unloaded; the full toolset is restored."
+            ));
         }
     }
 

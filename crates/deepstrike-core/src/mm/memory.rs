@@ -30,23 +30,6 @@ impl MemoryKind {
         }
     }
 
-    /// Infer memory kind from metadata fields (heuristic classifier).
-    pub fn infer_from_metadata(metadata: &MemoryMetadata) -> Self {
-        if metadata.user_role.is_some() || metadata.expertise_level.is_some() {
-            return MemoryKind::User;
-        }
-        if metadata.preference_rule.is_some() || metadata.approved_pattern.is_some() {
-            return MemoryKind::BehaviorPreference;
-        }
-        if metadata.project_phase.is_some() || metadata.relative_date.is_some() {
-            return MemoryKind::Project;
-        }
-        if metadata.external_url.is_some() || metadata.ticket_ref.is_some() {
-            return MemoryKind::Reference;
-        }
-        // Default: behavior preference (most common)
-        MemoryKind::BehaviorPreference
-    }
 }
 
 /// Lightweight memory metadata (kernel stores, SDK provides full content).
@@ -74,39 +57,6 @@ pub struct MemoryMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
 
-    // --- Heuristic inference fields ---
-
-    /// User profile: role/title.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user_role: Option<String>,
-
-    /// User profile: expertise level.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expertise_level: Option<String>,
-
-    /// Behavior preference: rule/pattern.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preference_rule: Option<String>,
-
-    /// Behavior preference: approved pattern.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approved_pattern: Option<String>,
-
-    /// Project context: phase/milestone.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project_phase: Option<String>,
-
-    /// Project context: relative date (SDK must convert to absolute).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub relative_date: Option<String>,
-
-    /// External pointer: URL.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub external_url: Option<String>,
-
-    /// External pointer: ticket reference.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ticket_ref: Option<String>,
 }
 
 /// Memory write request (SDK → kernel).
@@ -291,14 +241,9 @@ impl Default for MemoryValidation {
             max_size_bytes: 10_000,
             max_name_length: 100,
             required_fields: vec!["name".into(), "description".into()],
-            forbidden_patterns: vec![
-                ("代码模式:".into(), "应从代码推，不应存储"),
-                ("文件路径:".into(), "应从git推，不应存储"),
-                ("架构:".into(), "应从实际代码推"),
-                ("git历史:".into(), "git log是权威"),
-                ("CLAUDE.md:".into(), "已在文档中"),
-                ("TODO:".into(), "临时任务不应进记忆"),
-            ],
+            // P13: no baked-in content heuristics — what belongs in memory is host/model
+            // judgment. Hosts configure forbidden prefixes via MemoryPolicy when they want them.
+            forbidden_patterns: Vec::new(),
         }
     }
 }
@@ -313,45 +258,6 @@ mod tests {
         assert_eq!(MemoryKind::BehaviorPreference.label(), "feedback");
         assert_eq!(MemoryKind::Project.label(), "project");
         assert_eq!(MemoryKind::Reference.label(), "reference");
-    }
-
-    #[test]
-    fn infer_kind_from_user_profile_fields() {
-        let metadata = MemoryMetadata {
-            user_role: Some("Senior Engineer".into()),
-            ..Default::default()
-        };
-        assert_eq!(MemoryKind::infer_from_metadata(&metadata), MemoryKind::User);
-    }
-
-    #[test]
-    fn infer_kind_from_preference_fields() {
-        let metadata = MemoryMetadata {
-            preference_rule: Some("Always use TypeScript".into()),
-            ..Default::default()
-        };
-        assert_eq!(
-            MemoryKind::infer_from_metadata(&metadata),
-            MemoryKind::BehaviorPreference
-        );
-    }
-
-    #[test]
-    fn infer_kind_from_project_fields() {
-        let metadata = MemoryMetadata {
-            project_phase: Some("MVP".into()),
-            ..Default::default()
-        };
-        assert_eq!(MemoryKind::infer_from_metadata(&metadata), MemoryKind::Project);
-    }
-
-    #[test]
-    fn infer_kind_defaults_to_behavior_preference() {
-        let metadata = MemoryMetadata::default();
-        assert_eq!(
-            MemoryKind::infer_from_metadata(&metadata),
-            MemoryKind::BehaviorPreference
-        );
     }
 
     #[test]
@@ -386,15 +292,21 @@ mod tests {
     }
 
     #[test]
-    fn validation_rejects_forbidden_pattern() {
-        let validation = MemoryValidation::default();
+    fn validation_rejects_host_configured_forbidden_pattern() {
+        // P13: no baked-in content heuristics — the mechanism only bites when a HOST
+        // configures forbidden prefixes on its MemoryPolicy.
+        let mut validation = MemoryValidation::default();
+        assert!(validation.forbidden_patterns.is_empty(), "no defaults");
+        validation
+            .forbidden_patterns
+            .push(("TODO:".into(), "transient tasks do not belong in memory"));
         let request = MemoryWriteRequest {
             metadata: MemoryMetadata {
                 name: "bad-memory".into(),
                 description: "Contains forbidden pattern".into(),
                 ..Default::default()
             },
-            content: "代码模式: 应该从代码推".to_string(),
+            content: "TODO: ship it".to_string(),
         };
         assert!(matches!(
             validation.validate(&request),

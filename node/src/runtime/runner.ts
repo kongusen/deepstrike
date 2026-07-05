@@ -159,10 +159,11 @@ export interface RuntimeOptions {
   agentId?: string
   /** I4: optional run-start memory pre-fetch hook. The runner calls this ONCE per run, before the
    *  first LLM turn, with the request's goal and (optional) run-spec. Each returned query string
-   *  becomes a `dreamStore.search(agentId, q, 5)` and the resulting hits are paged into the
-   *  context's knowledge partition before turn 1, so the model sees them on first call. Returning
+   *  becomes a `dreamStore.search(agentId, q, 5)` and the resulting hits land in decaying
+   *  HISTORY as an ordinary user turn before turn 1 (single-use retrieval content — never a
+   *  permanent knowledge pin; `initialMemory` is the curated CLAUDE.md-analog seed). Returning
    *  `undefined` / empty array is a no-op. Requires `dreamStore` + `agentId`; missing either ⇒
-   *  silently skipped (errs-open). Bench memory-recall shows -57% turns / -55% dollars when
+   *  silently skipped (errs-open). Default when unset: one query = the run goal (P10). Bench memory-recall shows -57% turns / -55% dollars when
    *  relevant memories land on turn 1 instead of being discovered via the meta-tool on turn 3+. */
   preQueryMemory?: (ctx: {
     goal: string
@@ -405,23 +406,30 @@ export class RuntimeRunner {
     }
 
     const existing = await this.opts.dreamStore.loadMemories(agentId)
-    await this.opts.dreamStore.commit(agentId, {
-      toAdd: [{
-        text: memory.content,
-        score: 1.0,
-        metadata: {
-          ...memory.metadata,
-          source: "write_memory_syscall",
+    // Curator-style jaccard dedup at the single write path: a near-duplicate of an
+    // existing entry is dropped (the observation is still logged for audit).
+    const isDuplicate = existing.some(e => jaccardSimilarity(e.text, memory.content) >= 0.9)
+    if (!isDuplicate) {
+      const meta = memory.metadata as unknown as Record<string, unknown>
+      const score = typeof meta?.score === "number" ? (meta.score as number) : 1.0
+      await this.opts.dreamStore.commit(agentId, {
+        toAdd: [{
+          text: memory.content,
+          score,
+          metadata: {
+            ...memory.metadata,
+            source: (meta?.source as string) ?? "write_memory_syscall",
+          },
+        }],
+        toRemoveIndices: [],
+        stats: {
+          insightsProcessed: 1,
+          duplicatesRemoved: 0,
+          conflictsResolved: 0,
+          entriesAdded: 1,
         },
-      }],
-      toRemoveIndices: [],
-      stats: {
-        insightsProcessed: 1,
-        duplicatesRemoved: 0,
-        conflictsResolved: 0,
-        entriesAdded: 1,
-      },
-    }, existing)
+      }, existing)
+    }
     await this.appendMemorySyscallObservations(sessionId, observations)
   }
 
@@ -2248,9 +2256,13 @@ export class RuntimeRunner {
     runtime: KernelRuntimeInstance,
     phase: "initial" | "renewal",
   ): Promise<void> {
-    if (!this.opts.preQueryMemory || !this.opts.dreamStore || !this.opts.agentId) return
+    if (!this.opts.dreamStore || !this.opts.agentId) return
+    // P10: recall is default-on (CC session-start recall) — with no hook configured,
+    // the goal itself is the query. preQueryMemory stays as the targeting override.
+    const preQuery = this.opts.preQueryMemory
+      ?? ((ctx: { goal: string }) => [ctx.goal])
     try {
-      const queries = await this.opts.preQueryMemory({
+      const queries = await preQuery({
         goal: this.currentGoal,
         runSpec: this.opts.runSpec,
         phase,
@@ -2335,6 +2347,7 @@ export class RuntimeRunner {
             compressedSeq,
             archived as Message[],
             compressionAction(obs.action) ?? "auto_compact",
+            runtime,
           )
         }
         // One compaction = one kernel observation: the page_out session record (and the
@@ -2374,17 +2387,19 @@ export class RuntimeRunner {
           archived,
           this.opts.dreamSystemPrompt,
         )
-      const existing = await this.opts.dreamStore.loadMemories(this.opts.agentId)
-      await this.opts.dreamStore.commit(this.opts.agentId, {
-        toAdd: [{ text: summary, score: 1.0, metadata: { source: "semantic_page_out", action } }],
-        toRemoveIndices: [],
-        stats: {
-          insightsProcessed: 1,
-          duplicatesRemoved: 0,
-          conflictsResolved: 0,
-          entriesAdded: 1,
-        },
-      }, existing)
+      // P2 write-funnel: route through the ONE gated WriteMemory syscall so validation,
+      // the rolling write quota, dedup, and the memory_written audit all apply. Score is
+      // advisory (0.6) — an automatic summary must never outrank curated content.
+      await this.writeMemory({
+        content: summary,
+        metadata: {
+          name: `page-out-${Date.now()}`,
+          description: `auto summary of ${action ?? "compaction"} archive`,
+          source: "semantic_page_out",
+          action,
+          score: 0.6,
+        } as unknown as MemoryWriteRequest["metadata"],
+      })
     } catch {
       // non-fatal: in-context compression summary remains; long-term layer is best-effort
     }
@@ -2395,6 +2410,7 @@ export class RuntimeRunner {
     compressedSeq: number,
     archived: Message[],
     action: string,
+    runtime?: KernelRuntimeInstance,
   ): Promise<void> {
     try {
       const summary = await this.opts.asyncSummarizer!.summarize(archived, action)
@@ -2403,6 +2419,20 @@ export class RuntimeRunner {
         compressed_seq: compressedSeq,
         summary,
       })
+      // P4: the LLM summary also re-enters the LIVE session as a keyed page-in entry —
+      // K1 boundary-deferred upsert lands it with zero mid-generation cache churn and the
+      // K2 budget governs its size. The RuleSummarizer text remains the synchronous label.
+      if (runtime) {
+        kernelApply(runtime, this.pendingObservations, {
+          kind: "page_in",
+          entries: [{
+            content: `[ARCHIVE SUMMARY] ${summary}`,
+            key: `summary:seq-${compressedSeq}`,
+            pinned: false,
+            source: "async_summarizer",
+          }],
+        })
+      }
     } catch {
       // non-fatal: rule-based summary stays in place
     }
@@ -2711,6 +2741,17 @@ function authoredWorkflowOutcomeNote(outcome: {
 
 /** Lower a host `RuntimeSignal` to the kernel's snake_case `signal` input event. Shared by the main
  *  loop's per-turn poll and #2-B-ii's workflow-batch preemption monitor (so the two never drift). */
+/** Word-set jaccard similarity — the curator's dedup rule as a pure helper at the write funnel. */
+function jaccardSimilarity(a: string, b: string): number {
+  const sa = new Set(a.split(/\s+/).filter(Boolean))
+  const sb = new Set(b.split(/\s+/).filter(Boolean))
+  if (sa.size === 0 && sb.size === 0) return 1
+  let inter = 0
+  for (const w of sa) if (sb.has(w)) inter++
+  const union = sa.size + sb.size - inter
+  return union === 0 ? 0 : inter / union
+}
+
 function signalToKernelEvent(sig: RuntimeSignal): Record<string, unknown> {
   return {
     kind: "signal",

@@ -221,6 +221,20 @@ impl RuntimeRunner {
         session_id: Option<&str>,
         agent_id: Option<&str>,
     ) -> Result<()> {
+        self.write_memory_with_score(memory, session_id, agent_id, 1.0, "write_memory_syscall")
+            .await
+    }
+
+    /// Shared gated write body; `score`/`source` are provenance for automatic writers
+    /// (page-out summaries) so they never outrank curated content.
+    async fn write_memory_with_score(
+        &self,
+        memory: MemoryWriteRequest,
+        session_id: Option<&str>,
+        agent_id: Option<&str>,
+        score: f64,
+        source: &str,
+    ) -> Result<()> {
         let Some(store) = &self.opts.dream_store else {
             return Ok(());
         };
@@ -236,18 +250,26 @@ impl RuntimeRunner {
             .any(|obs| matches!(obs, KernelObservation::MemoryWritten { .. }))
         {
             let existing = store.load_memories(agent_id).await?;
+            // Curator-style jaccard dedup at the single write path: a near-duplicate of an
+            // existing entry is dropped (the observation is still logged for audit).
+            if existing
+                .iter()
+                .any(|e| jaccard_similarity(&e.text, &memory.content) >= 0.9)
+            {
+                self.append_memory_syscall_observations(session_id, observations)
+                    .await;
+                return Ok(());
+            }
             let mut metadata =
                 serde_json::to_value(&memory.metadata).unwrap_or_else(|_| serde_json::json!({}));
             if let Some(obj) = metadata.as_object_mut() {
-                obj.insert(
-                    "source".to_string(),
-                    serde_json::Value::String("write_memory_syscall".to_string()),
-                );
+                obj.entry("source".to_string())
+                    .or_insert_with(|| serde_json::Value::String(source.to_string()));
             }
             let result = deepstrike_core::memory::curator::CurationResult {
                 to_add: vec![deepstrike_core::memory::semantic::MemoryEntry {
                     text: memory.content,
-                    score: 1.0,
+                    score,
                     metadata,
                 }],
                 to_remove_indices: vec![],
@@ -1938,26 +1960,25 @@ impl RuntimeRunner {
             Err(_) => return, // non-fatal
         };
 
-        if let Ok(existing) = store.load_memories(agent_id).await {
-            let curation_result = deepstrike_core::memory::curator::CurationResult {
-                to_add: vec![deepstrike_core::memory::semantic::MemoryEntry {
-                    text: summary,
-                    score: 1.0,
-                    metadata: serde_json::json!({
-                        "source": "semantic_page_out",
-                        "action": action,
-                    }),
-                }],
-                to_remove_indices: vec![],
-                stats: deepstrike_core::memory::curator::CurationStats {
-                    insights_processed: 1,
-                    duplicates_removed: 0,
-                    conflicts_resolved: 0,
-                    entries_added: 1,
-                },
-            };
-            let _ = store.commit(agent_id, curation_result, &existing).await;
-        }
+        // P2 write-funnel: route through the ONE gated write_memory syscall so validation,
+        // the rolling write quota, dedup, and the memory_written audit all apply. Score is
+        // advisory (0.6) — an automatic summary must never outrank curated content.
+        let _ = store; // reachability guard above; the funnel resolves the store itself
+        let request = deepstrike_core::mm::memory::MemoryWriteRequest {
+            content: summary,
+            metadata: deepstrike_core::mm::memory::MemoryMetadata {
+                name: format!("page-out-{}", self.opts.session_id.as_deref().unwrap_or("live")),
+                description: format!(
+                    "auto summary of {} archive",
+                    action.as_deref().unwrap_or("compaction")
+                ),
+                ..Default::default()
+            },
+        };
+        // Advisory score + provenance travel via the metadata JSON the funnel serializes.
+        let _ = self
+            .write_memory_with_score(request, None, Some(agent_id), 0.6, "semantic_page_out")
+            .await;
     }
 
     async fn summarize_for_long_term_memory(&self, archived: &[Message]) -> crate::Result<String> {
@@ -2037,6 +2058,19 @@ fn message_content_as_text(content: &deepstrike_core::types::message::Content) -
     }
 }
 
+
+/// Word-set jaccard similarity — the curator's dedup rule at the write funnel.
+fn jaccard_similarity(a: &str, b: &str) -> f64 {
+    use std::collections::HashSet;
+    let sa: HashSet<&str> = a.split_whitespace().collect();
+    let sb: HashSet<&str> = b.split_whitespace().collect();
+    if sa.is_empty() && sb.is_empty() {
+        return 1.0;
+    }
+    let inter = sa.intersection(&sb).count();
+    let union = sa.union(&sb).count();
+    if union == 0 { 0.0 } else { inter as f64 / union as f64 }
+}
 
 fn action_str_of(action: KernelPressureAction) -> String {
     match action {
