@@ -1,7 +1,7 @@
 ---
 # code_refs: validated by scripts/check-docs-drift.mjs against live source — symbols must exist.
 code_refs:
-  rust: [KernelInput, KernelAction, KernelObservation, TaskTable, Tcb, AgentProcess, TaskState]
+  rust: [KernelInput, KernelAction, KernelObservation, TaskTable, Tcb, AgentProcess, TaskLifecycle]
 ---
 
 # Kernel / Host Split
@@ -41,7 +41,7 @@ Observe  →  ingest provider_result, tool_results
 Delta    →  pressure, compression, renewal
 ```
 
-`TaskState` (Ready / Running / Blocked / Suspended / Done) is **orthogonal** — it describes schedulability, not turn phase.
+`TaskLifecycle` (Ready → Running → Suspended → Done) is **orthogonal** — it describes schedulability, not turn phase. `Suspended` carries a `WaitReason` (`Approval` for a governance AskUser, `SubAgentJoin` for a parent blocked on children); `Done` carries the `TerminationReason`.
 
 ## Workflow as second scheduling dimension
 

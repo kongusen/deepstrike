@@ -1,7 +1,7 @@
 ---
 # code_refs: validated by scripts/check-docs-drift.mjs against live source — symbols must exist.
 code_refs:
-  rust: [KernelInput, KernelAction, KernelObservation, TaskTable, Tcb, AgentProcess, TaskState]
+  rust: [KernelInput, KernelAction, KernelObservation, TaskTable, Tcb, AgentProcess, TaskLifecycle]
 ---
 
 # 内核与宿主分层
@@ -34,7 +34,7 @@ code_refs:
 
 ## L* 执行循环（单任务 turn 内）
 
-`LoopPhase` 描述 **一个 Running 任务** 在 turn 内的步骤（与 `TaskState` 正交）：
+`LoopPhase` 描述 **一个 Running 任务** 在 turn 内的步骤（与 `TaskLifecycle` 正交）：
 
 ```text
 Reason   →  kernel 渲染 Context，返回 CallLLM
@@ -43,14 +43,14 @@ Observe  →  SDK 回灌 provider_result、tool_results
 Delta    →  压力评估、压缩、renewal、capability 更新
 ```
 
-`TaskState` 描述 **任务是否可被调度**：
+`TaskLifecycle` 描述 **任务是否可被调度**：
 
 ```text
-Ready → Running → Blocked / Suspended → Done
+Ready → Running → Suspended → Done
 ```
 
-- **Blocked**：等 tool suspend、milestone eval
-- **Suspended**：等 AskUser、sub-agent join、external signal
+- **Suspended**：携 `WaitReason` —— `Approval`（治理 AskUser 人工审批）或 `SubAgentJoin`（阻塞等待子任务 join）
+- **Done**：携 `TerminationReason`（对应进程视图 `ProcessState::{Joined, Failed}`）
 
 ## Workflow 是第二维调度
 
