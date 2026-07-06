@@ -1,93 +1,88 @@
-# DeepStrike Examples
+# Research Brief Studio — a DeepStrike curriculum
 
-跨平台 SDK 示例。所有平台共用同一个真实场景——**FlashNote 闪念整理助手**——用同一套剧本，在 `node` / `python` / `rust` / `wasm` 四端各实现一遍，直观展示跨语言 API 的一致性与差异。
+One product grown across eight levels, from a single sourced-Q&A agent into a multi-agent
+editorial room. Each level is a self-contained, runnable project that **introduces one or two new
+mechanisms while reusing everything before it** — so by the end you have exercised the whole
+framework and, more importantly, seen the mechanisms *compose*.
 
-选场景的标准：**`tests/` 里 10 个模块在场景里都能找到非演示性的真实出场理由**，不存在硬塞。
+The domain stays constant (research → brief), so every level differs only in the framework surface
+it adds. The tools are local mocks (`search` / `read_source` over a canned corpus); the **provider
+is real** — these examples run the live agent loop, not a scripted transcript.
 
----
+## The ladder
 
-## 场景：FlashNote —— 闪念整理助手
+| # | Project | New mechanisms | One-line idea |
+|---|---|---|---|
+| **L1** | Sourced Q&A assistant | Tools + Execution Plane · Provider · Session replay/recovery | one agent that answers with citations and resumes after a crash |
+| **L2** | Assistant with memory | Memory (DreamStore, governed write gate, dedup, run-start recall) | remembers sources & preferences across sessions |
+| **L3** | Assistant with a handbook | Skills (on-demand load + tool gating) · Knowledge | loads a "citation style" skill on demand; narrows the tools it exposes |
+| **L4** | Event-driven assistant | Signals + Reactive (gateway, external triggers, injected notes) | a "new source arrived" webhook wakes it to process the delta |
+| **L5** | Governed assistant | Governance · Resource Quota · OS Profile snapshot | forbids destructive tools, caps tokens/spawns, exports an observability snapshot |
+| **L6** | Self-pacing digest | Loop Agent (`runLoop` / pace verbs / verdict gate / dormant→wake) | builds a running digest one source per round, pacing `continue`→`stop` itself |
+| **L7** | Brief pipeline | Workflow DAG · Structured output + Reducer · Harness/Eval gate · Milestones | two researchers → deterministic reduce → writer → verify gate, every node schema-typed |
+| **L8** | Editorial room | ReactiveSession (shared blackboard + turn policy) · RunGroup · DAG-in-peer | writer / editor / fact-checker peers collaborate under one cumulative budget |
 
-### 核心模式：知识飞轮
+## Mechanism coverage
 
-```text
-社区活动 / 个人闪念
-        ↓
-   AI 主动采集 + 结构化
-        ↓
-   策展 · 去重 · 关联
-        ↓
-   数据资产（个人知识库 / 训练语料 / RAG 语料库）
-        ↓
-   更好的产品 → 更多贡献者
+| Mechanism | Level | Mechanism | Level |
+|---|---|---|---|
+| Tools + Execution Plane | L1 | Loop Agent / pace | L6 |
+| Session replay & recovery | L1 | Structured output + Reducer | L7 |
+| Provider routing | L1, L7 | Workflow DAG (5 node kinds) | L7 |
+| Memory | L2 | Sub-agents / isolation / quarantine | L7 |
+| Skills + tool gating | L3 | Harness / Eval quality gate | L7 |
+| Knowledge | L3 | Milestones | L7 |
+| Signals + Reactive | L4 | Context engineering (compaction/cache) | woven L2/L6 |
+| Governance | L5 | RunGroup (cumulative budget + lineage) | L8 |
+| Resource quota | L5 | ReactiveSession (blackboard + turn policy) | L8 |
+| OS Profile / snapshots | L5 | | |
+
+## Languages
+
+Every level is **TypeScript** (the fullest SDK surface). **L1** and the **L8** capstone also ship a
+**Python** mirror (`main.py`), demonstrating cross-SDK parity without doubling the whole set.
+
+## Prerequisites
+
+```sh
+# build the SDK the TS examples import
+npm run build --prefix ../node
+# from this directory: link the local SDK (file:../node) + install tsx
+npm install
 ```
 
-FlashNote 既是个人闪念整理工具，也是社区知识采集平台。两条路径共用同一套 ingest → harness → archive pipeline，区别在于输入来源和输出格式：
+Provider config comes from a `.env` file (auto-loaded from `example/.env`, then the repo root) or the
+environment. Any one of:
 
-- **个人模式**：随手扔进来——想法片段、文章 URL、本地文件——agent 自动分类、打标签、找关联，随时 `/export` 拿摘要或聚类。
-- **社区模式**：活动现场或异步收集，agent 主动提问提取结构化洞察，多人贡献汇入同一 archive，输出高质量训练语料或 RAG 语料库。
-- **深研模式**：`/research <topic>` 触发，agent 切换到深度调研，产出流入同一 archive，与闪念共用质检流程。
-
-### 10 个模块的出场点
-
-| # | 模块 | 在 FlashNote 里的角色 |
-| --- | --- | --- |
-| 01 | provider | `OpenAIProvider` + `CircuitBreaker`：常驻守护进程，上游抖动必须熔断自愈 |
-| 02 | agent | 个人/社区捕获 `maxTurns=5`；`/research` 切 `maxTurns=20`；`pressure` 检测队列积压 |
-| 03 | tools | `capture_text` / `ingest_file` / `fetch_and_clip` / `search_archive` / `export` / `deep_research` / `interview_capture` / `export_dataset` |
-| 04 | skills | `classify_and_tag` / `find_connections` / `synthesize_cluster` / `write_digest` / `outline_research` / `summarize_source` / `elicit_insight` |
-| 05 | memory | SDK `WorkingMemory` 跟踪当批上下文；`DreamStore` 沉淀跨 session 主题；`initialMemory` 预加载 → Slot 2 |
-| 06 | knowledge | archive 同时作为个人知识库和社区语料库，检索时按来源权重区分 |
-| 07 | harness | 三套 criteria：个人笔记 / 社区贡献（去重 + 归因 + 独特性）/ 研究报告 |
-| 08 | signals | `scan_inbox` 定时扫文件夹；stdin 桥 `/dump` `/research` `/interview` `/export` `/export-dataset` `/stop` |
-| 09 | governance | `export_dataset` / `deep_research` 写盘 → `ask_user`；PII 检测 → `deny`；贡献者归因追踪 |
-| 10 | combos | 整个示例本身就是 combos 的现实形态 |
-
----
-
-## 目录布局
-
-```text
-example/
-├── node/         # 完整实现（当前进行中）
-├── python/       # node 跑通后镜像
-├── rust/         # node 跑通后镜像
-├── wasm/         # node 跑通后镜像（浏览器 / Workers / Deno）
-└── integration/  # 跨平台联合 demo
+```sh
+ANTHROPIC_API_KEY=sk-ant-...                              # Anthropic
+# — or an OpenAI-compatible endpoint —
+OPENAI_API_KEY=sk-...
+OPENAI_BASE_URL=https://your-endpoint/v1                  # optional
+OPENAI_MODEL=gpt-5-mini                                   # optional
+# DEEPSTRIKE_MODEL / DEEPSTRIKE_BASE_URL override either of the above.
 ```
 
-## 实现进度
+The Python mirrors (L1, L8) run under `../python/.venv/bin/python` (install the SDK once with
+`pip install -e ../python`). Every level accepts `--dry-run` to validate its wiring with **no key and
+no call** — a fast way to confirm the setup before spending tokens. Start at
+[`01-sourced-qa/`](./01-sourced-qa/).
 
-### node
+## Status
 
-- [ ] 骨架 + provider + agent + main（`/dump` 一条记录并打印处理结果）
-- [ ] 基础 tools + governance（export ask_user / fetch deny）
-- [ ] 个人模式 skills + `note_judge`
-- [ ] archive_source + working memory
-- [ ] inbox_watcher + cli_bridge
-- [ ] `deep_research` + 研究 skills + `report_judge`
-- [ ] `interview_capture` + `elicit_insight` skill（社区采集模式）
-- [ ] `export_dataset` + PII 过滤 + 贡献者归因（数据产品输出）
-- [x] DreamStore + `RuntimeRunner.dream()` (Node / Python / Rust / WASM)
+**All eight levels are built, typechecked, and live-validated against a real provider** (each with a
+`README.md`). L1 and L8 also ship a Python mirror (`main.py`), likewise live-run. Highlights from the
+live runs:
 
-### 其他平台与 Integration
+- **L3** — `toolsExposed` visibly drops `6 → 5` the turn the `citation-style` skill activates (`list_index` gated away).
+- **L4** — a gateway wire-alert *and* a high-urgency `injectNote` both reach a running loop and reshape the brief.
+- **L5** — `publish_public` never appears (deny → schema pre-filter); the `email_editor` `ask_user` gate is host-adjudicated.
+- **L6** — a 4-round loop paces itself `continue ×3 → stop`; the digest grows one line per round.
+- **L7** — a 5-node DAG completes end to end: two research spawns → `concat` reducer → writer → verify gate, all schema-valid.
+- **L8** — the `scribe`'s reaction is a whole workflow DAG, and the shared `RunGroup` ledger shows its `wf-node*` children billed alongside the reviewers' turns.
 
-- [ ] python / rust / wasm 镜像
-- [ ] 跨平台联合 demo
-
-## 运行前置
-
-所有平台共用根目录 `.env`：
-
-```env
-OPENAI_API_KEY=...
-OPENAI_BASE_URL=...
-OPENAI_MODEL=...
-```
-
-深研模式和社区采集可选：
-
-```env
-SERPAPI_API_KEY=...     # 或 TAVILY_API_KEY，deep_research 外网检索
-JINA_API_KEY=...        # 可选，jina.ai reader 增强网页正文提取
-```
+> Building **L6** surfaced (and fixed) a real SDK bug: the kernel-consumed `pace` meta-tool left an
+> orphan `tool_call` in the replayed history, which strict OpenAI-compatible providers reject — so a
+> paced loop died on round 2. The fix (`pairOrphanToolCalls` in the Node SDK, with regression tests)
+> re-pairs kernel-consumed orphans while leaving genuinely-pending tail calls for wake/recovery. Full
+> Node suite green (519). See [`06-daily-digest/README.md`](./06-daily-digest/README.md).

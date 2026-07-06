@@ -1,0 +1,18 @@
+{
+  "name": "@deepstrike/example-studio",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Research Brief Studio — a graduated curriculum that grows one product from a single sourced-Q&A agent into a multi-agent editorial room, covering every DeepStrike mechanism.",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "l1": "tsx 01-sourced-qa/main.ts"
+  },
+  "dependencies": {
+    "@deepstrike/sdk": "file:../node"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.0"
+  }
+}

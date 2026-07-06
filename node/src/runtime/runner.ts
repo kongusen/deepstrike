@@ -2612,6 +2612,47 @@ async function summarizeForLongTermMemory(
   return text.trim() || transcript.slice(0, 2000)
 }
 
+/** Kernel-consumed meta-tools (e.g. `pace`) are answered by a synthetic tool result the kernel keeps
+ *  in its OWN history but never emits as a `tool_completed` session event (they never reach the
+ *  execution plane). On replay that leaves an assistant `tool_call` with no following tool result —
+ *  which strict OpenAI-compatible providers reject ("every tool_call must be answered by a tool
+ *  message"). This pass re-pairs any such orphan by inserting a synthetic tool-result message right
+ *  after its assistant message, reproducing the pair the kernel had all along.
+ *
+ *  Discriminator: only pair an orphan when the run **continued past it** — i.e. a later non-tool
+ *  message exists. A tail assistant tool_call with nothing after it is a genuinely PENDING tool the
+ *  run stopped in front of (the wake/recovery case), which must stay unpaired so wake executes it.
+ *  Pure. */
+export function pairOrphanToolCalls(messages: Message[]): Message[] {
+  const out: Message[] = []
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]
+    out.push(m)
+    if (m.role !== "assistant" || !m.toolCalls?.length) continue
+    // Collect ids answered by the immediately-following run of tool messages; note where it ends.
+    const answered = new Set<string>()
+    let j = i + 1
+    for (; j < messages.length && messages[j].role === "tool"; j++) {
+      for (const p of messages[j].contentParts ?? []) {
+        if (p.type === "tool_result") answered.add(p.callId)
+      }
+    }
+    // If nothing follows the tool run, this tool_call is a pending tail (wake case) — leave it.
+    if (j >= messages.length) continue
+    for (const c of m.toolCalls) {
+      if (answered.has(c.id)) continue
+      out.push({
+        role: "tool",
+        content: "",
+        toolCalls: [],
+        contentParts: [{ type: "tool_result", callId: c.id, output: `[${c.name} handled by kernel]`, isError: false }],
+        tokenCount: 1,
+      })
+    }
+  }
+  return out
+}
+
 export function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, maxBytes?: number): Message[] {
   // Build upgraded-summary index: compressed_seq -> upgraded summary
   const upgradedSummaries = new Map<number, string>()
@@ -2666,7 +2707,7 @@ export function replayMessages(events: Array<{ seq: number; event: SessionEvent 
       }
     }
   }
-  return messages
+  return pairOrphanToolCalls(messages)
 }
 
 export async function replayMessagesAsync(
@@ -2747,7 +2788,7 @@ export async function replayMessagesAsync(
       }
     }
   }
-  return messages
+  return pairOrphanToolCalls(messages)
 }
 
 function nextArchivedSeqStart(events?: Array<{ seq: number; event: SessionEvent }>): number {

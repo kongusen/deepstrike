@@ -328,3 +328,52 @@ describe("RuntimeRunner wake recovery", () => {
     expect(msgs[3].content).toBe("Recovered")
   })
 })
+
+describe("pairOrphanToolCalls (kernel meta-tool replay pairing)", () => {
+  const asst = (content: string, calls: Array<{ id: string; name: string }>): Message => ({
+    role: "assistant", content, toolCalls: calls.map(c => ({ ...c, arguments: "{}" })),
+  })
+  const toolMsg = (callId: string): Message => ({
+    role: "tool", content: "", toolCalls: [],
+    contentParts: [{ type: "tool_result", callId, output: "ok", isError: false }],
+  })
+
+  it("pairs an orphan meta-tool call when the run continued past it (the pace/loop case)", async () => {
+    const { pairOrphanToolCalls } = await import("../../src/runtime/runner.js")
+    // user → assistant(pace tool_call, no result) → assistant(final): the kernel consumed `pace`.
+    const out = pairOrphanToolCalls([
+      { role: "user", content: "go", toolCalls: [] },
+      asst("", [{ id: "call_pace", name: "pace" }]),
+      asst("round report", []),
+    ])
+    // A synthetic tool result is spliced in right after the pace call → strict validators pass.
+    expect(out).toHaveLength(4)
+    expect(out[2].role).toBe("tool")
+    expect(out[2].contentParts?.[0]).toEqual(expect.objectContaining({ type: "tool_result", callId: "call_pace" }))
+    expect(out[3].content).toBe("round report")
+  })
+
+  it("leaves a pending tail tool_call unpaired (the wake/recovery case)", async () => {
+    const { pairOrphanToolCalls } = await import("../../src/runtime/runner.js")
+    // The run stopped right after emitting a real tool_call — nothing follows. Wake must execute it,
+    // so it must NOT be pre-answered by a synthetic result.
+    const input: Message[] = [
+      { role: "user", content: "go", toolCalls: [] },
+      asst("", [{ id: "call_ping", name: "ping" }]),
+    ]
+    const out = pairOrphanToolCalls(input)
+    expect(out).toHaveLength(2)
+    expect(out[1].toolCalls?.[0]?.id).toBe("call_ping")
+  })
+
+  it("does not touch already-answered tool calls", async () => {
+    const { pairOrphanToolCalls } = await import("../../src/runtime/runner.js")
+    const out = pairOrphanToolCalls([
+      { role: "user", content: "go", toolCalls: [] },
+      asst("", [{ id: "call_1", name: "read" }]),
+      toolMsg("call_1"),
+      asst("done", []),
+    ])
+    expect(out).toHaveLength(4) // unchanged — no synthetic insert
+  })
+})
