@@ -30,6 +30,7 @@ mechanism turns on. Everything else is L1.
 ```sh
 npx tsx 02-memory-assistant/main.ts            # runs session A (learn) then session B (recall)
 npx tsx 02-memory-assistant/main.ts --dry-run  # wiring only
+../../python/.venv/bin/python 02-memory-assistant/main.py   # the Python mirror
 ```
 
 Watch session A search + answer + get written to memory, then session B answer the follow-up

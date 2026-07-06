@@ -37,6 +37,7 @@ differently:
 ```sh
 npx tsx 03-skills-handbook/main.ts            # loads the skill, writes a cited brief
 npx tsx 03-skills-handbook/main.ts --dry-run  # wiring only
+../../python/.venv/bin/python 03-skills-handbook/main.py   # the Python mirror
 ```
 
 In the live run the agent loads `citation-style`, searches + reads the cache source, cites every

@@ -33,6 +33,7 @@ prompt is not what stops it. `publish_public` is **absent** from the toolset (po
 ```sh
 npx tsx 05-governed-studio/main.ts            # deny + ask_user gates fire; OS snapshot printed
 npx tsx 05-governed-studio/main.ts --dry-run  # wiring only
+../../python/.venv/bin/python 05-governed-studio/main.py   # the Python mirror
 ```
 
 You'll see one `[⚖ ask_user … APPROVED by studio-host]` gate, the notification tool run, and an OS

@@ -39,8 +39,10 @@ is real** — these examples run the live agent loop, not a scripted transcript.
 
 ## Languages
 
-Every level is **TypeScript** (the fullest SDK surface). **L1** and the **L8** capstone also ship a
-**Python** mirror (`main.py`), demonstrating cross-SDK parity without doubling the whole set.
+Every level is **TypeScript** (the fullest SDK surface) **and Python** — each `main.ts` has a
+`main.py` mirror using the snake_case Python SDK, so the whole curriculum runs cross-language. Run
+the Python mirrors under `../python/.venv/bin/python <level>/main.py` (install once with
+`pip install -e ../python`).
 
 ## Prerequisites
 

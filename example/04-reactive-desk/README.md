@@ -35,6 +35,7 @@ the agent sees is byte-identical; only the trigger moves off the tool call.
 ```sh
 npx tsx 04-reactive-desk/main.ts            # two events arrive mid-run and reshape the brief
 npx tsx 04-reactive-desk/main.ts --dry-run  # wiring only
+../../python/.venv/bin/python 04-reactive-desk/main.py   # the Python mirror
 ```
 
 In the live run the final brief acknowledges the **wire alert** ("a correction just landed") *and*

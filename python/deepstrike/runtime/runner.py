@@ -2560,6 +2560,48 @@ def _is_mid_run(events: list[SessionEntry]) -> bool:
   return last_started >= 0 and last_started > last_terminal
 
 
+def _pair_orphan_tool_calls(messages: list[Message]) -> list[Message]:
+  """Kernel-consumed meta-tools (e.g. ``pace``) are answered by a synthetic tool result the kernel
+  keeps in its OWN history but never emits as a ``tool_completed`` session event (they never reach
+  the execution plane). On replay that leaves an assistant ``tool_call`` with no following tool
+  result — which strict OpenAI-compatible providers reject. This pass re-pairs such orphans by
+  inserting a synthetic tool-result message right after the assistant message.
+
+  Discriminator: only pair an orphan when the run CONTINUED past it (a later non-tool message
+  exists). A tail assistant tool_call with nothing after it is a genuinely pending tool the run
+  stopped in front of (the wake/recovery case) and must stay unpaired so wake executes it. Pure.
+  Mirrors the Node SDK ``pairOrphanToolCalls``.
+  """
+  def _attr(o: Any, key: str) -> Any:
+    return o.get(key) if isinstance(o, dict) else getattr(o, key, None)
+
+  out: list[Message] = []
+  n = len(messages)
+  for i, m in enumerate(messages):
+    out.append(m)
+    if m.role != "assistant" or not m.tool_calls:
+      continue
+    answered: set = set()
+    j = i + 1
+    while j < n and messages[j].role == "tool":
+      for p in (messages[j].content_parts or []):
+        if _attr(p, "type") == "tool_result":
+          answered.add(_attr(p, "call_id"))
+      j += 1
+    if j >= n:  # pending tail tool call (wake/recovery) — leave it for wake to execute
+      continue
+    for c in m.tool_calls:
+      cid = _attr(c, "id")
+      if cid in answered:
+        continue
+      part = ContentPartObj(
+        type="tool_result", call_id=cid,
+        output=f"[{_attr(c, 'name')} handled by kernel]", is_error=False,
+      )
+      out.append(Message(role="tool", content="", tool_calls=[], content_parts=[part]))
+  return out
+
+
 def _replay_messages(events: list[SessionEntry], max_bytes: int | None = None) -> list[Message]:
   messages: list[Message] = []
   for entry in events:
@@ -2608,7 +2650,7 @@ def _replay_messages(events: list[SessionEntry], max_bytes: int | None = None) -
       len_val = e.get("checkpoint_history_len", 0)
       if len(messages) > len_val:
         messages = messages[:len_val]
-  return messages
+  return _pair_orphan_tool_calls(messages)
 
 
 async def _replay_messages_async(
@@ -2682,7 +2724,7 @@ async def _replay_messages_async(
       len_val = e.get("checkpoint_history_len", 0)
       if len(messages) > len_val:
         messages = messages[:len_val]
-  return messages
+  return _pair_orphan_tool_calls(messages)
 
 
 def _next_archived_seq_start(events: list[SessionEntry] | None) -> int:

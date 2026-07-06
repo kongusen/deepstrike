@@ -62,6 +62,7 @@ new RuntimeRunner({
 ```sh
 npx tsx 07-brief-pipeline/main.ts            # runs the 5-node DAG live
 npx tsx 07-brief-pipeline/main.ts --dry-run  # prints the node kinds, no provider call
+../../python/.venv/bin/python 07-brief-pipeline/main.py   # the Python mirror
 ```
 
 You'll see all five nodes complete: two research spawns emit schema-valid findings, the reducer

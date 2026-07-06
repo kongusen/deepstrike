@@ -32,13 +32,21 @@ providers reject an assistant `tool_call` with no following tool message. The SD
 (`pairOrphanToolCalls`) now re-pairs such kernel-consumed orphans — while leaving a genuinely
 *pending* tail tool_call (the wake/recovery case) untouched. Without it, a paced loop on an
 OpenAI-compatible endpoint dies on round 2; with it, the loop runs clean. (Fixed while building this
-level — see `pairOrphanToolCalls` in the SDK and its tests in `wake-recovery.test.ts`.)
+level, in **both SDKs** — `pairOrphanToolCalls` in Node and `_pair_orphan_tool_calls` in Python, each
+with regression tests; full suites green.)
+
+> Note on the live Python mirror: the loop and the replay fix work identically, but the *pace verb*
+> only surfaces when the model reliably emits the `pace` tool call's arguments through the tool
+> channel. With a small model that sometimes writes them as message text instead, the round advances
+> via the `default_action` / `verdict_fn` ladder and the verb prints as `—` — the same mechanism, one
+> rung lower. A capable model shows explicit `pace: continue`/`stop` as the Node run does.
 
 ## Run
 
 ```sh
 npx tsx 06-daily-digest/main.ts            # a 4-round digest loop that paces itself
 npx tsx 06-daily-digest/main.ts --dry-run  # wiring only
+../../python/.venv/bin/python 06-daily-digest/main.py   # the Python mirror
 ```
 
 You'll see `pace: continue` after rounds 1–3 (each adding a digest line) and a clean `pace: stop`

@@ -48,8 +48,9 @@ shared budget across all three peers *and* the scribe's workflow nodes.
 ## Python mirror
 
 `main.py` is the same room in the Python SDK — `ReactiveSession`, `RunGroup`, `InMemoryEventStream`,
-`read_recent_tool`, and a `react` override that calls `runner.run_workflow(...)`. It is the second of
-the two levels (with L1) mirrored to Python, to show the peer + workflow surfaces are cross-language.
+`read_recent_tool`, and a `react` override that calls `runner.run_workflow(...)`. Every level of the
+curriculum ships a Python mirror alongside its `main.ts`; this capstone shows the peer + workflow
+surfaces compose cross-language just as they do in Node.
 
 ## That's the curriculum
 
