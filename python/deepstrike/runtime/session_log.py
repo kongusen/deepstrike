@@ -143,6 +143,25 @@ class CheckpointTakenEvent(TypedDict, total=False):
     history_len: int
 
 
+class EntropySampleEvent(TypedDict, total=False):
+    kind: Literal["entropy_sample"]
+    turn: int
+    score: float
+    score_version: int
+    rho: float
+    repeat_pressure: float
+    failure_rate: float
+    rollbacks_in_window: int
+    window_turns: int
+
+
+class EntropyAlertEvent(TypedDict, total=False):
+    kind: Literal["entropy_alert"]
+    turn: int
+    score: float
+    threshold: float
+
+
 class AgentProcessChangedEvent(TypedDict, total=False):
     kind: Literal["agent_process_changed"]
     turn: int
@@ -298,6 +317,8 @@ SessionEvent = (
     | MilestoneAdvancedEvent
     | MilestoneBlockedEvent
     | CheckpointTakenEvent
+    | EntropySampleEvent
+    | EntropyAlertEvent
     | AgentProcessChangedEvent
     | PageOutEvent
     | PageInEvent

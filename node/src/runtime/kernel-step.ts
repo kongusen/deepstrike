@@ -1,4 +1,5 @@
 import type {
+  EntropySample,
   Message,
   RenderedContext,
   TaskUpdate,
@@ -126,6 +127,15 @@ export interface KernelObservation {
   /** workflow_completed. */
   completed?: string[]
   failed?: string[]
+  // entropy_sample / entropy_alert: kernel session-entropy measurement + opt-in watch trip.
+  score?: number
+  score_version?: number
+  rho?: number
+  repeat_pressure?: number
+  failure_rate?: number
+  rollbacks_in_window?: number
+  window_turns?: number
+  threshold?: number
 }
 
 interface KernelStepJson {
@@ -278,6 +288,20 @@ export function capabilityCommandUnmount(capabilityKind: string, id: string): Re
 
 function parseStep(raw: string): KernelStepJson {
   return JSON.parse(raw) as KernelStepJson
+}
+
+/** Camel-case an `entropy_sample` kernel observation into the SDK's `EntropySample`. */
+export function entropySampleFromObservation(obs: KernelObservation): EntropySample {
+  return {
+    turn: obs.turn ?? 0,
+    score: obs.score ?? 0,
+    scoreVersion: obs.score_version ?? 0,
+    rho: obs.rho ?? 0,
+    repeatPressure: obs.repeat_pressure ?? 0,
+    failureRate: obs.failure_rate ?? 0,
+    rollbacksInWindow: obs.rollbacks_in_window ?? 0,
+    windowTurns: obs.window_turns ?? 0,
+  }
 }
 
 function kernelMessageToSdk(raw: Record<string, unknown>): Message {

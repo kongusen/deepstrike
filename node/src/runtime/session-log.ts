@@ -63,6 +63,18 @@ export type SessionEvent =
   | { kind: "milestone_blocked"; turn: number; phase_id: string; reason: string }
   | { kind: "checkpoint_taken"; turn: number; history_len: number }
   | {
+      kind: "entropy_sample"
+      turn: number
+      score: number
+      score_version: number
+      rho: number
+      repeat_pressure: number
+      failure_rate: number
+      rollbacks_in_window: number
+      window_turns: number
+    }
+  | { kind: "entropy_alert"; turn: number; score: number; threshold: number }
+  | {
       kind: "agent_process_changed"
       turn: number
       agent_id: string

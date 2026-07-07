@@ -145,6 +145,41 @@ class ToolAuditFailedEvent:
 
 
 @dataclass
+class EntropySample:
+    """Kernel session-entropy measurement at a completed turn boundary. "Entropy" = session
+    disorder: repetition, tool failures, rollbacks, context pressure. The component vector is
+    the contract; ``score`` is a versioned default fold (``score_version``). All normalized
+    components are in [0, 1]."""
+    turn: int = 0
+    score: float = 0.0
+    score_version: int = 0
+    rho: float = 0.0
+    repeat_pressure: float = 0.0
+    failure_rate: float = 0.0
+    rollbacks_in_window: int = 0
+    window_turns: int = 0
+
+
+@dataclass
+class EntropySampleEvent:
+    """One kernel entropy sample, emitted once per completed turn (a heartbeat watch source:
+    subscribe to drive an external supervisor without tailing the audit log)."""
+    type: str = "entropy_sample"
+    sample: EntropySample = field(default_factory=EntropySample)
+
+
+@dataclass
+class EntropyAlertEvent:
+    """The opt-in kernel entropy watch tripped: ``score`` crossed ``threshold`` while armed and
+    cooled down (see ``RunnerOptions.entropy_watch``). Correlate components via the same-turn
+    ``entropy_sample`` event."""
+    type: str = "entropy_alert"
+    turn: int = 0
+    score: float = 0.0
+    threshold: float = 0.0
+
+
+@dataclass
 class WorkflowNodesSubmittedEvent:
     """R3-1: a workflow node's agent called the ``submit_workflow_nodes`` tool. The runner surfaces
     the requested nodes (it cannot apply them to the child's own kernel — the workflow lives in the
@@ -168,5 +203,7 @@ StreamEvent = Union[
     ToolArgumentRepairedEvent,
     ToolDeniedEvent,
     ToolAuditFailedEvent,
+    EntropySampleEvent,
+    EntropyAlertEvent,
     WorkflowNodesSubmittedEvent,
 ]

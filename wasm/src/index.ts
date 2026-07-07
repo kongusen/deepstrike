@@ -92,6 +92,7 @@ export type {
   StreamEvent, TextDelta, ThinkingDelta,
   ToolCallEvent, ToolResultEvent, ToolAuditFailedEvent, DoneEvent, ErrorEvent,
   PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
+  EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
   LLMProvider,
   CacheBreakpointStrategy,
 } from "./types.js"

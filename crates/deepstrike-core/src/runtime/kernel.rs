@@ -175,6 +175,11 @@ pub struct RunConfig {
     /// `ContextConfig::knowledge_budget_ratio`). Absent ⇒ kernel default (0.25); `0.0` disables.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knowledge_budget_ratio: Option<f64>,
+    /// Entropy watch: opt-in threshold alerting over the per-turn session-entropy score
+    /// (see `SetEntropyWatch`). Absent ⇒ kernel default (disabled; sampling itself is
+    /// unconditional and unaffected).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entropy_watch: Option<crate::scheduler::entropy::EntropyWatchConfig>,
 }
 
 /// Build a [`GovernancePipeline`](crate::governance::pipeline::GovernancePipeline) from the ABI policy
@@ -378,6 +383,22 @@ pub enum KernelInputEvent {
         deny_after: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         terminate_after: Option<u32>,
+    },
+    /// Entropy watch: tune the opt-in threshold alerting over the per-turn session-entropy
+    /// score (defaults: disabled, threshold=0.65, hysteresis=0.1, cooldown_turns=4,
+    /// notify_model=false). Each field is optional — an absent field keeps the current
+    /// value. Sampling itself is unconditional and unaffected. Additive ABI.
+    SetEntropyWatch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        threshold: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hysteresis: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cooldown_turns: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notify_model: Option<bool>,
     },
     /// Adjust the wall-clock budget at runtime (e.g. to extend or set a deadline
     /// after a run has already started). Additive: omit to keep the value from
@@ -696,6 +717,28 @@ pub enum KernelObservation {
     CriteriaGateFired {
         turn: u32,
         criteria: Vec<String>,
+    },
+    /// Session-entropy sample at a completed turn boundary (the heartbeat watch source).
+    /// One per completed turn, unconditional — like `CheckpointTaken`. The component
+    /// vector is the contract; `score` is a versioned default fold (`score_version`).
+    /// See `scheduler::entropy`. Additive ABI.
+    EntropySample {
+        turn: u32,
+        score: f64,
+        score_version: u32,
+        rho: f64,
+        repeat_pressure: f64,
+        failure_rate: f64,
+        rollbacks_in_window: u32,
+        window_turns: u32,
+    },
+    /// The opt-in entropy watch tripped: `score` crossed `threshold` while armed and
+    /// cooled down (`EntropyWatchConfig`). Correlate components via the same-turn
+    /// `EntropySample`. Additive ABI.
+    EntropyAlert {
+        turn: u32,
+        score: f64,
+        threshold: f64,
     },
     /// Kernel process table changed for a spawned sub-agent.
     AgentProcessChanged {
@@ -1034,6 +1077,7 @@ impl KernelRuntime {
                     repeat_fuse,
                     criteria_gate,
                     knowledge_budget_ratio,
+                    entropy_watch,
                 } = config;
                 if let Some(tools) = tools {
                     self.sm.tools = tools;
@@ -1092,6 +1136,9 @@ impl KernelRuntime {
                 if let Some(ratio) = knowledge_budget_ratio {
                     self.sm.ctx.config.knowledge_budget_ratio = ratio;
                 }
+                if let Some(watch) = entropy_watch {
+                    self.sm.set_entropy_watch(watch);
+                }
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::SetAttentionPolicy { max_queue_size } => {
@@ -1143,6 +1190,16 @@ impl KernelRuntime {
                 if let Some(d) = deny_after { cfg.deny_after = d; }
                 if let Some(t) = terminate_after { cfg.terminate_after = t; }
                 self.sm.set_repeat_fuse(cfg);
+                return KernelStep::empty(self.sm.take_observations());
+            }
+            KernelInputEvent::SetEntropyWatch { enabled, threshold, hysteresis, cooldown_turns, notify_model } => {
+                let mut cfg = self.sm.entropy_watch_config();
+                if let Some(e) = enabled { cfg.enabled = e; }
+                if let Some(t) = threshold { cfg.threshold = t; }
+                if let Some(h) = hysteresis { cfg.hysteresis = h; }
+                if let Some(c) = cooldown_turns { cfg.cooldown_turns = c; }
+                if let Some(n) = notify_model { cfg.notify_model = n; }
+                self.sm.set_entropy_watch(cfg);
                 return KernelStep::empty(self.sm.take_observations());
             }
             KernelInputEvent::ProviderResult {
@@ -2184,6 +2241,67 @@ mod tests {
                 .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
             "expected a Rollbacked observation for the bundle-denied turn",
         );
+    }
+
+    #[test]
+    fn configure_run_entropy_watch_flows_through_the_abi() {
+        // The `entropy_watch` bundle field arms the watch; a completed tool round then
+        // surfaces BOTH the unconditional sample and (threshold 0 + all-error results) the alert.
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+        runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+            config: RunConfig {
+                entropy_watch: Some(crate::scheduler::entropy::EntropyWatchConfig {
+                    enabled: true,
+                    threshold: 0.1,
+                    hysteresis: 0.05,
+                    cooldown_turns: 0,
+                    notify_model: false,
+                }),
+                ..RunConfig::default()
+            },
+        }));
+        run_with_tool_call(&mut runtime, "step");
+        let step = runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
+            results: vec![ToolResult {
+                call_id: "call-1".into(),
+                output: crate::types::message::Content::Text("boom".into()),
+                is_error: true,
+                is_fatal: false,
+                error_kind: None,
+                token_count: None,
+            }],
+        }));
+        assert!(
+            step.observations
+                .iter()
+                .any(|o| matches!(o, KernelObservation::EntropySample { failure_rate, .. } if *failure_rate > 0.9)),
+            "completed boundary must carry the entropy sample: {:?}",
+            step.observations
+        );
+        assert!(
+            step.observations
+                .iter()
+                .any(|o| matches!(o, KernelObservation::EntropyAlert { threshold, .. } if (*threshold - 0.1).abs() < 1e-9)),
+            "armed watch + errored turn must alert: {:?}",
+            step.observations
+        );
+    }
+
+    #[test]
+    fn set_entropy_watch_event_parses_from_json_and_applies_partially() {
+        // Additive ABI: the granular event round-trips from JSON with absent fields
+        // keeping current values (mirrors SetRepeatFuse).
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+        let input: KernelInput = serde_json::from_str(
+            r#"{"version":1,"event":{"kind":"set_entropy_watch","enabled":true,"threshold":0.4}}"#,
+        )
+        .expect("granular event must deserialize");
+        runtime.step(input);
+        let cfg = runtime.state_machine().entropy_watch_config();
+        assert!(cfg.enabled);
+        assert!((cfg.threshold - 0.4).abs() < 1e-9);
+        assert!((cfg.hysteresis - 0.1).abs() < 1e-9, "absent field keeps the default");
+        assert_eq!(cfg.cooldown_turns, 4, "absent field keeps the default");
     }
 
     #[test]

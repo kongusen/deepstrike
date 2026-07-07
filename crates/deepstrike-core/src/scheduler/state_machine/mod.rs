@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use super::entropy::{EntropyTracker, EntropyWatchConfig};
 use super::milestone::MilestoneTracker;
 use super::policy::SchedulerBudget;
 use super::tcb::{TaskLifecycle, TaskTable, Tcb, WaitReason};
@@ -235,6 +236,13 @@ pub struct LoopStateMachine {
     pub(super) criteria_gate_enabled: bool,
     /// O4: whether the gate already fired this run (it fires at most once — no nag loops).
     pub(super) criteria_gate_fired: bool,
+    /// Session-entropy sliding window + watch state (see `scheduler::entropy`). Like the
+    /// RepeatFuse streak, NOT part of the turn checkpoint — a rollback must not launder
+    /// the disorder it just evidenced.
+    pub(super) entropy: EntropyTracker,
+    /// Opt-in threshold watch over the per-turn entropy score. Default disabled; the
+    /// unconditional per-turn `EntropySample` observation does not depend on it.
+    pub(super) entropy_watch: EntropyWatchConfig,
 }
 
 mod signal;
@@ -295,6 +303,8 @@ impl LoopStateMachine {
             repeat_count: 0,
             criteria_gate_enabled: true,
             criteria_gate_fired: false,
+            entropy: EntropyTracker::default(),
+            entropy_watch: EntropyWatchConfig::default(),
         }
     }
 
@@ -306,6 +316,16 @@ impl LoopStateMachine {
     /// O6: tune or disable the repeat fuse (see [`RepeatFuseConfig`]).
     pub fn set_repeat_fuse(&mut self, config: RepeatFuseConfig) {
         self.repeat_fuse = config;
+    }
+
+    /// Configure the opt-in entropy threshold watch (see [`EntropyWatchConfig`]).
+    /// The per-turn `EntropySample` observation is unconditional and unaffected.
+    pub fn set_entropy_watch(&mut self, config: EntropyWatchConfig) {
+        self.entropy_watch = config;
+    }
+
+    pub fn entropy_watch_config(&self) -> EntropyWatchConfig {
+        self.entropy_watch
     }
 
     /// O6: the active repeat-fuse config (for read-modify-write from the ABI event).
@@ -662,6 +682,11 @@ impl LoopStateMachine {
                 // Non-fatal errors are committed to history so the LLM can
                 // see them and self-correct without losing turn state.
 
+                // Entropy: this completed turn's failure tally (fatal errors never get
+                // here — they rolled back above and accrued via `note_rollback`).
+                let errored_results = results.iter().filter(|r| r.is_error).count() as u32;
+                let total_results = results.len() as u32;
+
                 for r in &results {
                     self.total_tokens += r.token_count.unwrap_or(0) as u64;
                     // Preserve Content::Parts (structured / multimodal tool output).
@@ -786,6 +811,60 @@ impl LoopStateMachine {
                     });
                     // K1: renewal is a boundary — surface the knowledge sweep it just ran.
                     self.emit_knowledge_sweep_observations();
+                }
+
+                // Session-entropy sample (the heartbeat watch source): fold this completed
+                // turn's outcomes into the sliding window and surface the measurement.
+                // Unconditional, like `CheckpointTaken`; only the watch alert below is opt-in.
+                let repeat_streak = if self.repeat_fuse.enabled { self.repeat_count } else { 0 };
+                let sample = self.entropy.sample(
+                    self.turn,
+                    self.ctx.rho(),
+                    repeat_streak,
+                    self.repeat_fuse.deny_after,
+                    errored_results,
+                    total_results,
+                );
+                self.observations.push(KernelObservation::EntropySample {
+                    turn: sample.turn,
+                    score: sample.score,
+                    score_version: super::entropy::ENTROPY_SCORE_VERSION,
+                    rho: sample.rho,
+                    repeat_pressure: sample.repeat_pressure,
+                    failure_rate: sample.failure_rate,
+                    rollbacks_in_window: sample.rollbacks_in_window,
+                    window_turns: sample.window_turns,
+                });
+                // Opt-in entropy watch: threshold + hysteresis + cooldown. The alert is an
+                // observation (host-facing); with `notify_model` it is ALSO routed through
+                // the kernel's own signal dispatch as a Heartbeat/Alert directive — High
+                // urgency while running ⇒ a durable [SIGNAL] note on the turn we are about
+                // to emit anyway, never an extra provider call.
+                if self.entropy.should_alert(&self.entropy_watch, &sample) {
+                    self.observations.push(KernelObservation::EntropyAlert {
+                        turn: sample.turn,
+                        score: sample.score,
+                        threshold: self.entropy_watch.threshold,
+                    });
+                    if self.entropy_watch.notify_model {
+                        use crate::types::signal::{RuntimeSignal, SignalSource, SignalType, Urgency};
+                        let signal = RuntimeSignal::new(
+                            SignalSource::Heartbeat,
+                            SignalType::Alert,
+                            Urgency::High,
+                            format!(
+                                "[entropy] session disorder {:.2} ≥ {:.2} (repeat {:.2} / failures {:.2} / pressure {:.2}). \
+                                 Stop and reassess: state what is not working and try a different approach.",
+                                sample.score,
+                                self.entropy_watch.threshold,
+                                sample.repeat_pressure,
+                                sample.failure_rate,
+                                sample.rho,
+                            ),
+                        )
+                        .with_dedupe(format!("entropy_alert:{}", sample.turn));
+                        let _ = self.dispatch_signal(signal);
+                    }
                 }
 
                 // Turn boundary: drain any kernel-queued signals into context so they
@@ -1093,6 +1172,9 @@ impl LoopStateMachine {
         if let Some(ref state) = self.checkpoint.task_state {
             self.ctx.partitions.task_state = state.clone();
         }
+        // Rolled-back turns never reach the boundary sample point; accrue here so the
+        // disorder they evidence lands in the next completed turn's entropy window.
+        self.entropy.note_rollback();
         self.observations.push(KernelObservation::Rollbacked {
             turn: self.turn,
             checkpoint_history_len: self.checkpoint.history_len as u32,

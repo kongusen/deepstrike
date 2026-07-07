@@ -37,6 +37,7 @@ export function createRunner(
     criteriaGate?: boolean
     knowledgeBudgetRatio?: number
     skillLeaseTurns?: number
+    entropyWatch?: import("../../src/types.js").EntropyWatchOptions
     preQueryMemory?: import("../../src/runtime/runner.js").RuntimeOptions["preQueryMemory"]
   } = {},
 ): { runner: RuntimeRunner; sessionLog: InMemorySessionLog; plane: LocalExecutionPlane } {
@@ -68,6 +69,7 @@ export function createRunner(
     criteriaGate: opts.criteriaGate,
     knowledgeBudgetRatio: opts.knowledgeBudgetRatio,
     skillLeaseTurns: opts.skillLeaseTurns,
+    entropyWatch: opts.entropyWatch,
     preQueryMemory: opts.preQueryMemory,
   })
   return { runner, sessionLog, plane }

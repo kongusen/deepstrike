@@ -1829,6 +1829,42 @@ impl RuntimeRunner {
                     )
                     .await;
                 }
+                KernelObservation::EntropySample {
+                    turn,
+                    score,
+                    score_version,
+                    rho,
+                    repeat_pressure,
+                    failure_rate,
+                    rollbacks_in_window,
+                    window_turns,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::EntropySample {
+                            turn,
+                            score,
+                            score_version,
+                            rho,
+                            repeat_pressure,
+                            failure_rate,
+                            rollbacks_in_window,
+                            window_turns,
+                        },
+                    )
+                    .await;
+                }
+                KernelObservation::EntropyAlert { turn, score, threshold } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::EntropyAlert {
+                            turn,
+                            score,
+                            threshold,
+                        },
+                    )
+                    .await;
+                }
                 KernelObservation::AgentProcessChanged { .. } => {}
                 // W0-ABI workflow lifecycle. The rust SDK has no workflow drive yet
                 // (node/python only), so these are observed-but-ignored here.

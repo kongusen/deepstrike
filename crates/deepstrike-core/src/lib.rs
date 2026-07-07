@@ -44,6 +44,7 @@ pub use mm::{
     MemoryTierHint, PageInEntry, Residency,
 };
 pub use proc::{AgentProcess, ProcessState};
+pub use scheduler::entropy::{EntropySample, EntropyTracker, EntropyWatchConfig};
 pub use scheduler::tcb::{BudgetLedger, TaskId, TaskLifecycle, TaskTable, Tcb, WaitReason};
 pub use syscall::{Disposition, Syscall};
 pub use runtime::session::SessionEvent;

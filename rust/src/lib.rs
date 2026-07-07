@@ -16,6 +16,11 @@ mod tests;
 pub use deepstrike_core::context::renderer::RenderedContext;
 pub use deepstrike_core::governance::permission::PermissionAction;
 pub use deepstrike_core::governance::quota::ResourceQuota;
+// Session entropy (heartbeat watch source): the kernel emits `entropy_sample` /
+// `entropy_alert` observations through the shared JSON ABI; these types are for hosts
+// configuring the watch (`set_entropy_watch` / `configure_run.entropy_watch`) or folding
+// their own samples when driving the kernel manually.
+pub use deepstrike_core::{EntropySample, EntropyTracker, EntropyWatchConfig};
 pub use deepstrike_core::mm::memory::{
     MemoryKind, MemoryMetadata, MemoryPolicy, MemoryQuery, MemoryRetrieval, MemoryWriteRequest,
 };

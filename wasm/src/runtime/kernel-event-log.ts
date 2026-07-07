@@ -108,6 +108,25 @@ export function kernelObservationToSessionEvent(
         turn: t,
         history_len: obs.history_len ?? 0,
       }
+    case "entropy_sample":
+      return {
+        kind: "entropy_sample" as const,
+        turn: t,
+        score: obs.score ?? 0,
+        score_version: obs.score_version ?? 0,
+        rho: obs.rho ?? 0,
+        repeat_pressure: obs.repeat_pressure ?? 0,
+        failure_rate: obs.failure_rate ?? 0,
+        rollbacks_in_window: obs.rollbacks_in_window ?? 0,
+        window_turns: obs.window_turns ?? 0,
+      }
+    case "entropy_alert":
+      return {
+        kind: "entropy_alert" as const,
+        turn: t,
+        score: obs.score ?? 0,
+        threshold: obs.threshold ?? 0,
+      }
     case "agent_process_changed":
       return {
         kind: "agent_process_changed" as const,

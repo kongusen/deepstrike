@@ -203,6 +203,23 @@ pub enum SessionEvent {
         turn: u32,
         history_len: u32,
     },
+    /// Session-entropy sample at a completed turn boundary (see `scheduler::entropy`).
+    EntropySample {
+        turn: u32,
+        score: f64,
+        score_version: u32,
+        rho: f64,
+        repeat_pressure: f64,
+        failure_rate: f64,
+        rollbacks_in_window: u32,
+        window_turns: u32,
+    },
+    /// The opt-in entropy watch tripped (score crossed the configured threshold).
+    EntropyAlert {
+        turn: u32,
+        score: f64,
+        threshold: f64,
+    },
     /// Transaction rollback indicating state was restored to a checkpoint.
     Rollbacked {
         turn: u32,
@@ -294,6 +311,8 @@ impl SessionEvent {
             Self::SignalDisposed { .. } => "signal_disposed",
             Self::BudgetExceeded { .. } => "budget_exceeded",
             Self::CheckpointTaken { .. } => "checkpoint_taken",
+            Self::EntropySample { .. } => "entropy_sample",
+            Self::EntropyAlert { .. } => "entropy_alert",
             Self::Rollbacked { .. } => "rollbacked",
             Self::AgentProcessChanged { .. } => "agent_process_changed",
             Self::MilestoneAdvanced { .. } => "milestone_advanced",
@@ -321,6 +340,8 @@ impl SessionEvent {
                 | Self::SignalDisposed { .. }
                 | Self::BudgetExceeded { .. }
                 | Self::CheckpointTaken { .. }
+                | Self::EntropySample { .. }
+                | Self::EntropyAlert { .. }
                 | Self::Rollbacked { .. }
                 | Self::AgentProcessChanged { .. }
                 | Self::MilestoneAdvanced { .. }

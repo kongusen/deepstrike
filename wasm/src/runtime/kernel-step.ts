@@ -120,6 +120,15 @@ export interface KernelObservation {
   }>
   completed?: string[]
   failed?: string[]
+  // entropy_sample / entropy_alert: kernel session-entropy measurement + opt-in watch trip.
+  score?: number
+  score_version?: number
+  rho?: number
+  repeat_pressure?: number
+  failure_rate?: number
+  rollbacks_in_window?: number
+  window_turns?: number
+  threshold?: number
 }
 
 interface KernelStepJson {

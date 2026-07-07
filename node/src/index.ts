@@ -69,6 +69,7 @@ export type {
   StreamEvent, TextDelta, ThinkingDelta,
   ToolCallEvent, ToolChunk, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, ToolAuditFailedEvent, DoneEvent, ErrorEvent,
   PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
+  EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
   LLMProvider, RetryConfig, TokenUsage,
 } from "./types.js"
 export type {

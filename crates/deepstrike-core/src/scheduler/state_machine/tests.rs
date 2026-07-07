@@ -2979,3 +2979,139 @@
         assert_eq!(decision.action, crate::types::result::PaceAction::Continue);
     }
 
+
+    // ─── Session entropy: per-turn sample + opt-in watch ───────────────────
+
+    /// Drive one tool turn (name+args → result) and return the boundary observations.
+    fn entropy_drive_turn(
+        sm: &mut LoopStateMachine,
+        args: serde_json::Value,
+        is_error: bool,
+    ) -> Vec<KernelObservation> {
+        let a = sm.feed(LoopEvent::LLMResponse { message: fuse_tool_turn("step", args) });
+        assert!(matches!(a, LoopAction::ExecuteTools { .. }), "expected ExecuteTools, got {a:?}");
+        let result = ToolResult { is_error, ..fuse_tool_result() };
+        sm.feed(LoopEvent::ToolResults { results: vec![result] });
+        sm.take_observations()
+    }
+
+    fn entropy_sample_of(obs: &[KernelObservation]) -> Option<(f64, f64, f64, u32)> {
+        obs.iter().find_map(|o| match o {
+            KernelObservation::EntropySample { score, repeat_pressure, failure_rate, rollbacks_in_window, .. } => {
+                Some((*score, *repeat_pressure, *failure_rate, *rollbacks_in_window))
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn entropy_sample_emitted_every_completed_turn() {
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("do things"));
+        let obs = entropy_drive_turn(&mut sm, serde_json::json!({"n": 1}), false);
+        let (score, repeat, failures, rollbacks) =
+            entropy_sample_of(&obs).expect("EntropySample at the completed boundary");
+        assert!(score < 0.25, "healthy turn must score low, got {score}");
+        assert_eq!(repeat, 0.0);
+        assert_eq!(failures, 0.0);
+        assert_eq!(rollbacks, 0);
+    }
+
+    #[test]
+    fn entropy_sample_reflects_repeats_and_failures() {
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("loop badly"));
+        // Identical failing call, 4 turns: repeat streak + failure window both climb.
+        let mut last = Vec::new();
+        for _ in 0..4 {
+            last = entropy_drive_turn(&mut sm, serde_json::json!({"same": true}), true);
+        }
+        let (score, repeat, failures, _) = entropy_sample_of(&last).expect("sample");
+        assert!(repeat > 0.0, "identical-call streak must register, got {repeat}");
+        assert!((failures - 1.0).abs() < 1e-9, "all results errored, got {failures}");
+        assert!(score > 0.3, "disordered run must score high, got {score}");
+    }
+
+    #[test]
+    fn entropy_watch_alerts_once_and_respects_optin() {
+        let mut sm = sm();
+        // Watch OFF (default): a fully disordered run emits samples but never alerts.
+        sm.start(RuntimeTask::new("loop badly"));
+        for _ in 0..4 {
+            let obs = entropy_drive_turn(&mut sm, serde_json::json!({"same": true}), true);
+            assert!(
+                !obs.iter().any(|o| matches!(o, KernelObservation::EntropyAlert { .. })),
+                "watch is opt-in — no alert while disabled"
+            );
+        }
+
+        // Watch ON with a low threshold: exactly one alert (disarm) until re-arm.
+        let mut sm = sm2_with_watch(0.2, 0);
+        sm.start(RuntimeTask::new("loop badly"));
+        let mut alerts = 0;
+        for _ in 0..4 {
+            let obs = entropy_drive_turn(&mut sm, serde_json::json!({"same": true}), true);
+            alerts += obs.iter().filter(|o| matches!(o, KernelObservation::EntropyAlert { .. })).count();
+        }
+        assert_eq!(alerts, 1, "hysteresis must gate re-fires while the score stays hot");
+    }
+
+    fn sm2_with_watch(threshold: f64, cooldown_turns: u32) -> LoopStateMachine {
+        let mut sm = sm();
+        sm.set_entropy_watch(crate::scheduler::entropy::EntropyWatchConfig {
+            enabled: true,
+            threshold,
+            hysteresis: 0.1,
+            cooldown_turns,
+            notify_model: false,
+        });
+        sm
+    }
+
+    #[test]
+    fn entropy_watch_notify_model_routes_a_heartbeat_signal() {
+        let mut sm = sm2_with_watch(0.2, 0);
+        let mut cfg = sm.entropy_watch_config();
+        cfg.notify_model = true;
+        sm.set_entropy_watch(cfg);
+        sm.start(RuntimeTask::new("loop badly"));
+
+        let mut saw_alert = false;
+        for _ in 0..4 {
+            let obs = entropy_drive_turn(&mut sm, serde_json::json!({"same": true}), true);
+            if obs.iter().any(|o| matches!(o, KernelObservation::EntropyAlert { .. })) {
+                saw_alert = true;
+                // The self-signal went through the normal dispatch: disposition observed…
+                assert!(obs.iter().any(|o| matches!(o, KernelObservation::SignalDisposed { .. })));
+                // …and (High while running ⇒ Interrupt) the directive reached the model channel.
+                assert!(
+                    sm.ctx.partitions.signals.iter().any(|s| s.contains("[entropy]")),
+                    "entropy directive must land in signals: {:?}",
+                    sm.ctx.partitions.signals
+                );
+            }
+        }
+        assert!(saw_alert, "low threshold + disordered run must alert");
+    }
+
+    #[test]
+    fn entropy_rollbacks_accrue_into_the_next_completed_turn() {
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("fatal then recover"));
+        // Turn A: fatal tool result ⇒ rollback, no boundary sample.
+        let a = sm.feed(LoopEvent::LLMResponse {
+            message: fuse_tool_turn("step", serde_json::json!({"n": 1})),
+        });
+        assert!(matches!(a, LoopAction::ExecuteTools { .. }));
+        sm.feed(LoopEvent::ToolResults {
+            results: vec![ToolResult { is_fatal: true, ..fuse_tool_result() }],
+        });
+        let rolled = sm.take_observations();
+        assert!(rolled.iter().any(|o| matches!(o, KernelObservation::Rollbacked { .. })));
+        assert!(entropy_sample_of(&rolled).is_none(), "rolled-back turn has no boundary sample");
+
+        // Turn B completes: the rollback shows up in its window.
+        let obs = entropy_drive_turn(&mut sm, serde_json::json!({"n": 2}), false);
+        let (_, _, _, rollbacks) = entropy_sample_of(&obs).expect("sample");
+        assert_eq!(rollbacks, 1, "turn A's rollback must land in turn B's window");
+    }

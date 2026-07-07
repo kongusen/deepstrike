@@ -110,6 +110,42 @@ export interface ToolArgumentRepairedEvent extends StreamEvent {
   repairedArguments: string
 }
 
+/** Kernel session-entropy measurement at a completed turn boundary (see the Node SDK's
+ *  `EntropySample` for the canonical documentation; this is the WASM mirror). */
+export interface EntropySample {
+  turn: number
+  score: number
+  scoreVersion: number
+  rho: number
+  repeatPressure: number
+  failureRate: number
+  rollbacksInWindow: number
+  windowTurns: number
+}
+
+/** One kernel entropy sample, emitted once per completed turn (a heartbeat watch source). */
+export interface EntropySampleEvent extends StreamEvent {
+  type: "entropy_sample"
+  sample: EntropySample
+}
+
+/** The opt-in kernel entropy watch tripped (see `RunnerOptions.entropyWatch`). */
+export interface EntropyAlertEvent extends StreamEvent {
+  type: "entropy_alert"
+  turn: number
+  score: number
+  threshold: number
+}
+
+/** Opt-in kernel-side threshold watch over the per-turn entropy score (Node SDK mirror). */
+export interface EntropyWatchOptions {
+  enabled?: boolean
+  threshold?: number
+  hysteresis?: number
+  cooldownTurns?: number
+  notifyModel?: boolean
+}
+
 /**
  * Opaque per-run state owned by the provider (e.g. OpenAI Responses continuation).
  * The framework creates and threads this object; providers may read/write it.

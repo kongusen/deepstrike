@@ -223,6 +223,58 @@ export interface ToolAuditFailedEvent extends StreamEvent {
   error: string
 }
 
+/** Kernel session-entropy measurement at a completed turn boundary. "Entropy" = session
+ *  disorder: repetition, tool failures, rollbacks, context pressure. The component vector is
+ *  the contract; `score` is a versioned default fold (`scoreVersion`). All normalized
+ *  components are in [0, 1]. */
+export interface EntropySample {
+  turn: number
+  score: number
+  scoreVersion: number
+  /** Context pressure after this boundary's eviction pass. */
+  rho: number
+  /** Consecutive-identical-turn streak, normalized against the RepeatFuse deny rung. */
+  repeatPressure: number
+  /** Errored tool results / total tool results over the sliding window. */
+  failureRate: number
+  /** Raw rollback count inside the window (normalize with `windowTurns`). */
+  rollbacksInWindow: number
+  /** Effective window size in completed turns. */
+  windowTurns: number
+}
+
+/** One kernel entropy sample, emitted once per completed turn (a heartbeat watch source:
+ *  subscribe to drive an external supervisor without tailing the audit log). */
+export interface EntropySampleEvent extends StreamEvent {
+  type: "entropy_sample"
+  sample: EntropySample
+}
+
+/** The opt-in kernel entropy watch tripped: `score` crossed `threshold` while armed and
+ *  cooled down (see `RunnerOptions.entropyWatch`). Correlate components via the same-turn
+ *  `entropy_sample` event. */
+export interface EntropyAlertEvent extends StreamEvent {
+  type: "entropy_alert"
+  turn: number
+  score: number
+  threshold: number
+}
+
+/** Opt-in kernel-side threshold watch over the per-turn entropy score. Sampling itself is
+ *  unconditional; this only controls alerting. `notifyModel` additionally routes the alert
+ *  into the model's own signal channel (durable `[SIGNAL]` directive at the next boundary) —
+ *  leave it off when a host supervisor injects task-aware guidance itself. */
+export interface EntropyWatchOptions {
+  enabled?: boolean
+  /** Alert when `score >= threshold` (kernel default 0.65). */
+  threshold?: number
+  /** Re-arm only after the score falls below `threshold - hysteresis` (default 0.1). */
+  hysteresis?: number
+  /** Minimum completed turns between two alerts (default 4). */
+  cooldownTurns?: number
+  notifyModel?: boolean
+}
+
 export interface TokenUsage {
   /** Full prompt size: uncached input + cache reads + cache writes. */
   inputTokens: number

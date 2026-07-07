@@ -101,6 +101,7 @@ from deepstrike.tools import (
     ToolError, safe_tool, ok, fail, format_tool_error,
 )
 from deepstrike.providers.stream import ToolAuditFailedEvent
+from deepstrike.providers.stream import EntropySample, EntropySampleEvent, EntropyAlertEvent
 from deepstrike.memory import (
     WorkingMemory,
     DreamStore, DreamResult, SessionData, MemoryEntry, CurationResult, CurationStats,
@@ -210,6 +211,7 @@ __all__ = [
     "RetryConfig", "CircuitBreaker", "TokenUsage", "ProviderToolSpec",
     "RegisteredTool", "tool", "streaming_tool", "validate_tool_arguments", "execute_tools", "read_file",
     "ToolError", "safe_tool", "ok", "fail", "format_tool_error", "ToolAuditFailedEvent",
+    "EntropySample", "EntropySampleEvent", "EntropyAlertEvent",
     "WorkingMemory",
     "DreamStore", "DreamResult", "SessionData", "MemoryEntry", "CurationResult", "CurationStats",
     "PermissionManager", "PermissionMode", "Permission", "PermissionDecision",

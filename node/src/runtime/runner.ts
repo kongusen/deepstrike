@@ -3,6 +3,7 @@ import type {
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, WorkflowNodesSubmittedEvent, DoneEvent, ErrorEvent,
   ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
   PermissionResponse, PermissionResolvedEvent, AsyncSummarizer, DreamSummarizer,
+  EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
 } from "../types.js"
 import type {
   DreamStore,
@@ -41,6 +42,7 @@ import {
   capabilityTool,
   capabilityCommandMount,
   capabilityCommandUnmount,
+  entropySampleFromObservation,
   kernelAction,
   kernelApply,
   kernelMaybeAction,
@@ -231,6 +233,14 @@ export interface RuntimeOptions {
    */
   knowledgeBudgetRatio?: number
   /**
+   * Opt-in kernel entropy watch: threshold alerting over the per-turn session-entropy score
+   * (`entropy_sample` events stream unconditionally regardless). When the score crosses
+   * `threshold` — armed via hysteresis and past the cooldown — the run emits an `entropy_alert`
+   * stream event (and session-log record); with `notifyModel` the kernel also feeds the model a
+   * durable `[SIGNAL]` directive. Absent ⇒ disabled (kernel default).
+   */
+  entropyWatch?: EntropyWatchOptions
+  /**
    * K3: default lease (in turns) for every skill activation. After that many turns the kernel
    * auto-deactivates the skill — toolset re-widens, knowledge pin boundary-swept — exactly like
    * an explicit `deactivateSkill()`. Absent ⇒ activations are permanent (default). A repeat
@@ -368,6 +378,8 @@ export class RuntimeRunner {
    *  at the next safe point (after the tool turn resolves, kernel back in Reason — not suspended). */
   private pendingAuthoredWorkflows: WorkflowSpec[] = []
   private dashboard: KernelPrimitivesDashboard | null = null
+  /** Most recent kernel entropy sample of the active/last run (see `latestEntropy`). */
+  private lastEntropySample: EntropySample | null = null
 
   constructor(private readonly opts: RuntimeOptions) {
     if (opts.enableDiagnosticsDashboard) {
@@ -563,6 +575,18 @@ export class RuntimeRunner {
     // K2: knowledge budget ratio (absent ⇒ kernel default 0.25; 0 disables).
     if (this.opts.knowledgeBudgetRatio !== undefined) {
       config.knowledge_budget_ratio = this.opts.knowledgeBudgetRatio
+    }
+    // Entropy watch (opt-in): threshold alerting over the per-turn session-entropy score.
+    // Absent fields keep kernel defaults (threshold 0.65 / hysteresis 0.1 / cooldown 4).
+    if (this.opts.entropyWatch !== undefined) {
+      const ew = this.opts.entropyWatch
+      config.entropy_watch = {
+        enabled: ew.enabled ?? true,
+        ...(ew.threshold !== undefined ? { threshold: ew.threshold } : {}),
+        ...(ew.hysteresis !== undefined ? { hysteresis: ew.hysteresis } : {}),
+        ...(ew.cooldownTurns !== undefined ? { cooldown_turns: ew.cooldownTurns } : {}),
+        ...(ew.notifyModel !== undefined ? { notify_model: ew.notifyModel } : {}),
+      }
     }
 
     kernelApply(runtime, this.pendingObservations, { kind: "configure_run", config })
@@ -1250,6 +1274,13 @@ export class RuntimeRunner {
       urgency,
       payload: { goal: text },
     })
+  }
+
+  /** The most recent kernel session-entropy sample (one per completed turn), or `null` before the
+   *  first boundary. A pull companion to the streamed `entropy_sample` events — hosts polling from
+   *  outside the stream (e.g. a heartbeat supervisor) read the latest measurement here. */
+  latestEntropy(): EntropySample | null {
+    return this.lastEntropySample
   }
 
   /** Injected-note drain shared by the main loop's per-turn poll: injected notes first (FIFO), then
@@ -2200,10 +2231,26 @@ export class RuntimeRunner {
             }
           } catch { /* malformed skill args — skip activation */ }
         }
+        const entropyObsStart = this.pendingObservations.length
         action = kernelAction(runtime, this.pendingObservations, {
           kind: "tool_results",
           results: toolResults.map(toolResultToKernel),
         })
+        // Surface the boundary's entropy measurement live (the heartbeat watch source) —
+        // the session-log record lands via the normal appendObservations path.
+        for (const obs of this.pendingObservations.slice(entropyObsStart)) {
+          if (obs.kind === "entropy_sample") {
+            this.lastEntropySample = entropySampleFromObservation(obs)
+            yield { type: "entropy_sample", sample: this.lastEntropySample } as EntropySampleEvent
+          } else if (obs.kind === "entropy_alert") {
+            yield {
+              type: "entropy_alert",
+              turn: obs.turn ?? 0,
+              score: obs.score ?? 0,
+              threshold: obs.threshold ?? 0,
+            } as EntropyAlertEvent
+          }
+        }
 
       } else if (action.kind === "evaluate_milestone") {
         const milestonePolicy = this.opts.milestonePolicy ?? "require_verifier"

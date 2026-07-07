@@ -25,6 +25,9 @@ from deepstrike._kernel import (
 from deepstrike.providers.base import LLMProvider, RenderedContext
 from deepstrike.providers.stream import (
   DoneEvent,
+  EntropyAlertEvent,
+  EntropySample,
+  EntropySampleEvent,
   ErrorEvent,
   StreamEvent,
   TextDelta,
@@ -195,6 +198,13 @@ class RuntimeOptions:
   # unpinned, non-skill entries at the next compaction/renewal boundary. Pinned entries and skill
   # pins are never budget-evicted. 0 disables. None ⇒ kernel default (0.25).
   knowledge_budget_ratio: float | None = None
+  # Opt-in kernel entropy watch: threshold alerting over the per-turn session-entropy score
+  # (entropy_sample events stream unconditionally regardless). A dict of
+  # {"threshold": float, "hysteresis": float, "cooldown_turns": int, "notify_model": bool,
+  #  "enabled": bool} — absent keys keep kernel defaults (0.65 / 0.1 / 4 / False); passing a dict
+  # enables unless {"enabled": False}. notify_model additionally feeds the model a durable
+  # [SIGNAL] directive when the alert fires. None ⇒ disabled (kernel default).
+  entropy_watch: dict[str, Any] | None = None
   # K3: default lease (in turns) for every skill activation. After that many turns the kernel
   # auto-deactivates the skill — toolset re-widens, knowledge pin boundary-swept — exactly like an
   # explicit deactivate_skill(). None ⇒ activations are permanent (default). A repeat skill(name)
@@ -262,6 +272,8 @@ class RuntimeRunner:
     self._current_session_id: str | None = None
     # O2 (system-reminder channel): host-pushed notes awaiting the next turn-boundary drain.
     self._injected_signals: list[RuntimeSignal] = []
+    # Most recent kernel entropy sample of the active/last run (see `latest_entropy`).
+    self._last_entropy_sample: EntropySample | None = None
     # Skill names whose content has already been pushed into the durable `knowledge` slot this
     # run — guards against re-pushing a duplicate entry if the model calls skill(name) again for
     # an already-active skill (loading is idempotent; the knowledge push should be too).
@@ -1200,6 +1212,12 @@ class RuntimeRunner:
     """
     self._injected_signals.append(RuntimeSignal(kind="note", payload={"goal": text}, urgency=urgency))
 
+  def latest_entropy(self) -> "EntropySample | None":
+    """The most recent kernel session-entropy sample (one per completed turn), or ``None`` before
+    the first boundary. A pull companion to the streamed ``entropy_sample`` events — hosts polling
+    from outside the stream (e.g. a heartbeat supervisor) read the latest measurement here."""
+    return self._last_entropy_sample
+
   async def _next_inbound_signal(self) -> "RuntimeSignal | None":
     """Injected-note drain shared with the main loop's per-turn poll: injected notes first (FIFO),
     then the configured ``signal_source`` — one code path so the two channels never drift."""
@@ -1799,6 +1817,21 @@ class RuntimeRunner:
         "kind": "set_knowledge_budget", "ratio": float(self._opts.knowledge_budget_ratio),
       })
 
+    # Entropy watch (opt-in): threshold alerting over the per-turn session-entropy score.
+    # Absent keys keep kernel defaults (threshold 0.65 / hysteresis 0.1 / cooldown 4).
+    if self._opts.entropy_watch is not None:
+      ew = self._opts.entropy_watch
+      payload = {"enabled": bool(ew.get("enabled", True))}
+      if ew.get("threshold") is not None:
+        payload["threshold"] = float(ew["threshold"])
+      if ew.get("hysteresis") is not None:
+        payload["hysteresis"] = float(ew["hysteresis"])
+      if ew.get("cooldown_turns") is not None:
+        payload["cooldown_turns"] = int(ew["cooldown_turns"])
+      if ew.get("notify_model") is not None:
+        payload["notify_model"] = bool(ew["notify_model"])
+      kernel_apply(runtime, self._pending_observations, {"kind": "set_entropy_watch", **payload})
+
     # L1: seed the kernel with the group's cumulative spend so the run-level token cap + cumulative
     # spawn cap span the whole governance domain. No group ⇒ no seed ⇒ per-vehicle budget (unchanged).
     # Also register this session as a member so the run's lineage (R2) spans personas/invocations.
@@ -2245,10 +2278,23 @@ class RuntimeRunner:
               })
           except Exception:
             pass
+        entropy_obs_start = len(self._pending_observations)
         action = kernel_action(runtime, self._pending_observations, {
           "kind": "tool_results",
           "results": [tool_result_to_kernel(result) for result in tool_results],
         })
+        # Surface the boundary's entropy measurement live (the heartbeat watch source) —
+        # the session-log record lands via the normal _append_observations path.
+        for obs in self._pending_observations[entropy_obs_start:]:
+          if obs.get("kind") == "entropy_sample":
+            self._last_entropy_sample = _entropy_sample_from_observation(obs)
+            yield EntropySampleEvent(sample=self._last_entropy_sample)
+          elif obs.get("kind") == "entropy_alert":
+            yield EntropyAlertEvent(
+              turn=int(obs.get("turn") or 0),
+              score=float(obs.get("score") or 0.0),
+              threshold=float(obs.get("threshold") or 0.0),
+            )
 
       elif action.kind == "evaluate_milestone":
         milestone_policy = self._opts.milestone_policy or "require_verifier"
@@ -2536,6 +2582,20 @@ class RuntimeRunner:
       if isinstance(evt, TextDelta):
         text += evt.delta
     return text.strip() or transcript[:2000]
+
+
+def _entropy_sample_from_observation(obs: dict) -> EntropySample:
+  """Materialize an ``entropy_sample`` kernel observation into the SDK dataclass."""
+  return EntropySample(
+    turn=int(obs.get("turn") or 0),
+    score=float(obs.get("score") or 0.0),
+    score_version=int(obs.get("score_version") or 0),
+    rho=float(obs.get("rho") or 0.0),
+    repeat_pressure=float(obs.get("repeat_pressure") or 0.0),
+    failure_rate=float(obs.get("failure_rate") or 0.0),
+    rollbacks_in_window=int(obs.get("rollbacks_in_window") or 0),
+    window_turns=int(obs.get("window_turns") or 0),
+  )
 
 
 def _compression_action(action: str | None) -> str | None:

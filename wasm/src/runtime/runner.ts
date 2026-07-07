@@ -2,6 +2,7 @@ import type {
   LLMProvider, Message, ToolCall, ToolResult, ToolSchema,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, WorkflowNodesSubmittedEvent, DoneEvent, ErrorEvent,
   ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
+  EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
   DreamSummarizer,
 } from "../types.js"
 import type { ToolSuspendEvent } from "./execution-plane.js"
@@ -177,6 +178,10 @@ export interface RuntimeOptions {
    *  warn-once observation + oldest unpinned non-skill entries evicted at the next boundary.
    *  Pinned/skill entries are exempt. `0` disables. Default: kernel's 0.25. */
   knowledgeBudgetRatio?: number
+  /** Opt-in kernel entropy watch: threshold alerting over the per-turn session-entropy score
+   *  (`entropy_sample` events stream unconditionally regardless). See the Node SDK's
+   *  `entropyWatch` for the canonical documentation. Absent ⇒ disabled (kernel default). */
+  entropyWatch?: EntropyWatchOptions
   /** K3: default lease (in turns) for every skill activation — auto-deactivates after N turns
    *  (toolset re-widens, knowledge pin boundary-swept). Absent ⇒ permanent (default). */
   skillLeaseTurns?: number
@@ -235,6 +240,8 @@ export class RuntimeRunner {
    *  run — guards against re-pushing a duplicate entry if the model calls `skill(name)` again for
    *  an already-active skill (loading is idempotent; the knowledge push should be too). */
   private knowledgePushedSkills = new Set<string>()
+  /** Most recent kernel entropy sample of the active/last run (see `latestEntropy`). */
+  private lastEntropySample: EntropySample | null = null
   /** K4: the active run's goal, kept for the renewal-boundary memory re-query. */
   private currentGoal = ""
   private nextArchiveStart = 0
@@ -256,6 +263,12 @@ export class RuntimeRunner {
    *  preempts. */
   injectNote(text: string, urgency: RuntimeSignal["urgency"] = "normal"): void {
     this.injectedSignals.push({ source: "custom", signalType: "event", urgency, payload: { goal: text } })
+  }
+
+  /** The most recent kernel session-entropy sample (one per completed turn), or `null` before the
+   *  first boundary. A pull companion to the streamed `entropy_sample` events. */
+  latestEntropy(): EntropySample | null {
+    return this.lastEntropySample
   }
 
   /** Injected-note drain shared with the main loop's per-turn poll: injected notes first (FIFO), then
@@ -1109,10 +1122,34 @@ export class RuntimeRunner {
             }
           } catch { /* skip */ }
         }
+        const entropyObsStart = this.pendingObservations.length
         action = kernelAction(runtime, this.pendingObservations, {
           kind: "tool_results",
           results: toolResults.map(toolResultToKernel),
         })
+        // Surface the boundary's entropy measurement live (the heartbeat watch source).
+        for (const obs of this.pendingObservations.slice(entropyObsStart)) {
+          if (obs.kind === "entropy_sample") {
+            this.lastEntropySample = {
+              turn: obs.turn ?? 0,
+              score: obs.score ?? 0,
+              scoreVersion: obs.score_version ?? 0,
+              rho: obs.rho ?? 0,
+              repeatPressure: obs.repeat_pressure ?? 0,
+              failureRate: obs.failure_rate ?? 0,
+              rollbacksInWindow: obs.rollbacks_in_window ?? 0,
+              windowTurns: obs.window_turns ?? 0,
+            }
+            yield { type: "entropy_sample", sample: this.lastEntropySample } as EntropySampleEvent
+          } else if (obs.kind === "entropy_alert") {
+            yield {
+              type: "entropy_alert",
+              turn: obs.turn ?? 0,
+              score: obs.score ?? 0,
+              threshold: obs.threshold ?? 0,
+            } as EntropyAlertEvent
+          }
+        }
 
       } else if (action.kind === "evaluate_milestone") {
         const milestonePolicy = this.opts.milestonePolicy ?? "require_verifier"
@@ -1445,6 +1482,17 @@ export class RuntimeRunner {
     // K2: knowledge budget ratio (absent ⇒ kernel default 0.25; 0 disables).
     if (this.opts.knowledgeBudgetRatio !== undefined) {
       config.knowledge_budget_ratio = this.opts.knowledgeBudgetRatio
+    }
+    // Entropy watch (opt-in): threshold alerting over the per-turn session-entropy score.
+    if (this.opts.entropyWatch !== undefined) {
+      const ew = this.opts.entropyWatch
+      config.entropy_watch = {
+        enabled: ew.enabled ?? true,
+        ...(ew.threshold !== undefined ? { threshold: ew.threshold } : {}),
+        ...(ew.hysteresis !== undefined ? { hysteresis: ew.hysteresis } : {}),
+        ...(ew.cooldownTurns !== undefined ? { cooldown_turns: ew.cooldownTurns } : {}),
+        ...(ew.notifyModel !== undefined ? { notify_model: ew.notifyModel } : {}),
+      }
     }
     kernelApply(runtime, this.pendingObservations, { kind: "configure_run", config })
     if (this.opts.memoryPolicy) {
