@@ -318,6 +318,35 @@ pub struct RenderedContext {
     pub frozen_prefix_len: Option<u32>,
 }
 
+// ────────────────────────────────── FFI panic guard ──────────────────────────────────
+
+/// Run `f` with a `catch_unwind` net so a Rust panic becomes a catchable JS error
+/// instead of aborting the whole Node process. A panic unwinding across the
+/// `extern "C"` napi boundary is turned into a hard `abort` by the Rust runtime —
+/// which no `uncaughtException`/`unhandledRejection` handler can intercept, taking
+/// down every other session sharing the process. Converting it to `napi::Error`
+/// keeps the process (and its other sessions) alive; the failed call surfaces as a
+/// normal thrown error the SDK loop can catch and fail just that one run.
+///
+/// State touched before the panic may be left inconsistent, so callers must treat a
+/// returned error as fatal to *that run* — but that is strictly better than an abort.
+fn ffi_guard<T>(what: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(result) => result,
+        Err(payload) => {
+            let detail = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_string());
+            Err(Error::new(
+                Status::GenericFailure,
+                format!("internal kernel panic in {what}: {detail}"),
+            ))
+        }
+    }
+}
+
 // ────────────────────────────────── conversion helpers ──────────────────────────────────
 
 fn role_str_to_rust(role: &str) -> Result<Role> {
@@ -567,11 +596,15 @@ impl KernelRuntime {
         let input: RustKernelInput = serde_json::from_str(&input_json).map_err(|e| {
             Error::new(Status::InvalidArg, format!("invalid KernelInput JSON: {e}"))
         })?;
-        serde_json::to_string(&self.inner.step(input)).map_err(|e| {
-            Error::new(
-                Status::GenericFailure,
-                format!("failed to encode KernelStep: {e}"),
-            )
+        // Guard the core step (context compaction, rendering, scheduling) — a panic
+        // in here must not abort the whole Node process. See `ffi_guard`.
+        ffi_guard("KernelRuntime.step", || {
+            serde_json::to_string(&self.inner.step(input)).map_err(|e| {
+                Error::new(
+                    Status::GenericFailure,
+                    format!("failed to encode KernelStep: {e}"),
+                )
+            })
         })
     }
 
@@ -599,8 +632,14 @@ impl KernelRuntime {
     }
 
     #[napi]
-    pub fn render(&self) -> RenderedContext {
-        rendered_context_from_rust(self.inner.state_machine().ctx.render())
+    pub fn render(&self) -> Result<RenderedContext> {
+        // Guard render's truncation/projection — any mis-sliced string must throw,
+        // not abort the process. `Result<T>` maps to the same TS shape as `T`.
+        ffi_guard("KernelRuntime.render", || {
+            Ok(rendered_context_from_rust(
+                self.inner.state_machine().ctx.render(),
+            ))
+        })
     }
 
     #[napi]
