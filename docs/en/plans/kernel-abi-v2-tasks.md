@@ -51,7 +51,7 @@ Verify: `cargo check --workspace` and a source search for `state_machine_mut`.
 
 Dependencies: Task 3.
 
-Files: kernel runtime, Rust runner, Node/Python/WASM binding `lib.rs` files.
+Files: kernel runtime, Rust runner, Node/Python/WASM binding `lib.rs` files, and the Rust ABI golden/transaction integration fixtures.
 
 ## Checkpoint A
 

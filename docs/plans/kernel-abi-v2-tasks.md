@@ -114,6 +114,7 @@ rg -n "state_machine_mut" rust crates/deepstrike-node crates/deepstrike-py crate
 - `crates/deepstrike-node/src/`（`lib.rs`）
 - `crates/deepstrike-py/src/lib.rs`
 - `crates/deepstrike-wasm/src/`（`lib.rs`）
+- Rust ABI integration fixtures（t12 golden 与 t13 transaction）
 
 ## Checkpoint A
 

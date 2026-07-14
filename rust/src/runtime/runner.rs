@@ -783,19 +783,9 @@ impl RuntimeRunner {
                 );
             }
 
-            let recovery_tokens = {
-                let k = kernel.lock().unwrap();
-                k.state_machine()
-                    .ctx
-                    .config
-                    .recovery_content_tokens(k.state_machine().ctx.max_tokens)
-            };
             let max_bytes = {
                 let k = kernel.lock().unwrap();
-                k.state_machine()
-                    .ctx
-                    .engine
-                    .token_budget_to_bytes(recovery_tokens)
+                k.recovery_content_bytes()
             };
 
             if let Some(ref events) = prior_events {
@@ -1198,7 +1188,7 @@ impl RuntimeRunner {
                         self.log(
                             &session_id,
                             SessionEvent::LlmCompleted {
-                                turn: kernel.lock().unwrap().state_machine().turn,
+                                turn: kernel.lock().unwrap().turn(),
                                 message: assistant,
                                 provider_replay,
                             },
@@ -1210,7 +1200,7 @@ impl RuntimeRunner {
                         // — emit first, then advance.
                         if let Some(ref sink) = self.opts.on_turn_metrics {
                             sink(TurnMetrics {
-                                turn: kernel.lock().unwrap().state_machine().turn,
+                                turn: kernel.lock().unwrap().turn(),
                                 tools_exposed,
                                 tools_called: final_tool_calls.len(),
                                 active_skill: active_skill.clone(),
@@ -1234,7 +1224,7 @@ impl RuntimeRunner {
                         self.log(
                             &session_id,
                             SessionEvent::ToolRequested {
-                                turn: kernel.lock().unwrap().state_machine().turn,
+                                turn: kernel.lock().unwrap().turn(),
                                 calls: tool_calls.clone(),
                             },
                         )
@@ -1318,7 +1308,7 @@ impl RuntimeRunner {
                                         self.log(
                                             &session_id,
                                             SessionEvent::ToolArgumentRepaired {
-                                                turn: kernel.lock().unwrap().state_machine().turn,
+                                                turn: kernel.lock().unwrap().turn(),
                                                 tool: name.clone(),
                                                 original_arguments: original_arguments.clone(),
                                                 repaired_arguments: repaired_arguments.clone(),
@@ -1336,7 +1326,7 @@ impl RuntimeRunner {
                                         self.log(
                                             &session_id,
                                             SessionEvent::ToolDenied {
-                                                turn: kernel.lock().unwrap().state_machine().turn,
+                                                turn: kernel.lock().unwrap().turn(),
                                                 call_id: call_id.clone(),
                                                 tool_name: tool_name.clone(),
                                                 reason: reason.clone(),
@@ -1346,7 +1336,7 @@ impl RuntimeRunner {
                                         yield RunEvent::ToolDenied { call_id, tool_name, reason };
                                     }
                                     RunEvent::PermissionRequest { call_id, tool_name, arguments, reason } => {
-                                        let turn = kernel.lock().unwrap().state_machine().turn;
+                                        let turn = kernel.lock().unwrap().turn();
                                         self.log(
                                             &session_id,
                                             SessionEvent::PermissionRequested {
@@ -1360,7 +1350,7 @@ impl RuntimeRunner {
                                         yield RunEvent::PermissionRequest { call_id, tool_name, arguments, reason };
                                     }
                                     RunEvent::PermissionResolved { call_id, tool_name, approved, responder, reason } => {
-                                        let turn = kernel.lock().unwrap().state_machine().turn;
+                                        let turn = kernel.lock().unwrap().turn();
                                         self.log(
                                             &session_id,
                                             SessionEvent::PermissionResolved {
@@ -1391,7 +1381,7 @@ impl RuntimeRunner {
                         self.log(
                             &session_id,
                             SessionEvent::ToolCompleted {
-                                turn: kernel.lock().unwrap().state_machine().turn,
+                                turn: kernel.lock().unwrap().turn(),
                                 results: tool_results.clone(),
                             },
                         )
@@ -1511,13 +1501,13 @@ impl RuntimeRunner {
                                 &session_id,
                                 SessionEvent::RunTerminal {
                                     reason: "milestone_pending".to_string(),
-                                    turns_used: kernel.lock().unwrap().state_machine().turn.max(1),
+                                    turns_used: kernel.lock().unwrap().turn().max(1),
                                     total_tokens: 0,
                                 },
                             )
                             .await;
                             yield RunEvent::Done {
-                                iterations: kernel.lock().unwrap().state_machine().turn.max(1),
+                                iterations: kernel.lock().unwrap().turn().max(1),
                                 total_tokens: 0,
                                 status: "milestone_pending".to_string(),
                             };
@@ -1552,7 +1542,7 @@ impl RuntimeRunner {
                         if let (Some(store), Some(agent_id)) =
                             (&self.opts.dream_store, &self.opts.agent_id)
                         {
-                            let new_msgs = kernel.lock().unwrap().state_machine_mut().drain_new_messages();
+                            let new_msgs = kernel.lock().unwrap().drain_new_messages();
                             if !new_msgs.is_empty() {
                                 let now_ms = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
@@ -1601,7 +1591,7 @@ impl RuntimeRunner {
                 ),
                 _ => (
                     if self.interrupted.load(Ordering::Relaxed) { "user_abort".to_string() } else { "error".to_string() },
-                    kernel.lock().unwrap().state_machine().turn.max(1),
+                    kernel.lock().unwrap().turn().max(1),
                     0,
                 ),
             };
@@ -1620,7 +1610,7 @@ impl RuntimeRunner {
                 if let (Some(store), Some(agent_id)) =
                     (&self.opts.dream_store, &self.opts.agent_id)
                 {
-                    let new_msgs = kernel.lock().unwrap().state_machine_mut().drain_new_messages();
+                    let new_msgs = kernel.lock().unwrap().drain_new_messages();
                     if !new_msgs.is_empty() {
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -1658,19 +1648,18 @@ impl RuntimeRunner {
         let drained = std::mem::take(observations);
         let (turn, preserved_refs, summary_tokens_by_index) = {
             let kernel = kernel_mutex.lock().unwrap();
-            let sm = kernel.state_machine();
             let summary_tokens_by_index = drained
                 .iter()
                 .map(|obs| match obs {
                     KernelObservation::Compressed { summary, .. } => {
-                        summary.as_ref().map(|s| sm.ctx.engine.count(s))
+                        summary.as_ref().map(|s| kernel.count_tokens(s))
                     }
                     _ => None,
                 })
                 .collect::<Vec<_>>();
             (
-                sm.turn,
-                sm.ctx.partitions.task_state.preserved_refs.clone(),
+                kernel.turn(),
+                kernel.preserved_refs(),
                 summary_tokens_by_index,
             )
         };

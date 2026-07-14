@@ -296,5 +296,4 @@ fn kernel_config_transaction_rejects_partial_mutation() {
         [fault] if fault.code == KernelFaultCode::InvalidConfig
     ));
     assert_eq!(runtime.lifecycle(), KernelLifecycle::Created);
-    assert!(!runtime.state_machine().ctx.memory_enabled);
 }

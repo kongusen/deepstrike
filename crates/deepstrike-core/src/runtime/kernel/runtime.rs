@@ -107,11 +107,13 @@ impl KernelRuntime {
         }
     }
 
-    pub fn state_machine(&self) -> &LoopStateMachine {
+    #[cfg(test)]
+    pub(super) fn state_machine(&self) -> &LoopStateMachine {
         &self.sm
     }
 
-    pub fn state_machine_mut(&mut self) -> &mut LoopStateMachine {
+    #[cfg(test)]
+    pub(super) fn state_machine_mut(&mut self) -> &mut LoopStateMachine {
         &mut self.sm
     }
 
@@ -121,6 +123,35 @@ impl KernelRuntime {
 
     pub fn lifecycle(&self) -> KernelLifecycle {
         self.lifecycle
+    }
+
+    pub fn turn(&self) -> u32 {
+        self.sm.turn
+    }
+
+    pub fn recovery_content_bytes(&self) -> usize {
+        let tokens = self
+            .sm
+            .ctx
+            .config
+            .recovery_content_tokens(self.sm.ctx.max_tokens);
+        self.sm.ctx.engine.token_budget_to_bytes(tokens)
+    }
+
+    pub fn render(&self) -> RenderedContext {
+        self.sm.ctx.render()
+    }
+
+    pub fn drain_new_messages(&mut self) -> Vec<Message> {
+        self.sm.drain_new_messages()
+    }
+
+    pub fn preserved_refs(&self) -> Vec<String> {
+        self.sm.ctx.partitions.task_state.preserved_refs.clone()
+    }
+
+    pub fn count_tokens(&self, text: &str) -> u32 {
+        self.sm.ctx.engine.count(text)
     }
 
     /// L1 (RunGroup): this vehicle's cumulative sub-agent spawns this run, read back by the SDK at run

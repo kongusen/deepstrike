@@ -868,7 +868,7 @@ impl KernelRuntime {
     }
 
     fn turn(&self) -> u32 {
-        self.inner.state_machine().turn
+        self.inner.turn()
     }
 
     /// L1 (RunGroup): cumulative sub-agent spawns this run, for charging the group ledger at run end.
@@ -877,32 +877,22 @@ impl KernelRuntime {
     }
 
     fn recovery_content_bytes(&self) -> u32 {
-        let sm = self.inner.state_machine();
-        let tokens = sm.ctx.config.recovery_content_tokens(sm.ctx.max_tokens);
-        sm.ctx.engine.token_budget_to_bytes(tokens) as u32
+        self.inner.recovery_content_bytes() as u32
     }
 
     fn render(&self) -> RenderedContext {
-        RenderedContext::from_rust(self.inner.state_machine().ctx.render())
+        RenderedContext::from_rust(self.inner.render())
     }
 
     fn drain_new_messages(&mut self) -> Vec<Message> {
-        self.inner
-            .state_machine_mut()
-            .drain_new_messages()
+        self.inner.drain_new_messages()
             .iter()
             .map(Message::from_rust)
             .collect()
     }
 
     fn preserved_refs(&self) -> Vec<String> {
-        self.inner
-            .state_machine()
-            .ctx
-            .partitions
-            .task_state
-            .preserved_refs
-            .clone()
+        self.inner.preserved_refs()
     }
 }
 

@@ -138,8 +138,6 @@ fn spawn_sub_agent_fixture_updates_process_table_via_kernel() {
         task: RuntimeTask::new("parent"),
         run_spec: None,
     }));
-    runtime.state_machine_mut().take_observations();
-
     let KernelInputEvent::SpawnSubAgent { spec, parent_session_id } = input.event else {
         panic!("expected spawn_sub_agent event");
     };
