@@ -18,6 +18,8 @@ export interface EventStreamOptions {
 export interface BlackboardEvent {
   seq: number
   payload: unknown
+  /** Stable external event key. Re-appending the same key returns the original event. */
+  idempotencyKey?: string
   /** Emitting persona id (or external source), for audit / `reactByMention`. */
   source?: string
   /** Channel this event belongs to; only personas subscribed to it see it. Omit ⇒ all see it. */
@@ -53,13 +55,19 @@ export interface EventStream {
 /** Process-local default blackboard. */
 export class InMemoryEventStream implements EventStream {
   private readonly events: BlackboardEvent[] = []
+  private readonly idempotentEvents = new Map<string, BlackboardEvent>()
   private readonly listeners = new Set<(e: BlackboardEvent) => void>()
 
   constructor(private readonly opts: EventStreamOptions = {}) {}
 
   async append(event: Omit<BlackboardEvent, "seq">): Promise<BlackboardEvent> {
+    if (event.idempotencyKey) {
+      const existing = this.idempotentEvents.get(event.idempotencyKey)
+      if (existing) return existing
+    }
     const stamped: BlackboardEvent = { ...event, seq: this.events.length }
     this.events.push(stamped)
+    if (stamped.idempotencyKey) this.idempotentEvents.set(stamped.idempotencyKey, stamped)
     for (const listener of this.listeners) {
       try {
         listener(stamped)

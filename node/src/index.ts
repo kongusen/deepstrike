@@ -40,6 +40,14 @@ export { reactByMention, directorDriven, roundRobin, firstNonEmpty, union } from
 export type { TurnPolicy, PeerView } from "./runtime/turn-policy.js"
 export { ReactiveSession, readRecentTool } from "./runtime/reactive-session.js"
 export type { ReactiveSessionOptions, ReactivePeerSpec, EmitEvent, Reaction, ReactorTurn, ReactorContext } from "./runtime/reactive-session.js"
+export { InMemoryReactionCheckpointStore, ReactionInProgressError } from "./runtime/reaction-checkpoint.js"
+export type {
+  ReactionCheckpointClaim,
+  ReactionCheckpointClaimResult,
+  ReactionCheckpointReceipt,
+  ReactionCheckpointStore,
+  ReactionRecord,
+} from "./runtime/reaction-checkpoint.js"
 
 // ── Tool authoring ──────────────────────────────────────────────────────────
 export { tool, streamingTool } from "./tools/index.js"

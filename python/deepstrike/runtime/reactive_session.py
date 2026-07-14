@@ -20,6 +20,13 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from deepstrike.runtime.event_stream import BlackboardEvent, EventStream, EventViewer, InMemoryEventStream, is_visible_to
 from deepstrike.runtime.run_group import GroupMember, RunGroup
 from deepstrike.runtime.runner import collect_text
+from deepstrike.runtime.reaction_checkpoint import (
+    InMemoryReactionCheckpointStore,
+    ReactionCheckpointReceipt,
+    ReactionCheckpointStore,
+    ReactionInProgressError,
+    ReactionRecord,
+)
 from deepstrike.runtime.turn_policy import PeerView, TurnPolicy
 from deepstrike.signals.gateway import SignalGateway
 from deepstrike.signals.types import RuntimeSignal
@@ -73,6 +80,8 @@ class ReactiveSession:
         turn_policy: TurnPolicy,
         make_runner: MakeRunner,
         event_stream: EventStream | None = None,
+        checkpoint_store: ReactionCheckpointStore | None = None,
+        reaction_lease_ms: int | None = None,
         signal_gateway: SignalGateway | None = None,
         goal_for: Callable[[str, BlackboardEvent], str] | None = None,
         react_with: ReactorTurn | None = None,
@@ -81,6 +90,8 @@ class ReactiveSession:
         self._turn_policy = turn_policy
         self._make_runner = make_runner
         self._event_stream = event_stream or InMemoryEventStream()
+        self._checkpoint_store = checkpoint_store or InMemoryReactionCheckpointStore()
+        self._reaction_lease_ms = reaction_lease_ms
         self._gateway = signal_gateway or SignalGateway()
         self._goal_for = goal_for
         self._react_with = react_with
@@ -99,29 +110,62 @@ class ReactiveSession:
         return self._event_stream
 
     async def emit(self, payload: Any, *, source: str | None = None,
-                   channel: str | None = None, audience: list[str] | None = None) -> list[Reaction]:
-        bb = await self._event_stream.append(payload, source=source, channel=channel, audience=audience)
+                   channel: str | None = None, audience: list[str] | None = None,
+                   idempotency_key: str | None = None) -> list[Reaction]:
+        append_kwargs = {"source": source, "channel": channel, "audience": audience}
+        if idempotency_key is not None:
+            append_kwargs["idempotency_key"] = idempotency_key
+        bb = await self._event_stream.append(payload, **append_kwargs)
         # Record lineage for all registered peers (idempotent). W-N5: tagged "peer" so resume() can
         # tell personas apart from vehicle sessions (workflow envelopes / wf-node children / loop
         # iterations) that share the same governance domain.
         for pid, spec in self._peer_specs.items():
             await self._run_group.budget_store.join(self._run_group.id, GroupMember(pid, spec.role, kind="peer"))
 
-        candidates = [
-            PeerView(pid, spec.role, spec.channels)
-            for pid, spec in self._peer_specs.items()
-            if is_visible_to(bb, EventViewer(pid, spec.channels))
-        ]
-        chosen = self._turn_policy(bb, candidates, self._policy_state)
-        if hasattr(chosen, "__await__"):
-            chosen = await chosen
-        eligible = {p.persona_id for p in candidates}
+        event_identity = bb.idempotency_key or f"seq:{bb.seq}"
+        checkpoint_key = json.dumps([self._run_group.id, event_identity], separators=(",", ":"))
+        checkpoint = await self._checkpoint_store.claim(checkpoint_key, self._reaction_lease_ms)
+        if checkpoint.status == "completed":
+            return [Reaction(r.persona_id, r.output) for r in checkpoint.reactions]
+        if checkpoint.status == "busy":
+            raise ReactionInProgressError(checkpoint_key)
+        assert checkpoint.claim is not None
+        receipt = ReactionCheckpointReceipt(checkpoint.claim.checkpoint_key, checkpoint.claim.lease_token)
 
-        reactions: list[Reaction] = []
-        for pid in chosen:
-            if pid in eligible:
-                reactions.append(Reaction(pid, await self._drive_turn(pid, bb)))
-        return reactions
+        try:
+            candidates = [
+                PeerView(pid, spec.role, spec.channels)
+                for pid, spec in self._peer_specs.items()
+                if is_visible_to(bb, EventViewer(pid, spec.channels))
+            ]
+            eligible = {p.persona_id for p in candidates}
+            chosen = checkpoint.claim.plan
+            if chosen is None:
+                chosen = self._turn_policy(bb, candidates, self._policy_state)
+                if hasattr(chosen, "__await__"):
+                    chosen = await chosen
+                chosen = [pid for pid in chosen if pid in eligible]
+            plan = await self._checkpoint_store.save_plan(receipt, chosen)
+            if plan is None:
+                raise RuntimeError("reaction checkpoint lease was lost before saving the plan")
+
+            outputs = dict(checkpoint.claim.outputs)
+            reactions: list[Reaction] = []
+            for pid in plan:
+                output = outputs.get(pid)
+                if output is None:
+                    if pid not in eligible:
+                        raise RuntimeError(f"reaction persona is unavailable: {pid}")
+                    output = await self._drive_turn(pid, bb)
+                    if not await self._checkpoint_store.record(receipt, ReactionRecord(pid, output)):
+                        raise RuntimeError("reaction checkpoint lease was lost before recording output")
+                reactions.append(Reaction(pid, output))
+            if not await self._checkpoint_store.complete(receipt):
+                raise RuntimeError("reaction checkpoint lease was lost before completion")
+            return reactions
+        except BaseException:
+            await self._checkpoint_store.release(receipt)
+            raise
 
     async def interrupt(self, persona_id: str, *, payload: dict | None = None) -> None:
         self._gateway.ingest(RuntimeSignal(
@@ -164,11 +208,12 @@ class ReactiveSession:
     async def resume(
         *, run_group: RunGroup, turn_policy: TurnPolicy, make_runner: MakeRunner,
         event_stream: EventStream | None = None,
+        checkpoint_store: ReactionCheckpointStore | None = None,
         peer_specs: dict[str, ReactivePeerSpec] | None = None,
     ) -> "ReactiveSession":
         session = ReactiveSession(
             run_group=run_group, turn_policy=turn_policy,
-            make_runner=make_runner, event_stream=event_stream,
+            make_runner=make_runner, event_stream=event_stream, checkpoint_store=checkpoint_store,
         )
         # W-N5: vehicle members (workflow envelopes, ``wf-node*`` children, loop iterations) share
         # the governance domain but are NOT personas — resuming them as peers would resurrect

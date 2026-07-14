@@ -35,6 +35,7 @@ SignalGateway
 ReactiveSession
   ├── RunGroup        # 共享预算
   ├── EventStream     # 黑板
+  ├── ReactionCheckpointStore # 幂等 plan / output
   ├── SignalGateway   # recipient 路由
   └── TurnPolicy      # 谁响应哪个事件
 ```
@@ -134,6 +135,21 @@ reactions = await session.run_turns()
 每个 persona 是一次 `runner.run(session_id=...)`，continuity 来自 SessionLog。
 
 Stateless-friendly：`emit` 可在 HTTP handler 中调用；`resume` 从 RunGroup membership 重建 peer 集。
+
+对可能重试的外部请求，提供稳定的 `idempotency_key`，并在新进程中复用同一个持久化
+`EventStream` 与 `ReactionCheckpointStore`：
+
+```python
+reactions = await session.emit(
+    "@analyst 分析这个数据",
+    source="user",
+    idempotency_key=request.headers["Idempotency-Key"],
+)
+```
+
+checkpoint 先保存 turn-policy 选出的 persona plan，再逐个保存 output。若第二个 persona
+失败，重试只补做未完成项；已完成输出会直接返回。默认 `InMemoryReactionCheckpointStore`
+仅适合单进程，跨副本部署应提供实现同一原子 claim / record / complete 契约的持久化存储。
 
 ---
 

@@ -20,6 +20,15 @@ import { InMemoryEventStream, isVisibleTo } from "./event-stream.js"
 import type { TurnPolicy, PeerView } from "./turn-policy.js"
 import { tool } from "../tools/index.js"
 import type { RegisteredTool } from "../tools/index.js"
+import {
+  InMemoryReactionCheckpointStore,
+  ReactionInProgressError,
+} from "./reaction-checkpoint.js"
+import type {
+  ReactionCheckpointReceipt,
+  ReactionCheckpointStore,
+  ReactionRecord,
+} from "./reaction-checkpoint.js"
 
 /**
  * How a persona executes one reactive turn. The default body is a single `runner.run(...)` agent turn;
@@ -53,6 +62,8 @@ export interface ReactivePeerSpec {
 /** What the caller appends to the blackboard via `emit`. */
 export interface EmitEvent {
   payload: unknown
+  /** Stable external request/event key used for append and reaction idempotency. */
+  idempotencyKey?: string
   source?: string
   channel?: string
   audience?: string[]
@@ -65,6 +76,10 @@ export interface ReactiveSessionOptions {
   turnPolicy: TurnPolicy
   /** Shared blackboard. Defaults to a process-local `InMemoryEventStream`. */
   eventStream?: EventStream
+  /** Persisted event-level reaction plan/output checkpoints. Defaults to process-local memory. */
+  checkpointStore?: ReactionCheckpointStore
+  /** Lease covering one event's reaction plan. Default: 15 minutes. */
+  reactionLeaseMs?: number
   /** Shared signal gateway for targeted interrupt / broadcast (L0). Defaults to a fresh one. */
   signalGateway?: SignalGateway
   /**
@@ -86,10 +101,7 @@ export interface ReactiveSessionOptions {
 }
 
 /** A persona's reaction to an emitted event. */
-export interface Reaction {
-  personaId: string
-  output: string
-}
+export interface Reaction extends ReactionRecord {}
 
 export class ReactiveSession {
   private readonly peerSpecs = new Map<string, ReactivePeerSpec>()
@@ -97,10 +109,12 @@ export class ReactiveSession {
   private readonly policyState: Record<string, unknown> = {}
   private readonly eventStream: EventStream
   private readonly gateway: SignalGateway
+  private readonly checkpointStore: ReactionCheckpointStore
 
   constructor(private readonly opts: ReactiveSessionOptions) {
     this.eventStream = opts.eventStream ?? new InMemoryEventStream()
     this.gateway = opts.signalGateway ?? new SignalGateway()
+    this.checkpointStore = opts.checkpointStore ?? new InMemoryReactionCheckpointStore()
   }
 
   /** Register a peer persona and record it in the group membership (lineage). */
@@ -129,21 +143,44 @@ export class ReactiveSession {
    */
   async emit(event: EmitEvent): Promise<Reaction[]> {
     const bbEvent = await this.eventStream.append(event)
+    const eventIdentity = bbEvent.idempotencyKey ?? `seq:${bbEvent.seq}`
+    const checkpointKey = JSON.stringify([this.opts.runGroup.id, eventIdentity])
+    const checkpoint = await this.checkpointStore.claim(checkpointKey, this.opts.reactionLeaseMs)
+    if (checkpoint.status === "completed") return checkpoint.reactions
+    if (checkpoint.status === "busy") throw new ReactionInProgressError(checkpointKey)
+    const receipt: ReactionCheckpointReceipt = checkpoint.claim
 
-    const candidates: PeerView[] = [...this.peerSpecs.entries()]
-      .map(([personaId, spec]) => ({ personaId, role: spec.role, channels: spec.channels }))
-      // Only personas that can actually see the event are eligible to react.
-      .filter(p => isVisibleTo(bbEvent, p as EventViewer))
+    try {
+      const candidates: PeerView[] = [...this.peerSpecs.entries()]
+        .map(([personaId, spec]) => ({ personaId, role: spec.role, channels: spec.channels }))
+        .filter(p => isVisibleTo(bbEvent, p as EventViewer))
+      const eligible = new Set(candidates.map(p => p.personaId))
+      const selected = checkpoint.claim.plan
+        ?? (await this.opts.turnPolicy(bbEvent, candidates, this.policyState)).filter(id => eligible.has(id))
+      const plan = await this.checkpointStore.savePlan(receipt, selected)
+      if (!plan) throw new Error("reaction checkpoint lease was lost before saving the plan")
 
-    const chosen = await this.opts.turnPolicy(bbEvent, candidates, this.policyState)
-    const eligible = new Set(candidates.map(p => p.personaId))
-
-    const reactions: Reaction[] = []
-    for (const personaId of chosen) {
-      if (!eligible.has(personaId)) continue
-      reactions.push({ personaId, output: await this.driveTurn(personaId, bbEvent) })
+      const outputs = new Map(Object.entries(checkpoint.claim.outputs))
+      const reactions: Reaction[] = []
+      for (const personaId of plan) {
+        let output = outputs.get(personaId)
+        if (output === undefined) {
+          if (!eligible.has(personaId)) throw new Error(`reaction persona is unavailable: ${personaId}`)
+          output = await this.driveTurn(personaId, bbEvent)
+          if (!await this.checkpointStore.record(receipt, { personaId, output })) {
+            throw new Error("reaction checkpoint lease was lost before recording output")
+          }
+        }
+        reactions.push({ personaId, output })
+      }
+      if (!await this.checkpointStore.complete(receipt)) {
+        throw new Error("reaction checkpoint lease was lost before completion")
+      }
+      return reactions
+    } catch (cause) {
+      await this.checkpointStore.release(receipt)
+      throw cause
     }
-    return reactions
   }
 
   /** Targeted preemption: deliver a critical signal to one persona's loop only (L0 recipient routing). */

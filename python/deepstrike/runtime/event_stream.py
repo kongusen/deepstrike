@@ -21,6 +21,7 @@ class BlackboardEvent:
     source: str | None = None
     channel: str | None = None
     audience: list[str] | None = None
+    idempotency_key: str | None = None
 
 
 @dataclass
@@ -45,7 +46,7 @@ def is_visible_to(event: BlackboardEvent, viewer: EventViewer) -> bool:
 @runtime_checkable
 class EventStream(Protocol):
     async def append(
-        self, payload: Any, *, source: str | None = None,
+        self, payload: Any, *, idempotency_key: str | None = None, source: str | None = None,
         channel: str | None = None, audience: list[str] | None = None,
     ) -> BlackboardEvent: ...
 
@@ -59,14 +60,22 @@ class InMemoryEventStream:
 
     def __init__(self) -> None:
         self._events: list[BlackboardEvent] = []
+        self._idempotent_events: dict[str, BlackboardEvent] = {}
         self._listeners: set[Callable[[BlackboardEvent], None]] = set()
 
     async def append(
-        self, payload: Any, *, source: str | None = None,
+        self, payload: Any, *, idempotency_key: str | None = None, source: str | None = None,
         channel: str | None = None, audience: list[str] | None = None,
     ) -> BlackboardEvent:
-        ev = BlackboardEvent(len(self._events), payload, source, channel, audience)
+        if idempotency_key is not None and idempotency_key in self._idempotent_events:
+            return self._idempotent_events[idempotency_key]
+        ev = BlackboardEvent(
+            seq=len(self._events), payload=payload, source=source, channel=channel,
+            audience=audience, idempotency_key=idempotency_key,
+        )
         self._events.append(ev)
+        if idempotency_key is not None:
+            self._idempotent_events[idempotency_key] = ev
         for listener in list(self._listeners):
             listener(ev)
         return ev

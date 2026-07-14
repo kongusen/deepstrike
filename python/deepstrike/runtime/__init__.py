@@ -53,6 +53,15 @@ from deepstrike.runtime.reactive_session import (
   ReactorTurn,
   read_recent_tool,
 )
+from deepstrike.runtime.reaction_checkpoint import (
+  InMemoryReactionCheckpointStore,
+  ReactionCheckpointClaim,
+  ReactionCheckpointClaimResult,
+  ReactionCheckpointReceipt,
+  ReactionCheckpointStore,
+  ReactionInProgressError,
+  ReactionRecord,
+)
 from deepstrike.runtime.reliability import (
   BackgroundTaskErrorHandler,
   BackgroundTaskFailure,
@@ -186,6 +195,13 @@ __all__ = [
   "first_non_empty",
   "union",
   "ReactiveSession",
+  "InMemoryReactionCheckpointStore",
+  "ReactionCheckpointClaim",
+  "ReactionCheckpointClaimResult",
+  "ReactionCheckpointReceipt",
+  "ReactionCheckpointStore",
+  "ReactionInProgressError",
+  "ReactionRecord",
   "ReactivePeerSpec",
   "Reaction",
   "ReactorContext",

@@ -35,6 +35,7 @@ SignalGateway
 ReactiveSession
   ├── RunGroup        # shared budget
   ├── EventStream     # blackboard
+  ├── ReactionCheckpointStore # idempotent plan / output
   ├── SignalGateway   # recipient routing
   └── TurnPolicy      # who responds to which event
 ```
@@ -136,6 +137,22 @@ reactions = await session.run_turns()
 Each persona is one `runner.run(session_id=...)`; continuity comes from `SessionLog`.
 
 Stateless-friendly: `emit` can run in an HTTP handler; `resume` rebuilds the peer set from `RunGroup` membership.
+
+For external requests that may be retried, provide a stable `idempotency_key` and reuse the same
+durable `EventStream` and `ReactionCheckpointStore` in a fresh process:
+
+```python
+reactions = await session.emit(
+    "@analyst analyze this data",
+    source="user",
+    idempotency_key=request.headers["Idempotency-Key"],
+)
+```
+
+The checkpoint stores the persona plan selected by the turn policy before recording each output.
+If the second persona fails, a retry runs only unfinished work and returns the preserved outputs.
+The default `InMemoryReactionCheckpointStore` is process-local; multi-replica deployments should
+provide a durable implementation of the same atomic claim / record / complete contract.
 
 ```python
 # python/tests/test_reactive_session.py pattern

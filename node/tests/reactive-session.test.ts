@@ -6,7 +6,7 @@ import {
   RuntimeRunner, InMemorySessionLog, LocalExecutionPlane,
   InMemoryGroupBudgetStore, InMemoryEventStream, isVisibleTo,
   reactByMention, directorDriven, roundRobin, firstNonEmpty,
-  ReactiveSession, readRecentTool,
+  InMemoryReactionCheckpointStore, ReactiveSession, readRecentTool,
 } from "../src/index.js"
 import type { RunGroup, BlackboardEvent, PeerView, SignalSource } from "../src/index.js"
 
@@ -116,6 +116,62 @@ function makeSession(turnPolicy: ReturnType<typeof reactByMention>): { session: 
 }
 
 describe("ReactiveSession orchestration (L2 §6.2)", () => {
+  it("returns a completed checkpoint without rerunning a duplicate idempotent event", async () => {
+    const eventStream = new InMemoryEventStream()
+    const checkpointStore = new InMemoryReactionCheckpointStore()
+    const runGroup: RunGroup = { id: "retry", budgetStore: new InMemoryGroupBudgetStore() }
+    let calls = 0
+    const build = () => {
+      const session = new ReactiveSession({
+        runGroup,
+        turnPolicy: reactByMention(),
+        eventStream,
+        checkpointStore,
+        makeRunner: () => ({} as RuntimeRunner),
+      })
+      session.addPeer("alice", { react: async () => `alice-${++calls}` })
+      return session
+    }
+
+    const first = await build().emit({ payload: "alice", idempotencyKey: "event-1" })
+    const retried = await build().emit({ payload: "alice", idempotencyKey: "event-1" })
+
+    expect(retried).toEqual(first)
+    expect(calls).toBe(1)
+    expect(await eventStream.readSince(-1)).toHaveLength(1)
+  })
+
+  it("reuses the persisted plan and completed peer outputs after a partial failure", async () => {
+    const eventStream = new InMemoryEventStream()
+    const checkpointStore = new InMemoryReactionCheckpointStore()
+    const runGroup: RunGroup = { id: "partial", budgetStore: new InMemoryGroupBudgetStore() }
+    const calls = { alice: 0, bob: 0 }
+    const session = new ReactiveSession({
+      runGroup,
+      turnPolicy: async () => ["alice", "bob"],
+      eventStream,
+      checkpointStore,
+      makeRunner: () => ({} as RuntimeRunner),
+    })
+    session.addPeer("alice", { react: async () => `alice-${++calls.alice}` })
+    session.addPeer("bob", {
+      react: async () => {
+        calls.bob += 1
+        if (calls.bob === 1) throw new Error("temporary failure")
+        return `bob-${calls.bob}`
+      },
+    })
+
+    await expect(session.emit({ payload: "go", idempotencyKey: "event-2" })).rejects.toThrow("temporary failure")
+    const retried = await session.emit({ payload: "go", idempotencyKey: "event-2" })
+
+    expect(retried).toEqual([
+      { personaId: "alice", output: "alice-1" },
+      { personaId: "bob", output: "bob-2" },
+    ])
+    expect(calls).toEqual({ alice: 1, bob: 2 })
+  })
+
   it("emit drives only the peers the policy selects, under shared governance", async () => {
     const { session, store } = makeSession(reactByMention())
     session.addPeer("alice", { role: "buyer" })
