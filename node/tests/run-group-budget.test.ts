@@ -6,7 +6,7 @@
  * per-vehicle. No `runGroup` ⇒ N=1, per-run budget (unchanged).
  */
 import type { LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
-import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane, InMemoryGroupBudgetStore, SessionLogGroupBudgetStore } from "../src/index.js"
+import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane, InMemoryGroupBudgetStore, SessionLogGroupBudgetStore, GroupBudgetScope } from "../src/index.js"
 import { tool } from "../src/tools/index.js"
 import type { RunGroup } from "../src/index.js"
 
@@ -60,6 +60,41 @@ function makeRunner(runGroup?: RunGroup, agentId?: string): RuntimeRunner {
 }
 
 describe("RunGroup cumulative token budget (L1/R2)", () => {
+  it("atomically reserves capacity across concurrent members", async () => {
+    const store = new InMemoryGroupBudgetStore()
+    const group: RunGroup = { id: "concurrent", budgetStore: store }
+    const request = {
+      limits: { tokens: 100 },
+      requested: { tokens: 100 },
+    }
+
+    const [first, second] = await Promise.all([
+      GroupBudgetScope.open(group, { sessionId: "a" }, request),
+      GroupBudgetScope.open(group, { sessionId: "b" }, request),
+    ])
+
+    expect(first.mode).toBe("reserved")
+    expect(first.granted.tokens).toBe(100)
+    expect(second.granted.tokens).toBe(0)
+    expect(second.ledger.tokensSpent).toBe(100)
+
+    await first.settle({ tokens: 60 })
+    await second.release()
+    expect(store.read(group.id).tokensSpent).toBe(60)
+  })
+
+  it("marks non-transactional stores as accounting-only", async () => {
+    const store = new SessionLogGroupBudgetStore(new InMemorySessionLog())
+    const scope = await GroupBudgetScope.open(
+      { id: "legacy", budgetStore: store },
+      { sessionId: "a" },
+      { limits: { tokens: 100 }, requested: { tokens: 100 } },
+    )
+
+    expect(scope.mode).toBe("accounting")
+    expect(scope.granted.tokens).toBe(100)
+  })
+
   it("a member is seeded with the group's prior spend and hits the shared cap", async () => {
     const store = new InMemoryGroupBudgetStore()
     const group: RunGroup = { id: "scenario-1", budgetStore: store }

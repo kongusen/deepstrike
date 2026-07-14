@@ -67,7 +67,7 @@ from deepstrike.runtime.session_repair import (
 from deepstrike.runtime.session_log import SessionEntry, SessionEvent, SessionLog
 from deepstrike.runtime.archive import ArchiveStore
 from deepstrike.runtime.os_profile import assert_native_profile
-from deepstrike.runtime.run_group import RunGroup
+from deepstrike.runtime.run_group import GroupBudgetScope, GroupMember, RunGroup
 from deepstrike.runtime.reliability import (
   BackgroundTaskErrorHandler,
   ManagedTaskScope,
@@ -218,8 +218,8 @@ class RuntimeOptions:
   # call refreshes the lease.
   skill_lease_turns: int | None = None
   # L1 (RunGroup): bind this runner to a governance domain shared by N peer sessions of one logical
-  # run. Members pass the same RunGroup; the run-level token cap is enforced against the group's
-  # cumulative spend (seeded at boot, charged at run end) rather than per-vehicle. None ⇒ N=1.
+  # run. Reservable stores enforce the run-level cap against settled + in-flight usage; legacy
+  # stores provide cumulative accounting only. None ⇒ N=1.
   run_group: "RunGroup | None" = None
   memory_policy: MemoryPolicy | dict[str, Any] | None = None
   os_profile: "OsProfile | None" = None
@@ -274,6 +274,8 @@ class RuntimeRunner:
     self._plane = opts.execution_plane or LocalExecutionPlane()
     self._active_kernel: KernelRuntime | None = None
     self._active_operation: OperationContext | None = None
+    self._active_task_scope: ManagedTaskScope | None = None
+    self._active_group_budget_scope: GroupBudgetScope | None = None
     self._pending_observations: list[dict] = []
     # K4: the active run's goal, kept for the renewal-boundary memory re-query.
     self._current_goal = ""
@@ -296,6 +298,21 @@ class RuntimeRunner:
   def host_options(self) -> RuntimeOptions:
     """Host configuration (for coordinator / sub-agent spawn)."""
     return self._opts
+
+  async def _close_active_scopes(self) -> None:
+    group_scope = self._active_group_budget_scope
+    self._active_group_budget_scope = None
+    if group_scope is not None:
+      await group_scope.release()
+
+    task_scope = self._active_task_scope
+    self._active_task_scope = None
+    if task_scope is not None and task_scope.pending > 0:
+      await task_scope.cancel()
+
+    if self._active_operation is not None and self._active_operation.cancelled is not None:
+      self._active_operation.cancelled.set()
+    self._active_operation = None
 
   async def write_memory(
     self,
@@ -429,6 +446,16 @@ class RuntimeRunner:
       })
     return runtime
 
+  def _group_budget_request(self, *, include_tokens: bool = True) -> tuple[dict[str, int], dict[str, int]] | None:
+    limits: dict[str, int] = {}
+    if include_tokens and self._opts.max_total_tokens is not None:
+      limits["tokens"] = self._opts.max_total_tokens
+    if self._opts.resource_quota is not None:
+      max_subagents = _resource_quota_to_kernel(self._opts.resource_quota).get("max_total_subagents")
+      if max_subagents is not None:
+        limits["subagents"] = int(max_subagents)
+    return (limits, dict(limits)) if limits else None
+
   async def _append_memory_syscall_observations(
     self,
     session_id: str | None,
@@ -558,6 +585,7 @@ class RuntimeRunner:
     standalone session (defaults to a fresh uuid); it is ignored when a run is already active.
     """
     bootstrapped = self._active_kernel is None or self._current_session_id is None
+    group_budget_scope: GroupBudgetScope | None = None
     if bootstrapped:
       sid = session_id or f"wf-{uuid.uuid4()}"
       # L1: a standalone workflow is a member of its runner's governance domain. Seed the bootstrap
@@ -567,14 +595,18 @@ class RuntimeRunner:
       group_tokens_base: int | None = None
       group_spawns_base: int | None = None
       if self._opts.run_group is not None:
-        from deepstrike.runtime.run_group import GroupMember
         g = self._opts.run_group
         # W-N5: tagged "vehicle" — an execution envelope, not a persona (ReactiveSession.resume
         # rebuilds peers only).
-        await g.budget_store.join(g.id, GroupMember(sid, self._opts.agent_id, kind="vehicle"))
-        ledger = await g.budget_store.read(g.id)
-        group_tokens_base = ledger.tokens_spent
-        group_spawns_base = ledger.subagents_spawned
+        request = self._group_budget_request(include_tokens=False)
+        group_budget_scope = await GroupBudgetScope.open(
+          g,
+          GroupMember(sid, self._opts.agent_id, kind="vehicle"),
+          limits=request[0] if request else None,
+          requested=request[1] if request else None,
+        )
+        group_tokens_base = group_budget_scope.ledger.tokens_spent
+        group_spawns_base = group_budget_scope.ledger.subagents_spawned
       self._bootstrap_workflow_kernel(sid, spec, group_tokens_base, group_spawns_base)
       # Best-effort run_started log so a standalone workflow can be resumed via ``resume_workflow``
       # (node parity: runner.ts bootstrapWorkflowKernel). The kernel state, not the log, drives the
@@ -605,17 +637,14 @@ class RuntimeRunner:
         # cap (``max_total_subagents``) counts workflow nodes — they are member runs whose own
         # ``_execute`` charge contributes 0 spawns. The envelope kernel's TaskTable holds one proc per
         # scheduled node, so ``local_subagents_spawned()`` is exactly that node count.
-        if self._opts.run_group is not None:
-          runtime = self._active_kernel
-          spawned = (
-            runtime.local_subagents_spawned()
-            if runtime is not None and hasattr(runtime, "local_subagents_spawned")
-            else 0
-          )
-          if spawned > 0:
-            await self._opts.run_group.budget_store.charge(
-              self._opts.run_group.id, tokens=0, subagents=spawned,
-            )
+        runtime = self._active_kernel
+        spawned = (
+          runtime.local_subagents_spawned()
+          if runtime is not None and hasattr(runtime, "local_subagents_spawned")
+          else 0
+        )
+        if group_budget_scope is not None:
+          await group_budget_scope.settle(subagents=spawned)
         self._active_kernel = None
         self._current_session_id = None
         self._pending_observations = []
@@ -1318,11 +1347,14 @@ class RuntimeRunner:
         **({"system_prompt": self._opts.system_prompt} if self._opts.system_prompt else {}),
         **({"attachments": attachments} if attachments else {}),
       })
-    async for evt in self._execute(
-      sid, goal, criteria or [], extensions,
-      prior if prior else None, mid_run, attachments, run_id,
-    ):
-      yield evt
+    try:
+      async for evt in self._execute(
+        sid, goal, criteria or [], extensions,
+        prior if prior else None, mid_run, attachments, run_id,
+      ):
+        yield evt
+    finally:
+      await self._close_active_scopes()
 
   async def wake(
     self,
@@ -1336,17 +1368,20 @@ class RuntimeRunner:
     if start_entry is None:
       raise ValueError(f"No run_started event for session: {session_id}")
     start = start_entry.event
-    async for evt in self._execute(
-      session_id,
-      start["goal"],
-      start.get("criteria", []),
-      extensions,
-      events,
-      True,
-      start.get("attachments"),
-      start["run_id"],
-    ):
-      yield evt
+    try:
+      async for evt in self._execute(
+        session_id,
+        start["goal"],
+        start.get("criteria", []),
+        extensions,
+        events,
+        True,
+        start.get("attachments"),
+        start["run_id"],
+      ):
+        yield evt
+    finally:
+      await self._close_active_scopes()
 
   async def dream(self, agent_id: str, now_ms: int | None = None) -> "AsyncIterator[StreamEvent]":
     return self._dream_impl(agent_id, now_ms)
@@ -1617,6 +1652,7 @@ class RuntimeRunner:
     )
     self._active_operation = operation
     task_scope = ManagedTaskScope(operation, self._opts.on_background_task_error)
+    self._active_task_scope = task_scope
 
     _policy_kwargs: dict[str, Any] = dict(
       max_tokens=self._opts.max_tokens,
@@ -1858,13 +1894,17 @@ class RuntimeRunner:
     # L1: seed the kernel with the group's cumulative spend so the run-level token cap + cumulative
     # spawn cap span the whole governance domain. No group ⇒ no seed ⇒ per-vehicle budget (unchanged).
     # Also register this session as a member so the run's lineage (R2) spans personas/invocations.
+    group_budget_scope: GroupBudgetScope | None = None
     if self._opts.run_group is not None:
-      from deepstrike.runtime.run_group import GroupMember
-      # W-N5: tagged "vehicle" — an execution envelope, not a persona.
-      await self._opts.run_group.budget_store.join(
-        self._opts.run_group.id, GroupMember(session_id, self._opts.agent_id, kind="vehicle"),
+      request = self._group_budget_request()
+      group_budget_scope = await GroupBudgetScope.open(
+        self._opts.run_group,
+        GroupMember(session_id, self._opts.agent_id, kind="vehicle"),
+        limits=request[0] if request else None,
+        requested=request[1] if request else None,
       )
-      ledger = await self._opts.run_group.budget_store.read(self._opts.run_group.id)
+      self._active_group_budget_scope = group_budget_scope
+      ledger = group_budget_scope.ledger
       seed_config: dict[str, Any] = {}
       if ledger.tokens_spent > 0:
         seed_config["group_tokens_base"] = ledger.tokens_spent
@@ -2357,6 +2397,9 @@ class RuntimeRunner:
             turns_used=turns_used,
             total_tokens=0,
           ))
+          spawned = runtime.local_subagents_spawned() if hasattr(runtime, "local_subagents_spawned") else 0
+          if group_budget_scope is not None:
+            await group_budget_scope.settle(subagents=spawned)
           await task_scope.drain()
           self._active_kernel = None
           self._active_operation = None
@@ -2381,6 +2424,9 @@ class RuntimeRunner:
         ))
       except Exception:
         pass  # session log failure must not mask the original error
+      spawned = runtime.local_subagents_spawned() if hasattr(runtime, "local_subagents_spawned") else 0
+      if group_budget_scope is not None:
+        await group_budget_scope.settle(subagents=spawned)
       await task_scope.drain()
       yield DoneEvent(iterations=runtime.turn() or 0, total_tokens=0, status=reason)
       self._active_kernel = None
@@ -2403,14 +2449,10 @@ class RuntimeRunner:
       total_tokens=total_tokens,
     ))
 
-    # L1: charge this vehicle's local spend (tokens + sub-agent spawns) back to the governance domain
-    # so the next member is seeded with the updated cumulative totals.
-    if self._opts.run_group is not None:
+    # L1: settle reserved capacity into actual usage. Accounting-only stores retain legacy charge.
+    if group_budget_scope is not None:
       spawned = runtime.local_subagents_spawned() if hasattr(runtime, "local_subagents_spawned") else 0
-      if total_tokens > 0 or spawned > 0:
-        await self._opts.run_group.budget_store.charge(
-          self._opts.run_group.id, tokens=total_tokens, subagents=spawned,
-        )
+      await group_budget_scope.settle(tokens=total_tokens, subagents=spawned)
 
     if self._opts.dream_store and self._opts.agent_id:
       new_msgs = list(runtime.drain_new_messages())

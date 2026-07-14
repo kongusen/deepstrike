@@ -21,7 +21,8 @@ import type { SessionLog, SessionEvent, RollbackReason } from "./session-log.js"
 import type { ArchiveStore } from "./archive.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
 import { resolvePermissionRequest } from "./execution-plane.js"
-import type { RunGroup, GroupLedger } from "./run-group.js"
+import { GroupBudgetScope } from "./run-group.js"
+import type { RunGroup, GroupBudgetRequest } from "./run-group.js"
 import { getKernel, type KernelRuntimeInstance, type MemoryPolicy, type ResourceQuota } from "../kernel.js"
 import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
@@ -270,8 +271,8 @@ export interface RuntimeOptions {
     Promise<ToolResultHookDecision | undefined | void> | ToolResultHookDecision | undefined | void
   /**
    * L1 (RunGroup): bind this runner to a governance domain shared by N peer sessions of one logical
-   * run. Members pass the same `id` + `budgetStore`; the kernel's run-level token cap is then enforced
-   * against the group's cumulative spend (seeded at boot, charged at run end) rather than per-vehicle.
+   * run. Members pass the same `id` + `budgetStore`; reservable stores enforce the kernel's run-level
+   * cap against settled + in-flight usage. Legacy stores provide cumulative accounting only.
    * Unset ⇒ N=1, pre-L1 per-run budget (byte-identical). Only cumulative budget is shared; instantaneous
    * concurrency stays vehicle-scoped (spec §2.5).
    */
@@ -508,6 +509,22 @@ export class RuntimeRunner {
       maxTotalTokens: this.opts.maxTotalTokens !== undefined ? BigInt(this.opts.maxTotalTokens) : undefined,
       timeoutMs: this.opts.timeoutMs !== undefined ? BigInt(this.opts.timeoutMs) : undefined,
     })
+  }
+
+  private groupBudgetRequest(includeTokens = true): GroupBudgetRequest | undefined {
+    const tokens = includeTokens ? this.opts.maxTotalTokens : undefined
+    const subagents = this.opts.resourceQuota?.maxTotalSubagents
+    if (tokens === undefined && subagents === undefined) return undefined
+    return {
+      limits: {
+        ...(tokens !== undefined ? { tokens } : {}),
+        ...(subagents !== undefined ? { subagents } : {}),
+      },
+      requested: {
+        ...(tokens !== undefined ? { tokens } : {}),
+        ...(subagents !== undefined ? { subagents } : {}),
+      },
+    }
   }
 
   /**
@@ -891,19 +908,27 @@ export class RuntimeRunner {
     // gets — then tear it down on completion so the runner is reusable. Mid-run callers (activeKernel
     // already set by an in-flight `run()`) keep the original in-place behavior with no teardown.
     const bootstrapped = !this.activeKernel || !this.currentSessionId
+    let groupBudgetScope: GroupBudgetScope | undefined
     if (bootstrapped) {
       const sessionId = opts?.sessionId ?? `wf-${crypto.randomUUID()}`
       // L1: a standalone workflow is a member of its runner's governance domain too. Seed the
       // bootstrap kernel with the group's cumulative spend (so the cumulative spawn/token cap bites
       // while scheduling DAG nodes) and register membership — mirroring `execute()`. Mid-run callers
       // skip this: their parent `run()` already seeds + counts the nodes via `localSubagentsSpawned()`.
-      let groupLedger: GroupLedger | undefined
       if (this.opts.runGroup) {
         const g = this.opts.runGroup
-        groupLedger = await g.budgetStore.read(g.id)
-        await g.budgetStore.join(g.id, { sessionId, role: this.opts.agentId, kind: "vehicle" })
+        groupBudgetScope = await GroupBudgetScope.open(
+          g,
+          { sessionId, role: this.opts.agentId, kind: "vehicle" },
+          this.groupBudgetRequest(false),
+        )
       }
-      this.bootstrapWorkflowKernel(sessionId, spec, groupLedger?.tokensSpent, groupLedger?.subagentsSpawned)
+      this.bootstrapWorkflowKernel(
+        sessionId,
+        spec,
+        groupBudgetScope?.ledger.tokensSpent,
+        groupBudgetScope?.ledger.subagentsSpawned,
+      )
     }
     const parentSessionId = this.currentSessionId!
     const runtime = this.activeKernel!
@@ -938,12 +963,7 @@ export class RuntimeRunner {
         // `execute()` charge contributes 0 spawns, so without this the node count is invisible to the
         // group. The envelope kernel's TaskTable holds one proc per scheduled node, so
         // `localSubagentsSpawned()` is exactly that node count (the envelope itself burns no tokens).
-        if (this.opts.runGroup) {
-          const subagents = runtime.localSubagentsSpawned?.() ?? 0
-          if (subagents > 0) {
-            await this.opts.runGroup.budgetStore.charge(this.opts.runGroup.id, { subagents })
-          }
-        }
+        await groupBudgetScope?.settle({ subagents: runtime.localSubagentsSpawned?.() ?? 0 })
         this.activeKernel = null
         this.currentSessionId = null
         this.pendingObservations = []
@@ -1604,7 +1624,9 @@ export class RuntimeRunner {
       ...(effectiveTimeoutMs !== undefined ? { deadlineMs: Date.now() + effectiveTimeoutMs } : {}),
     }
     const taskScope = new ManagedTaskScope(operation, this.opts.onBackgroundTaskError)
+    let groupBudgetScope: GroupBudgetScope | undefined
 
+    try {
     const runtime = new kernel.KernelRuntime({
       maxTokens: this.opts.maxTokens,
       maxTurns: effectiveMaxTurns,
@@ -1779,13 +1801,20 @@ export class RuntimeRunner {
     // L1: seed the kernel with the group's cumulative spend so the run-level token cap + cumulative
     // spawn cap span the whole governance domain (other members' prior spend). No group ⇒ per-run.
     // Also register this session as a member so the run's lineage (R2) spans personas/invocations.
-    let groupLedger: GroupLedger | undefined
     if (this.opts.runGroup) {
       const g = this.opts.runGroup
-      groupLedger = await g.budgetStore.read(g.id)
-      await g.budgetStore.join(g.id, { sessionId, role: this.opts.agentId, kind: "vehicle" })
+      groupBudgetScope = await GroupBudgetScope.open(
+        g,
+        { sessionId, role: this.opts.agentId, kind: "vehicle" },
+        this.groupBudgetRequest(),
+      )
     }
-    this.applyKernelPolicies(runtime, groupLedger?.tokensSpent, groupLedger?.subagentsSpawned, groupLedger?.roundsCompleted)
+    this.applyKernelPolicies(
+      runtime,
+      groupBudgetScope?.ledger.tokensSpent,
+      groupBudgetScope?.ledger.subagentsSpawned,
+      groupBudgetScope?.ledger.roundsCompleted,
+    )
     // Multimodal upload: seed the user's attachments (images/audio) as a history
     // message before start_run pushes the "[TASK STATE]" anchor. init_task does not
     // clear history, so order becomes [attachment user msg, "Proceed…"] — both land
@@ -2314,6 +2343,7 @@ export class RuntimeRunner {
             turnsUsed,
             totalTokens: 0,
           }))
+          await groupBudgetScope?.settle({ subagents: runtime.localSubagentsSpawned?.() ?? 0 })
           await taskScope.drain()
           yield { type: "done", iterations: turnsUsed, totalTokens: 0, status: "milestone_pending" } as DoneEvent
           this.activeKernel = null
@@ -2344,6 +2374,7 @@ export class RuntimeRunner {
           totalTokens: 0,
         }))
       } catch { /* session log failure must not mask the original error */ }
+      await groupBudgetScope?.settle({ subagents: runtime.localSubagentsSpawned?.() ?? 0 })
       await taskScope.drain()
       yield { type: "done", iterations: runtime.turn() || 0, totalTokens: 0, status: reason } as DoneEvent
       this.activeKernel = null
@@ -2375,14 +2406,12 @@ export class RuntimeRunner {
       totalTokens,
     }))
 
-    // L1: charge this vehicle's local spend (tokens + sub-agent spawns) back to the governance domain
-    // so the next member is seeded with the updated cumulative totals.
-    if (this.opts.runGroup) {
-      const subagents = runtime.localSubagentsSpawned?.() ?? 0
-      if (totalTokens > 0 || subagents > 0) {
-        await this.opts.runGroup.budgetStore.charge(this.opts.runGroup.id, { tokens: totalTokens, subagents })
-      }
-    }
+    // L1: settle the member's reserved capacity into actual usage. Accounting-only stores retain
+    // the legacy charge behavior through GroupBudgetScope; reservable stores release unused capacity.
+    await groupBudgetScope?.settle({
+      tokens: totalTokens,
+      subagents: runtime.localSubagentsSpawned?.() ?? 0,
+    })
 
     if (this.opts.dreamStore && this.opts.agentId) {
       const newMsgs = runtime.drainNewMessages().map(m => ({
@@ -2418,6 +2447,13 @@ export class RuntimeRunner {
     this.activeKernel = null
     this.currentSessionId = null
     this.dashboard = null
+    } finally {
+      await groupBudgetScope?.release()
+      if (taskScope.pending > 0) await taskScope.cancel("run scope closed")
+      this.activeKernel = null
+      this.currentSessionId = null
+      this.dashboard = null
+    }
   }
 
   /** I4 + K4: fetch long-term memory hits for the current goal and land them in `history` as an

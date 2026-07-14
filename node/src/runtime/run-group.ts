@@ -3,19 +3,19 @@
  *
  * The kernel (execution vehicle) is ephemeral and torn down between stateless turns, so the
  * cumulative budget + membership that must span the whole group live outside any vehicle: in a
- * `GroupBudgetStore`. Each member's run is seeded at boot with the group's accumulated spend (tokens
- * + sub-agent spawns) so the run-level token cap and the cumulative spawn cap are enforced across all
- * members, registers itself as a member (lineage), and charges its own consumption back when it ends.
+ * `GroupBudgetStore`. A reservable store atomically holds capacity for each member, seeds its kernel
+ * from settled usage plus earlier reservations, and settles actual consumption when the member ends.
+ * Legacy stores retain read/charge accounting but cannot enforce a concurrent group quota.
  * Per spec §2.5, only *cumulative* budget is shared this way; instantaneous concurrency stays
  * vehicle-scoped.
  *
  * Two built-in stores:
- * - `InMemoryGroupBudgetStore` — process-local; fine for a single replica / tests.
+ * - `InMemoryGroupBudgetStore` — process-local atomic reservations; fine for one replica / tests.
  * - `SessionLogGroupBudgetStore` — persists the ledger + membership to any `SessionLog` (fold-on-read
- *   under a group-anchor key), so a logical run's governance + lineage survive process boundaries and
- *   span replicas when backed by a durable `SessionLog`.
+ *   under a group-anchor key). It is accounting-only because SessionLog has no compare-and-set API.
  */
 import type { SessionLog } from "./session-log.js"
+import { randomUUID } from "node:crypto"
 
 /** Cumulative resources spent across a run group. */
 export interface GroupLedger {
@@ -34,6 +34,23 @@ export interface GroupCharge {
   subagents?: number
   /** ③ loop-agent: completed rounds to add to the group's round count. */
   rounds?: number
+}
+
+export interface GroupBudgetRequest {
+  /** Group-wide hard limits. An omitted axis is accounting-only. */
+  limits: GroupCharge
+  /** Maximum capacity this member wants to hold for its lifetime. */
+  requested: GroupCharge
+}
+
+export interface GroupBudgetReservation {
+  id: string
+  groupId: string
+  memberId: string
+  /** Settled usage plus reservations held by earlier members; seed the kernel from this ledger. */
+  ledger: GroupLedger
+  /** Capacity granted to this member. May be lower than requested when the group is nearly full. */
+  granted: GroupCharge
 }
 
 /** A persona session that participated in the logical run (process-table lineage). */
@@ -58,13 +75,36 @@ export interface GroupBudgetStore {
   members(groupId: string): GroupMember[] | Promise<GroupMember[]>
 }
 
+/** Transactional capability required for concurrent quota enforcement. */
+export interface ReservableGroupBudgetStore extends GroupBudgetStore {
+  reserve(
+    groupId: string,
+    request: GroupBudgetRequest & { memberId: string },
+  ): GroupBudgetReservation | Promise<GroupBudgetReservation>
+  settle(groupId: string, reservationId: string, actual: GroupCharge): void | Promise<void>
+  release(groupId: string, reservationId: string): void | Promise<void>
+}
+
+export function isReservableGroupBudgetStore(
+  store: GroupBudgetStore,
+): store is ReservableGroupBudgetStore {
+  const candidate = store as Partial<ReservableGroupBudgetStore>
+  return typeof candidate.reserve === "function" &&
+    typeof candidate.settle === "function" &&
+    typeof candidate.release === "function"
+}
+
 /** Process-local default store. One ledger + member set per group id. */
-export class InMemoryGroupBudgetStore implements GroupBudgetStore {
+export class InMemoryGroupBudgetStore implements ReservableGroupBudgetStore {
   private readonly ledgers = new Map<string, GroupLedger>()
   private readonly memberships = new Map<string, Map<string, GroupMember>>()
+  private readonly reservations = new Map<string, Map<string, GroupBudgetReservation>>()
 
   read(groupId: string): GroupLedger {
-    return this.ledgers.get(groupId) ?? { tokensSpent: 0, subagentsSpawned: 0, roundsCompleted: 0 }
+    const ledger = this.ledgers.get(groupId)
+    return ledger
+      ? { ...ledger }
+      : { tokensSpent: 0, subagentsSpawned: 0, roundsCompleted: 0 }
   }
 
   charge(groupId: string, delta: GroupCharge): void {
@@ -88,12 +128,64 @@ export class InMemoryGroupBudgetStore implements GroupBudgetStore {
   members(groupId: string): GroupMember[] {
     return [...(this.memberships.get(groupId)?.values() ?? [])]
   }
+
+  reserve(
+    groupId: string,
+    request: GroupBudgetRequest & { memberId: string },
+  ): GroupBudgetReservation {
+    const settled = this.read(groupId)
+    const held = [...(this.reservations.get(groupId)?.values() ?? [])].reduce<GroupLedger>(
+      (sum, reservation) => ({
+        tokensSpent: sum.tokensSpent + (reservation.granted.tokens ?? 0),
+        subagentsSpawned: sum.subagentsSpawned + (reservation.granted.subagents ?? 0),
+        roundsCompleted: (sum.roundsCompleted ?? 0) + (reservation.granted.rounds ?? 0),
+      }),
+      { tokensSpent: 0, subagentsSpawned: 0, roundsCompleted: 0 },
+    )
+    const ledger: GroupLedger = {
+      tokensSpent: settled.tokensSpent + held.tokensSpent,
+      subagentsSpawned: settled.subagentsSpawned + held.subagentsSpawned,
+      roundsCompleted: (settled.roundsCompleted ?? 0) + (held.roundsCompleted ?? 0),
+    }
+    const grant = (requested = 0, limit: number | undefined, used: number): number =>
+      Math.max(0, Math.min(Math.max(0, requested), limit === undefined ? requested : limit - used))
+    const reservation: GroupBudgetReservation = {
+      id: randomUUID(),
+      groupId,
+      memberId: request.memberId,
+      ledger,
+      granted: {
+        tokens: grant(request.requested.tokens, request.limits.tokens, ledger.tokensSpent),
+        subagents: grant(request.requested.subagents, request.limits.subagents, ledger.subagentsSpawned),
+        rounds: grant(request.requested.rounds, request.limits.rounds, ledger.roundsCompleted ?? 0),
+      },
+    }
+    if (!this.reservations.has(groupId)) this.reservations.set(groupId, new Map())
+    this.reservations.get(groupId)!.set(reservation.id, reservation)
+    return reservation
+  }
+
+  settle(groupId: string, reservationId: string, actual: GroupCharge): void {
+    const reservations = this.reservations.get(groupId)
+    if (!reservations?.delete(reservationId)) {
+      throw new Error(`unknown group budget reservation: ${reservationId}`)
+    }
+    if (reservations.size === 0) this.reservations.delete(groupId)
+    this.charge(groupId, actual)
+  }
+
+  release(groupId: string, reservationId: string): void {
+    const reservations = this.reservations.get(groupId)
+    if (!reservations?.delete(reservationId)) return
+    if (reservations.size === 0) this.reservations.delete(groupId)
+  }
 }
 
 /**
- * Persists the group ledger + membership to a `SessionLog`, keyed by a group-anchor session whose id
+ * Persists the accounting ledger + membership to a `SessionLog`, keyed by a group-anchor session whose id
  * is the group id. Budget/membership rebuild by folding `group_budget_charged` / `group_member_joined`
- * events on read (spec §2.4). Durable + replica-spanning when the underlying `SessionLog` is.
+ * events on read (spec §2.4). Durable across replicas, but not a concurrent quota enforcer: use a
+ * `ReservableGroupBudgetStore` backed by a transactional database/Redis script for that contract.
  */
 export class SessionLogGroupBudgetStore implements GroupBudgetStore {
   constructor(private readonly log: SessionLog) {}
@@ -145,6 +237,62 @@ export class SessionLogGroupBudgetStore implements GroupBudgetStore {
       }
     }
     return [...seen.values()]
+  }
+}
+
+/**
+ * One member's budget lifecycle. Reservable stores enforce concurrent admission; legacy stores are
+ * explicitly accounting-only and retain the previous read/charge behavior during migration.
+ */
+export class GroupBudgetScope {
+  private closed = false
+
+  private constructor(
+    private readonly group: RunGroup,
+    readonly ledger: GroupLedger,
+    readonly granted: GroupCharge,
+    readonly mode: "reserved" | "accounting",
+    private readonly reservation?: GroupBudgetReservation,
+  ) {}
+
+  static async open(
+    group: RunGroup,
+    member: GroupMember,
+    request?: GroupBudgetRequest,
+  ): Promise<GroupBudgetScope> {
+    await group.budgetStore.join(group.id, member)
+    if (request && isReservableGroupBudgetStore(group.budgetStore)) {
+      const reservation = await group.budgetStore.reserve(group.id, {
+        ...request,
+        memberId: member.sessionId,
+      })
+      return new GroupBudgetScope(group, reservation.ledger, reservation.granted, "reserved", reservation)
+    }
+    return new GroupBudgetScope(
+      group,
+      await group.budgetStore.read(group.id),
+      { ...request?.requested },
+      "accounting",
+    )
+  }
+
+  async settle(actual: GroupCharge): Promise<void> {
+    if (this.closed) return
+    this.closed = true
+    if (this.reservation && isReservableGroupBudgetStore(this.group.budgetStore)) {
+      await this.group.budgetStore.settle(this.group.id, this.reservation.id, actual)
+      return
+    }
+    if ((actual.tokens ?? 0) <= 0 && (actual.subagents ?? 0) <= 0 && (actual.rounds ?? 0) <= 0) return
+    await this.group.budgetStore.charge(this.group.id, actual)
+  }
+
+  async release(): Promise<void> {
+    if (this.closed) return
+    this.closed = true
+    if (this.reservation && isReservableGroupBudgetStore(this.group.budgetStore)) {
+      await this.group.budgetStore.release(this.group.id, this.reservation.id)
+    }
   }
 }
 

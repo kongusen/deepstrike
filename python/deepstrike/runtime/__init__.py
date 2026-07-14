@@ -20,8 +20,11 @@ from deepstrike.runtime.session_log import (
 )
 from deepstrike.runtime.run_group import (
   GroupBudgetStore,
+  ReservableGroupBudgetStore,
   GroupLedger,
   GroupMember,
+  GroupBudgetReservation,
+  GroupBudgetScope,
   InMemoryGroupBudgetStore,
   RunGroup,
   SessionLogGroupBudgetStore,
@@ -163,8 +166,11 @@ __all__ = [
   "SessionLog",
   "RunGroup",
   "GroupBudgetStore",
+  "ReservableGroupBudgetStore",
   "GroupLedger",
   "GroupMember",
+  "GroupBudgetReservation",
+  "GroupBudgetScope",
   "InMemoryGroupBudgetStore",
   "SessionLogGroupBudgetStore",
   "BlackboardEvent",

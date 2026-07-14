@@ -26,7 +26,11 @@ export type { ExecutionPlane, RunContext } from "./runtime/execution-plane.js"
 export { InMemorySessionLog, FileSessionLog } from "./runtime/session-log.js"
 export type { SessionLog, SessionEvent } from "./runtime/session-log.js"
 export { InMemoryGroupBudgetStore, SessionLogGroupBudgetStore } from "./runtime/run-group.js"
-export type { RunGroup, GroupBudgetStore, GroupLedger, GroupCharge, GroupMember } from "./runtime/run-group.js"
+export { GroupBudgetScope, isReservableGroupBudgetStore } from "./runtime/run-group.js"
+export type {
+  RunGroup, GroupBudgetStore, ReservableGroupBudgetStore, GroupLedger, GroupCharge, GroupMember,
+  GroupBudgetRequest, GroupBudgetReservation,
+} from "./runtime/run-group.js"
 export { InMemoryEventStream, isVisibleTo } from "./runtime/event-stream.js"
 export type { EventStream, EventStreamOptions, BlackboardEvent, EventViewer } from "./runtime/event-stream.js"
 export type { ObserverFailure, ObserverErrorHandler } from "./runtime/reliability.js"

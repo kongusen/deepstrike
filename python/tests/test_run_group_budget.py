@@ -5,6 +5,8 @@ group's cumulative spend, so the run-level max_total_tokens cap is enforced acro
 per-vehicle. No run_group => N=1, per-run budget (unchanged).
 """
 
+import asyncio
+
 import pytest
 
 from deepstrike import (
@@ -16,6 +18,7 @@ from deepstrike import (
     GroupMember,
     InMemoryGroupBudgetStore,
     SessionLogGroupBudgetStore,
+    GroupBudgetScope,
 )
 from deepstrike.tools import tool
 from deepstrike.providers.base import Message
@@ -133,3 +136,35 @@ async def test_charges_accumulate_into_group_total():
     assert (await store.read(group.id)).tokens_spent == t1
     _, t2 = await _run_to_done(_make_runner(group), "p2", "second beat")
     assert (await store.read(group.id)).tokens_spent == t1 + t2
+@pytest.mark.asyncio
+async def test_atomically_reserves_capacity_across_concurrent_members():
+    store = InMemoryGroupBudgetStore()
+    group = RunGroup(id="concurrent", budget_store=store)
+
+    first, second = await asyncio.gather(
+        GroupBudgetScope.open(group, GroupMember("a"), limits={"tokens": 100}, requested={"tokens": 100}),
+        GroupBudgetScope.open(group, GroupMember("b"), limits={"tokens": 100}, requested={"tokens": 100}),
+    )
+
+    assert first.mode == "reserved"
+    assert first.granted.tokens_spent == 100
+    assert second.granted.tokens_spent == 0
+    assert second.ledger.tokens_spent == 100
+
+    await first.settle(tokens=60)
+    await second.release()
+    assert (await store.read(group.id)).tokens_spent == 60
+
+
+@pytest.mark.asyncio
+async def test_non_transactional_store_is_accounting_only():
+    store = SessionLogGroupBudgetStore(InMemorySessionLog())
+    scope = await GroupBudgetScope.open(
+        RunGroup(id="legacy", budget_store=store),
+        GroupMember("a"),
+        limits={"tokens": 100},
+        requested={"tokens": 100},
+    )
+
+    assert scope.mode == "accounting"
+    assert scope.granted.tokens_spent == 100
