@@ -513,6 +513,15 @@ impl WorkflowRun {
         self.graph.fail(node);
     }
 
+    /// A host rejected or failed a spawn after the kernel reserved the node.
+    /// Remove its completion route and fail the graph node so dependents cannot
+    /// run on work that never started.
+    pub fn mark_spawn_failed(&mut self, agent_id: &str) -> Option<usize> {
+        let node = self.node_of_agent.remove(agent_id)?;
+        self.graph.fail(node);
+        Some(node)
+    }
+
     /// Record a completed sub-agent against its node. Returns the node index if `agent_id`
     /// belonged to this workflow, else `None`.
     ///

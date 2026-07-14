@@ -1,6 +1,8 @@
 //! Signal routing impl for [`super::LoopStateMachine`].
 
-use super::{KernelObservation, LoopAction, LoopPhase, LoopStateMachine, SuspendState};
+use super::{
+    KernelObservation, LoopAction, LoopPhase, LoopStateMachine, PendingPreempt, SuspendState,
+};
 use crate::signals::router::SignalRouter;
 use crate::types::policy::SignalDisposition;
 use crate::types::result::TerminationReason;
@@ -31,7 +33,10 @@ impl LoopStateMachine {
     /// Route a signal and decide whether it drives a turn now. Assumes the caller
     /// has already cleared observations / swept leases (see `feed` and `signal_event`).
     pub(super) fn dispatch_signal(&mut self, signal: RuntimeSignal) -> Option<LoopAction> {
-        let is_running = !matches!(self.lifecycle(), TaskLifecycle::Ready | TaskLifecycle::Done(_));
+        let is_running = !matches!(
+            self.lifecycle(),
+            TaskLifecycle::Ready | TaskLifecycle::Done(_)
+        );
         let router = &mut self.signal_router;
         let signal_id = signal.id.to_string();
         let summary = signal.summary.to_string();
@@ -54,9 +59,9 @@ impl LoopStateMachine {
             SignalDisposition::InterruptNow => {
                 self.ctx.record_directive(summary.clone());
                 self.ctx.push_signal(format!("[INTERRUPT] {summary}"));
-                self.preempt_running_for_interrupt(&summary);
                 self.phase = LoopPhase::Reason;
-                Some(self.emit_call_llm())
+                self.request_preempt_for_interrupt(&summary)
+                    .or_else(|| Some(self.emit_call_llm()))
             }
             // #2-A: soft interrupt (High while busy) — record the directive so the agent handles it at
             // the NEXT turn boundary (when running children complete and the root resumes). Does NOT
@@ -82,9 +87,9 @@ impl LoopStateMachine {
             }
             // Queued in the kernel (drained at the next turn boundary), or
             // deduped / dropped — no provider call this step.
-            SignalDisposition::Queue
-            | SignalDisposition::Ignore
-            | SignalDisposition::Dropped => None,
+            SignalDisposition::Queue | SignalDisposition::Ignore | SignalDisposition::Dropped => {
+                None
+            }
         }
     }
 
@@ -94,14 +99,32 @@ impl LoopStateMachine {
     /// `WorkflowCompleted`), emit `AgentPreempted` (the SDK aborts the in-flight runs + discards their
     /// results), and clear the suspend so the forced reason turn reclaims the root. No-op when not
     /// awaiting sub-agents (then `InterruptNow` is just a plain forced reason turn).
-    pub(super) fn preempt_running_for_interrupt(&mut self, reason: &str) {
+    pub(super) fn request_preempt_for_interrupt(&mut self, reason: &str) -> Option<LoopAction> {
         let Some(SuspendState::SubAgentAwait { agent_ids }) = self.suspend_state.as_ref() else {
-            return;
+            return None;
         };
         let agent_ids: Vec<String> = agent_ids.clone();
         if agent_ids.is_empty() {
-            return;
+            return None;
         }
+
+        self.pending_preempt = Some(PendingPreempt {
+            agent_ids: agent_ids.clone(),
+            reason: reason.to_string(),
+        });
+        Some(LoopAction::PreemptSubAgents {
+            agent_ids,
+            reason: reason.to_string(),
+        })
+    }
+
+    /// Commit a successful host preemption, then reclaim the root for the
+    /// interrupt reason turn.
+    pub fn resolve_preempt(&mut self) -> LoopAction {
+        let Some(pending) = self.pending_preempt.take() else {
+            return LoopAction::AwaitingResume;
+        };
+        let agent_ids = pending.agent_ids;
 
         // Mark each preempted child terminal (UserAbort); rebuild its `AgentProcess` view row.
         for id in &agent_ids {
@@ -124,20 +147,42 @@ impl LoopStateMachine {
         {
             if let Some(run) = self.workflow.take() {
                 let (completed, failed) = run.abort_outcome();
-                self.observations.push(KernelObservation::WorkflowCompleted {
-                    turn: self.turn,
-                    completed,
-                    failed,
-                });
+                self.observations
+                    .push(KernelObservation::WorkflowCompleted {
+                        turn: self.turn,
+                        completed,
+                        failed,
+                    });
             }
         }
 
         self.observations.push(KernelObservation::AgentPreempted {
             turn: self.turn,
             agent_ids,
-            reason: reason.to_string(),
+            reason: pending.reason,
         });
         self.suspend_state = None;
+        self.emit_call_llm()
+    }
+
+    /// A host failure leaves child state untouched and reissues the preemption
+    /// intent without recording an abort fact.
+    pub fn retry_preempt(&mut self, error: String) -> LoopAction {
+        let pending = self
+            .pending_preempt
+            .as_ref()
+            .expect("preempt failure requires pending intent");
+        self.observations
+            .push(KernelObservation::AgentPreemptFailed {
+                turn: self.turn,
+                agent_ids: pending.agent_ids.clone(),
+                reason: pending.reason.clone(),
+                error,
+            });
+        LoopAction::PreemptSubAgents {
+            agent_ids: pending.agent_ids.clone(),
+            reason: pending.reason.clone(),
+        }
     }
 
     /// Drain all kernel-queued signals into the current context as runtime notes.

@@ -1,7 +1,9 @@
 //! Workflow orchestration impl for [`super::LoopStateMachine`].
 
-use super::{KernelObservation, LoopAction, LoopPhase, LoopStateMachine, SuspendState};
 use super::super::tcb::{TaskLifecycle, Tcb, WaitReason};
+use super::{
+    KernelObservation, LoopAction, LoopPhase, LoopStateMachine, PendingWorkflowSpawn, SuspendState,
+};
 use crate::proc::AgentProcess;
 use crate::runtime::session::RollbackReason;
 use crate::syscall::{Disposition, Syscall};
@@ -9,6 +11,49 @@ use crate::types::message::Message;
 use crate::types::result::SubAgentResult;
 
 impl LoopStateMachine {
+    pub(crate) fn validate_workflow_spawn_result(
+        &self,
+        started_agent_ids: &[String],
+        failures: &[crate::runtime::kernel::WorkflowSpawnFailure],
+        error: Option<&str>,
+    ) -> Result<(), String> {
+        let pending = self
+            .pending_workflow_spawn
+            .as_ref()
+            .ok_or_else(|| "workflow spawn result has no pending batch".to_string())?;
+        if error.is_some() {
+            return if started_agent_ids.is_empty() && failures.is_empty() {
+                Ok(())
+            } else {
+                Err("batch error cannot include per-agent results".to_string())
+            };
+        }
+
+        let expected: std::collections::HashSet<&str> = pending
+            .nodes
+            .iter()
+            .map(|node| node.agent_id.as_str())
+            .collect();
+        let mut actual = std::collections::HashSet::with_capacity(expected.len());
+        for agent_id in started_agent_ids
+            .iter()
+            .map(String::as_str)
+            .chain(failures.iter().map(|failure| failure.agent_id.as_str()))
+        {
+            if !actual.insert(agent_id) {
+                return Err(format!(
+                    "duplicate workflow spawn result for agent {agent_id}"
+                ));
+            }
+        }
+        if actual != expected {
+            return Err(
+                "workflow spawn result must resolve every requested agent exactly once".to_string(),
+            );
+        }
+        Ok(())
+    }
+
     /// Whether a workflow DAG is currently in flight.
     pub fn workflow_active(&self) -> bool {
         self.workflow.is_some()
@@ -96,12 +141,13 @@ impl LoopStateMachine {
             if let Some(&base) = appended.first() {
                 // R3-1: surface the batch's base index so the SDK-persisted
                 // `workflow_nodes_submitted` record lets resume rebuild exact indices.
-                self.observations.push(KernelObservation::WorkflowNodesSubmitted {
-                    turn: self.turn,
-                    base: base as u32,
-                    count: appended.len() as u32,
-                    submitter: submitter_agent_id.map(str::to_string),
-                });
+                self.observations
+                    .push(KernelObservation::WorkflowNodesSubmitted {
+                        turn: self.turn,
+                        base: base as u32,
+                        count: appended.len() as u32,
+                        submitter: submitter_agent_id.map(str::to_string),
+                    });
             }
         }
         self.drive_workflow(None)
@@ -234,7 +280,10 @@ impl LoopStateMachine {
     /// their `WorkflowSpawnInfo` (for the `WorkflowBatchSpawned` observation).
     fn spawn_ready_workflow_nodes(
         &mut self,
-    ) -> (Vec<String>, Vec<crate::orchestration::workflow::WorkflowSpawnInfo>) {
+    ) -> (
+        Vec<String>,
+        Vec<crate::orchestration::workflow::WorkflowSpawnInfo>,
+    ) {
         // A2 tournament: a controller node whose deps are satisfied fans out into entrant children
         // (and spawns no agent of its own) before we read the ready set — so its entrants/judges
         // are picked up by the same run-queue spawn loop as any other node.
@@ -252,7 +301,11 @@ impl LoopStateMachine {
             // W3 quarantine stage: a quarantined node that declares write privilege is a contradiction
             // (it reads untrusted content) — deny the spawn in-kernel and starve its dependents, rather
             // than trusting the SDK to honor read-only. Equivalent to `Deny{stage:"quarantine"}`.
-            if self.workflow.as_ref().is_some_and(|w| w.quarantine_violation(node)) {
+            if self
+                .workflow
+                .as_ref()
+                .is_some_and(|w| w.quarantine_violation(node))
+            {
                 if let Some(run) = self.workflow.as_mut() {
                     run.mark_denied(node);
                 }
@@ -261,7 +314,8 @@ impl LoopStateMachine {
                         "workflow-node:{}",
                         crate::orchestration::workflow::node_agent_id(node)
                     ),
-                    reason: "quarantine: quarantined node requested write-capable isolation".to_string(),
+                    reason: "quarantine: quarantined node requested write-capable isolation"
+                        .to_string(),
                 };
                 let note = Message::user(super::super::rollback::build_rollback_note(
                     &rb,
@@ -281,9 +335,6 @@ impl LoopStateMachine {
                     let agent_id = manifest.agent_id.to_string();
                     let child = Tcb::spawned(&manifest, self.policy.clone());
                     self.tasks.insert(child);
-                    if let Some(process) = self.tasks.get(&agent_id).and_then(AgentProcess::from_tcb) {
-                        self.push_agent_process_changed(process);
-                    }
                     if let Some(run) = self.workflow.as_mut() {
                         run.mark_spawned(node, &agent_id);
                     }
@@ -328,12 +379,6 @@ impl LoopStateMachine {
             // G4: snapshot remaining budget *after* this batch's spawns are reflected in the running
             // set, so a coordinator node reads accurate headroom for its next submission.
             let budget = self.workflow_budget();
-            // W0-ABI: tell the SDK which nodes to run (with their goals) before suspending.
-            self.observations.push(KernelObservation::WorkflowBatchSpawned {
-                turn: self.turn,
-                nodes: spawned_infos,
-                budget,
-            });
             match self.suspend_state.as_mut() {
                 Some(SuspendState::SubAgentAwait { agent_ids }) => {
                     agent_ids.extend(spawned_ids.iter().cloned());
@@ -350,12 +395,18 @@ impl LoopStateMachine {
                 }
                 _ => Vec::new(),
             };
-            self.set_lifecycle(TaskLifecycle::Suspended, Some(WaitReason::SubAgentJoin(wait_ids)));
-            self.observations.push(KernelObservation::Suspended {
-                turn: self.turn,
-                reason: "workflow_batch".to_string(),
-                pending_calls: spawned_ids,
+            self.set_lifecycle(
+                TaskLifecycle::Suspended,
+                Some(WaitReason::SubAgentJoin(wait_ids)),
+            );
+            self.pending_workflow_spawn = Some(PendingWorkflowSpawn {
+                nodes: spawned_infos.clone(),
+                budget: budget.clone(),
             });
+            return LoopAction::SpawnWorkflow {
+                nodes: spawned_infos,
+                budget,
+            };
         }
 
         // Still nodes running? keep awaiting their completions.
@@ -385,11 +436,12 @@ impl LoopStateMachine {
     fn finish_workflow(&mut self) -> LoopAction {
         if let Some(run) = self.workflow.as_ref() {
             let (completed, failed) = run.outcome();
-            self.observations.push(KernelObservation::WorkflowCompleted {
-                turn: self.turn,
-                completed,
-                failed,
-            });
+            self.observations
+                .push(KernelObservation::WorkflowCompleted {
+                    turn: self.turn,
+                    completed,
+                    failed,
+                });
         }
         self.workflow = None;
         self.phase = LoopPhase::Reason;
@@ -406,5 +458,93 @@ impl LoopStateMachine {
             run.record_completion(&agent_id, result.result.clone());
         }
         self.drive_workflow(Some(agent_id))
+    }
+
+    /// Commit a host workflow-spawn result. Only agents acknowledged as started
+    /// become process facts; failed agents are removed from the live wait set and
+    /// fail their workflow nodes before the DAG is driven again.
+    pub fn resolve_workflow_spawn(
+        &mut self,
+        started_agent_ids: Vec<String>,
+        failures: Vec<crate::runtime::kernel::WorkflowSpawnFailure>,
+    ) -> LoopAction {
+        let Some(pending) = self.pending_workflow_spawn.take() else {
+            return LoopAction::AwaitingResume;
+        };
+
+        let failed_ids: std::collections::HashSet<&str> = failures
+            .iter()
+            .map(|failure| failure.agent_id.as_str())
+            .collect();
+        for failure in &failures {
+            if let Some(task) = self.tasks.get_mut(failure.agent_id.as_str()) {
+                task.state = TaskLifecycle::Done(crate::types::result::TerminationReason::Error);
+            }
+            if let Some(run) = self.workflow.as_mut() {
+                run.mark_spawn_failed(&failure.agent_id);
+            }
+        }
+        if let Some(SuspendState::SubAgentAwait { agent_ids }) = self.suspend_state.as_mut() {
+            agent_ids.retain(|agent_id| !failed_ids.contains(agent_id.as_str()));
+        }
+
+        let started: std::collections::HashSet<&str> =
+            started_agent_ids.iter().map(String::as_str).collect();
+        let started_nodes: Vec<_> = pending
+            .nodes
+            .into_iter()
+            .filter(|node| started.contains(node.agent_id.as_str()))
+            .collect();
+        for node in &started_nodes {
+            if let Some(process) = self
+                .tasks
+                .get(&node.agent_id)
+                .and_then(AgentProcess::from_tcb)
+            {
+                self.push_agent_process_changed(process);
+            }
+        }
+        if !started_nodes.is_empty() {
+            self.observations
+                .push(KernelObservation::WorkflowBatchSpawned {
+                    turn: self.turn,
+                    nodes: started_nodes,
+                    budget: pending.budget,
+                });
+            self.observations.push(KernelObservation::Suspended {
+                turn: self.turn,
+                reason: "workflow_batch".to_string(),
+                pending_calls: started_agent_ids,
+            });
+        }
+
+        let running = matches!(
+            self.suspend_state.as_ref(),
+            Some(SuspendState::SubAgentAwait { agent_ids }) if !agent_ids.is_empty()
+        );
+        if running {
+            LoopAction::AwaitingResume
+        } else {
+            self.suspend_state = None;
+            self.drive_workflow(None)
+        }
+    }
+
+    /// A batch-level host failure leaves the reserved spawn intent intact and
+    /// reissues it without recording any node as started.
+    pub fn retry_workflow_spawn(&mut self, error: String) -> LoopAction {
+        self.observations
+            .push(KernelObservation::WorkflowSpawnFailed {
+                turn: self.turn,
+                error,
+            });
+        let pending = self
+            .pending_workflow_spawn
+            .as_ref()
+            .expect("workflow spawn failure requires pending intent");
+        LoopAction::SpawnWorkflow {
+            nodes: pending.nodes.clone(),
+            budget: pending.budget.clone(),
+        }
     }
 }

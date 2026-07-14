@@ -95,6 +95,17 @@ pub enum LoopAction {
     RequestApproval {
         requests: Vec<ApprovalRequest>,
     },
+    /// Host-owned workflow orchestration effect. The kernel has reserved the
+    /// batch but records no spawn fact until the correlated result arrives.
+    SpawnWorkflow {
+        nodes: Vec<crate::orchestration::workflow::WorkflowSpawnInfo>,
+        budget: Option<crate::orchestration::workflow::WorkflowBudget>,
+    },
+    /// Host-owned cancellation of in-flight child agents.
+    PreemptSubAgents {
+        agent_ids: Vec<String>,
+        reason: String,
+    },
     Done {
         result: LoopResult,
     },
@@ -117,6 +128,18 @@ pub struct ApprovalRequest {
     pub call_id: String,
     pub tool: String,
     pub arguments: serde_json::Value,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingWorkflowSpawn {
+    pub nodes: Vec<crate::orchestration::workflow::WorkflowSpawnInfo>,
+    pub budget: Option<crate::orchestration::workflow::WorkflowBudget>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingPreempt {
+    pub agent_ids: Vec<String>,
     pub reason: String,
 }
 
@@ -234,6 +257,10 @@ pub struct LoopStateMachine {
     /// gated batches (each through `evaluate_syscall(Syscall::Spawn)`) and advances on
     /// completions. `None` (default) preserves the single-spawn `spawn_sub_agent` behavior.
     pub(super) workflow: Option<crate::orchestration::workflow::WorkflowRun>,
+    /// Workflow batch reserved by the kernel and awaiting the host's correlated
+    /// spawn result. This is intent, not an observed external fact.
+    pub(super) pending_workflow_spawn: Option<PendingWorkflowSpawn>,
+    pub(super) pending_preempt: Option<PendingPreempt>,
     /// O6: repeat-fuse thresholds (the hard rungs above the 2c soft STOP). Default enabled with
     /// generous thresholds; tune/disable via `SetRepeatFuse` / `ConfigureRun.repeat_fuse`.
     pub(super) repeat_fuse: RepeatFuseConfig,
@@ -311,6 +338,8 @@ impl LoopStateMachine {
             suspend_state: None,
             pending_denied_results: Vec::new(),
             workflow: None,
+            pending_workflow_spawn: None,
+            pending_preempt: None,
             repeat_fuse: RepeatFuseConfig::default(),
             repeat_sig: None,
             repeat_count: 0,

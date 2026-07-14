@@ -10,6 +10,23 @@ fn correlated_input(
     KernelInput::correlated(operation_id, event_id, observed_at_ms, event)
 }
 
+fn accept_workflow_spawn(runtime: &mut KernelRuntime, step: KernelStep) -> KernelStep {
+    let Some(KernelAction {
+        effect_id,
+        effect: KernelEffect::SpawnWorkflow { nodes, .. },
+        ..
+    }) = step.actions.first()
+    else {
+        return step;
+    };
+    runtime.step(KernelInput::new(KernelInputEvent::WorkflowSpawnResult {
+        effect_id: effect_id.clone(),
+        started_agent_ids: nodes.iter().map(|node| node.agent_id.clone()).collect(),
+        failures: Vec::new(),
+        error: None,
+    }))
+}
+
 #[test]
 fn abi_v2_envelope_correlates_input_step_and_effect() {
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
@@ -295,7 +312,10 @@ fn deterministic_replay_preserves_the_next_effect_identity() {
     let before_crash = drive_to_tool_effect();
     let after_replay = drive_to_tool_effect();
 
-    assert_eq!(before_crash.actions[0].effect_id, after_replay.actions[0].effect_id);
+    assert_eq!(
+        before_crash.actions[0].effect_id,
+        after_replay.actions[0].effect_id
+    );
     assert_eq!(
         serde_json::to_value(&before_crash.actions[0]).unwrap(),
         serde_json::to_value(&after_replay.actions[0]).unwrap(),
@@ -913,6 +933,61 @@ fn spawn_sub_agent_input_registers_process() {
 }
 
 #[test]
+fn critical_signal_preemption_is_committed_only_after_correlated_result() {
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+    use crate::types::signal::Urgency;
+
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("parent task"),
+        run_spec: None,
+    }));
+    runtime.step(KernelInput::new(KernelInputEvent::SpawnSubAgent {
+        spec: AgentRunSpec::new(
+            AgentIdentity::sub_agent("worker", "worker-session"),
+            AgentRole::Implement,
+            "do work",
+        ),
+        parent_session_id: "parent-session".to_string(),
+    }));
+
+    let requested = runtime.step(KernelInput::new(KernelInputEvent::Signal {
+        signal: signal(Urgency::Critical, "stop child"),
+    }));
+    let effect_id = match &requested.actions[0] {
+        KernelAction {
+            effect_id,
+            effect: KernelEffect::PreemptSubAgents { agent_ids, .. },
+            ..
+        } if agent_ids == &vec!["worker".to_string()] => effect_id.clone(),
+        other => panic!("expected preempt_sub_agents action, got {other:?}"),
+    };
+    assert!(
+        !requested
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::AgentPreempted { .. }))
+    );
+
+    let committed = runtime.step(KernelInput::new(KernelInputEvent::PreemptResult {
+        effect_id,
+        error: None,
+    }));
+    assert!(matches!(
+        committed.actions.as_slice(),
+        [KernelAction {
+            effect: KernelEffect::CallProvider { .. },
+            ..
+        }]
+    ));
+    assert!(committed.observations.iter().any(|o| matches!(
+        o,
+        KernelObservation::AgentPreempted { agent_ids, .. }
+            if agent_ids == &vec!["worker".to_string()]
+    )));
+}
+
+#[test]
 fn set_resource_quota_input_denies_spawn_over_quota() {
     use crate::governance::quota::ResourceQuota;
     use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
@@ -1525,10 +1600,12 @@ fn governance_ask_user_suspends_until_resume() {
             ..
         }] if requests.len() == 1 && requests[0].tool == "sensitive.read"
     ));
-    assert!(!step
-        .observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::ToolGated { .. })));
+    assert!(
+        !step
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::ToolGated { .. }))
+    );
     assert!(
         step.observations.iter().any(|o| matches!(
             o,
@@ -1928,23 +2005,40 @@ fn load_workflow_input_drives_dag_to_completion() {
     let parsed: KernelInputEvent = serde_json::from_str(&json).expect("deserialize");
 
     let step = runtime.step(KernelInput::new(parsed));
-    // First batch carries both workers' goals so the SDK can run them.
-    let batch = step
-        .observations
-        .iter()
-        .find_map(|o| match o {
-            KernelObservation::WorkflowBatchSpawned { nodes, .. } => Some(nodes.clone()),
-            _ => None,
-        })
-        .expect("workflow_batch_spawned");
+    assert!(
+        !step
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::WorkflowBatchSpawned { .. }))
+    );
+    // First batch is an effect request; it is not a completed fact until the host result arrives.
+    let (spawn_effect_id, batch) = match &step.actions[0] {
+        KernelAction {
+            effect_id,
+            effect: KernelEffect::SpawnWorkflow { nodes, .. },
+            ..
+        } => (effect_id.clone(), nodes.clone()),
+        other => panic!("expected spawn_workflow action, got {other:?}"),
+    };
     assert_eq!(batch.len(), 2);
     let goals: Vec<&str> = batch.iter().map(|n| n.goal.as_str()).collect();
     assert!(goals.contains(&"w0") && goals.contains(&"w1"));
     assert_eq!(batch[0].agent_id, "wf-node0");
     assert_eq!(batch[0].isolation, "read_only"); // fanout workers are Explore → read_only
 
+    let started = runtime.step(KernelInput::new(KernelInputEvent::WorkflowSpawnResult {
+        effect_id: spawn_effect_id,
+        started_agent_ids: batch.iter().map(|node| node.agent_id.clone()).collect(),
+        failures: Vec::new(),
+        error: None,
+    }));
+    assert!(started.observations.iter().any(|o| matches!(
+        o,
+        KernelObservation::WorkflowBatchSpawned { nodes, .. } if nodes.len() == 2
+    )));
+
     let complete = |runtime: &mut KernelRuntime, id: &str| {
-        runtime.step(KernelInput::new(KernelInputEvent::SubAgentCompleted {
+        let step = runtime.step(KernelInput::new(KernelInputEvent::SubAgentCompleted {
             result: SubAgentResult {
                 agent_id: compact_str::CompactString::new(id),
                 result: LoopResult {
@@ -1958,7 +2052,8 @@ fn load_workflow_input_drives_dag_to_completion() {
                     pace_decision: None,
                 },
             },
-        }))
+        }));
+        accept_workflow_spawn(runtime, step)
     };
 
     complete(&mut runtime, "wf-node0");
@@ -1975,6 +2070,56 @@ fn load_workflow_input_drives_dag_to_completion() {
     assert!(step.observations.iter().any(|o| matches!(
         o,
         KernelObservation::WorkflowCompleted { completed, .. } if completed.len() == 3
+    )));
+}
+
+#[test]
+fn workflow_spawn_host_failure_reissues_effect_without_success_observation() {
+    use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+    use crate::types::agent::AgentRole;
+
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("parent task"),
+        run_spec: None,
+    }));
+    let first = runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow {
+        spec: WorkflowSpec::new(vec![WorkflowNode::new(
+            RuntimeTask::new("worker"),
+            AgentRole::Implement,
+        )]),
+        parent_session_id: "sess".to_string(),
+        resumed_completed: Vec::new(),
+        resumed_submissions: Vec::new(),
+        resumed_submission_bases: Vec::new(),
+        resumed_results: Vec::new(),
+    }));
+    let effect_id = first.actions[0].effect_id.clone();
+
+    let failed = runtime.step(KernelInput::new(KernelInputEvent::WorkflowSpawnResult {
+        effect_id,
+        started_agent_ids: Vec::new(),
+        failures: Vec::new(),
+        error: Some("orchestrator unavailable".to_string()),
+    }));
+
+    assert!(matches!(
+        failed.actions.as_slice(),
+        [KernelAction {
+            effect: KernelEffect::SpawnWorkflow { .. },
+            ..
+        }]
+    ));
+    assert!(
+        !failed
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::WorkflowBatchSpawned { .. }))
+    );
+    assert!(failed.observations.iter().any(|o| matches!(
+        o,
+        KernelObservation::WorkflowSpawnFailed { error, .. }
+            if error == "orchestrator unavailable"
     )));
 }
 
@@ -2028,7 +2173,7 @@ fn submit_workflow_nodes_input_appends_a_node_over_the_abi() {
         RuntimeTask::new("root"),
         AgentRole::Implement,
     )]);
-    runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow {
+    let initial = runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow {
         spec,
         parent_session_id: "sess".to_string(),
         resumed_completed: Vec::new(),
@@ -2036,6 +2181,7 @@ fn submit_workflow_nodes_input_appends_a_node_over_the_abi() {
         resumed_submission_bases: Vec::new(),
         resumed_results: Vec::new(),
     }));
+    accept_workflow_spawn(&mut runtime, initial);
     runtime.state_machine_mut().take_observations();
 
     // Submit a node over the ABI while wf-node0 runs (full serde round-trip).
@@ -2049,6 +2195,7 @@ fn submit_workflow_nodes_input_appends_a_node_over_the_abi() {
     let json = serde_json::to_string(&event).expect("serialize");
     let parsed: KernelInputEvent = serde_json::from_str(&json).expect("deserialize");
     let step = runtime.step(KernelInput::new(parsed));
+    let step = accept_workflow_spawn(&mut runtime, step);
     // The appended node spawns as wf-node1 in a workflow batch.
     assert!(step.observations.iter().any(|o| matches!(
         o,
@@ -2057,7 +2204,7 @@ fn submit_workflow_nodes_input_appends_a_node_over_the_abi() {
     )));
 
     let complete = |runtime: &mut KernelRuntime, id: &str| {
-        runtime.step(KernelInput::new(KernelInputEvent::SubAgentCompleted {
+        let step = runtime.step(KernelInput::new(KernelInputEvent::SubAgentCompleted {
             result: SubAgentResult {
                 agent_id: compact_str::CompactString::new(id),
                 result: LoopResult {
@@ -2071,7 +2218,8 @@ fn submit_workflow_nodes_input_appends_a_node_over_the_abi() {
                     pace_decision: None,
                 },
             },
-        }))
+        }));
+        accept_workflow_spawn(runtime, step)
     };
     complete(&mut runtime, "wf-node0");
     // The workflow finishes only after the submitted node also completes (2 nodes total).
@@ -2110,6 +2258,7 @@ fn submit_workflow_input_bootstraps_a_dag_over_the_abi() {
     let json = serde_json::to_string(&event).expect("serialize");
     let parsed: KernelInputEvent = serde_json::from_str(&json).expect("deserialize");
     let step = runtime.step(KernelInput::new(parsed));
+    let step = accept_workflow_spawn(&mut runtime, step);
     // The authored node bootstraps as wf-node0 in a workflow batch.
     assert!(step.observations.iter().any(|o| matches!(
             o,
@@ -2162,6 +2311,7 @@ fn load_workflow_resumes_from_completed_nodes() {
         resumed_submission_bases: Vec::new(),
         resumed_results: Vec::new(),
     }));
+    let step = accept_workflow_spawn(&mut runtime, step);
 
     // Only the remaining worker is re-spawned (node 0 is not re-run).
     let batch = step

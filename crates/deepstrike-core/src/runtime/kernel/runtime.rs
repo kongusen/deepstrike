@@ -51,6 +51,8 @@ enum PendingEffectKind {
     Tool,
     Milestone,
     Approval,
+    WorkflowSpawn,
+    Preempt,
 }
 
 #[derive(Clone, Copy)]
@@ -336,6 +338,27 @@ impl KernelRuntime {
                     KernelFaultCode::InvalidConfig,
                     message,
                     None,
+                );
+            }
+        }
+        if let KernelInputEvent::WorkflowSpawnResult {
+            effect_id,
+            started_agent_ids,
+            failures,
+            error,
+        } = &input.event
+        {
+            if let Err(message) = self.sm.validate_workflow_spawn_result(
+                started_agent_ids,
+                failures,
+                error.as_deref(),
+            ) {
+                return self.fault_step(
+                    operation_id,
+                    event_id,
+                    KernelFaultCode::UnexpectedEffectResult,
+                    message,
+                    Some(effect_id.clone()),
                 );
             }
         }
@@ -650,6 +673,22 @@ impl KernelRuntime {
             } => match error {
                 Some(error) => self.sm.retry_approval(error),
                 None => self.sm.resolve_approval(approved_calls, denied_calls),
+            },
+            KernelInputEvent::WorkflowSpawnResult {
+                effect_id: _,
+                started_agent_ids,
+                failures,
+                error,
+            } => match error {
+                Some(error) => self.sm.retry_workflow_spawn(error),
+                None => self.sm.resolve_workflow_spawn(started_agent_ids, failures),
+            },
+            KernelInputEvent::PreemptResult {
+                effect_id: _,
+                error,
+            } => match error {
+                Some(error) => self.sm.retry_preempt(error),
+                None => self.sm.resolve_preempt(),
             },
             KernelInputEvent::SetSchedulerBudget { max_wall_ms } => {
                 self.sm.set_wall_budget(max_wall_ms);
@@ -975,10 +1014,12 @@ impl KernelRuntime {
                     self.lifecycle
                 )),
             },
-            KernelInputEvent::ApprovalResult { .. } => match self.lifecycle {
+            KernelInputEvent::ApprovalResult { .. }
+            | KernelInputEvent::WorkflowSpawnResult { .. }
+            | KernelInputEvent::PreemptResult { .. } => match self.lifecycle {
                 KernelLifecycle::Suspended => Ok(LifecycleTransition::Resume),
                 _ => Err(format!(
-                    "approval_result is not valid in lifecycle {:?}",
+                    "effect result is not valid in lifecycle {:?}",
                     self.lifecycle
                 )),
             },
@@ -1098,6 +1139,12 @@ fn result_effect(event: &KernelInputEvent) -> Option<(&str, PendingEffectKind)> 
         KernelInputEvent::ApprovalResult { effect_id, .. } => {
             Some((effect_id, PendingEffectKind::Approval))
         }
+        KernelInputEvent::WorkflowSpawnResult { effect_id, .. } => {
+            Some((effect_id, PendingEffectKind::WorkflowSpawn))
+        }
+        KernelInputEvent::PreemptResult { effect_id, .. } => {
+            Some((effect_id, PendingEffectKind::Preempt))
+        }
         _ => None,
     }
 }
@@ -1108,6 +1155,8 @@ fn pending_effect_kind(effect: &KernelEffect) -> Option<PendingEffectKind> {
         KernelEffect::ExecuteTool { .. } => Some(PendingEffectKind::Tool),
         KernelEffect::EvaluateMilestone { .. } => Some(PendingEffectKind::Milestone),
         KernelEffect::RequestApproval { .. } => Some(PendingEffectKind::Approval),
+        KernelEffect::SpawnWorkflow { .. } => Some(PendingEffectKind::WorkflowSpawn),
+        KernelEffect::PreemptSubAgents { .. } => Some(PendingEffectKind::Preempt),
         KernelEffect::Done { .. } => None,
     }
 }

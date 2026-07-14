@@ -391,6 +391,22 @@ pub enum KernelInputEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// Result of a host-owned workflow spawn batch. Every requested agent must
+    /// appear in exactly one of `started_agent_ids` or `failures`.
+    WorkflowSpawnResult {
+        effect_id: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        started_agent_ids: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        failures: Vec<WorkflowSpawnFailure>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    PreemptResult {
+        effect_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// K2: set the knowledge-budget ratio at runtime (granular sibling of
     /// `RunConfig::knowledge_budget_ratio`). `0.0` disables the cap.
     SetKnowledgeBudget {
@@ -698,6 +714,12 @@ impl KernelAction {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowSpawnFailure {
+    pub agent_id: String,
+    pub error: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum KernelEffect {
@@ -710,6 +732,15 @@ pub enum KernelEffect {
     },
     RequestApproval {
         requests: Vec<crate::scheduler::state_machine::ApprovalRequest>,
+    },
+    SpawnWorkflow {
+        nodes: Vec<crate::orchestration::workflow::WorkflowSpawnInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget: Option<crate::orchestration::workflow::WorkflowBudget>,
+    },
+    PreemptSubAgents {
+        agent_ids: Vec<String>,
+        reason: String,
     },
     EvaluateMilestone {
         phase_id: String,
@@ -733,6 +764,10 @@ impl From<LoopAction> for KernelEffect {
             LoopAction::CallLLM { context, tools } => Self::CallProvider { context, tools },
             LoopAction::ExecuteTools { calls } => Self::ExecuteTool { calls },
             LoopAction::RequestApproval { requests } => Self::RequestApproval { requests },
+            LoopAction::SpawnWorkflow { nodes, budget } => Self::SpawnWorkflow { nodes, budget },
+            LoopAction::PreemptSubAgents { agent_ids, reason } => {
+                Self::PreemptSubAgents { agent_ids, reason }
+            }
             LoopAction::EvaluateMilestone {
                 phase_id,
                 criteria,
@@ -890,6 +925,12 @@ pub enum KernelObservation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         budget: Option<crate::orchestration::workflow::WorkflowBudget>,
     },
+    /// The host could not resolve a workflow spawn effect. No node is recorded
+    /// as started; the same logical batch remains pending for retry.
+    WorkflowSpawnFailed {
+        turn: u32,
+        error: String,
+    },
     /// W0-ABI: a workflow finished (all nodes terminal, or stalled by a gated dependency).
     WorkflowCompleted {
         turn: u32,
@@ -908,6 +949,12 @@ pub enum KernelObservation {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         agent_ids: Vec<String>,
         reason: String,
+    },
+    AgentPreemptFailed {
+        turn: u32,
+        agent_ids: Vec<String>,
+        reason: String,
+        error: String,
     },
     /// ③ loop-agent pacing: the kernel adjudicated a `pace` proposal for this round.
     RoundPaced {

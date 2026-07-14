@@ -8,8 +8,8 @@ use deepstrike_core::governance::quota::ResourceQuota;
 use deepstrike_core::memory::idle_pipeline::{IdleAction, IdleEvent, IdlePipeline, IdlePolicy};
 use deepstrike_core::mm::memory::{MemoryPolicy, MemoryQuery, MemoryRetrieval, MemoryWriteRequest};
 use deepstrike_core::runtime::kernel::{
-    KernelAction, KernelEffect, KernelInput, KernelInputEvent, KernelObservation, KernelPressureAction,
-    KernelRuntime, KernelStep,
+    KernelAction, KernelEffect, KernelInput, KernelInputEvent, KernelObservation,
+    KernelPressureAction, KernelRuntime, KernelStep,
 };
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::scheduler::policy::SchedulerBudget as KernelBudget;
@@ -34,7 +34,7 @@ use crate::runtime::execution_plane::{
     PermissionResponse, RunContext, ToolSuspendHandler,
 };
 use crate::runtime::os_profile::{
-    assert_native_profile, AttentionPolicy, GovernancePolicy, OsProfile, SchedulerBudget,
+    AttentionPolicy, GovernancePolicy, OsProfile, SchedulerBudget, assert_native_profile,
 };
 use crate::runtime::provider_replay::{peek_provider_replay, seed_provider_replay_from_events};
 use crate::runtime::replay::{
@@ -325,8 +325,7 @@ impl RuntimeRunner {
             let hits = store
                 .search(agent_id, &query.current_context, query.top_k)
                 .await?;
-            if !hits.is_empty()
-                && retrieval.selection_rationale == "No candidates after filtering"
+            if !hits.is_empty() && retrieval.selection_rationale == "No candidates after filtering"
             {
                 retrieval.selected_memory_ids = hits
                     .iter()
@@ -346,7 +345,8 @@ impl RuntimeRunner {
 
         self.append_memory_syscall_observations(session_id, observations)
             .await;
-        self.log_memory_retrieval_result(session_id, retrieval).await;
+        self.log_memory_retrieval_result(session_id, retrieval)
+            .await;
         Ok(hits)
     }
 
@@ -388,18 +388,25 @@ impl RuntimeRunner {
                     .unwrap_or(profile.governance_policy)
                     .into_kernel_event(),
             ));
-            let attention = self.opts.attention_policy.unwrap_or(profile.attention_policy);
+            let attention = self
+                .opts
+                .attention_policy
+                .unwrap_or(profile.attention_policy);
             kernel.step(KernelInput::new(KernelInputEvent::SetAttentionPolicy {
                 max_queue_size: attention.max_queue_size.unwrap_or(64),
             }));
         }
-        if let Some(max_wall_ms) = effective_wall_budget(self.opts.scheduler_budget, self.opts.timeout_ms) {
+        if let Some(max_wall_ms) =
+            effective_wall_budget(self.opts.scheduler_budget, self.opts.timeout_ms)
+        {
             kernel.step(KernelInput::new(KernelInputEvent::SetSchedulerBudget {
                 max_wall_ms: Some(max_wall_ms),
             }));
         }
         if let Some(quota) = self.opts.resource_quota.clone() {
-            kernel.step(KernelInput::new(KernelInputEvent::SetResourceQuota { quota }));
+            kernel.step(KernelInput::new(KernelInputEvent::SetResourceQuota {
+                quota,
+            }));
         }
         if let Some(policy) = self.opts.memory_policy.clone() {
             kernel.step(KernelInput::new(memory_policy_event(policy)));
@@ -1299,6 +1306,42 @@ impl RuntimeRunner {
                             },
                         );
                     }
+                    KernelEffect::SpawnWorkflow { nodes, .. } => {
+                        // This runner has no workflow child orchestrator. Report each
+                        // requested spawn as a completed failure instead of treating the
+                        // action as an observation or leaving the effect unresolved.
+                        let workflow_effect_id = action.effect_id.clone();
+                        let failures = nodes
+                            .into_iter()
+                            .map(|node| deepstrike_core::runtime::kernel::WorkflowSpawnFailure {
+                                agent_id: node.agent_id.clone(),
+                                error: "Rust RuntimeRunner has no workflow orchestrator".to_string(),
+                            })
+                            .collect();
+                        action = kernel_action(
+                            &mut kernel,
+                            &mut pending_observations,
+                            KernelInputEvent::WorkflowSpawnResult {
+                                effect_id: workflow_effect_id,
+                                started_agent_ids: Vec::new(),
+                                failures,
+                                error: None,
+                            },
+                        );
+                    }
+                    KernelEffect::PreemptSubAgents { .. } => {
+                        // RuntimeRunner does not launch external child runners, so
+                        // there is no host process to cancel before acknowledging.
+                        let preempt_effect_id = action.effect_id.clone();
+                        action = kernel_action(
+                            &mut kernel,
+                            &mut pending_observations,
+                            KernelInputEvent::PreemptResult {
+                                effect_id: preempt_effect_id,
+                                error: None,
+                            },
+                        );
+                    }
                     KernelEffect::ExecuteTool { calls } => {
                         let tool_effect_id = action.effect_id.clone();
                         let tool_calls = calls.clone();
@@ -1906,10 +1949,7 @@ impl RuntimeRunner {
                 KernelObservation::CheckpointTaken { turn, history_len } => {
                     self.log(
                         session_id,
-                        SessionEvent::CheckpointTaken {
-                            turn,
-                            history_len,
-                        },
+                        SessionEvent::CheckpointTaken { turn, history_len },
                     )
                     .await;
                 }
@@ -1938,7 +1978,11 @@ impl RuntimeRunner {
                     )
                     .await;
                 }
-                KernelObservation::EntropyAlert { turn, score, threshold } => {
+                KernelObservation::EntropyAlert {
+                    turn,
+                    score,
+                    threshold,
+                } => {
                     self.log(
                         session_id,
                         SessionEvent::EntropyAlert {
@@ -1953,8 +1997,10 @@ impl RuntimeRunner {
                 // W0-ABI workflow lifecycle. The rust SDK has no workflow drive yet
                 // (node/python only), so these are observed-but-ignored here.
                 KernelObservation::WorkflowBatchSpawned { .. } => {}
+                KernelObservation::WorkflowSpawnFailed { .. } => {}
                 KernelObservation::WorkflowCompleted { .. } => {}
                 KernelObservation::AgentPreempted { .. } => {}
+                KernelObservation::AgentPreemptFailed { .. } => {}
                 // Governance flagged a tool call for user approval. The kernel does
                 // not block it; the SDK-side human-approval workflow is a follow-up.
                 KernelObservation::ToolGated { .. } => {}
@@ -2091,7 +2137,10 @@ impl RuntimeRunner {
         let request = deepstrike_core::mm::memory::MemoryWriteRequest {
             content: summary,
             metadata: deepstrike_core::mm::memory::MemoryMetadata {
-                name: format!("page-out-{}", self.opts.session_id.as_deref().unwrap_or("live")),
+                name: format!(
+                    "page-out-{}",
+                    self.opts.session_id.as_deref().unwrap_or("live")
+                ),
                 description: format!(
                     "auto summary of {} archive",
                     action.as_deref().unwrap_or("compaction")
@@ -2174,14 +2223,15 @@ fn message_content_as_text(content: &deepstrike_core::types::message::Content) -
             .iter()
             .filter_map(|p| match p {
                 deepstrike_core::types::message::ContentPart::Text { text } => Some(text.as_str()),
-                deepstrike_core::types::message::ContentPart::ToolResult { output, .. } => Some(output.as_str()),
+                deepstrike_core::types::message::ContentPart::ToolResult { output, .. } => {
+                    Some(output.as_str())
+                }
                 _ => None,
             })
             .collect::<Vec<_>>()
             .join("\n"),
     }
 }
-
 
 /// Word-set jaccard similarity — the curator's dedup rule at the write funnel.
 fn jaccard_similarity(a: &str, b: &str) -> f64 {
@@ -2193,7 +2243,11 @@ fn jaccard_similarity(a: &str, b: &str) -> f64 {
     }
     let inter = sa.intersection(&sb).count();
     let union = sa.union(&sb).count();
-    if union == 0 { 0.0 } else { inter as f64 / union as f64 }
+    if union == 0 {
+        0.0
+    } else {
+        inter as f64 / union as f64
+    }
 }
 
 fn action_str_of(action: KernelPressureAction) -> String {

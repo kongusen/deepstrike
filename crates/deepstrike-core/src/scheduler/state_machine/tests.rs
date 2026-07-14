@@ -174,8 +174,20 @@
 
         let sig = RuntimeSignal::new(SignalSource::Gateway, SignalType::Alert, Urgency::Critical, "stop and handle this");
         let action = sm.signal_event(sig);
-        assert!(matches!(action, Some(LoopAction::CallLLM { .. })), "interrupt reclaims the root");
-        assert!(!sm.is_suspended(), "preemption cleared SubAgentAwait");
+        assert!(matches!(
+            action,
+            Some(LoopAction::PreemptSubAgents { ref agent_ids, .. })
+                if agent_ids == &vec!["child".to_string()]
+        ));
+        assert!(sm.is_suspended(), "request alone does not commit preemption");
+        assert!(!sm.take_observations().iter().any(|o| matches!(
+            o,
+            KernelObservation::AgentPreempted { .. }
+        )));
+
+        let action = sm.resolve_preempt();
+        assert!(matches!(action, LoopAction::CallLLM { .. }), "result reclaims the root");
+        assert!(!sm.is_suspended(), "confirmed preemption cleared SubAgentAwait");
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(
             o,
@@ -193,12 +205,26 @@
         let mut sm = sm();
         sm.start(RuntimeTask::new("parent"));
         let spec = WorkflowSpec::new(vec![WorkflowNode::new(RuntimeTask::new("root node"), AgentRole::Implement)]);
-        sm.load_workflow(spec, "sess");
+        let action = sm.load_workflow(spec, "sess");
+        if let LoopAction::SpawnWorkflow { nodes, .. } = action {
+            sm.resolve_workflow_spawn(
+                nodes.into_iter().map(|node| node.agent_id).collect(),
+                Vec::new(),
+            );
+        }
         assert!(sm.workflow_active());
         sm.take_observations();
 
         let sig = RuntimeSignal::new(SignalSource::Gateway, SignalType::Alert, Urgency::Critical, "abort");
-        sm.signal_event(sig);
+        let action = sm.signal_event(sig);
+        assert!(matches!(action, Some(LoopAction::PreemptSubAgents { .. })));
+        assert!(sm.workflow_active(), "request does not tear down workflow");
+        assert!(!sm.take_observations().iter().any(|o| matches!(
+            o,
+            KernelObservation::AgentPreempted { .. }
+        )));
+
+        sm.resolve_preempt();
         assert!(!sm.workflow_active(), "InterruptNow tore the workflow down");
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(o, KernelObservation::AgentPreempted { .. })));
@@ -1184,11 +1210,11 @@
             arguments: serde_json::json!({}),
         });
         let action = sm.feed(LoopEvent::LLMResponse { message: msg });
-        assert!(matches!(action, LoopAction::AwaitingResume));
+        assert!(matches!(action, LoopAction::RequestApproval { .. }));
         assert!(sm.is_suspended());
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(o, KernelObservation::Suspended { .. })));
-        assert!(obs.iter().any(|o| matches!(o, KernelObservation::ToolGated { .. })));
+        assert!(!obs.iter().any(|o| matches!(o, KernelObservation::ToolGated { .. })));
     }
 
     #[test]
@@ -1265,7 +1291,7 @@
                 pace_decision: None,
             },
         };
-        let resumed = sm.feed(LoopEvent::SubAgentCompleted { result });
+        let resumed = feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result });
         assert!(matches!(resumed, LoopAction::CallLLM { .. }));
         let obs = sm.take_observations();
         assert!(obs.iter().any(|o| matches!(o, KernelObservation::Resumed { .. })));
@@ -1496,7 +1522,7 @@
         let isolation_at_spawn = p.isolation;
         let inheritance_at_spawn = p.context_inheritance;
 
-        sm.feed(LoopEvent::SubAgentCompleted {
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted {
             result: SubAgentResult {
                 agent_id: compact_str::CompactString::new("child"),
                 result: LoopResult {
@@ -1729,7 +1755,7 @@
         assert_eq!(sm.task_table().children_of("root").len(), 1);
         assert_eq!(sm.task_table().all().len(), 2); // root + child
 
-        sm.feed(LoopEvent::SubAgentCompleted {
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted {
             result: SubAgentResult {
                 agent_id: compact_str::CompactString::new("child"),
                 result: LoopResult {
@@ -1809,6 +1835,49 @@
             .count()
     }
 
+    fn accept_workflow_spawn(sm: &mut LoopStateMachine, action: LoopAction) -> LoopAction {
+        match action {
+            LoopAction::SpawnWorkflow { nodes, .. } => sm.resolve_workflow_spawn(
+                nodes.into_iter().map(|node| node.agent_id).collect(),
+                Vec::new(),
+            ),
+            other => other,
+        }
+    }
+
+    fn load_workflow_started(
+        sm: &mut LoopStateMachine,
+        spec: crate::orchestration::workflow::WorkflowSpec,
+        session_id: &str,
+    ) -> LoopAction {
+        let action = sm.load_workflow(spec, session_id);
+        accept_workflow_spawn(sm, action)
+    }
+
+    fn feed_workflow(sm: &mut LoopStateMachine, event: LoopEvent) -> LoopAction {
+        let action = sm.feed(event);
+        accept_workflow_spawn(sm, action)
+    }
+
+    fn submit_workflow_started(
+        sm: &mut LoopStateMachine,
+        spec: crate::orchestration::workflow::WorkflowSpec,
+        session_id: &str,
+        submitter_agent_id: Option<&str>,
+    ) -> LoopAction {
+        let action = sm.submit_workflow(spec, session_id, submitter_agent_id);
+        accept_workflow_spawn(sm, action)
+    }
+
+    fn submit_workflow_nodes_started(
+        sm: &mut LoopStateMachine,
+        nodes: Vec<crate::orchestration::workflow::WorkflowNode>,
+        submitter_agent_id: Option<&str>,
+    ) -> LoopAction {
+        let action = sm.submit_workflow_nodes(nodes, submitter_agent_id);
+        accept_workflow_spawn(sm, action)
+    }
+
     #[test]
     fn workflow_fanout_spawns_batch_then_synthesizes() {
         use crate::orchestration::workflow::fanout_synthesize;
@@ -1825,7 +1894,7 @@
             ],
             RuntimeTask::new("synth"),
         );
-        let action = sm.load_workflow(spec, "sess");
+        let action = load_workflow_started(&mut sm, spec, "sess");
         assert!(matches!(action, LoopAction::AwaitingResume));
         assert!(sm.workflow_active());
         assert!(sm.is_suspended());
@@ -1845,13 +1914,13 @@
 
         // Two workers done → still suspended (batch not drained).
         assert!(matches!(
-            sm.feed(LoopEvent::SubAgentCompleted {
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted {
                 result: wf_completed("wf-node0")
             }),
             LoopAction::AwaitingResume
         ));
         assert!(matches!(
-            sm.feed(LoopEvent::SubAgentCompleted {
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted {
                 result: wf_completed("wf-node1")
             }),
             LoopAction::AwaitingResume
@@ -1861,7 +1930,7 @@
 
         // Third worker done → batch drains, synth (wf-node3) becomes the next gated batch.
         assert!(matches!(
-            sm.feed(LoopEvent::SubAgentCompleted {
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted {
                 result: wf_completed("wf-node2")
             }),
             LoopAction::AwaitingResume
@@ -1872,7 +1941,7 @@
         assert!(sm.agent_process("wf-node3").is_some());
 
         // Synth done → no more ready nodes → workflow finishes, parent resumes.
-        let final_action = sm.feed(LoopEvent::SubAgentCompleted {
+        let final_action = feed_workflow(&mut sm, LoopEvent::SubAgentCompleted {
             result: wf_completed("wf-node3"),
         });
         assert!(matches!(final_action, LoopAction::CallLLM { .. }));
@@ -1899,21 +1968,21 @@
             WorkflowNode::new(RuntimeTask::new("B"), AgentRole::Implement).with_depends_on(vec![0]),
             WorkflowNode::new(RuntimeTask::new("C"), AgentRole::Implement).with_depends_on(vec![1]),
         ]);
-        sm.load_workflow(spec, "sess");
+        load_workflow_started(&mut sm, spec, "sess");
         assert_eq!(count_spawned(&sm.take_observations()), 1); // only A
 
-        sm.feed(LoopEvent::SubAgentCompleted {
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted {
             result: wf_completed("wf-node0"),
         });
         assert_eq!(count_spawned(&sm.take_observations()), 1); // B
         assert!(sm.workflow_active());
 
-        sm.feed(LoopEvent::SubAgentCompleted {
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted {
             result: wf_completed("wf-node1"),
         });
         assert_eq!(count_spawned(&sm.take_observations()), 1); // C
 
-        let done = sm.feed(LoopEvent::SubAgentCompleted {
+        let done = feed_workflow(&mut sm, LoopEvent::SubAgentCompleted {
             result: wf_completed("wf-node2"),
         });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
@@ -1941,14 +2010,14 @@
             vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
             RuntimeTask::new("synth"),
         );
-        sm.load_workflow(spec, "sess");
+        load_workflow_started(&mut sm, spec, "sess");
         assert_eq!(count_spawned(&sm.take_observations()), 1); // only wf-node0 fits the slot
         assert!(sm.agent_process("wf-node0").is_some());
         assert!(sm.agent_process("wf-node1").is_none()); // deferred, not yet spawned
 
         // wf-node0 completes → its slot frees → the deferred wf-node1 now spawns (not starved).
         assert!(matches!(
-            sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") }),
+            feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") }),
             LoopAction::AwaitingResume
         ));
         assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node1 spawned after the slot freed
@@ -1957,14 +2026,14 @@
 
         // wf-node1 completes → both workers done → synth (wf-node2) becomes ready and spawns.
         assert!(matches!(
-            sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") }),
+            feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") }),
             LoopAction::AwaitingResume
         ));
         assert_eq!(count_spawned(&sm.take_observations()), 1); // synth
         assert!(sm.agent_process("wf-node2").is_some());
 
         // synth completes → DAG done, parent resumes. Every node ran despite the cap of 1.
-        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node2") });
+        let done = feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node2") });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
         assert!(!sm.workflow_active());
     }
@@ -1986,12 +2055,12 @@
             RuntimeTask::new("root"),
             AgentRole::Implement,
         )]);
-        sm.load_workflow(spec, "sess");
+        load_workflow_started(&mut sm, spec, "sess");
         assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node0
         assert!(sm.agent_process("wf-node0").is_some());
 
         // While wf-node0 runs, submit one more node — it spawns immediately as wf-node1.
-        let action = sm.submit_workflow_nodes(
+        let action = submit_workflow_nodes_started(&mut sm,
             vec![WorkflowNode::new(
                 RuntimeTask::new("discovered-work"),
                 AgentRole::Implement,
@@ -2004,18 +2073,18 @@
         assert!(sm.workflow_active());
 
         // Empty submission (and a submission with no active workflow) is a no-op.
-        sm.submit_workflow_nodes(vec![], None);
+        submit_workflow_nodes_started(&mut sm, vec![], None);
         assert_eq!(count_spawned(&sm.take_observations()), 0);
 
         // The root completes but the workflow keeps running its submitted node.
         assert!(matches!(
-            sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") }),
+            feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") }),
             LoopAction::AwaitingResume
         ));
         assert!(sm.workflow_active(), "still running the submitted node");
 
         // The submitted node completes → DAG done, parent resumes.
-        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
+        let done = feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
         assert!(!sm.workflow_active());
     }
@@ -2039,11 +2108,11 @@
             RuntimeTask::new("root"),
             AgentRole::Implement,
         )]);
-        sm.load_workflow(spec, "sess");
+        load_workflow_started(&mut sm, spec, "sess");
         assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node0
 
         // Submitting would grow the DAG to 2 > max(1) → denied; no wf-node1 spawns.
-        sm.submit_workflow_nodes(
+        submit_workflow_nodes_started(&mut sm,
             vec![WorkflowNode::new(RuntimeTask::new("more"), AgentRole::Implement)],
             None,
         );
@@ -2051,7 +2120,7 @@
         assert!(sm.agent_process("wf-node1").is_none(), "denied submission does not spawn");
 
         // The workflow finishes with just the root.
-        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") });
+        let done = feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
         assert!(!sm.workflow_active());
     }
@@ -2073,14 +2142,14 @@
             WorkflowNode::new(RuntimeTask::new("a"), AgentRole::Implement),
             WorkflowNode::new(RuntimeTask::new("b"), AgentRole::Implement),
         ]);
-        let action = sm.submit_workflow(spec, "sess", None);
+        let action = submit_workflow_started(&mut sm, spec, "sess", None);
         assert!(matches!(action, LoopAction::AwaitingResume { .. }));
         assert!(sm.workflow_active(), "spec bootstrapped the DAG");
         assert_eq!(count_spawned(&sm.take_observations()), 2); // wf-node0 + wf-node1
 
         // Both complete → the agent-authored workflow finishes.
-        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") });
-        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") });
+        let done = feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
         assert!(!sm.workflow_active());
     }
@@ -2100,7 +2169,7 @@
             RuntimeTask::new("root"),
             AgentRole::Implement,
         )]);
-        sm.load_workflow(spec, "sess");
+        load_workflow_started(&mut sm, spec, "sess");
         assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node0
 
         // Author a second spec while wf-node0 runs → its nodes flatten onto the live DAG as wf-node1.
@@ -2108,13 +2177,13 @@
             RuntimeTask::new("more"),
             AgentRole::Implement,
         )]);
-        sm.submit_workflow(more, "sess", None);
+        submit_workflow_started(&mut sm, more, "sess", None);
         assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node1 appended, not a new workflow
         assert!(sm.agent_process("wf-node1").is_some(), "flattened node spawned in the same DAG");
 
         // The DAG finishes only after both nodes complete (2 total) — confirming a single workflow.
-        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") });
-        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") });
+        let done = feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
         assert!(!sm.workflow_active());
     }
@@ -2140,7 +2209,7 @@
             WorkflowNode::new(RuntimeTask::new("b"), AgentRole::Implement),
             WorkflowNode::new(RuntimeTask::new("c"), AgentRole::Implement),
         ]);
-        let action = sm.submit_workflow(spec, "sess", None);
+        let action = submit_workflow_started(&mut sm, spec, "sess", None);
         assert!(matches!(action, LoopAction::AwaitingResume { .. }));
         assert_eq!(count_spawned(&sm.take_observations()), 0);
         assert!(!sm.workflow_active(), "denied authoring installs no workflow");
@@ -2162,7 +2231,7 @@
             WorkflowNode::new(RuntimeTask::new("a"), AgentRole::Implement),
             WorkflowNode::new(RuntimeTask::new("b"), AgentRole::Implement),
         ]);
-        sm.submit_workflow(spec, "sess", Some("author-agent"));
+        submit_workflow_started(&mut sm, spec, "sess", Some("author-agent"));
         let obs = sm.take_observations();
         let submitted = obs
             .iter()
@@ -2180,7 +2249,7 @@
             RuntimeTask::new("c"),
             AgentRole::Implement,
         )]);
-        sm.submit_workflow(more, "sess", Some("wf-node0"));
+        submit_workflow_started(&mut sm, more, "sess", Some("wf-node0"));
         let obs = sm.take_observations();
         let flattened = obs
             .iter()
@@ -2213,7 +2282,7 @@
             RuntimeTask::new("a"),
             AgentRole::Implement,
         )]);
-        sm.load_workflow(spec, "sess");
+        load_workflow_started(&mut sm, spec, "sess");
         let obs = sm.take_observations();
         assert_eq!(count_spawned(&obs), 0, "nothing spawns under a zero-slot pool");
         let completed = obs.iter().find_map(|o| match o {
@@ -2247,7 +2316,7 @@
             RuntimeTask::new("root"),
             AgentRole::Implement,
         )]);
-        sm.load_workflow(spec, "sess");
+        load_workflow_started(&mut sm, spec, "sess");
 
         // The first batch (wf-node0) reports: 1/5 nodes used → 4 remaining; 1 running → 2 slots left.
         let budget = sm
@@ -2283,7 +2352,7 @@
             RuntimeTask::new("root"),
             AgentRole::Implement,
         )]);
-        sm.load_workflow(spec, "sess");
+        load_workflow_started(&mut sm, spec, "sess");
         let had_budget = sm.take_observations().into_iter().any(|o| {
             matches!(o, KernelObservation::WorkflowBatchSpawned { budget: Some(_), .. })
         });
@@ -2306,11 +2375,11 @@
         let spec = WorkflowSpec::new(vec![
             WorkflowNode::new(RuntimeTask::new("read-untrusted"), AgentRole::Explore).quarantined(),
         ]);
-        sm.load_workflow(spec, "sess");
+        load_workflow_started(&mut sm, spec, "sess");
         sm.take_observations();
         assert!(sm.agent_process("wf-node0").is_some(), "quarantined ReadOnly node spawns");
 
-        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") });
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") });
         assert!(
             sm.ctx
                 .partitions
@@ -2343,7 +2412,7 @@
             WorkflowNode::new(RuntimeTask::new("act on it"), AgentRole::Implement)
                 .with_depends_on(vec![0]),
         ]);
-        let action = sm.load_workflow(spec, "sess");
+        let action = load_workflow_started(&mut sm, spec, "sess");
 
         // Nothing spawns (node0 denied, node1 starved) → workflow finishes immediately.
         assert!(matches!(action, LoopAction::CallLLM { .. }));
@@ -2376,7 +2445,7 @@
             WorkflowNode::new(RuntimeTask::new("finalize"), AgentRole::Implement)
                 .with_depends_on(vec![0]),
         ]);
-        sm.load_workflow(spec, "sess");
+        load_workflow_started(&mut sm, spec, "sess");
 
         // Iteration 0 spawns.
         assert_eq!(count_spawned(&sm.take_observations()), 1);
@@ -2385,7 +2454,7 @@
 
         // i0 completes → loop continues → iteration 1 spawns (not the dependent).
         assert!(matches!(
-            sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0-i0") }),
+            feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0-i0") }),
             LoopAction::AwaitingResume
         ));
         assert_eq!(count_spawned(&sm.take_observations()), 1);
@@ -2394,14 +2463,14 @@
 
         // i1 completes → loop done (max_iters=2) → the dependent finally spawns.
         assert!(matches!(
-            sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0-i1") }),
+            feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0-i1") }),
             LoopAction::AwaitingResume
         ));
         assert_eq!(count_spawned(&sm.take_observations()), 1);
         assert!(sm.agent_process("wf-node1").is_some(), "dependent spawns after the loop ends");
 
         // dependent completes → workflow finishes, parent resumes.
-        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
+        let done = feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
         assert!(!sm.workflow_active());
     }
@@ -2421,21 +2490,21 @@
             WorkflowNode::new(RuntimeTask::new("probe"), AgentRole::Explore).with_loop(5),
             WorkflowNode::new(RuntimeTask::new("report"), AgentRole::Plan).with_depends_on(vec![0]),
         ]);
-        sm.load_workflow(spec, "sess");
+        load_workflow_started(&mut sm, spec, "sess");
         assert_eq!(count_spawned(&sm.take_observations()), 1); // i0
 
         // i0 → continue (no opinion); i1 spawns.
-        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0-i0") });
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0-i0") });
         assert_eq!(count_spawned(&sm.take_observations()), 1); // i1
         assert!(sm.agent_process("wf-node1").is_none(), "dependent still waiting");
 
         // i1 signals "done" (loop_continue=false) at iteration 2 of 5 → loop ends early; dependent spawns.
-        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed_stop("wf-node0-i1") });
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed_stop("wf-node0-i1") });
         assert_eq!(count_spawned(&sm.take_observations()), 1);
         assert!(sm.agent_process("wf-node1").is_some(), "early stop promoted the dependent");
         assert!(sm.agent_process("wf-node0-i2").is_none(), "no third iteration ran");
 
-        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
+        let done = feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
         assert!(!sm.workflow_active());
     }
@@ -2461,17 +2530,17 @@
             WorkflowNode::new(RuntimeTask::new("build the feature"), AgentRole::Implement)
                 .with_depends_on(vec![0]),
         ]);
-        sm.load_workflow(spec, "sess");
+        load_workflow_started(&mut sm, spec, "sess");
         assert_eq!(count_spawned(&sm.take_observations()), 1); // the classifier (wf-node0)
 
         // Classifier returns "bug" → the bug branch (node 1) runs; the feature branch (node 2) is pruned.
-        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed_branch("wf-node0", "bug") });
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed_branch("wf-node0", "bug") });
         assert_eq!(count_spawned(&sm.take_observations()), 1);
         assert!(sm.agent_process("wf-node1").is_some(), "chosen branch runs");
         assert!(sm.agent_process("wf-node2").is_none(), "other branch pruned");
 
         // bug branch completes → workflow done (feature branch was pruned).
-        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
+        let done = feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
         assert!(!sm.workflow_active());
     }
@@ -2500,7 +2569,7 @@
             WorkflowNode::new(RuntimeTask::new("ship the winner"), AgentRole::Implement)
                 .with_depends_on(vec![0]),
         ]);
-        sm.load_workflow(spec, "sess");
+        load_workflow_started(&mut sm, spec, "sess");
 
         // Node 0 = controller, node 1 = the gated dependent ("ship the winner"). Entrant children are
         // appended after the static spec → wf-node2..5; the controller spawns no agent of its own.
@@ -2514,10 +2583,10 @@
 
         // Entrants finish → round-1 judges spawn (2 matches), each with its pair as a JudgeMatch.
         for id in ["wf-node2", "wf-node3", "wf-node4"] {
-            sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed(id) });
+            feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed(id) });
             assert_eq!(count_spawned(&sm.take_observations()), 0, "no judges until every entrant is in");
         }
-        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node5") });
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node5") });
         let r1 = sm.take_observations();
         assert_eq!(count_spawned(&r1), 2, "two round-1 judges (wf-node6, wf-node7)");
         let r1_matches: Vec<_> =
@@ -2530,9 +2599,9 @@
         assert!(sm.agent_process("wf-node1").is_none(), "dependent waits for the whole bracket");
 
         // Judges report winners (entrant 2 and entrant 4 advance) → one final judge spawns.
-        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed_winner("wf-node6", "wf-node2") });
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed_winner("wf-node6", "wf-node2") });
         assert_eq!(count_spawned(&sm.take_observations()), 0, "final waits for both round-1 judges");
-        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed_winner("wf-node7", "wf-node4") });
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed_winner("wf-node7", "wf-node4") });
         let r2 = sm.take_observations();
         assert_eq!(count_spawned(&r2), 1, "one final judge (wf-node8)");
         let r2_match = last_batch_spawns(&r2)[0].judge_match.clone().expect("final judge match");
@@ -2540,12 +2609,12 @@
         assert_eq!(r2_match.right, "wf-node4");
 
         // Final judge crowns entrant 4 → controller completes; only now does the dependent run.
-        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed_winner("wf-node8", "wf-node4") });
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed_winner("wf-node8", "wf-node4") });
         assert_eq!(count_spawned(&sm.take_observations()), 1, "dependent spawns after the bracket");
         assert!(sm.agent_process("wf-node1").is_some(), "the 'ship the winner' dependent");
 
         // Dependent completes → workflow finishes, parent loop resumes.
-        let done = sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
+        let done = feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node1") });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
         assert!(!sm.workflow_active());
     }
@@ -2565,7 +2634,7 @@
                 .with_isolation(AgentIsolation::ReadOnly)
                 .with_trust(NodeTrust::Quarantined),
         ]);
-        sm.load_workflow(spec, "sess");
+        load_workflow_started(&mut sm, spec, "sess");
         assert_eq!(count_spawned(&sm.take_observations()), 1, "read-only quarantined node spawns");
         assert!(sm.agent_process("wf-node0").is_some());
     }
@@ -2590,13 +2659,13 @@
             WorkflowNode::new(RuntimeTask::new("C"), AgentRole::Implement).with_depends_on(vec![0, 1]),
             WorkflowNode::new(RuntimeTask::new("D"), AgentRole::Implement).with_depends_on(vec![0]),
         ]);
-        sm.load_workflow(spec, "sess");
+        load_workflow_started(&mut sm, spec, "sess");
         // A and B have no deps → both spawn in the first round.
         assert_eq!(count_spawned(&sm.take_observations()), 2);
 
         // A completes while B is still running → D (depends only on A) spawns immediately; C still
         // waits on B. This is the per-node unblock the run queue delivers.
-        sm.feed(LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") });
+        feed_workflow(&mut sm, LoopEvent::SubAgentCompleted { result: wf_completed("wf-node0") });
         let obs = sm.take_observations();
         assert_eq!(count_spawned(&obs), 1, "D unblocks on A alone, not waiting for B");
         assert!(sm.agent_process("wf-node3").is_some(), "D (node 3) is running");
@@ -2620,7 +2689,7 @@
             "parent-sess",
         );
         assert!(!sm.workflow_active());
-        let done = sm.feed(LoopEvent::SubAgentCompleted {
+        let done = feed_workflow(&mut sm, LoopEvent::SubAgentCompleted {
             result: wf_completed("child"),
         });
         assert!(matches!(done, LoopAction::CallLLM { .. }));
