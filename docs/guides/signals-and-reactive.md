@@ -28,7 +28,9 @@ Signal 面解决的是“外部世界如何打断或唤醒 agent”，ReactiveSe
 SignalGateway
   ├── schedule(ScheduledPrompt)  # cron
   ├── ingest(RuntimeSignal)      # webhook
-  └── next_signal(recipient?)    # runner 消费
+  ├── claim_signal(recipient?)   # 带租约消费
+  ├── ack_signal / nack_signal   # 确认或重投
+  └── next_signal(recipient?)    # 兼容的取出即确认接口
 
 ReactiveSession
   ├── RunGroup        # 共享预算
@@ -78,13 +80,32 @@ gateway.ingest(RuntimeSignal(
 
 ---
 
-## Level 3：Recipient 路由
+## Level 3：Recipient 路由与投递租约
 
-共享 gateway 服务多个 peer 时，按 `recipient` 过滤：
+共享 gateway 服务多个 peer 时，runner 会按 `recipient` claim，并在 kernel 接受信号后 ack；
+处理异常或租约丢失时 nack。未确认的 claim 在租约过期后重新可见，因此消费者崩溃不会直接丢失信号。
+
+手工消费时：
+
+```python
+claim = await gateway.claim_signal(recipient="analyst-1")
+if claim is not None:
+    try:
+        await handle(claim.signal)
+        await gateway.ack_signal(claim)
+    except Exception:
+        await gateway.nack_signal(claim)
+        raise
+```
+
+旧的取出即确认接口仍保留：
 
 ```python
 sig = await gateway.next_signal(recipient="analyst-1")
 ```
+
+`SignalGateway` 是进程内默认实现；跨进程或重启恢复需要实现同一 `LeasedSignalSource`
+契约的持久化存储，并在存储侧原子完成 claim / ack / nack。
 
 测试：`python/tests/test_signal_addressing.py`
 

@@ -16,7 +16,13 @@ import type {
 } from "../memory/protocols.js"
 import { memoriesToIndex, selectMemories } from "../memory/agent.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
-import type { SignalSource, RuntimeSignal, RuntimeSignalUrgency } from "../signals/types.js"
+import { isLeasedSignalSource } from "../signals/types.js"
+import type {
+  RuntimeSignal,
+  RuntimeSignalUrgency,
+  SignalDeliveryReceipt,
+  SignalSource,
+} from "../signals/types.js"
 import type { SessionLog, SessionEvent, RollbackReason } from "./session-log.js"
 import type { ArchiveStore } from "./archive.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
@@ -95,6 +101,12 @@ import type { BackgroundTaskErrorHandler, OperationContext } from "./reliability
 
 export interface SchedulerBudget {
   maxWallMs?: number
+}
+
+interface InboundSignalDelivery {
+  signal: RuntimeSignal
+  ack(): Promise<boolean>
+  nack(): Promise<boolean>
 }
 
 /** P0-C tool-gating telemetry: per-LLM-turn metrics, emitted via `RuntimeOptions.onTurnMetrics`.
@@ -1096,11 +1108,14 @@ export class RuntimeRunner {
     while (!batchState.settled) {
       // O2: injected notes participate in the monitor too, so a host `injectNote` mid-batch is not
       // stranded until the batch settles (the drain order matches `nextInboundSignal`).
-      const sig = this.injectedSignals.shift()
-        ?? await source.nextSignal(this.currentSessionId ?? undefined)
-      if (batchState.settled) break
-      if (!sig) { await new Promise(resolve => setTimeout(resolve, 5)); continue }
-      const obs = kernelApply(runtime, this.pendingObservations, signalToKernelEvent(sig))
+      const delivery = await this.nextInboundSignal()
+      if (batchState.settled) {
+        await delivery?.nack()
+        break
+      }
+      if (!delivery) { await new Promise(resolve => setTimeout(resolve, 5)); continue }
+      const obs = await this.consumeInboundSignal(delivery, sig =>
+        kernelApply(runtime, this.pendingObservations, signalToKernelEvent(sig)))
       const preempted = obs.find(o => o.kind === "agent_preempted") as { agent_ids?: string[] } | undefined
       if (preempted) {
         for (const id of preempted.agent_ids ?? []) controllers.get(id)?.abort()
@@ -1311,11 +1326,40 @@ export class RuntimeRunner {
 
   /** Injected-note drain shared by the main loop's per-turn poll: injected notes first (FIFO), then
    *  the configured `signalSource`. Keeps the two inbound channels on one code path so they never drift. */
-  private async nextInboundSignal(): Promise<RuntimeSignal | null> {
+  private async nextInboundSignal(): Promise<InboundSignalDelivery | null> {
     const injected = this.injectedSignals.shift()
-    if (injected) return injected
+    if (injected) return { signal: injected, ack: async () => true, nack: async () => true }
     if (!this.opts.signalSource) return null
-    return this.opts.signalSource.nextSignal(this.currentSessionId ?? undefined)
+    const source = this.opts.signalSource
+    if (isLeasedSignalSource(source)) {
+      const claim = await source.claimSignal(this.currentSessionId ?? undefined)
+      if (!claim) return null
+      const receipt: SignalDeliveryReceipt = {
+        deliveryId: claim.deliveryId,
+        leaseToken: claim.leaseToken,
+      }
+      return {
+        signal: claim.signal,
+        ack: () => source.ackSignal(receipt),
+        nack: () => source.nackSignal(receipt),
+      }
+    }
+    const signal = await source.nextSignal(this.currentSessionId ?? undefined)
+    return signal ? { signal, ack: async () => true, nack: async () => true } : null
+  }
+
+  private async consumeInboundSignal<T>(
+    delivery: InboundSignalDelivery,
+    consume: (signal: RuntimeSignal) => T,
+  ): Promise<T> {
+    try {
+      const result = consume(delivery.signal)
+      if (!await delivery.ack()) throw new Error("signal lease was lost before acknowledgement")
+      return result
+    } catch (cause) {
+      await delivery.nack()
+      throw cause
+    }
   }
 
   async *run(req: {
@@ -1868,12 +1912,13 @@ export class RuntimeRunner {
       }
 
       if (this.opts.signalSource || this.injectedSignals.length > 0) {
-        const sig = await this.nextInboundSignal()
-        if (sig) {
+        const delivery = await this.nextInboundSignal()
+        if (delivery) {
           // Kernel-routed: the kernel decides disposition (dedup/queue/interrupt) and emits
           // `signal_disposed`. An actionable disposition yields a new action to adopt; queued/observed/
           // ignored yields none (kernel buffers).
-          const sigAction = kernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(sig))
+          const sigAction = await this.consumeInboundSignal(delivery, sig =>
+            kernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(sig)))
           if (sigAction) action = sigAction
           // I0a: a Critical-urgency signal carries user_abort intent. The kernel disposes it as
           // InterruptNow (forces a Reason turn) but does NOT call abortController.abort() unless
@@ -1881,7 +1926,7 @@ export class RuntimeRunner {
           // scenario) wouldn't otherwise set `this.interrupted`, and the eventual run_terminal would
           // report `reason: "error"` indistinguishable from a crash. Mark it here so the final
           // classification in the run_terminal emit picks `user_abort`.
-          if (sig.urgency === "critical") this.interrupted = true
+          if (delivery.signal.urgency === "critical") this.interrupted = true
         }
       }
       if (runtime.isTerminal()) break

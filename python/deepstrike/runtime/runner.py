@@ -73,7 +73,7 @@ from deepstrike.runtime.reliability import (
   ManagedTaskScope,
   OperationContext,
 )
-from deepstrike.signals.types import RuntimeSignal
+from deepstrike.signals.types import LeasedSignalSource, RuntimeSignal, SignalDeliveryReceipt
 
 if TYPE_CHECKING:
   from deepstrike.governance import Governance, GovernancePolicy
@@ -90,6 +90,13 @@ class SubAgentHarnessConfig:
   """When set on RuntimeOptions, spawned sub-agents run through HarnessLoop."""
   eval_provider: LLMProvider
   max_attempts: int = 3
+
+
+@dataclass
+class _InboundSignalDelivery:
+  signal: RuntimeSignal
+  ack: Callable[[], Awaitable[bool]]
+  nack: Callable[[], Awaitable[bool]]
 
 
 @dataclass
@@ -1007,13 +1014,18 @@ class RuntimeRunner:
         while not all(t.done() for t in tasks.values()):
           # O2: injected notes participate in the monitor too, so a host inject_note mid-batch is
           # not stranded until the batch settles (drain order matches _next_inbound_signal).
-          sig = self._injected_signals.pop(0) if self._injected_signals else await source.next_signal(self._current_session_id)
+          delivery = await self._next_inbound_signal()
           if all(t.done() for t in tasks.values()):
+            if delivery is not None:
+              await delivery.nack()
             break
-          if sig is None:
+          if delivery is None:
             await asyncio.sleep(0.005)
             continue
-          obs = kernel_apply(runtime, self._pending_observations, _signal_to_kernel_event(sig))
+          obs = await self._consume_inbound_signal(
+            delivery,
+            lambda sig: kernel_apply(runtime, self._pending_observations, _signal_to_kernel_event(sig)),
+          )
           preempted = next((o for o in obs if o.get("kind") == "agent_preempted"), None)
           if preempted:
             for aid in preempted.get("agent_ids", []):
@@ -1252,14 +1264,43 @@ class RuntimeRunner:
     from outside the stream (e.g. a heartbeat supervisor) read the latest measurement here."""
     return self._last_entropy_sample
 
-  async def _next_inbound_signal(self) -> "RuntimeSignal | None":
+  async def _next_inbound_signal(self) -> "_InboundSignalDelivery | None":
     """Injected-note drain shared with the main loop's per-turn poll: injected notes first (FIFO),
     then the configured ``signal_source`` — one code path so the two channels never drift."""
     if self._injected_signals:
-      return self._injected_signals.pop(0)
+      async def _committed() -> bool:
+        return True
+      return _InboundSignalDelivery(self._injected_signals.pop(0), _committed, _committed)
     if self._opts.signal_source is None:
       return None
-    return await self._opts.signal_source.next_signal(self._current_session_id)
+    source = self._opts.signal_source
+    if isinstance(source, LeasedSignalSource):
+      claim = await source.claim_signal(self._current_session_id)
+      if claim is None:
+        return None
+      receipt = SignalDeliveryReceipt(claim.delivery_id, claim.lease_token)
+      return _InboundSignalDelivery(
+        claim.signal,
+        lambda: source.ack_signal(receipt),
+        lambda: source.nack_signal(receipt),
+      )
+    signal = await source.next_signal(self._current_session_id)
+    if signal is None:
+      return None
+
+    async def _committed() -> bool:
+      return True
+    return _InboundSignalDelivery(signal, _committed, _committed)
+
+  async def _consume_inbound_signal(self, delivery: _InboundSignalDelivery, consume: Callable[[RuntimeSignal], Any]):
+    try:
+      result = consume(delivery.signal)
+      if not await delivery.ack():
+        raise RuntimeError("signal lease was lost before acknowledgement")
+      return result
+    except BaseException:
+      await delivery.nack()
+      raise
 
   def mount_tool(self, schema: dict) -> None:
     """Mount a tool capability on the active run. No-op if not running."""
@@ -1959,13 +2000,16 @@ class RuntimeRunner:
         break
 
       if self._opts.signal_source or self._injected_signals:
-        sig = await self._next_inbound_signal()
-        if sig:
-          sig_action = kernel_maybe_action(runtime, self._pending_observations, _signal_to_kernel_event(sig))
+        delivery = await self._next_inbound_signal()
+        if delivery:
+          sig_action = await self._consume_inbound_signal(
+            delivery,
+            lambda sig: kernel_maybe_action(runtime, self._pending_observations, _signal_to_kernel_event(sig)),
+          )
           if sig_action:
             action = sig_action
           # I0a: Critical signal carries user_abort intent; see Node runner for full rationale.
-          if getattr(sig, "urgency", None) == "critical":
+          if getattr(delivery.signal, "urgency", None) == "critical":
             self._interrupted = True
       if runtime.is_terminal():
         break

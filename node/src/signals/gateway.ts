@@ -1,10 +1,25 @@
-import type { RuntimeSignal, SignalSource } from "./types.js"
+import type {
+  LeasedSignalSource,
+  RuntimeSignal,
+  SignalClaim,
+  SignalDeliveryReceipt,
+} from "./types.js"
 import type { ScheduledPrompt } from "./scheduled.js"
 import type { ObserverErrorHandler } from "../runtime/reliability.js"
 import { reportObserverFailure } from "../runtime/reliability.js"
 
 export interface SignalGatewayOptions {
   onObserverError?: ObserverErrorHandler
+  /** Injectable wall clock for deterministic lease tests. */
+  now?: () => number
+  /** Default claim lease. Must be positive. Default: 30 seconds. */
+  defaultLeaseMs?: number
+}
+
+interface QueuedSignal {
+  deliveryId: string
+  signal: RuntimeSignal
+  lease?: { token: string; expiresAtMs: number }
 }
 
 /**
@@ -19,10 +34,12 @@ export interface SignalGatewayOptions {
  * - Webhook / push ingestion: external code calls `ingest()` to push a signal in
  * - Listener API: `onSignal()` for side-channel observers that don't need the pull interface
  */
-export class SignalGateway implements SignalSource {
+export class SignalGateway implements LeasedSignalSource {
   private timers = new Map<string, ReturnType<typeof setTimeout>>()
-  private queue: RuntimeSignal[] = []
+  private queue: QueuedSignal[] = []
   private listeners: Array<(sig: RuntimeSignal) => void> = []
+  private deliverySeq = 0
+  private leaseSeq = 0
 
   constructor(private readonly opts: SignalGatewayOptions = {}) {}
 
@@ -35,10 +52,50 @@ export class SignalGateway implements SignalSource {
    * shared gateway can serve N peer loops. Omit ⇒ legacy FIFO drain (any signal).
    */
   async nextSignal(recipient?: string): Promise<RuntimeSignal | null> {
-    if (recipient === undefined) return this.queue.shift() ?? null
-    const idx = this.queue.findIndex(s => s.recipient === undefined || s.recipient === recipient)
+    const claim = await this.claimSignal(recipient)
+    if (!claim) return null
+    await this.ackSignal(claim)
+    return claim.signal
+  }
+
+  /** Claim one visible signal without deleting it. Unacked claims are redelivered after expiry. */
+  async claimSignal(recipient?: string, leaseMs = this.opts.defaultLeaseMs ?? 30_000): Promise<SignalClaim | null> {
+    if (!Number.isFinite(leaseMs) || leaseMs <= 0) throw new RangeError("leaseMs must be positive")
+    const now = this.opts.now?.() ?? Date.now()
+    const idx = this.queue.findIndex(entry => {
+      const visible = recipient === undefined
+        || entry.signal.recipient === undefined
+        || entry.signal.recipient === recipient
+      const available = entry.lease === undefined || entry.lease.expiresAtMs <= now
+      return visible && available
+    })
     if (idx === -1) return null
-    return this.queue.splice(idx, 1)[0]
+    const entry = this.queue[idx]
+    const token = `${entry.deliveryId}:lease-${++this.leaseSeq}`
+    const expiresAtMs = now + leaseMs
+    entry.lease = { token, expiresAtMs }
+    return {
+      deliveryId: entry.deliveryId,
+      leaseToken: token,
+      leaseExpiresAtMs: expiresAtMs,
+      signal: entry.signal,
+    }
+  }
+
+  /** Permanently remove the delivery iff the receipt still owns its current lease. */
+  async ackSignal(receipt: SignalDeliveryReceipt): Promise<boolean> {
+    const idx = this.currentLeaseIndex(receipt)
+    if (idx === -1) return false
+    this.queue.splice(idx, 1)
+    return true
+  }
+
+  /** Release the current lease for immediate retry. Stale receipts are ignored. */
+  async nackSignal(receipt: SignalDeliveryReceipt): Promise<boolean> {
+    const idx = this.currentLeaseIndex(receipt)
+    if (idx === -1) return false
+    delete this.queue[idx].lease
+    return true
   }
 
   // ── Push API ────────────────────────────────────────────────────────────────
@@ -116,7 +173,7 @@ export class SignalGateway implements SignalSource {
   // ── Internal ────────────────────────────────────────────────────────────────
 
   private emit(sig: RuntimeSignal): void {
-    this.queue.push(sig)
+    this.queue.push({ deliveryId: `signal-${++this.deliverySeq}`, signal: sig })
     for (const listener of this.listeners) {
       try {
         listener(sig)
@@ -128,5 +185,10 @@ export class SignalGateway implements SignalSource {
         })
       }
     }
+  }
+
+  private currentLeaseIndex(receipt: SignalDeliveryReceipt): number {
+    return this.queue.findIndex(entry => entry.deliveryId === receipt.deliveryId
+      && entry.lease?.token === receipt.leaseToken)
   }
 }

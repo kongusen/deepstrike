@@ -67,7 +67,14 @@ export type { GovernanceVerdict, GovernancePolicy, GovernanceConstraint } from "
 export { AgentPool } from "./collaboration/pool.js"
 
 // ── Signals (the `RuntimeOptions.signalSource` surface) ─────────────────────
-export type { RuntimeSignal, SignalSource } from "./signals/types.js"
+export { isLeasedSignalSource } from "./signals/types.js"
+export type {
+  LeasedSignalSource,
+  RuntimeSignal,
+  SignalClaim,
+  SignalDeliveryReceipt,
+  SignalSource,
+} from "./signals/types.js"
 
 // ── Core data types ─────────────────────────────────────────────────────────
 export type {

@@ -26,3 +26,28 @@ export interface SignalSource {
    */
   nextSignal(recipient?: string): Promise<RuntimeSignal | null>
 }
+
+/** Opaque proof that one consumer currently owns a leased signal delivery. */
+export interface SignalDeliveryReceipt {
+  deliveryId: string
+  leaseToken: string
+}
+
+export interface SignalClaim extends SignalDeliveryReceipt {
+  signal: RuntimeSignal
+  leaseExpiresAtMs: number
+}
+
+/** Additive lease capability for sources that can redeliver work after consumer failure. */
+export interface LeasedSignalSource extends SignalSource {
+  claimSignal(recipient?: string, leaseMs?: number): Promise<SignalClaim | null>
+  ackSignal(receipt: SignalDeliveryReceipt): Promise<boolean>
+  nackSignal(receipt: SignalDeliveryReceipt): Promise<boolean>
+}
+
+export function isLeasedSignalSource(source: SignalSource): source is LeasedSignalSource {
+  const candidate = source as Partial<LeasedSignalSource>
+  return typeof candidate.claimSignal === "function"
+    && typeof candidate.ackSignal === "function"
+    && typeof candidate.nackSignal === "function"
+}

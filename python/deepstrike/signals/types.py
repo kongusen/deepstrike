@@ -66,3 +66,26 @@ class SignalSource(Protocol):
         legacy FIFO drain (any signal).
         """
         ...
+
+
+@dataclass(frozen=True)
+class SignalDeliveryReceipt:
+    """Opaque proof that one consumer currently owns a leased signal delivery."""
+    delivery_id: str
+    lease_token: str
+
+
+@dataclass(frozen=True)
+class SignalClaim(SignalDeliveryReceipt):
+    signal: RuntimeSignal
+    lease_expires_at_ms: int
+
+
+@runtime_checkable
+class LeasedSignalSource(SignalSource, Protocol):
+    """Additive lease capability for sources that redeliver work after consumer failure."""
+    async def claim_signal(
+        self, recipient: str | None = None, lease_ms: int | None = None,
+    ) -> SignalClaim | None: ...
+    async def ack_signal(self, receipt: SignalDeliveryReceipt) -> bool: ...
+    async def nack_signal(self, receipt: SignalDeliveryReceipt) -> bool: ...

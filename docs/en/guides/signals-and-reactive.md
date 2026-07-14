@@ -28,7 +28,9 @@ The signal plane answers "how does the outside world interrupt or wake an agent?
 SignalGateway
   ├── schedule(ScheduledPrompt)  # cron
   ├── ingest(RuntimeSignal)      # webhook
-  └── next_signal(recipient?)    # runner consumes
+  ├── claim_signal(recipient?)   # leased consumption
+  ├── ack_signal / nack_signal   # confirm or redeliver
+  └── next_signal(recipient?)    # compatibility claim-and-ack API
 
 ReactiveSession
   ├── RunGroup        # shared budget
@@ -78,13 +80,34 @@ gateway.ingest(RuntimeSignal(
 
 ---
 
-## Level 3: Recipient routing
+## Level 3: Recipient routing and delivery leases
 
-When one gateway serves multiple peers, filter by `recipient`:
+When one gateway serves multiple peers, the runner claims by `recipient` and acknowledges only
+after the kernel accepts the signal. Errors or a lost lease trigger a negative acknowledgement.
+An unacknowledged claim becomes visible again after expiry, so a consumer crash does not immediately
+lose the signal.
+
+For manual consumption:
+
+```python
+claim = await gateway.claim_signal(recipient="analyst-1")
+if claim is not None:
+    try:
+        await handle(claim.signal)
+        await gateway.ack_signal(claim)
+    except Exception:
+        await gateway.nack_signal(claim)
+        raise
+```
+
+The destructive compatibility API remains available:
 
 ```python
 sig = await gateway.next_signal(recipient="analyst-1")
 ```
+
+`SignalGateway` is the process-local default. Cross-process or restart recovery requires a durable
+store implementing the same `LeasedSignalSource` contract and atomically owning claim / ack / nack.
 
 Test: `python/tests/test_signal_addressing.py`
 

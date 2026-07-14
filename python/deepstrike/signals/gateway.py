@@ -2,11 +2,19 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Callable
-from deepstrike.signals.types import RuntimeSignal
+from deepstrike.signals.types import RuntimeSignal, SignalClaim, SignalDeliveryReceipt
 from deepstrike.signals.scheduled import ScheduledPrompt
 from deepstrike.runtime.reliability import ObserverErrorHandler, report_observer_failure
+
+
+@dataclass
+class _QueuedSignal:
+    delivery_id: str
+    signal: RuntimeSignal
+    lease_token: str | None = None
+    lease_expires_at_ms: int | None = None
 
 
 class SignalGateway:
@@ -27,11 +35,20 @@ class SignalGateway:
         # call gateway.destroy() when done to cancel pending timers
     """
 
-    def __init__(self, *, on_observer_error: ObserverErrorHandler | None = None) -> None:
+    def __init__(
+        self, *, on_observer_error: ObserverErrorHandler | None = None,
+        now: Callable[[], int] | None = None, default_lease_ms: int = 30_000,
+    ) -> None:
+        if default_lease_ms <= 0:
+            raise ValueError("default_lease_ms must be positive")
         self._listeners: list[Callable[[RuntimeSignal], None]] = []
         self._tasks: dict[str, asyncio.Task] = {}
-        self._pending: deque[RuntimeSignal] = deque()
+        self._pending: deque[_QueuedSignal] = deque()
         self._on_observer_error = on_observer_error
+        self._now = now or (lambda: int(time.time() * 1000))
+        self._default_lease_ms = default_lease_ms
+        self._delivery_seq = 0
+        self._lease_seq = 0
 
     def on_signal(self, listener: Callable[[RuntimeSignal], None]) -> Callable[[], None]:
         """Register a listener that is called synchronously whenever a signal is emitted.
@@ -98,13 +115,53 @@ class SignalGateway:
         unaddressed shared items); signals addressed to other recipients stay queued, so one
         shared gateway can serve N peer loops. None ⇒ legacy FIFO drain (any signal).
         """
-        if recipient is None:
-            return self._pending.popleft() if self._pending else None
-        for i, sig in enumerate(self._pending):
-            if sig.recipient is None or sig.recipient == recipient:
-                del self._pending[i]
-                return sig
+        claim = await self.claim_signal(recipient)
+        if claim is None:
+            return None
+        await self.ack_signal(claim)
+        return claim.signal
+
+    async def claim_signal(
+        self, recipient: str | None = None, lease_ms: int | None = None,
+    ) -> SignalClaim | None:
+        """Claim one visible signal without deleting it; expiry makes it visible again."""
+        duration = self._default_lease_ms if lease_ms is None else lease_ms
+        if duration <= 0:
+            raise ValueError("lease_ms must be positive")
+        now = self._now()
+        for entry in self._pending:
+            visible = (
+                recipient is None
+                or entry.signal.recipient is None
+                or entry.signal.recipient == recipient
+            )
+            available = entry.lease_token is None or (entry.lease_expires_at_ms or 0) <= now
+            if not visible or not available:
+                continue
+            self._lease_seq += 1
+            token = f"{entry.delivery_id}:lease-{self._lease_seq}"
+            expires_at = now + duration
+            entry.lease_token = token
+            entry.lease_expires_at_ms = expires_at
+            return SignalClaim(entry.delivery_id, token, entry.signal, expires_at)
         return None
+
+    async def ack_signal(self, receipt: SignalDeliveryReceipt) -> bool:
+        """Permanently remove a delivery iff the receipt owns its current lease."""
+        for i, entry in enumerate(self._pending):
+            if entry.delivery_id == receipt.delivery_id and entry.lease_token == receipt.lease_token:
+                del self._pending[i]
+                return True
+        return False
+
+    async def nack_signal(self, receipt: SignalDeliveryReceipt) -> bool:
+        """Release the current lease for immediate retry; ignore stale receipts."""
+        for entry in self._pending:
+            if entry.delivery_id == receipt.delivery_id and entry.lease_token == receipt.lease_token:
+                entry.lease_token = None
+                entry.lease_expires_at_ms = None
+                return True
+        return False
 
     def destroy(self) -> None:
         """Cancel all pending scheduled tasks."""
@@ -117,7 +174,8 @@ class SignalGateway:
         return len(self._pending)
 
     def _emit(self, signal: RuntimeSignal) -> None:
-        self._pending.append(signal)
+        self._delivery_seq += 1
+        self._pending.append(_QueuedSignal(f"signal-{self._delivery_seq}", signal))
         for listener in self._listeners:
             try:
                 listener(signal)

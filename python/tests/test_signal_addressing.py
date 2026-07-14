@@ -20,6 +20,38 @@ def _sig(summary: str, recipient: str | None = None) -> RuntimeSignal:
 
 
 @pytest.mark.asyncio
+async def test_unacked_claim_is_redelivered_after_lease_expiry():
+    now = 1_000
+    gw = SignalGateway(now=lambda: now, default_lease_ms=100)
+    gw.ingest(_sig("leased", "sess-a"))
+
+    first = await gw.claim_signal("sess-a")
+    assert first.signal.payload["goal"] == "leased"
+    assert await gw.claim_signal("sess-a") is None
+
+    now += 101
+    second = await gw.claim_signal("sess-a")
+    assert second.signal.payload["goal"] == "leased"
+    assert second.lease_token != first.lease_token
+    assert await gw.ack_signal(first) is False
+    assert await gw.ack_signal(second) is True
+    assert gw.depth == 0
+
+
+@pytest.mark.asyncio
+async def test_nacked_claim_is_immediately_available_for_redelivery():
+    gw = SignalGateway()
+    gw.ingest(_sig("retry", "sess-a"))
+
+    first = await gw.claim_signal("sess-a")
+    assert await gw.nack_signal(first) is True
+    second = await gw.claim_signal("sess-a")
+
+    assert second.signal.payload["goal"] == "retry"
+    assert second.lease_token != first.lease_token
+
+
+@pytest.mark.asyncio
 async def test_each_loop_drains_own_plus_shared():
     gw = SignalGateway()
     gw.ingest(_sig("to-a", "sess-a"))

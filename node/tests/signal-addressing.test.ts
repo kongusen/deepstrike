@@ -17,6 +17,36 @@ const sig = (summary: string, recipient?: string): RuntimeSignal => ({
 })
 
 describe("SignalGateway recipient addressing (R1/L0)", () => {
+  it("redelivers an unacked claim after its lease expires", async () => {
+    let now = 1_000
+    const gw = new SignalGateway({ now: () => now, defaultLeaseMs: 100 })
+    gw.ingest(sig("leased", "sess-a"))
+
+    const first = await gw.claimSignal("sess-a")
+    expect(first?.signal.payload.goal).toBe("leased")
+    expect(await gw.claimSignal("sess-a")).toBeNull()
+
+    now += 101
+    const second = await gw.claimSignal("sess-a")
+    expect(second?.signal.payload.goal).toBe("leased")
+    expect(second?.leaseToken).not.toBe(first?.leaseToken)
+    expect(await gw.ackSignal(first!)).toBe(false)
+    expect(await gw.ackSignal(second!)).toBe(true)
+    expect(gw.depth).toBe(0)
+  })
+
+  it("makes a nacked claim immediately available for redelivery", async () => {
+    const gw = new SignalGateway()
+    gw.ingest(sig("retry", "sess-a"))
+
+    const first = await gw.claimSignal("sess-a")
+    expect(await gw.nackSignal(first!)).toBe(true)
+    const second = await gw.claimSignal("sess-a")
+
+    expect(second?.signal.payload.goal).toBe("retry")
+    expect(second?.leaseToken).not.toBe(first?.leaseToken)
+  })
+
   it("each loop drains only its own + shared signals from one shared gateway", async () => {
     const gw = new SignalGateway()
     gw.ingest(sig("to-a", "sess-a"))
