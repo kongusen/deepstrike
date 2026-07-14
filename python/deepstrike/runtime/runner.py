@@ -237,8 +237,9 @@ class RuntimeOptions:
   # with {"call_id", "name", "arguments"}. Return {"block": True, "reason": ...} to veto — the call
   # never runs and the reason is fed back to the model as a denied tool result. The seam for
   # STATEFUL host policy (count repeats, per-resource budgets); keep static allow/deny in
-  # governance_policy. Errs-open: a raising hook never blocks the run. Sync or async.
+  # governance_policy. A raising decision hook fails closed by default. Sync or async.
   on_tool_call: Callable[[dict], Awaitable[dict | None] | dict | None] | None = None
+  on_tool_call_failure: str = "closed"
   # O5 (PostToolUse-hook analog): called for each executed result with {"call_id", "name",
   # "arguments", "output", "is_error"}. Return {"replace_output": str} to swap what the model sees
   # and/or {"note": str} to push a contextual note into the signal stream (same channel as
@@ -2232,7 +2233,8 @@ class RuntimeRunner:
 
         # O5 (PreToolUse-hook analog): give the host a STATEFUL veto over each kernel-approved
         # call. A blocked call never executes; its reason reaches the model as a governance-denied
-        # tool result (the kernel rolls the turn back with the note). Errs-open on hook throw.
+        # tool result (the kernel rolls the turn back with the note). Decision failures are closed
+        # unless the host explicitly marks this hook advisory with ``on_tool_call_failure="open"``.
         executable_calls = normal_calls
         if self._opts.on_tool_call is not None:
           allowed = []
@@ -2244,8 +2246,11 @@ class RuntimeRunner:
               })
               if inspect.isawaitable(decision):
                 decision = await decision
-            except Exception:
-              decision = None
+            except Exception as cause:
+              decision = (
+                None if self._opts.on_tool_call_failure == "open"
+                else {"block": True, "reason": f"on_tool_call hook failed: {format_tool_error(cause)}"}
+              )
             if decision and decision.get("block"):
               reason = decision.get("reason") or "blocked by host on_tool_call hook"
               yield ToolDeniedEvent(call_id=call.id, tool_name=call.name, reason=reason)

@@ -64,6 +64,28 @@ def _all_text(calls) -> str:
 
 
 @pytest.mark.asyncio
+async def test_on_tool_call_fails_closed_unless_explicitly_open():
+    def unavailable(_call):
+        raise RuntimeError("policy backend unavailable")
+
+    closed_executed = []
+    closed = _make_runner(TwoToolTurnsProvider(), closed_executed, on_tool_call=unavailable)
+    async for _ in closed.run(goal="write"):
+        pass
+
+    open_executed = []
+    opened = _make_runner(
+        TwoToolTurnsProvider(), open_executed,
+        on_tool_call=unavailable, on_tool_call_failure="open",
+    )
+    async for _ in opened.run(goal="write"):
+        pass
+
+    assert closed_executed == []
+    assert len(open_executed) > 0
+
+
+@pytest.mark.asyncio
 async def test_on_tool_call_blocks_statefully_and_feeds_reason_back():
     provider = TwoToolTurnsProvider()
     executed: list[str] = []

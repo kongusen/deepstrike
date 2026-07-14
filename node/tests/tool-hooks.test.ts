@@ -37,6 +37,21 @@ function makeWriteTool(executed: string[]) {
 }
 
 describe("onToolCall (pre-tool hook)", () => {
+  it("fails closed by default and permits an explicit fail-open policy", async () => {
+    const run = async (failurePolicy?: "closed" | "open") => {
+      const executed: string[] = []
+      const { runner } = createRunner(new TwoToolTurnsProvider(), [makeWriteTool(executed)], { maxTurns: 6 })
+      const opts = (runner as unknown as { opts: Record<string, unknown> }).opts
+      opts.onToolCall = () => { throw new Error("policy backend unavailable") }
+      if (failurePolicy) opts.onToolCallFailure = failurePolicy
+      for await (const _event of runner.run({ sessionId: `hook-${failurePolicy}`, goal: "write" })) { /* drain */ }
+      return executed
+    }
+
+    expect(await run()).toEqual([])
+    expect((await run("open")).length).toBeGreaterThan(0)
+  })
+
   it("blocks a call statefully and feeds the reason back to the model", async () => {
     const provider = new TwoToolTurnsProvider()
     const executed: string[] = []

@@ -269,10 +269,12 @@ export interface RuntimeOptions {
    * executes. Return `{ block: true, reason }` to veto — the call never runs and the reason is fed
    * back to the model as a denied tool result. This is the seam for STATEFUL host policy (count
    * repeats, budget writes per resource, project-specific rules); keep static allow/deny in
-   * `governancePolicy`. Errs-open: a throwing hook never blocks the run.
+   * `governancePolicy`. A throwing decision hook fails closed by default.
    */
   onToolCall?: (call: { callId: string; name: string; arguments: string }) =>
     Promise<ToolCallHookDecision | undefined | void> | ToolCallHookDecision | undefined | void
+  /** Failure policy for `onToolCall`. Default `closed`; set `open` only for advisory hooks. */
+  onToolCallFailure?: "closed" | "open"
   /**
    * O5 (the PostToolUse-hook analog): called for each executed tool result before it reaches the
    * kernel. Return `{ replaceOutput }` to swap the result the model sees (redact / annotate), and/or
@@ -2176,7 +2178,8 @@ export class RuntimeRunner {
 
         // O5 (PreToolUse-hook analog): give the host a STATEFUL veto over each kernel-approved
         // call. A blocked call never executes; its reason reaches the model as a governance-denied
-        // tool result (the kernel rolls the turn back with the note). Errs-open on hook throw.
+        // tool result (the kernel rolls the turn back with the note). Decision failures are closed
+        // unless the host explicitly marks this hook advisory with `onToolCallFailure: "open"`.
         let executableCalls = normalCalls
         if (this.opts.onToolCall) {
           const allowed: ToolCall[] = []
@@ -2184,7 +2187,11 @@ export class RuntimeRunner {
             let decision: ToolCallHookDecision | undefined | void
             try {
               decision = await this.opts.onToolCall({ callId: call.id, name: call.name, arguments: call.arguments })
-            } catch { decision = undefined }
+            } catch (cause) {
+              decision = this.opts.onToolCallFailure === "open"
+                ? undefined
+                : { block: true, reason: `onToolCall hook failed: ${formatToolError(cause)}` }
+            }
             if (decision?.block) {
               const reason = decision.reason ?? "blocked by host onToolCall hook"
               yield { type: "tool_denied", callId: call.id, toolName: call.name, reason } as ToolDeniedEvent

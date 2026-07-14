@@ -106,6 +106,13 @@ Workflow 增长走内核 syscall：
 
 `GovernancePolicy.surface_denied_in_system=True`（默认）时，runner 预过滤 denied 工具，并在 system 中 surface 拒绝列表。
 
+## 有状态决策 hook
+
+`on_tool_call` 是执行前决策边界。hook 抛错时默认 fail-closed，tool call 会以
+`governance_denied` 返回；只有纯 advisory hook 才应显式设置
+`on_tool_call_failure="open"`。`on_tool_result` 发生在工具副作用之后，仍按 observer/enrichment
+语义隔离失败，不能反向声称工具未执行。
+
 ---
 
 ## 延伸阅读
