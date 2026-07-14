@@ -1,5 +1,5 @@
 use super::*;
-pub const KERNEL_ABI_VERSION: u32 = 1;
+pub const KERNEL_ABI_VERSION: u32 = 2;
 
 /// Serializable permission action for the governance ABI.
 /// Mirrors [`crate::governance::permission::PermissionAction`] without coupling
@@ -70,13 +70,38 @@ fn default_signal_queue_size() -> u32 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KernelInput {
     pub version: u32,
+    pub operation_id: String,
+    pub event_id: String,
+    pub observed_at_ms: u64,
     pub event: KernelInputEvent,
 }
 
 impl KernelInput {
+    /// Build an in-process input for callers that do not cross a durable wire boundary.
+    /// Wire hosts should use [`Self::correlated`] with their durable identities.
     pub fn new(event: KernelInputEvent) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LOCAL_EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+        let event_seq = LOCAL_EVENT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        Self::correlated(
+            "local-operation",
+            format!("local-event-{event_seq}"),
+            0,
+            event,
+        )
+    }
+
+    pub fn correlated(
+        operation_id: impl Into<String>,
+        event_id: impl Into<String>,
+        observed_at_ms: u64,
+        event: KernelInputEvent,
+    ) -> Self {
         Self {
             version: KERNEL_ABI_VERSION,
+            operation_id: operation_id.into(),
+            event_id: event_id.into(),
+            observed_at_ms,
             event,
         }
     }
@@ -397,6 +422,7 @@ pub enum KernelInputEvent {
         quota: crate::governance::quota::ResourceQuota,
     },
     ProviderResult {
+        effect_id: String,
         message: Message,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         observed_input_tokens: Option<u32>,
@@ -414,6 +440,7 @@ pub enum KernelInputEvent {
         stop_reason: Option<String>,
     },
     ToolResults {
+        effect_id: String,
         results: Vec<ToolResult>,
     },
     /// Reactive recovery entry point: the SDK's provider stream failed. The kernel classifies the
@@ -423,12 +450,14 @@ pub enum KernelInputEvent {
     /// owning the classify + compact + retry + give-up policy. Additive ABI: a brand-new variant,
     /// byte-identical on the wire for SDKs that never send it.
     ProviderError {
+        effect_id: String,
         message: String,
     },
     Signal {
         signal: RuntimeSignal,
     },
     MilestoneResult {
+        effect_id: String,
         result: MilestoneCheckResult,
     },
     /// Spawn a sub-agent: registers/updates the kernel process table.
@@ -542,31 +571,115 @@ fn default_validation_enabled() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KernelStep {
     pub version: u32,
+    pub operation_id: String,
+    pub input_event_id: String,
+    pub step_seq: u64,
     pub actions: Vec<KernelAction>,
     pub observations: Vec<KernelObservation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub faults: Vec<KernelFault>,
 }
 
 impl KernelStep {
-    pub(super) fn empty(observations: Vec<KernelObservation>) -> Self {
+    pub(super) fn empty(
+        operation_id: String,
+        input_event_id: String,
+        step_seq: u64,
+        observations: Vec<KernelObservation>,
+    ) -> Self {
         Self {
             version: KERNEL_ABI_VERSION,
+            operation_id,
+            input_event_id,
+            step_seq,
             actions: Vec::new(),
             observations,
+            faults: Vec::new(),
         }
     }
 
-    pub(super) fn single(action: LoopAction, observations: Vec<KernelObservation>) -> Self {
+    pub(super) fn single(
+        operation_id: String,
+        input_event_id: String,
+        step_seq: u64,
+        action: LoopAction,
+        observations: Vec<KernelObservation>,
+    ) -> Self {
+        let effect_id = format!("{operation_id}:step:{step_seq}:effect:0");
         Self {
             version: KERNEL_ABI_VERSION,
-            actions: vec![action.into()],
+            operation_id,
+            input_event_id: input_event_id.clone(),
+            step_seq,
+            actions: vec![KernelAction::from_loop(effect_id, input_event_id, action)],
             observations,
+            faults: Vec::new(),
+        }
+    }
+
+    pub(super) fn fault(
+        operation_id: String,
+        input_event_id: String,
+        step_seq: u64,
+        fault: KernelFault,
+    ) -> Self {
+        Self {
+            version: KERNEL_ABI_VERSION,
+            operation_id,
+            input_event_id,
+            step_seq,
+            actions: Vec::new(),
+            observations: Vec::new(),
+            faults: vec![fault],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KernelFaultCode {
+    VersionMismatch,
+    OperationMismatch,
+    InvalidLifecycle,
+    InvalidConfig,
+    DuplicateEventConflict,
+    UnexpectedEffectResult,
+    SnapshotIncompatible,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelFault {
+    pub code: KernelFaultCode,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KernelAction {
+    pub effect_id: String,
+    pub causation_id: String,
+    #[serde(flatten)]
+    pub effect: KernelEffect,
+}
+
+impl KernelAction {
+    fn from_loop(effect_id: String, causation_id: String, action: LoopAction) -> Self {
+        Self {
+            effect_id,
+            causation_id,
+            effect: action.into(),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum KernelAction {
+pub enum KernelEffect {
     CallProvider {
         context: RenderedContext,
         tools: Vec<ToolSchema>,
@@ -587,11 +700,11 @@ pub enum KernelAction {
     },
 }
 
-impl From<LoopAction> for KernelAction {
+impl From<LoopAction> for KernelEffect {
     fn from(action: LoopAction) -> Self {
         match action {
             LoopAction::AwaitingResume => {
-                panic!("AwaitingResume must not be converted to KernelAction")
+                panic!("AwaitingResume must not be converted to KernelEffect")
             }
             LoopAction::CallLLM { context, tools } => Self::CallProvider { context, tools },
             LoopAction::ExecuteTools { calls } => Self::ExecuteTool { calls },

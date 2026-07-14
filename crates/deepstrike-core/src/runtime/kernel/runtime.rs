@@ -1,14 +1,99 @@
 use super::*;
+use std::collections::{HashMap, VecDeque};
+
+pub(super) const EVENT_REPLAY_WINDOW_CAPACITY: usize = 256;
+
+#[derive(Clone)]
+struct RecordedEvent {
+    fingerprint: serde_json::Value,
+    step: KernelStep,
+}
+
+struct EventReplayWindow {
+    entries: HashMap<String, RecordedEvent>,
+    order: VecDeque<String>,
+}
+
+impl EventReplayWindow {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::with_capacity(EVENT_REPLAY_WINDOW_CAPACITY),
+            order: VecDeque::with_capacity(EVENT_REPLAY_WINDOW_CAPACITY),
+        }
+    }
+
+    fn get(&self, event_id: &str) -> Option<&RecordedEvent> {
+        self.entries.get(event_id)
+    }
+
+    fn insert(&mut self, event_id: String, event: RecordedEvent) {
+        if self.entries.len() == EVENT_REPLAY_WINDOW_CAPACITY {
+            if let Some(expired_event_id) = self.order.pop_front() {
+                self.entries.remove(&expired_event_id);
+            }
+        }
+        self.order.push_back(event_id.clone());
+        self.entries.insert(event_id, event);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingEffectKind {
+    Provider,
+    Tool,
+    Milestone,
+}
+
+struct StepIdentity {
+    operation_id: String,
+    input_event_id: String,
+    step_seq: u64,
+}
+
+impl StepIdentity {
+    fn empty(&self, observations: Vec<KernelObservation>) -> KernelStep {
+        KernelStep::empty(
+            self.operation_id.clone(),
+            self.input_event_id.clone(),
+            self.step_seq,
+            observations,
+        )
+    }
+
+    fn single(self, action: LoopAction, observations: Vec<KernelObservation>) -> KernelStep {
+        KernelStep::single(
+            self.operation_id,
+            self.input_event_id,
+            self.step_seq,
+            action,
+            observations,
+        )
+    }
+}
+
 /// Pure kernel runtime wrapper. SDKs should migrate toward feeding
 /// `KernelInput` values here instead of directly driving `LoopStateMachine`.
 pub struct KernelRuntime {
     sm: LoopStateMachine,
+    operation_id: Option<String>,
+    next_step_seq: u64,
+    recorded_events: EventReplayWindow,
+    pending_effects: HashMap<String, PendingEffectKind>,
 }
 
 impl KernelRuntime {
     pub fn new(policy: SchedulerBudget) -> Self {
         Self {
             sm: LoopStateMachine::new(policy),
+            operation_id: None,
+            next_step_seq: 1,
+            recorded_events: EventReplayWindow::new(),
+            pending_effects: HashMap::new(),
         }
     }
 
@@ -30,30 +115,186 @@ impl KernelRuntime {
         self.sm.local_subagents_spawned()
     }
 
+    #[cfg(test)]
+    pub(super) fn pending_provider_effect_id(&self) -> String {
+        self.pending_effect_id(PendingEffectKind::Provider)
+    }
+
+    #[cfg(test)]
+    pub(super) fn pending_tool_effect_id(&self) -> String {
+        self.pending_effect_id(PendingEffectKind::Tool)
+    }
+
+    #[cfg(test)]
+    fn pending_effect_id(&self, kind: PendingEffectKind) -> String {
+        let matches = self
+            .pending_effects
+            .iter()
+            .filter(|(_, pending_kind)| **pending_kind == kind)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            matches.len(),
+            1,
+            "test transition must have one {kind:?} effect"
+        );
+        matches[0].0.clone()
+    }
+
+    #[cfg(test)]
+    pub(super) fn recorded_event_count(&self) -> usize {
+        self.recorded_events.len()
+    }
+
+    /// Decode and execute one wire input. The version is probed before decoding
+    /// the v2 envelope so a v1 payload receives a structured kernel fault rather
+    /// than a host-language deserialization error.
+    pub fn step_json(&mut self, input_json: &str) -> Result<KernelStep, serde_json::Error> {
+        let value: serde_json::Value = serde_json::from_str(input_json)?;
+        if value.get("version").and_then(serde_json::Value::as_u64)
+            != Some(KERNEL_ABI_VERSION as u64)
+        {
+            let operation_id = value
+                .get("operation_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let event_id = value
+                .get("event_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let received_version = value
+                .get("version")
+                .and_then(serde_json::Value::as_u64)
+                .map_or_else(|| "missing".to_string(), |version| version.to_string());
+            return Ok(self.fault_step(
+                operation_id,
+                event_id,
+                KernelFaultCode::VersionMismatch,
+                format!(
+                    "kernel ABI version mismatch: input v{received_version}, kernel v{KERNEL_ABI_VERSION}"
+                ),
+                None,
+            ));
+        }
+
+        serde_json::from_value(value).map(|input| self.step(input))
+    }
+
     pub fn step(&mut self, input: KernelInput) -> KernelStep {
-        // The ABI version stamped by `KernelInput::new` is checked, not ceremonial: a payload
-        // built against a different kernel ABI is rejected instead of being silently
-        // reinterpreted under this version's semantics.
+        let operation_id = input.operation_id.clone();
+        let event_id = input.event_id.clone();
+
         if input.version != KERNEL_ABI_VERSION {
-            self.sm.observations.push(KernelObservation::ToolGated {
-                turn: self.sm.turn,
-                call_id: String::new(),
-                tool: "kernel_abi".to_string(),
-                reason: format!(
+            return self.fault_step(
+                operation_id,
+                event_id,
+                KernelFaultCode::VersionMismatch,
+                format!(
                     "kernel ABI version mismatch: input v{}, kernel v{}",
                     input.version, KERNEL_ABI_VERSION
                 ),
-            });
-            return KernelStep::empty(self.sm.take_observations());
+                None,
+            );
         }
-        let action = match input.event {
+
+        if operation_id.is_empty() || event_id.is_empty() {
+            return self.fault_step(
+                operation_id,
+                event_id,
+                KernelFaultCode::InvalidConfig,
+                "operation_id and event_id must be non-empty".to_string(),
+                None,
+            );
+        }
+
+        let fingerprint = serde_json::to_value(&input)
+            .expect("KernelInput serialization must succeed after typed construction");
+        if let Some(recorded) = self.recorded_events.get(&event_id) {
+            if recorded.fingerprint == fingerprint {
+                return recorded.step.clone();
+            }
+            return self.fault_step(
+                operation_id,
+                event_id,
+                KernelFaultCode::DuplicateEventConflict,
+                "event_id was already accepted with a different payload".to_string(),
+                None,
+            );
+        }
+
+        if let Some(bound_operation_id) = &self.operation_id {
+            if bound_operation_id != &operation_id {
+                return self.fault_step(
+                    operation_id,
+                    event_id,
+                    KernelFaultCode::OperationMismatch,
+                    format!("input operation does not match bound operation {bound_operation_id}"),
+                    None,
+                );
+            }
+        }
+
+        if let Some((effect_id, expected_kind)) = result_effect(&input.event) {
+            match self.pending_effects.get(effect_id) {
+                Some(actual_kind) if actual_kind == &expected_kind => {
+                    self.pending_effects.remove(effect_id);
+                }
+                _ => {
+                    return self.fault_step(
+                        operation_id,
+                        event_id,
+                        KernelFaultCode::UnexpectedEffectResult,
+                        format!("effect result does not match a pending effect: {effect_id}"),
+                        Some(effect_id.to_string()),
+                    );
+                }
+            }
+        }
+
+        if self.operation_id.is_none() {
+            self.operation_id = Some(operation_id.clone());
+        }
+
+        if input.observed_at_ms > 0 {
+            self.sm.set_observed_time(input.observed_at_ms);
+        }
+
+        let step_seq = self.allocate_step_seq();
+        let step = self.dispatch(
+            StepIdentity {
+                operation_id: operation_id.clone(),
+                input_event_id: event_id.clone(),
+                step_seq,
+            },
+            input.event,
+        );
+        for action in &step.actions {
+            if let Some(kind) = pending_effect_kind(&action.effect) {
+                self.pending_effects
+                    .retain(|_, pending_kind| *pending_kind != kind);
+                self.pending_effects.insert(action.effect_id.clone(), kind);
+            }
+        }
+        self.recorded_events.insert(
+            event_id,
+            RecordedEvent {
+                fingerprint,
+                step: step.clone(),
+            },
+        );
+        step
+    }
+
+    fn dispatch(&mut self, identity: StepIdentity, event: KernelInputEvent) -> KernelStep {
+        let action = match event {
             KernelInputEvent::SetTools { tools } => {
                 self.sm.tools = tools;
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::SetAvailableSkills { skills } => {
                 self.sm.ctx.set_available_skills(skills);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::SkillActivated { name, lease_turns } => {
                 // B1: record the activation (B2 reads it in emit_call_llm to narrow tools).
@@ -61,36 +302,36 @@ impl KernelRuntime {
                 // K3: a lease converts to an absolute expiry turn here (the manager is turn-blind).
                 let expires_at_turn = lease_turns.map(|n| self.sm.turn.saturating_add(n));
                 self.sm.ctx.activate_skill_leased(name, expires_at_turn);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::SkillDeactivated { name } => {
                 self.sm.ctx.deactivate_skill(&name);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::SetStableCoreTools { tool_ids } => {
                 self.sm
                     .ctx
                     .set_stable_core_tools(tool_ids.into_iter().map(Into::into));
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::SetMemoryEnabled { enabled } => {
                 self.sm.ctx.set_memory_enabled(enabled);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::SetKnowledgeEnabled { enabled } => {
                 self.sm.ctx.set_knowledge_enabled(enabled);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::SetPlanToolEnabled { enabled } => {
                 self.sm.ctx.set_plan_tool_enabled(enabled);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::SetTokenizer { .. } => {
                 // Local BPE tokenisers are no longer used — accuracy comes from
                 // observed_input_tokens reported by the provider API (P0-1 Step 2).
                 // char_approx is always used for pre-flight truncation estimates.
                 self.sm.ctx.engine = ContextTokenEngine::char_approx();
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::AddSystemMessage { content, tokens } => {
                 self.sm
@@ -98,7 +339,7 @@ impl KernelRuntime {
                     .partitions
                     .system
                     .push(Message::system(content), tokens.max(1));
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::AddKnowledgeMessage {
                 content,
@@ -124,35 +365,35 @@ impl KernelRuntime {
                     tokens.max(1),
                     pinned,
                 );
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::RemoveKnowledge { key } => {
                 self.sm.ctx.remove_knowledge(&key);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::AddHistoryMessage { message, tokens } => {
                 let tokens = tokens.unwrap_or_else(|| self.sm.ctx.engine.count_message(&message));
                 self.sm.ctx.push_history(message, tokens.max(1));
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::PreloadHistory { messages } => {
                 self.sm.preload_history(messages);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::MountCapability { capability } => {
                 self.sm.mount_capability(capability, None, None);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::UnmountCapability {
                 capability_kind,
                 id,
             } => {
                 self.sm.unmount_capability(capability_kind, &id);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::LoadMilestoneContract { contract } => {
                 self.sm.load_milestone_contract(contract);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::LoadGovernancePolicy {
                 default_action,
@@ -168,7 +409,7 @@ impl KernelRuntime {
                     rate_limits,
                     constraints,
                 ));
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::ConfigureRun { config } => {
                 // K2: apply a bundle of run-setup config in one event (tools / governance / attention /
@@ -259,23 +500,23 @@ impl KernelRuntime {
                 if let Some(watch) = entropy_watch {
                     self.sm.set_entropy_watch(watch);
                 }
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::SetAttentionPolicy { max_queue_size } => {
                 self.sm.set_attention(max_queue_size as usize);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::PageIn { entries } => {
                 self.sm.apply_page_in(&entries);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::ForceCompact => {
                 self.sm.force_compact();
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::UpdateTask { update } => {
                 self.sm.ctx.update_task(update);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::StartRun { task, run_spec } => {
                 self.sm.run_spec = run_spec;
@@ -283,7 +524,7 @@ impl KernelRuntime {
             }
             KernelInputEvent::CapabilityCommand { command } => {
                 self.sm.execute_capability_command(command);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::Resume {
                 approved_calls,
@@ -291,19 +532,19 @@ impl KernelRuntime {
             } => self.sm.resume_from_suspend(approved_calls, denied_calls),
             KernelInputEvent::SetSchedulerBudget { max_wall_ms } => {
                 self.sm.set_wall_budget(max_wall_ms);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::SetResourceQuota { quota } => {
                 self.sm.set_resource_quota(quota);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::SetCriteriaGate { enabled } => {
                 self.sm.set_criteria_gate(enabled);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::SetKnowledgeBudget { ratio } => {
                 self.sm.ctx.config.knowledge_budget_ratio = ratio;
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::SetRepeatFuse {
                 enabled,
@@ -321,7 +562,7 @@ impl KernelRuntime {
                     cfg.terminate_after = t;
                 }
                 self.sm.set_repeat_fuse(cfg);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::SetEntropyWatch {
                 enabled,
@@ -347,9 +588,10 @@ impl KernelRuntime {
                     cfg.notify_model = n;
                 }
                 self.sm.set_entropy_watch(cfg);
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::ProviderResult {
+                effect_id: _,
                 message,
                 observed_input_tokens,
                 observed_output_tokens: _,
@@ -368,10 +610,14 @@ impl KernelRuntime {
                 self.sm.set_pending_stop_reason(stop_reason);
                 self.sm.feed(LoopEvent::LLMResponse { message })
             }
-            KernelInputEvent::ToolResults { results } => {
-                self.sm.feed(LoopEvent::ToolResults { results })
-            }
-            KernelInputEvent::ProviderError { message } => {
+            KernelInputEvent::ToolResults {
+                effect_id: _,
+                results,
+            } => self.sm.feed(LoopEvent::ToolResults { results }),
+            KernelInputEvent::ProviderError {
+                effect_id: _,
+                message,
+            } => {
                 // Reactive recovery is a kernel decision: classify + bounded compact-and-retry,
                 // returning the next action (retry or honest terminal) through the common tail.
                 self.sm.recover_from_provider_error(&message)
@@ -380,11 +626,14 @@ impl KernelRuntime {
                 Some(action) => action,
                 // Non-actionable disposition (queued / observed / ignored / dropped):
                 // no provider call this step, just the SignalDisposed observation.
-                None => return KernelStep::empty(self.sm.take_observations()),
+                None => {
+                    return identity.empty(self.sm.take_observations());
+                }
             },
-            KernelInputEvent::MilestoneResult { result } => {
-                self.sm.feed(LoopEvent::MilestoneResult { result })
-            }
+            KernelInputEvent::MilestoneResult {
+                effect_id: _,
+                result,
+            } => self.sm.feed(LoopEvent::MilestoneResult { result }),
             KernelInputEvent::SpawnSubAgent {
                 spec,
                 parent_session_id,
@@ -459,7 +708,7 @@ impl KernelRuntime {
                     max_content_bytes,
                     max_name_length,
                 });
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::WriteMemory { memory } => {
                 // Phase 7: Validate memory write request.
@@ -489,7 +738,7 @@ impl KernelRuntime {
                             memory_id: memory.metadata.name.clone(),
                             error,
                         });
-                    return KernelStep::empty(self.sm.take_observations());
+                    return identity.empty(self.sm.take_observations());
                 }
                 // Validate honoring any installed memory policy: a policy with validation disabled
                 // admits the write outright; a policy with size/name overrides validates against
@@ -545,7 +794,7 @@ impl KernelRuntime {
                             });
                     }
                 }
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::QueryMemory { query } => {
                 // Phase 7: Query memory for context.
@@ -562,13 +811,67 @@ impl KernelRuntime {
                     requested_k,
                     requires_async_response: true,
                 });
-                return KernelStep::empty(self.sm.take_observations());
+                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::Timeout => self.sm.feed(LoopEvent::Timeout),
         };
         if matches!(action, LoopAction::AwaitingResume) {
-            return KernelStep::empty(self.sm.take_observations());
+            return identity.empty(self.sm.take_observations());
         }
-        KernelStep::single(action, self.sm.take_observations())
+        identity.single(action, self.sm.take_observations())
+    }
+
+    fn allocate_step_seq(&mut self) -> u64 {
+        let step_seq = self.next_step_seq;
+        self.next_step_seq = self.next_step_seq.saturating_add(1);
+        step_seq
+    }
+
+    fn fault_step(
+        &mut self,
+        operation_id: String,
+        event_id: String,
+        code: KernelFaultCode,
+        message: String,
+        effect_id: Option<String>,
+    ) -> KernelStep {
+        let step_seq = self.allocate_step_seq();
+        KernelStep::fault(
+            operation_id.clone(),
+            event_id.clone(),
+            step_seq,
+            KernelFault {
+                code,
+                message,
+                operation_id: Some(operation_id),
+                event_id: Some(event_id),
+                effect_id,
+            },
+        )
+    }
+}
+
+fn result_effect(event: &KernelInputEvent) -> Option<(&str, PendingEffectKind)> {
+    match event {
+        KernelInputEvent::ProviderResult { effect_id, .. }
+        | KernelInputEvent::ProviderError { effect_id, .. } => {
+            Some((effect_id, PendingEffectKind::Provider))
+        }
+        KernelInputEvent::ToolResults { effect_id, .. } => {
+            Some((effect_id, PendingEffectKind::Tool))
+        }
+        KernelInputEvent::MilestoneResult { effect_id, .. } => {
+            Some((effect_id, PendingEffectKind::Milestone))
+        }
+        _ => None,
+    }
+}
+
+fn pending_effect_kind(effect: &KernelEffect) -> Option<PendingEffectKind> {
+    match effect {
+        KernelEffect::CallProvider { .. } => Some(PendingEffectKind::Provider),
+        KernelEffect::ExecuteTool { .. } => Some(PendingEffectKind::Tool),
+        KernelEffect::EvaluateMilestone { .. } => Some(PendingEffectKind::Milestone),
+        KernelEffect::Done { .. } => None,
     }
 }

@@ -40,6 +40,21 @@ fn test_input_start_run_fixture() {
 }
 
 #[test]
+fn test_v1_input_fixture_returns_version_mismatch_fault() {
+    use deepstrike_core::runtime::{KernelFaultCode, KernelRuntime};
+    use deepstrike_core::scheduler::policy::SchedulerBudget;
+
+    let raw = load_fixture("input_start_run_v1.json");
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let step = runtime.step_json(&raw).expect("v1 JSON remains valid JSON");
+
+    assert!(matches!(
+        step.faults.as_slice(),
+        [fault] if fault.code == KernelFaultCode::VersionMismatch
+    ));
+}
+
+#[test]
 fn test_input_tool_results_fixture() {
     assert_roundtrip::<KernelInput>("input_tool_results.json");
 }

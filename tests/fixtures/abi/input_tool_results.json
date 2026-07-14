@@ -1,7 +1,11 @@
 {
-  "version": 1,
+  "version": 2,
+  "operation_id": "op-golden-001",
+  "event_id": "event-tools-001",
+  "observed_at_ms": 1710000001000,
   "event": {
     "kind": "tool_results",
+    "effect_id": "op-golden-001:step:2:effect:0",
     "results": [
       {
         "call_id": "call_123",

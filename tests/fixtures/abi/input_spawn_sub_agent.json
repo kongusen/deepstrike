@@ -1,5 +1,8 @@
 {
-  "version": 1,
+  "version": 2,
+  "operation_id": "op-golden-001",
+  "event_id": "event-spawn-001",
+  "observed_at_ms": 1710000003000,
   "event": {
     "kind": "spawn_sub_agent",
     "parent_session_id": "parent-session-001",

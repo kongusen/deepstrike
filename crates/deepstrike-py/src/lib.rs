@@ -54,9 +54,7 @@ use deepstrike_core::memory::idle_pipeline::{
     IdlePolicy as RustIdlePolicy,
 };
 use deepstrike_core::memory::semantic::MemoryEntry as RustMemoryEntry;
-use deepstrike_core::runtime::{
-    KernelInput as RustKernelInput, KernelRuntime as RustKernelRuntime,
-};
+use deepstrike_core::runtime::KernelRuntime as RustKernelRuntime;
 use deepstrike_core::scheduler::policy::SchedulerBudget as RustLoopPolicy;
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
 use deepstrike_core::types::agent::AgentIdentity;
@@ -859,9 +857,9 @@ impl KernelRuntime {
 
     /// Feed a JSON-encoded KernelInput and return a JSON-encoded KernelStep.
     fn step(&mut self, input_json: String) -> PyResult<String> {
-        let input: RustKernelInput = serde_json::from_str(&input_json)
+        let step = self.inner.step_json(&input_json)
             .map_err(|e| PyValueError::new_err(format!("invalid KernelInput JSON: {e}")))?;
-        serde_json::to_string(&self.inner.step(input))
+        serde_json::to_string(&step)
             .map_err(|e| PyValueError::new_err(format!("failed to encode KernelStep: {e}")))
     }
 

@@ -31,7 +31,7 @@ Verify: core kernel tests and `t12_golden_fixtures`.
 
 Dependencies: Task 1.
 
-Files: kernel protocol/runtime/tests, `tests/rust/`（`src/t12_golden_fixtures.rs`）, `tests/fixtures/abi/input_start_run.json`.
+Files: kernel protocol/runtime/tests and runtime re-exports; Rust runner; Node/Python/WASM binding crates; `tests/rust/`（`src/t12_golden_fixtures.rs`）; all v2 input/step fixtures plus the rejection-only v1 fixture under `tests/fixtures/abi/`.
 
 ### Task 3: Enforce lifecycle and atomic configuration
 

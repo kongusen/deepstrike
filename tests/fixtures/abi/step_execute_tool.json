@@ -1,7 +1,12 @@
 {
-  "version": 1,
+  "version": 2,
+  "operation_id": "op-golden-001",
+  "input_event_id": "event-provider-001",
+  "step_seq": 2,
   "actions": [
     {
+      "effect_id": "op-golden-001:step:2:effect:0",
+      "causation_id": "event-provider-001",
       "kind": "execute_tool",
       "calls": [
         {

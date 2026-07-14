@@ -58,8 +58,11 @@ cargo test -p deepstrike-tests t12_golden_fixtures
 - `crates/deepstrike-core/src/runtime/kernel/`（`protocol.rs`）
 - `crates/deepstrike-core/src/runtime/kernel/`（`runtime.rs`）
 - `crates/deepstrike-core/src/runtime/kernel/`（`tests.rs`）
+- `crates/deepstrike-core/src/runtime/mod.rs`
+- `rust/src/runtime/runner.rs`
+- Node、Python、WASM binding crates（各自的 `lib.rs`）
 - `tests/rust/`（`src/t12_golden_fixtures.rs`）
-- `tests/fixtures/abi/input_start_run.json`
+- `tests/fixtures/abi/`（v2 input/step fixtures 与只用于 rejection 的 v1 fixture）
 
 ### Task 3：严格 lifecycle 与原子配置
 

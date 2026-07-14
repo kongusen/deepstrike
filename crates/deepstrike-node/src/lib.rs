@@ -58,9 +58,7 @@ use deepstrike_core::memory::idle_pipeline::{
     IdlePolicy as RustIdlePolicy,
 };
 use deepstrike_core::memory::semantic::MemoryEntry as RustMemoryEntry;
-use deepstrike_core::runtime::{
-    KernelInput as RustKernelInput, KernelRuntime as RustKernelRuntime,
-};
+use deepstrike_core::runtime::KernelRuntime as RustKernelRuntime;
 use deepstrike_core::scheduler::policy::SchedulerBudget as RustLoopPolicy;
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
 use deepstrike_core::types::agent::AgentIdentity;
@@ -593,13 +591,13 @@ impl KernelRuntime {
 
     #[napi]
     pub fn step(&mut self, input_json: String) -> Result<String> {
-        let input: RustKernelInput = serde_json::from_str(&input_json).map_err(|e| {
-            Error::new(Status::InvalidArg, format!("invalid KernelInput JSON: {e}"))
-        })?;
         // Guard the core step (context compaction, rendering, scheduling) — a panic
         // in here must not abort the whole Node process. See `ffi_guard`.
         ffi_guard("KernelRuntime.step", || {
-            serde_json::to_string(&self.inner.step(input)).map_err(|e| {
+            let step = self.inner.step_json(&input_json).map_err(|e| {
+                Error::new(Status::InvalidArg, format!("invalid KernelInput JSON: {e}"))
+            })?;
+            serde_json::to_string(&step).map_err(|e| {
                 Error::new(
                     Status::GenericFailure,
                     format!("failed to encode KernelStep: {e}"),

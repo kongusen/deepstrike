@@ -1,7 +1,12 @@
 {
-  "version": 1,
+  "version": 2,
+  "operation_id": "op-golden-001",
+  "input_event_id": "event-start-001",
+  "step_seq": 1,
   "actions": [
     {
+      "effect_id": "op-golden-001:step:1:effect:0",
+      "causation_id": "event-start-001",
       "kind": "call_provider",
       "context": {
         "system_text": "System prompt",

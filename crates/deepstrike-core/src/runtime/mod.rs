@@ -8,8 +8,8 @@ pub mod repair;
 pub mod session;
 
 pub use kernel::{
-    KERNEL_ABI_VERSION, KernelAction, KernelInput, KernelInputEvent, KernelObservation,
-    KernelPressureAction, KernelRuntime, KernelStep,
+    KERNEL_ABI_VERSION, KernelAction, KernelEffect, KernelFault, KernelFaultCode, KernelInput,
+    KernelInputEvent, KernelObservation, KernelPressureAction, KernelRuntime, KernelStep,
 };
 
 pub use repair::{

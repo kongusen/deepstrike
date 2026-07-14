@@ -1,4 +1,211 @@
+use super::runtime::EVENT_REPLAY_WINDOW_CAPACITY;
 use super::*;
+
+fn correlated_input(
+    operation_id: &str,
+    event_id: &str,
+    observed_at_ms: u64,
+    event: KernelInputEvent,
+) -> KernelInput {
+    KernelInput::correlated(operation_id, event_id, observed_at_ms, event)
+}
+
+#[test]
+fn abi_v2_envelope_correlates_input_step_and_effect() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let step = runtime.step(correlated_input(
+        "op-1",
+        "event-1",
+        42,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("test"),
+            run_spec: None,
+        },
+    ));
+
+    assert_eq!(KERNEL_ABI_VERSION, 2);
+    assert_eq!(step.version, 2);
+    assert_eq!(step.operation_id, "op-1");
+    assert_eq!(step.input_event_id, "event-1");
+    assert_eq!(step.step_seq, 1);
+    assert!(step.faults.is_empty());
+    assert_eq!(step.actions.len(), 1);
+    assert_eq!(step.actions[0].causation_id, "event-1");
+    assert_eq!(step.actions[0].effect_id, "op-1:step:1:effect:0");
+}
+
+#[test]
+fn abi_v1_is_rejected_with_a_structured_fault() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let mut input = correlated_input(
+        "op-1",
+        "event-1",
+        42,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("test"),
+            run_spec: None,
+        },
+    );
+    input.version = 1;
+
+    let step = runtime.step(input);
+
+    assert!(step.actions.is_empty());
+    assert!(step.observations.is_empty());
+    assert!(matches!(
+        step.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::VersionMismatch,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn exact_event_replay_returns_the_original_step() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let input = correlated_input(
+        "op-1",
+        "event-1",
+        42,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("test"),
+            run_spec: None,
+        },
+    );
+
+    let first = runtime.step(input.clone());
+    let replay = runtime.step(input);
+
+    assert_eq!(
+        serde_json::to_value(replay).unwrap(),
+        serde_json::to_value(first).unwrap()
+    );
+}
+
+#[test]
+fn duplicate_event_id_with_different_payload_is_rejected() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(correlated_input(
+        "op-1",
+        "event-1",
+        42,
+        KernelInputEvent::SetMemoryEnabled { enabled: true },
+    ));
+
+    let step = runtime.step(correlated_input(
+        "op-1",
+        "event-1",
+        42,
+        KernelInputEvent::SetMemoryEnabled { enabled: false },
+    ));
+
+    assert!(matches!(
+        step.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::DuplicateEventConflict,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn cross_operation_input_is_rejected() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(correlated_input(
+        "op-1",
+        "event-1",
+        42,
+        KernelInputEvent::SetMemoryEnabled { enabled: true },
+    ));
+
+    let step = runtime.step(correlated_input(
+        "op-2",
+        "event-2",
+        43,
+        KernelInputEvent::SetMemoryEnabled { enabled: false },
+    ));
+
+    assert!(matches!(
+        step.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::OperationMismatch,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn unknown_effect_result_is_rejected() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let step = runtime.step(correlated_input(
+        "op-1",
+        "event-1",
+        42,
+        KernelInputEvent::ProviderResult {
+            effect_id: "missing-effect".to_string(),
+            message: Message::assistant("unexpected"),
+            observed_input_tokens: None,
+            observed_output_tokens: None,
+            now_ms: None,
+            stop_reason: None,
+        },
+    ));
+
+    assert!(matches!(
+        step.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::UnexpectedEffectResult,
+            effect_id: Some(effect_id),
+            ..
+        }] if effect_id == "missing-effect"
+    ));
+}
+
+#[test]
+fn rejected_effect_result_does_not_bind_the_operation() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(correlated_input(
+        "bad-op",
+        "bad-event",
+        42,
+        KernelInputEvent::ProviderResult {
+            effect_id: "missing-effect".to_string(),
+            message: Message::assistant("unexpected"),
+            observed_input_tokens: None,
+            observed_output_tokens: None,
+            now_ms: None,
+            stop_reason: None,
+        },
+    ));
+
+    let step = runtime.step(correlated_input(
+        "good-op",
+        "good-event",
+        43,
+        KernelInputEvent::SetMemoryEnabled { enabled: true },
+    ));
+
+    assert!(step.faults.is_empty());
+    assert_eq!(step.operation_id, "good-op");
+}
+
+#[test]
+fn event_replay_dedupe_has_a_fixed_capacity() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    for index in 0..(EVENT_REPLAY_WINDOW_CAPACITY + 1) {
+        runtime.step(correlated_input(
+            "op-1",
+            &format!("event-{index}"),
+            index as u64,
+            KernelInputEvent::SetMemoryEnabled {
+                enabled: index % 2 == 0,
+            },
+        ));
+    }
+
+    assert_eq!(runtime.recorded_event_count(), EVENT_REPLAY_WINDOW_CAPACITY);
+}
 
 #[test]
 fn start_run_returns_versioned_provider_action() {
@@ -11,7 +218,10 @@ fn start_run_returns_versioned_provider_action() {
     assert_eq!(step.version, KERNEL_ABI_VERSION);
     assert!(matches!(
         step.actions.as_slice(),
-        [KernelAction::CallProvider { .. }]
+        [KernelAction {
+            effect: KernelEffect::CallProvider { .. },
+            ..
+        }]
     ));
 }
 
@@ -23,6 +233,7 @@ fn provider_text_response_returns_done() {
         run_spec: None,
     }));
     let step = runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
+        effect_id: runtime.pending_provider_effect_id(),
         message: Message::assistant("done"),
         observed_input_tokens: None,
         observed_output_tokens: None,
@@ -32,7 +243,10 @@ fn provider_text_response_returns_done() {
 
     assert!(matches!(
         step.actions.as_slice(),
-        [KernelAction::Done { .. }]
+        [KernelAction {
+            effect: KernelEffect::Done { .. },
+            ..
+        }]
     ));
 }
 
@@ -156,6 +370,7 @@ fn skill_lease_expires_after_turns_and_reactivation_renarrows() {
     // event, so the following provider turn is what actually expires the lease.
     run_with_tool_call(&mut runtime, "read");
     runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
+        effect_id: runtime.pending_tool_effect_id(),
         results: vec![ToolResult {
             call_id: "call-1".into(),
             output: crate::types::message::Content::Text("ok".into()),
@@ -166,6 +381,7 @@ fn skill_lease_expires_after_turns_and_reactivation_renarrows() {
         }],
     }));
     runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
+        effect_id: runtime.pending_provider_effect_id(),
         message: Message::assistant("done"),
         observed_input_tokens: None,
         observed_output_tokens: None,
@@ -251,6 +467,7 @@ fn knowledge_budget_exceeded_observed_in_live_loop() {
     run_with_tool_call(&mut runtime, "search");
     // The check runs at the turn boundary (ToolResults handling), not on the proposal.
     let step = runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
+        effect_id: runtime.pending_tool_effect_id(),
         results: vec![ToolResult {
             call_id: "call-1".into(),
             output: crate::types::message::Content::Text("ok".into()),
@@ -285,6 +502,7 @@ fn knowledge_budget_exceeded_observed_in_live_loop() {
     }));
     run_with_tool_call(&mut runtime2, "search");
     let step2 = runtime2.step(KernelInput::new(KernelInputEvent::ToolResults {
+        effect_id: runtime2.pending_tool_effect_id(),
         results: vec![ToolResult {
             call_id: "call-1".into(),
             output: crate::types::message::Content::Text("ok".into()),
@@ -442,7 +660,10 @@ fn set_resource_quota_input_denies_spawn_over_quota() {
     // not suspended on a sub-agent join.
     assert!(matches!(
         step.actions.as_slice(),
-        [KernelAction::CallProvider { .. }]
+        [KernelAction {
+            effect: KernelEffect::CallProvider { .. },
+            ..
+        }]
     ));
     assert!(!step.observations.iter().any(|o| matches!(
         o,
@@ -482,6 +703,7 @@ fn group_budget_base_enforces_shared_token_cap() {
             arguments: serde_json::json!({}),
         });
         runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
+            effect_id: runtime.pending_provider_effect_id(),
             message: msg,
             observed_input_tokens: None,
             observed_output_tokens: None,
@@ -489,6 +711,7 @@ fn group_budget_base_enforces_shared_token_cap() {
             now_ms: None,
         }));
         runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
+            effect_id: runtime.pending_tool_effect_id(),
             results: vec![ToolResult {
                 call_id: "c1".into(),
                 output: Content::Text("ok".into()),
@@ -555,7 +778,10 @@ fn group_spawns_base_enforces_cumulative_spawn_cap() {
     // Denied: domain already at the cumulative cap → rolled back, no process registered.
     assert!(matches!(
         step.actions.as_slice(),
-        [KernelAction::CallProvider { .. }]
+        [KernelAction {
+            effect: KernelEffect::CallProvider { .. },
+            ..
+        }]
     ));
     assert!(runtime.state_machine().agent_process("worker").is_none());
     assert_eq!(runtime.local_subagents_spawned(), 0);
@@ -768,6 +994,7 @@ fn provider_result_now_ms_drives_wall_time_budget() {
         arguments: serde_json::json!({}),
     });
     runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
+        effect_id: runtime.pending_provider_effect_id(),
         message: msg,
         observed_input_tokens: None,
         observed_output_tokens: None,
@@ -775,6 +1002,7 @@ fn provider_result_now_ms_drives_wall_time_budget() {
         now_ms: Some(100),
     }));
     let step = runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
+        effect_id: runtime.pending_tool_effect_id(),
         results: vec![ToolResult {
             call_id: "call-1".into(),
             output: crate::types::message::Content::Text("ok".into()),
@@ -787,7 +1015,7 @@ fn provider_result_now_ms_drives_wall_time_budget() {
 
     assert!(matches!(
         step.actions.as_slice(),
-        [KernelAction::CallProvider { tools, .. }] if tools.is_empty()
+        [KernelAction { effect: KernelEffect::CallProvider { tools, .. }, .. }] if tools.is_empty()
     ));
 }
 
@@ -815,6 +1043,7 @@ fn run_with_tool_call_named(runtime: &mut KernelRuntime, tool: &str, _call_id: &
     }));
     runtime.state_machine_mut().take_observations();
     runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
+        effect_id: runtime.pending_provider_effect_id(),
         message: assistant_calling(tool),
         observed_input_tokens: None,
         observed_output_tokens: None,
@@ -841,7 +1070,13 @@ fn governance_deny_blocks_tool_and_reprompts() {
 
     // Denied call must NOT reach ExecuteTool; the turn rolls back and re-prompts.
     assert!(
-        matches!(step.actions.as_slice(), [KernelAction::CallProvider { .. }]),
+        matches!(
+            step.actions.as_slice(),
+            [KernelAction {
+                effect: KernelEffect::CallProvider { .. },
+                ..
+            }]
+        ),
         "denied tool should roll back and re-call provider, got {:?}",
         step.actions
     );
@@ -877,7 +1112,13 @@ fn configure_run_bundle_applies_governance_equivalently_to_load_governance_polic
     let step = run_with_tool_call(&mut runtime, "danger.delete");
 
     assert!(
-        matches!(step.actions.as_slice(), [KernelAction::CallProvider { .. }]),
+        matches!(
+            step.actions.as_slice(),
+            [KernelAction {
+                effect: KernelEffect::CallProvider { .. },
+                ..
+            }]
+        ),
         "bundle-configured deny should roll back and re-call provider, got {:?}",
         step.actions
     );
@@ -908,6 +1149,7 @@ fn configure_run_entropy_watch_flows_through_the_abi() {
     }));
     run_with_tool_call(&mut runtime, "step");
     let step = runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
+        effect_id: runtime.pending_tool_effect_id(),
         results: vec![ToolResult {
             call_id: "call-1".into(),
             output: crate::types::message::Content::Text("boom".into()),
@@ -935,11 +1177,11 @@ fn configure_run_entropy_watch_flows_through_the_abi() {
 
 #[test]
 fn set_entropy_watch_event_parses_from_json_and_applies_partially() {
-    // Additive ABI: the granular event round-trips from JSON with absent fields
-    // keeping current values (mirrors SetRepeatFuse).
+    // The granular event round-trips inside the required v2 envelope while absent
+    // event fields keep their current values (mirrors SetRepeatFuse).
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
     let input: KernelInput = serde_json::from_str(
-        r#"{"version":1,"event":{"kind":"set_entropy_watch","enabled":true,"threshold":0.4}}"#,
+        r#"{"version":2,"operation_id":"op-entropy","event_id":"event-entropy-1","observed_at_ms":42,"event":{"kind":"set_entropy_watch","enabled":true,"threshold":0.4}}"#,
     )
     .expect("granular event must deserialize");
     runtime.step(input);
@@ -1016,7 +1258,10 @@ fn governance_ask_user_suspends_until_resume() {
     assert!(
         matches!(
             resumed.actions.as_slice(),
-            [KernelAction::ExecuteTool { .. }]
+            [KernelAction {
+                effect: KernelEffect::ExecuteTool { .. },
+                ..
+            }]
         ),
         "resume with approval should emit ExecuteTool, got {:?}",
         resumed.actions
@@ -1049,7 +1294,13 @@ fn governance_ask_user_resume_all_denied_feeds_tool_results() {
         denied_calls: vec!["call-1".to_string()],
     }));
     assert!(
-        matches!(step.actions.as_slice(), [KernelAction::CallProvider { .. }]),
+        matches!(
+            step.actions.as_slice(),
+            [KernelAction {
+                effect: KernelEffect::CallProvider { .. },
+                ..
+            }]
+        ),
         "all denied should re-prompt provider, got {:?}",
         step.actions
     );
@@ -1063,7 +1314,10 @@ fn no_governance_policy_executes_all_tools() {
     // Without a policy the gate is a no-op — behavior is unchanged.
     assert!(matches!(
         step.actions.as_slice(),
-        [KernelAction::ExecuteTool { .. }]
+        [KernelAction {
+            effect: KernelEffect::ExecuteTool { .. },
+            ..
+        }]
     ));
     assert!(
         !step
@@ -1106,6 +1360,7 @@ fn governance_rate_limit_blocks_second_call() {
 
     // First call within the window — allowed.
     let s1 = runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
+        effect_id: runtime.pending_provider_effect_id(),
         message: assistant_calling("fetch"),
         observed_input_tokens: None,
         observed_output_tokens: None,
@@ -1113,19 +1368,27 @@ fn governance_rate_limit_blocks_second_call() {
         now_ms: Some(1_000),
     }));
     assert!(
-        matches!(s1.actions.as_slice(), [KernelAction::ExecuteTool { .. }]),
+        matches!(
+            s1.actions.as_slice(),
+            [KernelAction {
+                effect: KernelEffect::ExecuteTool { .. },
+                ..
+            }]
+        ),
         "first call should execute, got {:?}",
         s1.actions
     );
 
     // Close the turn so the kernel re-prompts the provider.
     runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
+        effect_id: runtime.pending_tool_effect_id(),
         results: vec![tool_ok("call-1")],
     }));
     runtime.state_machine_mut().take_observations();
 
     // Second call to the same tool within the window — rate limited → rollback.
     let s2 = runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
+        effect_id: runtime.pending_provider_effect_id(),
         message: assistant_calling("fetch"),
         observed_input_tokens: None,
         observed_output_tokens: None,
@@ -1133,7 +1396,13 @@ fn governance_rate_limit_blocks_second_call() {
         now_ms: Some(1_001),
     }));
     assert!(
-        matches!(s2.actions.as_slice(), [KernelAction::CallProvider { .. }]),
+        matches!(
+            s2.actions.as_slice(),
+            [KernelAction {
+                effect: KernelEffect::CallProvider { .. },
+                ..
+            }]
+        ),
         "rate-limited call should roll back and re-call provider, got {:?}",
         s2.actions
     );
@@ -1162,7 +1431,13 @@ fn governance_constraint_required_param_denies() {
     // assistant_calling emits empty args `{}` → required "path" is missing → deny.
     let step = run_with_tool_call(&mut runtime, "write");
     assert!(
-        matches!(step.actions.as_slice(), [KernelAction::CallProvider { .. }]),
+        matches!(
+            step.actions.as_slice(),
+            [KernelAction {
+                effect: KernelEffect::CallProvider { .. },
+                ..
+            }]
+        ),
         "missing required param should roll back, got {:?}",
         step.actions
     );
@@ -1205,7 +1480,13 @@ fn attention_policy_critical_signal_interrupts() {
         signal: signal(Urgency::Critical, "fire"),
     }));
     assert!(
-        matches!(step.actions.as_slice(), [KernelAction::CallProvider { .. }]),
+        matches!(
+            step.actions.as_slice(),
+            [KernelAction {
+                effect: KernelEffect::CallProvider { .. },
+                ..
+            }]
+        ),
         "critical signal should drive a provider call, got {:?}",
         step.actions
     );
@@ -1279,11 +1560,6 @@ fn memory_tool_does_not_emit_page_in_requested() {
     runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled {
         enabled: true,
     }));
-    runtime.step(KernelInput::new(KernelInputEvent::StartRun {
-        task: RuntimeTask::new("test"),
-        run_spec: None,
-    }));
-    runtime.state_machine_mut().take_observations();
 
     let _step = run_with_tool_call(&mut runtime, "memory");
     // (the PageInRequested observation itself was deleted with its retired producer)

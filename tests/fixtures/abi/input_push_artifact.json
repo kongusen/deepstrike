@@ -1,5 +1,8 @@
 {
-  "version": 1,
+  "version": 2,
+  "operation_id": "op-golden-001",
+  "event_id": "event-knowledge-001",
+  "observed_at_ms": 1710000002000,
   "event": {
     "kind": "add_knowledge_message",
     "content": "Generated report content",

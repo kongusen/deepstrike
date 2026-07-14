@@ -8,7 +8,7 @@ use deepstrike_core::governance::quota::ResourceQuota;
 use deepstrike_core::memory::idle_pipeline::{IdleAction, IdleEvent, IdlePipeline, IdlePolicy};
 use deepstrike_core::mm::memory::{MemoryPolicy, MemoryQuery, MemoryRetrieval, MemoryWriteRequest};
 use deepstrike_core::runtime::kernel::{
-    KernelAction, KernelInput, KernelInputEvent, KernelObservation, KernelPressureAction,
+    KernelAction, KernelEffect, KernelInput, KernelInputEvent, KernelObservation, KernelPressureAction,
     KernelRuntime, KernelStep,
 };
 use deepstrike_core::runtime::session::SessionEvent;
@@ -1052,8 +1052,9 @@ impl RuntimeRunner {
                     break;
                 }
 
-                match &action {
-                    KernelAction::CallProvider { context, tools } => {
+                match &action.effect {
+                    KernelEffect::CallProvider { context, tools } => {
+                        let provider_effect_id = action.effect_id.clone();
                         let mut final_text = String::new();
                         let mut final_tool_calls: Vec<ToolCall> = Vec::new();
                         let mut turn_tokens: u32 = 0;
@@ -1107,7 +1108,10 @@ impl RuntimeRunner {
                                 action = kernel_action(
                                     &mut kernel,
                                     &mut pending_observations,
-                                    KernelInputEvent::ProviderError { message: msg.clone() },
+                                    KernelInputEvent::ProviderError {
+                                        effect_id: provider_effect_id.clone(),
+                                        message: msg.clone(),
+                                    },
                                 );
                                 // Withholding (query.ts parity): surface the raw provider error only
                                 // when the kernel could NOT recover (it returned a terminal). On a
@@ -1115,7 +1119,7 @@ impl RuntimeRunner {
                                 // re-enters the loop: a recovered turn persists its compaction
                                 // archive at the loop's normal append point, and a terminal Done
                                 // exits through `is_terminal()` into the run_terminal emit.
-                                if matches!(action, KernelAction::Done { .. }) {
+                                if matches!(&action.effect, KernelEffect::Done { .. }) {
                                     yield RunEvent::Error(msg);
                                 }
                                 continue;
@@ -1180,6 +1184,7 @@ impl RuntimeRunner {
                             &mut kernel,
                             &mut pending_observations,
                             KernelInputEvent::ProviderResult {
+                                effect_id: provider_effect_id,
                                 message: assistant.clone(),
                                 observed_input_tokens: None,
                                 observed_output_tokens: None,
@@ -1223,7 +1228,8 @@ impl RuntimeRunner {
                             }
                         }
                     }
-                    KernelAction::ExecuteTool { calls } => {
+                    KernelEffect::ExecuteTool { calls } => {
+                        let tool_effect_id = action.effect_id.clone();
                         let tool_calls = calls.clone();
                         self.log(
                             &session_id,
@@ -1434,23 +1440,28 @@ impl RuntimeRunner {
                             &mut kernel,
                             &mut pending_observations,
                             KernelInputEvent::ToolResults {
+                                effect_id: tool_effect_id,
                                 results: tool_results,
                             },
                         );
                     }
-                    KernelAction::EvaluateMilestone {
+                    KernelEffect::EvaluateMilestone {
                         phase_id,
                         criteria,
                         required_evidence,
                         ..
                     } => {
+                        let milestone_effect_id = action.effect_id.clone();
                         let policy = self.opts.milestone_policy;
                         if policy == MilestonePolicy::AutoPass {
                             let result = MilestoneCheckResult::pass(phase_id.clone());
                             action = kernel_action(
                                 &mut kernel,
                                 &mut pending_observations,
-                                KernelInputEvent::MilestoneResult { result },
+                                KernelInputEvent::MilestoneResult {
+                                    effect_id: milestone_effect_id.clone(),
+                                    result,
+                                },
                             );
                             next_archive_start = self
                                 .append_observations(
@@ -1472,7 +1483,10 @@ impl RuntimeRunner {
                             action = kernel_action(
                                 &mut kernel,
                                 &mut pending_observations,
-                                KernelInputEvent::MilestoneResult { result },
+                                KernelInputEvent::MilestoneResult {
+                                    effect_id: milestone_effect_id,
+                                    result,
+                                },
                             );
                             next_archive_start = self
                                 .append_observations(
@@ -1510,7 +1524,7 @@ impl RuntimeRunner {
                             return;
                         }
                     }
-                    KernelAction::Done { result } => {
+                    KernelEffect::Done { result } => {
                         let status = format!("{:?}", result.termination).to_lowercase();
                         let turns_used = result.turns_used.max(1);
                         let total_tokens = result.total_tokens_used;
@@ -1579,8 +1593,8 @@ impl RuntimeRunner {
             // I0a: when the loop exits without a clean kernel-done, preserve preempt intent
             // (interrupted flag set) in the run_terminal reason — otherwise an interrupt-curtailed
             // run reports "error" indistinguishable from a real crash. Mirrors Node/WASM/Python.
-            let (status, turns_used, total_tokens) = match &action {
-                KernelAction::Done { result } => (
+            let (status, turns_used, total_tokens) = match &action.effect {
+                KernelEffect::Done { result } => (
                     format!("{:?}", result.termination).to_lowercase(),
                     result.turns_used.max(1),
                     result.total_tokens_used,
@@ -1602,7 +1616,7 @@ impl RuntimeRunner {
             )
             .await;
 
-            if let KernelAction::Done { .. } = &action {
+            if let KernelEffect::Done { .. } = &action.effect {
                 if let (Some(store), Some(agent_id)) =
                     (&self.opts.dream_store, &self.opts.agent_id)
                 {

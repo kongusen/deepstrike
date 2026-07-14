@@ -1,8 +1,5 @@
 {
-  "version": 2,
-  "operation_id": "op-golden-001",
-  "event_id": "event-start-001",
-  "observed_at_ms": 1710000000000,
+  "version": 1,
   "event": {
     "kind": "start_run",
     "task": {
