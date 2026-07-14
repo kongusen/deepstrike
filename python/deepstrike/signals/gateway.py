@@ -2,9 +2,11 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
+from dataclasses import replace
 from typing import Callable
 from deepstrike.signals.types import RuntimeSignal
 from deepstrike.signals.scheduled import ScheduledPrompt
+from deepstrike.runtime.reliability import ObserverErrorHandler, report_observer_failure
 
 
 class SignalGateway:
@@ -25,10 +27,11 @@ class SignalGateway:
         # call gateway.destroy() when done to cancel pending timers
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, on_observer_error: ObserverErrorHandler | None = None) -> None:
         self._listeners: list[Callable[[RuntimeSignal], None]] = []
         self._tasks: dict[str, asyncio.Task] = {}
         self._pending: deque[RuntimeSignal] = deque()
+        self._on_observer_error = on_observer_error
 
     def on_signal(self, listener: Callable[[RuntimeSignal], None]) -> Callable[[], None]:
         """Register a listener that is called synchronously whenever a signal is emitted.
@@ -79,11 +82,20 @@ class SignalGateway:
         """Ingest a raw external signal (e.g. from a webhook handler)."""
         self._emit(signal)
 
+    def broadcast(self, recipients: list[str], signal: RuntimeSignal) -> None:
+        """Fan one logical signal out to a known recipient set."""
+        seen: set[str] = set()
+        for recipient in recipients:
+            if not recipient or recipient in seen:
+                continue
+            seen.add(recipient)
+            self._emit(replace(signal, recipient=recipient))
+
     async def next_signal(self, recipient: str | None = None) -> RuntimeSignal | None:
         """Return the next pending signal so the gateway can be passed directly to RuntimeRunner.
 
         When ``recipient`` is given, return only the oldest signal addressed to it (plus
-        unaddressed broadcasts); signals addressed to other recipients stay queued, so one
+        unaddressed shared items); signals addressed to other recipients stay queued, so one
         shared gateway can serve N peer loops. None ⇒ legacy FIFO drain (any signal).
         """
         if recipient is None:
@@ -100,7 +112,19 @@ class SignalGateway:
             task.cancel()
         self._tasks.clear()
 
+    @property
+    def depth(self) -> int:
+        return len(self._pending)
+
     def _emit(self, signal: RuntimeSignal) -> None:
         self._pending.append(signal)
         for listener in self._listeners:
-            listener(signal)
+            try:
+                listener(signal)
+            except Exception as cause:
+                report_observer_failure(
+                    self._on_observer_error,
+                    component="SignalGateway",
+                    operation="signal_listener",
+                    cause=cause,
+                )

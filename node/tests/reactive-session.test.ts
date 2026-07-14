@@ -33,6 +33,18 @@ describe("EventStream visibility (L2 §6.1)", () => {
     expect(isVisibleTo({ audience: ["y"] }, { personaId: "x" })).toBe(false)
     expect(isVisibleTo({ channel: "c" }, { personaId: "x", channels: ["c"] })).toBe(true)
   })
+
+  it("keeps a committed event successful when an observer throws", async () => {
+    const failures: string[] = []
+    const s = new InMemoryEventStream({
+      onObserverError: failure => failures.push(failure.operation),
+    })
+    s.subscribe(() => { throw new Error("observer unavailable") })
+
+    await expect(s.append({ payload: "committed" })).resolves.toMatchObject({ seq: 0 })
+    expect((await s.readSince(-1)).map(event => event.payload)).toEqual(["committed"])
+    expect(failures).toEqual(["event_stream_listener"])
+  })
 })
 
 // ── TurnPolicy default set ──────────────────────────────────────────────────

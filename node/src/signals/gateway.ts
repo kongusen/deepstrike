@@ -1,5 +1,11 @@
 import type { RuntimeSignal, SignalSource } from "./types.js"
 import type { ScheduledPrompt } from "./scheduled.js"
+import type { ObserverErrorHandler } from "../runtime/reliability.js"
+import { reportObserverFailure } from "../runtime/reliability.js"
+
+export interface SignalGatewayOptions {
+  onObserverError?: ObserverErrorHandler
+}
 
 /**
  * SignalGateway — entry point for all external signals into the agent.
@@ -18,12 +24,14 @@ export class SignalGateway implements SignalSource {
   private queue: RuntimeSignal[] = []
   private listeners: Array<(sig: RuntimeSignal) => void> = []
 
+  constructor(private readonly opts: SignalGatewayOptions = {}) {}
+
   // ── SignalSource interface (pull model) ─────────────────────────────────────
 
   /**
    * Called by the agent loop each turn. Returns the oldest queued signal or null.
    * When `recipient` is given, returns only the oldest signal addressed to it (plus
-   * unaddressed broadcasts); signals addressed to other recipients stay queued, so one
+   * unaddressed shared items); signals addressed to other recipients stay queued, so one
    * shared gateway can serve N peer loops. Omit ⇒ legacy FIFO drain (any signal).
    */
   async nextSignal(recipient?: string): Promise<RuntimeSignal | null> {
@@ -83,6 +91,16 @@ export class SignalGateway implements SignalSource {
     this.emit(sig)
   }
 
+  /** Fan one logical signal out to a known recipient set. Each recipient gets one queue item. */
+  broadcast(recipients: Iterable<string>, sig: RuntimeSignal): void {
+    const seen = new Set<string>()
+    for (const recipient of recipients) {
+      if (!recipient || seen.has(recipient)) continue
+      seen.add(recipient)
+      this.emit({ ...sig, recipient })
+    }
+  }
+
   /** Number of signals currently buffered in the queue. */
   get depth(): number {
     return this.queue.length
@@ -99,6 +117,16 @@ export class SignalGateway implements SignalSource {
 
   private emit(sig: RuntimeSignal): void {
     this.queue.push(sig)
-    for (const l of this.listeners) l(sig)
+    for (const listener of this.listeners) {
+      try {
+        listener(sig)
+      } catch (cause) {
+        reportObserverFailure(this.opts.onObserverError, {
+          component: "SignalGateway",
+          operation: "signal_listener",
+          cause,
+        })
+      }
+    }
   }
 }

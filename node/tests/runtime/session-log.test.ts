@@ -94,4 +94,17 @@ describe("FileSessionLog", () => {
     const log = new FileSessionLog(dir)
     expect(await log.read("no-such-session")).toEqual([])
   })
+
+  it("serializes concurrent appends within one instance", async () => {
+    const log = new FileSessionLog(dir)
+
+    const returned = await Promise.all([
+      log.append("sess-concurrent", { kind: "run_started", run_id: "r1", goal: "a", criteria: [] }),
+      log.append("sess-concurrent", { kind: "run_started", run_id: "r2", goal: "b", criteria: [] }),
+    ])
+
+    expect(returned).toEqual([0, 1])
+    expect((await log.read("sess-concurrent")).map(entry => entry.seq)).toEqual([0, 1])
+    expect(await log.latestSeq("sess-concurrent")).toBe(1)
+  })
 })

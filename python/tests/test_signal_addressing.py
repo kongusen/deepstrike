@@ -20,15 +20,15 @@ def _sig(summary: str, recipient: str | None = None) -> RuntimeSignal:
 
 
 @pytest.mark.asyncio
-async def test_each_loop_drains_own_plus_broadcast():
+async def test_each_loop_drains_own_plus_shared():
     gw = SignalGateway()
     gw.ingest(_sig("to-a", "sess-a"))
     gw.ingest(_sig("to-b", "sess-b"))
-    gw.ingest(_sig("all"))  # broadcast
+    gw.ingest(_sig("shared"))
 
     a1 = await gw.next_signal("sess-a")
     a2 = await gw.next_signal("sess-a")
-    assert sorted([a1.payload["goal"], a2.payload["goal"]]) == ["all", "to-a"]
+    assert sorted([a1.payload["goal"], a2.payload["goal"]]) == ["shared", "to-a"]
     assert await gw.next_signal("sess-a") is None
 
     # sess-b's signal still queued for its own puller.
@@ -54,3 +54,23 @@ async def test_omitting_recipient_is_legacy_fifo():
     assert (await gw.next_signal()).payload["goal"] == "x"
     assert (await gw.next_signal()).payload["goal"] == "y"
     assert await gw.next_signal() is None
+
+
+@pytest.mark.asyncio
+async def test_broadcast_fans_out_to_explicit_recipients():
+    gw = SignalGateway()
+    gw.broadcast(["sess-a", "sess-b"], _sig("all"))
+
+    assert (await gw.next_signal("sess-a")).payload["goal"] == "all"
+    assert (await gw.next_signal("sess-b")).payload["goal"] == "all"
+
+
+def test_observer_failure_does_not_turn_committed_ingest_into_failure():
+    failures = []
+    gw = SignalGateway(on_observer_error=lambda failure: failures.append(failure))
+    gw.on_signal(lambda _signal: (_ for _ in ()).throw(RuntimeError("observer unavailable")))
+
+    gw.ingest(_sig("committed"))
+
+    assert gw.depth == 1
+    assert failures[0].operation == "signal_listener"

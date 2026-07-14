@@ -160,13 +160,12 @@ export class ReactiveSession {
 
   /** Broadcast a signal to every persona (each sees it on its next turn). */
   async broadcast(signal: Partial<RuntimeSignal> & { payload?: Record<string, unknown> }): Promise<void> {
-    this.gateway.ingest({
+    this.gateway.broadcast(this.peers(), {
       source: "gateway",
       signalType: "event",
       urgency: "normal",
       payload: signal.payload ?? {},
       ...signal,
-      recipient: undefined,
     })
   }
 

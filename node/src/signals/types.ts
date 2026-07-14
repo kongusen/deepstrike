@@ -8,7 +8,7 @@ export interface RuntimeSignal {
   urgency: RuntimeSignalUrgency
   payload: Record<string, unknown>
   dedupeKey?: string
-  /** Target a specific session loop (its `sessionId`). Omitted ⇒ broadcast (any puller). */
+  /** Target a specific session loop. Omitted means a shared item consumed by one eligible puller. */
   recipient?: string
   /** Optional pub/sub topic (carried through; multi-subscriber routing deferred). */
   topic?: string
@@ -21,7 +21,7 @@ export interface RuntimeSignal {
 export interface SignalSource {
   /**
    * Pull the next pending signal. When `recipient` is given, return only signals
-   * addressed to it (plus unaddressed broadcasts); other recipients' signals stay
+   * addressed to it (plus unaddressed shared items); other recipients' signals stay
    * queued. Omit ⇒ legacy FIFO drain (any signal).
    */
   nextSignal(recipient?: string): Promise<RuntimeSignal | null>

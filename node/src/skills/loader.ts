@@ -1,6 +1,15 @@
 import { readFile, readdir } from "fs/promises"
 import path from "path"
 
+const SAFE_SKILL_NAME = /^[A-Za-z0-9_-]+$/
+
+function skillPath(skillDir: string, name: string): string {
+  if (!SAFE_SKILL_NAME.test(name)) {
+    throw new Error(`invalid skill name "${name}": use only letters, digits, "-", "_"`)
+  }
+  return path.join(skillDir, `${name}.md`)
+}
+
 export interface SkillMetadata {
   name: string
   description: string
@@ -34,10 +43,12 @@ function parseFrontmatter(content: string): { meta: Record<string, unknown>; bod
 
 /** Read one skill file and return its body (frontmatter stripped). */
 export async function readSkillFile(skillDir: string, name: string): Promise<string | null> {
+  const file = skillPath(skillDir, name)
   try {
-    const raw = await readFile(path.join(skillDir, `${name}.md`), "utf8")
+    const raw = await readFile(file, "utf8")
     return parseFrontmatter(raw).body
-  } catch {
+  } catch (error: unknown) {
+    if ((error as { code?: string }).code !== "ENOENT") throw error
     return null
   }
 }

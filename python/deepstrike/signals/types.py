@@ -13,7 +13,7 @@ class RuntimeSignal:
     signal_type: str = "event"
     urgency: str = "normal"
     dedupe_key: str | None = None
-    # Target a specific session loop (its session_id). None ⇒ broadcast (any puller).
+    # Target a specific session loop. None means a shared item consumed by one eligible puller.
     recipient: str | None = None
     # Optional pub/sub topic (carried through; multi-subscriber routing deferred).
     topic: str | None = None
@@ -62,7 +62,7 @@ class SignalSource(Protocol):
         """Return the next pending signal, or None if none available.
 
         When ``recipient`` is given, return only signals addressed to it (plus
-        unaddressed broadcasts); other recipients' signals stay queued. None ⇒
+        unaddressed shared items); other recipients' signals stay queued. None ⇒
         legacy FIFO drain (any signal).
         """
         ...

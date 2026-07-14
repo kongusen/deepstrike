@@ -7,6 +7,12 @@
  * event to a subset of personas, enforced at the framework boundary (`readSince(seq, viewer)` + the
  * `read_recent` tool) — context isolation, not convention.
  */
+import type { ObserverErrorHandler } from "./reliability.js"
+import { reportObserverFailure } from "./reliability.js"
+
+export interface EventStreamOptions {
+  onObserverError?: ObserverErrorHandler
+}
 
 /** One entry on the shared blackboard. `channel`/`audience` are optional visibility scoping. */
 export interface BlackboardEvent {
@@ -49,10 +55,22 @@ export class InMemoryEventStream implements EventStream {
   private readonly events: BlackboardEvent[] = []
   private readonly listeners = new Set<(e: BlackboardEvent) => void>()
 
+  constructor(private readonly opts: EventStreamOptions = {}) {}
+
   async append(event: Omit<BlackboardEvent, "seq">): Promise<BlackboardEvent> {
     const stamped: BlackboardEvent = { ...event, seq: this.events.length }
     this.events.push(stamped)
-    for (const l of this.listeners) l(stamped)
+    for (const listener of this.listeners) {
+      try {
+        listener(stamped)
+      } catch (cause) {
+        reportObserverFailure(this.opts.onObserverError, {
+          component: "InMemoryEventStream",
+          operation: "event_stream_listener",
+          cause,
+        })
+      }
+    }
     return stamped
   }
 

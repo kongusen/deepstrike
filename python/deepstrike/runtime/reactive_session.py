@@ -130,7 +130,10 @@ class ReactiveSession:
         ))
 
     async def broadcast(self, *, payload: dict | None = None) -> None:
-        self._gateway.ingest(RuntimeSignal(kind="external", payload=payload or {}, source="gateway"))
+        self._gateway.broadcast(
+            self.peers(),
+            RuntimeSignal(kind="external", payload=payload or {}, source="gateway"),
+        )
 
     def _get_runner(self, persona_id: str) -> "RuntimeRunner":
         runner = self._runners.get(persona_id)

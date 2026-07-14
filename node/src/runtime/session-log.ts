@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { createInterface } from "node:readline"
 import type { ContentPart, ProviderReplay, ToolCall, ToolErrorKind } from "../types.js"
 import { primitiveForKind } from "./kernel-event-log.js"
+import { KeyedSerialExecutor } from "./reliability.js"
 
 export type RollbackReason =
   | { kind: "fatal_tool_error"; tool_name: string; error: string }
@@ -189,6 +190,7 @@ export class InMemorySessionLog implements SessionLog {
 export class FileSessionLog implements SessionLog {
   // Lazy-initialized per-session counter. Avoids re-reading the file on every append.
   private seqCounters = new Map<string, number>()
+  private readonly appends = new KeyedSerialExecutor()
 
   constructor(private dir: string) {}
 
@@ -207,17 +209,19 @@ export class FileSessionLog implements SessionLog {
   }
 
   async append(sessionId: string, event: SessionEvent): Promise<number> {
-    await mkdir(this.dir, { recursive: true })
-    const seq = await this.nextSeq(sessionId)
-    await new Promise<void>((resolve, reject) => {
-      const ws = createWriteStream(this.path(sessionId), { flags: "a" })
-      ws.write(JSON.stringify({ seq, event }) + "\n", err => {
-        if (err) reject(err)
-        else resolve()
+    return this.appends.run(sessionId, async () => {
+      await mkdir(this.dir, { recursive: true })
+      const seq = await this.nextSeq(sessionId)
+      await new Promise<void>((resolve, reject) => {
+        const ws = createWriteStream(this.path(sessionId), { flags: "a" })
+        ws.write(JSON.stringify({ seq, event }) + "\n", err => {
+          if (err) reject(err)
+          else resolve()
+        })
+        ws.end()
       })
-      ws.end()
+      return seq
     })
-    return seq
   }
 
   async read(sessionId: string, fromSeq = 0, primitiveFilter?: KernelPrimitive): Promise<Array<{ seq: number; event: SessionEvent }>> {
@@ -243,6 +247,6 @@ export class FileSessionLog implements SessionLog {
 
   async latestSeq(sessionId: string): Promise<number> {
     const entries = await this.read(sessionId)
-    return entries.length - 1
+    return entries.reduce((latest, entry) => Math.max(latest, entry.seq), -1)
   }
 }

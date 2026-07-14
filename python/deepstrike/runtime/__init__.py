@@ -50,6 +50,7 @@ from deepstrike.runtime.reactive_session import (
   ReactorTurn,
   read_recent_tool,
 )
+from deepstrike.runtime.reliability import ObserverErrorHandler, ObserverFailure
 from deepstrike.runtime.provider_replay import (
   ProviderReplay,
   assess_provider_replayability,
@@ -177,6 +178,8 @@ __all__ = [
   "ReactorContext",
   "ReactorTurn",
   "read_recent_tool",
+  "ObserverErrorHandler",
+  "ObserverFailure",
   "SessionEvent",
   "SessionEntry",
   "ProviderReplay",

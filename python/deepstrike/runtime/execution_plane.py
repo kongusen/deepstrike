@@ -24,6 +24,7 @@ from deepstrike.providers.stream import (
 )
 from deepstrike.tools.errors import format_tool_error
 from deepstrike.tools.registry import RegisteredTool, normalize_tool_chunk, tool_chunk_text, validate_tool_arguments
+from deepstrike.skills.loader import read_skill_file
 
 if TYPE_CHECKING:
   from deepstrike.governance import Governance
@@ -126,9 +127,7 @@ class LocalExecutionPlane:
       name = str(args.get("name", ""))
       content = None
       if ctx.skill_dir and name:
-        path = ctx.skill_dir / f"{name}.md"
-        if path.exists():
-          content = _strip_frontmatter(path.read_text(encoding="utf-8"))
+        content = read_skill_file(ctx.skill_dir, name)
       output = content if content is not None else f'Skill "{name}" not found.'
       yield ToolResultEvent(call_id=c.id, name=c.name, content=output, is_error=content is None)
 
