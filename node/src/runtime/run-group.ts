@@ -81,7 +81,9 @@ export interface ReservableGroupBudgetStore extends GroupBudgetStore {
     groupId: string,
     request: GroupBudgetRequest & { memberId: string },
   ): GroupBudgetReservation | Promise<GroupBudgetReservation>
+  /** Idempotently replace a reservation with actual usage. */
   settle(groupId: string, reservationId: string, actual: GroupCharge): void | Promise<void>
+  /** Idempotently discard an unused reservation. */
   release(groupId: string, reservationId: string): void | Promise<void>
 }
 
@@ -167,9 +169,7 @@ export class InMemoryGroupBudgetStore implements ReservableGroupBudgetStore {
 
   settle(groupId: string, reservationId: string, actual: GroupCharge): void {
     const reservations = this.reservations.get(groupId)
-    if (!reservations?.delete(reservationId)) {
-      throw new Error(`unknown group budget reservation: ${reservationId}`)
-    }
+    if (!reservations?.delete(reservationId)) return
     if (reservations.size === 0) this.reservations.delete(groupId)
     this.charge(groupId, actual)
   }
@@ -278,21 +278,23 @@ export class GroupBudgetScope {
 
   async settle(actual: GroupCharge): Promise<void> {
     if (this.closed) return
-    this.closed = true
     if (this.reservation && isReservableGroupBudgetStore(this.group.budgetStore)) {
       await this.group.budgetStore.settle(this.group.id, this.reservation.id, actual)
+      this.closed = true
       return
     }
-    if ((actual.tokens ?? 0) <= 0 && (actual.subagents ?? 0) <= 0 && (actual.rounds ?? 0) <= 0) return
-    await this.group.budgetStore.charge(this.group.id, actual)
+    if ((actual.tokens ?? 0) > 0 || (actual.subagents ?? 0) > 0 || (actual.rounds ?? 0) > 0) {
+      await this.group.budgetStore.charge(this.group.id, actual)
+    }
+    this.closed = true
   }
 
   async release(): Promise<void> {
     if (this.closed) return
-    this.closed = true
     if (this.reservation && isReservableGroupBudgetStore(this.group.budgetStore)) {
       await this.group.budgetStore.release(this.group.id, this.reservation.id)
     }
+    this.closed = true
   }
 }
 

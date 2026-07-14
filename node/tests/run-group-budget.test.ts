@@ -95,6 +95,28 @@ describe("RunGroup cumulative token budget (L1/R2)", () => {
     expect(scope.granted.tokens).toBe(100)
   })
 
+  it("keeps a reservation retryable when settlement fails", async () => {
+    class FlakyStore extends InMemoryGroupBudgetStore {
+      attempts = 0
+      override settle(groupId: string, reservationId: string, actual: { tokens?: number }): void {
+        this.attempts += 1
+        if (this.attempts === 1) throw new Error("temporary store failure")
+        super.settle(groupId, reservationId, actual)
+      }
+    }
+    const store = new FlakyStore()
+    const scope = await GroupBudgetScope.open(
+      { id: "retry", budgetStore: store },
+      { sessionId: "a" },
+      { limits: { tokens: 100 }, requested: { tokens: 100 } },
+    )
+
+    await expect(scope.settle({ tokens: 40 })).rejects.toThrow("temporary store failure")
+    await scope.settle({ tokens: 40 })
+
+    expect(store.read("retry").tokensSpent).toBe(40)
+  })
+
   it("a member is seeded with the group's prior spend and hits the shared cap", async () => {
     const store = new InMemoryGroupBudgetStore()
     const group: RunGroup = { id: "scenario-1", budgetStore: store }

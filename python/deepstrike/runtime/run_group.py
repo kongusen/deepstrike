@@ -89,9 +89,13 @@ class ReservableGroupBudgetStore(GroupBudgetStore, Protocol):
         tokens: int = 0,
         subagents: int = 0,
         rounds: int = 0,
-    ) -> None: ...
+    ) -> None:
+        """Idempotently replace a reservation with actual usage."""
+        ...
 
-    async def release(self, group_id: str, reservation_id: str) -> None: ...
+    async def release(self, group_id: str, reservation_id: str) -> None:
+        """Idempotently discard an unused reservation."""
+        ...
 
 class InMemoryGroupBudgetStore:
     """Process-local default store. One ledger + member set per group id."""
@@ -173,7 +177,7 @@ class InMemoryGroupBudgetStore:
         async with self._locks.setdefault(group_id, asyncio.Lock()):
             reservations = self._reservations.get(group_id, {})
             if reservations.pop(reservation_id, None) is None:
-                raise ValueError(f"unknown group budget reservation: {reservation_id}")
+                return
             if not reservations:
                 self._reservations.pop(group_id, None)
             cur = self._ledgers.setdefault(group_id, GroupLedger())
@@ -306,7 +310,6 @@ class GroupBudgetScope:
     async def settle(self, *, tokens: int = 0, subagents: int = 0, rounds: int = 0) -> None:
         if self._closed:
             return
-        self._closed = True
         if self._reservation is not None and _is_reservable(self._group.budget_store):
             await self._group.budget_store.settle(
                 self._group.id,
@@ -315,19 +318,20 @@ class GroupBudgetScope:
                 subagents=subagents,
                 rounds=rounds,
             )
+            self._closed = True
             return
-        if tokens <= 0 and subagents <= 0 and rounds <= 0:
-            return
-        await self._group.budget_store.charge(
-            self._group.id,
-            tokens=tokens,
-            subagents=subagents,
-            rounds=rounds,
-        )
+        if tokens > 0 or subagents > 0 or rounds > 0:
+            await self._group.budget_store.charge(
+                self._group.id,
+                tokens=tokens,
+                subagents=subagents,
+                rounds=rounds,
+            )
+        self._closed = True
 
     async def release(self) -> None:
         if self._closed:
             return
-        self._closed = True
         if self._reservation is not None and _is_reservable(self._group.budget_store):
             await self._group.budget_store.release(self._group.id, self._reservation.id)
+        self._closed = True

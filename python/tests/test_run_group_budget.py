@@ -168,3 +168,31 @@ async def test_non_transactional_store_is_accounting_only():
 
     assert scope.mode == "accounting"
     assert scope.granted.tokens_spent == 100
+
+
+@pytest.mark.asyncio
+async def test_reservation_remains_retryable_when_settlement_fails():
+    class FlakyStore(InMemoryGroupBudgetStore):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        async def settle(self, group_id, reservation_id, **actual):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("temporary store failure")
+            await super().settle(group_id, reservation_id, **actual)
+
+    store = FlakyStore()
+    scope = await GroupBudgetScope.open(
+        RunGroup(id="retry", budget_store=store),
+        GroupMember("a"),
+        limits={"tokens": 100},
+        requested={"tokens": 100},
+    )
+
+    with pytest.raises(RuntimeError, match="temporary store failure"):
+        await scope.settle(tokens=40)
+    await scope.settle(tokens=40)
+
+    assert (await store.read("retry")).tokens_spent == 40
