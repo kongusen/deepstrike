@@ -172,6 +172,137 @@ fn unknown_effect_result_is_rejected() {
 }
 
 #[test]
+fn duplicate_effect_result_with_new_event_id_returns_the_original_step() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let start = runtime.step(correlated_input(
+        "op-effect-replay",
+        "event-start",
+        41,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("test"),
+            run_spec: None,
+        },
+    ));
+    let effect_id = start.actions[0].effect_id.clone();
+    let result = KernelInputEvent::ProviderResult {
+        effect_id: effect_id.clone(),
+        message: Message::assistant("done"),
+        observed_input_tokens: Some(10),
+        observed_output_tokens: Some(2),
+        now_ms: Some(42),
+        stop_reason: None,
+    };
+
+    let first = runtime.step(correlated_input(
+        "op-effect-replay",
+        "event-result-1",
+        42,
+        result.clone(),
+    ));
+    let duplicate = runtime.step(correlated_input(
+        "op-effect-replay",
+        "event-result-2",
+        43,
+        result,
+    ));
+
+    assert_eq!(
+        serde_json::to_value(duplicate).unwrap(),
+        serde_json::to_value(first).unwrap(),
+    );
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Completed);
+}
+
+#[test]
+fn duplicate_effect_result_with_conflicting_payload_is_rejected() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let start = runtime.step(correlated_input(
+        "op-effect-conflict",
+        "event-start",
+        41,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("test"),
+            run_spec: None,
+        },
+    ));
+    let effect_id = start.actions[0].effect_id.clone();
+    runtime.step(correlated_input(
+        "op-effect-conflict",
+        "event-result-1",
+        42,
+        KernelInputEvent::ProviderResult {
+            effect_id: effect_id.clone(),
+            message: Message::assistant("done"),
+            observed_input_tokens: None,
+            observed_output_tokens: None,
+            now_ms: None,
+            stop_reason: None,
+        },
+    ));
+
+    let conflict = runtime.step(correlated_input(
+        "op-effect-conflict",
+        "event-result-2",
+        43,
+        KernelInputEvent::ProviderResult {
+            effect_id: effect_id.clone(),
+            message: Message::assistant("different"),
+            observed_input_tokens: None,
+            observed_output_tokens: None,
+            now_ms: None,
+            stop_reason: None,
+        },
+    ));
+
+    assert!(matches!(
+        conflict.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::UnexpectedEffectResult,
+            effect_id: Some(conflicting_effect_id),
+            ..
+        }] if conflicting_effect_id == &effect_id
+    ));
+}
+
+#[test]
+fn deterministic_replay_preserves_the_next_effect_identity() {
+    fn drive_to_tool_effect() -> KernelStep {
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+        let start = runtime.step(correlated_input(
+            "op-crash-replay",
+            "event-start",
+            41,
+            KernelInputEvent::StartRun {
+                task: RuntimeTask::new("use a tool"),
+                run_spec: None,
+            },
+        ));
+        runtime.step(correlated_input(
+            "op-crash-replay",
+            "event-provider-result",
+            42,
+            KernelInputEvent::ProviderResult {
+                effect_id: start.actions[0].effect_id.clone(),
+                message: assistant_calling("fetch"),
+                observed_input_tokens: None,
+                observed_output_tokens: None,
+                now_ms: None,
+                stop_reason: None,
+            },
+        ))
+    }
+
+    let before_crash = drive_to_tool_effect();
+    let after_replay = drive_to_tool_effect();
+
+    assert_eq!(before_crash.actions[0].effect_id, after_replay.actions[0].effect_id);
+    assert_eq!(
+        serde_json::to_value(&before_crash.actions[0]).unwrap(),
+        serde_json::to_value(&after_replay.actions[0]).unwrap(),
+    );
+}
+
+#[test]
 fn rejected_effect_result_does_not_bind_the_operation() {
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
     runtime.step(correlated_input(
@@ -293,6 +424,40 @@ fn configure_then_start_advances_the_explicit_lifecycle() {
             task: RuntimeTask::new("test"),
             run_spec: None,
         },
+    ));
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Running);
+}
+
+#[test]
+fn preloaded_history_resumes_from_configured_to_running() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(correlated_input(
+        "op-recovery",
+        "event-preload",
+        42,
+        KernelInputEvent::PreloadHistory {
+            messages: vec![Message::user("continue")],
+        },
+    ));
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Configured);
+
+    let step = runtime.step(correlated_input(
+        "op-recovery",
+        "event-resume",
+        43,
+        KernelInputEvent::Resume {
+            approved_calls: vec![],
+            denied_calls: vec![],
+        },
+    ));
+
+    assert!(step.faults.is_empty());
+    assert!(matches!(
+        step.actions.as_slice(),
+        [KernelAction {
+            effect: KernelEffect::CallProvider { .. },
+            ..
+        }]
     ));
     assert_eq!(runtime.lifecycle(), KernelLifecycle::Running);
 }

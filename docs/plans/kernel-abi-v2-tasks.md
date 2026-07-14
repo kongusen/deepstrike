@@ -71,6 +71,7 @@ cargo test -p deepstrike-tests t12_golden_fixtures
 - lifecycle 为 Created/Configured/Running/Suspended/terminal。
 - `ConfigureRun` 先整体校验再应用；失败不产生部分 mutation。
 - Workflow 不再 auto-start；非法顺序产生 `invalid_lifecycle`。
+- 预载历史后的空 `Resume` 只允许 Configured → Running；带 approval 结果的 `Resume` 仍只允许从 Suspended 进入 Running。
 
 **Verify**
 

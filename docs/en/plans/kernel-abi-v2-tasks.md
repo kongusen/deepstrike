@@ -35,7 +35,7 @@ Files: kernel protocol/runtime/tests and runtime re-exports; Rust runner; Node/P
 
 ### Task 3: Enforce lifecycle and atomic configuration
 
-Acceptance: Created/Configured/Running/Suspended/terminal lifecycle; validate configuration before applying it; no workflow auto-start; invalid order faults without partial mutation.
+Acceptance: Created/Configured/Running/Suspended/terminal lifecycle; validate configuration before applying it; no workflow auto-start; invalid order faults without partial mutation. An empty `Resume` after history preload is the Configured-to-Running recovery transition, while a `Resume` carrying approval results remains Suspended-only.
 
 Verify: `cargo test -p deepstrike-core lifecycle` and `cargo test -p deepstrike-tests t13_transaction`.
 

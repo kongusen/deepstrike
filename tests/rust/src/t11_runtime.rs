@@ -8,6 +8,7 @@ use compact_str::CompactString;
 use deepstrike_core::context::renderer::RenderedContext;
 use deepstrike_core::governance::permission::PermissionAction;
 use deepstrike_core::runtime::session::SessionEvent;
+use deepstrike_core::runtime::{KernelEffect, KernelInput, KernelInputEvent, KernelRuntime};
 use deepstrike_core::scheduler::policy::SchedulerBudget;
 use deepstrike_core::scheduler::state_machine::{KernelObservation, LoopStateMachine};
 use deepstrike_core::types::capability::{CapabilityDescriptor, CapabilityKind};
@@ -18,6 +19,63 @@ use deepstrike_sdk::{
     RegisteredTool, RunContext, RunEvent, RuntimeOptions, RuntimeRunner, SessionLog, StreamEvent,
 };
 use futures::StreamExt;
+
+#[test]
+fn kernel_effect_result_retry_keeps_the_same_next_action() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let start = runtime.step(KernelInput::correlated(
+        "op-host-retry",
+        "event-start",
+        1,
+        KernelInputEvent::StartRun {
+            task: deepstrike_core::types::task::RuntimeTask::new("call ping"),
+            run_spec: None,
+        },
+    ));
+    let mut response = Message::assistant("");
+    response.tool_calls.push(ToolCall {
+        id: "call-ping".into(),
+        name: "ping".into(),
+        arguments: serde_json::json!({}),
+    });
+    let effect_id = start.actions[0].effect_id.clone();
+
+    let first = runtime.step(KernelInput::correlated(
+        "op-host-retry",
+        "event-provider-result-1",
+        2,
+        KernelInputEvent::ProviderResult {
+            effect_id: effect_id.clone(),
+            message: response.clone(),
+            observed_input_tokens: None,
+            observed_output_tokens: None,
+            now_ms: None,
+            stop_reason: None,
+        },
+    ));
+    let retry = runtime.step(KernelInput::correlated(
+        "op-host-retry",
+        "event-provider-result-2",
+        3,
+        KernelInputEvent::ProviderResult {
+            effect_id,
+            message: response,
+            observed_input_tokens: None,
+            observed_output_tokens: None,
+            now_ms: None,
+            stop_reason: None,
+        },
+    ));
+
+    assert!(matches!(
+        first.actions.as_slice(),
+        [action] if matches!(action.effect, KernelEffect::ExecuteTool { .. })
+    ));
+    assert_eq!(
+        serde_json::to_value(retry).unwrap(),
+        serde_json::to_value(first).unwrap(),
+    );
+}
 
 struct ResumeAwareProvider {
     stream_calls: std::sync::atomic::AtomicU32,

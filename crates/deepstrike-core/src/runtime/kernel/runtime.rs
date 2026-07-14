@@ -2,38 +2,41 @@ use super::*;
 use std::collections::{HashMap, VecDeque};
 
 pub(super) const EVENT_REPLAY_WINDOW_CAPACITY: usize = 256;
+const COMPLETED_EFFECT_REPLAY_WINDOW_CAPACITY: usize = 256;
 
 #[derive(Clone)]
-struct RecordedEvent {
+struct RecordedTransition {
     fingerprint: serde_json::Value,
     step: KernelStep,
 }
 
-struct EventReplayWindow {
-    entries: HashMap<String, RecordedEvent>,
+struct ReplayWindow {
+    entries: HashMap<String, RecordedTransition>,
     order: VecDeque<String>,
+    capacity: usize,
 }
 
-impl EventReplayWindow {
-    fn new() -> Self {
+impl ReplayWindow {
+    fn new(capacity: usize) -> Self {
         Self {
-            entries: HashMap::with_capacity(EVENT_REPLAY_WINDOW_CAPACITY),
-            order: VecDeque::with_capacity(EVENT_REPLAY_WINDOW_CAPACITY),
+            entries: HashMap::with_capacity(capacity),
+            order: VecDeque::with_capacity(capacity),
+            capacity,
         }
     }
 
-    fn get(&self, event_id: &str) -> Option<&RecordedEvent> {
-        self.entries.get(event_id)
+    fn get(&self, identity: &str) -> Option<&RecordedTransition> {
+        self.entries.get(identity)
     }
 
-    fn insert(&mut self, event_id: String, event: RecordedEvent) {
-        if self.entries.len() == EVENT_REPLAY_WINDOW_CAPACITY {
-            if let Some(expired_event_id) = self.order.pop_front() {
-                self.entries.remove(&expired_event_id);
+    fn insert(&mut self, identity: String, transition: RecordedTransition) {
+        if self.entries.len() == self.capacity {
+            if let Some(expired_identity) = self.order.pop_front() {
+                self.entries.remove(&expired_identity);
             }
         }
-        self.order.push_back(event_id.clone());
-        self.entries.insert(event_id, event);
+        self.order.push_back(identity.clone());
+        self.entries.insert(identity, transition);
     }
 
     #[cfg(test)]
@@ -91,8 +94,9 @@ pub struct KernelRuntime {
     lifecycle: KernelLifecycle,
     operation_id: Option<String>,
     next_step_seq: u64,
-    recorded_events: EventReplayWindow,
+    recorded_events: ReplayWindow,
     pending_effects: HashMap<String, PendingEffectKind>,
+    completed_effects: ReplayWindow,
 }
 
 impl KernelRuntime {
@@ -102,8 +106,9 @@ impl KernelRuntime {
             lifecycle: KernelLifecycle::Created,
             operation_id: None,
             next_step_seq: 1,
-            recorded_events: EventReplayWindow::new(),
+            recorded_events: ReplayWindow::new(EVENT_REPLAY_WINDOW_CAPACITY),
             pending_effects: HashMap::new(),
+            completed_effects: ReplayWindow::new(COMPLETED_EFFECT_REPLAY_WINDOW_CAPACITY),
         }
     }
 
@@ -280,6 +285,36 @@ impl KernelRuntime {
             }
         }
 
+        let result_fingerprint = result_effect(&input.event).map(|(effect_id, _)| {
+            (
+                effect_id.to_string(),
+                serde_json::to_value(&input.event)
+                    .expect("KernelInputEvent serialization must succeed after typed construction"),
+            )
+        });
+        if let Some((effect_id, result_fingerprint)) = &result_fingerprint {
+            if let Some(completed) = self.completed_effects.get(effect_id) {
+                if completed.fingerprint == *result_fingerprint {
+                    let step = completed.step.clone();
+                    self.recorded_events.insert(
+                        event_id,
+                        RecordedTransition {
+                            fingerprint,
+                            step: step.clone(),
+                        },
+                    );
+                    return step;
+                }
+                return self.fault_step(
+                    operation_id,
+                    event_id,
+                    KernelFaultCode::UnexpectedEffectResult,
+                    format!("effect result conflicts with the completed result: {effect_id}"),
+                    Some(effect_id.clone()),
+                );
+            }
+        }
+
         let lifecycle_transition = match self.lifecycle_transition(&input.event) {
             Ok(transition) => transition,
             Err(message) => {
@@ -346,9 +381,18 @@ impl KernelRuntime {
                 self.pending_effects.insert(action.effect_id.clone(), kind);
             }
         }
+        if let Some((effect_id, result_fingerprint)) = result_fingerprint {
+            self.completed_effects.insert(
+                effect_id,
+                RecordedTransition {
+                    fingerprint: result_fingerprint,
+                    step: step.clone(),
+                },
+            );
+        }
         self.recorded_events.insert(
             event_id,
-            RecordedEvent {
+            RecordedTransition {
                 fingerprint,
                 step: step.clone(),
             },
@@ -917,8 +961,16 @@ impl KernelRuntime {
                     self.lifecycle
                 )),
             },
-            KernelInputEvent::Resume { .. } => match self.lifecycle {
+            KernelInputEvent::Resume {
+                approved_calls,
+                denied_calls,
+            } => match self.lifecycle {
                 KernelLifecycle::Suspended => Ok(LifecycleTransition::Resume),
+                KernelLifecycle::Configured
+                    if approved_calls.is_empty() && denied_calls.is_empty() =>
+                {
+                    Ok(LifecycleTransition::Resume)
+                }
                 _ => Err(format!(
                     "resume is not valid in lifecycle {:?}",
                     self.lifecycle
