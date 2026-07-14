@@ -125,7 +125,7 @@ export class ProcessSandboxPlane extends LocalExecutionPlane {
         const cwd = ctx?.cwd ?? this.sandboxDir
         if (!ctx?.cwd) await mkdir(this.sandboxDir, { recursive: true })
         const { output, isError } = await this.runSubprocess("bash", ["-c", String(args.command)], cwd, ctx?.operation)
-        if (isError && !output.trim()) return "Process exited with non-zero status and produced no output."
+        if (isError) throw new Error(output.trim() || "Process exited with non-zero status and produced no output.")
         return output || "(no output)"
       },
     )
@@ -147,7 +147,7 @@ export class ProcessSandboxPlane extends LocalExecutionPlane {
         const cwd = ctx?.cwd ?? this.sandboxDir
         if (!ctx?.cwd) await mkdir(this.sandboxDir, { recursive: true })
         const { output, isError } = await this.runSubprocess("node", ["-e", String(args.code)], cwd, ctx?.operation)
-        if (isError && !output.trim()) return "Script exited with non-zero status and produced no output."
+        if (isError) throw new Error(output.trim() || "Script exited with non-zero status and produced no output.")
         return output || "(no output)"
       },
     )

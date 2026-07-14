@@ -108,8 +108,8 @@ class ProcessSandboxPlane(LocalExecutionPlane):
       cwd = ctx.cwd if ctx is not None and ctx.cwd else None
       operation = ctx.operation if ctx is not None else None
       output, is_error = await sandbox._run_subprocess("bash", ["-c", command], cwd, operation)
-      if is_error and not output.strip():
-        return "Process exited with non-zero status and produced no output."
+      if is_error:
+        raise RuntimeError(output.strip() or "Process exited with non-zero status and produced no output.")
       return output or "(no output)"
 
     schema = ToolSchema(
@@ -130,8 +130,8 @@ class ProcessSandboxPlane(LocalExecutionPlane):
       cwd = ctx.cwd if ctx is not None and ctx.cwd else None
       operation = ctx.operation if ctx is not None else None
       output, is_error = await sandbox._run_subprocess("python3", ["-c", code], cwd, operation)
-      if is_error and not output.strip():
-        return "Script exited with non-zero status and produced no output."
+      if is_error:
+        raise RuntimeError(output.strip() or "Script exited with non-zero status and produced no output.")
       return output or "(no output)"
 
     schema = ToolSchema(

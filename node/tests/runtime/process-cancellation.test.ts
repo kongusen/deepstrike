@@ -21,6 +21,6 @@ it("terminates sandbox subprocess work when the operation is already cancelled",
   ], { operation })) events.push(event)
 
   expect(events).toHaveLength(1)
-  expect(events[0]).toMatchObject({ type: "tool_result", isError: false })
+  expect(events[0]).toMatchObject({ type: "tool_result", isError: true })
   expect((events[0] as { content: string }).content).toContain("operation cancelled")
 })

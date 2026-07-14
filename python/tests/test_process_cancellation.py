@@ -20,4 +20,5 @@ async def test_sandbox_subprocess_stops_when_operation_is_already_cancelled(tmp_
         events.append(event)
 
     assert len(events) == 1
+    assert events[0].is_error is True
     assert "operation cancelled" in events[0].content
