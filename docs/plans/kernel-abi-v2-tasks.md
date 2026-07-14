@@ -85,7 +85,8 @@ cargo test -p deepstrike-tests t13_transaction
 
 - `crates/deepstrike-core/src/runtime/kernel/`（`protocol.rs`）
 - `crates/deepstrike-core/src/runtime/kernel/`（`runtime.rs`）
-- `crates/deepstrike-core/src/scheduler/state_machine/mod.rs`
+- `crates/deepstrike-core/src/runtime/mod.rs`
+- `crates/deepstrike-core/src/scheduler/state_machine/workflow.rs`
 - `crates/deepstrike-core/src/runtime/kernel/`（`tests.rs`）
 - `tests/rust/`（`src/t13_transaction.rs`）
 

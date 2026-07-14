@@ -49,6 +49,14 @@ enum PendingEffectKind {
     Milestone,
 }
 
+#[derive(Clone, Copy)]
+enum LifecycleTransition {
+    Stay,
+    Configure,
+    Start,
+    Resume,
+}
+
 struct StepIdentity {
     operation_id: String,
     input_event_id: String,
@@ -80,6 +88,7 @@ impl StepIdentity {
 /// `KernelInput` values here instead of directly driving `LoopStateMachine`.
 pub struct KernelRuntime {
     sm: LoopStateMachine,
+    lifecycle: KernelLifecycle,
     operation_id: Option<String>,
     next_step_seq: u64,
     recorded_events: EventReplayWindow,
@@ -90,6 +99,7 @@ impl KernelRuntime {
     pub fn new(policy: SchedulerBudget) -> Self {
         Self {
             sm: LoopStateMachine::new(policy),
+            lifecycle: KernelLifecycle::Created,
             operation_id: None,
             next_step_seq: 1,
             recorded_events: EventReplayWindow::new(),
@@ -106,7 +116,11 @@ impl KernelRuntime {
     }
 
     pub fn is_terminal(&self) -> bool {
-        self.sm.is_terminal()
+        self.lifecycle.is_terminal()
+    }
+
+    pub fn lifecycle(&self) -> KernelLifecycle {
+        self.lifecycle
     }
 
     /// L1 (RunGroup): this vehicle's cumulative sub-agent spawns this run, read back by the SDK at run
@@ -235,6 +249,30 @@ impl KernelRuntime {
             }
         }
 
+        let lifecycle_transition = match self.lifecycle_transition(&input.event) {
+            Ok(transition) => transition,
+            Err(message) => {
+                return self.fault_step(
+                    operation_id,
+                    event_id,
+                    KernelFaultCode::InvalidLifecycle,
+                    message,
+                    None,
+                );
+            }
+        };
+        if let KernelInputEvent::ConfigureRun { config } = &input.event {
+            if let Err(message) = validate_run_config(config) {
+                return self.fault_step(
+                    operation_id,
+                    event_id,
+                    KernelFaultCode::InvalidConfig,
+                    message,
+                    None,
+                );
+            }
+        }
+
         if let Some((effect_id, expected_kind)) = result_effect(&input.event) {
             match self.pending_effects.get(effect_id) {
                 Some(actual_kind) if actual_kind == &expected_kind => {
@@ -269,6 +307,7 @@ impl KernelRuntime {
             },
             input.event,
         );
+        self.advance_lifecycle(lifecycle_transition, &step);
         for action in &step.actions {
             if let Some(kind) = pending_effect_kind(&action.effect) {
                 self.pending_effects
@@ -646,10 +685,6 @@ impl KernelRuntime {
                 resumed_submission_bases,
                 resumed_results,
             } => {
-                // K1: self-bootstrap the run if the host never fired `StartRun` (stateless
-                // `runWorkflow` caller). Parity with the agent-reachable `SubmitWorkflow`, which already
-                // bootstraps. Idempotent no-op once the root task has left `Ready`.
-                self.sm.ensure_started_for_workflow(&spec);
                 if resumed_completed.is_empty()
                     && resumed_results.is_empty()
                     && resumed_submissions.is_empty()
@@ -821,6 +856,114 @@ impl KernelRuntime {
         identity.single(action, self.sm.take_observations())
     }
 
+    fn lifecycle_transition(
+        &self,
+        event: &KernelInputEvent,
+    ) -> Result<LifecycleTransition, String> {
+        if self.lifecycle.is_terminal() {
+            return Err(format!(
+                "kernel is terminal in lifecycle {:?}",
+                self.lifecycle
+            ));
+        }
+
+        match event {
+            KernelInputEvent::ConfigureRun { .. } => match self.lifecycle {
+                KernelLifecycle::Created | KernelLifecycle::Configured => {
+                    Ok(LifecycleTransition::Configure)
+                }
+                _ => Err(format!(
+                    "configure_run is not valid in lifecycle {:?}",
+                    self.lifecycle
+                )),
+            },
+            KernelInputEvent::StartRun { .. } => match self.lifecycle {
+                KernelLifecycle::Created | KernelLifecycle::Configured => {
+                    Ok(LifecycleTransition::Start)
+                }
+                _ => Err(format!(
+                    "start_run is not valid in lifecycle {:?}",
+                    self.lifecycle
+                )),
+            },
+            KernelInputEvent::Resume { .. } => match self.lifecycle {
+                KernelLifecycle::Suspended => Ok(LifecycleTransition::Resume),
+                _ => Err(format!(
+                    "resume is not valid in lifecycle {:?}",
+                    self.lifecycle
+                )),
+            },
+            KernelInputEvent::ProviderResult { .. }
+            | KernelInputEvent::ProviderError { .. }
+            | KernelInputEvent::ToolResults { .. }
+            | KernelInputEvent::MilestoneResult { .. }
+            | KernelInputEvent::LoadWorkflow { .. }
+            | KernelInputEvent::SpawnSubAgent { .. } => match self.lifecycle {
+                KernelLifecycle::Running => Ok(LifecycleTransition::Stay),
+                _ => Err(format!(
+                    "execution input is not valid in lifecycle {:?}",
+                    self.lifecycle
+                )),
+            },
+            KernelInputEvent::SubmitWorkflow { .. }
+            | KernelInputEvent::SubmitWorkflowNodes { .. }
+            | KernelInputEvent::Signal { .. }
+            | KernelInputEvent::Timeout => match self.lifecycle {
+                KernelLifecycle::Running | KernelLifecycle::Suspended => {
+                    Ok(LifecycleTransition::Stay)
+                }
+                _ => Err(format!(
+                    "execution input is not valid in lifecycle {:?}",
+                    self.lifecycle
+                )),
+            },
+            KernelInputEvent::SubAgentCompleted { .. } => match self.lifecycle {
+                KernelLifecycle::Running | KernelLifecycle::Suspended => {
+                    Ok(LifecycleTransition::Resume)
+                }
+                _ => Err(format!(
+                    "sub_agent_completed is not valid in lifecycle {:?}",
+                    self.lifecycle
+                )),
+            },
+            _ => match self.lifecycle {
+                KernelLifecycle::Suspended => Err(
+                    "only resume, sub_agent_completed, or cancellation is valid while suspended"
+                        .to_string(),
+                ),
+                KernelLifecycle::Created => Ok(LifecycleTransition::Configure),
+                _ => Ok(LifecycleTransition::Stay),
+            },
+        }
+    }
+
+    fn advance_lifecycle(&mut self, transition: LifecycleTransition, step: &KernelStep) {
+        if let Some(result) = step.actions.iter().find_map(|action| match &action.effect {
+            KernelEffect::Done { result } => Some(result),
+            _ => None,
+        }) {
+            self.lifecycle = match result.termination {
+                crate::types::result::TerminationReason::Completed => KernelLifecycle::Completed,
+                crate::types::result::TerminationReason::UserAbort => KernelLifecycle::Cancelled,
+                _ => KernelLifecycle::Failed,
+            };
+            return;
+        }
+
+        if self.sm.is_suspended() {
+            self.lifecycle = KernelLifecycle::Suspended;
+            return;
+        }
+
+        self.lifecycle = match transition {
+            LifecycleTransition::Configure if self.lifecycle == KernelLifecycle::Created => {
+                KernelLifecycle::Configured
+            }
+            LifecycleTransition::Start | LifecycleTransition::Resume => KernelLifecycle::Running,
+            _ => self.lifecycle,
+        };
+    }
+
     fn allocate_step_seq(&mut self) -> u64 {
         let step_seq = self.next_step_seq;
         self.next_step_seq = self.next_step_seq.saturating_add(1);
@@ -874,4 +1017,69 @@ fn pending_effect_kind(effect: &KernelEffect) -> Option<PendingEffectKind> {
         KernelEffect::EvaluateMilestone { .. } => Some(PendingEffectKind::Milestone),
         KernelEffect::Done { .. } => None,
     }
+}
+
+fn validate_run_config(config: &RunConfig) -> Result<(), String> {
+    if matches!(config.attention_max_queue_size, Some(0)) {
+        return Err("attention_max_queue_size must be greater than zero".to_string());
+    }
+    if matches!(config.scheduler_max_wall_ms, Some(0)) {
+        return Err("scheduler_max_wall_ms must be greater than zero".to_string());
+    }
+    if let Some(ratio) = config.knowledge_budget_ratio {
+        if !ratio.is_finite() || !(0.0..=1.0).contains(&ratio) {
+            return Err("knowledge_budget_ratio must be finite and between 0 and 1".to_string());
+        }
+    }
+    if let Some(fuse) = config.repeat_fuse {
+        if fuse.enabled
+            && fuse.deny_after > 0
+            && fuse.terminate_after > 0
+            && fuse.deny_after >= fuse.terminate_after
+        {
+            return Err("repeat_fuse terminate_after must be greater than deny_after".to_string());
+        }
+    }
+    if let Some(watch) = config.entropy_watch {
+        if !watch.threshold.is_finite() || !(0.0..=1.0).contains(&watch.threshold) {
+            return Err("entropy_watch threshold must be finite and between 0 and 1".to_string());
+        }
+        if !watch.hysteresis.is_finite()
+            || watch.hysteresis < 0.0
+            || watch.hysteresis > watch.threshold
+        {
+            return Err(
+                "entropy_watch hysteresis must be finite and no greater than threshold".to_string(),
+            );
+        }
+    }
+    if let Some(quota) = &config.resource_quota {
+        if matches!(quota.memory_writes_per_window, Some((_, 0))) {
+            return Err("memory write quota window must be greater than zero".to_string());
+        }
+    }
+    if let Some(governance) = &config.governance {
+        if governance
+            .rate_limits
+            .iter()
+            .any(|limit| limit.window_ms == 0)
+        {
+            return Err("governance rate-limit windows must be greater than zero".to_string());
+        }
+        for constraint in &governance.constraints {
+            if let ConstraintSpec::Range {
+                min: Some(min),
+                max: Some(max),
+                ..
+            } = constraint
+            {
+                if !min.is_finite() || !max.is_finite() || min > max {
+                    return Err(
+                        "governance range constraints require finite min <= max".to_string()
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }

@@ -269,3 +269,32 @@ fn turn_checkpoint_default_is_zero() {
     assert_eq!(cp.signals_len, 0);
     assert!(cp.task_state.is_none());
 }
+
+#[test]
+fn kernel_config_transaction_rejects_partial_mutation() {
+    use deepstrike_core::runtime::{
+        KernelFaultCode, KernelInput, KernelInputEvent, KernelLifecycle, KernelRuntime,
+    };
+    use deepstrike_core::runtime::kernel::RunConfig;
+
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let step = runtime.step(KernelInput::correlated(
+        "op-transaction",
+        "event-config-invalid",
+        1,
+        KernelInputEvent::ConfigureRun {
+            config: RunConfig {
+                memory_enabled: Some(true),
+                knowledge_budget_ratio: Some(1.5),
+                ..RunConfig::default()
+            },
+        },
+    ));
+
+    assert!(matches!(
+        step.faults.as_slice(),
+        [fault] if fault.code == KernelFaultCode::InvalidConfig
+    ));
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Created);
+    assert!(!runtime.state_machine().ctx.memory_enabled);
+}

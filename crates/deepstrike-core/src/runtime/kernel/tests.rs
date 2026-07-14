@@ -138,6 +138,15 @@ fn cross_operation_input_is_rejected() {
 #[test]
 fn unknown_effect_result_is_rejected() {
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(correlated_input(
+        "op-1",
+        "event-0",
+        41,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("test"),
+            run_spec: None,
+        },
+    ));
     let step = runtime.step(correlated_input(
         "op-1",
         "event-1",
@@ -205,6 +214,122 @@ fn event_replay_dedupe_has_a_fixed_capacity() {
     }
 
     assert_eq!(runtime.recorded_event_count(), EVENT_REPLAY_WINDOW_CAPACITY);
+}
+
+#[test]
+fn provider_result_before_start_is_an_invalid_lifecycle_fault() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let step = runtime.step(correlated_input(
+        "op-1",
+        "event-1",
+        42,
+        KernelInputEvent::ProviderResult {
+            effect_id: "not-yet-issued".to_string(),
+            message: Message::assistant("too early"),
+            observed_input_tokens: None,
+            observed_output_tokens: None,
+            now_ms: None,
+            stop_reason: None,
+        },
+    ));
+
+    assert!(matches!(
+        step.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::InvalidLifecycle,
+            ..
+        }]
+    ));
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Created);
+}
+
+#[test]
+fn configure_run_validates_before_applying_any_field() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let step = runtime.step(correlated_input(
+        "op-1",
+        "event-1",
+        42,
+        KernelInputEvent::ConfigureRun {
+            config: RunConfig {
+                memory_enabled: Some(true),
+                knowledge_budget_ratio: Some(1.5),
+                ..RunConfig::default()
+            },
+        },
+    ));
+
+    assert!(matches!(
+        step.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::InvalidConfig,
+            ..
+        }]
+    ));
+    assert!(!runtime.state_machine().ctx.memory_enabled);
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Created);
+}
+
+#[test]
+fn configure_then_start_advances_the_explicit_lifecycle() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Created);
+
+    runtime.step(correlated_input(
+        "op-1",
+        "event-1",
+        42,
+        KernelInputEvent::ConfigureRun {
+            config: RunConfig::default(),
+        },
+    ));
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Configured);
+
+    runtime.step(correlated_input(
+        "op-1",
+        "event-2",
+        43,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("test"),
+            run_spec: None,
+        },
+    ));
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Running);
+}
+
+#[test]
+fn terminal_lifecycle_rejects_business_mutation() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled {
+        enabled: true,
+    }));
+    runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("test"),
+        run_spec: None,
+    }));
+    runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
+        effect_id: runtime.pending_provider_effect_id(),
+        message: Message::assistant("done"),
+        observed_input_tokens: None,
+        observed_output_tokens: None,
+        now_ms: None,
+        stop_reason: None,
+    }));
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Completed);
+
+    let step = runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled {
+        enabled: false,
+    }));
+
+    assert!(matches!(
+        step.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::InvalidLifecycle,
+            ..
+        }]
+    ));
+    assert!(runtime.state_machine().ctx.memory_enabled);
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Completed);
 }
 
 #[test]
@@ -382,7 +507,7 @@ fn skill_lease_expires_after_turns_and_reactivation_renarrows() {
     }));
     runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
         effect_id: runtime.pending_provider_effect_id(),
-        message: Message::assistant("done"),
+        message: assistant_calling("read"),
         observed_input_tokens: None,
         observed_output_tokens: None,
         stop_reason: None,
@@ -1250,6 +1375,7 @@ fn governance_ask_user_suspends_until_resume() {
         )),
         "expected a Suspended observation",
     );
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Suspended);
 
     let resumed = runtime.step(KernelInput::new(KernelInputEvent::Resume {
         approved_calls: vec!["call-1".to_string()],
@@ -1271,6 +1397,7 @@ fn governance_ask_user_suspends_until_resume() {
         KernelObservation::Resumed { approved, denied, .. }
         if approved == &["call-1"] && denied.is_empty()
     )),);
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Running);
 }
 
 #[test]
@@ -1645,16 +1772,10 @@ fn load_workflow_input_drives_dag_to_completion() {
 }
 
 #[test]
-fn load_workflow_self_bootstraps_with_no_prior_start_run() {
-    // K1: a stateless `runWorkflow` caller fires `LoadWorkflow` with NO preceding `StartRun`. The
-    // host path now self-bootstraps the run (parity with the agent-reachable `SubmitWorkflow`), so
-    // the DAG installs and drives to completion exactly as the started-path test above.
+fn load_workflow_without_start_run_is_rejected() {
     use crate::orchestration::workflow::fanout_synthesize;
-    use crate::types::result::{LoopResult, SubAgentResult, TerminationReason};
 
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
-    // NOTE: deliberately no StartRun here — that is the whole point of K1.
-
     let spec = fanout_synthesize(
         vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
         RuntimeTask::new("synth"),
@@ -1667,40 +1788,17 @@ fn load_workflow_self_bootstraps_with_no_prior_start_run() {
         resumed_submission_bases: Vec::new(),
         resumed_results: Vec::new(),
     }));
-    let batch = step
-        .observations
-        .iter()
-        .find_map(|o| match o {
-            KernelObservation::WorkflowBatchSpawned { nodes, .. } => Some(nodes.clone()),
-            _ => None,
-        })
-        .expect("workflow_batch_spawned even without a prior StartRun");
-    assert_eq!(batch.len(), 2);
 
-    let complete = |runtime: &mut KernelRuntime, id: &str| {
-        runtime.step(KernelInput::new(KernelInputEvent::SubAgentCompleted {
-            result: SubAgentResult {
-                agent_id: compact_str::CompactString::new(id),
-                result: LoopResult {
-                    termination: TerminationReason::Completed,
-                    final_message: None,
-                    turns_used: 1,
-                    total_tokens_used: 1,
-                    loop_continue: None,
-                    classify_branch: None,
-                    tournament_winner: None,
-                    pace_decision: None,
-                },
-            },
-        }))
-    };
-    complete(&mut runtime, "wf-node0");
-    complete(&mut runtime, "wf-node1");
-    let step = complete(&mut runtime, "wf-node2");
-    assert!(step.observations.iter().any(|o| matches!(
-        o,
-        KernelObservation::WorkflowCompleted { completed, .. } if completed.len() == 3
-    )));
+    assert!(step.actions.is_empty());
+    assert!(step.observations.is_empty());
+    assert!(matches!(
+        step.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::InvalidLifecycle,
+            ..
+        }]
+    ));
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Created);
 }
 
 #[test]

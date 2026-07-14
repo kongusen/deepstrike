@@ -41,7 +41,7 @@ Verify: `cargo test -p deepstrike-core lifecycle` and `cargo test -p deepstrike-
 
 Dependencies: Task 2.
 
-Files: kernel protocol/runtime/tests, state-machine mod, `tests/rust/`（`src/t13_transaction.rs`）.
+Files: kernel protocol/runtime/tests and runtime re-exports, the state-machine workflow module, `tests/rust/`（`src/t13_transaction.rs`）.
 
 ### Task 4: Close the mutable state-machine escape hatch
 

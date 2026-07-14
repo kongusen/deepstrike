@@ -7,28 +7,11 @@ use crate::runtime::session::RollbackReason;
 use crate::syscall::{Disposition, Syscall};
 use crate::types::message::Message;
 use crate::types::result::SubAgentResult;
-use crate::types::task::RuntimeTask;
 
 impl LoopStateMachine {
     /// Whether a workflow DAG is currently in flight.
     pub fn workflow_active(&self) -> bool {
         self.workflow.is_some()
-    }
-
-    /// K1: bring the host `LoadWorkflow` path to parity with the agent-reachable `SubmitWorkflow`,
-    /// which already bootstraps a run when none is active. If the root task is still `Ready` (the host
-    /// never fired `StartRun` — e.g. a stateless `runWorkflow` caller), run the same initialization
-    /// `StartRun` performs so the DAG installs onto a live run. No-op once the root has left `Ready`
-    /// (host started it, or we already bootstrapped), so it is safe to call unconditionally and carries
-    /// no behavior change for runs that were started normally. The `CallLLM` action `start` returns is
-    /// discarded — the workflow drives nodes, not a root provider turn, exactly as the SDK's previous
-    /// `start_run` + `load_workflow` sequence already did.
-    pub fn ensure_started_for_workflow(&mut self, spec: &crate::orchestration::workflow::WorkflowSpec) {
-        if !matches!(self.lifecycle(), TaskLifecycle::Ready) {
-            return;
-        }
-        let goal = format!("workflow:{} nodes", spec.nodes.len());
-        let _ = self.start(RuntimeTask::new(goal));
     }
 
     /// W0: load a workflow DAG and spawn its first gated batch. On an invalid spec (cycle /

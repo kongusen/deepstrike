@@ -1,6 +1,24 @@
 use super::*;
 pub const KERNEL_ABI_VERSION: u32 = 2;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KernelLifecycle {
+    Created,
+    Configured,
+    Running,
+    Suspended,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+impl KernelLifecycle {
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Cancelled | Self::Failed)
+    }
+}
+
 /// Serializable permission action for the governance ABI.
 /// Mirrors [`crate::governance::permission::PermissionAction`] without coupling
 /// the wire format to the internal type.

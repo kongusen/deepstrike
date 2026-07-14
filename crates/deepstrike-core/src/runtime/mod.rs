@@ -9,7 +9,8 @@ pub mod session;
 
 pub use kernel::{
     KERNEL_ABI_VERSION, KernelAction, KernelEffect, KernelFault, KernelFaultCode, KernelInput,
-    KernelInputEvent, KernelObservation, KernelPressureAction, KernelRuntime, KernelStep,
+    KernelInputEvent, KernelLifecycle, KernelObservation, KernelPressureAction, KernelRuntime,
+    KernelStep,
 };
 
 pub use repair::{
