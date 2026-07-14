@@ -3,6 +3,7 @@ import json
 import pytest
 
 from deepstrike.runtime.execution_plane import LocalExecutionPlane, RunContext
+from deepstrike.runtime.reliability import OperationContext
 from deepstrike.runtime.worktree_plane import WorktreeExecutionPlane
 from deepstrike.tools.registry import tool
 from deepstrike._kernel import ToolCall
@@ -87,6 +88,26 @@ async def test_injected_cwd_reaches_a_tool_via_ctx():
         pass
 
     assert seen["cwd"] == "/tmp/wt/wf-node7"
+
+
+@pytest.mark.asyncio
+async def test_operation_identity_reaches_a_tool_via_ctx():
+    seen = {}
+
+    async def probe(ctx=None) -> str:
+        seen["operation"] = ctx.operation if ctx is not None else None
+        return "ok"
+
+    plane = LocalExecutionPlane().register(tool(probe))
+    operation = OperationContext(run_id="run-1", session_id="session-1", agent_id="agent-1")
+
+    async for _ in plane.execute_all(
+        [ToolCall(id="c1", name="probe", arguments="{}")],
+        RunContext(operation=operation),
+    ):
+        pass
+
+    assert seen["operation"] is operation
 
 
 @pytest.mark.asyncio

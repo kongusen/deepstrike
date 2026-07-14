@@ -53,7 +53,6 @@ describe("semantic page_out → DreamStore (Layer 5 contract)", () => {
     )
 
     await collectText(runner.run({ sessionId: "semantic-page-out", goal: "fill until compact" }))
-    await new Promise(r => setTimeout(r, 50))
 
     expect(commitCalls).toBeGreaterThan(0)
     expect(lastSummary).toContain("long-term summary")

@@ -1,8 +1,31 @@
 import { LocalExecutionPlane } from "../../src/runtime/execution-plane.js"
 import { tool, streamingTool } from "../../src/tools/index.js"
+import type { OperationContext } from "../../src/runtime/reliability.js"
 
 describe("LocalExecutionPlane", () => {
 
+  it("passes immutable operation identity to tools", async () => {
+    const plane = new LocalExecutionPlane()
+    const seen: OperationContext[] = []
+    plane.register(tool("observe_context", "Observe context", { type: "object", properties: {} }, (_args, ctx) => {
+      if (ctx?.operation) seen.push(ctx.operation)
+      return "ok"
+    }))
+    const operation: OperationContext = {
+      runId: "run-1",
+      sessionId: "session-1",
+      agentId: "agent-1",
+      signal: new AbortController().signal,
+    }
+
+    for await (const _event of plane.executeAll(
+      [{ id: "call-1", name: "observe_context", arguments: "{}" }],
+      { operation },
+    )) { /* drain */ }
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toBe(operation)
+  })
 
   it("runs regular tools concurrently and emits one result per call", async () => {
     const plane = new LocalExecutionPlane()

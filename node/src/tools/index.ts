@@ -1,5 +1,6 @@
 import type { ToolChunk, ToolSchema, ToolResult } from "../types.js"
 import { formatToolError } from "./errors.js"
+import type { OperationContext } from "../runtime/reliability.js"
 
 /** M3/G4: the runtime context a tool may read when executing. Carries the working directory the tool
  *  should operate in — set to a sub-agent's git worktree for `isolation: "worktree"` nodes. A narrow,
@@ -11,6 +12,7 @@ import { formatToolError } from "./errors.js"
  *  the tool still completes successfully — avoiding the foot-gun where a transient audit-store
  *  outage flips an already-committed write into `isError: true` and triggers a duplicate retry. */
 export interface ToolExecContext {
+  operation?: OperationContext
   cwd?: string
   audit?: (label: string, fn: () => Promise<void> | void) => Promise<void>
 }

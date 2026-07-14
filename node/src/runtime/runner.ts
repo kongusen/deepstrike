@@ -89,6 +89,8 @@ import { kernelObservationToSessionEvent } from "./kernel-event-log.js"
 import { assertNativeProfile, type NativeOsProfile, type OsProfileId } from "./os-profile.js"
 import { LargeResultSpool } from "./large-result-spool.js"
 import { formatToolError } from "../tools/errors.js"
+import { ManagedTaskScope } from "./reliability.js"
+import type { BackgroundTaskErrorHandler, OperationContext } from "./reliability.js"
 
 export interface SchedulerBudget {
   maxWallMs?: number
@@ -156,6 +158,8 @@ export interface RuntimeOptions {
   worktreeManager?: import("./worktree-plane.js").WorktreeManager
   sessionLog: SessionLog
   executionPlane: ExecutionPlane
+  /** Receives failures from run-owned best-effort tasks after their semantic owner has committed. */
+  onBackgroundTaskError?: BackgroundTaskErrorHandler
   maxTokens: number
   maxTurns?: number
   timeoutMs?: number
@@ -402,14 +406,14 @@ export class RuntimeRunner {
 
   async writeMemory(
     memory: MemoryWriteRequest,
-    opts: { sessionId?: string; agentId?: string } = {},
+    opts: { sessionId?: string; agentId?: string; runtime?: KernelRuntimeInstance } = {},
   ): Promise<void> {
     const sessionId = opts.sessionId ?? this.currentSessionId
     const agentId = opts.agentId ?? this.opts.agentId
     if (!this.opts.dreamStore || !agentId) return
 
     const observations: KernelObservation[] = []
-    const runtime = this.activeKernel ?? this.createSyscallRuntime()
+    const runtime = opts.runtime ?? this.activeKernel ?? this.createSyscallRuntime()
     kernelApply(runtime, observations, { kind: "write_memory", memory })
 
     const event = observations.find(o => o.kind === "memory_written")
@@ -1304,10 +1308,14 @@ export class RuntimeRunner {
   }): AsyncIterable<StreamEvent> {
     const prior = req.inheritEvents ?? await this.opts.sessionLog.read(req.sessionId)
     const midRun = isMidRun(prior)
+    const resumedStart = [...prior].reverse().find(entry => entry.event.kind === "run_started")
+    const runId = midRun && resumedStart?.event.kind === "run_started"
+      ? resumedStart.event.run_id
+      : crypto.randomUUID()
     if (!midRun) {
       await this.opts.sessionLog.append(req.sessionId, {
         kind: "run_started",
-        run_id: crypto.randomUUID(),
+        run_id: runId,
         goal: req.goal,
         criteria: req.criteria ?? [],
         agent_id: this.opts.agentId,
@@ -1323,6 +1331,7 @@ export class RuntimeRunner {
       prior.length > 0 ? prior : undefined,
       midRun,
       req.attachments,
+      runId,
     )
   }
 
@@ -1334,7 +1343,7 @@ export class RuntimeRunner {
     if (!startEntry) throw new Error(`No run_started event for session: ${sessionId}`)
     const start = startEntry.event as Extract<SessionEvent, { kind: "run_started" }>
 
-    yield* this.execute(sessionId, start.goal, start.criteria, extensions, events, true, start.attachments)
+    yield* this.execute(sessionId, start.goal, start.criteria, extensions, events, true, start.attachments, start.run_id)
   }
 
   async *dream(agentId: string, nowMs = Date.now()): AsyncIterable<StreamEvent> {
@@ -1569,6 +1578,7 @@ export class RuntimeRunner {
     priorEvents?: Array<{ seq: number; event: SessionEvent }>,
     resumeMidRun = false,
     attachments?: ContentPart[],
+    runId: string = crypto.randomUUID(),
   ): AsyncIterable<StreamEvent> {
     this.interrupted = false
     this.abortController = new AbortController()
@@ -1586,6 +1596,14 @@ export class RuntimeRunner {
     const providerPolicy = this.opts.provider.runtimePolicy?.() ?? {}
     const effectiveMaxTurns = this.opts.maxTurns ?? providerPolicy.maxTurns ?? 25
     const effectiveTimeoutMs = this.opts.timeoutMs ?? providerPolicy.timeoutMs
+    const operation: OperationContext = {
+      runId,
+      sessionId,
+      agentId: this.opts.agentId,
+      signal: this.abortController.signal,
+      ...(effectiveTimeoutMs !== undefined ? { deadlineMs: Date.now() + effectiveTimeoutMs } : {}),
+    }
+    const taskScope = new ManagedTaskScope(operation, this.opts.onBackgroundTaskError)
 
     const runtime = new kernel.KernelRuntime({
       maxTokens: this.opts.maxTokens,
@@ -1810,6 +1828,7 @@ export class RuntimeRunner {
         sessionId,
         runtime,
         nextCompressedArchiveStart,
+        taskScope,
       )
       this.nextArchiveStart = nextCompressedArchiveStart
       if (this.interrupted) {
@@ -2007,6 +2026,7 @@ export class RuntimeRunner {
         await this.opts.sessionLog.append(sessionId, { kind: "tool_requested", turn: runtime.turn(), calls: allCalls })
 
         const runCtx: RunContext = {
+          operation,
           agentId: this.opts.agentId,
           skillDir: this.opts.skillDir,
           dreamStore: this.opts.dreamStore,
@@ -2263,6 +2283,7 @@ export class RuntimeRunner {
             sessionId,
             runtime,
             this.nextArchiveStart,
+            taskScope,
           )
         } else if (this.opts.onMilestoneEvaluate) {
           const check = await this.opts.onMilestoneEvaluate({
@@ -2278,12 +2299,14 @@ export class RuntimeRunner {
             sessionId,
             runtime,
             this.nextArchiveStart,
+            taskScope,
           )
         } else {
           this.nextArchiveStart = await this.appendObservations(
             sessionId,
             runtime,
             this.nextArchiveStart,
+            taskScope,
           )
           const turnsUsed = Math.max(1, runtime.turn())
           await this.opts.sessionLog.append(sessionId, buildRunTerminalEvent({
@@ -2291,6 +2314,7 @@ export class RuntimeRunner {
             turnsUsed,
             totalTokens: 0,
           }))
+          await taskScope.drain()
           yield { type: "done", iterations: turnsUsed, totalTokens: 0, status: "milestone_pending" } as DoneEvent
           this.activeKernel = null
           this.currentSessionId = null
@@ -2320,6 +2344,7 @@ export class RuntimeRunner {
           totalTokens: 0,
         }))
       } catch { /* session log failure must not mask the original error */ }
+      await taskScope.drain()
       yield { type: "done", iterations: runtime.turn() || 0, totalTokens: 0, status: reason } as DoneEvent
       this.activeKernel = null
       this.currentSessionId = null
@@ -2342,6 +2367,7 @@ export class RuntimeRunner {
       sessionId,
       runtime,
       nextCompressedArchiveStart,
+      taskScope,
     )
     await this.opts.sessionLog.append(sessionId, buildRunTerminalEvent({
       reason: status,
@@ -2380,6 +2406,7 @@ export class RuntimeRunner {
       }
     }
 
+    await taskScope.drain()
     yield {
       type: "done",
       iterations: turnsUsed,
@@ -2434,6 +2461,7 @@ export class RuntimeRunner {
     sessionId: string,
     runtime: KernelRuntimeInstance,
     nextArchiveStart: number,
+    taskScope?: ManagedTaskScope,
   ): Promise<number> {
     const turn = runtime.turn()
     const preservedRefs = runtime.preservedRefs()
@@ -2488,13 +2516,15 @@ export class RuntimeRunner {
         nextArchiveStart = compressedSeq + 1
         const archived = obs.kind === "compressed" ? obs.archived : undefined
         if (this.opts.asyncSummarizer && archived && archived.length > 0) {
-          void this.upgradeCompressedSummary(
+          const upgrade = () => this.upgradeCompressedSummary(
             sessionId,
             compressedSeq,
             archived as Message[],
             compressionAction(obs.action) ?? "auto_compact",
             runtime,
           )
+          if (taskScope) taskScope.spawn("compressed-summary-upgrade", upgrade)
+          else void upgrade().catch(() => {})
         }
         // One compaction = one kernel observation: the page_out session record (and the
         // semantic-archive branch) is DERIVED here from Compressed.tier_hint, preserving the
@@ -2509,7 +2539,14 @@ export class RuntimeRunner {
             message_count: archived.length,
           })
           if (obs.tier_hint === "semantic") {
-            void this.archiveSemanticPageOut(archived as Message[], compressionAction(obs.action))
+            const archive = () => this.archiveSemanticPageOut(
+              archived as Message[],
+              compressionAction(obs.action),
+              sessionId,
+              runtime,
+            )
+            if (taskScope) taskScope.spawn("semantic-page-out", archive)
+            else void archive().catch(() => {})
           }
         }
       }
@@ -2523,32 +2560,33 @@ export class RuntimeRunner {
     return nextArchiveStart
   }
 
-  private async archiveSemanticPageOut(archived: Message[], action?: string): Promise<void> {
+  private async archiveSemanticPageOut(
+    archived: Message[],
+    action: string | undefined,
+    sessionId: string,
+    runtime: KernelRuntimeInstance,
+  ): Promise<void> {
     if (!this.opts.dreamStore || !this.opts.agentId) return
-    try {
-      const summary = this.opts.dreamSummarizer
-        ? await this.opts.dreamSummarizer.summarize(archived, { action })
-        : await summarizeForLongTermMemory(
-          this.opts.dreamProvider ?? this.opts.provider,
-          archived,
-          this.opts.dreamSystemPrompt,
-        )
-      // P2 write-funnel: route through the ONE gated WriteMemory syscall so validation,
-      // the rolling write quota, dedup, and the memory_written audit all apply. Score is
-      // advisory (0.6) — an automatic summary must never outrank curated content.
-      await this.writeMemory({
-        content: summary,
-        metadata: {
-          name: `page-out-${Date.now()}`,
-          description: `auto summary of ${action ?? "compaction"} archive`,
-          source: "semantic_page_out",
-          action,
-          score: 0.6,
-        } as unknown as MemoryWriteRequest["metadata"],
-      })
-    } catch {
-      // non-fatal: in-context compression summary remains; long-term layer is best-effort
-    }
+    const summary = this.opts.dreamSummarizer
+      ? await this.opts.dreamSummarizer.summarize(archived, { action })
+      : await summarizeForLongTermMemory(
+        this.opts.dreamProvider ?? this.opts.provider,
+        archived,
+        this.opts.dreamSystemPrompt,
+      )
+    // P2 write-funnel: route through the ONE gated WriteMemory syscall so validation,
+    // the rolling write quota, dedup, and the memory_written audit all apply. Score is
+    // advisory (0.6) — an automatic summary must never outrank curated content.
+    await this.writeMemory({
+      content: summary,
+      metadata: {
+        name: `page-out-${Date.now()}`,
+        description: `auto summary of ${action ?? "compaction"} archive`,
+        source: "semantic_page_out",
+        action,
+        score: 0.6,
+      } as unknown as MemoryWriteRequest["metadata"],
+    }, { sessionId, agentId: this.opts.agentId, runtime })
   }
 
   private async upgradeCompressedSummary(
@@ -2558,29 +2596,25 @@ export class RuntimeRunner {
     action: string,
     runtime?: KernelRuntimeInstance,
   ): Promise<void> {
-    try {
-      const summary = await this.opts.asyncSummarizer!.summarize(archived, action)
-      await this.opts.sessionLog.append(sessionId, {
-        kind: "summary_upgraded",
-        compressed_seq: compressedSeq,
-        summary,
+    const summary = await this.opts.asyncSummarizer!.summarize(archived, action)
+    await this.opts.sessionLog.append(sessionId, {
+      kind: "summary_upgraded",
+      compressed_seq: compressedSeq,
+      summary,
+    })
+    // P4: the LLM summary also re-enters the LIVE session as a keyed page-in entry —
+    // K1 boundary-deferred upsert lands it with zero mid-generation cache churn and the
+    // K2 budget governs its size. The RuleSummarizer text remains the synchronous label.
+    if (runtime) {
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "page_in",
+        entries: [{
+          content: `[ARCHIVE SUMMARY] ${summary}`,
+          key: `summary:seq-${compressedSeq}`,
+          pinned: false,
+          source: "async_summarizer",
+        }],
       })
-      // P4: the LLM summary also re-enters the LIVE session as a keyed page-in entry —
-      // K1 boundary-deferred upsert lands it with zero mid-generation cache churn and the
-      // K2 budget governs its size. The RuleSummarizer text remains the synchronous label.
-      if (runtime) {
-        kernelApply(runtime, this.pendingObservations, {
-          kind: "page_in",
-          entries: [{
-            content: `[ARCHIVE SUMMARY] ${summary}`,
-            key: `summary:seq-${compressedSeq}`,
-            pinned: false,
-            source: "async_summarizer",
-          }],
-        })
-      }
-    } catch {
-      // non-fatal: rule-based summary stays in place
     }
   }
 }

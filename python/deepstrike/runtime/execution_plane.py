@@ -31,6 +31,7 @@ if TYPE_CHECKING:
   from deepstrike.knowledge.source import KnowledgeSource
   from deepstrike.memory.protocols import DreamStore
   from deepstrike.runtime.large_result_spool import LargeResultSpool
+  from deepstrike.runtime.reliability import OperationContext
 
 
 def _strip_frontmatter(content: str) -> str:
@@ -73,6 +74,7 @@ def _maybe_warn_failure_shaped_chunk(tool_name: str, delta_text: str) -> None:
 
 @dataclass
 class RunContext:
+  operation: "OperationContext | None" = None
   agent_id: str | None = None
   skill_dir: Path | None = None
   dream_store: "DreamStore | None" = None
@@ -229,6 +231,7 @@ class LocalExecutionPlane:
         audit_failures.append((label, format_tool_error(ae)))
 
     call_ctx = RunContext(
+      operation=ctx.operation,
       agent_id=ctx.agent_id,
       skill_dir=ctx.skill_dir,
       dream_store=ctx.dream_store,

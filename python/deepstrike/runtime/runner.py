@@ -68,6 +68,11 @@ from deepstrike.runtime.session_log import SessionEntry, SessionEvent, SessionLo
 from deepstrike.runtime.archive import ArchiveStore
 from deepstrike.runtime.os_profile import assert_native_profile
 from deepstrike.runtime.run_group import RunGroup
+from deepstrike.runtime.reliability import (
+  BackgroundTaskErrorHandler,
+  ManagedTaskScope,
+  OperationContext,
+)
 from deepstrike.signals.types import RuntimeSignal
 
 if TYPE_CHECKING:
@@ -152,6 +157,8 @@ class RuntimeOptions:
   provider: LLMProvider
   session_log: SessionLog
   execution_plane: ExecutionPlane | None = None
+  # Failures from run-owned best-effort tasks after their semantic owner has committed.
+  on_background_task_error: BackgroundTaskErrorHandler | None = None
   # M1/G3 intelligence routing: resolve a per-node provider from a workflow node's ``model_hint``.
   # Returns None ⇒ fall back to ``provider``. Without this hook the hint is a no-op.
   provider_for: Callable[[str], LLMProvider | None] | None = None
@@ -266,6 +273,7 @@ class RuntimeRunner:
     self._interrupted = False
     self._plane = opts.execution_plane or LocalExecutionPlane()
     self._active_kernel: KernelRuntime | None = None
+    self._active_operation: OperationContext | None = None
     self._pending_observations: list[dict] = []
     # K4: the active run's goal, kept for the renewal-boundary memory re-query.
     self._current_goal = ""
@@ -295,6 +303,7 @@ class RuntimeRunner:
     *,
     session_id: str | None = None,
     agent_id: str | None = None,
+    runtime: KernelRuntime | None = None,
   ) -> None:
     resolved_session_id = session_id or self._current_session_id
     resolved_agent_id = agent_id or self._opts.agent_id
@@ -302,8 +311,8 @@ class RuntimeRunner:
       return
 
     observations: list[dict[str, Any]] = []
-    runtime = self._active_kernel or self._create_syscall_runtime()
-    kernel_apply(runtime, observations, {"kind": "write_memory", "memory": memory})
+    target_runtime = runtime or self._active_kernel or self._create_syscall_runtime()
+    kernel_apply(target_runtime, observations, {"kind": "write_memory", "memory": memory})
 
     if any(o.get("kind") == "memory_written" for o in observations):
       from deepstrike.memory.protocols import CurationResult, CurationStats, MemoryEntry
@@ -1144,6 +1153,8 @@ class RuntimeRunner:
 
   def interrupt(self) -> None:
     self._interrupted = True
+    if self._active_operation is not None and self._active_operation.cancelled is not None:
+      self._active_operation.cancelled.set()
 
   def push_knowledge(
     self,
@@ -1295,10 +1306,12 @@ class RuntimeRunner:
     sid = session_id or str(uuid.uuid4())
     prior = inherit_events if inherit_events is not None else await self._opts.session_log.read(sid)
     mid_run = _is_mid_run(prior)
+    resumed_start = next((entry for entry in reversed(prior) if entry.event.get("kind") == "run_started"), None)
+    run_id = resumed_start.event["run_id"] if mid_run and resumed_start is not None else str(uuid.uuid4())
     if not mid_run:
       await self._opts.session_log.append(sid, {
         "kind": "run_started",
-        "run_id": str(uuid.uuid4()),
+        "run_id": run_id,
         "goal": goal,
         "criteria": criteria or [],
         **({"agent_id": self._opts.agent_id} if self._opts.agent_id else {}),
@@ -1307,7 +1320,7 @@ class RuntimeRunner:
       })
     async for evt in self._execute(
       sid, goal, criteria or [], extensions,
-      prior if prior else None, mid_run, attachments,
+      prior if prior else None, mid_run, attachments, run_id,
     ):
       yield evt
 
@@ -1331,6 +1344,7 @@ class RuntimeRunner:
       events,
       True,
       start.get("attachments"),
+      start["run_id"],
     ):
       yield evt
 
@@ -1578,6 +1592,7 @@ class RuntimeRunner:
     prior_events: list[SessionEntry] | None,
     resume_mid_run: bool,
     attachments: list[dict] | None = None,
+    run_id: str | None = None,
   ) -> AsyncIterator[StreamEvent]:
     self._interrupted = False
     self._pending_observations = []
@@ -1594,6 +1609,14 @@ class RuntimeRunner:
     provider_policy = _get_policy() if callable(_get_policy) else None
     effective_max_turns  = self._opts.max_turns  or (provider_policy.max_turns  if provider_policy else None) or 25
     effective_timeout_ms = self._opts.timeout_ms or (provider_policy.timeout_ms if provider_policy else None)
+    operation = OperationContext(
+      run_id=run_id or str(uuid.uuid4()),
+      session_id=session_id,
+      agent_id=self._opts.agent_id,
+      deadline_ms=(int(time.time() * 1000) + effective_timeout_ms) if effective_timeout_ms is not None else None,
+    )
+    self._active_operation = operation
+    task_scope = ManagedTaskScope(operation, self._opts.on_background_task_error)
 
     _policy_kwargs: dict[str, Any] = dict(
       max_tokens=self._opts.max_tokens,
@@ -1894,7 +1917,7 @@ class RuntimeRunner:
     try:
      while not runtime.is_terminal():
       next_compressed_archive_start = await self._append_observations(
-        session_id, runtime, next_compressed_archive_start,
+        session_id, runtime, next_compressed_archive_start, task_scope,
       )
       self._next_archive_start = next_compressed_archive_start
       if self._interrupted:
@@ -2065,6 +2088,7 @@ class RuntimeRunner:
         })
         from deepstrike.runtime.large_result_spool import LargeResultSpool
         run_ctx = RunContext(
+          operation=operation,
           agent_id=self._opts.agent_id,
           skill_dir=skill_dir,
           dream_store=self._opts.dream_store,
@@ -2305,7 +2329,7 @@ class RuntimeRunner:
             "result": milestone_check_result_to_kernel(milestone_check_pass(action.phase_id)),
           })
           next_compressed_archive_start = await self._append_observations(
-            session_id, runtime, next_compressed_archive_start,
+            session_id, runtime, next_compressed_archive_start, task_scope,
           )
         elif self._opts.on_milestone_evaluate is not None:
           from deepstrike.types.agent import milestone_check_result_to_kernel
@@ -2321,11 +2345,11 @@ class RuntimeRunner:
             "result": milestone_check_result_to_kernel(check),
           })
           next_compressed_archive_start = await self._append_observations(
-            session_id, runtime, next_compressed_archive_start,
+            session_id, runtime, next_compressed_archive_start, task_scope,
           )
         else:
           next_compressed_archive_start = await self._append_observations(
-            session_id, runtime, next_compressed_archive_start,
+            session_id, runtime, next_compressed_archive_start, task_scope,
           )
           turns_used = max(1, runtime.turn())
           await self._opts.session_log.append(session_id, build_run_terminal_event(
@@ -2333,7 +2357,9 @@ class RuntimeRunner:
             turns_used=turns_used,
             total_tokens=0,
           ))
+          await task_scope.drain()
           self._active_kernel = None
+          self._active_operation = None
           self._current_session_id = None
           yield DoneEvent(iterations=turns_used, total_tokens=0, status="milestone_pending")
           return
@@ -2355,8 +2381,10 @@ class RuntimeRunner:
         ))
       except Exception:
         pass  # session log failure must not mask the original error
+      await task_scope.drain()
       yield DoneEvent(iterations=runtime.turn() or 0, total_tokens=0, status=reason)
       self._active_kernel = None
+      self._active_operation = None
       self._current_session_id = None
       return
 
@@ -2367,7 +2395,7 @@ class RuntimeRunner:
     total_tokens = result.total_tokens_used if result else 0
 
     next_compressed_archive_start = await self._append_observations(
-      session_id, runtime, next_compressed_archive_start,
+      session_id, runtime, next_compressed_archive_start, task_scope,
     )
     await self._opts.session_log.append(session_id, build_run_terminal_event(
       reason=status,
@@ -2400,7 +2428,9 @@ class RuntimeRunner:
         except Exception:
           pass
 
+    await task_scope.drain()
     self._active_kernel = None
+    self._active_operation = None
     self._current_session_id = None
     yield DoneEvent(
       iterations=turns_used,
@@ -2415,6 +2445,7 @@ class RuntimeRunner:
     session_id: str,
     runtime: KernelRuntime,
     next_archive_start: int,
+    task_scope: ManagedTaskScope | None = None,
   ) -> int:
     turn = runtime.turn()
     preserved_refs = runtime.preserved_refs()
@@ -2484,8 +2515,18 @@ class RuntimeRunner:
             "message_count": len(archived),
           })
           if tier_hint == "semantic":
-            import asyncio
-            asyncio.create_task(self._archive_semantic_page_out(list(archived), _compression_action(obs.get("action"))))
+            archive = self._archive_semantic_page_out(
+              list(archived),
+              _compression_action(obs.get("action")),
+              session_id,
+              runtime,
+            )
+            if task_scope is not None:
+              task_scope.spawn("semantic-page-out", archive)
+            else:
+              import asyncio
+              task = asyncio.create_task(archive)
+              task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
       # K4: a sprint renewal dropped the old history — including any earlier memory hits — so
       # re-run the pre_query_memory prefetch for the new sprint (live observations only: this
       # consumer sits on the live drain path, same placement as the semantic page-out archival).
@@ -2535,31 +2576,34 @@ class RuntimeRunner:
     except Exception:
       pass  # errs-open — a faulty pre-fetch never breaks the run
 
-  async def _archive_semantic_page_out(self, archived: list[Any], action: str | None = None) -> None:
+  async def _archive_semantic_page_out(
+    self,
+    archived: list[Any],
+    action: str | None,
+    session_id: str,
+    runtime: KernelRuntime,
+  ) -> None:
     if not self._opts.dream_store or not self._opts.agent_id:
       return
-    try:
-      if self._opts.dream_summarizer:
-        result = self._opts.dream_summarizer(archived, {"action": action})
-        summary = await result if inspect.isawaitable(result) else result
-      else:
-        summary = await self._summarize_for_long_term_memory(archived)
-      # P2 write-funnel: route through the ONE gated write_memory syscall so validation,
-      # the rolling write quota, dedup, and the memory_written audit all apply. Score is
-      # advisory (0.6) — an automatic summary must never outrank curated content.
-      import time as _time
-      await self.write_memory({
-        "content": summary,
-        "metadata": {
-          "name": f"page-out-{int(_time.time() * 1000)}",
-          "description": f"auto summary of {action or 'compaction'} archive",
-          "source": "semantic_page_out",
-          "action": action,
-          "score": 0.6,
-        },
-      })
-    except Exception:
-      pass
+    if self._opts.dream_summarizer:
+      result = self._opts.dream_summarizer(archived, {"action": action})
+      summary = await result if inspect.isawaitable(result) else result
+    else:
+      summary = await self._summarize_for_long_term_memory(archived)
+    # P2 write-funnel: route through the ONE gated write_memory syscall so validation,
+    # the rolling write quota, dedup, and the memory_written audit all apply. Score is
+    # advisory (0.6) — an automatic summary must never outrank curated content.
+    import time as _time
+    await self.write_memory({
+      "content": summary,
+      "metadata": {
+        "name": f"page-out-{int(_time.time() * 1000)}",
+        "description": f"auto summary of {action or 'compaction'} archive",
+        "source": "semantic_page_out",
+        "action": action,
+        "score": 0.6,
+      },
+    }, session_id=session_id, agent_id=self._opts.agent_id, runtime=runtime)
 
   async def _summarize_for_long_term_memory(self, archived: list[Any]) -> str:
     provider = self._opts.dream_provider or self._opts.provider

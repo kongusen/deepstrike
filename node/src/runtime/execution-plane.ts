@@ -9,8 +9,11 @@ import { readSkillFile } from "../skills/loader.js"
 import type { DreamStore, MemoryEntry } from "../memory/protocols.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
 import { LargeResultSpool } from "./large-result-spool.js"
+import type { OperationContext } from "./reliability.js"
 
 export interface RunContext {
+  /** Immutable identity, deadline, and cancellation boundary for this operation. */
+  operation?: OperationContext
   agentId?: string
   skillDir?: string
   dreamStore?: DreamStore
@@ -159,6 +162,7 @@ export class LocalExecutionPlane implements ExecutionPlane {
     // best-effort failures recorded before the main throw.
     const auditFailures: Array<{ label: string; error: string }> = []
     const callCtx: ToolExecContext = {
+      ...(ctx.operation !== undefined ? { operation: ctx.operation } : {}),
       ...(ctx.cwd !== undefined ? { cwd: ctx.cwd } : {}),
       audit: async (label, fn) => {
         try { await fn() }

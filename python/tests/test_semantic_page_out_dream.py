@@ -1,5 +1,3 @@
-import asyncio
-
 import pytest
 
 from deepstrike.memory.protocols import CurationResult, CurationStats, MemoryEntry
@@ -68,7 +66,6 @@ async def test_semantic_page_out_commits_dream_summary():
   ))
 
   await collect_text(runner.run(session_id="semantic-page-out-py", goal="fill until compact"))
-  await asyncio.sleep(0.05)
 
   assert commit_calls > 0
   assert "python long-term summary" in last_summary
