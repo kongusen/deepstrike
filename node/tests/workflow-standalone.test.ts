@@ -7,7 +7,7 @@
  * Uses a stub orchestrator so no LLM is needed — the focus is the bootstrap / teardown / resume wiring.
  */
 import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
-import type { WorkflowSpec } from "../src/index.js"
+import type { SessionEvent, WorkflowSpec } from "../src/index.js"
 
 function stubOrchestrator(onCall?: () => void) {
   return {
@@ -31,6 +31,27 @@ const fanoutSpec: WorkflowSpec = {
 }
 
 describe("runWorkflow bootstraps standalone (no active parent run)", () => {
+  it("does not start nodes when the durable run_started fact cannot be recorded", async () => {
+    let calls = 0
+    class FailingStartLog extends InMemorySessionLog {
+      override async append(sessionId: string, event: SessionEvent): Promise<number> {
+        if (event.kind === "run_started") throw new Error("session log unavailable")
+        return super.append(sessionId, event)
+      }
+    }
+    const runner = new RuntimeRunner({
+      sessionLog: new FailingStartLog(),
+      maxTokens: 8000,
+      subAgentOrchestrator: stubOrchestrator(() => { calls++ }) as never,
+    } as never)
+
+    await expect(runner.runWorkflow(fanoutSpec, { sessionId: "durable-start" }))
+      .rejects.toThrow("session log unavailable")
+    expect(calls).toBe(0)
+    expect((runner as never as { activeKernel: unknown }).activeKernel).toBeNull()
+    expect((runner as never as { currentSessionId: unknown }).currentSessionId).toBeNull()
+  })
+
   it("drives a fanout→synthesize DAG with a bare runner — no activeKernel hack", async () => {
     let calls = 0
     const runner = new RuntimeRunner({

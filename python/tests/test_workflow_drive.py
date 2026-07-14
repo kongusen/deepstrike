@@ -788,6 +788,31 @@ async def test_run_workflow_bootstraps_standalone():
 
 
 @pytest.mark.asyncio
+async def test_standalone_workflow_requires_durable_start_before_dispatch():
+    class _FailingStartLog(InMemorySessionLog):
+        async def append(self, session_id, event):
+            if event["kind"] == "run_started":
+                raise RuntimeError("session log unavailable")
+            return await super().append(session_id, event)
+
+    orch = _StubOrchestrator()
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=_StubProvider(),
+        session_log=_FailingStartLog(),
+        execution_plane=LocalExecutionPlane(),
+        sub_agent_orchestrator=orch,
+        max_tokens=1000,
+    ))
+    spec = WorkflowSpec(nodes=[WorkflowNodeSpec(task="w0", role="explore")])
+
+    with pytest.raises(RuntimeError, match="session log unavailable"):
+        await runner.run_workflow(spec, session_id="durable-start")
+    assert orch.goals == []
+    assert runner._active_kernel is None
+    assert runner._current_session_id is None
+
+
+@pytest.mark.asyncio
 async def test_resume_workflow_standalone_by_session_id():
     """Standalone resume reads the prior session by id; completed nodes are not re-run."""
     orch = _StubOrchestrator()

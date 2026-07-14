@@ -586,32 +586,30 @@ class RuntimeRunner:
     """
     bootstrapped = self._active_kernel is None or self._current_session_id is None
     group_budget_scope: GroupBudgetScope | None = None
-    if bootstrapped:
-      sid = session_id or f"wf-{uuid.uuid4()}"
-      # L1: a standalone workflow is a member of its runner's governance domain. Seed the bootstrap
-      # kernel from the group's cumulative spend (so the cumulative spawn/token cap bites while
-      # scheduling DAG nodes) and register membership — mirroring ``_execute``. Mid-run callers skip
-      # this: their parent ``run()`` already seeds + counts the nodes via ``local_subagents_spawned``.
-      group_tokens_base: int | None = None
-      group_spawns_base: int | None = None
-      if self._opts.run_group is not None:
-        g = self._opts.run_group
-        # W-N5: tagged "vehicle" — an execution envelope, not a persona (ReactiveSession.resume
-        # rebuilds peers only).
-        request = self._group_budget_request(include_tokens=False)
-        group_budget_scope = await GroupBudgetScope.open(
-          g,
-          GroupMember(sid, self._opts.agent_id, kind="vehicle"),
-          limits=request[0] if request else None,
-          requested=request[1] if request else None,
-        )
-        group_tokens_base = group_budget_scope.ledger.tokens_spent
-        group_spawns_base = group_budget_scope.ledger.subagents_spawned
-      self._bootstrap_workflow_kernel(sid, spec, group_tokens_base, group_spawns_base)
-      # Best-effort run_started log so a standalone workflow can be resumed via ``resume_workflow``
-      # (node parity: runner.ts bootstrapWorkflowKernel). The kernel state, not the log, drives the
-      # DAG; a logless store simply means no resume.
-      try:
+    standalone_runtime: KernelRuntime | None = None
+    try:
+      if bootstrapped:
+        sid = session_id or f"wf-{uuid.uuid4()}"
+        # L1: a standalone workflow is a member of its runner's governance domain. Seed the bootstrap
+        # kernel from the group's cumulative spend (so the cumulative spawn/token cap bites while
+        # scheduling DAG nodes) and register membership — mirroring ``_execute``. Mid-run callers skip
+        # this: their parent ``run()`` already seeds + counts the nodes via ``local_subagents_spawned``.
+        group_tokens_base: int | None = None
+        group_spawns_base: int | None = None
+        if self._opts.run_group is not None:
+          g = self._opts.run_group
+          # W-N5: tagged "vehicle" — an execution envelope, not a persona (ReactiveSession.resume
+          # rebuilds peers only).
+          request = self._group_budget_request(include_tokens=False)
+          group_budget_scope = await GroupBudgetScope.open(
+            g,
+            GroupMember(sid, self._opts.agent_id, kind="vehicle"),
+            limits=request[0] if request else None,
+            requested=request[1] if request else None,
+          )
+          group_tokens_base = group_budget_scope.ledger.tokens_spent
+          group_spawns_base = group_budget_scope.ledger.subagents_spawned
+        # Resume depends on this fact. Do not dispatch any node until it is durable.
         await self._opts.session_log.append(sid, {
           "kind": "run_started",
           "run_id": str(uuid.uuid4()),
@@ -619,9 +617,9 @@ class RuntimeRunner:
           "criteria": [],
           "agent_id": self._opts.agent_id,
         })
-      except Exception:
-        pass
-    try:
+        standalone_runtime = self._bootstrap_workflow_kernel(
+          sid, group_tokens_base, group_spawns_base
+        )
       return await self._run_workflow_inner(
         spec,
         resumed_completed=resumed_completed,
@@ -633,26 +631,24 @@ class RuntimeRunner:
       )
     finally:
       if bootstrapped:
-        # L1: charge the standalone workflow's node spawns back to the group so the cumulative spawn
-        # cap (``max_total_subagents``) counts workflow nodes — they are member runs whose own
-        # ``_execute`` charge contributes 0 spawns. The envelope kernel's TaskTable holds one proc per
-        # scheduled node, so ``local_subagents_spawned()`` is exactly that node count.
-        runtime = self._active_kernel
-        spawned = (
-          runtime.local_subagents_spawned()
-          if runtime is not None and hasattr(runtime, "local_subagents_spawned")
-          else 0
-        )
-        if group_budget_scope is not None:
-          await group_budget_scope.settle(subagents=spawned)
-        self._active_kernel = None
-        self._current_session_id = None
-        self._pending_observations = []
+        try:
+          if group_budget_scope is not None:
+            if standalone_runtime is not None:
+              # L1: the envelope kernel's TaskTable holds one proc per scheduled node, so
+              # ``local_subagents_spawned()`` is exactly the workflow's node count.
+              await group_budget_scope.settle(
+                subagents=standalone_runtime.local_subagents_spawned()
+              )
+            else:
+              await group_budget_scope.release()
+        finally:
+          self._active_kernel = None
+          self._current_session_id = None
+          self._pending_observations = []
 
   def _bootstrap_workflow_kernel(
     self,
     session_id: str,
-    spec: "WorkflowSpec",
     group_tokens_base: int | None = None,
     group_spawns_base: int | None = None,
   ) -> KernelRuntime:
@@ -660,15 +656,14 @@ class RuntimeRunner:
 
     Mirrors ``_execute``'s pre-run setup (governance / attention / scheduler-budget / resource-quota,
     then ``start_run``) so DAG-node spawns are gated and quota'd exactly as a mid-run spawn. The
-    caller (``run_workflow``) appends the best-effort ``run_started`` event right after this returns,
-    so the standalone run can be resumed via ``resume_workflow``.
+    caller (``run_workflow``) durably appends ``run_started`` before calling this method, so the
+    standalone run can be resumed via ``resume_workflow``.
     """
     self._interrupted = False
     self._pending_observations = []
     self._current_session_id = session_id
     runtime = self._create_syscall_runtime()
     self._active_kernel = runtime
-    goal = f"workflow:{len(spec.nodes)} nodes"
 
     # K2: lower governance / attention / scheduler in ONE `configure_run` event (resource-quota is
     # already applied by `_create_syscall_runtime`). Requires the 0.2.30 core that ships `configure_run`.
@@ -691,7 +686,6 @@ class RuntimeRunner:
     kernel_apply(runtime, self._pending_observations, {"kind": "configure_run", "config": config})
     # K1: no explicit `start_run` — the host `load_workflow` (fired next by `run_workflow`) self-bootstraps
     # the run on the 0.2.30 core, matching the agent-reachable `submit_workflow` path.
-    _ = goal
     return runtime
 
   async def _run_workflow_inner(
@@ -2566,9 +2560,7 @@ class RuntimeRunner:
             if task_scope is not None:
               task_scope.spawn("semantic-page-out", archive)
             else:
-              import asyncio
-              task = asyncio.create_task(archive)
-              task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
+              await archive
       # K4: a sprint renewal dropped the old history — including any earlier memory hits — so
       # re-run the pre_query_memory prefetch for the new sprint (live observations only: this
       # consumer sits on the live drain path, same placement as the semantic page-out archival).
