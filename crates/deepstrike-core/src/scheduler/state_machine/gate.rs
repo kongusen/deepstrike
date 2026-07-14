@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use super::super::tcb::{TaskLifecycle, WaitReason};
 use super::{
-    GateToolOutcome, KernelObservation, LoopAction, LoopEvent, LoopPhase, LoopStateMachine,
-    SuspendState,
+    ApprovalRequest, GateToolOutcome, KernelObservation, LoopAction, LoopEvent, LoopPhase,
+    LoopStateMachine, SuspendState,
 };
 use crate::runtime::session::RollbackReason;
 use crate::syscall::{Disposition, Syscall};
@@ -350,14 +350,19 @@ impl LoopStateMachine {
             .iter()
             .map(|(id, _, reason)| (id.clone(), reason.clone()))
             .collect();
-        for (call_id, tool, reason) in &gated {
-            self.observations.push(KernelObservation::ToolGated {
-                turn: self.turn,
-                call_id: call_id.clone(),
-                tool: tool.clone(),
-                reason: reason.clone(),
-            });
-        }
+        let requests = calls
+            .iter()
+            .filter_map(|call| {
+                gated_reasons
+                    .get(call.id.as_str())
+                    .map(|reason| ApprovalRequest {
+                        call_id: call.id.to_string(),
+                        tool: call.name.to_string(),
+                        arguments: call.arguments.clone(),
+                        reason: reason.clone(),
+                    })
+            })
+            .collect();
         self.suspend_state = Some(SuspendState::AskUser {
             calls: calls.to_vec(),
             gated_reasons,
@@ -368,25 +373,18 @@ impl LoopStateMachine {
             reason: "ask_user".to_string(),
             pending_calls,
         });
-        GateToolOutcome::Suspended
+        GateToolOutcome::ApprovalRequired(requests)
     }
 
-    /// Resume from `Suspended` after SDK resolves human approval (or wake preload).
-    pub fn resume_from_suspend(
+    /// Apply a host-owned approval effect result to the suspended tool set.
+    pub fn resolve_approval(
         &mut self,
         approved_calls: Vec<String>,
         denied_calls: Vec<String>,
     ) -> LoopAction {
         self.observations.clear();
 
-        if self.suspend_state.is_none() && approved_calls.is_empty() && denied_calls.is_empty() {
-            return self.resume_after_preload();
-        }
-
         let Some(state) = self.suspend_state.take() else {
-            if approved_calls.is_empty() && denied_calls.is_empty() {
-                return self.resume_after_preload();
-            }
             return LoopAction::AwaitingResume;
         };
 
@@ -394,18 +392,30 @@ impl LoopStateMachine {
             return LoopAction::AwaitingResume;
         }
 
-        self.observations.push(KernelObservation::Resumed {
-            turn: self.turn,
-            approved: approved_calls.clone(),
-            denied: denied_calls.clone(),
-        });
-
-        let approved_set: std::collections::HashSet<String> = approved_calls.into_iter().collect();
-        let denied_set: std::collections::HashSet<String> = denied_calls.into_iter().collect();
+        let approved_set: std::collections::HashSet<String> =
+            approved_calls.iter().cloned().collect();
+        let denied_set: std::collections::HashSet<String> =
+            denied_calls.iter().cloned().collect();
 
         let SuspendState::AskUser { calls, gated_reasons } = state else {
             return LoopAction::AwaitingResume;
         };
+
+        for call in &calls {
+            if let Some(reason) = gated_reasons.get(call.id.as_str()) {
+                self.observations.push(KernelObservation::ToolGated {
+                    turn: self.turn,
+                    call_id: call.id.to_string(),
+                    tool: call.name.to_string(),
+                    reason: reason.clone(),
+                });
+            }
+        }
+        self.observations.push(KernelObservation::Resumed {
+            turn: self.turn,
+            approved: approved_calls,
+            denied: denied_calls,
+        });
 
         let mut to_execute = Vec::new();
         let mut synthetic_results = Vec::new();
@@ -446,5 +456,37 @@ impl LoopStateMachine {
         LoopAction::ExecuteTools {
             calls: to_execute,
         }
+    }
+
+    /// Preserve suspension and reissue a failed host approval effect without
+    /// recording a successful approval fact.
+    pub fn retry_approval(&mut self, error: String) -> LoopAction {
+        self.observations.clear();
+        self.observations
+            .push(KernelObservation::ApprovalResolutionFailed {
+                turn: self.turn,
+                error,
+            });
+        let Some(SuspendState::AskUser {
+            calls,
+            gated_reasons,
+        }) = &self.suspend_state
+        else {
+            return LoopAction::AwaitingResume;
+        };
+        let requests = calls
+            .iter()
+            .filter_map(|call| {
+                gated_reasons
+                    .get(call.id.as_str())
+                    .map(|reason| ApprovalRequest {
+                        call_id: call.id.to_string(),
+                        tool: call.name.to_string(),
+                        arguments: call.arguments.clone(),
+                        reason: reason.clone(),
+                    })
+            })
+            .collect();
+        LoopAction::RequestApproval { requests }
     }
 }

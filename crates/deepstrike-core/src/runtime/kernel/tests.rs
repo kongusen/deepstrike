@@ -445,10 +445,7 @@ fn preloaded_history_resumes_from_configured_to_running() {
         "op-recovery",
         "event-resume",
         43,
-        KernelInputEvent::Resume {
-            approved_calls: vec![],
-            denied_calls: vec![],
-        },
+        KernelInputEvent::Resume,
     ));
 
     assert!(step.faults.is_empty());
@@ -1521,18 +1518,17 @@ fn governance_ask_user_suspends_until_resume() {
 
     let step = run_with_tool_call(&mut runtime, "sensitive.read");
 
-    assert!(
-        step.actions.is_empty(),
-        "AskUser should suspend without ExecuteTool, got {:?}",
-        step.actions
-    );
-    assert!(
-        step.observations.iter().any(|o| matches!(
-            o,
-            KernelObservation::ToolGated { tool, .. } if tool == "sensitive.read"
-        )),
-        "expected a ToolGated observation for the AskUser call",
-    );
+    assert!(matches!(
+        step.actions.as_slice(),
+        [KernelAction {
+            effect: KernelEffect::RequestApproval { requests },
+            ..
+        }] if requests.len() == 1 && requests[0].tool == "sensitive.read"
+    ));
+    assert!(!step
+        .observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::ToolGated { .. })));
     assert!(
         step.observations.iter().any(|o| matches!(
             o,
@@ -1542,9 +1538,11 @@ fn governance_ask_user_suspends_until_resume() {
     );
     assert_eq!(runtime.lifecycle(), KernelLifecycle::Suspended);
 
-    let resumed = runtime.step(KernelInput::new(KernelInputEvent::Resume {
+    let resumed = runtime.step(KernelInput::new(KernelInputEvent::ApprovalResult {
+        effect_id: step.actions[0].effect_id.clone(),
         approved_calls: vec!["call-1".to_string()],
         denied_calls: vec![],
+        error: None,
     }));
     assert!(
         matches!(
@@ -1566,6 +1564,48 @@ fn governance_ask_user_suspends_until_resume() {
 }
 
 #[test]
+fn approval_host_failure_reissues_effect_without_success_observation() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(KernelInput::new(KernelInputEvent::LoadGovernancePolicy {
+        default_action: Some(PolicyAction::Allow),
+        rules: vec![PolicyRule {
+            tool_pattern: "sensitive.*".to_string(),
+            action: PolicyAction::AskUser,
+        }],
+        vetoed_tools: vec![],
+        rate_limits: vec![],
+        constraints: vec![],
+    }));
+    let approval = run_with_tool_call(&mut runtime, "sensitive.read");
+
+    let failed = runtime.step(KernelInput::new(KernelInputEvent::ApprovalResult {
+        effect_id: approval.actions[0].effect_id.clone(),
+        approved_calls: vec![],
+        denied_calls: vec![],
+        error: Some("approval service unavailable".to_string()),
+    }));
+
+    assert!(matches!(
+        failed.actions.as_slice(),
+        [KernelAction {
+            effect: KernelEffect::RequestApproval { .. },
+            ..
+        }]
+    ));
+    assert_ne!(failed.actions[0].effect_id, approval.actions[0].effect_id);
+    assert!(failed.observations.iter().any(|observation| matches!(
+        observation,
+        KernelObservation::ApprovalResolutionFailed { error, .. }
+            if error == "approval service unavailable"
+    )));
+    assert!(!failed.observations.iter().any(|observation| matches!(
+        observation,
+        KernelObservation::Resumed { .. } | KernelObservation::ToolGated { .. }
+    )));
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Suspended);
+}
+
+#[test]
 fn governance_ask_user_resume_all_denied_feeds_tool_results() {
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
     runtime.step(KernelInput::new(KernelInputEvent::LoadGovernancePolicy {
@@ -1578,12 +1618,14 @@ fn governance_ask_user_resume_all_denied_feeds_tool_results() {
         rate_limits: vec![],
         constraints: vec![],
     }));
-    run_with_tool_call(&mut runtime, "sensitive.read");
+    let approval = run_with_tool_call(&mut runtime, "sensitive.read");
     runtime.state_machine_mut().take_observations();
 
-    let step = runtime.step(KernelInput::new(KernelInputEvent::Resume {
+    let step = runtime.step(KernelInput::new(KernelInputEvent::ApprovalResult {
+        effect_id: approval.actions[0].effect_id.clone(),
         approved_calls: vec![],
         denied_calls: vec!["call-1".to_string()],
+        error: None,
     }));
     assert!(
         matches!(

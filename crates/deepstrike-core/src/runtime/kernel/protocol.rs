@@ -379,14 +379,17 @@ pub enum KernelInputEvent {
     CapabilityCommand {
         command: CapabilityCommand,
     },
-    Resume {
-        // COMPAT(sched-resume-generic): old SDKs send `{kind:"resume"}` with no
-        // fields — serde(default) deserialises to empty vecs. Change to required
-        // once all SDKs supply approved/denied explicitly.
+    /// Continue a run reconstructed from preloaded history. Approval resolution
+    /// uses the correlated `ApprovalResult` event instead.
+    Resume,
+    ApprovalResult {
+        effect_id: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         approved_calls: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         denied_calls: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     /// K2: set the knowledge-budget ratio at runtime (granular sibling of
     /// `RunConfig::knowledge_budget_ratio`). `0.0` disables the cap.
@@ -705,6 +708,9 @@ pub enum KernelEffect {
     ExecuteTool {
         calls: Vec<ToolCall>,
     },
+    RequestApproval {
+        requests: Vec<crate::scheduler::state_machine::ApprovalRequest>,
+    },
     EvaluateMilestone {
         phase_id: String,
         criteria: Vec<String>,
@@ -726,6 +732,7 @@ impl From<LoopAction> for KernelEffect {
             }
             LoopAction::CallLLM { context, tools } => Self::CallProvider { context, tools },
             LoopAction::ExecuteTools { calls } => Self::ExecuteTool { calls },
+            LoopAction::RequestApproval { requests } => Self::RequestApproval { requests },
             LoopAction::EvaluateMilestone {
                 phase_id,
                 criteria,
@@ -955,6 +962,10 @@ pub enum KernelObservation {
         approved: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         denied: Vec<String>,
+    },
+    ApprovalResolutionFailed {
+        turn: u32,
+        error: String,
     },
     /// Memory entry written successfully (Phase 7).
     MemoryWritten {

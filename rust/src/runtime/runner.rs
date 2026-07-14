@@ -30,7 +30,8 @@ use crate::providers::{LLMProvider, StreamEvent};
 use crate::run_event::RunEvent;
 use crate::runtime::archive::ArchiveStore;
 use crate::runtime::execution_plane::{
-    ExecutionPlane, LocalExecutionPlane, PermissionRequestHandler, RunContext, ToolSuspendHandler,
+    ExecutionPlane, LocalExecutionPlane, PermissionRequest, PermissionRequestHandler,
+    PermissionResponse, RunContext, ToolSuspendHandler,
 };
 use crate::runtime::os_profile::{
     assert_native_profile, AttentionPolicy, GovernancePolicy, OsProfile, SchedulerBudget,
@@ -935,10 +936,7 @@ impl RuntimeRunner {
                 kernel_action(
                     &mut kernel,
                     &mut pending_observations,
-                    KernelInputEvent::Resume {
-                        approved_calls: vec![],
-                        denied_calls: vec![],
-                    },
+                    KernelInputEvent::Resume,
                 )
             } else {
                 // P0-A: fold an explicit `run_spec` and/or the `allowed_tool_ids` profile into the
@@ -1217,6 +1215,89 @@ impl RuntimeRunner {
                                 active_skill = Some(name.to_string());
                             }
                         }
+                    }
+                    KernelEffect::RequestApproval { requests } => {
+                        let approval_effect_id = action.effect_id.clone();
+                        let mut approved_calls = Vec::new();
+                        let mut denied_calls = Vec::new();
+                        for request in requests {
+                            let arguments = request.arguments.to_string();
+                            self.log(
+                                &session_id,
+                                SessionEvent::PermissionRequested {
+                                    turn: kernel.lock().unwrap().turn(),
+                                    tool: request.tool.clone(),
+                                    arguments: arguments.clone(),
+                                    reason: Some(request.reason.clone()),
+                                },
+                            )
+                            .await;
+                            yield RunEvent::PermissionRequest {
+                                call_id: request.call_id.clone(),
+                                tool_name: request.tool.clone(),
+                                arguments: arguments.clone(),
+                                reason: request.reason.clone(),
+                            };
+
+                            let response = match &self.opts.on_permission_request {
+                                Some(handler) => match handler(PermissionRequest {
+                                    call_id: request.call_id.clone(),
+                                    tool_name: request.tool.clone(),
+                                    arguments,
+                                    reason: request.reason.clone(),
+                                })
+                                .await
+                                {
+                                    Ok(response) => response,
+                                    Err(err) => PermissionResponse {
+                                        approved: false,
+                                        responder: "permission_handler".to_string(),
+                                        reason: Some(format!("permission handler failed: {err}")),
+                                    },
+                                },
+                                None => PermissionResponse {
+                                    approved: false,
+                                    responder: "policy_gate".to_string(),
+                                    reason: Some("no permission handler configured".to_string()),
+                                },
+                            };
+                            if response.approved {
+                                approved_calls.push(request.call_id.clone());
+                            } else {
+                                denied_calls.push(request.call_id.clone());
+                            }
+                            let responder = if response.responder.is_empty() {
+                                "host".to_string()
+                            } else {
+                                response.responder
+                            };
+                            self.log(
+                                &session_id,
+                                SessionEvent::PermissionResolved {
+                                    turn: kernel.lock().unwrap().turn(),
+                                    approved: response.approved,
+                                    responder: responder.clone(),
+                                },
+                            )
+                            .await;
+                            yield RunEvent::PermissionResolved {
+                                call_id: request.call_id.clone(),
+                                tool_name: request.tool.clone(),
+                                approved: response.approved,
+                                responder,
+                                reason: response.reason,
+                            };
+                        }
+                        action = kernel_action(
+                            &mut kernel,
+                            &mut pending_observations,
+                            KernelInputEvent::ApprovalResult {
+                                effect_id: approval_effect_id,
+                                approved_calls,
+                                denied_calls,
+                                error: None,
+                            },
+                        );
                     }
                     KernelEffect::ExecuteTool { calls } => {
                         let tool_effect_id = action.effect_id.clone();
@@ -1882,7 +1963,8 @@ impl RuntimeRunner {
                 // by the generic observation path elsewhere if needed.
                 KernelObservation::SignalDisposed { .. } => {}
                 KernelObservation::BudgetExceeded { .. } => {}
-                KernelObservation::Suspended { .. } => {}
+                KernelObservation::Suspended { .. }
+                | KernelObservation::ApprovalResolutionFailed { .. } => {}
                 KernelObservation::Resumed { .. } => {}
                 // R3-1: submission bookkeeping — the rust SDK has no workflow driver, so the
                 // base-index observation has no session record to enrich here.

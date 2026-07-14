@@ -50,6 +50,7 @@ enum PendingEffectKind {
     Provider,
     Tool,
     Milestone,
+    Approval,
 }
 
 #[derive(Clone, Copy)]
@@ -640,10 +641,16 @@ impl KernelRuntime {
                 self.sm.execute_capability_command(command);
                 return identity.empty(self.sm.take_observations());
             }
-            KernelInputEvent::Resume {
+            KernelInputEvent::Resume => self.sm.resume_after_preload(),
+            KernelInputEvent::ApprovalResult {
+                effect_id: _,
                 approved_calls,
                 denied_calls,
-            } => self.sm.resume_from_suspend(approved_calls, denied_calls),
+                error,
+            } => match error {
+                Some(error) => self.sm.retry_approval(error),
+                None => self.sm.resolve_approval(approved_calls, denied_calls),
+            },
             KernelInputEvent::SetSchedulerBudget { max_wall_ms } => {
                 self.sm.set_wall_budget(max_wall_ms);
                 return identity.empty(self.sm.take_observations());
@@ -961,18 +968,17 @@ impl KernelRuntime {
                     self.lifecycle
                 )),
             },
-            KernelInputEvent::Resume {
-                approved_calls,
-                denied_calls,
-            } => match self.lifecycle {
-                KernelLifecycle::Suspended => Ok(LifecycleTransition::Resume),
-                KernelLifecycle::Configured
-                    if approved_calls.is_empty() && denied_calls.is_empty() =>
-                {
-                    Ok(LifecycleTransition::Resume)
-                }
+            KernelInputEvent::Resume => match self.lifecycle {
+                KernelLifecycle::Configured => Ok(LifecycleTransition::Resume),
                 _ => Err(format!(
                     "resume is not valid in lifecycle {:?}",
+                    self.lifecycle
+                )),
+            },
+            KernelInputEvent::ApprovalResult { .. } => match self.lifecycle {
+                KernelLifecycle::Suspended => Ok(LifecycleTransition::Resume),
+                _ => Err(format!(
+                    "approval_result is not valid in lifecycle {:?}",
                     self.lifecycle
                 )),
             },
@@ -1089,6 +1095,9 @@ fn result_effect(event: &KernelInputEvent) -> Option<(&str, PendingEffectKind)> 
         KernelInputEvent::MilestoneResult { effect_id, .. } => {
             Some((effect_id, PendingEffectKind::Milestone))
         }
+        KernelInputEvent::ApprovalResult { effect_id, .. } => {
+            Some((effect_id, PendingEffectKind::Approval))
+        }
         _ => None,
     }
 }
@@ -1098,6 +1107,7 @@ fn pending_effect_kind(effect: &KernelEffect) -> Option<PendingEffectKind> {
         KernelEffect::CallProvider { .. } => Some(PendingEffectKind::Provider),
         KernelEffect::ExecuteTool { .. } => Some(PendingEffectKind::Tool),
         KernelEffect::EvaluateMilestone { .. } => Some(PendingEffectKind::Milestone),
+        KernelEffect::RequestApproval { .. } => Some(PendingEffectKind::Approval),
         KernelEffect::Done { .. } => None,
     }
 }

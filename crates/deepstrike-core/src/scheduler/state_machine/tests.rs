@@ -1204,7 +1204,7 @@
         sm.feed(LoopEvent::LLMResponse { message: msg });
         sm.take_observations();
 
-        let action = sm.resume_from_suspend(vec!["call_a".to_string()], vec![]);
+        let action = sm.resolve_approval(vec!["call_a".to_string()], vec![]);
         match action {
             LoopAction::ExecuteTools { calls } => assert_eq!(calls.len(), 1),
             other => panic!("expected ExecuteTools, got {other:?}"),
@@ -1226,7 +1226,7 @@
         sm.feed(LoopEvent::LLMResponse { message: msg });
         sm.take_observations();
 
-        let action = sm.resume_from_suspend(vec![], vec!["call_a".to_string()]);
+        let action = sm.resolve_approval(vec![], vec!["call_a".to_string()]);
         assert!(matches!(action, LoopAction::CallLLM { .. }));
     }
 
@@ -1385,7 +1385,7 @@
         sm.feed(LoopEvent::LLMResponse { message: msg });
         assert_eq!(sm.lifecycle(), TaskLifecycle::Suspended);
 
-        sm.resume_from_suspend(vec!["call_a".to_string()], vec![]);
+        sm.resolve_approval(vec!["call_a".to_string()], vec![]);
         // After resume the loop is driving a turn again — back to a runnable lifecycle.
         assert_eq!(sm.lifecycle(), TaskLifecycle::Running);
         assert_eq!(sm.wait_reason(), None);

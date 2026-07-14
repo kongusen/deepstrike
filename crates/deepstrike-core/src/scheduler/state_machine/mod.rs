@@ -90,6 +90,11 @@ pub enum LoopAction {
     ExecuteTools {
         calls: Vec<ToolCall>,
     },
+    /// Host-owned approval effect. The kernel remains suspended until the host
+    /// returns the correlated result through the ABI.
+    RequestApproval {
+        requests: Vec<ApprovalRequest>,
+    },
     Done {
         result: LoopResult,
     },
@@ -103,14 +108,22 @@ pub enum LoopAction {
         verifier: Option<crate::types::milestone::MilestoneVerifier>,
         required_evidence: Vec<String>,
     },
-    /// Kernel is suspended — SDK must resolve (e.g. human approval) and feed `Resume`.
+    /// Kernel is suspended awaiting a non-approval internal continuation.
     AwaitingResume,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ApprovalRequest {
+    pub call_id: String,
+    pub tool: String,
+    pub arguments: serde_json::Value,
+    pub reason: String,
 }
 
 /// Payload held while the loop is in `Suspended`.
 #[derive(Debug, Clone)]
 pub(super) enum SuspendState {
-    /// Governance AskUser — awaiting `Resume { approved_calls, denied_calls }`.
+    /// Governance AskUser — awaiting a correlated approval result.
     AskUser {
         calls: Vec<ToolCall>,
         gated_reasons: HashMap<String, String>,
@@ -124,7 +137,7 @@ pub(super) enum SuspendState {
 pub(super) enum GateToolOutcome {
     Proceed,
     Blocked(LoopAction),
-    Suspended,
+    ApprovalRequired(Vec<ApprovalRequest>),
 }
 
 /// Snapshot of context lengths captured just before each LLM call.
@@ -652,7 +665,9 @@ impl LoopStateMachine {
 
                 match self.gate_tool_calls(&calls) {
                     GateToolOutcome::Blocked(action) => return action,
-                    GateToolOutcome::Suspended => return LoopAction::AwaitingResume,
+                    GateToolOutcome::ApprovalRequired(requests) => {
+                        return LoopAction::RequestApproval { requests };
+                    }
                     GateToolOutcome::Proceed => {}
                 }
                 self.phase = LoopPhase::Act {
