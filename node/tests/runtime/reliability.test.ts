@@ -1,14 +1,14 @@
-import { ManagedTaskScope } from "../../src/runtime/reliability.js"
+import { ManagedTaskScope, operationAbortSignal } from "../../src/runtime/reliability.js"
 import type { OperationContext } from "../../src/runtime/reliability.js"
 
-describe("ManagedTaskScope", () => {
-  const operation = (): OperationContext => ({
-    runId: "run-1",
-    sessionId: "session-1",
-    agentId: "agent-1",
-    signal: new AbortController().signal,
-  })
+const operation = (): OperationContext => ({
+  runId: "run-1",
+  sessionId: "session-1",
+  agentId: "agent-1",
+  signal: new AbortController().signal,
+})
 
+describe("ManagedTaskScope", () => {
   it("drains owned work before closing", async () => {
     const completed: string[] = []
     const scope = new ManagedTaskScope(operation())
@@ -40,5 +40,21 @@ describe("ManagedTaskScope", () => {
     await scope.drain()
 
     expect(() => scope.spawn("late", async () => {})).toThrow("task scope is closed")
+  })
+})
+
+describe("operationAbortSignal", () => {
+  it("propagates operation cancellation into adapter work", () => {
+    const controller = new AbortController()
+    const signal = operationAbortSignal({ ...operation(), signal: controller.signal }, 30_000)
+
+    controller.abort("stop")
+
+    expect(signal.aborted).toBe(true)
+  })
+
+  it("uses an already-expired operation deadline", () => {
+    const signal = operationAbortSignal({ ...operation(), deadlineMs: Date.now() - 1 }, 30_000)
+    expect(signal.aborted).toBe(true)
   })
 })

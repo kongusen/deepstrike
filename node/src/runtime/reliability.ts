@@ -26,6 +26,21 @@ export interface BackgroundTaskFailure {
 
 export type BackgroundTaskErrorHandler = (failure: BackgroundTaskFailure) => void
 
+/** Compose an adapter timeout with the operation cancellation/deadline boundary. */
+export function operationAbortSignal(
+  operation: OperationContext | undefined,
+  timeoutMs: number,
+  now: () => number = Date.now,
+): AbortSignal {
+  const remaining = operation?.deadlineMs === undefined
+    ? timeoutMs
+    : Math.min(timeoutMs, operation.deadlineMs - now())
+  const timeout = remaining <= 0
+    ? AbortSignal.abort(new Error("operation deadline exceeded"))
+    : AbortSignal.timeout(remaining)
+  return operation ? AbortSignal.any([operation.signal, timeout]) : timeout
+}
+
 /** Report an observer failure without allowing the reporter to change the committed result. */
 export function reportObserverFailure(
   handler: ObserverErrorHandler | undefined,

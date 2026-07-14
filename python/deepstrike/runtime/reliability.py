@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Awaitable, Callable, Mapping
@@ -41,6 +42,36 @@ class BackgroundTaskFailure:
 
 
 BackgroundTaskErrorHandler = Callable[[BackgroundTaskFailure], Any]
+
+
+async def run_with_operation(
+    work: Awaitable[Any],
+    operation: OperationContext | None,
+    *,
+    timeout_ms: int,
+) -> Any:
+    """Run adapter work under the earliest local timeout, operation deadline, or cancellation."""
+    timeout_s = timeout_ms / 1000
+    if operation is not None and operation.deadline_ms is not None:
+        timeout_s = min(timeout_s, (operation.deadline_ms - int(time.time() * 1000)) / 1000)
+    task = asyncio.ensure_future(work)
+    cancel_waiter: asyncio.Task[bool] | None = None
+    try:
+        if operation is not None and operation.cancelled is not None:
+            cancel_waiter = asyncio.create_task(operation.cancelled.wait())
+        waiters = {task, *([cancel_waiter] if cancel_waiter is not None else [])}
+        done, _ = await asyncio.wait(waiters, timeout=max(0, timeout_s), return_when=asyncio.FIRST_COMPLETED)
+        if task in done:
+            return await task
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if cancel_waiter is not None and cancel_waiter in done:
+            raise asyncio.CancelledError("operation cancelled")
+        raise TimeoutError("operation deadline exceeded")
+    finally:
+        if cancel_waiter is not None:
+            cancel_waiter.cancel()
+            await asyncio.gather(cancel_waiter, return_exceptions=True)
 
 
 def report_observer_failure(

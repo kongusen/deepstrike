@@ -5,6 +5,8 @@ import type { ExecutionPlane, RunContext } from "./execution-plane.js"
 import { LocalExecutionPlane } from "./execution-plane.js"
 import type { CredentialVault } from "./credential-vault.js"
 import { formatToolError } from "../tools/errors.js"
+import { operationAbortSignal } from "./reliability.js"
+import type { OperationContext } from "./reliability.js"
 
 export interface RemoteVpcOptions {
   /**
@@ -83,7 +85,7 @@ export class RemoteVpcPlane implements ExecutionPlane {
     if (auth) headers["Authorization"] = auth
 
     // Fire all remote calls concurrently; yield results in dispatch order
-    const pending = remoteCalls.map(call => this.callRemote(call, headers).then(result => ({ call, result })))
+    const pending = remoteCalls.map(call => this.callRemote(call, headers, ctx.operation).then(result => ({ call, result })))
     for (const p of pending) {
       const { call, result } = await p
       yield {
@@ -99,6 +101,7 @@ export class RemoteVpcPlane implements ExecutionPlane {
   private async callRemote(
     call: ToolCall,
     headers: Record<string, string>,
+    operation?: OperationContext,
   ): Promise<{ output: string; isError: boolean }> {
     try {
       const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>
@@ -106,7 +109,7 @@ export class RemoteVpcPlane implements ExecutionPlane {
         method: "POST",
         headers,
         body: JSON.stringify({ name: call.name, arguments: args }),
-        signal: AbortSignal.timeout(this.opts.timeoutMs ?? 30_000),
+        signal: operationAbortSignal(operation, this.opts.timeoutMs ?? 30_000),
       })
       if (!response.ok) {
         const body = await response.text().catch(() => "")

@@ -7,6 +7,7 @@ import type { ExecutionPlane, RunContext } from "./execution-plane.js"
 import { LocalExecutionPlane } from "./execution-plane.js"
 import type { CredentialVault } from "./credential-vault.js"
 import { formatToolError } from "../tools/errors.js"
+import { operationAbortSignal } from "./reliability.js"
 
 export interface McpServerConfig {
   /** Executable to run (e.g. "npx", "python3", "/usr/local/bin/my-mcp-server"). */
@@ -88,11 +89,22 @@ class McpConnection {
     }
   }
 
-  private request(method: string, params?: unknown): Promise<unknown> {
+  private request(method: string, params?: unknown, signal?: AbortSignal): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.child?.stdin) { reject(new Error(`MCP server "${this.serverName}" not running`)); return }
       const id = this.nextId++
-      this.pending.set(id, { resolve, reject })
+      const cleanup = () => signal?.removeEventListener("abort", abort)
+      const abort = () => {
+        this.pending.delete(id)
+        cleanup()
+        reject(signal?.reason instanceof Error ? signal.reason : new Error("operation cancelled"))
+      }
+      this.pending.set(id, {
+        resolve: result => { cleanup(); resolve(result) },
+        reject: error => { cleanup(); reject(error) },
+      })
+      signal?.addEventListener("abort", abort, { once: true })
+      if (signal?.aborted) { abort(); return }
       const msg: RpcRequest = { jsonrpc: "2.0", method, id }
       if (params !== undefined) msg.params = params
       this.child.stdin.write(JSON.stringify(msg) + "\n")
@@ -109,10 +121,10 @@ class McpConnection {
   schemas(): ToolSchema[] { return this._schemas }
   hasSchema(name: string): boolean { return this.schemaNames.has(name) }
 
-  async execute(call: ToolCall): Promise<{ output: string; isError: boolean }> {
+  async execute(call: ToolCall, signal?: AbortSignal): Promise<{ output: string; isError: boolean }> {
     try {
       const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>
-      const result = await this.request("tools/call", { name: call.name, arguments: args }) as {
+      const result = await this.request("tools/call", { name: call.name, arguments: args }, signal) as {
         content?: Array<{ type: string; text?: string }>
         isError?: boolean
       }
@@ -160,6 +172,7 @@ export class McpProxyPlane implements ExecutionPlane {
   constructor(private readonly opts: {
     servers: Record<string, McpServerConfig>
     vault: CredentialVault
+    timeoutMs?: number
   }) {}
 
   /** Start all configured MCP server processes and discover their tool schemas. */
@@ -220,7 +233,10 @@ export class McpProxyPlane implements ExecutionPlane {
 
     const tasks = Array.from(groups.entries()).map(async ([conn, serverCalls]) => {
       const results: Array<{ call: ToolCall; result: { output: string; isError: boolean } }> = []
-      for (const call of serverCalls) results.push({ call, result: await conn.execute(call) })
+      for (const call of serverCalls) {
+        const signal = operationAbortSignal(ctx.operation, this.opts.timeoutMs ?? 30_000)
+        results.push({ call, result: await conn.execute(call, signal) })
+      }
       return results
     })
 

@@ -2,8 +2,11 @@ import { spawn } from "node:child_process"
 import { mkdir } from "node:fs/promises"
 import { tool } from "../tools/index.js"
 import type { RegisteredTool } from "../tools/index.js"
+import type { ToolExecContext } from "../tools/index.js"
 import { LocalExecutionPlane } from "./execution-plane.js"
 import { formatToolError } from "../tools/errors.js"
+import { operationAbortSignal } from "./reliability.js"
+import type { OperationContext } from "./reliability.js"
 
 export interface SandboxOptions {
   /** Working directory for all subprocesses. This is not an OS-enforced filesystem boundary. */
@@ -55,7 +58,12 @@ export class ProcessSandboxPlane extends LocalExecutionPlane {
     return env
   }
 
-  private runSubprocess(cmd: string, argv: string[], cwd: string): Promise<{ output: string; isError: boolean }> {
+  private runSubprocess(
+    cmd: string,
+    argv: string[],
+    cwd: string,
+    operation?: OperationContext,
+  ): Promise<{ output: string; isError: boolean }> {
     return new Promise(resolve => {
       const chunks: Buffer[] = []
       let totalBytes = 0
@@ -64,7 +72,7 @@ export class ProcessSandboxPlane extends LocalExecutionPlane {
       const settle = (output: string, isError: boolean) => {
         if (settled) return
         settled = true
-        clearTimeout(timer)
+        signal.removeEventListener("abort", abort)
         resolve({ output, isError })
       }
 
@@ -74,10 +82,13 @@ export class ProcessSandboxPlane extends LocalExecutionPlane {
         stdio: ["ignore", "pipe", "pipe"],
       })
 
-      const timer = setTimeout(() => {
+      const signal = operationAbortSignal(operation, this.timeoutMs)
+      const abort = () => {
         child.kill("SIGKILL")
-        settle(`timed out after ${this.timeoutMs}ms`, true)
-      }, this.timeoutMs)
+        settle(signal.reason instanceof Error ? signal.reason.message : "operation cancelled", true)
+      }
+      signal.addEventListener("abort", abort, { once: true })
+      if (signal.aborted) abort()
 
       const capture = (chunk: Buffer) => {
         if (settled) return
@@ -109,11 +120,11 @@ export class ProcessSandboxPlane extends LocalExecutionPlane {
         },
         required: ["command"],
       },
-      async (args: Record<string, unknown>, ctx?: { cwd?: string }) => {
+      async (args: Record<string, unknown>, ctx?: ToolExecContext) => {
         // M3/G4: run in the sub-agent's worktree when one was injected, else the sandbox dir.
         const cwd = ctx?.cwd ?? this.sandboxDir
         if (!ctx?.cwd) await mkdir(this.sandboxDir, { recursive: true })
-        const { output, isError } = await this.runSubprocess("bash", ["-c", String(args.command)], cwd)
+        const { output, isError } = await this.runSubprocess("bash", ["-c", String(args.command)], cwd, ctx?.operation)
         if (isError && !output.trim()) return "Process exited with non-zero status and produced no output."
         return output || "(no output)"
       },
@@ -131,11 +142,11 @@ export class ProcessSandboxPlane extends LocalExecutionPlane {
         },
         required: ["code"],
       },
-      async (args: Record<string, unknown>, ctx?: { cwd?: string }) => {
+      async (args: Record<string, unknown>, ctx?: ToolExecContext) => {
         // M3/G4: run in the sub-agent's worktree when one was injected, else the sandbox dir.
         const cwd = ctx?.cwd ?? this.sandboxDir
         if (!ctx?.cwd) await mkdir(this.sandboxDir, { recursive: true })
-        const { output, isError } = await this.runSubprocess("node", ["-e", String(args.code)], cwd)
+        const { output, isError } = await this.runSubprocess("node", ["-e", String(args.code)], cwd, ctx?.operation)
         if (isError && !output.trim()) return "Script exited with non-zero status and produced no output."
         return output || "(no output)"
       },

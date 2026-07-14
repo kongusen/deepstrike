@@ -14,6 +14,7 @@ from deepstrike.tools.errors import format_tool_error
 from deepstrike.tools.registry import RegisteredTool
 from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPlane, RunContext
 from deepstrike.runtime.credential_vault import CredentialVault
+from deepstrike.runtime.reliability import run_with_operation
 
 if TYPE_CHECKING:
   pass
@@ -98,6 +99,7 @@ class _McpConnection:
     self._next_id += 1
     fut: asyncio.Future = asyncio.get_event_loop().create_future()
     self._pending[rpc_id] = fut
+    fut.add_done_callback(lambda done: self._pending.pop(rpc_id, None) if self._pending.get(rpc_id) is done else None)
     msg: dict[str, Any] = {"jsonrpc": "2.0", "method": method, "id": rpc_id}
     if params is not None:
       msg["params"] = params
@@ -160,13 +162,17 @@ class McpProxyPlane:
     await plane.disconnect()
   """
 
-  def __init__(self, *, servers: dict[str, McpServerConfig], vault: CredentialVault) -> None:
+  def __init__(
+    self, *, servers: dict[str, McpServerConfig], vault: CredentialVault,
+    timeout_ms: int = 30_000,
+  ) -> None:
     self._server_configs = servers
     self._vault = vault
     self._connections: dict[str, _McpConnection] = {}
     self._tool_to_conn: dict[str, _McpConnection] = {}
     self._local = LocalExecutionPlane()
     self._local_names: set[str] = set()
+    self._timeout_ms = timeout_ms
 
   async def connect(self) -> None:
     for name, config in self._server_configs.items():
@@ -223,11 +229,19 @@ class McpProxyPlane:
     async def run_group(conn: _McpConnection, group: list[ToolCall]) -> list[tuple[ToolCall, str, bool]]:
       results = []
       for call in group:
-        output, is_error = await conn.execute(call)
+        output, is_error = await run_with_operation(
+          conn.execute(call), ctx.operation, timeout_ms=self._timeout_ms,
+        )
         results.append((call, output, is_error))
       return results
 
     tasks = [asyncio.create_task(run_group(conn, group)) for conn, group in groups.items()]
-    for task in tasks:
-      for call, output, is_error in await task:
-        yield ToolResultEvent(call_id=call.id, name=call.name, content=output, is_error=is_error)
+    try:
+      for task in tasks:
+        for call, output, is_error in await task:
+          yield ToolResultEvent(call_id=call.id, name=call.name, content=output, is_error=is_error)
+    finally:
+      for task in tasks:
+        if not task.done():
+          task.cancel()
+      await asyncio.gather(*tasks, return_exceptions=True)

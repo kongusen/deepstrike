@@ -162,6 +162,10 @@ plane = ProcessSandboxPlane(
 
 它会使用 sandbox dir 作为 cwd，并裁剪环境变量。这是执行卫生，不是强 OS 级隔离；高风险场景仍应使用容器、VM 或远程沙箱。
 
+ProcessSandbox、RemoteVpc 与 MCP adapter 都消费 `RunContext.operation`。operation 被取消或
+deadline 早于 adapter 自身 timeout 时，SDK 会采用更早的边界：终止子进程、abort HTTP
+请求或取消待处理 RPC，并清理对应 pending task。
+
 ## Level 7：远程 VPC 工具
 
 `RemoteVpcPlane` 把 tool call 转发到远程 worker：

@@ -13,6 +13,7 @@ from deepstrike.tools.errors import format_tool_error
 from deepstrike.tools.registry import RegisteredTool
 from deepstrike.runtime.execution_plane import LocalExecutionPlane, RunContext
 from deepstrike.runtime.credential_vault import CredentialVault
+from deepstrike.runtime.reliability import run_with_operation
 
 
 class RemoteVpcPlane:
@@ -77,10 +78,21 @@ class RemoteVpcPlane:
       headers["Authorization"] = auth
 
     # Fire all remote calls concurrently; yield in dispatch order
-    tasks = [asyncio.create_task(self._call_remote(call, headers)) for call in remote_calls]
-    for call, task in zip(remote_calls, tasks):
-      output, is_error = await task
-      yield ToolResultEvent(call_id=call.id, name=call.name, content=output, is_error=is_error)
+    tasks = [
+      asyncio.create_task(run_with_operation(
+        self._call_remote(call, headers), ctx.operation, timeout_ms=int(self._timeout_s * 1000),
+      ))
+      for call in remote_calls
+    ]
+    try:
+      for call, task in zip(remote_calls, tasks):
+        output, is_error = await task
+        yield ToolResultEvent(call_id=call.id, name=call.name, content=output, is_error=is_error)
+    finally:
+      for task in tasks:
+        if not task.done():
+          task.cancel()
+      await asyncio.gather(*tasks, return_exceptions=True)
 
   async def _call_remote(self, call: ToolCall, headers: dict[str, str]) -> tuple[str, bool]:
     try:
