@@ -205,6 +205,28 @@ cargo test -p deepstrike-core page_out
 - `crates/deepstrike-core/src/scheduler/state_machine/eviction.rs`
 - `crates/deepstrike-core/src/runtime/kernel/`（`tests.rs`）
 
+### Task 7A：开放有边界的内核可靠性配置
+
+**Acceptance**
+
+- replay/effect 窗口、provider/output 恢复次数和 spool 阈值由 `RunConfig.reliability` 聚合配置。
+- ABI 边界校验安全范围并原子应用；缺省值保持原行为。
+- signal、budget、repeat fuse 等既有策略不重复建模，纯实现常量不公开。
+
+**Verify**
+
+```bash
+cargo test -p deepstrike-core reliability_config
+```
+
+**Dependencies:** Task 3、5。
+
+**Files:**
+
+- `crates/deepstrike-core/src/runtime/kernel/`（`protocol.rs`、`runtime.rs`、`tests.rs`）
+- `crates/deepstrike-core/src/scheduler/state_machine/`（`mod.rs`、`eviction.rs`）
+- `docs/decisions/003-kernel-reliability-configuration.md`
+
 ### Task 8：Node effect protocol cutover
 
 **Acceptance**

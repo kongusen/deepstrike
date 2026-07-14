@@ -141,11 +141,31 @@ pub struct GovernanceConfig {
     pub constraints: Vec<ConstraintSpec>,
 }
 
+/// Host-selectable reliability policy. These values bound retained replay
+/// state and retry ladders; omitted fields keep the kernel defaults.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct KernelReliabilityConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_replay_capacity: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_effect_replay_capacity: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_recovery_attempts: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_recovery_attempts: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spool_threshold_bytes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spool_preview_bytes: Option<u32>,
+}
+
 /// K2: a bundle of run-setup configuration carried by the [`KernelInputEvent::ConfigureRun`] event.
 /// Each field maps 1:1 to a granular `Set*` / `Load*` event; `None`/absent leaves that aspect untouched.
 /// This is the host-side analogue of the SDK's `applyKernelPolicies` — one event for the whole setup.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RunConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reliability: Option<KernelReliabilityConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolSchema>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

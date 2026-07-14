@@ -39,6 +39,17 @@ impl ReplayWindow {
         self.entries.insert(identity, transition);
     }
 
+    fn set_capacity(&mut self, capacity: usize) {
+        self.capacity = capacity;
+        while self.entries.len() > capacity {
+            if let Some(expired_identity) = self.order.pop_front() {
+                self.entries.remove(&expired_identity);
+            }
+        }
+        self.entries.shrink_to(capacity);
+        self.order.shrink_to(capacity);
+    }
+
     #[cfg(test)]
     fn len(&self) -> usize {
         self.entries.len()
@@ -575,6 +586,7 @@ impl KernelRuntime {
                     criteria_gate,
                     knowledge_budget_ratio,
                     entropy_watch,
+                    reliability,
                 } = config;
                 if let Some(tools) = tools {
                     self.sm.tools = tools;
@@ -637,6 +649,15 @@ impl KernelRuntime {
                 }
                 if let Some(watch) = entropy_watch {
                     self.sm.set_entropy_watch(watch);
+                }
+                if let Some(reliability) = reliability {
+                    if let Some(capacity) = reliability.event_replay_capacity {
+                        self.recorded_events.set_capacity(capacity);
+                    }
+                    if let Some(capacity) = reliability.completed_effect_replay_capacity {
+                        self.completed_effects.set_capacity(capacity);
+                    }
+                    self.sm.set_reliability_config(&reliability);
                 }
                 return identity.empty(self.sm.take_observations());
             }
@@ -1162,6 +1183,40 @@ fn pending_effect_kind(effect: &KernelEffect) -> Option<PendingEffectKind> {
 }
 
 fn validate_run_config(config: &RunConfig) -> Result<(), String> {
+    if let Some(reliability) = &config.reliability {
+        for (name, capacity) in [
+            ("event_replay_capacity", reliability.event_replay_capacity),
+            (
+                "completed_effect_replay_capacity",
+                reliability.completed_effect_replay_capacity,
+            ),
+        ] {
+            if let Some(capacity) = capacity {
+                if !(1..=65_536).contains(&capacity) {
+                    return Err(format!("{name} must be between 1 and 65536"));
+                }
+            }
+        }
+        if reliability.provider_recovery_attempts.is_some_and(|value| value > 16) {
+            return Err("provider_recovery_attempts must be at most 16".to_string());
+        }
+        if reliability.output_recovery_attempts.is_some_and(|value| value > 16) {
+            return Err("output_recovery_attempts must be at most 16".to_string());
+        }
+        let threshold = reliability
+            .spool_threshold_bytes
+            .unwrap_or(50 * 1024);
+        let preview = reliability.spool_preview_bytes.unwrap_or(2 * 1024);
+        if threshold == 0 {
+            return Err("spool_threshold_bytes must be greater than zero".to_string());
+        }
+        if preview == 0 || preview > threshold {
+            return Err(
+                "spool_preview_bytes must be greater than zero and no larger than spool_threshold_bytes"
+                    .to_string(),
+            );
+        }
+    }
     if matches!(config.attention_max_queue_size, Some(0)) {
         return Err("attention_max_queue_size must be greater than zero".to_string());
     }

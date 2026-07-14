@@ -368,6 +368,59 @@ fn event_replay_dedupe_has_a_fixed_capacity() {
 }
 
 #[test]
+fn reliability_config_bounds_replay_windows_from_the_sdk_boundary() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let configured = runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            reliability: Some(KernelReliabilityConfig {
+                event_replay_capacity: Some(2),
+                completed_effect_replay_capacity: Some(2),
+                provider_recovery_attempts: Some(0),
+                output_recovery_attempts: Some(1),
+                spool_threshold_bytes: Some(4096),
+                spool_preview_bytes: Some(512),
+            }),
+            ..RunConfig::default()
+        },
+    }));
+    assert!(configured.faults.is_empty());
+
+    runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled { enabled: true }));
+    runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled { enabled: false }));
+    runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled { enabled: true }));
+
+    assert_eq!(runtime.recorded_event_count(), 2);
+    assert_eq!(runtime.state_machine().provider_recovery_attempt_limit, 0);
+    assert_eq!(runtime.state_machine().output_recovery_attempt_limit, 1);
+    assert_eq!(runtime.state_machine().ctx.config.spool_threshold_bytes, 4096);
+    assert_eq!(runtime.state_machine().ctx.config.spool_preview_bytes, 512);
+}
+
+#[test]
+fn reliability_config_rejects_unsafe_ranges_atomically() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let step = runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            memory_enabled: Some(true),
+            reliability: Some(KernelReliabilityConfig {
+                event_replay_capacity: Some(0),
+                ..KernelReliabilityConfig::default()
+            }),
+            ..RunConfig::default()
+        },
+    }));
+
+    assert!(matches!(
+        step.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::InvalidConfig,
+            ..
+        }]
+    ));
+    assert!(!runtime.state_machine().ctx.memory_enabled);
+}
+
+#[test]
 fn provider_result_before_start_is_an_invalid_lifecycle_fault() {
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
     let step = runtime.step(correlated_input(

@@ -206,12 +206,14 @@ pub struct LoopStateMachine {
     /// `LLMResponse`, mirroring the per-turn `hasAttemptedReactiveCompact` reset the SDK runners
     /// used to own. See `recover_from_provider_error`.
     pub(super) recovery_attempts: u8,
+    pub(crate) provider_recovery_attempt_limit: u8,
     /// Max-output-tokens recovery: consecutive continue-and-retry turns since the model last
     /// finished a response WITHOUT hitting the output cap. When a turn is cut off at the cap
     /// (provider `stop_reason` = max_tokens/length) the kernel keeps the partial, nudges the model
     /// to resume mid-thought, and re-calls — bounded by `MAX_OUTPUT_RECOVERY` (mirrors query.ts's
     /// MAX_OUTPUT_TOKENS_RECOVERY_LIMIT). Resets to 0 on any non-truncated response.
     pub(super) output_recovery_attempts: u8,
+    pub(crate) output_recovery_attempt_limit: u8,
     /// Transient carrier for the provider `stop_reason` of the in-flight response, set by the
     /// kernel ABI just before `feed(LLMResponse)` and taken (cleared) inside it. `None` when the
     /// SDK/provider doesn't report one (every non-Anthropic provider today ⇒ no-op).
@@ -321,7 +323,9 @@ impl LoopStateMachine {
             group_spawns_base: 0,
             pending_termination: None,
             recovery_attempts: 0,
+            provider_recovery_attempt_limit: 2,
             output_recovery_attempts: 0,
+            output_recovery_attempt_limit: 3,
             pending_stop_reason: None,
             session_history_baseline: 0,
             checkpoint: TurnCheckpoint::default(),
@@ -353,6 +357,24 @@ impl LoopStateMachine {
     /// O4: enable/disable the turn-end criteria gate (default enabled; no-op without criteria).
     pub fn set_criteria_gate(&mut self, enabled: bool) {
         self.criteria_gate_enabled = enabled;
+    }
+
+    pub(crate) fn set_reliability_config(
+        &mut self,
+        config: &crate::runtime::kernel::KernelReliabilityConfig,
+    ) {
+        if let Some(limit) = config.provider_recovery_attempts {
+            self.provider_recovery_attempt_limit = limit;
+        }
+        if let Some(limit) = config.output_recovery_attempts {
+            self.output_recovery_attempt_limit = limit;
+        }
+        if let Some(bytes) = config.spool_threshold_bytes {
+            self.ctx.config.spool_threshold_bytes = bytes;
+        }
+        if let Some(bytes) = config.spool_preview_bytes {
+            self.ctx.config.spool_preview_bytes = bytes;
+        }
     }
 
     /// O6: tune or disable the repeat fuse (see [`RepeatFuseConfig`]).
@@ -576,7 +598,6 @@ impl LoopStateMachine {
                 // Max-output-tokens recovery (mirrors query.ts): a response cut off at the output
                 // cap reports stop_reason = max_tokens (Anthropic) / length (OpenAI). A clean finish
                 // resets the ladder.
-                const MAX_OUTPUT_RECOVERY: u8 = 3;
                 const OUTPUT_TRUNCATION_NUDGE: &str = "Output token limit hit. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.";
                 let truncated = matches!(
                     self.pending_stop_reason.take().as_deref(),
@@ -596,7 +617,9 @@ impl LoopStateMachine {
                     // truncation for a finished turn. Bounded by MAX_OUTPUT_RECOVERY; once exhausted
                     // the partial stands and the turn terminates normally below. (A truncated
                     // *tool-call* turn isn't handled here — it falls through to tool execution.)
-                    if truncated && self.output_recovery_attempts < MAX_OUTPUT_RECOVERY {
+                    if truncated
+                        && self.output_recovery_attempts < self.output_recovery_attempt_limit
+                    {
                         self.output_recovery_attempts += 1;
                         self.ctx.push_history(message, tokens);
                         self.ctx.push_signal(OUTPUT_TRUNCATION_NUDGE.to_string());

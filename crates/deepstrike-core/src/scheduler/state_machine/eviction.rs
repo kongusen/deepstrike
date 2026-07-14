@@ -11,8 +11,6 @@ use crate::types::result::TerminationReason;
 /// unrecoverable. Bounds the reactive recovery ladder (anti-spiral); resets on any successful
 /// provider turn. The `force_compress` "nothing left to save" check is the real terminator —
 /// this is the belt-and-suspenders cap so a degenerate provider that 413s forever still ends.
-const MAX_RECOVERY_ATTEMPTS: u8 = 2;
-
 /// Classify a provider error message as a context-overflow (prompt-too-long / 413). Centralizes
 /// the case-insensitive string match the four SDK runners (node/python/rust/wasm) each used to
 /// own, so the recovery vocabulary lives in exactly one place.
@@ -42,7 +40,7 @@ impl LoopStateMachine {
             // the same outcome the runners produced, minus the fabricated `timeout`.
             return self.terminate(TerminationReason::Error, None);
         }
-        if self.recovery_attempts >= MAX_RECOVERY_ATTEMPTS {
+        if self.recovery_attempts >= self.provider_recovery_attempt_limit {
             return self.terminate(TerminationReason::ContextOverflow, None);
         }
         self.recovery_attempts += 1;
