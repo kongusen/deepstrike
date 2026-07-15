@@ -56,6 +56,13 @@ class MemoryQuery:
     kinds: list[MemoryKind] = field(default_factory=list)
     min_score: float | None = None
 
+@dataclass
+class MemoryRecallLifecycle:
+    """One record's recall lifecycle, mirrored from the kernel's ``memory_recalled`` observation."""
+    record_id: str
+    recall_count: int
+    last_recalled_at: int
+
 
 @dataclass
 class SessionData:
@@ -83,3 +90,8 @@ class DreamStore(Protocol):
     async def save_session(self, data: "SessionData") -> None:
         """Persist a completed session before the runner's one extraction pass."""
         ...
+
+    # Optional lifecycle methods (not part of the runtime_checkable required surface so existing
+    # stores keep passing isinstance). The runner calls them via getattr when present:
+    #   async def record_recall(agent_id: str, recalls: list[MemoryRecallLifecycle]) -> None  # M3
+    #   async def set_pinned(agent_id: str, record_id: str, pinned: bool) -> None              # M4

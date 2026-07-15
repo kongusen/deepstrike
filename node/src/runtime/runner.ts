@@ -260,6 +260,9 @@ export interface RuntimeOptions {
   initialMemory?: string[]
   skillDir?: string
   dreamStore?: DreamStore
+  /** M4: advisory callback when a recalled record crosses the promotion threshold. The host/model
+   *  decides whether to pin the record or promote its content into knowledge. */
+  onPromotionSuggested?: (info: { recordId: string; recallCount: number }) => void
   knowledgeSource?: KnowledgeSource
   signalSource?: SignalSource
   extensions?: Record<string, unknown>
@@ -2901,6 +2904,23 @@ export class RuntimeRunner {
           rounds: obs.rounds ?? 0,
         })
         this.activeGroupBudgetScope = undefined
+      }
+
+      // M3: mirror the kernel's journaled recall lifecycle into the durable store so recall
+      // history (count + last-recalled turn) survives across sessions.
+      if (obs.kind === "memory_recalled" && obs.recalls?.length) {
+        const agentId = this.opts.agentId
+        if (agentId && this.opts.dreamStore?.recordRecall) {
+          await this.opts.dreamStore.recordRecall(agentId, obs.recalls)
+        }
+      }
+      // M4: a recall crossed the promotion threshold. Advisory — surface it for the host/model to
+      // act on (pin or promote to knowledge); the runner does not auto-pin.
+      if (obs.kind === "promotion_suggested" && obs.record_id) {
+        this.opts.onPromotionSuggested?.({
+          recordId: obs.record_id,
+          recallCount: obs.recall_count ?? 0,
+        })
       }
 
       const latest =

@@ -615,7 +615,12 @@ struct ReportCollector<'a> {
     synthetic_handles: BTreeSet<String>,
     system_facts: Vec<String>,
     pinned_knowledge_facts: Vec<String>,
-    recent_source_messages: Vec<Message>,
+    /// Host-declared recent context-unit source messages, each tagged with the transaction
+    /// ordinal that introduced it. The tag makes `recent_context_unit_retention` render-aware:
+    /// a render is only accountable for recent messages that existed at or before its own
+    /// transaction, so an early provider turn is never faulted for a message a *later*
+    /// transaction added (or for the final response, which follows the last render entirely).
+    recent_source_messages: Vec<(u32, Message)>,
     seen_source_transactions: BTreeSet<u32>,
 }
 
@@ -674,13 +679,16 @@ impl<'a> ReportCollector<'a> {
                     }
                 }
                 KernelInputEvent::AddHistoryMessage { message, .. } => {
-                    self.recent_source_messages.push(message.clone());
+                    self.recent_source_messages
+                        .push((transaction, message.clone()));
                 }
                 KernelInputEvent::PreloadHistory { messages } => {
-                    self.recent_source_messages.extend(messages.iter().cloned());
+                    self.recent_source_messages
+                        .extend(messages.iter().cloned().map(|m| (transaction, m)));
                 }
                 KernelInputEvent::ProviderResult { message, .. } => {
-                    self.recent_source_messages.push(message.clone());
+                    self.recent_source_messages
+                        .push((transaction, message.clone()));
                 }
                 KernelInputEvent::ToolResults { results, .. } => {
                     let parts = results
@@ -691,7 +699,8 @@ impl<'a> ReportCollector<'a> {
                             is_error: result.is_error,
                         })
                         .collect();
-                    self.recent_source_messages.push(Message::tool(parts));
+                    self.recent_source_messages
+                        .push((transaction, Message::tool(parts)));
                 }
                 _ => {}
             }
@@ -833,6 +842,7 @@ impl<'a> ReportCollector<'a> {
                 &render.text,
                 &this.recent_source_messages,
                 this.preserve_recent_turns,
+                render.transaction,
             );
             push_invariant(
                 &mut t2,
@@ -1024,13 +1034,27 @@ fn strict_tool_pairing(messages: &[Message]) -> bool {
     pending.is_empty()
 }
 
-fn recent_messages_retained(text: &str, source: &[Message], preserve_turns: usize) -> bool {
-    let units = deepstrike_core::context::units::unit_boundaries(source);
+fn recent_messages_retained(
+    text: &str,
+    source: &[(u32, Message)],
+    preserve_turns: usize,
+    up_to_transaction: u32,
+) -> bool {
+    // Render-aware: only the recent source messages that existed at or before this render's
+    // transaction are the render's responsibility. A message a later transaction introduced
+    // (including the model's own response after the final render) cannot be present yet and must
+    // not fault an earlier provider turn.
+    let visible = source
+        .iter()
+        .filter(|(tx, _)| *tx <= up_to_transaction)
+        .map(|(_, message)| message.clone())
+        .collect::<Vec<_>>();
+    let units = deepstrike_core::context::units::unit_boundaries(&visible);
     units
         .iter()
         .rev()
         .take(preserve_turns)
-        .flat_map(|range| source[range.clone()].iter())
+        .flat_map(|range| visible[range.clone()].iter())
         .map(message_text)
         .filter(|value| !value.is_empty())
         .all(|value| text.contains(&value))

@@ -769,6 +769,9 @@ pub enum KernelInputEvent {
         /// Override the validation name-length limit. Omit to keep the kernel default.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_name_length: Option<usize>,
+        /// M4: recall count at which a record becomes a promotion candidate. Omit to disable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        promotion_recall_threshold: Option<u64>,
     },
     /// Write a long-term memory entry (SDK background agent calls this).
     WriteMemory {
@@ -1342,6 +1345,21 @@ pub enum KernelObservation {
         scope: crate::mm::memory::MemoryScope,
         query: String,
         error: String,
+    },
+    /// M3: recall lifecycle was journaled for one or more recalled records. Derived from the routed
+    /// hits (each carries its current count); the host mirrors the incremented counts into its
+    /// durable store so recall history survives across sessions.
+    MemoryRecalled {
+        turn: u32,
+        scope: crate::mm::memory::MemoryScope,
+        recalls: Vec<crate::mm::memory::MemoryRecallLifecycle>,
+    },
+    /// M4: a recalled record crossed the promotion threshold. Advisory only — the host/model decides
+    /// whether to pin it or promote its content into knowledge.
+    PromotionSuggested {
+        turn: u32,
+        record_id: String,
+        recall_count: u64,
     },
     /// Large tool result spooled (Layer 1).
     LargeResultSpooled {

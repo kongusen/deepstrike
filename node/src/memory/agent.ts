@@ -44,20 +44,20 @@ export async function selectMemories(
   const candidates = records.filter(record =>
     record.scope.tenant_id === query.scope.tenant_id
     && record.scope.namespace === query.scope.namespace
-    && (query.kinds.length === 0 || query.kinds.includes(record.kind))
-    && (query.min_score === undefined || record.confidence >= query.min_score),
+    && (query.kinds.length === 0 || query.kinds.includes(record.kind)),
   )
-  const selected = rankMemories(query.query, candidates.map((record, insertionIndex) => ({
+  const ranked = rankMemories(query.query, candidates.map((record, insertionIndex) => ({
     value: record,
     searchableText: `${record.name} ${record.description} ${record.content}`,
     updatedAt: Number.isFinite(record.updated_at) ? record.updated_at : 0,
+    recallCount: record.recall_count,
+    ttlDays: record.ttl_days,
     insertionIndex,
   })), query.top_k)
-  return selected.map(record => ({
-    record,
-    score: Math.max(0, Math.min(1, record.confidence)),
-    why: "deterministic lexical relevance with recency tie-breaking",
-  }))
+  // score is relevance (from ranking), deliberately distinct from the record's stored confidence.
+  return ranked
+    .filter(hit => query.min_score === undefined || hit.score >= query.min_score)
+    .map(hit => ({ record: hit.value, score: hit.score, why: hit.why }))
 }
 
 /**

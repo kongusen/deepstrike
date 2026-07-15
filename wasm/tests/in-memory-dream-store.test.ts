@@ -22,4 +22,30 @@ describe("InMemoryDreamStore search", () => {
     ])
     await expect(store.search("agent", query("nonexistent"))).resolves.toEqual([])
   })
+
+  // M3-C: score is relevance, not stored confidence (deviation 1).
+  it("scores hits by relevance, not stored confidence", async () => {
+    const store = new InMemoryDreamStore([
+      { ...memory("token rotation and token expiry", 20), record_id: "hi", confidence: 0.1 },
+      { ...memory("refresh token expires in UTC", 10), record_id: "lo", confidence: 0.99 },
+    ])
+    const hits = await store.search("a1", { scope, query: "token expiry rotation", top_k: 2, kinds: [] })
+    expect(hits[0]!.record.record_id).toBe("hi")
+    expect(hits[0]!.score).toBeGreaterThan(0.1)
+    expect(hits[0]!.score).toBeGreaterThan(hits[1]!.score)
+  })
+
+  // M3: value-ordered retention eviction + recall/pin mirroring.
+  it("evicts the lowest-value record and mirrors recall/pin lifecycle", async () => {
+    const store = new InMemoryDreamStore([], { maxRecords: 2 })
+    await store.upsert("a1", { ...memory("cold", 1), record_id: "cold", recall_count: 0 })
+    await store.upsert("a1", { ...memory("warm", 1), record_id: "warm", recall_count: 5 })
+    await store.upsert("a1", { ...memory("new", 1), record_id: "new", recall_count: 1 })
+    const ids = (await store.search("a1", { scope, query: "cold warm new", top_k: 9, kinds: [] })).map(h => h.record.record_id)
+    expect(ids).not.toContain("cold")
+
+    await store.recordRecall("a1", [{ record_id: "warm", recall_count: 8, last_recalled_at: 3 }])
+    const warm = (await store.search("a1", { scope, query: "warm", top_k: 1, kinds: [] }))[0]
+    expect(warm?.record.recall_count).toBe(8)
+  })
 })

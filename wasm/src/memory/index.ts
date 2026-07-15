@@ -43,12 +43,18 @@ export interface MemoryRecall { record: MemoryRecord; score: number; why: string
 export interface MemoryQuery {
   scope: MemoryScope; query: string; top_k: number; kinds: MemoryKind[]; min_score?: number
 }
+/** One record's recall lifecycle, mirrored from the kernel's `memory_recalled` observation (M3). */
+export interface MemoryRecallLifecycle { record_id: string; recall_count: number; last_recalled_at: number }
 
 export interface DreamStore {
   upsert(agentId: string, record: MemoryRecord): Promise<void>
   search(agentId: string, query: MemoryQuery): Promise<MemoryRecall[]>
   /** Persist a completed session before the runner's one extraction pass. */
   saveSession(data: SessionData): Promise<void>
+  /** M3: mirror the kernel's journaled recall lifecycle into the durable store. Optional. */
+  recordRecall?(agentId: string, recalls: MemoryRecallLifecycle[]): Promise<void>
+  /** M4: set/clear a record's pin (exempt from retention eviction). Optional. */
+  setPinned?(agentId: string, recordId: string, pinned: boolean): Promise<void>
 }
 
 export interface SessionStore {

@@ -2157,6 +2157,7 @@ fn memory_policy_validation_disabled_admits_forbidden_write() {
         validation_enabled: false,
         max_content_bytes: None,
         max_name_length: None,
+        promotion_recall_threshold: None,
     }));
     let step = write_memory(&mut runtime, "note", "代码模式: foo");
     assert!(
@@ -2195,6 +2196,7 @@ fn memory_policy_size_override_rejects_oversized_write() {
         validation_enabled: true,
         max_content_bytes: Some(8),
         max_name_length: None,
+        promotion_recall_threshold: None,
     }));
     let step = write_memory(
         &mut runtime,
@@ -2219,6 +2221,7 @@ fn memory_policy_clamps_retrieval_top_k() {
         validation_enabled: true,
         max_content_bytes: None,
         max_name_length: None,
+        promotion_recall_threshold: None,
     }));
     let step = runtime.step(KernelInput::new(KernelInputEvent::QueryMemory {
         query: MemoryQuery {
@@ -2328,6 +2331,94 @@ fn memory_query_result_enforces_scope_and_replays_recalled_record() {
     let encoded = runtime.snapshot_json().expect("recall journal snapshot");
     let restored = KernelRuntime::restore_snapshot_json(&encoded).expect("replay recall journal");
     assert_eq!(restored.snapshot_json().expect("re-encode"), encoded);
+}
+
+/// Drive a recall whose single hit carries `recall_count`, and return the completing step. The hit
+/// is the host's current record state; the kernel journals the incremented lifecycle statelessly.
+fn recall_hit(runtime: &mut KernelRuntime, record_id: &str, recall_count: u64) -> KernelStep {
+    use crate::mm::memory::{MemoryQuery, MemoryRecall, MemoryScope};
+    let requested = runtime.step(KernelInput::new(KernelInputEvent::QueryMemory {
+        query: MemoryQuery {
+            scope: MemoryScope::new("tenant-test", "kernel-tests"),
+            query: "which command builds the project".into(),
+            top_k: 5,
+            kinds: vec![crate::mm::memory::MemoryKind::Project],
+            min_score: None,
+        },
+    }));
+    let effect_id = requested.actions[0].effect_id.clone();
+    let mut record = memory_record(record_id, "build", "cargo build");
+    record.recall_count = recall_count;
+    runtime.step(KernelInput::new(KernelInputEvent::MemoryQueryResult {
+        effect_id,
+        hits: vec![MemoryRecall {
+            record,
+            score: 0.9,
+            why: "lexical overlap".into(),
+        }],
+        error: None,
+    }))
+}
+
+#[test]
+fn m3_recall_journals_incremented_lifecycle_from_the_hit() {
+    // Recall lifecycle is derived from the routed hit (host-authoritative store), not a kernel
+    // ledger: a hit at count N journals N+1, stamped with the current turn.
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let step = recall_hit(&mut runtime, "record-build", 4);
+    let recalls = step
+        .observations
+        .iter()
+        .find_map(|o| match o {
+            KernelObservation::MemoryRecalled { recalls, .. } => Some(recalls.clone()),
+            _ => None,
+        })
+        .expect("recall journals a MemoryRecalled observation");
+    assert_eq!(recalls.len(), 1);
+    assert_eq!(recalls[0].record_id, "record-build");
+    assert_eq!(recalls[0].recall_count, 5, "hit count 4 → journaled 5");
+}
+
+#[test]
+fn m4_recall_crossing_threshold_suggests_promotion_only_on_the_edge() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(KernelInput::new(KernelInputEvent::SetMemoryPolicy {
+        memory_path: String::new(),
+        stale_warning_days: 2,
+        retrieval_top_k: 5,
+        validation_enabled: true,
+        max_content_bytes: None,
+        max_name_length: None,
+        promotion_recall_threshold: Some(2),
+    }));
+
+    // Hit at count 0 → 1: still below the threshold, no suggestion.
+    let below = recall_hit(&mut runtime, "record-build", 0);
+    assert!(
+        !below
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::PromotionSuggested { .. }))
+    );
+
+    // Hit at count 1 → 2: crosses the threshold, suggestion fires with the new count.
+    let crossing = recall_hit(&mut runtime, "record-build", 1);
+    let suggested = crossing.observations.iter().find_map(|o| match o {
+        KernelObservation::PromotionSuggested { record_id, recall_count, .. } => {
+            Some((record_id.clone(), *recall_count))
+        }
+        _ => None,
+    });
+    assert_eq!(suggested, Some(("record-build".into(), 2)));
+
+    // Hit already at/above the threshold (2 → 3): edge already passed, no repeat nag.
+    let above = recall_hit(&mut runtime, "record-build", 2);
+    assert!(
+        !above
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::PromotionSuggested { .. }))
+    );
 }
 
 #[test]

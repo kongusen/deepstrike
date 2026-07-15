@@ -1634,7 +1634,7 @@ impl KernelRuntime {
                             memory_kind: memory.kind,
                             name: memory.name,
                             size_bytes: memory.content.len() as u32,
-                        })
+                        });
                     }
                 }
                 return identity.empty(self.sm.take_observations());
@@ -1663,6 +1663,18 @@ impl KernelRuntime {
                         continuation
                     }
                     None => {
+                        // M3/M4: journal recall lifecycle derived from the routed hits. Each hit
+                        // carries the host store's current recall_count, so the incremented count is
+                        // computed statelessly here (the durable ledger lives host-side) and mirrored
+                        // back via observation. Recall time is the current turn — deterministic and
+                        // replay-safe; the kernel owns no wall clock. Promotion is edge-triggered on
+                        // the threshold crossing so it never nags.
+                        let promotion_threshold = self
+                            .sm
+                            .memory_policy()
+                            .and_then(|policy| policy.promotion_recall_threshold);
+                        let mut recalls = Vec::new();
+                        let mut promotions = Vec::new();
                         for hit in &hits {
                             let trust = match hit.record.provenance.trust {
                                 crate::mm::memory::MemoryTrustLevel::Untrusted => "untrusted",
@@ -1682,15 +1694,45 @@ impl KernelRuntime {
                                 crate::types::message::Message::user(content),
                                 tokens,
                             );
+
+                            let record_id = hit.record.record_id.clone();
+                            let before = hit.record.recall_count;
+                            let after = before.saturating_add(1);
+                            recalls.push(crate::mm::memory::MemoryRecallLifecycle {
+                                record_id: record_id.clone(),
+                                recall_count: after,
+                                last_recalled_at: turn as u64,
+                            });
+                            if let Some(threshold) = promotion_threshold {
+                                if before < threshold && after >= threshold {
+                                    promotions.push((record_id, after));
+                                }
+                            }
                         }
                         let continuation = self.sm.resume_after_preload();
                         self.sm.observations.push(KernelObservation::MemoryQueried {
                             turn,
-                            scope: query.scope,
+                            scope: query.scope.clone(),
                             query: query.query,
                             requested_k,
                             requires_async_response: false,
                         });
+                        if !recalls.is_empty() {
+                            self.sm.observations.push(KernelObservation::MemoryRecalled {
+                                turn,
+                                scope: query.scope,
+                                recalls,
+                            });
+                        }
+                        for (record_id, recall_count) in promotions {
+                            self.sm
+                                .observations
+                                .push(KernelObservation::PromotionSuggested {
+                                    turn,
+                                    record_id,
+                                    recall_count,
+                                });
+                        }
                         continuation
                     }
                 };
@@ -1868,10 +1910,13 @@ impl KernelRuntime {
                 validation_enabled,
                 max_content_bytes,
                 max_name_length,
+                promotion_recall_threshold,
             } => {
                 // Phase 7: install the memory policy. The kernel enforces validation_enabled +
-                // retrieval_top_k + size/name overrides at the WriteMemory/QueryMemory traps;
-                // memory_path / stale_warning_days are carried for the SDK's recall I/O.
+                // retrieval_top_k + size/name overrides at the WriteMemory/QueryMemory traps and
+                // (M4) promotion_recall_threshold on recall; memory_path / stale_warning_days are
+                // carried for the SDK's recall I/O. Capacity eviction is host-side (the host store
+                // owns the full cross-session record set).
                 self.sm.set_memory_policy(crate::mm::memory::MemoryPolicy {
                     memory_path,
                     stale_warning_days,
@@ -1879,6 +1924,7 @@ impl KernelRuntime {
                     validation_enabled,
                     max_content_bytes,
                     max_name_length,
+                    promotion_recall_threshold,
                 });
                 return identity.empty(self.sm.take_observations());
             }

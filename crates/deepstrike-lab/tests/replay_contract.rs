@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use deepstrike_core::context::policy::{ContextPolicyV1, PressureThresholdsPpm};
 use deepstrike_core::runtime::{KernelInput, KernelInputEvent, KernelRuntime, KernelSnapshot};
 use deepstrike_core::scheduler::policy::SchedulerBudget;
-use deepstrike_core::types::message::Message;
+use deepstrike_core::types::message::{Content, Message, ToolCall, ToolResult};
 use deepstrike_core::types::task::RuntimeTask;
 use deepstrike_lab::{
     FactProbe, LabContextOverrides, ReplayError, ReplayOptions, TracePoint, export_snapshot_trace,
@@ -273,4 +273,295 @@ fn typed_probe_and_structural_invariants_are_reported() {
             .iter()
             .all(|turn| turn.render_tokens <= 1_024)
     );
+}
+
+// ── Compaction golden (W2-S2 A/B pre-gate for the compression pipeline) ─────────────
+//
+// `fixture_snapshot` above renders once at a cold ~4% rho, so its golden pins the
+// no-pressure path — determinism and structural invariants, but `compression_count: 0`.
+// The fixture below drives a real tool-call loop over a preloaded history heavy enough
+// that the turn-boundary eviction checkpoint fires a compaction before the second
+// provider turn. Its golden pins the *compression pipeline* itself (tier, prefix
+// invalidation, post-compaction fact recall), so any P1 change to compression bytes
+// moves the golden and must ship a justification — the regression environment the spec
+// requires to precede compression-algorithm work.
+
+fn history_event(role: &str, content: &str, tokens: u32) -> KernelInputEvent {
+    let message = if role == "user" {
+        Message::user(content)
+    } else {
+        Message::assistant(content)
+    };
+    KernelInputEvent::AddHistoryMessage {
+        message,
+        tokens: Some(tokens),
+    }
+}
+
+fn compaction_fixture_snapshot() -> KernelSnapshot {
+    let mut runtime = KernelRuntime::new(SchedulerBudget {
+        max_tokens: 1_000,
+        max_turns: 20,
+        max_total_tokens: 1_000_000,
+        max_wall_ms: None,
+    });
+    let mut seq = 1u64;
+    let drive = |runtime: &mut KernelRuntime, seq: &mut u64, event: KernelInputEvent| {
+        let step = runtime.step(input(*seq, event));
+        assert!(step.faults.is_empty(), "seq {}: {:?}", *seq, step.faults);
+        *seq += 1;
+        step
+    };
+
+    drive(
+        &mut runtime,
+        &mut seq,
+        KernelInputEvent::ConfigureRun {
+            config: deepstrike_core::runtime::kernel::RunConfig {
+                context_policy: Some(policy(1)),
+                ..Default::default()
+            },
+        },
+    );
+    drive(
+        &mut runtime,
+        &mut seq,
+        KernelInputEvent::AddSystemMessage {
+            content: "SYSTEM_ANCHOR".into(),
+            tokens: 8,
+        },
+    );
+    drive(
+        &mut runtime,
+        &mut seq,
+        KernelInputEvent::AddKnowledgeMessage {
+            content: "pinned anchor note".into(),
+            tokens: 8,
+            key: Some("anchor".into()),
+            pinned: true,
+        },
+    );
+    // Old history — the fact under test (`ORCHID`) is introduced in transaction 4, well before
+    // the compaction, so the T2 probe genuinely measures post-compaction recall (not preservation
+    // of a recent turn).
+    drive(
+        &mut runtime,
+        &mut seq,
+        history_event("user", "recall the project codename ORCHID and its release", 220),
+    );
+    drive(
+        &mut runtime,
+        &mut seq,
+        history_event(
+            "assistant",
+            "Understood; codename ORCHID release plan noted with retry decision",
+            220,
+        ),
+    );
+    drive(
+        &mut runtime,
+        &mut seq,
+        history_event("user", "routine chatter number one about unrelated things", 200),
+    );
+    drive(
+        &mut runtime,
+        &mut seq,
+        history_event("assistant", "acknowledged the routine chatter number one", 120),
+    );
+
+    let started = drive(
+        &mut runtime,
+        &mut seq,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("what is the codename"),
+            run_spec: None,
+        },
+    );
+    let effect1 = started.actions[0].effect_id.clone();
+
+    // Turn 1 answers with a tool call so the loop advances to a second provider turn — the
+    // turn-boundary eviction checkpoint runs between them and compacts the pressured history.
+    let mut assistant = Message::assistant("let me look it up");
+    assistant.tool_calls.push(ToolCall {
+        id: "call-1".into(),
+        name: "search".into(),
+        arguments: serde_json::json!({ "q": "codename" }),
+    });
+    let tool_step = drive(
+        &mut runtime,
+        &mut seq,
+        KernelInputEvent::ProviderResult {
+            effect_id: effect1,
+            message: assistant,
+            observed_input_tokens: None,
+            observed_output_tokens: None,
+            now_ms: None,
+            stop_reason: None,
+        },
+    );
+    let tool_effect = tool_step.actions[0].effect_id.clone();
+    let render2 = drive(
+        &mut runtime,
+        &mut seq,
+        KernelInputEvent::ToolResults {
+            effect_id: tool_effect,
+            results: vec![ToolResult {
+                call_id: "call-1".into(),
+                output: Content::Text("ORCHID".into()),
+                is_error: false,
+                is_fatal: false,
+                error_kind: None,
+                token_count: Some(4),
+            }],
+        },
+    );
+    let effect2 = render2.actions[0].effect_id.clone();
+    drive(
+        &mut runtime,
+        &mut seq,
+        KernelInputEvent::ProviderResult {
+            effect_id: effect2,
+            message: Message::assistant("The codename is ORCHID."),
+            observed_input_tokens: None,
+            observed_output_tokens: None,
+            now_ms: None,
+            stop_reason: None,
+        },
+    );
+    runtime.snapshot().unwrap()
+}
+
+fn compaction_probe() -> FactProbe {
+    FactProbe {
+        id: "codename".into(),
+        introduced_at: TracePoint::Transaction(4),
+        required_at: TracePoint::ProviderTurn(2),
+        canonical_value: "ORCHID".into(),
+        aliases: vec![],
+        acceptable_handles: vec![],
+    }
+}
+
+#[test]
+fn compaction_report_is_byte_deterministic() {
+    let snapshot = compaction_fixture_snapshot();
+    let trace =
+        export_snapshot_trace(&snapshot, BTreeMap::new(), vec![compaction_probe()]).unwrap();
+    let options = ReplayOptions {
+        context_policy: Some(policy(1)),
+        lab_overrides: LabContextOverrides::default(),
+    };
+
+    let left = replay_fork(&trace, &options)
+        .unwrap()
+        .normalized_json()
+        .unwrap();
+    let right = replay_fork(&trace, &options)
+        .unwrap()
+        .normalized_json()
+        .unwrap();
+
+    assert_eq!(left.as_bytes(), right.as_bytes());
+    assert_eq!(
+        left.as_bytes(),
+        include_str!("goldens/compaction-report.json")
+            .trim_end()
+            .as_bytes()
+    );
+    assert!(!left.contains("/tmp/"));
+    assert!(!left.contains("localhost"));
+
+    // The golden must actually exercise the compression pipeline (else it is the cold-start
+    // golden again). Pin the load-bearing facts here so a fixture edit that silently stops
+    // compressing fails loudly, not just as an opaque byte diff.
+    let report = replay_fork(&trace, &options).unwrap();
+    assert!(report.comparable);
+    assert_eq!(report.t1.compression_count, 1);
+    assert_eq!(report.t1.prefix_invalidation_count, 1);
+    assert!(report.t2.fact_probes[0].retained, "fact recall survives compaction");
+    assert!(report.t2.invariants.iter().all(|i| i.passed));
+}
+
+#[test]
+fn policy_ab_produces_comparable_but_divergent_reports() {
+    // The A/B contract: replaying ONE trace under two context policies that keep the same
+    // provider-demand structure yields two *comparable* reports whose mechanical T1 metrics
+    // diverge with the policy. This is what makes the lab a pre-gate for compression tuning —
+    // a knob change is observable as a report delta, not a silent behavior drift.
+    let snapshot = compaction_fixture_snapshot();
+    let trace =
+        export_snapshot_trace(&snapshot, BTreeMap::new(), vec![compaction_probe()]).unwrap();
+
+    let tight = replay_fork(
+        &trace,
+        &ReplayOptions {
+            context_policy: Some(policy(1)),
+            lab_overrides: LabContextOverrides::default(),
+        },
+    )
+    .unwrap();
+    let loose = replay_fork(
+        &trace,
+        &ReplayOptions {
+            context_policy: Some(policy(3)),
+            lab_overrides: LabContextOverrides::default(),
+        },
+    )
+    .unwrap();
+
+    // Both fork the same recorded provider demand — neither is quarantined as not-comparable.
+    assert!(tight.comparable && loose.comparable);
+    // Both still compress and still recall the fact — the divergence is in *how much* context
+    // the post-compaction render carries, not in correctness.
+    assert_eq!(tight.t1.compression_count, 1);
+    assert_eq!(loose.t1.compression_count, 1);
+    assert!(tight.t2.fact_probes[0].retained && loose.t2.fact_probes[0].retained);
+    // Preserving more recent turns changes the post-compaction render size — the observable A/B.
+    let tight_turn2 = tight.t1.provider_turns[1].render_tokens;
+    let loose_turn2 = loose.t1.provider_turns[1].render_tokens;
+    assert_ne!(
+        tight_turn2, loose_turn2,
+        "preserve_recent_turns must move the post-compaction render size"
+    );
+    assert_ne!(
+        tight.normalized_json().unwrap(),
+        loose.normalized_json().unwrap()
+    );
+}
+
+#[test]
+fn policy_that_reshapes_provider_demand_fails_closed() {
+    // A policy aggressive enough to change the causal structure (heavy compaction defers the
+    // second provider turn behind a host page-out, or renewal restarts the sprint) must be
+    // rejected as `trace_not_comparable`, never silently compared against the recorded trace.
+    // This is the guard that keeps an A/B honest: only same-shape forks are diffed.
+    let snapshot = compaction_fixture_snapshot();
+    let trace =
+        export_snapshot_trace(&snapshot, BTreeMap::new(), vec![compaction_probe()]).unwrap();
+
+    let aggressive = ContextPolicyV1 {
+        version: 1,
+        pressure_thresholds_ppm: PressureThresholdsPpm {
+            snip: 100_000,
+            micro: 200_000,
+            collapse: 300_000,
+            auto: 400_000,
+            renewal: 980_000,
+        },
+        target_after_compress_ppm: 80_000,
+        preserve_recent_turns: 1,
+        renewal_carryover_ppm: 40_000,
+        collapse_old_assistant_narration: true,
+        idle_micro_compact_minutes: 60,
+    };
+
+    let error = replay_fork(
+        &trace,
+        &ReplayOptions {
+            context_policy: Some(aggressive),
+            lab_overrides: LabContextOverrides::default(),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), "trace_not_comparable");
 }

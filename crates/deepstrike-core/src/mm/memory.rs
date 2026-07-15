@@ -227,6 +227,11 @@ impl MemoryRecordStore {
     }
 
     /// Commit a successful recall as part of the journaled query-result transaction.
+    ///
+    /// `recalled_at` is a monotonic turn counter, not a wall clock: recall lifecycle is a
+    /// deterministic kernel fact so it must replay byte-for-byte. Retention scoring consumes it as a
+    /// step, and the TTL/staleness discount (which does need a clock) is applied host-side at recall
+    /// ranking time.
     pub fn record_recall(&mut self, record_id: &str, recalled_at: u64) -> Option<&MemoryRecord> {
         let key = self.keys_by_id.get(record_id)?.clone();
         let record = self.records.get_mut(&key)?;
@@ -239,6 +244,41 @@ impl MemoryRecordStore {
         self.get_by_id(record_id)
             .is_some_and(|record| !record.pinned && record.recall_count >= threshold)
     }
+}
+
+/// Deterministic retention score for a durable record, evaluated at `current_turn`.
+///
+/// This is the canonical reference the host mirrors when it bounds its own store: durable memory and
+/// context knowledge rank by the same "value" definition ([`deterministic_retention_score`]). The
+/// host owns the full cross-session record set, so it — not the kernel — enforces the capacity bound
+/// and applies the day-based TTL/staleness discount (which needs a wall clock the kernel lacks). The
+/// kernel's job is the recall/promotion signal derived from the routed hits.
+pub fn memory_retention_score(
+    record: &MemoryRecord,
+    current_turn: u64,
+    stale_discount_ppm: u32,
+) -> i64 {
+    use crate::mm::value::{deterministic_retention_score, RetentionFeatures, RetentionKind};
+    let kind = match record.kind {
+        MemoryKind::User => RetentionKind::User,
+        MemoryKind::Feedback => RetentionKind::Feedback,
+        MemoryKind::Project => RetentionKind::Project,
+        MemoryKind::Reference => RetentionKind::Reference,
+    };
+    let confidence_ppm = (record.confidence.clamp(0.0, 1.0) * 1_000_000.0) as u32;
+    // Rough 4-bytes-per-token proxy keeps the size penalty on the same scale as context units.
+    let tokens = (record.content.len() / 4).min(u32::MAX as usize) as u32;
+    deterministic_retention_score(RetentionFeatures {
+        pinned: record.pinned,
+        use_count: record.recall_count,
+        last_used_step: record.last_recalled_at,
+        current_step: current_turn,
+        lease_remaining_steps: None,
+        kind,
+        tokens,
+        confidence_ppm,
+        stale_discount_ppm,
+    })
 }
 
 /// Scoped recall request. The host owns retrieval; the kernel validates this deterministic wire and
@@ -341,6 +381,16 @@ pub struct MemoryRecall {
     pub record: MemoryRecord,
     pub score: f64,
     pub why: String,
+}
+
+/// Journaled recall lifecycle for one record (M3). Carried on `MemoryRecalled` so the host mirrors
+/// the kernel-authoritative counts into its durable store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryRecallLifecycle {
+    pub record_id: String,
+    pub recall_count: u64,
+    pub last_recalled_at: u64,
 }
 
 /// Memory validation error.
@@ -453,6 +503,9 @@ pub struct MemoryPolicy {
     pub validation_enabled: bool,
     pub max_content_bytes: Option<u32>,
     pub max_name_length: Option<usize>,
+    /// M4: recall count at which a record becomes a promotion candidate. When set, crossing it on a
+    /// recall emits an advisory `PromotionSuggested`; `None` disables the suggestion.
+    pub promotion_recall_threshold: Option<u64>,
 }
 
 impl Default for MemoryPolicy {
@@ -464,6 +517,7 @@ impl Default for MemoryPolicy {
             validation_enabled: true,
             max_content_bytes: None,
             max_name_length: None,
+            promotion_recall_threshold: None,
         }
     }
 }
@@ -649,6 +703,27 @@ mod tests {
 
         store.record_recall("recall-me", 43).unwrap();
         assert!(store.promotion_suggested("recall-me", 2));
+    }
+
+    #[test]
+    fn memory_retention_score_ranks_recalled_and_pinned_above_cold() {
+        // Reference formula the host mirrors when bounding its store: a recalled record outranks an
+        // untouched one, and a pin is absolute.
+        let mut hot = record("hot", "agent-a", "hot", "frequently useful fact");
+        hot.recall_count = 3;
+        hot.last_recalled_at = Some(9);
+        let cold = record("cold", "agent-a", "cold", "never referenced fact");
+        assert!(
+            memory_retention_score(&hot, 10, 0) > memory_retention_score(&cold, 10, 0),
+            "a recalled record beats a cold one"
+        );
+
+        let mut pinned = cold.clone();
+        pinned.pinned = true;
+        assert_eq!(memory_retention_score(&pinned, 10, 0), i64::MAX, "pin is absolute");
+
+        // The TTL/staleness discount (host-supplied, clock-based) lowers the score.
+        assert!(memory_retention_score(&cold, 10, 500_000) < memory_retention_score(&cold, 10, 0));
     }
 
     #[test]

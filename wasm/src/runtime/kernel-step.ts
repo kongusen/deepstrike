@@ -200,6 +200,9 @@ export interface KernelObservation {
   query?: string
   requested_k?: number
   requires_async_response?: boolean
+  // M3 memory_recalled / M4 promotion_suggested.
+  recalls?: Array<{ record_id: string; recall_count: number; last_recalled_at: number }>
+  recall_count?: number
   /** memory_validation_failed (Phase 7). */
   error?: string
   // W0-ABI: workflow lifecycle observations.

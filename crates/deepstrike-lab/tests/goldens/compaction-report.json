@@ -1,0 +1,147 @@
+{
+  "report_version": 1,
+  "lab_version": "deepstrike-lab-v1",
+  "trace_digest": "fnv1a64:676de5418afc0be4",
+  "trace_version": 1,
+  "abi_version": 2,
+  "comparable": true,
+  "policy": {
+    "version": 1,
+    "pressure_thresholds_ppm": {
+      "snip": 700000,
+      "micro": 800000,
+      "collapse": 900000,
+      "auto": 950000,
+      "renewal": 980000
+    },
+    "target_after_compress_ppm": 650000,
+    "preserve_recent_turns": 1,
+    "renewal_carryover_ppm": 50000,
+    "collapse_old_assistant_narration": true,
+    "idle_micro_compact_minutes": 60
+  },
+  "lab_overrides": {},
+  "t1": {
+    "provider_turns": [
+      {
+        "provider_turn": 1,
+        "transaction": 8,
+        "logical_effect_key": "provider:event-8",
+        "render_tokens": 89,
+        "rho_ppm": 89000,
+        "frozen_prefix_len": null,
+        "reusable_prefix_turns": 0,
+        "reusable_prefix_tokens": 0,
+        "invalidates_prefix_at": null
+      },
+      {
+        "provider_turn": 2,
+        "transaction": 10,
+        "logical_effect_key": "provider:event-10",
+        "render_tokens": 117,
+        "rho_ppm": 117000,
+        "frozen_prefix_len": null,
+        "reusable_prefix_turns": 1,
+        "reusable_prefix_tokens": 19,
+        "invalidates_prefix_at": 1
+      }
+    ],
+    "compression_count": 1,
+    "compression_by_type": {
+      "microcompact": 1
+    },
+    "archived_messages": 0,
+    "archived_bytes": 0,
+    "prefix_invalidation_count": 1,
+    "external_payload_spool_count": 0,
+    "external_payload_bytes": 0,
+    "knowledge_eviction_count": 0,
+    "knowledge_evicted_tokens": 0
+  },
+  "t2": {
+    "fact_probes": [
+      {
+        "id": "codename",
+        "required_at": {
+          "provider_turn": 2
+        },
+        "retained": true,
+        "matched": "ORCHID"
+      }
+    ],
+    "invariants": [
+      {
+        "name": "tool_call_result_pairing",
+        "provider_turn": 1,
+        "passed": true,
+        "detail": "all tool calls are paired"
+      },
+      {
+        "name": "no_orphan_handle",
+        "provider_turn": 1,
+        "passed": true,
+        "detail": "all handles resolve to fixtures or probe allowances"
+      },
+      {
+        "name": "recent_context_unit_retention",
+        "provider_turn": 1,
+        "passed": true,
+        "detail": "declared recent source messages are retained"
+      },
+      {
+        "name": "system_preservation",
+        "provider_turn": 1,
+        "passed": true,
+        "detail": "system anchors are preserved"
+      },
+      {
+        "name": "knowledge_preservation",
+        "provider_turn": 1,
+        "passed": true,
+        "detail": "pinned knowledge anchors are preserved"
+      },
+      {
+        "name": "context_hard_limit",
+        "provider_turn": 1,
+        "passed": true,
+        "detail": "render fits the declared hard limit"
+      },
+      {
+        "name": "tool_call_result_pairing",
+        "provider_turn": 2,
+        "passed": true,
+        "detail": "all tool calls are paired"
+      },
+      {
+        "name": "no_orphan_handle",
+        "provider_turn": 2,
+        "passed": true,
+        "detail": "all handles resolve to fixtures or probe allowances"
+      },
+      {
+        "name": "recent_context_unit_retention",
+        "provider_turn": 2,
+        "passed": true,
+        "detail": "declared recent source messages are retained"
+      },
+      {
+        "name": "system_preservation",
+        "provider_turn": 2,
+        "passed": true,
+        "detail": "system anchors are preserved"
+      },
+      {
+        "name": "knowledge_preservation",
+        "provider_turn": 2,
+        "passed": true,
+        "detail": "pinned knowledge anchors are preserved"
+      },
+      {
+        "name": "context_hard_limit",
+        "provider_turn": 2,
+        "passed": true,
+        "detail": "render fits the declared hard limit"
+      }
+    ]
+  }
+}

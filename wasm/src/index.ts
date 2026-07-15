@@ -84,8 +84,10 @@ export { safeTool, ok, fail, ToolError, formatToolError } from "./tools/errors.j
 export type { ToolEnvelope, ToolEnvelopeOk, ToolEnvelopeFail } from "./tools/errors.js"
 export { WorkingMemory } from "./memory/index.js"
 export { InMemoryDreamStore } from "./memory/in-memory-store.js"
+export type { InMemoryDreamStoreOptions } from "./memory/in-memory-store.js"
+export { memoryRetentionScore } from "./memory/retention.js"
 export type {
-  DreamStore, SessionStore, SessionData, SessionMessage, MemoryRecord, MemoryRecall,
+  DreamStore, SessionStore, SessionData, SessionMessage, MemoryRecord, MemoryRecall, MemoryRecallLifecycle,
   MemoryQuery, MemoryScope, MemoryProvenance, MemoryKind, MemoryAuthor, MemoryTrustLevel,
 } from "./memory/index.js"
 export type { KnowledgeSource } from "./knowledge/index.js"

@@ -298,7 +298,7 @@ the metric Δ isolates one mechanism's contribution. `bench list` prints the sam
 
 The harness spec ([`benchmark-harness.md` §7](../.local-docs/specs/benchmark-harness.md))
 calls out 8 kernel mechanisms that should each get an A/B scenario. Current state — **6 shipped,
-2 deferred** (designs preserved in [`.local-docs/specs/bench-scenarios-deferred.md`](../.local-docs/specs/bench-scenarios-deferred.md)):
+1 unblocked (bench scenario buildable), 1 deferred** (designs preserved in [`.local-docs/specs/bench-scenarios-deferred.md`](../.local-docs/specs/bench-scenarios-deferred.md)):
 
 | § | mechanism | scenario | status | notes |
 | - | --------- | -------- | ------ | ----- |
@@ -306,12 +306,12 @@ calls out 8 kernel mechanisms that should each get an A/B scenario. Current stat
 | 7.2 | prefix-cache / attention | `prefix-cache` | ✅ shipped | unblocked in v0.2.22 by the `cacheBreakpointStrategy` SDK knob; 5-variant A/B over `default` / `tools-only` / `system-only` / `frozen-prefix` / `none`; Anthropic-only signal (non-Anthropic providers ignore the extension by design) |
 | 7.3 | context compression / paging | `compression-stress` | ✅ shipped | reveals task-completion cost of tight budget |
 | 7.4 | memory / knowledge | `memory-recall` | ✅ shipped | pre-seeded `DreamStore` vs. empty; uses the public `InMemoryDreamStore` (promoted to SDK in v0.2.21) |
-| 7.5 | orchestration / sub-agents | — | ⏸ deferred | natural variant ("did the agent dispatch in parallel?") is agent-driven, not config-driven — violates the single-variable rule. Two workable routes designed in the deferred-scenarios doc (tool-level concurrency stand-in or `submitWorkflowNodesTool`-driven fan-out) |
+| 7.5 | orchestration / sub-agents | — | 🔨 unblocked | the single-variable blocker is resolved: `scheduler_policy` (critical-path / fanout / age / token weights) is now a first-class config axis, so an A/B is config-driven (weighted vs. zeroed = FIFO) instead of agent-driven. Deterministic scheduler behavior is kernel-validated by F1–F3 scenario tests (`orchestration::workflow::run::tests::{f1_critical_path…, f2_rearming_loop…, f3_failure_and_partial…}`): critical-path skew, loop fairness, transitive failure propagation. Full bench `BenchScenario` (needs a provider to run end-to-end) is now buildable |
 | 7.6 | signal preemption | `signal-injection` | ✅ shipped | soft `Interrupt` (High) vs. `InterruptNow` (Critical) A/B; soft path keeps run going (12/12 fetches), hard path preempts at the inject turn |
 | 7.7 | governance gate | `governance-write-deny` | ✅ shipped | rollbacked-event signal documented in scenario header |
 | 7.8 | token-count tiering | — | ⏸ deferred | no natural variant dimension that doesn't reduce to tokenizer-accuracy noise rather than run-behavior signal; framework's A/B pattern is a poor fit. Design preserved in the deferred-scenarios doc; kernel `SetTokenizer` work also pending |
 
-Legend: ✅ shipped · ⏸ deferred (design preserved, scenario not built).
+Legend: ✅ shipped · 🔨 unblocked (config axis + kernel-validated; bench scenario buildable) · ⏸ deferred (design preserved, scenario not built).
 
 ## Adding a scenario
 

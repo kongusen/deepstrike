@@ -224,6 +224,8 @@ export interface RuntimeOptions {
   /** Skill name → markdown body (WASM has no filesystem). */
   skillContentMap?: Map<string, string>
   dreamStore?: DreamStore
+  /** M4: advisory callback when a recalled record crosses the promotion threshold. */
+  onPromotionSuggested?: (info: { recordId: string; recallCount: number }) => void
   knowledgeSource?: KnowledgeSource
   signalSource?: SignalSource
   extensions?: Record<string, unknown>
@@ -1062,12 +1064,22 @@ export class RuntimeRunner {
             ...(action.query as unknown as MemoryQuery), top_k: action.requestedK,
           })
         } catch (cause) { error = formatToolError(cause) }
+        const obsStart = this.pendingObservations.length
         action = kernelAction(runtime, this.pendingObservations, {
           kind: "memory_query_result",
           effect_id: action.effectId,
           hits,
           ...(error ? { error } : {}),
         })
+        // M3/M4: mirror the kernel's journaled recall lifecycle + surface promotion suggestions.
+        for (const obs of this.pendingObservations.slice(obsStart)) {
+          if (obs.kind === "memory_recalled" && obs.recalls?.length && this.opts.agentId) {
+            await this.opts.dreamStore?.recordRecall?.(this.opts.agentId, obs.recalls)
+          }
+          if (obs.kind === "promotion_suggested" && obs.record_id) {
+            this.opts.onPromotionSuggested?.({ recordId: obs.record_id, recallCount: obs.recall_count ?? 0 })
+          }
+        }
 
       } else if (action.kind === "spool_large_result") {
         const spool = this.opts.resultSpool ?? new LargeResultSpool()

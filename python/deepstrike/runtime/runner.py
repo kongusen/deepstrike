@@ -226,6 +226,9 @@ class RuntimeOptions:
   initial_memory: list[str] | None = None
   skill_dir: str | Path | None = None
   dream_store: "DreamStore | None" = None
+  #: M4: advisory callback when a recalled record crosses the promotion threshold. Keyword args:
+  #: record_id: str, recall_count: int. The host/model decides whether to pin or promote to knowledge.
+  on_promotion_suggested: "Callable[..., None] | None" = None
   knowledge_source: "KnowledgeSource | None" = None
   signal_source: "SignalSource | None" = None
   extensions: dict | None = None
@@ -2706,6 +2709,30 @@ class RuntimeRunner:
           rounds=int(obs.get("rounds") or 0),
         )
         self._active_group_budget_scope = None
+
+      # M3: mirror the kernel's journaled recall lifecycle into the durable store so recall
+      # history survives across sessions.
+      if obs.get("kind") == "memory_recalled" and obs.get("recalls"):
+        agent_id = self._opts.agent_id
+        record_recall = getattr(self._opts.dream_store, "record_recall", None) if self._opts.dream_store else None
+        if agent_id and record_recall is not None:
+          from deepstrike.memory.protocols import MemoryRecallLifecycle
+          recalls = [
+            MemoryRecallLifecycle(
+              record_id=str(r["record_id"]),
+              recall_count=int(r["recall_count"]),
+              last_recalled_at=int(r["last_recalled_at"]),
+            )
+            for r in obs["recalls"]
+          ]
+          await record_recall(agent_id, recalls)
+      # M4: a recall crossed the promotion threshold. Advisory — surface for the host/model to act.
+      if obs.get("kind") == "promotion_suggested" and obs.get("record_id"):
+        if self._opts.on_promotion_suggested is not None:
+          self._opts.on_promotion_suggested(
+            record_id=str(obs["record_id"]),
+            recall_count=int(obs.get("recall_count") or 0),
+          )
 
       latest = (
         await self._opts.session_log.latest_seq(session_id)

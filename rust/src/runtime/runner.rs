@@ -2113,6 +2113,10 @@ impl RuntimeRunner {
                 KernelObservation::AgentPreemptFailed { .. } => {}
                 KernelObservation::MemoryWriteFailed { .. } => {}
                 KernelObservation::MemoryQueryFailed { .. } => {}
+                // M3/M4 lifecycle observations. Durable-store mirroring is a Node/Python SDK
+                // concern; this Rust session-log loop does not persist them (parity follow-up).
+                KernelObservation::MemoryRecalled { .. }
+                | KernelObservation::PromotionSuggested { .. } => {}
                 // Governance flagged a tool call for user approval. The kernel does
                 // not block it; the SDK-side human-approval workflow is a follow-up.
                 KernelObservation::ToolGated { .. } => {}
@@ -2526,6 +2530,7 @@ fn memory_policy_event(policy: MemoryPolicy) -> KernelInputEvent {
         validation_enabled: policy.validation_enabled,
         max_content_bytes: policy.max_content_bytes,
         max_name_length: policy.max_name_length,
+        promotion_recall_threshold: policy.promotion_recall_threshold,
     }
 }
 

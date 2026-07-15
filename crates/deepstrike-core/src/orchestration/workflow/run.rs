@@ -2798,4 +2798,230 @@ mod tests {
         assert!(root.input_agent_ids.is_empty());
         assert_eq!(root.max_turns, None);
     }
+
+    // ── P3 DAG scheduler scenarios (F1 critical-path / F2 loop fairness / F3 failure propagation) ─
+    //
+    // These make the deferred orchestration A/B concrete: with `scheduler_policy` now a first-class
+    // config axis, scheduling behavior is single-variable testable instead of agent-driven. Each
+    // scenario drives the deterministic scheduler and asserts the property the audit called out.
+
+    /// F1 — critical-path skew: among ready siblings, the one heading the longest downstream chain is
+    /// scheduled first, overriding node-id order.
+    #[test]
+    fn f1_critical_path_node_is_scheduled_before_a_lower_id_leaf() {
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::scheduler::policy::SchedulerPolicyConfig;
+        use crate::types::agent::AgentRole;
+
+        // node 0 = a leaf (critical path 1). node 1 = root of chain 1→2→3 (critical path 3).
+        // Both are ready at the start; the longer critical path must win over the smaller id.
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("leaf"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("chain-root"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("mid"), AgentRole::Implement).with_depends_on(vec![1]),
+            WorkflowNode::new(RuntimeTask::new("tail"), AgentRole::Implement).with_depends_on(vec![2]),
+        ]);
+        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        run.set_scheduler_policy(SchedulerPolicyConfig::default());
+
+        assert_eq!(
+            run.ready_batch(),
+            vec![1, 0],
+            "the deeper critical path (node 1) outranks the lower-id leaf (node 0)"
+        );
+    }
+
+    /// F2 — loop fairness: a re-arming loop node does not starve an independent ready node. The
+    /// audit's starvation case (concurrency 1, loop with a smaller id) must let the independent node
+    /// run between iterations.
+    #[test]
+    fn f2_rearming_loop_does_not_starve_an_independent_node() {
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::scheduler::policy::SchedulerPolicyConfig;
+        use crate::types::agent::AgentRole;
+
+        // node 0 = Loop{5} (smaller id), node 1 = independent plain node. Nothing depends on either.
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("loop"), AgentRole::Implement).with_loop(5),
+            WorkflowNode::new(RuntimeTask::new("independent"), AgentRole::Implement),
+        ]);
+        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        run.set_scheduler_policy(SchedulerPolicyConfig::default());
+
+        // Concurrency 1: run only the head of each ready batch. First round the loop wins the tie
+        // (enqueued first); after it re-arms, the independent node — waiting since round 0 — must be
+        // scheduled before the loop's next iteration.
+        let first = run.ready_batch();
+        assert_eq!(first[0], 0, "loop takes the first slot on the initial tie");
+        let id = run.current_agent_id(0);
+        run.mark_spawned(0, &id);
+        run.record_completion(&id, done()); // finishes iteration 0, re-arms the loop
+
+        assert_eq!(
+            run.ready_batch()[0],
+            1,
+            "the independent node runs before the loop's second iteration (no starvation)"
+        );
+    }
+
+    /// F3 — failure propagation: a failure skips its transitive successors, and partial results gate
+    /// per the downstream node's dependency policy.
+    #[test]
+    fn f3_failure_and_partial_propagate_transitively_by_policy() {
+        use crate::orchestration::workflow::{DependencyPolicy, WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        // Transitive skip: A(0) fails → B(1) depends on A → C(2) depends on B. Both B and C must
+        // close as SkippedUpstreamFailed, not strand in Pending.
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("a"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("b"), AgentRole::Implement).with_depends_on(vec![0]),
+            WorkflowNode::new(RuntimeTask::new("c"), AgentRole::Implement).with_depends_on(vec![1]),
+        ]);
+        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        run.mark_spawned(0, "wf-node0");
+        run.record_completion("wf-node0", terminated(TerminationReason::Error));
+        let outcomes = run.finish();
+        assert_eq!(outcomes[0].status, WorkflowNodeStatus::Failed);
+        assert_eq!(outcomes[1].status, WorkflowNodeStatus::SkippedUpstreamFailed);
+        assert_eq!(
+            outcomes[2].status,
+            WorkflowNodeStatus::SkippedUpstreamFailed,
+            "the failure propagates through the whole chain"
+        );
+
+        // Partial gates by policy: an upstream partial blocks an AllSuccess dependent but satisfies
+        // an AcceptPartial one.
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("up"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("strict"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+            WorkflowNode::new(RuntimeTask::new("lenient"), AgentRole::Implement)
+                .with_depends_on(vec![0])
+                .with_dependency_policy(DependencyPolicy::AcceptPartial),
+        ]);
+        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        run.mark_spawned(0, "wf-node0");
+        run.record_completion("wf-node0", terminated(TerminationReason::Timeout)); // partial
+        assert_eq!(run.ready_batch(), vec![2], "only the AcceptPartial dependent runs");
+        assert_eq!(
+            run.node_outcomes()[1].status,
+            WorkflowNodeStatus::SkippedUpstreamFailed,
+            "the AllSuccess dependent is skipped behind the partial upstream"
+        );
+    }
+
+    // ── P3 (P0-4) generative property: every node lands in exactly one terminal set ─────────────
+    //
+    // The audit flagged that totality ("∀ node ∈ exactly one terminal state") held structurally but
+    // had no generative coverage — the old executor could strand blocked successors in Pending,
+    // appearing in neither the completed nor failed audit set. This drives many pseudo-random DAGs
+    // with random dependency policies to completion under random per-node terminations (including
+    // denials) and asserts `finish()` closes every node into exactly one terminal status. A
+    // regression means the workflow audit is no longer closed.
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn below(&mut self, n: u64) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (self.0 ^ (self.0 >> 33)) % n.max(1)
+        }
+    }
+
+    #[test]
+    fn finish_closes_every_node_into_exactly_one_terminal_state_over_random_dags() {
+        use crate::orchestration::workflow::{DependencyPolicy, WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+        use std::collections::BTreeSet;
+
+        let terminations = [
+            TerminationReason::Completed,
+            TerminationReason::MaxTurns,
+            TerminationReason::TokenBudget,
+            TerminationReason::Timeout,
+            TerminationReason::ContextOverflow,
+            TerminationReason::NoProgress,
+            TerminationReason::MilestoneExceeded,
+            TerminationReason::Error,
+            TerminationReason::UserAbort,
+        ];
+        let policies = [
+            DependencyPolicy::AllSuccess,
+            DependencyPolicy::AcceptPartial,
+            DependencyPolicy::AllTerminal,
+            DependencyPolicy::Optional,
+        ];
+
+        for seed in 0..300u64 {
+            let mut rng = Lcg(seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1));
+            let n = 2 + rng.below(7) as usize;
+
+            // Random DAG: node i depends on a random subset of earlier nodes (backward edges only,
+            // so it is always acyclic), with a random dependency policy.
+            let mut nodes = Vec::new();
+            for i in 0..n {
+                let mut deps = Vec::new();
+                for j in 0..i {
+                    if rng.below(3) == 0 {
+                        deps.push(j);
+                    }
+                }
+                let policy = policies[rng.below(policies.len() as u64) as usize];
+                nodes.push(
+                    WorkflowNode::new(RuntimeTask::new(format!("n{i}")), AgentRole::Implement)
+                        .with_depends_on(deps)
+                        .with_dependency_policy(policy),
+                );
+            }
+            let spec = WorkflowSpec::new(nodes);
+            let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+
+            // Drive to a fixpoint: spawn each ready node, then either complete it with a random
+            // termination or deny it. Bounded so a bug cannot hang the test.
+            for _ in 0..(n * 4 + 4) {
+                let ready = run.ready_batch();
+                if ready.is_empty() {
+                    break;
+                }
+                for node in ready {
+                    let agent = node_agent_id(node);
+                    run.mark_spawned(node, &agent);
+                    if rng.below(5) == 0 {
+                        run.mark_denied(node);
+                    } else {
+                        let termination = terminations[rng.below(terminations.len() as u64) as usize];
+                        run.record_completion(&agent, terminated(termination));
+                    }
+                }
+            }
+
+            let outcomes = run.finish();
+            // Totality: exactly one terminal outcome per node, covering the whole node set.
+            assert_eq!(outcomes.len(), n, "seed {seed}: every node has an outcome");
+            let ids: BTreeSet<String> = outcomes.iter().map(|o| o.node_id.clone()).collect();
+            assert_eq!(ids.len(), n, "seed {seed}: node ids are unique");
+            for node in 0..n {
+                assert!(
+                    ids.contains(&node_agent_id(node)),
+                    "seed {seed}: node {node} is in the closed outcome set"
+                );
+            }
+            for outcome in &outcomes {
+                assert!(
+                    matches!(
+                        outcome.status,
+                        WorkflowNodeStatus::Completed
+                            | WorkflowNodeStatus::CompletedPartial
+                            | WorkflowNodeStatus::Failed
+                            | WorkflowNodeStatus::SkippedUpstreamFailed
+                    ),
+                    "seed {seed}: {} is terminal",
+                    outcome.node_id
+                );
+            }
+        }
+    }
 }

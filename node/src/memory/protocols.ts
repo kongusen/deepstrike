@@ -59,6 +59,13 @@ export interface MemoryRecall {
   why: string
 }
 
+/** One record's recall lifecycle, mirrored from the kernel's `memory_recalled` observation. */
+export interface MemoryRecallLifecycle {
+  record_id: string
+  recall_count: number
+  last_recalled_at: number
+}
+
 export interface DreamStore {
   /** The only durable memory mutation. Callers must reach this through the kernel WriteMemory gate. */
   upsert(agentId: string, record: MemoryRecord): Promise<void>
@@ -66,6 +73,17 @@ export interface DreamStore {
   search(agentId: string, query: MemoryQuery): Promise<MemoryRecall[]>
   /** Persist the completed session before the runner performs its one extraction pass. */
   saveSession(data: SessionData): Promise<void>
+  /**
+   * M3: mirror the kernel's journaled recall lifecycle into the durable store so recall history
+   * (count + last-recalled turn) survives across sessions. Optional: a store that does not track
+   * recall history omits it. The runner calls it when it observes `memory_recalled`.
+   */
+  recordRecall?(agentId: string, recalls: MemoryRecallLifecycle[]): Promise<void>
+  /**
+   * M4: set (or clear) a record's pin. Pinned records are exempt from the store's retention
+   * eviction. Optional. The runner calls it when the host/model acts on a promotion suggestion.
+   */
+  setPinned?(agentId: string, recordId: string, pinned: boolean): Promise<void>
 }
 
 /** Memory query request (kernel → SDK). */

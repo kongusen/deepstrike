@@ -1237,4 +1237,140 @@ mod tests {
         assert_eq!(ctx.history.messages.len(), 1);
         assert!(ctx.total_tokens(&engine()) <= 500);
     }
+
+    // ── P3 (P0-1) generative property: compression + rendering never break tool pairing ─────────
+    //
+    // The audit flagged that the pairing invariant was enforced only by `debug_assert!` plus fixed
+    // fixtures — no generative coverage. This drives many pseudo-random *valid* transcripts through
+    // the whole compression cascade and the renderer, asserting the strict provider-replay pairing
+    // invariant survives every level. A regression here means compression/rendering can again ship
+    // an orphan tool result (or an unanswered tool call) that a strict provider rejects on send.
+
+    /// Deterministic LCG — the kernel forbids wall-clock/`Math.random`, and a seeded generator keeps
+    /// this property test byte-reproducible (a failing seed is a permanent, re-runnable repro).
+    struct Lcg(u64);
+    impl Lcg {
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            self.0 ^ (self.0 >> 33)
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next_u64() % n.max(1)
+        }
+    }
+
+    /// Build a pseudo-random but structurally valid transcript: a run of transactions, each either a
+    /// plain user/assistant exchange or a tool transaction (assistant tool_calls → all results →
+    /// optional trailing answer), with a per-message token weight so compression actually fires.
+    fn random_valid_history(rng: &mut Lcg, call_seq: &mut usize) -> Vec<(Message, u32)> {
+        use crate::types::message::{ContentPart, ToolCall};
+        let mut out: Vec<(Message, u32)> = Vec::new();
+        let transactions = 3 + rng.below(10) as usize;
+        let weight = |rng: &mut Lcg| 10 + rng.below(300) as u32;
+        for _ in 0..transactions {
+            if rng.below(10) < 6 {
+                // Tool transaction.
+                if rng.below(2) == 0 {
+                    out.push((Message::user(format!("ask {}", call_seq)), weight(rng)));
+                }
+                let n_calls = 1 + rng.below(3) as usize;
+                let ids: Vec<String> = (0..n_calls)
+                    .map(|_| {
+                        *call_seq += 1;
+                        format!("call-{call_seq}")
+                    })
+                    .collect();
+                let mut assistant = Message::assistant("working");
+                for id in &ids {
+                    assistant.tool_calls.push(ToolCall {
+                        id: id.clone().into(),
+                        name: "read".into(),
+                        arguments: serde_json::json!({}),
+                    });
+                }
+                out.push((assistant, weight(rng)));
+                // Answer every call, sometimes split across multiple tool messages.
+                if rng.below(2) == 0 {
+                    for id in &ids {
+                        out.push((
+                            Message::tool(vec![ContentPart::ToolResult {
+                                call_id: id.clone().into(),
+                                output: "ok ".repeat(20),
+                                is_error: false,
+                            }]),
+                            weight(rng),
+                        ));
+                    }
+                } else {
+                    let parts = ids
+                        .iter()
+                        .map(|id| ContentPart::ToolResult {
+                            call_id: id.clone().into(),
+                            output: "ok ".repeat(20),
+                            is_error: false,
+                        })
+                        .collect();
+                    out.push((Message::tool(parts), weight(rng)));
+                }
+                if rng.below(2) == 0 {
+                    out.push((Message::assistant("done"), weight(rng)));
+                }
+            } else {
+                out.push((Message::user(format!("plain {}", call_seq)), weight(rng)));
+                out.push((Message::assistant("reply"), weight(rng)));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn compression_and_rendering_preserve_tool_pairing_over_random_transcripts() {
+        use crate::context::units::strict_tool_pairing_is_valid;
+        let cfg = config();
+        let eng = engine();
+        let pipeline = CompressionPipeline::new(&cfg);
+        let actions = [
+            PressureAction::SnipCompact,
+            PressureAction::MicroCompact,
+            PressureAction::ContextCollapse,
+            PressureAction::AutoCompact,
+        ];
+
+        let mut call_seq = 0usize;
+        for seed in 0..250u64 {
+            let mut rng = Lcg(seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1));
+            let history = random_valid_history(&mut rng, &mut call_seq);
+            let messages: Vec<Message> = history.iter().map(|(m, _)| m.clone()).collect();
+            assert!(
+                strict_tool_pairing_is_valid(&messages),
+                "generator must emit valid transcripts (seed {seed})"
+            );
+
+            for action in actions {
+                for &target in &[0u32, 60, 200, 800] {
+                    let mut ctx = ContextPartitions::new(&cfg);
+                    for (message, tokens) in &history {
+                        ctx.history.push(message.clone(), *tokens);
+                    }
+                    pipeline.compress(&mut ctx, action, MAX, target, &eng);
+                    assert!(
+                        strict_tool_pairing_is_valid(&ctx.history.messages),
+                        "compression {action:?} target {target} broke pairing (seed {seed})"
+                    );
+
+                    // The rendered turns (what actually reaches a strict provider) must also pair.
+                    for &budget in &[10u32, 150, MAX] {
+                        let rc = super::super::renderer::render(&ctx, budget, &eng, 2);
+                        assert!(
+                            strict_tool_pairing_is_valid(&rc.turns),
+                            "render budget {budget} after {action:?} broke pairing (seed {seed})"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
