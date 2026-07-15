@@ -86,4 +86,44 @@ maybe("real-model multimodal (image attachment)", () => {
     expect(text).toContain("blue")
     expect(topRed).toBe(true)
   }, 120_000)
+
+  // Regression guard for the resume/replay data-loss bug: `run_started.attachments` is persisted but
+  // was never read back on resume — reconstruction rebuilt a TEXT-ONLY initial turn, so a crash-and-
+  // resume left the model blind to the image. We simulate the crash with a mid-run session log
+  // (run_started + attachments, no run_terminal) and resume it; the model must still see the pixels.
+  it("preserves an image attachment across a crash-and-resume rebuilt from the session log", async () => {
+    const b64 = twoColorPng(96, 96, [255, 0, 0], [0, 0, 255]) // red top, blue bottom
+    const sessionLog = new InMemorySessionLog()
+    const sessionId = `mm-resume-${Date.now()}`
+    const goal =
+      "Look at the attached image. It is split into two horizontal halves. Name the color of the TOP half and the color of the BOTTOM half. Answer in the form 'top: <color>, bottom: <color>'."
+
+    // A run that crashed right after starting with an image: the live attachment seed (gated behind
+    // !resumeMidRun) never ran, so the only record of the image is the persisted run_started event.
+    await sessionLog.append(sessionId, {
+      kind: "run_started",
+      run_id: "crashed-run",
+      goal,
+      criteria: [],
+      attachments: [{ type: "image", data: b64, mediaType: "image/png" }],
+    })
+
+    // Fresh runner, same log → the resume path rebuilds history from events. Before the fix this
+    // dropped the image; now it reconstructs a Content::Parts turn and the model can see it again.
+    const runner = new RuntimeRunner({
+      provider: provider!,
+      sessionLog,
+      executionPlane: new LocalExecutionPlane(),
+      maxTokens: 4000,
+      maxTurns: 2,
+    })
+    const text = (await collectText(runner.run({ sessionId, goal }))).toLowerCase()
+
+    console.log(`\n[multimodal-resume] model said: ${text.trim().slice(0, 200)}\n`)
+
+    const topRed = /top[^a-z]*red/.test(text) || (text.indexOf("red") < text.indexOf("blue") && text.includes("red"))
+    expect(text).toContain("red")
+    expect(text).toContain("blue")
+    expect(topRed).toBe(true)
+  }, 120_000)
 })

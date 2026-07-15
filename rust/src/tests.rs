@@ -927,6 +927,7 @@ mod tests {
             criteria: vec![],
             agent_id: None,
             system_prompt: None,
+            attachments: vec![],
         }).await;
         session_log.append(session_id, deepstrike_core::runtime::session::SessionEvent::LlmCompleted {
             turn: 0,

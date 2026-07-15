@@ -450,6 +450,7 @@ async fn wake_continues_after_tool_completed() {
                 criteria: vec![],
                 agent_id: None,
                 system_prompt: None,
+            attachments: vec![],
             },
         )
         .await
@@ -645,6 +646,7 @@ async fn reactive_compact_on_413_retry() {
                 criteria: vec![],
                 agent_id: None,
                 system_prompt: None,
+            attachments: vec![],
             },
         )
         .await

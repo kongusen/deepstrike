@@ -65,7 +65,7 @@ describe("provider profiles", () => {
     })
     expect(modelProfiles["qwen/qwen3-vl-embedding"]).toMatchObject({
       defaultEndpointId: "qwen.dashscope.multimodal-embeddings",
-      modalities: { input: ["text", "image", "video"], output: ["embedding"] },
+      modalities: { input: ["text", "image"], output: ["embedding"] },
       tools: { supported: false },
     })
     expect(modelProfiles["openai/text-embedding-3-large"]).toMatchObject({
@@ -81,7 +81,7 @@ describe("provider profiles", () => {
     expect(modelProfiles["gemini/gemini-embedding-2"]).toMatchObject({
       defaultEndpointId: "gemini.google.embeddings",
       contextWindow: 8_192,
-      modalities: { input: ["text", "image", "audio", "video", "pdf"], output: ["embedding"] },
+      modalities: { input: ["text", "image", "audio"], output: ["embedding"] },
       tools: { supported: false },
     })
     expect(Object.entries(modelProfiles).filter(([id, profile]) => (
@@ -187,5 +187,20 @@ describe("provider profiles", () => {
       defaultEndpointId: "openai.responses",
       reasoning: { supported: true, preserveAcrossToolTurns: true },
     })
+  })
+
+  it("agent chat profiles never advertise video/pdf (no ContentPart yet)", () => {
+    for (const [, profile] of Object.entries(modelProfiles)) {
+      if (!profile.modalities.output.includes("text")) continue
+      expect(profile.modalities.input).not.toContain("video")
+      expect(profile.modalities.input).not.toContain("pdf")
+    }
+  })
+
+  it("gemini chat profiles advertise audio only when serializer supports it", () => {
+    for (const [id, profile] of Object.entries(modelProfiles)) {
+      if (!id.startsWith("gemini/") || !profile.modalities.output.includes("text")) continue
+      expect(profile.modalities.input).toEqual(expect.arrayContaining(["text", "image", "audio"]))
+    }
   })
 })

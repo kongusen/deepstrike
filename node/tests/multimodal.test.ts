@@ -1,5 +1,5 @@
 import { buildContents } from "../src/providers/gemini.js"
-import { toOpenAIMessageParams, toAnthropicMessages } from "../src/providers/base.js"
+import { toOpenAIMessageParams, toAnthropicMessages, UnsupportedModalityError } from "../src/providers/base.js"
 import { getKernel } from "../src/kernel.js"
 import type { Message, RenderedContext } from "../src/types.js"
 import { stepKernelV2 } from "./helpers/kernel-v2.js"
@@ -52,5 +52,39 @@ describe("multimodal image input", () => {
     const ctx = k.render() as any
     const hasImage = ctx.turns.some((m: any) => (m.contentParts ?? []).some((p: any) => p.type === "image"))
     expect(hasImage).toBe(true)
+  })
+})
+
+describe("multimodal audio map-or-reject", () => {
+  const audioMsg: Message = {
+    role: "user",
+    content: "",
+    contentParts: [
+      { type: "text", text: "transcribe" },
+      { type: "audio", data: "AAAA", mediaType: "audio/wav" },
+    ],
+  }
+
+  it("OpenAI maps audio to input_audio", () => {
+    const ctx: RenderedContext = { systemText: "", turns: [audioMsg] }
+    const openai = toOpenAIMessageParams(ctx)
+    const oaContent = openai[0].content as any[]
+    expect(oaContent.find(p => p.type === "input_audio").input_audio).toEqual({
+      data: "AAAA",
+      format: "wav",
+    })
+  })
+
+  it("Anthropic rejects audio (no silent placeholder)", () => {
+    expect(() => toAnthropicMessages([audioMsg])).toThrow(UnsupportedModalityError)
+    expect(() => toAnthropicMessages([audioMsg])).toThrow(/UnsupportedModality: audio/)
+  })
+
+  it("Gemini maps audio to inlineData (was silently dropping)", () => {
+    const contents = buildContents([audioMsg])
+    const parts = contents[0].parts as any[]
+    expect(parts.some(p => p.text === "transcribe")).toBe(true)
+    const audio = parts.find(p => p.inlineData?.mimeType?.startsWith("audio/"))
+    expect(audio.inlineData).toEqual({ mimeType: "audio/wav", data: "AAAA" })
   })
 })

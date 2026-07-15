@@ -1,6 +1,11 @@
 from deepstrike._kernel import ContentPartObj, Message
 from deepstrike.providers.gemini import GeminiProvider
-from deepstrike.providers.base import to_openai_content, to_anthropic_content
+from deepstrike.providers.base import (
+    UnsupportedModalityError,
+    to_openai_content,
+    to_anthropic_content,
+)
+import pytest
 
 
 def _img_msg() -> Message:
@@ -10,6 +15,17 @@ def _img_msg() -> Message:
         content_parts=[
             ContentPartObj("text", text="What is in this image?"),
             ContentPartObj("image", data="iVBORw0KGgo=", media_type="image/png"),
+        ],
+    )
+
+
+def _audio_msg() -> Message:
+    return Message(
+        role="user",
+        content="",
+        content_parts=[
+            ContentPartObj("text", text="transcribe"),
+            ContentPartObj("audio", data="AAAA", media_type="audio/wav"),
         ],
     )
 
@@ -41,3 +57,22 @@ def test_openai_and_anthropic_image_content():
     )
     an = to_anthropic_content(msg)
     assert any(p.get("type") == "image" and p["source"]["data"] == "iVBORw0KGgo=" for p in an)
+
+
+def test_openai_maps_audio_input():
+    oa = to_openai_content(_audio_msg())
+    assert any(
+        p.get("type") == "input_audio" and p["input_audio"] == {"data": "AAAA", "format": "wav"}
+        for p in oa
+    )
+
+
+def test_anthropic_rejects_audio():
+    with pytest.raises(UnsupportedModalityError, match="audio"):
+        to_anthropic_content(_audio_msg())
+
+
+def test_gemini_maps_audio_inline_data():
+    parts = GeminiProvider("k")._build_contents([_audio_msg()])[0]["parts"]
+    audio = next(p for p in parts if p.get("inline_data", {}).get("mime_type", "").startswith("audio/"))
+    assert audio["inline_data"] == {"mime_type": "audio/wav", "data": "AAAA"}
