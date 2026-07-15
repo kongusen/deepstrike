@@ -71,7 +71,10 @@ impl LoopStateMachine {
     /// node count + `TaskTable` — no I/O. Carried on `WorkflowBatchSpawned` so a coordinator node can
     /// scale its next submission to what is actually available.
     pub(super) fn workflow_budget(&self) -> Option<crate::orchestration::workflow::WorkflowBudget> {
-        let quota = self.resource_quota.as_ref()?;
+        let quota = self.resource_quota.as_ref();
+        if quota.is_none() && self.budget_grant.is_none() {
+            return None;
+        }
         let nodes_used = self.workflow.as_ref().map(|w| w.len()).unwrap_or(0);
         let running_subagents = self
             .tasks
@@ -79,14 +82,19 @@ impl LoopStateMachine {
             .iter()
             .filter(|t| t.proc.is_some() && matches!(t.state, TaskLifecycle::Running))
             .count();
-        let nodes_max = quota.max_workflow_nodes;
-        let max_concurrent_subagents = quota.max_concurrent_subagents.map(|m| m as usize);
+        let nodes_max = quota.and_then(|quota| quota.max_workflow_nodes);
+        let max_concurrent_subagents = quota
+            .and_then(|quota| quota.max_concurrent_subagents)
+            .map(|m| m as usize);
         // M4/G5 token headroom: the run-level cumulative token cap is always set on the scheduler
         // budget, so a coordinator always sees how many tokens remain (the "use 10k tokens" signal).
-        let tokens_max = self.policy.max_total_tokens;
-        // L1: report the governance domain's cumulative token spend (this vehicle + other members'
-        // seeded base) so a coordinator scales submissions to the group's remaining headroom.
-        let tokens_used = self.total_tokens.saturating_add(self.group_tokens_base);
+        let tokens_max = self
+            .budget_grant
+            .as_ref()
+            .and_then(|grant| grant.tokens)
+            .unwrap_or(self.policy.max_total_tokens)
+            .min(self.policy.max_total_tokens);
+        let tokens_used = self.total_tokens;
         Some(crate::orchestration::workflow::WorkflowBudget {
             nodes_used,
             nodes_max,
@@ -112,11 +120,9 @@ impl LoopStateMachine {
     ///   event, when a running sibling has freed a slot.
     /// The **permanent** axes (cumulative total, depth) are always a hard `Deny`: a completed
     /// sibling never frees a cumulative slot, and more nesting never becomes available.
-    fn evaluate_spawn_quota_inner(&self, concurrency_transient: bool) -> Disposition {
-        let Some(quota) = self.resource_quota.as_ref() else {
-            return Disposition::Allow;
-        };
-        if let Some(max) = quota.max_concurrent_subagents {
+    fn evaluate_spawn_quota_inner(&mut self, concurrency_transient: bool) -> Disposition {
+        let quota = self.resource_quota.as_ref();
+        if let Some(max) = quota.and_then(|quota| quota.max_concurrent_subagents) {
             // W-6: a zero-slot pool can never free a slot — Defer would park every workflow node
             // forever and the drive loop would fall through to an empty "completed" outcome. A
             // permanent impossibility is a hard Deny on both caller paths.
@@ -146,18 +152,35 @@ impl LoopStateMachine {
                 };
             }
         }
-        if let Some(max) = quota.max_total_subagents {
-            // L1: cumulative across the whole governance domain (other members' seeded base + this
-            // vehicle's spawns ever). A hard Deny — a completed sibling never frees a cumulative slot.
-            let total = self.group_spawns_base + self.local_subagents_spawned();
+        let quota_max = quota.and_then(|quota| quota.max_total_subagents);
+        let grant_max = self.budget_grant.as_ref().and_then(|grant| grant.subagents);
+        let max_total = match (quota_max, grant_max) {
+            (Some(quota), Some(grant)) => Some(quota.min(grant)),
+            (Some(quota), None) => Some(quota),
+            (None, Some(grant)) => Some(grant),
+            (None, None) => None,
+        };
+        if let Some(max) = max_total {
+            let total = self.local_subagents_spawned();
             if total >= max {
+                if grant_max.is_some() {
+                    self.observations.push(KernelObservation::BudgetExceeded {
+                        turn: self.turn,
+                        budget: "subagents".into(),
+                        operation_id: String::new(),
+                        reservation_id: self
+                            .budget_grant
+                            .as_ref()
+                            .map(|grant| grant.reservation_id.clone()),
+                    });
+                }
                 return Disposition::Deny {
-                    stage: "quota",
-                    reason: format!("max_total_subagents={max} reached ({total} spawned in domain)"),
+                    stage: "budget_grant",
+                    reason: format!("subagent grant {max} reached ({total} spawned locally)"),
                 };
             }
         }
-        if let Some(max) = quota.max_spawn_depth {
+        if let Some(max) = quota.and_then(|quota| quota.max_spawn_depth) {
             // Sub-agents currently parent to the root task (depth 1). Nested spawning would
             // generalize this to the spawning task's lineage depth.
             let depth = 1u32;
@@ -172,12 +195,12 @@ impl LoopStateMachine {
     }
 
     /// Synchronous spawn path: quota misses roll the turn back like a denied tool call.
-    pub(super) fn evaluate_spawn_quota(&self) -> Disposition {
+    pub(super) fn evaluate_spawn_quota(&mut self) -> Disposition {
         self.evaluate_spawn_quota_inner(false)
     }
 
     /// W2-1 workflow run-queue path: the transient concurrency axis defers instead of denying.
-    pub(super) fn evaluate_spawn_quota_deferrable(&self) -> Disposition {
+    pub(super) fn evaluate_spawn_quota_deferrable(&mut self) -> Disposition {
         self.evaluate_spawn_quota_inner(true)
     }
 

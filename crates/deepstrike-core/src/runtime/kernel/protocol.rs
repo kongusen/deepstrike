@@ -191,20 +191,10 @@ pub struct RunConfig {
     pub scheduler_max_wall_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_quota: Option<crate::governance::quota::ResourceQuota>,
-    /// L1 (RunGroup): cumulative tokens already spent by *other* members of this run's governance
-    /// domain, seeded at boot so the run-level token cap (`max_total_tokens`) is enforced across the
-    /// whole group, not per-vehicle. `None`/0 ⇒ no group (N=1) ⇒ pre-L1 per-kernel behavior.
+    /// RunGroup admission result. The kernel enforces these as local hard limits and reports
+    /// terminal usage against the same opaque reservation identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group_tokens_base: Option<u64>,
-    /// L1 (RunGroup): sub-agents already spawned by *other* members of this run's governance domain,
-    /// seeded at boot so `ResourceQuota::max_total_subagents` is enforced across the whole group.
-    /// `None`/0 ⇒ no group (N=1) ⇒ pre-L1 per-vehicle behavior.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group_spawns_base: Option<u32>,
-    /// ③ loop-agent: rounds completed across the loop before this run (seeds the
-    /// pacing trap's max_rounds coercion). Additive.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group_rounds_base: Option<u32>,
+    pub budget_grant: Option<BudgetGrant>,
     /// O6: repeat-fuse thresholds (see `SetRepeatFuse`). Absent ⇒ kernel defaults
     /// (enabled, deny_after=5, terminate_after=8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -221,6 +211,17 @@ pub struct RunConfig {
     /// unconditional and unaffected).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entropy_watch: Option<crate::scheduler::entropy::EntropyWatchConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BudgetGrant {
+    pub reservation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagents: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rounds: Option<u32>,
 }
 
 /// Build a [`GovernancePipeline`](crate::governance::pipeline::GovernancePipeline) from the ABI policy
@@ -642,6 +643,10 @@ pub enum KernelInputEvent {
     QueryMemory {
         query: crate::mm::memory::MemoryQuery,
     },
+    /// Privileged host control: commit a host-driven run (for example a standalone workflow)
+    /// after its kernel-owned work has completed. This supersedes any pending provider effect and
+    /// produces the ordinary `done` effect and terminal usage report.
+    CompleteRun,
     Timeout,
 }
 
@@ -1095,6 +1100,17 @@ pub enum KernelObservation {
     BudgetExceeded {
         turn: u32,
         budget: String,
+        operation_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reservation_id: Option<String>,
+    },
+    /// Terminal local usage for one reservation. Emitted exactly once per operation.
+    BudgetUsageReported {
+        operation_id: String,
+        reservation_id: String,
+        tokens: u64,
+        subagents: u32,
+        rounds: u32,
     },
     /// Loop entered `Suspended` state (awaiting human approval or sub-agent).
     Suspended {

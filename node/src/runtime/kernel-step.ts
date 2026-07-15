@@ -129,6 +129,10 @@ export interface KernelObservation {
   queue_depth?: number
   // Phase 2: budget_exceeded observation — which budget axis fired.
   budget?: string
+  reservation_id?: string
+  tokens?: number
+  subagents?: number
+  rounds?: number
   // Phase 2: suspended observation — loop suspended awaiting external resolution.
   pending_calls?: string[]
   // Phase 2: resumed observation — loop resumed with approved/denied calls.

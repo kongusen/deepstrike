@@ -12,7 +12,7 @@
  *
  * Durable pacing: every round appends `round_started` / `round_paced` to the loop's
  * session log, so `LoopDriver.resume()`-style recovery is a fold over the log
- * (the SessionLogGroupBudgetStore pattern) — zero new storage. A stateless host
+ * — zero new storage. A stateless host
  * reads `wake_at_ms` from the fold and re-arms via its own cron/queue; an
  * in-process host lets `run()` sleep inline.
  */
@@ -182,9 +182,8 @@ export class LoopDriver {
           defaultAction: this.spec.defaultAction,
         },
       }
-      // With a RunGroup configured, run() seeds the kernel trap's round base from the
-      // group ledger (the driver charges rounds:1 per round below) — max_rounds coercion
-      // then happens IN-KERNEL; the check above is the ungrouped backstop.
+      // With a RunGroup configured, run() reserves one round and the kernel reports its
+      // correlated local usage; the check above remains the ungrouped backstop.
       try {
         for await (const evt of this.runner.run({
           sessionId: loopId,
@@ -241,10 +240,6 @@ export class LoopDriver {
         reason: finalDecision.reason,
         ...(finalDecision.coercedFrom ? { coerced_from: finalDecision.coercedFrom } : {}),
       })
-      // Lifetime governance: one round = one group charge on the rounds axis.
-      const group = this.runner.hostOptions.runGroup
-      if (group) await group.budgetStore.charge(group.id, { rounds: 1 })
-
       if (finalDecision.action === "stop") {
         return {
           loopId, roundsCompleted: round, stopped: true, state: "stopped",

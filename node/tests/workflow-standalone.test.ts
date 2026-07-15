@@ -6,7 +6,7 @@
  *
  * Uses a stub orchestrator so no LLM is needed — the focus is the bootstrap / teardown / resume wiring.
  */
-import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
+import { RuntimeRunner, InMemorySessionLog, InMemoryGroupBudgetStore } from "../src/index.js"
 import type { SessionEvent, WorkflowSpec } from "../src/index.js"
 
 function stubOrchestrator(onCall?: () => void) {
@@ -67,6 +67,24 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
     expect(calls).toBe(3)
     // Every node's output is surfaced back to the host.
     expect(outcome.outputs["wf-node2"]).toBe("wf-node2")
+  })
+
+  it("settles standalone workflow node usage from the kernel terminal report", async () => {
+    const store = new InMemoryGroupBudgetStore()
+    const runner = new RuntimeRunner({
+      sessionLog: new InMemorySessionLog(),
+      maxTokens: 8000,
+      resourceQuota: { maxTotalSubagents: 4 },
+      runGroup: { id: "workflow-budget", budgetStore: store },
+      subAgentOrchestrator: stubOrchestrator() as never,
+    } as never)
+
+    await runner.runWorkflow(fanoutSpec, { sessionId: "workflow-member" })
+
+    expect(store.read("workflow-budget").subagentsSpawned).toBe(3)
+    expect((await store.members("workflow-budget")).map(member => member.sessionId)).toEqual([
+      "workflow-member",
+    ])
   })
 
   it("applies bounded SDK reliability policy during bootstrap", async () => {

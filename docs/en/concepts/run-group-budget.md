@@ -1,158 +1,60 @@
 # RunGroup Budget
 
-`RunGroup` is a host-SDK governance domain: it lets multiple stateless runs / persona sessions share **cumulative tokens, cumulative sub-agent spawns, and lineage**. The kernel remains a pure state machine; cross-run durable ledger state lives in `GroupBudgetStore`.
+`RunGroup` is the host SDK's cross-run governance domain. Stateless runs, persona sessions, and standalone workflows can share cumulative tokens, sub-agent spawns, loop rounds, and lineage. `GroupBudgetStore` owns cross-run state; the kernel receives only the reservation grant admitted for the current vehicle.
 
-Main implementation entry points:
-
-- `python/deepstrike/runtime/run_group.py`
-- `node/src/runtime/run-group.ts`
-- `python/deepstrike/runtime/runner.py`
-- `node/src/runtime/runner.ts`
-- `crates/deepstrike-core/src/scheduler/state_machine/gate.rs`
-- `crates/deepstrike-core/src/governance/quota.rs`
-
-## Why RunGroup Lives in the SDK
-
-DeepStrike kernels can be created and destroyed by stateless request handlers. If one logical task is carried by multiple sessions, personas, or workflow bootstraps, cumulative budget cannot live inside a single kernel instance.
-
-The implementation is split:
-
-| Layer | Responsibility |
-|-------|----------------|
-| SDK `RunGroup` | Store group id, read/write cumulative ledger, register members |
-| Kernel seed | Receive `group_tokens_base` / `group_spawns_base` at boot |
-| Kernel gate | Check token cap, spawn quota, workflow growth inside this vehicle |
-| SDK charge | Write this run's consumption back to the group ledger at terminal |
-
-## Data Model
-
-Python:
-
-```python
-@dataclass
-class GroupLedger:
-    tokens_spent: int = 0
-    subagents_spawned: int = 0
-
-@dataclass
-class GroupMember:
-    session_id: str
-    role: str | None = None
-
-@dataclass
-class RunGroup:
-    id: str
-    budget_store: GroupBudgetStore
-```
-
-Node uses camelCase:
-
-```ts
-interface GroupLedger {
-  tokensSpent: number
-  subagentsSpawned: number
-}
-
-interface RunGroup {
-  id: string
-  budgetStore: GroupBudgetStore
-}
-```
-
-## Lifecycle: seed → run → charge
+## The single budget protocol
 
 ```text
-runner.run(session_id)
-        │
-        ├─ join(group_id, GroupMember(session_id, agent_id))
-        ├─ ledger = budget_store.read(group_id)
-        ├─ kernel configure_run:
-        │    group_tokens_base = ledger.tokens_spent
-        │    group_spawns_base = ledger.subagents_spawned
-        │
-        ▼
-kernel run
-        │
-        ├─ SchedulerBudget.max_total_tokens checks:
-        │    group_tokens_base + local total_tokens
-        ├─ ResourceQuota.max_total_subagents checks:
-        │    group_spawns_base + local_subagents_spawned()
-        │
-        ▼
-run terminal
-        │
-        └─ budget_store.charge(group_id, tokens=total_tokens, subagents=spawned)
+join member
+    │
+    ▼
+reserve(limits, requested) ──► reservation_id + granted capacity
+    │
+    ▼
+configure_run.budget_grant
+    │
+    ▼
+kernel local enforcement
+    │
+    ▼
+budget_usage_reported(reservation_id, actual usage)
+    │
+    ▼
+settle(reservation_id, actual) / release(reservation_id) before terminal
 ```
 
-The next member starts with all previous members' cumulative spend.
+The former `group_tokens_base`, `group_spawns_base`, `group_rounds_base`, host `read/charge` fallback, and `SessionLogGroupBudgetStore` paths are removed. Runners do not infer settlement from `LoopResult` or `local_subagents_spawned()`.
 
-## Cumulative vs Instantaneous Budget
+## Responsibility boundary
 
-RunGroup shares only **cumulative** budget, not instantaneous concurrency state.
+| Component | Responsibility |
+|-----------|----------------|
+| `GroupBudgetStore` | Atomically account for settled + held capacity, reserve, idempotently settle/release, and keep member lineage |
+| SDK runner | Reserve before `start_run`, configure the kernel grant, and settle only a correlated usage report |
+| Kernel | Enforce the local grant and correlate exceeded/usage events with operation and reservation identities |
 
-| Budget | Accumulates across RunGroup? | Reason |
-|--------|------------------------------|--------|
-| `SchedulerBudget.max_total_tokens` | yes | SDK seeds `group_tokens_base`; kernel evaluates cumulative tokens |
-| `ResourceQuota.max_total_subagents` | yes | SDK seeds `group_spawns_base`; kernel evaluates cumulative spawns |
-| `ResourceQuota.max_concurrent_subagents` | no | running children exist only in the current vehicle's `TaskTable` |
-| `ResourceQuota.max_spawn_depth` | no | structural constraint of the current spawn lineage |
-| `memory_writes_per_window` | no | uses current kernel observed clock / write timestamps |
-| `max_workflow_nodes` | current workflow | evaluated against active `WorkflowRun` node count |
+A store must implement `join`, `members`, `reserve`, `settle`, and `release`. Multi-replica implementations should use a Redis script, database transaction, or equivalent atomic primitive. A generic append-only session log has no CAS and is not a reservation store.
 
-This boundary matters: cross-process "how much has been spent" can be folded from a ledger; cross-process "how many are running right now" requires an external scheduler and is not a kernel fact.
+## Budget axes
 
-## Standalone Workflow
+| Axis | RunGroup behavior |
+|------|-------------------|
+| `max_total_tokens` | Reserve token capacity; the grant becomes this run's effective cumulative limit |
+| `max_total_subagents` | Reserve spawn capacity; ordinary spawns and workflow nodes use the same kernel gate |
+| loop `max_rounds` | Each loop vehicle requests one round, preventing concurrent oversubscription |
+| `max_concurrent_subagents` | Instantaneous current-kernel limit; not cross-vehicle |
+| `max_spawn_depth` | Structural current-lineage limit |
+| `memory_writes_per_window` | Current-kernel observed-clock rate limit |
 
-`RuntimeRunner.run_workflow(...)` bootstraps a workflow kernel when there is no active parent run. With a RunGroup it:
+An unrequested axis is omitted from `budget_grant`, meaning that admission does not constrain that axis. It does not mean zero capacity. The kernel may still report actual usage for accounting.
 
-1. Registers the standalone workflow session as a group member.
-2. Seeds the kernel from the group ledger.
-3. On completion, charges the envelope kernel's `local_subagents_spawned()` back as subagents.
+## Standalone workflows
 
-Each workflow node counts on the spawn axis because each scheduled node is a child proc in the kernel `TaskTable`.
+With no active parent, `runWorkflow()` creates a real kernel run. The SDK reserves first and starts the workflow. When the DAG finishes, it sends `complete_run`; the kernel then emits the ordinary `done` effect and one correlated `budget_usage_reported`. Workflow-node usage therefore comes from the kernel TaskTable rather than host-side counting.
 
-## ReactiveSession
-
-`ReactiveSession` places multiple persona runners in one logical session. All peer runners should receive the same `RunGroup`:
-
-```python
-session = ReactiveSession(
-    run_group=group,
-    make_runner=lambda pid, shared: RuntimeRunner(RuntimeOptions(
-        ...,
-        run_group=shared["run_group"],
-    )),
-    ...
-)
-```
-
-Membership is recorded as `GroupMember(session_id, role)`, so lineage can be queried across personas and invocations.
-
-## Budget Stores
-
-| Implementation | Location | Use case |
-|----------------|----------|----------|
-| `InMemoryGroupBudgetStore` | Python / Node | single-process development and tests |
-| `SessionLogGroupBudgetStore` | Python / Node | persist ledger and membership to `SessionLog`, rebuildable across store instances |
-
-`SessionLogGroupBudgetStore` persists by folding events:
-
-| event kind | Purpose |
-|------------|---------|
-| `group_budget_charged` | add tokens / subagents |
-| `group_member_joined` | register session membership, idempotent by session_id |
-
-## Configuration Example
+## Example
 
 ```python
-from deepstrike import (
-    InMemoryGroupBudgetStore,
-    ResourceQuota,
-    RunGroup,
-    RuntimeOptions,
-    RuntimeRunner,
-)
-
 store = InMemoryGroupBudgetStore()
 group = RunGroup(id="incident-42", budget_store=store)
 
@@ -165,27 +67,6 @@ runner = RuntimeRunner(RuntimeOptions(
 ))
 ```
 
-Multiple runners share a cumulative governance domain when they use the same `RunGroup.id` and shared store.
+`InMemoryGroupBudgetStore` is intended for one process and tests. Production deployments should provide a durable implementation of the same reservation contract.
 
-## Common Misreadings
-
-| Misreading | Actual implementation |
-|------------|-----------------------|
-| the kernel persists the RunGroup ledger | ledger lives in SDK `GroupBudgetStore`; the kernel only receives seed values |
-| `max_concurrent_subagents` applies across all members | it only sees running child tasks in the current kernel |
-| completed sub-agents free `max_total_subagents` | no; total is cumulative |
-| standalone workflow does not count against group spawns | it does; completion charges workflow node count |
-| budgets break without RunGroup | no; behavior falls back to N=1 per-run budget |
-
-## Verification Entry Points
-
-- `python/tests/test_run_group_budget.py`
-- `node/tests/run-group-budget.test.ts`
-- `python/tests/test_workflow_drive.py`
-- `node/tests/e2e/composition.test.ts`
-
-## Further Reading
-
-- [Signals & Reactive](/en/guides/signals-and-reactive)
-- [Governance](/en/guides/governance)
-- [Workflow](/en/guides/workflow)
+Verification: `python/tests/test_run_group_budget.py`, `node/tests/run-group-budget.test.ts`, and `python/tests/test_workflow_drive.py`.

@@ -402,6 +402,7 @@ export class RuntimeRunner {
    *  per `execute`; `interrupt()` fires it so a Critical `InterruptNow` cancels the live LLM call. */
   private abortController: AbortController | null = null
   private activeKernel: KernelRuntimeInstance | null = null
+  private activeGroupBudgetScope: GroupBudgetScope | undefined
   private pendingObservations: KernelObservation[] = []
   private currentSessionId: string | null = null
   /** O2 (system-reminder channel): host-pushed notes awaiting the next turn-boundary drain. */
@@ -592,19 +593,37 @@ export class RuntimeRunner {
     })
   }
 
-  private groupBudgetRequest(includeTokens = true): GroupBudgetRequest | undefined {
+  private groupBudgetRequest(includeTokens = true): GroupBudgetRequest {
     const tokens = includeTokens ? this.opts.maxTotalTokens : undefined
     const subagents = this.opts.resourceQuota?.maxTotalSubagents
-    if (tokens === undefined && subagents === undefined) return undefined
+    const rounds = this.opts.runSpec?.loopRound ? 1 : undefined
+    const roundLimit = this.opts.runSpec?.loopRound?.maxRounds
     return {
       limits: {
         ...(tokens !== undefined ? { tokens } : {}),
         ...(subagents !== undefined ? { subagents } : {}),
+        ...(roundLimit !== undefined ? { rounds: roundLimit } : {}),
       },
       requested: {
         ...(tokens !== undefined ? { tokens } : {}),
         ...(subagents !== undefined ? { subagents } : {}),
+        ...(rounds !== undefined ? { rounds } : {}),
       },
+    }
+  }
+
+  private async settleGroupBudget(
+    scope: GroupBudgetScope,
+    actual: { tokens?: number; subagents?: number; rounds?: number },
+  ): Promise<void> {
+    const retries = this.opts.kernelReliability?.hostEffectRetryAttempts ?? 3
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await scope.settle(actual)
+        return
+      } catch (error) {
+        if (attempt >= retries) throw error
+      }
     }
   }
 
@@ -617,9 +636,7 @@ export class RuntimeRunner {
    */
   private applyKernelPolicies(
     runtime: KernelRuntimeInstance,
-    groupTokensBase?: number,
-    groupSpawnsBase?: number,
-    groupRoundsBase?: number,
+    groupBudgetScope?: GroupBudgetScope,
   ): void {
     // K2: lower governance / attention / scheduler / quota in ONE `configure_run` event instead of
     // the previous 2–4 separate `set_*` / `load_governance_policy` events. The kernel applies each
@@ -678,15 +695,19 @@ export class RuntimeRunner {
       }
     }
 
-    if (groupTokensBase !== undefined && groupTokensBase > 0) {
-      config.group_tokens_base = groupTokensBase
-    }
-    if (groupSpawnsBase !== undefined && groupSpawnsBase > 0) {
-      config.group_spawns_base = groupSpawnsBase
-    }
-    if (groupRoundsBase !== undefined && groupRoundsBase > 0) {
-      // ③ loop-agent: completed-round count seeds the pacing trap's max_rounds coercion.
-      config.group_rounds_base = groupRoundsBase
+    if (groupBudgetScope) {
+      config.budget_grant = {
+        reservation_id: groupBudgetScope.reservationId,
+        ...(groupBudgetScope.granted.tokens !== undefined
+          ? { tokens: groupBudgetScope.granted.tokens }
+          : {}),
+        ...(groupBudgetScope.granted.subagents !== undefined
+          ? { subagents: groupBudgetScope.granted.subagents }
+          : {}),
+        ...(groupBudgetScope.granted.rounds !== undefined
+          ? { rounds: groupBudgetScope.granted.rounds }
+          : {}),
+      }
     }
     // O6: tune/disable the in-kernel repeat fuse. `false` disables; an object overrides thresholds.
     // Absent ⇒ kernel defaults (enabled, deny_after=5, terminate_after=8).
@@ -1016,15 +1037,12 @@ export class RuntimeRunner {
     // already set by an in-flight `run()`) keep the original in-place behavior with no teardown.
     const bootstrapped = !this.activeKernel || !this.currentSessionId
     let groupBudgetScope: GroupBudgetScope | undefined
-    let standaloneRuntime: KernelRuntimeInstance | undefined
 
     try {
       if (bootstrapped) {
         const sessionId = opts?.sessionId ?? `wf-${crypto.randomUUID()}`
-        // L1: a standalone workflow is a member of its runner's governance domain too. Seed the
-        // bootstrap kernel with the group's cumulative spend (so the cumulative spawn/token cap bites
-        // while scheduling DAG nodes) and register membership — mirroring `execute()`. Mid-run callers
-        // skip this: their parent `run()` already seeds + counts the nodes via `localSubagentsSpawned()`.
+        // A standalone workflow reserves a bounded slice before its kernel schedules any node.
+        // Mid-run callers reuse their parent run's already-active reservation.
         if (this.opts.runGroup) {
           const g = this.opts.runGroup
           groupBudgetScope = await GroupBudgetScope.open(
@@ -1032,6 +1050,7 @@ export class RuntimeRunner {
             { sessionId, role: this.opts.agentId, kind: "vehicle" },
             this.groupBudgetRequest(false),
           )
+          this.activeGroupBudgetScope = groupBudgetScope
         }
         // Resume depends on this fact. Do not dispatch any node until it is durable.
         await this.opts.sessionLog.append(sessionId, {
@@ -1041,11 +1060,7 @@ export class RuntimeRunner {
           criteria: [],
           agent_id: this.opts.agentId,
         })
-        standaloneRuntime = this.bootstrapWorkflowKernel(
-          sessionId,
-          groupBudgetScope?.ledger.tokensSpent,
-          groupBudgetScope?.ledger.subagentsSpawned,
-        )
+        this.bootstrapWorkflowKernel(sessionId, groupBudgetScope)
       }
       const parentSessionId = this.currentSessionId!
       const runtime = this.activeKernel!
@@ -1072,24 +1087,32 @@ export class RuntimeRunner {
         ...(opts?.resumedSubmissionBases?.length ? { resumed_submission_bases: opts.resumedSubmissionBases } : {}),
       })
       const observations = this.pendingObservations.slice(observationStart)
-      return await this.driveWorkflow(initialAction, observations, parentSessionId, runtime, opts?.resumedOutputs)
+      const outcome = await this.driveWorkflow(
+        initialAction,
+        observations,
+        parentSessionId,
+        runtime,
+        opts?.resumedOutputs,
+      )
+      if (bootstrapped) {
+        const terminal = kernelAction(runtime, this.pendingObservations, { kind: "complete_run" })
+        if (terminal.kind !== "done") {
+          throw new Error("complete_run did not produce a terminal kernel action")
+        }
+        await this.appendObservations(parentSessionId, runtime, 0)
+      }
+      return outcome
     } finally {
       if (bootstrapped) {
         try {
-          if (groupBudgetScope) {
-            if (standaloneRuntime) {
-              // L1: charge the standalone workflow's node spawns back to the group so the cumulative
-              // spawn cap counts workflow nodes. The envelope kernel's TaskTable holds one proc per
-              // scheduled node, so `localSubagentsSpawned()` is exactly that node count.
-              await groupBudgetScope.settle({ subagents: standaloneRuntime.localSubagentsSpawned?.() ?? 0 })
-            } else {
-              await groupBudgetScope.release()
-            }
+          if (groupBudgetScope && !groupBudgetScope.isClosed) {
+            await groupBudgetScope.release()
           }
         } finally {
           this.activeKernel = null
           this.currentSessionId = null
           this.pendingObservations = []
+          this.activeGroupBudgetScope = undefined
         }
       }
     }
@@ -1104,8 +1127,7 @@ export class RuntimeRunner {
    */
   private bootstrapWorkflowKernel(
     sessionId: string,
-    groupTokensBase?: number,
-    groupSpawnsBase?: number,
+    groupBudgetScope?: GroupBudgetScope,
   ): KernelRuntimeInstance {
     this.interrupted = false
     this.abortController = new AbortController()
@@ -1117,7 +1139,7 @@ export class RuntimeRunner {
     const runtime = this.createSyscallRuntime()
     this.activeKernel = runtime
 
-    this.applyKernelPolicies(runtime, groupTokensBase, groupSpawnsBase)
+    this.applyKernelPolicies(runtime, groupBudgetScope)
     // ABI v2 has one lifecycle: standalone workflows start a real run before loading their DAG.
     // The initial provider effect is superseded by the workflow load; no self-bootstrap escape hatch.
     kernelAction(runtime, this.pendingObservations, {
@@ -2001,9 +2023,8 @@ export class RuntimeRunner {
         : baseSpec
       startPayload.run_spec = agentRunSpecToKernel(spec)
     }
-    // L1: seed the kernel with the group's cumulative spend so the run-level token cap + cumulative
-    // spawn cap span the whole governance domain (other members' prior spend). No group ⇒ per-run.
-    // Also register this session as a member so the run's lineage (R2) spans personas/invocations.
+    // Reserve capacity before start_run. The kernel enforces only this vehicle's grant and reports
+    // exact terminal usage against the same opaque reservation identity.
     if (this.opts.runGroup) {
       const g = this.opts.runGroup
       groupBudgetScope = await GroupBudgetScope.open(
@@ -2011,13 +2032,9 @@ export class RuntimeRunner {
         { sessionId, role: this.opts.agentId, kind: "vehicle" },
         this.groupBudgetRequest(),
       )
+      this.activeGroupBudgetScope = groupBudgetScope
     }
-    this.applyKernelPolicies(
-      runtime,
-      groupBudgetScope?.ledger.tokensSpent,
-      groupBudgetScope?.ledger.subagentsSpawned,
-      groupBudgetScope?.ledger.roundsCompleted,
-    )
+    this.applyKernelPolicies(runtime, groupBudgetScope)
     // Multimodal upload: seed the user's attachments (images/audio) as a history
     // message before start_run pushes the "[TASK STATE]" anchor. init_task does not
     // clear history, so order becomes [attachment user msg, "Proceed…"] — both land
@@ -2663,7 +2680,7 @@ export class RuntimeRunner {
             turnsUsed,
             totalTokens: 0,
           }))
-          await groupBudgetScope?.settle({ subagents: runtime.localSubagentsSpawned?.() ?? 0 })
+          await groupBudgetScope?.release()
           await taskScope.drain()
           yield { type: "done", iterations: turnsUsed, totalTokens: 0, status: "milestone_pending" } as DoneEvent
           this.activeKernel = null
@@ -2694,7 +2711,7 @@ export class RuntimeRunner {
           totalTokens: 0,
         }))
       } catch { /* session log failure must not mask the original error */ }
-      await groupBudgetScope?.settle({ subagents: runtime.localSubagentsSpawned?.() ?? 0 })
+      await groupBudgetScope?.release()
       await taskScope.drain()
       yield { type: "done", iterations: runtime.turn() || 0, totalTokens: 0, status: reason } as DoneEvent
       this.activeKernel = null
@@ -2726,12 +2743,9 @@ export class RuntimeRunner {
       totalTokens,
     }))
 
-    // L1: settle the member's reserved capacity into actual usage. Accounting-only stores retain
-    // the legacy charge behavior through GroupBudgetScope; reservable stores release unused capacity.
-    await groupBudgetScope?.settle({
-      tokens: totalTokens,
-      subagents: runtime.localSubagentsSpawned?.() ?? 0,
-    })
+    if (groupBudgetScope && !groupBudgetScope.isClosed) {
+      throw new Error("kernel terminated without a correlated budget_usage_reported observation")
+    }
 
     if (this.opts.dreamStore && this.opts.agentId) {
       const newMsgs = runtime.drainNewMessages().map(m => ({
@@ -2824,6 +2838,18 @@ export class RuntimeRunner {
     const observations = this.pendingObservations.splice(0)
     for (const obs of observations) {
       if (obs.kind === "page_in_requested") continue
+      if (obs.kind === "budget_usage_reported") {
+        const scope = this.activeGroupBudgetScope
+        if (!scope || obs.reservation_id !== scope.reservationId) {
+          throw new Error("budget usage report does not match the active reservation")
+        }
+        await this.settleGroupBudget(scope, {
+          tokens: obs.tokens ?? 0,
+          subagents: obs.subagents ?? 0,
+          rounds: obs.rounds ?? 0,
+        })
+        this.activeGroupBudgetScope = undefined
+      }
 
       const latest =
         obs.kind === "compressed" ? await this.opts.sessionLog.latestSeq(sessionId) : undefined

@@ -241,8 +241,7 @@ class RuntimeOptions:
   # call refreshes the lease.
   skill_lease_turns: int | None = None
   # L1 (RunGroup): bind this runner to a governance domain shared by N peer sessions of one logical
-  # run. Reservable stores enforce the run-level cap against settled + in-flight usage; legacy
-  # stores provide cumulative accounting only. None ⇒ N=1.
+  # run. The store must atomically reserve, settle, and release capacity. None ⇒ N=1.
   run_group: "RunGroup | None" = None
   memory_policy: MemoryPolicy | dict[str, Any] | None = None
   os_profile: "OsProfile | None" = None
@@ -501,15 +500,42 @@ class RuntimeRunner:
       })
     return runtime
 
-  def _group_budget_request(self, *, include_tokens: bool = True) -> tuple[dict[str, int], dict[str, int]] | None:
+  def _group_budget_request(self, *, include_tokens: bool = True) -> tuple[dict[str, int], dict[str, int]]:
     limits: dict[str, int] = {}
+    requested: dict[str, int] = {}
     if include_tokens and self._opts.max_total_tokens is not None:
       limits["tokens"] = self._opts.max_total_tokens
+      requested["tokens"] = self._opts.max_total_tokens
     if self._opts.resource_quota is not None:
       max_subagents = _resource_quota_to_kernel(self._opts.resource_quota).get("max_total_subagents")
       if max_subagents is not None:
         limits["subagents"] = int(max_subagents)
-    return (limits, dict(limits)) if limits else None
+        requested["subagents"] = int(max_subagents)
+    loop_round = self._opts.run_spec.loop_round if self._opts.run_spec is not None else None
+    if loop_round is not None:
+      requested["rounds"] = 1
+      if loop_round.get("max_rounds") is not None:
+        limits["rounds"] = int(loop_round["max_rounds"])
+    return limits, requested
+
+  async def _settle_group_budget(
+    self,
+    scope: GroupBudgetScope,
+    *,
+    tokens: int,
+    subagents: int,
+    rounds: int,
+  ) -> None:
+    reliability = self._opts.kernel_reliability
+    retries = reliability.host_effect_retry_attempts if reliability is not None else None
+    retries = 3 if retries is None else retries
+    for attempt in range(retries + 1):
+      try:
+        await scope.settle(tokens=tokens, subagents=subagents, rounds=rounds)
+        return
+      except Exception:
+        if attempt >= retries:
+          raise
 
   async def _append_memory_syscall_observations(
     self,
@@ -645,12 +671,8 @@ class RuntimeRunner:
     try:
       if bootstrapped:
         sid = session_id or f"wf-{uuid.uuid4()}"
-        # L1: a standalone workflow is a member of its runner's governance domain. Seed the bootstrap
-        # kernel from the group's cumulative spend (so the cumulative spawn/token cap bites while
-        # scheduling DAG nodes) and register membership — mirroring ``_execute``. Mid-run callers skip
-        # this: their parent ``run()`` already seeds + counts the nodes via ``local_subagents_spawned``.
-        group_tokens_base: int | None = None
-        group_spawns_base: int | None = None
+        # A standalone workflow reserves its own bounded slice before the kernel schedules any node.
+        # Mid-run callers reuse the parent run's already-active reservation.
         if self._opts.run_group is not None:
           g = self._opts.run_group
           # W-N5: tagged "vehicle" — an execution envelope, not a persona (ReactiveSession.resume
@@ -659,11 +681,10 @@ class RuntimeRunner:
           group_budget_scope = await GroupBudgetScope.open(
             g,
             GroupMember(sid, self._opts.agent_id, kind="vehicle"),
-            limits=request[0] if request else None,
-            requested=request[1] if request else None,
+            limits=request[0],
+            requested=request[1],
           )
-          group_tokens_base = group_budget_scope.ledger.tokens_spent
-          group_spawns_base = group_budget_scope.ledger.subagents_spawned
+          self._active_group_budget_scope = group_budget_scope
         # Resume depends on this fact. Do not dispatch any node until it is durable.
         await self._opts.session_log.append(sid, {
           "kind": "run_started",
@@ -672,10 +693,8 @@ class RuntimeRunner:
           "criteria": [],
           "agent_id": self._opts.agent_id,
         })
-        standalone_runtime = self._bootstrap_workflow_kernel(
-          sid, group_tokens_base, group_spawns_base
-        )
-      return await self._run_workflow_inner(
+        standalone_runtime = self._bootstrap_workflow_kernel(sid, group_budget_scope)
+      outcome = await self._run_workflow_inner(
         spec,
         resumed_completed=resumed_completed,
         resumed_results=resumed_results,
@@ -684,28 +703,33 @@ class RuntimeRunner:
         resumed_outputs=resumed_outputs,
         _initial_event=_initial_event,
       )
+      if bootstrapped:
+        if standalone_runtime is None:
+          raise RuntimeError("standalone workflow lost its kernel runtime")
+        terminal = kernel_action(
+          standalone_runtime,
+          self._pending_observations,
+          {"kind": "complete_run"},
+        )
+        if terminal.kind != "done":
+          raise RuntimeError("complete_run did not produce a terminal kernel action")
+        await self._append_observations(sid, standalone_runtime, 0)
+      return outcome
     finally:
       if bootstrapped:
         try:
-          if group_budget_scope is not None:
-            if standalone_runtime is not None:
-              # L1: the envelope kernel's TaskTable holds one proc per scheduled node, so
-              # ``local_subagents_spawned()`` is exactly the workflow's node count.
-              await group_budget_scope.settle(
-                subagents=standalone_runtime.local_subagents_spawned()
-              )
-            else:
-              await group_budget_scope.release()
+          if group_budget_scope is not None and not group_budget_scope.closed:
+            await group_budget_scope.release()
         finally:
           self._active_kernel = None
           self._current_session_id = None
           self._pending_observations = []
+          self._active_group_budget_scope = None
 
   def _bootstrap_workflow_kernel(
     self,
     session_id: str,
-    group_tokens_base: int | None = None,
-    group_spawns_base: int | None = None,
+    group_budget_scope: GroupBudgetScope | None = None,
   ) -> KernelRuntime:
     """Bootstrap a standalone kernel for a host-driven workflow with no active parent run.
 
@@ -736,11 +760,14 @@ class RuntimeRunner:
     scheduler_budget = _scheduler_budget_to_kernel(self._opts.scheduler_budget)
     if scheduler_budget is not None and scheduler_budget.get("max_wall_ms") is not None:
       config["scheduler_max_wall_ms"] = scheduler_budget["max_wall_ms"]
-    # L1: seed the group's cumulative spend so the cumulative spawn/token cap spans the domain (§2.4).
-    if group_tokens_base is not None and group_tokens_base > 0:
-      config["group_tokens_base"] = group_tokens_base
-    if group_spawns_base is not None and group_spawns_base > 0:
-      config["group_spawns_base"] = group_spawns_base
+    if group_budget_scope is not None:
+      granted = group_budget_scope.granted
+      config["budget_grant"] = {
+        "reservation_id": group_budget_scope.reservation_id,
+        **({"tokens": granted.tokens} if granted.tokens is not None else {}),
+        **({"subagents": granted.subagents} if granted.subagents is not None else {}),
+        **({"rounds": granted.rounds} if granted.rounds is not None else {}),
+      }
     kernel_apply(runtime, self._pending_observations, {"kind": "configure_run", "config": config})
     # ABI v2 has one lifecycle: a standalone workflow starts a real run before loading its DAG.
     # The initial provider effect is superseded by the workflow load.
@@ -2056,33 +2083,28 @@ class RuntimeRunner:
         "config": {"reliability": reliability},
       })
 
-    # L1: seed the kernel with the group's cumulative spend so the run-level token cap + cumulative
-    # spawn cap span the whole governance domain. No group ⇒ no seed ⇒ per-vehicle budget (unchanged).
-    # Also register this session as a member so the run's lineage (R2) spans personas/invocations.
+    # Reserve capacity before start_run and give the opaque grant to the kernel. The kernel enforces
+    # only local granted capacity and reports exact terminal usage against the same reservation id.
     group_budget_scope: GroupBudgetScope | None = None
     if self._opts.run_group is not None:
       request = self._group_budget_request()
       group_budget_scope = await GroupBudgetScope.open(
         self._opts.run_group,
         GroupMember(session_id, self._opts.agent_id, kind="vehicle"),
-        limits=request[0] if request else None,
-        requested=request[1] if request else None,
+        limits=request[0],
+        requested=request[1],
       )
       self._active_group_budget_scope = group_budget_scope
-      ledger = group_budget_scope.ledger
-      seed_config: dict[str, Any] = {}
-      if ledger.tokens_spent > 0:
-        seed_config["group_tokens_base"] = ledger.tokens_spent
-      if ledger.subagents_spawned > 0:
-        seed_config["group_spawns_base"] = ledger.subagents_spawned
-      # ③ loop-agent: completed-round count seeds the pacing trap's max_rounds coercion.
-      if getattr(ledger, "rounds_completed", 0) > 0:
-        seed_config["group_rounds_base"] = ledger.rounds_completed
-      if seed_config:
-        kernel_apply(runtime, self._pending_observations, {
-          "kind": "configure_run",
-          "config": seed_config,
-        })
+      granted = group_budget_scope.granted
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "configure_run",
+        "config": {"budget_grant": {
+          "reservation_id": group_budget_scope.reservation_id,
+          **({"tokens": granted.tokens} if granted.tokens is not None else {}),
+          **({"subagents": granted.subagents} if granted.subagents is not None else {}),
+          **({"rounds": granted.rounds} if granted.rounds is not None else {}),
+        }},
+      })
 
     if self._opts.memory_policy is not None:
       kernel_apply(runtime, self._pending_observations, {
@@ -2625,9 +2647,9 @@ class RuntimeRunner:
             turns_used=turns_used,
             total_tokens=0,
           ))
-          spawned = runtime.local_subagents_spawned() if hasattr(runtime, "local_subagents_spawned") else 0
           if group_budget_scope is not None:
-            await group_budget_scope.settle(subagents=spawned)
+            await group_budget_scope.release()
+            self._active_group_budget_scope = None
           await task_scope.drain()
           self._active_kernel = None
           self._active_operation = None
@@ -2652,9 +2674,9 @@ class RuntimeRunner:
         ))
       except Exception:
         pass  # session log failure must not mask the original error
-      spawned = runtime.local_subagents_spawned() if hasattr(runtime, "local_subagents_spawned") else 0
       if group_budget_scope is not None:
-        await group_budget_scope.settle(subagents=spawned)
+        await group_budget_scope.release()
+        self._active_group_budget_scope = None
       await task_scope.drain()
       yield DoneEvent(iterations=runtime.turn() or 0, total_tokens=0, status=reason)
       self._active_kernel = None
@@ -2677,10 +2699,8 @@ class RuntimeRunner:
       total_tokens=total_tokens,
     ))
 
-    # L1: settle reserved capacity into actual usage. Accounting-only stores retain legacy charge.
-    if group_budget_scope is not None:
-      spawned = runtime.local_subagents_spawned() if hasattr(runtime, "local_subagents_spawned") else 0
-      await group_budget_scope.settle(tokens=total_tokens, subagents=spawned)
+    if group_budget_scope is not None and not group_budget_scope.closed:
+      raise RuntimeError("kernel terminated without a correlated budget_usage_reported observation")
 
     if self._opts.dream_store and self._opts.agent_id:
       new_msgs = list(runtime.drain_new_messages())
@@ -2724,6 +2744,17 @@ class RuntimeRunner:
     for obs in observations:
       if obs.get("kind") == "page_in_requested":
         continue
+      if obs.get("kind") == "budget_usage_reported":
+        scope = self._active_group_budget_scope
+        if scope is None or obs.get("reservation_id") != scope.reservation_id:
+          raise RuntimeError("budget usage report does not match the active reservation")
+        await self._settle_group_budget(
+          scope,
+          tokens=int(obs.get("tokens") or 0),
+          subagents=int(obs.get("subagents") or 0),
+          rounds=int(obs.get("rounds") or 0),
+        )
+        self._active_group_budget_scope = None
 
       latest = (
         await self._opts.session_log.latest_seq(session_id)

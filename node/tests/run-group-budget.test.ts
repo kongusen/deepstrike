@@ -1,18 +1,14 @@
-/**
- * L1 (RunGroup) — cumulative token budget spans the governance domain (R2).
- *
- * N peer sessions of one logical run share a `GroupBudgetStore`. Each run is seeded at boot with the
- * group's cumulative spend, so the run-level `maxTotalTokens` cap is enforced across all members, not
- * per-vehicle. No `runGroup` ⇒ N=1, per-run budget (unchanged).
- */
 import type { LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
-import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane, InMemoryGroupBudgetStore, SessionLogGroupBudgetStore, GroupBudgetScope } from "../src/index.js"
+import {
+  GroupBudgetScope,
+  InMemoryGroupBudgetStore,
+  InMemorySessionLog,
+  LocalExecutionPlane,
+  RuntimeRunner,
+  type RunGroup,
+} from "../src/index.js"
 import { tool } from "../src/tools/index.js"
-import type { RunGroup } from "../src/index.js"
 
-// Calls a tool on the first turn (so the loop continues to a scheduling boundary where the token
-// budget is evaluated), then returns final text. A single-turn final-text response would complete
-// before the budget axis is ever checked.
 class ToolThenTextProvider implements LLMProvider {
   private turn = 0
   async complete(): Promise<Message> {
@@ -20,32 +16,18 @@ class ToolThenTextProvider implements LLMProvider {
   }
   async *stream(_ctx: RenderedContext, _tools: ToolSchema[]): AsyncIterable<StreamEvent> {
     this.turn += 1
-    if (this.turn === 1) {
-      yield { type: "tool_call", id: "call_1", name: "noop", arguments: {} }
-    } else {
-      yield { type: "text_delta", delta: "done" }
-    }
+    if (this.turn === 1) yield { type: "tool_call", id: "call_1", name: "noop", arguments: {} }
+    else yield { type: "text_delta", delta: "done" }
   }
 }
 
 const noopTool = tool("noop", "does nothing", { type: "object", properties: {} }, () => "ok")
 
-async function runToDone(
-  runner: RuntimeRunner,
-  sessionId: string,
-  goal: string,
-): Promise<{ status: string; totalTokens: number }> {
-  let done = { status: "", totalTokens: 0 }
-  for await (const evt of runner.run({ sessionId, goal })) {
-    if ((evt as { type: string }).type === "done") {
-      const e = evt as unknown as { status: string; totalTokens: number }
-      done = { status: e.status, totalTokens: e.totalTokens }
-    }
-  }
-  return done
-}
-
-function makeRunner(runGroup?: RunGroup, agentId?: string): RuntimeRunner {
+function makeRunner(
+  runGroup?: RunGroup,
+  agentId?: string,
+  kernelReliability?: { hostEffectRetryAttempts: number },
+): RuntimeRunner {
   const plane = new LocalExecutionPlane()
   plane.register(noopTool)
   return new RuntimeRunner({
@@ -53,49 +35,54 @@ function makeRunner(runGroup?: RunGroup, agentId?: string): RuntimeRunner {
     sessionLog: new InMemorySessionLog(),
     executionPlane: plane,
     maxTokens: 4096,
-    maxTotalTokens: 100_000, // run-level cap, comfortably above one short run
+    maxTotalTokens: 100_000,
     agentId,
     runGroup,
+    kernelReliability,
   })
 }
 
-describe("RunGroup cumulative token budget (L1/R2)", () => {
-  it("atomically reserves capacity across concurrent members", async () => {
+async function runToDone(runner: RuntimeRunner, sessionId: string): Promise<{ status: string; totalTokens: number }> {
+  let done = { status: "", totalTokens: 0 }
+  for await (const event of runner.run({ sessionId, goal: "open the scene" })) {
+    if ((event as { type: string }).type === "done") {
+      const terminal = event as unknown as { status: string; totalTokens: number }
+      done = { status: terminal.status, totalTokens: terminal.totalTokens }
+    }
+  }
+  return done
+}
+
+describe("RunGroup reservation-backed budgets", () => {
+  it("atomically reserves capacity without overselling", async () => {
     const store = new InMemoryGroupBudgetStore()
     const group: RunGroup = { id: "concurrent", budgetStore: store }
-    const request = {
-      limits: { tokens: 100 },
-      requested: { tokens: 100 },
-    }
-
+    const request = { limits: { tokens: 100 }, requested: { tokens: 100 } }
     const [first, second] = await Promise.all([
       GroupBudgetScope.open(group, { sessionId: "a" }, request),
       GroupBudgetScope.open(group, { sessionId: "b" }, request),
     ])
 
-    expect(first.mode).toBe("reserved")
-    expect(first.granted.tokens).toBe(100)
-    expect(second.granted.tokens).toBe(0)
-    expect(second.ledger.tokensSpent).toBe(100)
-
+    expect(first.granted).toEqual({ tokens: 100 })
+    expect(second.granted).toEqual({ tokens: 0 })
     await first.settle({ tokens: 60 })
     await second.release()
     expect(store.read(group.id).tokensSpent).toBe(60)
   })
 
-  it("marks non-transactional stores as accounting-only", async () => {
-    const store = new SessionLogGroupBudgetStore(new InMemorySessionLog())
+  it("does not turn an unrequested axis into a zero grant", async () => {
+    const store = new InMemoryGroupBudgetStore()
     const scope = await GroupBudgetScope.open(
-      { id: "legacy", budgetStore: store },
+      { id: "partial", budgetStore: store },
       { sessionId: "a" },
-      { limits: { tokens: 100 }, requested: { tokens: 100 } },
+      { limits: { subagents: 4 }, requested: { subagents: 2 } },
     )
 
-    expect(scope.mode).toBe("accounting")
-    expect(scope.granted.tokens).toBe(100)
+    expect(scope.granted).toEqual({ subagents: 2 })
+    await scope.release()
   })
 
-  it("keeps a reservation retryable when settlement fails", async () => {
+  it("keeps a reservation open when settlement fails so the same report can retry", async () => {
     class FlakyStore extends InMemoryGroupBudgetStore {
       attempts = 0
       override settle(groupId: string, reservationId: string, actual: { tokens?: number }): void {
@@ -112,86 +99,56 @@ describe("RunGroup cumulative token budget (L1/R2)", () => {
     )
 
     await expect(scope.settle({ tokens: 40 })).rejects.toThrow("temporary store failure")
+    expect(scope.isClosed).toBe(false)
     await scope.settle({ tokens: 40 })
-
     expect(store.read("retry").tokensSpent).toBe(40)
   })
 
-  it("a member is seeded with the group's prior spend and hits the shared cap", async () => {
+  it("retries terminal settlement according to the SDK reliability policy", async () => {
+    class FlakyStore extends InMemoryGroupBudgetStore {
+      attempts = 0
+      override settle(groupId: string, reservationId: string, actual: { tokens?: number }): void {
+        this.attempts += 1
+        if (this.attempts === 1) throw new Error("temporary store failure")
+        super.settle(groupId, reservationId, actual)
+      }
+    }
+    const store = new FlakyStore()
+    const runner = makeRunner(
+      { id: "host-retry", budgetStore: store },
+      undefined,
+      { hostEffectRetryAttempts: 1 },
+    )
+
+    expect((await runToDone(runner, "member")).status).toBe("completed")
+    expect(store.attempts).toBe(2)
+  })
+
+  it("enforces an exhausted group through a zero-capacity reservation", async () => {
     const store = new InMemoryGroupBudgetStore()
-    const group: RunGroup = { id: "scenario-1", budgetStore: store }
-
-    // Simulate other members of the domain having already exhausted the 100k cap.
-    store.charge(group.id, { tokens: 100_000 })
-
-    // This member is seeded with the group's spend → even a tiny turn tips over → token_budget.
-    const { status } = await runToDone(makeRunner(group), "director", "open the scene")
-    expect(status).toBe("token_budget")
+    const group: RunGroup = { id: "exhausted", budgetStore: store }
+    const seed = await GroupBudgetScope.open(
+      group,
+      { sessionId: "prior-member" },
+      { limits: { tokens: 100_000 }, requested: { tokens: 100_000 } },
+    )
+    await seed.settle({ tokens: 100_000 })
+    expect((await runToDone(makeRunner(group), "director")).status).toBe("token_budget")
   })
 
-  it("without a group, the same run completes (per-vehicle budget, unchanged)", async () => {
-    const { status } = await runToDone(makeRunner(undefined), "solo", "open the scene")
-    expect(status).toBe("completed")
-  })
-
-  it("charges each member's spend back so the group total accumulates", async () => {
+  it("settles kernel-reported local usage and preserves member lineage", async () => {
     const store = new InMemoryGroupBudgetStore()
-    const group: RunGroup = { id: "scenario-2", budgetStore: store }
+    const group: RunGroup = { id: "usage", budgetStore: store }
+    const first = await runToDone(makeRunner(group, "director"), "director")
+    const second = await runToDone(makeRunner(group, "critic"), "critic")
 
-    expect(store.read(group.id).tokensSpent).toBe(0)
-    const r1 = await runToDone(makeRunner(group), "p1", "first beat")
-    expect(r1.status).toBe("completed")
-    expect(r1.totalTokens).toBeGreaterThan(0)
-    // The run's local spend is now reflected in the shared domain total.
-    expect(store.read(group.id).tokensSpent).toBe(r1.totalTokens)
-
-    const r2 = await runToDone(makeRunner(group), "p2", "second beat")
-    expect(store.read(group.id).tokensSpent).toBe(r1.totalTokens + r2.totalTokens)
+    expect(first.status).toBe("completed")
+    expect(second.status).toBe("completed")
+    expect(store.read(group.id).tokensSpent).toBe(first.totalTokens + second.totalTokens)
+    expect((await store.members(group.id)).map(member => member.sessionId).sort()).toEqual(["critic", "director"])
   })
 
-  // Kernel enforcement of the cumulative spawn cap (a member seeded at the cap is denied its spawn)
-  // is covered by the kernel test `group_spawns_base_enforces_cumulative_spawn_cap`. Here we verify
-  // the SDK-side ledger that seeds/charges it carries both axes independently.
-  it("the group ledger accumulates tokens and sub-agent spawns independently", () => {
-    const store = new InMemoryGroupBudgetStore()
-    expect(store.read("g")).toEqual({ tokensSpent: 0, subagentsSpawned: 0, roundsCompleted: 0 })
-
-    store.charge("g", { tokens: 100 })
-    store.charge("g", { subagents: 2 })
-    store.charge("g", { tokens: 50, subagents: 1 })
-
-    expect(store.read("g")).toEqual({ tokensSpent: 150, subagentsSpawned: 3, roundsCompleted: 0 })
-    // Distinct groups stay isolated.
-    expect(store.read("other")).toEqual({ tokensSpent: 0, subagentsSpawned: 0, roundsCompleted: 0 })
-  })
-
-  it("tracks membership (lineage) across the personas of one logical run", async () => {
-    const store = new InMemoryGroupBudgetStore()
-    const group: RunGroup = { id: "scenario-3", budgetStore: store }
-    await runToDone(makeRunner(group, "director"), "director", "beat 1")
-    await runToDone(makeRunner(group, "role-npc"), "role-npc", "beat 2")
-    await runToDone(makeRunner(group, "director"), "director", "beat 3") // rejoin is idempotent
-
-    const members = await store.members(group.id)
-    expect(members.map(m => m.sessionId).sort()).toEqual(["director", "role-npc"])
-    expect(members.find(m => m.sessionId === "director")?.role).toBe("director")
-  })
-
-  it("SessionLogGroupBudgetStore persists ledger + membership across store instances", async () => {
-    // A shared, durable SessionLog stands in for Postgres/Redis: a fresh store instance (e.g. a new
-    // replica) rebuilds the same governance state by folding the persisted group-anchor events.
-    const log = new InMemorySessionLog()
-    const writer = new SessionLogGroupBudgetStore(log)
-    await writer.join("run-x", { sessionId: "director", role: "director" })
-    await writer.charge("run-x", { tokens: 1200, subagents: 2 })
-    await writer.charge("run-x", { tokens: 800, subagents: 1 })
-
-    const reader = new SessionLogGroupBudgetStore(log) // different instance, same log
-    expect(await reader.read("run-x")).toEqual({ tokensSpent: 2000, subagentsSpawned: 3, roundsCompleted: 0 })
-    expect((await reader.members("run-x")).map(m => m.sessionId)).toEqual(["director"])
-
-    // Idempotent join: re-joining the same session does not duplicate the lineage entry.
-    await reader.join("run-x", { sessionId: "director", role: "director" })
-    expect((await reader.members("run-x")).length).toBe(1)
+  it("keeps the same run per-vehicle when no group is configured", async () => {
+    expect((await runToDone(makeRunner(), "solo")).status).toBe("completed")
   })
 })

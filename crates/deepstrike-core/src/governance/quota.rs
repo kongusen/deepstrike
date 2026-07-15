@@ -22,7 +22,7 @@ pub struct ResourceQuota {
     pub max_concurrent_subagents: Option<u32>,
     /// L1 (RunGroup): max sub-agents spawned *cumulatively* over the whole governance domain. Unlike
     /// `max_concurrent_subagents` this counts every spawn ever (running + completed), seeded across
-    /// members via `group_spawns_base`, so it spans N stateless top-level runs. A hard `Deny` at cap
+    /// members via reservation-backed budget grants, so it spans N stateless top-level runs. A hard `Deny` at cap
     /// (a completed sibling never frees a cumulative slot).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_total_subagents: Option<u32>,

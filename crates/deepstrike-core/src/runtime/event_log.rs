@@ -75,6 +75,7 @@ pub fn category_for_kind(kind: &str) -> KernelEventCategory {
         "suspended"
         | "resumed"
         | "budget_exceeded"
+        | "budget_usage_reported"
         | "checkpoint_taken"
         | "rollbacked"
         | "milestone_advanced"

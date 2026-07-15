@@ -236,7 +236,19 @@ class SignalDeliveryDisposedEvent(TypedDict, total=False):
 class BudgetExceededEvent(TypedDict, total=False):
     kind: Literal["budget_exceeded"]
     turn: int
+    operation_id: str
+    reservation_id: str
     budget: str
+
+
+class BudgetUsageReportedEvent(TypedDict, total=False):
+    kind: Literal["budget_usage_reported"]
+    turn: int
+    operation_id: str
+    reservation_id: str
+    tokens: int
+    subagents: int
+    rounds: int
 
 
 class ContextRenewedEvent(TypedDict, total=False):
@@ -331,6 +343,7 @@ SessionEvent = (
     | ToolGatedEvent
     | SignalDeliveryDisposedEvent
     | BudgetExceededEvent
+    | BudgetUsageReportedEvent
     | ContextRenewedEvent
     | MemoryWrittenEvent
     | MemoryQueriedEvent

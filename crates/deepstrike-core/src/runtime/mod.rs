@@ -22,7 +22,7 @@ pub use event_log::{
     category_for_kind, primitive_for_kind, KernelEventCategory, Primitive,
 };
 pub use replay::{
-    rebuild_os_snapshot_from_events, BudgetExceededRecord,
+    rebuild_os_snapshot_from_events, BudgetExceededRecord, BudgetUsageRecord,
     OsSnapshot, ProcessRecord, SignalDeliveryDisposedRecord, SuspendRecord,
 };
 pub use session::{ProviderReplay, SessionEvent};

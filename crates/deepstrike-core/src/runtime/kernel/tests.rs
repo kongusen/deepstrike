@@ -1093,20 +1093,22 @@ fn set_resource_quota_input_denies_spawn_over_quota() {
 }
 
 #[test]
-fn group_budget_base_enforces_shared_token_cap() {
+fn budget_grant_enforces_local_token_cap() {
     use crate::types::message::{Content, Message, ToolCall, ToolResult};
 
-    // Drive one tool-calling turn under a 100-token run cap, with `group_base` already spent by
-    // other members of the governance domain. The token-budget axis is checked after the tool
-    // results, against `group_base + local`.
-    fn run_one_turn(group_base: Option<u64>) -> KernelStep {
+    fn run_one_turn(granted_tokens: Option<u64>) -> KernelStep {
         let mut runtime = KernelRuntime::new(SchedulerBudget {
             max_total_tokens: 100,
             ..SchedulerBudget::default()
         });
         runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
             config: RunConfig {
-                group_tokens_base: group_base,
+                budget_grant: granted_tokens.map(|tokens| BudgetGrant {
+                    reservation_id: "reservation-token".into(),
+                    tokens: Some(tokens),
+                    subagents: None,
+                    rounds: None,
+                }),
                 ..RunConfig::default()
             },
         }));
@@ -1148,10 +1150,10 @@ fn group_budget_base_enforces_shared_token_cap() {
             })
     };
 
-    // Group already spent 95; this vehicle's 10 pushes the domain to 105 > 100 → shared cap fires.
+    // This vehicle received five tokens and spends ten, so its reservation cap fires.
     assert!(
-        exceeded(&run_one_turn(Some(95))),
-        "group token budget must span the whole domain"
+        exceeded(&run_one_turn(Some(5))),
+        "token grant must bound local usage"
     );
     // N=1 / no group (base 0): local 10 is far under the cap → pre-L1 behavior unchanged.
     assert!(
@@ -1161,20 +1163,19 @@ fn group_budget_base_enforces_shared_token_cap() {
 }
 
 #[test]
-fn group_spawns_base_enforces_cumulative_spawn_cap() {
-    use crate::governance::quota::ResourceQuota;
+fn budget_grant_enforces_local_spawn_cap() {
     use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
 
-    // Cumulative cap of 2 sub-agents across the domain. Other members already spawned 2 (seeded),
-    // so this vehicle's very first spawn is denied — the cap spans the whole group.
+    // The reservation grants no sub-agent capacity, so the first spawn is denied.
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
     runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
         config: RunConfig {
-            resource_quota: Some(ResourceQuota {
-                max_total_subagents: Some(2),
-                ..ResourceQuota::default()
+            budget_grant: Some(BudgetGrant {
+                reservation_id: "reservation-spawn".into(),
+                tokens: None,
+                subagents: Some(0),
+                rounds: None,
             }),
-            group_spawns_base: Some(2),
             ..RunConfig::default()
         },
     }));
@@ -1204,6 +1205,117 @@ fn group_spawns_base_enforces_cumulative_spawn_cap() {
     ));
     assert!(runtime.state_machine().agent_process("worker").is_none());
     assert_eq!(runtime.local_subagents_spawned(), 0);
+}
+
+#[test]
+fn budget_grant_reports_correlated_terminal_usage_once() {
+    use crate::types::message::Message;
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(KernelInput::correlated(
+        "operation-budget",
+        "configure-budget",
+        1,
+        KernelInputEvent::ConfigureRun {
+            config: RunConfig {
+                budget_grant: Some(BudgetGrant {
+                    reservation_id: "reservation-1".into(),
+                    tokens: Some(100),
+                    subagents: Some(2),
+                    rounds: Some(1),
+                }),
+                ..RunConfig::default()
+            },
+        },
+    ));
+    runtime.step(KernelInput::correlated(
+        "operation-budget",
+        "start-budget",
+        2,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("task"),
+            run_spec: None,
+        },
+    ));
+    let effect_id = runtime.pending_provider_effect_id();
+    let terminal_input = KernelInput::correlated(
+        "operation-budget",
+        "provider-budget",
+        3,
+        KernelInputEvent::ProviderResult {
+            effect_id,
+            message: Message::assistant("done"),
+            observed_input_tokens: Some(7),
+            observed_output_tokens: Some(3),
+            now_ms: None,
+            stop_reason: None,
+        },
+    );
+    let terminal = runtime.step(terminal_input.clone());
+    let reports = terminal
+        .observations
+        .iter()
+        .filter_map(|observation| match observation {
+            KernelObservation::BudgetUsageReported {
+                operation_id,
+                reservation_id,
+                tokens,
+                subagents,
+                rounds,
+            } if operation_id == "operation-budget" && reservation_id == "reservation-1" => {
+                Some((*tokens, *subagents, *rounds))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(reports, vec![(1, 0, 0)]);
+    assert_eq!(
+        serde_json::to_value(runtime.step(terminal_input).observations).unwrap(),
+        serde_json::to_value(terminal.observations).unwrap(),
+    );
+}
+
+#[test]
+fn complete_run_commits_host_driven_terminal_usage() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            budget_grant: Some(BudgetGrant {
+                reservation_id: "workflow-reservation".into(),
+                tokens: None,
+                subagents: Some(3),
+                rounds: None,
+            }),
+            ..RunConfig::default()
+        },
+    }));
+    runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("host workflow"),
+        run_spec: None,
+    }));
+
+    let terminal = runtime.step(KernelInput::correlated(
+        "local-operation",
+        "workflow-complete",
+        3,
+        KernelInputEvent::CompleteRun,
+    ));
+
+    assert!(matches!(
+        terminal.actions.as_slice(),
+        [KernelAction {
+            effect: KernelEffect::Done { result },
+            ..
+        }] if result.termination == crate::types::result::TerminationReason::Completed
+    ), "{terminal:?}");
+    assert!(terminal.observations.iter().any(|observation| matches!(
+        observation,
+        KernelObservation::BudgetUsageReported {
+            operation_id,
+            reservation_id,
+            ..
+        } if operation_id == "local-operation" && reservation_id == "workflow-reservation"
+    )));
+    assert!(runtime.is_terminal());
 }
 
 #[test]

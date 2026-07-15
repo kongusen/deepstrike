@@ -2970,7 +2970,12 @@
             max_rounds: Some(3),
             ..Default::default()
         });
-        sm.seed_group_rounds(2); // two rounds already done; this one is the third
+        sm.set_budget_grant(crate::runtime::kernel::BudgetGrant {
+            reservation_id: "reservation-round".into(),
+            tokens: None,
+            subagents: None,
+            rounds: Some(0),
+        });
         sm.feed(LoopEvent::LLMResponse { message: pace_turn("continue", None) });
         let done = sm.feed(LoopEvent::LLMResponse { message: Message::assistant("report") });
         match done {
@@ -2981,6 +2986,34 @@
             }
             other => panic!("expected Done, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn zero_round_grant_stops_before_provider_dispatch() {
+        use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec, LoopRoundSpec};
+        let mut sm = sm();
+        let mut run_spec = AgentRunSpec::new(
+            AgentIdentity::new("loop-agent", "loop-sess"),
+            AgentRole::Implement,
+            "iterate",
+        );
+        run_spec.loop_round = Some(LoopRoundSpec { max_rounds: Some(3), ..Default::default() });
+        sm.run_spec = Some(run_spec);
+        sm.set_budget_grant(crate::runtime::kernel::BudgetGrant {
+            reservation_id: "no-rounds".into(),
+            tokens: None,
+            subagents: None,
+            rounds: Some(0),
+        });
+
+        let action = sm.start(RuntimeTask::new("iterate"));
+
+        assert!(matches!(action, LoopAction::Done { .. }));
+        assert_eq!(sm.turn, 0, "no provider turn may start without round capacity");
+        assert!(sm.observations.iter().any(|observation| matches!(
+            observation,
+            KernelObservation::BudgetExceeded { budget, .. } if budget == "rounds"
+        )));
     }
 
     #[test]
@@ -3037,9 +3070,8 @@
     }
 
     #[test]
-    fn pace_emits_round_paced_observation_with_seeded_round_number() {
+    fn pace_emits_local_round_number() {
         let mut sm = loop_sm(crate::types::agent::LoopRoundSpec::default());
-        sm.seed_group_rounds(4);
         sm.feed(LoopEvent::LLMResponse { message: pace_turn("continue", None) });
         let obs = sm.take_observations();
         let paced = obs.iter().find_map(|o| match o {
@@ -3047,7 +3079,7 @@
             _ => None,
         });
         let (round, decision) = paced.expect("RoundPaced emitted");
-        assert_eq!(round, 5, "this round = seeded base + 1");
+        assert_eq!(round, 1, "round numbering is local to the granted operation");
         assert_eq!(decision.action, crate::types::result::PaceAction::Continue);
     }
 

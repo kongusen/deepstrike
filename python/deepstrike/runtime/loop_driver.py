@@ -11,7 +11,7 @@ A loop agent is NOT a new execution engine:
 
 Durable pacing: every round appends ``round_started`` / ``round_paced`` to the loop's
 session log, so resume-style recovery is a fold over the log (the
-``SessionLogGroupBudgetStore`` pattern) — zero new storage. A stateless host reads
+the configured ``GroupBudgetStore`` reservation ledger — zero new storage. A stateless host reads
 ``wake_at_ms`` from the fold and re-arms via its own cron/queue; an in-process host
 lets ``run()`` sleep inline.
 """
@@ -258,10 +258,6 @@ class LoopDriver:
       if final_decision.get("coerced_from"):
         paced_event["coerced_from"] = final_decision["coerced_from"]
       await log.append(loop_id, paced_event)
-      # Lifetime governance: one round = one group charge on the rounds axis.
-      group = self._runner.host_options.run_group
-      if group is not None:
-        await group.budget_store.charge(group.id, rounds=1)
 
       if final_decision.get("action") == "stop":
         return LoopOutcome(

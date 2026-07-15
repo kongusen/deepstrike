@@ -1,6 +1,7 @@
 import { createRunner } from "./helpers.js"
 import { LoopDriver, foldLoopState, runLoop, signalAwareSleeper } from "../../src/runtime/loop-driver.js"
 import { SignalGateway } from "../../src/os/public.js"
+import { InMemoryGroupBudgetStore } from "../../src/runtime/run-group.js"
 import type { LLMProvider, Message, StreamEvent } from "../../src/types.js"
 
 /** Scripted loop provider: each ROUND proposes a pace verb, then files its round report. */
@@ -150,6 +151,26 @@ describe("③ dynamic loop agent — LoopDriver over the kernel pacing trap", ()
     expect(outcome.lastPace?.reason).toContain("max_rounds")
     const events = (await sessionLog.read("loop-cap")).map(e => e.event)
     expect(events.filter(e => e.kind === "round_started").length).toBe(2)
+  })
+
+  it("settles exactly one reservation-backed round per loop vehicle", async () => {
+    const provider = scriptedLoopProvider([
+      { next: "continue" },
+      { next: "continue" },
+      { next: "stop" },
+    ])
+    const { runner } = createRunner(provider, [])
+    const store = new InMemoryGroupBudgetStore()
+    runner.hostOptions.runGroup = { id: "loop-group", budgetStore: store }
+
+    const outcome = await runLoop(runner, {
+      loopId: "loop-grouped",
+      goal: "iterate",
+      maxRounds: 3,
+    })
+
+    expect(outcome.roundsCompleted).toBe(3)
+    expect(store.read("loop-group").roundsCompleted).toBe(3)
   })
 
   it("DW-5: the verdict override budget folds from the log — a restart grants no fresh overrides", async () => {

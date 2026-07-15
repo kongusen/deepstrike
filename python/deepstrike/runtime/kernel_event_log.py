@@ -172,7 +172,19 @@ def kernel_observation_to_session_event(
         return {
             "kind": "budget_exceeded",
             "turn": t,
+            "operation_id": obs.get("operation_id") or "",
+            "reservation_id": obs.get("reservation_id") or "",
             "budget": obs.get("budget") or "",
+        }
+    if kind == "budget_usage_reported":
+        return {
+            "kind": "budget_usage_reported",
+            "turn": t,
+            "operation_id": obs.get("operation_id") or "",
+            "reservation_id": obs.get("reservation_id") or "",
+            "tokens": obs.get("tokens") or 0,
+            "subagents": obs.get("subagents") or 0,
+            "rounds": obs.get("rounds") or 0,
         }
     if kind == "suspended":
         return {

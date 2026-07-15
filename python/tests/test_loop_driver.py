@@ -8,11 +8,13 @@ import pytest
 
 from deepstrike import (
     InMemorySessionLog,
+    InMemoryGroupBudgetStore,
     LocalExecutionPlane,
     LoopDriver,
     RuntimeOptions,
     RuntimeRunner,
     RuntimeSignal,
+    RunGroup,
     SignalGateway,
     fold_loop_state,
     run_loop,
@@ -175,6 +177,27 @@ async def test_enforces_max_rounds_as_ungrouped_backstop_without_extra_round():
     assert "max_rounds" in outcome.last_pace["reason"]
     events = [e.event for e in await session_log.read("loop-cap")]
     assert len([e for e in events if e.get("kind") == "round_started"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_grouped_loop_settles_exactly_one_round_per_vehicle():
+    provider = ScriptedLoopProvider([
+        {"next": "continue"},
+        {"next": "continue"},
+        {"next": "stop"},
+    ])
+    runner, _ = _make_runner(provider)
+    store = InMemoryGroupBudgetStore()
+    runner.host_options.run_group = RunGroup(id="loop-group", budget_store=store)
+
+    outcome = await run_loop(runner, LoopSpec(
+        loop_id="loop-grouped",
+        goal="iterate",
+        max_rounds=3,
+    ))
+
+    assert outcome.rounds_completed == 3
+    assert (await store.read("loop-group")).rounds_completed == 3
 
 
 @pytest.mark.asyncio

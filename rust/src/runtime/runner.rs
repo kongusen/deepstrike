@@ -2164,7 +2164,43 @@ impl RuntimeRunner {
                 // signals through the kernel attention policy; observation is logged
                 // by the generic observation path elsewhere if needed.
                 KernelObservation::SignalDeliveryDisposed { .. } => {}
-                KernelObservation::BudgetExceeded { .. } => {}
+                KernelObservation::BudgetExceeded {
+                    turn,
+                    operation_id,
+                    reservation_id,
+                    budget,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::BudgetExceeded {
+                            turn,
+                            operation_id,
+                            reservation_id,
+                            budget,
+                        },
+                    )
+                    .await;
+                }
+                KernelObservation::BudgetUsageReported {
+                    operation_id,
+                    reservation_id,
+                    tokens,
+                    subagents,
+                    rounds,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::BudgetUsageReported {
+                            turn,
+                            operation_id,
+                            reservation_id,
+                            tokens,
+                            subagents,
+                            rounds,
+                        },
+                    )
+                    .await;
+                }
                 KernelObservation::Suspended { .. }
                 | KernelObservation::ApprovalResolutionFailed { .. } => {}
                 KernelObservation::Resumed { .. } => {}

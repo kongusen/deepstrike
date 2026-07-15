@@ -117,6 +117,7 @@ pub struct KernelRuntime {
     completed_effects: ReplayWindow,
     pending_memory_write: Option<crate::mm::memory::MemoryWriteRequest>,
     pending_memory_query: Option<(crate::mm::memory::MemoryQuery, usize)>,
+    budget_usage_reported: bool,
 }
 
 impl KernelRuntime {
@@ -131,6 +132,7 @@ impl KernelRuntime {
             completed_effects: ReplayWindow::new(COMPLETED_EFFECT_REPLAY_WINDOW_CAPACITY),
             pending_memory_write: None,
             pending_memory_query: None,
+            budget_usage_reported: false,
         }
     }
 
@@ -440,7 +442,7 @@ impl KernelRuntime {
         }
 
         let step_seq = self.allocate_step_seq();
-        let step = self.dispatch(
+        let mut step = self.dispatch(
             StepIdentity {
                 operation_id: operation_id.clone(),
                 input_event_id: event_id.clone(),
@@ -448,12 +450,50 @@ impl KernelRuntime {
             },
             input.event,
         );
+        let reservation_id = self
+            .sm
+            .budget_grant()
+            .map(|grant| grant.reservation_id.clone());
+        for observation in &mut step.observations {
+            if let KernelObservation::BudgetExceeded {
+                operation_id: observed_operation_id,
+                reservation_id: observed_reservation_id,
+                ..
+            } = observation
+            {
+                *observed_operation_id = operation_id.clone();
+                if observed_reservation_id.is_none() {
+                    *observed_reservation_id = reservation_id.clone();
+                }
+            }
+        }
+        let is_terminal = step
+            .actions
+            .iter()
+            .any(|action| matches!(action.effect, KernelEffect::Done { .. }));
+        if is_terminal && !self.budget_usage_reported {
+            if let Some(reservation_id) = reservation_id {
+                let (tokens, subagents, rounds) = self.sm.local_budget_usage();
+                step.observations.push(KernelObservation::BudgetUsageReported {
+                    operation_id: operation_id.clone(),
+                    reservation_id,
+                    tokens,
+                    subagents,
+                    rounds,
+                });
+                self.budget_usage_reported = true;
+            }
+        }
         self.advance_lifecycle(lifecycle_transition, &step);
-        for action in &step.actions {
-            if let Some(kind) = pending_effect_kind(&action.effect) {
-                self.pending_effects
-                    .retain(|_, pending_kind| *pending_kind != kind);
-                self.pending_effects.insert(action.effect_id.clone(), kind);
+        if is_terminal {
+            self.pending_effects.clear();
+        } else {
+            for action in &step.actions {
+                if let Some(kind) = pending_effect_kind(&action.effect) {
+                    self.pending_effects
+                        .retain(|_, pending_kind| *pending_kind != kind);
+                    self.pending_effects.insert(action.effect_id.clone(), kind);
+                }
             }
         }
         if let Some((effect_id, result_fingerprint)) = result_fingerprint {
@@ -619,9 +659,7 @@ impl KernelRuntime {
                     attention_max_queue_size,
                     scheduler_max_wall_ms,
                     resource_quota,
-                    group_tokens_base,
-                    group_spawns_base,
-                    group_rounds_base,
+                    budget_grant,
                     repeat_fuse,
                     criteria_gate,
                     knowledge_budget_ratio,
@@ -669,14 +707,8 @@ impl KernelRuntime {
                 if let Some(quota) = resource_quota {
                     self.sm.set_resource_quota(quota);
                 }
-                if let Some(base) = group_tokens_base {
-                    self.sm.seed_group_budget(base);
-                }
-                if let Some(base) = group_spawns_base {
-                    self.sm.seed_group_spawns(base);
-                }
-                if let Some(base) = group_rounds_base {
-                    self.sm.seed_group_rounds(base);
+                if let Some(grant) = budget_grant {
+                    self.sm.set_budget_grant(grant);
                 }
                 if let Some(fuse) = repeat_fuse {
                     self.sm.set_repeat_fuse(fuse);
@@ -1093,6 +1125,7 @@ impl KernelRuntime {
                 self.pending_memory_query = Some((query.clone(), requested_k));
                 LoopAction::QueryMemory { query, requested_k }
             }
+            KernelInputEvent::CompleteRun => self.sm.feed(LoopEvent::Complete),
             KernelInputEvent::Timeout => self.sm.feed(LoopEvent::Timeout),
         };
         let action = self.sm.externalize_pending_host_effect(action);
@@ -1175,6 +1208,7 @@ impl KernelRuntime {
             KernelInputEvent::SubmitWorkflow { .. }
             | KernelInputEvent::SubmitWorkflowNodes { .. }
             | KernelInputEvent::DeliverSignal { .. }
+            | KernelInputEvent::CompleteRun
             | KernelInputEvent::Timeout => match self.lifecycle {
                 KernelLifecycle::Running | KernelLifecycle::Suspended => {
                     Ok(LifecycleTransition::Stay)
@@ -1315,6 +1349,13 @@ fn pending_effect_kind(effect: &KernelEffect) -> Option<PendingEffectKind> {
 }
 
 fn validate_run_config(config: &RunConfig) -> Result<(), String> {
+    if config
+        .budget_grant
+        .as_ref()
+        .is_some_and(|grant| grant.reservation_id.is_empty())
+    {
+        return Err("budget_grant reservation_id must be non-empty".to_string());
+    }
     if let Some(reliability) = &config.reliability {
         for (name, capacity) in [
             ("event_replay_capacity", reliability.event_replay_capacity),

@@ -73,6 +73,7 @@ pub enum LoopEvent {
     SubAgentCompleted {
         result: SubAgentResult,
     },
+    Complete,
     Timeout,
 }
 
@@ -257,19 +258,12 @@ pub struct LoopStateMachine {
     pub observations: Vec<KernelObservation>,
     pub(super) policy: SchedulerBudget,
     pub(super) total_tokens: u64,
-    /// L1 (RunGroup): cumulative tokens spent by *other* members of this run's governance domain,
-    /// seeded at boot via `seed_group_budget`. The run-level token cap is enforced against
-    /// `group_tokens_base + total_tokens` so the budget spans the whole group, not one vehicle.
-    /// 0 (default) ⇒ no group (N=1) ⇒ pre-L1 per-kernel behavior (byte-identical).
-    pub(super) group_tokens_base: u64,
-    /// ③ loop-agent: rounds completed across the loop BEFORE this run (seeded like the
-    /// token/spawn bases); this round's completion makes it `group_rounds_base + 1`.
-    pub(super) group_rounds_base: u32,
+    /// Reservation-backed hard limits for this operation. Shared accounting stays in the host;
+    /// the kernel tracks only this run's local usage.
+    pub(super) budget_grant: Option<crate::runtime::kernel::BudgetGrant>,
+    pub(super) local_rounds_completed: u32,
     /// ③ the adjudicated `pace` decision awaiting attachment to this round's LoopResult.
     pub(super) pending_pace: Option<crate::types::result::PaceDecision>,
-    /// L1 (RunGroup): sub-agents spawned by *other* members of this run's governance domain, seeded
-    /// at boot. `max_total_subagents` is enforced against `group_spawns_base + local spawns`. 0 ⇒ N=1.
-    pub(super) group_spawns_base: u32,
     /// When set, the next LLM call strips tools to force a text response,
     /// then terminates with this reason once the response arrives.
     pub(super) pending_termination: Option<TerminationReason>,
@@ -396,10 +390,9 @@ impl LoopStateMachine {
             observations: Vec::new(),
             policy,
             total_tokens: 0,
-            group_tokens_base: 0,
-            group_rounds_base: 0,
+            budget_grant: None,
+            local_rounds_completed: 0,
             pending_pace: None,
-            group_spawns_base: 0,
             pending_termination: None,
             recovery_attempts: 0,
             provider_recovery_attempt_limit: 2,
@@ -671,9 +664,10 @@ impl LoopStateMachine {
     fn root_tcb(&self) -> Tcb {
         let mut tcb = Tcb::root("root", self.policy.clone());
         tcb.budget.turns = self.turn;
-        // L1: the token-budget axis is evaluated against the whole governance domain's cumulative
-        // spend (this vehicle's `total_tokens` plus other members' `group_tokens_base`).
-        tcb.budget.total_tokens = self.total_tokens.saturating_add(self.group_tokens_base);
+        tcb.budget.total_tokens = self.total_tokens;
+        if let Some(tokens) = self.budget_grant.as_ref().and_then(|grant| grant.tokens) {
+            tcb.budget.limits.max_total_tokens = tcb.budget.limits.max_total_tokens.min(tokens);
+        }
         tcb.budget.started_at_ms = self.started_at_ms;
         tcb.state = self.lifecycle();
         tcb
@@ -698,23 +692,8 @@ impl LoopStateMachine {
         self.resource_quota = Some(quota);
     }
 
-    /// L1 (RunGroup): seed the cumulative tokens already spent by other members of this run's
-    /// governance domain. The run-level token cap is then enforced against the group total. Seeding
-    /// 0 (the default) preserves pre-L1 per-vehicle behavior.
-    pub fn seed_group_budget(&mut self, tokens_spent: u64) {
-        self.group_tokens_base = tokens_spent;
-    }
-
-    /// L1 (RunGroup): seed the sub-agents already spawned by other members of this run's governance
-    /// domain. `max_total_subagents` is then enforced against the group total. 0 ⇒ pre-L1 behavior.
-    /// ③ seed the loop's completed-round count (parallel to the token/spawn bases) so
-    /// the pacing trap can coerce continue/sleep to stop at `max_rounds`.
-    pub fn seed_group_rounds(&mut self, rounds_completed: u32) {
-        self.group_rounds_base = rounds_completed;
-    }
-
-    pub fn seed_group_spawns(&mut self, subagents_spawned: u32) {
-        self.group_spawns_base = subagents_spawned;
+    pub fn set_budget_grant(&mut self, grant: crate::runtime::kernel::BudgetGrant) {
+        self.budget_grant = Some(grant);
     }
 
     /// L1: this vehicle's cumulative sub-agent spawns this run — every child task ever registered in
@@ -722,6 +701,18 @@ impl LoopStateMachine {
     /// for the cumulative spawn quota and read back by the SDK to charge the group ledger at run end.
     pub fn local_subagents_spawned(&self) -> u32 {
         self.tasks.all().iter().filter(|t| t.proc.is_some()).count() as u32
+    }
+
+    pub fn local_budget_usage(&self) -> (u64, u32, u32) {
+        (
+            self.total_tokens,
+            self.local_subagents_spawned(),
+            self.local_rounds_completed,
+        )
+    }
+
+    pub fn budget_grant(&self) -> Option<&crate::runtime::kernel::BudgetGrant> {
+        self.budget_grant.as_ref()
     }
 
     /// Install the long-term memory policy (`set_memory_policy`). Once set it gates `write_memory`
@@ -800,6 +791,34 @@ impl LoopStateMachine {
     pub fn start(&mut self, task: RuntimeTask) -> LoopAction {
         self.observations.clear();
         self.ctx.init_task(task.goal.clone(), task.criteria.clone());
+
+        // A loop vehicle with no admitted round capacity must not make even one provider call.
+        // The host may have raced another member between reading its durable loop log and reserve;
+        // the reservation is the authoritative admission decision.
+        if self
+            .run_spec
+            .as_ref()
+            .and_then(|spec| spec.loop_round.as_ref())
+            .is_some()
+            && self.budget_grant.as_ref().and_then(|grant| grant.rounds) == Some(0)
+        {
+            self.observations.push(KernelObservation::BudgetExceeded {
+                turn: self.turn,
+                budget: "rounds".into(),
+                operation_id: String::new(),
+                reservation_id: self
+                    .budget_grant
+                    .as_ref()
+                    .map(|grant| grant.reservation_id.clone()),
+            });
+            self.pending_pace = Some(crate::types::result::PaceDecision {
+                action: crate::types::result::PaceAction::Stop,
+                delay_ms: None,
+                reason: "round budget grant exhausted before start".into(),
+                coerced_from: None,
+            });
+            return self.terminate(TerminationReason::Completed, None);
+        }
 
         let user_msg = "Proceed with the task described in [TASK STATE].".to_string();
 
@@ -1057,6 +1076,11 @@ impl LoopStateMachine {
                     self.observations.push(KernelObservation::BudgetExceeded {
                         turn: self.turn,
                         budget: budget.to_string(),
+                        operation_id: String::new(),
+                        reservation_id: self
+                            .budget_grant
+                            .as_ref()
+                            .map(|grant| grant.reservation_id.clone()),
                     });
                     self.pending_termination = Some(term);
                     self.phase = LoopPhase::Reason;
@@ -1186,6 +1210,8 @@ impl LoopStateMachine {
 
             LoopEvent::SubAgentCompleted { result } => self.handle_sub_agent_completed(result),
 
+            LoopEvent::Complete => self.terminate(TerminationReason::Completed, None),
+
             LoopEvent::Timeout => {
                 let reason = RollbackReason::Timeout;
                 let note = Message::user(super::rollback::build_rollback_note(
@@ -1260,10 +1286,16 @@ impl LoopStateMachine {
         };
         let mut coerced_from: Option<String> = None;
 
-        // Round-cap coercion: this round's completion is group_rounds_base + 1.
+        // Round-cap coercion: both the run spec and reservation grant bound local rounds.
         if action != PaceAction::Stop {
-            if let Some(max) = spec.max_rounds {
-                if self.group_rounds_base.saturating_add(1) >= max {
+            let granted_rounds = self.budget_grant.as_ref().and_then(|grant| grant.rounds);
+            let max_rounds = if granted_rounds == Some(0) {
+                Some(0)
+            } else {
+                spec.max_rounds
+            };
+            if let Some(max) = max_rounds {
+                if self.local_rounds_completed.saturating_add(1) >= max {
                     coerced_from = Some(format!("{} (max_rounds={max})", action.label()));
                     action = PaceAction::Stop;
                 }
@@ -1315,10 +1347,11 @@ impl LoopStateMachine {
             None
         };
 
+        self.local_rounds_completed = self.local_rounds_completed.saturating_add(1);
         let decision = PaceDecision { action, delay_ms, reason, coerced_from };
         self.observations.push(KernelObservation::RoundPaced {
             turn: self.turn,
-            round: self.group_rounds_base.saturating_add(1),
+            round: self.local_rounds_completed,
             decision: decision.clone(),
         });
         self.push_synthetic_tool_result(

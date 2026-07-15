@@ -36,7 +36,19 @@ pub struct SuspendRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BudgetExceededRecord {
     pub turn: u32,
+    pub operation_id: String,
+    pub reservation_id: Option<String>,
     pub budget: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BudgetUsageRecord {
+    pub turn: u32,
+    pub operation_id: String,
+    pub reservation_id: String,
+    pub tokens: u64,
+    pub subagents: u32,
+    pub rounds: u32,
 }
 
 /// Aggregated kernel OS state derived from session log (audit view).
@@ -46,6 +58,7 @@ pub struct OsSnapshot {
     pub last_resumed_turn: Option<u32>,
     pub process_by_agent: Vec<ProcessRecord>,
     pub budget_exceeded: Vec<BudgetExceededRecord>,
+    pub budget_usage_reported: Vec<BudgetUsageRecord>,
     pub signals: Vec<SignalDeliveryDisposedRecord>,
     pub page_out_count: u32,
     pub page_in_count: u32,
@@ -115,10 +128,35 @@ pub fn rebuild_os_snapshot_from_events(events: &[SessionEvent]) -> OsSnapshot {
                     snap.process_by_agent.push(record);
                 }
             }
-            SessionEvent::BudgetExceeded { turn, budget, .. } => {
+            SessionEvent::BudgetExceeded {
+                turn,
+                operation_id,
+                reservation_id,
+                budget,
+                ..
+            } => {
                 snap.budget_exceeded.push(BudgetExceededRecord {
                     turn: *turn,
+                    operation_id: operation_id.clone(),
+                    reservation_id: reservation_id.clone(),
                     budget: budget.clone(),
+                });
+            }
+            SessionEvent::BudgetUsageReported {
+                turn,
+                operation_id,
+                reservation_id,
+                tokens,
+                subagents,
+                rounds,
+            } => {
+                snap.budget_usage_reported.push(BudgetUsageRecord {
+                    turn: *turn,
+                    operation_id: operation_id.clone(),
+                    reservation_id: reservation_id.clone(),
+                    tokens: *tokens,
+                    subagents: *subagents,
+                    rounds: *rounds,
                 });
             }
             SessionEvent::SignalDeliveryDisposed {

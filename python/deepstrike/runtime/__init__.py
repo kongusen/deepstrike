@@ -21,14 +21,13 @@ from deepstrike.runtime.session_log import (
 )
 from deepstrike.runtime.run_group import (
   GroupBudgetStore,
-  ReservableGroupBudgetStore,
+  GroupBudgetGrant,
   GroupLedger,
   GroupMember,
   GroupBudgetReservation,
   GroupBudgetScope,
   InMemoryGroupBudgetStore,
   RunGroup,
-  SessionLogGroupBudgetStore,
 )
 from deepstrike.runtime.event_stream import (
   BlackboardEvent,
@@ -177,13 +176,12 @@ __all__ = [
   "SessionLog",
   "RunGroup",
   "GroupBudgetStore",
-  "ReservableGroupBudgetStore",
+  "GroupBudgetGrant",
   "GroupLedger",
   "GroupMember",
   "GroupBudgetReservation",
   "GroupBudgetScope",
   "InMemoryGroupBudgetStore",
-  "SessionLogGroupBudgetStore",
   "BlackboardEvent",
   "EventStream",
   "EventViewer",

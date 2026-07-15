@@ -21,6 +21,7 @@ _KERNEL_KINDS = frozenset({
     "tool_gated",
     "signal_delivery_disposed",
     "budget_exceeded",
+    "budget_usage_reported",
     "checkpoint_taken",
     "rollbacked",
     "agent_process_changed",
@@ -38,6 +39,7 @@ class OsSnapshot:
     last_resumed_turn: int | None = None
     process_by_agent: list[dict[str, Any]] = field(default_factory=list)
     budget_exceeded: list[dict[str, Any]] = field(default_factory=list)
+    budget_usage_reported: list[dict[str, Any]] = field(default_factory=list)
     signals: list[dict[str, Any]] = field(default_factory=list)
     page_out_count: int = 0
     page_in_count: int = 0
@@ -86,7 +88,18 @@ def rebuild_os_snapshot_from_session_events(events: list[dict[str, Any]]) -> OsS
         elif kind == "budget_exceeded":
             snap.budget_exceeded.append({
                 "turn": event.get("turn"),
+                "operation_id": event.get("operation_id"),
+                "reservation_id": event.get("reservation_id"),
                 "budget": event.get("budget"),
+            })
+        elif kind == "budget_usage_reported":
+            snap.budget_usage_reported.append({
+                "turn": event.get("turn"),
+                "operation_id": event.get("operation_id"),
+                "reservation_id": event.get("reservation_id"),
+                "tokens": event.get("tokens") or 0,
+                "subagents": event.get("subagents") or 0,
+                "rounds": event.get("rounds") or 0,
             })
         elif kind == "signal_delivery_disposed":
             snap.signals.append({
@@ -111,4 +124,3 @@ def rebuild_os_snapshot_from_session_events(events: list[dict[str, Any]]) -> OsS
         elif kind == "memory_validation_failed":
             snap.memory_validation_failed_count += 1
     return snap
-

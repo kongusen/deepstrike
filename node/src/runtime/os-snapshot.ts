@@ -13,6 +13,7 @@ const KERNEL_KINDS = new Set([
   "tool_gated",
   "signal_delivery_disposed",
   "budget_exceeded",
+  "budget_usage_reported",
   "checkpoint_taken",
   "rollbacked",
   "agent_process_changed",
@@ -27,7 +28,15 @@ export interface OsSnapshot {
   lastSuspend?: { turn: number; reason: string; pending_calls: string[] }
   lastResumedTurn?: number
   processByAgent: Array<{ turn: number; agent_id: string; parent_session_id: string; state: string }>
-  budgetExceeded: Array<{ turn: number; budget: string }>
+  budgetExceeded: Array<{ turn: number; operation_id: string; reservation_id?: string; budget: string }>
+  budgetUsageReported: Array<{
+    turn: number
+    operation_id: string
+    reservation_id: string
+    tokens: number
+    subagents: number
+    rounds: number
+  }>
   signals: Array<{
     turn: number
     operation_id: string
@@ -53,6 +62,7 @@ export function rebuildOsSnapshotFromSessionEvents(
   const snap: OsSnapshot = {
     processByAgent: [],
     budgetExceeded: [],
+    budgetUsageReported: [],
     signals: [],
     pageOutCount: 0,
     pageInCount: 0,
@@ -103,7 +113,22 @@ export function rebuildOsSnapshotFromSessionEvents(
         break
       }
       case "budget_exceeded":
-        snap.budgetExceeded.push({ turn: event.turn, budget: event.budget })
+        snap.budgetExceeded.push({
+          turn: event.turn,
+          operation_id: event.operation_id,
+          ...(event.reservation_id ? { reservation_id: event.reservation_id } : {}),
+          budget: event.budget,
+        })
+        break
+      case "budget_usage_reported":
+        snap.budgetUsageReported.push({
+          turn: event.turn,
+          operation_id: event.operation_id,
+          reservation_id: event.reservation_id,
+          tokens: event.tokens,
+          subagents: event.subagents,
+          rounds: event.rounds,
+        })
         break
       case "signal_delivery_disposed":
         snap.signals.push({

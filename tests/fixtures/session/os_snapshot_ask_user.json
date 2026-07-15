@@ -7,6 +7,7 @@
   "last_resumed_turn": 3,
   "process_by_agent": [],
   "budget_exceeded": [],
+  "budget_usage_reported": [],
   "signals": [],
   "page_out_count": 0,
   "page_in_count": 0,

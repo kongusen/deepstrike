@@ -199,7 +199,19 @@ pub enum SessionEvent {
     /// Scheduler budget axis exhausted.
     BudgetExceeded {
         turn: u32,
+        operation_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reservation_id: Option<String>,
         budget: String,
+    },
+    /// Terminal local usage for a reservation-backed RunGroup budget grant.
+    BudgetUsageReported {
+        turn: u32,
+        operation_id: String,
+        reservation_id: String,
+        tokens: u64,
+        subagents: u32,
+        rounds: u32,
     },
     /// Checkpoint taken at the start of a turn transaction (before LLM call).
     CheckpointTaken {
@@ -313,6 +325,7 @@ impl SessionEvent {
             Self::ToolGated { .. } => "tool_gated",
             Self::SignalDeliveryDisposed { .. } => "signal_delivery_disposed",
             Self::BudgetExceeded { .. } => "budget_exceeded",
+            Self::BudgetUsageReported { .. } => "budget_usage_reported",
             Self::CheckpointTaken { .. } => "checkpoint_taken",
             Self::EntropySample { .. } => "entropy_sample",
             Self::EntropyAlert { .. } => "entropy_alert",
@@ -342,6 +355,7 @@ impl SessionEvent {
                 | Self::ToolGated { .. }
                 | Self::SignalDeliveryDisposed { .. }
                 | Self::BudgetExceeded { .. }
+                | Self::BudgetUsageReported { .. }
                 | Self::CheckpointTaken { .. }
                 | Self::EntropySample { .. }
                 | Self::EntropyAlert { .. }

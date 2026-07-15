@@ -2,15 +2,10 @@
 
 The kernel (execution vehicle) is ephemeral and torn down between stateless turns, so the cumulative
 budget + membership that must span the whole group live outside any vehicle: in a ``GroupBudgetStore``.
-A reservable store atomically holds capacity for each member, seeds its kernel from settled usage plus
-earlier reservations, and settles actual consumption when the member ends. Legacy stores retain
-read/charge accounting but cannot enforce a concurrent group quota. Per spec §2.5, only
+Every store atomically holds capacity for each member and settles actual consumption. Per spec §2.5, only
 *cumulative* budget is shared this way; instantaneous concurrency stays vehicle-scoped.
 
-Two built-in stores:
-- ``InMemoryGroupBudgetStore`` — process-local atomic reservations; fine for one replica / tests.
-- ``SessionLogGroupBudgetStore`` — persists the ledger + membership to any ``SessionLog`` (fold-on-read
-  under a group-anchor key). It is accounting-only because SessionLog has no compare-and-set API.
+``InMemoryGroupBudgetStore`` provides process-local atomic reservations for one replica / tests.
 """
 
 from __future__ import annotations
@@ -18,10 +13,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
-
-if TYPE_CHECKING:
-    from deepstrike.runtime.session_log import SessionLog
+from typing import Protocol, runtime_checkable
 
 
 @dataclass
@@ -32,6 +24,15 @@ class GroupLedger:
     subagents_spawned: int = 0
     # ③ loop-agent rounds completed across the group (seeds the pacing trap's max_rounds).
     rounds_completed: int = 0
+
+
+@dataclass(frozen=True)
+class GroupBudgetGrant:
+    """Capacity granted on the axes this member actually requested."""
+
+    tokens: int | None = None
+    subagents: int | None = None
+    rounds: int | None = None
 
 
 @dataclass
@@ -51,14 +52,6 @@ class GroupMember:
 class GroupBudgetStore(Protocol):
     """Cumulative-budget + membership ledger shared by the members of a run group."""
 
-    async def read(self, group_id: str) -> GroupLedger:
-        """Cumulative spend across the group so far."""
-        ...
-
-    async def charge(self, group_id: str, *, tokens: int = 0, subagents: int = 0, rounds: int = 0) -> None:
-        """Add a member's spend to the group's cumulative totals."""
-        ...
-
     async def join(self, group_id: str, member: GroupMember) -> None:
         """Register a persona session as a member of the group (idempotent by session_id)."""
         ...
@@ -67,10 +60,6 @@ class GroupBudgetStore(Protocol):
         """All persona sessions of the logical run — the cross-invocation lineage (R2)."""
         ...
 
-
-@runtime_checkable
-class ReservableGroupBudgetStore(GroupBudgetStore, Protocol):
-    """Transactional capability required for concurrent group quota enforcement."""
 
     async def reserve(
         self,
@@ -110,15 +99,9 @@ class InMemoryGroupBudgetStore:
         cur = self._ledgers.get(group_id)
         return GroupLedger(cur.tokens_spent, cur.subagents_spawned, cur.rounds_completed) if cur else GroupLedger()
 
-    async def charge(self, group_id: str, *, tokens: int = 0, subagents: int = 0, rounds: int = 0) -> None:
-        cur = self._ledgers.setdefault(group_id, GroupLedger())
-        cur.tokens_spent += max(0, tokens)
-        cur.subagents_spawned += max(0, subagents)
-        cur.rounds_completed += max(0, rounds)
-
     async def join(self, group_id: str, member: GroupMember) -> None:
-        # Idempotent by session_id (same contract as SessionLogGroupBudgetStore): the FIRST join
-        # wins. W-N5 relies on this — a persona joined as "peer" must not be re-tagged "vehicle"
+        # Idempotent by session_id: the FIRST join wins. W-N5 relies on this — a persona joined as
+        # "peer" must not be re-tagged "vehicle"
         # when its own turn's run() joins the same session id.
         self._members.setdefault(group_id, {}).setdefault(member.session_id, member)
 
@@ -137,9 +120,9 @@ class InMemoryGroupBudgetStore:
             settled = await self.read(group_id)
             held = GroupLedger()
             for reservation in self._reservations.get(group_id, {}).values():
-                held.tokens_spent += reservation.granted.tokens_spent
-                held.subagents_spawned += reservation.granted.subagents_spawned
-                held.rounds_completed += reservation.granted.rounds_completed
+                held.tokens_spent += reservation.granted.tokens or 0
+                held.subagents_spawned += reservation.granted.subagents or 0
+                held.rounds_completed += reservation.granted.rounds or 0
             ledger = GroupLedger(
                 settled.tokens_spent + held.tokens_spent,
                 settled.subagents_spawned + held.subagents_spawned,
@@ -155,11 +138,13 @@ class InMemoryGroupBudgetStore:
                 id=str(uuid.uuid4()),
                 group_id=group_id,
                 member_id=member_id,
-                ledger=ledger,
-                granted=GroupLedger(
-                    tokens_spent=grant("tokens", ledger.tokens_spent),
-                    subagents_spawned=grant("subagents", ledger.subagents_spawned),
-                    rounds_completed=grant("rounds", ledger.rounds_completed),
+                granted=GroupBudgetGrant(
+                    tokens=grant("tokens", ledger.tokens_spent) if "tokens" in requested else None,
+                    subagents=(
+                        grant("subagents", ledger.subagents_spawned)
+                        if "subagents" in requested else None
+                    ),
+                    rounds=grant("rounds", ledger.rounds_completed) if "rounds" in requested else None,
                 ),
             )
             self._reservations.setdefault(group_id, {})[reservation.id] = reservation
@@ -193,67 +178,12 @@ class InMemoryGroupBudgetStore:
                 self._reservations.pop(group_id, None)
 
 
-class SessionLogGroupBudgetStore:
-    """Persists the group ledger + membership to a ``SessionLog``, keyed by a group-anchor session whose
-    id is the group id. Budget/membership rebuild by folding ``group_budget_charged`` /
-    ``group_member_joined`` events on read (spec §2.4). This is durable accounting, not concurrent
-    quota enforcement; a transactional store must implement reserve/settle/release for that."""
-
-    def __init__(self, log: "SessionLog") -> None:
-        self._log = log
-
-    async def read(self, group_id: str) -> GroupLedger:
-        tokens = subagents = rounds = 0
-        for entry in await self._log.read(group_id):
-            if entry.event.get("kind") == "group_budget_charged":
-                tokens += entry.event["tokens"]
-                subagents += entry.event["subagents"]
-                rounds += entry.event.get("rounds") or 0
-        return GroupLedger(tokens, subagents, rounds)
-
-    async def charge(self, group_id: str, *, tokens: int = 0, subagents: int = 0, rounds: int = 0) -> None:
-        event: dict = {
-            "kind": "group_budget_charged",
-            "tokens": max(0, tokens),
-            "subagents": max(0, subagents),
-        }
-        if rounds:
-            event["rounds"] = max(0, rounds)
-        await self._log.append(group_id, event)
-
-    async def join(self, group_id: str, member: GroupMember) -> None:
-        existing = await self.members(group_id)
-        if any(m.session_id == member.session_id for m in existing):
-            return
-        event: dict = {
-            "kind": "group_member_joined",
-            "session_id": member.session_id,
-            "role": member.role,
-        }
-        if member.kind:
-            event["member_kind"] = member.kind
-        await self._log.append(group_id, event)
-
-    async def members(self, group_id: str) -> list[GroupMember]:
-        seen: dict[str, GroupMember] = {}
-        for entry in await self._log.read(group_id):
-            if entry.event.get("kind") == "group_member_joined":
-                sid = entry.event["session_id"]
-                seen[sid] = GroupMember(sid, entry.event.get("role"), entry.event.get("member_kind"))
-        return list(seen.values())
-
-
 @dataclass(frozen=True)
 class GroupBudgetReservation:
     id: str
     group_id: str
     member_id: str
-    ledger: GroupLedger
-    granted: GroupLedger
-
-
-def _is_reservable(store: GroupBudgetStore) -> bool:
-    return isinstance(store, ReservableGroupBudgetStore)
+    granted: GroupBudgetGrant
 
 
 @dataclass
@@ -265,21 +195,17 @@ class RunGroup:
 
 
 class GroupBudgetScope:
-    """One member's reservation/accounting lifecycle."""
+    """One member's reservation lifecycle."""
 
     def __init__(
         self,
         group: RunGroup,
-        ledger: GroupLedger,
-        granted: GroupLedger,
-        mode: str,
-        reservation: GroupBudgetReservation | None = None,
+        granted: GroupBudgetGrant,
+        reservation_id: str,
     ) -> None:
         self._group = group
-        self.ledger = ledger
         self.granted = granted
-        self.mode = mode
-        self._reservation = reservation
+        self.reservation_id = reservation_id
         self._closed = False
 
     @classmethod
@@ -288,50 +214,36 @@ class GroupBudgetScope:
         group: RunGroup,
         member: GroupMember,
         *,
-        limits: dict[str, int] | None = None,
-        requested: dict[str, int] | None = None,
+        limits: dict[str, int],
+        requested: dict[str, int],
     ) -> "GroupBudgetScope":
         await group.budget_store.join(group.id, member)
-        if requested is not None and _is_reservable(group.budget_store):
-            reservation = await group.budget_store.reserve(
-                group.id,
-                member_id=member.session_id,
-                limits=limits or {},
-                requested=requested,
-            )
-            return cls(group, reservation.ledger, reservation.granted, "reserved", reservation)
-        granted = GroupLedger(
-            tokens_spent=max(0, (requested or {}).get("tokens", 0)),
-            subagents_spawned=max(0, (requested or {}).get("subagents", 0)),
-            rounds_completed=max(0, (requested or {}).get("rounds", 0)),
+        reservation = await group.budget_store.reserve(
+            group.id,
+            member_id=member.session_id,
+            limits=limits,
+            requested=requested,
         )
-        return cls(group, await group.budget_store.read(group.id), granted, "accounting")
+        return cls(group, reservation.granted, reservation.id)
 
     async def settle(self, *, tokens: int = 0, subagents: int = 0, rounds: int = 0) -> None:
         if self._closed:
             return
-        if self._reservation is not None and _is_reservable(self._group.budget_store):
-            await self._group.budget_store.settle(
-                self._group.id,
-                self._reservation.id,
-                tokens=tokens,
-                subagents=subagents,
-                rounds=rounds,
-            )
-            self._closed = True
-            return
-        if tokens > 0 or subagents > 0 or rounds > 0:
-            await self._group.budget_store.charge(
-                self._group.id,
-                tokens=tokens,
-                subagents=subagents,
-                rounds=rounds,
-            )
+        await self._group.budget_store.settle(
+            self._group.id,
+            self.reservation_id,
+            tokens=tokens,
+            subagents=subagents,
+            rounds=rounds,
+        )
         self._closed = True
 
     async def release(self) -> None:
         if self._closed:
             return
-        if self._reservation is not None and _is_reservable(self._group.budget_store):
-            await self._group.budget_store.release(self._group.id, self._reservation.id)
+        await self._group.budget_store.release(self._group.id, self.reservation_id)
         self._closed = True
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
