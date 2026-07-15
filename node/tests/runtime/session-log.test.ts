@@ -8,6 +8,7 @@ import {
   createKernelOperationGenesis,
   createKernelTransaction,
   kernelRecordDigest,
+  verifyKernelTransactionStream,
 } from "../../src/runtime/kernel-transaction-log.js"
 
 async function genesis(operationId = "op-1") {
@@ -37,6 +38,22 @@ describe("InMemorySessionLog", () => {
       "74ffaa09c9570f87244813a5b15514369f7b1a8996e3e80017585b4df246c1f7",
     )
     expect(() => kernelRecordDigest({ ratio: 0.5 })).toThrow(KernelLogIntegrityError)
+  })
+
+  it("validates the complete digest chain and derives a regex-free operation cursor", async () => {
+    const operationGenesis = await genesis()
+    const first = await transaction(operationGenesis.genesis_digest)
+    const second = await transaction(first.transaction_digest, 2)
+
+    expect(verifyKernelTransactionStream(operationGenesis, [first, second])).toEqual({
+      operation_id: "op-1",
+      next_event_sequence: 3,
+      next_step_seq: 3,
+      transaction_head_digest: second.transaction_digest,
+    })
+    expect(() => verifyKernelTransactionStream(operationGenesis, [second, first])).toThrow(
+      KernelLogIntegrityError,
+    )
   })
 
   it("fences authoritative transactions without coupling projection appends", async () => {

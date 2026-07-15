@@ -51,6 +51,13 @@ class KernelTransactionEntry(TypedDict):
     transaction: KernelTransaction
 
 
+class KernelOperationCursor(TypedDict):
+    operation_id: str
+    next_event_sequence: int
+    next_step_seq: int
+    transaction_head_digest: str
+
+
 class KernelLogConflictError(RuntimeError):
     pass
 
@@ -168,6 +175,38 @@ def verify_kernel_transaction_successor(
         raise KernelLogIntegrityError(
             "kernel transaction input operation_id does not match its envelope"
         )
+
+
+def verify_kernel_transaction_stream(
+    genesis: KernelOperationGenesis,
+    transactions: list[KernelTransaction],
+) -> KernelOperationCursor:
+    """Validate a complete authoritative stream and derive its next wire cursor."""
+    verify_kernel_operation_genesis(genesis)
+    previous: KernelTransaction | None = None
+    head = genesis["genesis_digest"]
+
+    for transaction in transactions:
+        verify_kernel_transaction(transaction)
+        if transaction["operation_id"] != genesis["operation_id"]:
+            raise KernelLogIntegrityError(
+                "kernel transaction operation_id does not match genesis"
+            )
+        if transaction["previous_transaction_digest"] != head:
+            raise KernelLogIntegrityError(
+                "kernel transaction digest chain is not continuous"
+            )
+        verify_kernel_transaction_successor(previous, transaction)
+        previous = transaction
+        head = transaction["transaction_digest"]
+
+    next_sequence = (previous["step_seq"] if previous else 0) + 1
+    return {
+        "operation_id": genesis["operation_id"],
+        "next_event_sequence": next_sequence,
+        "next_step_seq": next_sequence,
+        "transaction_head_digest": head,
+    }
 
 
 def _validate_genesis_body(genesis: KernelOperationGenesisBody) -> None:

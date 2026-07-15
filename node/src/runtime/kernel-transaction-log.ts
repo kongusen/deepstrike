@@ -40,6 +40,13 @@ export interface DurableAppendReceipt {
   transaction_digest: string
 }
 
+export interface KernelOperationCursor {
+  operation_id: string
+  next_event_sequence: number
+  next_step_seq: number
+  transaction_head_digest: string
+}
+
 export class KernelLogConflictError extends Error {
   constructor(message: string) {
     super(message)
@@ -148,6 +155,37 @@ export function verifyKernelTransactionSuccessor(
   }
   if (transaction.input.operation_id !== transaction.operation_id) {
     throw new KernelLogIntegrityError("kernel transaction input operation_id does not match its envelope")
+  }
+}
+
+/** Validate one complete authoritative operation stream and derive its next wire cursor. */
+export function verifyKernelTransactionStream(
+  genesis: KernelOperationGenesis,
+  transactions: readonly KernelTransaction[],
+): KernelOperationCursor {
+  verifyKernelOperationGenesis(genesis)
+  let previous: KernelTransaction | undefined
+  let head = genesis.genesis_digest
+
+  for (const transaction of transactions) {
+    verifyKernelTransaction(transaction)
+    if (transaction.operation_id !== genesis.operation_id) {
+      throw new KernelLogIntegrityError("kernel transaction operation_id does not match genesis")
+    }
+    if (transaction.previous_transaction_digest !== head) {
+      throw new KernelLogIntegrityError("kernel transaction digest chain is not continuous")
+    }
+    verifyKernelTransactionSuccessor(previous, transaction)
+    previous = transaction
+    head = transaction.transaction_digest
+  }
+
+  const nextSequence = (previous?.step_seq ?? 0) + 1
+  return {
+    operation_id: genesis.operation_id,
+    next_event_sequence: nextSequence,
+    next_step_seq: nextSequence,
+    transaction_head_digest: head,
   }
 }
 

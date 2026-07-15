@@ -9,6 +9,7 @@ from deepstrike.runtime.kernel_transaction_log import (
     create_kernel_operation_genesis,
     create_kernel_transaction,
     kernel_record_digest,
+    verify_kernel_transaction_stream,
 )
 from deepstrike.runtime.session_log import FileSessionLog, InMemorySessionLog
 
@@ -41,6 +42,21 @@ def test_canonical_kernel_json_sorts_keys_and_rejects_binary_floats():
     )
     with pytest.raises(KernelLogIntegrityError):
         canonical_kernel_json({"ratio": 0.5})
+
+
+def test_validates_digest_chain_and_derives_regex_free_operation_cursor():
+    operation_genesis = genesis()
+    first = transaction(operation_genesis["genesis_digest"])
+    second = transaction(first["transaction_digest"], 2)
+
+    assert verify_kernel_transaction_stream(operation_genesis, [first, second]) == {
+        "operation_id": "op-python",
+        "next_event_sequence": 3,
+        "next_step_seq": 3,
+        "transaction_head_digest": second["transaction_digest"],
+    }
+    with pytest.raises(KernelLogIntegrityError):
+        verify_kernel_transaction_stream(operation_genesis, [second, first])
 
 
 @pytest.mark.asyncio

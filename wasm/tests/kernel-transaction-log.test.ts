@@ -5,6 +5,7 @@ import {
   createKernelOperationGenesis,
   createKernelTransaction,
   kernelRecordDigest,
+  verifyKernelTransactionStream,
 } from "../src/runtime/index.js"
 
 describe("WASM authoritative kernel transaction log", () => {
@@ -13,6 +14,31 @@ describe("WASM authoritative kernel transaction log", () => {
       "74ffaa09c9570f87244813a5b15514369f7b1a8996e3e80017585b4df246c1f7",
     )
     await expect(kernelRecordDigest({ ratio: 0.5 })).rejects.toBeInstanceOf(KernelLogIntegrityError)
+  })
+
+  it("validates the digest chain and derives a regex-free operation cursor", async () => {
+    const genesis = await createKernelOperationGenesis({
+      abi_version: 2,
+      operation_id: "op-wasm",
+      initial_scheduler_policy: { max_tokens: 8_000 },
+      resolved_runtime_defaults: {},
+      default_policy_version: 1,
+    })
+    const first = await createKernelTransaction({
+      operation_id: "op-wasm",
+      step_seq: 1,
+      base_generation: 0,
+      input: { version: 2, operation_id: "op-wasm", event_id: "opaque-a" },
+      step: { version: 2, operation_id: "op-wasm", step_seq: 1, actions: [] },
+      previous_transaction_digest: genesis.genesis_digest,
+    })
+
+    await expect(verifyKernelTransactionStream(genesis, [first])).resolves.toEqual({
+      operation_id: "op-wasm",
+      next_event_sequence: 2,
+      next_step_seq: 2,
+      transaction_head_digest: first.transaction_digest,
+    })
   })
 
   it("fences stale writers independently of semantic projections", async () => {
