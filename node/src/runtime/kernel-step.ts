@@ -16,7 +16,7 @@ export interface KernelRuntimeHandle {
   step(inputJson: string): string
   snapshot(): string
   restore(snapshotJson: string): void
-  diagnostics?(): string
+  diagnostics(): string
   isTerminal(): boolean
   turn(): number
   recoveryContentBytes(): number
@@ -40,7 +40,6 @@ export interface KernelDiagnostics {
 }
 
 export function readKernelDiagnostics(runtime: KernelRuntimeHandle): KernelDiagnostics {
-  if (!runtime.diagnostics) throw new Error("kernel diagnostics require the current ABI-v2 native binding")
   return JSON.parse(runtime.diagnostics()) as KernelDiagnostics
 }
 

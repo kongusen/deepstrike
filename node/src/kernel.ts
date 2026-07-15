@@ -151,6 +151,7 @@ export interface KernelRuntimeInstance {
   step(inputJson: string): string
   snapshot(): string
   restore(snapshotJson: string): void
+  diagnostics(): string
   isTerminal(): boolean
   turn(): number
   /** L1 (RunGroup): cumulative sub-agent spawns this run, for charging the group ledger at run end. */

@@ -5,6 +5,7 @@ declare module "@deepstrike/wasm-kernel" {
     step(inputJson: string): string
     snapshot(): string
     restore(snapshotJson: string): void
+    diagnostics(): string
     isTerminal(): boolean
     turn(): number
     recoveryContentBytes(): number

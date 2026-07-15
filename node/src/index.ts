@@ -19,8 +19,8 @@ export type { LoopSpec, LoopOutcome } from "./runtime/loop-driver.js"
 export type { RunAgentOptions, RunFanoutOptions } from "./runtime/facade.js"
 export { RuntimeRunner, collectText } from "./runtime/runner.js"
 export type { RuntimeOptions, KernelReliabilityOptions, OperationCancellationReason } from "./runtime/runner.js"
-export { restoreKernelRuntime, snapshotKernelRuntime } from "./runtime/kernel-step.js"
-export type { KernelSnapshotV2 } from "./runtime/kernel-step.js"
+export { readKernelDiagnostics, restoreKernelRuntime, snapshotKernelRuntime } from "./runtime/kernel-step.js"
+export type { KernelDiagnostics, KernelSnapshotV2 } from "./runtime/kernel-step.js"
 
 // ── Execution plane + session log (the defaults) ────────────────────────────
 export { LocalExecutionPlane } from "./runtime/execution-plane.js"

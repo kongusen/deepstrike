@@ -22,6 +22,21 @@ class FakeKernel implements KernelRuntimeHandle {
 
   snapshot(): string { throw new Error("unused") }
   restore(_snapshotJson: string): void { throw new Error("unused") }
+  diagnostics(): string {
+    return JSON.stringify({
+      lifecycle: "created",
+      next_step_seq: 1,
+      accepted_input_count: this.inputs.length,
+      accepted_input_bytes: 0,
+      snapshot_input_limit: 10_000,
+      snapshot_journal_bytes_limit: 64 * 1024 * 1024,
+      max_input_bytes: 16 * 1024 * 1024,
+      snapshot_overflowed: false,
+      recorded_event_count: this.inputs.length,
+      completed_effect_count: 0,
+      pending_effect_count: 0,
+    })
+  }
 
   isTerminal(): boolean { return false }
   turn(): number { return 0 }
