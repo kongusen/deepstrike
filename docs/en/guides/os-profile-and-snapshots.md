@@ -128,10 +128,10 @@ This verifies kernel events carry correct `category` and `primitive`, useful bef
 | Name | Purpose | Can restore execution? |
 |------|---------|------------------------|
 | OS Snapshot | observed summary folded from SessionLog | no |
-| KernelSnapshotV2 | accepted ABI transactions plus validation metadata | yes, for exact wake / replay |
+| KernelSnapshot | accepted ABI transactions plus validation metadata | yes, for exact wake / replay |
 | ContextSnapshot | context partition snapshot | partially, for context restore |
 
-OS Snapshot is for humans and monitoring. `KernelSnapshotV2` is for runtime recovery. It does not serialize private state-machine structs: restore deterministically replays the public ABI and verifies lifecycle, operation, step/effect identity, and the terminal latch. Node exposes `snapshotKernelRuntime` / `restoreKernelRuntime`; Python exposes `snapshot_kernel_runtime` / `restore_kernel_runtime`. Configure the bound with `kernelReliability.snapshotInputLimit` or `KernelReliability.snapshot_input_limit`.
+OS Snapshot is for humans and monitoring. `KernelSnapshot` is for runtime recovery. It does not serialize private state-machine structs: restore deterministically replays the public ABI and verifies lifecycle, operation, step/effect identity, and the terminal latch. Node exposes `snapshotKernelRuntime` / `restoreKernelRuntime`; Python exposes `snapshot_kernel_runtime` / `restore_kernel_runtime`. Configure the bound with `kernelReliability.snapshotInputLimit` or `KernelReliability.snapshot_input_limit`.
 
 ## Production Practices
 

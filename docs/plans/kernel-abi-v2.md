@@ -124,7 +124,7 @@ operation_id (start_run)
 
 ### 阶段 E：Replay 与残留清理
 
-完成 `KernelSnapshotV2`、session replay/OS audit snapshot differential fixtures、有界 event/signal dedupe，删除 v1/base/signal/observation-command/accounting fallback 残留，完成跨语言验证与文档更新。
+完成 `KernelSnapshot`、session replay/OS audit snapshot differential fixtures、有界 event/signal dedupe，删除 v1/base/signal/observation-command/accounting fallback 残留，完成跨语言验证与文档更新。
 
 依赖：阶段 B、C、D。
 

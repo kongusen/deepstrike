@@ -73,7 +73,7 @@ export function readKernelDiagnostics(runtime: KernelRuntimeHandle): KernelDiagn
   return JSON.parse(runtime.diagnostics()) as KernelDiagnostics
 }
 
-export interface KernelSnapshotV2 {
+export interface KernelSnapshot {
   snapshot_version: 2
   abi_version: 2
   initial_policy: {
@@ -93,11 +93,11 @@ export interface KernelSnapshotV2 {
   last_step?: Record<string, unknown>
 }
 
-export function snapshotKernelRuntime(runtime: KernelRuntimeHandle): KernelSnapshotV2 {
-  return JSON.parse(runtime.snapshot()) as KernelSnapshotV2
+export function snapshotKernelRuntime(runtime: KernelRuntimeHandle): KernelSnapshot {
+  return JSON.parse(runtime.snapshot()) as KernelSnapshot
 }
 
-export function restoreKernelRuntime(runtime: KernelRuntimeHandle, snapshot: KernelSnapshotV2): void {
+export function restoreKernelRuntime(runtime: KernelRuntimeHandle, snapshot: KernelSnapshot): void {
   runtime.restore(JSON.stringify(snapshot))
   const operationId = snapshot.operation_id
   if (!operationId) {

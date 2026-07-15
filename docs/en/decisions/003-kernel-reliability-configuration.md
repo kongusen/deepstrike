@@ -22,7 +22,7 @@ Kernel ABI v2 moves replay, effect correlation, recovery, and large-result spool
 - `output_recovery_attempts`: truncated-output continuation attempts;
 - `host_effect_retry_attempts`: retry attempts for host durability effects such as spool and page-out;
 - `spool_threshold_bytes` and `spool_preview_bytes`: large-result externalization and inline-preview limits;
-- `snapshot_input_limit`: accepted ABI transaction limit retained for deterministic `KernelSnapshotV2` rebuilds.
+- `snapshot_input_limit`: accepted ABI transaction limit retained for deterministic `KernelSnapshot` rebuilds.
 - `max_input_bytes`: canonical JSON byte limit for one ABI input, default 16 MiB; typed and JSON entry points enforce the same boundary.
 - `snapshot_journal_bytes_limit`: cumulative canonical JSON byte limit for the snapshot transaction journal, default 64 MiB.
 
@@ -34,7 +34,7 @@ Configuration is validated as a whole and applied atomically at the ABI boundary
 
 The kernel exposes a read-only `KernelDiagnostics` projection with input count/bytes, journal high-water state, replay/effect/pending counts, and lifecycle. It has no setters and cannot bypass versioned input transactions.
 
-The 64-bit budget axes in `KernelSnapshotV2.initial_policy` use decimal-string encoding so Node/WASM JSON round trips cannot lose `Number` precision.
+The 64-bit budget axes in `KernelSnapshot.initial_policy` use decimal-string encoding so Node/WASM JSON round trips cannot lose `Number` precision.
 
 Existing standalone policies keep their established entry points: the signal queue belongs to attention policy, while repeat fuse, entropy watch, scheduler budget, and resource quota are not duplicated in the reliability bundle.
 

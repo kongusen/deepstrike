@@ -169,7 +169,7 @@ class KernelReliability:
   host_effect_retry_attempts: int | None = None
   spool_threshold_bytes: int | None = None
   spool_preview_bytes: int | None = None
-  # Max accepted ABI transactions retained for a portable KernelSnapshotV2 rebuild.
+  # Max accepted ABI transactions retained for a portable KernelSnapshot rebuild.
   snapshot_input_limit: int | None = None
   # Max canonical JSON bytes accepted for one kernel input, 256..64MiB.
   max_input_bytes: int | None = None

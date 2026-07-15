@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use deepstrike_core::context::policy::{ContextPolicyV1, PressureThresholdsPpm};
-use deepstrike_core::runtime::{KernelInput, KernelInputEvent, KernelRuntime, KernelSnapshotV2};
+use deepstrike_core::runtime::{KernelInput, KernelInputEvent, KernelRuntime, KernelSnapshot};
 use deepstrike_core::scheduler::policy::SchedulerBudget;
 use deepstrike_core::types::message::Message;
 use deepstrike_core::types::task::RuntimeTask;
@@ -32,7 +32,7 @@ fn policy(preserve_recent_turns: u32) -> ContextPolicyV1 {
     }
 }
 
-fn fixture_snapshot() -> KernelSnapshotV2 {
+fn fixture_snapshot() -> KernelSnapshot {
     let mut runtime = KernelRuntime::new(SchedulerBudget {
         max_tokens: 1_024,
         max_turns: 10,
@@ -69,7 +69,7 @@ fn fixture_snapshot() -> KernelSnapshotV2 {
     runtime.snapshot().unwrap()
 }
 
-fn completed_fixture_snapshot() -> KernelSnapshotV2 {
+fn completed_fixture_snapshot() -> KernelSnapshot {
     let mut runtime = KernelRuntime::new(SchedulerBudget {
         max_tokens: 1_024,
         max_turns: 10,

@@ -1,4 +1,4 @@
-import type { KernelPreparedStep, KernelRuntimeHandle, KernelSnapshotV2 } from "./kernel-step.js"
+import type { KernelPreparedStep, KernelRuntimeHandle, KernelSnapshot } from "./kernel-step.js"
 import {
   KernelLogIntegrityError,
   kernelRecordDigest,
@@ -82,7 +82,7 @@ function assertFreshRuntimeMatchesGenesis(
   runtime: KernelRuntimeHandle,
   genesis: KernelOperationGenesis,
 ): void {
-  const snapshot = JSON.parse(runtime.snapshot()) as KernelSnapshotV2
+  const snapshot = JSON.parse(runtime.snapshot()) as KernelSnapshot
   if (snapshot.abi_version !== genesis.abi_version) {
     throw new KernelLogIntegrityError("kernel runtime ABI version does not match operation genesis")
   }
@@ -102,7 +102,7 @@ function assertFreshRuntimeMatchesGenesis(
   }
 }
 
-function resolvedRuntimeDefaults(snapshot: KernelSnapshotV2): Record<string, unknown> {
+function resolvedRuntimeDefaults(snapshot: KernelSnapshot): Record<string, unknown> {
   return {
     snapshot_version: snapshot.snapshot_version,
     snapshot_input_limit: snapshot.snapshot_input_limit,

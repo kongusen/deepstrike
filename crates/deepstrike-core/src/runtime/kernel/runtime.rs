@@ -18,7 +18,7 @@ struct RecordedTransition {
 struct KernelSnapshotRefV2<'a> {
     snapshot_version: u32,
     abi_version: u32,
-    initial_policy: KernelSnapshotPolicyV2,
+    initial_policy: KernelSnapshotPolicy,
     lifecycle: KernelLifecycle,
     #[serde(skip_serializing_if = "Option::is_none")]
     operation_id: Option<&'a str>,
@@ -237,12 +237,12 @@ impl KernelRuntime {
     }
 
     /// Capture a portable ABI-v2 checkpoint without exposing private scheduler representation.
-    pub fn snapshot(&self) -> Result<KernelSnapshotV2, KernelFault> {
+    pub fn snapshot(&self) -> Result<KernelSnapshot, KernelFault> {
         self.ensure_snapshot_available()?;
-        Ok(KernelSnapshotV2 {
+        Ok(KernelSnapshot {
             snapshot_version: KERNEL_SNAPSHOT_VERSION,
             abi_version: KERNEL_ABI_VERSION,
-            initial_policy: KernelSnapshotPolicyV2::from(&self.initial_policy),
+            initial_policy: KernelSnapshotPolicy::from(&self.initial_policy),
             lifecycle: self.lifecycle,
             operation_id: self.operation_id.clone(),
             next_step_seq: self.next_step_seq,
@@ -260,7 +260,7 @@ impl KernelRuntime {
         let snapshot = KernelSnapshotRefV2 {
             snapshot_version: KERNEL_SNAPSHOT_VERSION,
             abi_version: KERNEL_ABI_VERSION,
-            initial_policy: KernelSnapshotPolicyV2::from(&self.initial_policy),
+            initial_policy: KernelSnapshotPolicy::from(&self.initial_policy),
             lifecycle: self.lifecycle,
             operation_id: self.operation_id.as_deref(),
             next_step_seq: self.next_step_seq,
@@ -281,7 +281,7 @@ impl KernelRuntime {
 
     /// Restore by deterministically replaying accepted public ABI transactions, then fail closed
     /// if any checkpoint metadata differs from the rebuilt runtime.
-    pub fn restore_snapshot(snapshot: KernelSnapshotV2) -> Result<Self, KernelFault> {
+    pub fn restore_snapshot(snapshot: KernelSnapshot) -> Result<Self, KernelFault> {
         if snapshot.snapshot_version != KERNEL_SNAPSHOT_VERSION
             || snapshot.abi_version != KERNEL_ABI_VERSION
             || !(1..=100_000).contains(&snapshot.snapshot_input_limit)
@@ -298,7 +298,7 @@ impl KernelRuntime {
 
         let initial_policy = SchedulerBudget::try_from(&snapshot.initial_policy)
             .map_err(|message| snapshot_fault(snapshot.operation_id.clone(), message))?;
-        if KernelSnapshotPolicyV2::from(&initial_policy) != snapshot.initial_policy {
+        if KernelSnapshotPolicy::from(&initial_policy) != snapshot.initial_policy {
             return Err(snapshot_fault(
                 snapshot.operation_id,
                 "kernel snapshot policy is not canonically encoded".to_string(),

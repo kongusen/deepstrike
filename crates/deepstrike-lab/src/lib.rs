@@ -10,7 +10,7 @@ use deepstrike_core::context::policy::{ContextPolicyV1, PPM_SCALE};
 use deepstrike_core::runtime::kernel::RunConfig;
 use deepstrike_core::runtime::{
     KERNEL_ABI_VERSION, KernelAction, KernelEffect, KernelInput, KernelInputEvent,
-    KernelObservation, KernelRuntime, KernelSnapshotPolicyV2, KernelSnapshotV2, KernelStep,
+    KernelObservation, KernelRuntime, KernelSnapshotPolicy, KernelSnapshot, KernelStep,
 };
 use deepstrike_core::scheduler::policy::SchedulerBudget;
 use deepstrike_core::types::message::{Content, ContentPart, Message, Role};
@@ -69,7 +69,7 @@ pub struct TraceTransaction {
 pub struct TraceV1 {
     pub trace_version: u32,
     pub abi_version: u32,
-    pub initial_policy: KernelSnapshotPolicyV2,
+    pub initial_policy: KernelSnapshotPolicy,
     pub transactions: Vec<TraceTransaction>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub fixture_blobs: BTreeMap<String, String>,
@@ -193,7 +193,7 @@ pub fn fixture_blob_key(content: &str) -> String {
 }
 
 pub fn export_snapshot_trace(
-    snapshot: &KernelSnapshotV2,
+    snapshot: &KernelSnapshot,
     fixture_blobs: BTreeMap<String, String>,
     probes: Vec<FactProbe>,
 ) -> Result<TraceV1, ReplayError> {

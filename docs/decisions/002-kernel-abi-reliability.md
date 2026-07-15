@@ -134,7 +134,7 @@ ABI 拒绝不再伪装成 `ToolGated`，而是进入结构化 `KernelFault`：`v
 - uninterrupted 与 snapshot/restore 后的下一步 action/observation 等价；
 - 不把 lease token、API key、路径或宿主 cancellation handle 写入 snapshot。
 
-当前 `OsSnapshot` 仅保留为审计投影；新增稳定的 `KernelSnapshotV2` 恢复真实运行状态、event/effect 去重窗口与 terminal-report latch，不直接序列化内部 state-machine struct。
+当前 `OsSnapshot` 仅保留为审计投影；新增稳定的 `KernelSnapshot` 恢复真实运行状态、event/effect 去重窗口与 terminal-report latch，不直接序列化内部 state-machine struct。
 
 ### 8. 有界状态与性能纪律
 
@@ -254,7 +254,7 @@ docs/decisions/                                    ADR 与规格
 - kernel 对 `budget_grant` 的三个轴执行本地硬限制，并输出与 `reservation_id` 关联的实际用量。
 - `cancel_operation` 在 Reason、ToolAwait、SubAgentAwait、Workflow 等 phase 中幂等地产生同一取消终态。
 - snapshot/restore 不丢 delivery/reservation/operation correlation，恢复后的下一步与不中断执行等价。
-- `KernelSnapshotV2` 可恢复真实内核状态；signal/event dedupe 状态有界。
+- `KernelSnapshot` 可恢复真实内核状态；signal/event dedupe 状态有界。
 - Node 与 Python 只公开 ABI v2，并对 v1 rejection 与 v2 parity 有契约测试；完整 Rust/Node/Python/docs 验证通过。
 - core 中没有新增持久化、网络、文件、provider 或 process side effect。
 

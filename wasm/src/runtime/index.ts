@@ -10,7 +10,7 @@ export type { MemoryPolicy, MemoryWriteRateLimit, OperationCancellationReason, P
 export { RuntimeRunner, collectText } from "./runner.js"
 export { readKernelDiagnostics, restoreKernelRuntime, snapshotKernelRuntime } from "./kernel-step.js"
 export type { KernelDiagnostics } from "./kernel-step.js"
-export type { KernelSnapshotV2 } from "./kernel-step.js"
+export type { KernelSnapshot } from "./kernel-step.js"
 export { runAgent, runFanout } from "./facade.js"
 export type { RunAgentOptions, RunFanoutOptions } from "./facade.js"
 export { builtinReducers, resolveReducer } from "./reducers.js"

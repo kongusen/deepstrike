@@ -485,7 +485,7 @@ cd python && pytest
 
 ## Phase 4：Snapshot、replay 与清理
 
-### Task 18：实现 KernelSnapshotV2
+### Task 18：实现 KernelSnapshot
 
 **Acceptance**
 
@@ -514,7 +514,7 @@ cargo test -p deepstrike-tests t12_golden_fixtures
 
 **Acceptance**
 
-- Node 可持久化/恢复 KernelSnapshotV2，并保持 action/effect identity。
+- Node 可持久化/恢复 KernelSnapshot，并保持 action/effect identity。
 - OS snapshot 明确为 audit projection，不冒充 runtime snapshot。
 
 **Verify**
@@ -537,7 +537,7 @@ cd node && npm test -- --runInBand tests/runtime/kernel-event-log.test.ts tests/
 
 **Acceptance**
 
-- Python 可持久化/恢复 KernelSnapshotV2，并保持 action/effect identity。
+- Python 可持久化/恢复 KernelSnapshot，并保持 action/effect identity。
 - OS snapshot 只作为 audit projection。
 
 **Verify**

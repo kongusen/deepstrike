@@ -49,8 +49,8 @@ pub use runtime::session::SessionEvent;
 pub use runtime::{
     CancellationReason, KERNEL_ABI_VERSION, KERNEL_SNAPSHOT_VERSION, KernelAction,
     KernelEventCategory, KernelInput, KernelInputEvent, KernelObservation, KernelPreparationStatus,
-    KernelPreparedStep, KernelPressureAction, KernelRuntime, KernelSnapshotPolicyV2,
-    KernelSnapshotV2, KernelStep, OsSnapshot, Primitive, category_for_kind, primitive_for_kind,
+    KernelPreparedStep, KernelPressureAction, KernelRuntime, KernelSnapshotPolicy,
+    KernelSnapshot, KernelStep, OsSnapshot, Primitive, category_for_kind, primitive_for_kind,
     rebuild_os_snapshot_from_events, reconstruct_messages_with_fallback,
 };
 pub use scheduler::entropy::{EntropySample, EntropyTracker, EntropyWatchConfig};

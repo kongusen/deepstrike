@@ -21,7 +21,7 @@ export { RuntimeRunner, collectText } from "./runtime/runner.js"
 export type { RuntimeOptions, KernelReliabilityOptions, OperationCancellationReason, PromptBudget, SchedulerPolicy } from "./runtime/runner.js"
 export type { SignalPolicy } from "./runtime/os-profile.js"
 export { readKernelDiagnostics, restoreKernelRuntime, snapshotKernelRuntime } from "./runtime/kernel-step.js"
-export type { KernelDiagnostics, KernelSnapshotV2 } from "./runtime/kernel-step.js"
+export type { KernelDiagnostics, KernelSnapshot } from "./runtime/kernel-step.js"
 export { rebuildKernelRuntime } from "./runtime/kernel-rebuild.js"
 export type { KernelRebuildResult } from "./runtime/kernel-rebuild.js"
 export {

@@ -134,7 +134,7 @@ New inputs, observations, and session events must:
 - produce equivalent next actions/observations after snapshot/restore and uninterrupted execution;
 - never persist lease tokens, API keys, paths, or host cancellation handles.
 
-The current `OsSnapshot` remains an audit projection. A stable `KernelSnapshotV2` restores real run state, event/effect replay windows, and the terminal-report latch without directly serializing the internal state-machine struct.
+The current `OsSnapshot` remains an audit projection. A stable `KernelSnapshot` restores real run state, event/effect replay windows, and the terminal-report latch without directly serializing the internal state-machine struct.
 
 ### 8. Bound state and optimize only from measurements
 
@@ -248,7 +248,7 @@ Large snapshot updates do not replace precise assertions; each golden change mus
 - Core enforces all three `budget_grant` axes locally and reports actual usage correlated with `reservation_id`.
 - `cancel_operation` idempotently produces the same terminal cancellation state in Reason, ToolAwait, SubAgentAwait, and Workflow phases.
 - Snapshot/restore preserves delivery/reservation/operation correlation and produces the same next step as uninterrupted execution.
-- `KernelSnapshotV2` restores real kernel state and signal/event dedupe remains bounded.
+- `KernelSnapshot` restores real kernel state and signal/event dedupe remains bounded.
 - Node and Python expose only ABI v2, with contract tests for v1 rejection and v2 parity; full Rust/Node/Python/docs verification passes.
 - Core gains no persistence, network, filesystem, provider, or process side effects.
 

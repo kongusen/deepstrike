@@ -124,7 +124,7 @@ Checkpoint: all phases, repeated cancellation, conflicting identity, deadline, a
 
 ### Phase E: Replay and residual cleanup
 
-Complete `KernelSnapshotV2`, session replay/OS audit snapshot differential fixtures, bounded event/signal dedupe, remove v1/base/signal/observation-command/accounting-fallback residue, and finish cross-language verification and documentation.
+Complete `KernelSnapshot`, session replay/OS audit snapshot differential fixtures, bounded event/signal dedupe, remove v1/base/signal/observation-command/accounting-fallback residue, and finish cross-language verification and documentation.
 
 Dependencies: Phases B, C, and D.
 

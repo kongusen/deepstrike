@@ -227,10 +227,10 @@ pub struct KernelDiagnostics {
 /// Portable runtime checkpoint. State is rebuilt from accepted public ABI transactions rather
 /// than serializing private scheduler structs, so internal refactors do not change this schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KernelSnapshotV2 {
+pub struct KernelSnapshot {
     pub snapshot_version: u32,
     pub abi_version: u32,
-    pub initial_policy: KernelSnapshotPolicyV2,
+    pub initial_policy: KernelSnapshotPolicy,
     pub lifecycle: KernelLifecycle,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_id: Option<String>,
@@ -248,7 +248,7 @@ pub struct KernelSnapshotV2 {
 /// JSON-portable scheduler policy. The 64-bit axes use decimal strings so JavaScript hosts do not
 /// lose precision while parsing and re-encoding a checkpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct KernelSnapshotPolicyV2 {
+pub struct KernelSnapshotPolicy {
     pub max_tokens: u32,
     pub max_turns: u32,
     pub max_total_tokens: String,
@@ -256,7 +256,7 @@ pub struct KernelSnapshotPolicyV2 {
     pub max_wall_ms: Option<String>,
 }
 
-impl From<&SchedulerBudget> for KernelSnapshotPolicyV2 {
+impl From<&SchedulerBudget> for KernelSnapshotPolicy {
     fn from(policy: &SchedulerBudget) -> Self {
         Self {
             max_tokens: policy.max_tokens,
@@ -267,10 +267,10 @@ impl From<&SchedulerBudget> for KernelSnapshotPolicyV2 {
     }
 }
 
-impl TryFrom<&KernelSnapshotPolicyV2> for SchedulerBudget {
+impl TryFrom<&KernelSnapshotPolicy> for SchedulerBudget {
     type Error = String;
 
-    fn try_from(policy: &KernelSnapshotPolicyV2) -> Result<Self, Self::Error> {
+    fn try_from(policy: &KernelSnapshotPolicy) -> Result<Self, Self::Error> {
         Ok(Self {
             max_tokens: policy.max_tokens,
             max_turns: policy.max_turns,

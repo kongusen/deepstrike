@@ -11,7 +11,7 @@ pub use kernel::{
     CancellationReason, KERNEL_ABI_VERSION, KERNEL_SNAPSHOT_VERSION, KernelAction, KernelEffect,
     KernelFault, KernelFaultCode, KernelInput, KernelInputEvent, KernelLifecycle,
     KernelObservation, KernelPreparationStatus, KernelPreparedStep, KernelPressureAction,
-    KernelRuntime, KernelSnapshotPolicyV2, KernelSnapshotV2, KernelStep,
+    KernelRuntime, KernelSnapshotPolicy, KernelSnapshot, KernelStep,
 };
 
 pub use event_log::{KernelEventCategory, Primitive, category_for_kind, primitive_for_kind};

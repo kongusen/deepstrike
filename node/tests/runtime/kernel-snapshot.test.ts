@@ -5,7 +5,7 @@ import {
   snapshotKernelRuntime,
 } from "../../src/runtime/kernel-step.js"
 
-describe("KernelSnapshotV2 host parity", () => {
+describe("KernelSnapshot host parity", () => {
   it("restores the operation wire identity and pending provider effect", () => {
     const kernel = getKernel()
     const original = new kernel.KernelRuntime({

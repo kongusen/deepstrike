@@ -203,7 +203,7 @@ Run complete Rust, Node, and Python tests.
 
 ## Phase 4: Snapshot, Replay, and Cleanup
 
-### Task 18: Implement KernelSnapshotV2
+### Task 18: Implement KernelSnapshot
 
 Acceptance: restore phase, operation, effects, workflow, budget, dedupe, and terminal latch without serializing internal structs; incompatible snapshots fault; differential replay passes.
 
@@ -215,7 +215,7 @@ Files: kernel protocol/runtime, runtime replay/session, Rust golden test.
 
 ### Task 19: Add Node snapshot/replay parity
 
-Acceptance: persist/restore KernelSnapshotV2 with action/effect identity; OS snapshot remains an audit projection.
+Acceptance: persist/restore KernelSnapshot with action/effect identity; OS snapshot remains an audit projection.
 
 Verify: Node kernel-event-log and signal-delivery tests.
 
@@ -225,7 +225,7 @@ Files: Node kernel-step, runner, OS snapshot, kernel event log, and event-log te
 
 ### Task 20: Add Python snapshot/replay parity
 
-Acceptance: persist/restore KernelSnapshotV2 with action/effect identity; OS snapshot remains an audit projection.
+Acceptance: persist/restore KernelSnapshot with action/effect identity; OS snapshot remains an audit projection.
 
 Verify: Python runtime-wake and signal-delivery tests.
 

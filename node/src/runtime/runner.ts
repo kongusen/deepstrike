@@ -205,7 +205,7 @@ export interface KernelReliabilityOptions {
   spoolThresholdBytes?: number
   /** Inline spool preview bytes; positive and no larger than the threshold. */
   spoolPreviewBytes?: number
-  /** Max accepted ABI transactions retained for a portable KernelSnapshotV2 rebuild. */
+  /** Max accepted ABI transactions retained for a portable KernelSnapshot rebuild. */
   snapshotInputLimit?: number
   /** Max canonical JSON bytes accepted for one kernel input, 256..64MiB. */
   maxInputBytes?: number
