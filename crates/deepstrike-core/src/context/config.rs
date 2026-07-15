@@ -73,8 +73,8 @@ pub struct ContextConfig {
     // ── Layer 1: Large-result spool ──────────────────────────────────────
 
     /// Byte size above which a single tool result is spooled (Layer 1): the kernel
-    /// keeps only a preview in context and emits `LargeResultSpooled` for the SDK to
-    /// persist the full content to disk. Default: 50 KiB. `0` disables spooling.
+    /// keeps only a preview in context and emits a `SpoolLargeResult` host effect.
+    /// Default: 50 KiB. `0` disables spooling.
     pub spool_threshold_bytes: u32,
 
     /// Preview byte budget kept in context when a tool result is spooled. Default: 2 KiB.

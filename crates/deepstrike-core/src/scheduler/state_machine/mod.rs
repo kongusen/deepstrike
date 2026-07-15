@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use super::entropy::{EntropyTracker, EntropyWatchConfig};
 use super::milestone::MilestoneTracker;
@@ -77,7 +77,7 @@ pub enum LoopEvent {
 }
 
 /// Actions the state machine outputs — SDK layer executes the I/O.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum LoopAction {
     /// Structured context ready for a provider call.
     /// `context.system_text` → provider system param.
@@ -112,6 +112,20 @@ pub enum LoopAction {
     QueryMemory {
         query: crate::mm::memory::MemoryQuery,
         requested_k: usize,
+    },
+    SpoolLargeResult {
+        call_id: String,
+        tool: String,
+        output: String,
+        original_size: u32,
+        preview_size: u32,
+    },
+    ArchivePageOut {
+        turn: u32,
+        action: crate::runtime::kernel::KernelPressureAction,
+        summary: Option<String>,
+        archived: Vec<Message>,
+        tier: String,
     },
     Done {
         result: LoopResult,
@@ -148,6 +162,57 @@ pub(super) struct PendingWorkflowSpawn {
 pub(super) struct PendingPreempt {
     pub agent_ids: Vec<String>,
     pub reason: String,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum PendingHostEffect {
+    SpoolLargeResult {
+        call_id: String,
+        tool: String,
+        output: String,
+        original_size: u32,
+        preview_size: u32,
+    },
+    ArchivePageOut {
+        turn: u32,
+        action: crate::runtime::kernel::KernelPressureAction,
+        summary: Option<String>,
+        archived: Vec<Message>,
+        tier: String,
+    },
+}
+
+impl PendingHostEffect {
+    fn action(&self) -> LoopAction {
+        match self {
+            Self::SpoolLargeResult {
+                call_id,
+                tool,
+                output,
+                original_size,
+                preview_size,
+            } => LoopAction::SpoolLargeResult {
+                call_id: call_id.clone(),
+                tool: tool.clone(),
+                output: output.clone(),
+                original_size: *original_size,
+                preview_size: *preview_size,
+            },
+            Self::ArchivePageOut {
+                turn,
+                action,
+                summary,
+                archived,
+                tier,
+            } => LoopAction::ArchivePageOut {
+                turn: *turn,
+                action: *action,
+                summary: summary.clone(),
+                archived: archived.clone(),
+                tier: tier.clone(),
+            },
+        }
+    }
 }
 
 /// Payload held while the loop is in `Suspended`.
@@ -221,6 +286,7 @@ pub struct LoopStateMachine {
     /// MAX_OUTPUT_TOKENS_RECOVERY_LIMIT). Resets to 0 on any non-truncated response.
     pub(super) output_recovery_attempts: u8,
     pub(crate) output_recovery_attempt_limit: u8,
+    pub(crate) host_effect_retry_attempt_limit: u8,
     /// Transient carrier for the provider `stop_reason` of the in-flight response, set by the
     /// kernel ABI just before `feed(LLMResponse)` and taken (cleared) inside it. `None` when the
     /// SDK/provider doesn't report one (every non-Anthropic provider today ⇒ no-op).
@@ -270,6 +336,12 @@ pub struct LoopStateMachine {
     /// spawn result. This is intent, not an observed external fact.
     pub(super) pending_workflow_spawn: Option<PendingWorkflowSpawn>,
     pub(super) pending_preempt: Option<PendingPreempt>,
+    /// Ordered host-owned durability effects produced during a pure state-machine
+    /// transition. The normal continuation is held until every effect commits.
+    pub(super) pending_host_effects: VecDeque<PendingHostEffect>,
+    pub(super) active_host_effect: Option<PendingHostEffect>,
+    pub(super) active_host_effect_failures: u8,
+    pub(super) deferred_action: Option<Box<LoopAction>>,
     /// O6: repeat-fuse thresholds (the hard rungs above the 2c soft STOP). Default enabled with
     /// generous thresholds; tune/disable via `SetRepeatFuse` / `ConfigureRun.repeat_fuse`.
     pub(super) repeat_fuse: RepeatFuseConfig,
@@ -333,6 +405,7 @@ impl LoopStateMachine {
             provider_recovery_attempt_limit: 2,
             output_recovery_attempts: 0,
             output_recovery_attempt_limit: 3,
+            host_effect_retry_attempt_limit: 3,
             pending_stop_reason: None,
             session_history_baseline: 0,
             checkpoint: TurnCheckpoint::default(),
@@ -351,6 +424,10 @@ impl LoopStateMachine {
             workflow: None,
             pending_workflow_spawn: None,
             pending_preempt: None,
+            pending_host_effects: VecDeque::new(),
+            active_host_effect: None,
+            active_host_effect_failures: 0,
+            deferred_action: None,
             repeat_fuse: RepeatFuseConfig::default(),
             repeat_sig: None,
             repeat_count: 0,
@@ -376,12 +453,159 @@ impl LoopStateMachine {
         if let Some(limit) = config.output_recovery_attempts {
             self.output_recovery_attempt_limit = limit;
         }
+        if let Some(limit) = config.host_effect_retry_attempts {
+            self.host_effect_retry_attempt_limit = limit;
+        }
         if let Some(bytes) = config.spool_threshold_bytes {
             self.ctx.config.spool_threshold_bytes = bytes;
         }
         if let Some(bytes) = config.spool_preview_bytes {
             self.ctx.config.spool_preview_bytes = bytes;
         }
+    }
+
+    pub(crate) fn externalize_pending_host_effect(
+        &mut self,
+        continuation: LoopAction,
+    ) -> LoopAction {
+        if self.active_host_effect.is_some() {
+            return continuation;
+        }
+        let Some(pending) = self.pending_host_effects.pop_front() else {
+            return continuation;
+        };
+        assert!(
+            self.deferred_action.is_none(),
+            "host effect continuation must be unique"
+        );
+        self.deferred_action = Some(Box::new(continuation));
+        self.active_host_effect = Some(pending);
+        self.active_host_effect_failures = 0;
+        self.active_host_effect
+            .as_ref()
+            .expect("host effect was just activated")
+            .action()
+    }
+
+    fn next_after_host_effect(&mut self) -> LoopAction {
+        if let Some(pending) = self.pending_host_effects.pop_front() {
+            self.active_host_effect = Some(pending);
+            self.active_host_effect_failures = 0;
+            self.active_host_effect
+                .as_ref()
+                .expect("host effect was just activated")
+                .action()
+        } else {
+            self.deferred_action
+                .take()
+                .map(|action| *action)
+                .unwrap_or(LoopAction::AwaitingResume)
+        }
+    }
+
+    pub(crate) fn resolve_large_result_spool(
+        &mut self,
+        spool_ref: Option<String>,
+        error: Option<String>,
+    ) -> LoopAction {
+        let pending = self
+            .active_host_effect
+            .as_ref()
+            .expect("spool result requires an active host effect");
+        let PendingHostEffect::SpoolLargeResult {
+            call_id,
+            tool,
+            original_size,
+            preview_size,
+            ..
+        } = pending
+        else {
+            panic!("spool result does not match active page-out effect");
+        };
+        if let Some(error) = error {
+            self.observations
+                .push(KernelObservation::LargeResultSpoolFailed {
+                    turn: self.turn,
+                    call_id: call_id.clone(),
+                    tool: tool.clone(),
+                    error,
+                });
+            self.active_host_effect_failures = self.active_host_effect_failures.saturating_add(1);
+            if self.active_host_effect_failures > self.host_effect_retry_attempt_limit {
+                self.active_host_effect = None;
+                self.pending_host_effects.clear();
+                self.deferred_action = None;
+                return self.terminate(TerminationReason::Error, None);
+            }
+            return pending.action();
+        }
+        let spool_ref = spool_ref.expect("successful spool result requires spool_ref");
+        let call_id = call_id.clone();
+        let tool = tool.clone();
+        let original_size = *original_size;
+        let preview_size = *preview_size;
+        self.ctx.mark_spooled(&call_id, spool_ref.clone());
+        self.observations.push(KernelObservation::LargeResultSpooled {
+            turn: self.turn,
+            call_id,
+            tool,
+            original_size,
+            preview_size,
+            spool_ref: Some(spool_ref),
+        });
+        self.active_host_effect = None;
+        self.active_host_effect_failures = 0;
+        self.next_after_host_effect()
+    }
+
+    pub(crate) fn resolve_page_out_archive(
+        &mut self,
+        archive_ref: Option<String>,
+        error: Option<String>,
+    ) -> LoopAction {
+        let pending = self
+            .active_host_effect
+            .as_ref()
+            .expect("page-out result requires an active host effect");
+        let PendingHostEffect::ArchivePageOut {
+            turn,
+            action,
+            summary,
+            archived,
+            tier,
+        } = pending
+        else {
+            panic!("page-out result does not match active spool effect");
+        };
+        if let Some(error) = error {
+            self.observations
+                .push(KernelObservation::PageOutArchiveFailed {
+                    turn: *turn,
+                    action: *action,
+                    tier: tier.clone(),
+                    message_count: archived.len() as u32,
+                    error,
+                });
+            self.active_host_effect_failures = self.active_host_effect_failures.saturating_add(1);
+            if self.active_host_effect_failures > self.host_effect_retry_attempt_limit {
+                self.active_host_effect = None;
+                self.pending_host_effects.clear();
+                self.deferred_action = None;
+                return self.terminate(TerminationReason::Error, None);
+            }
+            return pending.action();
+        }
+        self.observations.push(KernelObservation::PageOutArchived {
+            turn: *turn,
+            action: *action,
+            summary: summary.clone(),
+            tier: tier.clone(),
+            message_count: archived.len() as u32,
+            archive_ref,
+        });
+        self.active_host_effect = None;
+        self.active_host_effect_failures = 0;
+        self.next_after_host_effect()
     }
 
     /// O6: tune or disable the repeat fuse (see [`RepeatFuseConfig`]).
@@ -760,6 +984,13 @@ impl LoopStateMachine {
                 // here — they rolled back above and accrued via `note_rollback`).
                 let errored_results = results.iter().filter(|r| r.is_error).count() as u32;
                 let total_results = results.len() as u32;
+                let tool_by_call_id: HashMap<String, String> = match &self.phase {
+                    LoopPhase::Act { tool_calls } => tool_calls
+                        .iter()
+                        .map(|call| (call.id.to_string(), call.name.to_string()))
+                        .collect(),
+                    LoopPhase::Reason => HashMap::new(),
+                };
 
                 for r in &results {
                     self.total_tokens += r.token_count.unwrap_or(0) as u64;
@@ -769,23 +1000,27 @@ impl LoopStateMachine {
                         Content::Text(s) => s.clone(),
                         Content::Parts(parts) => serde_json::to_string(parts).unwrap_or_default(),
                     };
-                    // Layer 1 spool: oversized results keep only a preview in context; the kernel
-                    // emits `LargeResultSpooled` so the SDK persists the full output it still holds.
+                    // Layer 1 spool: oversized results keep only a preview in context. The full
+                    // output becomes a host effect and no success fact is recorded until its
+                    // correlated result commits.
                     let (output, spooled) = match crate::mm::plan_spool(
                         &raw_output,
                         self.ctx.config.spool_threshold_bytes,
                         self.ctx.config.spool_preview_bytes,
                     ) {
                         Some(decision) => {
-                            self.observations.push(KernelObservation::LargeResultSpooled {
-                                turn: self.turn,
-                                call_id: r.call_id.to_string(),
-                                // ToolResult carries no tool name; the SDK maps call_id -> tool.
-                                tool: String::new(),
-                                original_size: decision.original_size,
-                                preview_size: decision.preview.len() as u32,
-                                spool_ref: None,
-                            });
+                            self.pending_host_effects.push_back(
+                                PendingHostEffect::SpoolLargeResult {
+                                    call_id: r.call_id.to_string(),
+                                    tool: tool_by_call_id
+                                        .get(r.call_id.as_str())
+                                        .cloned()
+                                        .unwrap_or_default(),
+                                    output: raw_output.clone(),
+                                    original_size: decision.original_size,
+                                    preview_size: decision.preview.len() as u32,
+                                },
+                            );
                             (decision.preview, true)
                         }
                         None => (raw_output, false),
@@ -804,11 +1039,6 @@ impl LoopStateMachine {
                             .unwrap_or_else(|| self.ctx.engine.count_message(&tool_msg))
                     };
                     self.ctx.push_history(tool_msg, tokens);
-                    // Layer 1: a spooled result's handle is marked SpooledOut (its full output now
-                    // lives on disk via the SDK); the SDK maps call_id -> the persisted ref.
-                    if spooled {
-                        self.ctx.mark_spooled(&r.call_id, r.call_id.to_string());
-                    }
                 }
                 self.turn += 1;
 

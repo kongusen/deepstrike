@@ -377,6 +377,7 @@ fn reliability_config_bounds_replay_windows_from_the_sdk_boundary() {
                 completed_effect_replay_capacity: Some(2),
                 provider_recovery_attempts: Some(0),
                 output_recovery_attempts: Some(1),
+                host_effect_retry_attempts: Some(2),
                 spool_threshold_bytes: Some(4096),
                 spool_preview_bytes: Some(512),
             }),
@@ -392,6 +393,7 @@ fn reliability_config_bounds_replay_windows_from_the_sdk_boundary() {
     assert_eq!(runtime.recorded_event_count(), 2);
     assert_eq!(runtime.state_machine().provider_recovery_attempt_limit, 0);
     assert_eq!(runtime.state_machine().output_recovery_attempt_limit, 1);
+    assert_eq!(runtime.state_machine().host_effect_retry_attempt_limit, 2);
     assert_eq!(runtime.state_machine().ctx.config.spool_threshold_bytes, 4096);
     assert_eq!(runtime.state_machine().ctx.config.spool_preview_bytes, 512);
 }
@@ -1467,6 +1469,163 @@ fn provider_result_now_ms_drives_wall_time_budget() {
         step.actions.as_slice(),
         [KernelAction { effect: KernelEffect::CallProvider { tools, .. }, .. }] if tools.is_empty()
     ));
+}
+
+#[test]
+fn large_result_spool_is_a_correlated_effect_before_provider_continues() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    run_with_tool_call(&mut runtime, "echo");
+    let requested = runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
+        effect_id: runtime.pending_tool_effect_id(),
+        results: vec![ToolResult {
+            call_id: "call-1".into(),
+            output: crate::types::message::Content::Text("Z".repeat(60 * 1024)),
+            is_error: false, is_fatal: false, error_kind: None, token_count: None,
+        }],
+    }));
+    let effect_id = match requested.actions.as_slice() {
+        [KernelAction { effect_id, effect: KernelEffect::SpoolLargeResult { call_id, tool, output, .. }, .. }] => {
+            assert_eq!(call_id, "call-1");
+            assert_eq!(tool, "echo");
+            assert_eq!(output.len(), 60 * 1024);
+            effect_id.clone()
+        }
+        other => panic!("expected spool effect, got {other:?}"),
+    };
+    assert!(!requested.observations.iter().any(|o| matches!(o, KernelObservation::LargeResultSpooled { .. })));
+    let committed = runtime.step(KernelInput::new(KernelInputEvent::LargeResultSpoolResult {
+        effect_id, spool_ref: Some("spool://call-1".to_string()), error: None,
+    }));
+    assert!(matches!(committed.actions.as_slice(), [KernelAction { effect: KernelEffect::CallProvider { .. }, .. }]));
+    assert!(committed.observations.iter().any(|o| matches!(
+        o, KernelObservation::LargeResultSpooled { call_id, spool_ref: Some(spool_ref), .. }
+            if call_id == "call-1" && spool_ref == "spool://call-1"
+    )));
+}
+
+#[test]
+fn failed_large_result_spool_is_observed_and_retried_without_success_fact() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    run_with_tool_call(&mut runtime, "echo");
+    let requested = runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
+        effect_id: runtime.pending_tool_effect_id(),
+        results: vec![ToolResult {
+            call_id: "call-1".into(),
+            output: crate::types::message::Content::Text("Z".repeat(60 * 1024)),
+            is_error: false, is_fatal: false, error_kind: None, token_count: None,
+        }],
+    }));
+    let failed = runtime.step(KernelInput::new(KernelInputEvent::LargeResultSpoolResult {
+        effect_id: requested.actions[0].effect_id.clone(),
+        spool_ref: None,
+        error: Some("disk full".to_string()),
+    }));
+    assert!(matches!(failed.actions.as_slice(), [KernelAction { effect: KernelEffect::SpoolLargeResult { .. }, .. }]));
+    assert!(failed.observations.iter().any(|o| matches!(o, KernelObservation::LargeResultSpoolFailed { error, .. } if error == "disk full")));
+    assert!(!failed.observations.iter().any(|o| matches!(o, KernelObservation::LargeResultSpooled { .. })));
+}
+
+#[test]
+fn host_effect_retry_limit_terminates_instead_of_spinning() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            reliability: Some(KernelReliabilityConfig {
+                host_effect_retry_attempts: Some(0),
+                ..KernelReliabilityConfig::default()
+            }),
+            ..RunConfig::default()
+        },
+    }));
+    run_with_tool_call(&mut runtime, "echo");
+    let requested = runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
+        effect_id: runtime.pending_tool_effect_id(),
+        results: vec![ToolResult {
+            call_id: "call-1".into(),
+            output: crate::types::message::Content::Text("Z".repeat(60 * 1024)),
+            is_error: false, is_fatal: false, error_kind: None, token_count: None,
+        }],
+    }));
+
+    let exhausted = runtime.step(KernelInput::new(KernelInputEvent::LargeResultSpoolResult {
+        effect_id: requested.actions[0].effect_id.clone(),
+        spool_ref: None,
+        error: Some("disk full".to_string()),
+    }));
+
+    assert!(matches!(exhausted.actions.as_slice(), [KernelAction { effect: KernelEffect::Done { result }, .. }] if result.termination == crate::types::result::TerminationReason::Error));
+    assert!(exhausted.observations.iter().any(|observation| matches!(observation, KernelObservation::LargeResultSpoolFailed { .. })));
+}
+
+#[test]
+fn multiple_large_results_commit_in_order_before_provider_continues() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    run_with_tool_call(&mut runtime, "echo");
+    let requested = runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
+        effect_id: runtime.pending_tool_effect_id(),
+        results: ["call-1", "call-2"].into_iter().map(|call_id| ToolResult {
+            call_id: call_id.into(),
+            output: crate::types::message::Content::Text("Z".repeat(60 * 1024)),
+            is_error: false, is_fatal: false, error_kind: None, token_count: None,
+        }).collect(),
+    }));
+    let first_effect_id = requested.actions[0].effect_id.clone();
+    assert!(matches!(&requested.actions[0].effect, KernelEffect::SpoolLargeResult { call_id, .. } if call_id == "call-1"));
+    let second = runtime.step(KernelInput::new(KernelInputEvent::LargeResultSpoolResult {
+        effect_id: first_effect_id, spool_ref: Some("spool://call-1".to_string()), error: None,
+    }));
+    let second_effect_id = second.actions[0].effect_id.clone();
+    assert!(matches!(&second.actions[0].effect, KernelEffect::SpoolLargeResult { call_id, .. } if call_id == "call-2"));
+    let completed = runtime.step(KernelInput::new(KernelInputEvent::LargeResultSpoolResult {
+        effect_id: second_effect_id, spool_ref: Some("spool://call-2".to_string()), error: None,
+    }));
+    assert!(matches!(completed.actions.as_slice(), [KernelAction { effect: KernelEffect::CallProvider { .. }, .. }]));
+}
+
+fn runtime_with_page_out() -> KernelRuntime {
+    let mut runtime = KernelRuntime::new(SchedulerBudget { max_tokens: 100, ..SchedulerBudget::default() });
+    runtime.step(KernelInput::new(KernelInputEvent::StartRun { task: RuntimeTask::new("compact"), run_spec: None }));
+    for index in 0..10 {
+        runtime.state_machine_mut().ctx.push_history(Message::user(format!("filler {index}")), 50);
+    }
+    runtime
+}
+
+#[test]
+fn page_out_archive_is_a_correlated_effect_with_no_pre_result_success_fact() {
+    let mut runtime = runtime_with_page_out();
+    let requested = runtime.step(KernelInput::new(KernelInputEvent::ForceCompact));
+    let effect_id = match requested.actions.as_slice() {
+        [KernelAction { effect_id, effect: KernelEffect::ArchivePageOut { archived, tier, .. }, .. }] => {
+            assert!(!archived.is_empty());
+            assert_eq!(tier, "semantic");
+            effect_id.clone()
+        }
+        other => panic!("expected page-out archive effect, got {other:?}"),
+    };
+    assert!(!requested.observations.iter().any(|o| matches!(o, KernelObservation::PageOutArchived { .. })));
+    let committed = runtime.step(KernelInput::new(KernelInputEvent::PageOutArchiveResult {
+        effect_id, archive_ref: Some("archive://batch-1".to_string()), error: None,
+    }));
+    assert!(committed.actions.is_empty());
+    assert!(committed.observations.iter().any(|o| matches!(
+        o, KernelObservation::PageOutArchived { archive_ref: Some(archive_ref), message_count, .. }
+            if archive_ref == "archive://batch-1" && *message_count > 0
+    )));
+}
+
+#[test]
+fn failed_page_out_archive_is_observed_and_retried() {
+    let mut runtime = runtime_with_page_out();
+    let requested = runtime.step(KernelInput::new(KernelInputEvent::ForceCompact));
+    let failed = runtime.step(KernelInput::new(KernelInputEvent::PageOutArchiveResult {
+        effect_id: requested.actions[0].effect_id.clone(),
+        archive_ref: None,
+        error: Some("archive unavailable".to_string()),
+    }));
+    assert!(matches!(failed.actions.as_slice(), [KernelAction { effect: KernelEffect::ArchivePageOut { .. }, .. }]));
+    assert!(failed.observations.iter().any(|o| matches!(o, KernelObservation::PageOutArchiveFailed { error, .. } if error == "archive unavailable")));
+    assert!(!failed.observations.iter().any(|o| matches!(o, KernelObservation::PageOutArchived { .. })));
 }
 
 // ─── Governance gate ───────────────────────────────────────────────────

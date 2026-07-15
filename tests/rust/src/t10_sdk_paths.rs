@@ -82,6 +82,7 @@ where
         execution_plane: None,
         session_log: Some(Arc::new(InMemorySessionLog::new())),
         compression_store: None,
+        spool_dir: None,
         session_id: None,
         max_tokens: 4096,
         max_turns: Some(25),

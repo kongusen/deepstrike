@@ -294,7 +294,7 @@ pub struct SpoolDecision {
 /// Pure Layer-1 spool planner: if `output` exceeds `threshold_bytes` (and threshold > 0), return a
 /// [`SpoolDecision`] whose `preview` is the first `preview_bytes` (truncated at a char boundary)
 /// plus a marker. `None` means keep the output inline. The kernel keeps `preview` in context and
-/// emits `LargeResultSpooled`; the SDK persists the full content to disk. No I/O here.
+/// emits a `SpoolLargeResult` effect; success is observed only after the host result. No I/O here.
 pub fn plan_spool(output: &str, threshold_bytes: u32, preview_bytes: u32) -> Option<SpoolDecision> {
     let size = output.len();
     if threshold_bytes == 0 || size <= threshold_bytes as usize {

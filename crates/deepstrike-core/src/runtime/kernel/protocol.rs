@@ -154,6 +154,8 @@ pub struct KernelReliabilityConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_recovery_attempts: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_effect_retry_attempts: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spool_threshold_bytes: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spool_preview_bytes: Option<u32>,
@@ -436,6 +438,20 @@ pub enum KernelInputEvent {
         effect_id: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         entries: Vec<crate::mm::PageInEntry>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    LargeResultSpoolResult {
+        effect_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spool_ref: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    PageOutArchiveResult {
+        effect_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        archive_ref: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -781,6 +797,20 @@ pub enum KernelEffect {
         query: crate::mm::memory::MemoryQuery,
         requested_k: usize,
     },
+    SpoolLargeResult {
+        call_id: String,
+        tool: String,
+        output: String,
+        original_size: u32,
+        preview_size: u32,
+    },
+    ArchivePageOut {
+        turn: u32,
+        action: KernelPressureAction,
+        summary: Option<String>,
+        archived: Vec<Message>,
+        tier: String,
+    },
     EvaluateMilestone {
         phase_id: String,
         criteria: Vec<String>,
@@ -811,6 +841,32 @@ impl From<LoopAction> for KernelEffect {
             LoopAction::QueryMemory { query, requested_k } => {
                 Self::QueryMemory { query, requested_k }
             }
+            LoopAction::SpoolLargeResult {
+                call_id,
+                tool,
+                output,
+                original_size,
+                preview_size,
+            } => Self::SpoolLargeResult {
+                call_id,
+                tool,
+                output,
+                original_size,
+                preview_size,
+            },
+            LoopAction::ArchivePageOut {
+                turn,
+                action,
+                summary,
+                archived,
+                tier,
+            } => Self::ArchivePageOut {
+                turn,
+                action,
+                summary,
+                archived,
+                tier,
+            },
             LoopAction::EvaluateMilestone {
                 phase_id,
                 criteria,
@@ -830,18 +886,15 @@ impl From<LoopAction> for KernelEffect {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum KernelObservation {
-    /// One compaction = one observation. `archived` non-empty ⇒ content left working
-    /// context (what the retired separate PageOut observation used to duplicate);
-    /// `tier_hint` then names the recommended long-term tier for the archived batch.
+    /// Synchronous in-kernel compaction fact. Archived content is carried only by
+    /// `ArchivePageOut`; it never rides an observation into host I/O.
     Compressed {
         #[serde(default)]
         turn: u32,
         action: KernelPressureAction,
         rho_after: f64,
         summary: Option<String>,
-        archived: Vec<Message>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tier_hint: Option<String>,
+        archived_count: u32,
         /// W1-1 cache-awareness: the message index at which this compression invalidated the
         /// prompt cache prefix (if any). `None` = prefix-safe. SDK/telemetry can use this to
         /// quantify "tokens saved vs cache rebuild cost". Additive ABI field with default.
@@ -1095,6 +1148,28 @@ pub enum KernelObservation {
         original_size: u32,
         preview_size: u32,
         spool_ref: Option<String>,
+    },
+    LargeResultSpoolFailed {
+        turn: u32,
+        call_id: String,
+        tool: String,
+        error: String,
+    },
+    PageOutArchived {
+        turn: u32,
+        action: KernelPressureAction,
+        summary: Option<String>,
+        tier: String,
+        message_count: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        archive_ref: Option<String>,
+    },
+    PageOutArchiveFailed {
+        turn: u32,
+        action: KernelPressureAction,
+        tier: String,
+        message_count: u32,
+        error: String,
     },
 }
 

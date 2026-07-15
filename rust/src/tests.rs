@@ -512,6 +512,7 @@ mod tests {
             execution_plane: Some(Box::new(plane)),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
             compression_store: None,
+            spool_dir: None,
             session_id: None,
             max_tokens: 2048,
             max_turns: Some(4),
@@ -619,6 +620,7 @@ mod tests {
             execution_plane: Some(Box::new(plane)),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
             compression_store: None,
+            spool_dir: None,
             session_id: None,
             max_tokens: 2048,
             max_turns: Some(2),
@@ -740,6 +742,7 @@ mod tests {
             execution_plane: Some(Box::new(plane)),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
             compression_store: None,
+            spool_dir: None,
             session_id: None,
             max_tokens: 4096,
             max_turns: Some(3),
@@ -836,6 +839,7 @@ mod tests {
             execution_plane: None,
             session_log: Some(session_log.clone()),
             compression_store: None,
+            spool_dir: None,
             session_id: None,
             max_tokens: 1_000,
             max_turns: Some(4),
@@ -1015,6 +1019,7 @@ mod tests {
             execution_plane: Some(Box::new(plane)),
             session_log: Some(session_log.clone()),
             compression_store: None,
+            spool_dir: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -1115,6 +1120,7 @@ mod tests {
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
             compression_store: None,
+            spool_dir: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -1193,6 +1199,7 @@ mod tests {
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
             compression_store: None,
+            spool_dir: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -1285,6 +1292,7 @@ mod tests {
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
             compression_store: None,
+            spool_dir: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -1411,7 +1419,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_semantic_page_out_archives_to_dream_store() {
+    async fn test_page_out_observation_does_not_trigger_dream_store_io() {
         use crate::runtime::runner::{RuntimeRunner, RuntimeOptions, MilestonePolicy};
         use deepstrike_core::runtime::kernel::{KernelObservation, KernelPressureAction};
         use deepstrike_core::types::message::{Message, Role};
@@ -1475,6 +1483,7 @@ mod tests {
             execution_plane: None,
             session_log: Some(Arc::new(InMemorySessionLog::new())),
             compression_store: None,
+            spool_dir: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -1508,34 +1517,32 @@ mod tests {
             on_milestone_evaluate: None,
         });
 
-        // One compaction = one observation: the semantic-archive branch is now driven by
-        // Compressed.tier_hint (the separate PageOut observation was removed).
-        let mut obs = vec![KernelObservation::Compressed {
+        // A committed page-out observation is telemetry only. Host persistence must have
+        // happened while executing ArchivePageOut, never as an observation side effect.
+        let mut obs = vec![KernelObservation::PageOutArchived {
             turn: 1,
             action: KernelPressureAction::AutoCompact,
-            rho_after: 0.5,
             summary: Some("PageOut summary".to_string()),
-            archived: vec![Message::user("Hello memory")],
-            invalidates_prefix_at: Some(0),
-            tier_hint: Some("semantic".to_string()),
+            tier: "semantic".to_string(),
+            message_count: 1,
+            archive_ref: Some("archive://batch".to_string()),
         }];
 
         let kernel = std::sync::Mutex::new(deepstrike_core::runtime::kernel::KernelRuntime::new(
             deepstrike_core::scheduler::policy::SchedulerBudget::default(),
         ));
-        let mut pending_spools = std::collections::HashMap::new();
-
-        runner.append_observations(
-            "test-session",
-            &kernel,
-            &mut obs,
-            &mut pending_spools,
-            0,
-        ).await;
+        runner
+            .append_observations(
+                "test-session",
+                &kernel,
+                &mut obs,
+                &mut std::collections::VecDeque::new(),
+                0,
+            )
+            .await;
 
         let mems = memories.lock().unwrap();
-        assert_eq!(mems.len(), 1);
-        assert_eq!(mems[0].text, "Summary of page out conversation");
+        assert!(mems.is_empty());
     }
 
     #[tokio::test]
@@ -1593,6 +1600,7 @@ mod tests {
             execution_plane: None,
             session_log: Some(session_log.clone()),
             compression_store: None,
+            spool_dir: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -1700,6 +1708,7 @@ mod tests {
             execution_plane: None,
             session_log: Some(session_log.clone()),
             compression_store: None,
+            spool_dir: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -1846,6 +1855,7 @@ mod tests {
             execution_plane: None,
             session_log: Some(session_log.clone()),
             compression_store: None,
+            spool_dir: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -1935,6 +1945,7 @@ mod tests {
             execution_plane: None,
             session_log: Some(session_log.clone()),
             compression_store: None,
+            spool_dir: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),

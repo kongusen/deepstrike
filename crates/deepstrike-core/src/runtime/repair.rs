@@ -123,7 +123,7 @@ where
     F: FnMut(&str) -> Result<Vec<Message>, crate::context::fault::ContextFault>,
 {
     let mut messages = Vec::new();
-    for event in events {
+    for (event_index, event) in events.iter().enumerate() {
         match event {
             SessionEvent::RunStarted { goal, criteria, .. } => {
                 let user_text = if criteria.is_empty() {
@@ -198,7 +198,16 @@ where
                     }
                 }
 
-                if !loaded_successfully {
+                let page_out_will_supply_archive = archive_ref.is_none()
+                    && events[event_index + 1..].iter().any(|event| matches!(
+                        event,
+                        SessionEvent::PageOut {
+                            turn: page_out_turn,
+                            archive_ref: Some(reference),
+                            ..
+                        } if page_out_turn == turn && !reference.is_empty()
+                    ));
+                if !loaded_successfully && !page_out_will_supply_archive {
                     if let Some(sum) = summary {
                         let system_text = format!("[Compressed context: turn {}]\n{}", turn, sum);
                         messages.push(Message {
@@ -207,6 +216,49 @@ where
                             tool_calls: vec![],
                             token_count: None,
                         });
+                    }
+                }
+            }
+            SessionEvent::PageOut {
+                turn,
+                summary,
+                archive_ref: Some(archive_ref),
+                ..
+            } if !archive_ref.is_empty() => {
+                let already_loaded_by_compression = events[..event_index].iter().rev().any(|event| {
+                    matches!(
+                        event,
+                        SessionEvent::Compressed {
+                            turn: compressed_turn,
+                            archive_ref: Some(reference),
+                            ..
+                        } if compressed_turn == turn && !reference.is_empty()
+                    )
+                });
+                if already_loaded_by_compression {
+                    continue;
+                }
+                match load_archive(archive_ref) {
+                    Ok(archived_messages) => {
+                        for mut message in archived_messages {
+                            if let Content::Text(text) = &mut message.content {
+                                *text = sanitize_recovery_text_bounded(text, max_bytes);
+                            }
+                            messages.push(message);
+                        }
+                    }
+                    Err(_) => {
+                        if let Some(summary) = summary {
+                            messages.push(Message {
+                                role: Role::System,
+                                content: Content::Text(format!(
+                                    "[Compressed context: turn {}]\n{}",
+                                    turn, summary
+                                )),
+                                tool_calls: vec![],
+                                token_count: None,
+                            });
+                        }
                     }
                 }
             }
@@ -302,6 +354,7 @@ mod tests {
                 summary: Some("sum".into()),
                 tier_hint: Some("durable".into()),
                 message_count: 3,
+                archive_ref: None,
             },
             SessionEvent::SignalDisposed {
                 turn: 1,
@@ -318,6 +371,39 @@ mod tests {
         });
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, Role::User);
+    }
+
+    #[test]
+    fn reconstruct_loads_archive_from_committed_page_out_event() {
+        use crate::runtime::session::SessionEvent;
+
+        let events = vec![
+            SessionEvent::Compressed {
+                turn: 2,
+                archived_seq_range: (0, 4),
+                action: Some("auto_compact".into()),
+                summary: Some("fallback".into()),
+                summary_tokens: Some(1),
+                archive_ref: None,
+                preserved_refs: vec![],
+            },
+            SessionEvent::PageOut {
+                turn: 2,
+                action: Some("auto_compact".into()),
+                summary: Some("fallback".into()),
+                tier_hint: Some("semantic".into()),
+                message_count: 1,
+                archive_ref: Some("archive://turn-2".into()),
+            },
+        ];
+
+        let messages = reconstruct_messages_with_fallback(&events, "s1", 1024, |reference| {
+            assert_eq!(reference, "archive://turn-2");
+            Ok(vec![Message::user("restored archive")])
+        });
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content.as_text(), Some("restored archive"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! MM / eviction execution impl for [`super::LoopStateMachine`].
 
-use super::{KernelObservation, LoopAction, LoopPhase, LoopStateMachine};
+use super::{KernelObservation, LoopAction, LoopPhase, LoopStateMachine, PendingHostEffect};
 use crate::context::pressure::PressureAction;
 use crate::mm::tier_hint_for_compress;
 use crate::runtime::kernel::KernelPressureAction;
@@ -46,8 +46,8 @@ impl LoopStateMachine {
         self.recovery_attempts += 1;
         if self.force_compact() {
             // Recovered headroom: re-render and retry as a normal turn (tools intact). The
-            // Compressed/PageOut observations pushed by `force_compact` ride out in this same
-            // step, so the SDK still archives the evicted messages.
+            // The compression fact and page-out effect ride out in this same step; the provider
+            // retry remains deferred until the host commits the archive.
             self.phase = LoopPhase::Reason;
             self.emit_call_llm()
         } else {
@@ -76,20 +76,25 @@ impl LoopStateMachine {
         invalidates_prefix_at: Option<usize>,
     ) {
         let rho_after = self.ctx.rho();
-        // One compaction = ONE observation (the former separate PageOut duplicated summary +
-        // the full archived set across the FFI boundary). `tier_hint` rides along only when
-        // content actually left working context.
-        let tier_hint = (!archived.is_empty())
-            .then(|| tier_hint_for_compress(action).label().to_string());
+        let kernel_action = KernelPressureAction::from(action);
         self.observations.push(KernelObservation::Compressed {
             turn: self.turn,
-            action: KernelPressureAction::from(action),
+            action: kernel_action,
             rho_after,
-            summary,
-            archived,
+            summary: summary.clone(),
+            archived_count: archived.len() as u32,
             invalidates_prefix_at,
-            tier_hint,
         });
+        if !archived.is_empty() {
+            self.pending_host_effects
+                .push_back(PendingHostEffect::ArchivePageOut {
+                    turn: self.turn,
+                    action: kernel_action,
+                    summary,
+                    archived,
+                    tier: tier_hint_for_compress(action).label().to_string(),
+                });
+        }
         // K1: surface any boundary knowledge sweep that ran inside this compaction (an
         // in-place compaction can still have swept knowledge).
         self.emit_knowledge_sweep_observations();

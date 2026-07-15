@@ -66,6 +66,8 @@ enum PendingEffectKind {
     Preempt,
     MemoryPersist,
     MemoryQuery,
+    LargeResultSpool,
+    PageOutArchive,
 }
 
 #[derive(Clone, Copy)]
@@ -379,6 +381,22 @@ impl KernelRuntime {
                 );
             }
         }
+        if let KernelInputEvent::LargeResultSpoolResult {
+            effect_id,
+            spool_ref,
+            error,
+        } = &input.event
+        {
+            if error.is_none() && spool_ref.as_deref().map_or(true, str::is_empty) {
+                return self.fault_step(
+                    operation_id,
+                    event_id,
+                    KernelFaultCode::UnexpectedEffectResult,
+                    "successful spool result requires a non-empty spool_ref".to_string(),
+                    Some(effect_id.clone()),
+                );
+            }
+        }
 
         if let Some((effect_id, expected_kind)) = result_effect(&input.event) {
             match self.pending_effects.get(effect_id) {
@@ -677,7 +695,8 @@ impl KernelRuntime {
             }
             KernelInputEvent::ForceCompact => {
                 self.sm.force_compact();
-                return identity.empty(self.sm.take_observations());
+                self.sm
+                    .externalize_pending_host_effect(LoopAction::AwaitingResume)
             }
             KernelInputEvent::UpdateTask { update } => {
                 self.sm.ctx.update_task(update);
@@ -778,6 +797,16 @@ impl KernelRuntime {
                 }
                 return identity.empty(self.sm.take_observations());
             }
+            KernelInputEvent::LargeResultSpoolResult {
+                effect_id: _,
+                spool_ref,
+                error,
+            } => self.sm.resolve_large_result_spool(spool_ref, error),
+            KernelInputEvent::PageOutArchiveResult {
+                effect_id: _,
+                archive_ref,
+                error,
+            } => self.sm.resolve_page_out_archive(archive_ref, error),
             KernelInputEvent::SetSchedulerBudget { max_wall_ms } => {
                 self.sm.set_wall_budget(max_wall_ms);
                 return identity.empty(self.sm.take_observations());
@@ -1041,6 +1070,7 @@ impl KernelRuntime {
             }
             KernelInputEvent::Timeout => self.sm.feed(LoopEvent::Timeout),
         };
+        let action = self.sm.externalize_pending_host_effect(action);
         if matches!(action, LoopAction::AwaitingResume) {
             return identity.empty(self.sm.take_observations());
         }
@@ -1094,7 +1124,9 @@ impl KernelRuntime {
                 )),
             },
             KernelInputEvent::MemoryPersistResult { .. }
-            | KernelInputEvent::MemoryQueryResult { .. } => match self.lifecycle {
+            | KernelInputEvent::MemoryQueryResult { .. }
+            | KernelInputEvent::LargeResultSpoolResult { .. }
+            | KernelInputEvent::PageOutArchiveResult { .. } => match self.lifecycle {
                 KernelLifecycle::Configured | KernelLifecycle::Running => {
                     Ok(LifecycleTransition::Stay)
                 }
@@ -1231,6 +1263,12 @@ fn result_effect(event: &KernelInputEvent) -> Option<(&str, PendingEffectKind)> 
         KernelInputEvent::MemoryQueryResult { effect_id, .. } => {
             Some((effect_id, PendingEffectKind::MemoryQuery))
         }
+        KernelInputEvent::LargeResultSpoolResult { effect_id, .. } => {
+            Some((effect_id, PendingEffectKind::LargeResultSpool))
+        }
+        KernelInputEvent::PageOutArchiveResult { effect_id, .. } => {
+            Some((effect_id, PendingEffectKind::PageOutArchive))
+        }
         _ => None,
     }
 }
@@ -1245,6 +1283,8 @@ fn pending_effect_kind(effect: &KernelEffect) -> Option<PendingEffectKind> {
         KernelEffect::PreemptSubAgents { .. } => Some(PendingEffectKind::Preempt),
         KernelEffect::PersistMemory { .. } => Some(PendingEffectKind::MemoryPersist),
         KernelEffect::QueryMemory { .. } => Some(PendingEffectKind::MemoryQuery),
+        KernelEffect::SpoolLargeResult { .. } => Some(PendingEffectKind::LargeResultSpool),
+        KernelEffect::ArchivePageOut { .. } => Some(PendingEffectKind::PageOutArchive),
         KernelEffect::Done { .. } => None,
     }
 }
@@ -1269,6 +1309,9 @@ fn validate_run_config(config: &RunConfig) -> Result<(), String> {
         }
         if reliability.output_recovery_attempts.is_some_and(|value| value > 16) {
             return Err("output_recovery_attempts must be at most 16".to_string());
+        }
+        if reliability.host_effect_retry_attempts.is_some_and(|value| value > 16) {
+            return Err("host_effect_retry_attempts must be at most 16".to_string());
         }
         let threshold = reliability
             .spool_threshold_bytes

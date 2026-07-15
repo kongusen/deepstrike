@@ -565,11 +565,9 @@
         }
         assert!(sm.force_compact());
         let obs = sm.take_observations();
-        // One compaction = one observation: archived content + tier hint ride on Compressed.
-        assert!(obs.iter().any(|o| matches!(
-            o,
-            KernelObservation::Compressed { archived, tier_hint: Some(_), .. } if !archived.is_empty()
-        )));
+        assert!(obs.iter().any(|o| matches!(o, KernelObservation::Compressed { .. })));
+        let action = sm.externalize_pending_host_effect(LoopAction::AwaitingResume);
+        assert!(matches!(action, LoopAction::ArchivePageOut { archived, tier, .. } if !archived.is_empty() && tier == "semantic"));
     }
 
     #[test]
@@ -776,12 +774,11 @@
             sm.ctx.push_history(Message::user(format!("filler {i}")), 50);
         }
         assert!(sm.force_compact()); // force_compact runs an AutoCompact pass
-        let obs = sm.take_observations();
-        let semantic_pageout = obs.iter().any(|o| matches!(
-            o,
-            KernelObservation::Compressed { tier_hint: Some(tier), archived, action: KernelPressureAction::AutoCompact, .. }
+        let semantic_pageout = matches!(
+            sm.externalize_pending_host_effect(LoopAction::AwaitingResume),
+            LoopAction::ArchivePageOut { tier, archived, action: KernelPressureAction::AutoCompact, .. }
                 if tier == "semantic" && !archived.is_empty()
-        ));
+        );
         assert!(
             semantic_pageout,
             "AutoCompact must hint the semantic tier for the archived batch (SDK LLM summary)"
@@ -1650,13 +1647,13 @@
     // ---- Layer 1: large tool result spool ----------------------------------
 
     #[test]
-    fn large_tool_result_is_spooled_with_preview_and_observation() {
+    fn large_tool_result_emits_spool_effect_and_keeps_preview() {
         let mut sm = sm();
         sm.start(RuntimeTask::new("task"));
         sm.take_observations();
 
         let huge = "Z".repeat(60 * 1024); // > 50 KiB default threshold
-        sm.feed(LoopEvent::ToolResults {
+        let continuation = sm.feed(LoopEvent::ToolResults {
             results: vec![ToolResult {
                 call_id: compact_str::CompactString::new("big"),
                 output: Content::Text(huge.clone()),
@@ -1667,13 +1664,16 @@
             }],
         });
 
-        // Kernel emitted the spool signal for the SDK to persist.
+        let action = sm.externalize_pending_host_effect(continuation);
+        assert!(matches!(
+            action,
+            LoopAction::SpoolLargeResult { call_id, output, original_size, .. }
+                if call_id == "big" && output == huge && original_size == (60 * 1024)
+        ));
+
+        // No success fact exists until the host returns the correlated result.
         let obs = sm.take_observations();
-        assert!(obs.iter().any(|o| matches!(
-            o,
-            KernelObservation::LargeResultSpooled { call_id, original_size, spool_ref: None, .. }
-                if call_id == "big" && *original_size == (60 * 1024)
-        )));
+        assert!(!obs.iter().any(|o| matches!(o, KernelObservation::LargeResultSpooled { .. })));
 
         // Context holds only the preview, not the full 60 KiB.
         let stored: usize = sm

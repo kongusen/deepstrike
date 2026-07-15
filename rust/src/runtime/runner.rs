@@ -102,6 +102,9 @@ pub struct RuntimeOptions {
     pub execution_plane: Option<Box<dyn ExecutionPlane>>,
     pub session_log: Option<Arc<dyn SessionLog>>,
     pub compression_store: Option<Arc<dyn ArchiveStore>>,
+    /// Directory used by the built-in large-result spool effect executor.
+    /// Defaults to `.spool` when omitted.
+    pub spool_dir: Option<std::path::PathBuf>,
     /// When set, `execute` reuses this session id.
     pub session_id: Option<String>,
     pub max_tokens: u32,
@@ -742,8 +745,8 @@ impl RuntimeRunner {
             };
 
             let mut pending_observations = Vec::new();
-            let mut pending_spool_outputs: std::collections::HashMap<String, (String, String)> =
-                std::collections::HashMap::new();
+            let mut pending_page_out_starts = std::collections::VecDeque::new();
+            let mut active_page_out_start = None;
 
             if let Some(tokenizer_name) = &self.opts.tokenizer {
                 kernel_apply(
@@ -1039,7 +1042,7 @@ impl RuntimeRunner {
                         &session_id,
                         &kernel,
                         &mut pending_observations,
-                        &mut pending_spool_outputs,
+                        &mut pending_page_out_starts,
                         next_archive_start,
                     )
                     .await;
@@ -1420,6 +1423,52 @@ impl RuntimeRunner {
                             },
                         );
                     }
+                    KernelEffect::SpoolLargeResult { call_id, output, .. } => {
+                        let effect_id = action.effect_id.clone();
+                        let spool_dir = self.opts.spool_dir.as_deref().unwrap_or_else(|| std::path::Path::new(".spool"));
+                        let (spool_ref, error) = match crate::runtime::large_result_spool::persist_output(spool_dir, call_id, output) {
+                            Ok(path) => (Some(path), None),
+                            Err(error) => (None, Some(error.to_string())),
+                        };
+                        action = kernel_action(
+                            &mut kernel,
+                            &mut pending_observations,
+                            KernelInputEvent::LargeResultSpoolResult { effect_id, spool_ref, error },
+                        );
+                    }
+                    KernelEffect::ArchivePageOut { archived, tier, action: pressure_action, .. } => {
+                        let effect_id = action.effect_id.clone();
+                        let archived = archived.clone();
+                        let tier = tier.clone();
+                        let action_name = action_str_of(*pressure_action);
+                        let archive_start = *active_page_out_start.get_or_insert_with(|| {
+                            pending_page_out_starts.pop_front().unwrap_or(next_archive_start)
+                        });
+                        let archive_result = if let Some(store) = &self.opts.compression_store {
+                            store.write(&session_id, archive_start, &archived)
+                                .map(|path| (!path.is_empty()).then_some(path))
+                        } else {
+                            Ok(None)
+                        };
+                        let (archive_ref, error) = match archive_result {
+                            Ok(archive_ref) => {
+                                self.local_page_out_cache.lock().unwrap().extend(archived.clone());
+                                if tier == "semantic" {
+                                    self.archive_semantic_page_out(archived, Some(action_name)).await;
+                                }
+                                (archive_ref, None)
+                            }
+                            Err(error) => (None, Some(error.to_string())),
+                        };
+                        if error.is_none() {
+                            active_page_out_start = None;
+                        }
+                        action = kernel_action(
+                            &mut kernel,
+                            &mut pending_observations,
+                            KernelInputEvent::PageOutArchiveResult { effect_id, archive_ref, error },
+                        );
+                    }
                     KernelEffect::ExecuteTool { calls } => {
                         let tool_effect_id = action.effect_id.clone();
                         let tool_calls = calls.clone();
@@ -1589,24 +1638,6 @@ impl RuntimeRunner {
                         )
                         .await;
 
-                        for call in &normal_calls {
-                            if let Some(result) = tool_results
-                                .iter()
-                                .find(|r| r.call_id.as_str() == call.id.as_str())
-                            {
-                                let output = match &result.output {
-                                    deepstrike_core::types::message::Content::Text(s) => s.to_string(),
-                                    deepstrike_core::types::message::Content::Parts(parts) => {
-                                        serde_json::to_string(parts).unwrap_or_default()
-                                    }
-                                };
-                                pending_spool_outputs.insert(
-                                    call.id.to_string(),
-                                    (call.name.to_string(), output),
-                                );
-                            }
-                        }
-
                         // P1-B B3: a successfully-resolved `skill` call activates that skill for the
                         // next turn (fed before ToolResults, which computes the next action).
                         for call in &tool_calls {
@@ -1660,7 +1691,7 @@ impl RuntimeRunner {
                                     &session_id,
                                     &kernel,
                                     &mut pending_observations,
-                                    &mut pending_spool_outputs,
+                                    &mut pending_page_out_starts,
                                     next_archive_start,
                                 )
                                 .await;
@@ -1685,7 +1716,7 @@ impl RuntimeRunner {
                                     &session_id,
                                     &kernel,
                                     &mut pending_observations,
-                                    &mut pending_spool_outputs,
+                                    &mut pending_page_out_starts,
                                     next_archive_start,
                                 )
                                 .await;
@@ -1695,7 +1726,7 @@ impl RuntimeRunner {
                                     &session_id,
                                     &kernel,
                                     &mut pending_observations,
-                                    &mut pending_spool_outputs,
+                                    &mut pending_page_out_starts,
                                     next_archive_start,
                                 )
                                 .await;
@@ -1726,7 +1757,7 @@ impl RuntimeRunner {
                                 &session_id,
                                 &kernel,
                                 &mut pending_observations,
-                                &mut pending_spool_outputs,
+                                &mut pending_page_out_starts,
                                 next_archive_start,
                             )
                             .await;
@@ -1777,7 +1808,7 @@ impl RuntimeRunner {
                     &session_id,
                     &kernel,
                     &mut pending_observations,
-                    &mut pending_spool_outputs,
+                    &mut pending_page_out_starts,
                     next_archive_start,
                 )
                 .await;
@@ -1844,7 +1875,7 @@ impl RuntimeRunner {
         session_id: &str,
         kernel_mutex: &std::sync::Mutex<KernelRuntime>,
         observations: &mut Vec<KernelObservation>,
-        pending_spool_outputs: &mut std::collections::HashMap<String, (String, String)>,
+        pending_page_out_starts: &mut std::collections::VecDeque<u64>,
         mut next_archive_start: u64,
     ) -> u64 {
         let drained = std::mem::take(observations);
@@ -1869,13 +1900,12 @@ impl RuntimeRunner {
         for (index, obs) in drained.into_iter().enumerate() {
             match obs {
                 KernelObservation::Compressed {
-                    turn: obs_turn,
+                    turn: _,
                     action,
                     rho_after: _,
                     summary,
-                    archived,
+                    archived_count,
                     invalidates_prefix_at: _,
-                    tier_hint,
                 } => {
                     let Some(log) = &self.opts.session_log else {
                         continue;
@@ -1885,18 +1915,8 @@ impl RuntimeRunner {
                         continue;
                     }
                     let end = latest;
-
-                    let mut archive_ref = None;
-                    if let Some(store) = &self.opts.compression_store {
-                        if !archived.is_empty() {
-                            if let Ok(path_ref) =
-                                store.write(session_id, next_archive_start, &archived)
-                            {
-                                if !path_ref.is_empty() {
-                                    archive_ref = Some(path_ref);
-                                }
-                            }
-                        }
+                    if archived_count > 0 {
+                        pending_page_out_starts.push_back(next_archive_start);
                     }
 
                     let summary_tokens = summary_tokens_by_index.get(index).copied().flatten();
@@ -1911,7 +1931,7 @@ impl RuntimeRunner {
                                 action: Some(action_str),
                                 summary: summary.clone(),
                                 summary_tokens,
-                                archive_ref,
+                                archive_ref: None,
                                 preserved_refs: preserved_refs.clone(),
                             },
                         )
@@ -1920,35 +1940,21 @@ impl RuntimeRunner {
                         next_archive_start = compressed_seq + 1;
                     }
 
-                    // One compaction = one kernel observation: the page_out session record,
-                    // the local page-out cache, and the semantic-archive branch are DERIVED
-                    // from Compressed.tier_hint (the retired PageOut observation used to
-                    // duplicate summary + the full archived set across the FFI boundary).
-                    if let Some(tier) = tier_hint {
-                        if !archived.is_empty() {
-                            self.local_page_out_cache
-                                .lock()
-                                .unwrap()
-                                .extend(archived.clone());
-                            let action_str2 = action_str_of(action);
-                            self.log(
-                                session_id,
-                                SessionEvent::PageOut {
-                                    turn: obs_turn,
-                                    action: Some(action_str2.clone()),
-                                    summary,
-                                    tier_hint: Some(tier.clone()),
-                                    message_count: archived.len() as u32,
-                                },
-                            )
-                            .await;
-                            if tier == "semantic" {
-                                self.archive_semantic_page_out(archived, Some(action_str2))
-                                    .await;
-                            }
-                        }
-                    }
                 }
+                KernelObservation::PageOutArchived { turn, action, summary, tier, message_count, archive_ref } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::PageOut {
+                            turn,
+                            action: Some(action_str_of(action)),
+                            summary,
+                            tier_hint: Some(tier),
+                            message_count,
+                            archive_ref,
+                        },
+                    ).await;
+                }
+                KernelObservation::PageOutArchiveFailed { .. } => {}
                 KernelObservation::Rollbacked {
                     turn,
                     checkpoint_history_len,
@@ -2154,26 +2160,14 @@ impl RuntimeRunner {
                     tool,
                     original_size,
                     preview_size,
-                    spool_ref: _,
+                    spool_ref,
                 } => {
-                    let mut spool_ref = None;
-                    let mut tool_name = tool;
-                    if let Some((stored_tool, output)) = pending_spool_outputs.remove(&call_id) {
-                        if tool_name.is_empty() {
-                            tool_name = stored_tool;
-                        }
-                        if let Ok(path) =
-                            crate::runtime::large_result_spool::persist_output(&call_id, &output)
-                        {
-                            spool_ref = Some(path);
-                        }
-                    }
                     self.log(
                         session_id,
                         SessionEvent::LargeResultSpooled {
                             turn,
                             call_id,
-                            tool: tool_name,
+                            tool,
                             original_size,
                             preview_size,
                             spool_ref,
@@ -2181,6 +2175,7 @@ impl RuntimeRunner {
                     )
                     .await;
                 }
+                KernelObservation::LargeResultSpoolFailed { .. } => {}
             }
         }
         next_archive_start

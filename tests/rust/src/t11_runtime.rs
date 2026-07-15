@@ -132,6 +132,7 @@ fn default_runtime_opts(
         execution_plane: Some(Box::new(plane)),
         session_log: Some(session_log),
         compression_store: None,
+        spool_dir: None,
         session_id: None,
         max_tokens: 2048,
         max_turns: Some(4),

@@ -87,6 +87,8 @@ pub enum SessionEvent {
         tier_hint: Option<String>,
         #[serde(default)]
         message_count: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        archive_ref: Option<String>,
     },
     /// Long-term entries injected into knowledge partition (SDK `page_in`).
     PageIn {
