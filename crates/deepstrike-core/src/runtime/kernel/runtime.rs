@@ -64,6 +64,8 @@ enum PendingEffectKind {
     Approval,
     WorkflowSpawn,
     Preempt,
+    MemoryPersist,
+    MemoryQuery,
 }
 
 #[derive(Clone, Copy)]
@@ -111,6 +113,8 @@ pub struct KernelRuntime {
     recorded_events: ReplayWindow,
     pending_effects: HashMap<String, PendingEffectKind>,
     completed_effects: ReplayWindow,
+    pending_memory_write: Option<crate::mm::memory::MemoryWriteRequest>,
+    pending_memory_query: Option<(crate::mm::memory::MemoryQuery, usize)>,
 }
 
 impl KernelRuntime {
@@ -123,6 +127,8 @@ impl KernelRuntime {
             recorded_events: ReplayWindow::new(EVENT_REPLAY_WINDOW_CAPACITY),
             pending_effects: HashMap::new(),
             completed_effects: ReplayWindow::new(COMPLETED_EFFECT_REPLAY_WINDOW_CAPACITY),
+            pending_memory_write: None,
+            pending_memory_query: None,
         }
     }
 
@@ -711,6 +717,67 @@ impl KernelRuntime {
                 Some(error) => self.sm.retry_preempt(error),
                 None => self.sm.resolve_preempt(),
             },
+            KernelInputEvent::MemoryPersistResult {
+                effect_id: _,
+                error,
+            } => {
+                let memory = self
+                    .pending_memory_write
+                    .take()
+                    .expect("validated memory result requires pending write");
+                let turn = self.sm.turn;
+                match error {
+                    Some(error) => self.sm.observations.push(
+                        KernelObservation::MemoryWriteFailed {
+                            turn,
+                            memory_id: memory.metadata.name,
+                            error,
+                        },
+                    ),
+                    None => self.sm.observations.push(KernelObservation::MemoryWritten {
+                        turn,
+                        memory_id: memory.metadata.name,
+                        memory_kind: memory
+                            .metadata
+                            .kind
+                            .map(|kind| kind.label())
+                            .unwrap_or("unclassified")
+                            .to_string(),
+                        size_bytes: memory.content.len() as u32,
+                    }),
+                }
+                return identity.empty(self.sm.take_observations());
+            }
+            KernelInputEvent::MemoryQueryResult {
+                effect_id: _,
+                entries,
+                error,
+            } => {
+                let (query, requested_k) = self
+                    .pending_memory_query
+                    .take()
+                    .expect("validated memory result requires pending query");
+                let turn = self.sm.turn;
+                match error {
+                    Some(error) => self.sm.observations.push(
+                        KernelObservation::MemoryQueryFailed {
+                            turn,
+                            query_context: query.current_context,
+                            error,
+                        },
+                    ),
+                    None => {
+                        self.sm.apply_page_in(&entries);
+                        self.sm.observations.push(KernelObservation::MemoryQueried {
+                            turn,
+                            query_context: query.current_context,
+                            requested_k,
+                            requires_async_response: false,
+                        });
+                    }
+                }
+                return identity.empty(self.sm.take_observations());
+            }
             KernelInputEvent::SetSchedulerBudget { max_wall_ms } => {
                 self.sm.set_wall_budget(max_wall_ms);
                 return identity.empty(self.sm.take_observations());
@@ -927,20 +994,8 @@ impl KernelRuntime {
                 };
                 match validation_result {
                     Ok(()) => {
-                        // Emit observation for SDK to perform I/O
-                        self.sm.observations.push(KernelObservation::MemoryWritten {
-                            turn,
-                            memory_id: memory.metadata.name.clone(),
-                            // Kind is an optional caller-supplied label; the kernel does not
-                            // guess taxonomy from metadata (P13: heuristic classifier deleted).
-                            memory_kind: memory
-                                .metadata
-                                .kind
-                                .map(|k| k.label())
-                                .unwrap_or("unclassified")
-                                .to_string(),
-                            size_bytes: memory.content.len() as u32,
-                        });
+                        self.pending_memory_write = Some(memory.clone());
+                        LoopAction::PersistMemory { memory }
                     }
                     Err(err) => {
                         // Emit validation error observation
@@ -969,26 +1024,20 @@ impl KernelRuntime {
                                 memory_id: memory.metadata.name.clone(),
                                 error: error_msg,
                             });
+                        return identity.empty(self.sm.take_observations());
                     }
                 }
-                return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::QueryMemory { query } => {
                 // Phase 7: Query memory for context.
                 // Kernel emits observation; SDK responds asynchronously.
-                let turn = self.sm.turn;
                 // An installed policy caps retrieval breadth: requested_k = min(query.top_k, policy).
                 let requested_k = match self.sm.memory_policy() {
                     Some(p) => p.clamp_top_k(query.top_k),
                     None => query.top_k,
                 };
-                self.sm.observations.push(KernelObservation::MemoryQueried {
-                    turn,
-                    query_context: query.current_context.clone(),
-                    requested_k,
-                    requires_async_response: true,
-                });
-                return identity.empty(self.sm.take_observations());
+                self.pending_memory_query = Some((query.clone(), requested_k));
+                LoopAction::QueryMemory { query, requested_k }
             }
             KernelInputEvent::Timeout => self.sm.feed(LoopEvent::Timeout),
         };
@@ -1041,6 +1090,16 @@ impl KernelRuntime {
                 KernelLifecycle::Suspended => Ok(LifecycleTransition::Resume),
                 _ => Err(format!(
                     "effect result is not valid in lifecycle {:?}",
+                    self.lifecycle
+                )),
+            },
+            KernelInputEvent::MemoryPersistResult { .. }
+            | KernelInputEvent::MemoryQueryResult { .. } => match self.lifecycle {
+                KernelLifecycle::Configured | KernelLifecycle::Running => {
+                    Ok(LifecycleTransition::Stay)
+                }
+                _ => Err(format!(
+                    "memory effect result is not valid in lifecycle {:?}",
                     self.lifecycle
                 )),
             },
@@ -1166,6 +1225,12 @@ fn result_effect(event: &KernelInputEvent) -> Option<(&str, PendingEffectKind)> 
         KernelInputEvent::PreemptResult { effect_id, .. } => {
             Some((effect_id, PendingEffectKind::Preempt))
         }
+        KernelInputEvent::MemoryPersistResult { effect_id, .. } => {
+            Some((effect_id, PendingEffectKind::MemoryPersist))
+        }
+        KernelInputEvent::MemoryQueryResult { effect_id, .. } => {
+            Some((effect_id, PendingEffectKind::MemoryQuery))
+        }
         _ => None,
     }
 }
@@ -1178,6 +1243,8 @@ fn pending_effect_kind(effect: &KernelEffect) -> Option<PendingEffectKind> {
         KernelEffect::RequestApproval { .. } => Some(PendingEffectKind::Approval),
         KernelEffect::SpawnWorkflow { .. } => Some(PendingEffectKind::WorkflowSpawn),
         KernelEffect::PreemptSubAgents { .. } => Some(PendingEffectKind::Preempt),
+        KernelEffect::PersistMemory { .. } => Some(PendingEffectKind::MemoryPersist),
+        KernelEffect::QueryMemory { .. } => Some(PendingEffectKind::MemoryQuery),
         KernelEffect::Done { .. } => None,
     }
 }

@@ -427,6 +427,18 @@ pub enum KernelInputEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    MemoryPersistResult {
+        effect_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    MemoryQueryResult {
+        effect_id: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        entries: Vec<crate::mm::PageInEntry>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// K2: set the knowledge-budget ratio at runtime (granular sibling of
     /// `RunConfig::knowledge_budget_ratio`). `0.0` disables the cap.
     SetKnowledgeBudget {
@@ -762,6 +774,13 @@ pub enum KernelEffect {
         agent_ids: Vec<String>,
         reason: String,
     },
+    PersistMemory {
+        memory: crate::mm::memory::MemoryWriteRequest,
+    },
+    QueryMemory {
+        query: crate::mm::memory::MemoryQuery,
+        requested_k: usize,
+    },
     EvaluateMilestone {
         phase_id: String,
         criteria: Vec<String>,
@@ -787,6 +806,10 @@ impl From<LoopAction> for KernelEffect {
             LoopAction::SpawnWorkflow { nodes, budget } => Self::SpawnWorkflow { nodes, budget },
             LoopAction::PreemptSubAgents { agent_ids, reason } => {
                 Self::PreemptSubAgents { agent_ids, reason }
+            }
+            LoopAction::PersistMemory { memory } => Self::PersistMemory { memory },
+            LoopAction::QueryMemory { query, requested_k } => {
+                Self::QueryMemory { query, requested_k }
             }
             LoopAction::EvaluateMilestone {
                 phase_id,
@@ -1047,12 +1070,22 @@ pub enum KernelObservation {
         memory_id: String,
         error: String,
     },
+    MemoryWriteFailed {
+        turn: u32,
+        memory_id: String,
+        error: String,
+    },
     /// Memory query request (Phase 7).
     MemoryQueried {
         turn: u32,
         query_context: String,
         requested_k: usize,
         requires_async_response: bool,
+    },
+    MemoryQueryFailed {
+        turn: u32,
+        query_context: String,
+        error: String,
     },
     /// Large tool result spooled (Layer 1).
     LargeResultSpooled {

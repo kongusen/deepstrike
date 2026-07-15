@@ -106,6 +106,13 @@ pub enum LoopAction {
         agent_ids: Vec<String>,
         reason: String,
     },
+    PersistMemory {
+        memory: crate::mm::memory::MemoryWriteRequest,
+    },
+    QueryMemory {
+        query: crate::mm::memory::MemoryQuery,
+        requested_k: usize,
+    },
     Done {
         result: LoopResult,
     },

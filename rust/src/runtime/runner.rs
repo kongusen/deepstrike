@@ -243,13 +243,20 @@ impl RuntimeRunner {
             return Ok(());
         };
 
-        let observations = self.apply_memory_syscall(KernelInputEvent::WriteMemory {
+        let (kernel, requested) = self.begin_memory_syscall(KernelInputEvent::WriteMemory {
             memory: memory.clone(),
         });
-        if observations
-            .iter()
-            .any(|obs| matches!(obs, KernelObservation::MemoryWritten { .. }))
-        {
+        let persist_effect_id = requested.actions.iter().find_map(|action| match &action.effect {
+            KernelEffect::PersistMemory { .. } => Some(action.effect_id.clone()),
+            _ => None,
+        });
+        let Some(effect_id) = persist_effect_id else {
+            self.append_memory_syscall_observations(session_id, requested.observations)
+                .await;
+            return Ok(());
+        };
+
+        let io_result: Result<()> = async {
             let existing = store.load_memories(agent_id).await?;
             // Curator-style jaccard dedup at the single write path: a near-duplicate of an
             // existing entry is dropped (the observation is still logged for audit).
@@ -257,8 +264,6 @@ impl RuntimeRunner {
                 .iter()
                 .any(|e| jaccard_similarity(&e.text, &memory.content) >= 0.9)
             {
-                self.append_memory_syscall_observations(session_id, observations)
-                    .await;
                 return Ok(());
             }
             let mut metadata =
@@ -282,10 +287,18 @@ impl RuntimeRunner {
                 },
             };
             store.commit(agent_id, result, &existing).await?;
+            Ok(())
         }
-        self.append_memory_syscall_observations(session_id, observations)
+        .await;
+        let completed = kernel.lock().unwrap().step(KernelInput::new(
+            KernelInputEvent::MemoryPersistResult {
+                effect_id,
+                error: io_result.as_ref().err().map(ToString::to_string),
+            },
+        ));
+        self.append_memory_syscall_observations(session_id, completed.observations)
             .await;
-        Ok(())
+        io_result
     }
 
     pub async fn query_memory(
@@ -301,9 +314,18 @@ impl RuntimeRunner {
             return Ok(Vec::new());
         };
 
-        let observations = self.apply_memory_syscall(KernelInputEvent::QueryMemory {
+        let (kernel, requested) = self.begin_memory_syscall(KernelInputEvent::QueryMemory {
             query: query.clone(),
         });
+        let query_effect_id = requested.actions.iter().find_map(|action| match &action.effect {
+            KernelEffect::QueryMemory { .. } => Some(action.effect_id.clone()),
+            _ => None,
+        });
+        let Some(effect_id) = query_effect_id else {
+            self.append_memory_syscall_observations(session_id, requested.observations)
+                .await;
+            return Ok(Vec::new());
+        };
 
         let all_memories = store.load_memories(agent_id).await?;
         let mut retrieval = select_memories(&query, &all_memories);
@@ -343,7 +365,28 @@ impl RuntimeRunner {
             hits
         };
 
-        self.append_memory_syscall_observations(session_id, observations)
+        let entries = hits
+            .iter()
+            .map(|entry| deepstrike_core::mm::PageInEntry {
+                content: entry.text.clone(),
+                tokens: None,
+                source: Some("dream_store".to_string()),
+                key: entry
+                    .metadata
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                pinned: false,
+            })
+            .collect();
+        let completed = kernel.lock().unwrap().step(KernelInput::new(
+            KernelInputEvent::MemoryQueryResult {
+                effect_id,
+                entries,
+                error: None,
+            },
+        ));
+        self.append_memory_syscall_observations(session_id, completed.observations)
             .await;
         self.log_memory_retrieval_result(session_id, retrieval)
             .await;
@@ -367,11 +410,16 @@ impl RuntimeRunner {
         .await;
     }
 
-    fn apply_memory_syscall(&self, event: KernelInputEvent) -> Vec<KernelObservation> {
+    fn begin_memory_syscall(
+        &self,
+        event: KernelInputEvent,
+    ) -> (Arc<std::sync::Mutex<KernelRuntime>>, KernelStep) {
         if let Some(active) = self.active_kernel.lock().unwrap().clone() {
-            let mut kernel = active.lock().unwrap();
-            let step = kernel.step(KernelInput::new(event));
-            return step.observations;
+            let step = {
+                let mut kernel = active.lock().unwrap();
+                kernel.step(KernelInput::new(event))
+            };
+            return (active, step);
         }
 
         let mut kernel = KernelRuntime::new(KernelBudget {
@@ -411,8 +459,9 @@ impl RuntimeRunner {
         if let Some(policy) = self.opts.memory_policy.clone() {
             kernel.step(KernelInput::new(memory_policy_event(policy)));
         }
-        let step = kernel.step(KernelInput::new(event));
-        step.observations
+        let kernel = Arc::new(std::sync::Mutex::new(kernel));
+        let step = kernel.lock().unwrap().step(KernelInput::new(event));
+        (kernel, step)
     }
 
     async fn append_memory_syscall_observations(
@@ -1342,6 +1391,35 @@ impl RuntimeRunner {
                             },
                         );
                     }
+                    KernelEffect::PersistMemory { .. } => {
+                        let effect_id = action.effect_id.clone();
+                        action = kernel_action(
+                            &mut kernel,
+                            &mut pending_observations,
+                            KernelInputEvent::MemoryPersistResult {
+                                effect_id,
+                                error: Some(
+                                    "memory effects must be executed by RuntimeRunner::write_memory"
+                                        .to_string(),
+                                ),
+                            },
+                        );
+                    }
+                    KernelEffect::QueryMemory { .. } => {
+                        let effect_id = action.effect_id.clone();
+                        action = kernel_action(
+                            &mut kernel,
+                            &mut pending_observations,
+                            KernelInputEvent::MemoryQueryResult {
+                                effect_id,
+                                entries: Vec::new(),
+                                error: Some(
+                                    "memory effects must be executed by RuntimeRunner::query_memory"
+                                        .to_string(),
+                                ),
+                            },
+                        );
+                    }
                     KernelEffect::ExecuteTool { calls } => {
                         let tool_effect_id = action.effect_id.clone();
                         let tool_calls = calls.clone();
@@ -2001,6 +2079,8 @@ impl RuntimeRunner {
                 KernelObservation::WorkflowCompleted { .. } => {}
                 KernelObservation::AgentPreempted { .. } => {}
                 KernelObservation::AgentPreemptFailed { .. } => {}
+                KernelObservation::MemoryWriteFailed { .. } => {}
+                KernelObservation::MemoryQueryFailed { .. } => {}
                 // Governance flagged a tool call for user approval. The kernel does
                 // not block it; the SDK-side human-approval workflow is a follow-up.
                 KernelObservation::ToolGated { .. } => {}

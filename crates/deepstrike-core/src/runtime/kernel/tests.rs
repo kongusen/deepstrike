@@ -1276,7 +1276,7 @@ fn agent_process_changed_locks_multiword_wire_form() {
 
 fn write_memory(runtime: &mut KernelRuntime, name: &str, content: &str) -> KernelStep {
     use crate::mm::memory::{MemoryMetadata, MemoryWriteRequest};
-    runtime.step(KernelInput::new(KernelInputEvent::WriteMemory {
+    let requested = runtime.step(KernelInput::new(KernelInputEvent::WriteMemory {
         memory: MemoryWriteRequest {
             metadata: MemoryMetadata {
                 name: name.to_string(),
@@ -1285,7 +1285,23 @@ fn write_memory(runtime: &mut KernelRuntime, name: &str, content: &str) -> Kerne
             },
             content: content.to_string(),
         },
-    }))
+    }));
+    if let Some(KernelAction {
+        effect_id,
+        effect: KernelEffect::PersistMemory { .. },
+        ..
+    }) = requested.actions.first()
+    {
+        assert!(!requested.observations.iter().any(|observation| matches!(
+            observation,
+            KernelObservation::MemoryWritten { .. }
+        )));
+        return runtime.step(KernelInput::new(KernelInputEvent::MemoryPersistResult {
+            effect_id: effect_id.clone(),
+            error: None,
+        }));
+    }
+    requested
 }
 
 #[test]
@@ -1368,11 +1384,28 @@ fn memory_policy_clamps_retrieval_top_k() {
             ..Default::default()
         },
     }));
-    let requested = step.observations.iter().find_map(|o| match o {
-        KernelObservation::MemoryQueried { requested_k, .. } => Some(*requested_k),
-        _ => None,
-    });
-    assert_eq!(requested, Some(3));
+    let (effect_id, requested_k) = match &step.actions[0] {
+        KernelAction {
+            effect_id,
+            effect: KernelEffect::QueryMemory { requested_k, .. },
+            ..
+        } => (effect_id.clone(), *requested_k),
+        other => panic!("expected query_memory action, got {other:?}"),
+    };
+    assert_eq!(requested_k, 3);
+    assert!(!step.observations.iter().any(|o| matches!(
+        o,
+        KernelObservation::MemoryQueried { .. }
+    )));
+    let completed = runtime.step(KernelInput::new(KernelInputEvent::MemoryQueryResult {
+        effect_id,
+        entries: Vec::new(),
+        error: None,
+    }));
+    assert!(completed.observations.iter().any(|o| matches!(
+        o,
+        KernelObservation::MemoryQueried { requested_k: 3, .. }
+    )));
 }
 
 #[test]
@@ -1385,11 +1418,13 @@ fn default_runtime_uses_requested_top_k_verbatim() {
             ..Default::default()
         },
     }));
-    let requested = step.observations.iter().find_map(|o| match o {
-        KernelObservation::MemoryQueried { requested_k, .. } => Some(*requested_k),
-        _ => None,
-    });
-    assert_eq!(requested, Some(50));
+    assert!(matches!(
+        step.actions.as_slice(),
+        [KernelAction {
+            effect: KernelEffect::QueryMemory { requested_k: 50, .. },
+            ..
+        }]
+    ));
 }
 
 #[test]
