@@ -18,6 +18,7 @@ export {
   parseVerdict,
   verdictOutputSchema,
 } from "./runtime/index.js"
+export * from "./runtime/kernel-transaction-log.js"
 export type {
   ReplayProviderOpts,
   Criterion,
@@ -35,6 +36,7 @@ export type {
   SchedulerBudget,
   SessionEvent,
   SessionLog,
+  KernelTransactionEntry,
   RunContext,
   ExecutionPlane,
 } from "./runtime/index.js"
