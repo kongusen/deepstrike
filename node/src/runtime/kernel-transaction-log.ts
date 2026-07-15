@@ -130,6 +130,27 @@ export function verifyKernelTransaction(transaction: KernelTransaction): void {
   }
 }
 
+export function verifyKernelTransactionSuccessor(
+  previous: KernelTransaction | undefined,
+  transaction: KernelTransaction,
+): void {
+  const expectedStepSeq = previous ? previous.step_seq + 1 : 1
+  const expectedGeneration = previous ? previous.base_generation + 1 : 0
+  if (transaction.step_seq !== expectedStepSeq) {
+    throw new KernelLogIntegrityError(
+      `kernel transaction step_seq ${transaction.step_seq} does not follow ${expectedStepSeq - 1}`,
+    )
+  }
+  if (transaction.base_generation !== expectedGeneration) {
+    throw new KernelLogIntegrityError(
+      `kernel transaction base_generation ${transaction.base_generation} does not match ${expectedGeneration}`,
+    )
+  }
+  if (transaction.input.operation_id !== transaction.operation_id) {
+    throw new KernelLogIntegrityError("kernel transaction input operation_id does not match its envelope")
+  }
+}
+
 function validateGenesisBody(genesis: KernelOperationGenesisBody): void {
   if (genesis.record_version !== KERNEL_LOG_RECORD_VERSION) {
     throw new KernelLogIntegrityError("unsupported kernel genesis record version")

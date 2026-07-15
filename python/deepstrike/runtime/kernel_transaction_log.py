@@ -149,6 +149,27 @@ def verify_kernel_transaction(transaction: KernelTransaction) -> None:
         raise KernelLogIntegrityError("kernel transaction digest does not match its canonical body")
 
 
+def verify_kernel_transaction_successor(
+    previous: KernelTransaction | None,
+    transaction: KernelTransaction,
+) -> None:
+    expected_step_seq = previous["step_seq"] + 1 if previous else 1
+    expected_generation = previous["base_generation"] + 1 if previous else 0
+    if transaction["step_seq"] != expected_step_seq:
+        raise KernelLogIntegrityError(
+            f"kernel transaction step_seq {transaction['step_seq']} does not follow {expected_step_seq - 1}"
+        )
+    if transaction["base_generation"] != expected_generation:
+        raise KernelLogIntegrityError(
+            "kernel transaction base_generation "
+            f"{transaction['base_generation']} does not match {expected_generation}"
+        )
+    if transaction["input"].get("operation_id") != transaction["operation_id"]:
+        raise KernelLogIntegrityError(
+            "kernel transaction input operation_id does not match its envelope"
+        )
+
+
 def _validate_genesis_body(genesis: KernelOperationGenesisBody) -> None:
     if genesis.get("record_version") != KERNEL_LOG_RECORD_VERSION:
         raise KernelLogIntegrityError("unsupported kernel genesis record version")

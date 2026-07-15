@@ -17,6 +17,7 @@ import {
   KernelLogIntegrityError,
   verifyKernelOperationGenesis,
   verifyKernelTransaction,
+  verifyKernelTransactionSuccessor,
 } from "./kernel-transaction-log.js"
 
 export interface KernelTransactionEntry {
@@ -285,8 +286,9 @@ export class InMemorySessionLog implements SessionLog {
     if (head !== expectedTransactionHead || transaction.previous_transaction_digest !== head) {
       throw new KernelLogConflictError("kernel transaction head changed before compare-and-append")
     }
-    const log_seq = this.nextSeq(sessionId)
     const entries = this.transactionStore.get(operationKey) ?? []
+    verifyKernelTransactionSuccessor(entries.at(-1)?.transaction, transaction)
+    const log_seq = this.nextSeq(sessionId)
     entries.push({ log_seq, transaction })
     this.transactionStore.set(operationKey, entries)
     return { log_seq, transaction_digest: transaction.transaction_digest }
@@ -431,6 +433,7 @@ export class FileSessionLog implements SessionLog {
       if (head !== expectedTransactionHead || transaction.previous_transaction_digest !== head) {
         throw new KernelLogConflictError("kernel transaction head changed before compare-and-append")
       }
+      verifyKernelTransactionSuccessor(transactions.at(-1)?.transaction, transaction)
       const log_seq = await this.nextSeq(sessionId)
       await this.appendRecord(sessionId, {
         seq: log_seq,

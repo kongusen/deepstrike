@@ -21,6 +21,7 @@ from deepstrike.runtime.kernel_transaction_log import (
     KernelTransactionEntry,
     verify_kernel_operation_genesis,
     verify_kernel_transaction,
+    verify_kernel_transaction_successor,
 )
 
 
@@ -487,8 +488,12 @@ class InMemorySessionLog:
         head = await self.kernel_transaction_head(session_id, transaction["operation_id"])
         if head != expected_transaction_head or transaction["previous_transaction_digest"] != head:
             raise KernelLogConflictError("kernel transaction head changed before compare-and-append")
-        log_seq = self._next_seq(session_id)
         entries = self._transaction_store.setdefault(operation_key, [])
+        verify_kernel_transaction_successor(
+            entries[-1]["transaction"] if entries else None,
+            transaction,
+        )
+        log_seq = self._next_seq(session_id)
         entries.append({"log_seq": log_seq, "transaction": transaction})
         return {"log_seq": log_seq, "transaction_digest": transaction["transaction_digest"]}
 
@@ -638,6 +643,10 @@ class FileSessionLog:
             )
             if head != expected_transaction_head or transaction["previous_transaction_digest"] != head:
                 raise KernelLogConflictError("kernel transaction head changed before compare-and-append")
+            verify_kernel_transaction_successor(
+                transactions[-1]["transaction"] if transactions else None,
+                transaction,
+            )
             log_seq = self._next_seq(session_id)
             self._append_record(
                 session_id,

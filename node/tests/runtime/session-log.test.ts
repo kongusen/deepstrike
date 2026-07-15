@@ -66,6 +66,10 @@ describe("InMemorySessionLog", () => {
     await expect(
       log.compareAndAppendKernelTransaction("s1", operationGenesis.genesis_digest, stale),
     ).rejects.toBeInstanceOf(KernelLogConflictError)
+    const skipped = await transaction(first.transaction_digest, 3)
+    await expect(
+      log.compareAndAppendKernelTransaction("s1", first.transaction_digest, skipped),
+    ).rejects.toBeInstanceOf(KernelLogIntegrityError)
     expect(await log.readKernelTransactions("s1", "op-1")).toEqual([{ log_seq: firstReceipt.log_seq, transaction: first }])
   })
 

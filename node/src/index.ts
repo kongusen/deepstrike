@@ -37,6 +37,7 @@ export {
   kernelRecordDigest,
   verifyKernelOperationGenesis,
   verifyKernelTransaction,
+  verifyKernelTransactionSuccessor,
 } from "./runtime/kernel-transaction-log.js"
 export type {
   DurableAppendReceipt,

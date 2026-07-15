@@ -36,6 +36,7 @@ from deepstrike.runtime.kernel_transaction_log import (
   kernel_record_digest,
   verify_kernel_operation_genesis,
   verify_kernel_transaction,
+  verify_kernel_transaction_successor,
 )
 from deepstrike.runtime.run_group import (
   GroupBudgetStore,
@@ -209,6 +210,7 @@ __all__ = [
   "kernel_record_digest",
   "verify_kernel_operation_genesis",
   "verify_kernel_transaction",
+  "verify_kernel_transaction_successor",
   "RunGroup",
   "GroupBudgetStore",
   "GroupBudgetGrant",
