@@ -14,7 +14,7 @@ Accepted
 2. This is an explicit breaking upgrade: `KERNEL_ABI_VERSION` becomes `2`, and ABI v1 inputs are no longer accepted.
 3. Rust core owns deterministic state transitions, adjudication, correlation, and usage accounting. Persistence, distributed atomicity, and real I/O cancellation remain host responsibilities.
 4. `group_*_base`, legacy `signal`, `signal_disposed`, and the accounting-only group-budget fallback are removed directly; no dual path remains.
-5. Node and Python are required host targets. WASM must continue to compile against core, but no dedicated high-level WASM API is added in this slice.
+5. Node, Python, and WASM are all required host targets for the cutover and validation; each exposes only the ABI v2 high-level API.
 
 If these assumptions change, update this ADR before implementation planning.
 

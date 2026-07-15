@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed
+Completed (2026-07-15)
+
+Verified results: the Rust workspace passed; Node passed 561 tests (13 skipped); Python passed 335; WASM passed 82; all three binding crates passed `cargo check`; Node/WASM TypeScript builds, benchmark compile/run, and docs drift/build passed. Runtime-source scans found no legacy budget/signal surface or public mutable escape hatch.
 
 ## Execution Rules
 

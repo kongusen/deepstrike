@@ -14,7 +14,7 @@ Accepted
 2. 这是一次明确的破坏性升级：`KERNEL_ABI_VERSION` 提升为 `2`，ABI v1 input 不再接受。
 3. Rust core 只拥有确定性状态转换、裁决、关联与用量核算；持久化、分布式原子性和真实 I/O 取消继续由宿主拥有。
 4. `group_*_base`、legacy `signal`、`signal_disposed` 与 accounting-only group budget fallback 直接移除，不保留双路径。
-5. Node 与 Python 是本切片必须同时验证的宿主；WASM 只要求 core ABI 仍可编译，暂不增加专用上层 API。
+5. Node、Python 与 WASM 都是本切片同步切换并验证的宿主；三端只公开 ABI v2 上层 API。
 
 若这些假设被调整，应先更新本 ADR，再进入实现计划。
 

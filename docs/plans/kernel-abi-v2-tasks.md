@@ -2,7 +2,9 @@
 
 ## 状态
 
-Proposed
+Completed (2026-07-15)
+
+实际验证：Rust workspace 全量通过；Node 561 tests passed（13 skipped）；Python 335 passed；WASM 82 passed；三套 binding `cargo check`、Node/WASM TypeScript build、benchmark compile/run、docs drift/build 全部通过。运行时源码的 legacy budget/signal 与 public mutable escape hatch 扫描为零。
 
 ## 执行规则
 

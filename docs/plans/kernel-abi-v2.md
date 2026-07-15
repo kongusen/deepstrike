@@ -2,7 +2,7 @@
 
 ## 状态
 
-Accepted
+Completed (2026-07-15)
 
 ## 依据
 

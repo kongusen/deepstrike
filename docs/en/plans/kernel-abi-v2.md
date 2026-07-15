@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Completed (2026-07-15)
 
 ## Basis
 
