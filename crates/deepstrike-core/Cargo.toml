@@ -14,3 +14,7 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = "1"
+
+[[bench]]
+name = "kernel_baseline"
+harness = false
