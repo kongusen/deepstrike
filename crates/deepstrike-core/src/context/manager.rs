@@ -1,5 +1,6 @@
 use super::compression::CompressionPipeline;
 use super::config::ContextConfig;
+use super::policy::ContextPolicyV1;
 use super::partitions::ContextPartitions;
 use super::pressure::{PressureAction, PressureMonitor};
 use super::renderer::RenderedContext;
@@ -133,6 +134,14 @@ impl ContextManager {
             pending_knowledge_sweeps: Vec::new(),
             knowledge_budget_warned: false,
         }
+    }
+
+    /// Atomically install the stable replay policy and rebuild every component derived from it.
+    pub fn apply_context_policy(&mut self, policy: &ContextPolicyV1) {
+        policy.apply_to(&mut self.config);
+        self.compression = CompressionPipeline::new(&self.config);
+        self.pressure = PressureMonitor::new(self.max_tokens, self.config.clone());
+        self.renewal = RenewalPolicy::from_config(&self.config);
     }
 
     // ── Layer 3: Time-based decay ─────────────────────────────────────────────

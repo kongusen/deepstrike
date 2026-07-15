@@ -97,6 +97,11 @@ import { LargeResultSpool } from "./large-result-spool.js"
 import { formatToolError } from "../tools/errors.js"
 import { ManagedTaskScope } from "./reliability.js"
 import type { BackgroundTaskErrorHandler, OperationContext } from "./reliability.js"
+import {
+  contextPolicyV1,
+  normalizeContextPolicyV1,
+  type ContextPolicyOverridesV1,
+} from "./context-policy.js"
 
 export interface SchedulerBudget {
   maxWallMs?: number
@@ -243,6 +248,8 @@ export interface RuntimeOptions {
    * `maxQueueSize` defaults to 64.
    */
   attentionPolicy?: { maxQueueSize?: number }
+  /** Stable replayable context behavior; SDK ratios are normalized to integer ppm on the ABI wire. */
+  contextPolicy?: ContextPolicyOverridesV1
   /**
    * Optional scheduler budget overrides. `maxWallMs` is the wall-clock run budget
    * in milliseconds; when set, the kernel terminates the run when exceeded.
@@ -745,6 +752,9 @@ export class RuntimeRunner {
     const { kind: _govKind, ...governance } = governancePolicyToKernelEvent(governancePolicy) as Record<string, unknown>
 
     const config: Record<string, unknown> = { governance }
+    if (this.opts.contextPolicy) {
+      config.context_policy = normalizeContextPolicyV1(contextPolicyV1(this.opts.contextPolicy))
+    }
     if (this.opts.kernelReliability) {
       const reliability = this.opts.kernelReliability
       config.reliability = {

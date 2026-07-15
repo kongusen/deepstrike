@@ -303,6 +303,9 @@ pub struct RunConfig {
     pub governance: Option<GovernanceConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention_max_queue_size: Option<u32>,
+    /// Stable, replayable context behavior. Ratios use integer ppm on the ABI wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_policy: Option<crate::context::policy::ContextPolicyV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduler_max_wall_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

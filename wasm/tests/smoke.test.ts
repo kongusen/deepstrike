@@ -194,6 +194,10 @@ describe("RuntimeRunner", () => {
       executionPlane: new LocalExecutionPlane(),
       maxTokens: 2048,
       schedulerBudget: { maxWallMs: 1234 },
+      contextPolicy: {
+        pressureThresholds: { snip: 0.72 },
+        preserveRecentTurns: 4,
+      },
       resourceQuota: {
         maxConcurrentSubagents: 2,
         maxSpawnDepth: 1,
@@ -213,6 +217,21 @@ describe("RuntimeRunner", () => {
       memory_writes_per_window: [3, 1000],
     })
     expect(configure!.config.scheduler_max_wall_ms).toBe(1234)
+    expect(configure!.config.context_policy).toEqual({
+      version: 1,
+      pressure_thresholds_ppm: {
+        snip: 720_000,
+        micro: 800_000,
+        collapse: 900_000,
+        auto: 950_000,
+        renewal: 980_000,
+      },
+      target_after_compress_ppm: 650_000,
+      preserve_recent_turns: 4,
+      renewal_carryover_ppm: 50_000,
+      collapse_old_assistant_narration: true,
+      idle_micro_compact_minutes: 60,
+    })
   })
 
   it("continues an ask_user-gated tool after host approval", async () => {

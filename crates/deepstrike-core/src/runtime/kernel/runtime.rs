@@ -1398,6 +1398,7 @@ impl KernelRuntime {
                     tokenizer,
                     governance,
                     attention_max_queue_size,
+                    context_policy,
                     scheduler_max_wall_ms,
                     resource_quota,
                     budget_grant,
@@ -1441,6 +1442,9 @@ impl KernelRuntime {
                 }
                 if let Some(max_queue) = attention_max_queue_size {
                     self.sm.set_attention(max_queue as usize);
+                }
+                if let Some(context_policy) = context_policy {
+                    self.sm.ctx.apply_context_policy(&context_policy);
                 }
                 if let Some(ms) = scheduler_max_wall_ms {
                     self.sm.set_wall_budget(Some(ms));
@@ -2235,6 +2239,9 @@ fn validate_run_config(config: &RunConfig) -> Result<(), String> {
     }
     if matches!(config.attention_max_queue_size, Some(0)) {
         return Err("attention_max_queue_size must be greater than zero".to_string());
+    }
+    if let Some(policy) = &config.context_policy {
+        policy.validate()?;
     }
     if matches!(config.scheduler_max_wall_ms, Some(0)) {
         return Err("scheduler_max_wall_ms must be greater than zero".to_string());

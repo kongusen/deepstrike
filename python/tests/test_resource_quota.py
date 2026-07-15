@@ -88,6 +88,10 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
     execution_plane=LocalExecutionPlane(),
     max_tokens=1024,
     scheduler_budget=SchedulerBudget(max_wall_ms=1234),
+    context_policy={
+      "pressure_thresholds": {"snip": 0.72},
+      "preserve_recent_turns": 4,
+    },
     kernel_reliability=KernelReliability(
       event_replay_capacity=512,
       host_effect_retry_attempts=4,
@@ -113,6 +117,25 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
   }
   budget_event = next(e for e in CapturingKernelRuntime.events if e["kind"] == "set_scheduler_budget")
   assert budget_event["max_wall_ms"] == 1234
+  context_event = next(
+    e for e in CapturingKernelRuntime.events
+    if e["kind"] == "configure_run" and "context_policy" in e["config"]
+  )
+  assert context_event["config"]["context_policy"] == {
+    "version": 1,
+    "pressure_thresholds_ppm": {
+      "snip": 720_000,
+      "micro": 800_000,
+      "collapse": 900_000,
+      "auto": 950_000,
+      "renewal": 980_000,
+    },
+    "target_after_compress_ppm": 650_000,
+    "preserve_recent_turns": 4,
+    "renewal_carryover_ppm": 50_000,
+    "collapse_old_assistant_narration": True,
+    "idle_micro_compact_minutes": 60,
+  }
   reliability_event = next(
     e for e in CapturingKernelRuntime.events
     if e["kind"] == "configure_run" and "reliability" in e["config"]

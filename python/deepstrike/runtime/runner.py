@@ -46,6 +46,7 @@ from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPla
 from deepstrike.tools.errors import format_tool_error
 from deepstrike.governance import governance_policy_to_kernel_event
 from deepstrike.runtime.kernel_event_log import kernel_observation_to_session_event
+from deepstrike.runtime.context_policy import context_policy_v1, normalize_context_policy_v1
 from deepstrike.runtime.kernel_step import (
   capability_marker,
   capability_skill,
@@ -216,6 +217,8 @@ class RuntimeOptions:
   governance: "Governance | None" = None
   governance_policy: "GovernancePolicy | None" = None
   attention_policy: "AttentionPolicy | dict | None" = None
+  # Stable replayable context behavior. Public ratios are normalized to integer ppm on the wire.
+  context_policy: dict[str, Any] | None = None
   scheduler_budget: SchedulerBudget | dict[str, Any] | None = None
   kernel_reliability: KernelReliability | dict[str, Any] | None = None
   # Attempts allowed for a workflow node to satisfy its output schema, 1..16.
@@ -786,6 +789,10 @@ class RuntimeRunner:
     gov_policy = self._opts.governance_policy or os_profile.governance_policy
     governance = {k: v for k, v in governance_policy_to_kernel_event(gov_policy).items() if k != "kind"}
     config: dict[str, Any] = {"governance": governance}
+    if self._opts.context_policy is not None:
+      config["context_policy"] = normalize_context_policy_v1(
+        context_policy_v1(self._opts.context_policy)
+      )
     reliability = _kernel_reliability_to_kernel(self._opts.kernel_reliability)
     if reliability is not None:
       config["reliability"] = reliability
@@ -2059,6 +2066,13 @@ class RuntimeRunner:
       "kind": "set_attention_policy",
       **({"max_queue_size": max_q} if max_q is not None else {}),
     })
+    if self._opts.context_policy is not None:
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "configure_run",
+        "config": {"context_policy": normalize_context_policy_v1(
+          context_policy_v1(self._opts.context_policy)
+        )},
+      })
 
     scheduler_budget = _scheduler_budget_to_kernel(self._opts.scheduler_budget)
     if scheduler_budget is not None:

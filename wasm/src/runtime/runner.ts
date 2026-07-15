@@ -69,6 +69,11 @@ import {
 import { kernelObservationToSessionEvent } from "./kernel-event-log.js"
 import { assertNativeProfile, type NativeOsProfile, type OsProfileId } from "./os-profile.js"
 import { LargeResultSpool } from "./large-result-spool.js"
+import {
+  contextPolicyV1,
+  normalizeContextPolicyV1,
+  type ContextPolicyOverridesV1,
+} from "./context-policy.js"
 
 export interface MemoryWriteRateLimit {
   maxWrites: number
@@ -196,6 +201,8 @@ export interface RuntimeOptions {
   osProfile?: OsProfileId | NativeOsProfile
   governancePolicy?: GovernancePolicy
   attentionPolicy?: { maxQueueSize?: number }
+  /** Stable replayable context behavior; ratios are normalized to integer ppm. */
+  contextPolicy?: ContextPolicyOverridesV1
   schedulerBudget?: SchedulerBudget
   kernelReliability?: KernelReliabilityOptions
   /** Attempts allowed for a workflow node to satisfy its output schema, 1..16. Default: 2. */
@@ -1620,6 +1627,9 @@ export class RuntimeRunner {
     // core applies each present field via its granular path). `set_memory_policy` stays separate below.
     const { kind: _govKind, ...governance } = governancePolicyToKernelEvent(governancePolicy) as Record<string, unknown>
     const config: Record<string, unknown> = { governance }
+    if (this.opts.contextPolicy) {
+      config.context_policy = normalizeContextPolicyV1(contextPolicyV1(this.opts.contextPolicy))
+    }
     if (attentionPolicy.maxQueueSize !== undefined) {
       config.attention_max_queue_size = attentionPolicy.maxQueueSize
     }

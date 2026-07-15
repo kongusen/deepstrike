@@ -2,6 +2,7 @@ pub mod compression;
 pub mod config;
 pub mod manager;
 pub mod partitions;
+pub mod policy;
 pub mod pressure;
 pub mod renderer;
 pub mod renewal;
