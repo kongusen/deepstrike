@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 pub(super) const EVENT_REPLAY_WINDOW_CAPACITY: usize = 256;
 const COMPLETED_EFFECT_REPLAY_WINDOW_CAPACITY: usize = 256;
@@ -7,8 +7,23 @@ const SNAPSHOT_INPUT_LIMIT: usize = 10_000;
 
 #[derive(Clone)]
 struct RecordedTransition {
-    fingerprint: serde_json::Value,
+    fingerprint: Vec<u8>,
     step: KernelStep,
+}
+
+#[derive(serde::Serialize)]
+struct KernelSnapshotRefV2<'a> {
+    snapshot_version: u32,
+    abi_version: u32,
+    initial_policy: KernelSnapshotPolicyV2,
+    lifecycle: KernelLifecycle,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation_id: Option<&'a str>,
+    next_step_seq: u64,
+    snapshot_input_limit: usize,
+    accepted_inputs: &'a [KernelInput],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_step: Option<&'a KernelStep>,
 }
 
 #[derive(Clone)]
@@ -158,15 +173,7 @@ impl KernelRuntime {
 
     /// Capture a portable ABI-v2 checkpoint without exposing private scheduler representation.
     pub fn snapshot(&self) -> Result<KernelSnapshotV2, KernelFault> {
-        if self.snapshot_overflowed || self.accepted_inputs.len() > self.snapshot_input_limit {
-            return Err(snapshot_fault(
-                self.operation_id.clone(),
-                format!(
-                    "snapshot input journal exceeded configured limit {}",
-                    self.snapshot_input_limit
-                ),
-            ));
-        }
+        self.ensure_snapshot_available()?;
         Ok(KernelSnapshotV2 {
             snapshot_version: KERNEL_SNAPSHOT_VERSION,
             abi_version: KERNEL_ABI_VERSION,
@@ -181,7 +188,18 @@ impl KernelRuntime {
     }
 
     pub fn snapshot_json(&self) -> Result<String, KernelFault> {
-        let snapshot = self.snapshot()?;
+        self.ensure_snapshot_available()?;
+        let snapshot = KernelSnapshotRefV2 {
+            snapshot_version: KERNEL_SNAPSHOT_VERSION,
+            abi_version: KERNEL_ABI_VERSION,
+            initial_policy: KernelSnapshotPolicyV2::from(&self.initial_policy),
+            lifecycle: self.lifecycle,
+            operation_id: self.operation_id.as_deref(),
+            next_step_seq: self.next_step_seq,
+            snapshot_input_limit: self.snapshot_input_limit,
+            accepted_inputs: &self.accepted_inputs,
+            last_step: self.last_step.as_ref(),
+        };
         serde_json::to_string(&snapshot).map_err(|error| {
             snapshot_fault(
                 self.operation_id.clone(),
@@ -214,8 +232,18 @@ impl KernelRuntime {
         }
         let mut runtime = Self::new(initial_policy);
         runtime.snapshot_input_limit = snapshot.snapshot_input_limit;
+        let mut event_ids = HashSet::with_capacity(snapshot.accepted_inputs.len());
         for input in snapshot.accepted_inputs.iter().cloned() {
-            let step = runtime.step(input);
+            if !event_ids.insert(input.event_id.clone()) {
+                return Err(snapshot_fault(
+                    snapshot.operation_id.clone(),
+                    format!(
+                        "kernel snapshot journal repeats accepted event_id {}",
+                        input.event_id
+                    ),
+                ));
+            }
+            let step = runtime.step_internal(input, false);
             if let Some(fault) = step.faults.first() {
                 return Err(snapshot_fault(
                     snapshot.operation_id.clone(),
@@ -228,13 +256,10 @@ impl KernelRuntime {
         }
         let rebuilt_last = serde_json::to_value(&runtime.last_step).ok();
         let expected_last = serde_json::to_value(&snapshot.last_step).ok();
-        let rebuilt_inputs = serde_json::to_value(&runtime.accepted_inputs).ok();
-        let expected_inputs = serde_json::to_value(&snapshot.accepted_inputs).ok();
         if runtime.lifecycle != snapshot.lifecycle
             || runtime.operation_id != snapshot.operation_id
             || runtime.next_step_seq != snapshot.next_step_seq
             || runtime.snapshot_input_limit != snapshot.snapshot_input_limit
-            || rebuilt_inputs != expected_inputs
             || rebuilt_last != expected_last
         {
             return Err(snapshot_fault(
@@ -242,6 +267,7 @@ impl KernelRuntime {
                 "kernel snapshot metadata does not match deterministic replay".to_string(),
             ));
         }
+        runtime.accepted_inputs = snapshot.accepted_inputs;
         Ok(runtime)
     }
 
@@ -381,7 +407,11 @@ impl KernelRuntime {
         serde_json::from_value(value).map(|input| self.step(input))
     }
 
-    pub fn step(&mut self, mut input: KernelInput) -> KernelStep {
+    pub fn step(&mut self, input: KernelInput) -> KernelStep {
+        self.step_internal(input, true)
+    }
+
+    fn step_internal(&mut self, mut input: KernelInput, record_snapshot_input: bool) -> KernelStep {
         if let KernelInputEvent::CancelOperation {
             pending_call_ids, ..
         } = &mut input.event
@@ -415,7 +445,7 @@ impl KernelRuntime {
             );
         }
 
-        let fingerprint = serde_json::to_value(&input)
+        let fingerprint = serde_json::to_vec(&input)
             .expect("KernelInput serialization must succeed after typed construction");
         if let Some(recorded) = self.recorded_events.get(&event_id) {
             if recorded.fingerprint == fingerprint {
@@ -479,7 +509,9 @@ impl KernelRuntime {
                             step: step.clone(),
                         },
                     );
-                    self.record_accepted_input(input);
+                    if record_snapshot_input {
+                        self.record_accepted_input(input);
+                    }
                     self.last_step = Some(step.clone());
                     return step;
                 }
@@ -496,7 +528,7 @@ impl KernelRuntime {
         let result_fingerprint = result_effect(&input.event).map(|(effect_id, _)| {
             (
                 effect_id.to_string(),
-                serde_json::to_value(&input.event)
+                serde_json::to_vec(&input.event)
                     .expect("KernelInputEvent serialization must succeed after typed construction"),
             )
         });
@@ -511,7 +543,9 @@ impl KernelRuntime {
                             step: step.clone(),
                         },
                     );
-                    self.record_accepted_input(input);
+                    if record_snapshot_input {
+                        self.record_accepted_input(input);
+                    }
                     self.last_step = Some(step.clone());
                     return step;
                 }
@@ -642,7 +676,7 @@ impl KernelRuntime {
             self.sm.set_observed_time(input.observed_at_ms);
         }
 
-        let accepted_input = input.clone();
+        let accepted_input = record_snapshot_input.then(|| input.clone());
         let step_seq = self.allocate_step_seq();
         let cancellation_identity = match &input.event {
             KernelInputEvent::CancelOperation {
@@ -730,9 +764,24 @@ impl KernelRuntime {
                 step: step.clone(),
             },
         );
-        self.record_accepted_input(accepted_input);
+        if let Some(accepted_input) = accepted_input {
+            self.record_accepted_input(accepted_input);
+        }
         self.last_step = Some(step.clone());
         step
+    }
+
+    fn ensure_snapshot_available(&self) -> Result<(), KernelFault> {
+        if self.snapshot_overflowed || self.accepted_inputs.len() > self.snapshot_input_limit {
+            return Err(snapshot_fault(
+                self.operation_id.clone(),
+                format!(
+                    "snapshot input journal exceeded configured limit {}",
+                    self.snapshot_input_limit
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn record_accepted_input(&mut self, input: KernelInput) {
