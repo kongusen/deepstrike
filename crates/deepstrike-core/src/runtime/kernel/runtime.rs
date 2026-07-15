@@ -3,6 +3,7 @@ use std::collections::{HashMap, VecDeque};
 
 pub(super) const EVENT_REPLAY_WINDOW_CAPACITY: usize = 256;
 const COMPLETED_EFFECT_REPLAY_WINDOW_CAPACITY: usize = 256;
+const SNAPSHOT_INPUT_LIMIT: usize = 10_000;
 
 #[derive(Clone)]
 struct RecordedTransition {
@@ -116,6 +117,7 @@ impl StepIdentity {
 /// `KernelInput` values here instead of directly driving `LoopStateMachine`.
 pub struct KernelRuntime {
     sm: LoopStateMachine,
+    initial_policy: SchedulerBudget,
     lifecycle: KernelLifecycle,
     operation_id: Option<String>,
     next_step_seq: u64,
@@ -126,12 +128,17 @@ pub struct KernelRuntime {
     pending_memory_query: Option<(crate::mm::memory::MemoryQuery, usize)>,
     budget_usage_reported: bool,
     accepted_cancellation: Option<AcceptedCancellation>,
+    accepted_inputs: Vec<KernelInput>,
+    snapshot_input_limit: usize,
+    snapshot_overflowed: bool,
+    last_step: Option<KernelStep>,
 }
 
 impl KernelRuntime {
     pub fn new(policy: SchedulerBudget) -> Self {
         Self {
-            sm: LoopStateMachine::new(policy),
+            sm: LoopStateMachine::new(policy.clone()),
+            initial_policy: policy,
             lifecycle: KernelLifecycle::Created,
             operation_id: None,
             next_step_seq: 1,
@@ -142,7 +149,107 @@ impl KernelRuntime {
             pending_memory_query: None,
             budget_usage_reported: false,
             accepted_cancellation: None,
+            accepted_inputs: Vec::new(),
+            snapshot_input_limit: SNAPSHOT_INPUT_LIMIT,
+            snapshot_overflowed: false,
+            last_step: None,
         }
+    }
+
+    /// Capture a portable ABI-v2 checkpoint without exposing private scheduler representation.
+    pub fn snapshot(&self) -> Result<KernelSnapshotV2, KernelFault> {
+        if self.snapshot_overflowed || self.accepted_inputs.len() > self.snapshot_input_limit {
+            return Err(snapshot_fault(
+                self.operation_id.clone(),
+                format!(
+                    "snapshot input journal exceeded configured limit {}",
+                    self.snapshot_input_limit
+                ),
+            ));
+        }
+        Ok(KernelSnapshotV2 {
+            snapshot_version: KERNEL_SNAPSHOT_VERSION,
+            abi_version: KERNEL_ABI_VERSION,
+            initial_policy: KernelSnapshotPolicyV2::from(&self.initial_policy),
+            lifecycle: self.lifecycle,
+            operation_id: self.operation_id.clone(),
+            next_step_seq: self.next_step_seq,
+            snapshot_input_limit: self.snapshot_input_limit,
+            accepted_inputs: self.accepted_inputs.clone(),
+            last_step: self.last_step.clone(),
+        })
+    }
+
+    pub fn snapshot_json(&self) -> Result<String, KernelFault> {
+        let snapshot = self.snapshot()?;
+        serde_json::to_string(&snapshot).map_err(|error| {
+            snapshot_fault(
+                self.operation_id.clone(),
+                format!("failed to encode kernel snapshot: {error}"),
+            )
+        })
+    }
+
+    /// Restore by deterministically replaying accepted public ABI transactions, then fail closed
+    /// if any checkpoint metadata differs from the rebuilt runtime.
+    pub fn restore_snapshot(snapshot: KernelSnapshotV2) -> Result<Self, KernelFault> {
+        if snapshot.snapshot_version != KERNEL_SNAPSHOT_VERSION
+            || snapshot.abi_version != KERNEL_ABI_VERSION
+            || !(1..=100_000).contains(&snapshot.snapshot_input_limit)
+            || snapshot.accepted_inputs.len() > snapshot.snapshot_input_limit
+        {
+            return Err(snapshot_fault(
+                snapshot.operation_id,
+                "incompatible kernel snapshot version or bounds".to_string(),
+            ));
+        }
+
+        let initial_policy = SchedulerBudget::try_from(&snapshot.initial_policy)
+            .map_err(|message| snapshot_fault(snapshot.operation_id.clone(), message))?;
+        if KernelSnapshotPolicyV2::from(&initial_policy) != snapshot.initial_policy {
+            return Err(snapshot_fault(
+                snapshot.operation_id,
+                "kernel snapshot policy is not canonically encoded".to_string(),
+            ));
+        }
+        let mut runtime = Self::new(initial_policy);
+        runtime.snapshot_input_limit = snapshot.snapshot_input_limit;
+        for input in snapshot.accepted_inputs.iter().cloned() {
+            let step = runtime.step(input);
+            if let Some(fault) = step.faults.first() {
+                return Err(snapshot_fault(
+                    snapshot.operation_id.clone(),
+                    format!(
+                        "snapshot replay rejected an accepted input: {}",
+                        fault.message
+                    ),
+                ));
+            }
+        }
+        let rebuilt_last = serde_json::to_value(&runtime.last_step).ok();
+        let expected_last = serde_json::to_value(&snapshot.last_step).ok();
+        let rebuilt_inputs = serde_json::to_value(&runtime.accepted_inputs).ok();
+        let expected_inputs = serde_json::to_value(&snapshot.accepted_inputs).ok();
+        if runtime.lifecycle != snapshot.lifecycle
+            || runtime.operation_id != snapshot.operation_id
+            || runtime.next_step_seq != snapshot.next_step_seq
+            || runtime.snapshot_input_limit != snapshot.snapshot_input_limit
+            || rebuilt_inputs != expected_inputs
+            || rebuilt_last != expected_last
+        {
+            return Err(snapshot_fault(
+                snapshot.operation_id,
+                "kernel snapshot metadata does not match deterministic replay".to_string(),
+            ));
+        }
+        Ok(runtime)
+    }
+
+    pub fn restore_snapshot_json(snapshot_json: &str) -> Result<Self, KernelFault> {
+        let snapshot = serde_json::from_str(snapshot_json).map_err(|error| {
+            snapshot_fault(None, format!("invalid kernel snapshot JSON: {error}"))
+        })?;
+        Self::restore_snapshot(snapshot)
     }
 
     #[cfg(test)]
@@ -151,8 +258,18 @@ impl KernelRuntime {
     }
 
     #[cfg(test)]
-    pub(super) fn state_machine_mut(&mut self) -> &mut LoopStateMachine {
-        &mut self.sm
+    pub(super) fn clear_test_observations(&mut self) {
+        self.sm.take_observations();
+    }
+
+    #[cfg(test)]
+    pub(super) fn push_test_history(&mut self, message: Message, tokens: u32) {
+        self.sm.ctx.push_history(message, tokens);
+    }
+
+    #[cfg(test)]
+    pub(super) fn accepted_snapshot_input_count(&self) -> usize {
+        self.accepted_inputs.len()
     }
 
     pub fn is_terminal(&self) -> bool {
@@ -362,6 +479,8 @@ impl KernelRuntime {
                             step: step.clone(),
                         },
                     );
+                    self.record_accepted_input(input);
+                    self.last_step = Some(step.clone());
                     return step;
                 }
                 return self.fault_step(
@@ -392,6 +511,8 @@ impl KernelRuntime {
                             step: step.clone(),
                         },
                     );
+                    self.record_accepted_input(input);
+                    self.last_step = Some(step.clone());
                     return step;
                 }
                 return self.fault_step(
@@ -423,6 +544,21 @@ impl KernelRuntime {
                     event_id,
                     KernelFaultCode::InvalidConfig,
                     message,
+                    None,
+                );
+            }
+            if config
+                .reliability
+                .as_ref()
+                .and_then(|reliability| reliability.snapshot_input_limit)
+                .is_some_and(|limit| limit <= self.accepted_inputs.len())
+            {
+                return self.fault_step(
+                    operation_id,
+                    event_id,
+                    KernelFaultCode::InvalidConfig,
+                    "snapshot_input_limit must leave room for the configure transaction"
+                        .to_string(),
                     None,
                 );
             }
@@ -506,6 +642,7 @@ impl KernelRuntime {
             self.sm.set_observed_time(input.observed_at_ms);
         }
 
+        let accepted_input = input.clone();
         let step_seq = self.allocate_step_seq();
         let cancellation_identity = match &input.event {
             KernelInputEvent::CancelOperation {
@@ -593,7 +730,17 @@ impl KernelRuntime {
                 step: step.clone(),
             },
         );
+        self.record_accepted_input(accepted_input);
+        self.last_step = Some(step.clone());
         step
+    }
+
+    fn record_accepted_input(&mut self, input: KernelInput) {
+        if self.accepted_inputs.len() < self.snapshot_input_limit {
+            self.accepted_inputs.push(input);
+        } else {
+            self.snapshot_overflowed = true;
+        }
     }
 
     fn dispatch(&mut self, identity: StepIdentity, event: KernelInputEvent) -> KernelStep {
@@ -809,6 +956,9 @@ impl KernelRuntime {
                     }
                     if let Some(capacity) = reliability.completed_effect_replay_capacity {
                         self.completed_effects.set_capacity(capacity);
+                    }
+                    if let Some(limit) = reliability.snapshot_input_limit {
+                        self.snapshot_input_limit = limit;
                     }
                     self.sm.set_reliability_config(&reliability);
                 }
@@ -1370,7 +1520,9 @@ impl KernelRuntime {
         message: String,
         effect_id: Option<String>,
     ) -> KernelStep {
-        let step_seq = self.allocate_step_seq();
+        // Rejected transactions do not consume a committed step identity. This keeps effect IDs
+        // deterministic across retries and lets snapshots rebuild from accepted inputs only.
+        let step_seq = self.next_step_seq;
         KernelStep::fault(
             operation_id.clone(),
             event_id.clone(),
@@ -1383,6 +1535,16 @@ impl KernelRuntime {
                 effect_id,
             },
         )
+    }
+}
+
+fn snapshot_fault(operation_id: Option<String>, message: String) -> KernelFault {
+    KernelFault {
+        code: KernelFaultCode::SnapshotIncompatible,
+        message,
+        operation_id,
+        event_id: None,
+        effect_id: None,
     }
 }
 
@@ -1460,6 +1622,12 @@ fn validate_run_config(config: &RunConfig) -> Result<(), String> {
                     return Err(format!("{name} must be between 1 and 65536"));
                 }
             }
+        }
+        if reliability
+            .snapshot_input_limit
+            .is_some_and(|value| !(1..=100_000).contains(&value))
+        {
+            return Err("snapshot_input_limit must be between 1 and 100000".to_string());
         }
         if reliability
             .provider_recovery_attempts

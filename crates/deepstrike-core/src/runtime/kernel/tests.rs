@@ -380,6 +380,7 @@ fn reliability_config_bounds_replay_windows_from_the_sdk_boundary() {
                 host_effect_retry_attempts: Some(2),
                 spool_threshold_bytes: Some(4096),
                 spool_preview_bytes: Some(512),
+                snapshot_input_limit: Some(32),
             }),
             ..RunConfig::default()
         },
@@ -942,7 +943,7 @@ fn spawn_sub_agent_input_registers_process() {
         task: RuntimeTask::new("parent task"),
         run_spec: None,
     }));
-    runtime.state_machine_mut().take_observations();
+    runtime.clear_test_observations();
 
     let spec = AgentRunSpec::new(
         AgentIdentity::sub_agent("worker", "worker-session"),
@@ -1058,7 +1059,7 @@ fn set_resource_quota_input_denies_spawn_over_quota() {
         task: RuntimeTask::new("parent task"),
         run_spec: None,
     }));
-    runtime.state_machine_mut().take_observations();
+    runtime.clear_test_observations();
 
     let spec = AgentRunSpec::new(
         AgentIdentity::sub_agent("worker", "worker-session"),
@@ -1178,7 +1179,7 @@ fn budget_grant_enforces_local_spawn_cap() {
         task: RuntimeTask::new("task"),
         run_spec: None,
     }));
-    runtime.state_machine_mut().take_observations();
+    runtime.clear_test_observations();
 
     let spec = AgentRunSpec::new(
         AgentIdentity::sub_agent("worker", "worker-session"),
@@ -1552,7 +1553,7 @@ fn default_runtime_leaves_spawn_unquota_ed() {
         task: RuntimeTask::new("parent task"),
         run_spec: None,
     }));
-    runtime.state_machine_mut().take_observations();
+    runtime.clear_test_observations();
 
     let spec = AgentRunSpec::new(
         AgentIdentity::sub_agent("worker", "worker-session"),
@@ -1580,7 +1581,7 @@ fn agent_process_changed_locks_multiword_wire_form() {
         task: RuntimeTask::new("parent task"),
         run_spec: None,
     }));
-    runtime.state_machine_mut().take_observations();
+    runtime.clear_test_observations();
 
     // Verify role → SystemOnly inheritance; explicit ReadOnly isolation. Both are multi-word.
     let spec = AgentRunSpec::new(
@@ -1991,10 +1992,7 @@ fn runtime_with_page_out() -> KernelRuntime {
         run_spec: None,
     }));
     for index in 0..10 {
-        runtime
-            .state_machine_mut()
-            .ctx
-            .push_history(Message::user(format!("filler {index}")), 50);
+        runtime.push_test_history(Message::user(format!("filler {index}")), 50);
     }
     runtime
 }
@@ -2076,7 +2074,7 @@ fn run_with_tool_call_named(runtime: &mut KernelRuntime, tool: &str, _call_id: &
         task: RuntimeTask::new("do the thing"),
         run_spec: None,
     }));
-    runtime.state_machine_mut().take_observations();
+    runtime.clear_test_observations();
     runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
         effect_id: runtime.pending_provider_effect_id(),
         message: assistant_calling(tool),
@@ -2367,7 +2365,7 @@ fn governance_ask_user_resume_all_denied_feeds_tool_results() {
         constraints: vec![],
     }));
     let approval = run_with_tool_call(&mut runtime, "sensitive.read");
-    runtime.state_machine_mut().take_observations();
+    runtime.clear_test_observations();
 
     let step = runtime.step(KernelInput::new(KernelInputEvent::ApprovalResult {
         effect_id: approval.actions[0].effect_id.clone(),
@@ -2436,7 +2434,7 @@ fn governance_rate_limit_blocks_second_call() {
         task: RuntimeTask::new("fetch twice"),
         run_spec: None,
     }));
-    runtime.state_machine_mut().take_observations();
+    runtime.clear_test_observations();
 
     // First call within the window — allowed.
     let s1 = runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
@@ -2464,7 +2462,7 @@ fn governance_rate_limit_blocks_second_call() {
         effect_id: runtime.pending_tool_effect_id(),
         results: vec![tool_ok("call-1")],
     }));
-    runtime.state_machine_mut().take_observations();
+    runtime.clear_test_observations();
 
     // Second call to the same tool within the window — rate limited → rollback.
     let s2 = runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
@@ -2548,7 +2546,7 @@ fn started_runtime_with_attention(max_queue: u32) -> KernelRuntime {
         task: RuntimeTask::new("watch for signals"),
         run_spec: None,
     }));
-    runtime.state_machine_mut().take_observations();
+    runtime.clear_test_observations();
     runtime
 }
 
@@ -2734,7 +2732,7 @@ fn load_workflow_input_drives_dag_to_completion() {
         task: RuntimeTask::new("parent task"),
         run_spec: None,
     }));
-    runtime.state_machine_mut().take_observations();
+    runtime.clear_test_observations();
 
     // Exercise the full serde round-trip of LoadWorkflow + WorkflowSpec over the ABI.
     let spec = fanout_synthesize(
@@ -2910,7 +2908,7 @@ fn submit_workflow_nodes_input_appends_a_node_over_the_abi() {
         task: RuntimeTask::new("parent task"),
         run_spec: None,
     }));
-    runtime.state_machine_mut().take_observations();
+    runtime.clear_test_observations();
 
     // A single-node workflow: wf-node0 spawns first.
     let spec = WorkflowSpec::new(vec![WorkflowNode::new(
@@ -2926,7 +2924,7 @@ fn submit_workflow_nodes_input_appends_a_node_over_the_abi() {
         resumed_results: Vec::new(),
     }));
     accept_workflow_spawn(&mut runtime, initial);
-    runtime.state_machine_mut().take_observations();
+    runtime.clear_test_observations();
 
     // Submit a node over the ABI while wf-node0 runs (full serde round-trip).
     let event = KernelInputEvent::SubmitWorkflowNodes {
@@ -2987,7 +2985,7 @@ fn submit_workflow_input_bootstraps_a_dag_over_the_abi() {
         task: RuntimeTask::new("parent task"),
         run_spec: None,
     }));
-    runtime.state_machine_mut().take_observations();
+    runtime.clear_test_observations();
 
     // No LoadWorkflow first — the agent itself authors the spec.
     let spec = WorkflowSpec::new(vec![WorkflowNode::new(
@@ -3031,6 +3029,271 @@ fn submit_workflow_input_bootstraps_a_dag_over_the_abi() {
     )));
 }
 
+fn assert_same_kernel_step(left: &KernelStep, right: &KernelStep) {
+    assert_eq!(
+        serde_json::to_value(left).expect("serialize left step"),
+        serde_json::to_value(right).expect("serialize right step"),
+    );
+}
+
+#[test]
+fn snapshot_v2_restores_pending_effect_identity_and_dedupe_window() {
+    let policy = SchedulerBudget::default();
+    let mut uninterrupted = KernelRuntime::new(policy);
+    let start = correlated_input(
+        "snapshot-op",
+        "snapshot-start",
+        10,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("resume exactly"),
+            run_spec: None,
+        },
+    );
+    let started = uninterrupted.step(start.clone());
+    let provider_effect_id = started.actions[0].effect_id.clone();
+
+    let snapshot = uninterrupted.snapshot().expect("snapshot pending provider");
+    assert_eq!(snapshot.snapshot_version, KERNEL_SNAPSHOT_VERSION);
+    assert_eq!(snapshot.lifecycle, KernelLifecycle::Running);
+    let mut restored = KernelRuntime::restore_snapshot(snapshot).expect("restore snapshot");
+
+    assert_same_kernel_step(&started, &restored.step(start));
+    let provider_result = correlated_input(
+        "snapshot-op",
+        "snapshot-provider-result",
+        20,
+        KernelInputEvent::ProviderResult {
+            effect_id: provider_effect_id,
+            message: crate::types::message::Message::assistant("finished"),
+            observed_input_tokens: Some(12),
+            observed_output_tokens: Some(3),
+            now_ms: Some(20),
+            stop_reason: None,
+        },
+    );
+    let uninterrupted_done = uninterrupted.step(provider_result.clone());
+    let restored_done = restored.step(provider_result);
+    assert_same_kernel_step(&uninterrupted_done, &restored_done);
+    assert_eq!(restored.lifecycle(), KernelLifecycle::Completed);
+}
+
+#[test]
+fn snapshot_v2_restores_workflow_budget_and_terminal_cancellation() {
+    use crate::orchestration::workflow::fanout_synthesize;
+
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(correlated_input(
+        "workflow-snapshot-op",
+        "workflow-config",
+        1,
+        KernelInputEvent::ConfigureRun {
+            config: RunConfig {
+                budget_grant: Some(BudgetGrant {
+                    reservation_id: "workflow-snapshot-reservation".into(),
+                    tokens: Some(100),
+                    subagents: Some(2),
+                    rounds: Some(1),
+                }),
+                ..RunConfig::default()
+            },
+        },
+    ));
+    runtime.step(correlated_input(
+        "workflow-snapshot-op",
+        "workflow-start",
+        2,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("parent"),
+            run_spec: None,
+        },
+    ));
+    let workflow = runtime.step(correlated_input(
+        "workflow-snapshot-op",
+        "workflow-load",
+        3,
+        KernelInputEvent::LoadWorkflow {
+            spec: fanout_synthesize(
+                vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
+                RuntimeTask::new("synth"),
+            ),
+            parent_session_id: "parent-session".into(),
+            resumed_completed: Vec::new(),
+            resumed_submissions: Vec::new(),
+            resumed_submission_bases: Vec::new(),
+            resumed_results: Vec::new(),
+        },
+    ));
+    let pending_ids = match &workflow.actions[0] {
+        KernelAction {
+            effect: KernelEffect::SpawnWorkflow { nodes, .. },
+            ..
+        } => nodes
+            .iter()
+            .map(|node| node.agent_id.clone())
+            .collect::<Vec<_>>(),
+        other => panic!("expected workflow spawn, got {other:?}"),
+    };
+
+    let snapshot_json = runtime.snapshot_json().expect("encode workflow snapshot");
+    let mut restored =
+        KernelRuntime::restore_snapshot_json(&snapshot_json).expect("restore workflow");
+    let cancel = correlated_input(
+        "workflow-snapshot-op",
+        "workflow-cancel",
+        4,
+        KernelInputEvent::CancelOperation {
+            operation_id: "workflow-snapshot-op".into(),
+            reason: CancellationReason::HostShutdown,
+            pending_call_ids: pending_ids,
+        },
+    );
+    let original_cancel = runtime.step(cancel.clone());
+    let restored_cancel = restored.step(cancel);
+    assert_same_kernel_step(&original_cancel, &restored_cancel);
+    assert!(restored_cancel
+        .observations
+        .iter()
+        .any(|observation| matches!(
+            observation,
+            KernelObservation::BudgetUsageReported { reservation_id, .. }
+                if reservation_id == "workflow-snapshot-reservation"
+        )));
+    assert_eq!(restored.lifecycle(), KernelLifecycle::Cancelled);
+}
+
+#[test]
+fn snapshot_v2_rejects_incompatible_or_over_limit_checkpoints() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            reliability: Some(KernelReliabilityConfig {
+                snapshot_input_limit: Some(2),
+                ..KernelReliabilityConfig::default()
+            }),
+            ..RunConfig::default()
+        },
+    }));
+    let mut incompatible = runtime.snapshot().expect("bounded snapshot");
+    incompatible.snapshot_version = 1;
+    assert!(matches!(
+        KernelRuntime::restore_snapshot(incompatible),
+        Err(KernelFault {
+            code: KernelFaultCode::SnapshotIncompatible,
+            ..
+        })
+    ));
+
+    let mut inconsistent_limit = runtime.snapshot().expect("bounded snapshot");
+    inconsistent_limit.snapshot_input_limit = 100_001;
+    assert!(matches!(
+        KernelRuntime::restore_snapshot(inconsistent_limit),
+        Err(KernelFault {
+            code: KernelFaultCode::SnapshotIncompatible,
+            ..
+        })
+    ));
+
+    let mut inconsistent_journal = runtime.snapshot().expect("bounded snapshot");
+    inconsistent_journal
+        .accepted_inputs
+        .push(inconsistent_journal.accepted_inputs[0].clone());
+    assert!(matches!(
+        KernelRuntime::restore_snapshot(inconsistent_journal),
+        Err(KernelFault {
+            code: KernelFaultCode::SnapshotIncompatible,
+            ..
+        })
+    ));
+
+    runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("fills the configured journal"),
+        run_spec: None,
+    }));
+    runtime.step(KernelInput::new(KernelInputEvent::DeliverSignal {
+        delivery_id: "third-input".into(),
+        attempt: 1,
+        signal: signal(crate::types::signal::Urgency::Normal, "queued"),
+    }));
+    assert!(matches!(
+        runtime.snapshot(),
+        Err(KernelFault {
+            code: KernelFaultCode::SnapshotIncompatible,
+            ..
+        })
+    ));
+    assert_eq!(
+        runtime.accepted_snapshot_input_count(),
+        2,
+        "snapshot journal stays memory-bounded"
+    );
+}
+
+#[test]
+fn snapshot_v2_rejects_a_limit_below_the_existing_journal() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled {
+        enabled: true,
+    }));
+    let rejected = runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            reliability: Some(KernelReliabilityConfig {
+                snapshot_input_limit: Some(1),
+                ..KernelReliabilityConfig::default()
+            }),
+            ..RunConfig::default()
+        },
+    }));
+    assert!(matches!(
+        rejected.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::InvalidConfig,
+            ..
+        }]
+    ));
+    assert_eq!(
+        runtime
+            .snapshot()
+            .expect("original journal remains valid")
+            .accepted_inputs
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn snapshot_v2_preserves_u64_policy_across_json_hosts() {
+    let policy = SchedulerBudget {
+        max_tokens: 4096,
+        max_turns: 10,
+        max_total_tokens: u64::MAX,
+        max_wall_ms: Some(u64::MAX - 1),
+    };
+    let runtime = KernelRuntime::new(policy);
+    let encoded = runtime.snapshot_json().expect("encode large policy");
+    let value: serde_json::Value = serde_json::from_str(&encoded).expect("snapshot JSON");
+    assert_eq!(
+        value["initial_policy"]["max_total_tokens"],
+        u64::MAX.to_string()
+    );
+    assert_eq!(
+        value["initial_policy"]["max_wall_ms"],
+        (u64::MAX - 1).to_string()
+    );
+
+    let restored = KernelRuntime::restore_snapshot_json(&encoded).expect("restore large policy");
+    assert_eq!(restored.snapshot_json().expect("re-encode"), encoded);
+
+    let mut noncanonical = runtime.snapshot().expect("typed snapshot");
+    noncanonical.initial_policy.max_total_tokens = "01".into();
+    assert!(matches!(
+        KernelRuntime::restore_snapshot(noncanonical),
+        Err(KernelFault {
+            code: KernelFaultCode::SnapshotIncompatible,
+            ..
+        })
+    ));
+}
+
 #[test]
 fn load_workflow_resumes_from_completed_nodes() {
     use crate::orchestration::workflow::fanout_synthesize;
@@ -3040,7 +3303,7 @@ fn load_workflow_resumes_from_completed_nodes() {
         task: RuntimeTask::new("parent task"),
         run_spec: None,
     }));
-    runtime.state_machine_mut().take_observations();
+    runtime.clear_test_observations();
 
     // Resume a 2-worker fanout where worker 0 already completed before the interruption.
     let spec = fanout_synthesize(

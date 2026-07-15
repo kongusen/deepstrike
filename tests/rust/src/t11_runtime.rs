@@ -203,6 +203,7 @@ async fn runtime_applies_bounded_kernel_reliability_config() {
         host_effect_retry_attempts: Some(4),
         spool_threshold_bytes: Some(2048),
         spool_preview_bytes: Some(256),
+        snapshot_input_limit: Some(4096),
     });
 
     assert_eq!(RuntimeRunner::new(opts).execute("configured").await.unwrap(), "ok");

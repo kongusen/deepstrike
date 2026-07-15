@@ -683,7 +683,7 @@ runner.interrupt() // cooperative abort → kernel timeout path
 gw.destroy()
 ```
 
-Each routed signal produces a `signal_disposed` session event (`category: "ipc"`).
+Each routed signal produces a correlated `signal_delivery_disposed` session event (`category: "ipc"`).
 
 ---
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import re
@@ -153,6 +154,8 @@ class KernelReliability:
   host_effect_retry_attempts: int | None = None
   spool_threshold_bytes: int | None = None
   spool_preview_bytes: int | None = None
+  # Max accepted ABI transactions retained for a portable KernelSnapshotV2 rebuild.
+  snapshot_input_limit: int | None = None
 
 
 @dataclass
@@ -211,6 +214,8 @@ class RuntimeOptions:
   attention_policy: "AttentionPolicy | dict | None" = None
   scheduler_budget: SchedulerBudget | dict[str, Any] | None = None
   kernel_reliability: KernelReliability | dict[str, Any] | None = None
+  # Attempts allowed for a workflow node to satisfy its output schema, 1..16.
+  workflow_schema_validation_attempts: int = 2
   resource_quota: ResourceQuota | dict[str, Any] | None = None
   # O6: the in-kernel repeat fuse — hard rungs above the soft no-progress STOP. When the model
   # re-issues the IDENTICAL tool call (same name AND args) deny_after turns in a row the kernel
@@ -311,6 +316,12 @@ def _pending_call_ids(action: Any) -> list[str]:
 
 class RuntimeRunner:
   def __init__(self, opts: RuntimeOptions) -> None:
+    if (
+      isinstance(opts.workflow_schema_validation_attempts, bool)
+      or not isinstance(opts.workflow_schema_validation_attempts, int)
+      or not 1 <= opts.workflow_schema_validation_attempts <= 16
+    ):
+      raise ValueError("workflow_schema_validation_attempts must be an integer between 1 and 16")
     self._opts = opts
     self._interrupted = False
     self._cancellation_reason: OperationCancellationReason | None = None
@@ -1047,7 +1058,7 @@ class RuntimeRunner:
         return await _run(base_spec.goal)
 
       # G3: instruct + validate + retry once on mismatch; fail the node if it never conforms.
-      max_attempts = 2
+      max_attempts = self._opts.workflow_schema_validation_attempts
       last: Any = None
       last_errors: list[str] = []
       for attempt in range(1, max_attempts + 1):
@@ -3230,6 +3241,7 @@ def _kernel_reliability_to_kernel(
     "host_effect_retry_attempts",
     "spool_threshold_bytes",
     "spool_preview_bytes",
+    "snapshot_input_limit",
   ):
     value = get(field)
     if value is not None:

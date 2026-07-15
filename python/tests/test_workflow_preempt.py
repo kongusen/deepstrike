@@ -5,8 +5,6 @@ node's asyncio task → CancelledError aborts its in-flight LLM call. Real nativ
 """
 
 import asyncio
-from types import SimpleNamespace
-
 import pytest
 
 from deepstrike import (
@@ -16,6 +14,8 @@ from deepstrike import (
     Message,
     RuntimeOptions,
     RuntimeRunner,
+    RuntimeSignal,
+    SignalClaim,
     SubAgentResult,
 )
 from deepstrike._kernel import KernelRuntime, LoopPolicy
@@ -44,15 +44,30 @@ class _SigSource:
     def __init__(self, sigs):
         self._sigs = list(sigs)
 
-    async def next_signal(self, recipient=None):
-        return self._sigs.pop(0) if self._sigs else None
+    async def claim_signal(self, recipient=None, lease_ms=None):
+        if not self._sigs:
+            return None
+        return SignalClaim(
+            delivery_id="workflow-preempt-delivery",
+            lease_token="workflow-preempt-lease",
+            signal_id="79cc2f49-5d63-42be-bc0c-ecfcb9b9a47f",
+            delivery_attempt=1,
+            signal=self._sigs.pop(0),
+            lease_expires_at_ms=30_000,
+        )
+
+    async def ack_signal(self, receipt):
+        return True
+
+    async def nack_signal(self, receipt):
+        return True
 
 
 @pytest.mark.asyncio
 async def test_critical_signal_preempts_running_workflow_node():
     orch = _Stub()
-    crit = SimpleNamespace(source="gateway", signal_type="alert", urgency="critical",
-                           payload={"goal": "STOP NOW"}, kind="alert", dedupe_key=None)
+    crit = RuntimeSignal(source="gateway", signal_type="alert", urgency="critical",
+                         payload={"goal": "STOP NOW"}, dedupe_key=None)
     runner = RuntimeRunner(RuntimeOptions(
         provider=None,
         session_log=InMemorySessionLog(),

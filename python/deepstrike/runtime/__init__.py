@@ -1,4 +1,5 @@
 from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPlane, RunContext
+from deepstrike.runtime.kernel_step import restore_kernel_runtime, snapshot_kernel_runtime
 from deepstrike.runtime.facade import run_agent, run_fanout
 from deepstrike.runtime.runner import (
   MemoryPolicy,
@@ -147,6 +148,8 @@ __all__ = [
   "MemoryPolicy",
   "KernelReliability",
   "OperationCancellationReason",
+  "restore_kernel_runtime",
+  "snapshot_kernel_runtime",
   "MemoryWriteRateLimit",
   "SchedulerBudget",
   "SubAgentHarnessConfig",

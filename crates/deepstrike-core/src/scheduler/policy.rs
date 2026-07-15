@@ -1,5 +1,5 @@
 /// OS Phase-2 unified scheduler budget: turn / token / wall-clock three axes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerBudget {
     /// Context window size passed to the pressure monitor.
     pub max_tokens: u32,
@@ -48,4 +48,3 @@ impl SchedulerBudget {
         None
     }
 }
-

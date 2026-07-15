@@ -1,5 +1,6 @@
 use super::*;
 pub const KERNEL_ABI_VERSION: u32 = 2;
+pub const KERNEL_SNAPSHOT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -159,6 +160,69 @@ pub struct KernelReliabilityConfig {
     pub spool_threshold_bytes: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spool_preview_bytes: Option<u32>,
+    /// Maximum accepted ABI inputs retained for a portable snapshot rebuild.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_input_limit: Option<usize>,
+}
+
+/// Portable runtime checkpoint. State is rebuilt from accepted public ABI transactions rather
+/// than serializing private scheduler structs, so internal refactors do not change this schema.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KernelSnapshotV2 {
+    pub snapshot_version: u32,
+    pub abi_version: u32,
+    pub initial_policy: KernelSnapshotPolicyV2,
+    pub lifecycle: KernelLifecycle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    pub next_step_seq: u64,
+    pub snapshot_input_limit: usize,
+    #[serde(default)]
+    pub accepted_inputs: Vec<KernelInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_step: Option<KernelStep>,
+}
+
+/// JSON-portable scheduler policy. The 64-bit axes use decimal strings so JavaScript hosts do not
+/// lose precision while parsing and re-encoding a checkpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelSnapshotPolicyV2 {
+    pub max_tokens: u32,
+    pub max_turns: u32,
+    pub max_total_tokens: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_wall_ms: Option<String>,
+}
+
+impl From<&SchedulerBudget> for KernelSnapshotPolicyV2 {
+    fn from(policy: &SchedulerBudget) -> Self {
+        Self {
+            max_tokens: policy.max_tokens,
+            max_turns: policy.max_turns,
+            max_total_tokens: policy.max_total_tokens.to_string(),
+            max_wall_ms: policy.max_wall_ms.map(|value| value.to_string()),
+        }
+    }
+}
+
+impl TryFrom<&KernelSnapshotPolicyV2> for SchedulerBudget {
+    type Error = String;
+
+    fn try_from(policy: &KernelSnapshotPolicyV2) -> Result<Self, Self::Error> {
+        Ok(Self {
+            max_tokens: policy.max_tokens,
+            max_turns: policy.max_turns,
+            max_total_tokens: policy.max_total_tokens.parse().map_err(|_| {
+                "snapshot max_total_tokens must be a u64 decimal string".to_string()
+            })?,
+            max_wall_ms: policy
+                .max_wall_ms
+                .as_deref()
+                .map(str::parse)
+                .transpose()
+                .map_err(|_| "snapshot max_wall_ms must be a u64 decimal string".to_string())?,
+        })
+    }
 }
 
 /// K2: a bundle of run-setup configuration carried by the [`KernelInputEvent::ConfigureRun`] event.

@@ -31,12 +31,49 @@ export const KERNEL_ABI_VERSION = 2
 
 export interface KernelRuntimeHandle {
   step(inputJson: string): string
+  snapshot(): string
+  restore(snapshotJson: string): void
   isTerminal(): boolean
   turn(): number
   recoveryContentBytes(): number
   render(): RenderedContext
   drainNewMessages(): Message[]
   preservedRefs(): string[]
+}
+
+export interface KernelSnapshotV2 {
+  snapshot_version: 2
+  abi_version: 2
+  initial_policy: {
+    max_tokens: number
+    max_turns: number
+    max_total_tokens: string
+    max_wall_ms?: string
+  }
+  lifecycle: string
+  operation_id?: string
+  next_step_seq: number
+  snapshot_input_limit: number
+  accepted_inputs: Array<{ event_id: string; [key: string]: unknown }>
+  last_step?: Record<string, unknown>
+}
+
+export function snapshotKernelRuntime(runtime: KernelRuntimeHandle): KernelSnapshotV2 {
+  return JSON.parse(runtime.snapshot()) as KernelSnapshotV2
+}
+
+export function restoreKernelRuntime(runtime: KernelRuntimeHandle, snapshot: KernelSnapshotV2): void {
+  runtime.restore(JSON.stringify(snapshot))
+  const operationId = snapshot.operation_id
+  if (!operationId) {
+    kernelWireStates.delete(runtime)
+    return
+  }
+  const nextEventSequence = snapshot.accepted_inputs.reduce((next, input) => {
+    const match = input.event_id.match(/-event-(\d+)$/)
+    return match ? Math.max(next, Number(match[1]) + 1) : next
+  }, 1)
+  kernelWireStates.set(runtime, { operationId, nextEventSequence })
 }
 
 export interface PaceDecision {

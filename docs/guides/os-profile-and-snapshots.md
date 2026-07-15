@@ -106,7 +106,7 @@ Snapshot 统计：
 | `last_resumed_turn` | `resumed` |
 | `process_by_agent` | `agent_process_changed` |
 | `budget_exceeded` | `budget_exceeded` |
-| `signals` | `signal_disposed` |
+| `signals` | `signal_delivery_disposed` |
 | `page_out_count` / `page_in_count` | memory paging |
 | `spool_count` | `large_result_spooled` |
 | `tool_gated_count` | `tool_gated` |
@@ -128,10 +128,10 @@ assert session_log_has_required_categories(events)
 | 名称 | 用途 | 是否可恢复执行 |
 |------|------|----------------|
 | OS Snapshot | 从 SessionLog 折叠出的观测摘要 | 否 |
-| KernelSnapshot | kernel 内部 runtime state | 是，服务 wake / replay |
+| KernelSnapshotV2 | 已接受 ABI 事务与校验元数据 | 是，服务精确 wake / replay |
 | ContextSnapshot | Context 分区快照 | 部分，服务 context restore |
 
-OS Snapshot 面向人和监控系统；KernelSnapshot 面向 runtime 恢复。
+OS Snapshot 面向人和监控系统；`KernelSnapshotV2` 面向 runtime 恢复。后者不序列化私有 state-machine struct，而是确定性重放 public ABI，并核对 lifecycle、operation、step/effect identity 与 terminal latch。Node 使用 `snapshotKernelRuntime` / `restoreKernelRuntime`，Python 使用 `snapshot_kernel_runtime` / `restore_kernel_runtime`。`kernelReliability.snapshotInputLimit` / `KernelReliability.snapshot_input_limit` 控制可恢复事务上限。
 
 ## 生产建议
 
@@ -140,6 +140,7 @@ OS Snapshot 面向人和监控系统；KernelSnapshot 面向 runtime 恢复。
 3. 给 dashboard ingest 增加 `session_log_has_required_categories` 检查。
 4. 对长期 run 定期构建 OS Snapshot，观察 `tool_gated_count`、`spool_count`、memory validation failure。
 5. Profile 与 `ResourceQuota` 配合使用；profile 管策略，quota 管资源。
+6. 按故障恢复窗口设置 snapshot input limit；达到上限会显式返回 `snapshot_incompatible`，不会生成不完整快照。
 
 ## 验证入口
 

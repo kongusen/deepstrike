@@ -512,6 +512,21 @@ impl KernelRuntime {
             .map_err(|e| JsValue::from_str(&format!("failed to encode KernelStep: {e}")))
     }
 
+    #[wasm_bindgen(js_name = snapshot)]
+    pub fn snapshot(&self) -> Result<String, JsValue> {
+        self.inner.snapshot_json().map_err(|fault| {
+            JsValue::from_str(&serde_json::to_string(&fault).unwrap_or(fault.message))
+        })
+    }
+
+    #[wasm_bindgen(js_name = restore)]
+    pub fn restore(&mut self, snapshot_json: String) -> Result<(), JsValue> {
+        self.inner = RustKernelRuntime::restore_snapshot_json(&snapshot_json).map_err(|fault| {
+            JsValue::from_str(&serde_json::to_string(&fault).unwrap_or(fault.message))
+        })?;
+        Ok(())
+    }
+
     #[wasm_bindgen(js_name = isTerminal)]
     pub fn is_terminal(&self) -> bool {
         self.inner.is_terminal()

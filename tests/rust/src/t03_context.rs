@@ -244,8 +244,15 @@ fn reconstruct_messages_with_fallback_success_and_degrade() {
             action: Some("auto_compact".to_string()),
             summary: Some("Compressed turn 1 summary".to_string()),
             summary_tokens: Some(10),
-            archive_ref: Some("archive/success.jsonl".to_string()),
             preserved_refs: vec![],
+        },
+        SessionEvent::PageOut {
+            turn: 1,
+            action: Some("auto_compact".to_string()),
+            summary: Some("Compressed turn 1 summary".to_string()),
+            tier_hint: Some("semantic".to_string()),
+            message_count: 1,
+            archive_ref: Some("archive/success.jsonl".to_string()),
         },
         SessionEvent::Compressed {
             turn: 2,
@@ -253,8 +260,15 @@ fn reconstruct_messages_with_fallback_success_and_degrade() {
             action: Some("auto_compact".to_string()),
             summary: Some("Compressed turn 2 summary".to_string()),
             summary_tokens: Some(10),
-            archive_ref: Some("archive/missing.jsonl".to_string()),
             preserved_refs: vec![],
+        },
+        SessionEvent::PageOut {
+            turn: 2,
+            action: Some("auto_compact".to_string()),
+            summary: Some("Compressed turn 2 summary".to_string()),
+            tier_hint: Some("semantic".to_string()),
+            message_count: 1,
+            archive_ref: Some("archive/missing.jsonl".to_string()),
         },
     ];
 

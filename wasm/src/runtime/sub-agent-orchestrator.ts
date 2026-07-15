@@ -189,7 +189,7 @@ export async function spawnStandalone(
   const runtime = new kernel.KernelRuntime({
     maxTokens: parentOpts.maxTokens,
     maxTurns: parentOpts.maxTurns ?? 25,
-    timeoutMs: parentOpts.timeoutMs !== undefined ? BigInt(parentOpts.timeoutMs) : undefined,
+    timeoutMs: parentOpts.timeoutMs,
   })
   const pending: KernelObservation[] = []
 

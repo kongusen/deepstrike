@@ -111,6 +111,8 @@ export interface KernelReliabilityOptions {
   hostEffectRetryAttempts?: number
   spoolThresholdBytes?: number
   spoolPreviewBytes?: number
+  /** Max accepted ABI transactions retained for a portable KernelSnapshotV2 rebuild. */
+  snapshotInputLimit?: number
 }
 
 interface InboundSignalDelivery {
@@ -192,6 +194,8 @@ export interface RuntimeOptions {
   attentionPolicy?: { maxQueueSize?: number }
   schedulerBudget?: SchedulerBudget
   kernelReliability?: KernelReliabilityOptions
+  /** Attempts allowed for a workflow node to satisfy its output schema, 1..16. Default: 2. */
+  workflowSchemaValidationAttempts?: number
   resourceQuota?: ResourceQuota
   /** O6: the in-kernel repeat fuse — identical tool call (same name AND args) `denyAfter` turns in a
    *  row ⇒ deny + directive note; `terminateAfter` ⇒ run ends `no_progress`. Defaults 5/8; `false`
@@ -292,7 +296,12 @@ export class RuntimeRunner {
   private pendingAuthoredWorkflows: WorkflowSpec[] = []
   private workflowContinuation: Extract<KernelRunnerAction, { kind: "call_provider" }> | null = null
 
-  constructor(private readonly opts: RuntimeOptions) {}
+  constructor(private readonly opts: RuntimeOptions) {
+    const schemaAttempts = opts.workflowSchemaValidationAttempts ?? 2
+    if (!Number.isInteger(schemaAttempts) || schemaAttempts < 1 || schemaAttempts > 16) {
+      throw new RangeError("workflowSchemaValidationAttempts must be an integer between 1 and 16")
+    }
+  }
 
   get hostOptions(): RuntimeOptions { return this.opts }
 
@@ -684,7 +693,7 @@ export class RuntimeRunner {
       maxTurns: effectiveMaxTurns,
       // M4/G5: per-node token cap → child run's cumulative token budget (wasm LoopPolicy.maxTotalTokens is f64).
       ...(this.opts.maxTotalTokens !== undefined ? { maxTotalTokens: this.opts.maxTotalTokens } : {}),
-      timeoutMs: effectiveTimeoutMs !== undefined ? BigInt(effectiveTimeoutMs) : undefined,
+      timeoutMs: effectiveTimeoutMs,
     })
     this.activeKernel = runtime
 
@@ -1538,10 +1547,10 @@ export class RuntimeRunner {
     const schema = node.output_schema
     if (!schema) return orchestrator.run(mkCtx(baseSpec.goal))
 
-    const MAX_ATTEMPTS = 2
+    const maxAttempts = this.opts.workflowSchemaValidationAttempts ?? 2
     let last: SubAgentResult | undefined
     let lastErrors: string[] = []
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const goal =
         attempt === 1
           ? `${baseSpec.goal}\n\n${schemaInstruction(schema)}`
@@ -1555,7 +1564,7 @@ export class RuntimeRunner {
       lastErrors = v.errors
     }
 
-    const reason = `output_schema validation failed after ${MAX_ATTEMPTS} attempts: ${lastErrors.join("; ")}`
+    const reason = `output_schema validation failed after ${maxAttempts} attempts: ${lastErrors.join("; ")}`
     const fallback = last as SubAgentResult
     return {
       ...fallback,
@@ -1623,6 +1632,7 @@ export class RuntimeRunner {
         ...(r.hostEffectRetryAttempts !== undefined ? { host_effect_retry_attempts: r.hostEffectRetryAttempts } : {}),
         ...(r.spoolThresholdBytes !== undefined ? { spool_threshold_bytes: r.spoolThresholdBytes } : {}),
         ...(r.spoolPreviewBytes !== undefined ? { spool_preview_bytes: r.spoolPreviewBytes } : {}),
+        ...(r.snapshotInputLimit !== undefined ? { snapshot_input_limit: r.snapshotInputLimit } : {}),
       }
     }
     if (this.opts.resourceQuota) {
@@ -1695,7 +1705,7 @@ export class RuntimeRunner {
       maxTokens: this.opts.maxTokens,
       maxTurns: this.opts.maxTurns ?? 25,
       ...(this.opts.maxTotalTokens !== undefined ? { maxTotalTokens: this.opts.maxTotalTokens } : {}),
-      timeoutMs: this.opts.timeoutMs !== undefined ? BigInt(this.opts.timeoutMs) : undefined,
+      timeoutMs: this.opts.timeoutMs,
     })
     this.activeKernel = runtime
     const goal = `workflow:${spec.nodes.length} nodes`

@@ -153,3 +153,26 @@ fn spawn_sub_agent_fixture_updates_process_table_via_kernel() {
             if agent_id == "worker" && state == "running"
     )));
 }
+
+#[test]
+fn kernel_snapshot_v2_roundtrips_pending_effect_identity() {
+    use deepstrike_core::runtime::{KernelInputEvent, KernelRuntime, KERNEL_SNAPSHOT_VERSION};
+    use deepstrike_core::scheduler::policy::SchedulerBudget;
+    use deepstrike_core::types::task::RuntimeTask;
+
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let started = runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("snapshot golden"),
+        run_spec: None,
+    }));
+    let expected_effect_id = started.actions[0].effect_id.clone();
+    let snapshot = runtime.snapshot().expect("snapshot");
+    assert_eq!(snapshot.snapshot_version, KERNEL_SNAPSHOT_VERSION);
+
+    let restored = KernelRuntime::restore_snapshot(snapshot).expect("restore");
+    let restored_snapshot = restored.snapshot().expect("restored snapshot");
+    assert_eq!(
+        restored_snapshot.last_step.expect("pending step").actions[0].effect_id,
+        expected_effect_id,
+    );
+}

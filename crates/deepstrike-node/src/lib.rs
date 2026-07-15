@@ -606,6 +606,29 @@ impl KernelRuntime {
         })
     }
 
+    /// Encode a portable ABI-v2 runtime checkpoint.
+    #[napi]
+    pub fn snapshot(&self) -> Result<String> {
+        self.inner.snapshot_json().map_err(|fault| {
+            Error::new(
+                Status::InvalidArg,
+                serde_json::to_string(&fault).unwrap_or(fault.message),
+            )
+        })
+    }
+
+    /// Replace this runtime with a checkpoint restored by deterministic ABI replay.
+    #[napi]
+    pub fn restore(&mut self, snapshot_json: String) -> Result<()> {
+        self.inner = RustKernelRuntime::restore_snapshot_json(&snapshot_json).map_err(|fault| {
+            Error::new(
+                Status::InvalidArg,
+                serde_json::to_string(&fault).unwrap_or(fault.message),
+            )
+        })?;
+        Ok(())
+    }
+
     #[napi]
     pub fn is_terminal(&self) -> bool {
         self.inner.is_terminal()

@@ -510,12 +510,13 @@ def test_g3_validate_against_schema_subset():
 _G3_SCHEMA = {"type": "object", "required": ["verdict"], "properties": {"verdict": {"type": "string"}}}
 
 
-def _g3_runner(orch):
+def _g3_runner(orch, *, attempts=2):
     runner = RuntimeRunner(RuntimeOptions(
         provider=_StubProvider(),
         session_log=InMemorySessionLog(),
         execution_plane=LocalExecutionPlane(),
         sub_agent_orchestrator=orch,
+        workflow_schema_validation_attempts=attempts,
         max_tokens=1000,
     ))
     rt = KernelRuntime(LoopPolicy(max_tokens=1000))
@@ -600,6 +601,35 @@ async def test_g3_run_workflow_fails_node_when_never_conforms():
     outcome = await runner.run_workflow(spec)
     assert orch.calls == 2
     assert outcome["failed"] == ["wf-node0"]
+
+
+@pytest.mark.asyncio
+async def test_g3_run_workflow_uses_configured_attempt_bound():
+    from deepstrike._kernel import Message
+
+    class _Orch:
+        def __init__(self):
+            self.calls = 0
+
+        async def run(self, ctx):
+            self.calls += 1
+            return SubAgentResult(
+                agent_id=ctx.spec.identity.agent_id,
+                result=LoopResult(termination="completed", turns_used=1, total_tokens_used=1,
+                                  final_message=Message(role="assistant", content="never valid")),
+            )
+
+    orch = _Orch()
+    runner = _g3_runner(orch, attempts=3)
+    spec = WorkflowSpec(nodes=[WorkflowNodeSpec(task="judge", role="verify", output_schema=_G3_SCHEMA)])
+    outcome = await runner.run_workflow(spec)
+    assert orch.calls == 3
+    assert outcome["failed"] == ["wf-node0"]
+
+
+def test_g3_rejects_unsafe_attempt_bound():
+    with pytest.raises(ValueError, match="between 1 and 16"):
+        _g3_runner(object(), attempts=0)
 
 
 # ── G4 budget-as-signal ──────────────────────────────────────────────────────────────────────────

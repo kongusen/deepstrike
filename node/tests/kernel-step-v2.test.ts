@@ -20,6 +20,9 @@ class FakeKernel implements KernelRuntimeHandle {
     return JSON.stringify(step)
   }
 
+  snapshot(): string { throw new Error("unused") }
+  restore(_snapshotJson: string): void { throw new Error("unused") }
+
   isTerminal(): boolean { return false }
   turn(): number { return 0 }
   recoveryContentBytes(): number { return 1024 }

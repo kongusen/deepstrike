@@ -18,17 +18,25 @@ export class KernelRuntime {
   private loopRound: { default_action?: string } | null = null
   private paceProposal: { action: string; reason: string } | null = null
   private nextEffect = 1
+  private operationId: string | undefined
+  private acceptedInputs: Array<Record<string, unknown>> = []
 
   private effect(kind: string, payload: Record<string, unknown>): Record<string, unknown> {
     return { effect_id: `mock-effect-${this.nextEffect++}`, kind, ...payload }
   }
 
-  constructor(policy: { maxTokens: number; maxTurns?: number }) {
+  constructor(policy: { maxTokens: number; maxTurns?: number; maxTotalTokens?: number; timeoutMs?: number }) {
+    if (policy.timeoutMs !== undefined && typeof policy.timeoutMs !== "number") {
+      throw new TypeError("WASM LoopPolicy.timeoutMs must be a number")
+    }
     this.maxTurns = policy.maxTurns ?? 25
   }
 
   step(inputJson: string): string {
     const input = JSON.parse(inputJson) as { event?: Record<string, unknown> }
+    const envelope = JSON.parse(inputJson) as Record<string, unknown>
+    this.operationId = String(envelope.operation_id ?? this.operationId ?? "") || undefined
+    this.acceptedInputs.push(envelope)
     const event = input.event ?? {}
     kernelEvents.push(event)
     const actions: Array<Record<string, unknown>> = []
@@ -187,6 +195,24 @@ export class KernelRuntime {
   }
 
   isTerminal(): boolean { return this.terminal }
+  snapshot(): string {
+    return JSON.stringify({
+      snapshot_version: 2,
+      abi_version: 2,
+      initial_policy: {},
+      lifecycle: this.terminal ? "completed" : (this.operationId ? "running" : "created"),
+      operation_id: this.operationId,
+      next_step_seq: this.nextEffect,
+      snapshot_input_limit: 10_000,
+      accepted_inputs: this.acceptedInputs,
+    })
+  }
+  restore(snapshotJson: string): void {
+    const snapshot = JSON.parse(snapshotJson) as { operation_id?: string; lifecycle?: string; accepted_inputs?: Array<Record<string, unknown>> }
+    this.operationId = snapshot.operation_id
+    this.terminal = ["completed", "cancelled", "failed"].includes(snapshot.lifecycle ?? "")
+    this.acceptedInputs = snapshot.accepted_inputs ?? []
+  }
   turn(): number { return this.phase }
   recoveryContentBytes(): number { return 32_768 }
   render(): unknown { return this.rendered }

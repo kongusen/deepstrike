@@ -172,6 +172,8 @@ export interface KernelReliabilityOptions {
   spoolThresholdBytes?: number
   /** Inline spool preview bytes; positive and no larger than the threshold. */
   spoolPreviewBytes?: number
+  /** Max accepted ABI transactions retained for a portable KernelSnapshotV2 rebuild. */
+  snapshotInputLimit?: number
 }
 
 export type OperationCancellationReason = "user" | "deadline" | "lease_lost" | "host_shutdown"
@@ -251,6 +253,8 @@ export interface RuntimeOptions {
   resourceQuota?: ResourceQuota
   /** Host-selectable bounded replay/recovery/durability policy. */
   kernelReliability?: KernelReliabilityOptions
+  /** Attempts allowed for a workflow node to satisfy its output schema, 1..16. Default: 2. */
+  workflowSchemaValidationAttempts?: number
   /**
    * O6: the in-kernel repeat fuse — the hard rungs above the soft no-progress STOP. When the model
    * re-issues the IDENTICAL tool call (same name AND args) `denyAfter` turns in a row, the kernel
@@ -310,8 +314,8 @@ export interface RuntimeOptions {
   /**
    * L1 (RunGroup): bind this runner to a governance domain shared by N peer sessions of one logical
    * run. Members pass the same `id` + `budgetStore`; reservable stores enforce the kernel's run-level
-   * cap against settled + in-flight usage. Legacy stores provide cumulative accounting only.
-   * Unset ⇒ N=1, pre-L1 per-run budget (byte-identical). Only cumulative budget is shared; instantaneous
+   * cap against settled + in-flight usage. Stores must implement atomic reserve/settle/release.
+   * Unset ⇒ N=1. Only cumulative budget is shared; instantaneous
    * concurrency stays vehicle-scoped (spec §2.5).
    */
   runGroup?: RunGroup
@@ -443,6 +447,10 @@ export class RuntimeRunner {
   private lastEntropySample: EntropySample | null = null
 
   constructor(private readonly opts: RuntimeOptions) {
+    const schemaAttempts = opts.workflowSchemaValidationAttempts ?? 2
+    if (!Number.isInteger(schemaAttempts) || schemaAttempts < 1 || schemaAttempts > 16) {
+      throw new RangeError("workflowSchemaValidationAttempts must be an integer between 1 and 16")
+    }
     if (opts.enableDiagnosticsDashboard) {
       const originalAppend = opts.sessionLog.append.bind(opts.sessionLog)
       opts.sessionLog.append = async (sessionId, event) => {
@@ -693,6 +701,9 @@ export class RuntimeRunner {
           : {}),
         ...(reliability.spoolPreviewBytes !== undefined
           ? { spool_preview_bytes: reliability.spoolPreviewBytes }
+          : {}),
+        ...(reliability.snapshotInputLimit !== undefined
+          ? { snapshot_input_limit: reliability.snapshotInputLimit }
           : {}),
       }
     }
@@ -977,10 +988,10 @@ export class RuntimeRunner {
     const schema = node.output_schema
     if (!schema) return orchestrator.run(mkCtx(baseSpec.goal))
 
-    const MAX_ATTEMPTS = 2
+    const maxAttempts = this.opts.workflowSchemaValidationAttempts ?? 2
     let last: SubAgentResult | undefined
     let lastErrors: string[] = []
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const goal =
         attempt === 1
           ? `${baseSpec.goal}\n\n${schemaInstruction(schema)}`
@@ -994,7 +1005,7 @@ export class RuntimeRunner {
       lastErrors = v.errors
     }
 
-    const reason = `output_schema validation failed after ${MAX_ATTEMPTS} attempts: ${lastErrors.join("; ")}`
+    const reason = `output_schema validation failed after ${maxAttempts} attempts: ${lastErrors.join("; ")}`
     const fallback = last as SubAgentResult
     return {
       ...fallback,

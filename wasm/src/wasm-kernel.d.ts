@@ -1,8 +1,10 @@
 /** Ambient types when `@deepstrike/wasm-kernel` is not installed (e.g. `tsc` without `build:wasm`). */
 declare module "@deepstrike/wasm-kernel" {
   export class KernelRuntime {
-    constructor(policy: { maxTokens: number; maxTurns?: number; timeoutMs?: bigint })
+    constructor(policy: { maxTokens: number; maxTurns?: number; maxTotalTokens?: number; timeoutMs?: number })
     step(inputJson: string): string
+    snapshot(): string
+    restore(snapshotJson: string): void
     isTerminal(): boolean
     turn(): number
     recoveryContentBytes(): number

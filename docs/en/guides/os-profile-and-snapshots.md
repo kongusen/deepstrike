@@ -106,7 +106,7 @@ Snapshot fields:
 | `last_resumed_turn` | `resumed` |
 | `process_by_agent` | `agent_process_changed` |
 | `budget_exceeded` | `budget_exceeded` |
-| `signals` | `signal_disposed` |
+| `signals` | `signal_delivery_disposed` |
 | `page_out_count` / `page_in_count` | memory paging |
 | `spool_count` | `large_result_spooled` |
 | `tool_gated_count` | `tool_gated` |
@@ -128,10 +128,10 @@ This verifies kernel events carry correct `category` and `primitive`, useful bef
 | Name | Purpose | Can restore execution? |
 |------|---------|------------------------|
 | OS Snapshot | observed summary folded from SessionLog | no |
-| KernelSnapshot | internal kernel runtime state | yes, for wake / replay |
+| KernelSnapshotV2 | accepted ABI transactions plus validation metadata | yes, for exact wake / replay |
 | ContextSnapshot | context partition snapshot | partially, for context restore |
 
-OS Snapshot is for humans and monitoring. KernelSnapshot is for runtime recovery.
+OS Snapshot is for humans and monitoring. `KernelSnapshotV2` is for runtime recovery. It does not serialize private state-machine structs: restore deterministically replays the public ABI and verifies lifecycle, operation, step/effect identity, and the terminal latch. Node exposes `snapshotKernelRuntime` / `restoreKernelRuntime`; Python exposes `snapshot_kernel_runtime` / `restore_kernel_runtime`. Configure the bound with `kernelReliability.snapshotInputLimit` or `KernelReliability.snapshot_input_limit`.
 
 ## Production Practices
 
@@ -140,6 +140,7 @@ OS Snapshot is for humans and monitoring. KernelSnapshot is for runtime recovery
 3. Check `session_log_has_required_categories` before dashboard ingest.
 4. Build OS Snapshot periodically for long runs and watch `tool_gated_count`, `spool_count`, and memory validation failures.
 5. Combine Profile with `ResourceQuota`: profile governs policy; quota governs resources.
+6. Size the snapshot input limit to the recovery window. Once exceeded, snapshot creation fails explicitly with `snapshot_incompatible` instead of emitting a partial checkpoint.
 
 ## Verification Entry Points
 

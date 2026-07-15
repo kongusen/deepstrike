@@ -863,6 +863,23 @@ impl KernelRuntime {
             .map_err(|e| PyValueError::new_err(format!("failed to encode KernelStep: {e}")))
     }
 
+    fn snapshot(&self) -> PyResult<String> {
+        self.inner.snapshot_json().map_err(|fault| {
+            PyValueError::new_err(
+                serde_json::to_string(&fault).unwrap_or(fault.message)
+            )
+        })
+    }
+
+    fn restore(&mut self, snapshot_json: String) -> PyResult<()> {
+        self.inner = RustKernelRuntime::restore_snapshot_json(&snapshot_json).map_err(|fault| {
+            PyValueError::new_err(
+                serde_json::to_string(&fault).unwrap_or(fault.message)
+            )
+        })?;
+        Ok(())
+    }
+
     fn is_terminal(&self) -> bool {
         self.inner.is_terminal()
     }

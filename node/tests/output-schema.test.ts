@@ -179,4 +179,40 @@ describe("runWorkflow enforces output_schema", () => {
     expect(calls).toBe(2) // tried, retried, still invalid
     expect(outcome.failed).toEqual(["wf-node0"])
   })
+
+  it("uses the SDK-configured validation attempt bound", async () => {
+    let calls = 0
+    const orchestrator = {
+      async run(ctx: { manifest: { agent_id: string } }) {
+        calls += 1
+        return {
+          agentId: ctx.manifest.agent_id,
+          result: {
+            termination: "completed",
+            finalMessage: { role: "assistant", content: "never valid json", toolCalls: [] },
+            turnsUsed: 1,
+            totalTokensUsed: 1,
+          },
+        }
+      },
+    }
+    const runner = new RuntimeRunner({
+      sessionLog: new InMemorySessionLog(),
+      maxTokens: 8000,
+      subAgentOrchestrator: orchestrator as never,
+      workflowSchemaValidationAttempts: 3,
+    } as never)
+    wire(runner, makeFakeKernel())
+    const outcome = await runner.runWorkflow(spec)
+    expect(calls).toBe(3)
+    expect(outcome.failed).toEqual(["wf-node0"])
+  })
+
+  it("rejects an unsafe validation attempt bound", () => {
+    expect(() => new RuntimeRunner({
+      sessionLog: new InMemorySessionLog(),
+      maxTokens: 8000,
+      workflowSchemaValidationAttempts: 0,
+    } as never)).toThrow(/between 1 and 16/)
+  })
 })

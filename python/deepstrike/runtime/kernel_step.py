@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -13,6 +14,24 @@ from deepstrike.providers.base import RenderedContext
 
 KERNEL_ABI_VERSION = 2
 _wire_states: dict[int, tuple[str, int]] = {}
+
+
+def snapshot_kernel_runtime(runtime: Any) -> dict[str, Any]:
+  return json.loads(runtime.snapshot())
+
+
+def restore_kernel_runtime(runtime: Any, snapshot: dict[str, Any]) -> None:
+  runtime.restore(json.dumps(snapshot))
+  operation_id = snapshot.get("operation_id")
+  if not operation_id:
+    _wire_states.pop(id(runtime), None)
+    return
+  next_sequence = 1
+  for accepted in snapshot.get("accepted_inputs") or []:
+    match = re.search(r"-event-(\d+)$", str(accepted.get("event_id") or ""))
+    if match:
+      next_sequence = max(next_sequence, int(match.group(1)) + 1)
+  _wire_states[id(runtime)] = (str(operation_id), next_sequence)
 
 
 @dataclass
