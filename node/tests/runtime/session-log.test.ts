@@ -7,6 +7,7 @@ import {
   KernelLogIntegrityError,
   createKernelOperationGenesis,
   createKernelTransaction,
+  kernelRecordDigest,
 } from "../../src/runtime/kernel-transaction-log.js"
 
 async function genesis(operationId = "op-1") {
@@ -31,6 +32,13 @@ async function transaction(previousTransactionDigest: string, stepSeq = 1) {
 }
 
 describe("InMemorySessionLog", () => {
+  it("pins the cross-SDK canonical digest codec", () => {
+    expect(kernelRecordDigest({ z: 1, a: [true, "雪"] })).toBe(
+      "74ffaa09c9570f87244813a5b15514369f7b1a8996e3e80017585b4df246c1f7",
+    )
+    expect(() => kernelRecordDigest({ ratio: 0.5 })).toThrow(KernelLogIntegrityError)
+  })
+
   it("fences authoritative transactions without coupling projection appends", async () => {
     const log = new InMemorySessionLog()
     const operationGenesis = await genesis()

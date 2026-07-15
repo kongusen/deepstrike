@@ -56,7 +56,11 @@ export function canonicalKernelJson(value: unknown): string {
   if (value === null) return "null"
   if (typeof value === "string" || typeof value === "boolean") return JSON.stringify(value)
   if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new KernelLogIntegrityError("canonical records require finite numbers")
+    if (!Number.isSafeInteger(value)) {
+      throw new KernelLogIntegrityError(
+        "canonical records require safe integers; encode ratios as fixed-point integers or decimal strings",
+      )
+    }
     return JSON.stringify(Object.is(value, -0) ? 0 : value)
   }
   if (Array.isArray(value)) return `[${value.map(canonicalKernelJson).join(",")}]`

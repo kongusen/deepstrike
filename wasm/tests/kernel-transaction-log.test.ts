@@ -4,9 +4,17 @@ import {
   KernelLogIntegrityError,
   createKernelOperationGenesis,
   createKernelTransaction,
+  kernelRecordDigest,
 } from "../src/runtime/index.js"
 
 describe("WASM authoritative kernel transaction log", () => {
+  it("pins the cross-SDK canonical digest codec", async () => {
+    await expect(kernelRecordDigest({ z: 1, a: [true, "雪"] })).resolves.toBe(
+      "74ffaa09c9570f87244813a5b15514369f7b1a8996e3e80017585b4df246c1f7",
+    )
+    await expect(kernelRecordDigest({ ratio: 0.5 })).rejects.toBeInstanceOf(KernelLogIntegrityError)
+  })
+
   it("fences stale writers independently of semantic projections", async () => {
     const log = new InMemorySessionLog()
     const genesis = await createKernelOperationGenesis({

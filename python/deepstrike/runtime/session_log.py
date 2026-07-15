@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, TypedDict
@@ -8,6 +10,17 @@ from typing import Literal, Protocol, TypedDict
 from deepstrike._kernel import ToolCall, ToolResult
 from deepstrike.runtime.kernel_event_log import (
     primitive_for_kind,
+)
+from deepstrike.runtime.kernel_transaction_log import (
+    DurableAppendReceipt,
+    KernelGenesisReceipt,
+    KernelLogConflictError,
+    KernelLogIntegrityError,
+    KernelOperationGenesis,
+    KernelTransaction,
+    KernelTransactionEntry,
+    verify_kernel_operation_genesis,
+    verify_kernel_transaction,
 )
 
 
@@ -380,16 +393,38 @@ class SessionLog(Protocol):
         primitive_filter: KernelPrimitive | None = None,
     ) -> list[SessionEntry]: ...
     async def latest_seq(self, session_id: str) -> int: ...
+    async def append_kernel_genesis(
+        self, session_id: str, genesis: KernelOperationGenesis
+    ) -> KernelGenesisReceipt: ...
+    async def read_kernel_genesis(self, session_id: str) -> KernelOperationGenesis | None: ...
+    async def compare_and_append_kernel_transaction(
+        self,
+        session_id: str,
+        expected_transaction_head: str,
+        transaction: KernelTransaction,
+    ) -> DurableAppendReceipt: ...
+    async def read_kernel_transactions(
+        self, session_id: str, from_step_seq: int = 1
+    ) -> list[KernelTransactionEntry]: ...
+    async def kernel_transaction_head(self, session_id: str) -> str | None: ...
 
 
 class InMemorySessionLog:
     def __init__(self) -> None:
         self._store: dict[str, list[SessionEntry]] = {}
+        self._seq_counters: dict[str, int] = {}
+        self._genesis_store: dict[str, tuple[int, KernelOperationGenesis]] = {}
+        self._transaction_store: dict[str, list[KernelTransactionEntry]] = {}
+
+    def _next_seq(self, session_id: str) -> int:
+        seq = self._seq_counters.get(session_id, 0)
+        self._seq_counters[session_id] = seq + 1
+        return seq
 
     async def append(self, session_id: str, event: SessionEvent) -> int:
         if session_id not in self._store:
             self._store[session_id] = []
-        seq = len(self._store[session_id])
+        seq = self._next_seq(session_id)
         self._store[session_id].append(SessionEntry(seq=seq, event=event))
         return seq
 
@@ -407,8 +442,61 @@ class InMemorySessionLog:
         ]
 
     async def latest_seq(self, session_id: str) -> int:
-        entries = self._store.get(session_id)
-        return len(entries) - 1 if entries else -1
+        return self._seq_counters.get(session_id, 0) - 1
+
+    async def append_kernel_genesis(
+        self, session_id: str, genesis: KernelOperationGenesis
+    ) -> KernelGenesisReceipt:
+        verify_kernel_operation_genesis(genesis)
+        existing = self._genesis_store.get(session_id)
+        if existing is not None:
+            log_seq, existing_genesis = existing
+            if existing_genesis["genesis_digest"] != genesis["genesis_digest"]:
+                raise KernelLogConflictError("session already has a different kernel operation genesis")
+            return {"log_seq": log_seq, "genesis_digest": genesis["genesis_digest"]}
+        log_seq = self._next_seq(session_id)
+        self._genesis_store[session_id] = (log_seq, genesis)
+        return {"log_seq": log_seq, "genesis_digest": genesis["genesis_digest"]}
+
+    async def read_kernel_genesis(self, session_id: str) -> KernelOperationGenesis | None:
+        existing = self._genesis_store.get(session_id)
+        return existing[1] if existing else None
+
+    async def compare_and_append_kernel_transaction(
+        self,
+        session_id: str,
+        expected_transaction_head: str,
+        transaction: KernelTransaction,
+    ) -> DurableAppendReceipt:
+        verify_kernel_transaction(transaction)
+        genesis = await self.read_kernel_genesis(session_id)
+        if genesis is None:
+            raise KernelLogIntegrityError("kernel transaction requires a durable genesis")
+        if transaction["operation_id"] != genesis["operation_id"]:
+            raise KernelLogIntegrityError("kernel transaction operation_id does not match genesis")
+        head = await self.kernel_transaction_head(session_id)
+        if head != expected_transaction_head or transaction["previous_transaction_digest"] != head:
+            raise KernelLogConflictError("kernel transaction head changed before compare-and-append")
+        log_seq = self._next_seq(session_id)
+        entries = self._transaction_store.setdefault(session_id, [])
+        entries.append({"log_seq": log_seq, "transaction": transaction})
+        return {"log_seq": log_seq, "transaction_digest": transaction["transaction_digest"]}
+
+    async def read_kernel_transactions(
+        self, session_id: str, from_step_seq: int = 1
+    ) -> list[KernelTransactionEntry]:
+        return [
+            entry
+            for entry in self._transaction_store.get(session_id, [])
+            if entry["transaction"]["step_seq"] >= from_step_seq
+        ]
+
+    async def kernel_transaction_head(self, session_id: str) -> str | None:
+        transactions = self._transaction_store.get(session_id, [])
+        if transactions:
+            return transactions[-1]["transaction"]["transaction_digest"]
+        genesis = await self.read_kernel_genesis(session_id)
+        return genesis["genesis_digest"] if genesis else None
 
 
 class FileSessionLog:
@@ -419,25 +507,30 @@ class FileSessionLog:
         self._dir = Path(directory)
         # Lazy-initialized per-session counter; avoids re-reading on every append.
         self._seq_counters: dict[str, int] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
 
     def _path(self, session_id: str) -> Path:
         return self._dir / f"{session_id}.jsonl"
 
-    async def _next_seq(self, session_id: str) -> int:
+    def _lock(self, session_id: str) -> asyncio.Lock:
+        return self._locks.setdefault(session_id, asyncio.Lock())
+
+    def _next_seq(self, session_id: str) -> int:
         if session_id not in self._seq_counters:
-            existing = await self.read(session_id)
-            self._seq_counters[session_id] = len(existing)
+            existing = self._read_records(session_id)
+            self._seq_counters[session_id] = max(
+                (int(record["seq"]) + 1 for record in existing),
+                default=0,
+            )
         seq = self._seq_counters[session_id]
         self._seq_counters[session_id] = seq + 1
         return seq
 
     async def append(self, session_id: str, event: SessionEvent) -> int:
-        self._dir.mkdir(parents=True, exist_ok=True)
-        seq = await self._next_seq(session_id)
-        line = json.dumps({"seq": seq, "event": _event_to_json(event)}, ensure_ascii=False)
-        with self._path(session_id).open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
-        return seq
+        async with self._lock(session_id):
+            seq = self._next_seq(session_id)
+            self._append_record(session_id, {"seq": seq, "event": _event_to_json(event)})
+            return seq
 
     async def read(
         self,
@@ -445,25 +538,143 @@ class FileSessionLog:
         from_seq: int = 0,
         primitive_filter: KernelPrimitive | None = None,
     ) -> list[SessionEntry]:
-        path = self._path(session_id)
-        if not path.exists():
-            return []
         results: list[SessionEntry] = []
-        with path.open(encoding="utf-8") as f:
-            for line in f:
-                if not line.strip():
+        for raw in self._read_records(session_id):
+            if "event" not in raw:
+                continue
+            entry = SessionEntry(seq=int(raw["seq"]), event=_event_from_json(raw["event"]))
+            if entry.seq >= from_seq:
+                if primitive_filter is not None and primitive_for_kind(entry.event["kind"]) != primitive_filter:
                     continue
-                raw = json.loads(line)
-                entry = SessionEntry(seq=int(raw["seq"]), event=_event_from_json(raw["event"]))
-                if entry.seq >= from_seq:
-                    if primitive_filter is not None and primitive_for_kind(entry.event["kind"]) != primitive_filter:
-                        continue
-                    results.append(entry)
+                results.append(entry)
         return results
 
     async def latest_seq(self, session_id: str) -> int:
-        entries = await self.read(session_id)
-        return len(entries) - 1
+        records = self._read_records(session_id)
+        return max((int(record["seq"]) for record in records), default=-1)
+
+    async def append_kernel_genesis(
+        self, session_id: str, genesis: KernelOperationGenesis
+    ) -> KernelGenesisReceipt:
+        async with self._lock(session_id):
+            verify_kernel_operation_genesis(genesis)
+            existing = next(
+                (
+                    record
+                    for record in self._read_records(session_id)
+                    if record.get("record_type") == "kernel_genesis"
+                ),
+                None,
+            )
+            if existing is not None:
+                if existing["genesis"]["genesis_digest"] != genesis["genesis_digest"]:
+                    raise KernelLogConflictError("session already has a different kernel operation genesis")
+                return {"log_seq": int(existing["seq"]), "genesis_digest": genesis["genesis_digest"]}
+            log_seq = self._next_seq(session_id)
+            self._append_record(
+                session_id,
+                {"seq": log_seq, "record_type": "kernel_genesis", "genesis": genesis},
+            )
+            return {"log_seq": log_seq, "genesis_digest": genesis["genesis_digest"]}
+
+    async def read_kernel_genesis(self, session_id: str) -> KernelOperationGenesis | None:
+        record = next(
+            (
+                record
+                for record in self._read_records(session_id)
+                if record.get("record_type") == "kernel_genesis"
+            ),
+            None,
+        )
+        return record["genesis"] if record else None
+
+    async def compare_and_append_kernel_transaction(
+        self,
+        session_id: str,
+        expected_transaction_head: str,
+        transaction: KernelTransaction,
+    ) -> DurableAppendReceipt:
+        async with self._lock(session_id):
+            verify_kernel_transaction(transaction)
+            records = self._read_records(session_id)
+            genesis_record = next(
+                (record for record in records if record.get("record_type") == "kernel_genesis"),
+                None,
+            )
+            if genesis_record is None:
+                raise KernelLogIntegrityError("kernel transaction requires a durable genesis")
+            genesis = genesis_record["genesis"]
+            if transaction["operation_id"] != genesis["operation_id"]:
+                raise KernelLogIntegrityError("kernel transaction operation_id does not match genesis")
+            transactions = [
+                record for record in records if record.get("record_type") == "kernel_transaction"
+            ]
+            head = (
+                transactions[-1]["transaction"]["transaction_digest"]
+                if transactions
+                else genesis["genesis_digest"]
+            )
+            if head != expected_transaction_head or transaction["previous_transaction_digest"] != head:
+                raise KernelLogConflictError("kernel transaction head changed before compare-and-append")
+            log_seq = self._next_seq(session_id)
+            self._append_record(
+                session_id,
+                {
+                    "seq": log_seq,
+                    "record_type": "kernel_transaction",
+                    "transaction": transaction,
+                },
+            )
+            return {"log_seq": log_seq, "transaction_digest": transaction["transaction_digest"]}
+
+    async def read_kernel_transactions(
+        self, session_id: str, from_step_seq: int = 1
+    ) -> list[KernelTransactionEntry]:
+        return [
+            {
+                "log_seq": int(record["seq"]),
+                "transaction": record["transaction"],
+            }
+            for record in self._read_records(session_id)
+            if record.get("record_type") == "kernel_transaction"
+            and int(record["transaction"]["step_seq"]) >= from_step_seq
+        ]
+
+    async def kernel_transaction_head(self, session_id: str) -> str | None:
+        records = self._read_records(session_id)
+        transactions = [
+            record for record in records if record.get("record_type") == "kernel_transaction"
+        ]
+        if transactions:
+            return transactions[-1]["transaction"]["transaction_digest"]
+        genesis = next(
+            (record for record in records if record.get("record_type") == "kernel_genesis"),
+            None,
+        )
+        return genesis["genesis"]["genesis_digest"] if genesis else None
+
+    def _append_record(self, session_id: str, record: dict) -> None:
+        self._dir.mkdir(parents=True, exist_ok=True)
+        path = self._path(session_id)
+        is_new_file = not path.exists()
+        line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+        with path.open("a", encoding="utf-8") as file:
+            file.write(line + "\n")
+            file.flush()
+            os.fsync(file.fileno())
+        if is_new_file:
+            directory_fd = os.open(self._dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+
+    def _read_records(self, session_id: str) -> list[dict]:
+        path = self._path(session_id)
+        if not path.exists():
+            return []
+        with path.open(encoding="utf-8") as file:
+            return [json.loads(line) for line in file if line.strip()]
 
 
 def _event_to_json(event: SessionEvent) -> dict:
