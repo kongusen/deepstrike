@@ -27,9 +27,9 @@ describe("knowledge budget (K2)", () => {
           // Budget = 480 × 0.25 = 120 tokens. Two 60-token unpinned entries + one pinned
           // (~60 tokens) ⇒ ~180 used, over budget by ~60 ⇒ the OLDEST unpinned entry gets
           // marked; the pinned one is exempt regardless of age.
-          runner.pushKnowledge({ role: "system", content: PINNED.padEnd(240, "p"), toolCalls: [] }, 60, { key: "keep", pinned: true })
-          runner.pushKnowledge({ role: "system", content: `${EVICTABLE}1`.padEnd(240, "x"), toolCalls: [] }, 60, { key: "old1" })
-          runner.pushKnowledge({ role: "system", content: `${EVICTABLE}2`.padEnd(240, "y"), toolCalls: [] }, 60, { key: "old2" })
+          await runner.pushKnowledge({ role: "system", content: PINNED.padEnd(240, "p"), toolCalls: [] }, 60, { key: "keep", pinned: true })
+          await runner.pushKnowledge({ role: "system", content: `${EVICTABLE}1`.padEnd(240, "x"), toolCalls: [] }, 60, { key: "old1" })
+          await runner.pushKnowledge({ role: "system", content: `${EVICTABLE}2`.padEnd(240, "y"), toolCalls: [] }, 60, { key: "old2" })
           yield { type: "tool_call", id: `b${call}`, name: "bulk", arguments: {} }
           return
         }
@@ -73,9 +73,9 @@ describe("knowledge budget (K2)", () => {
         if (call === 1) {
           // 180 tokens — clearly over the default budget (120) so this test would FAIL if the
           // ratio-0 knob didn't reach the kernel.
-          runner.pushKnowledge({ role: "system", content: `${EVICTABLE}1`.padEnd(240, "x"), toolCalls: [] }, 60, { key: "old1" })
-          runner.pushKnowledge({ role: "system", content: `${EVICTABLE}2`.padEnd(240, "y"), toolCalls: [] }, 60, { key: "old2" })
-          runner.pushKnowledge({ role: "system", content: `${EVICTABLE}3`.padEnd(240, "w"), toolCalls: [] }, 60, { key: "old3" })
+          await runner.pushKnowledge({ role: "system", content: `${EVICTABLE}1`.padEnd(240, "x"), toolCalls: [] }, 60, { key: "old1" })
+          await runner.pushKnowledge({ role: "system", content: `${EVICTABLE}2`.padEnd(240, "y"), toolCalls: [] }, 60, { key: "old2" })
+          await runner.pushKnowledge({ role: "system", content: `${EVICTABLE}3`.padEnd(240, "w"), toolCalls: [] }, 60, { key: "old3" })
           yield { type: "tool_call", id: `b${call}`, name: "bulk", arguments: {} }
           return
         }

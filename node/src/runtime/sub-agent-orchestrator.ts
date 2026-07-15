@@ -9,7 +9,7 @@ import type { SessionEvent, SessionLog } from "./session-log.js"
 import { FilteredExecutionPlane } from "./filtered-plane.js"
 import { WorktreeExecutionPlane } from "./worktree-plane.js"
 import type { ExecutionPlane } from "./execution-plane.js"
-import { kernelApply, type KernelObservation } from "./kernel-step.js"
+import { durableKernelApply, type KernelObservation } from "./kernel-step.js"
 
 export interface SubAgentRunContext {
   parentOpts: RuntimeOptions
@@ -275,8 +275,14 @@ export async function spawnStandalone(
   })
   const pending: KernelObservation[] = []
 
-  kernelApply(runtime, pending, { kind: "start_run", task: { goal: "coordinator", criteria: [] } })
-  const observations = kernelApply(runtime, pending, {
+  await durableKernelApply(
+    runtime,
+    parentOpts.sessionLog,
+    parentSessionId,
+    pending,
+    { kind: "start_run", task: { goal: "coordinator", criteria: [] } },
+  )
+  const observations = await durableKernelApply(runtime, parentOpts.sessionLog, parentSessionId, pending, {
     kind: "spawn_sub_agent",
     spec: agentRunSpecToKernel(spec),
     parent_session_id: parentSessionId,

@@ -49,9 +49,9 @@ import {
   capabilityCommandMount,
   capabilityCommandUnmount,
   entropySampleFromObservation,
-  kernelAction,
-  kernelApply,
-  kernelMaybeAction,
+  durableKernelAction,
+  durableKernelApply,
+  durableKernelMaybeAction,
   messageToKernelMessage,
   skillMetadataToKernel,
   taskUpdateToKernel,
@@ -473,6 +473,57 @@ export class RuntimeRunner {
     return this.opts
   }
 
+  private durableSessionId(sessionId?: string | null): string {
+    const resolved = sessionId ?? this.currentSessionId
+    if (!resolved) throw new Error("durable kernel transitions require a session id")
+    return resolved
+  }
+
+  private async commitKernelApply(
+    runtime: KernelRuntimeInstance,
+    pending: KernelObservation[],
+    event: Record<string, unknown>,
+    sessionId?: string | null,
+  ): Promise<KernelObservation[]> {
+    return durableKernelApply(
+      runtime,
+      this.opts.sessionLog,
+      this.durableSessionId(sessionId),
+      pending,
+      event,
+    )
+  }
+
+  private async commitKernelMaybeAction(
+    runtime: KernelRuntimeInstance,
+    pending: KernelObservation[],
+    event: Record<string, unknown>,
+    sessionId?: string | null,
+  ): Promise<KernelRunnerAction | null> {
+    return durableKernelMaybeAction(
+      runtime,
+      this.opts.sessionLog,
+      this.durableSessionId(sessionId),
+      pending,
+      event,
+    )
+  }
+
+  private async commitKernelAction(
+    runtime: KernelRuntimeInstance,
+    pending: KernelObservation[],
+    event: Record<string, unknown>,
+    sessionId?: string | null,
+  ): Promise<KernelRunnerAction> {
+    return durableKernelAction(
+      runtime,
+      this.opts.sessionLog,
+      this.durableSessionId(sessionId),
+      pending,
+      event,
+    )
+  }
+
   private async persistMemoryToStore(memory: MemoryWriteRequest, agentId: string): Promise<void> {
     if (!this.opts.dreamStore) throw new Error("memory persistence requires dreamStore")
     const existing = await this.opts.dreamStore.loadMemories(agentId)
@@ -532,10 +583,16 @@ export class RuntimeRunner {
     const sessionId = opts.sessionId ?? this.currentSessionId
     const agentId = opts.agentId ?? this.opts.agentId
     if (!this.opts.dreamStore || !agentId) return
+    const durableSessionId = this.durableSessionId(sessionId)
 
     const observations: KernelObservation[] = []
     const runtime = this.createSyscallRuntime()
-    const action = kernelMaybeAction(runtime, observations, { kind: "write_memory", memory })
+    const action = await this.commitKernelMaybeAction(
+      runtime,
+      observations,
+      { kind: "write_memory", memory },
+      durableSessionId,
+    )
     if (!action) {
       await this.appendMemorySyscallObservations(sessionId, observations)
       return
@@ -550,12 +607,12 @@ export class RuntimeRunner {
     } catch (cause) {
       ioError = cause
     }
-    kernelApply(runtime, observations, {
+    await this.commitKernelApply(runtime, observations, {
       kind: "memory_persist_result",
       effect_id: action.effectId,
       ...(ioError ? { error: formatToolError(ioError) } : {}),
-    })
-    await this.appendMemorySyscallObservations(sessionId, observations)
+    }, durableSessionId)
+    await this.appendMemorySyscallObservations(durableSessionId, observations)
     if (ioError) throw ioError
   }
 
@@ -566,10 +623,16 @@ export class RuntimeRunner {
     const sessionId = opts.sessionId ?? this.currentSessionId
     const agentId = opts.agentId ?? this.opts.agentId
     if (!this.opts.dreamStore || !agentId) return []
+    const durableSessionId = this.durableSessionId(sessionId)
 
     const observations: KernelObservation[] = []
     const runtime = this.createSyscallRuntime()
-    const action = kernelAction(runtime, observations, { kind: "query_memory", query })
+    const action = await this.commitKernelAction(
+      runtime,
+      observations,
+      { kind: "query_memory", query },
+      durableSessionId,
+    )
     if (action.kind !== "query_memory") {
       throw new Error(`query_memory returned unexpected kernel effect: ${action.kind}`)
     }
@@ -582,7 +645,7 @@ export class RuntimeRunner {
     } catch (cause) {
       ioError = cause
     }
-    kernelApply(runtime, observations, {
+    await this.commitKernelApply(runtime, observations, {
       kind: "memory_query_result",
       effect_id: action.effectId,
       entries: hits.map(hit => ({
@@ -592,10 +655,10 @@ export class RuntimeRunner {
         pinned: false,
       })),
       ...(ioError ? { error: formatToolError(ioError) } : {}),
-    })
-    await this.appendMemorySyscallObservations(sessionId, observations)
+    }, durableSessionId)
+    await this.appendMemorySyscallObservations(durableSessionId, observations)
     if (ioError) throw ioError
-    await this.logMemoryRetrievalResult(sessionId, retrieval)
+    await this.logMemoryRetrievalResult(durableSessionId, retrieval)
     return hits
   }
 
@@ -665,10 +728,10 @@ export class RuntimeRunner {
    * exactly as a mid-run spawn would be. Must run BEFORE `start_run` so the in-kernel gate enforces
    * every policy from the first spawn. No config ⇒ the native-profile defaults (铁律: defaults only).
    */
-  private applyKernelPolicies(
+  private async applyKernelPolicies(
     runtime: KernelRuntimeInstance,
     groupBudgetScope?: GroupBudgetScope,
-  ): void {
+  ): Promise<void> {
     // K2: lower governance / attention / scheduler / quota in ONE `configure_run` event instead of
     // the previous 2–4 separate `set_*` / `load_governance_policy` events. The kernel applies each
     // present field via the same path its granular event uses; absent fields are left untouched.
@@ -778,7 +841,7 @@ export class RuntimeRunner {
       }
     }
 
-    kernelApply(runtime, this.pendingObservations, { kind: "configure_run", config })
+    await this.commitKernelApply(runtime, this.pendingObservations, { kind: "configure_run", config })
   }
 
   private async appendMemorySyscallObservations(
@@ -799,31 +862,31 @@ export class RuntimeRunner {
   }
 
   /** Mount a tool capability on the currently-running kernel runtime. No-op if not running. */
-  mountTool(schema: ToolSchema): void {
+  async mountTool(schema: ToolSchema): Promise<void> {
     if (!this.activeKernel) return
-    kernelApply(this.activeKernel, this.pendingObservations, capabilityCommandMount(capabilityTool(schema)))
+    await this.commitKernelApply(this.activeKernel, this.pendingObservations, capabilityCommandMount(capabilityTool(schema)))
   }
 
   /** Mount a skill capability on the currently-running kernel runtime. No-op if not running. */
-  mountSkill(name: string, description: string): void {
+  async mountSkill(name: string, description: string): Promise<void> {
     if (!this.activeKernel) return
-    kernelApply(this.activeKernel, this.pendingObservations, capabilityCommandMount(
+    await this.commitKernelApply(this.activeKernel, this.pendingObservations, capabilityCommandMount(
       capabilitySkill({ name, description, estimatedTokens: 0 }),
     ))
   }
 
   /** Mount a generic marker capability (e.g. MCP server, agent) on the active run. No-op if not running. */
-  mountMarker(kind: string, id: string, description: string): void {
+  async mountMarker(kind: string, id: string, description: string): Promise<void> {
     if (!this.activeKernel) return
-    kernelApply(this.activeKernel, this.pendingObservations, capabilityCommandMount(
+    await this.commitKernelApply(this.activeKernel, this.pendingObservations, capabilityCommandMount(
       capabilityMarker(kind, id, description),
     ))
   }
 
   /** Unmount a capability by kind + id from the active run. No-op if not running. */
-  unmountCapability(kind: string, id: string): void {
+  async unmountCapability(kind: string, id: string): Promise<void> {
     if (!this.activeKernel) return
-    kernelApply(this.activeKernel, this.pendingObservations, capabilityCommandUnmount(kind, id))
+    await this.commitKernelApply(this.activeKernel, this.pendingObservations, capabilityCommandUnmount(kind, id))
   }
 
 
@@ -831,9 +894,9 @@ export class RuntimeRunner {
    *  K1: `opts.key` gives the entry identity — a same-key push upserts (applied at the next
    *  compaction/renewal boundary, where the cached system[1] block is rewritten anyway) instead
    *  of appending a duplicate. `opts.pinned` exempts the entry from the knowledge-budget sweep. */
-  pushKnowledge(message: Message, tokens?: number, opts?: { key?: string; pinned?: boolean }): void {
+  async pushKnowledge(message: Message, tokens?: number, opts?: { key?: string; pinned?: boolean }): Promise<void> {
     if (!this.activeKernel) return
-    kernelApply(this.activeKernel, this.pendingObservations, {
+    await this.commitKernelApply(this.activeKernel, this.pendingObservations, {
       kind: "add_knowledge_message",
       content: message.content ?? "",
       tokens: tokens ?? Math.max(1, Math.ceil((message.content?.length ?? 0) / 4)),
@@ -844,18 +907,18 @@ export class RuntimeRunner {
 
   /** K1: mark a keyed knowledge entry for removal at the next compaction/renewal boundary.
    *  Errs-open: an unknown key is a kernel-side no-op. */
-  removeKnowledge(key: string): void {
+  async removeKnowledge(key: string): Promise<void> {
     if (!this.activeKernel) return
-    kernelApply(this.activeKernel, this.pendingObservations, { kind: "remove_knowledge", key })
+    await this.commitKernelApply(this.activeKernel, this.pendingObservations, { kind: "remove_knowledge", key })
   }
 
   /** K3: host-driven skill deactivation (there is deliberately no model-facing unload — it
    *  invites thrash). The toolset re-widens at the next provider call; the skill's knowledge pin
    *  drops at the next compaction/renewal boundary. A later `skill(name)` call re-activates and
    *  re-pins fresh content. Errs-open: not-active is a kernel-side no-op. */
-  deactivateSkill(name: string): void {
+  async deactivateSkill(name: string): Promise<void> {
     if (!this.activeKernel) return
-    kernelApply(this.activeKernel, this.pendingObservations, { kind: "skill_deactivated", name })
+    await this.commitKernelApply(this.activeKernel, this.pendingObservations, { kind: "skill_deactivated", name })
     // Re-arm the SDK-side push guard so a re-activation re-pins the content.
     this.knowledgePushedSkills.delete(name)
   }
@@ -871,7 +934,7 @@ export class RuntimeRunner {
     const parentSessionId = this.currentSessionId
     const runtime = this.activeKernel
 
-    const observations = kernelApply(runtime, this.pendingObservations, {
+    const observations = await this.commitKernelApply(runtime, this.pendingObservations, {
       kind: "spawn_sub_agent",
       spec: agentRunSpecToKernel(spec),
       parent_session_id: parentSessionId,
@@ -893,7 +956,7 @@ export class RuntimeRunner {
       ...(this.opts.subAgentHarness ? { harness: this.opts.subAgentHarness } : {}),
     })
 
-    kernelApply(runtime, this.pendingObservations, {
+    await this.commitKernelApply(runtime, this.pendingObservations, {
       kind: "sub_agent_completed",
       result: subAgentResultToKernel(result),
     })
@@ -1100,12 +1163,12 @@ export class RuntimeRunner {
           criteria: [],
           agent_id: this.opts.agentId,
         })
-        this.bootstrapWorkflowKernel(sessionId, groupBudgetScope)
+        await this.bootstrapWorkflowKernel(sessionId, groupBudgetScope)
       }
       const parentSessionId = this.currentSessionId!
       const runtime = this.activeKernel!
       const observationStart = this.pendingObservations.length
-      const initialAction = kernelMaybeAction(runtime, this.pendingObservations, {
+      const initialAction = await this.commitKernelMaybeAction(runtime, this.pendingObservations, {
         kind: "load_workflow",
         spec: workflowSpecToKernel(spec),
         parent_session_id: parentSessionId,
@@ -1135,7 +1198,7 @@ export class RuntimeRunner {
         opts?.resumedOutputs,
       )
       if (bootstrapped) {
-        const terminal = kernelAction(runtime, this.pendingObservations, { kind: "complete_run" })
+        const terminal = await this.commitKernelAction(runtime, this.pendingObservations, { kind: "complete_run" })
         if (terminal.kind !== "done") {
           throw new Error("complete_run did not produce a terminal kernel action")
         }
@@ -1165,10 +1228,10 @@ export class RuntimeRunner {
    * after `runWorkflow` has durably recorded `run_started`. Sets `activeKernel` / `currentSessionId`;
    * `runWorkflow` is responsible for tearing them down.
    */
-  private bootstrapWorkflowKernel(
+  private async bootstrapWorkflowKernel(
     sessionId: string,
     groupBudgetScope?: GroupBudgetScope,
-  ): KernelRuntimeInstance {
+  ): Promise<KernelRuntimeInstance> {
     this.interrupted = false
     this.abortController = new AbortController()
     this.pendingObservations = []
@@ -1179,10 +1242,10 @@ export class RuntimeRunner {
     const runtime = this.createSyscallRuntime()
     this.activeKernel = runtime
 
-    this.applyKernelPolicies(runtime, groupBudgetScope)
+    await this.applyKernelPolicies(runtime, groupBudgetScope)
     // ABI v2 has one lifecycle: standalone workflows start a real run before loading their DAG.
     // The initial provider effect is superseded by the workflow load; no self-bootstrap escape hatch.
-    kernelAction(runtime, this.pendingObservations, {
+    await this.commitKernelAction(runtime, this.pendingObservations, {
       kind: "start_run",
       task: { goal: `workflow session ${sessionId}`, criteria: [] },
     })
@@ -1208,7 +1271,7 @@ export class RuntimeRunner {
     const parentSessionId = this.currentSessionId
     const runtime = this.activeKernel
     const observationStart = this.pendingObservations.length
-    const initialAction = kernelMaybeAction(
+    const initialAction = await this.commitKernelMaybeAction(
       runtime,
       this.pendingObservations,
       submitWorkflowToKernel(spec, parentSessionId, opts?.submitterAgentId),
@@ -1248,7 +1311,7 @@ export class RuntimeRunner {
     this.pendingAuthoredWorkflows = []
     for (const spec of specs) {
       const outcome = await this.bootstrapWorkflow(spec)
-      kernelApply(runtime, this.pendingObservations, {
+      await this.commitKernelApply(runtime, this.pendingObservations, {
         kind: "add_history_message",
         message: messageToKernelMessage({ role: "user", content: authoredWorkflowOutcomeNote(outcome) }),
       })
@@ -1282,12 +1345,12 @@ export class RuntimeRunner {
       if (!delivery) { await new Promise(resolve => setTimeout(resolve, 5)); continue }
       const observationStart = this.pendingObservations.length
       const signalAction = await this.consumeInboundSignal(delivery, sig =>
-        kernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(sig)))
+        this.commitKernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(sig)))
       let observations = this.pendingObservations.slice(observationStart)
       if (signalAction?.kind === "preempt_sub_agents") {
         for (const id of signalAction.agentIds) controllers.get(id)?.abort()
         const resultStart = this.pendingObservations.length
-        const continuation = kernelMaybeAction(runtime, this.pendingObservations, {
+        const continuation = await this.commitKernelMaybeAction(runtime, this.pendingObservations, {
           kind: "preempt_result",
           effect_id: signalAction.effectId,
         })
@@ -1328,9 +1391,11 @@ export class RuntimeRunner {
         | { completed?: string[]; failed?: string[] }
         | undefined
 
-    const acceptSpawn = (spawn: Extract<KernelRunnerAction, { kind: "spawn_workflow" }>): KernelObservation[] => {
+    const acceptSpawn = async (
+      spawn: Extract<KernelRunnerAction, { kind: "spawn_workflow" }>,
+    ): Promise<KernelObservation[]> => {
       const observationStart = this.pendingObservations.length
-      const continuation = kernelMaybeAction(runtime, this.pendingObservations, {
+      const continuation = await this.commitKernelMaybeAction(runtime, this.pendingObservations, {
         kind: "workflow_spawn_result",
         effect_id: spawn.effectId,
         started_agent_ids: spawn.nodes.map(node => String(node.agent_id ?? "")),
@@ -1350,7 +1415,7 @@ export class RuntimeRunner {
     }
     let nodes = initialAction.nodes as unknown as WorkflowSpawnInfo[]
     let budget = initialAction.budget as unknown as WorkflowBudget | undefined
-    observations = acceptSpawn(initialAction)
+    observations = await acceptSpawn(initialAction)
     done = findDone(observations)
     // G2: each completed node's output, keyed by agent id — a reduce node reads its dependencies'
     // outputs from here. Deps always complete in an earlier round than the reduce node that needs
@@ -1404,12 +1469,12 @@ export class RuntimeRunner {
           // submitter's nodes to quarantined (no topological privilege escalation).
           const submitEvent = submitWorkflowNodesToKernel(result.submittedNodes, result.agentId)
           const observationStart = this.pendingObservations.length
-          const submitAction = kernelMaybeAction(runtime, this.pendingObservations, submitEvent)
+          const submitAction = await this.commitKernelMaybeAction(runtime, this.pendingObservations, submitEvent)
           const subObs = this.pendingObservations.slice(observationStart)
           if (submitAction?.kind === "spawn_workflow") {
             nextNodes.push(...submitAction.nodes as unknown as WorkflowSpawnInfo[])
             budget = submitAction.budget as unknown as WorkflowBudget | undefined ?? budget
-            const accepted = acceptSpawn(submitAction)
+            const accepted = await acceptSpawn(submitAction)
             const submittedDone = findDone([...subObs, ...accepted])
             if (submittedDone) done = submittedDone
           } else if (submitAction) {
@@ -1429,7 +1494,7 @@ export class RuntimeRunner {
           }))
         }
         const observationStart = this.pendingObservations.length
-        const completionAction = kernelMaybeAction(runtime, this.pendingObservations, {
+        const completionAction = await this.commitKernelMaybeAction(runtime, this.pendingObservations, {
           kind: "sub_agent_completed",
           result: subAgentResultToKernel(result),
         })
@@ -1437,7 +1502,7 @@ export class RuntimeRunner {
         if (completionAction?.kind === "spawn_workflow") {
           nextNodes.push(...completionAction.nodes as unknown as WorkflowSpawnInfo[])
           budget = completionAction.budget as unknown as WorkflowBudget | undefined ?? budget
-          obs = [...obs, ...acceptSpawn(completionAction)]
+          obs = [...obs, ...await acceptSpawn(completionAction)]
         } else if (completionAction && completionAction.kind !== "call_provider") {
           throw new Error(`workflow completion returned unexpected effect: ${completionAction.kind}`)
         }
@@ -1571,11 +1636,11 @@ export class RuntimeRunner {
 
   private async consumeInboundSignal<T>(
     delivery: InboundSignalDelivery,
-    consume: (delivery: InboundSignalDelivery) => T,
+    consume: (delivery: InboundSignalDelivery) => Promise<T> | T,
   ): Promise<T> {
     try {
       const observationStart = this.pendingObservations.length
-      const result = consume(delivery)
+      const result = await consume(delivery)
       const dispositions = this.pendingObservations.slice(observationStart).filter(observation =>
         observation.kind === "signal_delivery_disposed"
         && observation.delivery_id === delivery.deliveryId
@@ -1907,25 +1972,25 @@ export class RuntimeRunner {
     this.nextArchiveStart = nextCompressedArchiveStart
 
     if (this.opts.tokenizer) {
-      kernelApply(runtime, this.pendingObservations, {
+      await this.commitKernelApply(runtime, this.pendingObservations, {
         kind: "set_tokenizer",
         name: this.opts.tokenizer,
       })
     }
     if (this.opts.enablePlanTool !== undefined) {
-      kernelApply(runtime, this.pendingObservations, {
+      await this.commitKernelApply(runtime, this.pendingObservations, {
         kind: "set_plan_tool_enabled",
         enabled: this.opts.enablePlanTool,
       })
     }
 
-    kernelApply(runtime, this.pendingObservations, {
+    await this.commitKernelApply(runtime, this.pendingObservations, {
       kind: "set_tools",
       tools: this.opts.executionPlane.schemas().map(toolSchemaToKernel),
     })
 
     if (this.opts.systemPrompt) {
-      kernelApply(runtime, this.pendingObservations, {
+      await this.commitKernelApply(runtime, this.pendingObservations, {
         kind: "add_system_message",
         content: this.opts.systemPrompt,
         tokens: Math.max(1, Math.ceil(this.opts.systemPrompt.length / 4)),
@@ -1934,7 +1999,7 @@ export class RuntimeRunner {
 
     if (this.opts.initialMemory) {
       for (const mem of this.opts.initialMemory) {
-        kernelApply(runtime, this.pendingObservations, {
+        await this.commitKernelApply(runtime, this.pendingObservations, {
           kind: "add_knowledge_message",
           content: mem,
           tokens: Math.max(1, Math.ceil(mem.length / 4)),
@@ -1947,7 +2012,7 @@ export class RuntimeRunner {
       const metas = await scanSkillDir(this.opts.skillDir)
       // P1-B: pass the full SkillMetadata (incl. `allowedTools`) straight through — re-mapping it
       // field-by-field previously dropped `allowedTools`.
-      kernelApply(runtime, this.pendingObservations, {
+      await this.commitKernelApply(runtime, this.pendingObservations, {
         kind: "set_available_skills",
         skills: metas.map(m => skillMetadataToKernel(m)),
       })
@@ -1956,20 +2021,20 @@ export class RuntimeRunner {
     // P1-B/D: configure the stable-core tool ids (always exposed under skill gating). Empty/absent
     // ⇒ skills narrow to exactly their declared tools + meta-tools.
     if (this.opts.stableCoreToolIds?.length) {
-      kernelApply(runtime, this.pendingObservations, {
+      await this.commitKernelApply(runtime, this.pendingObservations, {
         kind: "set_stable_core_tools",
         tool_ids: this.opts.stableCoreToolIds,
       })
     }
 
     if (this.opts.dreamStore && this.opts.agentId) {
-      kernelApply(runtime, this.pendingObservations, { kind: "set_memory_enabled", enabled: true })
+      await this.commitKernelApply(runtime, this.pendingObservations, { kind: "set_memory_enabled", enabled: true })
     }
     // Install optional memory policy. Maps the ergonomic camelCase option onto the kernel's
     // snake_case `set_memory_policy` event; omitted fields fall back to kernel defaults.
     if (this.opts.memoryPolicy) {
       const m = this.opts.memoryPolicy
-      kernelApply(runtime, this.pendingObservations, {
+      await this.commitKernelApply(runtime, this.pendingObservations, {
         kind: "set_memory_policy",
         ...(m.memoryPath !== undefined ? { memory_path: m.memoryPath } : {}),
         ...(m.staleWarningDays !== undefined ? { stale_warning_days: m.staleWarningDays } : {}),
@@ -1980,11 +2045,11 @@ export class RuntimeRunner {
       })
     }
     if (this.opts.knowledgeSource) {
-      kernelApply(runtime, this.pendingObservations, { kind: "set_knowledge_enabled", enabled: true })
+      await this.commitKernelApply(runtime, this.pendingObservations, { kind: "set_knowledge_enabled", enabled: true })
     }
 
     if (this.opts.milestoneContract) {
-      kernelApply(runtime, this.pendingObservations, {
+      await this.commitKernelApply(runtime, this.pendingObservations, {
         kind: "load_milestone_contract",
         contract: {
           phases: this.opts.milestoneContract.phases.map(p => ({
@@ -2007,7 +2072,7 @@ export class RuntimeRunner {
         ? (ref: string) => this.opts.compressionStore!.read(ref)
         : undefined
       const replayed = await replayMessagesAsync(repaired, maxBytes, loadArchive)
-      kernelApply(runtime, this.pendingObservations, {
+      await this.commitKernelApply(runtime, this.pendingObservations, {
         kind: "preload_history",
         messages: replayed.map(messageToKernelMessage),
       })
@@ -2028,7 +2093,7 @@ export class RuntimeRunner {
           try {
             const name = (JSON.parse(tc.arguments || "{}") as { name?: string }).name
             if (!name) continue
-            kernelApply(runtime, this.pendingObservations, {
+            await this.commitKernelApply(runtime, this.pendingObservations, {
               kind: "skill_activated",
               name,
               ...(this.opts.skillLeaseTurns !== undefined ? { lease_turns: this.opts.skillLeaseTurns } : {}),
@@ -2039,7 +2104,11 @@ export class RuntimeRunner {
               // K1: keyed — the kernel-side upsert is the authoritative dedup, so a wake re-push
               // of a skill already pinned live can never double-pin (the in-run Set resets with
               // each runner instance; the key does not).
-              this.pushKnowledge({ role: "system", content: output, toolCalls: [] }, undefined, { key: `skill:${name}` })
+              await this.pushKnowledge(
+                { role: "system", content: output, toolCalls: [] },
+                undefined,
+                { key: `skill:${name}` },
+              )
             }
           } catch { /* malformed skill args — skip */ }
         }
@@ -2079,13 +2148,13 @@ export class RuntimeRunner {
       )
       this.activeGroupBudgetScope = groupBudgetScope
     }
-    this.applyKernelPolicies(runtime, groupBudgetScope)
+    await this.applyKernelPolicies(runtime, groupBudgetScope)
     // Multimodal upload: seed the user's attachments (images/audio) as a history
     // message before start_run pushes the "[TASK STATE]" anchor. init_task does not
     // clear history, so order becomes [attachment user msg, "Proceed…"] — both land
     // in the first render. On resume the message is already in the replayed history.
     if (!resumeMidRun && attachments?.length) {
-      kernelApply(runtime, this.pendingObservations, {
+      await this.commitKernelApply(runtime, this.pendingObservations, {
         kind: "add_history_message",
         message: attachmentsToKernelMessage(attachments),
       })
@@ -2104,8 +2173,8 @@ export class RuntimeRunner {
     }
 
     let action: KernelRunnerAction = resumeMidRun
-      ? kernelAction(runtime, this.pendingObservations, { kind: "resume" })
-      : kernelAction(runtime, this.pendingObservations, startPayload)
+      ? await this.commitKernelAction(runtime, this.pendingObservations, { kind: "resume" })
+      : await this.commitKernelAction(runtime, this.pendingObservations, startPayload)
     // P0-C: the skill loaded and in effect going into the current turn (updated when the model's
     // `skill` tool call resolves). Drives the per-turn `activeSkill` metric → dwell measurement.
     let activeSkill: string | undefined
@@ -2126,7 +2195,7 @@ export class RuntimeRunner {
       )
       this.nextArchiveStart = nextCompressedArchiveStart
       if (this.interrupted) {
-        action = kernelAction(runtime, this.pendingObservations, {
+        action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "cancel_operation",
           reason: this.cancellationReason ?? "user",
           pending_call_ids: pendingCallIds(action),
@@ -2141,7 +2210,7 @@ export class RuntimeRunner {
           // `signal_delivery_disposed`. An actionable disposition yields a new action to adopt; queued/observed/
           // ignored yields none (kernel buffers).
           const sigAction = await this.consumeInboundSignal(delivery, sig =>
-            kernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(sig)))
+            this.commitKernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(sig)))
           if (sigAction) action = sigAction
           // A critical signal is a kernel attention/preemption decision, not operation cancellation.
         }
@@ -2232,7 +2301,7 @@ export class RuntimeRunner {
             // duplicated across the four SDK runners. `continue` re-enters the loop: a recovered
             // turn persists its compaction archive via the loop-top appendObservations, and a
             // terminal `done` exits through `isTerminal()` into the run_terminal emit below.
-            action = kernelAction(runtime, this.pendingObservations, {
+            action = await this.commitKernelAction(runtime, this.pendingObservations, {
               kind: "provider_error",
               effect_id: providerEffectId,
               message: formatToolError(err),
@@ -2250,7 +2319,7 @@ export class RuntimeRunner {
 
         // Do not commit partial provider output after host cancellation.
         if (abortSignal?.aborted) {
-          action = kernelAction(runtime, this.pendingObservations, {
+          action = await this.commitKernelAction(runtime, this.pendingObservations, {
             kind: "cancel_operation",
             reason: this.cancellationReason ?? "user",
             pending_call_ids: [providerEffectId],
@@ -2273,7 +2342,7 @@ export class RuntimeRunner {
           now_ms: Date.now(),
           ...(turnStopReason ? { stop_reason: turnStopReason } : {}),
         }
-        action = kernelAction(runtime, this.pendingObservations, providerEvent)
+        action = await this.commitKernelAction(runtime, this.pendingObservations, providerEvent)
         const providerReplay = peekProviderReplay(this.opts.provider, finalText, finalToolCalls)
         await this.opts.sessionLog.append(sessionId, buildLlmCompletedEvent({
           turn: runtime.turn(),
@@ -2311,7 +2380,7 @@ export class RuntimeRunner {
       } else if (action.kind === "request_approval") {
         const resolved = await this.resolveApprovalRequests(action.requests, runtime, sessionId)
         for (const event of resolved.events) yield event
-        action = kernelAction(runtime, this.pendingObservations, {
+        action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "approval_result",
           effect_id: action.effectId,
           approved_calls: resolved.approved,
@@ -2327,7 +2396,7 @@ export class RuntimeRunner {
         } catch (cause) {
           error = formatToolError(cause)
         }
-        action = kernelAction(runtime, this.pendingObservations, {
+        action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "memory_persist_result",
           effect_id: action.effectId,
           ...(error ? { error } : {}),
@@ -2345,7 +2414,7 @@ export class RuntimeRunner {
         } catch (cause) {
           error = formatToolError(cause)
         }
-        action = kernelAction(runtime, this.pendingObservations, {
+        action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "memory_query_result",
           effect_id: action.effectId,
           entries: hits.map(hit => ({
@@ -2367,7 +2436,7 @@ export class RuntimeRunner {
         } catch (cause) {
           error = formatToolError(cause)
         }
-        action = kernelAction(runtime, this.pendingObservations, {
+        action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "large_result_spool_result",
           effect_id: action.effectId,
           ...(spoolRef ? { spool_ref: spoolRef } : {}),
@@ -2403,7 +2472,7 @@ export class RuntimeRunner {
         const archiveTier = action.tier
         const compressedSeq = archiveMeta.compressedSeq
         if (!error) this.activePageOutArchive = undefined
-        action = kernelAction(runtime, this.pendingObservations, {
+        action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "page_out_archive_result",
           effect_id: action.effectId,
           ...(archiveRef ? { archive_ref: archiveRef } : {}),
@@ -2460,7 +2529,7 @@ export class RuntimeRunner {
 
         for (const call of planCalls) {
           const update = parseUpdatePlanArgs(call.arguments)
-          kernelApply(runtime, this.pendingObservations, {
+          await this.commitKernelApply(runtime, this.pendingObservations, {
             kind: "update_task",
             update: taskUpdateToKernel(update),
           })
@@ -2589,7 +2658,7 @@ export class RuntimeRunner {
             }
           }
           const names = executableCalls.map(c => c.name).join(", ")
-          kernelApply(runtime, this.pendingObservations, {
+          await this.commitKernelApply(runtime, this.pendingObservations, {
             kind: "update_task",
             update: taskUpdateToKernel({ progress: `Executed tools: ${names}` }),
           })
@@ -2642,7 +2711,7 @@ export class RuntimeRunner {
           try {
             const name = (JSON.parse(call.arguments || "{}") as { name?: string }).name
             if (!name) continue
-            kernelApply(runtime, this.pendingObservations, {
+            await this.commitKernelApply(runtime, this.pendingObservations, {
               kind: "skill_activated",
               name,
               ...(this.opts.skillLeaseTurns !== undefined ? { lease_turns: this.opts.skillLeaseTurns } : {}),
@@ -2653,12 +2722,16 @@ export class RuntimeRunner {
             // must re-pin, and only the kernel knows the lease state — its upsert dedupes anyway.
             if (this.opts.skillLeaseTurns !== undefined || !this.knowledgePushedSkills.has(name)) {
               this.knowledgePushedSkills.add(name)
-              this.pushKnowledge({ role: "system", content: res.output, toolCalls: [] }, undefined, { key: `skill:${name}` })
+              await this.pushKnowledge(
+                { role: "system", content: res.output, toolCalls: [] },
+                undefined,
+                { key: `skill:${name}` },
+              )
             }
           } catch { /* malformed skill args — skip activation */ }
         }
         const entropyObsStart = this.pendingObservations.length
-        action = kernelAction(runtime, this.pendingObservations, {
+        action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "tool_results",
           effect_id: toolEffectId,
           results: toolResults.map(toolResultToKernel),
@@ -2683,7 +2756,7 @@ export class RuntimeRunner {
         const milestoneEffectId = action.effectId
         const milestonePolicy = this.opts.milestonePolicy ?? "require_verifier"
         if (milestonePolicy === "auto_pass") {
-          action = kernelAction(runtime, this.pendingObservations, {
+          action = await this.commitKernelAction(runtime, this.pendingObservations, {
             kind: "milestone_result",
             effect_id: milestoneEffectId,
             result: milestoneCheckResultToKernel(milestoneCheckPass(action.phaseId)),
@@ -2700,7 +2773,7 @@ export class RuntimeRunner {
             criteria: action.criteria,
             requiredEvidence: action.requiredEvidence,
           })
-          action = kernelAction(runtime, this.pendingObservations, {
+          action = await this.commitKernelAction(runtime, this.pendingObservations, {
             kind: "milestone_result",
             effect_id: milestoneEffectId,
             result: milestoneCheckResultToKernel(check),
@@ -2863,7 +2936,7 @@ export class RuntimeRunner {
         }
       }
       if (lines.length > 0) {
-        kernelApply(runtime, this.pendingObservations, {
+        await this.commitKernelApply(runtime, this.pendingObservations, {
           kind: "add_history_message",
           message: { role: "user", content: lines.join("\n") },
         })
@@ -2967,7 +3040,7 @@ export class RuntimeRunner {
     // K1 boundary-deferred upsert lands it with zero mid-generation cache churn and the
     // K2 budget governs its size. The RuleSummarizer text remains the synchronous label.
     if (runtime) {
-      kernelApply(runtime, this.pendingObservations, {
+      await this.commitKernelApply(runtime, this.pendingObservations, {
         kind: "page_in",
         entries: [{
           content: `[ARCHIVE SUMMARY] ${summary}`,

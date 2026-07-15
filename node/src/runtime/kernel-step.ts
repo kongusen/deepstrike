@@ -9,6 +9,12 @@ import type {
 } from "../types.js"
 import type { SkillMetadata } from "../skills/loader.js"
 import type { RollbackReason } from "./session-log.js"
+import type { SessionLog } from "./session-log.js"
+import {
+  createKernelOperationGenesis,
+  createKernelTransaction,
+  kernelRecordDigest,
+} from "./kernel-transaction-log.js"
 
 export const KERNEL_ABI_VERSION = 2
 
@@ -251,8 +257,11 @@ export interface KernelObservation {
   threshold?: number
 }
 
-interface KernelStepJson {
+export interface KernelStepJson {
   version: number
+  operation_id: string
+  input_event_id: string
+  step_seq: number
   actions: Array<Record<string, unknown>>
   observations: KernelObservation[]
   faults?: Array<{ code?: string; message?: string; effect_id?: string }>
@@ -644,6 +653,136 @@ function stepInput(runtime: KernelRuntimeHandle, event: Record<string, unknown>)
     observed_at_ms: Date.now(),
     event: correlatedEvent,
   })
+}
+
+interface DurableKernelState {
+  sessionId: string
+  operationId: string
+  genesisDigest: string
+}
+
+const durableKernelStates = new WeakMap<KernelRuntimeHandle, DurableKernelState>()
+
+/**
+ * Execute one production transition behind the durable action-publish gate. Genesis is persisted
+ * before prepare; a newly prepared transaction is CAS-appended before commit; only the committed
+ * step is returned to callers, so actions and observations cannot escape early.
+ */
+export async function durableKernelStep(
+  runtime: KernelRuntimeHandle,
+  sessionLog: SessionLog,
+  sessionId: string,
+  event: Record<string, unknown>,
+): Promise<KernelStepJson> {
+  const inputJson = stepInput(runtime, event)
+  const input = JSON.parse(inputJson) as Record<string, unknown>
+  const operationId = String(input.operation_id ?? "")
+  if (!operationId) throw new Error("kernel input is missing operation_id")
+
+  let durableState = durableKernelStates.get(runtime)
+  if (!durableState) {
+    const snapshot = snapshotKernelRuntime(runtime)
+    const genesis = await createKernelOperationGenesis({
+      abi_version: KERNEL_ABI_VERSION,
+      operation_id: operationId,
+      initial_scheduler_policy: snapshot.initial_policy as unknown as Record<string, unknown>,
+      resolved_runtime_defaults: {
+        snapshot_version: snapshot.snapshot_version,
+        snapshot_input_limit: snapshot.snapshot_input_limit,
+        max_input_bytes: snapshot.max_input_bytes,
+        snapshot_journal_bytes_limit: snapshot.snapshot_journal_bytes_limit,
+      },
+      default_policy_version: 1,
+    })
+    const receipt = await sessionLog.appendKernelGenesis(sessionId, genesis)
+    durableState = {
+      sessionId,
+      operationId,
+      genesisDigest: receipt.genesis_digest,
+    }
+    durableKernelStates.set(runtime, durableState)
+  } else if (durableState.sessionId !== sessionId || durableState.operationId !== operationId) {
+    throw new Error("kernel runtime cannot change its durable session or operation identity")
+  }
+
+  const prepared = JSON.parse(runtime.prepareStep(inputJson)) as KernelPreparedStep
+  if (prepared.status !== "prepared") return prepared.step
+  const token = prepared.prepare_token
+  if (!token) throw new Error("prepared kernel transition is missing its commit token")
+
+  const head = await sessionLog.kernelTransactionHead(sessionId, operationId)
+  if (!head) {
+    runtime.abortPrepared(token)
+    throw new Error("durable kernel genesis is missing before transaction append")
+  }
+  const transaction = await createKernelTransaction({
+    operation_id: operationId,
+    step_seq: prepared.step.step_seq,
+    base_generation: prepared.base_generation,
+    input: prepared.input,
+    step: prepared.step as unknown as Record<string, unknown>,
+    previous_transaction_digest: head,
+  })
+  try {
+    await sessionLog.compareAndAppendKernelTransaction(sessionId, head, transaction)
+  } catch (appendError) {
+    try {
+      runtime.abortPrepared(token)
+    } catch (abortError) {
+      throw new AggregateError(
+        [appendError, abortError],
+        "durable append failed and the prepared kernel transition could not be aborted",
+      )
+    }
+    throw appendError
+  }
+
+  const committed = parseStep(runtime.commitPrepared(token))
+  if (kernelRecordDigest(committed) !== transaction.step_digest) {
+    throw new Error("committed kernel step does not match the durable prepared step")
+  }
+  return committed
+}
+
+export async function durableKernelApply(
+  runtime: KernelRuntimeHandle,
+  sessionLog: SessionLog,
+  sessionId: string,
+  pending: KernelObservation[],
+  event: Record<string, unknown>,
+): Promise<KernelObservation[]> {
+  const step = await durableKernelStep(runtime, sessionLog, sessionId, event)
+  const fault = step.faults?.[0]
+  if (fault) throw new Error(`${fault.code ?? "kernel_fault"}: ${fault.message ?? "kernel transition failed"}`)
+  pending.push(...step.observations)
+  return step.observations
+}
+
+export async function durableKernelMaybeAction(
+  runtime: KernelRuntimeHandle,
+  sessionLog: SessionLog,
+  sessionId: string,
+  pending: KernelObservation[],
+  event: Record<string, unknown>,
+): Promise<KernelRunnerAction | null> {
+  const step = await durableKernelStep(runtime, sessionLog, sessionId, event)
+  const fault = step.faults?.[0]
+  if (fault) throw new Error(`${fault.code ?? "kernel_fault"}: ${fault.message ?? "kernel transition failed"}`)
+  pending.push(...step.observations)
+  const raw = step.actions[0]
+  return raw ? mapKernelAction(raw) : null
+}
+
+export async function durableKernelAction(
+  runtime: KernelRuntimeHandle,
+  sessionLog: SessionLog,
+  sessionId: string,
+  pending: KernelObservation[],
+  event: Record<string, unknown>,
+): Promise<KernelRunnerAction> {
+  const action = await durableKernelMaybeAction(runtime, sessionLog, sessionId, pending, event)
+  if (!action) throw new Error("kernel transition must return one action")
+  return action
 }
 
 export function kernelApply(

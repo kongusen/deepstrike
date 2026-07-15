@@ -28,10 +28,10 @@ describe("keyed knowledge entries (K1)", () => {
         if (call === 1) {
           // Stage the lifecycle: keyed append (immediate), same-key upsert (deferred),
           // a second entry that will be marked for removal.
-          runner.pushKnowledge({ role: "system", content: V1, toolCalls: [] }, undefined, { key: "ref" })
-          runner.pushKnowledge({ role: "system", content: V2, toolCalls: [] }, undefined, { key: "ref" })
-          runner.pushKnowledge({ role: "system", content: TMP, toolCalls: [] }, undefined, { key: "tmp" })
-          runner.removeKnowledge("tmp")
+          await runner.pushKnowledge({ role: "system", content: V1, toolCalls: [] }, undefined, { key: "ref" })
+          await runner.pushKnowledge({ role: "system", content: V2, toolCalls: [] }, undefined, { key: "ref" })
+          await runner.pushKnowledge({ role: "system", content: TMP, toolCalls: [] }, undefined, { key: "tmp" })
+          await runner.removeKnowledge("tmp")
           yield { type: "tool_call", id: `b${call}`, name: "bulk", arguments: {} }
           return
         }

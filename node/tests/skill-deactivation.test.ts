@@ -39,7 +39,7 @@ describe("skill deactivation (K3)", () => {
         if (call === 2) {
           // Skill content is pinned now; phase over — the host deactivates it.
           expect(context.systemKnowledge ?? "").toContain(SKILL_BODY)
-          runner.deactivateSkill("debug")
+          await runner.deactivateSkill("debug")
           yield { type: "tool_call", id: `b${call}`, name: "bulk", arguments: {} }
           return
         }
