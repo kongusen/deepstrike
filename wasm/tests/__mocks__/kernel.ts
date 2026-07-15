@@ -17,6 +17,11 @@ export class KernelRuntime {
   // done result as `pace_decision`. Silence = the spec's default_action ("stop" = CC contract).
   private loopRound: { default_action?: string } | null = null
   private paceProposal: { action: string; reason: string } | null = null
+  private nextEffect = 1
+
+  private effect(kind: string, payload: Record<string, unknown>): Record<string, unknown> {
+    return { effect_id: `mock-effect-${this.nextEffect++}`, kind, ...payload }
+  }
 
   constructor(policy: { maxTokens: number; maxTurns?: number }) {
     this.maxTurns = policy.maxTurns ?? 25
@@ -54,19 +59,18 @@ export class KernelRuntime {
         this.loopRound = ((event.run_spec as { loop_round?: { default_action?: string } } | undefined)?.loop_round) ?? null
         this.paceProposal = null
         this.rendered = { systemText: "", turns: [{ role: "user", content: "test" }] }
-        actions.push({ kind: "call_provider", context: this.rendered, tools: [] })
+        actions.push(this.effect("call_provider", { context: this.rendered, tools: [] }))
         break
-      case "resume": {
+      case "approval_result": {
         this.resumedAfterAsk = true
         const approved = (event.approved_calls as string[]) ?? []
         if (approved.length > 0) {
-          actions.push({
-            kind: "execute_tool",
+          actions.push(this.effect("execute_tool", {
             calls: [{ id: approved[0], name: "needs_approval", arguments: "{}" }],
-          })
+          }))
         } else {
           this.rendered = { systemText: "", turns: [{ role: "user", content: "resume" }] }
-          actions.push({ kind: "call_provider", context: this.rendered, tools: [] })
+          actions.push(this.effect("call_provider", { context: this.rendered, tools: [] }))
         }
         break
       }
@@ -79,15 +83,15 @@ export class KernelRuntime {
           msg.includes("context length exceeded") || msg.includes("context_length_exceeded")
         if (!isOverflow) {
           this.terminal = true
-          actions.push({ kind: "done", result: { turns_used: this.turn(), total_tokens_used: 0, termination: "error" } })
+          actions.push(this.effect("done", { result: { turns_used: this.turn(), total_tokens_used: 0, termination: "error" } }))
         } else if (this.recoveryAttempts >= 2) {
           this.terminal = true
-          actions.push({ kind: "done", result: { turns_used: this.turn(), total_tokens_used: 0, termination: "context_overflow" } })
+          actions.push(this.effect("done", { result: { turns_used: this.turn(), total_tokens_used: 0, termination: "context_overflow" } }))
         } else {
           this.recoveryAttempts += 1
-          observations.push({ kind: "compressed", action: "auto_compact", rho_after: 0.4, summary: null, archived: [] })
+          observations.push({ kind: "compressed", action: "auto_compact", rho_after: 0.4, summary: null, archived_count: 0 })
           this.rendered = { systemText: "", turns: [{ role: "user", content: "retry" }] }
-          actions.push({ kind: "call_provider", context: this.rendered, tools: [] })
+          actions.push(this.effect("call_provider", { context: this.rendered, tools: [] }))
         }
         break
       }
@@ -105,35 +109,23 @@ export class KernelRuntime {
           const args = (typeof rawArgs === "string" ? JSON.parse(rawArgs || "{}") : rawArgs ?? {}) as { next?: string; reason?: string }
           this.paceProposal = { action: args.next ?? "stop", reason: args.reason ?? "" }
           this.rendered = { systemText: "", turns: [{ role: "user", content: "paced" }] }
-          actions.push({ kind: "call_provider", context: this.rendered, tools: [] })
+          actions.push(this.effect("call_provider", { context: this.rendered, tools: [] }))
           break
         }
         if (this.phase === 0 && toolCalls.length > 0 && this.governanceAskUser && !this.resumedAfterAsk) {
           const call = toolCalls[0]
-          observations.push(
-            {
-              kind: "tool_gated",
-              turn: 1,
-              call_id: call.id ?? "c1",
-              tool: call.name ?? "needs_approval",
-              reason: "ask_user",
-            },
-            {
-              kind: "suspended",
-              turn: 1,
-              reason: "ask_user",
-              pending_calls: [call.id ?? "c1"],
-            },
-          )
+          actions.push(this.effect("request_approval", { requests: [{
+            call_id: call.id ?? "c1", tool: call.name ?? "needs_approval",
+            arguments: call.arguments ?? {}, reason: "ask_user",
+          }] }))
           break
         }
         if (this.phase === 0 && toolCalls.length > 0) {
           this.phase = 1
-          actions.push({ kind: "execute_tool", calls: toolCalls })
+          actions.push(this.effect("execute_tool", { calls: toolCalls }))
         } else {
           this.terminal = true
-          actions.push({
-            kind: "done",
+          actions.push(this.effect("done", {
             result: {
               turns_used: 2,
               total_tokens_used: 100,
@@ -148,25 +140,22 @@ export class KernelRuntime {
                   }
                 : {}),
             },
-          })
+          }))
         }
         break
       }
       case "tool_results":
-        actions.push({ kind: "call_provider", context: { systemText: "", turns: [] }, tools: [] })
+        actions.push(this.effect("call_provider", { context: { systemText: "", turns: [] }, tools: [] }))
         break
       case "timeout":
         this.terminal = true
-        actions.push({
-          kind: "done",
+        actions.push(this.effect("done", {
           result: { turns_used: this.turn(), total_tokens_used: 0, termination: "timeout" },
-        })
-        break
-      case "force_compact":
+        }))
         break
       case "spawn_sub_agent":
         return JSON.stringify({
-          version: 1,
+          version: 2,
           actions: [],
           observations: [
             {
@@ -187,7 +176,7 @@ export class KernelRuntime {
         break
     }
 
-    return JSON.stringify({ version: 1, actions, observations })
+    return JSON.stringify({ version: 2, actions, observations, faults: [] })
   }
 
   isTerminal(): boolean { return this.terminal }

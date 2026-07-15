@@ -141,6 +141,18 @@ class SchedulerBudget:
 
 
 @dataclass
+class KernelReliability:
+  """Bounded ABI-v2 reliability policy; omitted fields retain kernel defaults."""
+  event_replay_capacity: int | None = None
+  completed_effect_replay_capacity: int | None = None
+  provider_recovery_attempts: int | None = None
+  output_recovery_attempts: int | None = None
+  host_effect_retry_attempts: int | None = None
+  spool_threshold_bytes: int | None = None
+  spool_preview_bytes: int | None = None
+
+
+@dataclass
 class TurnMetrics:
   """P0-C tool-gating telemetry: per-LLM-turn metrics emitted via ``RuntimeOptions.on_turn_metrics``.
 
@@ -195,6 +207,7 @@ class RuntimeOptions:
   governance_policy: "GovernancePolicy | None" = None
   attention_policy: "AttentionPolicy | dict | None" = None
   scheduler_budget: SchedulerBudget | dict[str, Any] | None = None
+  kernel_reliability: KernelReliability | dict[str, Any] | None = None
   resource_quota: ResourceQuota | dict[str, Any] | None = None
   # O6: the in-kernel repeat fuse — hard rungs above the soft no-progress STOP. When the model
   # re-issues the IDENTICAL tool call (same name AND args) deny_after turns in a row the kernel
@@ -297,10 +310,14 @@ class RuntimeRunner:
     # an already-active skill (loading is idempotent; the knowledge push should be too).
     self._knowledge_pushed_skills: set[str] = set()
     self._next_archive_start: int = 0
-    self._pending_spool_outputs: dict[str, dict[str, str]] = {}
+    self._pending_page_out_archives: list[tuple[int, int]] = []
+    self._active_page_out_archive: tuple[int, int] | None = None
     # M5 v2.1: sub-workflow specs a top-level agent authored via ``start_workflow``, awaiting auto-drive
     # at the next safe point (after the tool turn resolves, kernel back in Reason — not suspended).
     self._pending_authored_workflows: list[Any] = []
+    # The workflow driver consumes internal spawn effects and hands the committed provider
+    # continuation back to the outer run loop through this transaction boundary.
+    self._workflow_continuation_action: KernelRunnerAction | None = None
 
   @property
   def host_options(self) -> RuntimeOptions:
@@ -328,7 +345,6 @@ class RuntimeRunner:
     *,
     session_id: str | None = None,
     agent_id: str | None = None,
-    runtime: KernelRuntime | None = None,
   ) -> None:
     resolved_session_id = session_id or self._current_session_id
     resolved_agent_id = agent_id or self._opts.agent_id
@@ -336,39 +352,49 @@ class RuntimeRunner:
       return
 
     observations: list[dict[str, Any]] = []
-    target_runtime = runtime or self._active_kernel or self._create_syscall_runtime()
-    kernel_apply(target_runtime, observations, {"kind": "write_memory", "memory": memory})
+    target_runtime = self._create_syscall_runtime()
+    action = kernel_maybe_action(target_runtime, observations, {"kind": "write_memory", "memory": memory})
+    if action is None:
+      await self._append_memory_syscall_observations(resolved_session_id, observations)
+      return
+    if action.kind != "persist_memory":
+      raise RuntimeError(f"write_memory returned unexpected kernel effect: {action.kind}")
 
-    if any(o.get("kind") == "memory_written" for o in observations):
+    error: Exception | None = None
+    try:
       from deepstrike.memory.protocols import CurationResult, CurationStats, MemoryEntry
       existing = await self._opts.dream_store.load_memories(resolved_agent_id)
       content = str(memory.get("content") or "")
       # Curator-style jaccard dedup at the single write path: a near-duplicate of an
       # existing entry is dropped (the observation is still logged for audit).
       if any(_jaccard_similarity(e.text, content) >= 0.9 for e in existing):
-        await self._append_memory_syscall_observations(resolved_session_id, observations)
-        return
-      meta = memory.get("metadata") if isinstance(memory.get("metadata"), dict) else {}
-      score = meta.get("score") if isinstance(meta.get("score"), (int, float)) else 1.0
-      await self._opts.dream_store.commit(
-        resolved_agent_id,
-        CurationResult(
-          to_add=[
-            MemoryEntry(
+        pass
+      else:
+        meta = memory.get("metadata") if isinstance(memory.get("metadata"), dict) else {}
+        score = meta.get("score") if isinstance(meta.get("score"), (int, float)) else 1.0
+        await self._opts.dream_store.commit(
+          resolved_agent_id,
+          CurationResult(
+            to_add=[MemoryEntry(
               text=content,
               score=float(score),
-              metadata={
-                **meta,
-                "source": meta.get("source") or "write_memory_syscall",
-              },
-            )
-          ],
-          to_remove_indices=[],
-          stats=CurationStats(insights_processed=1, entries_added=1),
-        ),
-        existing,
-      )
+              metadata={**meta, "source": meta.get("source") or "write_memory_syscall"},
+            )],
+            to_remove_indices=[],
+            stats=CurationStats(insights_processed=1, entries_added=1),
+          ),
+          existing,
+        )
+    except Exception as exc:
+      error = exc
+    kernel_apply(target_runtime, observations, {
+      "kind": "memory_persist_result",
+      "effect_id": action.effect_id,
+      **({"error": format_tool_error(error)} if error else {}),
+    })
     await self._append_memory_syscall_observations(resolved_session_id, observations)
+    if error:
+      raise error
 
   async def query_memory(
     self,
@@ -385,35 +411,53 @@ class RuntimeRunner:
       return []
 
     observations: list[dict[str, Any]] = []
-    runtime = self._active_kernel or self._create_syscall_runtime()
-    kernel_apply(runtime, observations, {"kind": "query_memory", "query": query})
+    runtime = self._create_syscall_runtime()
+    action = kernel_action(runtime, observations, {"kind": "query_memory", "query": query})
+    if action.kind != "query_memory":
+      raise RuntimeError(f"query_memory returned unexpected kernel effect: {action.kind}")
 
-    all_memories = await self._opts.dream_store.load_memories(resolved_agent_id)
-    retrieval = await select_memories(query, memories_to_index(all_memories))
-    selected_ids = set(retrieval.get("selected_memory_ids") or [])
     hits: list[Any] = []
-    if selected_ids:
-      for entry in all_memories:
-        meta = entry.metadata if hasattr(entry, "metadata") else {}
-        name = meta.get("name") if isinstance(meta, dict) else None
-        if name in selected_ids:
-          hits.append(entry)
-      hits = hits[: int(query.get("top_k") or 5)]
-    else:
-      hits = await self._opts.dream_store.search(
-        resolved_agent_id,
-        str(query.get("current_context") or ""),
-        int(query.get("top_k") or 5),
-      )
-      if hits and retrieval.get("selection_rationale") == "No candidates after filtering":
-        retrieval["selected_memory_ids"] = [
-          (entry.metadata.get("name") if hasattr(entry, "metadata") and isinstance(entry.metadata, dict) else None)
-          or getattr(entry, "text", "")[:32]
-          for entry in hits
-        ]
-        retrieval["selection_rationale"] = f"DreamStore.search returned {len(hits)} hit(s)"
+    retrieval: dict[str, Any] = {"selected_memory_ids": [], "selection_rationale": "memory query failed"}
+    error = None
+    try:
+      all_memories = await self._opts.dream_store.load_memories(resolved_agent_id)
+      retrieval = await select_memories(query, memories_to_index(all_memories))
+      selected_ids = set(retrieval.get("selected_memory_ids") or [])
+      if selected_ids:
+        for entry in all_memories:
+          meta = entry.metadata if hasattr(entry, "metadata") else {}
+          name = meta.get("name") if isinstance(meta, dict) else None
+          if name in selected_ids:
+            hits.append(entry)
+        hits = hits[: int(action.requested_k or 0)]
+      else:
+        hits = await self._opts.dream_store.search(
+          resolved_agent_id, str(query.get("current_context") or ""), int(action.requested_k or 0),
+        )
+        if hits and retrieval.get("selection_rationale") == "No candidates after filtering":
+          retrieval["selected_memory_ids"] = [
+            (entry.metadata.get("name") if hasattr(entry, "metadata") and isinstance(entry.metadata, dict) else None)
+            or getattr(entry, "text", "")[:32] for entry in hits
+          ]
+          retrieval["selection_rationale"] = f"DreamStore.search returned {len(hits)} hit(s)"
+    except Exception as exc:
+      error = exc
+
+    kernel_apply(runtime, observations, {
+      "kind": "memory_query_result",
+      "effect_id": action.effect_id,
+      "entries": [{
+        "content": entry.text,
+        "source": "dream_store",
+        "key": entry.metadata.get("name") if isinstance(entry.metadata, dict) else None,
+        "pinned": False,
+      } for entry in hits],
+      **({"error": format_tool_error(error)} if error else {}),
+    })
 
     await self._append_memory_syscall_observations(resolved_session_id, observations)
+    if error:
+      raise error
     await self._log_memory_retrieval_result(resolved_session_id, retrieval)
     return hits
 
@@ -679,6 +723,9 @@ class RuntimeRunner:
     gov_policy = self._opts.governance_policy or os_profile.governance_policy
     governance = {k: v for k, v in governance_policy_to_kernel_event(gov_policy).items() if k != "kind"}
     config: dict[str, Any] = {"governance": governance}
+    reliability = _kernel_reliability_to_kernel(self._opts.kernel_reliability)
+    if reliability is not None:
+      config["reliability"] = reliability
     ap = self._opts.attention_policy or os_profile.attention_policy
     max_q = ap.get("max_queue_size") if isinstance(ap, dict) else getattr(ap, "max_queue_size", None)
     if max_q is not None:
@@ -692,8 +739,12 @@ class RuntimeRunner:
     if group_spawns_base is not None and group_spawns_base > 0:
       config["group_spawns_base"] = group_spawns_base
     kernel_apply(runtime, self._pending_observations, {"kind": "configure_run", "config": config})
-    # K1: no explicit `start_run` — the host `load_workflow` (fired next by `run_workflow`) self-bootstraps
-    # the run on the 0.2.30 core, matching the agent-reachable `submit_workflow` path.
+    # ABI v2 has one lifecycle: a standalone workflow starts a real run before loading its DAG.
+    # The initial provider effect is superseded by the workflow load.
+    kernel_action(runtime, self._pending_observations, {
+      "kind": "start_run",
+      "task": {"goal": f"workflow session {session_id}", "criteria": []},
+    })
     return runtime
 
   async def _run_workflow_inner(
@@ -793,7 +844,9 @@ class RuntimeRunner:
       if resumed_submission_bases and len(resumed_submission_bases) > 0:
         load_event["resumed_submission_bases"] = resumed_submission_bases
 
-    observations = kernel_apply(runtime, self._pending_observations, load_event)
+    observation_start = len(self._pending_observations)
+    initial_action = kernel_maybe_action(runtime, self._pending_observations, load_event)
+    observations = self._pending_observations[observation_start:]
 
     # W-3: persist the agent-authored batch (bootstrap base 0 / flatten base N — the kernel
     # announces BOTH) so an interrupted authored workflow reconstructs on resume; the host never
@@ -976,23 +1029,36 @@ class RuntimeRunner:
         submitted_nodes=getattr(last, "submitted_nodes", []),
       )
 
-    def _collect_nodes(obs: list) -> list:
-      batch = next((o for o in obs if o.get("kind") == "workflow_batch_spawned"), None)
-      return (batch or {}).get("nodes") or []
-
-    def _collect_budget(obs: list):
-      # G4: the batch observation carries the workflow's remaining budget (None without a quota).
-      batch = next((o for o in obs if o.get("kind") == "workflow_batch_spawned"), None)
-      return (batch or {}).get("budget")
-
     def _find_done(obs: list):
       return next((o for o in obs if o.get("kind") == "workflow_completed"), None)
 
+    def _accept_spawn(spawn: KernelRunnerAction) -> list[dict[str, Any]]:
+      observation_start = len(self._pending_observations)
+      continuation = kernel_maybe_action(runtime, self._pending_observations, {
+        "kind": "workflow_spawn_result",
+        "effect_id": spawn.effect_id,
+        "started_agent_ids": [str(node.get("agent_id") or "") for node in (spawn.nodes or [])],
+        "failures": [],
+      })
+      if continuation is not None:
+        raise RuntimeError(
+          f"workflow spawn acknowledgement returned unexpected effect: {continuation.kind}"
+        )
+      return self._pending_observations[observation_start:]
+
     done = _find_done(observations)
     if done is not None:
+      if initial_action is not None and initial_action.kind == "call_provider":
+        self._workflow_continuation_action = initial_action
       return {"completed": list(done.get("completed") or []), "failed": list(done.get("failed") or []), "outputs": dict(outputs)}
-    nodes = _collect_nodes(observations)
-    budget = _collect_budget(observations)
+    if initial_action is None:
+      return {"completed": [], "failed": [], "outputs": dict(outputs)}
+    if initial_action.kind != "spawn_workflow":
+      raise RuntimeError(f"workflow load returned unexpected kernel effect: {initial_action.kind}")
+    nodes = list(initial_action.nodes or [])
+    budget = initial_action.budget
+    observations = _accept_spawn(initial_action)
+    done = _find_done(observations)
 
     while True:
       if not nodes:
@@ -1023,10 +1089,31 @@ class RuntimeRunner:
           if delivery is None:
             await asyncio.sleep(0.005)
             continue
-          obs = await self._consume_inbound_signal(
+          signal_action = await self._consume_inbound_signal(
             delivery,
-            lambda sig: kernel_apply(runtime, self._pending_observations, _signal_to_kernel_event(sig)),
+            lambda sig: kernel_maybe_action(
+              runtime, self._pending_observations, _signal_to_kernel_event(sig)
+            ),
           )
+          observation_start = len(self._pending_observations)
+          if signal_action is not None:
+            if signal_action.kind != "preempt_sub_agents":
+              raise RuntimeError(
+                f"workflow signal returned unexpected effect: {signal_action.kind}"
+              )
+            for aid in signal_action.agent_ids or []:
+              task = tasks.get(aid)
+              if task is not None:
+                task.cancel()
+            continuation = kernel_maybe_action(runtime, self._pending_observations, {
+              "kind": "preempt_result",
+              "effect_id": signal_action.effect_id,
+            })
+            if continuation is not None and continuation.kind not in ("call_provider", "done"):
+              raise RuntimeError(
+                f"workflow preemption returned unexpected effect: {continuation.kind}"
+              )
+          obs = self._pending_observations[observation_start:]
           preempted = next((o for o in obs if o.get("kind") == "agent_preempted"), None)
           if preempted:
             for aid in preempted.get("agent_ids", []):
@@ -1074,9 +1161,20 @@ class RuntimeRunner:
           submit_event = submit_workflow_nodes_to_kernel(
             result.submitted_nodes, getattr(result, "agent_id", None)
           )
-          sub_obs = kernel_apply(runtime, self._pending_observations, submit_event)
-          next_nodes.extend(_collect_nodes(sub_obs))
-          budget = _collect_budget(sub_obs) or budget
+          observation_start = len(self._pending_observations)
+          submit_action = kernel_maybe_action(runtime, self._pending_observations, submit_event)
+          sub_obs = self._pending_observations[observation_start:]
+          if submit_action is not None:
+            if submit_action.kind != "spawn_workflow":
+              raise RuntimeError(
+                f"workflow node submission returned unexpected effect: {submit_action.kind}"
+              )
+            next_nodes.extend(submit_action.nodes or [])
+            budget = submit_action.budget or budget
+            accepted = _accept_spawn(submit_action)
+            submitted_done = _find_done([*sub_obs, *accepted])
+            if submitted_done is not None:
+              done = submitted_done
           # R3-1: persist the submission (kernel-shape nodes) + the kernel-reported base index
           # so resume can re-apply the batch at the exact original graph position. W-N3: also the
           # submitter, so resume drops batches whose submitter re-runs (it will re-submit).
@@ -1092,12 +1190,23 @@ class RuntimeRunner:
               submitter_agent_id=result.agent_id,
             ),
           )
-        obs = kernel_apply(runtime, self._pending_observations, {
+        observation_start = len(self._pending_observations)
+        completion_action = kernel_maybe_action(runtime, self._pending_observations, {
           "kind": "sub_agent_completed",
           "result": sub_agent_result_to_kernel(result),
         })
-        next_nodes.extend(_collect_nodes(obs))
-        budget = _collect_budget(obs) or budget
+        obs = self._pending_observations[observation_start:]
+        if completion_action is not None:
+          if completion_action.kind == "spawn_workflow":
+            next_nodes.extend(completion_action.nodes or [])
+            budget = completion_action.budget or budget
+            obs = [*obs, *_accept_spawn(completion_action)]
+          elif completion_action.kind != "call_provider":
+            raise RuntimeError(
+              f"workflow completion returned unexpected effect: {completion_action.kind}"
+            )
+          else:
+            self._workflow_continuation_action = completion_action
         d = _find_done(obs)
         if d is not None:
           done = d
@@ -1131,13 +1240,22 @@ class RuntimeRunner:
     """
     specs = self._pending_authored_workflows
     self._pending_authored_workflows = []
+    self._workflow_continuation_action = None
     for spec in specs:
       outcome = await self.bootstrap_workflow(spec)
       kernel_apply(runtime, self._pending_observations, {
         "kind": "add_history_message",
         "message": {"role": "user", "content": _authored_workflow_outcome_note(outcome)},
       })
-    return SimpleNamespace(kind="call_provider", context=runtime.render(), tools=action.tools)
+    continuation = self._workflow_continuation_action
+    if continuation is None or continuation.kind != "call_provider":
+      raise RuntimeError("authored workflow completed without a provider continuation")
+    return SimpleNamespace(
+      kind="call_provider",
+      effect_id=continuation.effect_id,
+      context=runtime.render(),
+      tools=continuation.tools,
+    )
 
   async def resume_workflow(
     self, spec: "WorkflowSpec", *, session_id: str | None = None,
@@ -1513,27 +1631,24 @@ class RuntimeRunner:
       ),
     )
 
-  async def _resolve_kernel_suspend(
+  async def _resolve_approval_requests(
     self,
+    requests: list[dict[str, Any]],
     runtime: KernelRuntime,
     session_id: str,
   ) -> tuple[list[str], list[str], list[StreamEvent]]:
     from deepstrike.runtime.execution_plane import resolve_permission_request
 
-    gated = [
-      o for o in self._pending_observations
-      if o.get("kind") == "tool_gated" and isinstance(o.get("call_id"), str) and isinstance(o.get("tool"), str)
-    ]
     approved: list[str] = []
     denied: list[str] = []
     events: list[StreamEvent] = []
     run_ctx = RunContext(on_permission_request=self._opts.on_permission_request)
 
-    for g in gated:
+    for g in requests:
       request = PermissionRequestEvent(
         call_id=g["call_id"],
         tool_name=g["tool"],
-        arguments="{}",
+        arguments=str(g.get("arguments") or "{}"),
         reason=g.get("reason") if isinstance(g.get("reason"), str) else "",
       )
       events.append(request)
@@ -1549,7 +1664,7 @@ class RuntimeRunner:
         "kind": "permission_requested",
         "turn": runtime.turn(),
         "tool": g["tool"],
-        "arguments": "{}",
+        "arguments": request.arguments,
         "reason": request.reason,
       })
       await self._opts.session_log.append(session_id, {
@@ -1601,9 +1716,8 @@ class RuntimeRunner:
     args_json: str,
   ) -> tuple[str, bool]:
     """O7: resolve a ``read_result`` meta-tool call to the full text of a previously-evicted tool
-    output. Resolution order: (a) this turn's in-memory ``_pending_spool_outputs`` map, (b) the
-    on-disk result spool (persisted once the kernel observation ``large_result_spooled`` was
-    processed), (c) a session-log scan for the original ``tool_completed`` event carrying that
+    output. Resolution order: (a) the effect-committed on-disk result spool, then (b) a
+    session-log scan for the original ``tool_completed`` event carrying that
     ``call_id``. Slices the resolved text by ``[offset, offset + max_bytes)`` (plain string slice —
     "bytes-ish")."""
     call_id = ""
@@ -1621,17 +1735,12 @@ class RuntimeRunner:
       pass  # malformed arguments — call_id stays empty, falls through to "not found" below
 
     full: str | None = None
-    pending = self._pending_spool_outputs.get(call_id)
-    if pending is not None:
-      full = pending.get("output")
-
-    if full is None:
-      from deepstrike.runtime.large_result_spool import LargeResultSpool
-      spool = self._opts.result_spool or LargeResultSpool()
-      try:
-        full = await spool.find_by_call_id(call_id)
-      except Exception:
-        full = None
+    from deepstrike.runtime.large_result_spool import LargeResultSpool
+    spool = self._opts.result_spool or LargeResultSpool()
+    try:
+      full = await spool.find_by_call_id(call_id)
+    except Exception:
+      full = None
 
     if full is None:
       try:
@@ -1667,7 +1776,8 @@ class RuntimeRunner:
   ) -> AsyncIterator[StreamEvent]:
     self._interrupted = False
     self._pending_observations = []
-    self._pending_spool_outputs.clear()
+    self._pending_page_out_archives = []
+    self._active_page_out_archive = None
     self._current_session_id = session_id
     ext = {**(self._opts.extensions or {}), **(extensions or {})}
     create_run_state = getattr(self._opts.provider, "create_run_state", None)
@@ -1927,6 +2037,13 @@ class RuntimeRunner:
         payload["notify_model"] = bool(ew["notify_model"])
       kernel_apply(runtime, self._pending_observations, {"kind": "set_entropy_watch", **payload})
 
+    reliability = _kernel_reliability_to_kernel(self._opts.kernel_reliability)
+    if reliability is not None:
+      kernel_apply(runtime, self._pending_observations, {
+        "kind": "configure_run",
+        "config": {"reliability": reliability},
+      })
+
     # L1: seed the kernel with the group's cumulative spend so the run-level token cap + cumulative
     # spawn cap span the whole governance domain. No group ⇒ no seed ⇒ per-vehicle budget (unchanged).
     # Also register this session as a member so the run's lineage (R2) spans personas/invocations.
@@ -2021,6 +2138,7 @@ class RuntimeRunner:
         # authored spec is never stranded. Drains the queue; fires once per authored batch.
         if self._pending_authored_workflows:
           action = await self._drive_authored_workflows(runtime, action)
+        provider_effect_id = action.effect_id
         final_tool_calls: list[ToolCall] = []
         final_text = ""
         context = action.context or RenderedContext()
@@ -2088,6 +2206,7 @@ class RuntimeRunner:
             # loop-top _append_observations, and a terminal `done` exits through `is_terminal()`.
             action = kernel_action(runtime, self._pending_observations, {
               "kind": "provider_error",
+              "effect_id": provider_effect_id,
               "message": format_tool_error(exc),
             })
             # Withholding (query.ts parity): surface the raw provider error only when the kernel
@@ -2109,21 +2228,12 @@ class RuntimeRunner:
         )
         provider_event: dict[str, Any] = {
           "kind": "provider_result",
+          "effect_id": provider_effect_id,
           "message": message_to_kernel(assistant_message),
           "now_ms": int(time.time() * 1000),
           **({"stop_reason": turn_stop_reason} if turn_stop_reason else {}),
         }
-        next_action = kernel_maybe_action(runtime, self._pending_observations, provider_event)
-        if not next_action and any(o.get("kind") == "suspended" for o in self._pending_observations):
-          approved, denied, suspend_events = await self._resolve_kernel_suspend(runtime, session_id)
-          for evt in suspend_events:
-            yield evt
-          next_action = kernel_action(runtime, self._pending_observations, {
-            "kind": "resume",
-            "approved_calls": approved,
-            "denied_calls": denied,
-          })
-        action = next_action or kernel_action(runtime, self._pending_observations, provider_event)
+        action = kernel_action(runtime, self._pending_observations, provider_event)
         from deepstrike.runtime.provider_replay import peek_provider_replay
         provider_replay = peek_provider_replay(self._opts.provider, final_text, final_tool_calls)
         await self._opts.session_log.append(session_id, build_llm_completed_event(
@@ -2160,7 +2270,70 @@ class RuntimeRunner:
           except Exception:
             pass  # malformed skill args — leave active_skill unchanged
 
+      elif action.kind == "request_approval":
+        approved, denied, suspend_events = await self._resolve_approval_requests(
+          action.requests or [], runtime, session_id,
+        )
+        for evt in suspend_events:
+          yield evt
+        action = kernel_action(runtime, self._pending_observations, {
+          "kind": "approval_result",
+          "effect_id": action.effect_id,
+          "approved_calls": approved,
+          "denied_calls": denied,
+        })
+
+      elif action.kind == "spool_large_result":
+        from deepstrike.runtime.large_result_spool import LargeResultSpool
+        spool = self._opts.result_spool or LargeResultSpool()
+        spool_ref = None
+        error = None
+        try:
+          spool_ref = await spool.persist_output(action.call_id or "", action.output or "")
+        except Exception as exc:
+          error = format_tool_error(exc)
+        action = kernel_action(runtime, self._pending_observations, {
+          "kind": "large_result_spool_result",
+          "effect_id": action.effect_id,
+          **({"spool_ref": spool_ref} if spool_ref else {}),
+          **({"error": error} if error else {}),
+        })
+
+      elif action.kind == "archive_page_out":
+        if self._active_page_out_archive is None:
+          if self._pending_page_out_archives:
+            self._active_page_out_archive = self._pending_page_out_archives.pop(0)
+          else:
+            self._active_page_out_archive = (
+              self._next_archive_start,
+              await self._opts.session_log.latest_seq(session_id),
+            )
+        archive_start, _compressed_seq = self._active_page_out_archive
+        archive_ref = None
+        error = None
+        archived = list(action.archived or [])
+        try:
+          if self._opts.compression_store is not None:
+            archive_ref = await self._opts.compression_store.write(session_id, archive_start, archived)
+        except Exception as exc:
+          error = format_tool_error(exc)
+        archive_action = _compression_action(action.action) or "auto_compact"
+        archive_tier = action.tier
+        if error is None:
+          self._active_page_out_archive = None
+        action = kernel_action(runtime, self._pending_observations, {
+          "kind": "page_out_archive_result",
+          "effect_id": action.effect_id,
+          **({"archive_ref": archive_ref} if archive_ref else {}),
+          **({"error": error} if error else {}),
+        })
+        if error is None and archive_tier == "semantic" and archived:
+          task_scope.spawn("semantic-page-out", self._archive_semantic_page_out(
+            archived, archive_action, session_id,
+          ))
+
       elif action.kind == "execute_tool":
+        tool_effect_id = action.effect_id
         all_calls = list(action.calls or [])
         await self._opts.session_log.append(session_id, {
           "kind": "tool_requested", "turn": runtime.turn(), "calls": all_calls,
@@ -2345,10 +2518,6 @@ class RuntimeRunner:
         await self._opts.session_log.append(session_id, {
           "kind": "tool_completed", "turn": runtime.turn(), "results": tool_results,
         })
-        for call in normal_calls:
-          result = next((r for r in tool_results if r.call_id == call.id), None)
-          if result is not None:
-            self._pending_spool_outputs[call.id] = {"tool": call.name, "output": result.output}
         # P1-B B3: a successfully-resolved `skill` call activates that skill for the next turn.
         #
         # Strict dynamic context control: a skill is METHOD content — how to do something — reused
@@ -2388,6 +2557,7 @@ class RuntimeRunner:
         entropy_obs_start = len(self._pending_observations)
         action = kernel_action(runtime, self._pending_observations, {
           "kind": "tool_results",
+          "effect_id": tool_effect_id,
           "results": [tool_result_to_kernel(result) for result in tool_results],
         })
         # Surface the boundary's entropy measurement live (the heartbeat watch source) —
@@ -2404,11 +2574,13 @@ class RuntimeRunner:
             )
 
       elif action.kind == "evaluate_milestone":
+        milestone_effect_id = action.effect_id
         milestone_policy = self._opts.milestone_policy or "require_verifier"
         if milestone_policy == "auto_pass":
           from deepstrike.types.agent import milestone_check_result_to_kernel, milestone_check_pass
           action = kernel_action(runtime, self._pending_observations, {
             "kind": "milestone_result",
+            "effect_id": milestone_effect_id,
             "result": milestone_check_result_to_kernel(milestone_check_pass(action.phase_id)),
           })
           next_compressed_archive_start = await self._append_observations(
@@ -2425,6 +2597,7 @@ class RuntimeRunner:
             check = await check
           action = kernel_action(runtime, self._pending_observations, {
             "kind": "milestone_result",
+            "effect_id": milestone_effect_id,
             "result": milestone_check_result_to_kernel(check),
           })
           next_compressed_archive_start = await self._append_observations(
@@ -2540,31 +2713,6 @@ class RuntimeRunner:
       if obs.get("kind") == "page_in_requested":
         continue
 
-      archive_ref = None
-      spool_ref = None
-      if obs.get("kind") == "compressed":
-        archived = obs.get("archived")
-        if self._opts.compression_store and archived:
-          try:
-            path_ref = await self._opts.compression_store.write(session_id, next_archive_start, archived)
-            if path_ref:
-              archive_ref = path_ref
-          except Exception:
-            pass
-
-      if obs.get("kind") == "large_result_spooled":
-        call_id = obs.get("call_id") if isinstance(obs.get("call_id"), str) else ""
-        pending = self._pending_spool_outputs.pop(call_id, None)
-        if pending:
-          try:
-            from deepstrike.runtime.large_result_spool import LargeResultSpool
-            spool = self._opts.result_spool or LargeResultSpool()
-            spool_ref = await spool.persist_output(call_id, pending["output"])
-          except Exception:
-            pass
-          if not obs.get("tool") and pending.get("tool"):
-            obs = {**obs, "tool": pending["tool"]}
-
       latest = (
         await self._opts.session_log.latest_seq(session_id)
         if obs.get("kind") == "compressed"
@@ -2575,41 +2723,16 @@ class RuntimeRunner:
         turn,
         next_archive_start=next_archive_start,
         latest_seq=latest,
-        archive_ref=archive_ref,
         preserved_refs=preserved_refs,
         compression_action=_compression_action,
-        spool_ref=spool_ref,
       )
       if not event:
         continue
       compressed_seq = await self._opts.session_log.append(session_id, event)
       if event.get("kind") == "compressed":
+        if int(obs.get("archived_count") or 0) > 0:
+          self._pending_page_out_archives.append((next_archive_start, compressed_seq))
         next_archive_start = compressed_seq + 1
-        # One compaction = one kernel observation: the page_out session record (and the
-        # semantic-archive branch) is DERIVED from Compressed.tier_hint, preserving the
-        # session-log format and OsSnapshot page_out_count.
-        archived = obs.get("archived")
-        tier_hint = obs.get("tier_hint")
-        if tier_hint and isinstance(archived, list) and archived:
-          await self._opts.session_log.append(session_id, {
-            "kind": "page_out",
-            "turn": obs.get("turn") or turn,
-            "action": _compression_action(obs.get("action")),
-            "summary": obs.get("summary"),
-            "tier_hint": tier_hint,
-            "message_count": len(archived),
-          })
-          if tier_hint == "semantic":
-            archive = self._archive_semantic_page_out(
-              list(archived),
-              _compression_action(obs.get("action")),
-              session_id,
-              runtime,
-            )
-            if task_scope is not None:
-              task_scope.spawn("semantic-page-out", archive)
-            else:
-              await archive
       # K4: a sprint renewal dropped the old history — including any earlier memory hits — so
       # re-run the pre_query_memory prefetch for the new sprint (live observations only: this
       # consumer sits on the live drain path, same placement as the semantic page-out archival).
@@ -2664,7 +2787,6 @@ class RuntimeRunner:
     archived: list[Any],
     action: str | None,
     session_id: str,
-    runtime: KernelRuntime,
   ) -> None:
     if not self._opts.dream_store or not self._opts.agent_id:
       return
@@ -2686,7 +2808,7 @@ class RuntimeRunner:
         "action": action,
         "score": 0.6,
       },
-    }, session_id=session_id, agent_id=self._opts.agent_id, runtime=runtime)
+    }, session_id=session_id, agent_id=self._opts.agent_id)
 
   async def _summarize_for_long_term_memory(self, archived: list[Any]) -> str:
     provider = self._opts.dream_provider or self._opts.provider
@@ -2846,6 +2968,13 @@ async def _replay_messages_async(
   load_archive: Callable[[str], Awaitable[list[Message]]] | None = None,
 ) -> list[Message]:
   messages: list[Message] = []
+  archived_turns = {
+    int(entry.event.get("turn") or 0)
+    for entry in events
+    if entry.event.get("kind") == "page_out"
+    and entry.event.get("archive_ref")
+    and load_archive is not None
+  }
   for entry in events:
     e = entry.event
     kind = e.get("kind")
@@ -2861,24 +2990,35 @@ async def _replay_messages_async(
         token_count=max(1, len(user_text) // 4),
       ))
     elif kind == "compressed":
+      # A committed page-out transaction is replayed from its archive event below. The compressed
+      # record remains the durable fallback when no archive was committed.
+      if int(e.get("turn") or 0) in archived_turns:
+        continue
+      summary = e.get("summary")
+      if summary:
+        system_text = f"[Compressed context: turn {e.get('turn', 0)}]\n{summary}"
+        messages.append(Message(
+          role="system",
+          content=system_text,
+          tool_calls=[],
+          token_count=max(1, len(system_text) // 4),
+        ))
+    elif kind == "page_out" and e.get("archive_ref") and load_archive:
       loaded_successfully = False
-      archive_ref = e.get("archive_ref")
-      if archive_ref and load_archive:
-        try:
-          archived_msgs = await load_archive(archive_ref)
-          for msg in archived_msgs:
-            content = sanitize_replay_text(msg.content, max_bytes)
-            messages.append(Message(
-              role=msg.role,
-              content=content,
-              tool_calls=msg.tool_calls,
-              token_count=msg.token_count,
-              content_parts=msg.content_parts,
-            ))
-          loaded_successfully = True
-        except Exception:
-          pass
-
+      try:
+        archived_msgs = await load_archive(str(e["archive_ref"]))
+        for msg in archived_msgs:
+          content = sanitize_replay_text(msg.content, max_bytes)
+          messages.append(Message(
+            role=msg.role,
+            content=content,
+            tool_calls=msg.tool_calls,
+            token_count=msg.token_count,
+            content_parts=msg.content_parts,
+          ))
+        loaded_successfully = True
+      except Exception:
+        pass
       if not loaded_successfully:
         summary = e.get("summary")
         if summary:
@@ -2988,6 +3128,28 @@ def _scheduler_budget_to_kernel(budget: SchedulerBudget | dict[str, Any] | None)
   else:
     max_wall_ms = budget.max_wall_ms
   return {"max_wall_ms": max_wall_ms} if max_wall_ms is not None else {}
+
+
+def _kernel_reliability_to_kernel(
+  policy: KernelReliability | dict[str, Any] | None,
+) -> dict[str, Any] | None:
+  if policy is None:
+    return None
+  get = policy.get if isinstance(policy, dict) else lambda key: getattr(policy, key)
+  out: dict[str, Any] = {}
+  for field in (
+    "event_replay_capacity",
+    "completed_effect_replay_capacity",
+    "provider_recovery_attempts",
+    "output_recovery_attempts",
+    "host_effect_retry_attempts",
+    "spool_threshold_bytes",
+    "spool_preview_bytes",
+  ):
+    value = get(field)
+    if value is not None:
+      out[field] = value
+  return out
 
 
 def _to_kernel_message(message: object) -> Message:

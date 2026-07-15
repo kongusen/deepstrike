@@ -26,7 +26,6 @@ export type SessionEvent =
       action?: "snip_compact" | "micro_compact" | "context_collapse" | "auto_compact"
       summary?: string
       summary_tokens?: number
-      archive_ref?: string
       preserved_refs?: string[]
     }
   | {
@@ -36,6 +35,7 @@ export type SessionEvent =
       summary?: string
       tier_hint?: string
       message_count?: number
+      archive_ref?: string
     }
   | { kind: "page_in"; turn: number; entry_count: number }
   | {

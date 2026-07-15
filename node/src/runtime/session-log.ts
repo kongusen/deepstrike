@@ -31,7 +31,6 @@ export type SessionEvent =
       action?: "snip_compact" | "micro_compact" | "context_collapse" | "auto_compact"
       summary?: string
       summary_tokens?: number
-      archive_ref?: string
       preserved_refs?: string[]
     }
   | {

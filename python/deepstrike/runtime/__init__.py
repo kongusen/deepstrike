@@ -2,6 +2,7 @@ from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPla
 from deepstrike.runtime.facade import run_agent, run_fanout
 from deepstrike.runtime.runner import (
   MemoryPolicy,
+  KernelReliability,
   MemoryWriteRateLimit,
   ResourceQuota,
   SchedulerBudget,
@@ -144,6 +145,7 @@ __all__ = [
   "TurnMetrics",
   "ResourceQuota",
   "MemoryPolicy",
+  "KernelReliability",
   "MemoryWriteRateLimit",
   "SchedulerBudget",
   "SubAgentHarnessConfig",

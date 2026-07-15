@@ -19,7 +19,22 @@ import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
 import type { RegisteredTool } from "../src/tools/index.js"
 
 type Obs = Record<string, unknown>
-const reply = (obs: Obs[]) => JSON.stringify({ version: 1, actions: [], observations: obs })
+let effectSequence = 1
+const reply = (obs: Obs[]) => {
+  const batch = obs.find(o => o.kind === "workflow_batch_spawned")
+  const completed = obs.some(o => o.kind === "workflow_completed")
+  const actions = batch
+    ? [{ kind: "spawn_workflow", effect_id: `spawn-${effectSequence++}`, nodes: batch.nodes, ...(batch.budget ? { budget: batch.budget } : {}) }]
+    : completed
+      ? [{ kind: "call_provider", effect_id: `provider-${effectSequence++}`, context: {}, tools: [] }]
+      : []
+  return JSON.stringify({
+    version: 2,
+    actions,
+    observations: obs.filter(o => o.kind !== "workflow_batch_spawned"),
+    faults: [],
+  })
+}
 
 /** A workflow_batch_spawned node descriptor (kernel wire shape). */
 const spawn = (over: Record<string, unknown> = {}) => ({

@@ -106,13 +106,8 @@ pub fn pending_tool_calls_from_messages(messages: &[Message]) -> Vec<ToolCall> {
         .collect()
 }
 
-/// Reconstructs full messages from a sequence of events.
-/// For `SessionEvent::Compressed` events:
-/// 1. If `archive_ref` is present, it attempts to load the messages using `load_archive`.
-/// 2. If loading succeeds, the reconstructed messages are appended to the history.
-/// 3. If loading fails (returns a `ContextFault::MissingArchive` or another error),
-///    or if `archive_ref` is `None`, it falls back to the embedded `summary` in the `Compressed` event (if present)
-///    as a system message `[Compressed context: turn {turn}]\n{summary}`.
+/// Reconstructs messages from committed session events. `Compressed` owns the fallback summary;
+/// `PageOut` is the only event that may own an archive reference.
 pub fn reconstruct_messages_with_fallback<F>(
     events: &[SessionEvent],
     _session_id: &str,
@@ -175,31 +170,9 @@ where
             SessionEvent::Compressed {
                 turn,
                 summary,
-                archive_ref,
                 ..
             } => {
-                let mut loaded_successfully = false;
-                if let Some(ref_str) = archive_ref {
-                    if !ref_str.is_empty() {
-                        match load_archive(ref_str) {
-                            Ok(archived_msgs) => {
-                                for mut msg in archived_msgs {
-                                    if let Content::Text(text) = &mut msg.content {
-                                        *text = sanitize_recovery_text_bounded(text, max_bytes);
-                                    }
-                                    messages.push(msg);
-                                }
-                                loaded_successfully = true;
-                            }
-                            Err(_) => {
-                                // Loader failed (e.g. MissingArchive). We degrade and fallback.
-                            }
-                        }
-                    }
-                }
-
-                let page_out_will_supply_archive = archive_ref.is_none()
-                    && events[event_index + 1..].iter().any(|event| matches!(
+                let page_out_will_supply_archive = events[event_index + 1..].iter().any(|event| matches!(
                         event,
                         SessionEvent::PageOut {
                             turn: page_out_turn,
@@ -207,7 +180,7 @@ where
                             ..
                         } if page_out_turn == turn && !reference.is_empty()
                     ));
-                if !loaded_successfully && !page_out_will_supply_archive {
+                if !page_out_will_supply_archive {
                     if let Some(sum) = summary {
                         let system_text = format!("[Compressed context: turn {}]\n{}", turn, sum);
                         messages.push(Message {
@@ -225,19 +198,6 @@ where
                 archive_ref: Some(archive_ref),
                 ..
             } if !archive_ref.is_empty() => {
-                let already_loaded_by_compression = events[..event_index].iter().rev().any(|event| {
-                    matches!(
-                        event,
-                        SessionEvent::Compressed {
-                            turn: compressed_turn,
-                            archive_ref: Some(reference),
-                            ..
-                        } if compressed_turn == turn && !reference.is_empty()
-                    )
-                });
-                if already_loaded_by_compression {
-                    continue;
-                }
                 match load_archive(archive_ref) {
                     Ok(archived_messages) => {
                         for mut message in archived_messages {
@@ -337,7 +297,6 @@ mod tests {
 
     #[test]
     fn reconstruct_ignores_categorized_kernel_os_events() {
-        use crate::runtime::event_log::KernelEventCategory;
         use crate::runtime::session::SessionEvent;
 
         let events = vec![
@@ -384,7 +343,6 @@ mod tests {
                 action: Some("auto_compact".into()),
                 summary: Some("fallback".into()),
                 summary_tokens: Some(1),
-                archive_ref: None,
                 preserved_refs: vec![],
             },
             SessionEvent::PageOut {

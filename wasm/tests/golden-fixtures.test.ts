@@ -27,7 +27,7 @@ describe("WASM Golden ABI Fixtures", () => {
     expect(stepJson).toBeDefined()
     
     const step = JSON.parse(stepJson)
-    expect(step.version).toBe(1)
+    expect(step.version).toBe(2)
     expect(step.actions).toBeDefined()
     expect(step.actions.length).toBeGreaterThan(0)
     expect(step.actions[0].kind).toBe("call_provider")
@@ -44,7 +44,7 @@ describe("WASM Golden ABI Fixtures", () => {
     expect(stepJson).toBeDefined()
 
     const step = JSON.parse(stepJson)
-    expect(step.version).toBe(1)
+    expect(step.version).toBe(2)
     expect(step.actions).toBeDefined()
   })
 
@@ -54,7 +54,7 @@ describe("WASM Golden ABI Fixtures", () => {
 
     const stepJson = kernel.step(inputJson)
     const step = JSON.parse(stepJson)
-    expect(step.version).toBe(1)
+    expect(step.version).toBe(2)
     expect(step.actions).toHaveLength(0)
     expect(step.observations).toHaveLength(0)
   })
@@ -64,7 +64,7 @@ describe("WASM Golden ABI Fixtures", () => {
     kernel.step(readFileSync(join(fixturesDir, "input_start_run.json"), "utf8"))
 
     const step = JSON.parse(kernel.step(readFileSync(join(fixturesDir, "input_spawn_sub_agent.json"), "utf8")))
-    expect(step.version).toBe(1)
+    expect(step.version).toBe(2)
     expect(step.actions).toHaveLength(0)
     const spawned = step.observations.find((o: { kind: string }) => o.kind === "agent_process_changed")
     expect(spawned).toBeDefined()

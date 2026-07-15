@@ -5,6 +5,7 @@ pending map -> on-disk result spool -> session-log scan). Mirrors the Node
 `tests/read-result.test.ts` integration test."""
 
 import shutil
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -86,3 +87,19 @@ async def test_read_result_refetches_spooled_output_by_call_id():
     assert read_result_output is not None
     assert f"of {len(huge)}" in read_result_output
     assert huge[:4000] in read_result_output
+
+
+@pytest.mark.asyncio
+async def test_spool_hashes_untrusted_call_ids_and_commits_atomically(tmp_path):
+    spool = LargeResultSpool(spool_dir=str(tmp_path / "spool"))
+    call_id = "../../outside/../tool-call"
+    refs = await asyncio.gather(*[
+        spool.persist_output(call_id, "stable-output") for _ in range(8)
+    ])
+
+    assert len(set(refs)) == 1
+    ref = Path(refs[0])
+    assert ref.parent == tmp_path / "spool"
+    assert "tool-call" not in ref.name
+    assert not list(ref.parent.glob("*.tmp"))
+    assert await spool.find_by_call_id(call_id) == "stable-output"

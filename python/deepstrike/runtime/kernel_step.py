@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import time
+import uuid
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -9,12 +11,14 @@ from deepstrike._kernel import ContentPartObj, Message, TaskUpdate, ToolCall, To
 from deepstrike.providers.base import RenderedContext
 
 
-KERNEL_ABI_VERSION = 1
+KERNEL_ABI_VERSION = 2
+_wire_states: dict[int, tuple[str, int]] = {}
 
 
 @dataclass
 class KernelRunnerAction:
   kind: str
+  effect_id: str = ""
   context: RenderedContext | None = None
   tools: list[ToolSchema] | None = None
   calls: list[ToolCall] | None = None
@@ -22,6 +26,24 @@ class KernelRunnerAction:
   criteria: list[str] | None = None
   required_evidence: list[str] | None = None
   result: Any | None = None
+  requests: list[dict[str, Any]] | None = None
+  nodes: list[dict[str, Any]] | None = None
+  budget: dict[str, Any] | None = None
+  agent_ids: list[str] | None = None
+  reason: str | None = None
+  memory: dict[str, Any] | None = None
+  query: dict[str, Any] | None = None
+  requested_k: int | None = None
+  call_id: str | None = None
+  tool: str | None = None
+  output: str | None = None
+  original_size: int | None = None
+  preview_size: int | None = None
+  turn: int | None = None
+  action: str | None = None
+  summary: str | None = None
+  archived: list[Message] | None = None
+  tier: str | None = None
 
 
 def _try_parse_json(value: str) -> Any:
@@ -218,9 +240,13 @@ def _context_from_kernel(raw: dict[str, Any]) -> RenderedContext:
 
 def _action_from_kernel(raw: dict[str, Any]) -> KernelRunnerAction:
   kind = raw.get("kind")
+  effect_id = str(raw.get("effect_id") or "")
+  if not effect_id:
+    raise RuntimeError(f"kernel action {kind} is missing effect_id")
   if kind == "call_provider":
     return KernelRunnerAction(
       kind="call_provider",
+      effect_id=effect_id,
       context=_context_from_kernel(raw.get("context") or {}),
       tools=[
         ToolSchema(
@@ -234,6 +260,7 @@ def _action_from_kernel(raw: dict[str, Any]) -> KernelRunnerAction:
   if kind == "execute_tool":
     return KernelRunnerAction(
       kind="execute_tool",
+      effect_id=effect_id,
       calls=[
         ToolCall(
           id=str(c.get("id") or ""),
@@ -243,9 +270,52 @@ def _action_from_kernel(raw: dict[str, Any]) -> KernelRunnerAction:
         for c in raw.get("calls", []) or []
       ],
     )
+  if kind == "request_approval":
+    return KernelRunnerAction(
+      kind=kind,
+      effect_id=effect_id,
+      requests=[{
+        "call_id": str(request.get("call_id") or ""),
+        "tool": str(request.get("tool") or ""),
+        "arguments": json.dumps(request.get("arguments") or {}),
+        "reason": str(request.get("reason") or ""),
+      } for request in raw.get("requests", []) or []],
+    )
+  if kind == "spawn_workflow":
+    return KernelRunnerAction(
+      kind=kind, effect_id=effect_id,
+      nodes=list(raw.get("nodes") or []), budget=raw.get("budget"),
+    )
+  if kind == "preempt_sub_agents":
+    return KernelRunnerAction(
+      kind=kind, effect_id=effect_id,
+      agent_ids=list(raw.get("agent_ids") or []), reason=str(raw.get("reason") or ""),
+    )
+  if kind == "persist_memory":
+    return KernelRunnerAction(kind=kind, effect_id=effect_id, memory=dict(raw.get("memory") or {}))
+  if kind == "query_memory":
+    return KernelRunnerAction(
+      kind=kind, effect_id=effect_id, query=dict(raw.get("query") or {}),
+      requested_k=int(raw.get("requested_k") or 0),
+    )
+  if kind == "spool_large_result":
+    return KernelRunnerAction(
+      kind=kind, effect_id=effect_id,
+      call_id=str(raw.get("call_id") or ""), tool=str(raw.get("tool") or ""),
+      output=str(raw.get("output") or ""), original_size=int(raw.get("original_size") or 0),
+      preview_size=int(raw.get("preview_size") or 0),
+    )
+  if kind == "archive_page_out":
+    return KernelRunnerAction(
+      kind=kind, effect_id=effect_id, turn=int(raw.get("turn") or 0),
+      action=str(raw.get("action") or "auto_compact"), summary=raw.get("summary"),
+      archived=[_message_from_kernel(message) for message in raw.get("archived", []) or []],
+      tier=str(raw.get("tier") or "durable"),
+    )
   if kind == "evaluate_milestone":
     return KernelRunnerAction(
       kind="evaluate_milestone",
+      effect_id=effect_id,
       phase_id=str(raw.get("phase_id") or ""),
       criteria=list(raw.get("criteria") or []),
       required_evidence=list(raw.get("required_evidence") or []),
@@ -266,6 +336,7 @@ def _action_from_kernel(raw: dict[str, Any]) -> KernelRunnerAction:
     )
     return KernelRunnerAction(
       kind="done",
+      effect_id=effect_id,
       result=SimpleNamespace(
         termination=str(result.get("termination") or "error"),
         turns_used=int(result.get("turns_used") or 0),
@@ -276,19 +347,40 @@ def _action_from_kernel(raw: dict[str, Any]) -> KernelRunnerAction:
   raise RuntimeError(f"unknown KernelAction kind: {kind}")
 
 
-def _step_input(event: dict[str, Any]) -> str:
-  return json.dumps({"version": KERNEL_ABI_VERSION, "event": event})
+def _step_input(runtime: Any, event: dict[str, Any]) -> str:
+  key = id(runtime)
+  state = _wire_states.get(key)
+  if state is None:
+    state = (f"python-operation-{uuid.uuid4()}", 1)
+  operation_id, sequence = state
+  _wire_states[key] = (operation_id, sequence + 1)
+  return json.dumps({
+    "version": KERNEL_ABI_VERSION,
+    "operation_id": operation_id,
+    "event_id": f"{operation_id}-event-{sequence}",
+    "observed_at_ms": int(time.time() * 1000),
+    "event": event,
+  })
+
+
+def _kernel_step(runtime: Any, event: dict[str, Any]) -> dict[str, Any]:
+  step = json.loads(runtime.step(_step_input(runtime, event)))
+  faults = step.get("faults") or []
+  if faults:
+    fault = faults[0]
+    raise RuntimeError(f"{fault.get('code', 'kernel_fault')}: {fault.get('message', 'kernel transition failed')}")
+  return step
 
 
 def kernel_apply(runtime: Any, pending: list[dict[str, Any]], event: dict[str, Any]) -> list[dict[str, Any]]:
-  step = json.loads(runtime.step(_step_input(event)))
+  step = _kernel_step(runtime, event)
   observations = list(step.get("observations") or [])
   pending.extend(observations)
   return observations
 
 
 def kernel_action(runtime: Any, pending: list[dict[str, Any]], event: dict[str, Any]) -> KernelRunnerAction:
-  step = json.loads(runtime.step(_step_input(event)))
+  step = _kernel_step(runtime, event)
   pending.extend(step.get("observations") or [])
   actions = step.get("actions") or []
   if not actions:
@@ -301,13 +393,9 @@ def kernel_maybe_action(
   pending: list[dict[str, Any]],
   event: dict[str, Any],
 ) -> KernelRunnerAction | None:
-  step = json.loads(runtime.step(_step_input(event)))
+  step = _kernel_step(runtime, event)
   pending.extend(step.get("observations") or [])
   actions = step.get("actions") or []
   if not actions:
     return None
   return _action_from_kernel(actions[0])
-
-
-def force_compact(runtime: Any, pending: list[dict[str, Any]]) -> bool:
-  return any(o.get("kind") == "compressed" for o in kernel_apply(runtime, pending, {"kind": "force_compact"}))

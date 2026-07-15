@@ -17,6 +17,11 @@ from deepstrike import (
     verify_rules,
 )
 from deepstrike._kernel import KernelRuntime, LoopPolicy
+from deepstrike.runtime.kernel_step import kernel_action, kernel_apply, kernel_maybe_action
+
+
+def _start_runtime(runtime: KernelRuntime) -> None:
+    kernel_action(runtime, [], {"kind": "start_run", "task": {"goal": "parent", "criteria": []}})
 
 
 class _StubProvider:
@@ -116,7 +121,7 @@ async def test_run_workflow_drives_fanout_to_completion():
 
     # Establish an active parent run on a kernel (run_workflow runs mid-run).
     rt = KernelRuntime(LoopPolicy(max_tokens=1000))
-    rt.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
+    _start_runtime(rt)
     runner._active_kernel = rt
     runner._current_session_id = "sess"
 
@@ -191,7 +196,7 @@ async def test_run_workflow_resumes_from_completed_nodes():
     ))
 
     rt = KernelRuntime(LoopPolicy(max_tokens=1000))
-    rt.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
+    _start_runtime(rt)
     runner._active_kernel = rt
     runner._current_session_id = "sess"
 
@@ -225,7 +230,7 @@ async def test_run_workflow_with_all_nodes_resumed():
     ))
 
     rt = KernelRuntime(LoopPolicy(max_tokens=1000))
-    rt.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
+    _start_runtime(rt)
     runner._active_kernel = rt
     runner._current_session_id = "sess"
 
@@ -255,7 +260,7 @@ async def test_resume_workflow_recovers_from_session_log():
     ))
 
     rt = KernelRuntime(LoopPolicy(max_tokens=1000))
-    rt.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
+    _start_runtime(rt)
     runner._active_kernel = rt
     runner._current_session_id = "sess"
 
@@ -324,8 +329,8 @@ def test_g1_quarantined_submitter_cannot_escalate_over_abi():
     from deepstrike import submit_workflow_nodes_to_kernel
 
     rt = KernelRuntime(LoopPolicy(max_tokens=128000))
-    rt.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
-    rt.step(json.dumps({"version": 1, "event": {
+    _start_runtime(rt)
+    initial = kernel_maybe_action(rt, [], {
         "kind": "load_workflow",
         "spec": {"nodes": [{
             "task": {"goal": "read-untrusted", "criteria": []},
@@ -335,26 +340,23 @@ def test_g1_quarantined_submitter_cannot_escalate_over_abi():
             "trust": "quarantined",
         }]},
         "parent_session_id": "sess",
-    }}))
+    })
+    assert initial is not None and initial.kind == "spawn_workflow"
+    kernel_apply(rt, [], {
+        "kind": "workflow_spawn_result", "effect_id": initial.effect_id,
+        "started_agent_ids": [n["agent_id"] for n in initial.nodes or []], "failures": [],
+    })
 
-    escalated = json.loads(rt.step(json.dumps({
-        "version": 1,
-        "event": submit_workflow_nodes_to_kernel(
-            [WorkflowNodeSpec(task="act-with-privilege", role="implement")], "wf-node0"
-        ),
-    })))
-    spawned = [
-        n["agent_id"]
-        for o in escalated["observations"]
-        if o["kind"] == "workflow_batch_spawned"
-        for n in o.get("nodes", [])
-    ]
+    escalated = kernel_maybe_action(rt, [], submit_workflow_nodes_to_kernel(
+        [WorkflowNodeSpec(task="act-with-privilege", role="implement")], "wf-node0"
+    ))
+    spawned = [n["agent_id"] for n in (escalated.nodes or [])] if escalated else []
     assert "wf-node1" not in spawned, "quarantined submitter's write-capable node must be denied"
 
     # Control: no submitter id → no coercion → the same node spawns.
     rt2 = KernelRuntime(LoopPolicy(max_tokens=128000))
-    rt2.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
-    rt2.step(json.dumps({"version": 1, "event": {
+    _start_runtime(rt2)
+    initial2 = kernel_maybe_action(rt2, [], {
         "kind": "load_workflow",
         "spec": {"nodes": [{
             "task": {"goal": "root", "criteria": []},
@@ -363,19 +365,16 @@ def test_g1_quarantined_submitter_cannot_escalate_over_abi():
             "context_inheritance": "none",
         }]},
         "parent_session_id": "sess",
-    }}))
-    ok = json.loads(rt2.step(json.dumps({
-        "version": 1,
-        "event": submit_workflow_nodes_to_kernel(
-            [WorkflowNodeSpec(task="act-with-privilege", role="implement")]
-        ),
-    })))
-    spawned_ok = [
-        n["agent_id"]
-        for o in ok["observations"]
-        if o["kind"] == "workflow_batch_spawned"
-        for n in o.get("nodes", [])
-    ]
+    })
+    assert initial2 is not None and initial2.kind == "spawn_workflow"
+    kernel_apply(rt2, [], {
+        "kind": "workflow_spawn_result", "effect_id": initial2.effect_id,
+        "started_agent_ids": [n["agent_id"] for n in initial2.nodes or []], "failures": [],
+    })
+    ok = kernel_maybe_action(rt2, [], submit_workflow_nodes_to_kernel(
+        [WorkflowNodeSpec(task="act-with-privilege", role="implement")]
+    ))
+    spawned_ok = [n["agent_id"] for n in (ok.nodes or [])] if ok else []
     assert "wf-node1" in spawned_ok
 
 
@@ -423,7 +422,7 @@ async def test_run_workflow_resumes_dynamically_appended_nodes():
         max_tokens=1000,
     ))
     rt = KernelRuntime(LoopPolicy(max_tokens=1000))
-    rt.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
+    _start_runtime(rt)
     runner._active_kernel = rt
     runner._current_session_id = "sess"
 
@@ -467,7 +466,7 @@ async def test_run_workflow_submit_nodes_appends_and_completes():
         max_tokens=1000,
     ))
     rt = KernelRuntime(LoopPolicy(max_tokens=1000))
-    rt.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
+    _start_runtime(rt)
     runner._active_kernel = rt
     runner._current_session_id = "sess"
 
@@ -520,7 +519,7 @@ def _g3_runner(orch):
         max_tokens=1000,
     ))
     rt = KernelRuntime(LoopPolicy(max_tokens=1000))
-    rt.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
+    _start_runtime(rt)
     runner._active_kernel = rt
     runner._current_session_id = "sess"
     return runner
@@ -647,9 +646,9 @@ async def test_g4_run_workflow_surfaces_budget_into_node_goal():
         max_tokens=1000,
     ))
     rt = KernelRuntime(LoopPolicy(max_tokens=128000))
-    rt.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
-    rt.step(json.dumps({"version": 1, "event": {"kind": "set_resource_quota",
-            "quota": {"max_workflow_nodes": 5, "max_concurrent_subagents": 3}}}))
+    _start_runtime(rt)
+    kernel_apply(rt, [], {"kind": "set_resource_quota",
+            "quota": {"max_workflow_nodes": 5, "max_concurrent_subagents": 3}})
     runner._active_kernel = rt
     runner._current_session_id = "sess"
 
@@ -711,7 +710,7 @@ async def test_g2_run_workflow_runs_reduce_node_without_llm():
         max_tokens=1000,
     ))
     rt = KernelRuntime(LoopPolicy(max_tokens=128000))
-    rt.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
+    _start_runtime(rt)
     runner._active_kernel = rt
     runner._current_session_id = "sess"
 
@@ -745,7 +744,7 @@ async def test_g2_unknown_reducer_fails_node():
         max_tokens=1000,
     ))
     rt = KernelRuntime(LoopPolicy(max_tokens=128000))
-    rt.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
+    _start_runtime(rt)
     runner._active_kernel = rt
     runner._current_session_id = "sess"
 

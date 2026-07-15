@@ -23,17 +23,28 @@ from deepstrike.providers.base import Message
 from deepstrike.providers.stream import TextDelta, ToolCallEvent
 from deepstrike.runtime.run_group import GroupMember
 from deepstrike.runtime.workflow_control_flow import dependency_outputs_note
+from deepstrike.runtime.kernel_step import _kernel_step
 from deepstrike.tools import tool
 from deepstrike.types.agent import workflow_node_to_spec
 
 
 def _step(rt: KernelRuntime, event: dict) -> dict:
-    return json.loads(rt.step(json.dumps({"version": 1, "event": event})))
+    return _kernel_step(rt, event)
 
 
-def _batch_of(obs: list) -> list:
-    batch = next((o for o in obs if o.get("kind") == "workflow_batch_spawned"), None)
-    return (batch or {}).get("nodes") or []
+def _batch_of(step: dict) -> list:
+    action = next((a for a in step.get("actions", []) if a.get("kind") == "spawn_workflow"), None)
+    return (action or {}).get("nodes") or []
+
+
+def _accept_batch(rt: KernelRuntime, step: dict) -> None:
+    action = next(a for a in step.get("actions", []) if a.get("kind") == "spawn_workflow")
+    _step(rt, {
+        "kind": "workflow_spawn_result",
+        "effect_id": action["effect_id"],
+        "started_agent_ids": [node["agent_id"] for node in action.get("nodes", [])],
+        "failures": [],
+    })
 
 
 # ── W-1: resume replays classify control flow over the ABI ──────────────────────────────────────
@@ -64,7 +75,7 @@ def test_w1_recorded_classify_branch_reprunes_rejected_branch_on_resume():
         "resumed_results": [{"agent_id": "wf-node0", "classify_branch": "a"}],
     })
     # Only the chosen branch spawns; the rejected branch stays pruned across resume.
-    batch = _batch_of(out["observations"])
+    batch = _batch_of(out)
     assert [n["agent_id"] for n in batch] == ["wf-node1"]
 
 
@@ -107,8 +118,9 @@ def test_plain_dependent_node_spawn_info_carries_dependency_agent_ids():
         },
         "parent_session_id": "sess",
     })
-    workers = _batch_of(out["observations"])
+    workers = _batch_of(out)
     assert [n.get("input_agent_ids") or [] for n in workers] == [[], []]
+    _accept_batch(rt, out)
 
     # Complete both workers → the synthesizer spawns WITH its data edges.
     def _mk_result(agent_id: str) -> dict:
@@ -123,7 +135,7 @@ def test_plain_dependent_node_spawn_info_carries_dependency_agent_ids():
 
     _step(rt, _mk_result("wf-node0"))
     after = _step(rt, _mk_result("wf-node1"))
-    synth = _batch_of(after["observations"])
+    synth = _batch_of(after)
     assert [n["agent_id"] for n in synth] == ["wf-node2"]
     assert synth[0]["input_agent_ids"] == ["wf-node0", "wf-node1"]
 

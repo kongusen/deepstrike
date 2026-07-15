@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import time
+import uuid
 from pathlib import Path
 
 
@@ -16,8 +18,9 @@ class LargeResultSpool:
 
   async def persist_output(self, call_id: str, content: str) -> str:
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+    call_key = hashlib.sha256(call_id.encode("utf-8")).hexdigest()[:32]
     self._spool_dir.mkdir(parents=True, exist_ok=True)
-    path = self._spool_dir / f"{call_id}-{digest}.txt"
+    path = self._spool_dir / f"{call_key}-{digest}.txt"
     path_str = str(path)
 
     if path_str not in self._active_writes:
@@ -25,7 +28,15 @@ class LargeResultSpool:
 
     async with self._active_writes[path_str]:
       def _write():
-        path.write_text(content, encoding="utf-8")
+        temp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        try:
+          with temp.open("x", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+          os.replace(temp, path)
+        finally:
+          temp.unlink(missing_ok=True)
       await asyncio.get_running_loop().run_in_executor(None, _write)
 
     return path_str
@@ -42,13 +53,14 @@ class LargeResultSpool:
   async def find_by_call_id(self, call_id: str) -> str | None:
     """O7: locate a spooled output by the tool call's id (the ``read_result`` meta-tool only
     knows ``call_id``, not the content-hashed file name ``persist_output`` chose). Scans the
-    spool directory for the ``{call_id}-*.txt`` naming convention; returns ``None`` if nothing
+    spool directory for the hashed call-key prefix; returns ``None`` if nothing
     was ever spooled for that call."""
     if not self._spool_dir.is_dir():
       return None
 
     def _find() -> Path | None:
-      matches = sorted(self._spool_dir.glob(f"{call_id}-*.txt"))
+      call_key = hashlib.sha256(call_id.encode("utf-8")).hexdigest()[:32]
+      matches = sorted(self._spool_dir.glob(f"{call_key}-*.txt"))
       return matches[0] if matches else None
 
     match = await asyncio.get_running_loop().run_in_executor(None, _find)

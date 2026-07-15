@@ -58,7 +58,6 @@ export function kernelObservationToSessionEvent(
         action: compressionAction(obs.action),
         summary: obs.summary,
         summary_tokens: obs.summary ? Math.max(1, Math.ceil(obs.summary.length / 4)) : undefined,
-        archive_ref: opts.archiveRef,
         preserved_refs: opts.preservedRefs ?? [],
       }
     }
@@ -188,7 +187,17 @@ export function kernelObservationToSessionEvent(
         tool: obs.tool ?? "",
         original_size: obs.original_size ?? 0,
         preview_size: obs.preview_size ?? 0,
-        spool_ref: opts.spoolRef,
+        spool_ref: obs.spool_ref,
+      }
+    case "page_out_archived":
+      return {
+        kind: "page_out" as const,
+        turn: t,
+        action: compressionAction(obs.action),
+        summary: obs.summary,
+        tier_hint: obs.tier,
+        message_count: obs.message_count ?? 0,
+        archive_ref: obs.archive_ref,
       }
     case "memory_written":
       return {

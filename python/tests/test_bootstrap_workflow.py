@@ -6,8 +6,6 @@ BOOTSTRAPS the DAG in this same kernel (unified governance — one kernel, one q
 driver runs it to completion. Exercises the real native ABI end-to-end via KernelRuntime.
 """
 
-import json
-
 import pytest
 
 from deepstrike import (
@@ -22,6 +20,7 @@ from deepstrike import (
     submit_workflow_to_kernel,
 )
 from deepstrike._kernel import KernelRuntime, LoopPolicy, Message
+from deepstrike.runtime.kernel_step import kernel_action, kernel_apply
 
 
 def test_submit_workflow_to_kernel_lowers_spec_with_parent_session():
@@ -60,9 +59,9 @@ def _runner(orch, *, quota: dict | None = None):
         max_tokens=1000,
     ))
     rt = KernelRuntime(LoopPolicy(max_tokens=1000))
-    rt.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
+    kernel_action(rt, [], {"kind": "start_run", "task": {"goal": "parent", "criteria": []}})
     if quota is not None:
-        rt.step(json.dumps({"version": 1, "event": {"kind": "set_resource_quota", "quota": quota}}))
+        kernel_apply(rt, [], {"kind": "set_resource_quota", "quota": quota})
     r._active_kernel = rt
     r._current_session_id = "sess"
     return r

@@ -9,7 +9,7 @@ use deepstrike_core::memory::idle_pipeline::{IdleAction, IdleEvent, IdlePipeline
 use deepstrike_core::mm::memory::{MemoryPolicy, MemoryQuery, MemoryRetrieval, MemoryWriteRequest};
 use deepstrike_core::runtime::kernel::{
     KernelAction, KernelEffect, KernelInput, KernelInputEvent, KernelObservation,
-    KernelPressureAction, KernelRuntime, KernelStep,
+    KernelPressureAction, KernelReliabilityConfig, KernelRuntime, KernelStep, RunConfig,
 };
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::scheduler::policy::SchedulerBudget as KernelBudget;
@@ -105,6 +105,8 @@ pub struct RuntimeOptions {
     /// Directory used by the built-in large-result spool effect executor.
     /// Defaults to `.spool` when omitted.
     pub spool_dir: Option<std::path::PathBuf>,
+    /// Bounded ABI-v2 replay, retry, and large-result policy. Omitted fields retain kernel defaults.
+    pub kernel_reliability: Option<KernelReliabilityConfig>,
     /// When set, `execute` reuses this session id.
     pub session_id: Option<String>,
     pub max_tokens: u32,
@@ -747,6 +749,24 @@ impl RuntimeRunner {
             let mut pending_observations = Vec::new();
             let mut pending_page_out_starts = std::collections::VecDeque::new();
             let mut active_page_out_start = None;
+
+            if let Some(reliability) = self.opts.kernel_reliability.clone() {
+                let mut step = kernel.lock().unwrap().step(KernelInput::new(
+                    KernelInputEvent::ConfigureRun {
+                        config: RunConfig {
+                            reliability: Some(reliability),
+                            ..RunConfig::default()
+                        },
+                    },
+                ));
+                if let Some(fault) = step.faults.pop() {
+                    Err(Error::Other(format!(
+                        "kernel {:?}: {}",
+                        fault.code, fault.message
+                    )))?;
+                }
+                pending_observations.append(&mut step.observations);
+            }
 
             if let Some(tokenizer_name) = &self.opts.tokenizer {
                 kernel_apply(
@@ -1931,7 +1951,6 @@ impl RuntimeRunner {
                                 action: Some(action_str),
                                 summary: summary.clone(),
                                 summary_tokens,
-                                archive_ref: None,
                                 preserved_refs: preserved_refs.clone(),
                             },
                         )

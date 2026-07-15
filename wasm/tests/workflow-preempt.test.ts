@@ -8,26 +8,30 @@ import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
 import { LocalExecutionPlane } from "../src/runtime/execution-plane.js"
 import type { WorkflowSpec } from "../src/index.js"
 
-type Obs = { kind: string; nodes?: unknown[]; completed?: string[]; failed?: string[]; agent_ids?: string[]; reason?: string }
+type Obs = { kind: string; completed?: string[]; failed?: string[]; agent_ids?: string[]; reason?: string }
 const node = (agent_id: string, goal: string) => ({
   agent_id, goal, role: "implement", isolation: "shared", context_inheritance: "none", model_hint: null, trust: "trusted",
 })
 
 /** Scripted kernel: load spawns wf-node0; a `signal` (the monitor's Critical) preempts it. */
 function makeFakeKernel() {
-  const reply = (obs: Obs[]) => JSON.stringify({ version: 1, actions: [], observations: obs })
+  const reply = (actions: unknown[], obs: Obs[]) => JSON.stringify({ version: 2, actions, observations: obs, faults: [] })
   return {
     turn: () => 0,
     step(input: string): string {
       const { event } = JSON.parse(input) as { event: { kind: string } }
-      if (event.kind === "load_workflow") return reply([{ kind: "workflow_batch_spawned", nodes: [node("wf-node0", "A")] }])
+      if (event.kind === "load_workflow") return reply([{ kind: "spawn_workflow", effect_id: "spawn-1", nodes: [node("wf-node0", "A")] }], [])
+      if (event.kind === "workflow_spawn_result") return reply([], [])
       if (event.kind === "signal") {
-        return reply([
+        return reply([{ kind: "preempt_sub_agents", effect_id: "preempt-1", agent_ids: ["wf-node0"], reason: "STOP" }], [])
+      }
+      if (event.kind === "preempt_result") {
+        return reply([], [
           { kind: "agent_preempted", agent_ids: ["wf-node0"], reason: "STOP" },
           { kind: "workflow_completed", completed: [], failed: ["wf-node0"] },
         ])
       }
-      return reply([])
+      return reply([], [])
     },
   }
 }

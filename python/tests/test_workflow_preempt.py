@@ -5,7 +5,6 @@ node's asyncio task → CancelledError aborts its in-flight LLM call. Real nativ
 """
 
 import asyncio
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +19,7 @@ from deepstrike import (
     SubAgentResult,
 )
 from deepstrike._kernel import KernelRuntime, LoopPolicy
+from deepstrike.runtime.kernel_step import kernel_action
 
 
 class _Stub:
@@ -62,7 +62,7 @@ async def test_critical_signal_preempts_running_workflow_node():
         max_tokens=1000,
     ))
     rt = KernelRuntime(LoopPolicy(max_tokens=1000))
-    rt.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
+    kernel_action(rt, [], {"kind": "start_run", "task": {"goal": "parent", "criteria": []}})
     runner._active_kernel = rt
     runner._current_session_id = "sess"
     runner._pending_observations = []

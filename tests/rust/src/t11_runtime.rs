@@ -9,6 +9,7 @@ use deepstrike_core::context::renderer::RenderedContext;
 use deepstrike_core::governance::permission::PermissionAction;
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::runtime::{KernelEffect, KernelInput, KernelInputEvent, KernelRuntime};
+use deepstrike_core::runtime::kernel::KernelReliabilityConfig;
 use deepstrike_core::scheduler::policy::SchedulerBudget;
 use deepstrike_core::scheduler::state_machine::{KernelObservation, LoopStateMachine};
 use deepstrike_core::types::capability::{CapabilityDescriptor, CapabilityKind};
@@ -133,6 +134,7 @@ fn default_runtime_opts(
         session_log: Some(session_log),
         compression_store: None,
         spool_dir: None,
+        kernel_reliability: None,
         session_id: None,
         max_tokens: 2048,
         max_turns: Some(4),
@@ -165,6 +167,61 @@ fn default_runtime_opts(
         stable_core_tool_ids: Vec::new(),
         pre_query_memory: None,
     }
+}
+
+struct FinalTextProvider;
+
+#[async_trait]
+impl LLMProvider for FinalTextProvider {
+    async fn stream(
+        &self,
+        _context: &RenderedContext,
+        _tools: &[ToolSchema],
+        _extensions: Option<&serde_json::Value>,
+        _state: Option<&deepstrike_sdk::ProviderRunState>,
+    ) -> deepstrike_sdk::Result<
+        Box<dyn futures::Stream<Item = deepstrike_sdk::Result<StreamEvent>> + Send + Unpin>,
+    > {
+        Ok(Box::new(futures::stream::iter(vec![Ok(
+            StreamEvent::TextDelta { delta: "ok".into() },
+        )])))
+    }
+}
+
+#[tokio::test]
+async fn runtime_applies_bounded_kernel_reliability_config() {
+    let mut opts = default_runtime_opts(
+        Box::new(FinalTextProvider),
+        LocalExecutionPlane::new(),
+        Arc::new(InMemorySessionLog::new()),
+    );
+    opts.kernel_reliability = Some(KernelReliabilityConfig {
+        event_replay_capacity: Some(512),
+        completed_effect_replay_capacity: Some(256),
+        provider_recovery_attempts: Some(2),
+        output_recovery_attempts: Some(2),
+        host_effect_retry_attempts: Some(4),
+        spool_threshold_bytes: Some(2048),
+        spool_preview_bytes: Some(256),
+    });
+
+    assert_eq!(RuntimeRunner::new(opts).execute("configured").await.unwrap(), "ok");
+}
+
+#[tokio::test]
+async fn runtime_surfaces_invalid_kernel_reliability_config() {
+    let mut opts = default_runtime_opts(
+        Box::new(FinalTextProvider),
+        LocalExecutionPlane::new(),
+        Arc::new(InMemorySessionLog::new()),
+    );
+    opts.kernel_reliability = Some(KernelReliabilityConfig {
+        event_replay_capacity: Some(0),
+        ..KernelReliabilityConfig::default()
+    });
+
+    let error = RuntimeRunner::new(opts).execute("invalid").await.unwrap_err();
+    assert!(error.to_string().contains("InvalidConfig"));
 }
 
 #[tokio::test]

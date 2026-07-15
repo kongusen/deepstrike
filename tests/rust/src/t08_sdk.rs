@@ -153,6 +153,7 @@ fn runtime_options_can_be_constructed() {
         session_log: Some(Arc::new(InMemorySessionLog::new())),
         compression_store: None,
         spool_dir: None,
+        kernel_reliability: None,
         session_id: None,
         max_tokens: 4096,
         max_turns: Some(25),

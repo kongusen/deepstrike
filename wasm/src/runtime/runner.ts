@@ -103,6 +103,21 @@ export interface MemoryPolicy {
   maxNameLength?: number
 }
 
+export interface KernelReliabilityOptions {
+  eventReplayCapacity?: number
+  completedEffectReplayCapacity?: number
+  providerRecoveryAttempts?: number
+  outputRecoveryAttempts?: number
+  hostEffectRetryAttempts?: number
+  spoolThresholdBytes?: number
+  spoolPreviewBytes?: number
+}
+
+export interface ArchiveStore {
+  write(sessionId: string, startSeq: number, messages: Message[]): Promise<string | undefined>
+  read?(archiveRef: string): Promise<Message[]>
+}
+
 /** P0-C tool-gating telemetry: per-LLM-turn metrics, emitted via `RuntimeOptions.onTurnMetrics`.
  *  Pure observation — no behavior change. `toolsExposed` vs `toolsCalled` quantifies over-exposure;
  *  consecutive equal `activeSkill` values measure skill dwell `D`; the cache split gives the
@@ -140,6 +155,7 @@ export interface RuntimeOptions {
    *  flows here for its child run. Undefined ⇒ the kernel default. */
   maxTotalTokens?: number
   sessionLog: SessionLog
+  compressionStore?: ArchiveStore
   executionPlane: ExecutionPlane
   maxTokens: number
   maxTurns?: number
@@ -166,6 +182,7 @@ export interface RuntimeOptions {
   governancePolicy?: GovernancePolicy
   attentionPolicy?: { maxQueueSize?: number }
   schedulerBudget?: SchedulerBudget
+  kernelReliability?: KernelReliabilityOptions
   resourceQuota?: ResourceQuota
   /** O6: the in-kernel repeat fuse — identical tool call (same name AND args) `denyAfter` turns in a
    *  row ⇒ deny + directive note; `terminateAfter` ⇒ run ends `no_progress`. Defaults 5/8; `false`
@@ -245,10 +262,12 @@ export class RuntimeRunner {
   /** K4: the active run's goal, kept for the renewal-boundary memory re-query. */
   private currentGoal = ""
   private nextArchiveStart = 0
+  private pendingPageOutArchives: Array<{ archiveStart: number; compressedSeq: number }> = []
+  private activePageOutArchive: { archiveStart: number; compressedSeq: number } | undefined
   /** M5 v2.1: sub-workflow specs a top-level agent authored via `start_workflow`, awaiting auto-drive
    *  at the next safe point (after the tool turn resolves, kernel back in Reason). */
   private pendingAuthoredWorkflows: WorkflowSpec[] = []
-  private pendingSpoolOutputs = new Map<string, { tool: string; output: string }>()
+  private workflowContinuation: Extract<KernelRunnerAction, { kind: "call_provider" }> | null = null
 
   constructor(private readonly opts: RuntimeOptions) {}
 
@@ -351,32 +370,29 @@ export class RuntimeRunner {
   }
 
   private async resolveKernelSuspend(
+    requests: Array<{ callId: string; tool: string; arguments: string; reason: string }>,
     runtime: KernelRuntimeHandle,
     sessionId: string,
   ): Promise<{ approved: string[]; denied: string[]; events: StreamEvent[] }> {
-    const gated = this.pendingObservations.filter(
-      (o): o is KernelObservation & { kind: "tool_gated"; call_id: string; tool: string; reason: string } =>
-        o.kind === "tool_gated" && typeof o.call_id === "string" && typeof o.tool === "string",
-    )
     const approved: string[] = []
     const denied: string[] = []
     const events: StreamEvent[] = []
     const runCtx: RunContext = { onPermissionRequest: this.opts.onPermissionRequest }
 
-    for (const g of gated) {
+    for (const requestAction of requests) {
       const request: PermissionRequestEvent = {
         type: "permission_request",
-        callId: g.call_id,
-        toolName: g.tool,
-        arguments: "{}",
-        reason: typeof g.reason === "string" ? g.reason : "",
+        callId: requestAction.callId,
+        toolName: requestAction.tool,
+        arguments: requestAction.arguments,
+        reason: requestAction.reason,
       }
       events.push(request)
       const decision = await resolvePermissionRequest(request, runCtx)
       events.push({
         type: "permission_resolved",
-        callId: g.call_id,
-        toolName: g.tool,
+        callId: requestAction.callId,
+        toolName: requestAction.tool,
         approved: decision.approved,
         responder: decision.responder ?? "host",
         ...(decision.reason ? { reason: decision.reason } : {}),
@@ -384,8 +400,8 @@ export class RuntimeRunner {
       await this.opts.sessionLog.append(sessionId, {
         kind: "permission_requested",
         turn: runtime.turn(),
-        tool: g.tool,
-        arguments: "{}",
+        tool: requestAction.tool,
+        arguments: requestAction.arguments,
         reason: request.reason,
       })
       await this.opts.sessionLog.append(sessionId, {
@@ -395,20 +411,20 @@ export class RuntimeRunner {
         responder: decision.responder ?? "host",
       })
       if (decision.approved) {
-        approved.push(g.call_id)
+        approved.push(requestAction.callId)
       } else {
-        denied.push(g.call_id)
+        denied.push(requestAction.callId)
         const denyReason = decision.reason ?? "permission denied"
         events.push({
           type: "tool_denied",
-          callId: g.call_id,
-          toolName: g.tool,
+          callId: requestAction.callId,
+          toolName: requestAction.tool,
           reason: denyReason,
         } as ToolDeniedEvent)
         events.push({
           type: "tool_result",
-          callId: g.call_id,
-          name: g.tool,
+          callId: requestAction.callId,
+          name: requestAction.tool,
           content: `permission denied: ${denyReason}`,
           isError: true,
           errorKind: "governance_denied",
@@ -416,15 +432,15 @@ export class RuntimeRunner {
         await this.opts.sessionLog.append(sessionId, {
           kind: "tool_denied",
           turn: runtime.turn(),
-          call_id: g.call_id,
-          tool_name: g.tool,
+          call_id: requestAction.callId,
+          tool_name: requestAction.tool,
           reason: denyReason,
         })
         await this.opts.sessionLog.append(sessionId, {
           kind: "tool_completed",
           turn: runtime.turn(),
           results: [{
-            call_id: g.call_id,
+            call_id: requestAction.callId,
             output: `permission denied: ${denyReason}`,
             is_error: true,
             error_kind: "governance_denied",
@@ -438,10 +454,9 @@ export class RuntimeRunner {
 
   /**
    * O7: resolve a `read_result` meta-tool call to the full text of a previously-evicted tool
-   * output. Resolution order: (a) this turn's in-memory `pendingSpoolOutputs` map, (b) the result
-   * spool (persisted once the kernel observation `large_result_spooled` was processed), (c) a
-   * session-log scan for the original `tool_completed` event carrying that `call_id`. Slices the
-   * resolved text by `[offset, offset + maxBytes)` (plain string slice — "bytes-ish").
+   * output. Resolution order: (a) the result spool committed by `large_result_spool_result`,
+   * (b) a session-log scan for the original `tool_completed` event carrying that `call_id`.
+   * Slices the resolved text by `[offset, offset + maxBytes)` (plain string slice — "bytes-ish").
    */
   private async resolveReadResult(
     sessionId: string,
@@ -459,7 +474,7 @@ export class RuntimeRunner {
       // malformed arguments — callId stays empty, falls through to "not found" below
     }
 
-    let full: string | undefined = this.pendingSpoolOutputs.get(callId)?.output
+    let full: string | undefined
 
     if (full === undefined && this.opts.resultSpool) {
       try {
@@ -580,7 +595,8 @@ export class RuntimeRunner {
     this.interrupted = false
     this.abortController = new AbortController()
     this.pendingObservations = []
-    this.pendingSpoolOutputs.clear()
+    this.pendingPageOutArchives = []
+    this.activePageOutArchive = undefined
     this.currentSessionId = sessionId
     const kernel = await getKernel()
 
@@ -683,7 +699,7 @@ export class RuntimeRunner {
     if (priorEvents && priorEvents.length > 0) {
       const repaired = repairEventsForRecovery(priorEvents, maxBytes)
       seedProviderReplayFromEvents(this.opts.provider, repaired)
-      const replayed = replayMessages(repaired, maxBytes)
+      const replayed = await replayMessages(repaired, maxBytes, this.opts.compressionStore)
       kernelApply(runtime, this.pendingObservations, {
         kind: "preload_history",
         messages: replayed.map(messageToKernelMessage),
@@ -786,6 +802,7 @@ export class RuntimeRunner {
         if (this.pendingAuthoredWorkflows.length > 0) {
           action = await this.driveAuthoredWorkflows(runtime, action)
         }
+        const providerEffectId = action.effectId
         const finalToolCalls: ToolCall[] = []
         let finalText = ""
         // I5: governance schema-level pre-filter — see Node runner for full rationale.
@@ -852,6 +869,7 @@ export class RuntimeRunner {
             // duplicated across the four SDK runners.
             action = kernelAction(runtime, this.pendingObservations, {
               kind: "provider_error",
+              effect_id: providerEffectId,
               message: formatToolError(err),
             })
             // Withholding (query.ts parity): surface the raw provider error only when the kernel
@@ -880,24 +898,14 @@ export class RuntimeRunner {
         }
         const providerEvent: Record<string, unknown> = {
           kind: "provider_result",
+          effect_id: providerEffectId,
           message: messageToKernelMessage(assistantMessage),
           ...(turnInputTokens > 0 ? { observed_input_tokens: turnInputTokens } : {}),
           ...(turnOutputTokens > 0 ? { observed_output_tokens: turnOutputTokens } : {}),
           now_ms: Date.now(),
           ...(turnStopReason ? { stop_reason: turnStopReason } : {}),
         }
-        let nextAction = kernelMaybeAction(runtime, this.pendingObservations, providerEvent)
-        const hasSuspended = this.pendingObservations.some(o => o.kind === "suspended")
-        if (!nextAction && hasSuspended) {
-          const resolved = await this.resolveKernelSuspend(runtime, sessionId)
-          for (const evt of resolved.events) yield evt
-          nextAction = kernelAction(runtime, this.pendingObservations, {
-            kind: "resume",
-            approved_calls: resolved.approved,
-            denied_calls: resolved.denied,
-          })
-        }
-        action = nextAction ?? kernelAction(runtime, this.pendingObservations, providerEvent)
+        action = kernelAction(runtime, this.pendingObservations, providerEvent)
         const providerReplay = peekProviderReplay(this.opts.provider, finalText, finalToolCalls)
         await this.opts.sessionLog.append(sessionId, buildLlmCompletedEvent({
           turn: runtime.turn(),
@@ -931,7 +939,77 @@ export class RuntimeRunner {
           } catch { /* malformed skill args — leave activeSkill unchanged */ }
         }
 
+      } else if (action.kind === "request_approval") {
+        const resolved = await this.resolveKernelSuspend(action.requests, runtime, sessionId)
+        for (const evt of resolved.events) yield evt
+        action = kernelAction(runtime, this.pendingObservations, {
+          kind: "approval_result",
+          effect_id: action.effectId,
+          approved_calls: resolved.approved,
+          denied_calls: resolved.denied,
+        })
+
+      } else if (action.kind === "persist_memory") {
+        action = kernelAction(runtime, this.pendingObservations, {
+          kind: "memory_persist_result",
+          effect_id: action.effectId,
+          error: "WASM host memory persistence requires an explicit SDK memory adapter",
+        })
+
+      } else if (action.kind === "query_memory") {
+        action = kernelAction(runtime, this.pendingObservations, {
+          kind: "memory_query_result",
+          effect_id: action.effectId,
+          entries: [],
+          error: "WASM host memory queries require an explicit SDK memory adapter",
+        })
+
+      } else if (action.kind === "spool_large_result") {
+        const spool = this.opts.resultSpool ?? new LargeResultSpool()
+        let spoolRef: string | undefined
+        let error: string | undefined
+        try {
+          spoolRef = await spool.persistOutput(action.callId, action.output)
+        } catch (cause) {
+          error = formatToolError(cause)
+        }
+        action = kernelAction(runtime, this.pendingObservations, {
+          kind: "large_result_spool_result",
+          effect_id: action.effectId,
+          ...(spoolRef ? { spool_ref: spoolRef } : {}),
+          ...(error ? { error } : {}),
+        })
+
+      } else if (action.kind === "archive_page_out") {
+        const archiveMeta: { archiveStart: number; compressedSeq: number } = this.activePageOutArchive
+          ?? this.pendingPageOutArchives.shift()
+          ?? { archiveStart: this.nextArchiveStart, compressedSeq: await this.opts.sessionLog.latestSeq(sessionId) }
+        this.activePageOutArchive = archiveMeta
+        let archiveRef: string | undefined
+        let error: string | undefined
+        try {
+          if (this.opts.compressionStore) {
+            archiveRef = await this.opts.compressionStore.write(sessionId, archiveMeta.archiveStart, action.archived)
+          }
+        } catch (cause) {
+          error = formatToolError(cause)
+        }
+        const archived = action.archived
+        const archiveAction = compressionAction(action.action) ?? "auto_compact"
+        const archiveTier = action.tier
+        if (!error) this.activePageOutArchive = undefined
+        action = kernelAction(runtime, this.pendingObservations, {
+          kind: "page_out_archive_result",
+          effect_id: action.effectId,
+          ...(archiveRef ? { archive_ref: archiveRef } : {}),
+          ...(error ? { error } : {}),
+        })
+        if (!error && archiveTier === "semantic" && archived.length > 0) {
+          void this.archiveSemanticPageOut(archived, archiveAction)
+        }
+
       } else if (action.kind === "execute_tool") {
+        const toolEffectId = action.effectId
         const allCalls = action.calls
         await this.opts.sessionLog.append(sessionId, { kind: "tool_requested", turn: runtime.turn(), calls: allCalls })
 
@@ -1088,12 +1166,6 @@ export class RuntimeRunner {
             token_count: r.tokenCount,
           })),
         })
-        for (const call of allCalls) {
-          const result = toolResults.find(r => r.callId === call.id)
-          if (result) {
-            this.pendingSpoolOutputs.set(call.id, { tool: call.name, output: result.output })
-          }
-        }
         // P1-B B3: a successfully-resolved `skill` call activates that skill for the next turn.
         //
         // Strict dynamic context control: a skill is METHOD content — how to do something — reused
@@ -1125,6 +1197,7 @@ export class RuntimeRunner {
         const entropyObsStart = this.pendingObservations.length
         action = kernelAction(runtime, this.pendingObservations, {
           kind: "tool_results",
+          effect_id: toolEffectId,
           results: toolResults.map(toolResultToKernel),
         })
         // Surface the boundary's entropy measurement live (the heartbeat watch source).
@@ -1156,6 +1229,7 @@ export class RuntimeRunner {
         if (milestonePolicy === "auto_pass") {
           action = kernelAction(runtime, this.pendingObservations, {
             kind: "milestone_result",
+            effect_id: action.effectId,
             result: milestoneCheckResultToKernel(milestoneCheckPass(action.phaseId)),
           })
           nextCompressedArchiveStart = await this.appendObservations(sessionId, runtime, nextCompressedArchiveStart)
@@ -1167,6 +1241,7 @@ export class RuntimeRunner {
           })
           action = kernelAction(runtime, this.pendingObservations, {
             kind: "milestone_result",
+            effect_id: action.effectId,
             result: milestoneCheckResultToKernel(check),
           })
           nextCompressedArchiveStart = await this.appendObservations(sessionId, runtime, nextCompressedArchiveStart)
@@ -1458,6 +1533,18 @@ export class RuntimeRunner {
     if (this.opts.schedulerBudget?.maxWallMs !== undefined) {
       config.scheduler_max_wall_ms = this.opts.schedulerBudget.maxWallMs
     }
+    if (this.opts.kernelReliability) {
+      const r = this.opts.kernelReliability
+      config.reliability = {
+        ...(r.eventReplayCapacity !== undefined ? { event_replay_capacity: r.eventReplayCapacity } : {}),
+        ...(r.completedEffectReplayCapacity !== undefined ? { completed_effect_replay_capacity: r.completedEffectReplayCapacity } : {}),
+        ...(r.providerRecoveryAttempts !== undefined ? { provider_recovery_attempts: r.providerRecoveryAttempts } : {}),
+        ...(r.outputRecoveryAttempts !== undefined ? { output_recovery_attempts: r.outputRecoveryAttempts } : {}),
+        ...(r.hostEffectRetryAttempts !== undefined ? { host_effect_retry_attempts: r.hostEffectRetryAttempts } : {}),
+        ...(r.spoolThresholdBytes !== undefined ? { spool_threshold_bytes: r.spoolThresholdBytes } : {}),
+        ...(r.spoolPreviewBytes !== undefined ? { spool_preview_bytes: r.spoolPreviewBytes } : {}),
+      }
+    }
     if (this.opts.resourceQuota) {
       const q = this.opts.resourceQuota
       config.resource_quota = {
@@ -1518,7 +1605,8 @@ export class RuntimeRunner {
   private async bootstrapWorkflowKernel(sessionId: string, spec: WorkflowSpec): Promise<KernelRuntimeHandle> {
     this.interrupted = false
     this.pendingObservations = []
-    this.pendingSpoolOutputs.clear()
+    this.pendingPageOutArchives = []
+    this.activePageOutArchive = undefined
     this.currentSessionId = sessionId
 
     const kernel = await getKernel()
@@ -1542,9 +1630,10 @@ export class RuntimeRunner {
     ).catch(() => {})
 
     this.applyKernelPolicies(runtime)
-    // K1: no explicit `start_run` — the host `load_workflow` (fired next by `runWorkflow`) self-bootstraps
-    // the run on the 0.2.30 core, matching the agent-reachable `submit_workflow` path.
-    void goal
+    kernelAction(runtime, this.pendingObservations, {
+      kind: "start_run",
+      task: { goal: `workflow session ${sessionId}`, criteria: [] },
+    })
     return runtime
   }
 
@@ -1576,7 +1665,8 @@ export class RuntimeRunner {
     const runtime = this.activeKernel!
 
     try {
-      const observations = kernelApply(runtime, this.pendingObservations, {
+      const observationStart = this.pendingObservations.length
+      const initialAction = kernelMaybeAction(runtime, this.pendingObservations, {
         kind: "load_workflow",
         spec: workflowSpecToKernel(spec),
         parent_session_id: parentSessionId,
@@ -1597,7 +1687,8 @@ export class RuntimeRunner {
         ...(opts?.resumedSubmissions && opts.resumedSubmissions.length ? { resumed_submissions: opts.resumedSubmissions } : {}),
         ...(opts?.resumedSubmissionBases && opts.resumedSubmissionBases.length ? { resumed_submission_bases: opts.resumedSubmissionBases } : {}),
       })
-      return await this.driveWorkflow(observations, parentSessionId, runtime, opts?.resumedOutputs)
+      const observations = this.pendingObservations.slice(observationStart)
+      return await this.driveWorkflow(initialAction, observations, parentSessionId, runtime, opts?.resumedOutputs)
     } finally {
       if (bootstrapped) {
         this.activeKernel = null
@@ -1622,11 +1713,13 @@ export class RuntimeRunner {
     }
     const parentSessionId = this.currentSessionId
     const runtime = this.activeKernel
-    const observations = kernelApply(
+    const observationStart = this.pendingObservations.length
+    const initialAction = kernelMaybeAction(
       runtime,
       this.pendingObservations,
       submitWorkflowToKernel(spec, parentSessionId, opts?.submitterAgentId),
     )
+    const observations = this.pendingObservations.slice(observationStart)
     // W-3: persist the agent-authored batch (bootstrap base 0 / flatten base N — the kernel now
     // announces BOTH) so an interrupted authored workflow reconstructs on resume; the host never
     // had this spec, unlike the `runWorkflow` path.
@@ -1641,7 +1734,7 @@ export class RuntimeRunner {
         submitterAgentId: opts?.submitterAgentId,
       }))
     }
-    return this.driveWorkflow(observations, parentSessionId, runtime)
+    return this.driveWorkflow(initialAction, observations, parentSessionId, runtime)
   }
 
   /**
@@ -1657,6 +1750,7 @@ export class RuntimeRunner {
   ): Promise<Extract<KernelRunnerAction, { kind: "call_provider" }>> {
     const specs = this.pendingAuthoredWorkflows
     this.pendingAuthoredWorkflows = []
+    this.workflowContinuation = null
     for (const spec of specs) {
       const outcome = await this.bootstrapWorkflow(spec)
       kernelApply(runtime, this.pendingObservations, {
@@ -1664,7 +1758,16 @@ export class RuntimeRunner {
         message: messageToKernelMessage({ role: "user", content: authoredWorkflowOutcomeNote(outcome) }),
       })
     }
-    return { kind: "call_provider", context: runtime.render(), tools: action.tools }
+    const continuation = this.workflowContinuation as Extract<KernelRunnerAction, { kind: "call_provider" }> | null
+    if (!continuation) {
+      throw new Error("authored workflow completed without a provider continuation")
+    }
+    return {
+      kind: "call_provider",
+      effectId: continuation.effectId,
+      context: runtime.render(),
+      tools: continuation.tools,
+    }
   }
 
   /**
@@ -1685,7 +1788,21 @@ export class RuntimeRunner {
       const sig = this.injectedSignals.shift() ?? await source.nextSignal()
       if (batchState.settled) break
       if (!sig) { await new Promise(resolve => setTimeout(resolve, 5)); continue }
-      const obs = kernelApply(runtime, this.pendingObservations, signalToKernelEvent(sig))
+      const observationStart = this.pendingObservations.length
+      const signalAction = kernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(sig))
+      if (signalAction) {
+        if (signalAction.kind !== "preempt_sub_agents") {
+          throw new Error(`workflow signal returned unexpected effect: ${signalAction.kind}`)
+        }
+        for (const id of signalAction.agentIds) controllers.get(id)?.abort()
+        const continuation = kernelMaybeAction(runtime, this.pendingObservations, {
+          kind: "preempt_result", effect_id: signalAction.effectId,
+        })
+        if (continuation && continuation.kind !== "call_provider" && continuation.kind !== "done") {
+          throw new Error(`workflow preemption returned unexpected effect: ${continuation.kind}`)
+        }
+      }
+      const obs = this.pendingObservations.slice(observationStart)
       const preempted = obs.find(o => o.kind === "agent_preempted") as { agent_ids?: string[] } | undefined
       if (preempted) {
         for (const id of preempted.agent_ids ?? []) controllers.get(id)?.abort()
@@ -1702,6 +1819,7 @@ export class RuntimeRunner {
    * agent-submitted nodes first), and loop until the kernel reports the workflow complete.
    */
   private async driveWorkflow(
+    initialAction: KernelRunnerAction | null,
     initial: KernelObservation[],
     parentSessionId: string,
     runtime: KernelRuntimeHandle,
@@ -1710,18 +1828,33 @@ export class RuntimeRunner {
     const observations = initial
     const orchestrator = this.opts.subAgentOrchestrator ?? defaultSubAgentOrchestrator
 
-    const collectNodes = (obs: typeof observations): WorkflowSpawnInfo[] =>
-      (obs.find(o => o.kind === "workflow_batch_spawned") as { nodes?: WorkflowSpawnInfo[] } | undefined)?.nodes ?? []
-    // G4: the batch observation carries the workflow's remaining budget; track the latest.
-    const collectBudget = (obs: typeof observations): WorkflowBudget | undefined =>
-      (obs.find(o => o.kind === "workflow_batch_spawned") as { budget?: WorkflowBudget } | undefined)?.budget
     const findDone = (obs: typeof observations) =>
       obs.find(o => o.kind === "workflow_completed") as { completed?: string[]; failed?: string[] } | undefined
 
+    const acceptSpawn = (spawn: Extract<KernelRunnerAction, { kind: "spawn_workflow" }>): KernelObservation[] => {
+      const observationStart = this.pendingObservations.length
+      const continuation = kernelMaybeAction(runtime, this.pendingObservations, {
+        kind: "workflow_spawn_result",
+        effect_id: spawn.effectId,
+        started_agent_ids: spawn.nodes.map(node => String(node.agent_id ?? "")),
+        failures: [],
+      })
+      if (continuation) throw new Error(`workflow spawn acknowledgement returned unexpected effect: ${continuation.kind}`)
+      return this.pendingObservations.slice(observationStart)
+    }
+
     let done = findDone(observations)
-    if (done) return { completed: done.completed ?? [], failed: done.failed ?? [], outputs: {} }
-    let nodes = collectNodes(observations)
-    let budget = collectBudget(observations)
+    if (done) {
+      if (initialAction?.kind === "call_provider") this.workflowContinuation = initialAction
+      return { completed: done.completed ?? [], failed: done.failed ?? [], outputs: {} }
+    }
+    if (!initialAction) return { completed: [], failed: [], outputs: {} }
+    if (initialAction.kind !== "spawn_workflow") {
+      throw new Error(`workflow load returned unexpected kernel effect: ${initialAction.kind}`)
+    }
+    let nodes = initialAction.nodes as unknown as WorkflowSpawnInfo[]
+    let budget = initialAction.budget as unknown as WorkflowBudget | undefined
+    acceptSpawn(initialAction)
     // G2: each completed node's output, keyed by agent id — a reduce node reads its deps' outputs.
     // W-1: on resume it is pre-seeded from the persisted node outputs, so post-resume dependents
     // still see their (pre-crash) dependencies' outputs.
@@ -1761,9 +1894,16 @@ export class RuntimeRunner {
           // G1: stamp the submitting node's agent id so the kernel coerces a quarantined submitter's
           // nodes to quarantined (no topological privilege escalation).
           const submitEvent = submitWorkflowNodesToKernel(result.submittedNodes, result.agentId)
-          const subObs = kernelApply(runtime, this.pendingObservations, submitEvent)
-          nextNodes.push(...collectNodes(subObs))
-          budget = collectBudget(subObs) ?? budget
+          const observationStart = this.pendingObservations.length
+          const submitAction = kernelMaybeAction(runtime, this.pendingObservations, submitEvent)
+          const subObs = this.pendingObservations.slice(observationStart)
+          if (submitAction?.kind === "spawn_workflow") {
+            nextNodes.push(...submitAction.nodes as unknown as WorkflowSpawnInfo[])
+            budget = submitAction.budget as unknown as WorkflowBudget | undefined ?? budget
+            acceptSpawn(submitAction)
+          } else if (submitAction) {
+            throw new Error(`workflow node submission returned unexpected effect: ${submitAction.kind}`)
+          }
           // R3-1: persist the submission (kernel-shape nodes) + its kernel-reported base index
           // so resume can re-apply the batch at the exact original graph position. W-N3: also the
           // submitter, so resume drops batches whose submitter re-runs (it will re-submit).
@@ -1777,12 +1917,21 @@ export class RuntimeRunner {
             submitterAgentId: result.agentId,
           }))
         }
-        const obs = kernelApply(runtime, this.pendingObservations, {
+        const observationStart = this.pendingObservations.length
+        const completionAction = kernelMaybeAction(runtime, this.pendingObservations, {
           kind: "sub_agent_completed",
           result: subAgentResultToKernel(result),
         })
-        nextNodes.push(...collectNodes(obs))
-        budget = collectBudget(obs) ?? budget
+        let obs = this.pendingObservations.slice(observationStart)
+        if (completionAction?.kind === "spawn_workflow") {
+          nextNodes.push(...completionAction.nodes as unknown as WorkflowSpawnInfo[])
+          budget = completionAction.budget as unknown as WorkflowBudget | undefined ?? budget
+          obs = [...obs, ...acceptSpawn(completionAction)]
+        } else if (completionAction?.kind === "call_provider") {
+          this.workflowContinuation = completionAction
+        } else if (completionAction) {
+          throw new Error(`workflow completion returned unexpected effect: ${completionAction.kind}`)
+        }
         const d = findDone(obs)
         if (d) done = d
         // Persist node completion for resume recovery. W-1: the result-borne control signals ride
@@ -1860,25 +2009,8 @@ export class RuntimeRunner {
     const turn = runtime.turn()
     const preservedRefs = runtime.preservedRefs()
     const observations = this.pendingObservations.splice(0)
-    for (let obs of observations) {
+    for (const obs of observations) {
       if (obs.kind === "page_in_requested") continue
-
-      let spoolRef: string | undefined
-      if (obs.kind === "large_result_spooled") {
-        const pending = this.pendingSpoolOutputs.get(obs.call_id ?? "")
-        if (pending) {
-          const spool = this.opts.resultSpool ?? new LargeResultSpool()
-          try {
-            spoolRef = await spool.persistOutput(obs.call_id ?? "", pending.output)
-          } catch {
-            // non-fatal
-          }
-          if (!obs.tool && pending.tool) {
-            obs = { ...obs, tool: pending.tool }
-          }
-          this.pendingSpoolOutputs.delete(obs.call_id ?? "")
-        }
-      }
 
       const latest =
         obs.kind === "compressed" ? await this.opts.sessionLog.latestSeq(sessionId) : undefined
@@ -1886,31 +2018,16 @@ export class RuntimeRunner {
         nextArchiveStart,
         latestSeq: latest,
         preservedRefs,
-        spoolRef,
         compressionAction,
       })
       if (!event) continue
 
       const compressedSeq = await this.opts.sessionLog.append(sessionId, event)
       if (event.kind === "compressed") {
-        nextArchiveStart = compressedSeq + 1
-        // One compaction = one kernel observation: the page_out session record (and the
-        // semantic-archive branch) is DERIVED from Compressed.tier_hint, preserving the
-        // session-log format and OsSnapshot page_out_count.
-        const archived = obs.archived
-        if (obs.tier_hint && Array.isArray(archived) && archived.length > 0) {
-          await this.opts.sessionLog.append(sessionId, {
-            kind: "page_out" as const,
-            turn: (obs.turn as number | undefined) ?? turn,
-            action: compressionAction(obs.action),
-            summary: obs.summary as string | undefined,
-            tier_hint: (obs.tier_hint as string) ?? "durable",
-            message_count: archived.length,
-          })
-          if (obs.tier_hint === "semantic") {
-            void this.archiveSemanticPageOut(archived as Message[], compressionAction(obs.action))
-          }
+        if ((obs.archived_count ?? 0) > 0) {
+          this.pendingPageOutArchives.push({ archiveStart: nextArchiveStart, compressedSeq })
         }
+        nextArchiveStart = compressedSeq + 1
       }
       // K4: a sprint renewal dropped the old history — including any earlier memory hits — so
       // re-run the preQueryMemory prefetch for the new sprint (live observations only).
@@ -2034,7 +2151,11 @@ function compressionAction(action?: string): Extract<SessionEvent, { kind: "comp
   return undefined
 }
 
-function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, maxBytes?: number): Message[] {
+async function replayMessages(
+  events: Array<{ seq: number; event: SessionEvent }>,
+  maxBytes?: number,
+  archiveStore?: ArchiveStore,
+): Promise<Message[]> {
   // Build upgraded-summary index: compressed_seq -> upgraded summary
   const upgradedSummaries = new Map<number, string>()
   for (const { event: e } of events) {
@@ -2042,6 +2163,9 @@ function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, max
   }
 
   const messages: Message[] = []
+  const archivedTurns = new Set(events.flatMap(({ event }) =>
+    event.kind === "page_out" && event.archive_ref && archiveStore?.read ? [event.turn] : [],
+  ))
   for (const { seq, event: e } of events) {
     if (e.kind === "run_started") {
       const userText = e.criteria.length
@@ -2054,6 +2178,7 @@ function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, max
         tokenCount: Math.max(1, Math.ceil(userText.length / 4)),
       })
     } else if (e.kind === "compressed") {
+      if (archivedTurns.has(e.turn)) continue
       const summary = upgradedSummaries.get(seq) ?? e.summary
       if (summary) {
         const systemText = `[Compressed context: turn ${e.turn}]\n${summary}`
@@ -2063,6 +2188,22 @@ function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, max
           toolCalls: [],
           tokenCount: Math.max(1, Math.ceil(systemText.length / 4)),
         })
+      }
+    } else if (e.kind === "page_out" && e.archive_ref && archiveStore?.read) {
+      try {
+        const archived = await archiveStore.read(e.archive_ref)
+        messages.push(...archived.map(message => ({
+          ...message,
+          content: sanitizeReplayText(message.content, maxBytes),
+        })))
+      } catch {
+        if (e.summary) {
+          const systemText = `[Compressed context: turn ${e.turn}]\n${e.summary}`
+          messages.push({
+            role: "system", content: systemText, toolCalls: [],
+            tokenCount: Math.max(1, Math.ceil(systemText.length / 4)),
+          })
+        }
       }
     } else if (e.kind === "llm_completed") {
       messages.push({

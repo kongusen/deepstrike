@@ -21,6 +21,7 @@ from deepstrike import (
 )
 from deepstrike.types.agent import sub_agent_result_to_kernel
 from deepstrike._kernel import KernelRuntime, LoopPolicy, Message, ToolCall
+from deepstrike.runtime.kernel_step import kernel_action
 
 
 # ── Pure mapping ─────────────────────────────────────────────────────────────
@@ -147,7 +148,7 @@ def _runner(orch):
         max_tokens=1000,
     ))
     rt = KernelRuntime(LoopPolicy(max_tokens=1000))
-    rt.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
+    kernel_action(rt, [], {"kind": "start_run", "task": {"goal": "parent", "criteria": []}})
     r._active_kernel = rt
     r._current_session_id = "sess"
     return r

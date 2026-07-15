@@ -14,6 +14,7 @@ from deepstrike import (
 )
 from deepstrike._kernel import KernelRuntime, LoopPolicy, Message
 from deepstrike.runtime.runner import _parse_submit_workflow_nodes_args
+from deepstrike.runtime.kernel_step import kernel_action
 from deepstrike.types.agent import workflow_node_spec_to_kernel
 
 
@@ -55,7 +56,7 @@ def _runner(orch):
         max_tokens=1000,
     ))
     rt = KernelRuntime(LoopPolicy(max_tokens=1000))
-    rt.step(json.dumps({"version": 1, "event": {"kind": "start_run", "task": {"goal": "parent", "criteria": []}}}))
+    kernel_action(rt, [], {"kind": "start_run", "task": {"goal": "parent", "criteria": []}})
     r._active_kernel = rt
     r._current_session_id = "sess"
     return r

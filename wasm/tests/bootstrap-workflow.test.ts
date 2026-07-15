@@ -18,7 +18,7 @@ describe("submitWorkflowToKernel (wasm)", () => {
   })
 })
 
-type Obs = { kind: string; nodes?: unknown[]; completed?: string[]; failed?: string[] }
+type Obs = { kind: string; completed?: string[]; failed?: string[] }
 const node = (agent_id: string, goal: string) => ({
   agent_id, goal, role: "implement", isolation: "shared", context_inheritance: "none", model_hint: null, trust: "trusted",
 })
@@ -27,20 +27,21 @@ const node = (agent_id: string, goal: string) => ({
 function makeFakeKernel() {
   const A = node("wf-node0", "A")
   const B = node("wf-node1", "B")
-  const reply = (obs: Obs[]) => JSON.stringify({ version: 1, actions: [], observations: obs })
+  const reply = (actions: unknown[], obs: Obs[]) => JSON.stringify({ version: 2, actions, observations: obs, faults: [] })
   return {
     turn: () => 0,
     step(input: string): string {
       const { event } = JSON.parse(input) as { event: { kind: string; result?: { agent_id: string } } }
       // The agent-reachable bootstrap event — both A and B are independent → first batch.
-      if (event.kind === "submit_workflow") return reply([{ kind: "workflow_batch_spawned", nodes: [A, B] }])
+      if (event.kind === "submit_workflow") return reply([{ kind: "spawn_workflow", effect_id: "spawn-1", nodes: [A, B] }], [])
+      if (event.kind === "workflow_spawn_result") return reply([], [])
       if (event.kind === "sub_agent_completed") {
         if (event.result?.agent_id === "wf-node1") {
-          return reply([{ kind: "workflow_completed", completed: ["wf-node0", "wf-node1"], failed: [] }])
+          return reply([{ kind: "call_provider", effect_id: "provider-next", context: {}, tools: [] }], [{ kind: "workflow_completed", completed: ["wf-node0", "wf-node1"], failed: [] }])
         }
-        return reply([])
+        return reply([], [])
       }
-      return reply([])
+      return reply([], [])
     },
   }
 }

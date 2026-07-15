@@ -71,8 +71,6 @@ pub enum SessionEvent {
         summary: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary_tokens: Option<u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        archive_ref: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         preserved_refs: Vec<String>,
     },

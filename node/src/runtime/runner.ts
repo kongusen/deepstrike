@@ -154,6 +154,24 @@ export interface ToolResultHookDecision {
   note?: string
 }
 
+/** Bounded kernel reliability policy. Omitted fields retain kernel defaults. */
+export interface KernelReliabilityOptions {
+  /** Deduplicated input-event replay window, 1..65536. */
+  eventReplayCapacity?: number
+  /** Completed effect-result replay window, 1..65536. */
+  completedEffectReplayCapacity?: number
+  /** Provider overflow recovery retries, 0..16. */
+  providerRecoveryAttempts?: number
+  /** Truncated-output recovery retries, 0..16. */
+  outputRecoveryAttempts?: number
+  /** Host durability-effect retries, 0..16. */
+  hostEffectRetryAttempts?: number
+  /** Tool-result spool threshold in bytes; must be positive. */
+  spoolThresholdBytes?: number
+  /** Inline spool preview bytes; positive and no larger than the threshold. */
+  spoolPreviewBytes?: number
+}
+
 export interface RuntimeOptions {
   provider: LLMProvider
   /** M4/G5: cumulative token cap for this run (the kernel's `max_total_tokens`). A workflow node's
@@ -227,6 +245,8 @@ export interface RuntimeOptions {
    * and memory-write syscalls are admitted unconditionally (pre-M2 behavior).
    */
   resourceQuota?: ResourceQuota
+  /** Host-selectable bounded replay/recovery/durability policy. */
+  kernelReliability?: KernelReliabilityOptions
   /**
    * O6: the in-kernel repeat fuse — the hard rungs above the soft no-progress STOP. When the model
    * re-issues the IDENTICAL tool call (same name AND args) `denyAfter` turns in a row, the kernel
@@ -612,6 +632,32 @@ export class RuntimeRunner {
     const { kind: _govKind, ...governance } = governancePolicyToKernelEvent(governancePolicy) as Record<string, unknown>
 
     const config: Record<string, unknown> = { governance }
+    if (this.opts.kernelReliability) {
+      const reliability = this.opts.kernelReliability
+      config.reliability = {
+        ...(reliability.eventReplayCapacity !== undefined
+          ? { event_replay_capacity: reliability.eventReplayCapacity }
+          : {}),
+        ...(reliability.completedEffectReplayCapacity !== undefined
+          ? { completed_effect_replay_capacity: reliability.completedEffectReplayCapacity }
+          : {}),
+        ...(reliability.providerRecoveryAttempts !== undefined
+          ? { provider_recovery_attempts: reliability.providerRecoveryAttempts }
+          : {}),
+        ...(reliability.outputRecoveryAttempts !== undefined
+          ? { output_recovery_attempts: reliability.outputRecoveryAttempts }
+          : {}),
+        ...(reliability.hostEffectRetryAttempts !== undefined
+          ? { host_effect_retry_attempts: reliability.hostEffectRetryAttempts }
+          : {}),
+        ...(reliability.spoolThresholdBytes !== undefined
+          ? { spool_threshold_bytes: reliability.spoolThresholdBytes }
+          : {}),
+        ...(reliability.spoolPreviewBytes !== undefined
+          ? { spool_preview_bytes: reliability.spoolPreviewBytes }
+          : {}),
+      }
+    }
     if (attentionPolicy.maxQueueSize !== undefined) {
       config.attention_max_queue_size = attentionPolicy.maxQueueSize
     }
@@ -3046,31 +3092,13 @@ export async function replayMessagesAsync(
         tokenCount: Math.max(1, Math.ceil(userText.length / 4)),
       })
     } else if (e.kind === "compressed") {
-      let loadedSuccessfully = false
-      if (e.archive_ref && loadArchive) {
-        try {
-          const archivedMsgs = await loadArchive(e.archive_ref)
-          for (const msg of archivedMsgs) {
-            messages.push({
-              role: msg.role,
-              content: sanitizeReplayText(msg.content, maxBytes),
-              toolCalls: msg.toolCalls ?? [],
-              tokenCount: msg.tokenCount,
-            })
-          }
-          loadedSuccessfully = true
-        } catch (err) {
-          // Loader failed (e.g. MissingArchive). We degrade and fallback.
-        }
-      }
-
       const pageOutWillSupplyArchive = events.slice(eventIndex + 1).some(({ event }) =>
         event.kind === "page_out"
           && event.turn === e.turn
           && typeof event.archive_ref === "string"
           && event.archive_ref.length > 0,
       )
-      if (!loadedSuccessfully && !pageOutWillSupplyArchive) {
+      if (!pageOutWillSupplyArchive) {
         const summary = upgradedSummaries.get(seq) ?? e.summary
         if (summary) {
           const systemText = `[Compressed context: turn ${e.turn}]\n${summary}`
@@ -3083,14 +3111,7 @@ export async function replayMessagesAsync(
         }
       }
     } else if (e.kind === "page_out" && e.archive_ref && loadArchive) {
-      const alreadyLoadedByCompression = events.slice(0, eventIndex).some(({ event }) =>
-        event.kind === "compressed"
-          && event.turn === e.turn
-          && typeof event.archive_ref === "string"
-          && event.archive_ref.length > 0,
-      )
-      if (!alreadyLoadedByCompression) {
-        try {
+      try {
           const archivedMsgs = await loadArchive(e.archive_ref)
           for (const msg of archivedMsgs) {
             messages.push({
@@ -3100,7 +3121,7 @@ export async function replayMessagesAsync(
               tokenCount: msg.tokenCount,
             })
           }
-        } catch {
+      } catch {
           if (e.summary) {
             const systemText = `[Compressed context: turn ${e.turn}]\n${e.summary}`
             messages.push({
@@ -3110,7 +3131,6 @@ export async function replayMessagesAsync(
               tokenCount: Math.max(1, Math.ceil(systemText.length / 4)),
             })
           }
-        }
       }
     } else if (e.kind === "llm_completed") {
       messages.push({

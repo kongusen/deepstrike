@@ -93,7 +93,6 @@ class CompressedEvent(TypedDict, total=False):
     action: str
     summary: str
     summary_tokens: int
-    archive_ref: str
     preserved_refs: list[str]
 
 
@@ -182,6 +181,7 @@ class PageOutEvent(TypedDict, total=False):
     summary: str
     tier_hint: str
     message_count: int
+    archive_ref: str
 
 
 class PageInEvent(TypedDict, total=False):

@@ -49,10 +49,8 @@ def kernel_observation_to_session_event(
     *,
     next_archive_start: int = 0,
     latest_seq: int | None = None,
-    archive_ref: str | None = None,
     preserved_refs: list[str] | None = None,
     compression_action: Callable[[str | None], str | None] | None = None,
-    spool_ref: str | None = None,
 ) -> dict[str, Any] | None:
     t = obs.get("turn") or turn
     to_action = compression_action or (lambda _a: None)
@@ -70,7 +68,6 @@ def kernel_observation_to_session_event(
             "action": to_action(obs.get("action")),
             "summary": summary,
             "summary_tokens": max(1, len(summary) // 4) if summary else None,
-            "archive_ref": archive_ref,
             "preserved_refs": preserved_refs or [],
         }
     if kind == "renewed":
@@ -198,7 +195,17 @@ def kernel_observation_to_session_event(
             "tool": obs.get("tool") or "",
             "original_size": obs.get("original_size") or 0,
             "preview_size": obs.get("preview_size") or 0,
-            "spool_ref": spool_ref,
+            "spool_ref": obs.get("spool_ref"),
+        }
+    if kind == "page_out_archived":
+        return {
+            "kind": "page_out",
+            "turn": t,
+            "action": to_action(obs.get("action")),
+            "summary": obs.get("summary"),
+            "tier_hint": obs.get("tier"),
+            "message_count": obs.get("message_count") or 0,
+            "archive_ref": obs.get("archive_ref"),
         }
     if kind == "memory_written":
         return {

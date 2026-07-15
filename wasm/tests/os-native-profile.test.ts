@@ -86,8 +86,7 @@ describe("OS Native Profile (Phase 6)", () => {
     await collectText(runner.run({ sessionId: "native-gov", goal: "go" }))
     const events = (await sessionLog.read("native-gov")).map(e => e.event)
     // Classification is derived from `kind` (single taxonomy), no longer embedded per event.
-    expect(events.some(e => e.kind === "tool_gated")).toBe(true)
-    expect(events.some(e => e.kind === "suspended")).toBe(true)
-    expect(rebuildOsSnapshotFromSessionEvents(events).toolGatedCount).toBeGreaterThanOrEqual(1)
+    expect(events.some(e => e.kind === "permission_requested")).toBe(true)
+    expect(events.some(e => e.kind === "permission_resolved")).toBe(true)
   })
 })

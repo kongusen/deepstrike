@@ -69,6 +69,34 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
     expect(outcome.outputs["wf-node2"]).toBe("wf-node2")
   })
 
+  it("applies bounded SDK reliability policy during bootstrap", async () => {
+    const runner = new RuntimeRunner({
+      sessionLog: new InMemorySessionLog(),
+      maxTokens: 8000,
+      kernelReliability: {
+        eventReplayCapacity: 512,
+        completedEffectReplayCapacity: 256,
+        hostEffectRetryAttempts: 4,
+        spoolThresholdBytes: 2048,
+        spoolPreviewBytes: 256,
+      },
+      subAgentOrchestrator: stubOrchestrator() as never,
+    } as never)
+
+    await expect(runner.runWorkflow(fanoutSpec)).resolves.toMatchObject({ failed: [] })
+  })
+
+  it("rejects out-of-bounds SDK reliability policy atomically", async () => {
+    const runner = new RuntimeRunner({
+      sessionLog: new InMemorySessionLog(),
+      maxTokens: 8000,
+      kernelReliability: { eventReplayCapacity: 0 },
+      subAgentOrchestrator: stubOrchestrator() as never,
+    } as never)
+
+    await expect(runner.runWorkflow(fanoutSpec)).rejects.toThrow(/invalid_config/)
+  })
+
   it("tears the bootstrapped kernel down so the runner is reusable across sequential runs", async () => {
     const runner = new RuntimeRunner({
       sessionLog: new InMemorySessionLog(),

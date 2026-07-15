@@ -27,7 +27,8 @@ def test_golden_start_run():
     assert step_json is not None
     
     step = json.loads(step_json)
-    assert step["version"] == 1
+    assert step["version"] == 2
+    assert step.get("faults", []) == []
     assert "actions" in step
     assert len(step["actions"]) > 0
     assert step["actions"][0]["kind"] == "call_provider"
@@ -38,7 +39,26 @@ def test_golden_tool_results():
 
     with open(os.path.join(fixtures_dir, "input_start_run.json"), "r") as f:
         start_json = f.read()
-    kernel.step(start_json)
+    start_step = json.loads(kernel.step(start_json))
+    kernel.step(json.dumps({
+        "version": 2,
+        "operation_id": "op-golden-001",
+        "event_id": "event-provider-001",
+        "observed_at_ms": 1710000000500,
+        "event": {
+            "kind": "provider_result",
+            "effect_id": start_step["actions"][0]["effect_id"],
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_123", "name": "read", "arguments": {}},
+                    {"id": "call_456", "name": "read", "arguments": {}},
+                ],
+            },
+            "now_ms": 1710000000500,
+        },
+    }))
 
     with open(os.path.join(fixtures_dir, "input_tool_results.json"), "r") as f:
         input_json = f.read()
@@ -47,7 +67,8 @@ def test_golden_tool_results():
     assert step_json is not None
 
     step = json.loads(step_json)
-    assert step["version"] == 1
+    assert step["version"] == 2
+    assert step.get("faults", []) == []
     assert "actions" in step
 
 def test_golden_push_artifact():
@@ -61,6 +82,7 @@ def test_golden_push_artifact():
     assert step_json is not None
 
     step = json.loads(step_json)
-    assert step["version"] == 1
+    assert step["version"] == 2
+    assert step.get("faults", []) == []
     assert step["actions"] == []
     assert step["observations"] == []
