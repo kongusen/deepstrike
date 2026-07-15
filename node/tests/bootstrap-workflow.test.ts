@@ -8,6 +8,7 @@ import { getKernel } from "../src/kernel.js"
 import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
 import { submitWorkflowToKernel } from "../src/types/agent.js"
 import type { WorkflowSpec } from "../src/index.js"
+import { startKernelV2, stepKernelV2 } from "./helpers/kernel-v2.js"
 
 describe("submitWorkflowToKernel", () => {
   it("lowers a spec to the submit_workflow event with the parent session id", () => {
@@ -46,8 +47,7 @@ describe("bootstrapWorkflow drives an agent-authored DAG over the real kernel", 
 
     // A real kernel with NO workflow loaded — the agent itself authors one via submit_workflow.
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    const step = (event: Record<string, unknown>) => rt.step(JSON.stringify({ version: 1, event }))
-    step({ kind: "start_run", task: { goal: "parent", criteria: [] } })
+    startKernelV2(rt)
     ;(runner as never as { activeKernel: unknown }).activeKernel = rt
     ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-boot"
     ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
@@ -86,9 +86,8 @@ describe("bootstrapWorkflow drives an agent-authored DAG over the real kernel", 
     } as never)
 
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    const step = (event: Record<string, unknown>) => rt.step(JSON.stringify({ version: 1, event }))
-    step({ kind: "start_run", task: { goal: "parent", criteria: [] } })
-    step({ kind: "set_resource_quota", quota: { max_workflow_nodes: 2 } })
+    startKernelV2(rt)
+    stepKernelV2(rt, { kind: "set_resource_quota", quota: { max_workflow_nodes: 2 } })
     ;(runner as never as { activeKernel: unknown }).activeKernel = rt
     ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-boot-deny"
     ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []

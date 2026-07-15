@@ -7,6 +7,7 @@ import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
 import { builtinReducers } from "../src/workflow/public.js"
 import type { WorkflowSpec } from "../src/index.js"
 import { workflowNodeSpecToKernel } from "../src/types/agent.js"
+import { startKernelV2 } from "./helpers/kernel-v2.js"
 
 describe("built-in reducers", () => {
   it("dedupe_lines unions lines first-seen across inputs", () => {
@@ -59,7 +60,7 @@ describe("runWorkflow runs a reduce node deterministically (no LLM)", () => {
     } as never)
 
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    rt.step(JSON.stringify({ version: 1, event: { kind: "start_run", task: { goal: "parent", criteria: [] } } }))
+    startKernelV2(rt)
     ;(runner as never as { activeKernel: unknown }).activeKernel = rt
     ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-g2"
     ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
@@ -87,7 +88,7 @@ describe("runWorkflow runs a reduce node deterministically (no LLM)", () => {
     }
     const runner = new RuntimeRunner({ sessionLog: new InMemorySessionLog(), maxTokens: 8000, subAgentOrchestrator: orchestrator as never } as never)
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    rt.step(JSON.stringify({ version: 1, event: { kind: "start_run", task: { goal: "parent", criteria: [] } } }))
+    startKernelV2(rt)
     ;(runner as never as { activeKernel: unknown }).activeKernel = rt
     ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-g2b"
     ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []

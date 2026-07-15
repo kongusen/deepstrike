@@ -1,4 +1,5 @@
 import { getKernel } from "../../src/kernel.js"
+import { stepKernelV2WithHostEffects } from "../helpers/kernel-v2.js"
 
 // M2 资源配额 reference test: resource quotas flow into the kernel through the versioned JSON
 // event ABI (`set_resource_quota`) — the same channel as governance/scheduler config — and are
@@ -6,7 +7,7 @@ import { getKernel } from "../../src/kernel.js"
 // rebuilt native addon exposes the new input event end to end.
 
 function step(rt: { step(json: string): string }, event: Record<string, unknown>) {
-  return JSON.parse(rt.step(JSON.stringify({ version: 1, event }))) as {
+  return stepKernelV2WithHostEffects(rt as never, event) as {
     actions: Array<{ kind: string }>
     observations: Array<{ kind: string; reason?: string; agent_id?: string; state?: string }>
   }

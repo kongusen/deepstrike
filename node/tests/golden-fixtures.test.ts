@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { getKernel } from "../src/kernel.js"
+import { stepKernelV2 } from "./helpers/kernel-v2.js"
 
 function getFixturesDir(): string {
   const path1 = join(process.cwd(), "tests/fixtures/abi")
@@ -29,7 +30,7 @@ describe("Golden ABI Fixtures", () => {
     expect(stepJson).toBeDefined()
     
     const step = JSON.parse(stepJson)
-    expect(step.version).toBe(1)
+    expect(step.version).toBe(2)
     expect(step.actions).toBeDefined()
     expect(step.actions.length).toBeGreaterThan(0)
     expect(step.actions[0].kind).toBe("call_provider")
@@ -46,7 +47,7 @@ describe("Golden ABI Fixtures", () => {
     expect(stepJson).toBeDefined()
 
     const step = JSON.parse(stepJson)
-    expect(step.version).toBe(1)
+    expect(step.version).toBe(2)
     expect(step.actions).toBeDefined()
   })
 
@@ -56,7 +57,7 @@ describe("Golden ABI Fixtures", () => {
 
     const stepJson = kernel.step(inputJson)
     const step = JSON.parse(stepJson)
-    expect(step.version).toBe(1)
+    expect(step.version).toBe(2)
     expect(step.actions).toHaveLength(0)
     expect(step.observations).toHaveLength(0)
   })
@@ -65,10 +66,10 @@ describe("Golden ABI Fixtures", () => {
     const kernel = new KernelRuntime({ maxTokens: 2048 })
     kernel.step(readFileSync(join(fixturesDir, "input_start_run.json"), "utf8"))
 
-    const step = JSON.parse(kernel.step(readFileSync(join(fixturesDir, "input_spawn_sub_agent.json"), "utf8")))
-    expect(step.version).toBe(1)
-    expect(step.actions).toHaveLength(0)
-    const process = step.observations.find((o: { kind: string }) => o.kind === "agent_process_changed")
+    const requested = JSON.parse(kernel.step(readFileSync(join(fixturesDir, "input_spawn_sub_agent.json"), "utf8")))
+    expect(requested.version).toBe(2)
+    expect(requested.actions).toHaveLength(0)
+    const process = requested.observations.find((o: { kind: string }) => o.kind === "agent_process_changed")
     expect(process).toBeDefined()
     expect(process.agent_id).toBe("worker")
     expect(process.parent_session_id).toBe("parent-session-001")
@@ -97,11 +98,9 @@ describe("Golden ABI Fixtures", () => {
 
   it("set_scheduler_budget event configures wall-clock budget", () => {
     const kernel = new KernelRuntime({ maxTokens: 2048 })
-    // Start a run with proper task structure
-    kernel.step('{"version":1,"event":{"kind":"start_run","task":{"goal":"test","criteria":[]}}}')
-    // Set wall-clock budget
-    const budgetStep = JSON.parse(kernel.step('{"version":1,"event":{"kind":"set_scheduler_budget","max_wall_ms":10000}}'))
-    expect(budgetStep.version).toBe(1)
+    stepKernelV2(kernel, { kind: "start_run", task: { goal: "test", criteria: [] } })
+    const budgetStep = stepKernelV2(kernel, { kind: "set_scheduler_budget", max_wall_ms: 10000 })
+    expect(budgetStep.version).toBe(2)
     expect(budgetStep.actions).toHaveLength(0)
     expect(budgetStep.observations).toHaveLength(0)
   })

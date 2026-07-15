@@ -1,4 +1,5 @@
 import * as path from "path"
+import * as fs from "node:fs/promises"
 import { LargeResultSpool } from "../../src/runtime/large-result-spool.js"
 import { collectText } from "../../src/runtime/runner.js"
 import { createRunner, tool } from "./helpers.js"
@@ -6,6 +7,10 @@ import type { LLMProvider, Message, StreamEvent } from "../../src/types.js"
 
 describe("runner Layer-1 spool integration", () => {
   const testSpoolDir = path.join(process.cwd(), ".spool-runner-test")
+
+  afterAll(async () => {
+    await fs.rm(testSpoolDir, { recursive: true, force: true })
+  })
 
   it("logs large_result_spooled when kernel spools an oversized tool result", async () => {
     const huge = "x".repeat(60 * 1024)

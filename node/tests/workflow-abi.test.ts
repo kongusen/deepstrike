@@ -8,9 +8,10 @@ import {
 } from "../src/types/agent.js"
 import type { WorkflowSpec, WorkflowSpawnInfo } from "../src/types/agent.js"
 import { buildWorkflowNodeCompletedEvent, recoverCompletedWorkflowNodes } from "../src/runtime/session-repair.js"
+import { stepKernelV2WithHostEffects } from "./helpers/kernel-v2.js"
 
 function step(rt: { step(json: string): string }, event: Record<string, unknown>) {
-  return JSON.parse(rt.step(JSON.stringify({ version: 1, event }))) as {
+  return stepKernelV2WithHostEffects(rt as never, event) as {
     actions: Array<Record<string, unknown>>
     observations: Array<{
       kind: string

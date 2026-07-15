@@ -16,6 +16,7 @@ import {
 import type { WorkflowSpec } from "../../src/index.js"
 import { getKernel } from "../../src/kernel.js"
 import { loadProviders, anyProvider } from "./providers.js"
+import { startKernelV2 } from "../helpers/kernel-v2.js"
 
 const provider = anyProvider(loadProviders())
 const maybe = provider ? describe : describe.skip
@@ -30,7 +31,7 @@ maybe("real-model workflow DAG", () => {
       maxTurns: 4,
     })
     const kernel = new (getKernel().KernelRuntime)({ maxTokens: 8000 })
-    kernel.step(JSON.stringify({ version: 1, event: { kind: "start_run", task: { goal: "review", criteria: [] } } }))
+    startKernelV2(kernel, "review")
     ;(runner as any).activeKernel = kernel
     ;(runner as any).currentSessionId = "verify-e2e"
     ;(runner as any).pendingObservations = []

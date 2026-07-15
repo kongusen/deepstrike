@@ -1496,7 +1496,11 @@ fn large_result_spool_is_a_correlated_effect_before_provider_continues() {
     let committed = runtime.step(KernelInput::new(KernelInputEvent::LargeResultSpoolResult {
         effect_id, spool_ref: Some("spool://call-1".to_string()), error: None,
     }));
-    assert!(matches!(committed.actions.as_slice(), [KernelAction { effect: KernelEffect::CallProvider { .. }, .. }]));
+    assert!(matches!(
+        committed.actions.as_slice(),
+        [KernelAction { effect: KernelEffect::CallProvider { tools, .. }, .. }]
+            if tools.iter().any(|tool| tool.name == "read_result")
+    ));
     assert!(committed.observations.iter().any(|o| matches!(
         o, KernelObservation::LargeResultSpooled { call_id, spool_ref: Some(spool_ref), .. }
             if call_id == "call-1" && spool_ref == "spool://call-1"

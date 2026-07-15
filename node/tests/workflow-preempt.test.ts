@@ -9,6 +9,7 @@ import { getKernel } from "../src/kernel.js"
 import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/index.js"
 import { SignalGateway } from "../src/os/public.js"
 import type { WorkflowSpec } from "../src/index.js"
+import { startKernelV2 } from "./helpers/kernel-v2.js"
 
 describe("#2-B-ii mid-flight workflow preemption", () => {
   it("a Critical signal aborts the running node and tears the workflow down", async () => {
@@ -43,7 +44,7 @@ describe("#2-B-ii mid-flight workflow preemption", () => {
     } as never)
 
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    rt.step(JSON.stringify({ version: 1, event: { kind: "start_run", task: { goal: "parent", criteria: [] } } }))
+    startKernelV2(rt)
     ;(runner as never as { activeKernel: unknown }).activeKernel = rt
     ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-preempt"
     ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []

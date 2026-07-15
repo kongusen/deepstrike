@@ -1,4 +1,5 @@
 import { getKernel } from "../../src/kernel.js"
+import { stepKernelV2WithHostEffects } from "../helpers/kernel-v2.js"
 import { categoryForKind, kernelObservationToSessionEvent } from "../../src/runtime/kernel-event-log.js"
 import { createRunner, tool } from "./helpers.js"
 import { collectText } from "../../src/runtime/runner.js"
@@ -82,7 +83,7 @@ describe("kernel event log (Phase 5)", () => {
     // stays a valid host-driven event kind for stable pins), so it still classifies as mm.
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
     const step = (event: Record<string, unknown>) =>
-      JSON.parse(rt.step(JSON.stringify({ version: 1, event }))) as {
+      stepKernelV2WithHostEffects(rt, event) as {
         observations: Array<{ kind: string }>
       }
 

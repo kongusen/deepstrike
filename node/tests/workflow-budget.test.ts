@@ -6,6 +6,7 @@ import { getKernel } from "../src/kernel.js"
 import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
 import type { WorkflowSpec } from "../src/index.js"
 import { workflowBudgetNote, type WorkflowBudget } from "../src/types/agent.js"
+import { startKernelV2, stepKernelV2 } from "./helpers/kernel-v2.js"
 
 describe("workflowBudgetNote", () => {
   it("formats bounded dimensions and omits unbounded ones", () => {
@@ -57,9 +58,8 @@ describe("runWorkflow surfaces the kernel budget into a node's goal", () => {
 
     // A real kernel with a node/concurrency quota installed (so a budget is emitted).
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    const step = (event: Record<string, unknown>) => rt.step(JSON.stringify({ version: 1, event }))
-    step({ kind: "start_run", task: { goal: "parent", criteria: [] } })
-    step({ kind: "set_resource_quota", quota: { max_workflow_nodes: 5, max_concurrent_subagents: 3 } })
+    startKernelV2(rt)
+    stepKernelV2(rt, { kind: "set_resource_quota", quota: { max_workflow_nodes: 5, max_concurrent_subagents: 3 } })
     ;(runner as never as { activeKernel: unknown }).activeKernel = rt
     ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-g4"
     ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []

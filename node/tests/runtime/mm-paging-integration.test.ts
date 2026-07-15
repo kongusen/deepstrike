@@ -118,14 +118,10 @@ describe("long-session memory paging integration", () => {
     expect(pageOut).toBeDefined()
     expect((pageOut!.event as { message_count?: number }).message_count ?? 0).toBeGreaterThan(0)
 
-    const withArchive = events.find(
-      e => e.event.kind === "compressed" && (e.event as { archive_ref?: string }).archive_ref,
-    )
-    if (withArchive) {
-      const ref = (withArchive.event as { archive_ref: string }).archive_ref
-      const archived = await archiveStore.read(ref)
-      expect(archived.length).toBeGreaterThan(0)
-    }
+    const archiveRef = (pageOut!.event as { archive_ref?: string }).archive_ref
+    expect(archiveRef).toBeTruthy()
+    const archived = await archiveStore.read(archiveRef!)
+    expect(archived.length).toBeGreaterThan(0)
 
     expect(sawRecallInContext).toBe(true)
   })

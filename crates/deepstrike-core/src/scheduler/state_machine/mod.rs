@@ -496,10 +496,13 @@ impl LoopStateMachine {
                 .expect("host effect was just activated")
                 .action()
         } else {
-            self.deferred_action
-                .take()
-                .map(|action| *action)
-                .unwrap_or(LoopAction::AwaitingResume)
+            match self.deferred_action.take().map(|action| *action) {
+                // Durability effects can change rendered context and conditional meta-tools
+                // (notably `read_result`). Never return the pre-commit frozen provider action.
+                Some(LoopAction::CallLLM { .. }) => self.emit_call_llm(),
+                Some(action) => action,
+                None => LoopAction::AwaitingResume,
+            }
         }
     }
 

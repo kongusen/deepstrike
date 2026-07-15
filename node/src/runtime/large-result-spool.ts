@@ -84,6 +84,26 @@ export class LargeResultSpool {
     return path.join(this.spoolDir, `${hash}.txt`)
   }
 
+  private callKey(callId: string): string {
+    return this.hashContent(callId).slice(0, 32)
+  }
+
+  private async atomicWrite(spoolPath: string, content: string): Promise<void> {
+    const tempPath = `${spoolPath}.${process.pid}.${crypto.randomUUID()}.tmp`
+    let handle: fs.FileHandle | undefined
+    try {
+      handle = await fs.open(tempPath, 'wx')
+      await handle.writeFile(content, 'utf-8')
+      await handle.sync()
+      await handle.close()
+      handle = undefined
+      await fs.rename(tempPath, spoolPath)
+    } finally {
+      await handle?.close().catch(() => undefined)
+      await fs.unlink(tempPath).catch(() => undefined)
+    }
+  }
+
   /**
    * Write large result to disk.
    */
@@ -98,7 +118,7 @@ export class LargeResultSpool {
       promise = (async () => {
         try {
           await fs.mkdir(this.spoolDir, { recursive: true })
-          await fs.writeFile(spoolPath, content, 'utf-8')
+          await this.atomicWrite(spoolPath, content)
           return spoolPath
         } finally {
           this.activeWrites.delete(spoolPath)
@@ -160,14 +180,14 @@ omitted: ${omitted} chars
    */
   async persistOutput(callId: string, content: string): Promise<string> {
     const hash = this.hashContent(content)
-    const spoolPath = this.getSpoolPath(`${callId}-${hash.slice(0, 16)}`)
+    const spoolPath = this.getSpoolPath(`${this.callKey(callId)}-${hash.slice(0, 16)}`)
 
     let promise = this.activeWrites.get(spoolPath)
     if (!promise) {
       promise = (async () => {
         try {
           await fs.mkdir(this.spoolDir, { recursive: true })
-          await fs.writeFile(spoolPath, content, 'utf-8')
+          await this.atomicWrite(spoolPath, content)
           return spoolPath
         } finally {
           this.activeWrites.delete(spoolPath)
@@ -193,7 +213,7 @@ omitted: ${omitted} chars
   /**
    * O7: locate a spooled output by the tool call's id (the `read_result` meta-tool only knows
    * `call_id`, not the content-hashed file name `persistOutput` chose). Scans the spool directory
-   * for the `${callId}-*.txt` naming convention; returns `undefined` if nothing was ever spooled
+   * for the hashed call-key prefix; returns `undefined` if nothing was ever spooled
    * for that call (e.g. it never actually exceeded the threshold, or the spool dir was cleaned up).
    */
   async findByCallId(callId: string): Promise<string | undefined> {
@@ -203,7 +223,7 @@ omitted: ${omitted} chars
     } catch {
       return undefined
     }
-    const prefix = `${callId}-`
+    const prefix = `${this.callKey(callId)}-`
     const match = files.find(f => f.startsWith(prefix) && f.endsWith('.txt'))
     if (!match) return undefined
     try {

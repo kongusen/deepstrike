@@ -2,6 +2,7 @@ import { buildContents } from "../src/providers/gemini.js"
 import { toOpenAIMessageParams, toAnthropicMessages } from "../src/providers/base.js"
 import { getKernel } from "../src/kernel.js"
 import type { Message, RenderedContext } from "../src/types.js"
+import { stepKernelV2 } from "./helpers/kernel-v2.js"
 
 describe("multimodal image input", () => {
   const imageMsg: Message = {
@@ -42,7 +43,7 @@ describe("multimodal image input", () => {
 
   it("upload: add_history_message lands the image in the rendered context (real kernel)", () => {
     const k = new (getKernel().KernelRuntime)({ maxTokens: 4096 })
-    const step = (event: unknown) => k.step(JSON.stringify({ version: 1, event }))
+    const step = (event: Record<string, unknown>) => stepKernelV2(k, event)
     step({ kind: "add_history_message", message: { role: "user", content: [
       { type: "text", text: "describe" },
       { type: "image", data: "iVBORw0KGgo=", media_type: "image/png" },

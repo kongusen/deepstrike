@@ -10,9 +10,10 @@ import { createRunner, tool } from "./runtime/helpers.js"
 import { ReactiveSession } from "../src/runtime/reactive-session.js"
 import { InMemoryGroupBudgetStore } from "../src/runtime/run-group.js"
 import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
+import { stepKernelV2WithHostEffects } from "./helpers/kernel-v2.js"
 
 function step(rt: { step(json: string): string }, event: Record<string, unknown>) {
-  return JSON.parse(rt.step(JSON.stringify({ version: 1, event }))) as {
+  return stepKernelV2WithHostEffects(rt as never, event) as {
     observations: Array<{ kind: string; nodes?: WorkflowSpawnInfo[]; completed?: string[]; failed?: string[] }>
   }
 }

@@ -2,9 +2,10 @@ import { getKernel } from "../../src/kernel.js"
 import { governancePolicyToKernelEvent } from "../../src/governance.js"
 import { createRunner, tool } from "./helpers.js"
 import type { LLMProvider } from "../../src/types.js"
+import { stepKernelV2WithHostEffects } from "../helpers/kernel-v2.js"
 
 function step(rt: { step(json: string): string }, event: Record<string, unknown>) {
-  return JSON.parse(rt.step(JSON.stringify({ version: 1, event }))) as {
+  return stepKernelV2WithHostEffects(rt as never, event) as {
     actions: Array<Record<string, unknown>>
     observations: Array<{ kind: string; reason?: string; call_id?: string; tool?: string }>
   }
@@ -25,11 +26,11 @@ describe("scheduler lifecycle (Phase 2)", () => {
         tool_calls: [{ id: "call_1", name: "needs_approval", arguments: {} }],
       },
     })
-    expect(proposed.actions).toHaveLength(0)
+    expect(proposed.actions[0]?.kind).toBe("request_approval")
     expect(proposed.observations.some(o => o.kind === "suspended")).toBe(true)
 
     const resumed = step(rt, {
-      kind: "resume",
+      kind: "approval_result",
       approved_calls: ["call_1"],
       denied_calls: [],
     })

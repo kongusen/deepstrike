@@ -10,7 +10,7 @@ import type {
 import type { SkillMetadata } from "../skills/loader.js"
 import type { RollbackReason } from "./session-log.js"
 
-export const KERNEL_ABI_VERSION = 1
+export const KERNEL_ABI_VERSION = 2
 
 export interface KernelRuntimeHandle {
   step(inputJson: string): string
@@ -46,16 +46,44 @@ export type MilestoneVerifierKind =
   | { kind: "external_command"; cmd: string }
 
 export type KernelRunnerAction =
-  | { kind: "call_provider"; context: RenderedContext; tools: ToolSchema[] }
-  | { kind: "execute_tool"; calls: ToolCall[] }
+  | { kind: "call_provider"; effectId: string; context: RenderedContext; tools: ToolSchema[] }
+  | { kind: "execute_tool"; effectId: string; calls: ToolCall[] }
+  | {
+      kind: "request_approval"
+      effectId: string
+      requests: Array<{ callId: string; tool: string; arguments: string; reason: string }>
+    }
+  | { kind: "spawn_workflow"; effectId: string; nodes: Array<Record<string, unknown>>; budget?: Record<string, unknown> }
+  | { kind: "preempt_sub_agents"; effectId: string; agentIds: string[]; reason: string }
+  | { kind: "persist_memory"; effectId: string; memory: Record<string, unknown> }
+  | { kind: "query_memory"; effectId: string; query: Record<string, unknown>; requestedK: number }
+  | {
+      kind: "spool_large_result"
+      effectId: string
+      callId: string
+      tool: string
+      output: string
+      originalSize: number
+      previewSize: number
+    }
+  | {
+      kind: "archive_page_out"
+      effectId: string
+      turn: number
+      action: string
+      summary?: string
+      archived: Message[]
+      tier: string
+    }
   | {
       kind: "evaluate_milestone"
+      effectId: string
       phaseId: string
       criteria: string[]
       verifier?: MilestoneVerifierKind
       requiredEvidence: string[]
     }
-  | { kind: "done"; result: KernelLoopResult }
+  | { kind: "done"; effectId: string; result: KernelLoopResult }
 
 export interface KernelObservation {
   kind: string
@@ -63,7 +91,7 @@ export interface KernelObservation {
   rho_after?: number
   sprint?: number
   summary?: string
-  archived?: Message[]
+  archived_count?: number
   turn?: number
   checkpoint_history_len?: number
   history_len?: number
@@ -103,7 +131,12 @@ export interface KernelObservation {
   // Phase 2: resumed observation — loop resumed with approved/denied calls.
   approved?: string[]
   denied?: string[]
-  tier_hint?: string
+  tier?: string
+  message_count?: number
+  archive_ref?: string
+  spool_ref?: string
+  original_size?: number
+  preview_size?: number
   // Phase 7 / M3: Memory observations
   memory_id?: string
   memory_kind?: string
@@ -142,7 +175,16 @@ interface KernelStepJson {
   version: number
   actions: Array<Record<string, unknown>>
   observations: KernelObservation[]
+  faults?: Array<{ code?: string; message?: string; effect_id?: string }>
 }
+
+interface KernelWireState {
+  operationId: string
+  nextEventSequence: number
+}
+
+let nextOperationSequence = 1
+const kernelWireStates = new WeakMap<object, KernelWireState>()
 
 function tryParseJson(s: string): unknown {
   try {
@@ -379,10 +421,13 @@ function renderedContextToSdk(raw: Record<string, unknown>): RenderedContext {
 }
 
 function mapKernelAction(raw: Record<string, unknown>): KernelRunnerAction {
+  const effectId = String(raw.effect_id ?? "")
+  if (!effectId) throw new Error(`kernel action ${String(raw.kind)} is missing effect_id`)
   switch (raw.kind) {
     case "call_provider":
       return {
         kind: "call_provider",
+        effectId,
         context: renderedContextToSdk((raw.context as Record<string, unknown>) ?? {}),
         tools: ((raw.tools as Array<Record<string, unknown>>) ?? []).map(t => ({
           name: String(t.name ?? ""),
@@ -393,15 +438,77 @@ function mapKernelAction(raw: Record<string, unknown>): KernelRunnerAction {
     case "execute_tool":
       return {
         kind: "execute_tool",
+        effectId,
         calls: ((raw.calls as Array<Record<string, unknown>>) ?? []).map(c => ({
           id: String(c.id ?? ""),
           name: String(c.name ?? ""),
           arguments: JSON.stringify(c.arguments ?? {}),
         })),
       }
+    case "request_approval":
+      return {
+        kind: "request_approval",
+        effectId,
+        requests: ((raw.requests as Array<Record<string, unknown>>) ?? []).map(request => ({
+          callId: String(request.call_id ?? ""),
+          tool: String(request.tool ?? ""),
+          arguments: JSON.stringify(request.arguments ?? {}),
+          reason: String(request.reason ?? ""),
+        })),
+      }
+    case "spawn_workflow":
+      return {
+        kind: "spawn_workflow",
+        effectId,
+        nodes: (raw.nodes as Array<Record<string, unknown>>) ?? [],
+        ...(raw.budget && typeof raw.budget === "object"
+          ? { budget: raw.budget as Record<string, unknown> }
+          : {}),
+      }
+    case "preempt_sub_agents":
+      return {
+        kind: "preempt_sub_agents",
+        effectId,
+        agentIds: (raw.agent_ids as string[]) ?? [],
+        reason: String(raw.reason ?? ""),
+      }
+    case "persist_memory":
+      return {
+        kind: "persist_memory",
+        effectId,
+        memory: (raw.memory as Record<string, unknown>) ?? {},
+      }
+    case "query_memory":
+      return {
+        kind: "query_memory",
+        effectId,
+        query: (raw.query as Record<string, unknown>) ?? {},
+        requestedK: Number(raw.requested_k ?? 0),
+      }
+    case "spool_large_result":
+      return {
+        kind: "spool_large_result",
+        effectId,
+        callId: String(raw.call_id ?? ""),
+        tool: String(raw.tool ?? ""),
+        output: String(raw.output ?? ""),
+        originalSize: Number(raw.original_size ?? 0),
+        previewSize: Number(raw.preview_size ?? 0),
+      }
+    case "archive_page_out":
+      return {
+        kind: "archive_page_out",
+        effectId,
+        turn: Number(raw.turn ?? 0),
+        action: String(raw.action ?? "auto_compact"),
+        ...(typeof raw.summary === "string" ? { summary: raw.summary } : {}),
+        archived: ((raw.archived as Array<Record<string, unknown>>) ?? []).map(kernelMessageToSdk),
+        tier: String(raw.tier ?? "durable"),
+      }
     case "evaluate_milestone":
       return {
         kind: "evaluate_milestone",
+        effectId,
         phaseId: String(raw.phase_id ?? ""),
         criteria: (raw.criteria as string[]) ?? [],
         verifier: raw.verifier as MilestoneVerifierKind | undefined,
@@ -414,6 +521,7 @@ function mapKernelAction(raw: Record<string, unknown>): KernelRunnerAction {
         | undefined
       return {
         kind: "done",
+        effectId,
         result: {
           termination: String(result.termination ?? "error"),
           turnsUsed: Number(result.turns_used ?? 0),
@@ -437,8 +545,22 @@ function mapKernelAction(raw: Record<string, unknown>): KernelRunnerAction {
   }
 }
 
-function stepInput(event: Record<string, unknown>): string {
-  return JSON.stringify({ version: KERNEL_ABI_VERSION, event })
+function stepInput(runtime: KernelRuntimeHandle, event: Record<string, unknown>): string {
+  let state = kernelWireStates.get(runtime)
+  if (!state) {
+    state = {
+      operationId: `node-operation-${nextOperationSequence++}`,
+      nextEventSequence: 1,
+    }
+    kernelWireStates.set(runtime, state)
+  }
+  return JSON.stringify({
+    version: KERNEL_ABI_VERSION,
+    operation_id: state.operationId,
+    event_id: `${state.operationId}-event-${state.nextEventSequence++}`,
+    observed_at_ms: Date.now(),
+    event,
+  })
 }
 
 export function kernelApply(
@@ -446,7 +568,9 @@ export function kernelApply(
   pending: KernelObservation[],
   event: Record<string, unknown>,
 ): KernelObservation[] {
-  const step = parseStep(runtime.step(stepInput(event)))
+  const step = kernelStep(runtime, event)
+  const fault = step.faults?.[0]
+  if (fault) throw new Error(`${fault.code ?? "kernel_fault"}: ${fault.message ?? "kernel transition failed"}`)
   pending.push(...step.observations)
   return step.observations
 }
@@ -471,15 +595,18 @@ export function kernelMaybeAction(
   pending: KernelObservation[],
   event: Record<string, unknown>,
 ): KernelRunnerAction | null {
-  const step = parseStep(runtime.step(stepInput(event)))
+  const step = kernelStep(runtime, event)
+  const fault = step.faults?.[0]
+  if (fault) throw new Error(`${fault.code ?? "kernel_fault"}: ${fault.message ?? "kernel transition failed"}`)
   pending.push(...step.observations)
   const raw = step.actions[0]
   return raw ? mapKernelAction(raw) : null
 }
 
-export function forceCompact(
+/** Internal ABI-v2 step primitive shared by SDK adapters and conformance tests. */
+export function kernelStep(
   runtime: KernelRuntimeHandle,
-  pending: KernelObservation[],
-): boolean {
-  return kernelApply(runtime, pending, { kind: "force_compact" }).some(o => o.kind === "compressed")
+  event: Record<string, unknown>,
+): KernelStepJson {
+  return parseStep(runtime.step(stepInput(runtime, event)))
 }

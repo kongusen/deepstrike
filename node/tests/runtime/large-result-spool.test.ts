@@ -83,6 +83,18 @@ describe("LargeResultSpool", () => {
     expect(content).toBe(data)
   })
 
+  it("never derives a filesystem path from an untrusted call id", async () => {
+    const spool = new LargeResultSpool({ spoolDir: testSpoolDir })
+    const callId = "../../deepstrike-spool-escape"
+
+    const ref = await spool.persistOutput(callId, "safe content")
+
+    expect(path.dirname(ref)).toBe(testSpoolDir)
+    expect(path.basename(ref)).not.toContain("..")
+    expect(path.relative(testSpoolDir, ref)).not.toMatch(/^\.\./)
+    expect(await spool.findByCallId(callId)).toBe("safe content")
+  })
+
   it("performs TTL cleanup for expired spool files", async () => {
     const spool = new LargeResultSpool({
       spoolThresholdBytes: 10,

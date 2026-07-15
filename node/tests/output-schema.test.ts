@@ -70,16 +70,30 @@ function node(agent_id: string) {
 
 /** Single-node workflow whose only node declares an output_schema; completes when node0 reports. */
 function makeFakeKernel() {
-  const reply = (obs: unknown[]) => JSON.stringify({ version: 1, actions: [], observations: obs })
+  const reply = (actions: unknown[], observations: unknown[]) =>
+    JSON.stringify({ version: 2, actions, observations })
+  const spawn = {
+    kind: "spawn_workflow",
+    effect_id: "fake-workflow-spawn-1",
+    nodes: [node("wf-node0")],
+  }
   return {
     turn: () => 0,
     step(input: string): string {
-      const { event } = JSON.parse(input) as { event: { kind: string; result?: { agent_id: string } } }
-      if (event.kind === "load_workflow") return reply([{ kind: "workflow_batch_spawned", nodes: [node("wf-node0")] }])
-      if (event.kind === "sub_agent_completed" && event.result?.agent_id === "wf-node0") {
-        return reply([{ kind: "workflow_completed", completed: ["wf-node0"], failed: [] }])
+      const { event } = JSON.parse(input) as { event: { kind: string; result?: { agent_id: string; result?: { termination?: string } } } }
+      if (event.kind === "load_workflow") return reply([spawn], [])
+      if (event.kind === "workflow_spawn_result") {
+        return reply([], [{ kind: "workflow_batch_spawned", nodes: spawn.nodes }])
       }
-      return reply([])
+      if (event.kind === "sub_agent_completed" && event.result?.agent_id === "wf-node0") {
+        const failed = event.result.result?.termination === "error"
+        return reply([], [{
+          kind: "workflow_completed",
+          completed: failed ? [] : ["wf-node0"],
+          failed: failed ? ["wf-node0"] : [],
+        }])
+      }
+      return reply([], [])
     },
   }
 }
@@ -160,21 +174,7 @@ describe("runWorkflow enforces output_schema", () => {
       },
     }
     const runner = new RuntimeRunner({ sessionLog: new InMemorySessionLog(), maxTokens: 8000, subAgentOrchestrator: orchestrator as never } as never)
-    // A kernel that reports the node as FAILED when its completion comes back as an error.
-    const reply = (obs: unknown[]) => JSON.stringify({ version: 1, actions: [], observations: obs })
-    const kernel = {
-      turn: () => 0,
-      step(input: string): string {
-        const { event } = JSON.parse(input) as { event: { kind: string; result?: { agent_id: string; result?: { termination: string } } } }
-        if (event.kind === "load_workflow") return reply([{ kind: "workflow_batch_spawned", nodes: [node("wf-node0")] }])
-        if (event.kind === "sub_agent_completed") {
-          const failed = event.result?.result?.termination === "error"
-          return reply([{ kind: "workflow_completed", completed: failed ? [] : ["wf-node0"], failed: failed ? ["wf-node0"] : [] }])
-        }
-        return reply([])
-      },
-    }
-    wire(runner, kernel)
+    wire(runner, makeFakeKernel())
     const outcome = await runner.runWorkflow(spec)
     expect(calls).toBe(2) // tried, retried, still invalid
     expect(outcome.failed).toEqual(["wf-node0"])

@@ -41,6 +41,7 @@ export type SessionEvent =
       summary?: string
       tier_hint?: string
       message_count?: number
+      archive_ref?: string
     }
   | { kind: "page_in"; turn: number; entry_count: number }
   | {

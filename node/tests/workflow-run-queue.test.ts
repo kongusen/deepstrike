@@ -34,8 +34,18 @@ function makeFakeKernel() {
   const C = node("wf-node2", "C") // depends on A & B
   const D = node("wf-node3", "D") // depends on A only
 
-  function reply(obs: Obs[]): string {
-    return JSON.stringify({ version: 1, actions: [], observations: obs })
+  let pendingBatch: ReturnType<typeof node>[] = []
+  let nextEffect = 1
+  function reply(actions: unknown[], observations: Obs[]): string {
+    return JSON.stringify({ version: 2, actions, observations })
+  }
+  function requestSpawn(nodes: ReturnType<typeof node>[]): string {
+    pendingBatch = nodes
+    return reply([{
+      kind: "spawn_workflow",
+      effect_id: `fake-workflow-spawn-${nextEffect++}`,
+      nodes,
+    }], [])
   }
 
   return {
@@ -44,27 +54,32 @@ function makeFakeKernel() {
       const { event } = JSON.parse(input) as { event: { kind: string; result?: { agent_id: string } } }
       if (event.kind === "load_workflow") {
         // A and B have no deps → both ready in the first round.
-        return reply([{ kind: "workflow_batch_spawned", nodes: [A, B] }])
+        return requestSpawn([A, B])
+      }
+      if (event.kind === "workflow_spawn_result") {
+        const nodes = pendingBatch
+        pendingBatch = []
+        return reply([], [{ kind: "workflow_batch_spawned", nodes }])
       }
       if (event.kind === "sub_agent_completed") {
         switch (event.result?.agent_id) {
           // A done (B still running) → D unblocks immediately (per-node unblock).
           case "wf-node0":
-            return reply([{ kind: "workflow_batch_spawned", nodes: [D] }])
+            return requestSpawn([D])
           // B done → C unblocks (both deps satisfied).
           case "wf-node1":
-            return reply([{ kind: "workflow_batch_spawned", nodes: [C] }])
+            return requestSpawn([C])
           // D done → nothing new.
           case "wf-node3":
-            return reply([])
+            return reply([], [])
           // C done → DAG complete.
           case "wf-node2":
-            return reply([
+            return reply([], [
               { kind: "workflow_completed", completed: ["wf-node0", "wf-node1", "wf-node2", "wf-node3"], failed: [] },
             ])
         }
       }
-      return reply([])
+      return reply([], [])
     },
   }
 }

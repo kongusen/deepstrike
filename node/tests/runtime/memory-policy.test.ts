@@ -1,4 +1,5 @@
 import { getKernel } from "../../src/kernel.js"
+import { stepKernelV2WithHostEffects } from "../helpers/kernel-v2.js"
 
 // Memory policy reference test: like governance / scheduler / resource-quota config, the memory
 // policy flows into the kernel through the versioned JSON event ABI (`set_memory_policy`) and is
@@ -6,7 +7,7 @@ import { getKernel } from "../../src/kernel.js"
 // accepts the event end to end and treats it as pure config (no actions, replayable).
 
 function step(rt: { step(json: string): string }, event: Record<string, unknown>) {
-  return JSON.parse(rt.step(JSON.stringify({ version: 1, event }))) as {
+  return stepKernelV2WithHostEffects(rt as never, event) as {
     actions: Array<{ kind: string }>
     observations: Array<{ kind: string }>
   }
@@ -75,14 +76,10 @@ describe("kernel memory policy", () => {
   it("retrieval_top_k caps the emitted requested_k", () => {
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
     step(rt, { kind: "set_memory_policy", retrieval_top_k: 3 })
-    const out = JSON.parse(
-      rt.step(
-        JSON.stringify({
-          version: 1,
-          event: { kind: "query_memory", query: { current_context: "ctx", top_k: 50 } },
-        }),
-      ),
-    ) as { observations: Array<{ kind: string; requested_k?: number }> }
+    const out = step(rt, {
+      kind: "query_memory",
+      query: { current_context: "ctx", active_tools: [], already_surfaced: [], top_k: 50 },
+    }) as { observations: Array<{ kind: string; requested_k?: number }> }
     const queried = out.observations.find(o => o.kind === "memory_queried")
     expect(queried?.requested_k).toBe(3)
   })

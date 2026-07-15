@@ -1,4 +1,5 @@
 import { getKernel } from "../../src/kernel.js"
+import { stepKernelV2WithHostEffects } from "../helpers/kernel-v2.js"
 
 // End-to-end through the native module: drive the KernelRuntime ABI directly and
 // assert the in-kernel attention policy routes signals (Phase 1 OS-ification).
@@ -10,7 +11,7 @@ interface StepObservation {
 }
 
 function step(rt: { step(json: string): string }, event: Record<string, unknown>): { actions: unknown[]; observations: StepObservation[] } {
-  return JSON.parse(rt.step(JSON.stringify({ version: 1, event })))
+  return stepKernelV2WithHostEffects(rt as never, event) as { actions: unknown[]; observations: StepObservation[] }
 }
 
 function makeSignal(urgency: string, summary: string) {
