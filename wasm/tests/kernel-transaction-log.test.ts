@@ -48,7 +48,7 @@ describe("WASM authoritative kernel transaction log", () => {
     await expect(
       log.compareAndAppendKernelTransaction("session", genesis.genesis_digest, stale),
     ).rejects.toBeInstanceOf(KernelLogConflictError)
-    expect(await log.kernelTransactionHead("session")).toBe(first.transaction_digest)
+    expect(await log.kernelTransactionHead("session", "op-wasm")).toBe(first.transaction_digest)
   })
 
   it("rejects tampered inputs", async () => {

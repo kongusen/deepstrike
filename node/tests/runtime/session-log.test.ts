@@ -46,7 +46,7 @@ describe("InMemorySessionLog", () => {
     expect(genesisReceipt.genesis_digest).toBe(operationGenesis.genesis_digest)
 
     await log.append("s1", { kind: "run_started", run_id: "r1", goal: "a", criteria: [] })
-    expect(await log.kernelTransactionHead("s1")).toBe(operationGenesis.genesis_digest)
+    expect(await log.kernelTransactionHead("s1", "op-1")).toBe(operationGenesis.genesis_digest)
 
     const first = await transaction(operationGenesis.genesis_digest)
     const firstReceipt = await log.compareAndAppendKernelTransaction(
@@ -55,13 +55,18 @@ describe("InMemorySessionLog", () => {
       first,
     )
     expect(firstReceipt.transaction_digest).toBe(first.transaction_digest)
-    expect(await log.kernelTransactionHead("s1")).toBe(first.transaction_digest)
+    expect(await log.kernelTransactionHead("s1", "op-1")).toBe(first.transaction_digest)
+
+    const secondGenesis = await genesis("op-2")
+    await log.appendKernelGenesis("s1", secondGenesis)
+    expect(await log.kernelTransactionHead("s1", "op-2")).toBe(secondGenesis.genesis_digest)
+    expect(await log.kernelTransactionHead("s1", "op-1")).toBe(first.transaction_digest)
 
     const stale = await transaction(operationGenesis.genesis_digest, 2)
     await expect(
       log.compareAndAppendKernelTransaction("s1", operationGenesis.genesis_digest, stale),
     ).rejects.toBeInstanceOf(KernelLogConflictError)
-    expect(await log.readKernelTransactions("s1")).toEqual([{ log_seq: firstReceipt.log_seq, transaction: first }])
+    expect(await log.readKernelTransactions("s1", "op-1")).toEqual([{ log_seq: firstReceipt.log_seq, transaction: first }])
   })
 
   it("rejects transaction payload tampering before append", async () => {
@@ -74,7 +79,7 @@ describe("InMemorySessionLog", () => {
     await expect(
       log.compareAndAppendKernelTransaction("s1", operationGenesis.genesis_digest, tampered),
     ).rejects.toBeInstanceOf(KernelLogIntegrityError)
-    expect(await log.readKernelTransactions("s1")).toEqual([])
+    expect(await log.readKernelTransactions("s1", "op-1")).toEqual([])
   })
 
   it("append returns monotonic seq starting at 0", async () => {
@@ -176,11 +181,11 @@ describe("FileSessionLog", () => {
     )
 
     const reopened = new FileSessionLog(dir)
-    expect(await reopened.readKernelGenesis("sess-kernel")).toEqual(operationGenesis)
-    expect(await reopened.readKernelTransactions("sess-kernel")).toEqual([
+    expect(await reopened.readKernelGenesis("sess-kernel", "op-1")).toEqual(operationGenesis)
+    expect(await reopened.readKernelTransactions("sess-kernel", "op-1")).toEqual([
       { log_seq: receipt.log_seq, transaction: first },
     ])
-    expect(await reopened.kernelTransactionHead("sess-kernel")).toBe(first.transaction_digest)
+    expect(await reopened.kernelTransactionHead("sess-kernel", "op-1")).toBe(first.transaction_digest)
     expect(genesisReceipt.log_seq).toBe(0)
     expect(receipt.log_seq).toBe(2)
   })

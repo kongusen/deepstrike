@@ -59,8 +59,8 @@ async def test_in_memory_kernel_transactions_are_cas_fenced_and_tamper_evident()
         await log.compare_and_append_kernel_transaction(
             "session", operation_genesis["genesis_digest"], stale
         )
-    assert await log.kernel_transaction_head("session") == first["transaction_digest"]
-    assert await log.read_kernel_transactions("session") == [
+    assert await log.kernel_transaction_head("session", "op-python") == first["transaction_digest"]
+    assert await log.read_kernel_transactions("session", "op-python") == [
         {"log_seq": receipt["log_seq"], "transaction": first}
     ]
 
@@ -83,10 +83,10 @@ async def test_file_kernel_transaction_stream_survives_reopen(tmp_path):
     )
 
     reopened = FileSessionLog(tmp_path)
-    assert await reopened.read_kernel_genesis("session") == operation_genesis
-    assert await reopened.read_kernel_transactions("session") == [
+    assert await reopened.read_kernel_genesis("session", "op-python") == operation_genesis
+    assert await reopened.read_kernel_transactions("session", "op-python") == [
         {"log_seq": receipt["log_seq"], "transaction": first}
     ]
-    assert await reopened.kernel_transaction_head("session") == first["transaction_digest"]
+    assert await reopened.kernel_transaction_head("session", "op-python") == first["transaction_digest"]
     assert genesis_receipt["log_seq"] == 0
     assert receipt["log_seq"] == 2

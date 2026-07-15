@@ -396,7 +396,9 @@ class SessionLog(Protocol):
     async def append_kernel_genesis(
         self, session_id: str, genesis: KernelOperationGenesis
     ) -> KernelGenesisReceipt: ...
-    async def read_kernel_genesis(self, session_id: str) -> KernelOperationGenesis | None: ...
+    async def read_kernel_genesis(
+        self, session_id: str, operation_id: str
+    ) -> KernelOperationGenesis | None: ...
     async def compare_and_append_kernel_transaction(
         self,
         session_id: str,
@@ -404,9 +406,9 @@ class SessionLog(Protocol):
         transaction: KernelTransaction,
     ) -> DurableAppendReceipt: ...
     async def read_kernel_transactions(
-        self, session_id: str, from_step_seq: int = 1
+        self, session_id: str, operation_id: str, from_step_seq: int = 1
     ) -> list[KernelTransactionEntry]: ...
-    async def kernel_transaction_head(self, session_id: str) -> str | None: ...
+    async def kernel_transaction_head(self, session_id: str, operation_id: str) -> str | None: ...
 
 
 class InMemorySessionLog:
@@ -415,6 +417,10 @@ class InMemorySessionLog:
         self._seq_counters: dict[str, int] = {}
         self._genesis_store: dict[str, tuple[int, KernelOperationGenesis]] = {}
         self._transaction_store: dict[str, list[KernelTransactionEntry]] = {}
+
+    @staticmethod
+    def _operation_key(session_id: str, operation_id: str) -> str:
+        return f"{session_id}\0{operation_id}"
 
     def _next_seq(self, session_id: str) -> int:
         seq = self._seq_counters.get(session_id, 0)
@@ -448,18 +454,21 @@ class InMemorySessionLog:
         self, session_id: str, genesis: KernelOperationGenesis
     ) -> KernelGenesisReceipt:
         verify_kernel_operation_genesis(genesis)
-        existing = self._genesis_store.get(session_id)
+        operation_key = self._operation_key(session_id, genesis["operation_id"])
+        existing = self._genesis_store.get(operation_key)
         if existing is not None:
             log_seq, existing_genesis = existing
             if existing_genesis["genesis_digest"] != genesis["genesis_digest"]:
                 raise KernelLogConflictError("session already has a different kernel operation genesis")
             return {"log_seq": log_seq, "genesis_digest": genesis["genesis_digest"]}
         log_seq = self._next_seq(session_id)
-        self._genesis_store[session_id] = (log_seq, genesis)
+        self._genesis_store[operation_key] = (log_seq, genesis)
         return {"log_seq": log_seq, "genesis_digest": genesis["genesis_digest"]}
 
-    async def read_kernel_genesis(self, session_id: str) -> KernelOperationGenesis | None:
-        existing = self._genesis_store.get(session_id)
+    async def read_kernel_genesis(
+        self, session_id: str, operation_id: str
+    ) -> KernelOperationGenesis | None:
+        existing = self._genesis_store.get(self._operation_key(session_id, operation_id))
         return existing[1] if existing else None
 
     async def compare_and_append_kernel_transaction(
@@ -469,33 +478,34 @@ class InMemorySessionLog:
         transaction: KernelTransaction,
     ) -> DurableAppendReceipt:
         verify_kernel_transaction(transaction)
-        genesis = await self.read_kernel_genesis(session_id)
+        operation_key = self._operation_key(session_id, transaction["operation_id"])
+        genesis = await self.read_kernel_genesis(session_id, transaction["operation_id"])
         if genesis is None:
             raise KernelLogIntegrityError("kernel transaction requires a durable genesis")
         if transaction["operation_id"] != genesis["operation_id"]:
             raise KernelLogIntegrityError("kernel transaction operation_id does not match genesis")
-        head = await self.kernel_transaction_head(session_id)
+        head = await self.kernel_transaction_head(session_id, transaction["operation_id"])
         if head != expected_transaction_head or transaction["previous_transaction_digest"] != head:
             raise KernelLogConflictError("kernel transaction head changed before compare-and-append")
         log_seq = self._next_seq(session_id)
-        entries = self._transaction_store.setdefault(session_id, [])
+        entries = self._transaction_store.setdefault(operation_key, [])
         entries.append({"log_seq": log_seq, "transaction": transaction})
         return {"log_seq": log_seq, "transaction_digest": transaction["transaction_digest"]}
 
     async def read_kernel_transactions(
-        self, session_id: str, from_step_seq: int = 1
+        self, session_id: str, operation_id: str, from_step_seq: int = 1
     ) -> list[KernelTransactionEntry]:
         return [
             entry
-            for entry in self._transaction_store.get(session_id, [])
+            for entry in self._transaction_store.get(self._operation_key(session_id, operation_id), [])
             if entry["transaction"]["step_seq"] >= from_step_seq
         ]
 
-    async def kernel_transaction_head(self, session_id: str) -> str | None:
-        transactions = self._transaction_store.get(session_id, [])
+    async def kernel_transaction_head(self, session_id: str, operation_id: str) -> str | None:
+        transactions = self._transaction_store.get(self._operation_key(session_id, operation_id), [])
         if transactions:
             return transactions[-1]["transaction"]["transaction_digest"]
-        genesis = await self.read_kernel_genesis(session_id)
+        genesis = await self.read_kernel_genesis(session_id, operation_id)
         return genesis["genesis_digest"] if genesis else None
 
 
@@ -563,6 +573,7 @@ class FileSessionLog:
                     record
                     for record in self._read_records(session_id)
                     if record.get("record_type") == "kernel_genesis"
+                    and record["genesis"]["operation_id"] == genesis["operation_id"]
                 ),
                 None,
             )
@@ -577,12 +588,15 @@ class FileSessionLog:
             )
             return {"log_seq": log_seq, "genesis_digest": genesis["genesis_digest"]}
 
-    async def read_kernel_genesis(self, session_id: str) -> KernelOperationGenesis | None:
+    async def read_kernel_genesis(
+        self, session_id: str, operation_id: str
+    ) -> KernelOperationGenesis | None:
         record = next(
             (
                 record
                 for record in self._read_records(session_id)
                 if record.get("record_type") == "kernel_genesis"
+                and record["genesis"]["operation_id"] == operation_id
             ),
             None,
         )
@@ -598,7 +612,12 @@ class FileSessionLog:
             verify_kernel_transaction(transaction)
             records = self._read_records(session_id)
             genesis_record = next(
-                (record for record in records if record.get("record_type") == "kernel_genesis"),
+                (
+                    record
+                    for record in records
+                    if record.get("record_type") == "kernel_genesis"
+                    and record["genesis"]["operation_id"] == transaction["operation_id"]
+                ),
                 None,
             )
             if genesis_record is None:
@@ -607,7 +626,10 @@ class FileSessionLog:
             if transaction["operation_id"] != genesis["operation_id"]:
                 raise KernelLogIntegrityError("kernel transaction operation_id does not match genesis")
             transactions = [
-                record for record in records if record.get("record_type") == "kernel_transaction"
+                record
+                for record in records
+                if record.get("record_type") == "kernel_transaction"
+                and record["transaction"]["operation_id"] == transaction["operation_id"]
             ]
             head = (
                 transactions[-1]["transaction"]["transaction_digest"]
@@ -628,7 +650,7 @@ class FileSessionLog:
             return {"log_seq": log_seq, "transaction_digest": transaction["transaction_digest"]}
 
     async def read_kernel_transactions(
-        self, session_id: str, from_step_seq: int = 1
+        self, session_id: str, operation_id: str, from_step_seq: int = 1
     ) -> list[KernelTransactionEntry]:
         return [
             {
@@ -637,18 +659,27 @@ class FileSessionLog:
             }
             for record in self._read_records(session_id)
             if record.get("record_type") == "kernel_transaction"
+            and record["transaction"]["operation_id"] == operation_id
             and int(record["transaction"]["step_seq"]) >= from_step_seq
         ]
 
-    async def kernel_transaction_head(self, session_id: str) -> str | None:
+    async def kernel_transaction_head(self, session_id: str, operation_id: str) -> str | None:
         records = self._read_records(session_id)
         transactions = [
-            record for record in records if record.get("record_type") == "kernel_transaction"
+            record
+            for record in records
+            if record.get("record_type") == "kernel_transaction"
+            and record["transaction"]["operation_id"] == operation_id
         ]
         if transactions:
             return transactions[-1]["transaction"]["transaction_digest"]
         genesis = next(
-            (record for record in records if record.get("record_type") == "kernel_genesis"),
+            (
+                record
+                for record in records
+                if record.get("record_type") == "kernel_genesis"
+                and record["genesis"]["operation_id"] == operation_id
+            ),
             None,
         )
         return genesis["genesis"]["genesis_digest"] if genesis else None
