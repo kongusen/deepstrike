@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::runtime::kernel::CancellationReason;
 use crate::runtime::session::SessionEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +52,14 @@ pub struct BudgetUsageRecord {
     pub rounds: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancellationRecord {
+    pub turn: u32,
+    pub operation_id: String,
+    pub reason: CancellationReason,
+    pub pending_call_ids: Vec<String>,
+}
+
 /// Aggregated kernel OS state derived from session log (audit view).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct OsSnapshot {
@@ -59,6 +68,7 @@ pub struct OsSnapshot {
     pub process_by_agent: Vec<ProcessRecord>,
     pub budget_exceeded: Vec<BudgetExceededRecord>,
     pub budget_usage_reported: Vec<BudgetUsageRecord>,
+    pub cancellations: Vec<CancellationRecord>,
     pub signals: Vec<SignalDeliveryDisposedRecord>,
     pub page_out_count: u32,
     pub page_in_count: u32,
@@ -159,6 +169,19 @@ pub fn rebuild_os_snapshot_from_events(events: &[SessionEvent]) -> OsSnapshot {
                     rounds: *rounds,
                 });
             }
+            SessionEvent::OperationCancelled {
+                turn,
+                operation_id,
+                reason,
+                pending_call_ids,
+            } => {
+                snap.cancellations.push(CancellationRecord {
+                    turn: *turn,
+                    operation_id: operation_id.clone(),
+                    reason: *reason,
+                    pending_call_ids: pending_call_ids.clone(),
+                });
+            }
             SessionEvent::SignalDeliveryDisposed {
                 turn,
                 operation_id,
@@ -252,15 +275,17 @@ mod tests {
         assert_eq!(snap.process_by_agent.len(), 1);
         assert_eq!(snap.process_by_agent[0].state, "joined");
         assert_eq!(snap.signals.len(), 1);
-        assert_eq!(snap.last_suspend.as_ref().map(|s| s.reason.as_str()), Some("ask_user"));
+        assert_eq!(
+            snap.last_suspend.as_ref().map(|s| s.reason.as_str()),
+            Some("ask_user")
+        );
     }
 
     fn load_fixture(name: &str) -> String {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/session")
             .join(name);
-        std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read {}: {}", path.display(), e))
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e))
     }
 
     fn assert_golden(events_file: &str, snapshot_file: &str) {
@@ -274,7 +299,10 @@ mod tests {
 
     #[test]
     fn golden_os_snapshot_spawn_lifecycle_fixture() {
-        assert_golden("events_spawn_lifecycle.json", "os_snapshot_spawn_lifecycle.json");
+        assert_golden(
+            "events_spawn_lifecycle.json",
+            "os_snapshot_spawn_lifecycle.json",
+        );
     }
 
     #[test]

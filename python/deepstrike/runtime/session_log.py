@@ -251,6 +251,14 @@ class BudgetUsageReportedEvent(TypedDict, total=False):
     rounds: int
 
 
+class OperationCancelledEvent(TypedDict, total=False):
+    kind: Literal["operation_cancelled"]
+    turn: int
+    operation_id: str
+    reason: Literal["user", "deadline", "lease_lost", "host_shutdown"]
+    pending_call_ids: list[str]
+
+
 class ContextRenewedEvent(TypedDict, total=False):
     kind: Literal["context_renewed"]
     turn: int
@@ -344,6 +352,7 @@ SessionEvent = (
     | SignalDeliveryDisposedEvent
     | BudgetExceededEvent
     | BudgetUsageReportedEvent
+    | OperationCancelledEvent
     | ContextRenewedEvent
     | MemoryWrittenEvent
     | MemoryQueriedEvent

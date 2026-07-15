@@ -8,6 +8,7 @@
   "process_by_agent": [],
   "budget_exceeded": [],
   "budget_usage_reported": [],
+  "cancellations": [],
   "signals": [],
   "page_out_count": 0,
   "page_in_count": 0,

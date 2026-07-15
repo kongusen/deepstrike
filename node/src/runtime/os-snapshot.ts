@@ -14,6 +14,7 @@ const KERNEL_KINDS = new Set([
   "signal_delivery_disposed",
   "budget_exceeded",
   "budget_usage_reported",
+  "operation_cancelled",
   "checkpoint_taken",
   "rollbacked",
   "agent_process_changed",
@@ -36,6 +37,12 @@ export interface OsSnapshot {
     tokens: number
     subagents: number
     rounds: number
+  }>
+  cancellations: Array<{
+    turn: number
+    operation_id: string
+    reason: "user" | "deadline" | "lease_lost" | "host_shutdown"
+    pending_call_ids: string[]
   }>
   signals: Array<{
     turn: number
@@ -63,6 +70,7 @@ export function rebuildOsSnapshotFromSessionEvents(
     processByAgent: [],
     budgetExceeded: [],
     budgetUsageReported: [],
+    cancellations: [],
     signals: [],
     pageOutCount: 0,
     pageInCount: 0,
@@ -128,6 +136,14 @@ export function rebuildOsSnapshotFromSessionEvents(
           tokens: event.tokens,
           subagents: event.subagents,
           rounds: event.rounds,
+        })
+        break
+      case "operation_cancelled":
+        snap.cancellations.push({
+          turn: event.turn,
+          operation_id: event.operation_id,
+          reason: event.reason,
+          pending_call_ids: event.pending_call_ids,
         })
         break
       case "signal_delivery_disposed":

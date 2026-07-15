@@ -10,6 +10,13 @@ struct RecordedTransition {
     step: KernelStep,
 }
 
+#[derive(Clone)]
+struct AcceptedCancellation {
+    reason: CancellationReason,
+    pending_call_ids: Vec<String>,
+    step: KernelStep,
+}
+
 struct ReplayWindow {
     entries: HashMap<String, RecordedTransition>,
     order: VecDeque<String>,
@@ -118,6 +125,7 @@ pub struct KernelRuntime {
     pending_memory_write: Option<crate::mm::memory::MemoryWriteRequest>,
     pending_memory_query: Option<(crate::mm::memory::MemoryQuery, usize)>,
     budget_usage_reported: bool,
+    accepted_cancellation: Option<AcceptedCancellation>,
 }
 
 impl KernelRuntime {
@@ -133,6 +141,7 @@ impl KernelRuntime {
             pending_memory_write: None,
             pending_memory_query: None,
             budget_usage_reported: false,
+            accepted_cancellation: None,
         }
     }
 
@@ -255,7 +264,14 @@ impl KernelRuntime {
         serde_json::from_value(value).map(|input| self.step(input))
     }
 
-    pub fn step(&mut self, input: KernelInput) -> KernelStep {
+    pub fn step(&mut self, mut input: KernelInput) -> KernelStep {
+        if let KernelInputEvent::CancelOperation {
+            pending_call_ids, ..
+        } = &mut input.event
+        {
+            pending_call_ids.sort();
+            pending_call_ids.dedup();
+        }
         let operation_id = input.operation_id.clone();
         let event_id = input.event_id.clone();
 
@@ -304,6 +320,55 @@ impl KernelRuntime {
                     event_id,
                     KernelFaultCode::OperationMismatch,
                     format!("input operation does not match bound operation {bound_operation_id}"),
+                    None,
+                );
+            }
+        }
+
+        if let KernelInputEvent::CancelOperation {
+            operation_id: cancelled_operation_id,
+            reason,
+            pending_call_ids,
+        } = &input.event
+        {
+            if cancelled_operation_id != &operation_id {
+                return self.fault_step(
+                    operation_id,
+                    event_id,
+                    KernelFaultCode::OperationMismatch,
+                    "cancel_operation identity does not match the input envelope".to_string(),
+                    None,
+                );
+            }
+            if cancelled_operation_id.is_empty()
+                || pending_call_ids.iter().any(|call_id| call_id.is_empty())
+            {
+                return self.fault_step(
+                    operation_id,
+                    event_id,
+                    KernelFaultCode::InvalidConfig,
+                    "cancel_operation requires non-empty operation and pending call identities"
+                        .to_string(),
+                    None,
+                );
+            }
+            if let Some(accepted) = &self.accepted_cancellation {
+                if accepted.reason == *reason && accepted.pending_call_ids == *pending_call_ids {
+                    let step = accepted.step.clone();
+                    self.recorded_events.insert(
+                        event_id,
+                        RecordedTransition {
+                            fingerprint,
+                            step: step.clone(),
+                        },
+                    );
+                    return step;
+                }
+                return self.fault_step(
+                    operation_id,
+                    event_id,
+                    KernelFaultCode::DuplicateEventConflict,
+                    "cancel_operation conflicts with the committed cancellation".to_string(),
                     None,
                 );
             }
@@ -442,6 +507,14 @@ impl KernelRuntime {
         }
 
         let step_seq = self.allocate_step_seq();
+        let cancellation_identity = match &input.event {
+            KernelInputEvent::CancelOperation {
+                reason,
+                pending_call_ids,
+                ..
+            } => Some((*reason, pending_call_ids.clone())),
+            _ => None,
+        };
         let mut step = self.dispatch(
             StepIdentity {
                 operation_id: operation_id.clone(),
@@ -474,13 +547,14 @@ impl KernelRuntime {
         if is_terminal && !self.budget_usage_reported {
             if let Some(reservation_id) = reservation_id {
                 let (tokens, subagents, rounds) = self.sm.local_budget_usage();
-                step.observations.push(KernelObservation::BudgetUsageReported {
-                    operation_id: operation_id.clone(),
-                    reservation_id,
-                    tokens,
-                    subagents,
-                    rounds,
-                });
+                step.observations
+                    .push(KernelObservation::BudgetUsageReported {
+                        operation_id: operation_id.clone(),
+                        reservation_id,
+                        tokens,
+                        subagents,
+                        rounds,
+                    });
                 self.budget_usage_reported = true;
             }
         }
@@ -504,6 +578,13 @@ impl KernelRuntime {
                     step: step.clone(),
                 },
             );
+        }
+        if let Some((reason, pending_call_ids)) = cancellation_identity {
+            self.accepted_cancellation = Some(AcceptedCancellation {
+                reason,
+                pending_call_ids,
+                step: step.clone(),
+            });
         }
         self.recorded_events.insert(
             event_id,
@@ -794,13 +875,15 @@ impl KernelRuntime {
                     .expect("validated memory result requires pending write");
                 let turn = self.sm.turn;
                 match error {
-                    Some(error) => self.sm.observations.push(
-                        KernelObservation::MemoryWriteFailed {
-                            turn,
-                            memory_id: memory.metadata.name,
-                            error,
-                        },
-                    ),
+                    Some(error) => {
+                        self.sm
+                            .observations
+                            .push(KernelObservation::MemoryWriteFailed {
+                                turn,
+                                memory_id: memory.metadata.name,
+                                error,
+                            })
+                    }
                     None => self.sm.observations.push(KernelObservation::MemoryWritten {
                         turn,
                         memory_id: memory.metadata.name,
@@ -826,13 +909,15 @@ impl KernelRuntime {
                     .expect("validated memory result requires pending query");
                 let turn = self.sm.turn;
                 match error {
-                    Some(error) => self.sm.observations.push(
-                        KernelObservation::MemoryQueryFailed {
-                            turn,
-                            query_context: query.current_context,
-                            error,
-                        },
-                    ),
+                    Some(error) => {
+                        self.sm
+                            .observations
+                            .push(KernelObservation::MemoryQueryFailed {
+                                turn,
+                                query_context: query.current_context,
+                                error,
+                            })
+                    }
                     None => {
                         self.sm.apply_page_in(&entries);
                         self.sm.observations.push(KernelObservation::MemoryQueried {
@@ -1126,7 +1211,13 @@ impl KernelRuntime {
                 LoopAction::QueryMemory { query, requested_k }
             }
             KernelInputEvent::CompleteRun => self.sm.feed(LoopEvent::Complete),
-            KernelInputEvent::Timeout => self.sm.feed(LoopEvent::Timeout),
+            KernelInputEvent::CancelOperation {
+                operation_id,
+                reason,
+                pending_call_ids,
+            } => self
+                .sm
+                .cancel_operation(operation_id, reason, pending_call_ids),
         };
         let action = self.sm.externalize_pending_host_effect(action);
         if matches!(action, LoopAction::AwaitingResume) {
@@ -1209,7 +1300,7 @@ impl KernelRuntime {
             | KernelInputEvent::SubmitWorkflowNodes { .. }
             | KernelInputEvent::DeliverSignal { .. }
             | KernelInputEvent::CompleteRun
-            | KernelInputEvent::Timeout => match self.lifecycle {
+            | KernelInputEvent::CancelOperation { .. } => match self.lifecycle {
                 KernelLifecycle::Running | KernelLifecycle::Suspended => {
                     Ok(LifecycleTransition::Stay)
                 }
@@ -1370,18 +1461,25 @@ fn validate_run_config(config: &RunConfig) -> Result<(), String> {
                 }
             }
         }
-        if reliability.provider_recovery_attempts.is_some_and(|value| value > 16) {
+        if reliability
+            .provider_recovery_attempts
+            .is_some_and(|value| value > 16)
+        {
             return Err("provider_recovery_attempts must be at most 16".to_string());
         }
-        if reliability.output_recovery_attempts.is_some_and(|value| value > 16) {
+        if reliability
+            .output_recovery_attempts
+            .is_some_and(|value| value > 16)
+        {
             return Err("output_recovery_attempts must be at most 16".to_string());
         }
-        if reliability.host_effect_retry_attempts.is_some_and(|value| value > 16) {
+        if reliability
+            .host_effect_retry_attempts
+            .is_some_and(|value| value > 16)
+        {
             return Err("host_effect_retry_attempts must be at most 16".to_string());
         }
-        let threshold = reliability
-            .spool_threshold_bytes
-            .unwrap_or(50 * 1024);
+        let threshold = reliability.spool_threshold_bytes.unwrap_or(50 * 1024);
         let preview = reliability.spool_preview_bytes.unwrap_or(2 * 1024);
         if threshold == 0 {
             return Err("spool_threshold_bytes must be greater than zero".to_string());

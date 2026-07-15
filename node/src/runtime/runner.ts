@@ -174,6 +174,8 @@ export interface KernelReliabilityOptions {
   spoolPreviewBytes?: number
 }
 
+export type OperationCancellationReason = "user" | "deadline" | "lease_lost" | "host_shutdown"
+
 export interface RuntimeOptions {
   provider: LLMProvider
   /** M4/G5: cumulative token cap for this run (the kernel's `max_total_tokens`). A workflow node's
@@ -396,10 +398,27 @@ export interface RuntimeOptions {
   enableDiagnosticsDashboard?: boolean
 }
 
+function pendingCallIds(action: KernelRunnerAction): string[] {
+  switch (action.kind) {
+    case "call_provider":
+      return [action.effectId]
+    case "execute_tool":
+      return action.calls.map(call => call.id)
+    case "request_approval":
+      return action.requests.map(request => request.callId)
+    case "spawn_workflow":
+      return action.nodes.map(node => String(node.agent_id ?? "")).filter(Boolean)
+    case "preempt_sub_agents":
+      return action.agentIds
+    default:
+      return "effectId" in action ? [action.effectId] : []
+  }
+}
+
 export class RuntimeRunner {
   private interrupted = false
-  /** #2-B-ii: aborts the in-flight provider stream when the run is interrupted/preempted. Recreated
-   *  per `execute`; `interrupt()` fires it so a Critical `InterruptNow` cancels the live LLM call. */
+  private cancellationReason: OperationCancellationReason | undefined
+  /** Aborts host-owned provider I/O before `cancel_operation` commits the kernel terminal fact. */
   private abortController: AbortController | null = null
   private activeKernel: KernelRuntimeInstance | null = null
   private activeGroupBudgetScope: GroupBudgetScope | undefined
@@ -1471,7 +1490,11 @@ export class RuntimeRunner {
     })
   }
 
-  interrupt(): void { this.interrupted = true; this.abortController?.abort() }
+  interrupt(reason: OperationCancellationReason = "user"): void {
+    this.interrupted = true
+    this.cancellationReason = reason
+    this.abortController?.abort(reason)
+  }
 
   /** Push a contextual note into the run's signal stream (the system-reminder channel): it drains at
    *  the next turn boundary, routes through the kernel attention policy, and — once acted on — renders
@@ -1825,6 +1848,7 @@ export class RuntimeRunner {
     runId: string = crypto.randomUUID(),
   ): AsyncIterable<StreamEvent> {
     this.interrupted = false
+    this.cancellationReason = undefined
     this.abortController = new AbortController()
     this.pendingObservations = []
     this.pendingPageOutArchives = []
@@ -2081,7 +2105,11 @@ export class RuntimeRunner {
       )
       this.nextArchiveStart = nextCompressedArchiveStart
       if (this.interrupted) {
-        action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
+        action = kernelAction(runtime, this.pendingObservations, {
+          kind: "cancel_operation",
+          reason: this.cancellationReason ?? "user",
+          pending_call_ids: pendingCallIds(action),
+        })
         break
       }
 
@@ -2094,13 +2122,7 @@ export class RuntimeRunner {
           const sigAction = await this.consumeInboundSignal(delivery, sig =>
             kernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(sig)))
           if (sigAction) action = sigAction
-          // I0a: a Critical-urgency signal carries user_abort intent. The kernel disposes it as
-          // InterruptNow (forces a Reason turn) but does NOT call abortController.abort() unless
-          // sub-agents are suspended — so the no-sub-agent path (e.g. the signal-injection bench
-          // scenario) wouldn't otherwise set `this.interrupted`, and the eventual run_terminal would
-          // report `reason: "error"` indistinguishable from a crash. Mark it here so the final
-          // classification in the run_terminal emit picks `user_abort`.
-          if (delivery.signal.urgency === "critical") this.interrupted = true
+          // A critical signal is a kernel attention/preemption decision, not operation cancellation.
         }
       }
       if (runtime.isTerminal()) break
@@ -2178,10 +2200,9 @@ export class RuntimeRunner {
           }
         } catch (err) {
           if (abortSignal?.aborted) {
-            // #2-B-ii: an aborted in-flight request surfaces as an AbortError — treat it as an
-            // interrupt (the post-stream `aborted` check below converts it to a clean
-            // timeout/UserAbort), not a crash or a provider error.
+            // External I/O is already stopped; the post-stream branch commits cancellation.
             this.interrupted = true
+            this.cancellationReason ??= "user"
           } else {
             // Reactive recovery is now a kernel decision. Forward the raw provider error and
             // dispatch whatever the kernel returns: `call_provider` to retry with a freshly
@@ -2206,11 +2227,13 @@ export class RuntimeRunner {
           }
         }
 
-        // #2-B-ii: stream aborted (preempt/interrupt) via the break path (provider yielded no error) —
-        // end the turn now with a timeout so the kernel terminates the run, rather than feeding the
-        // partial assistant output as a normal turn.
+        // Do not commit partial provider output after host cancellation.
         if (abortSignal?.aborted) {
-          action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
+          action = kernelAction(runtime, this.pendingObservations, {
+            kind: "cancel_operation",
+            reason: this.cancellationReason ?? "user",
+            pending_call_ids: [providerEffectId],
+          })
           break
         }
 
@@ -2727,7 +2750,7 @@ export class RuntimeRunner {
     // intent in the run_terminal reason. Without this, every interrupt-curtailed run reports
     // `reason: "error"` and the bench / observability layer can't distinguish preemption from a
     // genuine crash. Mirrors WASM/Python/Rust.
-    const status = result?.termination ?? (this.interrupted ? "user_abort" : "error")
+    const status = result?.termination ?? "error"
     const turnsUsed = result ? Math.max(1, result.turnsUsed) : runtime.turn() || 0
     const totalTokens = result?.totalTokensUsed ?? 0
 

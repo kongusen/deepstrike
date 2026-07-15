@@ -78,6 +78,13 @@ export type SessionEvent =
       subagents: number
       rounds: number
     }
+  | {
+      kind: "operation_cancelled"
+      turn: number
+      operation_id: string
+      reason: "user" | "deadline" | "lease_lost" | "host_shutdown"
+      pending_call_ids: string[]
+    }
   | { kind: "milestone_advanced"; turn: number; phase_id: string; capabilities_unlocked: string[] }
   | { kind: "milestone_blocked"; turn: number; phase_id: string; reason: string }
   | { kind: "checkpoint_taken"; turn: number; history_len: number }

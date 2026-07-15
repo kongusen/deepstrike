@@ -18,7 +18,7 @@ export { runLoop, LoopDriver, foldLoopState } from "./runtime/loop-driver.js"
 export type { LoopSpec, LoopOutcome } from "./runtime/loop-driver.js"
 export type { RunAgentOptions, RunFanoutOptions } from "./runtime/facade.js"
 export { RuntimeRunner, collectText } from "./runtime/runner.js"
-export type { RuntimeOptions, KernelReliabilityOptions } from "./runtime/runner.js"
+export type { RuntimeOptions, KernelReliabilityOptions, OperationCancellationReason } from "./runtime/runner.js"
 
 // ── Execution plane + session log (the defaults) ────────────────────────────
 export { LocalExecutionPlane } from "./runtime/execution-plane.js"

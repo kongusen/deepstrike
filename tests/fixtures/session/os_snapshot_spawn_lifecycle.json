@@ -15,6 +15,7 @@
   ],
   "budget_exceeded": [],
   "budget_usage_reported": [],
+  "cancellations": [],
   "signals": [
     {
       "turn": 2,

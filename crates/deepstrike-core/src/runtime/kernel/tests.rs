@@ -386,15 +386,24 @@ fn reliability_config_bounds_replay_windows_from_the_sdk_boundary() {
     }));
     assert!(configured.faults.is_empty());
 
-    runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled { enabled: true }));
-    runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled { enabled: false }));
-    runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled { enabled: true }));
+    runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled {
+        enabled: true,
+    }));
+    runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled {
+        enabled: false,
+    }));
+    runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled {
+        enabled: true,
+    }));
 
     assert_eq!(runtime.recorded_event_count(), 2);
     assert_eq!(runtime.state_machine().provider_recovery_attempt_limit, 0);
     assert_eq!(runtime.state_machine().output_recovery_attempt_limit, 1);
     assert_eq!(runtime.state_machine().host_effect_retry_attempt_limit, 2);
-    assert_eq!(runtime.state_machine().ctx.config.spool_threshold_bytes, 4096);
+    assert_eq!(
+        runtime.state_machine().ctx.config.spool_threshold_bytes,
+        4096
+    );
     assert_eq!(runtime.state_machine().ctx.config.spool_preview_bytes, 512);
 }
 
@@ -647,13 +656,11 @@ fn skill_activated_input_records_active_skill() {
         step.actions.is_empty(),
         "activation is config, not an action"
     );
-    assert!(
-        runtime
-            .state_machine()
-            .ctx
-            .active_skills
-            .contains_key("debug")
-    );
+    assert!(runtime
+        .state_machine()
+        .ctx
+        .active_skills
+        .contains_key("debug"));
     let filter = runtime
         .state_machine()
         .ctx
@@ -682,13 +689,11 @@ fn skill_deactivated_rewidens_toolset_and_unpins_knowledge() {
         key: Some("skill:debug".to_string()),
         pinned: false,
     }));
-    assert!(
-        runtime
-            .state_machine()
-            .ctx
-            .active_skill_tool_filter()
-            .is_some()
-    );
+    assert!(runtime
+        .state_machine()
+        .ctx
+        .active_skill_tool_filter()
+        .is_some());
 
     runtime.step(KernelInput::new(KernelInputEvent::SkillDeactivated {
         name: "debug".to_string(),
@@ -720,13 +725,11 @@ fn skill_lease_expires_after_turns_and_reactivation_renarrows() {
         name: "debug".to_string(),
         lease_turns: Some(1),
     }));
-    assert!(
-        runtime
-            .state_machine()
-            .ctx
-            .active_skill_tool_filter()
-            .is_some()
-    );
+    assert!(runtime
+        .state_machine()
+        .ctx
+        .active_skill_tool_filter()
+        .is_some());
 
     // One full tool round advances the turn; the sweep runs at the HEAD of the next loop
     // event, so the following provider turn is what actually expires the lease.
@@ -758,26 +761,22 @@ fn skill_lease_expires_after_turns_and_reactivation_renarrows() {
             .contains_key("debug"),
         "lease expired after the turn advanced"
     );
-    assert!(
-        runtime
-            .state_machine()
-            .ctx
-            .active_skill_tool_filter()
-            .is_none()
-    );
+    assert!(runtime
+        .state_machine()
+        .ctx
+        .active_skill_tool_filter()
+        .is_none());
 
     // Re-activation works and re-narrows.
     runtime.step(KernelInput::new(KernelInputEvent::SkillActivated {
         name: "debug".to_string(),
         lease_turns: None,
     }));
-    assert!(
-        runtime
-            .state_machine()
-            .ctx
-            .active_skill_tool_filter()
-            .is_some()
-    );
+    assert!(runtime
+        .state_machine()
+        .ctx
+        .active_skill_tool_filter()
+        .is_some());
 }
 
 #[test]
@@ -874,12 +873,10 @@ fn knowledge_budget_exceeded_observed_in_live_loop() {
             token_count: None,
         }],
     }));
-    assert!(
-        !step2
-            .observations
-            .iter()
-            .any(|o| matches!(o, KernelObservation::KnowledgeBudgetExceeded { .. }))
-    );
+    assert!(!step2
+        .observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::KnowledgeBudgetExceeded { .. })));
 }
 
 #[test]
@@ -1019,12 +1016,10 @@ fn critical_signal_preemption_is_committed_only_after_correlated_result() {
         } if agent_ids == &vec!["worker".to_string()] => effect_id.clone(),
         other => panic!("expected preempt_sub_agents action, got {other:?}"),
     };
-    assert!(
-        !requested
-            .observations
-            .iter()
-            .any(|o| matches!(o, KernelObservation::AgentPreempted { .. }))
-    );
+    assert!(!requested
+        .observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::AgentPreempted { .. })));
 
     let committed = runtime.step(KernelInput::new(KernelInputEvent::PreemptResult {
         effect_id,
@@ -1300,13 +1295,16 @@ fn complete_run_commits_host_driven_terminal_usage() {
         KernelInputEvent::CompleteRun,
     ));
 
-    assert!(matches!(
-        terminal.actions.as_slice(),
-        [KernelAction {
-            effect: KernelEffect::Done { result },
-            ..
-        }] if result.termination == crate::types::result::TerminationReason::Completed
-    ), "{terminal:?}");
+    assert!(
+        matches!(
+            terminal.actions.as_slice(),
+            [KernelAction {
+                effect: KernelEffect::Done { result },
+                ..
+            }] if result.termination == crate::types::result::TerminationReason::Completed
+        ),
+        "{terminal:?}"
+    );
     assert!(terminal.observations.iter().any(|observation| matches!(
         observation,
         KernelObservation::BudgetUsageReported {
@@ -1316,6 +1314,232 @@ fn complete_run_commits_host_driven_terminal_usage() {
         } if operation_id == "local-operation" && reservation_id == "workflow-reservation"
     )));
     assert!(runtime.is_terminal());
+}
+
+fn cancel_local_operation(
+    runtime: &mut KernelRuntime,
+    reason: CancellationReason,
+    pending_call_ids: Vec<String>,
+) -> KernelStep {
+    runtime.step(KernelInput::new(KernelInputEvent::CancelOperation {
+        operation_id: "local-operation".into(),
+        reason,
+        pending_call_ids,
+    }))
+}
+
+#[test]
+fn cancellation_is_terminal_correlated_and_idempotent() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            budget_grant: Some(BudgetGrant {
+                reservation_id: "cancel-reservation".into(),
+                tokens: Some(100),
+                subagents: None,
+                rounds: None,
+            }),
+            ..RunConfig::default()
+        },
+    }));
+    let started = runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("cancel me"),
+        run_spec: None,
+    }));
+    let pending_provider = started.actions[0].effect_id.clone();
+
+    let cancelled = cancel_local_operation(
+        &mut runtime,
+        CancellationReason::LeaseLost,
+        vec!["provider-call".into(), "provider-call".into()],
+    );
+
+    assert!(matches!(
+        cancelled.actions.as_slice(),
+        [KernelAction { effect: KernelEffect::Done { result }, .. }]
+            if result.termination == crate::types::result::TerminationReason::UserAbort
+    ));
+    assert!(cancelled.observations.iter().any(|observation| matches!(
+        observation,
+        KernelObservation::OperationCancelled {
+            operation_id,
+            reason: CancellationReason::LeaseLost,
+            pending_call_ids,
+            ..
+        } if operation_id == "local-operation" && pending_call_ids == &["provider-call"]
+    )));
+    assert_eq!(
+        cancelled
+            .observations
+            .iter()
+            .filter(|observation| matches!(
+                observation,
+                KernelObservation::BudgetUsageReported { .. }
+            ))
+            .count(),
+        1,
+    );
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Cancelled);
+
+    let repeated = cancel_local_operation(
+        &mut runtime,
+        CancellationReason::LeaseLost,
+        vec!["provider-call".into()],
+    );
+    assert_eq!(repeated.input_event_id, cancelled.input_event_id);
+    assert_eq!(repeated.step_seq, cancelled.step_seq);
+
+    let conflicting = cancel_local_operation(
+        &mut runtime,
+        CancellationReason::HostShutdown,
+        vec!["provider-call".into()],
+    );
+    assert!(matches!(
+        conflicting.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::DuplicateEventConflict,
+            ..
+        }]
+    ));
+
+    let late_provider = runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
+        effect_id: pending_provider,
+        message: crate::types::message::Message::assistant("too late"),
+        observed_input_tokens: None,
+        observed_output_tokens: None,
+        now_ms: None,
+        stop_reason: None,
+    }));
+    assert!(matches!(
+        late_provider.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::InvalidLifecycle,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn cancellation_cleans_tool_and_subagent_wait_states() {
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+    use crate::types::result::TerminationReason;
+
+    let mut tool_runtime = KernelRuntime::new(SchedulerBudget::default());
+    let tool_step = run_with_tool_call(&mut tool_runtime, "echo");
+    assert!(matches!(
+        tool_step.actions[0].effect,
+        KernelEffect::ExecuteTool { .. }
+    ));
+    let cancelled = cancel_local_operation(
+        &mut tool_runtime,
+        CancellationReason::Deadline,
+        vec!["call-1".into()],
+    );
+    assert!(matches!(
+        cancelled.actions[0].effect,
+        KernelEffect::Done { .. }
+    ));
+
+    let mut child_runtime = KernelRuntime::new(SchedulerBudget::default());
+    child_runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("parent"),
+        run_spec: None,
+    }));
+    child_runtime.step(KernelInput::new(KernelInputEvent::SpawnSubAgent {
+        spec: AgentRunSpec::new(
+            AgentIdentity::sub_agent("worker", "worker-session"),
+            AgentRole::Implement,
+            "work",
+        ),
+        parent_session_id: "parent-session".into(),
+    }));
+    let cancelled = cancel_local_operation(
+        &mut child_runtime,
+        CancellationReason::User,
+        vec!["worker".into()],
+    );
+    assert!(matches!(
+        cancelled.actions[0].effect,
+        KernelEffect::Done { .. }
+    ));
+    assert!(matches!(
+        child_runtime
+            .state_machine()
+            .task_table()
+            .get("worker")
+            .map(|task| task.state),
+        Some(crate::scheduler::tcb::TaskLifecycle::Done(
+            TerminationReason::UserAbort
+        ))
+    ));
+}
+
+#[test]
+fn cancellation_cleans_pending_workflow_spawn() {
+    use crate::orchestration::workflow::fanout_synthesize;
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("workflow"),
+        run_spec: None,
+    }));
+    let spawning = runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow {
+        spec: fanout_synthesize(
+            vec![RuntimeTask::new("a"), RuntimeTask::new("b")],
+            RuntimeTask::new("merge"),
+        ),
+        parent_session_id: "parent".into(),
+        resumed_completed: Vec::new(),
+        resumed_submissions: Vec::new(),
+        resumed_submission_bases: Vec::new(),
+        resumed_results: Vec::new(),
+    }));
+    let spawn_effect = spawning.actions[0].effect_id.clone();
+
+    let cancelled = cancel_local_operation(
+        &mut runtime,
+        CancellationReason::HostShutdown,
+        vec!["wf-node0".into(), "wf-node1".into()],
+    );
+    assert!(matches!(
+        cancelled.actions[0].effect,
+        KernelEffect::Done { .. }
+    ));
+
+    let late_spawn = runtime.step(KernelInput::new(KernelInputEvent::WorkflowSpawnResult {
+        effect_id: spawn_effect,
+        started_agent_ids: vec!["wf-node0".into(), "wf-node1".into()],
+        failures: Vec::new(),
+        error: None,
+    }));
+    assert!(matches!(
+        late_spawn.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::InvalidLifecycle,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn cancellation_rejects_an_inner_operation_mismatch() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("task"),
+        run_spec: None,
+    }));
+    let rejected = runtime.step(KernelInput::new(KernelInputEvent::CancelOperation {
+        operation_id: "different-operation".into(),
+        reason: CancellationReason::User,
+        pending_call_ids: Vec::new(),
+    }));
+    assert!(matches!(
+        rejected.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::OperationMismatch,
+            ..
+        }]
+    ));
+    assert!(!runtime.is_terminal());
 }
 
 #[test]
@@ -1408,10 +1632,10 @@ fn write_memory(runtime: &mut KernelRuntime, name: &str, content: &str) -> Kerne
         ..
     }) = requested.actions.first()
     {
-        assert!(!requested.observations.iter().any(|observation| matches!(
-            observation,
-            KernelObservation::MemoryWritten { .. }
-        )));
+        assert!(!requested
+            .observations
+            .iter()
+            .any(|observation| matches!(observation, KernelObservation::MemoryWritten { .. })));
         return runtime.step(KernelInput::new(KernelInputEvent::MemoryPersistResult {
             effect_id: effect_id.clone(),
             error: None,
@@ -1433,17 +1657,14 @@ fn memory_policy_validation_disabled_admits_forbidden_write() {
         max_name_length: None,
     }));
     let step = write_memory(&mut runtime, "note", "代码模式: foo");
-    assert!(
-        step.observations
-            .iter()
-            .any(|o| matches!(o, KernelObservation::MemoryWritten { .. }))
-    );
-    assert!(
-        !step
-            .observations
-            .iter()
-            .any(|o| matches!(o, KernelObservation::MemoryValidationFailed { .. }))
-    );
+    assert!(step
+        .observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::MemoryWritten { .. })));
+    assert!(!step
+        .observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::MemoryValidationFailed { .. })));
 }
 
 #[test]
@@ -1452,11 +1673,10 @@ fn default_runtime_accepts_content_hosts_have_not_forbidden() {
     // valid write passes; content judgment belongs to hosts/models, not the kernel.
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
     let step = write_memory(&mut runtime, "note", "代码模式: foo");
-    assert!(
-        step.observations
-            .iter()
-            .any(|o| matches!(o, KernelObservation::MemoryWritten { .. }))
-    );
+    assert!(step
+        .observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::MemoryWritten { .. })));
 }
 
 #[test]
@@ -1509,19 +1729,19 @@ fn memory_policy_clamps_retrieval_top_k() {
         other => panic!("expected query_memory action, got {other:?}"),
     };
     assert_eq!(requested_k, 3);
-    assert!(!step.observations.iter().any(|o| matches!(
-        o,
-        KernelObservation::MemoryQueried { .. }
-    )));
+    assert!(!step
+        .observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::MemoryQueried { .. })));
     let completed = runtime.step(KernelInput::new(KernelInputEvent::MemoryQueryResult {
         effect_id,
         entries: Vec::new(),
         error: None,
     }));
-    assert!(completed.observations.iter().any(|o| matches!(
-        o,
-        KernelObservation::MemoryQueried { requested_k: 3, .. }
-    )));
+    assert!(completed
+        .observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::MemoryQueried { requested_k: 3, .. })));
 }
 
 #[test]
@@ -1537,7 +1757,10 @@ fn default_runtime_uses_requested_top_k_verbatim() {
     assert!(matches!(
         step.actions.as_slice(),
         [KernelAction {
-            effect: KernelEffect::QueryMemory { requested_k: 50, .. },
+            effect: KernelEffect::QueryMemory {
+                requested_k: 50,
+                ..
+            },
             ..
         }]
     ));
@@ -1594,11 +1817,24 @@ fn large_result_spool_is_a_correlated_effect_before_provider_continues() {
         results: vec![ToolResult {
             call_id: "call-1".into(),
             output: crate::types::message::Content::Text("Z".repeat(60 * 1024)),
-            is_error: false, is_fatal: false, error_kind: None, token_count: None,
+            is_error: false,
+            is_fatal: false,
+            error_kind: None,
+            token_count: None,
         }],
     }));
     let effect_id = match requested.actions.as_slice() {
-        [KernelAction { effect_id, effect: KernelEffect::SpoolLargeResult { call_id, tool, output, .. }, .. }] => {
+        [KernelAction {
+            effect_id,
+            effect:
+                KernelEffect::SpoolLargeResult {
+                    call_id,
+                    tool,
+                    output,
+                    ..
+                },
+            ..
+        }] => {
             assert_eq!(call_id, "call-1");
             assert_eq!(tool, "echo");
             assert_eq!(output.len(), 60 * 1024);
@@ -1606,9 +1842,14 @@ fn large_result_spool_is_a_correlated_effect_before_provider_continues() {
         }
         other => panic!("expected spool effect, got {other:?}"),
     };
-    assert!(!requested.observations.iter().any(|o| matches!(o, KernelObservation::LargeResultSpooled { .. })));
+    assert!(!requested
+        .observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::LargeResultSpooled { .. })));
     let committed = runtime.step(KernelInput::new(KernelInputEvent::LargeResultSpoolResult {
-        effect_id, spool_ref: Some("spool://call-1".to_string()), error: None,
+        effect_id,
+        spool_ref: Some("spool://call-1".to_string()),
+        error: None,
     }));
     assert!(matches!(
         committed.actions.as_slice(),
@@ -1630,7 +1871,10 @@ fn failed_large_result_spool_is_observed_and_retried_without_success_fact() {
         results: vec![ToolResult {
             call_id: "call-1".into(),
             output: crate::types::message::Content::Text("Z".repeat(60 * 1024)),
-            is_error: false, is_fatal: false, error_kind: None, token_count: None,
+            is_error: false,
+            is_fatal: false,
+            error_kind: None,
+            token_count: None,
         }],
     }));
     let failed = runtime.step(KernelInput::new(KernelInputEvent::LargeResultSpoolResult {
@@ -1638,9 +1882,18 @@ fn failed_large_result_spool_is_observed_and_retried_without_success_fact() {
         spool_ref: None,
         error: Some("disk full".to_string()),
     }));
-    assert!(matches!(failed.actions.as_slice(), [KernelAction { effect: KernelEffect::SpoolLargeResult { .. }, .. }]));
+    assert!(matches!(
+        failed.actions.as_slice(),
+        [KernelAction {
+            effect: KernelEffect::SpoolLargeResult { .. },
+            ..
+        }]
+    ));
     assert!(failed.observations.iter().any(|o| matches!(o, KernelObservation::LargeResultSpoolFailed { error, .. } if error == "disk full")));
-    assert!(!failed.observations.iter().any(|o| matches!(o, KernelObservation::LargeResultSpooled { .. })));
+    assert!(!failed
+        .observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::LargeResultSpooled { .. })));
 }
 
 #[test]
@@ -1661,7 +1914,10 @@ fn host_effect_retry_limit_terminates_instead_of_spinning() {
         results: vec![ToolResult {
             call_id: "call-1".into(),
             output: crate::types::message::Content::Text("Z".repeat(60 * 1024)),
-            is_error: false, is_fatal: false, error_kind: None, token_count: None,
+            is_error: false,
+            is_fatal: false,
+            error_kind: None,
+            token_count: None,
         }],
     }));
 
@@ -1671,8 +1927,13 @@ fn host_effect_retry_limit_terminates_instead_of_spinning() {
         error: Some("disk full".to_string()),
     }));
 
-    assert!(matches!(exhausted.actions.as_slice(), [KernelAction { effect: KernelEffect::Done { result }, .. }] if result.termination == crate::types::result::TerminationReason::Error));
-    assert!(exhausted.observations.iter().any(|observation| matches!(observation, KernelObservation::LargeResultSpoolFailed { .. })));
+    assert!(
+        matches!(exhausted.actions.as_slice(), [KernelAction { effect: KernelEffect::Done { result }, .. }] if result.termination == crate::types::result::TerminationReason::Error)
+    );
+    assert!(exhausted.observations.iter().any(|observation| matches!(
+        observation,
+        KernelObservation::LargeResultSpoolFailed { .. }
+    )));
 }
 
 #[test]
@@ -1681,30 +1942,59 @@ fn multiple_large_results_commit_in_order_before_provider_continues() {
     run_with_tool_call(&mut runtime, "echo");
     let requested = runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
         effect_id: runtime.pending_tool_effect_id(),
-        results: ["call-1", "call-2"].into_iter().map(|call_id| ToolResult {
-            call_id: call_id.into(),
-            output: crate::types::message::Content::Text("Z".repeat(60 * 1024)),
-            is_error: false, is_fatal: false, error_kind: None, token_count: None,
-        }).collect(),
+        results: ["call-1", "call-2"]
+            .into_iter()
+            .map(|call_id| ToolResult {
+                call_id: call_id.into(),
+                output: crate::types::message::Content::Text("Z".repeat(60 * 1024)),
+                is_error: false,
+                is_fatal: false,
+                error_kind: None,
+                token_count: None,
+            })
+            .collect(),
     }));
     let first_effect_id = requested.actions[0].effect_id.clone();
-    assert!(matches!(&requested.actions[0].effect, KernelEffect::SpoolLargeResult { call_id, .. } if call_id == "call-1"));
+    assert!(
+        matches!(&requested.actions[0].effect, KernelEffect::SpoolLargeResult { call_id, .. } if call_id == "call-1")
+    );
     let second = runtime.step(KernelInput::new(KernelInputEvent::LargeResultSpoolResult {
-        effect_id: first_effect_id, spool_ref: Some("spool://call-1".to_string()), error: None,
+        effect_id: first_effect_id,
+        spool_ref: Some("spool://call-1".to_string()),
+        error: None,
     }));
     let second_effect_id = second.actions[0].effect_id.clone();
-    assert!(matches!(&second.actions[0].effect, KernelEffect::SpoolLargeResult { call_id, .. } if call_id == "call-2"));
+    assert!(
+        matches!(&second.actions[0].effect, KernelEffect::SpoolLargeResult { call_id, .. } if call_id == "call-2")
+    );
     let completed = runtime.step(KernelInput::new(KernelInputEvent::LargeResultSpoolResult {
-        effect_id: second_effect_id, spool_ref: Some("spool://call-2".to_string()), error: None,
+        effect_id: second_effect_id,
+        spool_ref: Some("spool://call-2".to_string()),
+        error: None,
     }));
-    assert!(matches!(completed.actions.as_slice(), [KernelAction { effect: KernelEffect::CallProvider { .. }, .. }]));
+    assert!(matches!(
+        completed.actions.as_slice(),
+        [KernelAction {
+            effect: KernelEffect::CallProvider { .. },
+            ..
+        }]
+    ));
 }
 
 fn runtime_with_page_out() -> KernelRuntime {
-    let mut runtime = KernelRuntime::new(SchedulerBudget { max_tokens: 100, ..SchedulerBudget::default() });
-    runtime.step(KernelInput::new(KernelInputEvent::StartRun { task: RuntimeTask::new("compact"), run_spec: None }));
+    let mut runtime = KernelRuntime::new(SchedulerBudget {
+        max_tokens: 100,
+        ..SchedulerBudget::default()
+    });
+    runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("compact"),
+        run_spec: None,
+    }));
     for index in 0..10 {
-        runtime.state_machine_mut().ctx.push_history(Message::user(format!("filler {index}")), 50);
+        runtime
+            .state_machine_mut()
+            .ctx
+            .push_history(Message::user(format!("filler {index}")), 50);
     }
     runtime
 }
@@ -1714,16 +2004,25 @@ fn page_out_archive_is_a_correlated_effect_with_no_pre_result_success_fact() {
     let mut runtime = runtime_with_page_out();
     let requested = runtime.step(KernelInput::new(KernelInputEvent::ForceCompact));
     let effect_id = match requested.actions.as_slice() {
-        [KernelAction { effect_id, effect: KernelEffect::ArchivePageOut { archived, tier, .. }, .. }] => {
+        [KernelAction {
+            effect_id,
+            effect: KernelEffect::ArchivePageOut { archived, tier, .. },
+            ..
+        }] => {
             assert!(!archived.is_empty());
             assert_eq!(tier, "semantic");
             effect_id.clone()
         }
         other => panic!("expected page-out archive effect, got {other:?}"),
     };
-    assert!(!requested.observations.iter().any(|o| matches!(o, KernelObservation::PageOutArchived { .. })));
+    assert!(!requested
+        .observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::PageOutArchived { .. })));
     let committed = runtime.step(KernelInput::new(KernelInputEvent::PageOutArchiveResult {
-        effect_id, archive_ref: Some("archive://batch-1".to_string()), error: None,
+        effect_id,
+        archive_ref: Some("archive://batch-1".to_string()),
+        error: None,
     }));
     assert!(committed.actions.is_empty());
     assert!(committed.observations.iter().any(|o| matches!(
@@ -1741,9 +2040,18 @@ fn failed_page_out_archive_is_observed_and_retried() {
         archive_ref: None,
         error: Some("archive unavailable".to_string()),
     }));
-    assert!(matches!(failed.actions.as_slice(), [KernelAction { effect: KernelEffect::ArchivePageOut { .. }, .. }]));
+    assert!(matches!(
+        failed.actions.as_slice(),
+        [KernelAction {
+            effect: KernelEffect::ArchivePageOut { .. },
+            ..
+        }]
+    ));
     assert!(failed.observations.iter().any(|o| matches!(o, KernelObservation::PageOutArchiveFailed { error, .. } if error == "archive unavailable")));
-    assert!(!failed.observations.iter().any(|o| matches!(o, KernelObservation::PageOutArchived { .. })));
+    assert!(!failed
+        .observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::PageOutArchived { .. })));
 }
 
 // ─── Governance gate ───────────────────────────────────────────────────
@@ -1965,12 +2273,10 @@ fn governance_ask_user_suspends_until_resume() {
             ..
         }] if requests.len() == 1 && requests[0].tool == "sensitive.read"
     ));
-    assert!(
-        !step
-            .observations
-            .iter()
-            .any(|o| matches!(o, KernelObservation::ToolGated { .. }))
-    );
+    assert!(!step
+        .observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::ToolGated { .. })));
     assert!(
         step.observations.iter().any(|o| matches!(
             o,
@@ -2095,12 +2401,10 @@ fn no_governance_policy_executes_all_tools() {
             ..
         }]
     ));
-    assert!(
-        !step
-            .observations
-            .iter()
-            .any(|o| matches!(o, KernelObservation::ToolGated { .. })),
-    );
+    assert!(!step
+        .observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::ToolGated { .. })),);
 }
 
 fn tool_ok(call_id: &str) -> ToolResult {
@@ -2449,12 +2753,10 @@ fn load_workflow_input_drives_dag_to_completion() {
     let parsed: KernelInputEvent = serde_json::from_str(&json).expect("deserialize");
 
     let step = runtime.step(KernelInput::new(parsed));
-    assert!(
-        !step
-            .observations
-            .iter()
-            .any(|o| matches!(o, KernelObservation::WorkflowBatchSpawned { .. }))
-    );
+    assert!(!step
+        .observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::WorkflowBatchSpawned { .. })));
     // First batch is an effect request; it is not a completed fact until the host result arrives.
     let (spawn_effect_id, batch) = match &step.actions[0] {
         KernelAction {
@@ -2554,12 +2856,10 @@ fn workflow_spawn_host_failure_reissues_effect_without_success_observation() {
             ..
         }]
     ));
-    assert!(
-        !failed
-            .observations
-            .iter()
-            .any(|o| matches!(o, KernelObservation::WorkflowBatchSpawned { .. }))
-    );
+    assert!(!failed
+        .observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::WorkflowBatchSpawned { .. })));
     assert!(failed.observations.iter().any(|o| matches!(
         o,
         KernelObservation::WorkflowSpawnFailed { error, .. }

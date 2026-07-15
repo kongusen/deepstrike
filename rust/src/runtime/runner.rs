@@ -1,5 +1,5 @@
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::runtime::sandboxed_skill::scan_skill_dir;
 use crate::runtime::skill_watcher::SkillWatcher;
@@ -8,8 +8,9 @@ use deepstrike_core::governance::quota::ResourceQuota;
 use deepstrike_core::memory::idle_pipeline::{IdleAction, IdleEvent, IdlePipeline, IdlePolicy};
 use deepstrike_core::mm::memory::{MemoryPolicy, MemoryQuery, MemoryRetrieval, MemoryWriteRequest};
 use deepstrike_core::runtime::kernel::{
-    KernelAction, KernelEffect, KernelInput, KernelInputEvent, KernelObservation,
-    KernelPressureAction, KernelReliabilityConfig, KernelRuntime, KernelStep, RunConfig,
+    CancellationReason, KernelAction, KernelEffect, KernelInput, KernelInputEvent,
+    KernelObservation, KernelPressureAction, KernelReliabilityConfig, KernelRuntime, KernelStep,
+    RunConfig,
 };
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::scheduler::policy::SchedulerBudget as KernelBudget;
@@ -22,7 +23,6 @@ use deepstrike_core::types::signal::{
 use deepstrike_core::types::task::RuntimeTask;
 use futures::StreamExt;
 
-use crate::{SignalDeliveryReceipt, SignalSource};
 use crate::governance::Governance;
 use crate::knowledge::KnowledgeSource;
 use crate::memory::{DreamResult, DreamStore};
@@ -34,7 +34,7 @@ use crate::runtime::execution_plane::{
     PermissionResponse, RunContext, ToolSuspendHandler,
 };
 use crate::runtime::os_profile::{
-    AttentionPolicy, GovernancePolicy, OsProfile, SchedulerBudget, assert_native_profile,
+    assert_native_profile, AttentionPolicy, GovernancePolicy, OsProfile, SchedulerBudget,
 };
 use crate::runtime::provider_replay::{peek_provider_replay, seed_provider_replay_from_events};
 use crate::runtime::replay::{
@@ -43,6 +43,7 @@ use crate::runtime::replay::{
 };
 use crate::runtime::session_log::{SessionEntry, SessionLog};
 use crate::{Error, Result};
+use crate::{SignalDeliveryReceipt, SignalSource};
 use deepstrike_core::context::task_state::TaskUpdate;
 use deepstrike_core::runtime::repair::repair_llm_completed;
 
@@ -194,6 +195,7 @@ pub struct RuntimeRunner {
     opts: RuntimeOptions,
     plane: Box<dyn ExecutionPlane>,
     interrupted: AtomicBool,
+    cancellation_reason: AtomicU8,
     active_kernel: std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<KernelRuntime>>>>,
     local_page_out_cache: std::sync::Mutex<Vec<Message>>,
 }
@@ -208,12 +210,19 @@ impl RuntimeRunner {
             opts,
             plane,
             interrupted: AtomicBool::new(false),
+            cancellation_reason: AtomicU8::new(0),
             active_kernel: std::sync::Mutex::new(None),
             local_page_out_cache: std::sync::Mutex::new(Vec::new()),
         }
     }
 
     pub fn interrupt(&self) {
+        self.interrupt_with_reason(CancellationReason::User);
+    }
+
+    pub fn interrupt_with_reason(&self, reason: CancellationReason) {
+        self.cancellation_reason
+            .store(cancellation_reason_code(reason), Ordering::Relaxed);
         self.interrupted.store(true, Ordering::Relaxed);
     }
 
@@ -251,10 +260,13 @@ impl RuntimeRunner {
         let (kernel, requested) = self.begin_memory_syscall(KernelInputEvent::WriteMemory {
             memory: memory.clone(),
         });
-        let persist_effect_id = requested.actions.iter().find_map(|action| match &action.effect {
-            KernelEffect::PersistMemory { .. } => Some(action.effect_id.clone()),
-            _ => None,
-        });
+        let persist_effect_id = requested
+            .actions
+            .iter()
+            .find_map(|action| match &action.effect {
+                KernelEffect::PersistMemory { .. } => Some(action.effect_id.clone()),
+                _ => None,
+            });
         let Some(effect_id) = persist_effect_id else {
             self.append_memory_syscall_observations(session_id, requested.observations)
                 .await;
@@ -295,12 +307,14 @@ impl RuntimeRunner {
             Ok(())
         }
         .await;
-        let completed = kernel.lock().unwrap().step(KernelInput::new(
-            KernelInputEvent::MemoryPersistResult {
-                effect_id,
-                error: io_result.as_ref().err().map(ToString::to_string),
-            },
-        ));
+        let completed =
+            kernel
+                .lock()
+                .unwrap()
+                .step(KernelInput::new(KernelInputEvent::MemoryPersistResult {
+                    effect_id,
+                    error: io_result.as_ref().err().map(ToString::to_string),
+                }));
         self.append_memory_syscall_observations(session_id, completed.observations)
             .await;
         io_result
@@ -322,10 +336,13 @@ impl RuntimeRunner {
         let (kernel, requested) = self.begin_memory_syscall(KernelInputEvent::QueryMemory {
             query: query.clone(),
         });
-        let query_effect_id = requested.actions.iter().find_map(|action| match &action.effect {
-            KernelEffect::QueryMemory { .. } => Some(action.effect_id.clone()),
-            _ => None,
-        });
+        let query_effect_id = requested
+            .actions
+            .iter()
+            .find_map(|action| match &action.effect {
+                KernelEffect::QueryMemory { .. } => Some(action.effect_id.clone()),
+                _ => None,
+            });
         let Some(effect_id) = query_effect_id else {
             self.append_memory_syscall_observations(session_id, requested.observations)
                 .await;
@@ -384,13 +401,15 @@ impl RuntimeRunner {
                 pinned: false,
             })
             .collect();
-        let completed = kernel.lock().unwrap().step(KernelInput::new(
-            KernelInputEvent::MemoryQueryResult {
-                effect_id,
-                entries,
-                error: None,
-            },
-        ));
+        let completed =
+            kernel
+                .lock()
+                .unwrap()
+                .step(KernelInput::new(KernelInputEvent::MemoryQueryResult {
+                    effect_id,
+                    entries,
+                    error: None,
+                }));
         self.append_memory_syscall_observations(session_id, completed.observations)
             .await;
         self.log_memory_retrieval_result(session_id, retrieval)
@@ -704,6 +723,7 @@ impl RuntimeRunner {
     ) -> impl futures::Stream<Item = Result<RunEvent>> + '_ {
         try_stream! {
             self.interrupted.store(false, Ordering::Relaxed);
+            self.cancellation_reason.store(0, Ordering::Relaxed);
 
             if let Some(ks) = &self.opts.knowledge_source {
                 ks.init().await?;
@@ -1071,7 +1091,11 @@ impl RuntimeRunner {
                     kernel_apply(
                         &mut kernel,
                         &mut pending_observations,
-                        KernelInputEvent::Timeout,
+                        KernelInputEvent::CancelOperation {
+                            operation_id: "local-operation".into(),
+                            reason: cancellation_reason_from_code(self.cancellation_reason.load(Ordering::Relaxed)),
+                            pending_call_ids: pending_call_ids(&action),
+                        },
                     );
                     break;
                 }
@@ -1159,11 +1183,7 @@ impl RuntimeRunner {
                         if let Some(sig_action) = step.actions.pop() {
                             action = sig_action;
                         }
-                        // I0a: a Critical signal carries user_abort intent — mark it so the final
-                        // run_terminal classification reports `user_abort`, not a generic error.
-                        if urgency == Urgency::Critical {
-                            self.interrupted.store(true, Ordering::Relaxed);
-                        }
+                        // Critical attention/preemption is distinct from operation cancellation.
                     }
                 }
                 if kernel.lock().unwrap().is_terminal() {
@@ -1245,6 +1265,9 @@ impl RuntimeRunner {
                         };
 
                         while let Some(evt) = provider_stream.next().await {
+                            if self.interrupted.load(Ordering::Relaxed) {
+                                break;
+                            }
                             match evt? {
                                 StreamEvent::TextDelta { delta } => {
                                     final_text.push_str(&delta);
@@ -1281,6 +1304,19 @@ impl RuntimeRunner {
                                 }
                                 StreamEvent::Done => {}
                             }
+                        }
+
+                        if self.interrupted.load(Ordering::Relaxed) {
+                            action = kernel_action(
+                                &mut kernel,
+                                &mut pending_observations,
+                                KernelInputEvent::CancelOperation {
+                                    operation_id: "local-operation".into(),
+                                    reason: cancellation_reason_from_code(self.cancellation_reason.load(Ordering::Relaxed)),
+                                    pending_call_ids: vec![provider_effect_id],
+                                },
+                            );
+                            break;
                         }
 
                         let mut assistant = Message {
@@ -1893,11 +1929,7 @@ impl RuntimeRunner {
                     result.turns_used.max(1),
                     result.total_tokens_used,
                 ),
-                _ => (
-                    if self.interrupted.load(Ordering::Relaxed) { "user_abort".to_string() } else { "error".to_string() },
-                    kernel.lock().unwrap().turn().max(1),
-                    0,
-                ),
+                _ => ("error".to_string(), kernel.lock().unwrap().turn().max(1), 0),
             };
 
             self.log(
@@ -2009,9 +2041,15 @@ impl RuntimeRunner {
                     {
                         next_archive_start = compressed_seq + 1;
                     }
-
                 }
-                KernelObservation::PageOutArchived { turn, action, summary, tier, message_count, archive_ref } => {
+                KernelObservation::PageOutArchived {
+                    turn,
+                    action,
+                    summary,
+                    tier,
+                    message_count,
+                    archive_ref,
+                } => {
                     self.log(
                         session_id,
                         SessionEvent::PageOut {
@@ -2022,7 +2060,8 @@ impl RuntimeRunner {
                             message_count,
                             archive_ref,
                         },
-                    ).await;
+                    )
+                    .await;
                 }
                 KernelObservation::PageOutArchiveFailed { .. } => {}
                 KernelObservation::Rollbacked {
@@ -2197,6 +2236,23 @@ impl RuntimeRunner {
                             tokens,
                             subagents,
                             rounds,
+                        },
+                    )
+                    .await;
+                }
+                KernelObservation::OperationCancelled {
+                    turn,
+                    operation_id,
+                    reason,
+                    pending_call_ids,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::OperationCancelled {
+                            turn,
+                            operation_id,
+                            reason,
+                            pending_call_ids,
                         },
                     )
                     .await;
@@ -2495,6 +2551,43 @@ fn merge_extensions(
         (Some(b), None) => Some(b.clone()),
         (None, Some(o)) => Some(o.clone()),
         (None, None) => None,
+    }
+}
+
+fn cancellation_reason_code(reason: CancellationReason) -> u8 {
+    match reason {
+        CancellationReason::User => 0,
+        CancellationReason::Deadline => 1,
+        CancellationReason::LeaseLost => 2,
+        CancellationReason::HostShutdown => 3,
+    }
+}
+
+fn cancellation_reason_from_code(code: u8) -> CancellationReason {
+    match code {
+        1 => CancellationReason::Deadline,
+        2 => CancellationReason::LeaseLost,
+        3 => CancellationReason::HostShutdown,
+        _ => CancellationReason::User,
+    }
+}
+
+fn pending_call_ids(action: &KernelAction) -> Vec<String> {
+    match &action.effect {
+        KernelEffect::CallProvider { .. } => vec![action.effect_id.clone()],
+        KernelEffect::ExecuteTool { calls } => {
+            calls.iter().map(|call| call.id.to_string()).collect()
+        }
+        KernelEffect::RequestApproval { requests } => requests
+            .iter()
+            .map(|request| request.call_id.clone())
+            .collect(),
+        KernelEffect::SpawnWorkflow { nodes, .. } => {
+            nodes.iter().map(|node| node.agent_id.clone()).collect()
+        }
+        KernelEffect::PreemptSubAgents { agent_ids, .. } => agent_ids.clone(),
+        KernelEffect::Done { .. } => Vec::new(),
+        _ => vec![action.effect_id.clone()],
     }
 }
 

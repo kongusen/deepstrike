@@ -354,12 +354,17 @@ def _step_input(runtime: Any, event: dict[str, Any]) -> str:
     state = (f"python-operation-{uuid.uuid4()}", 1)
   operation_id, sequence = state
   _wire_states[key] = (operation_id, sequence + 1)
+  correlated_event = (
+    {**event, "operation_id": operation_id}
+    if event.get("kind") == "cancel_operation"
+    else event
+  )
   return json.dumps({
     "version": KERNEL_ABI_VERSION,
     "operation_id": operation_id,
     "event_id": f"{operation_id}-event-{sequence}",
     "observed_at_ms": int(time.time() * 1000),
-    "event": event,
+    "event": correlated_event,
   })
 
 

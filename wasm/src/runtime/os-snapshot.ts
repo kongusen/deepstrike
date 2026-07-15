@@ -13,6 +13,8 @@ const KERNEL_KINDS = new Set([
   "tool_gated",
   "signal_delivery_disposed",
   "budget_exceeded",
+  "budget_usage_reported",
+  "operation_cancelled",
   "checkpoint_taken",
   "rollbacked",
   "agent_process_changed",
@@ -24,7 +26,9 @@ export interface OsSnapshot {
   lastSuspend?: { turn: number; reason: string; pending_calls: string[] }
   lastResumedTurn?: number
   processByAgent: Array<{ turn: number; agent_id: string; parent_session_id: string; state: string }>
-  budgetExceeded: Array<{ turn: number; budget: string }>
+  budgetExceeded: Array<{ turn: number; operation_id: string; reservation_id?: string; budget: string }>
+  budgetUsageReported: Array<{ turn: number; operation_id: string; reservation_id: string; tokens: number; subagents: number; rounds: number }>
+  cancellations: Array<{ turn: number; operation_id: string; reason: "user" | "deadline" | "lease_lost" | "host_shutdown"; pending_call_ids: string[] }>
   signals: Array<{
     turn: number
     operation_id: string
@@ -46,6 +50,8 @@ export function rebuildOsSnapshotFromSessionEvents(
   const snap: OsSnapshot = {
     processByAgent: [],
     budgetExceeded: [],
+    budgetUsageReported: [],
+    cancellations: [],
     signals: [],
     pageOutCount: 0,
     pageInCount: 0,
@@ -88,7 +94,13 @@ export function rebuildOsSnapshotFromSessionEvents(
         break
       }
       case "budget_exceeded":
-        snap.budgetExceeded.push({ turn: event.turn, budget: event.budget })
+        snap.budgetExceeded.push({ turn: event.turn, operation_id: event.operation_id, ...(event.reservation_id ? { reservation_id: event.reservation_id } : {}), budget: event.budget })
+        break
+      case "budget_usage_reported":
+        snap.budgetUsageReported.push({ turn: event.turn, operation_id: event.operation_id, reservation_id: event.reservation_id, tokens: event.tokens, subagents: event.subagents, rounds: event.rounds })
+        break
+      case "operation_cancelled":
+        snap.cancellations.push({ turn: event.turn, operation_id: event.operation_id, reason: event.reason, pending_call_ids: event.pending_call_ids })
         break
       case "signal_delivery_disposed":
         snap.signals.push({

@@ -253,8 +253,22 @@ export interface RuntimeOptions {
   resultSpool?: LargeResultSpool
 }
 
+export type OperationCancellationReason = "user" | "deadline" | "lease_lost" | "host_shutdown"
+
+function pendingCallIds(action: KernelRunnerAction): string[] {
+  switch (action.kind) {
+    case "call_provider": return [action.effectId]
+    case "execute_tool": return action.calls.map(call => call.id)
+    case "request_approval": return action.requests.map(request => request.callId)
+    case "spawn_workflow": return action.nodes.map(node => String(node.agent_id ?? "")).filter(Boolean)
+    case "preempt_sub_agents": return action.agentIds
+    default: return "effectId" in action ? [action.effectId] : []
+  }
+}
+
 export class RuntimeRunner {
   private interrupted = false
+  private cancellationReason: OperationCancellationReason | undefined
   /** #2-B-ii: aborts the in-flight provider stream on interrupt/preempt. Recreated per `execute`. */
   private abortController: AbortController | null = null
   private pendingObservations: KernelObservation[] = []
@@ -282,7 +296,11 @@ export class RuntimeRunner {
 
   get hostOptions(): RuntimeOptions { return this.opts }
 
-  interrupt(): void { this.interrupted = true; this.abortController?.abort() }
+  interrupt(reason: OperationCancellationReason = "user"): void {
+    this.interrupted = true
+    this.cancellationReason = reason
+    this.abortController?.abort(reason)
+  }
 
   /** Push a contextual note into the run's signal stream (the system-reminder channel): it drains at
    *  the next turn boundary, routes through the kernel attention policy, and — once acted on — renders
@@ -645,6 +663,7 @@ export class RuntimeRunner {
     resumeMidRun = false,
   ): AsyncIterable<StreamEvent> {
     this.interrupted = false
+    this.cancellationReason = undefined
     this.abortController = new AbortController()
     this.pendingObservations = []
     this.pendingPageOutArchives = []
@@ -832,7 +851,11 @@ export class RuntimeRunner {
     while (!runtime.isTerminal()) {
       nextCompressedArchiveStart = await this.appendObservations(sessionId, runtime, nextCompressedArchiveStart)
       if (this.interrupted) {
-        action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
+        action = kernelAction(runtime, this.pendingObservations, {
+          kind: "cancel_operation",
+          reason: this.cancellationReason ?? "user",
+          pending_call_ids: pendingCallIds(action),
+        })
         break
       }
 
@@ -842,8 +865,7 @@ export class RuntimeRunner {
           const sigAction = await this.consumeInboundSignal(delivery, claimed =>
             kernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(claimed)))
           if (sigAction) action = sigAction
-          // I0a: Critical signal carries user_abort intent; see Node runner for full rationale.
-          if (delivery.signal.urgency === "critical") this.interrupted = true
+          // Critical attention/preemption is distinct from operation cancellation.
         }
       }
       if (runtime.isTerminal()) break
@@ -914,6 +936,7 @@ export class RuntimeRunner {
             // interrupt (the post-stream `aborted` check below converts it to a clean
             // timeout/UserAbort), not a crash or a provider error.
             this.interrupted = true
+            this.cancellationReason ??= "user"
           } else {
             // Reactive recovery is now a kernel decision. Forward the raw provider error and
             // dispatch whatever the kernel returns: `call_provider` to retry with a freshly
@@ -939,7 +962,11 @@ export class RuntimeRunner {
 
         // #2-B-ii: stream aborted (preempt/interrupt) via the break path — end the turn now.
         if (abortSignal?.aborted) {
-          action = kernelAction(runtime, this.pendingObservations, { kind: "timeout" })
+          action = kernelAction(runtime, this.pendingObservations, {
+            kind: "cancel_operation",
+            reason: this.cancellationReason ?? "user",
+            pending_call_ids: [providerEffectId],
+          })
           break
         }
 
@@ -1341,7 +1368,7 @@ export class RuntimeRunner {
 
     const result = action.kind === "done" ? action.result : undefined
     // I0a: preserve preempt intent when loop exits without clean kernel-done (see Node runner for full rationale).
-    const status = result?.termination ?? (this.interrupted ? "user_abort" : "error")
+    const status = result?.termination ?? "error"
     const turnsUsed = result ? Math.max(1, result.turnsUsed) : runtime.turn() || 0
     const totalTokens = result?.totalTokensUsed ?? 0
 
@@ -1657,6 +1684,7 @@ export class RuntimeRunner {
    */
   private async bootstrapWorkflowKernel(sessionId: string, spec: WorkflowSpec): Promise<KernelRuntimeHandle> {
     this.interrupted = false
+    this.cancellationReason = undefined
     this.pendingObservations = []
     this.pendingPageOutArchives = []
     this.activePageOutArchive = undefined

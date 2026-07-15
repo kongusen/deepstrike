@@ -105,7 +105,12 @@ export interface KernelObservation {
   disposition?: string
   queue_depth?: number
   budget?: string
+  reservation_id?: string
+  tokens?: number
+  subagents?: number
+  rounds?: number
   pending_calls?: string[]
+  pending_call_ids?: string[]
   approved?: string[]
   denied?: string[]
   original_size?: number
@@ -398,12 +403,15 @@ function stepInput(runtime: KernelRuntimeHandle, event: Record<string, unknown>)
     state = { operationId: `wasm-operation-${nextOperationSequence++}`, nextEventSequence: 1 }
     kernelWireStates.set(runtime, state)
   }
+  const correlatedEvent = event.kind === "cancel_operation"
+    ? { ...event, operation_id: state.operationId }
+    : event
   return JSON.stringify({
     version: KERNEL_ABI_VERSION,
     operation_id: state.operationId,
     event_id: `${state.operationId}-event-${state.nextEventSequence++}`,
     observed_at_ms: Date.now(),
-    event,
+    event: correlatedEvent,
   })
 }
 

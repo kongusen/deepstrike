@@ -147,10 +147,17 @@ export class KernelRuntime {
       case "tool_results":
         actions.push(this.effect("call_provider", { context: { systemText: "", turns: [] }, tools: [] }))
         break
-      case "timeout":
+      case "cancel_operation":
         this.terminal = true
+        observations.push({
+          kind: "operation_cancelled",
+          turn: this.turn(),
+          operation_id: event.operation_id,
+          reason: event.reason,
+          pending_call_ids: event.pending_call_ids ?? [],
+        })
         actions.push(this.effect("done", {
-          result: { turns_used: this.turn(), total_tokens_used: 0, termination: "timeout" },
+          result: { turns_used: this.turn(), total_tokens_used: 0, termination: "user_abort" },
         }))
         break
       case "spawn_sub_agent":

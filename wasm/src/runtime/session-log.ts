@@ -63,7 +63,9 @@ export type SessionEvent =
       disposition: string
       queue_depth: number
     }
-  | { kind: "budget_exceeded"; turn: number; budget: string }
+  | { kind: "budget_exceeded"; turn: number; operation_id: string; reservation_id?: string; budget: string }
+  | { kind: "budget_usage_reported"; turn: number; operation_id: string; reservation_id: string; tokens: number; subagents: number; rounds: number }
+  | { kind: "operation_cancelled"; turn: number; operation_id: string; reason: "user" | "deadline" | "lease_lost" | "host_shutdown"; pending_call_ids: string[] }
   | { kind: "milestone_advanced"; turn: number; phase_id: string; capabilities_unlocked: string[] }
   | { kind: "milestone_blocked"; turn: number; phase_id: string; reason: string }
   | { kind: "checkpoint_taken"; turn: number; history_len: number }

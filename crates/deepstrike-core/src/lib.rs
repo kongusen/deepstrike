@@ -44,16 +44,16 @@ pub use mm::{
     MemoryTierHint, PageInEntry, Residency,
 };
 pub use proc::{AgentProcess, ProcessState};
+pub use runtime::session::SessionEvent;
+pub use runtime::{
+    category_for_kind, primitive_for_kind, rebuild_os_snapshot_from_events,
+    reconstruct_messages_with_fallback, CancellationReason, KernelAction, KernelEventCategory,
+    KernelInput, KernelInputEvent, KernelObservation, KernelPressureAction, KernelRuntime,
+    KernelStep, OsSnapshot, Primitive, KERNEL_ABI_VERSION,
+};
 pub use scheduler::entropy::{EntropySample, EntropyTracker, EntropyWatchConfig};
 pub use scheduler::tcb::{BudgetLedger, TaskId, TaskLifecycle, TaskTable, Tcb, WaitReason};
 pub use syscall::{Disposition, Syscall};
-pub use runtime::session::SessionEvent;
-pub use runtime::{
-    category_for_kind, primitive_for_kind, reconstruct_messages_with_fallback,
-    rebuild_os_snapshot_from_events, KernelEventCategory,
-    Primitive, KERNEL_ABI_VERSION, KernelAction, KernelInput, OsSnapshot,
-    KernelInputEvent, KernelObservation, KernelPressureAction, KernelRuntime, KernelStep,
-};
 pub use types::agent::{
     AgentCapabilityFilter, AgentIdentity, AgentIsolation, AgentRole, AgentRunSpec,
     ContextInheritance, IsolationManifest, LoopRoundSpec,

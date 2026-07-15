@@ -135,6 +135,7 @@ export interface KernelObservation {
   rounds?: number
   // Phase 2: suspended observation — loop suspended awaiting external resolution.
   pending_calls?: string[]
+  pending_call_ids?: string[]
   // Phase 2: resumed observation — loop resumed with approved/denied calls.
   approved?: string[]
   denied?: string[]
@@ -561,12 +562,15 @@ function stepInput(runtime: KernelRuntimeHandle, event: Record<string, unknown>)
     }
     kernelWireStates.set(runtime, state)
   }
+  const correlatedEvent = event.kind === "cancel_operation"
+    ? { ...event, operation_id: state.operationId }
+    : event
   return JSON.stringify({
     version: KERNEL_ABI_VERSION,
     operation_id: state.operationId,
     event_id: `${state.operationId}-event-${state.nextEventSequence++}`,
     observed_at_ms: Date.now(),
-    event,
+    event: correlatedEvent,
   })
 }
 

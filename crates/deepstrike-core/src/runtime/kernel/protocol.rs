@@ -224,6 +224,15 @@ pub struct BudgetGrant {
     pub rounds: Option<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancellationReason {
+    User,
+    Deadline,
+    LeaseLost,
+    HostShutdown,
+}
+
 /// Build a [`GovernancePipeline`](crate::governance::pipeline::GovernancePipeline) from the ABI policy
 /// fields. Shared by the `LoadGovernancePolicy` event and the `ConfigureRun` bundle so the two can never
 /// drift in how they interpret rules / vetoes / rate-limits / constraints.
@@ -647,7 +656,14 @@ pub enum KernelInputEvent {
     /// after its kernel-owned work has completed. This supersedes any pending provider effect and
     /// produces the ordinary `done` effect and terminal usage report.
     CompleteRun,
-    Timeout,
+    /// Host cancellation fact. The host has already stopped external I/O; the kernel commits the
+    /// deterministic terminal transition and clears every pending effect/wait state.
+    CancelOperation {
+        operation_id: String,
+        reason: CancellationReason,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pending_call_ids: Vec<String>,
+    },
 }
 
 fn default_stale_days() -> u32 {
@@ -1111,6 +1127,14 @@ pub enum KernelObservation {
         tokens: u64,
         subagents: u32,
         rounds: u32,
+    },
+    /// A host cancellation was committed. Emitted exactly once by the accepted cancellation step.
+    OperationCancelled {
+        turn: u32,
+        operation_id: String,
+        reason: CancellationReason,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pending_call_ids: Vec<String>,
     },
     /// Loop entered `Suspended` state (awaiting human approval or sub-agent).
     Suspended {

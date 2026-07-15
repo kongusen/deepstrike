@@ -186,6 +186,14 @@ def kernel_observation_to_session_event(
             "subagents": obs.get("subagents") or 0,
             "rounds": obs.get("rounds") or 0,
         }
+    if kind == "operation_cancelled":
+        return {
+            "kind": "operation_cancelled",
+            "turn": t,
+            "operation_id": obs.get("operation_id") or "",
+            "reason": obs.get("reason") or "user",
+            "pending_call_ids": obs.get("pending_call_ids") or [],
+        }
     if kind == "suspended":
         return {
             "kind": "suspended",

@@ -362,6 +362,7 @@ pub struct LoopStateMachine {
 
 mod signal;
 mod capability;
+mod cancellation;
 mod gate;
 mod eviction;
 mod process;

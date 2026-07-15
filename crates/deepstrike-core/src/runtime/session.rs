@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-
+use crate::runtime::kernel::CancellationReason;
 use crate::types::message::{Message, ToolCall, ToolResult};
 
 /// Provider-native replay payload persisted in `llm_completed` for wake/preload recovery.
@@ -213,6 +213,14 @@ pub enum SessionEvent {
         subagents: u32,
         rounds: u32,
     },
+    /// Host-owned external I/O was stopped and the correlated operation cancelled.
+    OperationCancelled {
+        turn: u32,
+        operation_id: String,
+        reason: CancellationReason,
+        #[serde(default)]
+        pending_call_ids: Vec<String>,
+    },
     /// Checkpoint taken at the start of a turn transaction (before LLM call).
     CheckpointTaken {
         turn: u32,
@@ -326,6 +334,7 @@ impl SessionEvent {
             Self::SignalDeliveryDisposed { .. } => "signal_delivery_disposed",
             Self::BudgetExceeded { .. } => "budget_exceeded",
             Self::BudgetUsageReported { .. } => "budget_usage_reported",
+            Self::OperationCancelled { .. } => "operation_cancelled",
             Self::CheckpointTaken { .. } => "checkpoint_taken",
             Self::EntropySample { .. } => "entropy_sample",
             Self::EntropyAlert { .. } => "entropy_alert",
@@ -356,6 +365,7 @@ impl SessionEvent {
                 | Self::SignalDeliveryDisposed { .. }
                 | Self::BudgetExceeded { .. }
                 | Self::BudgetUsageReported { .. }
+                | Self::OperationCancelled { .. }
                 | Self::CheckpointTaken { .. }
                 | Self::EntropySample { .. }
                 | Self::EntropyAlert { .. }

@@ -50,4 +50,29 @@ describe("#2-B-ii interrupt aborts the in-flight stream", () => {
     expect(provider.received?.aborted).toBe(true)
     expect(count).toBeLessThan(1000)
   })
+
+  it.each(["user", "deadline", "lease_lost", "host_shutdown"] as const)(
+    "commits the %s cancellation reason and pending provider call",
+    async reason => {
+      const provider = new LongStreamProvider()
+      const sessionLog = new InMemorySessionLog()
+      const runner = new RuntimeRunner({
+        provider,
+        sessionLog,
+        executionPlane: new LocalExecutionPlane(),
+        maxTokens: 8000,
+        maxTurns: 3,
+      } as never)
+
+      for await (const evt of runner.run({ sessionId: `cancel-${reason}`, goal: "cancel me" })) {
+        if (evt.type === "text_delta") runner.interrupt(reason)
+      }
+
+      const cancellation = (await sessionLog.read(`cancel-${reason}`))
+        .map(entry => entry.event)
+        .find(event => event.kind === "operation_cancelled")
+      expect(cancellation).toMatchObject({ kind: "operation_cancelled", reason })
+      expect(cancellation && "pending_call_ids" in cancellation ? cancellation.pending_call_ids : []).toHaveLength(1)
+    },
+  )
 })

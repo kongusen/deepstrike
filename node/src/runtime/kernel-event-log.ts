@@ -176,6 +176,14 @@ export function kernelObservationToSessionEvent(
         subagents: obs.subagents ?? 0,
         rounds: obs.rounds ?? 0,
       }
+    case "operation_cancelled":
+      return {
+        kind: "operation_cancelled" as const,
+        turn: t,
+        operation_id: obs.operation_id ?? "",
+        reason: (obs.reason ?? "user") as "user" | "deadline" | "lease_lost" | "host_shutdown",
+        pending_call_ids: obs.pending_call_ids ?? [],
+      }
     case "suspended":
       return {
         kind: "suspended" as const,

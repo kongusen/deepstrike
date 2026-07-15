@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
 from deepstrike._kernel import (
   ContentPartObj,
@@ -290,10 +290,30 @@ class RuntimeOptions:
   dream_summarizer: Callable[[list[Any], dict[str, Any]], Awaitable[str] | str] | None = None
 
 
+OperationCancellationReason = Literal["user", "deadline", "lease_lost", "host_shutdown"]
+
+
+def _pending_call_ids(action: Any) -> list[str]:
+  kind = getattr(action, "kind", None)
+  if kind == "call_provider":
+    return [action.effect_id]
+  if kind == "execute_tool":
+    return [call.id for call in (action.calls or [])]
+  if kind == "request_approval":
+    return [request.call_id for request in (action.requests or [])]
+  if kind == "spawn_workflow":
+    return [str(node.agent_id) for node in (action.nodes or []) if getattr(node, "agent_id", None)]
+  if kind == "preempt_sub_agents":
+    return list(action.agent_ids or [])
+  effect_id = getattr(action, "effect_id", None)
+  return [effect_id] if effect_id else []
+
+
 class RuntimeRunner:
   def __init__(self, opts: RuntimeOptions) -> None:
     self._opts = opts
     self._interrupted = False
+    self._cancellation_reason: OperationCancellationReason | None = None
     self._plane = opts.execution_plane or LocalExecutionPlane()
     self._active_kernel: KernelRuntime | None = None
     self._active_operation: OperationContext | None = None
@@ -739,6 +759,7 @@ class RuntimeRunner:
     standalone run can be resumed via ``resume_workflow``.
     """
     self._interrupted = False
+    self._cancellation_reason = None
     self._pending_observations = []
     self._current_session_id = session_id
     runtime = self._create_syscall_runtime()
@@ -1335,8 +1356,9 @@ class RuntimeRunner:
       session_id=sid,
     )
 
-  def interrupt(self) -> None:
+  def interrupt(self, reason: OperationCancellationReason = "user") -> None:
     self._interrupted = True
+    self._cancellation_reason = reason
     if self._active_operation is not None and self._active_operation.cancelled is not None:
       self._active_operation.cancelled.set()
 
@@ -1814,6 +1836,7 @@ class RuntimeRunner:
     run_id: str | None = None,
   ) -> AsyncIterator[StreamEvent]:
     self._interrupted = False
+    self._cancellation_reason = None
     self._pending_observations = []
     self._pending_page_out_archives = []
     self._active_page_out_archive = None
@@ -2148,7 +2171,11 @@ class RuntimeRunner:
       )
       self._next_archive_start = next_compressed_archive_start
       if self._interrupted:
-        action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
+        action = kernel_action(runtime, self._pending_observations, {
+          "kind": "cancel_operation",
+          "reason": self._cancellation_reason or "user",
+          "pending_call_ids": _pending_call_ids(action),
+        })
         break
 
       if self._opts.signal_source or self._injected_signals:
@@ -2161,8 +2188,7 @@ class RuntimeRunner:
           if sig_action:
             action = sig_action
           # I0a: Critical signal carries user_abort intent; see Node runner for full rationale.
-          if getattr(delivery.signal, "urgency", None) == "critical":
-            self._interrupted = True
+          # A critical signal is a kernel attention/preemption decision, not operation cancellation.
       if runtime.is_terminal():
         break
 
@@ -2226,6 +2252,18 @@ class RuntimeRunner:
               final_tool_calls.append(ToolCall(
                 id=evt.id, name=evt.name, arguments=json.dumps(evt.arguments),
               ))
+        except asyncio.CancelledError:
+          self._interrupted = True
+          self._cancellation_reason = self._cancellation_reason or "user"
+          kernel_action(runtime, self._pending_observations, {
+            "kind": "cancel_operation",
+            "reason": self._cancellation_reason,
+            "pending_call_ids": [provider_effect_id],
+          })
+          next_compressed_archive_start = await self._append_observations(
+            session_id, runtime, next_compressed_archive_start, task_scope,
+          )
+          raise
         except Exception as exc:
           if self._interrupted:
             # An interrupt raced with an in-flight error — handled as a clean preempt by the
@@ -2253,7 +2291,11 @@ class RuntimeRunner:
 
         # #2-B-ii: stream aborted (preempt/interrupt) via the break path — end the turn now.
         if self._interrupted:
-          action = kernel_action(runtime, self._pending_observations, {"kind": "timeout"})
+          action = kernel_action(runtime, self._pending_observations, {
+            "kind": "cancel_operation",
+            "reason": self._cancellation_reason or "user",
+            "pending_call_ids": [provider_effect_id],
+          })
           break
 
         assistant_message = Message(
@@ -2686,7 +2728,7 @@ class RuntimeRunner:
 
     result = action.result if action.kind == "done" else None
     # I0a: preserve preempt intent when loop exits without clean kernel-done (see Node runner for full rationale).
-    status = result.termination if result else ("user_abort" if self._interrupted else "error")
+    status = result.termination if result else "error"
     turns_used = max(1, result.turns_used) if result else (runtime.turn() or 0)
     total_tokens = result.total_tokens_used if result else 0
 

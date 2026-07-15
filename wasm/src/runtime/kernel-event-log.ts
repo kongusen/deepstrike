@@ -164,7 +164,27 @@ export function kernelObservationToSessionEvent(
       return {
         kind: "budget_exceeded" as const,
         turn: t,
+        operation_id: obs.operation_id ?? "",
+        ...(obs.reservation_id ? { reservation_id: obs.reservation_id } : {}),
         budget: obs.budget ?? "",
+      }
+    case "budget_usage_reported":
+      return {
+        kind: "budget_usage_reported" as const,
+        turn: t,
+        operation_id: obs.operation_id ?? "",
+        reservation_id: obs.reservation_id ?? "",
+        tokens: obs.tokens ?? 0,
+        subagents: obs.subagents ?? 0,
+        rounds: obs.rounds ?? 0,
+      }
+    case "operation_cancelled":
+      return {
+        kind: "operation_cancelled" as const,
+        turn: t,
+        operation_id: obs.operation_id ?? "",
+        reason: (obs.reason ?? "user") as "user" | "deadline" | "lease_lost" | "host_shutdown",
+        pending_call_ids: obs.pending_call_ids ?? [],
       }
     case "suspended":
       return {
