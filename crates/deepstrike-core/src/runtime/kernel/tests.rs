@@ -10,6 +10,254 @@ fn correlated_input(
     KernelInput::correlated(operation_id, event_id, observed_at_ms, event)
 }
 
+#[test]
+fn prepared_step_is_committed_only_after_matching_token() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let prepared = runtime.prepare_step(correlated_input(
+        "op-prepare",
+        "event-start",
+        42,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("test"),
+            run_spec: None,
+        },
+    ));
+
+    assert_eq!(prepared.status, KernelPreparationStatus::Prepared);
+    assert_eq!(prepared.base_generation, 0);
+    assert_eq!(prepared.step.step_seq, 1);
+    assert_eq!(
+        prepared.step.actions[0].effect_id,
+        "op-prepare:step:1:effect:0"
+    );
+    let token = prepared.prepare_token.as_deref().expect("prepared token");
+
+    let committed = runtime
+        .commit_prepared(token)
+        .expect("matching token commits the candidate");
+    assert_eq!(
+        serde_json::to_value(committed).unwrap(),
+        serde_json::to_value(prepared.step).unwrap(),
+    );
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Running);
+    assert_eq!(runtime.diagnostics().next_step_seq, 2);
+
+    let next = runtime.prepare_step(correlated_input(
+        "op-prepare",
+        "event-memory",
+        43,
+        KernelInputEvent::SetMemoryEnabled { enabled: true },
+    ));
+    assert_eq!(next.base_generation, 1);
+    runtime
+        .abort_prepared(next.prepare_token.as_deref().unwrap())
+        .expect("follow-up candidate aborts");
+}
+
+#[test]
+fn mismatched_prepare_token_invalidates_the_runtime() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let prepared = runtime.prepare_step(correlated_input(
+        "op-token-mismatch",
+        "event-start",
+        42,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("test"),
+            run_spec: None,
+        },
+    ));
+    let token = prepared.prepare_token.as_deref().expect("prepared token");
+
+    let mismatch = runtime
+        .commit_prepared("wrong-token")
+        .expect_err("mismatched token must fail closed");
+    assert_eq!(mismatch.code, KernelFaultCode::TransactionConflict);
+
+    let poisoned = runtime
+        .commit_prepared(token)
+        .expect_err("invalidated runtime cannot be reused");
+    assert_eq!(poisoned.code, KernelFaultCode::TransactionConflict);
+    let snapshot_fault = runtime
+        .snapshot()
+        .expect_err("invalidated runtime cannot checkpoint speculative state");
+    assert_eq!(snapshot_fault.code, KernelFaultCode::TransactionConflict);
+}
+
+#[test]
+fn snapshot_rejects_an_outstanding_prepared_transition_without_panicking() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let prepared = runtime.prepare_step(correlated_input(
+        "op-prepare-snapshot",
+        "evt-prepare-snapshot",
+        42,
+        KernelInputEvent::ConfigureRun {
+            config: RunConfig::default(),
+        },
+    ));
+    assert_eq!(prepared.status, KernelPreparationStatus::Prepared);
+
+    let fault = runtime
+        .snapshot()
+        .expect_err("uncommitted candidate must not enter a checkpoint");
+    assert_eq!(fault.code, KernelFaultCode::TransactionConflict);
+
+    runtime
+        .abort_prepared(prepared.prepare_token.as_deref().unwrap())
+        .expect("prepared transition remains abortable after the rejected snapshot");
+}
+
+#[test]
+fn aborting_prepared_step_restores_the_exact_committed_runtime() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(correlated_input(
+        "op-abort",
+        "event-configure",
+        40,
+        KernelInputEvent::ConfigureRun {
+            config: RunConfig {
+                memory_enabled: Some(true),
+                ..Default::default()
+            },
+        },
+    ));
+    let before = runtime.snapshot_json().expect("committed snapshot");
+    let input = correlated_input(
+        "op-abort",
+        "event-start",
+        42,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("test"),
+            run_spec: None,
+        },
+    );
+
+    let prepared = runtime.prepare_step(input.clone());
+    let token = prepared.prepare_token.as_deref().expect("prepared token");
+    runtime
+        .abort_prepared(token)
+        .expect("abort rebuilds the committed prefix");
+
+    assert_eq!(runtime.snapshot_json().expect("restored snapshot"), before);
+    let retried = runtime.step(input);
+    assert_eq!(retried.step_seq, prepared.step.step_seq);
+    assert_eq!(
+        retried.actions[0].effect_id,
+        prepared.step.actions[0].effect_id
+    );
+}
+
+#[test]
+fn second_prepare_is_rejected_without_discarding_the_first_candidate() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let first = runtime.prepare_step(correlated_input(
+        "op-pending",
+        "event-start",
+        42,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("test"),
+            run_spec: None,
+        },
+    ));
+    let first_token = first.prepare_token.as_deref().expect("first token");
+
+    let second = runtime.prepare_step(correlated_input(
+        "op-pending",
+        "event-configure",
+        43,
+        KernelInputEvent::ConfigureRun {
+            config: RunConfig::default(),
+        },
+    ));
+
+    assert_eq!(second.status, KernelPreparationStatus::Rejected);
+    assert!(matches!(
+        second.step.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::TransactionConflict,
+            ..
+        }]
+    ));
+    runtime
+        .commit_prepared(first_token)
+        .expect("first candidate remains committable");
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Running);
+}
+
+#[test]
+fn exact_event_replay_requires_no_new_durable_commit() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let input = correlated_input(
+        "op-replay-prepare",
+        "event-start",
+        42,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("test"),
+            run_spec: None,
+        },
+    );
+    let first = runtime.step(input.clone());
+
+    let replay = runtime.prepare_step(input);
+
+    assert_eq!(replay.status, KernelPreparationStatus::Replayed);
+    assert!(replay.prepare_token.is_none());
+    assert_eq!(
+        serde_json::to_value(replay.step).unwrap(),
+        serde_json::to_value(first).unwrap(),
+    );
+    assert_eq!(runtime.diagnostics().accepted_input_count, 1);
+}
+
+#[test]
+fn rejected_prepare_has_no_token_and_does_not_mutate_runtime() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let mut invalid = correlated_input(
+        "op-rejected-prepare",
+        "event-start",
+        42,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("test"),
+            run_spec: None,
+        },
+    );
+    invalid.version = 1;
+
+    let rejected = runtime.prepare_step(invalid);
+
+    assert_eq!(rejected.status, KernelPreparationStatus::Rejected);
+    assert!(rejected.prepare_token.is_none());
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Created);
+    assert_eq!(runtime.diagnostics().next_step_seq, 1);
+    assert_eq!(runtime.diagnostics().accepted_input_count, 0);
+}
+
+#[test]
+fn prepared_step_json_round_trips_the_normalized_input_and_status() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let input = correlated_input(
+        "op-json-prepare",
+        "event-start",
+        42,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("test"),
+            run_spec: None,
+        },
+    );
+
+    let prepared = runtime
+        .prepare_step_json(&serde_json::to_string(&input).unwrap())
+        .expect("wire input stages");
+
+    assert_eq!(prepared.status, KernelPreparationStatus::Prepared);
+    assert_eq!(prepared.input.operation_id, "op-json-prepare");
+    assert_eq!(prepared.input.event_id, "event-start");
+    let token = prepared.prepare_token.as_deref().expect("wire token");
+    runtime
+        .commit_prepared(token)
+        .expect("wire candidate commits");
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Running);
+}
+
 fn accept_workflow_spawn(runtime: &mut KernelRuntime, step: KernelStep) -> KernelStep {
     let Some(KernelAction {
         effect_id,

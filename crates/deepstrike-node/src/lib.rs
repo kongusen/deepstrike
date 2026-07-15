@@ -606,6 +606,57 @@ impl KernelRuntime {
         })
     }
 
+    /// Stage a KernelInput so the host can durably persist it before publishing the transition.
+    #[napi(js_name = "prepareStep")]
+    pub fn prepare_step(&mut self, input_json: String) -> Result<String> {
+        ffi_guard("KernelRuntime.prepareStep", || {
+            let prepared = self.inner.prepare_step_json(&input_json).map_err(|e| {
+                Error::new(Status::InvalidArg, format!("invalid KernelInput JSON: {e}"))
+            })?;
+            serde_json::to_string(&prepared).map_err(|e| {
+                Error::new(
+                    Status::GenericFailure,
+                    format!("failed to encode KernelPreparedStep: {e}"),
+                )
+            })
+        })
+    }
+
+    /// Publish a previously staged transition after durable host persistence succeeds.
+    #[napi(js_name = "commitPrepared")]
+    pub fn commit_prepared(&mut self, prepare_token: String) -> Result<String> {
+        ffi_guard("KernelRuntime.commitPrepared", || {
+            let step = self
+                .inner
+                .commit_prepared(&prepare_token)
+                .map_err(|fault| {
+                    Error::new(
+                        Status::InvalidArg,
+                        serde_json::to_string(&fault).unwrap_or(fault.message),
+                    )
+                })?;
+            serde_json::to_string(&step).map_err(|e| {
+                Error::new(
+                    Status::GenericFailure,
+                    format!("failed to encode KernelStep: {e}"),
+                )
+            })
+        })
+    }
+
+    /// Roll back a staged transition when durable host persistence fails.
+    #[napi(js_name = "abortPrepared")]
+    pub fn abort_prepared(&mut self, prepare_token: String) -> Result<()> {
+        ffi_guard("KernelRuntime.abortPrepared", || {
+            self.inner.abort_prepared(&prepare_token).map_err(|fault| {
+                Error::new(
+                    Status::InvalidArg,
+                    serde_json::to_string(&fault).unwrap_or(fault.message),
+                )
+            })
+        })
+    }
+
     /// Encode a portable ABI-v2 runtime checkpoint.
     #[napi]
     pub fn snapshot(&self) -> Result<String> {

@@ -863,6 +863,32 @@ impl KernelRuntime {
             .map_err(|e| PyValueError::new_err(format!("failed to encode KernelStep: {e}")))
     }
 
+    fn prepare_step(&mut self, input_json: String) -> PyResult<String> {
+        let prepared = self
+            .inner
+            .prepare_step_json(&input_json)
+            .map_err(|e| PyValueError::new_err(format!("invalid KernelInput JSON: {e}")))?;
+        serde_json::to_string(&prepared)
+            .map_err(|e| PyValueError::new_err(format!("failed to encode KernelPreparedStep: {e}")))
+    }
+
+    fn commit_prepared(&mut self, prepare_token: String) -> PyResult<String> {
+        let step = self
+            .inner
+            .commit_prepared(&prepare_token)
+            .map_err(|fault| {
+                PyValueError::new_err(serde_json::to_string(&fault).unwrap_or(fault.message))
+            })?;
+        serde_json::to_string(&step)
+            .map_err(|e| PyValueError::new_err(format!("failed to encode KernelStep: {e}")))
+    }
+
+    fn abort_prepared(&mut self, prepare_token: String) -> PyResult<()> {
+        self.inner.abort_prepared(&prepare_token).map_err(|fault| {
+            PyValueError::new_err(serde_json::to_string(&fault).unwrap_or(fault.message))
+        })
+    }
+
     fn snapshot(&self) -> PyResult<String> {
         self.inner.snapshot_json().map_err(|fault| {
             PyValueError::new_err(

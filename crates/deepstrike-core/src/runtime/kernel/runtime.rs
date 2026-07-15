@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::ops::{Deref, DerefMut};
 
 pub(super) const EVENT_REPLAY_WINDOW_CAPACITY: usize = 256;
 const COMPLETED_EFFECT_REPLAY_WINDOW_CAPACITY: usize = 256;
@@ -139,9 +140,8 @@ impl StepIdentity {
     }
 }
 
-/// Pure kernel runtime wrapper. SDKs should migrate toward feeding
-/// `KernelInput` values here instead of directly driving `LoopStateMachine`.
-pub struct KernelRuntime {
+#[doc(hidden)]
+pub struct KernelRuntimeState {
     sm: LoopStateMachine,
     initial_policy: SchedulerBudget,
     lifecycle: KernelLifecycle,
@@ -164,29 +164,71 @@ pub struct KernelRuntime {
     last_step: Option<KernelStep>,
 }
 
+struct PreparedCandidate {
+    token: String,
+    base_generation: u64,
+    state: Box<KernelRuntimeState>,
+    step: KernelStep,
+    accepted_inputs_before: usize,
+}
+
+/// Pure kernel runtime wrapper. SDKs should migrate toward feeding
+/// `KernelInput` values here instead of directly driving `LoopStateMachine`.
+pub struct KernelRuntime {
+    state: Option<Box<KernelRuntimeState>>,
+    prepared: Option<PreparedCandidate>,
+    generation: u64,
+    poisoned: bool,
+    next_prepare_token: u64,
+}
+
+impl Deref for KernelRuntime {
+    type Target = KernelRuntimeState;
+
+    fn deref(&self) -> &Self::Target {
+        self.state
+            .as_deref()
+            .expect("kernel runtime state is staged; commit or abort the prepared transition")
+    }
+}
+
+impl DerefMut for KernelRuntime {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.state
+            .as_deref_mut()
+            .expect("kernel runtime state is staged; commit or abort the prepared transition")
+    }
+}
+
 impl KernelRuntime {
     pub fn new(policy: SchedulerBudget) -> Self {
         Self {
-            sm: LoopStateMachine::new(policy.clone()),
-            initial_policy: policy,
-            lifecycle: KernelLifecycle::Created,
-            operation_id: None,
-            next_step_seq: 1,
-            recorded_events: ReplayWindow::new(EVENT_REPLAY_WINDOW_CAPACITY),
-            pending_effects: HashMap::new(),
-            completed_effects: ReplayWindow::new(COMPLETED_EFFECT_REPLAY_WINDOW_CAPACITY),
-            pending_memory_write: None,
-            pending_memory_query: None,
-            budget_usage_reported: false,
-            accepted_cancellation: None,
-            accepted_inputs: Vec::new(),
-            accepted_input_count: 0,
-            accepted_input_bytes: 0,
-            snapshot_input_limit: SNAPSHOT_INPUT_LIMIT,
-            max_input_bytes: MAX_INPUT_BYTES,
-            snapshot_journal_bytes_limit: SNAPSHOT_JOURNAL_BYTES_LIMIT,
-            snapshot_overflowed: false,
-            last_step: None,
+            state: Some(Box::new(KernelRuntimeState {
+                sm: LoopStateMachine::new(policy.clone()),
+                initial_policy: policy,
+                lifecycle: KernelLifecycle::Created,
+                operation_id: None,
+                next_step_seq: 1,
+                recorded_events: ReplayWindow::new(EVENT_REPLAY_WINDOW_CAPACITY),
+                pending_effects: HashMap::new(),
+                completed_effects: ReplayWindow::new(COMPLETED_EFFECT_REPLAY_WINDOW_CAPACITY),
+                pending_memory_write: None,
+                pending_memory_query: None,
+                budget_usage_reported: false,
+                accepted_cancellation: None,
+                accepted_inputs: Vec::new(),
+                accepted_input_count: 0,
+                accepted_input_bytes: 0,
+                snapshot_input_limit: SNAPSHOT_INPUT_LIMIT,
+                max_input_bytes: MAX_INPUT_BYTES,
+                snapshot_journal_bytes_limit: SNAPSHOT_JOURNAL_BYTES_LIMIT,
+                snapshot_overflowed: false,
+                last_step: None,
+            })),
+            prepared: None,
+            generation: 0,
+            poisoned: false,
+            next_prepare_token: 1,
         }
     }
 
@@ -303,6 +345,7 @@ impl KernelRuntime {
             ));
         }
         runtime.accepted_inputs = snapshot.accepted_inputs;
+        runtime.generation = runtime.accepted_input_count as u64;
         Ok(runtime)
     }
 
@@ -422,21 +465,267 @@ impl KernelRuntime {
         self.recorded_events.len()
     }
 
+    fn boundary_max_input_bytes(&self) -> usize {
+        self.state
+            .as_deref()
+            .or_else(|| {
+                self.prepared
+                    .as_ref()
+                    .map(|candidate| candidate.state.as_ref())
+            })
+            .map_or(MAX_INPUT_BYTES, |state| state.max_input_bytes)
+    }
+
+    fn boundary_step_seq(&self) -> u64 {
+        self.state
+            .as_deref()
+            .map(|state| state.next_step_seq)
+            .or_else(|| {
+                self.prepared
+                    .as_ref()
+                    .map(|candidate| candidate.step.step_seq)
+            })
+            .unwrap_or(1)
+    }
+
+    /// Stage one transition without publishing it as committed runtime state. A newly accepted
+    /// transition returns an opaque one-shot token; exact event replay and rejected inputs return no
+    /// token because neither requires a new durable transaction.
+    pub fn prepare_step(&mut self, mut input: KernelInput) -> KernelPreparedStep {
+        normalize_input(&mut input);
+        let base_generation = self.generation;
+        let operation_id = input.operation_id.clone();
+        let event_id = input.event_id.clone();
+
+        if self.poisoned {
+            return KernelPreparedStep {
+                status: KernelPreparationStatus::Rejected,
+                base_generation,
+                prepare_token: None,
+                input,
+                step: transaction_fault_step(
+                    operation_id,
+                    event_id,
+                    self.boundary_step_seq(),
+                    KernelFaultCode::TransactionConflict,
+                    "kernel runtime was invalidated by a transaction consistency error"
+                        .to_string(),
+                ),
+            };
+        }
+
+        if let Some(candidate) = &self.prepared {
+            return KernelPreparedStep {
+                status: KernelPreparationStatus::Rejected,
+                base_generation,
+                prepare_token: None,
+                input,
+                step: transaction_fault_step(
+                    operation_id,
+                    event_id,
+                    candidate.step.step_seq,
+                    KernelFaultCode::TransactionConflict,
+                    "another kernel transition is already prepared".to_string(),
+                ),
+            };
+        }
+
+        if self.snapshot_overflowed {
+            return KernelPreparedStep {
+                status: KernelPreparationStatus::Rejected,
+                base_generation,
+                prepare_token: None,
+                input,
+                step: transaction_fault_step(
+                    operation_id,
+                    event_id,
+                    self.next_step_seq,
+                    KernelFaultCode::ResourceLimitExceeded,
+                    "kernel journal cannot roll back a prepared transition after overflow"
+                        .to_string(),
+                ),
+            };
+        }
+
+        let fingerprint = serde_json::to_vec(&input)
+            .expect("KernelInput serialization must succeed after typed construction");
+        let was_exact_replay = self
+            .recorded_events
+            .get(&event_id)
+            .is_some_and(|recorded| recorded.fingerprint == fingerprint);
+        let accepted_inputs_before = self.accepted_inputs.len();
+        let step = self.step_internal(input.clone(), StepMode::Live);
+        let candidate_state = self
+            .state
+            .take()
+            .expect("step execution must leave a runtime state");
+
+        if !step.faults.is_empty() {
+            self.state = Some(candidate_state);
+            return KernelPreparedStep {
+                status: KernelPreparationStatus::Rejected,
+                base_generation,
+                prepare_token: None,
+                input,
+                step,
+            };
+        }
+
+        if was_exact_replay {
+            self.state = Some(candidate_state);
+            return KernelPreparedStep {
+                status: KernelPreparationStatus::Replayed,
+                base_generation,
+                prepare_token: None,
+                input,
+                step,
+            };
+        }
+
+        let token = format!("kernel-prepare-{}", self.next_prepare_token);
+        self.next_prepare_token = self.next_prepare_token.saturating_add(1);
+        self.prepared = Some(PreparedCandidate {
+            token: token.clone(),
+            base_generation,
+            state: candidate_state,
+            step: step.clone(),
+            accepted_inputs_before,
+        });
+        KernelPreparedStep {
+            status: KernelPreparationStatus::Prepared,
+            base_generation,
+            prepare_token: Some(token),
+            input,
+            step,
+        }
+    }
+
+    /// Publish the candidate selected by `prepare_step`. A token mismatch invalidates this runtime;
+    /// the host must discard it and rebuild from the authoritative committed stream.
+    pub fn commit_prepared(&mut self, token: &str) -> Result<KernelStep, KernelFault> {
+        if self.poisoned {
+            return Err(transaction_conflict_fault(
+                None,
+                "kernel runtime was invalidated by a transaction consistency error".to_string(),
+            ));
+        }
+        let Some(candidate) = self.prepared.as_ref() else {
+            return Err(transaction_conflict_fault(
+                None,
+                "no kernel transition is prepared".to_string(),
+            ));
+        };
+        if candidate.token != token {
+            let operation_id = candidate.state.operation_id.clone();
+            self.poisoned = true;
+            return Err(transaction_conflict_fault(
+                operation_id,
+                "prepare token does not match the staged transition".to_string(),
+            ));
+        }
+        if candidate.base_generation != self.generation {
+            let operation_id = candidate.state.operation_id.clone();
+            self.poisoned = true;
+            return Err(transaction_conflict_fault(
+                operation_id,
+                "prepared transition no longer matches the runtime generation".to_string(),
+            ));
+        }
+
+        let candidate = self
+            .prepared
+            .take()
+            .expect("prepared candidate was validated above");
+        let step = candidate.step.clone();
+        self.state = Some(candidate.state);
+        self.generation = self.generation.saturating_add(1);
+        Ok(step)
+    }
+
+    /// Abort a staged transition after durable append failure. Rollback is intentionally paid only
+    /// on this failure path: the committed prefix is deterministically rebuilt from its journal,
+    /// while the normal prepare/commit path moves the candidate state without cloning history.
+    pub fn abort_prepared(&mut self, token: &str) -> Result<(), KernelFault> {
+        if self.poisoned {
+            return Err(transaction_conflict_fault(
+                None,
+                "kernel runtime was invalidated by a transaction consistency error".to_string(),
+            ));
+        }
+        let Some(candidate) = self.prepared.as_ref() else {
+            return Err(transaction_conflict_fault(
+                None,
+                "no kernel transition is prepared".to_string(),
+            ));
+        };
+        if candidate.token != token {
+            let operation_id = candidate.state.operation_id.clone();
+            self.poisoned = true;
+            return Err(transaction_conflict_fault(
+                operation_id,
+                "prepare token does not match the staged transition".to_string(),
+            ));
+        }
+
+        let candidate = self
+            .prepared
+            .take()
+            .expect("prepared candidate was validated above");
+        let mut committed_inputs = candidate.state.accepted_inputs.clone();
+        committed_inputs.truncate(candidate.accepted_inputs_before);
+        match Self::rebuild_accepted_inputs(
+            candidate.state.initial_policy.clone(),
+            committed_inputs,
+        ) {
+            Ok(mut restored) => {
+                self.state = restored.state.take();
+                Ok(())
+            }
+            Err(fault) => {
+                self.prepared = Some(candidate);
+                Err(fault)
+            }
+        }
+    }
+
+    fn rebuild_accepted_inputs(
+        initial_policy: SchedulerBudget,
+        accepted_inputs: Vec<KernelInput>,
+    ) -> Result<Self, KernelFault> {
+        let mut runtime = Self::new(initial_policy);
+        for input in accepted_inputs.iter().cloned() {
+            let step = runtime.step_internal(input, StepMode::SnapshotReplay);
+            if let Some(fault) = step.faults.first() {
+                return Err(snapshot_fault(
+                    runtime.operation_id.clone(),
+                    format!(
+                        "committed transaction replay rejected an accepted input: {}",
+                        fault.message
+                    ),
+                ));
+            }
+        }
+        runtime.accepted_inputs = accepted_inputs;
+        runtime.generation = runtime.accepted_input_count as u64;
+        Ok(runtime)
+    }
+
     /// Decode and execute one wire input. The version is probed before decoding
     /// the v2 envelope so a v1 payload receives a structured kernel fault rather
     /// than a host-language deserialization error.
     pub fn step_json(&mut self, input_json: &str) -> Result<KernelStep, serde_json::Error> {
-        if input_json.len() > self.max_input_bytes {
-            return Ok(self.fault_step(
+        let max_input_bytes = self.boundary_max_input_bytes();
+        if input_json.len() > max_input_bytes {
+            return Ok(transaction_fault_step(
                 String::new(),
                 String::new(),
+                self.boundary_step_seq(),
                 KernelFaultCode::ResourceLimitExceeded,
                 format!(
                     "kernel input is {} bytes; configured maximum is {} bytes",
                     input_json.len(),
-                    self.max_input_bytes
+                    max_input_bytes
                 ),
-                None,
             ));
         }
         let value: serde_json::Value = serde_json::from_str(input_json)?;
@@ -457,32 +746,79 @@ impl KernelRuntime {
                 .get("version")
                 .and_then(serde_json::Value::as_u64)
                 .map_or_else(|| "missing".to_string(), |version| version.to_string());
-            return Ok(self.fault_step(
+            return Ok(transaction_fault_step(
                 operation_id,
                 event_id,
+                self.boundary_step_seq(),
                 KernelFaultCode::VersionMismatch,
                 format!(
                     "kernel ABI version mismatch: input v{received_version}, kernel v{KERNEL_ABI_VERSION}"
                 ),
-                None,
             ));
         }
 
         serde_json::from_value(value).map(|input| self.step(input))
     }
 
+    /// Decode and stage one wire input for a host-controlled durable commit boundary.
+    pub fn prepare_step_json(
+        &mut self,
+        input_json: &str,
+    ) -> Result<KernelPreparedStep, serde_json::Error> {
+        let value: serde_json::Value = serde_json::from_str(input_json)?;
+        let input: KernelInput = serde_json::from_value(value)?;
+        let max_input_bytes = self.boundary_max_input_bytes();
+        if input_json.len() > max_input_bytes {
+            return Ok(KernelPreparedStep {
+                status: KernelPreparationStatus::Rejected,
+                base_generation: self.generation,
+                prepare_token: None,
+                step: transaction_fault_step(
+                    input.operation_id.clone(),
+                    input.event_id.clone(),
+                    self.boundary_step_seq(),
+                    KernelFaultCode::ResourceLimitExceeded,
+                    format!(
+                        "kernel input is {} bytes; configured maximum is {} bytes",
+                        input_json.len(),
+                        max_input_bytes
+                    ),
+                ),
+                input,
+            });
+        }
+        Ok(self.prepare_step(input))
+    }
+
     pub fn step(&mut self, input: KernelInput) -> KernelStep {
-        self.step_internal(input, StepMode::Live)
+        if self.poisoned {
+            return transaction_fault_step(
+                input.operation_id,
+                input.event_id,
+                self.boundary_step_seq(),
+                KernelFaultCode::TransactionConflict,
+                "kernel runtime was invalidated by a transaction consistency error".to_string(),
+            );
+        }
+        if let Some(candidate) = &self.prepared {
+            return transaction_fault_step(
+                input.operation_id,
+                input.event_id,
+                candidate.step.step_seq,
+                KernelFaultCode::TransactionConflict,
+                "another kernel transition is already prepared".to_string(),
+            );
+        }
+        let accepted_input_count = self.accepted_input_count;
+        let step = self.step_internal(input, StepMode::Live);
+        if self.accepted_input_count > accepted_input_count {
+            self.generation = self.generation.saturating_add(1);
+        }
+        step
     }
 
     fn step_internal(&mut self, mut input: KernelInput, mode: StepMode) -> KernelStep {
-        if let KernelInputEvent::CancelOperation {
-            pending_call_ids, ..
-        } = &mut input.event
-        {
-            pending_call_ids.sort();
-            pending_call_ids.dedup();
-        }
+        normalize_input(&mut input);
         let operation_id = input.operation_id.clone();
         let event_id = input.event_id.clone();
 
@@ -878,6 +1214,18 @@ impl KernelRuntime {
     }
 
     fn ensure_snapshot_available(&self) -> Result<(), KernelFault> {
+        if self.poisoned {
+            return Err(transaction_conflict_fault(
+                None,
+                "kernel runtime was invalidated by a transaction consistency error".to_string(),
+            ));
+        }
+        if let Some(candidate) = &self.prepared {
+            return Err(transaction_conflict_fault(
+                candidate.state.operation_id.clone(),
+                "cannot snapshot an uncommitted prepared transition".to_string(),
+            ));
+        }
         if self.snapshot_overflowed
             || self.accepted_input_count > self.snapshot_input_limit
             || self.accepted_input_bytes > self.snapshot_journal_bytes_limit
@@ -1706,6 +2054,47 @@ impl KernelRuntime {
                 effect_id,
             },
         )
+    }
+}
+
+fn normalize_input(input: &mut KernelInput) {
+    if let KernelInputEvent::CancelOperation {
+        pending_call_ids, ..
+    } = &mut input.event
+    {
+        pending_call_ids.sort();
+        pending_call_ids.dedup();
+    }
+}
+
+fn transaction_fault_step(
+    operation_id: String,
+    event_id: String,
+    step_seq: u64,
+    code: KernelFaultCode,
+    message: String,
+) -> KernelStep {
+    KernelStep::fault(
+        operation_id.clone(),
+        event_id.clone(),
+        step_seq,
+        KernelFault {
+            code,
+            message,
+            operation_id: Some(operation_id),
+            event_id: Some(event_id),
+            effect_id: None,
+        },
+    )
+}
+
+fn transaction_conflict_fault(operation_id: Option<String>, message: String) -> KernelFault {
+    KernelFault {
+        code: KernelFaultCode::TransactionConflict,
+        message,
+        operation_id,
+        event_id: None,
+        effect_id: None,
     }
 }
 

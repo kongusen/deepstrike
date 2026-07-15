@@ -9,9 +9,9 @@ pub mod session;
 
 pub use kernel::{
     CancellationReason, KernelAction, KernelEffect, KernelFault, KernelFaultCode, KernelInput,
-    KernelInputEvent, KernelLifecycle, KernelObservation, KernelPressureAction, KernelRuntime,
-    KernelSnapshotPolicyV2, KernelSnapshotV2, KernelStep, KERNEL_ABI_VERSION,
-    KERNEL_SNAPSHOT_VERSION,
+    KernelInputEvent, KernelLifecycle, KernelObservation, KernelPreparationStatus,
+    KernelPreparedStep, KernelPressureAction, KernelRuntime, KernelSnapshotPolicyV2,
+    KernelSnapshotV2, KernelStep, KERNEL_ABI_VERSION, KERNEL_SNAPSHOT_VERSION,
 };
 
 pub use event_log::{category_for_kind, primitive_for_kind, KernelEventCategory, Primitive};

@@ -14,6 +14,9 @@ export const KERNEL_ABI_VERSION = 2
 
 export interface KernelRuntimeHandle {
   step(inputJson: string): string
+  prepareStep(inputJson: string): string
+  commitPrepared(prepareToken: string): string
+  abortPrepared(prepareToken: string): void
   snapshot(): string
   restore(snapshotJson: string): void
   diagnostics(): string
@@ -23,6 +26,16 @@ export interface KernelRuntimeHandle {
   render(): RenderedContext
   drainNewMessages(): Message[]
   preservedRefs(): string[]
+}
+
+export type KernelPreparationStatus = "prepared" | "replayed" | "rejected"
+
+export interface KernelPreparedStep {
+  status: KernelPreparationStatus
+  base_generation: number
+  prepare_token?: string
+  input: Record<string, unknown>
+  step: KernelStepJson
 }
 
 export interface KernelDiagnostics {

@@ -3,6 +3,9 @@ declare module "@deepstrike/wasm-kernel" {
   export class KernelRuntime {
     constructor(policy: { maxTokens: number; maxTurns?: number; maxTotalTokens?: number; timeoutMs?: number })
     step(inputJson: string): string
+    prepareStep(inputJson: string): string
+    commitPrepared(prepareToken: string): string
+    abortPrepared(prepareToken: string): void
     snapshot(): string
     restore(snapshotJson: string): void
     diagnostics(): string

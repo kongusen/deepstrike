@@ -126,6 +126,32 @@ impl KernelInput {
     }
 }
 
+/// Outcome of staging one kernel input before the host's durable commit boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KernelPreparationStatus {
+    /// A new accepted transition is staged and must be committed or aborted with `prepare_token`.
+    Prepared,
+    /// The exact event was already committed; no new durable transaction is required.
+    Replayed,
+    /// The input was rejected and did not stage any runtime state.
+    Rejected,
+}
+
+/// Host-visible description of a staged transition. The candidate runtime state remains opaque
+/// inside [`KernelRuntime`](super::KernelRuntime); hosts persist `input` plus `step` before using the
+/// one-shot token to publish it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KernelPreparedStep {
+    pub status: KernelPreparationStatus,
+    /// Committed runtime generation used to plan this outcome.
+    pub base_generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepare_token: Option<String>,
+    pub input: KernelInput,
+    pub step: KernelStep,
+}
+
 /// K2: the governance sub-bundle of [`RunConfig`] — the same five fields as the `LoadGovernancePolicy`
 /// event, grouped so a run's whole governance posture travels as one value.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -843,6 +869,7 @@ pub enum KernelFaultCode {
     ResourceLimitExceeded,
     DuplicateEventConflict,
     UnexpectedEffectResult,
+    TransactionConflict,
     SnapshotIncompatible,
 }
 

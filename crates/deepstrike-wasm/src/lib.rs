@@ -512,6 +512,35 @@ impl KernelRuntime {
             .map_err(|e| JsValue::from_str(&format!("failed to encode KernelStep: {e}")))
     }
 
+    #[wasm_bindgen(js_name = prepareStep)]
+    pub fn prepare_step(&mut self, input_json: String) -> Result<String, JsValue> {
+        let prepared = self
+            .inner
+            .prepare_step_json(&input_json)
+            .map_err(|e| JsValue::from_str(&format!("invalid KernelInput JSON: {e}")))?;
+        serde_json::to_string(&prepared)
+            .map_err(|e| JsValue::from_str(&format!("failed to encode KernelPreparedStep: {e}")))
+    }
+
+    #[wasm_bindgen(js_name = commitPrepared)]
+    pub fn commit_prepared(&mut self, prepare_token: String) -> Result<String, JsValue> {
+        let step = self
+            .inner
+            .commit_prepared(&prepare_token)
+            .map_err(|fault| {
+                JsValue::from_str(&serde_json::to_string(&fault).unwrap_or(fault.message))
+            })?;
+        serde_json::to_string(&step)
+            .map_err(|e| JsValue::from_str(&format!("failed to encode KernelStep: {e}")))
+    }
+
+    #[wasm_bindgen(js_name = abortPrepared)]
+    pub fn abort_prepared(&mut self, prepare_token: String) -> Result<(), JsValue> {
+        self.inner.abort_prepared(&prepare_token).map_err(|fault| {
+            JsValue::from_str(&serde_json::to_string(&fault).unwrap_or(fault.message))
+        })
+    }
+
     #[wasm_bindgen(js_name = snapshot)]
     pub fn snapshot(&self) -> Result<String, JsValue> {
         self.inner.snapshot_json().map_err(|fault| {

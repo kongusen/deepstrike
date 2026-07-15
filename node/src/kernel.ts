@@ -149,6 +149,9 @@ interface IdlePipelineInstance {
 
 export interface KernelRuntimeInstance {
   step(inputJson: string): string
+  prepareStep(inputJson: string): string
+  commitPrepared(prepareToken: string): string
+  abortPrepared(prepareToken: string): void
   snapshot(): string
   restore(snapshotJson: string): void
   diagnostics(): string
