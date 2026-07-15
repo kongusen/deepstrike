@@ -41,6 +41,17 @@ from deepstrike.runtime.kernel_transaction_log import (
   verify_kernel_transaction_successor,
 )
 from deepstrike.runtime.kernel_rebuild import KernelRebuildResult, rebuild_kernel_runtime
+from deepstrike.runtime.context_policy import (
+  CONTEXT_POLICY_VERSION,
+  DEFAULT_CONTEXT_POLICY_V1,
+  PPM_SCALE,
+  ContextPolicyV1,
+  ContextPolicyWireV1,
+  ContextPressureThresholdsV1,
+  context_policy_v1,
+  normalize_context_policy_v1,
+  ratio_to_ppm,
+)
 from deepstrike.runtime.run_group import (
   GroupBudgetStore,
   GroupBudgetGrant,
@@ -218,6 +229,15 @@ __all__ = [
   "verify_kernel_transaction_successor",
   "KernelRebuildResult",
   "rebuild_kernel_runtime",
+  "CONTEXT_POLICY_VERSION",
+  "DEFAULT_CONTEXT_POLICY_V1",
+  "PPM_SCALE",
+  "ContextPolicyV1",
+  "ContextPolicyWireV1",
+  "ContextPressureThresholdsV1",
+  "context_policy_v1",
+  "normalize_context_policy_v1",
+  "ratio_to_ppm",
   "RunGroup",
   "GroupBudgetStore",
   "GroupBudgetGrant",

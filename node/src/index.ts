@@ -23,6 +23,20 @@ export { readKernelDiagnostics, restoreKernelRuntime, snapshotKernelRuntime } fr
 export type { KernelDiagnostics, KernelSnapshotV2 } from "./runtime/kernel-step.js"
 export { rebuildKernelRuntime } from "./runtime/kernel-rebuild.js"
 export type { KernelRebuildResult } from "./runtime/kernel-rebuild.js"
+export {
+  CONTEXT_POLICY_VERSION,
+  DEFAULT_CONTEXT_POLICY_V1,
+  PPM_SCALE,
+  contextPolicyV1,
+  normalizeContextPolicyV1,
+  ratioToPpm,
+} from "./runtime/context-policy.js"
+export type {
+  ContextPolicyOverridesV1,
+  ContextPolicyV1,
+  ContextPolicyWireV1,
+  ContextPressureThresholdsV1,
+} from "./runtime/context-policy.js"
 
 // ── Execution plane + session log (the defaults) ────────────────────────────
 export { LocalExecutionPlane } from "./runtime/execution-plane.js"
