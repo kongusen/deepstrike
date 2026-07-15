@@ -3149,9 +3149,16 @@ export function replayMessages(events: Array<{ seq: number; event: SessionEvent 
       const userText = e.criteria.length
         ? `${e.goal}\n\nCriteria:\n${e.criteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
         : e.goal
+      // Multimodal parity: the live seed of `attachments` is gated behind `!resumeMidRun`, so on
+      // resume the image/audio must be recovered from the persisted run_started event or it is lost.
+      const attachments = ((e as { attachments?: ContentPart[] }).attachments ?? [])
+      const contentParts: ContentPart[] | undefined = attachments.length
+        ? [...(userText ? [{ type: "text", text: userText } as ContentPart] : []), ...attachments]
+        : undefined
       messages.push({
         role: "user",
         content: userText,
+        ...(contentParts ? { contentParts } : {}),
         toolCalls: [],
         tokenCount: Math.max(1, Math.ceil(userText.length / 4)),
       })
@@ -3211,9 +3218,16 @@ export async function replayMessagesAsync(
       const userText = e.criteria.length
         ? `${e.goal}\n\nCriteria:\n${e.criteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
         : e.goal
+      // Multimodal parity: the live seed of `attachments` is gated behind `!resumeMidRun`, so on
+      // resume the image/audio must be recovered from the persisted run_started event or it is lost.
+      const attachments = ((e as { attachments?: ContentPart[] }).attachments ?? [])
+      const contentParts: ContentPart[] | undefined = attachments.length
+        ? [...(userText ? [{ type: "text", text: userText } as ContentPart] : []), ...attachments]
+        : undefined
       messages.push({
         role: "user",
         content: userText,
+        ...(contentParts ? { contentParts } : {}),
         toolCalls: [],
         tokenCount: Math.max(1, Math.ceil(userText.length / 4)),
       })

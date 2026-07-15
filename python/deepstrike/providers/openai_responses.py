@@ -24,6 +24,7 @@ from .base import (
     ProviderRunState,
     RenderedContext,
     RuntimePolicy,
+    UnsupportedModalityError,
     normalize_tool_call,
     wire_request_extensions,
 )
@@ -62,8 +63,10 @@ def _message_content(message: Message) -> Any:
         if part.type == "text":
             content.append({"type": "input_text", "text": part.text})
         elif part.type == "image":
-            if part.data and part.media_type:
-                image_url = f"data:{part.media_type};base64,{part.data}"
+            # Default the MIME type (like every other serializer) so a data-only image is
+            # not silently dropped; only a part with neither url nor data yields None.
+            if part.data:
+                image_url = f"data:{part.media_type or 'image/png'};base64,{part.data}"
             else:
                 image_url = part.url
             if image_url:
@@ -72,6 +75,8 @@ def _message_content(message: Message) -> Any:
                     "detail": part.detail or "auto",
                     "image_url": image_url,
                 })
+        elif part.type == "audio":
+            raise UnsupportedModalityError("audio", "openai-responses")
     return content
 
 

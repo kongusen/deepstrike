@@ -1,8 +1,28 @@
 import type { ContentPart, Message, RenderedContext } from "../types.js"
 import { assistantReplayKey } from "../runtime/provider-replay.js"
 
+export class UnsupportedModalityError extends Error {
+  readonly modality: string
+  readonly provider: string
+  constructor(modality: string, provider: string) {
+    super(`UnsupportedModality: ${modality} is not supported by ${provider}`)
+    this.name = "UnsupportedModalityError"
+    this.modality = modality
+    this.provider = provider
+  }
+}
+
 function parseToolArguments(args: string): Record<string, unknown> {
   try { return JSON.parse(args || "{}") as Record<string, unknown> } catch { return {} }
+}
+
+/** Map an audio MIME type to OpenAI's `input_audio.format` (accepts "mp3" | "wav").
+ *  `audio/mpeg` must become "mp3", not the raw "mpeg" subtype. */
+function openaiAudioFormat(mediaType: string | undefined): string {
+  const sub = (mediaType ?? "audio/wav").split("/")[1]?.toLowerCase() ?? "wav"
+  if (sub === "mpeg" || sub === "mp3") return "mp3"
+  if (sub === "wav" || sub === "wave" || sub === "x-wav") return "wav"
+  return sub
 }
 
 /** Multimodal: OpenAI content blocks from contentParts (text + image). */
@@ -11,6 +31,14 @@ function openAIPartsContent(parts: ContentPart[]): Array<Record<string, unknown>
     if (p.type === "image") {
       const url = p.data ? `data:${p.mediaType ?? "image/png"};base64,${p.data}` : (p.url ?? "")
       return { type: "image_url", image_url: { url, ...(p.detail ? { detail: p.detail } : {}) } }
+    }
+    if (p.type === "audio") {
+      // OpenAI audio has no URL form — a part without base64 data cannot be sent.
+      if (!p.data) throw new UnsupportedModalityError("audio (no data)", "openai")
+      return {
+        type: "input_audio",
+        input_audio: { data: p.data, format: openaiAudioFormat(p.mediaType) },
+      }
     }
     return { type: "text", text: p.text ?? p.output ?? "" }
   })
@@ -24,6 +52,9 @@ function anthropicPartsContent(parts: ContentPart[]): Array<Record<string, unkno
         ? { type: "base64", media_type: p.mediaType ?? "image/png", data: p.data }
         : { type: "url", url: p.url ?? "" }
       return { type: "image", source }
+    }
+    if (p.type === "audio") {
+      throw new UnsupportedModalityError("audio", "anthropic")
     }
     return { type: "text", text: p.text ?? p.output ?? "" }
   })

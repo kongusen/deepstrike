@@ -3,6 +3,7 @@ import type { Message, ProviderRunState, RenderedContext, StreamEvent, TextDelta
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, omitExtensionKeys } from "./base.js"
 import { normalizeToolCall } from "./base.js"
+import { UnsupportedModalityError } from "./base.js"
 
 export interface OpenAIResponsesRunState extends ProviderRunState {
   previousResponseId?: string
@@ -129,9 +130,11 @@ export class OpenAIResponsesAdapter {
         continue
       }
       if (part.type === "image") {
+        // Default the MIME type (like every other serializer) so a data-only image is
+        // not silently dropped; only a part with neither url nor data yields undefined.
         const imageUrl = part.url ?? (
-          part.data && part.mediaType
-            ? `data:${part.mediaType};base64,${part.data}`
+          part.data
+            ? `data:${part.mediaType ?? "image/png"};base64,${part.data}`
             : undefined
         )
         if (imageUrl) content.push({
@@ -139,6 +142,10 @@ export class OpenAIResponsesAdapter {
           detail: part.detail ?? "auto",
           image_url: imageUrl,
         })
+        continue
+      }
+      if (part.type === "audio") {
+        throw new UnsupportedModalityError("audio", "openai-responses")
       }
     }
 

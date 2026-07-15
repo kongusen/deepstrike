@@ -72,8 +72,11 @@ impl ContextTokenEngine {
         match part {
             ContentPart::Text { text } => self.count(text),
             ContentPart::ToolResult { output, .. } => self.count(output.as_str()),
-            ContentPart::Image { .. } => 1, // structural token — content is base64/url
-            ContentPart::Audio { data, .. } => self.count(data.as_str()),
+            // Image/Audio: modality heuristic from ContentPart::estimate_tokens — never
+            // treat base64/url payloads as UTF-8 text (that blind-spots compression ρ).
+            ContentPart::Image { .. } | ContentPart::Audio { .. } => {
+                part.estimate_tokens().unwrap_or(1)
+            }
         }
     }
 
@@ -101,7 +104,7 @@ impl ContextTokenEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::message::Message;
+    use crate::types::message::{ContentPart, Message};
 
     fn engine() -> ContextTokenEngine {
         ContextTokenEngine::char_approx()
@@ -168,5 +171,33 @@ mod tests {
         let msg = Message::user("hi");
         let out = e.truncate_message(&msg, 1000);
         assert_eq!(out.content.as_text().unwrap(), "hi");
+    }
+
+    #[test]
+    fn count_image_uses_detail_heuristic_not_one() {
+        let e = engine();
+        let low = Message::user_multimodal(vec![ContentPart::image_base64_with_detail(
+            "abc", "image/png", "low",
+        )]);
+        let auto = Message::user_multimodal(vec![ContentPart::image_base64("abc", "image/png")]);
+        let high = Message::user_multimodal(vec![ContentPart::image_base64_with_detail(
+            "abc", "image/png", "high",
+        )]);
+        assert_eq!(e.count_message(&low), 85);
+        assert_eq!(e.count_message(&auto), 255);
+        assert_eq!(e.count_message(&high), 680);
+    }
+
+    #[test]
+    fn count_audio_uses_decoded_byte_heuristic_not_base64_text() {
+        let e = engine();
+        // 6400 base64 chars → ~4800 decoded bytes → 4800/1600 = 3 tokens
+        let audio = Message::user_multimodal(vec![ContentPart::audio(
+            "A".repeat(6400),
+            "audio/wav",
+        )]);
+        assert_eq!(e.count_message(&audio), 3);
+        // Must not explode to thousands the way counting base64 as text would.
+        assert!(e.count_message(&audio) < 100);
     }
 }

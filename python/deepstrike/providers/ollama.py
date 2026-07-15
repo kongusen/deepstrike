@@ -6,6 +6,7 @@ import httpx
 from deepstrike._kernel import Message, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent
 from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, turns_with_state_appended
+from deepstrike.providers.base import UnsupportedModalityError
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,8 @@ class OllamaProvider:
             entry: dict = {"role": m.role, "content": m.content}
             parts = getattr(m, "content_parts", None)
             if parts:
+                if any(p.type == "audio" for p in parts):
+                    raise UnsupportedModalityError("audio", "ollama")
                 images = [p.data for p in parts if p.type == "image" and p.data]
                 if images:
                     entry["images"] = images

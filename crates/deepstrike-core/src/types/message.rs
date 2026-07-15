@@ -102,6 +102,71 @@ pub struct ToolSchema {
     pub parameters: serde_json::Value,
 }
 
+impl ContentPart {
+    /// Modality-aware token estimate for Image/Audio. Returns `None` for text-bearing
+    /// parts that must go through a [`crate::context::token_engine::TokenCounter`].
+    ///
+    /// Image: OpenAI-vision-style tile heuristic (`low=85`, `auto/default=255`, `high=680`).
+    /// Audio: `max(1, floor(decoded_bytes / 1600))` where `decoded_bytes ≈ base64_len * 3/4`.
+    /// Never treat base64 payloads as UTF-8 text for counting.
+    pub fn estimate_tokens(&self) -> Option<u32> {
+        match self {
+            ContentPart::Image { detail, .. } => Some(match detail.as_deref() {
+                Some("low") => 85,
+                Some("high") => 680,
+                _ => 255,
+            }),
+            ContentPart::Audio { data, .. } => {
+                let decoded_bytes = (data.len() as u64).saturating_mul(3) / 4;
+                Some((decoded_bytes / 1600).max(1) as u32)
+            }
+            ContentPart::Text { .. } | ContentPart::ToolResult { .. } => None,
+        }
+    }
+
+    pub fn text(text: impl Into<String>) -> Self {
+        ContentPart::Text { text: text.into() }
+    }
+
+    pub fn image_url(url: impl Into<String>) -> Self {
+        ContentPart::Image {
+            url: Some(url.into()),
+            data: None,
+            media_type: None,
+            detail: None,
+        }
+    }
+
+    pub fn image_base64(data: impl Into<String>, media_type: impl Into<String>) -> Self {
+        ContentPart::Image {
+            url: None,
+            data: Some(data.into()),
+            media_type: Some(media_type.into()),
+            detail: None,
+        }
+    }
+
+    pub fn image_base64_with_detail(
+        data: impl Into<String>,
+        media_type: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        ContentPart::Image {
+            url: None,
+            data: Some(data.into()),
+            media_type: Some(media_type.into()),
+            detail: Some(detail.into()),
+        }
+    }
+
+    pub fn audio(data: impl Into<String>, media_type: impl Into<String>) -> Self {
+        ContentPart::Audio {
+            data: data.into(),
+            media_type: media_type.into(),
+        }
+    }
+}
+
 impl Content {
     pub fn as_text(&self) -> Option<&str> {
         match self {
@@ -110,6 +175,8 @@ impl Content {
         }
     }
 
+    /// Byte/char proxy length. Image/Audio use `estimate_tokens() * 4` so the
+    /// 4-chars≈1-token convention stays aligned with [`ContentPart::estimate_tokens`].
     pub fn text_len(&self) -> usize {
         match self {
             Content::Text(s) => s.len(),
@@ -117,15 +184,10 @@ impl Content {
                 .iter()
                 .map(|p| match p {
                     ContentPart::Text { text } => text.len(),
-                    ContentPart::Image { detail, .. } => {
-                        match detail.as_deref() {
-                            Some("low") => 340,   // 85 tokens
-                            Some("high") => 2720, // 680 tokens (4x4 tiles)
-                            _ => 1020,            // ~255 tokens (auto / unspecified)
-                        }
-                    }
-                    ContentPart::Audio { data, .. } => data.len() / 4, // rough estimate
                     ContentPart::ToolResult { output, .. } => output.len(),
+                    ContentPart::Image { .. } | ContentPart::Audio { .. } => {
+                        p.estimate_tokens().unwrap_or(1) as usize * 4
+                    }
                 })
                 .sum(),
         }
@@ -175,37 +237,6 @@ impl Message {
             content: Content::Parts(parts),
             tool_calls: Vec::new(),
             token_count: None,
-        }
-    }
-}
-
-impl ContentPart {
-    pub fn text(text: impl Into<String>) -> Self {
-        ContentPart::Text { text: text.into() }
-    }
-
-    pub fn image_url(url: impl Into<String>) -> Self {
-        ContentPart::Image {
-            url: Some(url.into()),
-            data: None,
-            media_type: None,
-            detail: None,
-        }
-    }
-
-    pub fn image_base64(data: impl Into<String>, media_type: impl Into<String>) -> Self {
-        ContentPart::Image {
-            url: None,
-            data: Some(data.into()),
-            media_type: Some(media_type.into()),
-            detail: None,
-        }
-    }
-
-    pub fn audio(data: impl Into<String>, media_type: impl Into<String>) -> Self {
-        ContentPart::Audio {
-            data: data.into(),
-            media_type: media_type.into(),
         }
     }
 }

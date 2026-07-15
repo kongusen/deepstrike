@@ -2042,7 +2042,7 @@ class RuntimeRunner:
     if not resume_mid_run and attachments:
       kernel_apply(runtime, self._pending_observations, {
         "kind": "add_history_message",
-        "message": {"role": "user", "content": list(attachments)},
+        "message": {"role": "user", "content": _normalize_attachment_parts(attachments)},
       })
 
     # I4: pre-fetch memory before the first LLM turn so the model sees it on turn 1 instead of
@@ -2892,6 +2892,27 @@ def _is_mid_run(events: list[SessionEntry]) -> bool:
   return last_started >= 0 and last_started > last_terminal
 
 
+def _normalize_attachment_parts(parts: list[dict]) -> list[dict]:
+  """Normalize SDK attachment dicts to kernel serde shape (`media_type`, not `mediaType`)."""
+  normalized: list[dict] = []
+  for part in parts:
+    p = dict(part)
+    if "mediaType" in p and "media_type" not in p:
+      p["media_type"] = p.pop("mediaType")
+    elif "mediaType" in p:
+      p.pop("mediaType", None)
+    if "callId" in p and "call_id" not in p:
+      p["call_id"] = p.pop("callId")
+    elif "callId" in p:
+      p.pop("callId", None)
+    if "isError" in p and "is_error" not in p:
+      p["is_error"] = p.pop("isError")
+    elif "isError" in p:
+      p.pop("isError", None)
+    normalized.append(p)
+  return normalized
+
+
 def _pair_orphan_tool_calls(messages: list[Message]) -> list[Message]:
   """Kernel-consumed meta-tools (e.g. ``pace``) are answered by a synthetic tool result the kernel
   keeps in its OWN history but never emits as a ``tool_completed`` session event (they never reach
@@ -2946,10 +2967,26 @@ def _replay_messages(events: list[SessionEntry], max_bytes: int | None = None) -
         if criteria
         else e["goal"]
       )
-      messages.append(Message(
-        role="user", content=user_text, tool_calls=[],
-        token_count=max(1, len(user_text) // 4),
-      ))
+      # Multimodal parity: the live seed of attachments is gated behind `not resume_mid_run`, so on
+      # resume the image/audio must be recovered from the persisted run_started event or it is lost.
+      raw_attachments = e.get("attachments") or []
+      if raw_attachments:
+        parts = [ContentPartObj(type="text", text=user_text)] if user_text else []
+        for a in _normalize_attachment_parts(raw_attachments):
+          parts.append(ContentPartObj(
+            type=a.get("type", "text"), text=a.get("text"), url=a.get("url"), data=a.get("data"),
+            media_type=a.get("media_type"), detail=a.get("detail"),
+            call_id=a.get("call_id"), output=a.get("output"), is_error=a.get("is_error"),
+          ))
+        messages.append(Message(
+          role="user", content=user_text, tool_calls=[], content_parts=parts,
+          token_count=max(1, len(user_text) // 4),
+        ))
+      else:
+        messages.append(Message(
+          role="user", content=user_text, tool_calls=[],
+          token_count=max(1, len(user_text) // 4),
+        ))
     elif kind == "compressed":
       summary = e.get("summary")
       if summary:
@@ -3008,10 +3045,26 @@ async def _replay_messages_async(
         if criteria
         else e["goal"]
       )
-      messages.append(Message(
-        role="user", content=user_text, tool_calls=[],
-        token_count=max(1, len(user_text) // 4),
-      ))
+      # Multimodal parity: the live seed of attachments is gated behind `not resume_mid_run`, so on
+      # resume the image/audio must be recovered from the persisted run_started event or it is lost.
+      raw_attachments = e.get("attachments") or []
+      if raw_attachments:
+        parts = [ContentPartObj(type="text", text=user_text)] if user_text else []
+        for a in _normalize_attachment_parts(raw_attachments):
+          parts.append(ContentPartObj(
+            type=a.get("type", "text"), text=a.get("text"), url=a.get("url"), data=a.get("data"),
+            media_type=a.get("media_type"), detail=a.get("detail"),
+            call_id=a.get("call_id"), output=a.get("output"), is_error=a.get("is_error"),
+          ))
+        messages.append(Message(
+          role="user", content=user_text, tool_calls=[], content_parts=parts,
+          token_count=max(1, len(user_text) // 4),
+        ))
+      else:
+        messages.append(Message(
+          role="user", content=user_text, tool_calls=[],
+          token_count=max(1, len(user_text) // 4),
+        ))
     elif kind == "compressed":
       # A committed page-out transaction is replayed from its archive event below. The compressed
       # record remains the durable fallback when no archive was committed.

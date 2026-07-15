@@ -5,7 +5,7 @@ from typing import AsyncIterator
 from http import HTTPStatus
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
-from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, openai_cached_prompt_tokens, to_openai_message_params
+from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, openai_cached_prompt_tokens, to_openai_message_params, UnsupportedModalityError
 from .replay import ReasoningReplayMixin
 from .anthropic_compatible import AnthropicCompatibleProvider
 from .vendor_profiles import QWEN_POLICIES as _QWEN_POLICIES, ANTHROPIC_VENDOR_PROFILES
@@ -119,6 +119,8 @@ class QwenProvider(ReasoningReplayMixin):
                         parts.append({"image": f"data:{getattr(p, 'media_type', None) or 'image/png'};base64,{data}"})
                     elif getattr(p, "url", None):
                         parts.append({"image": p.url})
+                elif ptype == "audio":
+                    raise UnsupportedModalityError("audio", "qwen")
             if not parts and turn.content:
                 parts.append({"text": turn.content})
             if parts:

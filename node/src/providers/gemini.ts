@@ -3,6 +3,7 @@ import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, Tool
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, normalizeToolCall, turnsWithStateAppended } from "./base.js"
 import { endpointProfiles } from "./profiles.js"
+import { UnsupportedModalityError } from "./base.js"
 
 const GEMINI_BASE = (endpointProfiles as Record<string, { baseURL: string }>)["gemini.google"].baseURL
 
@@ -61,6 +62,13 @@ export function buildContents(turns: Message[]): Content[] {
         else if (p.type === "image") {
           if (p.data) parts.push({ inlineData: { mimeType: p.mediaType ?? "image/png", data: p.data } })
           else if (p.url) parts.push({ fileData: { mimeType: p.mediaType ?? "image/png", fileUri: p.url } } as Part)
+        } else if (p.type === "audio") {
+          if (!p.data) throw new UnsupportedModalityError("audio", "gemini")
+          parts.push({ inlineData: { mimeType: p.mediaType ?? "audio/wav", data: p.data } })
+        } else if (p.type === "tool_result") {
+          // tool results are handled via functionResponse on tool role messages
+        } else {
+          throw new UnsupportedModalityError(String((p as { type?: string }).type ?? "unknown"), "gemini")
         }
       }
     } else if (msg.content) {

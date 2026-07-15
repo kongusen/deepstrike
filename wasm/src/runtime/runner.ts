@@ -1,5 +1,5 @@
 import type {
-  LLMProvider, Message, ToolCall, ToolResult, ToolSchema,
+  LLMProvider, Message, ToolCall, ToolResult, ToolSchema, ContentPart,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, WorkflowNodesSubmittedEvent, DoneEvent, ErrorEvent,
   ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
@@ -427,6 +427,7 @@ export class RuntimeRunner {
     goal: string
     criteria?: string[]
     extensions?: Record<string, unknown>
+    attachments?: import("../types.js").ContentPart[]
     inheritEvents?: Array<{ seq: number; event: SessionEvent }>
   }): AsyncIterable<StreamEvent> {
     const prior = req.inheritEvents ?? await this.opts.sessionLog.read(req.sessionId)
@@ -439,6 +440,7 @@ export class RuntimeRunner {
         criteria: req.criteria ?? [],
         agent_id: this.opts.agentId,
         system_prompt: this.opts.systemPrompt,
+        ...(req.attachments?.length ? { attachments: req.attachments } : {}),
       })
     }
     yield* this.execute(
@@ -448,6 +450,7 @@ export class RuntimeRunner {
       req.extensions,
       prior.length > 0 ? prior : undefined,
       midRun,
+      req.attachments,
     )
   }
 
@@ -459,7 +462,7 @@ export class RuntimeRunner {
     if (!startEntry) throw new Error(`No run_started event for session: ${sessionId}`)
     const start = startEntry.event as Extract<SessionEvent, { kind: "run_started" }>
 
-    yield* this.execute(sessionId, start.goal, start.criteria, extensions, events, true)
+    yield* this.execute(sessionId, start.goal, start.criteria, extensions, events, true, start.attachments)
   }
 
   async writeMemory(memory: MemoryRecord, sessionId?: string): Promise<void> {
@@ -675,6 +678,7 @@ export class RuntimeRunner {
     extensions?: Record<string, unknown>,
     priorEvents?: Array<{ seq: number; event: SessionEvent }>,
     resumeMidRun = false,
+    attachments?: import("../types.js").ContentPart[],
   ): AsyncIterable<StreamEvent> {
     this.interrupted = false
     this.cancellationReason = undefined
@@ -820,6 +824,14 @@ export class RuntimeRunner {
           } catch { /* skip */ }
         }
       }
+    }
+
+    // Multimodal upload: seed attachments before start_run (parity with Node/Python).
+    if (!resumeMidRun && attachments?.length) {
+      kernelApply(runtime, this.pendingObservations, {
+        kind: "add_history_message",
+        message: attachmentsToKernelMessage(attachments),
+      })
     }
 
     const sessionStart = Date.now()
@@ -2289,9 +2301,16 @@ async function replayMessages(
       const userText = e.criteria.length
         ? `${e.goal}\n\nCriteria:\n${e.criteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
         : e.goal
+      // Multimodal parity: the live seed of `attachments` is gated behind `!resumeMidRun`, so on
+      // resume the image/audio must be recovered from the persisted run_started event or it is lost.
+      const attachments = ((e as { attachments?: ContentPart[] }).attachments ?? [])
+      const contentParts: ContentPart[] | undefined = attachments.length
+        ? [...(userText ? [{ type: "text", text: userText } as ContentPart] : []), ...attachments]
+        : undefined
       messages.push({
         role: "user",
         content: userText,
+        ...(contentParts ? { contentParts } : {}),
         toolCalls: [],
         tokenCount: Math.max(1, Math.ceil(userText.length / 4)),
       })
@@ -2454,4 +2473,23 @@ function signalToKernelEvent(delivery: InboundSignalDelivery): Record<string, un
       timestamp_ms: Date.now(),
     },
   }
+}
+
+/** Convert SDK ContentParts (camelCase mediaType) to kernel serde shape (media_type). */
+function attachmentsToKernelMessage(parts: import("../types.js").ContentPart[]): Record<string, unknown> {
+  const content = parts.map(p => {
+    if (p.type === "image") {
+      return {
+        type: "image",
+        ...(p.url ? { url: p.url } : {}),
+        ...(p.data ? { data: p.data } : {}),
+        ...(p.mediaType ? { media_type: p.mediaType } : {}),
+        ...(p.detail ? { detail: p.detail } : {}),
+      }
+    }
+    if (p.type === "audio") return { type: "audio", data: p.data, media_type: p.mediaType }
+    if (p.type === "text") return { type: "text", text: p.text }
+    return { type: "text", text: "" }
+  })
+  return { role: "user", content }
 }

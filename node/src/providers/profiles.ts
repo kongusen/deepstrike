@@ -21,6 +21,8 @@ export interface ModelProfile {
   providerId: ProviderId
   defaultEndpointId: string
   contextWindow?: number
+  /** Agent-message modalities the ContentPart → provider serializer path can deliver.
+   *  Do not advertise video/pdf until ContentPart gains those variants. */
   modalities: {
     input: Array<"text" | "image" | "audio" | "video" | "pdf">
     output: Array<"text" | "embedding">
@@ -647,13 +649,13 @@ export const modelProfiles = {
   "qwen/qwen3-vl-embedding": {
     id: "qwen/qwen3-vl-embedding", providerId: "qwen", defaultEndpointId: "qwen.dashscope.multimodal-embeddings",
     contextWindow: 32_000,
-    modalities: { input: ["text", "image", "video"], output: ["embedding"] },
+    modalities: { input: ["text", "image"], output: ["embedding"] },
     tools: { supported: false }, reasoning: { supported: false, preserveAcrossToolTurns: false },
   },
   "qwen/qwen2.5-vl-embedding": {
     id: "qwen/qwen2.5-vl-embedding", providerId: "qwen", defaultEndpointId: "qwen.dashscope.multimodal-embeddings",
     contextWindow: 32_000,
-    modalities: { input: ["text", "image", "video"], output: ["embedding"] },
+    modalities: { input: ["text", "image"], output: ["embedding"] },
     tools: { supported: false }, reasoning: { supported: false, preserveAcrossToolTurns: false },
   },
   // ── Gemini ─────────────────────────────────────────────────────────────────
@@ -729,7 +731,7 @@ export const modelProfiles = {
   "gemini/gemini-embedding-2": {
     id: "gemini/gemini-embedding-2", providerId: "gemini", defaultEndpointId: "gemini.google.embeddings",
     contextWindow: 8_192,
-    modalities: { input: ["text", "image", "audio", "video", "pdf"], output: ["embedding"] },
+    modalities: { input: ["text", "image", "audio"], output: ["embedding"] },
     tools: { supported: false }, reasoning: { supported: false, preserveAcrossToolTurns: false },
   },
   // ── GLM ────────────────────────────────────────────────────────────────────

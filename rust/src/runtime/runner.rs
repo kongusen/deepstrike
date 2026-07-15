@@ -533,6 +533,20 @@ impl RuntimeRunner {
         extensions: Option<&'a serde_json::Value>,
         session_id: Option<&'a str>,
     ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<RunEvent>> + 'a>>> {
+        self.run_streaming_with_attachments(goal, criteria, extensions, session_id, &[])
+            .await
+    }
+
+    /// Like [`Self::run_streaming`], but seeds multimodal `attachments` into kernel history
+    /// before the first render (parity with Node/Python `run({ attachments })`).
+    pub async fn run_streaming_with_attachments<'a>(
+        &'a self,
+        goal: &'a str,
+        criteria: &'a [String],
+        extensions: Option<&'a serde_json::Value>,
+        session_id: Option<&'a str>,
+        attachments: &'a [deepstrike_core::types::message::ContentPart],
+    ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<RunEvent>> + 'a>>> {
         let session_id = session_id
             .map(str::to_string)
             .or_else(|| self.opts.session_id.clone())
@@ -550,6 +564,7 @@ impl RuntimeRunner {
                     criteria: criteria.to_vec(),
                     agent_id: self.opts.agent_id.clone(),
                     system_prompt: self.opts.system_prompt.clone(),
+                    attachments: attachments.to_vec(),
                 },
             )
             .await;
@@ -558,6 +573,7 @@ impl RuntimeRunner {
         let goal_owned = goal.to_string();
         let criteria_owned = criteria.to_vec();
         let extensions_owned = extensions.cloned();
+        let attachments_owned = attachments.to_vec();
         let prior_events = if prior.is_empty() { None } else { Some(prior) };
 
         Ok(Box::pin(self.execute_inner(
@@ -567,6 +583,7 @@ impl RuntimeRunner {
             extensions_owned,
             prior_events,
             mid_run,
+            attachments_owned,
         )))
     }
 
@@ -588,8 +605,13 @@ impl RuntimeRunner {
             .find(|e| matches!(e.event, SessionEvent::RunStarted { .. }))
             .ok_or_else(|| Error::Other(format!("no run_started for session: {session_id}")))?;
 
-        let (goal, criteria) = match &start.event {
-            SessionEvent::RunStarted { goal, criteria, .. } => (goal.clone(), criteria.clone()),
+        let (goal, criteria, attachments) = match &start.event {
+            SessionEvent::RunStarted {
+                goal,
+                criteria,
+                attachments,
+                ..
+            } => (goal.clone(), criteria.clone(), attachments.clone()),
             _ => unreachable!(),
         };
 
@@ -600,6 +622,7 @@ impl RuntimeRunner {
             extensions.cloned(),
             Some(prior),
             true,
+            attachments,
         )))
     }
 
@@ -615,6 +638,7 @@ impl RuntimeRunner {
         extensions: Option<serde_json::Value>,
         prior_events: Option<Vec<SessionEntry>>,
         resume_mid_run: bool,
+        attachments: Vec<deepstrike_core::types::message::ContentPart>,
     ) -> impl futures::Stream<Item = Result<RunEvent>> + '_ {
         try_stream! {
             self.interrupted.store(false, Ordering::Relaxed);
@@ -874,6 +898,18 @@ impl RuntimeRunner {
                     &mut kernel,
                     &mut pending_observations,
                     memory_policy_event(policy),
+                );
+            }
+
+            // Multimodal upload: seed attachments before start_run (parity with Node/Python).
+            if !resume_mid_run && !attachments.is_empty() {
+                kernel_apply(
+                    &mut kernel,
+                    &mut pending_observations,
+                    KernelInputEvent::AddHistoryMessage {
+                        message: Message::user_multimodal(attachments.clone()),
+                        tokens: None,
+                    },
                 );
             }
 

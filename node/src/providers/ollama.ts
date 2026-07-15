@@ -1,5 +1,5 @@
 import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
-import { normalizeToolCall, omitExtensionKeys, turnsWithStateAppended } from "./base.js"
+import { normalizeToolCall, omitExtensionKeys, turnsWithStateAppended, UnsupportedModalityError } from "./base.js"
 
 // Prefix-based policy for local models (first match wins)
 const OLLAMA_PREFIX_POLICIES: Array<[string, RuntimePolicy]> = [
@@ -38,6 +38,7 @@ export class OllamaProvider implements LLMProvider {
       if (m.contentParts?.length) {
         for (const p of m.contentParts) {
           if (p.type === "image" && p.data) images.push(p.data)
+          else if (p.type === "audio") throw new UnsupportedModalityError("audio", "ollama")
         }
       }
       result.push({ role: m.role, content: m.content, ...(images.length ? { images } : {}) })

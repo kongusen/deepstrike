@@ -120,7 +120,12 @@ where
     let mut messages = Vec::new();
     for (event_index, event) in events.iter().enumerate() {
         match event {
-            SessionEvent::RunStarted { goal, criteria, .. } => {
+            SessionEvent::RunStarted {
+                goal,
+                criteria,
+                attachments,
+                ..
+            } => {
                 let user_text = if criteria.is_empty() {
                     goal.clone()
                 } else {
@@ -135,9 +140,23 @@ where
                             .join("\n")
                     )
                 };
+                // Multimodal parity: the live path seeds `attachments` into history before the
+                // first render (gated behind `!resume_mid_run`), so on resume that seed is skipped
+                // and the image/audio must be recovered from the persisted `run_started` event —
+                // otherwise the model sees only the goal text and the attachment is silently lost.
+                let content = if attachments.is_empty() {
+                    Content::Text(user_text)
+                } else {
+                    let mut parts = Vec::with_capacity(attachments.len() + 1);
+                    if !user_text.is_empty() {
+                        parts.push(ContentPart::Text { text: user_text });
+                    }
+                    parts.extend(attachments.iter().cloned());
+                    Content::Parts(parts)
+                };
                 messages.push(Message {
                     role: Role::User,
-                    content: Content::Text(user_text),
+                    content,
                     tool_calls: vec![],
                     token_count: None,
                 });
@@ -305,6 +324,7 @@ mod tests {
                 criteria: vec![],
                 agent_id: None,
                 system_prompt: None,
+            attachments: vec![],
             },
             SessionEvent::PageOut {
                 turn: 1,
@@ -332,6 +352,40 @@ mod tests {
         });
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, Role::User);
+    }
+
+    #[test]
+    fn reconstruct_preserves_run_started_attachments_as_content_parts() {
+        use crate::runtime::session::SessionEvent;
+        use crate::types::message::{Content, ContentPart};
+
+        // A crash-and-resume rebuilds history from the session log rather than re-seeding the live
+        // attachments (that seed is gated behind `!resume_mid_run`). If reconstruction flattens the
+        // initial turn to text, the image is silently lost — this pins that it survives as Parts.
+        let events = vec![SessionEvent::RunStarted {
+            run_id: "r1".into(),
+            goal: "describe this".into(),
+            criteria: vec![],
+            agent_id: None,
+            system_prompt: None,
+            attachments: vec![ContentPart::image_base64("QUJD", "image/png")],
+        }];
+        let messages = reconstruct_messages_with_fallback(&events, "s1", 0, |_| {
+            Err(crate::context::fault::ContextFault::MissingArchive {
+                session_id: "s1".into(),
+                seq: 0,
+            })
+        });
+        assert_eq!(messages.len(), 1);
+        let Content::Parts(parts) = &messages[0].content else {
+            panic!("resumed multimodal run must reconstruct to Content::Parts, not flattened text");
+        };
+        assert!(matches!(&parts[0], ContentPart::Text { text } if text == "describe this"));
+        assert!(
+            parts
+                .iter()
+                .any(|p| matches!(p, ContentPart::Image { data: Some(d), .. } if d == "QUJD"))
+        );
     }
 
     #[test]

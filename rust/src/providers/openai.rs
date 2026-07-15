@@ -70,6 +70,16 @@ pub fn kimi(api_key: impl Into<String>) -> OpenAIProvider {
     OpenAIProvider::with_base_url(api_key, "moonshot-v1-8k", "https://api.moonshot.cn/v1")
 }
 
+/// Map an audio MIME type to OpenAI's `input_audio.format` (accepts "mp3" | "wav").
+/// `audio/mpeg` must become "mp3", not the raw "mpeg" subtype.
+fn openai_audio_format(media_type: &str) -> &str {
+    match media_type.split('/').nth(1).unwrap_or("wav") {
+        "mpeg" | "mp3" => "mp3",
+        "wav" | "wave" | "x-wav" => "wav",
+        other => other,
+    }
+}
+
 fn content_part_to_openai(part: &ContentPart) -> Value {
     match part {
         ContentPart::Text { text } => json!({ "type": "text", "text": text }),
@@ -101,8 +111,7 @@ fn content_part_to_openai(part: &ContentPart) -> Value {
         }
         ContentPart::Image { .. } => json!({ "type": "text", "text": "" }),
         ContentPart::Audio { data, media_type } => {
-            let fmt = media_type.split('/').nth(1).unwrap_or("wav");
-            json!({ "type": "input_audio", "input_audio": { "data": data, "format": fmt } })
+            json!({ "type": "input_audio", "input_audio": { "data": data, "format": openai_audio_format(media_type) } })
         }
         ContentPart::ToolResult { output, .. } => {
             json!({ "type": "text", "text": output })

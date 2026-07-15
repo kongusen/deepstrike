@@ -47,6 +47,9 @@ pub enum SessionEvent {
         criteria: Vec<String>,
         agent_id: Option<String>,
         system_prompt: Option<String>,
+        /// Multimodal parts seeded into history before the first render (Node/Python/WASM/Rust).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<crate::types::message::ContentPart>,
     },
     LlmCompleted {
         turn: u32,

@@ -8,7 +8,7 @@ except ImportError:  # pragma: no cover - exercised only when optional provider 
     google_genai = None
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent, UsageEvent
-from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, turns_with_state_appended
+from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, turns_with_state_appended, UnsupportedModalityError
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +103,14 @@ class GeminiProvider:
                             parts.append({"inline_data": {"mime_type": p.media_type or "image/png", "data": p.data}})
                         elif getattr(p, "url", None):
                             parts.append({"file_data": {"mime_type": p.media_type or "image/png", "file_uri": p.url}})
+                    elif p.type == "audio":
+                        if not getattr(p, "data", None):
+                            raise UnsupportedModalityError("audio", "gemini")
+                        parts.append({"inline_data": {"mime_type": p.media_type or "audio/wav", "data": p.data}})
+                    elif p.type == "tool_result":
+                        pass
+                    else:
+                        raise UnsupportedModalityError(getattr(p, "type", "unknown"), "gemini")
             elif msg.content:
                 parts.append({"text": msg.content})
             if parts:

@@ -283,7 +283,25 @@ export function messageToKernelMessage(message: Message): Record<string, unknown
   if (message.tokenCount !== undefined) {
     out.token_count = message.tokenCount
   }
-  out.content = message.content
+  // Multimodal: serialize typed content parts to the kernel `Content::Parts` shape when present
+  // (image/audio must survive the reconstruction→preload path, not just live ingress).
+  if (message.contentParts && message.contentParts.length > 0) {
+    out.content = message.contentParts.map(part => {
+      if (part.type === "text") return { type: "text", text: part.text }
+      if (part.type === "tool_result") {
+        return { type: "tool_result", call_id: part.callId, output: part.output, is_error: part.isError }
+      }
+      if (part.type === "image") {
+        return { type: "image", url: part.url, data: part.data, media_type: part.mediaType, detail: part.detail }
+      }
+      if (part.type === "audio") {
+        return { type: "audio", data: part.data, media_type: part.mediaType }
+      }
+      return { type: "text", text: message.content }
+    })
+  } else {
+    out.content = message.content
+  }
   return out
 }
 

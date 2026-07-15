@@ -58,7 +58,7 @@ impl AnthropicProvider {
         &self,
         context: &RenderedContext,
         strategy: CacheBreakpointStrategy,
-    ) -> (Option<Value>, Vec<Value>) {
+    ) -> Result<(Option<Value>, Vec<Value>)> {
         let native = self.native_assistant_blocks.lock().unwrap();
         context_to_anthropic(context, strategy, |content, tool_calls| {
             native
@@ -68,45 +68,45 @@ impl AnthropicProvider {
     }
 }
 
-fn content_part_to_anthropic(part: &ContentPart) -> Value {
+fn content_part_to_anthropic(part: &ContentPart) -> Result<Value> {
     match part {
-        ContentPart::Text { text } => json!({ "type": "text", "text": text }),
+        ContentPart::Text { text } => Ok(json!({ "type": "text", "text": text })),
         ContentPart::Image {
             url: Some(url),
             data: None,
             ..
-        } => {
-            json!({ "type": "image", "source": { "type": "url", "url": url } })
-        }
+        } => Ok(json!({ "type": "image", "source": { "type": "url", "url": url } })),
         ContentPart::Image {
             data: Some(data),
             media_type,
             ..
         } => {
             let mt = media_type.as_deref().unwrap_or("image/png");
-            json!({ "type": "image", "source": { "type": "base64", "media_type": mt, "data": data } })
+            Ok(json!({ "type": "image", "source": { "type": "base64", "media_type": mt, "data": data } }))
         }
-        ContentPart::Image { .. } => json!({ "type": "text", "text": "" }),
-        ContentPart::Audio { media_type, .. } => {
-            // Anthropic messages API doesn't accept audio natively; surface as placeholder
-            json!({ "type": "text", "text": format!("[audio: {media_type}]") })
-        }
+        ContentPart::Image { .. } => Ok(json!({ "type": "text", "text": "" })),
+        ContentPart::Audio { .. } => Err(Error::Provider(
+            "UnsupportedModality: audio is not supported by anthropic".into(),
+        )),
         ContentPart::ToolResult {
             call_id,
             output,
             is_error,
-        } => {
-            json!({ "type": "tool_result", "tool_use_id": call_id.as_str(), "content": output, "is_error": is_error })
-        }
+        } => Ok(
+            json!({ "type": "tool_result", "tool_use_id": call_id.as_str(), "content": output, "is_error": is_error }),
+        ),
     }
 }
 
-fn content_to_anthropic(content: &Content) -> Value {
+fn content_to_anthropic(content: &Content) -> Result<Value> {
     match content {
-        Content::Text(s) => json!(s),
+        Content::Text(s) => Ok(json!(s)),
         Content::Parts(parts) => {
-            let blocks: Vec<Value> = parts.iter().map(content_part_to_anthropic).collect();
-            json!(blocks)
+            let blocks: Vec<Value> = parts
+                .iter()
+                .map(content_part_to_anthropic)
+                .collect::<Result<Vec<_>>>()?;
+            Ok(json!(blocks))
         }
     }
 }
@@ -115,7 +115,7 @@ fn context_to_anthropic(
     context: &RenderedContext,
     strategy: CacheBreakpointStrategy,
     native_replay: impl Fn(&str, &[ToolCall]) -> Option<Vec<Value>>,
-) -> (Option<Value>, Vec<Value>) {
+) -> Result<(Option<Value>, Vec<Value>)> {
     let mut msgs = Vec::new();
     for message in &context.turns {
         if message.role == Role::Tool {
@@ -175,7 +175,7 @@ fn context_to_anthropic(
             Role::System => "assistant",
             Role::Tool => unreachable!(),
         };
-        msgs.push(json!({ "role": role, "content": content_to_anthropic(&message.content) }));
+        msgs.push(json!({ "role": role, "content": content_to_anthropic(&message.content)? }));
     }
     apply_message_cache_control(&mut msgs, strategy);
     // The volatile State turn is rendered AFTER the cache breakpoints, so the
@@ -188,9 +188,9 @@ fn context_to_anthropic(
         } else {
             "user"
         };
-        msgs.push(json!({ "role": role, "content": content_to_anthropic(&state.content) }));
+        msgs.push(json!({ "role": role, "content": content_to_anthropic(&state.content)? }));
     }
-    (build_system(context, strategy), msgs)
+    Ok((build_system(context, strategy), msgs))
 }
 
 /// Anthropic accepts at most this many cache_control breakpoints per request.
@@ -449,7 +449,7 @@ impl LLMProvider for AnthropicProvider {
     ) -> Result<Box<dyn Stream<Item = Result<StreamEvent>> + Send + Unpin>> {
         self.stream_native_blocks.lock().unwrap().clear();
         let strategy = resolve_cache_breakpoint_strategy(extensions);
-        let (system, msgs) = self.context_to_anthropic(context, strategy);
+        let (system, msgs) = self.context_to_anthropic(context, strategy)?;
         // Anchor the tool breakpoint only when system is not structured blocks.
         let tool_anchor = !matches!(&system, Some(Value::Array(_)));
         assert_cache_budget(system.as_ref(), tools.len())?;
@@ -743,7 +743,7 @@ mod tests {
         };
 
         let (system, messages) =
-            context_to_anthropic(&context, CacheBreakpointStrategy::Default, |_, _| None);
+            context_to_anthropic(&context, CacheBreakpointStrategy::Default, |_, _| None).unwrap();
         // system_stable present -> structured cache block, not a bare string.
         assert_eq!(
             system,
@@ -797,7 +797,7 @@ mod tests {
             budget_overflow: None,
         };
         let (system, _msgs) =
-            context_to_anthropic(&context, CacheBreakpointStrategy::Default, |_, _| None);
+            context_to_anthropic(&context, CacheBreakpointStrategy::Default, |_, _| None).unwrap();
         // 2 system + 2 message = 4 (tool breakpoint dropped) — at the limit, ok.
         assert!(assert_cache_budget(system.as_ref(), 3).is_ok());
     }
@@ -818,7 +818,7 @@ mod tests {
             budget_overflow: None,
         };
         let (_system, messages) =
-            context_to_anthropic(&context, CacheBreakpointStrategy::Default, |_, _| None);
+            context_to_anthropic(&context, CacheBreakpointStrategy::Default, |_, _| None).unwrap();
         // history (2) + state (1) appended last
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[2]["role"], "user");

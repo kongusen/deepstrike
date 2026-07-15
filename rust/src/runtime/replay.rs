@@ -73,6 +73,7 @@ mod tests {
                 criteria: vec![],
                 agent_id: None,
                 system_prompt: None,
+            attachments: vec![],
             },
         }];
         assert!(is_mid_run(&entries));
@@ -89,6 +90,7 @@ mod tests {
                     criteria: vec![],
                     agent_id: None,
                     system_prompt: None,
+                attachments: vec![],
                 },
             },
             SessionEntry {

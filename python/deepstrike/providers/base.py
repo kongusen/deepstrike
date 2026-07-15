@@ -9,6 +9,16 @@ from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent
 
 logger = logging.getLogger(__name__)
+
+
+class UnsupportedModalityError(ValueError):
+    """Raised when a ContentPart modality cannot be mapped to a provider wire format."""
+
+    def __init__(self, modality: str, provider: str):
+        self.modality = modality
+        self.provider = provider
+        super().__init__(f"UnsupportedModality: {modality} is not supported by {provider}")
+
 T = TypeVar("T")
 
 # Internal control flags that steer DeepStrike's own serialization/validation
@@ -126,7 +136,7 @@ def to_anthropic_content(msg: Message) -> str | list[dict]:
             elif p.url:
                 parts.append({"type": "image", "source": {"type": "url", "url": p.url}})
         elif p.type == "audio":
-            parts.append({"type": "text", "text": f"[audio: {p.media_type}]"})
+            raise UnsupportedModalityError("audio", "anthropic")
         elif p.type == "tool_result":
             parts.append({
                 "type": "tool_result",
@@ -135,6 +145,19 @@ def to_anthropic_content(msg: Message) -> str | list[dict]:
                 "is_error": p.is_error,
             })
     return parts or msg.content
+
+
+def _openai_audio_format(media_type: str | None) -> str:
+    """Map an audio MIME type to OpenAI's ``input_audio.format`` (accepts "mp3" | "wav").
+
+    ``audio/mpeg`` must become "mp3", not the raw "mpeg" subtype.
+    """
+    sub = (media_type or "audio/wav").split("/")[-1].lower()
+    if sub in ("mpeg", "mp3"):
+        return "mp3"
+    if sub in ("wav", "wave", "x-wav"):
+        return "wav"
+    return sub
 
 
 def to_openai_content(msg: Message) -> str | list[dict]:
@@ -155,8 +178,9 @@ def to_openai_content(msg: Message) -> str | list[dict]:
                 image_url["detail"] = p.detail
             parts.append({"type": "image_url", "image_url": image_url})
         elif p.type == "audio":
-            fmt = (p.media_type or "audio/wav").split("/")[-1]
-            parts.append({"type": "input_audio", "input_audio": {"data": p.data, "format": fmt}})
+            parts.append(
+                {"type": "input_audio", "input_audio": {"data": p.data, "format": _openai_audio_format(p.media_type)}}
+            )
         elif p.type == "tool_result":
             parts.append({"type": "text", "text": p.output or ""})
     return parts or msg.content
