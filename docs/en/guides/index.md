@@ -24,6 +24,7 @@ Guides are the Agent OS runtime-plane manual. Each page first explains where the
 | [Structured Output & Reducers](./structured-output-and-reducers) | Deterministic Compute Plane: uses schemas and reducers to reduce LLM uncertainty | `runtime/output_schema.py` |
 | [Governance](./governance) | Syscall Governance Plane: adjudicates permissions, quotas, and constraints before action | `governance/` |
 | [Provider Routing](./provider-routing) | Provider Plane: resolves kernel `model_hint` values to host-side model providers | `providers/` |
+| [Multimodal Input](./multimodal) | Content Plane: carries typed image/audio parts, weights their token cost, and serializes them per vendor | `providers/base.ts` |
 | [Session, Replay & Recovery](./session-replay-and-recovery) | Event Log / Recovery Plane: records evidence and enables recovery and reproduction | `runtime/session_log.py` |
 | [OS Profile & Runtime Snapshots](./os-profile-and-snapshots) | Runtime Policy / Observability Plane: summarizes profiles, policies, and dashboard state | `runtime/os_profile.py` |
 | [Signals & Reactive](./signals-and-reactive) | Attention / Signal Plane: injects external events into `state_turn` and peer coordination | `signals/` |

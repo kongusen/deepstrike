@@ -56,6 +56,7 @@ DeepStrike moves the control plane into `deepstrike-core`, a pure Rust state mac
 | **Replay and recovery** | Append-only `SessionLog`, provider replay envelopes, kernel observations, workflow resume, `wake(session_id)`, OS snapshots, and repair utilities. |
 | **Memory as an OS device** | Kernel-validated `write_memory` / `query_memory`, DreamStore integration, retrieval closure, idle consolidation, and memory write quotas. |
 | **Provider routing** | Kernel carries `model_hint`; the host resolves it to OpenAI, Anthropic, Gemini, DeepSeek, Kimi, Qwen, GLM, Minimax, Ollama, or your own provider. |
+| **Multimodal input** | Image and audio via `run({ attachments })` across all four SDKs, per-vendor serialization (Anthropic blocks, OpenAI `image_url` / `input_audio`, Gemini `inlineData`), detail-weighted token accounting, and `UnsupportedModalityError` instead of silent drops. |
 | **Cross-language runtime** | One kernel ABI and matching semantics across Node.js, Python, Rust, and WASM. |
 
 ## Why a Kernel?

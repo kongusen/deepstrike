@@ -1,7 +1,7 @@
 ---
 # code_refs: validated by scripts/check-docs-drift.mjs against python __all__ — symbols must exist.
 code_refs:
-  python: [RuntimeRunner, RuntimeOptions, AnthropicProvider, OpenAIProvider, OpenAIResponsesProvider, LLMProvider, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent, tool, LocalExecutionPlane, WorkflowSpec, WorkflowNodeSpec, Governance, AgentPool, ReactiveSession, RuntimeSignal, run_agent, run_fanout, DeepSeekProvider, QwenProvider, KimiProvider, OllamaProvider, RenderedContext, streaming_tool, read_file, WorkingMemory, DreamStore, MemoryEntry, MemoryPolicy, fanout_synthesize, generate_and_filter, verify_rules, workflow_spec_to_kernel, ResourceQuota, AgentRunSpec, HandoffBus, ContractDrivenHarness, HarnessLoop, SignalGateway, ScheduledPrompt]
+  python: [RuntimeRunner, RuntimeOptions, AnthropicProvider, OpenAIProvider, OpenAIResponsesProvider, LLMProvider, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent, tool, LocalExecutionPlane, WorkflowSpec, WorkflowNodeSpec, Governance, AgentPool, ReactiveSession, RuntimeSignal, run_agent, run_fanout, DeepSeekProvider, QwenProvider, KimiProvider, OllamaProvider, RenderedContext, streaming_tool, read_file, WorkingMemory, DreamStore, MemoryRecord, MemoryPolicy, fanout_synthesize, generate_and_filter, verify_rules, workflow_spec_to_kernel, ResourceQuota, AgentRunSpec, HandoffBus, AttemptLoop, AttemptJudge, SignalGateway, ScheduledPrompt]
 ---
 
 # Python API Index
@@ -58,7 +58,7 @@ Public exports for `from deepstrike import ...`, defined in `python/deepstrike/_
 | `WorkingMemory` | In-process scratch |
 | `DreamStore` | Protocol (implement as needed) |
 | `InMemoryDreamStore` | In-memory implementation |
-| `MemoryEntry` | Memory entry |
+| `MemoryRecord` | Memory record |
 | `MemoryPolicy` | Memory policy |
 
 ## Workflow
@@ -87,14 +87,14 @@ Public exports for `from deepstrike import ...`, defined in `python/deepstrike/_
 | `AgentPool` | Role pool |
 | `AgentRunSpec` | Sub-agent spec |
 | `HandoffBus` | Handoff bus |
-| `ContractDrivenHarness` | Contract harness |
+| `AttemptLoop` | Retry loop (body x judge x carry) |
 | `ReactiveSession` | Multi-peer reactive |
 
 ## Harness
 
 | Symbol | Description |
 |--------|-------------|
-| `HarnessLoop` | Retry harness |
+| `AttemptJudge` | Attempt verdict strategy |
 | `Criterion` | Judgment criterion |
 | `Verdict` | Judgment result |
 | `judge` | LLM judge |

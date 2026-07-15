@@ -82,7 +82,7 @@ memory_events = await session_log.read(
 
 | kind | 用途 |
 |------|------|
-| `run_started` / `run_terminal` | run 生命周期 |
+| `run_started` / `run_terminal` | run 生命周期；`run_started` 还携带任何多模态 `attachments`，在恢复时还原为一个 `Content::Parts` turn |
 | `llm_completed` | assistant 文本、tool_calls、provider_replay |
 | `tool_requested` / `tool_completed` | 工具证据 |
 | `compressed` / `context_renewed` | Context VM 压缩与 renewal |

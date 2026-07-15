@@ -1,7 +1,7 @@
 ---
 # code_refs: validated by scripts/check-docs-drift.mjs against python __all__ — symbols must exist.
 code_refs:
-  python: [RuntimeRunner, RuntimeOptions, AnthropicProvider, OpenAIProvider, OpenAIResponsesProvider, LLMProvider, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent, tool, LocalExecutionPlane, WorkflowSpec, WorkflowNodeSpec, Governance, AgentPool, ReactiveSession, RuntimeSignal, run_agent, run_fanout, DeepSeekProvider, QwenProvider, KimiProvider, OllamaProvider, RenderedContext, streaming_tool, read_file, WorkingMemory, DreamStore, MemoryEntry, MemoryPolicy, fanout_synthesize, generate_and_filter, verify_rules, workflow_spec_to_kernel, ResourceQuota, AgentRunSpec, HandoffBus, ContractDrivenHarness, HarnessLoop, SignalGateway, ScheduledPrompt]
+  python: [RuntimeRunner, RuntimeOptions, AnthropicProvider, OpenAIProvider, OpenAIResponsesProvider, LLMProvider, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent, tool, LocalExecutionPlane, WorkflowSpec, WorkflowNodeSpec, Governance, AgentPool, ReactiveSession, RuntimeSignal, run_agent, run_fanout, DeepSeekProvider, QwenProvider, KimiProvider, OllamaProvider, RenderedContext, streaming_tool, read_file, WorkingMemory, DreamStore, MemoryRecord, MemoryPolicy, fanout_synthesize, generate_and_filter, verify_rules, workflow_spec_to_kernel, ResourceQuota, AgentRunSpec, HandoffBus, AttemptLoop, AttemptJudge, SignalGateway, ScheduledPrompt]
 ---
 
 # Python API 索引
@@ -58,7 +58,7 @@ code_refs:
 | `WorkingMemory` | 进程内 scratch |
 | `DreamStore` | 协议（实现自定） |
 | `InMemoryDreamStore` | 内存实现 |
-| `MemoryEntry` | 记忆条目 |
+| `MemoryRecord` | 记忆记录 |
 | `MemoryPolicy` | 记忆策略 |
 
 ## Workflow
@@ -87,14 +87,14 @@ code_refs:
 | `AgentPool` | 角色 pool |
 | `AgentRunSpec` | Sub-agent spec |
 | `HandoffBus` | Handoff 总线 |
-| `ContractDrivenHarness` | 契约 harness |
+| `AttemptLoop` | 重试循环（body×judge×carry） |
 | `ReactiveSession` | 多 peer reactive |
 
 ## Harness
 
 | 符号 | 说明 |
 |------|------|
-| `HarnessLoop` | 重试 harness |
+| `AttemptJudge` | 尝试裁决策略 |
 | `Criterion` | 评判标准 |
 | `Verdict` | 评判结果 |
 | `judge` | LLM judge |

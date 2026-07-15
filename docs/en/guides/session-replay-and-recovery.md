@@ -81,7 +81,7 @@ Common events:
 
 | kind | Purpose |
 |------|---------|
-| `run_started` / `run_terminal` | run lifecycle |
+| `run_started` / `run_terminal` | run lifecycle; `run_started` also carries any multimodal `attachments`, restored as a `Content::Parts` turn on resume |
 | `llm_completed` | assistant text, tool_calls, provider_replay |
 | `tool_requested` / `tool_completed` | tool evidence |
 | `compressed` / `context_renewed` | Context VM compression and renewal |

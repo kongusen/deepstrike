@@ -39,6 +39,7 @@ function sidebar(prefix: '' | '/en'): SidebarGroup[] {
         { text: prefix ? 'Structured Output & Reducers' : '结构化输出与 Reducer', link: `${p}/guides/structured-output-and-reducers` },
         { text: 'Governance', link: `${p}/guides/governance` },
         { text: prefix ? 'Provider Routing' : 'Provider 路由', link: `${p}/guides/provider-routing` },
+        { text: prefix ? 'Multimodal Input' : '多模态输入', link: `${p}/guides/multimodal` },
         { text: prefix ? 'Session, Replay & Recovery' : 'Session、Replay 与恢复', link: `${p}/guides/session-replay-and-recovery` },
         { text: prefix ? 'OS Profile & Runtime Snapshots' : 'OS Profile 与运行时快照', link: `${p}/guides/os-profile-and-snapshots` },
         { text: prefix ? 'Signals & Reactive' : 'Signals 与 Reactive', link: `${p}/guides/signals-and-reactive` },

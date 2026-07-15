@@ -14,7 +14,7 @@ Memory is the Agent OS **Memory Plane**. It separates short-lived reasoning stat
 |-------|--------------|
 | Working | Scratch pad for the current run; no cross-session durability guarantee |
 | Session | Part of the evidence chain; auditable and recoverable |
-| Durable | DreamStore owns long-term knowledge and cross-session retrieval |
+| Durable | DreamStore is host-authoritative: it owns the full cross-session record set, computes retention host-side, and decides eviction and pinning |
 | Syscall | `write_memory` / `query_memory` are validated by the kernel before SDK execution |
 
 Memory is not "automatically append old messages." It is a policy-constrained knowledge device: what gets written, when it is written, and how it is retrieved must remain auditable and replayable.
@@ -153,6 +153,25 @@ RuntimeOptions(
     dream_system_prompt="Extract durable insights from sessions...",
 )
 ```
+
+---
+
+## Level 5: Recall journaling & retention
+
+Recall is a scored query with feedback, and forgetting is retention-based eviction — both host-authoritative.
+
+- **Recall journaling.** When `query_memory` routes a hit, the kernel derives the record's next `recall_count` from that hit and emits a `memory_recalled` observation. The host `DreamStore.recordRecall` folds it back, so a record that keeps getting recalled accrues usage without the kernel holding the durable ledger.
+- **Promotion on threshold.** Crossing `MemoryPolicy.promotion_recall_threshold` emits a `promotion_suggested` observation (edge-triggered — once, on the crossing), surfaced to the host via the `onPromotionSuggested` callback so a frequently-recalled record can be pinned into durable knowledge.
+- **Retention & eviction.** `memory_retention_score` ranks records by usage, kind, confidence, recency, and size (pinned records sort to the top). The host `DreamStore` uses it to evict cold records to capacity — forgetting is a deterministic ranking, not FIFO.
+
+```python
+RuntimeOptions(
+    memory_policy=MemoryPolicy(promotion_recall_threshold=3),
+    on_promotion_suggested=lambda rec: dream_store.set_pinned(rec.record_id, True),
+)
+```
+
+Host mirror of the scoring vocabulary: `node/src/memory/retention.ts`, `python/deepstrike/memory/retention.py`.
 
 ---
 

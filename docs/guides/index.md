@@ -24,6 +24,7 @@ Guides 是 Agent OS 的“运行面手册”：每篇都先说明能力位于哪
 | [结构化输出与 Reducer](./structured-output-and-reducers) | Deterministic Compute Plane：用 schema 和 reducer 降低 LLM 不确定性 | `runtime/output_schema.py` |
 | [Governance](./governance) | Syscall Governance Plane：在 action 前裁决权限、配额与约束 | `governance/` |
 | [Provider 路由](./provider-routing) | Provider Plane：把 kernel 的 `model_hint` 解析为宿主侧模型供应商 | `providers/` |
+| [多模态输入](./multimodal) | Content Plane：承载类型化的 image/audio part，为其 token 成本加权，并按厂商序列化 | `providers/base.ts` |
 | [Session、Replay 与恢复](./session-replay-and-recovery) | Event Log / Recovery Plane：记录证据链并支持恢复与复现 | `runtime/session_log.py` |
 | [OS Profile 与运行时快照](./os-profile-and-snapshots) | Runtime Policy / Observability Plane：汇总 profile、policy 与 dashboard 状态 | `runtime/os_profile.py` |
 | [Signals 与 Reactive](./signals-and-reactive) | Attention / Signal Plane：把外部事件接入 `state_turn` 与 peer 协作 | `signals/` |

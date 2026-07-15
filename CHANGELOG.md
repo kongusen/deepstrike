@@ -6,6 +6,35 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed — BREAKING: single-version kernel ABI v2
+
+- **Kernel snapshot ABI is a single version with no back-compat shims.** `KernelSnapshotV2` /
+  `KernelSnapshotPolicyV2` are renamed to `KernelSnapshot` / `KernelSnapshotPolicy`; the contract uses
+  `deny_unknown_fields` and rejects superseded wire shapes instead of parsing them. Kernel state rebuilds
+  from the accepted public-ABI transaction stream (portable snapshot replay), and all hosts are cut over
+  to ABI v2. Kernel reliability is bounded by explicit policy (byte-bounded snapshot replay), and memory
+  effects are transacted through the syscall gate.
+
+### Added
+
+- **Multimodal input (image + audio).** `run({ attachments })` across all four SDKs, with per-vendor
+  serialization (Anthropic image blocks, OpenAI `image_url` / `input_audio`, Gemini `inlineData`),
+  detail-weighted token accounting (image 85/255/680, audio by decoded bytes), and
+  `UnsupportedModalityError` in place of silent drops. Attachments persist in the session log and are
+  restored on resume. New guide: **Multimodal Input**.
+- **Memory lifecycle (M3/M4).** Recall journaling (`recall_count` via `memory_recalled` observations),
+  retention-based eviction (`memory_retention_score`), and promotion-on-recall-threshold
+  (`promotion_suggested`); the host `DreamStore` is authoritative for the durable record set.
+- **W2 deterministic replay lab** (`deepstrike-lab`) with a golden ReplayReport CI gate over the
+  compression pipeline (text and image compaction).
+
+### Fixed
+
+- Multimodal serialization edges: OpenAI-Responses no longer drops a data-only image missing its media
+  type; OpenAI `input_audio` format maps `audio/mpeg` → `mp3`.
+- Multimodal input was dropped on crash-and-resume (reconstruction flattened the initial turn to text);
+  attachments are now rebuilt as `Content::Parts` across all SDKs.
+
 ## [0.2.30] - 2026-06-21
 
 ### Changed — BREAKING: streamlined public API surface
