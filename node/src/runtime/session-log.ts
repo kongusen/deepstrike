@@ -1,11 +1,28 @@
-import { createWriteStream, createReadStream } from "node:fs"
+import { createReadStream } from "node:fs"
 import type { KernelPrimitive } from "./kernel-event-log.js"
-import { mkdir } from "node:fs/promises"
+import { access, mkdir, open as openFile } from "node:fs/promises"
 import { join } from "node:path"
 import { createInterface } from "node:readline"
 import type { ContentPart, ProviderReplay, ToolCall, ToolErrorKind } from "../types.js"
 import { primitiveForKind } from "./kernel-event-log.js"
 import { KeyedSerialExecutor } from "./reliability.js"
+import type {
+  DurableAppendReceipt,
+  KernelGenesisReceipt,
+  KernelOperationGenesis,
+  KernelTransaction,
+} from "./kernel-transaction-log.js"
+import {
+  KernelLogConflictError,
+  KernelLogIntegrityError,
+  verifyKernelOperationGenesis,
+  verifyKernelTransaction,
+} from "./kernel-transaction-log.js"
+
+export interface KernelTransactionEntry {
+  log_seq: number
+  transaction: KernelTransaction
+}
 
 export type RollbackReason =
   | { kind: "fatal_tool_error"; tool_name: string; error: string }
@@ -182,15 +199,33 @@ export interface SessionLog {
   append(sessionId: string, event: SessionEvent): Promise<number>
   read(sessionId: string, fromSeq?: number, primitiveFilter?: KernelPrimitive): Promise<Array<{ seq: number; event: SessionEvent }>>
   latestSeq(sessionId: string): Promise<number>
+  appendKernelGenesis(sessionId: string, genesis: KernelOperationGenesis): Promise<KernelGenesisReceipt>
+  readKernelGenesis(sessionId: string): Promise<KernelOperationGenesis | undefined>
+  compareAndAppendKernelTransaction(
+    sessionId: string,
+    expectedTransactionHead: string,
+    transaction: KernelTransaction,
+  ): Promise<DurableAppendReceipt>
+  readKernelTransactions(sessionId: string, fromStepSeq?: number): Promise<KernelTransactionEntry[]>
+  kernelTransactionHead(sessionId: string): Promise<string | undefined>
 }
 
 export class InMemorySessionLog implements SessionLog {
   private store = new Map<string, Array<{ seq: number; event: SessionEvent }>>()
+  private seqCounters = new Map<string, number>()
+  private genesisStore = new Map<string, { log_seq: number; genesis: KernelOperationGenesis }>()
+  private transactionStore = new Map<string, KernelTransactionEntry[]>()
+
+  private nextSeq(sessionId: string): number {
+    const seq = this.seqCounters.get(sessionId) ?? 0
+    this.seqCounters.set(sessionId, seq + 1)
+    return seq
+  }
 
   async append(sessionId: string, event: SessionEvent): Promise<number> {
     if (!this.store.has(sessionId)) this.store.set(sessionId, [])
     const entries = this.store.get(sessionId)!
-    const seq = entries.length
+    const seq = this.nextSeq(sessionId)
     entries.push({ seq, event })
     return seq
   }
@@ -205,10 +240,69 @@ export class InMemorySessionLog implements SessionLog {
   }
 
   async latestSeq(sessionId: string): Promise<number> {
-    const entries = this.store.get(sessionId)
-    return entries ? entries.length - 1 : -1
+    return (this.seqCounters.get(sessionId) ?? 0) - 1
+  }
+
+  async appendKernelGenesis(
+    sessionId: string,
+    genesis: KernelOperationGenesis,
+  ): Promise<KernelGenesisReceipt> {
+    verifyKernelOperationGenesis(genesis)
+    const existing = this.genesisStore.get(sessionId)
+    if (existing) {
+      if (existing.genesis.genesis_digest !== genesis.genesis_digest) {
+        throw new KernelLogConflictError("session already has a different kernel operation genesis")
+      }
+      return { log_seq: existing.log_seq, genesis_digest: genesis.genesis_digest }
+    }
+    const log_seq = this.nextSeq(sessionId)
+    this.genesisStore.set(sessionId, { log_seq, genesis })
+    return { log_seq, genesis_digest: genesis.genesis_digest }
+  }
+
+  async readKernelGenesis(sessionId: string): Promise<KernelOperationGenesis | undefined> {
+    return this.genesisStore.get(sessionId)?.genesis
+  }
+
+  async compareAndAppendKernelTransaction(
+    sessionId: string,
+    expectedTransactionHead: string,
+    transaction: KernelTransaction,
+  ): Promise<DurableAppendReceipt> {
+    verifyKernelTransaction(transaction)
+    const genesis = this.genesisStore.get(sessionId)?.genesis
+    if (!genesis) throw new KernelLogIntegrityError("kernel transaction requires a durable genesis")
+    if (transaction.operation_id !== genesis.operation_id) {
+      throw new KernelLogIntegrityError("kernel transaction operation_id does not match genesis")
+    }
+    const head = await this.kernelTransactionHead(sessionId)
+    if (head !== expectedTransactionHead || transaction.previous_transaction_digest !== head) {
+      throw new KernelLogConflictError("kernel transaction head changed before compare-and-append")
+    }
+    const log_seq = this.nextSeq(sessionId)
+    const entries = this.transactionStore.get(sessionId) ?? []
+    entries.push({ log_seq, transaction })
+    this.transactionStore.set(sessionId, entries)
+    return { log_seq, transaction_digest: transaction.transaction_digest }
+  }
+
+  async readKernelTransactions(sessionId: string, fromStepSeq = 1): Promise<KernelTransactionEntry[]> {
+    return (this.transactionStore.get(sessionId) ?? []).filter(
+      entry => entry.transaction.step_seq >= fromStepSeq,
+    )
+  }
+
+  async kernelTransactionHead(sessionId: string): Promise<string | undefined> {
+    const entries = this.transactionStore.get(sessionId) ?? []
+    return entries.at(-1)?.transaction.transaction_digest
+      ?? this.genesisStore.get(sessionId)?.genesis.genesis_digest
   }
 }
+
+type PersistedSessionRecord =
+  | { seq: number; event: SessionEvent }
+  | { seq: number; record_type: "kernel_genesis"; genesis: KernelOperationGenesis }
+  | { seq: number; record_type: "kernel_transaction"; transaction: KernelTransaction }
 
 // Single-writer per session. Safe for concurrent appends within one instance.
 // Cross-instance (multi-process) safety requires an external lock.
@@ -225,8 +319,11 @@ export class FileSessionLog implements SessionLog {
 
   private async nextSeq(sessionId: string): Promise<number> {
     if (!this.seqCounters.has(sessionId)) {
-      const existing = await this.read(sessionId)
-      this.seqCounters.set(sessionId, existing.length)
+      const existing = await this.readRecords(sessionId)
+      this.seqCounters.set(
+        sessionId,
+        existing.reduce((next, record) => Math.max(next, record.seq + 1), 0),
+      )
     }
     const seq = this.seqCounters.get(sessionId)!
     this.seqCounters.set(sessionId, seq + 1)
@@ -235,43 +332,159 @@ export class FileSessionLog implements SessionLog {
 
   async append(sessionId: string, event: SessionEvent): Promise<number> {
     return this.appends.run(sessionId, async () => {
-      await mkdir(this.dir, { recursive: true })
       const seq = await this.nextSeq(sessionId)
-      await new Promise<void>((resolve, reject) => {
-        const ws = createWriteStream(this.path(sessionId), { flags: "a" })
-        ws.write(JSON.stringify({ seq, event }) + "\n", err => {
-          if (err) reject(err)
-          else resolve()
-        })
-        ws.end()
-      })
+      await this.appendRecord(sessionId, { seq, event })
       return seq
     })
   }
 
   async read(sessionId: string, fromSeq = 0, primitiveFilter?: KernelPrimitive): Promise<Array<{ seq: number; event: SessionEvent }>> {
     const results: Array<{ seq: number; event: SessionEvent }> = []
+    for (const record of await this.readRecords(sessionId)) {
+      if (!("event" in record) || record.seq < fromSeq) continue
+      if (primitiveFilter && primitiveForKind(record.event.kind) !== primitiveFilter) continue
+      results.push({ seq: record.seq, event: record.event })
+    }
+    return results
+  }
+
+  async latestSeq(sessionId: string): Promise<number> {
+    const records = await this.readRecords(sessionId)
+    return records.reduce((latest, record) => Math.max(latest, record.seq), -1)
+  }
+
+  async appendKernelGenesis(
+    sessionId: string,
+    genesis: KernelOperationGenesis,
+  ): Promise<KernelGenesisReceipt> {
+    return this.appends.run(sessionId, async () => {
+      verifyKernelOperationGenesis(genesis)
+      const existing = (await this.readRecords(sessionId)).find(
+        (record): record is Extract<PersistedSessionRecord, { record_type: "kernel_genesis" }> =>
+          "record_type" in record && record.record_type === "kernel_genesis",
+      )
+      if (existing) {
+        if (existing.genesis.genesis_digest !== genesis.genesis_digest) {
+          throw new KernelLogConflictError("session already has a different kernel operation genesis")
+        }
+        return { log_seq: existing.seq, genesis_digest: genesis.genesis_digest }
+      }
+      const log_seq = await this.nextSeq(sessionId)
+      await this.appendRecord(sessionId, {
+        seq: log_seq,
+        record_type: "kernel_genesis",
+        genesis,
+      })
+      return { log_seq, genesis_digest: genesis.genesis_digest }
+    })
+  }
+
+  async readKernelGenesis(sessionId: string): Promise<KernelOperationGenesis | undefined> {
+    const record = (await this.readRecords(sessionId)).find(
+      (entry): entry is Extract<PersistedSessionRecord, { record_type: "kernel_genesis" }> =>
+        "record_type" in entry && entry.record_type === "kernel_genesis",
+    )
+    return record?.genesis
+  }
+
+  async compareAndAppendKernelTransaction(
+    sessionId: string,
+    expectedTransactionHead: string,
+    transaction: KernelTransaction,
+  ): Promise<DurableAppendReceipt> {
+    return this.appends.run(sessionId, async () => {
+      verifyKernelTransaction(transaction)
+      const records = await this.readRecords(sessionId)
+      const genesisRecord = records.find(
+        (record): record is Extract<PersistedSessionRecord, { record_type: "kernel_genesis" }> =>
+          "record_type" in record && record.record_type === "kernel_genesis",
+      )
+      if (!genesisRecord) throw new KernelLogIntegrityError("kernel transaction requires a durable genesis")
+      if (transaction.operation_id !== genesisRecord.genesis.operation_id) {
+        throw new KernelLogIntegrityError("kernel transaction operation_id does not match genesis")
+      }
+      const transactions = records.filter(
+        (record): record is Extract<PersistedSessionRecord, { record_type: "kernel_transaction" }> =>
+          "record_type" in record && record.record_type === "kernel_transaction",
+      )
+      const head = transactions.at(-1)?.transaction.transaction_digest
+        ?? genesisRecord.genesis.genesis_digest
+      if (head !== expectedTransactionHead || transaction.previous_transaction_digest !== head) {
+        throw new KernelLogConflictError("kernel transaction head changed before compare-and-append")
+      }
+      const log_seq = await this.nextSeq(sessionId)
+      await this.appendRecord(sessionId, {
+        seq: log_seq,
+        record_type: "kernel_transaction",
+        transaction,
+      })
+      return { log_seq, transaction_digest: transaction.transaction_digest }
+    })
+  }
+
+  async readKernelTransactions(sessionId: string, fromStepSeq = 1): Promise<KernelTransactionEntry[]> {
+    return (await this.readRecords(sessionId))
+      .filter(
+        (record): record is Extract<PersistedSessionRecord, { record_type: "kernel_transaction" }> =>
+          "record_type" in record
+          && record.record_type === "kernel_transaction"
+          && record.transaction.step_seq >= fromStepSeq,
+      )
+      .map(record => ({ log_seq: record.seq, transaction: record.transaction }))
+  }
+
+  async kernelTransactionHead(sessionId: string): Promise<string | undefined> {
+    const records = await this.readRecords(sessionId)
+    const transaction = records.filter(
+      (record): record is Extract<PersistedSessionRecord, { record_type: "kernel_transaction" }> =>
+        "record_type" in record && record.record_type === "kernel_transaction",
+    ).at(-1)
+    if (transaction) return transaction.transaction.transaction_digest
+    return records.find(
+      (record): record is Extract<PersistedSessionRecord, { record_type: "kernel_genesis" }> =>
+        "record_type" in record && record.record_type === "kernel_genesis",
+    )?.genesis.genesis_digest
+  }
+
+  private async appendRecord(sessionId: string, record: PersistedSessionRecord): Promise<void> {
+    await mkdir(this.dir, { recursive: true })
+    const path = this.path(sessionId)
+    let isNewFile = false
+    try {
+      await access(path)
+    } catch {
+      isNewFile = true
+    }
+    const file = await openFile(path, "a")
+    try {
+      await file.appendFile(`${JSON.stringify(record)}\n`, "utf8")
+      await file.sync()
+    } finally {
+      await file.close()
+    }
+    if (isNewFile) {
+      const directory = await openFile(this.dir, "r")
+      try {
+        await directory.sync()
+      } finally {
+        await directory.close()
+      }
+    }
+  }
+
+  private async readRecords(sessionId: string): Promise<PersistedSessionRecord[]> {
+    const records: PersistedSessionRecord[] = []
     try {
       const rl = createInterface({
         input: createReadStream(this.path(sessionId)),
         crlfDelay: Infinity,
       })
       for await (const line of rl) {
-        if (!line.trim()) continue
-        const entry = JSON.parse(line) as { seq: number; event: SessionEvent }
-        if (entry.seq >= fromSeq) {
-          if (primitiveFilter && primitiveForKind(entry.event.kind) !== primitiveFilter) continue
-          results.push(entry)
-        }
+        if (line.trim()) records.push(JSON.parse(line) as PersistedSessionRecord)
       }
     } catch (err: unknown) {
       if ((err as { code?: string }).code !== "ENOENT") throw err
     }
-    return results
-  }
-
-  async latestSeq(sessionId: string): Promise<number> {
-    const entries = await this.read(sessionId)
-    return entries.reduce((latest, entry) => Math.max(latest, entry.seq), -1)
+    return records
   }
 }

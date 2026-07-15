@@ -26,7 +26,26 @@ export type { KernelDiagnostics, KernelSnapshotV2 } from "./runtime/kernel-step.
 export { LocalExecutionPlane } from "./runtime/execution-plane.js"
 export type { ExecutionPlane, RunContext } from "./runtime/execution-plane.js"
 export { InMemorySessionLog, FileSessionLog } from "./runtime/session-log.js"
-export type { SessionLog, SessionEvent } from "./runtime/session-log.js"
+export type { KernelTransactionEntry, SessionLog, SessionEvent } from "./runtime/session-log.js"
+export {
+  KERNEL_LOG_RECORD_VERSION,
+  KernelLogConflictError,
+  KernelLogIntegrityError,
+  canonicalKernelJson,
+  createKernelOperationGenesis,
+  createKernelTransaction,
+  kernelRecordDigest,
+  verifyKernelOperationGenesis,
+  verifyKernelTransaction,
+} from "./runtime/kernel-transaction-log.js"
+export type {
+  DurableAppendReceipt,
+  KernelGenesisReceipt,
+  KernelOperationGenesis,
+  KernelOperationGenesisBody,
+  KernelTransaction,
+  KernelTransactionBody,
+} from "./runtime/kernel-transaction-log.js"
 export { InMemoryGroupBudgetStore, GroupBudgetScope } from "./runtime/run-group.js"
 export type {
   RunGroup, GroupBudgetStore, GroupLedger, GroupCharge, GroupMember,

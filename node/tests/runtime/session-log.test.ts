@@ -2,8 +2,73 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { InMemorySessionLog, FileSessionLog } from "../../src/runtime/session-log.js"
+import {
+  KernelLogConflictError,
+  KernelLogIntegrityError,
+  createKernelOperationGenesis,
+  createKernelTransaction,
+} from "../../src/runtime/kernel-transaction-log.js"
+
+async function genesis(operationId = "op-1") {
+  return createKernelOperationGenesis({
+    abi_version: 2,
+    operation_id: operationId,
+    initial_scheduler_policy: { max_tokens: 8_000 },
+    resolved_runtime_defaults: { max_input_bytes: 16_777_216 },
+    default_policy_version: 1,
+  })
+}
+
+async function transaction(previousTransactionDigest: string, stepSeq = 1) {
+  return createKernelTransaction({
+    operation_id: "op-1",
+    step_seq: stepSeq,
+    base_generation: stepSeq - 1,
+    input: { version: 2, operation_id: "op-1", event_id: `event-${stepSeq}` },
+    step: { version: 2, operation_id: "op-1", step_seq: stepSeq, actions: [] },
+    previous_transaction_digest: previousTransactionDigest,
+  })
+}
 
 describe("InMemorySessionLog", () => {
+  it("fences authoritative transactions without coupling projection appends", async () => {
+    const log = new InMemorySessionLog()
+    const operationGenesis = await genesis()
+    const genesisReceipt = await log.appendKernelGenesis("s1", operationGenesis)
+    expect(genesisReceipt.genesis_digest).toBe(operationGenesis.genesis_digest)
+
+    await log.append("s1", { kind: "run_started", run_id: "r1", goal: "a", criteria: [] })
+    expect(await log.kernelTransactionHead("s1")).toBe(operationGenesis.genesis_digest)
+
+    const first = await transaction(operationGenesis.genesis_digest)
+    const firstReceipt = await log.compareAndAppendKernelTransaction(
+      "s1",
+      operationGenesis.genesis_digest,
+      first,
+    )
+    expect(firstReceipt.transaction_digest).toBe(first.transaction_digest)
+    expect(await log.kernelTransactionHead("s1")).toBe(first.transaction_digest)
+
+    const stale = await transaction(operationGenesis.genesis_digest, 2)
+    await expect(
+      log.compareAndAppendKernelTransaction("s1", operationGenesis.genesis_digest, stale),
+    ).rejects.toBeInstanceOf(KernelLogConflictError)
+    expect(await log.readKernelTransactions("s1")).toEqual([{ log_seq: firstReceipt.log_seq, transaction: first }])
+  })
+
+  it("rejects transaction payload tampering before append", async () => {
+    const log = new InMemorySessionLog()
+    const operationGenesis = await genesis()
+    await log.appendKernelGenesis("s1", operationGenesis)
+    const valid = await transaction(operationGenesis.genesis_digest)
+    const tampered = { ...valid, input: { ...valid.input, event_id: "tampered" } }
+
+    await expect(
+      log.compareAndAppendKernelTransaction("s1", operationGenesis.genesis_digest, tampered),
+    ).rejects.toBeInstanceOf(KernelLogIntegrityError)
+    expect(await log.readKernelTransactions("s1")).toEqual([])
+  })
+
   it("append returns monotonic seq starting at 0", async () => {
     const log = new InMemorySessionLog()
     const s0 = await log.append("s1", { kind: "run_started", run_id: "r1", goal: "hi", criteria: [] })
@@ -88,6 +153,28 @@ describe("FileSessionLog", () => {
     const events = await log2.read("sess-1")
     expect(events).toHaveLength(2)
     expect(events[1].event.kind).toBe("tool_completed")
+  })
+
+  it("persists the authoritative genesis and transaction substream", async () => {
+    const log = new FileSessionLog(dir)
+    const operationGenesis = await genesis()
+    const genesisReceipt = await log.appendKernelGenesis("sess-kernel", operationGenesis)
+    await log.append("sess-kernel", { kind: "run_started", run_id: "r1", goal: "a", criteria: [] })
+    const first = await transaction(operationGenesis.genesis_digest)
+    const receipt = await log.compareAndAppendKernelTransaction(
+      "sess-kernel",
+      operationGenesis.genesis_digest,
+      first,
+    )
+
+    const reopened = new FileSessionLog(dir)
+    expect(await reopened.readKernelGenesis("sess-kernel")).toEqual(operationGenesis)
+    expect(await reopened.readKernelTransactions("sess-kernel")).toEqual([
+      { log_seq: receipt.log_seq, transaction: first },
+    ])
+    expect(await reopened.kernelTransactionHead("sess-kernel")).toBe(first.transaction_digest)
+    expect(genesisReceipt.log_seq).toBe(0)
+    expect(receipt.log_seq).toBe(2)
   })
 
   it("read returns empty for missing session file", async () => {
