@@ -42,7 +42,9 @@ fn spool_filename(call_id: &str, content: &str) -> String {
 }
 
 fn simple_hash(content: &str) -> u64 {
-    content.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(u64::from(b)))
+    content.bytes().fold(0u64, |acc, b| {
+        acc.wrapping_mul(31).wrapping_add(u64::from(b))
+    })
 }
 
 #[cfg(test)]

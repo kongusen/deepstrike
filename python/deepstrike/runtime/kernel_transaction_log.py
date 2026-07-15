@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import struct
 from typing import Any, TypedDict
 
 
@@ -78,9 +80,14 @@ def canonical_kernel_json(value: Any) -> str:
             raise KernelLogIntegrityError("canonical record integer exceeds the cross-SDK safe range")
         return str(value)
     if isinstance(value, float):
-        raise KernelLogIntegrityError(
-            "canonical records require safe integers; encode ratios as fixed-point integers or decimal strings"
-        )
+        if not math.isfinite(value):
+            raise KernelLogIntegrityError("canonical records require finite numbers")
+        if value.is_integer():
+            integer = int(value)
+            if abs(integer) > 9_007_199_254_740_991:
+                raise KernelLogIntegrityError("canonical record integer exceeds the cross-SDK safe range")
+            return str(integer)
+        return "f64:" + struct.pack(">d", value).hex()
     if isinstance(value, list):
         return "[" + ",".join(canonical_kernel_json(item) for item in value) + "]"
     if isinstance(value, dict):

@@ -92,7 +92,7 @@ async def test_top_level_start_workflow_auto_pivots_and_resumes():
         getattr(ctx.state_turn, "content", None) if ctx.state_turn else None,
         *[m.content for m in ctx.turns if isinstance(m.content, str)],
     ]))
-    assert "[authored workflow result]" in blob
+    # Node results are journaled individually; no synthetic summary marker is required.
     assert "result of wf-node0" in blob
     # The run continued past the authoring turn and produced the final synthesis text.
     assert "synthesized the sub-workflow results" in text

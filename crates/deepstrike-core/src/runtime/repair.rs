@@ -167,19 +167,17 @@ where
                     });
                 }
             }
-            SessionEvent::Compressed {
-                turn,
-                summary,
-                ..
-            } => {
-                let page_out_will_supply_archive = events[event_index + 1..].iter().any(|event| matches!(
+            SessionEvent::Compressed { turn, summary, .. } => {
+                let page_out_will_supply_archive = events[event_index + 1..].iter().any(|event| {
+                    matches!(
                         event,
                         SessionEvent::PageOut {
                             turn: page_out_turn,
                             archive_ref: Some(reference),
                             ..
                         } if page_out_turn == turn && !reference.is_empty()
-                    ));
+                    )
+                });
                 if !page_out_will_supply_archive {
                     if let Some(sum) = summary {
                         let system_text = format!("[Compressed context: turn {}]\n{}", turn, sum);
@@ -197,32 +195,33 @@ where
                 summary,
                 archive_ref: Some(archive_ref),
                 ..
-            } if !archive_ref.is_empty() => {
-                match load_archive(archive_ref) {
-                    Ok(archived_messages) => {
-                        for mut message in archived_messages {
-                            if let Content::Text(text) = &mut message.content {
-                                *text = sanitize_recovery_text_bounded(text, max_bytes);
-                            }
-                            messages.push(message);
+            } if !archive_ref.is_empty() => match load_archive(archive_ref) {
+                Ok(archived_messages) => {
+                    for mut message in archived_messages {
+                        if let Content::Text(text) = &mut message.content {
+                            *text = sanitize_recovery_text_bounded(text, max_bytes);
                         }
-                    }
-                    Err(_) => {
-                        if let Some(summary) = summary {
-                            messages.push(Message {
-                                role: Role::System,
-                                content: Content::Text(format!(
-                                    "[Compressed context: turn {}]\n{}",
-                                    turn, summary
-                                )),
-                                tool_calls: vec![],
-                                token_count: None,
-                            });
-                        }
+                        messages.push(message);
                     }
                 }
-            }
-            SessionEvent::Rollbacked { checkpoint_history_len, .. } => {
+                Err(_) => {
+                    if let Some(summary) = summary {
+                        messages.push(Message {
+                            role: Role::System,
+                            content: Content::Text(format!(
+                                "[Compressed context: turn {}]\n{}",
+                                turn, summary
+                            )),
+                            tool_calls: vec![],
+                            token_count: None,
+                        });
+                    }
+                }
+            },
+            SessionEvent::Rollbacked {
+                checkpoint_history_len,
+                ..
+            } => {
                 messages.truncate(*checkpoint_history_len as usize);
             }
             _ => {}

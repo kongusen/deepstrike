@@ -7,6 +7,10 @@ token tiering). Spec: [`.local-docs/specs/benchmark-harness.md`](../.local-docs/
 This is the **independent benchmark tree**. It deliberately lives outside `node/` so it can grow
 into a 4-SDK consumer without re-housing later.
 
+> **Capability evals (BFCL / GAIA / WebArena):** task-completion suites live under
+> [`capability/`](capability/README.md) and are separate from mechanism A/B scenarios.
+> Quick start: `node capability/cli/capability.mjs bfcl --provider deepseek --limit 8`
+
 ## Status
 
 **Done:**

@@ -19,7 +19,7 @@
  * (mirrored in Python).
  */
 import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
-import type { DreamStore, MemoryEntry } from "../src/memory/index.js"
+import type { DreamStore, MemoryRecall } from "../src/memory/index.js"
 import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
 import { kernelEvents } from "@deepstrike/wasm-kernel"
 
@@ -129,12 +129,20 @@ describe("knowledgeBudgetRatio reaches the kernel via configure_run (K2)", () =>
 describe("preQueryMemory prefetch lands in history, not knowledge", () => {
   it("emits add_history_message, never add_knowledge_message or page_in", async () => {
     kernelEvents.length = 0
+    const scope = { tenant_id: "agent-prequery", namespace: "prefetch" }
     const dreamStore: DreamStore = {
       loadSessions: async () => [],
       loadMemories: async () => [],
       commit: async () => {},
       saveSession: async () => {},
-      search: async () => [{ text: "PREFETCHED_LONGTERM_FACT", score: 0.9, metadata: null } satisfies MemoryEntry],
+      search: async () => [{
+        record: {
+          record_id: "record-prefetch", scope, name: "prefetch", kind: "reference",
+          content: "PREFETCHED_LONGTERM_FACT", description: "fixture",
+          provenance: { author: "host", trust: "host_verified", evidence_refs: [] },
+          created_at: 1, updated_at: 1, recall_count: 0, confidence: 0.9, links: [], pinned: false,
+        }, score: 0.9, why: "fixture",
+      } satisfies MemoryRecall],
     }
 
     const provider: LLMProvider = {
@@ -152,8 +160,9 @@ describe("preQueryMemory prefetch lands in history, not knowledge", () => {
       executionPlane: new LocalExecutionPlane(),
       maxTokens: 2048,
       agentId: "agent-prequery",
+      memoryScope: scope,
       dreamStore,
-      preQueryMemory: () => ["past facts"],
+      preQueryMemory: () => [{ scope, query: "past facts", top_k: 5, kinds: [] }],
     })
 
     for await (const _e of runner.run({ sessionId: "prequery", goal: "use the fact" })) { /* drain */ }

@@ -234,15 +234,18 @@ def kernel_observation_to_session_event(
         return {
             "kind": "memory_written",
             "turn": t,
-            "memory_id": obs.get("memory_id") or "",
+            "record_id": obs.get("record_id") or "",
+            "scope": obs.get("scope") or {"tenant_id": "", "namespace": ""},
             "memory_kind": obs.get("memory_kind") or "",
+            "name": obs.get("name") or "",
             "size_bytes": obs.get("size_bytes") or 0,
         }
     if kind == "memory_queried":
         return {
             "kind": "memory_queried",
             "turn": t,
-            "query_context": obs.get("query_context") or "",
+            "scope": obs.get("scope") or {"tenant_id": "", "namespace": ""},
+            "query": obs.get("query") or "",
             "requested_k": obs.get("requested_k") or 0,
             "requires_async_response": obs.get("requires_async_response") or False,
         }
@@ -250,7 +253,15 @@ def kernel_observation_to_session_event(
         return {
             "kind": "memory_validation_failed",
             "turn": t,
-            "memory_id": obs.get("memory_id") or "",
+            "record_id": obs.get("record_id") or "",
             "error": obs.get("error") or "",
+        }
+    if kind == "workflow_completed":
+        node_outcomes = list(obs.get("node_outcomes") or [])
+        return {
+            "kind": "workflow_completed",
+            "turn": t,
+            "node_outcomes": node_outcomes,
+            "total_nodes": len(node_outcomes),
         }
     return None

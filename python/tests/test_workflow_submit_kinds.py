@@ -95,6 +95,6 @@ async def test_agent_submitted_tournament_runs_end_to_end():
     runner = _runner(orch)
     spec = WorkflowSpec(nodes=[WorkflowNodeSpec(task="coordinate the tournament", role="plan")])
     outcome = await runner.run_workflow(spec)
-    assert "wf-node0" in outcome["completed"]  # coordinator completed
+    assert "wf-node0" in [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]  # coordinator completed
     # the submitted tournament expanded into entrants + a judge over the two candidates
     assert any("CANDIDATE left" in g for g in orch.goals), "a judge ran over the submitted tournament"

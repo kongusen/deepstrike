@@ -29,7 +29,7 @@ from deepstrike.skills.loader import read_skill_file
 if TYPE_CHECKING:
   from deepstrike.governance import Governance
   from deepstrike.knowledge.source import KnowledgeSource
-  from deepstrike.memory.protocols import DreamStore
+  from deepstrike.memory.protocols import DreamStore, MemoryScope
   from deepstrike.runtime.large_result_spool import LargeResultSpool
   from deepstrike.runtime.reliability import OperationContext
 
@@ -76,6 +76,7 @@ def _maybe_warn_failure_shaped_chunk(tool_name: str, delta_text: str) -> None:
 class RunContext:
   operation: "OperationContext | None" = None
   agent_id: str | None = None
+  memory_scope: "MemoryScope | None" = None
   skill_dir: Path | None = None
   dream_store: "DreamStore | None" = None
   knowledge_source: "KnowledgeSource | None" = None
@@ -134,13 +135,16 @@ class LocalExecutionPlane:
       yield ToolResultEvent(call_id=c.id, name=c.name, content=output, is_error=content is None)
 
     for c in memory_calls:
-      if ctx.dream_store and ctx.agent_id:
+      if ctx.dream_store and ctx.agent_id and ctx.memory_scope:
+        from deepstrike.memory.protocols import MemoryQuery
         args = _parse_json(c.arguments)
         query = str(args.get("query", ""))
         top_k = int(args.get("top_k", 5))
-        entries = await ctx.dream_store.search(ctx.agent_id, query, top_k)
+        entries = await ctx.dream_store.search(ctx.agent_id, MemoryQuery(
+          scope=ctx.memory_scope, query=query, top_k=top_k,
+        ))
         output = (
-          "\n---\n".join(f"[score={e.score:.3f}] {e.text}" for e in entries)
+          "\n---\n".join(f"[memory record_id={e.record.record_id} score={e.score:.3f}] {e.record.content}" for e in entries)
           if entries
           else "No relevant memories found."
         )
@@ -233,6 +237,7 @@ class LocalExecutionPlane:
     call_ctx = RunContext(
       operation=ctx.operation,
       agent_id=ctx.agent_id,
+      memory_scope=ctx.memory_scope,
       skill_dir=ctx.skill_dir,
       dream_store=ctx.dream_store,
       knowledge_source=ctx.knowledge_source,

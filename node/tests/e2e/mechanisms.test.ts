@@ -409,7 +409,7 @@ describe("E2E mechanism contract tests", () => {
         phase3BigFillDone = true
         return [
           { type: "text_delta", delta: "." },
-          { type: "tool_call", id: `autofill-${call}`, name: "fill", arguments: { size: 5000, kind: "auto" } },
+          { type: "tool_call", id: `autofill-${call}`, name: "fill", arguments: { size: 9000, kind: "auto" } },
           { type: "tool_call", id: `seed-${call}`, name: "seed_anchor", arguments: { value: RETAIN_ANCHOR } },
         ]
       }

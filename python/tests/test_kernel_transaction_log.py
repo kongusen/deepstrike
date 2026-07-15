@@ -36,13 +36,15 @@ def transaction(previous_digest: str, step_seq: int = 1):
     )
 
 
-def test_canonical_kernel_json_sorts_keys_and_rejects_binary_floats():
+def test_canonical_kernel_json_sorts_keys_and_encodes_binary_floats():
     assert canonical_kernel_json({"z": 1, "a": [True, "雪"]}) == '{"a":[true,"雪"],"z":1}'
     assert kernel_record_digest({"z": 1, "a": [True, "雪"]}) == (
         "74ffaa09c9570f87244813a5b15514369f7b1a8996e3e80017585b4df246c1f7"
     )
-    with pytest.raises(KernelLogIntegrityError):
-        canonical_kernel_json({"ratio": 0.5})
+    assert canonical_kernel_json({"ratio": 0.5}) == '{"ratio":f64:3fe0000000000000}'
+    assert canonical_kernel_json(1.0) == "1"
+    with pytest.raises(KernelLogIntegrityError, match="finite"):
+        canonical_kernel_json(float("inf"))
 
 
 def test_validates_digest_chain_and_derives_regex_free_operation_cursor():

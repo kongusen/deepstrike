@@ -45,6 +45,9 @@ class RecordingLeasedSource implements SignalSource {
         signalType: "event",
         urgency: "normal",
         payload: { goal: "leased" },
+        deadlineMs: Date.now() + 60_000,
+        coalesceKey: "leased-updates",
+        coalescedCount: 2,
       },
     }
   }

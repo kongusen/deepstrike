@@ -2,7 +2,7 @@
 # code_refs: validated by scripts/check-docs-drift.mjs against live source — symbols must exist.
 code_refs:
   rust: [KernelInput, KernelObservation, KernelRuntime, Syscall, Disposition]
-  python: [RenderedContext, MemoryPolicy, ResourceQuota, SchedulerBudget]
+  python: [RenderedContext, MemoryPolicy, ResourceQuota, SchedulerPolicy]
 ---
 
 # Kernel ABI

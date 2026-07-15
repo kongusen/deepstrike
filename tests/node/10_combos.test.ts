@@ -3,9 +3,10 @@
  */
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { tool, WorkingMemory, Governance, EvalLoopHarness, SignalGateway, ScheduledPrompt } from "@deepstrike/sdk"
+import { tool, WorkingMemory, Governance, SignalGateway, ScheduledPrompt } from "@deepstrike/sdk"
+import { AttemptLoop, RuntimeAttemptBody, VerdictFnJudge } from "@deepstrike/sdk/harness"
 import type { ErrorEvent, DoneEvent, ToolResultEvent } from "@deepstrike/sdk"
-import { makeAgent, makeProvider, collectEvents, text, MockDreamStore, MockKnowledgeSource, SKILL_DIR } from "./helpers.js"
+import { makeAgent, makeProvider, collectEvents, text, memoryRecord, MockDreamStore, MockKnowledgeSource, SKILL_DIR } from "./helpers.js"
 
 // ─── A: Tools + Governance ────────────────────────────────────────────────
 
@@ -114,9 +115,9 @@ describe("Skills + Tools", () => {
   })
 })
 
-// ─── E: EvalLoopHarness + Tools ──────────────────────────────────────────
+// ─── E: AttemptLoop + Tools ──────────────────────────────────────────────
 
-describe("EvalLoopHarness + Tools", () => {
+describe("AttemptLoop + Tools", () => {
   it("retries until tool produces accepted output", { timeout: 120_000 }, async () => {
     const square = tool("compute_square", "Compute the square of a number", {
       type: "object", properties: { n: { type: "number" } }, required: ["n"],
@@ -124,20 +125,24 @@ describe("EvalLoopHarness + Tools", () => {
 
     const agent = makeAgent().register(square)
     let attempts = 0
-    const gate = {
-      async evaluate(_req: import("@deepstrike/sdk").HarnessRequest, out: import("@deepstrike/sdk").HarnessOutcome) {
+    const outcome = await new AttemptLoop({
+      body: new RuntimeAttemptBody(agent.runner),
+      judge: new VerdictFnJudge(({ result }) => {
         attempts++
-        return out.result.includes("25")
-      },
-    }
-
-    const outcome = await new EvalLoopHarness(agent, gate, 3).run({
+        const passed = result.includes("25")
+        return { passed, overallScore: passed ? 1 : 0, feedback: passed ? "ok" : "retry", details: [] }
+      }),
+      stop: { maxAttempts: 3 },
+    }).run({
       goal: "Use compute_square to compute 5 squared and output the result.",
-      criteria: ["Must call compute_square with n=5", "Final answer must be 25"],
+      criteria: [
+        { text: "Must call compute_square with n=5" },
+        { text: "Final answer must be 25" },
+      ],
     })
 
-    assert.ok(typeof outcome.passed === "boolean")
-    if (outcome.passed) assert.ok(outcome.result.includes("25"))
+    assert.ok(outcome.outcome === "passed" || outcome.outcome === "exhausted")
+    if (outcome.outcome === "passed") assert.ok(outcome.result.includes("25"))
   })
 })
 
@@ -148,7 +153,7 @@ describe("Agent + DreamStore (memory-enabled run)", () => {
     const store = new MockDreamStore()
     const agentId = "combo-mem-agent"
     await store.commit(agentId, {
-      toAdd: [{ text: "The secret code word is BANANA.", score: 0.95, metadata: null }],
+      toAdd: [memoryRecord("secret-code", "The secret code word is BANANA.", 0.95)],
       toRemoveIndices: [],
       stats: { insightsProcessed: 1, duplicatesRemoved: 0, conflictsResolved: 0, entriesAdded: 1 },
     }, [])

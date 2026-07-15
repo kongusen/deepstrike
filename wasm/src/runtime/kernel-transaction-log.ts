@@ -63,12 +63,14 @@ export function canonicalKernelJson(value: unknown): string {
   if (value === null) return "null"
   if (typeof value === "string" || typeof value === "boolean") return JSON.stringify(value)
   if (typeof value === "number") {
-    if (!Number.isSafeInteger(value)) {
-      throw new KernelLogIntegrityError(
-        "canonical records require safe integers; encode ratios as fixed-point integers or decimal strings",
-      )
+    if (!Number.isFinite(value)) throw new KernelLogIntegrityError("canonical records require finite numbers")
+    if (Number.isSafeInteger(value)) return JSON.stringify(Object.is(value, -0) ? 0 : value)
+    if (Number.isInteger(value)) {
+      throw new KernelLogIntegrityError("canonical record integer exceeds the cross-SDK safe range")
     }
-    return JSON.stringify(Object.is(value, -0) ? 0 : value)
+    const bytes = new Uint8Array(8)
+    new DataView(bytes.buffer).setFloat64(0, value, false)
+    return `f64:${Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("")}`
   }
   if (Array.isArray(value)) return `[${value.map(canonicalKernelJson).join(",")}]`
   if (typeof value === "object") {

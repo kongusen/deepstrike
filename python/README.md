@@ -139,7 +139,7 @@ Tool calls, spawns, compression, and signals pass through one kernel gate with a
 Oversized tool results (> 50 KB) stay in context as a preview plus a `.spool/` reference — the model reads the full payload on demand via ordinary file tools. When pressure triggers semantic eviction, the SDK summarizes archived content into `DreamStore`. Long tasks survive token pressure instead of failing mid-run.
 
 **Safety and governance by default (OS native profile)**  
-Every run loads declarative `governance_policy` (deny / ask_user / rate-limit / param rules) and in-kernel signal routing (`attention_policy`, default queue 64). Dangerous tools, external interrupts, and approval flows are policy — not ad-hoc checks in your handlers.
+Every run loads declarative `governance_policy` (deny / ask_user / rate-limit / param rules) and in-kernel signal routing (`signal_policy`, default queue 64). Dangerous tools, external interrupts, and approval flows are policy — not ad-hoc checks in your handlers.
 
 **Long-term memory as syscalls (Phase-7)**  
 `write_memory` and `query_memory` run outside the main tool loop: kernel validation before `DreamStore.commit`, search → `select_memories` → `memory_retrieval_result` on query. Failed writes emit `memory_validation_failed` for audit; good memory is durable without polluting history.
@@ -153,7 +153,7 @@ Spool, page-out, signals, processes, budgets, and memory events land in `Session
 | You need… | Use… |
 |---|---|
 | Policy before tools run | `governance_policy` (default: allow-all native profile) |
-| External interrupts | `signal_source` + in-kernel `attention_policy` |
+| External interrupts | `signal_source` + in-kernel `signal_policy` |
 | Spawn / memory-write quotas | `resource_quota` (`set_resource_quota`) |
 | Huge tool output | Automatic Layer-1 spool; optional custom `result_spool` |
 | Durable recall across runs | `DreamStore` + semantic `page_out` via `dream_summarizer` |
@@ -277,7 +277,7 @@ from deepstrike import (
     AgentIdentity,
     AgentRunSpec,
 )
-from deepstrike.runtime import DEFAULT_NATIVE_ATTENTION_POLICY
+from deepstrike.runtime import DEFAULT_NATIVE_SIGNAL_POLICY, PromptBudget
 from deepstrike.governance import GovernancePolicy, GovernancePolicyRule
 
 runner = RuntimeRunner(RuntimeOptions(
@@ -292,7 +292,12 @@ runner = RuntimeRunner(RuntimeOptions(
 
     # Agent OS native profile (defaults shown)
     governance_policy=DEFAULT_NATIVE_GOVERNANCE_POLICY,
-    attention_policy=DEFAULT_NATIVE_ATTENTION_POLICY,  # SignalRouter queue size 64
+    signal_policy=DEFAULT_NATIVE_SIGNAL_POLICY,  # SignalRouter queue size 64
+    prompt_budget=PromptBudget(
+        prompt_overhead_tokens=20,
+        output_reserve_tokens=4096,
+        safety_margin_tokens=256,
+    ),
 
     # Host I/O
     extensions={"temperature": 0.1},
@@ -327,7 +332,8 @@ runner = RuntimeRunner(RuntimeOptions(
 | Option | Purpose |
 |--------|---------|
 | `governance_policy` | Declarative deny / ask_user / rate-limit / param rules loaded into the kernel before `start_run` |
-| `attention_policy` | In-kernel signal router queue size (default 64) |
+| `signal_policy` | Versioned in-kernel signal queue/TTL policy (default queue 64) |
+| `prompt_budget` | Provider-envelope overhead, output reserve, and safety margin deducted from the context window |
 | `on_permission_request` | Resolves `tool_gated` + `suspended` → kernel `resume` with approved/denied call IDs |
 | `compression_store` | Writes archived messages on `compressed` observations |
 | `dream_summarizer` | Summarizes `page_out { tier_hint: "semantic" }` into `DreamStore` during a run |
@@ -339,7 +345,7 @@ Validate policies before starting a run:
 ```python
 result = validate_declarative_policy(
     gov_policy=DEFAULT_SANDBOX_POLICY,
-    attention_policy=DEFAULT_NATIVE_ATTENTION_POLICY,
+    signal_policy=DEFAULT_NATIVE_SIGNAL_POLICY,
 )
 assert result["valid"], result["errors"]
 ```
@@ -478,7 +484,7 @@ class MyStore(DreamStore):
     async def load_sessions(self, agent_id): ...
     async def load_memories(self, agent_id): ...
     async def commit(self, agent_id, result, existing): ...
-    async def search(self, agent_id, query, top_k): ...
+    async def search(self, agent_id, query): ...  # -> list[MemoryRecall]
     async def save_session(self, data): ...
 
 runner = RuntimeRunner(RuntimeOptions(
@@ -525,23 +531,27 @@ runner = RuntimeRunner(RuntimeOptions(
 ### Phase-7 memory syscalls (`write_memory` / `query_memory`)
 
 ```python
-await runner.write_memory({
-    "metadata": {
-        "name": "prefers-small-tests",
-        "description": "User prefers focused unit tests",
-        "kind": "feedback",
-        "created_at": 1,
-        "updated_at": 1,
-    },
-    "content": "User prefers focused unit tests for SDK behavior.",
-}, session_id="my-session")
+from deepstrike import MemoryProvenance, MemoryQuery, MemoryRecord, MemoryScope
 
-hits = await runner.query_memory({
-    "current_context": "Need testing preferences",
-    "active_tools": [],
-    "already_surfaced": [],
-    "top_k": 5,
-}, session_id="my-session")
+scope = MemoryScope(tenant_id="acme", namespace="assistant")
+await runner.write_memory(MemoryRecord(
+    record_id="prefers-small-tests-v1",
+    scope=scope,
+    name="prefers-small-tests",
+    kind="feedback",
+    content="User prefers focused unit tests for SDK behavior.",
+    description="Testing preference",
+    provenance=MemoryProvenance(author="host", trust="user_asserted"),
+    created_at=1,
+    updated_at=1,
+), session_id="my-session")
+
+hits = await runner.query_memory(MemoryQuery(
+    scope=scope,
+    query="Need testing preferences",
+    top_k=5,
+    kinds=["feedback"],
+), session_id="my-session")
 ```
 
 Session events: `memory_written`, `memory_queried`, `memory_validation_failed`, `memory_retrieval_result`.
@@ -620,7 +630,7 @@ Inbound signals are routed by the in-kernel attention policy (default queue size
 
 ```python
 from deepstrike import SignalGateway, ScheduledPrompt, RuntimeSignal
-from deepstrike.runtime import DEFAULT_NATIVE_ATTENTION_POLICY
+from deepstrike.runtime import DEFAULT_NATIVE_SIGNAL_POLICY
 
 gw = SignalGateway()
 gw.schedule(ScheduledPrompt(goal="standup", run_at_ms=target_time))
@@ -631,7 +641,7 @@ runner = RuntimeRunner(RuntimeOptions(
     session_log=InMemorySessionLog(),
     execution_plane=plane,
     signal_source=gw,
-    attention_policy=DEFAULT_NATIVE_ATTENTION_POLICY,
+    signal_policy=DEFAULT_NATIVE_SIGNAL_POLICY,
 ))
 
 runner.interrupt()  # cooperative abort → kernel timeout path
@@ -664,23 +674,21 @@ Requires an active parent run (`run()` / `wake()` in progress). The kernel emits
 
 ---
 
-## Harness (evaluation framework)
+## Attempt loop
 
 ```python
 from deepstrike import (
-    SinglePassHarness, EvalLoopHarness, HarnessLoop, HarnessRequest,
-    SubAgentHarnessConfig, QualityGate,
+    AttemptLoop, AttemptRequest, RuntimeAttemptBody, StopPolicy,
+    LlmEvalJudge, SubAgentHarnessConfig,
 )
 
-outcome = await SinglePassHarness(runner).run(HarnessRequest(goal="Say hello"))
-
-class ContainsHello(QualityGate):
-    async def evaluate(self, request, outcome) -> bool:
-        return "hello" in outcome.result.lower()
-
-outcome = await EvalLoopHarness(runner, gate=ContainsHello(), max_attempts=3).run(req)
-
-loop = HarnessLoop(runner, eval_provider=eval_provider, max_attempts=3, skill_dir="./skills")
+loop = AttemptLoop(
+    body=RuntimeAttemptBody(runner),
+    judge=LlmEvalJudge(eval_provider),
+    stop=StopPolicy(max_attempts=3),
+)
+outcome = await loop.run(AttemptRequest(goal="Write a haiku"))
+print(outcome.run_status, outcome.outcome, outcome.verdict)
 
 runner = RuntimeRunner(RuntimeOptions(
     provider=provider,
@@ -688,10 +696,13 @@ runner = RuntimeRunner(RuntimeOptions(
     execution_plane=plane,
     sub_agent_harness=SubAgentHarnessConfig(eval_provider=eval_provider, max_attempts=3),
 ))
-async for event in loop.run_streaming(HarnessRequest(goal="Write a haiku")):
-    if event.type == "done":
-        print(event.verdict.passed, event.verdict.feedback)
+async for event in loop.stream(AttemptRequest(goal="Write a haiku")):
+    if event.type == "completed":
+        print(event.outcome.run_status, event.outcome.verdict)
 ```
+
+The default carry policy keeps one session and injects judge feedback as context. Use
+`fresh_with_feedback` or `fresh_with_digest(...)` only when attempt isolation is intentional.
 
 ---
 

@@ -332,7 +332,10 @@ fn governance_verdict_kinds_are_stable() {
     let ask = pipeline.evaluate(&call("approval_needed"), &caller());
     let allow = pipeline.evaluate(&call("safe_read"), &caller());
 
-    assert!(matches!(deny, GovernanceVerdict::Deny { stage: "veto", .. }));
+    assert!(matches!(
+        deny,
+        GovernanceVerdict::Deny { stage: "veto", .. }
+    ));
     assert!(matches!(ask, GovernanceVerdict::AskUser { .. }));
     assert!(matches!(allow, GovernanceVerdict::Allow));
 }

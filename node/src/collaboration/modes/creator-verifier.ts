@@ -1,9 +1,9 @@
 import type { AgentPool } from "../pool.js"
 import type { VerificationContract } from "../contract.js"
 import type { ContractOutcome } from "../harness.js"
-import { ContractDrivenHarness } from "../harness.js"
-import type { HandoffArtifact } from "../handoff.js"
+import { CreatorVerifierBody, StructuredContractJudge } from "../harness.js"
 import { HandoffBus } from "../handoff.js"
+import { AttemptLoop } from "../../harness/harness.js"
 
 export interface CreatorVerifierMetrics {
   total: number
@@ -49,17 +49,49 @@ export class CreatorVerifierMode {
 
     this.pool.ensureCoordinator(this.options.coordinatorSessionId)
 
-    const harness = new ContractDrivenHarness(this.pool, contract, {
-      maxAttempts: this.options.maxAttempts ?? 3,
+    const loop = new AttemptLoop({
+      body: new CreatorVerifierBody(this.pool, contract),
+      judge: new StructuredContractJudge(this.pool, contract),
+      stop: { maxAttempts: this.options.maxAttempts ?? 3 },
     })
-
-    const outcome = await harness.run()
-
-    if (!outcome.success) {
+    const attempt = await loop.run({
+      sessionId: crypto.randomUUID(),
+      goal: contract.goal,
+      criteria: contract.acceptance.map(criterion => ({
+        id: criterion.id,
+        text: criterion.text,
+        required: criterion.required,
+        weight: criterion.weight,
+        machineCheckable: criterion.machineCheckable,
+      })),
+    })
+    const checkResults = attempt.verdict?.details.map(detail => ({
+      criterionId: detail.criterion,
+      passed: detail.passed,
+      evidence: detail.feedback,
+    })) ?? []
+    const success = attempt.outcome === "passed"
+    if (!success) {
       this._failed++
     }
-
-    return outcome
+    const blockedOn = success
+      ? []
+      : checkResults.filter(result => !result.passed).map(result =>
+          `[${result.criterionId}] ${result.evidence ?? "verification failed"}`)
+    return {
+      success,
+      artifact: attempt.result,
+      checkResults,
+      attemptsUsed: attempt.attempts,
+      totalTokensConsumed: attempt.totalTokens,
+      handoff: HandoffBus.fromContractOutcome({
+        contract,
+        checkResults,
+        artifact: attempt.result,
+        success,
+        ...(blockedOn.length ? { blockedOn } : {}),
+      }),
+    }
   }
 
   /** Aggregate drift metrics across all runs through this mode instance. */

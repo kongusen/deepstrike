@@ -69,6 +69,13 @@ export interface RenderedContext {
   /** Message count of the frozen history prefix (compaction boundary). When set,
    *  Anthropic pins a deep cache breakpoint here instead of the rolling pair. */
   frozenPrefixLen?: number
+  budgetOverflow?: ContextBudgetOverflow
+}
+
+export interface ContextBudgetOverflow {
+  kind: "fixed_context" | "protected_tail"
+  requiredTokens: number
+  maxTokens: number
 }
 
 export interface StreamEvent { type: string }
@@ -79,7 +86,7 @@ export interface ToolCallEvent extends StreamEvent { type: "tool_call"; id: stri
 export interface ToolResultEvent extends StreamEvent { type: "tool_result"; callId: string; name: string; content: string; isError: boolean; isFatal?: boolean; errorKind?: ToolErrorKind }
 /** R3-1: a workflow node's agent called `submit_workflow_nodes`; the runner surfaces the requested nodes (the workflow lives in the parent kernel) and `runWorkflow` sends them to the parent kernel. */
 export interface WorkflowNodesSubmittedEvent extends StreamEvent { type: "workflow_nodes_submitted"; nodes: WorkflowNodeSpec[] }
-export interface DoneEvent extends StreamEvent { type: "done"; iterations: number; totalTokens: number; status: string; dreamResult?: import("./memory/index.js").DreamResult; /** ③ loop-agent: the kernel-adjudicated after-round decision (absent on non-loop runs). */ paceDecision?: import("./runtime/kernel-step.js").PaceDecision }
+export interface DoneEvent extends StreamEvent { type: "done"; iterations: number; totalTokens: number; status: string; /** ③ loop-agent: the kernel-adjudicated after-round decision (absent on non-loop runs). */ paceDecision?: import("./runtime/kernel-step.js").PaceDecision }
 export interface ErrorEvent extends StreamEvent { type: "error"; message: string }
 export interface PermissionRequestEvent extends StreamEvent { type: "permission_request"; callId: string; toolName: string; arguments: string; reason: string }
 export interface PermissionResponse { approved: boolean; responder?: string; reason?: string }

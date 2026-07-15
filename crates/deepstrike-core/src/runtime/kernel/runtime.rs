@@ -150,7 +150,9 @@ pub struct KernelRuntimeState {
     recorded_events: ReplayWindow,
     pending_effects: HashMap<String, PendingEffectKind>,
     completed_effects: ReplayWindow,
-    pending_memory_write: Option<crate::mm::memory::MemoryWriteRequest>,
+    memory_records: crate::mm::memory::MemoryRecordStore,
+    pending_memory_write: Option<crate::mm::memory::MemoryRecord>,
+    pending_memory_store: Option<crate::mm::memory::MemoryRecordStore>,
     pending_memory_query: Option<(crate::mm::memory::MemoryQuery, usize)>,
     budget_usage_reported: bool,
     accepted_cancellation: Option<AcceptedCancellation>,
@@ -212,7 +214,9 @@ impl KernelRuntime {
                 recorded_events: ReplayWindow::new(EVENT_REPLAY_WINDOW_CAPACITY),
                 pending_effects: HashMap::new(),
                 completed_effects: ReplayWindow::new(COMPLETED_EFFECT_REPLAY_WINDOW_CAPACITY),
+                memory_records: crate::mm::memory::MemoryRecordStore::default(),
                 pending_memory_write: None,
+                pending_memory_store: None,
                 pending_memory_query: None,
                 budget_usage_reported: false,
                 accepted_cancellation: None,
@@ -508,8 +512,7 @@ impl KernelRuntime {
                     event_id,
                     self.boundary_step_seq(),
                     KernelFaultCode::TransactionConflict,
-                    "kernel runtime was invalidated by a transaction consistency error"
-                        .to_string(),
+                    "kernel runtime was invalidated by a transaction consistency error".to_string(),
                 ),
             };
         }
@@ -987,7 +990,7 @@ impl KernelRuntime {
             }
         };
         if let KernelInputEvent::ConfigureRun { config } = &input.event {
-            if let Err(message) = validate_run_config(config) {
+            if let Err(message) = validate_run_config(config, self.sm.ctx.max_tokens) {
                 return self.fault_step(
                     operation_id,
                     event_id,
@@ -1055,6 +1058,55 @@ impl KernelRuntime {
                     "deliver_signal requires a non-empty delivery_id and attempt >= 1".to_string(),
                     None,
                 );
+            }
+        }
+        if let KernelInputEvent::SetSignalPolicy { policy } = &input.event {
+            if let Err(message) = validate_signal_policy(policy) {
+                return self.fault_step(
+                    operation_id,
+                    event_id,
+                    KernelFaultCode::InvalidConfig,
+                    message,
+                    None,
+                );
+            }
+        }
+        if let KernelInputEvent::QueryMemory { query } = &input.event {
+            if let Err(message) = query.validate() {
+                return self.fault_step(
+                    operation_id,
+                    event_id,
+                    KernelFaultCode::InvalidConfig,
+                    message,
+                    None,
+                );
+            }
+        }
+        if let KernelInputEvent::MemoryQueryResult {
+            effect_id,
+            hits,
+            error,
+        } = &input.event
+        {
+            if error.is_none() {
+                let Some((query, requested_k)) = self.pending_memory_query.as_ref() else {
+                    return self.fault_step(
+                        operation_id,
+                        event_id,
+                        KernelFaultCode::UnexpectedEffectResult,
+                        "memory query result has no pending query".to_string(),
+                        Some(effect_id.clone()),
+                    );
+                };
+                if let Err(message) = query.validate_hits(hits, *requested_k) {
+                    return self.fault_step(
+                        operation_id,
+                        event_id,
+                        KernelFaultCode::UnexpectedEffectResult,
+                        message,
+                        Some(effect_id.clone()),
+                    );
+                }
             }
         }
         if let KernelInputEvent::WorkflowSpawnResult {
@@ -1397,9 +1449,10 @@ impl KernelRuntime {
                     plan_tool_enabled,
                     tokenizer,
                     governance,
-                    attention_max_queue_size,
+                    signal_policy,
+                    prompt_budget,
                     context_policy,
-                    scheduler_max_wall_ms,
+                    scheduler_policy,
                     resource_quota,
                     budget_grant,
                     repeat_fuse,
@@ -1440,14 +1493,21 @@ impl KernelRuntime {
                         g.constraints,
                     ));
                 }
-                if let Some(max_queue) = attention_max_queue_size {
-                    self.sm.set_attention(max_queue as usize);
+                if let Some(policy) = signal_policy {
+                    self.sm.set_signal_policy(
+                        policy.queue_max as usize,
+                        policy.ttl_ms,
+                        policy.deadline_escalation.unwrap_or(false),
+                    );
+                }
+                if let Some(prompt_budget) = prompt_budget {
+                    self.sm.ctx.set_prompt_budget(prompt_budget);
                 }
                 if let Some(context_policy) = context_policy {
                     self.sm.ctx.apply_context_policy(&context_policy);
                 }
-                if let Some(ms) = scheduler_max_wall_ms {
-                    self.sm.set_wall_budget(Some(ms));
+                if let Some(policy) = scheduler_policy {
+                    self.sm.set_scheduler_policy(policy);
                 }
                 if let Some(quota) = resource_quota {
                     self.sm.set_resource_quota(quota);
@@ -1487,8 +1547,12 @@ impl KernelRuntime {
                 }
                 return identity.empty(self.sm.take_observations());
             }
-            KernelInputEvent::SetAttentionPolicy { max_queue_size } => {
-                self.sm.set_attention(max_queue_size as usize);
+            KernelInputEvent::SetSignalPolicy { policy } => {
+                self.sm.set_signal_policy(
+                    policy.queue_max as usize,
+                    policy.ttl_ms,
+                    policy.deadline_escalation.unwrap_or(false),
+                );
                 return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::PageIn { entries } => {
@@ -1546,6 +1610,10 @@ impl KernelRuntime {
                     .pending_memory_write
                     .take()
                     .expect("validated memory result requires pending write");
+                let staged_store = self
+                    .pending_memory_store
+                    .take()
+                    .expect("validated memory result requires staged scoped upsert");
                 let turn = self.sm.turn;
                 match error {
                     Some(error) => {
@@ -1553,27 +1621,27 @@ impl KernelRuntime {
                             .observations
                             .push(KernelObservation::MemoryWriteFailed {
                                 turn,
-                                memory_id: memory.metadata.name,
+                                record_id: memory.record_id,
                                 error,
                             })
                     }
-                    None => self.sm.observations.push(KernelObservation::MemoryWritten {
-                        turn,
-                        memory_id: memory.metadata.name,
-                        memory_kind: memory
-                            .metadata
-                            .kind
-                            .map(|kind| kind.label())
-                            .unwrap_or("unclassified")
-                            .to_string(),
-                        size_bytes: memory.content.len() as u32,
-                    }),
+                    None => {
+                        self.memory_records = staged_store;
+                        self.sm.observations.push(KernelObservation::MemoryWritten {
+                            turn,
+                            record_id: memory.record_id,
+                            scope: memory.scope,
+                            memory_kind: memory.kind,
+                            name: memory.name,
+                            size_bytes: memory.content.len() as u32,
+                        })
+                    }
                 }
                 return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::MemoryQueryResult {
                 effect_id: _,
-                entries,
+                hits,
                 error,
             } => {
                 let (query, requested_k) = self
@@ -1581,27 +1649,55 @@ impl KernelRuntime {
                     .take()
                     .expect("validated memory result requires pending query");
                 let turn = self.sm.turn;
-                match error {
+                let continuation = match error {
                     Some(error) => {
+                        let continuation = self.sm.resume_after_preload();
                         self.sm
                             .observations
                             .push(KernelObservation::MemoryQueryFailed {
                                 turn,
-                                query_context: query.current_context,
+                                scope: query.scope,
+                                query: query.query,
                                 error,
-                            })
+                            });
+                        continuation
                     }
                     None => {
-                        self.sm.apply_page_in(&entries);
+                        for hit in &hits {
+                            let trust = match hit.record.provenance.trust {
+                                crate::mm::memory::MemoryTrustLevel::Untrusted => "untrusted",
+                                crate::mm::memory::MemoryTrustLevel::UserAsserted => {
+                                    "user_asserted"
+                                }
+                                crate::mm::memory::MemoryTrustLevel::HostVerified => {
+                                    "host_verified"
+                                }
+                            };
+                            let content = format!(
+                                "[MEMORY record_id={} trust={} score={:.3}] {}",
+                                hit.record.record_id, trust, hit.score, hit.record.content
+                            );
+                            let tokens = self.sm.ctx.engine.count(&content).max(1);
+                            self.sm.ctx.push_history(
+                                crate::types::message::Message::user(content),
+                                tokens,
+                            );
+                        }
+                        let continuation = self.sm.resume_after_preload();
                         self.sm.observations.push(KernelObservation::MemoryQueried {
                             turn,
-                            query_context: query.current_context,
+                            scope: query.scope,
+                            query: query.query,
                             requested_k,
                             requires_async_response: false,
                         });
+                        continuation
                     }
-                }
-                return identity.empty(self.sm.take_observations());
+                };
+                // Recall is a deferred host effect in the reasoning path. Re-render after
+                // committing the hits so the provider continuation observes the recalled
+                // history instead of leaving the loop parked on an empty step.
+                return identity.single(continuation, self.sm.take_observations());
             }
             KernelInputEvent::LargeResultSpoolResult {
                 effect_id: _,
@@ -1733,31 +1829,19 @@ impl KernelRuntime {
             KernelInputEvent::LoadWorkflow {
                 spec,
                 parent_session_id,
-                resumed_completed,
                 resumed_submissions,
                 resumed_submission_bases,
-                resumed_results,
+                resumed_outcomes,
             } => {
-                if resumed_completed.is_empty()
-                    && resumed_results.is_empty()
-                    && resumed_submissions.is_empty()
-                {
+                if resumed_outcomes.is_empty() && resumed_submissions.is_empty() {
                     self.sm.load_workflow(spec, &parent_session_id)
                 } else {
-                    // W-1: merge legacy bare ids with signal-carrying records (records win).
-                    use crate::orchestration::workflow::ResumedCompletion;
-                    let mut completed: Vec<ResumedCompletion> = resumed_completed
-                        .iter()
-                        .filter(|id| resumed_results.iter().all(|r| &r.agent_id != *id))
-                        .map(ResumedCompletion::bare)
-                        .collect();
-                    completed.extend(resumed_results);
                     self.sm.load_workflow_resumed(
                         spec,
                         &parent_session_id,
                         &resumed_submissions,
                         &resumed_submission_bases,
-                        &completed,
+                        &resumed_outcomes,
                     )
                 }
             }
@@ -1823,7 +1907,7 @@ impl KernelRuntime {
                         .observations
                         .push(KernelObservation::MemoryValidationFailed {
                             turn,
-                            memory_id: memory.metadata.name.clone(),
+                            record_id: memory.record_id.clone(),
                             error,
                         });
                     return identity.empty(self.sm.take_observations());
@@ -1838,8 +1922,25 @@ impl KernelRuntime {
                 };
                 match validation_result {
                     Ok(()) => {
-                        self.pending_memory_write = Some(memory.clone());
-                        LoopAction::PersistMemory { memory }
+                        let key = memory.key();
+                        let mut staged_store = self.memory_records.clone();
+                        if let Err(error) = staged_store.upsert(memory) {
+                            self.sm
+                                .observations
+                                .push(KernelObservation::MemoryValidationFailed {
+                                    turn,
+                                    record_id: error.record_id().to_string(),
+                                    error: format!("record id conflicts with another scoped key"),
+                                });
+                            return identity.empty(self.sm.take_observations());
+                        }
+                        let canonical = staged_store
+                            .get(&key.scope, key.kind, &key.name)
+                            .expect("scoped upsert must retain its canonical record")
+                            .clone();
+                        self.pending_memory_write = Some(canonical.clone());
+                        self.pending_memory_store = Some(staged_store);
+                        LoopAction::PersistMemory { memory: canonical }
                     }
                     Err(err) => {
                         // Emit validation error observation
@@ -1865,7 +1966,7 @@ impl KernelRuntime {
                             .observations
                             .push(KernelObservation::MemoryValidationFailed {
                                 turn,
-                                memory_id: memory.metadata.name.clone(),
+                                record_id: memory.record_id.clone(),
                                 error: error_msg,
                             });
                         return identity.empty(self.sm.take_observations());
@@ -1888,9 +1989,13 @@ impl KernelRuntime {
                 operation_id,
                 reason,
                 pending_call_ids,
-            } => self
-                .sm
-                .cancel_operation(operation_id, reason, pending_call_ids),
+            } => {
+                self.pending_memory_write = None;
+                self.pending_memory_store = None;
+                self.pending_memory_query = None;
+                self.sm
+                    .cancel_operation(operation_id, reason, pending_call_ids)
+            }
         };
         let action = self.sm.externalize_pending_host_effect(action);
         if matches!(action, LoopAction::AwaitingResume) {
@@ -1903,7 +2008,8 @@ impl KernelRuntime {
         &self,
         event: &KernelInputEvent,
     ) -> Result<LifecycleTransition, String> {
-        if self.lifecycle.is_terminal() {
+        if self.lifecycle.is_terminal() && !matches!(event, KernelInputEvent::DeliverSignal { .. })
+        {
             return Err(format!(
                 "kernel is terminal in lifecycle {:?}",
                 self.lifecycle
@@ -1917,6 +2023,15 @@ impl KernelRuntime {
                 }
                 _ => Err(format!(
                     "configure_run is not valid in lifecycle {:?}",
+                    self.lifecycle
+                )),
+            },
+            KernelInputEvent::SetSignalPolicy { .. } => match self.lifecycle {
+                KernelLifecycle::Created | KernelLifecycle::Configured => {
+                    Ok(LifecycleTransition::Configure)
+                }
+                _ => Err(format!(
+                    "set_signal_policy is not valid in lifecycle {:?}",
                     self.lifecycle
                 )),
             },
@@ -1946,7 +2061,6 @@ impl KernelRuntime {
                 )),
             },
             KernelInputEvent::MemoryPersistResult { .. }
-            | KernelInputEvent::MemoryQueryResult { .. }
             | KernelInputEvent::LargeResultSpoolResult { .. }
             | KernelInputEvent::PageOutArchiveResult { .. } => match self.lifecycle {
                 KernelLifecycle::Configured | KernelLifecycle::Running => {
@@ -1954,6 +2068,15 @@ impl KernelRuntime {
                 }
                 _ => Err(format!(
                     "memory effect result is not valid in lifecycle {:?}",
+                    self.lifecycle
+                )),
+            },
+            KernelInputEvent::MemoryQueryResult { .. } => match self.lifecycle {
+                KernelLifecycle::Configured | KernelLifecycle::Running => {
+                    Ok(LifecycleTransition::Resume)
+                }
+                _ => Err(format!(
+                    "memory query result is not valid in lifecycle {:?}",
                     self.lifecycle
                 )),
             },
@@ -1971,7 +2094,6 @@ impl KernelRuntime {
             },
             KernelInputEvent::SubmitWorkflow { .. }
             | KernelInputEvent::SubmitWorkflowNodes { .. }
-            | KernelInputEvent::DeliverSignal { .. }
             | KernelInputEvent::CompleteRun
             | KernelInputEvent::CancelOperation { .. } => match self.lifecycle {
                 KernelLifecycle::Running | KernelLifecycle::Suspended => {
@@ -1979,6 +2101,17 @@ impl KernelRuntime {
                 }
                 _ => Err(format!(
                     "execution input is not valid in lifecycle {:?}",
+                    self.lifecycle
+                )),
+            },
+            KernelInputEvent::DeliverSignal { .. } => match self.lifecycle {
+                KernelLifecycle::Running
+                | KernelLifecycle::Suspended
+                | KernelLifecycle::Completed
+                | KernelLifecycle::Failed
+                | KernelLifecycle::Cancelled => Ok(LifecycleTransition::Stay),
+                _ => Err(format!(
+                    "deliver_signal is not valid in lifecycle {:?}",
                     self.lifecycle
                 )),
             },
@@ -2165,7 +2298,7 @@ fn pending_effect_kind(effect: &KernelEffect) -> Option<PendingEffectKind> {
     }
 }
 
-fn validate_run_config(config: &RunConfig) -> Result<(), String> {
+fn validate_run_config(config: &RunConfig, max_tokens: u32) -> Result<(), String> {
     if config
         .budget_grant
         .as_ref()
@@ -2237,14 +2370,22 @@ fn validate_run_config(config: &RunConfig) -> Result<(), String> {
             );
         }
     }
-    if matches!(config.attention_max_queue_size, Some(0)) {
-        return Err("attention_max_queue_size must be greater than zero".to_string());
+    if let Some(policy) = &config.signal_policy {
+        validate_signal_policy(policy)?;
+    }
+    if config
+        .prompt_budget
+        .is_some_and(|budget| budget.reserved_tokens() >= max_tokens)
+    {
+        return Err(
+            "prompt_budget reserves must leave at least one token for provider input".to_string(),
+        );
     }
     if let Some(policy) = &config.context_policy {
         policy.validate()?;
     }
-    if matches!(config.scheduler_max_wall_ms, Some(0)) {
-        return Err("scheduler_max_wall_ms must be greater than zero".to_string());
+    if let Some(policy) = config.scheduler_policy {
+        policy.validate()?;
     }
     if let Some(ratio) = config.knowledge_budget_ratio {
         if !ratio.is_finite() || !(0.0..=1.0).contains(&ratio) {
@@ -2300,6 +2441,21 @@ fn validate_run_config(config: &RunConfig) -> Result<(), String> {
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_signal_policy(policy: &SignalPolicyConfig) -> Result<(), String> {
+    if policy.version != SIGNAL_POLICY_VERSION {
+        return Err(format!(
+            "signal_policy version must be {SIGNAL_POLICY_VERSION}"
+        ));
+    }
+    if policy.queue_max == 0 {
+        return Err("signal_policy.queue_max must be greater than zero".to_string());
+    }
+    if matches!(policy.ttl_ms, Some(0)) {
+        return Err("signal_policy.ttl_ms must be greater than zero when present".to_string());
     }
     Ok(())
 }

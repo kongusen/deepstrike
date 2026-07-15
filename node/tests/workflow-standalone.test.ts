@@ -62,8 +62,8 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
 
     const outcome = await runner.runWorkflow(fanoutSpec)
 
-    expect(outcome.completed.sort()).toEqual(["wf-node0", "wf-node1", "wf-node2"])
-    expect(outcome.failed).toEqual([])
+    expect(outcome.nodeOutcomes.map(node => node.nodeId).sort()).toEqual(["wf-node0", "wf-node1", "wf-node2"])
+    expect(outcome.nodeOutcomes.every(node => node.status === "completed")).toBe(true)
     expect(calls).toBe(3)
     // Every node's output is surfaced back to the host.
     expect(outcome.outputs["wf-node2"]).toBe("wf-node2")
@@ -103,7 +103,7 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
       subAgentOrchestrator: stubOrchestrator() as never,
     } as never)
 
-    await expect(runner.runWorkflow(fanoutSpec)).resolves.toMatchObject({ failed: [] })
+    await expect(runner.runWorkflow(fanoutSpec)).resolves.toMatchObject({ nodeOutcomes: expect.any(Array) })
   })
 
   it("rejects out-of-bounds SDK reliability policy atomically", async () => {
@@ -131,7 +131,7 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
 
     // A second standalone call on the SAME runner must succeed (re-bootstraps cleanly).
     const second = await runner.runWorkflow(fanoutSpec)
-    expect(second.completed.sort()).toEqual(["wf-node0", "wf-node1", "wf-node2"])
+    expect(second.nodeOutcomes.map(node => node.nodeId).sort()).toEqual(["wf-node0", "wf-node1", "wf-node2"])
   })
 
   it("resumes a standalone workflow from the session log by sessionId — completed nodes are not re-run", async () => {
@@ -148,7 +148,7 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
 
     // Resume the same session: the kernel skips already-completed nodes, so no new agent calls.
     const resumed = await runner.resumeWorkflow(fanoutSpec, { sessionId: "resume-me" })
-    expect(resumed.completed.sort()).toEqual(["wf-node0", "wf-node1", "wf-node2"])
+    expect(resumed.nodeOutcomes.map(node => node.nodeId).sort()).toEqual(["wf-node0", "wf-node1", "wf-node2"])
     expect(calls).toBe(3)
   })
 

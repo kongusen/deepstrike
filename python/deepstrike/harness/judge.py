@@ -1,7 +1,6 @@
-"""AttemptJudge — the "how do we judge one attempt?" Strategy, factored out of ``HarnessLoop`` so the
-judgment step is a named, testable, swappable unit rather than inline loop logic (P4, Node parity).
+"""AttemptJudge — the independent "how do we judge one attempt?" policy slot.
 
-The built-in strategies reproduce ``HarnessLoop``'s prior behavior exactly:
+The built-in strategies compose without changing the attempt engine:
   • ``VerdictFnJudge`` — host-supplied deterministic judgment; returns ``None`` to defer (and awaits a
     coroutine result, mirroring the inline ``hasattr(result, "__await__")`` handling).
   • ``LlmEvalJudge``  — the kernel's stateless eval (``build_eval_messages`` → stream → ``parse_verdict``).
@@ -60,7 +59,7 @@ class LlmEvalJudge:
     """The built-in LLM eval: render the kernel eval prompt, stream the eval provider, parse the
     verdict. Always produces a ``JudgeResult`` (never defers)."""
 
-    def __init__(self, eval_provider, extract_skill_on_pass: bool = True):
+    def __init__(self, eval_provider, extract_skill_on_pass: bool = False):
         self._eval_provider = eval_provider
         self._extract_skill_on_pass = extract_skill_on_pass
 
@@ -87,8 +86,7 @@ class LlmEvalJudge:
 
 
 class HybridJudge:
-    """Try ``primary``; if it defers (``None``), use ``fallback``. Models ``HarnessLoop``'s
-    "verdict_fn short-circuits, else built-in LLM eval" hybrid judgment."""
+    """Try ``primary``; if it defers (``None``), use ``fallback``."""
 
     def __init__(self, primary: AttemptJudge, fallback: AttemptJudge):
         self._primary = primary

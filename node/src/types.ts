@@ -164,7 +164,6 @@ export interface DoneEvent extends StreamEvent {
   iterations: number
   totalTokens: number
   status: string
-  dreamResult?: import("./memory/protocols.js").DreamResult
   /** ③ loop-agent: the kernel-adjudicated after-round decision (absent on non-loop runs). */
   paceDecision?: import("./runtime/kernel-step.js").PaceDecision
 }
@@ -412,6 +411,13 @@ export interface RenderedContext {
    * yet) ⇒ the provider falls back to the rolling-pair placement.
    */
   frozenPrefixLen?: number
+  budgetOverflow?: ContextBudgetOverflow
+}
+
+export interface ContextBudgetOverflow {
+  kind: "fixed_context" | "protected_tail"
+  requiredTokens: number
+  maxTokens: number
 }
 
 /**

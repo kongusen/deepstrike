@@ -5,6 +5,7 @@ import type { VerificationContract } from "./contract.js"
 import { formatContractForSystemPrompt } from "./contract.js"
 import type { AgentRunSpec, KernelAgentRole, SubAgentResult } from "../types/agent.js"
 import { agentIdentitySub } from "../types/agent.js"
+import type { DoneEvent, TextDelta } from "../types.js"
 
 /** Legacy pool roles — mapped to kernel AgentRole when using spawn path. */
 export type AgentRole = "orchestrator" | "executor" | "verifier"
@@ -23,6 +24,13 @@ export interface IsolatedVerifierContext {
 export interface CoordinatorConfig {
   opts: RuntimeOptions
   sessionId: string
+}
+
+export interface RoleExecutionInput {
+  sessionId: string
+  goal: string
+  contextInput?: string
+  verificationContractId?: string
 }
 
 export class AgentPool {
@@ -98,6 +106,59 @@ export class AgentPool {
     return spawnStandalone(this.coordinator.opts, this.coordinator.sessionId, spec)
   }
 
+  /** Execute a role in a caller-owned session so AttemptLoop can retain transcript across attempts. */
+  async execute(role: AgentRole, input: RoleExecutionInput): Promise<SubAgentResult> {
+    if (this.coordinator) {
+      const kernelRole = KERNEL_ROLE_MAP[role]
+      const spec: AgentRunSpec = {
+        identity: agentIdentitySub(
+          `${kernelRole}-${input.sessionId}`,
+          input.sessionId,
+          this.coordinator.sessionId,
+        ),
+        role: kernelRole,
+        goal: input.goal,
+        ...(input.verificationContractId
+          ? { verificationContractId: input.verificationContractId }
+          : {}),
+      }
+      return spawnStandalone(
+        this.coordinator.opts,
+        this.coordinator.sessionId,
+        spec,
+        undefined,
+        input.contextInput,
+      )
+    }
+
+    const runner = this.get(role)
+    if (input.contextInput) runner.injectNote(input.contextInput)
+    let finalText = ""
+    let turnsUsed = 0
+    let totalTokensUsed = 0
+    let termination = "error"
+    for await (const event of runner.run({ sessionId: input.sessionId, goal: input.goal })) {
+      if (event.type === "text_delta") finalText += (event as TextDelta).delta
+      if (event.type === "done") {
+        const done = event as DoneEvent
+        turnsUsed = done.iterations
+        totalTokensUsed = done.totalTokens
+        termination = done.status
+      }
+    }
+    return {
+      agentId: `${KERNEL_ROLE_MAP[role]}-${input.sessionId}`,
+      result: {
+        termination,
+        turnsUsed,
+        totalTokensUsed,
+        ...(finalText
+          ? { finalMessage: { role: "assistant", content: finalText, toolCalls: [] } }
+          : {}),
+      },
+    }
+  }
+
   async verify(ctx: IsolatedVerifierContext): Promise<string> {
     const contractBlock = formatContractForSystemPrompt(ctx.contract)
     const auditGoal = [
@@ -107,9 +168,19 @@ export class AgentPool {
       ctx.artifact, "",
       "---", "",
       "Audit the artifact against every criterion in the contract above.",
-      "For each criterion, state whether it PASSED or FAILED and cite specific evidence.",
-      "List any anti-patterns you detected.",
-      "Conclude with an overall PASS or FAIL verdict.",
+      "Return only one JSON object with this exact shape:",
+      JSON.stringify({
+        passed: true,
+        overall_score: 1,
+        feedback: "overall verification feedback",
+        details: ctx.contract.acceptance.map(criterion => ({
+          criterion: criterion.id,
+          passed: true,
+          score: 1,
+          feedback: "specific evidence",
+        })),
+      }, null, 2),
+      "Every contract criterion id must appear exactly once in details. Do not emit prose or markdown.",
     ].join("\n")
 
     if (this.coordinator) {

@@ -4,7 +4,7 @@
 //! LoopStateMachine`] drives this, gating each ready node's spawn through
 //! `evaluate_syscall(Syscall::Spawn)` and reusing the existing batch-await barrier
 //! (`SuspendState::SubAgentAwait`). This module only tracks *which* nodes are ready, spawned,
-//! done, or denied, and builds each node's [`IsolationManifest`].
+//! complete, partially complete, failed, or skipped, and builds each node's [`IsolationManifest`].
 //!
 //! Lifecycle: `ready_batch()` → (gate each) `mark_spawned` / `mark_denied` → on completion
 //! `record_completion` → repeat until `is_complete()`.
@@ -13,14 +13,48 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::{DependencyPolicy, NodeKind, NodeTrust, WorkflowNode, WorkflowSpec};
 use crate::orchestration::task_graph::{TaskGraph, TaskStatus};
 use crate::orchestration::tournament::{EntrantId, Match, Tournament, TournamentAction};
-use super::{NodeKind, NodeTrust, WorkflowNode, WorkflowSpec};
 use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance, IsolationManifest};
 use crate::types::error::DeepStrikeError;
-use crate::types::task::RuntimeTask;
 use crate::types::error::Result;
 use crate::types::result::{LoopResult, TerminationReason};
+use crate::types::task::RuntimeTask;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowSubmissionError {
+    pub node_index: usize,
+    pub reason: String,
+}
+
+impl std::fmt::Display for WorkflowSubmissionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "node {}: {}", self.node_index, self.reason)
+    }
+}
+
+impl std::error::Error for WorkflowSubmissionError {}
+
+/// Terminal state of one workflow node. Non-terminal graph states are never exposed as outcomes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowNodeStatus {
+    Completed,
+    CompletedPartial,
+    Failed,
+    SkippedUpstreamFailed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowNodeOutcome {
+    pub node_id: String,
+    pub status: WorkflowNodeStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub termination: Option<TerminationReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<crate::types::message::Message>,
+}
 
 /// Deterministic kernel agent id for a workflow node (stable across resume / audit).
 pub fn node_agent_id(node: usize) -> String {
@@ -186,8 +220,8 @@ fn trust_label(trust: NodeTrust) -> &'static str {
     }
 }
 
-/// Synthetic terminal result for a node recovered as already-completed during resume.
-fn resumed_result() -> LoopResult {
+/// Synthetic terminal result for an inert reconstructed placeholder.
+fn resumed_placeholder_result() -> LoopResult {
     LoopResult {
         termination: crate::types::result::TerminationReason::Completed,
         final_message: None,
@@ -200,14 +234,16 @@ fn resumed_result() -> LoopResult {
     }
 }
 
-/// One recovered node completion for [`WorkflowRun::resume`]: the agent id plus the result-borne
-/// control signals the DAG needs to replay faithfully. Without `classify_branch` a resumed
-/// classifier cannot re-prune its losing branches (the rejected branch would RUN after resume);
-/// without `loop_continue` a semantic early-stop is unprovable from ids alone and the final
-/// iteration re-runs. All fields additive; a bare agent id (legacy logs) means "no signals".
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct ResumedCompletion {
+/// One typed recovered node outcome for [`WorkflowRun::resume`], plus the result-borne control
+/// signals required to reconstruct classify/loop/tournament state exactly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumedNodeOutcome {
     pub agent_id: String,
+    pub status: WorkflowNodeStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub termination: Option<TerminationReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<crate::types::message::Message>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classify_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -216,12 +252,16 @@ pub struct ResumedCompletion {
     pub loop_continue: Option<bool>,
 }
 
-impl ResumedCompletion {
-    /// A signal-less completion (legacy `resumed_completed` string entries).
-    pub fn bare(agent_id: impl Into<String>) -> Self {
+impl ResumedNodeOutcome {
+    pub fn completed(agent_id: impl Into<String>) -> Self {
         Self {
             agent_id: agent_id.into(),
-            ..Self::default()
+            status: WorkflowNodeStatus::Completed,
+            termination: Some(TerminationReason::Completed),
+            output: None,
+            classify_branch: None,
+            tournament_winner: None,
+            loop_continue: None,
         }
     }
 }
@@ -248,6 +288,7 @@ struct TournamentState {
 pub struct WorkflowRun {
     graph: TaskGraph,
     nodes: Vec<WorkflowNode>,
+    scheduler_policy: crate::scheduler::policy::SchedulerPolicyConfig,
     /// Parent session id stamped onto each node's spawned-agent manifest.
     parent_session_id: String,
     /// Completed-event lookup: kernel agent id → DAG node index.
@@ -266,16 +307,20 @@ pub struct WorkflowRun {
 impl WorkflowRun {
     /// Build from a spec. Validates dependency indices + acyclicity (reuses `WorkflowSpec`).
     pub fn new(spec: &WorkflowSpec, parent_session_id: &str) -> Result<Self> {
-        Ok(Self {
+        let mut run = Self {
             graph: spec.validate()?,
             nodes: spec.nodes.clone(),
+            scheduler_policy: crate::scheduler::policy::SchedulerPolicyConfig::default(),
             parent_session_id: parent_session_id.to_string(),
             node_of_agent: HashMap::new(),
             iter_counts: HashMap::new(),
             tournaments: HashMap::new(),
             child_controller: HashMap::new(),
             judge_matches: HashMap::new(),
-        })
+        };
+        run.refresh_scheduling();
+        run.resolve_dependency_outcomes();
+        Ok(run)
     }
 
     /// W0-ABI resume: rebuild an in-flight run by replaying which node agent-ids already completed
@@ -289,17 +334,15 @@ impl WorkflowRun {
     /// `WorkflowNodesSubmitted` observation), batches are re-applied at those EXACT indices,
     /// gap-filling any interleaved runtime children (tournament entrants/judges) with inert
     /// completed placeholders — so a later batch never shifts onto a child's old index and every
-    /// completed id maps to the node it originally named. Without bases (legacy logs) batches
-    /// replay in order, which is exact only when submissions were the sole runtime appends.
+    /// terminal id maps to the node it originally named. Every submission requires its exact base.
     ///
     /// Loop iterations complete under `wf-node{N}-i{k}`: replay advances the iteration cursor to
     /// the highest recorded `k+1` instead of discarding the finished work — the node re-arms at the
     /// next iteration. It completes when `max_iters` is provably exhausted OR a recorded
-    /// `loop_continue == false` proves the semantic early stop (legacy signal-less logs still
-    /// re-run the final iteration).
+    /// `loop_continue == false` proves the semantic early stop; otherwise the next iteration runs.
     ///
     /// A completed `Classify` node replays its recorded branch choice through the same prune logic
-    /// as [`Self::record_completion`]; with no recorded choice (legacy logs) every branch is pruned
+    /// as [`Self::record_completion`]; with no recorded choice every branch is pruned
     /// — the same "no recognizable choice" contract as the live path, and strictly safer than
     /// running a branch the original classification rejected.
     ///
@@ -311,8 +354,15 @@ impl WorkflowRun {
         parent_session_id: &str,
         submissions: &[Vec<WorkflowNode>],
         submission_bases: &[u32],
-        completed: &[ResumedCompletion],
+        outcomes: &[ResumedNodeOutcome],
     ) -> Result<Self> {
+        if submissions.len() != submission_bases.len() {
+            return Err(DeepStrikeError::InvalidConfig(format!(
+                "resume requires one base per submission ({} submissions, {} bases)",
+                submissions.len(),
+                submission_bases.len()
+            )));
+        }
         let mut run = Self::new(spec, parent_session_id)?;
         for (i, batch) in submissions.iter().enumerate() {
             if let Some(&base) = submission_bases.get(i) {
@@ -335,15 +385,17 @@ impl WorkflowRun {
                     run.graph.add(node.task.clone(), Vec::new());
                     run.nodes.push(node);
                     run.graph.start(idx);
-                    run.graph.complete(idx, resumed_result());
+                    run.graph.complete(idx, resumed_placeholder_result());
                 }
             }
-            run.submit_nodes(batch.clone());
+            run.submit_nodes(batch.clone()).map_err(|error| {
+                DeepStrikeError::InvalidConfig(format!("resume submission {i} rejected: {error}"))
+            })?;
         }
         let n = run.graph.len();
         // Highest finished iteration + last recorded loop_continue per Loop node.
         let mut loop_cursor: HashMap<usize, (usize, Option<bool>)> = HashMap::new();
-        for rec in completed {
+        for rec in outcomes {
             let id = rec.agent_id.as_str();
             if let Some(node) = (0..n).find(|&i| node_agent_id(i) == id) {
                 run.graph.start(node);
@@ -359,17 +411,11 @@ impl WorkflowRun {
                     for bn in prune {
                         run.graph.fail(bn);
                     }
-                    let result = LoopResult {
-                        classify_branch: chosen,
-                        ..resumed_result()
-                    };
-                    run.graph.complete(node, result);
+                    let mut restored = rec.clone();
+                    restored.classify_branch = chosen;
+                    run.restore_outcome(node, &restored)?;
                 } else {
-                    let result = LoopResult {
-                        tournament_winner: rec.tournament_winner.clone(),
-                        ..resumed_result()
-                    };
-                    run.graph.complete(node, result);
+                    run.restore_outcome(node, rec)?;
                 }
                 continue;
             }
@@ -391,7 +437,19 @@ impl WorkflowRun {
                 let stop_recorded = last_continue == Some(false);
                 if done >= max_iters || stop_recorded {
                     run.graph.start(node);
-                    run.graph.complete(node, resumed_result());
+                    let rec = outcomes
+                        .iter()
+                        .filter(|rec| {
+                            parse_loop_iteration_id(&rec.agent_id, n)
+                                .is_some_and(|(n, _)| n == node)
+                        })
+                        .max_by_key(|rec| {
+                            parse_loop_iteration_id(&rec.agent_id, n)
+                                .map(|(_, k)| k)
+                                .unwrap_or(0)
+                        })
+                        .expect("loop cursor was built from at least one recovered outcome");
+                    run.restore_outcome(node, rec)?;
                 } else {
                     // Re-arm at the recorded cursor: the next spawn round runs
                     // `wf-node{node}-i{done}` instead of restarting from i0.
@@ -399,12 +457,83 @@ impl WorkflowRun {
                 }
             }
         }
+        run.resolve_dependency_outcomes();
         Ok(run)
     }
 
+    fn restore_outcome(&mut self, node: usize, rec: &ResumedNodeOutcome) -> Result<()> {
+        if rec.status == WorkflowNodeStatus::SkippedUpstreamFailed {
+            if rec.termination.is_some() || rec.output.is_some() {
+                return Err(DeepStrikeError::InvalidConfig(format!(
+                    "resumed skipped node {} cannot carry termination/output",
+                    rec.agent_id
+                )));
+            }
+            self.graph.skip_upstream_failed(node);
+            return Ok(());
+        }
+        let termination = rec.termination.ok_or_else(|| {
+            DeepStrikeError::InvalidConfig(format!(
+                "resumed node {} with status {:?} requires termination",
+                rec.agent_id, rec.status
+            ))
+        })?;
+        let expected = match termination {
+            TerminationReason::Completed => WorkflowNodeStatus::Completed,
+            TerminationReason::MaxTurns
+            | TerminationReason::TokenBudget
+            | TerminationReason::Timeout
+            | TerminationReason::MilestoneExceeded
+            | TerminationReason::ContextOverflow
+            | TerminationReason::NoProgress => WorkflowNodeStatus::CompletedPartial,
+            TerminationReason::Error | TerminationReason::UserAbort => WorkflowNodeStatus::Failed,
+        };
+        if rec.status != expected {
+            return Err(DeepStrikeError::InvalidConfig(format!(
+                "resumed node {} status {:?} conflicts with termination {:?}",
+                rec.agent_id, rec.status, termination
+            )));
+        }
+        let result = LoopResult {
+            termination,
+            final_message: rec.output.clone(),
+            turns_used: 0,
+            total_tokens_used: 0,
+            loop_continue: rec.loop_continue,
+            classify_branch: rec.classify_branch.clone(),
+            tournament_winner: rec.tournament_winner.clone(),
+            pace_decision: None,
+        };
+        match rec.status {
+            WorkflowNodeStatus::Completed => self.graph.complete(node, result),
+            WorkflowNodeStatus::CompletedPartial => self.graph.complete_partial(node, result),
+            WorkflowNodeStatus::Failed => self.graph.fail_with_result(node, result),
+            WorkflowNodeStatus::SkippedUpstreamFailed => unreachable!(),
+        }
+        Ok(())
+    }
+
     /// Node indices whose dependencies are satisfied and that have not yet started.
-    pub fn ready_batch(&self) -> Vec<usize> {
+    pub fn ready_batch(&mut self) -> Vec<usize> {
         self.graph.ready_tasks()
+    }
+
+    pub fn set_scheduler_policy(
+        &mut self,
+        policy: crate::scheduler::policy::SchedulerPolicyConfig,
+    ) {
+        self.scheduler_policy = policy;
+        self.refresh_scheduling();
+    }
+
+    fn refresh_scheduling(&mut self) {
+        let token_costs: Vec<u64> = self
+            .nodes
+            .iter()
+            .map(|node| u64::from(node.token_budget.unwrap_or(0)))
+            .collect();
+        self.graph
+            .configure_scheduling(self.scheduler_policy, &token_costs);
     }
 
     /// The agent id for a node's *current* spawn. For a `Spawn` node this is the stable
@@ -443,7 +572,7 @@ impl WorkflowRun {
     }
 
     /// The goal text for a node (for the spawn's run spec / context injection).
-        /// W3 quarantine invariant: a quarantined node reads untrusted content and must run read-only.
+    /// W3 quarantine invariant: a quarantined node reads untrusted content and must run read-only.
     /// Returns `true` if the node is `Quarantined` yet declares a write-capable isolation
     /// (`Shared`/`Worktree`/`Remote`) — a privilege contradiction the kernel refuses to spawn,
     /// turning the SDK's "self-discipline" quarantine into an in-kernel, auditable enforcement.
@@ -466,8 +595,7 @@ impl WorkflowRun {
             NodeKind::Reduce { reducer } => Some(reducer.clone()),
             _ => None,
         };
-        let input_agent_ids: Vec<String> =
-            n.depends_on.iter().map(|&d| node_agent_id(d)).collect();
+        let input_agent_ids: Vec<String> = n.depends_on.iter().map(|&d| node_agent_id(d)).collect();
         // A#2 v2 / classify: surface the control-flow kind so the SDK can solicit + report the
         // matching result signal (`loop_continue` / `classify_branch`), mirroring how `reducer` /
         // `judge_match` distinguish reduce / judge spawns.
@@ -511,6 +639,7 @@ impl WorkflowRun {
     /// and will never become ready). Does not enter the live batch.
     pub fn mark_denied(&mut self, node: usize) {
         self.graph.fail(node);
+        self.resolve_dependency_outcomes();
     }
 
     /// A host rejected or failed a spawn after the kernel reserved the node.
@@ -519,6 +648,7 @@ impl WorkflowRun {
     pub fn mark_spawn_failed(&mut self, agent_id: &str) -> Option<usize> {
         let node = self.node_of_agent.remove(agent_id)?;
         self.graph.fail(node);
+        self.resolve_dependency_outcomes();
         Some(node)
     }
 
@@ -536,6 +666,15 @@ impl WorkflowRun {
         // rather than treating it as an ordinary node (it has no dependents of its own).
         if let Some(&controller) = self.child_controller.get(&node) {
             return self.advance_tournament(controller, node, result);
+        }
+
+        // A loop iteration with a non-success termination is itself terminal. Retrying it would
+        // erase the partial/failure semantics behind a later successful iteration.
+        if matches!(self.nodes[node].kind, NodeKind::Loop { .. })
+            && result.termination != TerminationReason::Completed
+        {
+            self.settle_result(node, result);
+            return Some(node);
         }
 
         match &self.nodes[node].kind {
@@ -572,18 +711,78 @@ impl WorkflowRun {
             NodeKind::Spawn | NodeKind::Tournament { .. } | NodeKind::Reduce { .. } => {}
         }
 
-        // Spawn node, loop's final iteration, or a completed classifier. A node whose agent
-        // terminated in `Error` is *failed* (its dependents starve) rather than completed — an
-        // errored agent must not promote dependents that would run on missing/garbage input. This
-        // is also the SDK's only lever to fail a node from a result: G3 schema enforcement returns
-        // an `Error`-terminated result when output never conforms, failing the node here. Other
-        // terminations (max-turns / budget / timeout) still complete — they may carry partial output.
-        if matches!(result.termination, crate::types::result::TerminationReason::Error) {
-            self.graph.fail(node);
-        } else {
-            self.graph.complete(node, result);
-        }
+        // Spawn node, loop's final iteration, or a completed classifier. Map the run termination
+        // into an explicit node terminal state, then apply each dependent's declared policy.
+        self.settle_result(node, result);
         Some(node)
+    }
+
+    fn settle_result(&mut self, node: usize, result: LoopResult) {
+        match result.termination {
+            TerminationReason::Completed => self.graph.complete(node, result),
+            TerminationReason::MaxTurns
+            | TerminationReason::TokenBudget
+            | TerminationReason::Timeout
+            | TerminationReason::MilestoneExceeded
+            | TerminationReason::ContextOverflow
+            | TerminationReason::NoProgress => self.graph.complete_partial(node, result),
+            TerminationReason::Error | TerminationReason::UserAbort => {
+                self.graph.fail_with_result(node, result)
+            }
+        }
+        self.resolve_dependency_outcomes();
+    }
+
+    /// Resolve every pending node whose dependency state is now decisive. Skips cascade until the
+    /// graph reaches a fixed point, so a failed ancestor cannot leave hidden pending descendants.
+    fn resolve_dependency_outcomes(&mut self) {
+        loop {
+            let mut changed = false;
+            for node in 0..self.nodes.len() {
+                if self.graph.get(node).map(|n| n.status) != Some(TaskStatus::Pending) {
+                    continue;
+                }
+                let policy = self.nodes[node].dep_policy;
+                if policy == DependencyPolicy::Optional {
+                    self.graph.set_ready(node);
+                    changed = true;
+                    continue;
+                }
+                let statuses: Vec<TaskStatus> = self.nodes[node]
+                    .depends_on
+                    .iter()
+                    .filter_map(|&dep| self.graph.get(dep).map(|n| n.status))
+                    .collect();
+                let all_terminal = statuses.iter().all(|status| status.is_terminal());
+                let impossible = match policy {
+                    DependencyPolicy::AllSuccess => statuses.iter().any(|status| {
+                        matches!(
+                            status,
+                            TaskStatus::CompletedPartial
+                                | TaskStatus::Failed
+                                | TaskStatus::SkippedUpstreamFailed
+                        )
+                    }),
+                    DependencyPolicy::AcceptPartial => statuses.iter().any(|status| {
+                        matches!(
+                            status,
+                            TaskStatus::Failed | TaskStatus::SkippedUpstreamFailed
+                        )
+                    }),
+                    DependencyPolicy::AllTerminal | DependencyPolicy::Optional => false,
+                };
+                if impossible {
+                    self.graph.skip_upstream_failed(node);
+                    changed = true;
+                } else if all_terminal {
+                    self.graph.set_ready(node);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
     }
 
     // ── Tournament controller (A#2) ─────────────────────────────────────────────────────────────
@@ -595,6 +794,7 @@ impl WorkflowRun {
         let idx = self.graph.add(node.task.clone(), Vec::new());
         debug_assert_eq!(idx, self.nodes.len(), "graph/nodes index drift");
         self.nodes.push(node);
+        self.refresh_scheduling();
         idx
     }
 
@@ -666,10 +866,17 @@ impl WorkflowRun {
         // (`record_completion`) — so outcome() reports it honestly. The bracket still advances:
         // an errored entrant simply fields an empty candidate (judges see it and prefer the other
         // side); an errored judge reports no winner, which surfaces as a no-champion bracket below.
-        if matches!(result.termination, TerminationReason::Error) {
-            self.graph.fail(child);
-        } else {
-            self.graph.complete(child, result.clone());
+        match result.termination {
+            TerminationReason::Completed => self.graph.complete(child, result.clone()),
+            TerminationReason::MaxTurns
+            | TerminationReason::TokenBudget
+            | TerminationReason::Timeout
+            | TerminationReason::MilestoneExceeded
+            | TerminationReason::ContextOverflow
+            | TerminationReason::NoProgress => self.graph.complete_partial(child, result.clone()),
+            TerminationReason::Error | TerminationReason::UserAbort => {
+                self.graph.fail_with_result(child, result.clone())
+            }
         }
 
         let in_entrant_phase = self.tournaments.get(&controller)?.bracket.is_none();
@@ -787,6 +994,7 @@ impl WorkflowRun {
         self.tournaments.remove(&controller);
         let Some(winner) = winner else {
             self.graph.fail(controller);
+            self.resolve_dependency_outcomes();
             return;
         };
         let result = LoopResult {
@@ -800,6 +1008,7 @@ impl WorkflowRun {
             pace_decision: None,
         };
         self.graph.complete(controller, result);
+        self.resolve_dependency_outcomes();
     }
 
     // ── R3-1: runtime node submission (true loop-until-done / dynamic fan-out) ────────────────────
@@ -810,14 +1019,9 @@ impl WorkflowRun {
     /// (loop-until-done) and per-item fan-out (e.g. a claim-extractor spawning one verifier per
     /// claim) both reduce to "append these nodes now".
     ///
-    /// Each submitted node's `depends_on` is interpreted **batch-relative and backward-only**: index
-    /// `d` refers to the `d`-th node of *this* submission, and only `d < this node's position` is
-    /// honored — so a submission can carry its own internal forward chain (extractor → dependents)
-    /// while forward/self/out-of-range references are dropped rather than stranding the node behind
-    /// an unsatisfiable dependency. Nodes with no (remaining) deps are immediately `Ready`, exactly
-    /// like tournament entrants, and flow through the unchanged gated spawn loop — so quota / depth /
-    /// quarantine apply per node with **no new gate**. Returns the appended node indices (their
-    /// agent ids are the deterministic `wf-node{idx}`).
+    /// Each submitted node's `depends_on` is batch-relative: both forward and backward edges are
+    /// accepted when the complete batch is acyclic. Validation precedes mutation, so malformed
+    /// references or control-flow nodes reject the entire batch atomically.
     ///
     /// Pure graph mutation: the caller (state machine) is responsible for routing the trigger
     /// through `evaluate_syscall` before calling this, keeping the kernel's zero-I/O contract.
@@ -836,7 +1040,7 @@ impl WorkflowRun {
         &mut self,
         submitter: Option<&str>,
         mut nodes: Vec<WorkflowNode>,
-    ) -> Vec<usize> {
+    ) -> std::result::Result<Vec<usize>, WorkflowSubmissionError> {
         let submitter_quarantined = submitter.is_some_and(|s| self.is_agent_quarantined(s));
         if submitter_quarantined {
             for node in &mut nodes {
@@ -846,63 +1050,94 @@ impl WorkflowRun {
         self.submit_nodes(nodes)
     }
 
-    pub fn submit_nodes(&mut self, nodes: Vec<WorkflowNode>) -> Vec<usize> {
+    pub fn submit_nodes(
+        &mut self,
+        mut nodes: Vec<WorkflowNode>,
+    ) -> std::result::Result<Vec<usize>, WorkflowSubmissionError> {
         let base = self.nodes.len();
         let batch_len = nodes.len();
-        let mut ids = Vec::with_capacity(nodes.len());
-        // W-2: runtime submissions bypass `WorkflowSpec::validate`, so the classify gating invariant
-        // ("branch nodes must depends_on the classifier, else they run before classification") is
-        // COERCED here instead: every batch-relative branch reference gains a dependency on its
-        // classifier. Forward-only (b > o), matching the batch-relative backward-deps convention.
-        let mut forced_deps: Vec<Vec<usize>> = vec![Vec::new(); batch_len];
-        for (o, node) in nodes.iter().enumerate() {
+        for (node_index, node) in nodes.iter().enumerate() {
+            if matches!(node.kind, NodeKind::Loop { max_iters: 0 }) {
+                return Err(WorkflowSubmissionError {
+                    node_index,
+                    reason: "loop max_iters must be greater than zero".to_string(),
+                });
+            }
+            if matches!(&node.kind, NodeKind::Tournament { entrants } if entrants.len() < 2) {
+                return Err(WorkflowSubmissionError {
+                    node_index,
+                    reason: "tournament requires at least two entrants".to_string(),
+                });
+            }
+            for &dependency in &node.depends_on {
+                if dependency >= batch_len {
+                    return Err(WorkflowSubmissionError {
+                        node_index,
+                        reason: format!(
+                            "dependency {dependency} out of range for batch of {batch_len} nodes"
+                        ),
+                    });
+                }
+                if dependency == node_index {
+                    return Err(WorkflowSubmissionError {
+                        node_index,
+                        reason: "node depends on itself".to_string(),
+                    });
+                }
+            }
             if let NodeKind::Classify { branches } = &node.kind {
-                for b in branches.iter().flat_map(|br| br.nodes.iter().copied()) {
-                    if b > o
-                        && b < batch_len
-                        && !nodes[b].depends_on.contains(&o)
-                        && !forced_deps[b].contains(&o)
-                    {
-                        forced_deps[b].push(o);
+                for branch_node in branches.iter().flat_map(|br| br.nodes.iter().copied()) {
+                    if branch_node >= batch_len {
+                        return Err(WorkflowSubmissionError {
+                            node_index,
+                            reason: format!("classify branch node {branch_node} out of range"),
+                        });
+                    }
+                    if branch_node == node_index {
+                        return Err(WorkflowSubmissionError {
+                            node_index,
+                            reason: "classifier cannot select itself as a branch node".to_string(),
+                        });
+                    }
+                    if !nodes[branch_node].depends_on.contains(&node_index) {
+                        return Err(WorkflowSubmissionError {
+                            node_index: branch_node,
+                            reason: format!(
+                                "classify branch node must depend on classifier {node_index}"
+                            ),
+                        });
                     }
                 }
             }
         }
-        for (offset, mut node) in nodes.into_iter().enumerate() {
-            // W-2: `Loop { max_iters: 0 }` would never run (validate rejects it on a spec); floor a
-            // runtime submission to one iteration, mirroring the `gen_eval` template's floor.
-            if let NodeKind::Loop { max_iters: 0 } = node.kind {
-                node.kind = NodeKind::Loop { max_iters: 1 };
-            }
-            let deps: Vec<usize> = node
-                .depends_on
-                .iter()
-                .filter(|&&d| d < offset)
-                .chain(forced_deps[offset].iter())
-                .map(|&d| base + d)
-                .collect();
-            node.depends_on = deps.clone();
-            // A#2/G2: a submitted `Classify` node's branch indices are *batch-relative* — they point
-            // at other nodes in this same submission, whose absolute graph index the submitter cannot
-            // know. Remap each branch node index `d` (0-based within the batch) to its absolute index
-            // `base + d`, dropping out-of-range references. Mirrors the `depends_on` batch-relative
-            // convention; without it a runtime-submitted classifier would prune the wrong nodes.
+
+        if WorkflowSpec::new(nodes.clone()).validate().is_err() {
+            return Err(WorkflowSubmissionError {
+                node_index: 0,
+                reason: "submission introduces a dependency cycle".to_string(),
+            });
+        }
+
+        for node in &mut nodes {
+            node.depends_on = node.depends_on.iter().map(|dep| base + dep).collect();
             if let NodeKind::Classify { branches } = &mut node.kind {
-                for branch in branches.iter_mut() {
-                    branch.nodes = branch
-                        .nodes
-                        .iter()
-                        .filter(|&&d| d < batch_len)
-                        .map(|&d| base + d)
-                        .collect();
+                for branch in branches {
+                    branch.nodes = branch.nodes.iter().map(|node| base + node).collect();
                 }
             }
+        }
+
+        let mut ids = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            let deps = node.depends_on.clone();
             let idx = self.graph.add(node.task.clone(), deps);
             debug_assert_eq!(idx, self.nodes.len(), "graph/nodes index drift");
             self.nodes.push(node);
             ids.push(idx);
         }
-        ids
+        self.refresh_scheduling();
+        self.resolve_dependency_outcomes();
+        Ok(ids)
     }
 
     /// Whether `agent_id` belongs to this workflow.
@@ -926,55 +1161,103 @@ impl WorkflowRun {
     #[cfg(test)]
     pub(crate) fn batch_drained(&self) -> bool {
         !(0..self.graph.len()).any(|i| {
-            matches!(self.graph.get(i).map(|n| &n.status), Some(crate::orchestration::task_graph::TaskStatus::Running))
+            matches!(
+                self.graph.get(i).map(|n| &n.status),
+                Some(crate::orchestration::task_graph::TaskStatus::Running)
+            )
         })
     }
 
-    /// Test instrument: every node reached a terminal status (completed or failed) and
-    /// nothing is running. NOTE the executor's own finish rule is looser — "nothing
-    /// running && nothing newly spawnable" — so a stalled DAG (dependents of a denied
-    /// node stay `Pending` forever) terminates the run while this stays false.
+    /// Test instrument: every node reached one of the four terminal statuses.
     #[cfg(test)]
     pub(crate) fn is_complete(&self) -> bool {
         self.graph.all_done()
     }
 
-    /// Outcome at finish: `(completed_agent_ids, failed_agent_ids)` by node. Nodes left
-    /// `Pending`/`Ready` (stalled behind a gated dependency) appear in neither.
-    pub fn outcome(&self) -> (Vec<String>, Vec<String>) {
-        let mut completed = Vec::new();
-        let mut failed = Vec::new();
-        for i in 0..self.graph.len() {
-            match self.graph.get(i).map(|n| n.status) {
-                Some(TaskStatus::Completed) => completed.push(node_agent_id(i)),
-                Some(TaskStatus::Failed) => failed.push(node_agent_id(i)),
+    /// Close a workflow and return exactly one typed terminal outcome per graph node.
+    pub fn finish(&mut self) -> Vec<WorkflowNodeOutcome> {
+        for node in 0..self.graph.len() {
+            match self.graph.get(node).map(|node| node.status) {
+                Some(TaskStatus::Pending | TaskStatus::Ready) => {
+                    self.graph.skip_upstream_failed(node)
+                }
+                Some(TaskStatus::Running) => self.graph.fail(node),
                 _ => {}
             }
         }
-        (completed, failed)
+        self.node_outcomes()
     }
 
-    /// #2-B abort: outcome when the workflow is preempted — every node that has not already
-    /// `Completed` counts as `failed` (running / ready / pending all abort). Used to emit a terminal
-    /// `WorkflowCompleted` when an `InterruptNow` tears the whole `WorkflowRun` down.
-    pub fn abort_outcome(&self) -> (Vec<String>, Vec<String>) {
-        let mut completed = Vec::new();
-        let mut failed = Vec::new();
-        for i in 0..self.graph.len() {
-            match self.graph.get(i).map(|n| n.status) {
-                Some(TaskStatus::Completed) => completed.push(node_agent_id(i)),
-                _ => failed.push(node_agent_id(i)),
-            }
-        }
-        (completed, failed)
+    pub fn node_outcomes(&self) -> Vec<WorkflowNodeOutcome> {
+        (0..self.graph.len())
+            .filter_map(|node| {
+                let graph_node = self.graph.get(node)?;
+                let status = match graph_node.status {
+                    TaskStatus::Completed => WorkflowNodeStatus::Completed,
+                    TaskStatus::CompletedPartial => WorkflowNodeStatus::CompletedPartial,
+                    TaskStatus::Failed => WorkflowNodeStatus::Failed,
+                    TaskStatus::SkippedUpstreamFailed => WorkflowNodeStatus::SkippedUpstreamFailed,
+                    TaskStatus::Pending | TaskStatus::Ready | TaskStatus::Running => return None,
+                };
+                Some(WorkflowNodeOutcome {
+                    node_id: node_agent_id(node),
+                    status,
+                    termination: graph_node.result.as_ref().map(|result| result.termination),
+                    output: graph_node
+                        .result
+                        .as_ref()
+                        .and_then(|result| result.final_message.clone()),
+                })
+            })
+            .collect()
+    }
+
+    /// #2-B abort: produce the same typed terminal contract as ordinary completion. Running/ready
+    /// nodes fail with `UserAbort`; nodes that never started are skipped behind the aborted graph.
+    pub fn abort_outcomes(&self) -> Vec<WorkflowNodeOutcome> {
+        (0..self.graph.len())
+            .filter_map(|node| {
+                let graph_node = self.graph.get(node)?;
+                let (status, termination) = match graph_node.status {
+                    TaskStatus::Completed => (
+                        WorkflowNodeStatus::Completed,
+                        graph_node.result.as_ref().map(|result| result.termination),
+                    ),
+                    TaskStatus::CompletedPartial => (
+                        WorkflowNodeStatus::CompletedPartial,
+                        graph_node.result.as_ref().map(|result| result.termination),
+                    ),
+                    TaskStatus::Pending | TaskStatus::SkippedUpstreamFailed => {
+                        (WorkflowNodeStatus::SkippedUpstreamFailed, None)
+                    }
+                    TaskStatus::Ready | TaskStatus::Running | TaskStatus::Failed => (
+                        WorkflowNodeStatus::Failed,
+                        Some(
+                            graph_node
+                                .result
+                                .as_ref()
+                                .map_or(TerminationReason::UserAbort, |result| result.termination),
+                        ),
+                    ),
+                };
+                Some(WorkflowNodeOutcome {
+                    node_id: node_agent_id(node),
+                    status,
+                    termination,
+                    output: graph_node
+                        .result
+                        .as_ref()
+                        .and_then(|result| result.final_message.clone()),
+                })
+            })
+            .collect()
     }
 
     /// Total node count.
     pub fn len(&self) -> usize {
         self.graph.len()
     }
-
-    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -993,6 +1276,13 @@ mod tests {
             classify_branch: None,
             tournament_winner: None,
             pace_decision: None,
+        }
+    }
+
+    fn terminated(termination: TerminationReason) -> LoopResult {
+        LoopResult {
+            termination,
+            ..done()
         }
     }
 
@@ -1027,9 +1317,17 @@ mod tests {
         out
     }
 
+    fn outcome_ids(run: &WorkflowRun, status: WorkflowNodeStatus) -> Vec<String> {
+        run.node_outcomes()
+            .into_iter()
+            .filter(|outcome| outcome.status == status)
+            .map(|outcome| outcome.node_id)
+            .collect()
+    }
+
     #[test]
     fn first_batch_is_the_workers() {
-        let run = fanout2();
+        let mut run = fanout2();
         assert_eq!(run.ready_batch(), vec![0, 1]);
         assert_eq!(run.len(), 3);
         assert!(!run.is_complete());
@@ -1044,10 +1342,12 @@ mod tests {
 
         let mut run = fanout2(); // nodes 0,1 (workers) → 2 (synth)
         assert_eq!(run.len(), 3);
-        let ids = run.submit_nodes(vec![
-            WorkflowNode::new(RuntimeTask::new("extra-a"), AgentRole::Implement),
-            WorkflowNode::new(RuntimeTask::new("extra-b"), AgentRole::Implement),
-        ]);
+        let ids = run
+            .submit_nodes(vec![
+                WorkflowNode::new(RuntimeTask::new("extra-a"), AgentRole::Implement),
+                WorkflowNode::new(RuntimeTask::new("extra-b"), AgentRole::Implement),
+            ])
+            .unwrap();
         assert_eq!(ids, vec![3, 4], "appended after the existing 3 nodes");
         assert_eq!(run.len(), 5);
         let ready = run.ready_batch();
@@ -1071,16 +1371,24 @@ mod tests {
         let id0 = run.current_agent_id(0);
         run.mark_spawned(0, &id0);
         run.record_completion(&id0, done());
-        let ids = run.submit_nodes(vec![WorkflowNode::new(
-            RuntimeTask::new("more"),
-            AgentRole::Implement,
-        )]);
+        let ids = run
+            .submit_nodes(vec![WorkflowNode::new(
+                RuntimeTask::new("more"),
+                AgentRole::Implement,
+            )])
+            .unwrap();
         assert_eq!(ids, vec![1]);
-        assert!(!run.is_complete(), "not complete while the submitted node is pending");
+        assert!(
+            !run.is_complete(),
+            "not complete while the submitted node is pending"
+        );
         let spawned = spawn_round(&mut run);
         assert_eq!(spawned, vec![(1usize, "wf-node1".to_string())]);
         run.record_completion("wf-node1", done());
-        assert!(run.is_complete(), "complete once the submitted node finishes");
+        assert!(
+            run.is_complete(),
+            "complete once the submitted node finishes"
+        );
     }
 
     #[test]
@@ -1111,15 +1419,18 @@ mod tests {
         assert_eq!(run.ready_batch(), vec![2]);
         let info = run.spawn_info(2);
         assert_eq!(info.reducer.as_deref(), Some("dedupe_lines"));
-        assert_eq!(info.input_agent_ids, vec!["wf-node0".to_string(), "wf-node1".to_string()]);
+        assert_eq!(
+            info.input_agent_ids,
+            vec!["wf-node0".to_string(), "wf-node1".to_string()]
+        );
 
         // The reduce node's (SDK-computed) result feeds back as an ordinary completion → DAG done.
         run.mark_spawned(2, "wf-node2");
         run.record_completion("wf-node2", done());
         assert!(run.is_complete());
-        let (completed, failed) = run.outcome();
+        let completed = outcome_ids(&run, WorkflowNodeStatus::Completed);
         assert_eq!(completed, vec!["wf-node0", "wf-node1", "wf-node2"]);
-        assert!(failed.is_empty());
+        assert_eq!(run.node_outcomes().len(), completed.len());
     }
 
     #[test]
@@ -1133,11 +1444,10 @@ mod tests {
             "required": ["verdict"],
             "properties": { "verdict": { "type": "string" } }
         });
-        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
-            RuntimeTask::new("judge"),
-            AgentRole::Verify,
-        )
-        .with_output_schema(schema.clone())]);
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("judge"), AgentRole::Verify)
+                .with_output_schema(schema.clone()),
+        ]);
         let run = WorkflowRun::new(&spec, "sess").unwrap();
         let info = run.spawn_info(0);
         assert_eq!(info.output_schema.as_ref(), Some(&schema));
@@ -1154,7 +1464,11 @@ mod tests {
         )]);
         let plain_info = WorkflowRun::new(&plain, "sess").unwrap().spawn_info(0);
         assert!(plain_info.output_schema.is_none());
-        assert!(!serde_json::to_string(&plain_info).unwrap().contains("output_schema"));
+        assert!(
+            !serde_json::to_string(&plain_info)
+                .unwrap()
+                .contains("output_schema")
+        );
     }
 
     #[test]
@@ -1165,21 +1479,24 @@ mod tests {
         // G1: a quarantined root reads untrusted content, then tries to submit a node it declares
         // "trusted" (and write-capable). The kernel must coerce that node to quarantined — a
         // quarantined origin cannot escalate its descendants out of the sandbox.
-        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
-            RuntimeTask::new("read-untrusted"),
-            AgentRole::Explore,
-        )
-        .quarantined()]);
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("read-untrusted"), AgentRole::Explore).quarantined(),
+        ]);
         let mut run = WorkflowRun::new(&spec, "sess").unwrap();
         let id0 = run.current_agent_id(0);
         run.mark_spawned(0, &id0);
         run.record_completion(&id0, done());
 
         // Submitted node claims Trusted; the quarantined submitter cannot grant that.
-        let ids = run.submit_nodes_from(
-            Some(&id0),
-            vec![WorkflowNode::new(RuntimeTask::new("act"), AgentRole::Implement)],
-        );
+        let ids = run
+            .submit_nodes_from(
+                Some(&id0),
+                vec![WorkflowNode::new(
+                    RuntimeTask::new("act"),
+                    AgentRole::Implement,
+                )],
+            )
+            .unwrap();
         assert_eq!(ids, vec![1]);
         let id1 = run.current_agent_id(1);
         run.mark_spawned(1, &id1);
@@ -1189,10 +1506,15 @@ mod tests {
         );
 
         // A trusted / unknown submitter does NOT coerce — only quarantined origins taint.
-        let ids2 = run.submit_nodes_from(
-            None,
-            vec![WorkflowNode::new(RuntimeTask::new("trusted-work"), AgentRole::Implement)],
-        );
+        let ids2 = run
+            .submit_nodes_from(
+                None,
+                vec![WorkflowNode::new(
+                    RuntimeTask::new("trusted-work"),
+                    AgentRole::Implement,
+                )],
+            )
+            .unwrap();
         let id2 = run.current_agent_id(ids2[0]);
         run.mark_spawned(ids2[0], &id2);
         assert!(
@@ -1215,20 +1537,30 @@ mod tests {
         run.mark_spawned(0, &id0);
         run.record_completion(&id0, done());
         // [extractor @offset 0, dependent @offset 1 depends on 0].
-        let ids = run.submit_nodes(vec![
-            WorkflowNode::new(RuntimeTask::new("extractor"), AgentRole::Implement),
-            WorkflowNode::new(RuntimeTask::new("dependent"), AgentRole::Implement)
-                .with_depends_on(vec![0]),
-        ]);
+        let ids = run
+            .submit_nodes(vec![
+                WorkflowNode::new(RuntimeTask::new("extractor"), AgentRole::Implement),
+                WorkflowNode::new(RuntimeTask::new("dependent"), AgentRole::Implement)
+                    .with_depends_on(vec![0]),
+            ])
+            .unwrap();
         assert_eq!(ids, vec![1, 2]);
-        assert_eq!(run.ready_batch(), vec![1], "backward dep keeps the dependent pending");
+        assert_eq!(
+            run.ready_batch(),
+            vec![1],
+            "backward dep keeps the dependent pending"
+        );
         run.mark_spawned(1, "wf-node1");
         run.record_completion("wf-node1", done());
-        assert_eq!(run.ready_batch(), vec![2], "dependent unblocks after the extractor");
+        assert_eq!(
+            run.ready_batch(),
+            vec![2],
+            "dependent unblocks after the extractor"
+        );
     }
 
     #[test]
-    fn submit_nodes_drops_forward_and_out_of_range_deps() {
+    fn submit_nodes_accepts_acyclic_forward_dependencies() {
         use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
         use crate::types::agent::AgentRole;
 
@@ -1237,15 +1569,51 @@ mod tests {
             AgentRole::Implement,
         )]);
         let mut run = WorkflowRun::new(&spec, "sess").unwrap();
-        // Only dep is a forward/out-of-range ref → dropped, so the node must not be stranded.
-        let ids = run.submit_nodes(vec![
-            WorkflowNode::new(RuntimeTask::new("a"), AgentRole::Implement).with_depends_on(vec![5]),
-        ]);
-        assert_eq!(ids, vec![1]);
-        assert!(
-            run.ready_batch().contains(&1),
-            "a node whose only dep was dropped is ready, not stranded"
+        // Node 0 in the batch depends on node 1: a valid forward edge. Only node 1 starts.
+        let ids = run
+            .submit_nodes(vec![
+                WorkflowNode::new(RuntimeTask::new("consumer"), AgentRole::Implement)
+                    .with_depends_on(vec![1]),
+                WorkflowNode::new(RuntimeTask::new("producer"), AgentRole::Implement),
+            ])
+            .unwrap();
+        assert_eq!(ids, vec![1, 2]);
+        assert_eq!(
+            run.ready_batch(),
+            vec![2, 0],
+            "the producer is on the longer critical path and runs before the independent root"
         );
+        run.mark_spawned(2, "wf-node2");
+        run.record_completion("wf-node2", done());
+        assert!(run.ready_batch().contains(&1));
+    }
+
+    #[test]
+    fn submit_nodes_rejects_malformed_batches_atomically() {
+        use crate::orchestration::workflow::WorkflowNode;
+        use crate::types::agent::AgentRole;
+
+        for nodes in [
+            vec![
+                WorkflowNode::new(RuntimeTask::new("bad-range"), AgentRole::Implement)
+                    .with_depends_on(vec![1]),
+            ],
+            vec![
+                WorkflowNode::new(RuntimeTask::new("self"), AgentRole::Implement)
+                    .with_depends_on(vec![0]),
+            ],
+            vec![
+                WorkflowNode::new(RuntimeTask::new("a"), AgentRole::Implement)
+                    .with_depends_on(vec![1]),
+                WorkflowNode::new(RuntimeTask::new("b"), AgentRole::Implement)
+                    .with_depends_on(vec![0]),
+            ],
+        ] {
+            let mut run = fanout2();
+            let before = run.len();
+            assert!(run.submit_nodes(nodes).is_err());
+            assert_eq!(run.len(), before, "rejection must precede every mutation");
+        }
     }
 
     #[test]
@@ -1267,20 +1635,33 @@ mod tests {
         run.record_completion(&id0, done());
 
         // Submit a Loop{2} node mid-run.
-        let ids = run.submit_nodes(vec![
-            WorkflowNode::new(RuntimeTask::new("refine"), AgentRole::Implement).with_loop(2),
-        ]);
+        let ids = run
+            .submit_nodes(vec![
+                WorkflowNode::new(RuntimeTask::new("refine"), AgentRole::Implement).with_loop(2),
+            ])
+            .unwrap();
         assert_eq!(ids, vec![1]);
 
         // It iterates with distinct per-iteration ids, then completes — its control flow runs.
         for k in 0..2 {
-            assert_eq!(run.ready_batch(), vec![1], "submitted loop ready for iteration {k}");
+            assert_eq!(
+                run.ready_batch(),
+                vec![1],
+                "submitted loop ready for iteration {k}"
+            );
             let id = run.current_agent_id(1);
-            assert_eq!(id, format!("wf-node1-i{k}"), "submitted loop gets per-iteration ids");
+            assert_eq!(
+                id,
+                format!("wf-node1-i{k}"),
+                "submitted loop gets per-iteration ids"
+            );
             run.mark_spawned(1, &id);
             run.record_completion(&id, done());
         }
-        assert!(run.is_complete(), "submitted loop ran its 2 iterations then finished");
+        assert!(
+            run.is_complete(),
+            "submitted loop ran its 2 iterations then finished"
+        );
     }
 
     #[test]
@@ -1301,18 +1682,24 @@ mod tests {
         run.record_completion(&id0, done());
 
         // Submit [tournament@batch0, dependent@batch1 depends_on [0]] (batch-relative).
-        let ids = run.submit_nodes(vec![
-            WorkflowNode::new(RuntimeTask::new("pick best"), AgentRole::Plan)
-                .with_tournament(vec![RuntimeTask::new("x"), RuntimeTask::new("y")]),
-            WorkflowNode::new(RuntimeTask::new("use winner"), AgentRole::Implement)
-                .with_depends_on(vec![0]),
-        ]);
+        let ids = run
+            .submit_nodes(vec![
+                WorkflowNode::new(RuntimeTask::new("pick best"), AgentRole::Plan)
+                    .with_tournament(vec![RuntimeTask::new("x"), RuntimeTask::new("y")]),
+                WorkflowNode::new(RuntimeTask::new("use winner"), AgentRole::Implement)
+                    .with_depends_on(vec![0]),
+            ])
+            .unwrap();
         assert_eq!(ids, vec![1, 2], "appended controller=1, dependent=2");
 
         // Controller (node 1) expands into 2 entrant children (3,4); spawns no agent of its own.
         let entrants = spawn_round(&mut run);
         let entrant_nodes: Vec<usize> = entrants.iter().map(|(n, _)| *n).collect();
-        assert_eq!(entrant_nodes, vec![3, 4], "two entrant children appended after the dependent");
+        assert_eq!(
+            entrant_nodes,
+            vec![3, 4],
+            "two entrant children appended after the dependent"
+        );
         for (_, id) in &entrants {
             run.record_completion(id, done());
         }
@@ -1320,12 +1707,25 @@ mod tests {
         // One judge over the two entrants; dependent (node 2) gated until the bracket resolves.
         let r1 = spawn_round(&mut run);
         assert_eq!(r1.len(), 1, "one judge for two entrants");
-        let jm = run.spawn_info(r1[0].0).judge_match.expect("judge carries a match");
-        assert_eq!(jm, JudgeMatch { left: node_agent_id(3), right: node_agent_id(4) });
+        let jm = run
+            .spawn_info(r1[0].0)
+            .judge_match
+            .expect("judge carries a match");
+        assert_eq!(
+            jm,
+            JudgeMatch {
+                left: node_agent_id(3),
+                right: node_agent_id(4)
+            }
+        );
 
         // Entrant 3 wins → controller completes with the champion → dependent unblocks.
         run.record_completion(&r1[0].1, judge_done(&node_agent_id(3)));
-        assert_eq!(run.ready_batch(), vec![2], "submitted dependent unblocks after the bracket");
+        assert_eq!(
+            run.ready_batch(),
+            vec![2],
+            "submitted dependent unblocks after the bracket"
+        );
         let last = spawn_round(&mut run);
         assert_eq!(last, vec![(2, node_agent_id(2))]);
         run.record_completion(&last[0].1, done());
@@ -1337,7 +1737,9 @@ mod tests {
         // M2: a submitted Classify node's branch `nodes` are batch-relative; `submit_nodes` remaps
         // them to absolute indices so the chosen branch runs and the rest are pruned. Without the
         // remap a runtime-submitted classifier would prune the wrong nodes.
-        use crate::orchestration::workflow::{ClassifyBranch, NodeKind, WorkflowNode, WorkflowSpec};
+        use crate::orchestration::workflow::{
+            ClassifyBranch, NodeKind, WorkflowNode, WorkflowSpec,
+        };
         use crate::types::agent::AgentRole;
 
         let spec = WorkflowSpec::new(vec![WorkflowNode::new(
@@ -1350,22 +1752,38 @@ mod tests {
         run.record_completion(&id0, done());
 
         // Submit [classify@batch0 (a→[1] b→[2]), branchA@batch1 dep[0], branchB@batch2 dep[0]].
-        let ids = run.submit_nodes(vec![
-            WorkflowNode::new(RuntimeTask::new("route"), AgentRole::Plan).with_classify(vec![
-                ClassifyBranch { label: "a".into(), nodes: vec![1] },
-                ClassifyBranch { label: "b".into(), nodes: vec![2] },
-            ]),
-            WorkflowNode::new(RuntimeTask::new("branch-a"), AgentRole::Implement)
-                .with_depends_on(vec![0]),
-            WorkflowNode::new(RuntimeTask::new("branch-b"), AgentRole::Implement)
-                .with_depends_on(vec![0]),
-        ]);
+        let ids = run
+            .submit_nodes(vec![
+                WorkflowNode::new(RuntimeTask::new("route"), AgentRole::Plan).with_classify(vec![
+                    ClassifyBranch {
+                        label: "a".into(),
+                        nodes: vec![1],
+                    },
+                    ClassifyBranch {
+                        label: "b".into(),
+                        nodes: vec![2],
+                    },
+                ]),
+                WorkflowNode::new(RuntimeTask::new("branch-a"), AgentRole::Implement)
+                    .with_depends_on(vec![0]),
+                WorkflowNode::new(RuntimeTask::new("branch-b"), AgentRole::Implement)
+                    .with_depends_on(vec![0]),
+            ])
+            .unwrap();
         assert_eq!(ids, vec![1, 2, 3], "classify=1, branchA=2, branchB=3");
 
         // Branch indices were remapped batch-relative → absolute: a→[2], b→[3].
         if let NodeKind::Classify { branches } = &run.nodes[1].kind {
-            assert_eq!(branches[0].nodes, vec![2], "branch a remapped to absolute node 2");
-            assert_eq!(branches[1].nodes, vec![3], "branch b remapped to absolute node 3");
+            assert_eq!(
+                branches[0].nodes,
+                vec![2],
+                "branch a remapped to absolute node 2"
+            );
+            assert_eq!(
+                branches[1].nodes,
+                vec![3],
+                "branch b remapped to absolute node 3"
+            );
         } else {
             panic!("node 1 should be a classify node");
         }
@@ -1373,17 +1791,26 @@ mod tests {
         // Classifier picks "a" → branch-a (node 2) runs, branch-b (node 3) is pruned/failed.
         let r = spawn_round(&mut run);
         assert_eq!(r, vec![(1, node_agent_id(1))], "classifier runs first");
-        run.record_completion(&r[0].1, LoopResult { classify_branch: Some("a".into()), ..done() });
+        run.record_completion(
+            &r[0].1,
+            LoopResult {
+                classify_branch: Some("a".into()),
+                ..done()
+            },
+        );
 
         assert_eq!(run.ready_batch(), vec![2], "only branch a is enabled");
-        let (_c, failed) = run.outcome();
-        assert!(failed.contains(&node_agent_id(3)), "branch b pruned/failed");
+        let failed = outcome_ids(&run, WorkflowNodeStatus::Failed);
+        assert!(
+            failed.contains(&node_agent_id(3)),
+            "branch b is explicitly failed by routing"
+        );
 
         let last = spawn_round(&mut run);
         assert_eq!(last, vec![(2, node_agent_id(2))]);
         run.record_completion(&last[0].1, done());
         assert!(run.is_complete());
-        let (completed, _f) = run.outcome();
+        let completed = outcome_ids(&run, WorkflowNodeStatus::Completed);
         assert!(completed.contains(&node_agent_id(1)) && completed.contains(&node_agent_id(2)));
     }
 
@@ -1402,7 +1829,11 @@ mod tests {
 
         // Three iterations, each with a distinct agent id; the dependent stays unready throughout.
         for k in 0..3 {
-            assert_eq!(run.ready_batch(), vec![0], "loop node ready for iteration {k}");
+            assert_eq!(
+                run.ready_batch(),
+                vec![0],
+                "loop node ready for iteration {k}"
+            );
             let id = run.current_agent_id(0);
             assert_eq!(id, format!("wf-node0-i{k}"), "distinct per-iteration id");
             run.mark_spawned(0, &id);
@@ -1416,7 +1847,11 @@ mod tests {
         }
 
         // Loop exhausted → node 0 complete → dependent (node 1) becomes ready.
-        assert_eq!(run.ready_batch(), vec![1], "dependent unblocks only after the loop ends");
+        assert_eq!(
+            run.ready_batch(),
+            vec![1],
+            "dependent unblocks only after the loop ends"
+        );
         let id1 = run.current_agent_id(1);
         assert_eq!(id1, "wf-node1", "spawn node keeps the plain id");
         run.mark_spawned(1, &id1);
@@ -1448,18 +1883,124 @@ mod tests {
     }
 
     #[test]
-    fn denied_node_blocks_dependents_and_stalls_progress() {
+    fn denied_node_skips_dependents_and_closes_outcome() {
         let mut run = fanout2();
         // node 0 spawned + completes; node 1 denied by the gate
         run.mark_spawned(0, &node_agent_id(0));
         run.mark_denied(1);
         run.record_completion(&node_agent_id(0), done());
-        // synth depends on node 1 (failed) → never ready; batch drained, nothing more to run.
-        // The state machine finishes a workflow on "drained && ready_batch empty" (here true),
-        // even though `is_complete()` is false (node 2 stays Pending forever).
         assert!(run.batch_drained());
         assert!(run.ready_batch().is_empty());
-        assert!(!run.is_complete());
+        assert!(run.is_complete());
+        let outcomes = run.finish();
+        assert_eq!(outcomes.len(), 3);
+        assert_eq!(outcomes[0].status, WorkflowNodeStatus::Completed);
+        assert_eq!(outcomes[1].status, WorkflowNodeStatus::Failed);
+        assert_eq!(
+            outcomes[2].status,
+            WorkflowNodeStatus::SkippedUpstreamFailed
+        );
+    }
+
+    #[test]
+    fn terminal_mapping_and_dependency_policies_are_explicit() {
+        use crate::orchestration::workflow::{DependencyPolicy, WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let cases = [
+            (TerminationReason::Completed, WorkflowNodeStatus::Completed),
+            (
+                TerminationReason::MaxTurns,
+                WorkflowNodeStatus::CompletedPartial,
+            ),
+            (
+                TerminationReason::TokenBudget,
+                WorkflowNodeStatus::CompletedPartial,
+            ),
+            (
+                TerminationReason::Timeout,
+                WorkflowNodeStatus::CompletedPartial,
+            ),
+            (
+                TerminationReason::ContextOverflow,
+                WorkflowNodeStatus::CompletedPartial,
+            ),
+            (
+                TerminationReason::NoProgress,
+                WorkflowNodeStatus::CompletedPartial,
+            ),
+            (
+                TerminationReason::MilestoneExceeded,
+                WorkflowNodeStatus::CompletedPartial,
+            ),
+            (TerminationReason::Error, WorkflowNodeStatus::Failed),
+            (TerminationReason::UserAbort, WorkflowNodeStatus::Failed),
+        ];
+        for (termination, expected) in cases {
+            let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+                RuntimeTask::new("node"),
+                AgentRole::Implement,
+            )]);
+            let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+            run.mark_spawned(0, "wf-node0");
+            run.record_completion("wf-node0", terminated(termination));
+            let outcome = run.finish().remove(0);
+            assert_eq!(outcome.status, expected);
+            assert_eq!(outcome.termination, Some(termination));
+        }
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("upstream"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("strict"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+            WorkflowNode::new(RuntimeTask::new("partial-ok"), AgentRole::Implement)
+                .with_depends_on(vec![0])
+                .with_dependency_policy(DependencyPolicy::AcceptPartial),
+        ]);
+        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        run.mark_spawned(0, "wf-node0");
+        run.record_completion("wf-node0", terminated(TerminationReason::Timeout));
+        assert_eq!(run.ready_batch(), vec![2]);
+        assert_eq!(
+            run.node_outcomes()[1].status,
+            WorkflowNodeStatus::SkippedUpstreamFailed
+        );
+    }
+
+    #[test]
+    fn all_terminal_and_optional_have_distinct_waiting_semantics() {
+        use crate::orchestration::workflow::{DependencyPolicy, WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("upstream"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("cleanup"), AgentRole::Implement)
+                .with_depends_on(vec![0])
+                .with_dependency_policy(DependencyPolicy::AllTerminal),
+            WorkflowNode::new(RuntimeTask::new("best-effort"), AgentRole::Implement)
+                .with_depends_on(vec![0])
+                .with_dependency_policy(DependencyPolicy::Optional),
+        ]);
+        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        assert_eq!(run.ready_batch(), vec![0, 2]);
+        run.mark_spawned(0, "wf-node0");
+        run.record_completion("wf-node0", terminated(TerminationReason::Error));
+        assert!(run.ready_batch().contains(&1));
+    }
+
+    #[test]
+    fn loop_terminal_result_is_not_retried() {
+        use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("loop"), AgentRole::Implement).with_loop(3),
+        ]);
+        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        run.mark_spawned(0, "wf-node0-i0");
+        run.record_completion("wf-node0-i0", terminated(TerminationReason::Timeout));
+        assert!(run.ready_batch().is_empty());
+        assert_eq!(run.finish()[0].status, WorkflowNodeStatus::CompletedPartial);
     }
 
     #[test]
@@ -1489,7 +2030,14 @@ mod tests {
             vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
             RuntimeTask::new("synth"),
         );
-        let run = WorkflowRun::resume(&spec, "sess", &[], &[], &[ResumedCompletion::bare(node_agent_id(0))]).unwrap();
+        let mut run = WorkflowRun::resume(
+            &spec,
+            "sess",
+            &[],
+            &[],
+            &[ResumedNodeOutcome::completed(node_agent_id(0))],
+        )
+        .unwrap();
         // only the remaining worker (node 1) is ready; node 0 is already complete, synth still gated.
         assert_eq!(run.ready_batch(), vec![1]);
         assert!(!run.is_complete());
@@ -1499,15 +2047,84 @@ mod tests {
     fn resume_with_all_done_completes() {
         let spec = fanout_synthesize(vec![RuntimeTask::new("w0")], RuntimeTask::new("synth"));
         // both nodes (worker 0, synth 1) recovered as done.
-        let run = WorkflowRun::resume(&spec, "sess", &[], &[], &[ResumedCompletion::bare(node_agent_id(0)), ResumedCompletion::bare(node_agent_id(1))]).unwrap();
+        let mut run = WorkflowRun::resume(
+            &spec,
+            "sess",
+            &[],
+            &[],
+            &[
+                ResumedNodeOutcome::completed(node_agent_id(0)),
+                ResumedNodeOutcome::completed(node_agent_id(1)),
+            ],
+        )
+        .unwrap();
         assert!(run.ready_batch().is_empty());
         assert!(run.is_complete());
     }
 
     #[test]
+    fn resume_preserves_partial_and_failed_dependency_semantics() {
+        use crate::orchestration::workflow::{DependencyPolicy, WorkflowNode, WorkflowSpec};
+        use crate::types::agent::AgentRole;
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("upstream"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("strict"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+            WorkflowNode::new(RuntimeTask::new("partial-ok"), AgentRole::Implement)
+                .with_depends_on(vec![0])
+                .with_dependency_policy(DependencyPolicy::AcceptPartial),
+        ]);
+
+        let partial = ResumedNodeOutcome {
+            agent_id: node_agent_id(0),
+            status: WorkflowNodeStatus::CompletedPartial,
+            termination: Some(TerminationReason::Timeout),
+            output: None,
+            classify_branch: None,
+            tournament_winner: None,
+            loop_continue: None,
+        };
+        let mut resumed = WorkflowRun::resume(&spec, "sess", &[], &[], &[partial]).unwrap();
+        assert_eq!(resumed.ready_batch(), vec![2]);
+        assert_eq!(
+            resumed.node_outcomes()[0].status,
+            WorkflowNodeStatus::CompletedPartial
+        );
+        assert_eq!(
+            resumed.node_outcomes()[1].status,
+            WorkflowNodeStatus::SkippedUpstreamFailed
+        );
+
+        let failed = ResumedNodeOutcome {
+            agent_id: node_agent_id(0),
+            status: WorkflowNodeStatus::Failed,
+            termination: Some(TerminationReason::Error),
+            output: None,
+            classify_branch: None,
+            tournament_winner: None,
+            loop_continue: None,
+        };
+        let mut resumed = WorkflowRun::resume(&spec, "sess", &[], &[], &[failed]).unwrap();
+        assert!(resumed.ready_batch().is_empty());
+        assert_eq!(
+            resumed.node_outcomes()[0].status,
+            WorkflowNodeStatus::Failed
+        );
+        assert_eq!(
+            resumed.node_outcomes()[1].status,
+            WorkflowNodeStatus::SkippedUpstreamFailed
+        );
+        assert_eq!(
+            resumed.node_outcomes()[2].status,
+            WorkflowNodeStatus::SkippedUpstreamFailed
+        );
+    }
+
+    #[test]
     fn resume_applies_submissions_at_recorded_bases_with_placeholder_gap_fill() {
         // The interleave bug: original run = spec [node0] → tournament children at 1,2 →
-        // runtime submission at base 3. Without bases, the submission replays at index 1 and
+        // runtime submission at base 3. A missing base would otherwise replay it at index 1 and
         // the child's completed id "wf-node2" would mark the WRONG node. With the recorded
         // base, indices stay faithful: 1,2 become inert completed placeholders, the batch
         // lands at 3, and every completed id maps to the node it originally named.
@@ -1522,17 +2139,27 @@ mod tests {
             RuntimeTask::new("late batch"),
             AgentRole::Implement,
         )];
-        let run = WorkflowRun::resume(
+        let mut run = WorkflowRun::resume(
             &spec,
             "sess",
             &[submission],
             &[3],
-            &[ResumedCompletion::bare("wf-node2"), ResumedCompletion::bare("wf-node3")],
+            &[
+                ResumedNodeOutcome::completed("wf-node2"),
+                ResumedNodeOutcome::completed("wf-node3"),
+            ],
         )
         .unwrap();
-        assert_eq!(run.graph.len(), 4, "spec node + 2 placeholders + 1 submitted");
+        assert_eq!(
+            run.graph.len(),
+            4,
+            "spec node + 2 placeholders + 1 submitted"
+        );
         // The submitted node (3) is complete because ITS id was recorded — not shifted.
-        assert!(run.ready_batch() == vec![0], "only the spec node remains to run");
+        assert!(
+            run.ready_batch() == vec![0],
+            "only the spec node remains to run"
+        );
         // A base below the reconstructed length is corrupt, not silently reinterpreted.
         let spec2 = WorkflowSpec::new(vec![
             WorkflowNode::new(RuntimeTask::new("a"), AgentRole::Implement),
@@ -1541,11 +2168,31 @@ mod tests {
         let bad = WorkflowRun::resume(
             &spec2,
             "sess",
-            &[vec![WorkflowNode::new(RuntimeTask::new("x"), AgentRole::Implement)]],
+            &[vec![WorkflowNode::new(
+                RuntimeTask::new("x"),
+                AgentRole::Implement,
+            )]],
             &[1],
             &[],
         );
-        assert!(bad.is_err(), "base inside the spec range is a corrupt record");
+        assert!(
+            bad.is_err(),
+            "base inside the spec range is a corrupt record"
+        );
+        let missing_base = WorkflowRun::resume(
+            &spec2,
+            "sess",
+            &[vec![WorkflowNode::new(
+                RuntimeTask::new("x"),
+                AgentRole::Implement,
+            )]],
+            &[],
+            &[],
+        );
+        assert!(
+            missing_base.is_err(),
+            "every recovered submission requires an exact base"
+        );
     }
 
     #[test]
@@ -1555,14 +2202,31 @@ mod tests {
         use crate::orchestration::workflow::{NodeKind, WorkflowNode, WorkflowSpec};
         use crate::types::agent::AgentRole;
 
-        let mut node = WorkflowNode::new(RuntimeTask::new("polish until done"), AgentRole::Implement);
+        let mut node =
+            WorkflowNode::new(RuntimeTask::new("polish until done"), AgentRole::Implement);
         node.kind = NodeKind::Loop { max_iters: 3 };
         let spec = WorkflowSpec::new(vec![node]);
-        let run = WorkflowRun::resume(&spec, "sess", &[], &[], &[ResumedCompletion::bare("wf-node0-i0"), ResumedCompletion::bare("wf-node0-i1")],
+        let mut run = WorkflowRun::resume(
+            &spec,
+            "sess",
+            &[],
+            &[],
+            &[
+                ResumedNodeOutcome::completed("wf-node0-i0"),
+                ResumedNodeOutcome::completed("wf-node0-i1"),
+            ],
         )
         .unwrap();
-        assert_eq!(run.ready_batch(), vec![0], "loop node re-armed, not complete");
-        assert_eq!(run.current_agent_id(0), "wf-node0-i2", "cursor advanced past finished work");
+        assert_eq!(
+            run.ready_batch(),
+            vec![0],
+            "loop node re-armed, not complete"
+        );
+        assert_eq!(
+            run.current_agent_id(0),
+            "wf-node0-i2",
+            "cursor advanced past finished work"
+        );
         assert!(!run.is_complete());
     }
 
@@ -1574,11 +2238,22 @@ mod tests {
         let mut node = WorkflowNode::new(RuntimeTask::new("polish"), AgentRole::Implement);
         node.kind = NodeKind::Loop { max_iters: 2 };
         let spec = WorkflowSpec::new(vec![node]);
-        let run = WorkflowRun::resume(&spec, "sess", &[], &[], &[ResumedCompletion::bare("wf-node0-i0"), ResumedCompletion::bare("wf-node0-i1")],
+        let mut run = WorkflowRun::resume(
+            &spec,
+            "sess",
+            &[],
+            &[],
+            &[
+                ResumedNodeOutcome::completed("wf-node0-i0"),
+                ResumedNodeOutcome::completed("wf-node0-i1"),
+            ],
         )
         .unwrap();
         assert!(run.ready_batch().is_empty());
-        assert!(run.is_complete(), "max_iters provably exhausted -> node complete");
+        assert!(
+            run.is_complete(),
+            "max_iters provably exhausted -> node complete"
+        );
     }
 
     #[test]
@@ -1593,17 +2268,40 @@ mod tests {
             RuntimeTask::new("root"),
             AgentRole::Implement,
         )]);
-        let submission = vec![WorkflowNode::new(RuntimeTask::new("discovered"), AgentRole::Implement)];
+        let submission = vec![WorkflowNode::new(
+            RuntimeTask::new("discovered"),
+            AgentRole::Implement,
+        )];
 
         // root done, submission re-applied, but the appended node not yet completed.
-        let run = WorkflowRun::resume(&spec, "sess", &[submission.clone()], &[], &[ResumedCompletion::bare(node_agent_id(0))]).unwrap();
+        let mut run = WorkflowRun::resume(
+            &spec,
+            "sess",
+            &[submission.clone()],
+            &[1],
+            &[ResumedNodeOutcome::completed(node_agent_id(0))],
+        )
+        .unwrap();
         assert_eq!(run.len(), 2, "base node + re-applied submitted node");
-        assert_eq!(run.ready_batch(), vec![1], "the re-applied appended node is the remaining work");
+        assert_eq!(
+            run.ready_batch(),
+            vec![1],
+            "the re-applied appended node is the remaining work"
+        );
         assert!(!run.is_complete());
 
         // both recovered as done → resume finishes.
-        let run2 =
-            WorkflowRun::resume(&spec, "sess", &[submission], &[], &[ResumedCompletion::bare(node_agent_id(0)), ResumedCompletion::bare(node_agent_id(1))]).unwrap();
+        let mut run2 = WorkflowRun::resume(
+            &spec,
+            "sess",
+            &[submission],
+            &[1],
+            &[
+                ResumedNodeOutcome::completed(node_agent_id(0)),
+                ResumedNodeOutcome::completed(node_agent_id(1)),
+            ],
+        )
+        .unwrap();
         assert!(run2.ready_batch().is_empty());
         assert!(run2.is_complete());
     }
@@ -1641,8 +2339,14 @@ mod tests {
             WorkflowNode::new(RuntimeTask::new("refine"), AgentRole::Implement).with_loop(3),
             // 1: classify node → descriptor carries the branch labels so the SDK can instruct + report.
             WorkflowNode::new(RuntimeTask::new("route"), AgentRole::Plan).with_classify(vec![
-                ClassifyBranch { label: "bug".into(), nodes: vec![] },
-                ClassifyBranch { label: "feature".into(), nodes: vec![] },
+                ClassifyBranch {
+                    label: "bug".into(),
+                    nodes: vec![],
+                },
+                ClassifyBranch {
+                    label: "feature".into(),
+                    nodes: vec![],
+                },
             ]),
             // 2: plain spawn → neither hint present.
             WorkflowNode::new(RuntimeTask::new("act"), AgentRole::Implement),
@@ -1655,7 +2359,10 @@ mod tests {
         assert_eq!(l.token_budget, None, "no token budget unless set");
 
         let c = run.spawn_info(1);
-        assert_eq!(c.classify_labels, vec!["bug".to_string(), "feature".to_string()]);
+        assert_eq!(
+            c.classify_labels,
+            vec!["bug".to_string(), "feature".to_string()]
+        );
         assert_eq!(c.loop_max_iters, None);
 
         let s = run.spawn_info(2);
@@ -1669,7 +2376,8 @@ mod tests {
         use crate::types::agent::AgentRole;
 
         let spec = WorkflowSpec::new(vec![
-            WorkflowNode::new(RuntimeTask::new("expensive"), AgentRole::Implement).with_token_budget(10_000),
+            WorkflowNode::new(RuntimeTask::new("expensive"), AgentRole::Implement)
+                .with_token_budget(10_000),
             WorkflowNode::new(RuntimeTask::new("plain"), AgentRole::Implement),
         ]);
         let run = WorkflowRun::new(&spec, "sess").unwrap();
@@ -1688,14 +2396,13 @@ mod tests {
     #[test]
     fn tournament_runs_bracket_then_promotes_dependent() {
         let spec = WorkflowSpec::new(vec![
-            WorkflowNode::new(RuntimeTask::new("pick the best ad"), AgentRole::Plan).with_tournament(
-                vec![
+            WorkflowNode::new(RuntimeTask::new("pick the best ad"), AgentRole::Plan)
+                .with_tournament(vec![
                     RuntimeTask::new("ad A"),
                     RuntimeTask::new("ad B"),
                     RuntimeTask::new("ad C"),
                     RuntimeTask::new("ad D"),
-                ],
-            ),
+                ]),
             WorkflowNode::new(RuntimeTask::new("ship the winner"), AgentRole::Implement)
                 .with_depends_on(vec![0]),
         ]);
@@ -1705,15 +2412,25 @@ mod tests {
         // controller spawns no agent of its own and the dependent stays gated.
         let entrants = spawn_round(&mut run);
         let entrant_nodes: Vec<usize> = entrants.iter().map(|(n, _)| *n).collect();
-        assert_eq!(entrant_nodes, vec![2, 3, 4, 5], "4 entrant children, no controller spawn");
-        assert!(run.spawn_info(2).judge_match.is_none(), "entrants are not judges");
+        assert_eq!(
+            entrant_nodes,
+            vec![2, 3, 4, 5],
+            "4 entrant children, no controller spawn"
+        );
+        assert!(
+            run.spawn_info(2).judge_match.is_none(),
+            "entrants are not judges"
+        );
         assert!(!run.is_complete());
 
         // All entrants generate → bracket begins; nothing else spawns until they're all in.
         for (i, (node, id)) in entrants.iter().enumerate() {
             run.record_completion(id, done());
             if i < 3 {
-                assert!(run.ready_batch().is_empty(), "no judges until every entrant is in");
+                assert!(
+                    run.ready_batch().is_empty(),
+                    "no judges until every entrant is in"
+                );
             }
             let _ = node;
         }
@@ -1721,21 +2438,51 @@ mod tests {
         // Round 1 judges: 2 matches over the 4 entrants, each carrying its pair.
         let r1 = spawn_round(&mut run);
         assert_eq!(r1.len(), 2, "two round-1 judges");
-        let jm0 = run.spawn_info(r1[0].0).judge_match.expect("judge carries a match");
-        assert_eq!(jm0, JudgeMatch { left: node_agent_id(2), right: node_agent_id(3) });
-        let jm1 = run.spawn_info(r1[1].0).judge_match.expect("judge carries a match");
-        assert_eq!(jm1, JudgeMatch { left: node_agent_id(4), right: node_agent_id(5) });
+        let jm0 = run
+            .spawn_info(r1[0].0)
+            .judge_match
+            .expect("judge carries a match");
+        assert_eq!(
+            jm0,
+            JudgeMatch {
+                left: node_agent_id(2),
+                right: node_agent_id(3)
+            }
+        );
+        let jm1 = run
+            .spawn_info(r1[1].0)
+            .judge_match
+            .expect("judge carries a match");
+        assert_eq!(
+            jm1,
+            JudgeMatch {
+                left: node_agent_id(4),
+                right: node_agent_id(5)
+            }
+        );
 
         // Entrant 2 beats 3; entrant 4 beats 5. Dependent still gated mid-bracket.
         run.record_completion(&r1[0].1, judge_done(&node_agent_id(2)));
         run.record_completion(&r1[1].1, judge_done(&node_agent_id(4)));
-        assert!(run.ready_batch().iter().all(|&n| n != 1), "dependent gated until the final");
+        assert!(
+            run.ready_batch().iter().all(|&n| n != 1),
+            "dependent gated until the final"
+        );
 
         // Final round: a single judge over the two survivors.
         let r2 = spawn_round(&mut run);
         assert_eq!(r2.len(), 1, "one final judge");
-        let jmf = run.spawn_info(r2[0].0).judge_match.expect("final judge carries a match");
-        assert_eq!(jmf, JudgeMatch { left: node_agent_id(2), right: node_agent_id(4) });
+        let jmf = run
+            .spawn_info(r2[0].0)
+            .judge_match
+            .expect("final judge carries a match");
+        assert_eq!(
+            jmf,
+            JudgeMatch {
+                left: node_agent_id(2),
+                right: node_agent_id(4)
+            }
+        );
 
         // Entrant 4 wins it all → controller completes with the champion, dependent unblocks.
         run.record_completion(&r2[0].1, judge_done(&node_agent_id(4)));
@@ -1744,8 +2491,16 @@ mod tests {
             .get(0)
             .and_then(|n| n.result.as_ref())
             .and_then(|r| r.tournament_winner.clone());
-        assert_eq!(winner.as_deref(), Some(node_agent_id(4).as_str()), "champion recorded");
-        assert_eq!(run.ready_batch(), vec![1], "dependent unblocks only after the bracket resolves");
+        assert_eq!(
+            winner.as_deref(),
+            Some(node_agent_id(4).as_str()),
+            "champion recorded"
+        );
+        assert_eq!(
+            run.ready_batch(),
+            vec![1],
+            "dependent unblocks only after the bracket resolves"
+        );
 
         // Ship the winner → workflow complete.
         let last = spawn_round(&mut run);
@@ -1758,15 +2513,13 @@ mod tests {
     /// still resolves to a single champion.
     #[test]
     fn tournament_with_bye_resolves() {
-        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
-            RuntimeTask::new("rank"),
-            AgentRole::Plan,
-        )
-        .with_tournament(vec![
-            RuntimeTask::new("x"),
-            RuntimeTask::new("y"),
-            RuntimeTask::new("z"),
-        ])]);
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("rank"), AgentRole::Plan).with_tournament(vec![
+                RuntimeTask::new("x"),
+                RuntimeTask::new("y"),
+                RuntimeTask::new("z"),
+            ]),
+        ]);
         let mut run = WorkflowRun::new(&spec, "sess").unwrap();
 
         let entrants = spawn_round(&mut run); // nodes 1,2,3
@@ -1782,9 +2535,19 @@ mod tests {
         let r2 = spawn_round(&mut run);
         assert_eq!(r2.len(), 1);
         let jm = run.spawn_info(r2[0].0).judge_match.unwrap();
-        assert_eq!(jm, JudgeMatch { left: node_agent_id(1), right: node_agent_id(3) });
+        assert_eq!(
+            jm,
+            JudgeMatch {
+                left: node_agent_id(1),
+                right: node_agent_id(3)
+            }
+        );
         run.record_completion(&r2[0].1, judge_done(&node_agent_id(3)));
-        let winner = run.graph.get(0).and_then(|n| n.result.as_ref()).and_then(|r| r.tournament_winner.clone());
+        let winner = run
+            .graph
+            .get(0)
+            .and_then(|n| n.result.as_ref())
+            .and_then(|r| r.tournament_winner.clone());
         assert_eq!(winner.as_deref(), Some(node_agent_id(3).as_str()));
         assert!(run.is_complete());
     }
@@ -1793,24 +2556,34 @@ mod tests {
     /// read-only) they pass the quarantine invariant rather than tripping it.
     #[test]
     fn tournament_children_inherit_controller_trust() {
-        let spec = WorkflowSpec::new(vec![WorkflowNode::new(
-            RuntimeTask::new("judge untrusted inputs"),
-            AgentRole::Plan,
-        )
-        .quarantined()
-        .with_tournament(vec![RuntimeTask::new("a"), RuntimeTask::new("b")])]);
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("judge untrusted inputs"), AgentRole::Plan)
+                .quarantined()
+                .with_tournament(vec![RuntimeTask::new("a"), RuntimeTask::new("b")]),
+        ]);
         let mut run = WorkflowRun::new(&spec, "sess").unwrap();
 
         let entrants = spawn_round(&mut run);
         for (node, _) in &entrants {
-            assert_eq!(run.spawn_info(*node).trust, "quarantined", "entrant inherits quarantine");
-            assert!(!run.quarantine_violation(*node), "read-only entrant is quarantine-clean");
+            assert_eq!(
+                run.spawn_info(*node).trust,
+                "quarantined",
+                "entrant inherits quarantine"
+            );
+            assert!(
+                !run.quarantine_violation(*node),
+                "read-only entrant is quarantine-clean"
+            );
         }
         for (_, id) in &entrants {
             run.record_completion(id, done());
         }
         let r1 = spawn_round(&mut run);
-        assert_eq!(run.spawn_info(r1[0].0).trust, "quarantined", "judge inherits quarantine");
+        assert_eq!(
+            run.spawn_info(r1[0].0).trust,
+            "quarantined",
+            "judge inherits quarantine"
+        );
         assert!(!run.quarantine_violation(r1[0].0));
     }
 
@@ -1818,12 +2591,17 @@ mod tests {
     /// (entrants/judges carry the work).
     #[test]
     fn tournament_controller_never_spawns_itself() {
-        let spec = WorkflowSpec::new(vec![WorkflowNode::new(RuntimeTask::new("c"), AgentRole::Plan)
-            .with_tournament(vec![RuntimeTask::new("a"), RuntimeTask::new("b")])]);
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("c"), AgentRole::Plan)
+                .with_tournament(vec![RuntimeTask::new("a"), RuntimeTask::new("b")]),
+        ]);
         let mut run = WorkflowRun::new(&spec, "sess").unwrap();
         assert!(matches!(run.nodes[0].kind, NodeKind::Tournament { .. }));
         let first = spawn_round(&mut run);
-        assert!(first.iter().all(|(n, _)| *n != 0), "controller node 0 never spawns directly");
+        assert!(
+            first.iter().all(|(n, _)| *n != 0),
+            "controller node 0 never spawns directly"
+        );
     }
 
     // ── dynamic-workflow optimization batch (W-1..W-6, W-N2/N7) ─────────────────────────────────
@@ -1834,13 +2612,21 @@ mod tests {
         // node0 classifies into branch "a" → node1, branch "b" → node2.
         let classifier = WorkflowNode::new(RuntimeTask::new("route"), AgentRole::Plan)
             .with_classify(vec![
-                ClassifyBranch { label: "a".to_string(), nodes: vec![1] },
-                ClassifyBranch { label: "b".to_string(), nodes: vec![2] },
+                ClassifyBranch {
+                    label: "a".to_string(),
+                    nodes: vec![1],
+                },
+                ClassifyBranch {
+                    label: "b".to_string(),
+                    nodes: vec![2],
+                },
             ]);
         WorkflowSpec::new(vec![
             classifier,
-            WorkflowNode::new(RuntimeTask::new("on a"), AgentRole::Implement).with_depends_on(vec![0]),
-            WorkflowNode::new(RuntimeTask::new("on b"), AgentRole::Implement).with_depends_on(vec![0]),
+            WorkflowNode::new(RuntimeTask::new("on a"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
+            WorkflowNode::new(RuntimeTask::new("on b"), AgentRole::Implement)
+                .with_depends_on(vec![0]),
         ])
     }
 
@@ -1848,37 +2634,45 @@ mod tests {
     fn resume_replays_classify_prune_from_recorded_branch() {
         // W-1: pre-crash the classifier chose "a" (node2 was pruned). Resume must re-prune node2
         // from the recorded signal — without it the REJECTED branch would run after resume.
-        let run = WorkflowRun::resume(
+        let mut run = WorkflowRun::resume(
             &classify_spec(),
             "sess",
             &[],
             &[],
-            &[ResumedCompletion {
+            &[ResumedNodeOutcome {
                 agent_id: "wf-node0".to_string(),
                 classify_branch: Some("a".to_string()),
-                ..ResumedCompletion::default()
+                ..ResumedNodeOutcome::completed("unused")
             }],
         )
         .unwrap();
-        assert_eq!(run.ready_batch(), vec![1], "only the chosen branch is armed");
-        let (_, failed) = run.outcome();
-        assert_eq!(failed, vec!["wf-node2"], "rejected branch stays pruned across resume");
+        assert_eq!(
+            run.ready_batch(),
+            vec![1],
+            "only the chosen branch is armed"
+        );
+        let failed = outcome_ids(&run, WorkflowNodeStatus::Failed);
+        assert_eq!(
+            failed,
+            vec!["wf-node2"],
+            "rejected branch stays pruned across resume"
+        );
     }
 
     #[test]
     fn resume_with_signalless_classify_record_prunes_all_branches() {
         // Legacy log (bare id, no recorded branch): prune every branch — the live path's
         // "no recognizable choice" contract, and strictly safer than running a rejected branch.
-        let run = WorkflowRun::resume(
+        let mut run = WorkflowRun::resume(
             &classify_spec(),
             "sess",
             &[],
             &[],
-            &[ResumedCompletion::bare("wf-node0")],
+            &[ResumedNodeOutcome::completed("wf-node0")],
         )
         .unwrap();
         assert!(run.ready_batch().is_empty());
-        let (_, failed) = run.outcome();
+        let failed = outcome_ids(&run, WorkflowNodeStatus::Failed);
         assert_eq!(failed, vec!["wf-node1", "wf-node2"]);
         assert!(run.is_complete());
     }
@@ -1890,19 +2684,22 @@ mod tests {
         let mut node = WorkflowNode::new(RuntimeTask::new("polish"), AgentRole::Implement);
         node.kind = NodeKind::Loop { max_iters: 3 };
         let spec = WorkflowSpec::new(vec![node]);
-        let run = WorkflowRun::resume(
+        let mut run = WorkflowRun::resume(
             &spec,
             "sess",
             &[],
             &[],
-            &[ResumedCompletion {
+            &[ResumedNodeOutcome {
                 agent_id: "wf-node0-i0".to_string(),
                 loop_continue: Some(false),
-                ..ResumedCompletion::default()
+                ..ResumedNodeOutcome::completed("unused")
             }],
         )
         .unwrap();
-        assert!(run.ready_batch().is_empty(), "no re-run of the stopped loop");
+        assert!(
+            run.ready_batch().is_empty(),
+            "no re-run of the stopped loop"
+        );
         assert!(run.is_complete());
     }
 
@@ -1922,15 +2719,24 @@ mod tests {
         run.record_completion(&entrants[0].1, done());
         run.record_completion(
             &entrants[1].1,
-            LoopResult { termination: TerminationReason::Error, ..done() },
+            LoopResult {
+                termination: TerminationReason::Error,
+                ..done()
+            },
         );
         // Bracket forms; the single judge reports NO winner (e.g. it errored too).
         let judges = spawn_round(&mut run);
         assert_eq!(judges.len(), 1, "one match for two entrants");
         run.record_completion(&judges[0].1, done()); // tournament_winner: None
-        let (_, failed) = run.outcome();
-        assert!(failed.contains(&entrants[1].1), "errored entrant reported failed");
-        assert!(failed.contains(&"wf-node0".to_string()), "no-champion controller failed");
+        let failed = outcome_ids(&run, WorkflowNodeStatus::Failed);
+        assert!(
+            failed.contains(&entrants[1].1),
+            "errored entrant reported failed"
+        );
+        assert!(
+            failed.contains(&"wf-node0".to_string()),
+            "no-champion controller failed"
+        );
         assert!(
             !run.ready_batch().contains(&1),
             "dependent of the failed controller starves"
@@ -1938,47 +2744,37 @@ mod tests {
     }
 
     #[test]
-    fn submitted_tournament_with_one_entrant_fails_instead_of_stalling() {
-        // W-2: runtime submissions bypass spec validation; a 1-entrant contest cannot form and must
-        // FAIL the controller (previously it sat Running forever and vanished from the outcome).
+    fn submitted_tournament_with_one_entrant_is_rejected_atomically() {
         let mut run = fanout2();
+        let before = run.len();
         let controller = WorkflowNode::new(RuntimeTask::new("pick"), AgentRole::Plan)
             .with_tournament(vec![RuntimeTask::new("only")]);
-        let ids = run.submit_nodes(vec![controller]);
-        run.expand_ready_controllers();
-        let (_, failed) = run.outcome();
-        assert_eq!(failed, vec![node_agent_id(ids[0])]);
+        assert!(run.submit_nodes(vec![controller]).is_err());
+        assert_eq!(run.len(), before);
     }
 
     #[test]
-    fn submitted_classify_branch_gains_classifier_dependency() {
-        // W-2: a runtime-submitted classifier's branch nodes are coerced to depend on it, so a
-        // branch can never run before classification (the race validate() exists to prevent).
+    fn submitted_classify_branch_without_classifier_dependency_is_rejected() {
         let mut run = fanout2();
+        let before = run.len();
         let classifier = WorkflowNode::new(RuntimeTask::new("route"), AgentRole::Plan)
-            .with_classify(vec![ClassifyBranch { label: "a".to_string(), nodes: vec![1] }]);
+            .with_classify(vec![ClassifyBranch {
+                label: "a".to_string(),
+                nodes: vec![1],
+            }]);
         let branch = WorkflowNode::new(RuntimeTask::new("on a"), AgentRole::Implement);
-        let ids = run.submit_nodes(vec![classifier, branch]);
-        let ready = run.ready_batch();
-        assert!(ready.contains(&ids[0]), "classifier ready");
-        assert!(!ready.contains(&ids[1]), "branch gated behind the classifier");
-        // The classifier picks "a" → the branch is promoted.
-        run.mark_spawned(ids[0], &node_agent_id(ids[0]));
-        run.record_completion(
-            &node_agent_id(ids[0]),
-            LoopResult { classify_branch: Some("a".to_string()), ..done() },
-        );
-        assert!(run.ready_batch().contains(&ids[1]));
+        assert!(run.submit_nodes(vec![classifier, branch]).is_err());
+        assert_eq!(run.len(), before);
     }
 
     #[test]
-    fn submitted_zero_iter_loop_is_floored_to_one() {
-        // W-2: Loop{max_iters:0} would never run; a runtime submission floors it to one iteration.
+    fn submitted_zero_iter_loop_is_rejected() {
         let mut run = fanout2();
+        let before = run.len();
         let mut node = WorkflowNode::new(RuntimeTask::new("once"), AgentRole::Implement);
         node.kind = NodeKind::Loop { max_iters: 0 };
-        let ids = run.submit_nodes(vec![node]);
-        assert_eq!(run.nodes[ids[0]].kind, NodeKind::Loop { max_iters: 1 });
+        assert!(run.submit_nodes(vec![node]).is_err());
+        assert_eq!(run.len(), before);
     }
 
     #[test]

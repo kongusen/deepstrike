@@ -6,11 +6,11 @@ use super::policy::SchedulerBudget;
 use super::tcb::{TaskLifecycle, TaskTable, Tcb, WaitReason};
 use crate::AgentRunSpec;
 use crate::context::manager::ContextManager;
+use crate::context::renderer::RenderedContext;
 use crate::governance::pipeline::GovernancePipeline;
 use crate::governance::repeat_fuse::RepeatFuseConfig;
 use crate::signals::router::SignalRouter;
 use crate::types::result::SubAgentResult;
-use crate::context::renderer::RenderedContext;
 // `pub use` so external integration tests that glob `state_machine::*` resolve the observation
 // type here — exactly as they did for the former `pub enum LoopObservation` this replaced.
 pub use crate::runtime::kernel::KernelObservation;
@@ -108,7 +108,7 @@ pub enum LoopAction {
         reason: String,
     },
     PersistMemory {
-        memory: crate::mm::memory::MemoryWriteRequest,
+        memory: crate::mm::memory::MemoryRecord,
     },
     QueryMemory {
         query: crate::mm::memory::MemoryQuery,
@@ -225,9 +225,7 @@ pub(super) enum SuspendState {
         gated_reasons: HashMap<String, String>,
     },
     /// Sub-agent spawn — awaiting `SubAgentCompleted` for each listed agent id.
-    SubAgentAwait {
-        agent_ids: Vec<String>,
-    },
+    SubAgentAwait { agent_ids: Vec<String> },
 }
 
 pub(super) enum GateToolOutcome {
@@ -257,6 +255,7 @@ pub struct LoopStateMachine {
     pub tools: Vec<ToolSchema>,
     pub observations: Vec<KernelObservation>,
     pub(super) policy: SchedulerBudget,
+    pub(super) scheduler_policy: crate::scheduler::policy::SchedulerPolicyConfig,
     pub(super) total_tokens: u64,
     /// Reservation-backed hard limits for this operation. Shared accounting stays in the host;
     /// the kernel tracks only this run's local usage.
@@ -313,6 +312,10 @@ pub struct LoopStateMachine {
     /// Kernel-owned signal routing: dedup set + attention policy + bounded queue.
     /// Always initialized; `set_attention` rebuilds it with a new queue size.
     pub(super) signal_router: SignalRouter,
+    /// Prefix of `ctx.partitions.signals` included in the currently pending provider request.
+    /// A correlated `ProviderResult` consumes exactly this prefix; signals arriving while the
+    /// provider is in flight remain for the next request.
+    pub(super) delivered_signals_len: usize,
     /// Wall-clock timestamp of the first `ProviderResult.now_ms` received.
     /// Used by the wall-time budget axis in `SchedulerBudget::should_terminate`.
     pub(super) started_at_ms: Option<u64>,
@@ -360,14 +363,14 @@ pub struct LoopStateMachine {
     pub(super) entropy_watch: EntropyWatchConfig,
 }
 
-mod signal;
-mod capability;
 mod cancellation;
-mod gate;
+mod capability;
 mod eviction;
-mod process;
-mod workflow;
+mod gate;
 mod milestone_exec;
+mod process;
+mod signal;
+mod workflow;
 
 impl LoopStateMachine {
     fn message_tokens(&self, message: &Message) -> u32 {
@@ -390,6 +393,7 @@ impl LoopStateMachine {
             tools: Vec::new(),
             observations: Vec::new(),
             policy,
+            scheduler_policy: crate::scheduler::policy::SchedulerPolicyConfig::default(),
             total_tokens: 0,
             budget_grant: None,
             local_rounds_completed: 0,
@@ -411,6 +415,7 @@ impl LoopStateMachine {
             memory_write_times: Vec::new(),
             memory_policy: None,
             signal_router: SignalRouter::new(64),
+            delivered_signals_len: 0,
             started_at_ms: None,
             last_now_ms: None,
             suspend_state: None,
@@ -435,6 +440,16 @@ impl LoopStateMachine {
     /// O4: enable/disable the turn-end criteria gate (default enabled; no-op without criteria).
     pub fn set_criteria_gate(&mut self, enabled: bool) {
         self.criteria_gate_enabled = enabled;
+    }
+
+    pub(crate) fn set_scheduler_policy(
+        &mut self,
+        policy: crate::scheduler::policy::SchedulerPolicyConfig,
+    ) {
+        self.scheduler_policy = policy;
+        if let Some(workflow) = self.workflow.as_mut() {
+            workflow.set_scheduler_policy(policy);
+        }
     }
 
     pub(crate) fn set_reliability_config(
@@ -542,14 +557,15 @@ impl LoopStateMachine {
         let original_size = *original_size;
         let preview_size = *preview_size;
         self.ctx.mark_spooled(&call_id, spool_ref.clone());
-        self.observations.push(KernelObservation::LargeResultSpooled {
-            turn: self.turn,
-            call_id,
-            tool,
-            original_size,
-            preview_size,
-            spool_ref: Some(spool_ref),
-        });
+        self.observations
+            .push(KernelObservation::LargeResultSpooled {
+                turn: self.turn,
+                call_id,
+                tool,
+                original_size,
+                preview_size,
+                spool_ref: Some(spool_ref),
+            });
         self.active_host_effect = None;
         self.active_host_effect_failures = 0;
         self.next_after_host_effect()
@@ -628,7 +644,10 @@ impl LoopStateMachine {
     /// The authoritative schedulability lifecycle of the loop (root task state). Replaces the
     /// removed `LoopPhase::{Idle,Suspended,Blocked,Terminal}` reads.
     pub fn lifecycle(&self) -> TaskLifecycle {
-        self.tasks.get("root").map(|t| t.state).unwrap_or(TaskLifecycle::Ready)
+        self.tasks
+            .get("root")
+            .map(|t| t.state)
+            .unwrap_or(TaskLifecycle::Ready)
     }
 
     /// The wait reason while suspended/blocked, if any.
@@ -842,8 +861,17 @@ impl LoopStateMachine {
         self.ctx.sweep_expired_skill_leases(self.turn);
 
         match event {
-
             LoopEvent::LLMResponse { message } => {
+                let delivered = self
+                    .delivered_signals_len
+                    .min(self.ctx.partitions.signals.len());
+                self.ctx.partitions.signals.drain(..delivered);
+                self.delivered_signals_len = 0;
+                // Signals admitted while the provider was in flight were not in the completed
+                // request. Promote queued items at this boundary and keep a no-tool response from
+                // terminating before the model receives them in a follow-up request.
+                self.drain_queued_signals();
+                let signals_waiting_for_followup = !self.ctx.partitions.signals.is_empty();
                 // A response arrived ⇒ the prompt fit ⇒ the overflow recovery ladder is reset.
                 self.recovery_attempts = 0;
                 let tokens = self.message_tokens(&message);
@@ -917,10 +945,16 @@ impl LoopStateMachine {
                              If all are met, give the final answer.",
                             criteria.join(" | ")
                         ));
-                        self.observations.push(KernelObservation::CriteriaGateFired {
-                            turn: self.turn,
-                            criteria,
-                        });
+                        self.observations
+                            .push(KernelObservation::CriteriaGateFired {
+                                turn: self.turn,
+                                criteria,
+                            });
+                        self.phase = LoopPhase::Reason;
+                        return self.emit_call_llm();
+                    }
+                    if signals_waiting_for_followup {
+                        self.ctx.push_history(message, tokens);
                         self.phase = LoopPhase::Reason;
                         return self.emit_call_llm();
                     }
@@ -938,7 +972,12 @@ impl LoopStateMachine {
                 // ③ pacing trap: a `pace` call is a kernel-adjudicated round-end proposal,
                 // never an SDK tool. Handled before the fuse/gate — it is a control verb,
                 // not task work.
-                if self.run_spec.as_ref().and_then(|r| r.loop_round.as_ref()).is_some() {
+                if self
+                    .run_spec
+                    .as_ref()
+                    .and_then(|r| r.loop_round.as_ref())
+                    .is_some()
+                {
                     if let Some(pace_call) = calls.iter().find(|c| c.name.as_str() == "pace") {
                         let call = pace_call.clone();
                         return self.handle_pace_call(call);
@@ -996,7 +1035,8 @@ impl LoopStateMachine {
                         self.ctx.config.verbose_control_notes,
                     ));
                     self.rollback(reason);
-                    self.ctx.push_signal(note.content.as_text().unwrap_or_default().to_string());
+                    self.ctx
+                        .push_signal(note.content.as_text().unwrap_or_default().to_string());
                     self.phase = LoopPhase::Reason;
                     return self.emit_call_llm();
                 }
@@ -1105,18 +1145,23 @@ impl LoopStateMachine {
                 // boundary sweep (marks are idempotent; drops only apply there) and stashes a
                 // warn-once-per-generation notice, drained into an observation here.
                 if let Some((used, budget)) = self.ctx.enforce_knowledge_budget() {
-                    self.observations.push(KernelObservation::KnowledgeBudgetExceeded {
-                        turn: self.turn,
-                        used,
-                        budget,
-                    });
+                    self.observations
+                        .push(KernelObservation::KnowledgeBudgetExceeded {
+                            turn: self.turn,
+                            used,
+                            budget,
+                        });
                 }
                 // Layers 2/4/5: execute the pressure-driven ops from the plan (skip TimeDecayMicro
                 // if already executed). The plan carries specific ops stamped with real config-derived
                 // params (W1-1 収口 — no magic-number placeholders), not the umbrella `Pressure` wrapper.
                 let (target_tokens, preserve_turns) = self.ctx.plan_compaction_params();
-                let plan =
-                    crate::mm::plan_eviction(self.ctx.should_compress(), idle_decay, target_tokens, preserve_turns);
+                let plan = crate::mm::plan_eviction(
+                    self.ctx.should_compress(),
+                    idle_decay,
+                    target_tokens,
+                    preserve_turns,
+                );
                 // `idle_decay` ⇒ the plan carries a `TimeDecayMicro` (so the skip-on-already-executed
                 // below is meaningful). The converse does NOT hold: a pressure-driven `MicroCompact`
                 // also emits `TimeDecayMicro` independent of `idle_decay` (W1 unified planner), so we
@@ -1148,7 +1193,11 @@ impl LoopStateMachine {
                 // Session-entropy sample (the heartbeat watch source): fold this completed
                 // turn's outcomes into the sliding window and surface the measurement.
                 // Unconditional, like `CheckpointTaken`; only the watch alert below is opt-in.
-                let repeat_streak = if self.repeat_fuse.enabled { self.repeat_count } else { 0 };
+                let repeat_streak = if self.repeat_fuse.enabled {
+                    self.repeat_count
+                } else {
+                    0
+                };
                 let sample = self.entropy.sample(
                     self.turn,
                     self.ctx.rho(),
@@ -1179,7 +1228,9 @@ impl LoopStateMachine {
                         threshold: self.entropy_watch.threshold,
                     });
                     if self.entropy_watch.notify_model {
-                        use crate::types::signal::{RuntimeSignal, SignalSource, SignalType, Urgency};
+                        use crate::types::signal::{
+                            RuntimeSignal, SignalSource, SignalType, Urgency,
+                        };
                         let signal = RuntimeSignal::new(
                             SignalSource::Heartbeat,
                             SignalType::Alert,
@@ -1220,13 +1271,13 @@ impl LoopStateMachine {
                     self.ctx.config.verbose_control_notes,
                 ));
                 self.rollback(reason);
-                self.ctx.push_signal(note.content.as_text().unwrap_or_default().to_string());
+                self.ctx
+                    .push_signal(note.content.as_text().unwrap_or_default().to_string());
                 self.phase = LoopPhase::Reason;
                 self.emit_call_llm()
             }
         }
     }
-
 
     /// Drain observations emitted during the last `start`/`feed` call.
     pub fn take_observations(&mut self) -> Vec<KernelObservation> {
@@ -1250,7 +1301,11 @@ impl LoopStateMachine {
             .cloned()
             .unwrap_or_default();
 
-        let next = call.arguments.get("next").and_then(|v| v.as_str()).unwrap_or("");
+        let next = call
+            .arguments
+            .get("next")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let reason = call
             .arguments
             .get("reason")
@@ -1267,9 +1322,7 @@ impl LoopStateMachine {
                 // Malformed proposal: governance-style directive note + fresh reason turn.
                 let rb = RollbackReason::GovernanceDenied {
                     tool_name: "pace".to_string(),
-                    reason: format!(
-                        "invalid pace next={other:?} (expected continue|sleep|stop)"
-                    ),
+                    reason: format!("invalid pace next={other:?} (expected continue|sleep|stop)"),
                 };
                 let note = Message::user(super::rollback::build_rollback_note(
                     &rb,
@@ -1322,10 +1375,11 @@ impl LoopStateMachine {
                  If all are met, call pace(stop) again.",
                 criteria.join(" | ")
             ));
-            self.observations.push(KernelObservation::CriteriaGateFired {
-                turn: self.turn,
-                criteria,
-            });
+            self.observations
+                .push(KernelObservation::CriteriaGateFired {
+                    turn: self.turn,
+                    criteria,
+                });
             self.phase = LoopPhase::Reason;
             return self.emit_call_llm();
         }
@@ -1349,7 +1403,12 @@ impl LoopStateMachine {
         };
 
         self.local_rounds_completed = self.local_rounds_completed.saturating_add(1);
-        let decision = PaceDecision { action, delay_ms, reason, coerced_from };
+        let decision = PaceDecision {
+            action,
+            delay_ms,
+            reason,
+            coerced_from,
+        };
         self.observations.push(KernelObservation::RoundPaced {
             turn: self.turn,
             round: self.local_rounds_completed,
@@ -1449,12 +1508,36 @@ impl LoopStateMachine {
         self.checkpoint.history_len = self.ctx.partitions.history.messages.len();
         self.checkpoint.signals_len = self.ctx.partitions.signals.len();
         self.checkpoint.task_state = Some(self.ctx.partitions.task_state.clone());
+        self.delivered_signals_len = self.ctx.partitions.signals.len();
         self.observations.push(KernelObservation::CheckpointTaken {
             turn: self.turn,
             history_len: self.checkpoint.history_len as u32,
         });
 
         let context = self.ctx.render();
+        if let Some(overflow) = context.budget_overflow.clone() {
+            self.observations
+                .push(KernelObservation::ContextBudgetExceeded {
+                    turn: self.turn,
+                    overflow_kind: overflow.kind,
+                    required_tokens: overflow.required_tokens,
+                    max_tokens: overflow.max_tokens,
+                });
+            // P0-2 §C: only a `FixedContext` overflow (system + state_turn alone exceed the hard
+            // window) is unrecoverable — compaction cannot touch that region, so terminate honestly.
+            // A `ProtectedTail` overflow (a protected recent unit tips the budget after compaction
+            // already ran) is NOT terminal: the observation records the over-budget tail, and the
+            // context is still submitted. The provider decides; if it rejects with a 413, the
+            // reactive recovery ladder (`recover_from_provider_error`) is the real backstop. Silently
+            // terminating here would kill runs the provider could have accepted or recovered from.
+            if matches!(
+                overflow.kind,
+                crate::context::renderer::ContextBudgetOverflowKind::FixedContext
+            ) {
+                self.delivered_signals_len = 0;
+                return self.terminate(TerminationReason::ContextOverflow, None);
+            }
+        }
         if self.pending_termination.is_some() {
             return LoopAction::CallLLM {
                 context,
@@ -1490,8 +1573,10 @@ impl LoopStateMachine {
         if let Some(allowed) = self.ctx.active_skill_tool_filter() {
             let stable = &self.ctx.stable_core_tools;
             tools.retain(|tool| {
-                matches!(tool.name.as_str(), "skill" | "memory" | "knowledge" | "update_plan")
-                    || stable.contains(&tool.name)
+                matches!(
+                    tool.name.as_str(),
+                    "skill" | "memory" | "knowledge" | "update_plan"
+                ) || stable.contains(&tool.name)
                     || allowed.contains(&tool.name)
             });
         }
@@ -1500,7 +1585,12 @@ impl LoopStateMachine {
         // (run_spec.loop_round present) — the same conditional-exposure pattern as
         // skill/memory/read_result. Pushed after every filter: pacing is kernel-owned
         // and must never be narrowed away by skills or capability filters.
-        if self.run_spec.as_ref().and_then(|r| r.loop_round.as_ref()).is_some() {
+        if self
+            .run_spec
+            .as_ref()
+            .and_then(|r| r.loop_round.as_ref())
+            .is_some()
+        {
             tools.push(pace_tool_schema());
         }
 
@@ -1508,8 +1598,15 @@ impl LoopStateMachine {
     }
 
     pub fn rollback(&mut self, reason: RollbackReason) {
-        self.ctx.partitions.history.messages.truncate(self.checkpoint.history_len);
-        self.ctx.partitions.signals.truncate(self.checkpoint.signals_len);
+        self.ctx
+            .partitions
+            .history
+            .messages
+            .truncate(self.checkpoint.history_len);
+        self.ctx
+            .partitions
+            .signals
+            .truncate(self.checkpoint.signals_len);
         if let Some(ref state) = self.checkpoint.task_state {
             self.ctx.partitions.task_state = state.clone();
         }

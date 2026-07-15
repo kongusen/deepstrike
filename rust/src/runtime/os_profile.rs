@@ -1,17 +1,27 @@
 use deepstrike_core::runtime::kernel::{
-    ConstraintSpec, KernelInputEvent, PolicyAction, PolicyRule, RateLimitSpec,
+    ConstraintSpec, KernelInputEvent, PolicyAction, PolicyRule, RateLimitSpec, SignalPolicyConfig,
+    SIGNAL_POLICY_VERSION,
 };
+pub use deepstrike_core::scheduler::policy::SchedulerPolicyConfig;
 
 use crate::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AttentionPolicy {
-    pub max_queue_size: Option<u32>,
+pub struct SignalPolicy {
+    pub queue_max: u32,
+    pub ttl_ms: Option<u64>,
+    pub deadline_escalation: Option<bool>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SchedulerBudget {
-    pub max_wall_ms: Option<u64>,
+impl SignalPolicy {
+    pub(crate) fn into_kernel(self) -> SignalPolicyConfig {
+        SignalPolicyConfig {
+            version: SIGNAL_POLICY_VERSION,
+            queue_max: self.queue_max,
+            ttl_ms: self.ttl_ms,
+            deadline_escalation: self.deadline_escalation,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +76,7 @@ impl GovernancePolicy {
 #[derive(Debug, Clone)]
 pub struct NativeOsProfile {
     pub id: &'static str,
-    pub attention_policy: AttentionPolicy,
+    pub signal_policy: SignalPolicy,
     pub governance_policy: GovernancePolicy,
 }
 
@@ -76,8 +86,10 @@ pub enum OsProfile {
     Concrete(NativeOsProfile),
 }
 
-pub const DEFAULT_NATIVE_ATTENTION_POLICY: AttentionPolicy = AttentionPolicy {
-    max_queue_size: Some(64),
+pub const DEFAULT_NATIVE_SIGNAL_POLICY: SignalPolicy = SignalPolicy {
+    queue_max: 64,
+    ttl_ms: None,
+    deadline_escalation: None,
 };
 
 pub fn default_native_governance_policy() -> GovernancePolicy {
@@ -88,7 +100,10 @@ pub fn default_native_governance_policy() -> GovernancePolicy {
 pub fn governance_filter_schema(
     tools: &[deepstrike_core::types::message::ToolSchema],
     policy: &GovernancePolicy,
-) -> (Vec<deepstrike_core::types::message::ToolSchema>, Vec<String>) {
+) -> (
+    Vec<deepstrike_core::types::message::ToolSchema>,
+    Vec<String>,
+) {
     let mut allowed = Vec::with_capacity(tools.len());
     let mut denied = Vec::new();
     let matches = |pat: &str, name: &str| -> bool {
@@ -106,10 +121,7 @@ pub fn governance_filter_schema(
             denied.push(name.to_string());
             continue;
         }
-        let mut action = policy
-            .default_action
-            .clone()
-            .unwrap_or(PolicyAction::Allow);
+        let mut action = policy.default_action.clone().unwrap_or(PolicyAction::Allow);
         for r in &policy.rules {
             if matches(&r.tool_pattern, name) {
                 action = r.action.clone();
@@ -128,7 +140,7 @@ pub fn os_profile(profile: Option<OsProfile>) -> NativeOsProfile {
     match profile.unwrap_or(OsProfile::Native) {
         OsProfile::Native => NativeOsProfile {
             id: "native",
-            attention_policy: DEFAULT_NATIVE_ATTENTION_POLICY,
+            signal_policy: DEFAULT_NATIVE_SIGNAL_POLICY,
             governance_policy: default_native_governance_policy(),
         },
         OsProfile::Concrete(profile) => profile,
@@ -138,15 +150,21 @@ pub fn os_profile(profile: Option<OsProfile>) -> NativeOsProfile {
 pub fn assert_native_profile(profile: Option<OsProfile>) -> Result<NativeOsProfile> {
     let resolved = os_profile(profile);
     if resolved.id != "native" {
-        return Err(Error::Other(format!("Unsupported OS profile: {}", resolved.id)));
+        return Err(Error::Other(format!(
+            "Unsupported OS profile: {}",
+            resolved.id
+        )));
     }
-    if let Some(max_queue_size) = resolved.attention_policy.max_queue_size {
-        if max_queue_size == 0 {
-            return Err(Error::Other(
-                "Invalid native OS profile: AttentionPolicy max_queue_size must be positive"
-                    .to_string(),
-            ));
-        }
+    if resolved.signal_policy.queue_max == 0 {
+        return Err(Error::Other(
+            "Invalid native OS profile: SignalPolicy queue_max must be positive".to_string(),
+        ));
+    }
+    if matches!(resolved.signal_policy.ttl_ms, Some(0)) {
+        return Err(Error::Other(
+            "Invalid native OS profile: SignalPolicy ttl_ms must be positive when present"
+                .to_string(),
+        ));
     }
     Ok(resolved)
 }

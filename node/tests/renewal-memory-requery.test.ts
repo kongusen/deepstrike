@@ -7,10 +7,11 @@
  */
 import { createRunner, tool } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
-import type { DreamStore, MemoryEntry } from "../src/memory/protocols.js"
+import type { DreamStore, MemoryRecall } from "../src/memory/protocols.js"
 import type { LLMProvider, Message, RenderedContext, StreamEvent } from "../src/types.js"
 
 const RECALL = "LONGTERM_FACT_FOR_SPRINT"
+const scope = { tenant_id: "agent-k4", namespace: "renewal" }
 
 describe("renewal-boundary memory re-query (K4)", () => {
   it("re-fires preQueryMemory with phase 'renewal' and lands hits in the new sprint's history", async () => {
@@ -20,11 +21,18 @@ describe("renewal-boundary memory re-query (K4)", () => {
     let call = 0
 
     const dreamStore: DreamStore = {
-      loadSessions: async () => [],
-      loadMemories: async () => [],
-      commit: async () => {},
+      upsert: async () => {},
       saveSession: async () => {},
-      search: async () => [{ text: RECALL, score: 0.9, metadata: null } satisfies MemoryEntry],
+      search: async () => [{
+        record: {
+          record_id: "record-renewal", scope, name: "renewal-fact", kind: "reference", content: RECALL,
+          description: "renewal fixture",
+          provenance: { author: "host", trust: "host_verified", evidence_refs: [] },
+          created_at: 1, updated_at: 1, recall_count: 0, confidence: 0.9, links: [], pinned: false,
+        },
+        score: 0.9,
+        why: "fixture",
+      } satisfies MemoryRecall],
     }
 
     const provider: LLMProvider = {
@@ -55,12 +63,13 @@ describe("renewal-boundary memory re-query (K4)", () => {
         maxTokens: 200,
         maxTurns: 30,
         agentId: "agent-k4",
+        memoryScope: scope,
         dreamStore,
         repeatFuse: false,
         preQueryMemory: (ctx: { goal: string; phase?: string }) => {
           phases.push(ctx.phase)
           if (ctx.phase === "renewal") sawRenewal = true
-          return ["relevant facts"]
+          return [{ scope, query: "relevant facts", top_k: 5, kinds: [] }]
         },
       },
     )

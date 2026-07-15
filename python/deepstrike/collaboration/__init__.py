@@ -8,10 +8,9 @@ from deepstrike.collaboration.contract import (
 )
 from deepstrike.collaboration.pool import AgentPool, AgentRole, IsolatedVerifierContext, CoordinatorConfig, KERNEL_ROLE_MAP
 from deepstrike.collaboration.harness import (
-    ContractDrivenHarness,
     ContractOutcome,
-    ContractHarnessOptions,
-    Violation,
+    CreatorVerifierBody,
+    StructuredContractJudge,
 )
 from deepstrike.collaboration.handoff import (
     HandoffArtifact,
@@ -27,7 +26,7 @@ __all__ = [
     # Pool
     "AgentPool", "AgentRole", "IsolatedVerifierContext", "CoordinatorConfig", "KERNEL_ROLE_MAP",
     # Harness
-    "ContractDrivenHarness", "ContractOutcome", "ContractHarnessOptions", "Violation",
+    "ContractOutcome", "CreatorVerifierBody", "StructuredContractJudge",
     # Handoff
     "HandoffArtifact", "HandoffBus", "ContractOutcomeInput",
     # Modes

@@ -375,7 +375,10 @@ mod tests {
         let filtered = manifest.filtered(|c| c.kind == CapabilityKind::Skill);
 
         assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered.by_kind(CapabilityKind::Skill)[0].id.as_str(), "debug");
+        assert_eq!(
+            filtered.by_kind(CapabilityKind::Skill)[0].id.as_str(),
+            "debug"
+        );
     }
 }
 

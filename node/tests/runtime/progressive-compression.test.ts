@@ -55,10 +55,10 @@ describe("SnipCompact — head/tail preserved after truncation", () => {
       [
         tool("fetch", "fetch", { type: "object", properties: { q: { type: "string" } } }, () =>
           // Large output: critical markers at head and tail, padding in middle
-          `${MARKER_HEAD} ${"x".repeat(400)} ${MARKER_TAIL}`,
+          `${MARKER_HEAD} ${"x".repeat(1000)} ${MARKER_TAIL}`,
         ),
       ],
-      { maxTokens: 512, maxTurns: 20 },
+      { maxTokens: 1024, maxTurns: 20 },
     )
 
     await collectText(runner.run({ sessionId: "snip-test", goal: "fetch then verify" }))
@@ -125,10 +125,11 @@ describe("ContextCollapse — summary contains tool names for follow-up task", (
       callCount = n
       const allText = context.turns.map(t => t.content ?? "").join(" ")
 
-      // RuleSummarizer format: "tools used: <name>"
-      // CollapseCompactor routes summary through compression_log → task_state → systemText/stateTurn
+      // RuleSummarizer six-slot format renders tool calls under `artifacts:` as
+      // "- tool <name> args <args>". CollapseCompactor routes the summary through
+      // compression_log → task_state → systemText/stateTurn.
       const allCtx = [context.systemText, context.systemStable, context.stateTurn?.content, context.turns[0]?.content].filter(Boolean).join("\n")
-      if (allCtx.includes("tools used:") && allCtx.includes("accumulate")) {
+      if (allCtx.includes("[Compressed: context_collapse]") && allCtx.includes("tool accumulate")) {
         summaryWithToolName = true
         yield { type: "text_delta" as const, delta: "done" }
         return
@@ -139,7 +140,7 @@ describe("ContextCollapse — summary contains tool names for follow-up task", (
         return
       }
 
-      yield { type: "usage" as const, totalTokens: 471, inputTokens: 470, outputTokens: 1 }
+      yield { type: "usage" as const, totalTokens: 941, inputTokens: 940, outputTokens: 1 }
       yield { type: "tool_call" as const, id: `c${n}`, name: "accumulate", arguments: { step: n } }
     })
 
@@ -147,10 +148,10 @@ describe("ContextCollapse — summary contains tool names for follow-up task", (
       provider,
       [
         tool("accumulate", "accumulate", { type: "object", properties: { step: { type: "number" } } }, () =>
-          "z".repeat(150),
+          "z ".repeat(200),
         ),
       ],
-      { maxTokens: 512, maxTurns: 40 },
+      { maxTokens: 1024, maxTurns: 40 },
     )
 
     await collectText(runner.run({ sessionId: "collapse-test", goal: "accumulate then verify" }))
@@ -187,6 +188,7 @@ describe("AutoCompact — summary injected into working partition", () => {
         return
       }
 
+      yield { type: "usage" as const, totalTokens: 1001, inputTokens: 1000, outputTokens: 1 }
       yield { type: "tool_call" as const, id: `c${n}`, name: "fill", arguments: { n } }
     })
 
@@ -194,11 +196,11 @@ describe("AutoCompact — summary injected into working partition", () => {
       provider,
       [
         tool("fill", "fill", { type: "object", properties: { n: { type: "number" } } }, () =>
-          "w".repeat(200),
+          "w ".repeat(200),
         ),
       ],
       // Very tight budget to force auto_compact
-      { maxTokens: 400, maxTurns: 60 },
+      { maxTokens: 1024, maxTurns: 60 },
     )
 
     await collectText(runner.run({ sessionId: "auto-test", goal: "fill then verify" }))
@@ -230,18 +232,37 @@ describe("Reactive compact — 413 triggers force_compact and run recovers", () 
     const { runner, sessionLog } = createRunner(
       provider,
       [tool("noop", "noop", { type: "object", properties: {} }, () => "ok")],
-      { maxTokens: 2048, maxTurns: 5 },
+      {
+        maxTokens: 4096,
+        maxTurns: 5,
+        compressionStore: {
+          async write(sessionId, seq) { return `${sessionId}@${seq}` },
+          async read() { return [] },
+        },
+      },
     )
 
     const sid = "reactive-test"
     await sessionLog.append(sid, { kind: "run_started", run_id: "r1", goal: "test", criteria: [] })
-    // Seed history with bulk content so force_compact has something to compress
-    for (let i = 0; i < 3; i++) {
-      await sessionLog.append(sid, { kind: "llm_completed", turn: i, content: "x".repeat(300), tool_calls: [{ id: `c${i}`, name: "noop", arguments: "{}" }] })
-      await sessionLog.append(sid, { kind: "tool_completed", turn: i, results: [{ call_id: `c${i}`, output: "ok" }] })
+    // Seed valid, complete tool transactions so ContextUnit can archive old units without ever
+    // splitting a call/result pair. Standalone assistant rows would form one degenerate unit and
+    // are not representative of a replayable provider transcript.
+    for (let i = 0; i < 6; i++) {
+      const callId = `seed-${i}`
+      await sessionLog.append(sid, {
+        kind: "llm_completed",
+        turn: i,
+        content: "seed",
+        tool_calls: [{ id: callId, name: "noop", arguments: "{}" }],
+      })
+      await sessionLog.append(sid, {
+        kind: "tool_completed",
+        turn: i,
+        results: [{ call_id: callId, output: "x ".repeat(200) }],
+      })
     }
     // Leave a pending tool call so wake() re-enters the provider
-    await sessionLog.append(sid, { kind: "llm_completed", turn: 3, content: "pending", tool_calls: [{ id: "cpending", name: "noop", arguments: "{}" }] })
+    await sessionLog.append(sid, { kind: "llm_completed", turn: 6, content: "pending", tool_calls: [{ id: "cpending", name: "noop", arguments: "{}" }] })
 
     const text = await collectText(runner.wake(sid))
     expect(text).toBe("recovered")

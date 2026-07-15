@@ -2,7 +2,15 @@ import { RuntimeRunner } from "../../src/runtime/runner.js"
 import { InMemorySessionLog } from "../../src/runtime/session-log.js"
 import { LocalExecutionPlane } from "../../src/runtime/execution-plane.js"
 import type { LLMProvider, Message, StreamEvent } from "../../src/types.js"
-import type { CurationResult, DreamStore, MemoryEntry } from "../../src/memory/protocols.js"
+import type { DreamStore, MemoryRecall, MemoryRecord } from "../../src/memory/protocols.js"
+
+const scope = { tenant_id: "agent-memory", namespace: "runtime-tests" }
+const memory = (name: string, content: string): MemoryRecord => ({
+  record_id: `record-${name || "invalid"}`, scope, name, kind: "feedback", content,
+  description: "User prefers small focused tests",
+  provenance: { author: "host", trust: "host_verified", evidence_refs: [] },
+  created_at: 1, updated_at: 1, recall_count: 0, confidence: 0.9, links: [], pinned: false,
+})
 
 const provider: LLMProvider = {
   async complete(): Promise<Message> {
@@ -12,13 +20,11 @@ const provider: LLMProvider = {
 }
 
 describe("Phase-7 memory syscalls", () => {
-  it("validates WriteMemory through the kernel and commits to DreamStore", async () => {
-    let committed: CurationResult | null = null
+  it("validates WriteMemory through the kernel and upserts to DreamStore", async () => {
+    let committed: MemoryRecord | null = null
     const dreamStore: DreamStore = {
-      loadSessions: async () => [],
-      loadMemories: async () => [],
-      commit: async (_agentId, result) => {
-        committed = result
+      upsert: async (_agentId, record) => {
+        committed = record
       },
       saveSession: async () => {},
       search: async () => [],
@@ -33,26 +39,24 @@ describe("Phase-7 memory syscalls", () => {
       dreamStore,
     })
 
-    await runner.writeMemory({
-      metadata: {
-        name: "prefers-small-tests",
-        description: "User prefers small focused tests",
-        kind: "feedback",
-        created_at: 1,
-        updated_at: 1,
-      },
-      content: "User prefers focused unit tests for SDK behavior.",
-    }, { sessionId: "memory-syscall" })
+    await runner.writeMemory(memory(
+      "prefers-small-tests",
+      "User prefers focused unit tests for SDK behavior.",
+    ), { sessionId: "memory-syscall" })
 
-    expect(committed?.toAdd[0]?.text).toBe("User prefers focused unit tests for SDK behavior.")
-    expect(committed?.toAdd[0]?.metadata).toMatchObject({ name: "prefers-small-tests", kind: "feedback" })
+    expect(committed?.content).toBe("User prefers focused unit tests for SDK behavior.")
+    expect(committed).toMatchObject({ name: "prefers-small-tests", kind: "feedback", scope })
 
     const events = await sessionLog.read("memory-syscall")
     expect(events.some(e => e.event.kind === "memory_written")).toBe(true)
   })
 
   it("validates QueryMemory through the kernel and returns DreamStore hits", async () => {
-    const hit: MemoryEntry = { text: "Use small focused tests.", score: 0.9, metadata: { name: "testing" } }
+    const hit: MemoryRecall = {
+      record: memory("testing", "Use small focused tests."),
+      score: 0.9,
+      why: "lexical match",
+    }
     const sessionLog = new InMemorySessionLog()
     const runner = new RuntimeRunner({
       provider,
@@ -61,19 +65,17 @@ describe("Phase-7 memory syscalls", () => {
       maxTokens: 1024,
       agentId: "agent-memory",
       dreamStore: {
-        loadSessions: async () => [],
-        loadMemories: async () => [],
-        commit: async () => {},
+        upsert: async () => {},
         saveSession: async () => {},
-        search: async (_agentId, query, topK) => query.includes("tests") && topK === 1 ? [hit] : [],
+        search: async (_agentId, query) => query.query.includes("tests") && query.top_k === 1 ? [hit] : [],
       },
     })
 
     const hits = await runner.queryMemory({
-      current_context: "Need memory about tests",
-      active_tools: [],
-      already_surfaced: [],
+      scope,
+      query: "Need memory about tests",
       top_k: 1,
+      kinds: [],
     }, { sessionId: "memory-query-syscall" })
 
     expect(hits).toEqual([hit])
@@ -91,24 +93,15 @@ describe("Phase-7 memory syscalls", () => {
       maxTokens: 1024,
       agentId: "agent-memory",
       dreamStore: {
-        loadSessions: async () => [],
-        loadMemories: async () => [],
-        commit: async () => {},
+        upsert: async () => {},
         saveSession: async () => {},
         search: async () => [],
       },
     })
 
-    await runner.writeMemory({
-      metadata: {
-        name: "",
-        description: "missing name",
-        kind: "feedback",
-        created_at: 1,
-        updated_at: 1,
-      },
-      content: "invalid write",
-    }, { sessionId: "memory-validation-fail" })
+    const invalid = memory("", "invalid write")
+    invalid.description = "missing name"
+    await runner.writeMemory(invalid, { sessionId: "memory-validation-fail" })
 
     const events = await sessionLog.read("memory-validation-fail")
     expect(events.some(e => e.event.kind === "memory_validation_failed")).toBe(true)

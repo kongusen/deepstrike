@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/deepstrike-core",
+    "crates/deepstrike-lab",
     "crates/deepstrike-py",
     "crates/deepstrike-node",
     "crates/deepstrike-wasm",

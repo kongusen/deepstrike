@@ -1,7 +1,7 @@
 use super::compression::CompressionPipeline;
-use super::config::ContextConfig;
-use super::policy::ContextPolicyV1;
+use super::config::{ContextConfig, PromptBudgetConfig};
 use super::partitions::ContextPartitions;
+use super::policy::ContextPolicyV1;
 use super::pressure::{PressureAction, PressureMonitor};
 use super::renderer::RenderedContext;
 use super::renewal::RenewalPolicy;
@@ -48,6 +48,9 @@ pub struct ContextManager {
     pub max_tokens: u32,
     pub config: ContextConfig,
     pub engine: ContextTokenEngine,
+    /// Provider envelope/tool-schema overhead plus output and safety reserves. Deducted from the
+    /// model context window before any system/state/history content is selected.
+    pub prompt_budget: PromptBudgetConfig,
     pub sprint: u32,
     pub skills: SkillCatalog,
     /// P1-B tool gating: the skills the model has loaded this session (by name), each with an
@@ -72,7 +75,6 @@ pub struct ContextManager {
     renewal: RenewalPolicy,
 
     // ── Layer 3: Time tracking for decay ─────────────────────────────────
-
     /// Last activity timestamp (milliseconds since epoch).
     /// Updated on each ProviderResult and ToolResults.
     pub last_activity_ms: u64,
@@ -82,7 +84,6 @@ pub struct ContextManager {
     pub last_compact_ms: Option<u64>,
 
     // ── P3: handle table (context as address space) ─────────────────────────
-
     /// Per-task handle table: one [`Handle`] per addressable working-context object (tool results
     /// today). Residency transitions on these handles drive read-time projection (Layer 4) and
     /// spool (Layer 1) — the original messages in `partitions` are never mutated by projection.
@@ -104,11 +105,17 @@ pub struct ContextManager {
     /// K2: whether the budget warning already fired this cache generation (warn-once; reset by
     /// the boundary sweep). Not snapshotted — a resume re-warns at most once, harmless.
     knowledge_budget_warned: bool,
+    /// Monotonic, input-derived clock for knowledge-reference recency.
+    knowledge_reference_step: u64,
 }
 
 impl ContextManager {
     pub fn new(max_tokens: u32) -> Self {
-        Self::with_config(max_tokens, ContextConfig::default(), ContextTokenEngine::char_approx())
+        Self::with_config(
+            max_tokens,
+            ContextConfig::default(),
+            ContextTokenEngine::char_approx(),
+        )
     }
 
     pub fn with_config(max_tokens: u32, config: ContextConfig, engine: ContextTokenEngine) -> Self {
@@ -117,15 +124,23 @@ impl ContextManager {
         let renewal = RenewalPolicy::from_config(&config);
         let partitions = ContextPartitions::new(&config);
         Self {
-            partitions, max_tokens, config, engine,
+            partitions,
+            max_tokens,
+            config,
+            engine,
+            prompt_budget: PromptBudgetConfig::default(),
             sprint: 0,
             skills: SkillCatalog::new(),
             active_skills: std::collections::BTreeMap::new(),
             stable_core_tools: std::collections::HashSet::new(),
             capabilities: CapabilityManifest::new(),
-            memory_enabled: false, knowledge_enabled: false, plan_tool_enabled: false,
+            memory_enabled: false,
+            knowledge_enabled: false,
+            plan_tool_enabled: false,
             last_observed_prompt_tokens: None,
-            compression, pressure, renewal,
+            compression,
+            pressure,
+            renewal,
             last_activity_ms: 0,
             last_compact_ms: None,
             handles: HandleTable::new(),
@@ -133,6 +148,7 @@ impl ContextManager {
             frozen_history_len: 0,
             pending_knowledge_sweeps: Vec::new(),
             knowledge_budget_warned: false,
+            knowledge_reference_step: 0,
         }
     }
 
@@ -170,7 +186,7 @@ impl ContextManager {
 
     /// Recompute tool-result handle residency for Layer-4 read-time projection (call before
     /// `render`). When pressure (`rho`) reaches `collapse_threshold`, all but the most recent
-    /// `preserve_recent_msgs` tool results are marked `Collapsed` (rendered as previews).
+    /// `preserved_tool_results` tool results are marked `Collapsed` (rendered as previews).
     ///
     /// **Monotonic within a cache generation (P0-C):** collapse is one-way here —
     /// `Resident → Collapsed` only, never the reverse. The old two-way version un-collapsed when
@@ -185,7 +201,7 @@ impl ContextManager {
         if self.rho() < self.config.collapse_threshold {
             return;
         }
-        let keep = self.config.preserve_recent_msgs;
+        let keep = self.config.preserved_tool_results;
         // Single mutable pass in insertion order. `tool_result_handles_mut().enumerate()` yields the
         // collapse candidates oldest-first; `i < cutoff` protects the most recent `keep` results.
         let total = self
@@ -266,8 +282,11 @@ impl ContextManager {
     /// from *this* value, so it must NOT discount paged content (else collapse → rho drops →
     /// un-collapse would oscillate).
     pub fn rho(&self) -> f64 {
-        self.pressure
-            .pressure(&self.partitions, &self.engine, self.last_observed_prompt_tokens)
+        self.pressure.pressure(
+            &self.partitions,
+            &self.engine,
+            self.last_observed_prompt_tokens,
+        )
     }
 
     pub fn set_observed_prompt_tokens(&mut self, tokens: u32) {
@@ -283,7 +302,10 @@ impl ContextManager {
         self.pressure.recommend(self.rho())
     }
 
-    pub fn compress(&mut self, action: PressureAction) -> (u32, Option<String>, Vec<Message>, Option<usize>) {
+    pub fn compress(
+        &mut self,
+        action: PressureAction,
+    ) -> (u32, Option<String>, Vec<Message>, Option<usize>) {
         self.compress_with_time(action, None)
     }
 
@@ -312,9 +334,13 @@ impl ContextManager {
         target_tokens: u32,
         now_ms: Option<u64>,
     ) -> (u32, Option<String>, Vec<Message>, Option<usize>) {
-        let result =
-            self.compression
-                .compress(&mut self.partitions, action, self.max_tokens, target_tokens, &self.engine);
+        let result = self.compression.compress(
+            &mut self.partitions,
+            action,
+            self.max_tokens,
+            target_tokens,
+            &self.engine,
+        );
         if let Some(ts) = now_ms {
             self.last_compact_ms = Some(ts);
         }
@@ -353,7 +379,8 @@ impl ContextManager {
     // ── Renewal ───────────────────────────────────────────────────────────────
 
     pub fn should_renew(&self) -> bool {
-        self.renewal.should_renew(&self.pressure, &self.partitions, &self.engine)
+        self.renewal
+            .should_renew(&self.pressure, &self.partitions, &self.engine)
     }
 
     pub fn renew(&mut self) {
@@ -371,12 +398,21 @@ impl ContextManager {
 
     // ── Render ────────────────────────────────────────────────────────────────
 
+    pub fn set_prompt_budget(&mut self, prompt_budget: PromptBudgetConfig) {
+        self.prompt_budget = prompt_budget;
+    }
+
+    pub fn available_input_tokens(&self) -> u32 {
+        self.max_tokens
+            .saturating_sub(self.prompt_budget.reserved_tokens())
+    }
+
     pub fn render(&self) -> RenderedContext {
         super::renderer::render_projected(
             &self.partitions,
-            self.max_tokens,
+            self.available_input_tokens(),
             &self.engine,
-            self.config.preserve_recent_msgs,
+            self.config.preserve_recent_units,
             &self.handles,
             self.frozen_history_len,
             self.config.collapse_assistant_narration,
@@ -386,12 +422,19 @@ impl ContextManager {
     // ── History / Knowledge ───────────────────────────────────────────────────
 
     pub fn push_history(&mut self, msg: Message, tokens: u32) {
+        self.knowledge_reference_step = self.knowledge_reference_step.saturating_add(1);
+        self.partitions
+            .knowledge
+            .observe_references(&msg, self.knowledge_reference_step);
         // P3 (3a): index each tool result entering working context as a handle, anchored to its
         // call_id. Pure bookkeeping — render/compression still read `partitions` until 3b. The
         // handle's residency later drives read-time projection without mutating the message.
         if let Content::Parts(parts) = &msg.content {
             for part in parts {
-                if let ContentPart::ToolResult { call_id, output, .. } = part {
+                if let ContentPart::ToolResult {
+                    call_id, output, ..
+                } = part
+                {
                     let id = self.alloc_handle_id();
                     let tok = self.engine.count(output).max(1);
                     self.handles.insert(Handle::resident_for(
@@ -427,7 +470,9 @@ impl ContextManager {
         tokens: u32,
         pinned: bool,
     ) {
-        self.partitions.knowledge.push_entry(key, msg, tokens, pinned);
+        self.partitions
+            .knowledge
+            .push_entry(key, msg, tokens, pinned);
     }
 
     /// K1: mark a keyed knowledge entry for removal at the next compaction/renewal boundary.
@@ -457,7 +502,7 @@ impl ContextManager {
         self.knowledge_budget_warned = false;
     }
 
-    /// K2: knowledge-budget check, run per turn before render. Over budget ⇒ mark the OLDEST
+    /// K2: knowledge-budget check, run per turn before render. Over budget ⇒ mark the LOWEST-VALUE
     /// unpinned, non-skill entries for eviction at the next boundary until the projected usage
     /// (used − already-marked) fits, and return `Some((used, budget))` ONCE per cache generation
     /// for the `KnowledgeBudgetExceeded` observation (marking itself is idempotent and repeats
@@ -475,19 +520,44 @@ impl ContextManager {
         if used <= budget {
             return None;
         }
-        let entries = &mut self.partitions.knowledge.entries;
-        let marked: u32 = entries.iter().filter(|e| e.evict_at_boundary).map(|e| e.tokens).sum();
+        let marked: u32 = self
+            .partitions
+            .knowledge
+            .entries
+            .iter()
+            .filter(|e| e.evict_at_boundary)
+            .map(|e| e.tokens)
+            .sum();
         let mut projected = used.saturating_sub(marked);
-        for entry in entries.iter_mut() {
+        let mut candidates = self
+            .partitions
+            .knowledge
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                !entry.evict_at_boundary
+                    && !entry.pinned
+                    && !entry
+                        .key
+                        .as_deref()
+                        .is_some_and(|key| key.starts_with("skill:"))
+            })
+            .map(|(index, _)| {
+                let score = self
+                    .partitions
+                    .knowledge
+                    .retention_score(index, self.knowledge_reference_step)
+                    .unwrap_or(i64::MIN);
+                (score, index)
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+        for (_, index) in candidates {
             if projected <= budget {
                 break;
             }
-            if entry.evict_at_boundary || entry.pinned {
-                continue;
-            }
-            if entry.key.as_deref().is_some_and(|k| k.starts_with("skill:")) {
-                continue;
-            }
+            let entry = &mut self.partitions.knowledge.entries[index];
             entry.evict_at_boundary = true;
             projected = projected.saturating_sub(entry.tokens);
         }
@@ -504,7 +574,8 @@ impl ContextManager {
     }
 
     /// Push a runtime signal into the current turn's State slot.
-    /// Signals are ephemeral — cleared after each render.
+    /// Rendering does not consume signals. The state machine clears only the prefix acknowledged by
+    /// a correlated provider result, so provider failures and retries see the same signal payload.
     pub fn push_signal(&mut self, text: String) {
         self.partitions.signals.push(text);
     }
@@ -519,7 +590,11 @@ impl ContextManager {
     // ── Task state ────────────────────────────────────────────────────────────
 
     pub fn init_task(&mut self, goal: String, criteria: Vec<String>) {
-        self.partitions.task_state = TaskState { goal, criteria, ..Default::default() };
+        self.partitions.task_state = TaskState {
+            goal,
+            criteria,
+            ..Default::default()
+        };
     }
 
     pub fn update_task(&mut self, update: TaskUpdate) {
@@ -537,7 +612,11 @@ impl ContextManager {
             .iter()
             .filter(|(name, _)| !is_meta_tool(name))
             .map(|(name, args)| {
-                if args.is_empty() { name.clone() } else { format!("{name}({args})") }
+                if args.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{name}({args})")
+                }
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -546,12 +625,13 @@ impl ContextManager {
 
     // ── Section pinning ───────────────────────────────────────────────────────
 
-
     // ── Skills ────────────────────────────────────────────────────────────────
 
     pub fn set_available_skills(&mut self, skills: Vec<SkillMetadata>) {
         self.capabilities.remove_kind(CapabilityKind::Skill);
-        for skill in &skills { self.capabilities.add_skill(skill.clone()); }
+        for skill in &skills {
+            self.capabilities.add_skill(skill.clone());
+        }
         self.skills.set_available(skills);
     }
 
@@ -575,7 +655,9 @@ impl ContextManager {
         name: impl Into<CompactString>,
         expires_at_turn: Option<u32>,
     ) -> bool {
-        self.active_skills.insert(name.into(), expires_at_turn).is_none()
+        self.active_skills
+            .insert(name.into(), expires_at_turn)
+            .is_none()
     }
 
     /// K3: deactivate a skill — the toolset re-widens at the next `emit_call_llm` (an epoch event,
@@ -636,42 +718,66 @@ impl ContextManager {
     pub fn set_memory_enabled(&mut self, enabled: bool) {
         self.memory_enabled = enabled;
         if enabled {
-            self.capabilities.add_marker(CapabilityKind::Memory, MEMORY_TOOL_NAME,
-                "Search long-term memory through the memory meta-tool.");
+            self.capabilities.add_marker(
+                CapabilityKind::Memory,
+                MEMORY_TOOL_NAME,
+                "Search long-term memory through the memory meta-tool.",
+            );
         } else {
-            self.capabilities.remove(CapabilityKind::Memory, MEMORY_TOOL_NAME);
+            self.capabilities
+                .remove(CapabilityKind::Memory, MEMORY_TOOL_NAME);
         }
     }
 
     pub fn set_knowledge_enabled(&mut self, enabled: bool) {
         self.knowledge_enabled = enabled;
         if enabled {
-            self.capabilities.add_marker(CapabilityKind::Knowledge, KNOWLEDGE_TOOL_NAME,
-                "Search external knowledge through the knowledge meta-tool.");
+            self.capabilities.add_marker(
+                CapabilityKind::Knowledge,
+                KNOWLEDGE_TOOL_NAME,
+                "Search external knowledge through the knowledge meta-tool.",
+            );
         } else {
-            self.capabilities.remove(CapabilityKind::Knowledge, KNOWLEDGE_TOOL_NAME);
+            self.capabilities
+                .remove(CapabilityKind::Knowledge, KNOWLEDGE_TOOL_NAME);
         }
     }
 
     pub fn set_plan_tool_enabled(&mut self, enabled: bool) {
         self.plan_tool_enabled = enabled;
         if enabled {
-            self.capabilities.add_marker(CapabilityKind::Tool, "update_plan",
-                "Update task plan and progress through the planning meta-tool.");
+            self.capabilities.add_marker(
+                CapabilityKind::Tool,
+                "update_plan",
+                "Update task plan and progress through the planning meta-tool.",
+            );
         } else {
-            self.capabilities.remove(CapabilityKind::Tool, "update_plan");
+            self.capabilities
+                .remove(CapabilityKind::Tool, "update_plan");
         }
     }
 
-    pub fn capability_inventory(&self) -> String { self.capabilities.format_inventory() }
+    pub fn capability_inventory(&self) -> String {
+        self.capabilities.format_inventory()
+    }
 
     pub fn meta_tool_schemas(&self) -> Vec<ToolSchema> {
         let mut tools = Vec::new();
-        if let Some(t) = self.skill_tool_schema() { tools.push(t); }
-        if let Some(t) = self.memory_tool_schema() { tools.push(t); }
-        if let Some(t) = self.knowledge_tool_schema() { tools.push(t); }
-        if let Some(t) = self.plan_tool_schema() { tools.push(t); }
-        if let Some(t) = self.read_result_tool_schema() { tools.push(t); }
+        if let Some(t) = self.skill_tool_schema() {
+            tools.push(t);
+        }
+        if let Some(t) = self.memory_tool_schema() {
+            tools.push(t);
+        }
+        if let Some(t) = self.knowledge_tool_schema() {
+            tools.push(t);
+        }
+        if let Some(t) = self.plan_tool_schema() {
+            tools.push(t);
+        }
+        if let Some(t) = self.read_result_tool_schema() {
+            tools.push(t);
+        }
         tools.sort_by(|a, b| a.name.cmp(&b.name));
         tools
     }
@@ -687,7 +793,9 @@ impl ContextManager {
             .all()
             .iter()
             .any(|h| !h.residency.occupies_context());
-        if !any_evicted { return None; }
+        if !any_evicted {
+            return None;
+        }
         Some(ToolSchema {
             name: CompactString::new(READ_RESULT_TOOL_NAME),
             description: "Re-read a tool result that was evicted from context (you see a \
@@ -708,7 +816,9 @@ impl ContextManager {
     }
 
     pub fn plan_tool_schema(&self) -> Option<ToolSchema> {
-        if !self.plan_tool_enabled { return None; }
+        if !self.plan_tool_enabled {
+            return None;
+        }
         Some(ToolSchema {
             name: CompactString::new("update_plan"),
             description: "Update your task plan and progress. Call this after completing a step or when the plan changes.".to_string(),
@@ -725,10 +835,14 @@ impl ContextManager {
     }
 
     pub fn memory_tool_schema(&self) -> Option<ToolSchema> {
-        if !self.memory_enabled { return None; }
+        if !self.memory_enabled {
+            return None;
+        }
         Some(ToolSchema {
             name: CompactString::new(MEMORY_TOOL_NAME),
-            description: "Search your long-term memory for relevant past experiences and knowledge.".to_string(),
+            description:
+                "Search your long-term memory for relevant past experiences and knowledge."
+                    .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -741,10 +855,14 @@ impl ContextManager {
     }
 
     pub fn knowledge_tool_schema(&self) -> Option<ToolSchema> {
-        if !self.knowledge_enabled { return None; }
+        if !self.knowledge_enabled {
+            return None;
+        }
         Some(ToolSchema {
             name: CompactString::new(KNOWLEDGE_TOOL_NAME),
-            description: "Search the external knowledge base for facts, documentation, or reference data.".to_string(),
+            description:
+                "Search the external knowledge base for facts, documentation, or reference data."
+                    .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -777,8 +895,18 @@ mod tests {
             mgr.partitions.task_state.recent_actions,
             ["step({\"n\":1})", "step({\"n\":2})", "step({\"n\":3})"]
         );
-        let txt = mgr.render().state_turn.unwrap().content.as_text().unwrap().to_string();
-        assert!(!txt.contains("STOP:"), "same-tool/diff-args loop must not trip STOP: {txt}");
+        let txt = mgr
+            .render()
+            .state_turn
+            .unwrap()
+            .content
+            .as_text()
+            .unwrap()
+            .to_string();
+        assert!(
+            !txt.contains("STOP:"),
+            "same-tool/diff-args loop must not trip STOP: {txt}"
+        );
 
         // Genuine stall — same tool, SAME args repeated — DOES trip the STOP.
         let mut mgr2 = ContextManager::new(100_000);
@@ -786,13 +914,26 @@ mod tests {
         for _ in 0..3 {
             mgr2.note_tool_actions(&[("document_read".to_string(), "{\"id\":\"x\"}".to_string())]);
         }
-        let txt2 = mgr2.render().state_turn.unwrap().content.as_text().unwrap().to_string();
-        assert!(txt2.contains("STOP:"), "identical repeated call must trip STOP: {txt2}");
+        let txt2 = mgr2
+            .render()
+            .state_turn
+            .unwrap()
+            .content
+            .as_text()
+            .unwrap()
+            .to_string();
+        assert!(
+            txt2.contains("STOP:"),
+            "identical repeated call must trip STOP: {txt2}"
+        );
 
         // Meta-tools are control plane, not task progress — filtered out entirely.
         let mut mgr3 = ContextManager::new(100_000);
         mgr3.init_task("g".to_string(), vec![]);
-        mgr3.note_tool_actions(&[("update_plan".to_string(), "{\"current_step\":1}".to_string())]);
+        mgr3.note_tool_actions(&[(
+            "update_plan".to_string(),
+            "{\"current_step\":1}".to_string(),
+        )]);
         assert!(mgr3.partitions.task_state.recent_actions.is_empty());
     }
 
@@ -801,7 +942,9 @@ mod tests {
         let mut mgr = ContextManager::new(1_000);
         mgr.init_task("test goal".to_string(), vec![]);
         mgr.partitions.system.push(Message::system("rules"), 10);
-        for i in 0..10 { mgr.push_history(Message::user(format!("msg {i}")), 50); }
+        for i in 0..10 {
+            mgr.push_history(Message::user(format!("msg {i}")), 50);
+        }
         mgr.renew();
         assert_eq!(mgr.partitions.task_state.goal, "test goal");
         assert_eq!(mgr.sprint, 1);
@@ -811,7 +954,9 @@ mod tests {
     fn compress_only_touches_history() {
         let mut mgr = ContextManager::new(1_000);
         mgr.push_knowledge(Message::system("knowledge content"), 100);
-        for _ in 0..30 { mgr.push_history(Message::user("history msg"), 50); }
+        for _ in 0..30 {
+            mgr.push_history(Message::user("history msg"), 50);
+        }
         let knowledge_before = mgr.partitions.knowledge.token_count;
         let history_before = mgr.partitions.history.token_count;
         mgr.compress(PressureAction::AutoCompact);
@@ -848,7 +993,9 @@ mod tests {
             plan: Some(vec!["fetch data".to_string(), "analyse".to_string()]),
             ..Default::default()
         });
-        for _ in 0..10 { mgr.push_history(Message::user("filler"), 50); }
+        for _ in 0..10 {
+            mgr.push_history(Message::user("filler"), 50);
+        }
         mgr.compress(PressureAction::AutoCompact);
         assert_eq!(mgr.partitions.task_state.goal, "survive compression");
         assert_eq!(mgr.partitions.task_state.plan.len(), 2);
@@ -859,10 +1006,19 @@ mod tests {
         let mut mgr = ContextManager::new(10_000);
         mgr.init_task("find anomalies".to_string(), vec![]);
         let rc = mgr.render();
-        assert!(!rc.system_text.contains("[TASK STATE]"), "task_state must not be in system_text");
+        assert!(
+            !rc.system_text.contains("[TASK STATE]"),
+            "task_state must not be in system_text"
+        );
         // State turn is separated from the cacheable history (turns).
         let state = rc.state_turn.as_ref().expect("should have a state turn");
-        assert!(state.content.as_text().unwrap().contains("[TASK STATE] goal: find anomalies"));
+        assert!(
+            state
+                .content
+                .as_text()
+                .unwrap()
+                .contains("[TASK STATE] goal: find anomalies")
+        );
     }
 
     #[test]
@@ -870,8 +1026,14 @@ mod tests {
         let mut mgr = ContextManager::new(1_000);
         mgr.init_task("g".to_string(), vec![]);
         mgr.partitions.task_state.plan = vec![
-            PlanStep { label: "done".to_string(), done: true },
-            PlanStep { label: "pending".to_string(), done: false },
+            PlanStep {
+                label: "done".to_string(),
+                done: true,
+            },
+            PlanStep {
+                label: "pending".to_string(),
+                done: false,
+            },
         ];
         mgr.renew();
         assert_eq!(mgr.partitions.task_state.open_steps(), vec!["pending"]);
@@ -890,11 +1052,17 @@ mod tests {
         // op-label == log-label contract end users observe (node K04/K09).
         let mut mgr = ContextManager::new(1_000);
         for i in 0..40 {
-            mgr.push_history(Message::user(format!("turn {i}: {}", "ctx ".repeat(40))), 200);
+            mgr.push_history(
+                Message::user(format!("turn {i}: {}", "ctx ".repeat(40))),
+                200,
+            );
         }
         let (saved, summary, _, _) = mgr.force_compress();
         assert!(saved > 0, "force_compress should compact a large history");
-        assert!(summary.is_some(), "auto-compact summarizes the archived turns");
+        assert!(
+            summary.is_some(),
+            "auto-compact summarizes the archived turns"
+        );
         let actions: Vec<&str> = mgr
             .partitions
             .task_state
@@ -918,7 +1086,12 @@ mod tests {
     fn skill_tool_schema_present_when_registered() {
         let mut mgr = ContextManager::new(10_000);
         mgr.set_available_skills(vec![SkillMetadata::new("debug", "Debug helper")]);
-        assert!(mgr.skill_tool_schema().unwrap().description.contains("debug"));
+        assert!(
+            mgr.skill_tool_schema()
+                .unwrap()
+                .description
+                .contains("debug")
+        );
     }
 
     #[test]
@@ -945,7 +1118,11 @@ mod tests {
         mgr.set_available_skills(vec![SkillMetadata::new("debug", "Debug helper")]);
         mgr.set_memory_enabled(true);
         mgr.set_knowledge_enabled(true);
-        let names = mgr.meta_tool_schemas().into_iter().map(|s| s.name.to_string()).collect::<Vec<_>>();
+        let names = mgr
+            .meta_tool_schemas()
+            .into_iter()
+            .map(|s| s.name.to_string())
+            .collect::<Vec<_>>();
         assert_eq!(names, ["knowledge", "memory", "skill"]);
     }
 
@@ -998,9 +1175,15 @@ mod tests {
         assert!(mgr.rho() >= mgr.config.collapse_threshold);
 
         mgr.recompute_handle_residency();
-        // Oldest is collapsed; the most recent (within preserve_recent_msgs) stays resident.
-        assert_eq!(mgr.handles.residency_for_source("c0"), Some(&Residency::Collapsed));
-        assert_eq!(mgr.handles.residency_for_source("c9"), Some(&Residency::Resident));
+        // Oldest is collapsed; the most recent configured tool-result handles stay resident.
+        assert_eq!(
+            mgr.handles.residency_for_source("c0"),
+            Some(&Residency::Collapsed)
+        );
+        assert_eq!(
+            mgr.handles.residency_for_source("c9"),
+            Some(&Residency::Resident)
+        );
 
         // P0-C — monotonic within a generation: once collapsed, dropping pressure does NOT
         // un-collapse (un-collapsing would re-bill the body and churn the cache prefix).
@@ -1014,7 +1197,10 @@ mod tests {
 
         // Only a generation reset (compaction/renewal) un-collapses.
         mgr.reset_collapse_generation();
-        assert_eq!(mgr.handles.residency_for_source("c0"), Some(&Residency::Resident));
+        assert_eq!(
+            mgr.handles.residency_for_source("c0"),
+            Some(&Residency::Resident)
+        );
     }
 
     #[test]
@@ -1022,25 +1208,43 @@ mod tests {
         let mut mgr = ContextManager::new(1_000);
         // Pre-compaction: no frozen region yet → providers use the rolling-pair fallback.
         for i in 0..30 {
-            mgr.push_history(Message::user(format!("turn {i}: {}", "ctx ".repeat(30))), 150);
+            mgr.push_history(
+                Message::user(format!("turn {i}: {}", "ctx ".repeat(30))),
+                150,
+            );
         }
-        assert!(mgr.render().frozen_prefix_len.is_none(), "no frozen region before any compaction");
+        assert!(
+            mgr.render().frozen_prefix_len.is_none(),
+            "no frozen region before any compaction"
+        );
 
         let (saved, _, archived, _) = mgr.compress(PressureAction::AutoCompact);
         assert!(saved > 0 && !archived.is_empty(), "expected archival");
 
         // Immediately after compaction the hot tail is empty → deep would coincide with the tail → None.
-        assert!(mgr.render().frozen_prefix_len.is_none(), "deep == tail right after compaction");
+        assert!(
+            mgr.render().frozen_prefix_len.is_none(),
+            "deep == tail right after compaction"
+        );
 
         // As turns are appended, the deep boundary holds fixed while the tail grows.
         mgr.push_history(Message::user("new 1"), 5);
-        let f1 = mgr.render().frozen_prefix_len.expect("frozen region exists once the tail grows");
+        let f1 = mgr
+            .render()
+            .frozen_prefix_len
+            .expect("frozen region exists once the tail grows");
         mgr.push_history(Message::assistant("reply 1"), 5);
         mgr.push_history(Message::user("new 2"), 5);
         let rc = mgr.render();
         let f2 = rc.frozen_prefix_len.expect("frozen region holds");
-        assert_eq!(f1, f2, "the deep boundary is fixed between compactions; only the tail grows");
-        assert!(f2 < rc.turns.len(), "deep boundary is distinct from the rolling tail");
+        assert_eq!(
+            f1, f2,
+            "the deep boundary is fixed between compactions; only the tail grows"
+        );
+        assert!(
+            f2 < rc.turns.len(),
+            "deep boundary is distinct from the rolling tail"
+        );
     }
 
     #[test]
@@ -1057,7 +1261,10 @@ mod tests {
         // anchor — the cached [0..3] prefix is untouched, so the deep breakpoint stays put.
         let (_, _, _, cache_at) = mgr.compress(PressureAction::None);
         assert!(cache_at.is_none(), "no-op compaction is prefix-safe");
-        assert_eq!(mgr.frozen_history_len, 3, "prefix-safe compaction preserves the deep-cache anchor");
+        assert_eq!(
+            mgr.frozen_history_len, 3,
+            "prefix-safe compaction preserves the deep-cache anchor"
+        );
     }
 
     #[test]
@@ -1070,7 +1277,10 @@ mod tests {
         }
         mgr.set_observed_prompt_tokens(980); // force collapse of the older results
         mgr.recompute_handle_residency();
-        assert_eq!(mgr.handles.residency_for_source("c0"), Some(&Residency::Collapsed));
+        assert_eq!(
+            mgr.handles.residency_for_source("c0"),
+            Some(&Residency::Collapsed)
+        );
 
         let (saved, _, archived, _) = mgr.compress(PressureAction::AutoCompact);
         assert!(saved > 0 && !archived.is_empty(), "expected archival");
@@ -1079,7 +1289,11 @@ mod tests {
         // rewrote the prefix, so the next pressure cycle re-decides from scratch.
         for h in mgr.handles.all() {
             if matches!(h.kind, HandleKind::ToolResult) {
-                assert_eq!(h.residency, Residency::Resident, "generation reset un-collapses survivors");
+                assert_eq!(
+                    h.residency,
+                    Residency::Resident,
+                    "generation reset un-collapses survivors"
+                );
             }
         }
     }
@@ -1098,7 +1312,9 @@ mod tests {
         mgr.mark_spooled("big", "disk://big");
         assert_eq!(
             mgr.handles.residency_for_source("big"),
-            Some(&Residency::SpooledOut { r: "disk://big".to_string() })
+            Some(&Residency::SpooledOut {
+                r: "disk://big".to_string()
+            })
         );
 
         // Even under collapse pressure, a spooled handle is not pulled into the
@@ -1107,7 +1323,9 @@ mod tests {
         mgr.recompute_handle_residency();
         assert_eq!(
             mgr.handles.residency_for_source("big"),
-            Some(&Residency::SpooledOut { r: "disk://big".to_string() })
+            Some(&Residency::SpooledOut {
+                r: "disk://big".to_string()
+            })
         );
     }
 
@@ -1180,11 +1398,16 @@ mod tests {
             .history
             .messages
             .iter()
-            .filter(|m| matches!(&m.content, Content::Parts(p)
-                if p.iter().any(|x| matches!(x, ContentPart::ToolResult { .. }))))
+            .filter(|m| {
+                matches!(&m.content, Content::Parts(p)
+                if p.iter().any(|x| matches!(x, ContentPart::ToolResult { .. })))
+            })
             .count();
         assert_eq!(mgr.handles.all().len(), live_tool_results);
-        assert!(mgr.handles.all().len() < 30, "table must shrink with archival");
+        assert!(
+            mgr.handles.all().len() < 30,
+            "table must shrink with archival"
+        );
     }
 
     #[test]
@@ -1220,19 +1443,27 @@ mod tests {
         mgr.set_observed_prompt_tokens(950); // rho >= collapse_threshold
         mgr.recompute_handle_residency();
 
-        // Spooled stays spooled; the most recent preserve_recent_msgs stay resident; older collapse.
+        // Spooled stays spooled; the most recent configured tool-result handles stay resident.
         assert_eq!(
             mgr.handles.residency_for_source("c2"),
-            Some(&Residency::SpooledOut { r: "disk://c2".to_string() })
+            Some(&Residency::SpooledOut {
+                r: "disk://c2".to_string()
+            })
         );
-        assert_eq!(mgr.handles.residency_for_source("c0"), Some(&Residency::Collapsed));
-        assert_eq!(mgr.handles.residency_for_source("c5"), Some(&Residency::Resident));
+        assert_eq!(
+            mgr.handles.residency_for_source("c0"),
+            Some(&Residency::Collapsed)
+        );
+        assert_eq!(
+            mgr.handles.residency_for_source("c5"),
+            Some(&Residency::Resident)
+        );
     }
 
     // ── K2: knowledge budget ─────────────────────────────────────────────────
 
     #[test]
-    fn knowledge_budget_marks_oldest_unpinned_first_and_warns_once() {
+    fn knowledge_budget_uses_stable_order_for_equal_value_and_warns_once() {
         // max_tokens 100 × default ratio 0.25 ⇒ budget 25. Four 10-token entries (40 used):
         // two evictable, one pinned, one skill pin.
         let mut mgr = ContextManager::new(100);
@@ -1243,7 +1474,7 @@ mod tests {
 
         let warn = mgr.enforce_knowledge_budget();
         assert_eq!(warn, Some((40, 25)));
-        // Oldest-first: unkeyed (10) then "a" (10) marked ⇒ projected 20 ≤ 25 stops there.
+        // Equal scores retain the deterministic insertion-order tie-break: unkeyed then "a".
         let e = &mgr.partitions.knowledge.entries;
         assert!(e[0].evict_at_boundary);
         assert!(e[1].evict_at_boundary);
@@ -1265,11 +1496,62 @@ mod tests {
     fn knowledge_budget_warning_stands_when_only_exempt_weight_remains() {
         let mut mgr = ContextManager::new(100);
         mgr.push_knowledge_entry(Some("p".into()), Message::system("pinned heavy"), 30, true);
-        mgr.push_knowledge_entry(Some("skill:x".into()), Message::system("skill heavy"), 30, false);
+        mgr.push_knowledge_entry(
+            Some("skill:x".into()),
+            Message::system("skill heavy"),
+            30,
+            false,
+        );
 
         // Over budget (60 > 25) but nothing evictable — warning fires, nothing marked.
         assert_eq!(mgr.enforce_knowledge_budget(), Some((60, 25)));
-        assert!(mgr.partitions.knowledge.entries.iter().all(|e| !e.evict_at_boundary));
+        assert!(
+            mgr.partitions
+                .knowledge
+                .entries
+                .iter()
+                .all(|e| !e.evict_at_boundary)
+        );
+    }
+
+    #[test]
+    fn knowledge_budget_retains_old_referenced_entry_over_new_irrelevant_entry() {
+        let mut mgr = ContextManager::new(100);
+        mgr.push_knowledge_entry(
+            Some("project:orchid".into()),
+            Message::system("ORCHID uses the Atlas storage engine"),
+            10,
+            false,
+        );
+        // A committed history input is the deterministic usage fact.
+        mgr.push_history(Message::user("For project:orchid keep using Atlas"), 5);
+        mgr.push_knowledge_entry(
+            Some("project:new".into()),
+            Message::system("unrelated fresh material"),
+            10,
+            false,
+        );
+        mgr.push_knowledge_entry(
+            Some("project:other".into()),
+            Message::system("another unused reference"),
+            10,
+            false,
+        );
+
+        assert_eq!(mgr.enforce_knowledge_budget(), Some((30, 25)));
+        let entries = &mgr.partitions.knowledge.entries;
+        assert!(
+            !entries[0].evict_at_boundary,
+            "a real reference must raise retention"
+        );
+        assert!(
+            entries[1].evict_at_boundary,
+            "lowest-value entry evicts first"
+        );
+        assert!(
+            !entries[2].evict_at_boundary,
+            "one eviction is enough to fit"
+        );
     }
 
     #[test]
@@ -1279,5 +1561,27 @@ mod tests {
         mgr.push_knowledge(Message::system("huge"), 90);
         assert_eq!(mgr.enforce_knowledge_budget(), None);
         assert!(!mgr.partitions.knowledge.entries[0].evict_at_boundary);
+    }
+
+    #[test]
+    fn provider_and_output_reservations_reduce_the_hard_input_budget() {
+        use crate::context::config::PromptBudgetConfig;
+
+        let mut mgr = ContextManager::new(100);
+        mgr.set_prompt_budget(PromptBudgetConfig {
+            prompt_overhead_tokens: 20,
+            output_reserve_tokens: 20,
+            safety_margin_tokens: 10,
+        });
+        mgr.partitions
+            .system
+            .push(Message::system("x".repeat(240)), 60);
+
+        let rendered = mgr.render();
+        let overflow = rendered
+            .budget_overflow
+            .expect("fixed context exceeds input allowance");
+        assert_eq!(overflow.max_tokens, 50);
+        assert!(overflow.required_tokens > overflow.max_tokens);
     }
 }

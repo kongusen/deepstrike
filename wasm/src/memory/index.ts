@@ -8,7 +8,7 @@ export class WorkingMemory {
 }
 
 export interface SessionMessage {
-  role: "user" | "assistant" | "tool"
+  role: "system" | "user" | "assistant" | "tool"
   content: string
   tokenCount?: number
   toolCalls?: Array<{ id: string; name: string; arguments: string }>
@@ -23,38 +23,31 @@ export interface SessionData {
   updatedAtMs: number
 }
 
-export interface MemoryEntry {
-  text: string
-  score: number
-  metadata: unknown
+export type MemoryKind = "user" | "feedback" | "project" | "reference"
+export type MemoryAuthor = "model" | "host" | "extraction"
+export type MemoryTrustLevel = "untrusted" | "user_asserted" | "host_verified"
+export interface MemoryScope { tenant_id: string; namespace: string }
+export interface MemoryProvenance {
+  session_id?: string
+  author: MemoryAuthor
+  trust: MemoryTrustLevel
+  evidence_refs: string[]
 }
-
-export interface CurationStats {
-  insightsProcessed: number
-  duplicatesRemoved: number
-  conflictsResolved: number
-  entriesAdded: number
+export interface MemoryRecord {
+  record_id: string; scope: MemoryScope; name: string; kind: MemoryKind; content: string
+  description: string; provenance: MemoryProvenance; created_at: number; updated_at: number
+  last_recalled_at?: number; recall_count: number; confidence: number; links: string[]
+  pinned: boolean; ttl_days?: number
 }
-
-export interface CurationResult {
-  toAdd: MemoryEntry[]
-  toRemoveIndices: number[]
-  stats: CurationStats
-}
-
-export interface DreamResult {
-  sessionsProcessed: number
-  insightsExtracted: number
-  entriesAdded: number
-  entriesRemoved: number
+export interface MemoryRecall { record: MemoryRecord; score: number; why: string }
+export interface MemoryQuery {
+  scope: MemoryScope; query: string; top_k: number; kinds: MemoryKind[]; min_score?: number
 }
 
 export interface DreamStore {
-  loadSessions(agentId: string): Promise<SessionData[]>
-  loadMemories(agentId: string): Promise<MemoryEntry[]>
-  commit(agentId: string, result: CurationResult, existing: MemoryEntry[]): Promise<void>
-  search(agentId: string, query: string, topK?: number): Promise<MemoryEntry[]>
-  /** Persist a completed session for future consolidation via `Agent.dream()`. */
+  upsert(agentId: string, record: MemoryRecord): Promise<void>
+  search(agentId: string, query: MemoryQuery): Promise<MemoryRecall[]>
+  /** Persist a completed session before the runner's one extraction pass. */
   saveSession(data: SessionData): Promise<void>
 }
 

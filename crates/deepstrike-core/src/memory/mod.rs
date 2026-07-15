@@ -1,13 +1,7 @@
-//! Offline memory consolidation (the "dream" pipeline) plus its FFI payload types.
+//! Durable memory contracts plus pure record-level curation helpers.
 //!
-//! The kernel side is pure computation: `idle_pipeline` drives
-//! `trace_analyzer` → `synthesis` → `curator` over session transcripts fed in
-//! by the SDK. Storage, embeddings, and retrieval I/O live in the SDKs.
-//! Working-context memory management (paging, pressure) is `crate::mm`.
+//! Storage and extraction I/O live in SDK hosts. Every durable mutation enters the kernel through
+//! `WriteMemory`; there is deliberately no second idle-consolidation state machine.
 
 pub mod curator;
 pub mod durable;
-pub mod idle_pipeline;
-pub mod semantic;
-pub mod synthesis;
-pub mod trace_analyzer;

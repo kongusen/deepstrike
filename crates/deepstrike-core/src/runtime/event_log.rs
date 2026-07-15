@@ -86,14 +86,16 @@ pub fn category_for_kind(kind: &str) -> KernelEventCategory {
         | "renewed"
         | "context_renewed"
         | "large_result_spooled" => KernelEventCategory::Mm,
-        "agent_process_changed" | "agent_spawned" | "workflow_batch_spawned"
-        | "workflow_completed" | "agent_preempted" => KernelEventCategory::Proc,
+        "agent_process_changed"
+        | "agent_spawned"
+        | "workflow_batch_spawned"
+        | "workflow_completed"
+        | "agent_preempted" => KernelEventCategory::Proc,
         "signal_delivery_disposed" => KernelEventCategory::Ipc,
         "memory_written" | "memory_queried" | "memory_validation_failed" => KernelEventCategory::Mm,
         _ => KernelEventCategory::Sched,
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -101,9 +103,15 @@ mod tests {
 
     #[test]
     fn maps_observation_kinds_to_categories() {
-        assert_eq!(category_for_kind("tool_gated"), KernelEventCategory::Syscall);
+        assert_eq!(
+            category_for_kind("tool_gated"),
+            KernelEventCategory::Syscall
+        );
         assert_eq!(category_for_kind("page_out"), KernelEventCategory::Mm);
-        assert_eq!(category_for_kind("agent_process_changed"), KernelEventCategory::Proc);
+        assert_eq!(
+            category_for_kind("agent_process_changed"),
+            KernelEventCategory::Proc
+        );
         assert_eq!(
             category_for_kind("signal_delivery_disposed"),
             KernelEventCategory::Ipc
@@ -124,7 +132,10 @@ mod tests {
     #[test]
     fn every_kernel_observation_kind_maps_to_a_primitive() {
         // syscall trap, scheduler, and paging cover the entire ABI surface — no orphans.
-        assert_eq!(primitive_for_kind("agent_process_changed"), Primitive::Sched);
+        assert_eq!(
+            primitive_for_kind("agent_process_changed"),
+            Primitive::Sched
+        );
         assert_eq!(
             primitive_for_kind("signal_delivery_disposed"),
             Primitive::Sched

@@ -3,7 +3,7 @@
 Python port of node/src/runtime/eval.ts. Wraps the kernel's `gen_eval` free functions
 (`build_eval_messages` / `parse_verdict` / `verdict_output_schema`) into a small typed
 surface so callers can score one (goal, criteria, result) pair without standing up
-HarnessLoop.
+an ``AttemptLoop``.
 
 Single LLM call: build the eval prompt → stream → parse verdict.
 """

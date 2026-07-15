@@ -119,7 +119,7 @@ policy = provider.runtime_policy()
 print(policy.max_turns)
 ```
 
-你仍可以在 `RuntimeOptions(max_turns=...)` 或 `scheduler_budget` 中显式覆盖。
+你仍可以通过 `RuntimeOptions(max_turns=...)` 显式覆盖 provider 推荐值。
 
 ## Level 6：Replay compatibility
 

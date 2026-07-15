@@ -160,6 +160,7 @@ fn runtime_options_can_be_constructed() {
         timeout_ms: None,
         extensions: None,
         agent_id: None,
+        memory_scope: None,
         system_prompt: None,
         initial_memory: vec![],
         skill_dir: None,
@@ -169,8 +170,8 @@ fn runtime_options_can_be_constructed() {
         governance: None,
         os_profile: None,
         governance_policy: None,
-        attention_policy: None,
-        scheduler_budget: None,
+        signal_policy: None,
+        scheduler_policy: None,
         resource_quota: None,
         memory_policy: None,
         tokenizer: None,
@@ -290,17 +291,6 @@ fn provider_factories() {
 #[test]
 fn knowledge_source_is_object_safe() {
     fn _takes_ks(_: &dyn KnowledgeSource) {}
-}
-
-// ─── DreamResult defaults ───────────────────────────────────────────────────
-
-#[test]
-fn dream_result_default() {
-    let dr = deepstrike_sdk::DreamResult::default();
-    assert_eq!(dr.sessions_processed, 0);
-    assert_eq!(dr.insights_extracted, 0);
-    assert_eq!(dr.entries_added, 0);
-    assert_eq!(dr.entries_removed, 0);
 }
 
 // ─── Error type ─────────────────────────────────────────────────────────────

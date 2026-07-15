@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 from typing import Literal
@@ -10,7 +11,14 @@ from deepstrike.collaboration.contract import (
 )
 from deepstrike.runtime import RuntimeOptions, RuntimeRunner, collect_text
 from deepstrike.runtime.sub_agent_orchestrator import spawn_standalone
-from deepstrike.types.agent import AgentRunSpec, KernelAgentRole, SubAgentResult, agent_identity_sub
+from deepstrike.providers.stream import DoneEvent, TextDelta, WorkflowNodesSubmittedEvent
+from deepstrike.types.agent import (
+    AgentRunSpec,
+    KernelAgentRole,
+    LoopResult,
+    SubAgentResult,
+    agent_identity_sub,
+)
 
 AgentRole = Literal["orchestrator", "executor", "verifier"]
 
@@ -104,8 +112,68 @@ class AgentPool:
             spec,
         )
 
+    async def execute(
+        self,
+        role: AgentRole,
+        *,
+        session_id: str,
+        goal: str,
+        context_input: str | None = None,
+        verification_contract_id: str | None = None,
+    ) -> SubAgentResult:
+        """Run one body attempt in a caller-owned session."""
+
+        if self._coordinator is not None:
+            kernel_role = KERNEL_ROLE_MAP[role]
+            spec = AgentRunSpec(
+                identity=agent_identity_sub(
+                    f"{kernel_role}-{uuid.uuid4()}",
+                    session_id,
+                    self._coordinator.session_id,
+                ),
+                role=kernel_role,
+                goal=goal,
+                verification_contract_id=verification_contract_id,
+            )
+            return await spawn_standalone(
+                self._coordinator.opts,
+                self._coordinator.session_id,
+                spec,
+                context_input=context_input,
+            )
+
+        runner = self.get(role)
+        if context_input:
+            runner.inject_note(context_input)
+        text = ""
+        done: DoneEvent | None = None
+        submitted_nodes: list = []
+        async for event in runner.run(session_id=session_id, goal=goal):
+            if isinstance(event, TextDelta):
+                text += event.delta
+            elif isinstance(event, DoneEvent):
+                done = event
+            elif isinstance(event, WorkflowNodesSubmittedEvent):
+                submitted_nodes.extend(event.nodes)
+
+        from deepstrike._kernel import Message
+
+        return SubAgentResult(
+            agent_id=f"{role}-{session_id}",
+            result=LoopResult(
+                termination=done.status if done else "error",
+                turns_used=done.iterations if done else 0,
+                total_tokens_used=done.total_tokens if done else 0,
+                final_message=Message(role="assistant", content=text) if text else None,
+            ),
+            submitted_nodes=submitted_nodes,
+        )
+
     async def run_verifier(self, ctx: IsolatedVerifierContext) -> str:
+        from deepstrike._kernel import verdict_output_schema
+
         contract_block = format_contract_for_system_prompt(ctx.contract)
+        schema = json.loads(verdict_output_schema(False))
         audit_goal = "\n".join([
             contract_block,
             "",
@@ -118,9 +186,8 @@ class AgentPool:
             "---",
             "",
             "Audit the artifact against every criterion in the contract above.",
-            "For each criterion, state whether it PASSED or FAILED and cite specific evidence.",
-            "List any anti-patterns you detected.",
-            "Conclude with an overall PASS or FAIL verdict.",
+            "Return only JSON matching this schema; free-text PASS/FAIL is invalid:",
+            json.dumps(schema, ensure_ascii=False),
         ])
         if self._coordinator is not None:
             result = await self.spawn("verify", audit_goal, verification_contract_id=ctx.contract.id, isolation="read_only")

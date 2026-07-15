@@ -1,7 +1,6 @@
 use async_trait::async_trait;
-use deepstrike_core::memory::curator::CurationResult;
 use deepstrike_core::memory::durable::SessionData as CoreSessionData;
-use deepstrike_core::memory::semantic::MemoryEntry;
+use deepstrike_core::mm::memory::{MemoryQuery, MemoryRecall, MemoryRecord};
 use deepstrike_sdk::*;
 use std::sync::{Arc, Mutex};
 
@@ -28,26 +27,14 @@ struct TrackingDreamStore {
 
 #[async_trait]
 impl DreamStore for TrackingDreamStore {
-    async fn load_sessions(&self, _agent_id: &str) -> Result<Vec<CoreSessionData>> {
-        Ok(vec![])
-    }
-    async fn load_memories(&self, _agent_id: &str) -> Result<Vec<MemoryEntry>> {
-        Ok(vec![])
-    }
-    async fn commit(
-        &self,
-        _agent_id: &str,
-        _result: CurationResult,
-        _existing: &[MemoryEntry],
-    ) -> Result<()> {
+    async fn upsert(&self, _agent_id: &str, _record: MemoryRecord) -> Result<()> {
         Ok(())
     }
     async fn search(
         &self,
         _agent_id: &str,
-        _query: &str,
-        _top_k: usize,
-    ) -> Result<Vec<MemoryEntry>> {
+        _query: &MemoryQuery,
+    ) -> Result<Vec<MemoryRecall>> {
         Ok(vec![])
     }
     async fn save_session(&self, data: CoreSessionData) -> Result<()> {
@@ -90,6 +77,7 @@ where
         timeout_ms: None,
         extensions: None,
         agent_id: None,
+        memory_scope: None,
         system_prompt: None,
         initial_memory: vec![],
         skill_dir: None,
@@ -99,8 +87,8 @@ where
         governance: None,
         os_profile: None,
         governance_policy: None,
-        attention_policy: None,
-        scheduler_budget: None,
+        signal_policy: None,
+        scheduler_policy: None,
         resource_quota: None,
         memory_policy: None,
         tokenizer: None,
@@ -208,74 +196,76 @@ async fn knowledge_init_called_once_per_run() {
     assert_eq!(*init_count.lock().unwrap(), 1);
 }
 
-// ─── HarnessLoop.run_streaming() ─────────────────────────────────────────────
+// ─── AttemptLoop.stream() ───────────────────────────────────────────────────
 
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
-async fn harness_loop_streaming_emits_events() {
-    use deepstrike_sdk::harness::{Criterion, HarnessEvent, HarnessRequest};
+async fn attempt_loop_streaming_emits_events() {
     use futures::StreamExt;
 
     let runner = make_runner_with(|_, _| {});
-    let harness = HarnessLoop::new(&runner, make_provider(), 2, None);
-    let req = HarnessRequest {
-        goal: "What is 6 * 7? Output only the number.".into(),
-        criteria: vec![Criterion::required("Answer must be 42")],
-        extensions: None,
-    };
+    let attempt_loop = AttemptLoop::new(
+        RuntimeAttemptBody::new(&runner),
+        LlmEvalJudge::new(make_provider()),
+        StopPolicy::new(2),
+    )
+    .unwrap();
+    let mut req = AttemptRequest::generated("What is 6 * 7? Output only the number.");
+    req.criteria = vec![Criterion::required("Answer must be 42")];
 
-    let stream = harness.run_streaming(req);
-    futures::pin_mut!(stream);
+    let mut stream = attempt_loop.stream(req);
 
     let mut has_token = false;
-    let mut has_supervising = false;
+    let mut has_judging = false;
     let mut has_terminal = false;
     let mut result = String::new();
 
     while let Some(evt) = stream.next().await {
         match evt.unwrap() {
-            HarnessEvent::Token(t) => {
+            AttemptLoopEvent::Token(t) => {
                 result.push_str(&t);
                 has_token = true;
             }
-            HarnessEvent::Supervising => has_supervising = true,
-            HarnessEvent::Done { .. } | HarnessEvent::MaxAttemptsReached => has_terminal = true,
+            AttemptLoopEvent::Judging { .. } => has_judging = true,
+            AttemptLoopEvent::Completed(_) => has_terminal = true,
             _ => {}
         }
     }
 
     assert!(has_token, "should emit Token events");
-    assert!(has_supervising, "should emit Supervising");
+    assert!(has_judging, "should emit Judging");
     assert!(has_terminal, "should terminate");
     assert!(!result.is_empty());
 }
 
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
-async fn harness_loop_done_verdict_has_details() {
-    use deepstrike_sdk::harness::{Criterion, HarnessEvent, HarnessRequest};
+async fn attempt_loop_done_verdict_has_details() {
     use futures::StreamExt;
 
     let runner = make_runner_with(|_, _| {});
-    let harness = HarnessLoop::new(&runner, make_provider(), 2, None);
-    let req = HarnessRequest {
-        goal: "Output the number 99.".into(),
-        criteria: vec![
-            Criterion::required("Response must contain 99"),
-            Criterion::optional("Response should be concise").with_weight(0.5),
-        ],
-        extensions: None,
-    };
+    let attempt_loop = AttemptLoop::new(
+        RuntimeAttemptBody::new(&runner),
+        LlmEvalJudge::new(make_provider()),
+        StopPolicy::new(2),
+    )
+    .unwrap();
+    let mut req = AttemptRequest::generated("Output the number 99.");
+    req.criteria = vec![
+        Criterion::required("Response must contain 99"),
+        Criterion::optional("Response should be concise").with_weight(0.5),
+    ];
 
-    let stream = harness.run_streaming(req);
-    futures::pin_mut!(stream);
+    let mut stream = attempt_loop.stream(req);
 
     let mut found_done = false;
     while let Some(evt) = stream.next().await {
-        if let Ok(HarnessEvent::Done { verdict, .. }) = evt {
-            assert!(verdict.details.len() > 0, "details should be populated");
-            assert!(verdict.overall_score >= 0.0 && verdict.overall_score <= 1.0);
-            found_done = true;
+        if let Ok(AttemptLoopEvent::Completed(outcome)) = evt {
+            if let Some(verdict) = outcome.verdict {
+                assert!(verdict.details.len() > 0, "details should be populated");
+                assert!(verdict.overall_score >= 0.0 && verdict.overall_score <= 1.0);
+                found_done = true;
+            }
         }
     }
     // may reach max_attempts instead of done — both are valid

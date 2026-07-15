@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from dataclasses import dataclass
 
 from deepstrike.collaboration.contract import (
     AcceptanceCriterion,
+    ContractCheckResult,
     VerificationContract,
 )
-from deepstrike.collaboration.harness import ContractDrivenHarness, ContractOutcome, ContractHarnessOptions
-from deepstrike.collaboration.handoff import HandoffBus
+from deepstrike.collaboration.harness import (
+    ContractOutcome,
+    CreatorVerifierBody,
+    StructuredContractJudge,
+)
+from deepstrike.collaboration.handoff import ContractOutcomeInput, HandoffBus
+from deepstrike.harness.harness import AttemptLoop, AttemptRequest, Criterion, StopPolicy
 
 from typing import TYPE_CHECKING
 
@@ -48,15 +55,55 @@ class CreatorVerifierMode:
     async def run(self, contract: VerificationContract) -> ContractOutcome:
         self._total += 1
         self._pool.ensure_coordinator(self._coordinator_session_id)
-        harness = ContractDrivenHarness(
-            self._pool,
-            contract,
-            ContractHarnessOptions(max_attempts=self._max_attempts),
+        loop = AttemptLoop(
+            body=CreatorVerifierBody(self._pool, contract),
+            judge=StructuredContractJudge(self._pool, contract),
+            stop=StopPolicy(max_attempts=self._max_attempts),
         )
-        outcome = await harness.run()
-        if not outcome.success:
+        attempt = await loop.run(AttemptRequest(
+            session_id=str(uuid.uuid4()),
+            goal=contract.goal,
+            criteria=[
+                Criterion(
+                    id=criterion.id,
+                    text=criterion.text,
+                    required=criterion.required,
+                    weight=criterion.weight,
+                    machine_checkable=criterion.machine_checkable,
+                )
+                for criterion in contract.acceptance
+            ],
+        ))
+        check_results = [
+            ContractCheckResult(
+                criterion_id=detail.criterion,
+                passed=detail.passed,
+                evidence=detail.feedback,
+            )
+            for detail in (attempt.verdict.details if attempt.verdict else [])
+        ]
+        success = attempt.outcome == "passed"
+        if not success:
             self._failed += 1
-        return outcome
+        blocked_on = [
+            f"[{result.criterion_id}] {result.evidence or 'verification failed'}"
+            for result in check_results
+            if not result.passed
+        ]
+        return ContractOutcome(
+            success=success,
+            artifact=attempt.result,
+            check_results=check_results,
+            attempts_used=attempt.attempts,
+            total_tokens_consumed=attempt.total_tokens,
+            handoff=HandoffBus.from_contract_outcome(ContractOutcomeInput(
+                contract=contract,
+                check_results=check_results,
+                artifact=attempt.result,
+                success=success,
+                blocked_on=blocked_on or None,
+            )),
+        )
 
     def get_metrics(self) -> CreatorVerifierMetrics:
         drift = self._failed / self._total if self._total > 0 else 0.0

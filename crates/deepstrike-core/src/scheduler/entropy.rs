@@ -55,9 +55,15 @@ pub struct EntropyWatchConfig {
     pub notify_model: bool,
 }
 
-fn default_threshold() -> f64 { 0.65 }
-fn default_hysteresis() -> f64 { 0.1 }
-fn default_cooldown_turns() -> u32 { 4 }
+fn default_threshold() -> f64 {
+    0.65
+}
+fn default_hysteresis() -> f64 {
+    0.1
+}
+fn default_cooldown_turns() -> u32 {
+    4
+}
 
 impl Default for EntropyWatchConfig {
     fn default() -> Self {
@@ -126,7 +132,8 @@ impl EntropyTracker {
         total_results: u32,
     ) -> EntropySample {
         self.turn_stats.push_back((errored_results, total_results));
-        self.rollback_stats.push_back(std::mem::take(&mut self.rollbacks_pending));
+        self.rollback_stats
+            .push_back(std::mem::take(&mut self.rollbacks_pending));
         while self.turn_stats.len() > ENTROPY_WINDOW_TURNS {
             self.turn_stats.pop_front();
         }
@@ -145,12 +152,17 @@ impl EntropyTracker {
         let repeat_pressure = (f64::from(repeat_streak.saturating_sub(1))
             / f64::from(repeat_deny_after.max(1)))
         .clamp(0.0, 1.0);
-        let failure_rate = if totals == 0 { 0.0 } else { f64::from(errors) / f64::from(totals) };
+        let failure_rate = if totals == 0 {
+            0.0
+        } else {
+            f64::from(errors) / f64::from(totals)
+        };
         let rollback_term = (f64::from(rollbacks_in_window) / ROLLBACK_SATURATION).clamp(0.0, 1.0);
 
         // v1 fold: repetition and failures dominate (they are the direct "no forward
         // progress" evidence), pressure and rollbacks corroborate.
-        let score = 0.35 * repeat_pressure + 0.30 * failure_rate + 0.20 * rho + 0.15 * rollback_term;
+        let score =
+            0.35 * repeat_pressure + 0.30 * failure_rate + 0.20 * rho + 0.15 * rollback_term;
 
         EntropySample {
             turn,
@@ -202,7 +214,11 @@ mod tests {
     fn healthy_turn_scores_near_zero() {
         let mut t = EntropyTracker::default();
         let s = quiet_sample(&mut t, 1);
-        assert!(s.score < 0.05, "healthy turn score {} should be ~0", s.score);
+        assert!(
+            s.score < 0.05,
+            "healthy turn score {} should be ~0",
+            s.score
+        );
         assert_eq!(s.repeat_pressure, 0.0);
         assert_eq!(s.failure_rate, 0.0);
         assert_eq!(s.rollbacks_in_window, 0);
@@ -213,7 +229,11 @@ mod tests {
         let mut t = EntropyTracker::default();
         // 4-streak against deny_after=5, every result errored, high pressure.
         let s = t.sample(3, 0.9, 4, 5, 2, 2);
-        assert!(s.score > 0.6, "disordered turn score {} should be high", s.score);
+        assert!(
+            s.score > 0.6,
+            "disordered turn score {} should be high",
+            s.score
+        );
         assert!((s.repeat_pressure - 0.6).abs() < 1e-9);
         assert!((s.failure_rate - 1.0).abs() < 1e-9);
     }
@@ -227,7 +247,10 @@ mod tests {
             if turn <= ENTROPY_WINDOW_TURNS as u32 {
                 assert!(s.failure_rate > 0.0, "turn {turn} still inside the window");
             } else {
-                assert_eq!(s.failure_rate, 0.0, "turn {turn} should have evicted the errors");
+                assert_eq!(
+                    s.failure_rate, 0.0,
+                    "turn {turn} should have evicted the errors"
+                );
             }
         }
     }
@@ -246,27 +269,76 @@ mod tests {
 
     #[test]
     fn watch_fires_once_then_rearms_below_hysteresis() {
-        let cfg = EntropyWatchConfig { enabled: true, threshold: 0.5, hysteresis: 0.1, cooldown_turns: 0, notify_model: false };
+        let cfg = EntropyWatchConfig {
+            enabled: true,
+            threshold: 0.5,
+            hysteresis: 0.1,
+            cooldown_turns: 0,
+            notify_model: false,
+        };
         let mut t = EntropyTracker::default();
-        let hot = EntropySample { turn: 1, score: 0.7, rho: 0.0, repeat_pressure: 0.0, failure_rate: 0.0, rollbacks_in_window: 0, window_turns: 1 };
+        let hot = EntropySample {
+            turn: 1,
+            score: 0.7,
+            rho: 0.0,
+            repeat_pressure: 0.0,
+            failure_rate: 0.0,
+            rollbacks_in_window: 0,
+            window_turns: 1,
+        };
         assert!(t.should_alert(&cfg, &hot));
         // Still hot: no re-fire until re-armed.
         assert!(!t.should_alert(&cfg, &EntropySample { turn: 2, ..hot }));
         // Inside the hysteresis band (0.45 ≥ threshold − hysteresis): stays disarmed.
-        assert!(!t.should_alert(&cfg, &EntropySample { turn: 3, score: 0.45, ..hot }));
+        assert!(!t.should_alert(
+            &cfg,
+            &EntropySample {
+                turn: 3,
+                score: 0.45,
+                ..hot
+            }
+        ));
         assert!(!t.should_alert(&cfg, &EntropySample { turn: 4, ..hot }));
         // Below the band: re-arms; the next crossing fires again.
-        assert!(!t.should_alert(&cfg, &EntropySample { turn: 5, score: 0.3, ..hot }));
+        assert!(!t.should_alert(
+            &cfg,
+            &EntropySample {
+                turn: 5,
+                score: 0.3,
+                ..hot
+            }
+        ));
         assert!(t.should_alert(&cfg, &EntropySample { turn: 6, ..hot }));
     }
 
     #[test]
     fn watch_cooldown_gates_refire_even_after_rearm() {
-        let cfg = EntropyWatchConfig { enabled: true, threshold: 0.5, hysteresis: 0.1, cooldown_turns: 5, notify_model: false };
+        let cfg = EntropyWatchConfig {
+            enabled: true,
+            threshold: 0.5,
+            hysteresis: 0.1,
+            cooldown_turns: 5,
+            notify_model: false,
+        };
         let mut t = EntropyTracker::default();
-        let hot = EntropySample { turn: 1, score: 0.9, rho: 0.0, repeat_pressure: 0.0, failure_rate: 0.0, rollbacks_in_window: 0, window_turns: 1 };
+        let hot = EntropySample {
+            turn: 1,
+            score: 0.9,
+            rho: 0.0,
+            repeat_pressure: 0.0,
+            failure_rate: 0.0,
+            rollbacks_in_window: 0,
+            window_turns: 1,
+        };
         assert!(t.should_alert(&cfg, &hot));
-        assert!(!t.should_alert(&cfg, &EntropySample { turn: 2, score: 0.2, ..hot })); // re-arm
+        assert!(!t.should_alert(
+            &cfg,
+            &EntropySample {
+                turn: 2,
+                score: 0.2,
+                ..hot
+            }
+        )); // re-arm
         assert!(!t.should_alert(&cfg, &EntropySample { turn: 3, ..hot })); // armed but cooling
         assert!(t.should_alert(&cfg, &EntropySample { turn: 6, ..hot })); // 6−1 ≥ 5
     }
@@ -276,7 +348,15 @@ mod tests {
         let cfg = EntropyWatchConfig::default();
         assert!(!cfg.enabled);
         let mut t = EntropyTracker::default();
-        let hot = EntropySample { turn: 1, score: 1.0, rho: 1.0, repeat_pressure: 1.0, failure_rate: 1.0, rollbacks_in_window: 9, window_turns: 8 };
+        let hot = EntropySample {
+            turn: 1,
+            score: 1.0,
+            rho: 1.0,
+            repeat_pressure: 1.0,
+            failure_rate: 1.0,
+            rollbacks_in_window: 9,
+            window_turns: 8,
+        };
         assert!(!t.should_alert(&cfg, &hot));
     }
 }

@@ -226,9 +226,9 @@ fn context_fault_serialization_roundtrip() {
 
 #[test]
 fn reconstruct_messages_with_fallback_success_and_degrade() {
-    use deepstrike_core::runtime::session::SessionEvent;
-    use deepstrike_core::runtime::reconstruct_messages_with_fallback;
     use deepstrike_core::context::fault::ContextFault;
+    use deepstrike_core::runtime::reconstruct_messages_with_fallback;
+    use deepstrike_core::runtime::session::SessionEvent;
 
     let events = vec![
         SessionEvent::RunStarted {
@@ -285,17 +285,28 @@ fn reconstruct_messages_with_fallback_success_and_degrade() {
 
     assert_eq!(messages.len(), 3);
     assert_eq!(messages[0].content.as_text().unwrap(), "Task Goal");
-    assert_eq!(messages[1].content.as_text().unwrap(), "Inside archive message");
-    assert!(messages[2].content.as_text().unwrap().contains("Compressed turn 2 summary"));
+    assert_eq!(
+        messages[1].content.as_text().unwrap(),
+        "Inside archive message"
+    );
+    assert!(
+        messages[2]
+            .content
+            .as_text()
+            .unwrap()
+            .contains("Compressed turn 2 summary")
+    );
 }
 
 // ─── Capability Bus & Lease & Agent Run Spec (Phase 3) ───────────────────────
 
 #[test]
 fn execute_capability_command_mount_unmount_replace_pin() {
-    use deepstrike_core::scheduler::state_machine::LoopStateMachine;
     use deepstrike_core::scheduler::policy::SchedulerBudget;
-    use deepstrike_core::types::capability::{CapabilityCommand, CapabilityDescriptor, CapabilityKind};
+    use deepstrike_core::scheduler::state_machine::LoopStateMachine;
+    use deepstrike_core::types::capability::{
+        CapabilityCommand, CapabilityDescriptor, CapabilityKind,
+    };
 
     let mut sm = LoopStateMachine::new(SchedulerBudget::default());
 
@@ -316,7 +327,8 @@ fn execute_capability_command_mount_unmount_replace_pin() {
         capability_id,
         version,
         ..
-    } = &obs[0] {
+    } = &obs[0]
+    {
         assert_eq!(change_kind.as_deref(), Some("mount"));
         assert_eq!(capability_id.as_deref(), Some("doctor"));
         assert_eq!(version.as_deref(), Some("1.0.0"));
@@ -332,22 +344,23 @@ fn execute_capability_command_mount_unmount_replace_pin() {
     assert!(sm.ctx.capabilities.capabilities()[0].is_pinned);
     let obs = sm.take_observations();
     assert_eq!(obs.len(), 1);
-    if let deepstrike_core::KernelObservation::CapabilityChanged {
-        change_kind,
-        ..
-    } = &obs[0] {
+    if let deepstrike_core::KernelObservation::CapabilityChanged { change_kind, .. } = &obs[0] {
         assert_eq!(change_kind.as_deref(), Some("pin"));
     }
 
     // 3. Replace capability
-    let new_desc = CapabilityDescriptor::marker(CapabilityKind::Command, "doctor", "new system doctor")
-        .with_version("2.0.0");
+    let new_desc =
+        CapabilityDescriptor::marker(CapabilityKind::Command, "doctor", "new system doctor")
+            .with_version("2.0.0");
     sm.execute_capability_command(CapabilityCommand::Replace {
         old_kind: CapabilityKind::Command,
         old_id: "doctor".to_string(),
         new_capability: new_desc,
     });
-    assert_eq!(sm.ctx.capabilities.capabilities()[0].description, "new system doctor");
+    assert_eq!(
+        sm.ctx.capabilities.capabilities()[0].description,
+        "new system doctor"
+    );
     let obs = sm.take_observations();
     assert_eq!(obs.len(), 1);
     if let deepstrike_core::KernelObservation::CapabilityChanged {
@@ -355,7 +368,8 @@ fn execute_capability_command_mount_unmount_replace_pin() {
         capability_id,
         version,
         ..
-    } = &obs[0] {
+    } = &obs[0]
+    {
         assert_eq!(change_kind.as_deref(), Some("replace"));
         assert_eq!(capability_id.as_deref(), Some("doctor"));
         assert_eq!(version.as_deref(), Some("2.0.0"));
@@ -371,9 +385,11 @@ fn execute_capability_command_mount_unmount_replace_pin() {
 
 #[test]
 fn capability_lease_auto_revokes() {
-    use deepstrike_core::scheduler::state_machine::{LoopStateMachine, LoopEvent};
     use deepstrike_core::scheduler::policy::SchedulerBudget;
-    use deepstrike_core::types::capability::{CapabilityCommand, CapabilityDescriptor, CapabilityKind, CapabilityLease};
+    use deepstrike_core::scheduler::state_machine::{LoopEvent, LoopStateMachine};
+    use deepstrike_core::types::capability::{
+        CapabilityCommand, CapabilityDescriptor, CapabilityKind, CapabilityLease,
+    };
 
     let mut sm = LoopStateMachine::new(SchedulerBudget::default());
     let lease = CapabilityLease { expires_at_turn: 2 };
@@ -392,7 +408,7 @@ fn capability_lease_auto_revokes() {
     sm.feed(LoopEvent::ToolResults { results: vec![] });
     assert_eq!(sm.ctx.capabilities.len(), 1);
     assert_eq!(sm.turn, 1);
-    
+
     // Turn = 1: not expired
     sm.feed(LoopEvent::ToolResults { results: vec![] });
     assert_eq!(sm.ctx.capabilities.len(), 1);
@@ -407,7 +423,8 @@ fn capability_lease_auto_revokes() {
             change_kind,
             capability_id,
             ..
-        } = o {
+        } = o
+        {
             change_kind.as_deref() == Some("unmount") && capability_id.as_deref() == Some("mcp1")
         } else {
             false
@@ -417,12 +434,14 @@ fn capability_lease_auto_revokes() {
 
 #[test]
 fn agent_run_spec_capability_filter_enforcement() {
-    use deepstrike_core::scheduler::state_machine::LoopStateMachine;
+    use compact_str::CompactString;
     use deepstrike_core::scheduler::policy::SchedulerBudget;
-    use deepstrike_core::types::agent::{AgentRunSpec, AgentIdentity, AgentRole, AgentCapabilityFilter};
+    use deepstrike_core::scheduler::state_machine::LoopStateMachine;
+    use deepstrike_core::types::agent::{
+        AgentCapabilityFilter, AgentIdentity, AgentRole, AgentRunSpec,
+    };
     use deepstrike_core::types::capability::{CapabilityDescriptor, CapabilityKind};
     use deepstrike_core::types::message::ToolSchema;
-    use compact_str::CompactString;
 
     let mut sm = LoopStateMachine::new(SchedulerBudget::default());
     sm.tools = vec![
@@ -442,11 +461,8 @@ fn agent_run_spec_capability_filter_enforcement() {
         allowed_kinds: vec![CapabilityKind::Tool],
         allowed_ids: vec![CompactString::new("read_file")],
     };
-    let spec = AgentRunSpec::new(
-        AgentIdentity::new("a1", "s1"),
-        AgentRole::Custom,
-        "goal",
-    ).with_capability_filter(filter);
+    let spec = AgentRunSpec::new(AgentIdentity::new("a1", "s1"), AgentRole::Custom, "goal")
+        .with_capability_filter(filter);
 
     sm.run_spec = Some(spec);
 

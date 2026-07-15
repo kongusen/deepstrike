@@ -224,10 +224,12 @@ export interface KernelObservation {
   original_size?: number
   preview_size?: number
   // Phase 7 / M3: Memory observations
-  memory_id?: string
+  record_id?: string
+  scope?: { tenant_id: string; namespace: string }
+  name?: string
   memory_kind?: string
   size_bytes?: number
-  query_context?: string
+  query?: string
   requested_k?: number
   requires_async_response?: boolean
   /** memory_validation_failed (Phase 7). */
@@ -244,8 +246,9 @@ export interface KernelObservation {
     trust?: string
   }>
   /** workflow_completed. */
-  completed?: string[]
-  failed?: string[]
+  node_outcomes?: import("../types/agent.js").KernelWorkflowNodeOutcome[]
+  /** nodes_rejected. */
+  node_index?: number
   // entropy_sample / entropy_alert: kernel session-entropy measurement + opt-in watch trip.
   score?: number
   score_version?: number
@@ -709,39 +712,38 @@ export async function durableKernelStep(
   if (prepared.status !== "prepared") return prepared.step
   const token = prepared.prepare_token
   if (!token) throw new Error("prepared kernel transition is missing its commit token")
-
-  const head = await sessionLog.kernelTransactionHead(sessionId, operationId)
-  if (!head) {
-    runtime.abortPrepared(token)
-    throw new Error("durable kernel genesis is missing before transaction append")
-  }
-  const transaction = await createKernelTransaction({
-    operation_id: operationId,
-    step_seq: prepared.step.step_seq,
-    base_generation: prepared.base_generation,
-    input: prepared.input,
-    step: prepared.step as unknown as Record<string, unknown>,
-    previous_transaction_digest: head,
-  })
+  let committed = false
   try {
+    const head = await sessionLog.kernelTransactionHead(sessionId, operationId)
+    if (!head) throw new Error("durable kernel genesis is missing before transaction append")
+    const transaction = await createKernelTransaction({
+      operation_id: operationId,
+      step_seq: prepared.step.step_seq,
+      base_generation: prepared.base_generation,
+      input: prepared.input,
+      step: prepared.step as unknown as Record<string, unknown>,
+      previous_transaction_digest: head,
+    })
     await sessionLog.compareAndAppendKernelTransaction(sessionId, head, transaction)
-  } catch (appendError) {
-    try {
-      runtime.abortPrepared(token)
-    } catch (abortError) {
-      throw new AggregateError(
-        [appendError, abortError],
-        "durable append failed and the prepared kernel transition could not be aborted",
-      )
+    const committedStep = parseStep(runtime.commitPrepared(token))
+    committed = true
+    if (kernelRecordDigest(committedStep) !== transaction.step_digest) {
+      throw new Error("committed kernel step does not match the durable prepared step")
     }
-    throw appendError
+    return committedStep
+  } catch (transitionError) {
+    if (!committed) {
+      try {
+        runtime.abortPrepared(token)
+      } catch (abortError) {
+        throw new AggregateError(
+          [transitionError, abortError],
+          "durable transition failed and the prepared kernel state could not be aborted",
+        )
+      }
+    }
+    throw transitionError
   }
-
-  const committed = parseStep(runtime.commitPrepared(token))
-  if (kernelRecordDigest(committed) !== transaction.step_digest) {
-    throw new Error("committed kernel step does not match the durable prepared step")
-  }
-  return committed
 }
 
 export async function durableKernelApply(

@@ -274,7 +274,11 @@ fn criteria_injected_into_user_message() {
             assert!(!user_msgs.is_empty());
             let text = user_msgs.last().unwrap().content.as_text().unwrap();
             assert_eq!(text, "Proceed with the task described in [TASK STATE].");
-            let state_text = context.state_turn.as_ref().and_then(|m| m.content.as_text()).unwrap_or("");
+            let state_text = context
+                .state_turn
+                .as_ref()
+                .and_then(|m| m.content.as_text())
+                .unwrap_or("");
             assert!(state_text.contains("Write code"));
             assert!(state_text.contains("criteria:"));
             assert!(state_text.contains("Must handle errors"));
@@ -299,9 +303,16 @@ fn no_criteria_means_plain_goal() {
                 .content
                 .as_text()
                 .unwrap();
-            assert_eq!(user_text, "Proceed with the task described in [TASK STATE].");
+            assert_eq!(
+                user_text,
+                "Proceed with the task described in [TASK STATE]."
+            );
             assert!(!user_text.contains("Criteria:"));
-            let state_text = context.state_turn.as_ref().and_then(|m| m.content.as_text()).unwrap_or("");
+            let state_text = context
+                .state_turn
+                .as_ref()
+                .and_then(|m| m.content.as_text())
+                .unwrap_or("");
             assert!(state_text.contains("Say hello"));
         }
         _ => panic!("expected CallLLM"),
@@ -323,11 +334,17 @@ fn critical_signal_injects_interrupt_and_re_reasons() {
         Urgency::Critical,
         "fire",
     );
-    let action = sm.signal_event("op-critical".into(), "delivery-critical".into(), 1, sig)
+    let action = sm
+        .signal_event("op-critical".into(), "delivery-critical".into(), 1, sig)
         .expect("critical signal drives a turn");
     assert!(matches!(action, LoopAction::CallLLM { .. }));
 
-    let has_interrupt = sm.ctx.partitions.signals.iter().any(|t| t.contains("[INTERRUPT]"));
+    let has_interrupt = sm
+        .ctx
+        .partitions
+        .signals
+        .iter()
+        .any(|t| t.contains("[INTERRUPT]"));
     assert!(has_interrupt);
 }
 
@@ -351,9 +368,19 @@ fn high_urgency_signal_injects_note() {
     let action = sm.signal_event("op-high".into(), "delivery-high".into(), 1, sig);
     assert!(action.is_none(), "soft interrupt does not force a turn");
 
-    let has_signal_note = sm.ctx.partitions.signals.iter().any(|t| t.contains("[SIGNAL]"));
+    let has_signal_note = sm
+        .ctx
+        .partitions
+        .signals
+        .iter()
+        .any(|t| t.contains("[SIGNAL]"));
     assert!(has_signal_note);
-    let has_interrupt = sm.ctx.partitions.signals.iter().any(|t| t.contains("[INTERRUPT]"));
+    let has_interrupt = sm
+        .ctx
+        .partitions
+        .signals
+        .iter()
+        .any(|t| t.contains("[INTERRUPT]"));
     assert!(!has_interrupt);
 }
 

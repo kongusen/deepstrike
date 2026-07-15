@@ -66,7 +66,13 @@ const runtimeOptions = {
   skillDir: path.join(exampleDir, "skills"),
   dreamStore,
   knowledgeSource,
-  schedulerBudget: { maxWallMs: config.timeoutMs },
+  schedulerPolicy: {
+    version: 1,
+    criticalPathWeight: 1_000_000,
+    fanoutWeight: 10_000,
+    ageWeight: 1_000,
+    tokenCostWeight: 1,
+  },
   resourceQuota: {
     maxConcurrentSubagents: config.maxConcurrentSubagents,
     maxSpawnDepth: config.maxSpawnDepth,
@@ -419,16 +425,27 @@ async function printRunSummary(params) {
 async function seedMemory(store, agentId, sessionId) {
   const existing = await store.loadMemories(agentId)
   if (existing.length > 0) return
+  const now = Date.now()
   await store.commit(agentId, {
     toAdd: [{
-      text: "Previous stability runs should verify ordered tool calls, checkpoint continuity, large-result spooling, and wake replay.",
-      score: 1,
-      metadata: {
-        name: "stability_seed",
-        kind: "project",
-        source: "example_seed",
+      record_id: "stability_seed",
+      scope: { tenant_id: "examples", namespace: agentId },
+      name: "stability_seed",
+      kind: "project",
+      content: "Previous stability runs should verify ordered tool calls, checkpoint continuity, large-result spooling, and wake replay.",
+      description: "Stability-run verification checklist",
+      provenance: {
+        author: "host",
+        trust: "host_verified",
+        evidence_refs: [],
         session_id: sessionId,
       },
+      created_at: now,
+      updated_at: now,
+      recall_count: 0,
+      confidence: 1,
+      links: [],
+      pinned: true,
     }],
     toRemoveIndices: [],
     stats: {
@@ -452,18 +469,30 @@ function createJsonDreamStore(root) {
     async commit(agentId, result, existing) {
       const removals = new Set(result.toRemoveIndices ?? [])
       const retained = existing.filter((_, index) => !removals.has(index))
-      const next = [...retained, ...(result.toAdd ?? [])]
+      const next = [...retained]
+      for (const incoming of result.toAdd ?? []) {
+        const index = next.findIndex(record =>
+          record.scope.tenant_id === incoming.scope.tenant_id
+          && record.scope.namespace === incoming.scope.namespace
+          && record.kind === incoming.kind
+          && record.name === incoming.name)
+        if (index >= 0) next[index] = incoming
+        else next.push(incoming)
+      }
       await writeJson(storePath(agentId, "memories.json"), next)
     },
-    async search(agentId, query, topK = 5) {
+    async search(agentId, query) {
       const memories = await this.loadMemories(agentId)
-      const terms = tokenize(query)
+      const terms = tokenize(query.query)
       return memories
-        .map(memory => ({ memory, score: scoreText(memory.text, terms) + Number(memory.score ?? 0) }))
+        .filter(memory => memory.scope.tenant_id === query.scope.tenant_id
+          && memory.scope.namespace === query.scope.namespace
+          && (query.kinds.length === 0 || query.kinds.includes(memory.kind)))
+        .map(memory => ({ memory, score: scoreText(`${memory.name} ${memory.description} ${memory.content}`, terms) }))
         .filter(entry => entry.score > 0)
         .sort((a, b) => b.score - a.score)
-        .slice(0, topK)
-        .map(entry => ({ ...entry.memory, score: entry.score }))
+        .slice(0, query.top_k)
+        .map(entry => ({ record: entry.memory, score: entry.score, why: "lexical match" }))
     },
     async saveSession(data) {
       const sessions = await this.loadSessions(data.agentId)

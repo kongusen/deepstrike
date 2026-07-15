@@ -2,7 +2,7 @@ import pytest
 
 from deepstrike._kernel import ToolCall, ToolResult
 from deepstrike.providers.base import RenderedContext
-from deepstrike.providers.stream import TextDelta, ToolCallEvent
+from deepstrike.providers.stream import TextDelta, ToolCallEvent, UsageEvent
 from deepstrike.runtime import (
   InMemorySessionLog,
   LocalExecutionPlane,
@@ -113,7 +113,13 @@ async def test_run_records_compressed_event():
     """Return a large ping payload."""
     return "pong " * 200
 
-  provider = ResumeAwareProvider()
+  class PressureProvider(ResumeAwareProvider):
+    async def stream(self, context, tools, extensions=None, state=None):
+      yield UsageEvent(total_tokens=940, input_tokens=940)
+      async for event in super().stream(context, tools, extensions, state):
+        yield event
+
+  provider = PressureProvider()
   session_log = InMemorySessionLog()
   plane = LocalExecutionPlane()
   plane.register(ping)
@@ -121,15 +127,19 @@ async def test_run_records_compressed_event():
     provider=provider,
     session_log=session_log,
     execution_plane=plane,
-    max_tokens=32,
+    max_tokens=1024,
     max_turns=4,
   ))
 
-  await collect_text(runner.run(session_id="compressed-session", goal="use big_ping then finish"))
+  session_id = "compressed-session"
+  await collect_text(runner.run(session_id=session_id, goal="use big_ping then finish"))
+  # A single live ContextUnit is protected. A second user turn creates a legal boundary at which
+  # the completed tool transaction can be archived.
+  await collect_text(runner.run(session_id=session_id, goal="continue"))
 
-  events = await session_log.read("compressed-session")
+  events = await session_log.read(session_id)
   compressed = [e.event for e in events if e.event.get("kind") == "compressed"]
-  assert compressed
+  assert compressed, [entry.event for entry in events]
   assert compressed[0]["archived_seq_range"][0] == 0
 
 
@@ -159,30 +169,33 @@ async def test_run_reactive_compacts_and_retries_prompt_too_long():
   ))
 
   session_id = "reactive-compact"
-  await session_log.append(session_id, {
-    "kind": "run_started",
-    "run_id": "seed",
-    "goal": "seed " * 1200,
-    "criteria": [],
-  })
-  await session_log.append(session_id, {
-    "kind": "llm_completed",
-    "turn": 0,
-    "content": "prior answer " * 400,
-    "tool_calls": [],
-  })
-  await session_log.append(session_id, {
-    "kind": "run_terminal",
-    "reason": "completed",
-    "turns_used": 1,
-    "total_tokens": 0,
-  })
+  # Keep more completed ContextUnits than the protected recent-unit floor so a reactive 413 has a
+  # legal whole-unit eviction candidate.
+  for index in range(4):
+    await session_log.append(session_id, {
+      "kind": "run_started",
+      "run_id": f"seed-{index}",
+      "goal": (f"seed-{index} " * 90),
+      "criteria": [],
+    })
+    await session_log.append(session_id, {
+      "kind": "llm_completed",
+      "turn": index,
+      "content": (f"prior-{index} " * 60),
+      "tool_calls": [],
+    })
+    await session_log.append(session_id, {
+      "kind": "run_terminal",
+      "reason": "completed",
+      "turns_used": 1,
+      "total_tokens": 0,
+    })
 
-  text = await collect_text(runner.run(session_id=session_id, goal="a" * 5000))
+  text = await collect_text(runner.run(session_id=session_id, goal="continue"))
 
-  assert text == "recovered"
-  assert provider.stream_calls == 2
   events = await session_log.read(session_id)
+  assert text == "recovered", (provider.stream_calls, [entry.event for entry in events])
+  assert provider.stream_calls == 2
   assert any(e.event.get("kind") == "compressed" for e in events)
 
 

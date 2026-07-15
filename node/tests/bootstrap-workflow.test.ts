@@ -8,7 +8,7 @@ import { getKernel } from "../src/kernel.js"
 import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
 import { submitWorkflowToKernel } from "../src/types/agent.js"
 import type { WorkflowSpec } from "../src/index.js"
-import { startKernelV2, stepKernelV2 } from "./helpers/kernel-v2.js"
+import { durableStartKernelV2, durableStepKernelV2 } from "./helpers/kernel-v2.js"
 
 describe("submitWorkflowToKernel", () => {
   it("lowers a spec to the submit_workflow event with the parent session id", () => {
@@ -39,15 +39,16 @@ describe("bootstrapWorkflow drives an agent-authored DAG over the real kernel", 
         }
       },
     }
+    const sessionLog = new InMemorySessionLog()
     const runner = new RuntimeRunner({
-      sessionLog: new InMemorySessionLog(),
+      sessionLog,
       maxTokens: 8000,
       subAgentOrchestrator: orchestrator as never,
     } as never)
 
     // A real kernel with NO workflow loaded — the agent itself authors one via submit_workflow.
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    startKernelV2(rt)
+    await durableStartKernelV2(rt, sessionLog, "wf-boot")
     ;(runner as never as { activeKernel: unknown }).activeKernel = rt
     ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-boot"
     ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
@@ -64,8 +65,8 @@ describe("bootstrapWorkflow drives an agent-authored DAG over the real kernel", 
 
     // The authored nodes bootstrapped + ran in this same kernel (no separate child kernel).
     expect(ran.sort()).toEqual(["wf-node0", "wf-node1"])
-    expect(outcome.completed.sort()).toEqual(["wf-node0", "wf-node1"])
-    expect(outcome.failed).toEqual([])
+    expect(outcome.nodeOutcomes.map(node => node.nodeId).sort()).toEqual(["wf-node0", "wf-node1"])
+    expect(outcome.nodeOutcomes.every(node => node.status === "completed")).toBe(true)
   })
 
   it("is denied when the authored spec would overgrow the workflow-node quota", async () => {
@@ -79,15 +80,19 @@ describe("bootstrapWorkflow drives an agent-authored DAG over the real kernel", 
         }
       },
     }
+    const sessionLog = new InMemorySessionLog()
     const runner = new RuntimeRunner({
-      sessionLog: new InMemorySessionLog(),
+      sessionLog,
       maxTokens: 8000,
       subAgentOrchestrator: orchestrator as never,
     } as never)
 
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    startKernelV2(rt)
-    stepKernelV2(rt, { kind: "set_resource_quota", quota: { max_workflow_nodes: 2 } })
+    await durableStartKernelV2(rt, sessionLog, "wf-boot-deny")
+    await durableStepKernelV2(rt, sessionLog, "wf-boot-deny", {
+      kind: "set_resource_quota",
+      quota: { max_workflow_nodes: 2 },
+    })
     ;(runner as never as { activeKernel: unknown }).activeKernel = rt
     ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-boot-deny"
     ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
@@ -102,6 +107,6 @@ describe("bootstrapWorkflow drives an agent-authored DAG over the real kernel", 
     }
     const outcome = await runner.bootstrapWorkflow(spec)
     expect(ran).toEqual([])
-    expect(outcome.completed).toEqual([])
+    expect(outcome.nodeOutcomes).toEqual([])
   })
 })

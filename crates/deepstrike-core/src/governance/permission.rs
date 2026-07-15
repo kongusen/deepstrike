@@ -100,7 +100,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn allow_by_default() {
         let pm = PermissionManager::new(PermissionAction::Allow);

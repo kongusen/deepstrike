@@ -28,6 +28,15 @@ def test_token_budget_maps_and_carries():
     assert workflow_node_to_spec(_node(), "sess").token_budget is None
 
 
+def test_dependency_policy_maps_with_strict_default():
+    assert workflow_node_spec_to_kernel(
+        WorkflowNodeSpec(task="x", role="plan", dep_policy="accept_partial")
+    )["dep_policy"] == "accept_partial"
+    assert workflow_node_spec_to_kernel(
+        WorkflowNodeSpec(task="x", role="plan")
+    )["dep_policy"] == "all_success"
+
+
 def test_resolve_provider_routes_and_falls_back():
     base = object()
     opus = object()

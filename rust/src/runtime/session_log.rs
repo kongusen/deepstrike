@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use deepstrike_core::runtime::event_log::{Primitive, primitive_for_kind};
+use deepstrike_core::runtime::event_log::{primitive_for_kind, Primitive};
 use deepstrike_core::runtime::session::SessionEvent;
 use serde::{Deserialize, Serialize};
 use tokio::fs;

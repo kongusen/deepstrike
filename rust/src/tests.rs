@@ -70,6 +70,10 @@ mod tests {
             urgency: "normal".into(),
             payload: serde_json::json!({"goal": "retry"}),
             dedupe_key: Some("logical-signal".into()),
+            recipient: Some("session-1".into()),
+            deadline_ms: Some(1_700_000_000_000),
+            coalesce_key: Some("retry".into()),
+            coalesced_count: 1,
         });
 
         let first = receiver
@@ -464,8 +468,9 @@ mod tests {
     }
 
     #[test]
-    fn harness_request_builder() {
-        let req = crate::harness::HarnessRequest::new("Write a haiku");
+    fn attempt_request_builder() {
+        let req = crate::harness_loop::AttemptRequest::new("session-1", "Write a haiku");
+        assert_eq!(req.session_id, "session-1");
         assert_eq!(req.goal, "Write a haiku");
         assert!(req.criteria.is_empty());
     }
@@ -554,6 +559,7 @@ mod tests {
             timeout_ms: None,
             extensions: None,
             agent_id: None,
+            memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
@@ -563,8 +569,8 @@ mod tests {
             governance: None,
             os_profile: None,
             governance_policy: None,
-            attention_policy: None,
-            scheduler_budget: None,
+            signal_policy: None,
+            scheduler_policy: None,
             resource_quota: None,
             memory_policy: None,
             tokenizer: None,
@@ -663,6 +669,7 @@ mod tests {
             timeout_ms: None,
             extensions: None,
             agent_id: None,
+            memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
@@ -672,8 +679,8 @@ mod tests {
             governance: None,
             os_profile: None,
             governance_policy: None,
-            attention_policy: None,
-            scheduler_budget: None,
+            signal_policy: None,
+            scheduler_policy: None,
             resource_quota: None,
             memory_policy: None,
             tokenizer: None,
@@ -786,6 +793,7 @@ mod tests {
             timeout_ms: None,
             extensions: None,
             agent_id: None,
+            memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: Some(dir.clone()),
@@ -795,8 +803,8 @@ mod tests {
             governance: None,
             os_profile: None,
             governance_policy: None,
-            attention_policy: None,
-            scheduler_budget: None,
+            signal_policy: None,
+            scheduler_policy: None,
             resource_quota: None,
             memory_policy: None,
             tokenizer: None,
@@ -884,6 +892,7 @@ mod tests {
             timeout_ms: None,
             extensions: None,
             agent_id: None,
+            memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
@@ -893,8 +902,8 @@ mod tests {
             governance: None,
             os_profile: None,
             governance_policy: None,
-            attention_policy: None,
-            scheduler_budget: None,
+            signal_policy: None,
+            scheduler_policy: None,
             resource_quota: None,
             memory_policy: None,
             tokenizer: None,
@@ -935,7 +944,12 @@ mod tests {
             total_tokens: 0,
         }).await;
 
-        let goal = "a".repeat(5000);
+        // The new task goal must itself fit the fixed budget (system + state_turn ≤ max_tokens):
+        // a goal larger than `max_tokens` is an unrecoverable `FixedContext` overflow (compaction
+        // cannot touch system/state), which correctly terminates without a provider call. This test
+        // exercises the *recoverable* path — the over-budget pressure comes from the seeded history
+        // (the prior answer), which the reactive 413 ladder can compact away before retrying.
+        let goal = "resume the prior task".to_string();
         let mut stream = runner
             .run_streaming(&goal, &[], None, Some(session_id))
             .await
@@ -1065,6 +1079,7 @@ mod tests {
             timeout_ms: None,
             extensions: None,
             agent_id: None,
+            memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
@@ -1074,8 +1089,8 @@ mod tests {
             governance: None,
             os_profile: None,
             governance_policy: None,
-            attention_policy: None,
-            scheduler_budget: None,
+            signal_policy: None,
+            scheduler_policy: None,
             resource_quota: None,
             memory_policy: None,
             tokenizer: None,
@@ -1167,6 +1182,7 @@ mod tests {
             timeout_ms: None,
             extensions: None,
             agent_id: None,
+            memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
@@ -1176,8 +1192,8 @@ mod tests {
             governance: None,
             os_profile: None,
             governance_policy: None,
-            attention_policy: None,
-            scheduler_budget: None,
+            signal_policy: None,
+            scheduler_policy: None,
             resource_quota: None,
             memory_policy: None,
             tokenizer: None,
@@ -1247,6 +1263,7 @@ mod tests {
             timeout_ms: None,
             extensions: None,
             agent_id: None,
+            memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
@@ -1256,8 +1273,8 @@ mod tests {
             governance: None,
             os_profile: None,
             governance_policy: None,
-            attention_policy: None,
-            scheduler_budget: None,
+            signal_policy: None,
+            scheduler_policy: None,
             resource_quota: None,
             memory_policy: None,
             tokenizer: None,
@@ -1341,6 +1358,7 @@ mod tests {
             timeout_ms: None,
             extensions: None,
             agent_id: None,
+            memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
@@ -1350,8 +1368,8 @@ mod tests {
             governance: None,
             os_profile: None,
             governance_policy: None,
-            attention_policy: None,
-            scheduler_budget: None,
+            signal_policy: None,
+            scheduler_policy: None,
             resource_quota: None,
             memory_policy: None,
             tokenizer: None,
@@ -1404,6 +1422,7 @@ mod tests {
         
         let ctx = RunContext {
             agent_id: None,
+            memory_scope: None,
             skill_dir: None,
             dream_store: None,
             knowledge_source: None,
@@ -1432,8 +1451,40 @@ mod tests {
     }
 
     use crate::memory::DreamStore;
-    use deepstrike_core::memory::semantic::MemoryEntry;
+    use deepstrike_core::mm::memory::{
+        MemoryAuthor, MemoryKind, MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord,
+        MemoryScope, MemoryTrustLevel,
+    };
     use crate::runtime::InMemorySessionLog;
+
+    fn memory_record(name: &str, content: &str) -> MemoryRecord {
+        MemoryRecord {
+            record_id: format!("record-{name}"),
+            scope: MemoryScope::new("agent-memory", "rust-tests"),
+            name: name.into(),
+            kind: MemoryKind::Feedback,
+            content: content.into(),
+            description: format!("test memory {name}"),
+            provenance: MemoryProvenance {
+                session_id: None,
+                author: MemoryAuthor::Host,
+                trust: MemoryTrustLevel::HostVerified,
+                evidence_refs: Vec::new(),
+            },
+            created_at: 1,
+            updated_at: 1,
+            last_recalled_at: None,
+            recall_count: 0,
+            confidence: 0.9,
+            links: Vec::new(),
+            pinned: false,
+            ttl_days: None,
+        }
+    }
+
+    fn memory_recall(record: MemoryRecord) -> MemoryRecall {
+        MemoryRecall { record, score: 0.9, why: "fixture".into() }
+    }
 
 
     struct MockLLMProvider;
@@ -1471,40 +1522,22 @@ mod tests {
         let sessions = Arc::new(std::sync::Mutex::new(Vec::new()));
 
         struct SharedMockDreamStore {
-            memories: Arc<std::sync::Mutex<Vec<MemoryEntry>>>,
+            memories: Arc<std::sync::Mutex<Vec<MemoryRecord>>>,
             sessions: Arc<std::sync::Mutex<Vec<deepstrike_core::memory::durable::SessionData>>>,
         }
 
         #[async_trait::async_trait]
         impl DreamStore for SharedMockDreamStore {
-            async fn load_sessions(&self, _agent_id: &str) -> crate::Result<Vec<deepstrike_core::memory::durable::SessionData>> {
-                Ok(self.sessions.lock().unwrap().clone())
-            }
-            async fn load_memories(&self, _agent_id: &str) -> crate::Result<Vec<MemoryEntry>> {
-                Ok(self.memories.lock().unwrap().clone())
-            }
-            async fn commit(
-                &self,
-                _agent_id: &str,
-                result: deepstrike_core::memory::curator::CurationResult,
-                _existing: &[MemoryEntry],
-            ) -> crate::Result<()> {
-                let mut mems = self.memories.lock().unwrap();
-                for idx in result.to_remove_indices.iter().rev() {
-                    if *idx < mems.len() {
-                        mems.remove(*idx);
-                    }
-                }
-                mems.extend(result.to_add);
+            async fn upsert(&self, _agent_id: &str, record: MemoryRecord) -> crate::Result<()> {
+                self.memories.lock().unwrap().push(record);
                 Ok(())
             }
             async fn search(
                 &self,
                 _agent_id: &str,
-                _query: &str,
-                _top_k: usize,
-            ) -> crate::Result<Vec<MemoryEntry>> {
-                Ok(self.memories.lock().unwrap().clone())
+                _query: &MemoryQuery,
+            ) -> crate::Result<Vec<MemoryRecall>> {
+                Ok(self.memories.lock().unwrap().clone().into_iter().map(memory_recall).collect())
             }
             async fn save_session(
                 &self,
@@ -1533,6 +1566,7 @@ mod tests {
             timeout_ms: None,
             extensions: None,
             agent_id: Some("test-agent".to_string()),
+            memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
@@ -1542,8 +1576,8 @@ mod tests {
             governance: None,
             os_profile: None,
             governance_policy: None,
-            attention_policy: None,
-            scheduler_budget: None,
+            signal_policy: None,
+            scheduler_policy: None,
             resource_quota: None,
             memory_policy: None,
             tokenizer: None,
@@ -1592,41 +1626,28 @@ mod tests {
     async fn test_write_memory_syscall_commits_to_dream_store() {
         use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
         use crate::runtime::session_log::SessionLog;
-        use deepstrike_core::mm::memory::{MemoryKind, MemoryMetadata, MemoryWriteRequest};
         use std::sync::Arc;
 
         let memories = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sessions = Arc::new(std::sync::Mutex::new(Vec::new()));
 
         struct Store {
-            memories: Arc<std::sync::Mutex<Vec<MemoryEntry>>>,
+            memories: Arc<std::sync::Mutex<Vec<MemoryRecord>>>,
             sessions: Arc<std::sync::Mutex<Vec<deepstrike_core::memory::durable::SessionData>>>,
         }
 
         #[async_trait::async_trait]
         impl DreamStore for Store {
-            async fn load_sessions(&self, _agent_id: &str) -> crate::Result<Vec<deepstrike_core::memory::durable::SessionData>> {
-                Ok(self.sessions.lock().unwrap().clone())
-            }
-            async fn load_memories(&self, _agent_id: &str) -> crate::Result<Vec<MemoryEntry>> {
-                Ok(self.memories.lock().unwrap().clone())
-            }
-            async fn commit(
-                &self,
-                _agent_id: &str,
-                result: deepstrike_core::memory::curator::CurationResult,
-                _existing: &[MemoryEntry],
-            ) -> crate::Result<()> {
-                self.memories.lock().unwrap().extend(result.to_add);
+            async fn upsert(&self, _agent_id: &str, record: MemoryRecord) -> crate::Result<()> {
+                self.memories.lock().unwrap().push(record);
                 Ok(())
             }
             async fn search(
                 &self,
                 _agent_id: &str,
-                _query: &str,
-                _top_k: usize,
-            ) -> crate::Result<Vec<MemoryEntry>> {
-                Ok(self.memories.lock().unwrap().clone())
+                _query: &MemoryQuery,
+            ) -> crate::Result<Vec<MemoryRecall>> {
+                Ok(self.memories.lock().unwrap().clone().into_iter().map(memory_recall).collect())
             }
             async fn save_session(
                 &self,
@@ -1651,6 +1672,7 @@ mod tests {
             timeout_ms: None,
             extensions: None,
             agent_id: Some("agent-memory".to_string()),
+            memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
@@ -1660,8 +1682,8 @@ mod tests {
             governance: None,
             os_profile: None,
             governance_policy: None,
-            attention_policy: None,
-            scheduler_budget: None,
+            signal_policy: None,
+            scheduler_policy: None,
             resource_quota: None,
             memory_policy: None,
             tokenizer: None,
@@ -1679,22 +1701,12 @@ mod tests {
         });
 
         runner.write_memory(
-            MemoryWriteRequest {
-                metadata: MemoryMetadata {
-                    name: "prefers-small-tests".to_string(),
-                    description: "User prefers small focused tests".to_string(),
-                    kind: Some(MemoryKind::BehaviorPreference),
-                    created_at: 1,
-                    updated_at: 1,
-                    ..Default::default()
-                },
-                content: "User prefers focused unit tests for SDK behavior.".to_string(),
-            },
+            memory_record("prefers-small-tests", "User prefers focused unit tests for SDK behavior."),
             Some("memory-syscall-rs"),
             None,
         ).await.unwrap();
 
-        assert_eq!(memories.lock().unwrap()[0].text, "User prefers focused unit tests for SDK behavior.");
+        assert_eq!(memories.lock().unwrap()[0].content, "User prefers focused unit tests for SDK behavior.");
         let events = session_log.read("memory-syscall-rs", 0, None).await.unwrap();
         assert!(events.iter().any(|e| e.event.kind_str() == "memory_written"));
     }
@@ -1704,7 +1716,6 @@ mod tests {
         use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
         use crate::runtime::session_log::SessionLog;
         use deepstrike_core::governance::quota::ResourceQuota;
-        use deepstrike_core::mm::memory::{MemoryKind, MemoryMetadata, MemoryWriteRequest};
         use std::sync::Arc;
 
         let commits = Arc::new(std::sync::Mutex::new(0usize));
@@ -1715,27 +1726,15 @@ mod tests {
 
         #[async_trait::async_trait]
         impl DreamStore for Store {
-            async fn load_sessions(&self, _agent_id: &str) -> crate::Result<Vec<deepstrike_core::memory::durable::SessionData>> {
-                Ok(vec![])
-            }
-            async fn load_memories(&self, _agent_id: &str) -> crate::Result<Vec<MemoryEntry>> {
-                Ok(vec![])
-            }
-            async fn commit(
-                &self,
-                _agent_id: &str,
-                _result: deepstrike_core::memory::curator::CurationResult,
-                _existing: &[MemoryEntry],
-            ) -> crate::Result<()> {
+            async fn upsert(&self, _agent_id: &str, _record: MemoryRecord) -> crate::Result<()> {
                 *self.commits.lock().unwrap() += 1;
                 Ok(())
             }
             async fn search(
                 &self,
                 _agent_id: &str,
-                _query: &str,
-                _top_k: usize,
-            ) -> crate::Result<Vec<MemoryEntry>> {
+                _query: &MemoryQuery,
+            ) -> crate::Result<Vec<MemoryRecall>> {
                 Ok(vec![])
             }
             async fn save_session(
@@ -1760,6 +1759,7 @@ mod tests {
             timeout_ms: None,
             extensions: None,
             agent_id: Some("agent-memory".to_string()),
+            memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
@@ -1769,8 +1769,8 @@ mod tests {
             governance: None,
             os_profile: None,
             governance_policy: None,
-            attention_policy: None,
-            scheduler_budget: None,
+            signal_policy: None,
+            scheduler_policy: None,
             resource_quota: Some(ResourceQuota {
                 memory_writes_per_window: Some((0, 60_000)),
                 ..Default::default()
@@ -1791,17 +1791,7 @@ mod tests {
         });
 
         runner.write_memory(
-            MemoryWriteRequest {
-                metadata: MemoryMetadata {
-                    name: "too-many-writes".to_string(),
-                    description: "Denied by quota".to_string(),
-                    kind: Some(MemoryKind::BehaviorPreference),
-                    created_at: 1,
-                    updated_at: 1,
-                    ..Default::default()
-                },
-                content: "This write should not be committed.".to_string(),
-            },
+            memory_record("too-many-writes", "This write should not be committed."),
             Some("memory-quota-rs"),
             None,
         ).await.unwrap();
@@ -1814,21 +1804,37 @@ mod tests {
     #[test]
     fn test_public_agent_os_shape_helpers() {
         use crate::{
-            assert_native_profile, MemoryWriteRateLimit, OsProfile, SchedulerBudget,
-            DEFAULT_NATIVE_ATTENTION_POLICY,
+            assert_native_profile, MemoryWriteRateLimit, OsProfile, SchedulerPolicyConfig,
+            DEFAULT_NATIVE_SIGNAL_POLICY,
         };
 
         let profile = assert_native_profile(Some(OsProfile::Native)).unwrap();
         assert_eq!(profile.id, "native");
         assert_eq!(
-            profile.attention_policy.max_queue_size,
-            DEFAULT_NATIVE_ATTENTION_POLICY.max_queue_size,
+            profile.signal_policy.queue_max,
+            DEFAULT_NATIVE_SIGNAL_POLICY.queue_max,
         );
 
-        let scheduler_budget = SchedulerBudget {
-            max_wall_ms: Some(1234),
+        let scheduler_policy = SchedulerPolicyConfig {
+            version: 1,
+            critical_path_weight: 1_000_000,
+            fanout_weight: 10_000,
+            age_weight: 1_000,
+            token_cost_weight: 1,
         };
-        assert_eq!(scheduler_budget.max_wall_ms, Some(1234));
+
+        let event = deepstrike_core::runtime::KernelInputEvent::ConfigureRun {
+            config: deepstrike_core::runtime::kernel::RunConfig {
+                scheduler_policy: Some(scheduler_policy),
+                ..Default::default()
+            },
+        };
+        let json = serde_json::to_value(event).unwrap();
+        assert_eq!(
+            json["config"]["scheduler_policy"]["critical_path_weight"],
+            1_000_000
+        );
+        assert!(json["config"].get("scheduler_max_wall_ms").is_none());
 
         let write_limit: (u32, u64) = MemoryWriteRateLimit {
             max_writes: 3,
@@ -1842,45 +1848,31 @@ mod tests {
     async fn test_query_memory_syscall_returns_dream_store_hits() {
         use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
         use crate::runtime::session_log::SessionLog;
-        use deepstrike_core::mm::memory::MemoryQuery;
         use std::sync::Arc;
 
-        let memories = Arc::new(std::sync::Mutex::new(vec![MemoryEntry {
-            text: "Use small focused tests.".to_string(),
-            score: 0.9,
-            metadata: serde_json::json!({"name": "testing"}),
-        }]));
+        let memories = Arc::new(std::sync::Mutex::new(vec![memory_record(
+            "testing",
+            "Use small focused tests.",
+        )]));
         let sessions = Arc::new(std::sync::Mutex::new(Vec::new()));
 
         struct Store {
-            memories: Arc<std::sync::Mutex<Vec<MemoryEntry>>>,
+            memories: Arc<std::sync::Mutex<Vec<MemoryRecord>>>,
             sessions: Arc<std::sync::Mutex<Vec<deepstrike_core::memory::durable::SessionData>>>,
         }
 
         #[async_trait::async_trait]
         impl DreamStore for Store {
-            async fn load_sessions(&self, _agent_id: &str) -> crate::Result<Vec<deepstrike_core::memory::durable::SessionData>> {
-                Ok(self.sessions.lock().unwrap().clone())
-            }
-            async fn load_memories(&self, _agent_id: &str) -> crate::Result<Vec<MemoryEntry>> {
-                Ok(self.memories.lock().unwrap().clone())
-            }
-            async fn commit(
-                &self,
-                _agent_id: &str,
-                _result: deepstrike_core::memory::curator::CurationResult,
-                _existing: &[MemoryEntry],
-            ) -> crate::Result<()> {
+            async fn upsert(&self, _agent_id: &str, _record: MemoryRecord) -> crate::Result<()> {
                 Ok(())
             }
             async fn search(
                 &self,
                 _agent_id: &str,
-                query: &str,
-                top_k: usize,
-            ) -> crate::Result<Vec<MemoryEntry>> {
-                if query.contains("tests") && top_k == 1 {
-                    Ok(self.memories.lock().unwrap().clone())
+                query: &MemoryQuery,
+            ) -> crate::Result<Vec<MemoryRecall>> {
+                if query.query.contains("tests") && query.top_k == 1 {
+                    Ok(self.memories.lock().unwrap().clone().into_iter().map(memory_recall).collect())
                 } else {
                     Ok(Vec::new())
                 }
@@ -1908,6 +1900,7 @@ mod tests {
             timeout_ms: None,
             extensions: None,
             agent_id: Some("agent-memory".to_string()),
+            memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
@@ -1917,8 +1910,8 @@ mod tests {
             governance: None,
             os_profile: None,
             governance_policy: None,
-            attention_policy: None,
-            scheduler_budget: None,
+            signal_policy: None,
+            scheduler_policy: None,
             resource_quota: None,
             memory_policy: None,
             tokenizer: None,
@@ -1937,16 +1930,17 @@ mod tests {
 
         let hits = runner.query_memory(
             MemoryQuery {
-                current_context: "Need memory about tests".to_string(),
-                active_tools: vec![],
-                already_surfaced: vec![],
+                scope: MemoryScope::new("agent-memory", "rust-tests"),
+                query: "Need memory about tests".to_string(),
                 top_k: 1,
+                kinds: Vec::new(),
+                min_score: None,
             },
             Some("memory-query-syscall-rs"),
             None,
         ).await.unwrap();
 
-        assert_eq!(hits[0].text, "Use small focused tests.");
+        assert_eq!(hits[0].record.content, "Use small focused tests.");
         let events = session_log.read("memory-query-syscall-rs", 0, None).await.unwrap();
         assert!(events.iter().any(|e| e.event.kind_str() == "memory_queried"));
         assert!(events.iter().any(|e| e.event.kind_str() == "memory_retrieval_result"));
@@ -1956,28 +1950,15 @@ mod tests {
     async fn test_write_memory_validation_failure_is_logged() {
         use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
         use crate::runtime::session_log::SessionLog;
-        use deepstrike_core::memory::semantic::MemoryEntry;
-        use deepstrike_core::mm::memory::{MemoryKind, MemoryMetadata, MemoryWriteRequest};
         use std::sync::Arc;
 
         struct Store;
         #[async_trait::async_trait]
         impl DreamStore for Store {
-            async fn load_sessions(&self, _agent_id: &str) -> crate::Result<Vec<deepstrike_core::memory::durable::SessionData>> {
-                Ok(vec![])
-            }
-            async fn load_memories(&self, _agent_id: &str) -> crate::Result<Vec<MemoryEntry>> {
-                Ok(vec![])
-            }
-            async fn commit(
-                &self,
-                _agent_id: &str,
-                _result: deepstrike_core::memory::curator::CurationResult,
-                _existing: &[MemoryEntry],
-            ) -> crate::Result<()> {
+            async fn upsert(&self, _agent_id: &str, _record: MemoryRecord) -> crate::Result<()> {
                 Ok(())
             }
-            async fn search(&self, _agent_id: &str, _query: &str, _top_k: usize) -> crate::Result<Vec<MemoryEntry>> {
+            async fn search(&self, _agent_id: &str, _query: &MemoryQuery) -> crate::Result<Vec<MemoryRecall>> {
                 Ok(vec![])
             }
             async fn save_session(&self, _data: deepstrike_core::memory::durable::SessionData) -> crate::Result<()> {
@@ -1999,6 +1980,7 @@ mod tests {
             timeout_ms: None,
             extensions: None,
             agent_id: Some("agent-memory".to_string()),
+            memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
@@ -2008,8 +1990,8 @@ mod tests {
             governance: None,
             os_profile: None,
             governance_policy: None,
-            attention_policy: None,
-            scheduler_budget: None,
+            signal_policy: None,
+            scheduler_policy: None,
             resource_quota: None,
             memory_policy: None,
             tokenizer: None,
@@ -2026,18 +2008,11 @@ mod tests {
             on_milestone_evaluate: None,
         });
 
+        let mut invalid = memory_record("invalid", "invalid write");
+        invalid.name.clear();
+        invalid.description = "missing name".into();
         runner.write_memory(
-            MemoryWriteRequest {
-                metadata: MemoryMetadata {
-                    name: String::new(),
-                    description: "missing name".to_string(),
-                    kind: Some(MemoryKind::BehaviorPreference),
-                    created_at: 1,
-                    updated_at: 1,
-                    ..Default::default()
-                },
-                content: "invalid write".to_string(),
-            },
+            invalid,
             Some("memory-validation-fail-rs"),
             None,
         ).await.unwrap();
@@ -2079,7 +2054,7 @@ mod tests {
         assert_eq!(spec.nodes.len(), 3);
         spec.validate().expect("valid dag");
         // workers ready first; synth gated behind both.
-        let graph = spec.to_task_graph().expect("graph");
+        let mut graph = spec.to_task_graph().expect("graph");
         assert_eq!(graph.ready_tasks(), vec![0, 1]);
     }
 }

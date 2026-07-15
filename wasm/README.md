@@ -79,7 +79,7 @@ src/
 ├── tools/            # tool() helper, executeTools (no fs/shell)
 ├── memory/           # WorkingMemory + DreamStore interfaces
 ├── knowledge/        # KnowledgeSource interface
-├── harness/          # SinglePassHarness, HarnessLoop
+├── harness/          # AttemptLoop body/judge/carry/stop policies
 ├── signals/          # RuntimeSignal, SignalSource, ScheduledPrompt
 └── safety/           # PermissionManager
 ```
@@ -241,26 +241,26 @@ const runner = new RuntimeRunner({
 
 ---
 
-## Harness
+## Attempt loop
 
 ```typescript
-import { SinglePassHarness, HarnessLoop } from "@deepstrike/wasm"
+import { AttemptLoop, RuntimeAttemptBody, LlmEvalJudge } from "@deepstrike/wasm"
 
-// Single pass — always passes
-const harness = new SinglePassHarness(runner)
-const outcome = await harness.run({ goal: "Write a haiku" })
-console.log(outcome.result)
-
-// Eval loop — LLM-judges the output; retries up to 3 times
-const loop = new HarnessLoop(runner, evalProvider, { maxAttempts: 3 })
-for await (const event of loop.runStreaming({
+const loop = new AttemptLoop({
+  body: new RuntimeAttemptBody(runner),
+  judge: new LlmEvalJudge(evalProvider),
+  stop: { maxAttempts: 3 },
+})
+for await (const event of loop.stream({
   goal: "Write a haiku",
   criteria: [
     { text: "Exactly 3 lines", required: true },
     { text: "Contains a seasonal reference", required: false },
   ],
 })) {
-  if (event.type === "done") console.log(event.verdict.passed, event.verdict.overallScore)
+  if (event.type === "completed") {
+    console.log(event.outcome.runStatus, event.outcome.outcome, event.outcome.verdict)
+  }
 }
 ```
 
@@ -268,7 +268,8 @@ for await (const event of loop.runStreaming({
 
 ## Signals & interrupts
 
-Delivered signals fold into Slot 3 (`turns[0]`) and are cleared after each render — they do not survive renewal.
+Delivered signals fold into Slot 3 (`turns[0]`) and are consumed only after the correlated
+provider result commits, so retries see the same signal exactly once.
 
 ```typescript
 import { ScheduledPrompt } from "@deepstrike/wasm"

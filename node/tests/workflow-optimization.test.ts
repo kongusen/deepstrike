@@ -14,7 +14,7 @@ import { stepKernelV2WithHostEffects } from "./helpers/kernel-v2.js"
 
 function step(rt: { step(json: string): string }, event: Record<string, unknown>) {
   return stepKernelV2WithHostEffects(rt as never, event) as {
-    observations: Array<{ kind: string; nodes?: WorkflowSpawnInfo[]; completed?: string[]; failed?: string[] }>
+    observations: Array<{ kind: string; nodes?: WorkflowSpawnInfo[]; node_outcomes?: Array<{ node_id: string; status: string }> }>
   }
 }
 const batchOf = (obs: ReturnType<typeof step>["observations"]): WorkflowSpawnInfo[] =>
@@ -40,7 +40,7 @@ describe("W-1: resume replays classify control flow over the ABI", () => {
       },
       parent_session_id: "sess",
       // W-1: the signal-carrying record — the classifier chose "a" pre-crash.
-      resumed_results: [{ agent_id: "wf-node0", classify_branch: "a" }],
+      resumed_outcomes: [{ agent_id: "wf-node0", status: "completed", termination: "completed", classify_branch: "a" }],
     })
     // Only the chosen branch spawns; the rejected branch stays pruned across resume.
     const batch = batchOf(out.observations)
@@ -137,7 +137,7 @@ describe("W-N1: workflow nodes get tools (trusted inherit; quarantined stay deny
     })
     const { runner } = createRunner(nodeProvider(), [ping])
     const outcome = await runner.runWorkflow({ nodes: [{ task: "use the ping tool once, then stop", role: "implement" }] })
-    expect(outcome.completed).toEqual(["wf-node0"])
+    expect(outcome.nodeOutcomes).toEqual([expect.objectContaining({ nodeId: "wf-node0", status: "completed" })])
     expect(pings).toBe(1) // pre-W-N1 this was 0: the missing grant list ran every node TOOL-LESS
   })
 
@@ -151,7 +151,7 @@ describe("W-N1: workflow nodes get tools (trusted inherit; quarantined stay deny
     const outcome = await runner.runWorkflow({
       nodes: [{ task: "try the ping tool", role: "explore", isolation: "read_only", trust: "quarantined" }],
     })
-    expect(outcome.completed).toEqual(["wf-node0"])
+    expect(outcome.nodeOutcomes).toEqual([expect.objectContaining({ nodeId: "wf-node0", status: "completed" })])
     expect(pings).toBe(0) // untrusted-content reader: no tool reaches the host
   })
 })
@@ -185,7 +185,7 @@ describe("DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable sessi
       { nodes: [{ task: "polish until done", role: "implement", loop: { maxIters: 5 } }] },
       { sessionId: "wfloop" },
     )
-    expect(outcome.completed).toEqual(["wf-node0"])
+    expect(outcome.nodeOutcomes).toEqual([expect.objectContaining({ nodeId: "wf-node0", status: "completed" })])
     // The pace verb ended the loop at 2 iterations, well before maxIters=5.
     const loopSession = await sessionLog.read("wfloop-wf-node0")
     const starts = loopSession.filter(e => e.event.kind === "run_started")
@@ -209,7 +209,7 @@ describe("DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable sessi
       { nodes: [{ task: "one-shot polish", role: "implement", loop: { maxIters: 4 } }] },
       { sessionId: "wfsilent" },
     )
-    expect(outcome.completed).toEqual(["wf-node0"])
+    expect(outcome.nodeOutcomes).toEqual([expect.objectContaining({ nodeId: "wf-node0", status: "completed" })])
     // default_action=stop: exactly ONE iteration ran (the kernel's pace fallback said stop).
     const starts = (await sessionLog.read("wfsilent-wf-node0")).filter(e => e.event.kind === "run_started")
     expect(starts.length).toBe(1)

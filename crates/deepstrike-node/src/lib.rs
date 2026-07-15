@@ -42,24 +42,28 @@ use napi_derive::napi;
 
 use compact_str::CompactString;
 
-use deepstrike_core::context::renderer::RenderedContext as RustRenderedContext;
+use deepstrike_core::context::renderer::{
+    ContextBudgetOverflow as RustContextBudgetOverflow,
+    ContextBudgetOverflowKind as RustContextBudgetOverflowKind,
+    RenderedContext as RustRenderedContext,
+};
 use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
 use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
 use deepstrike_core::governance::rate_limit::RateLimit;
 use deepstrike_core::harness::eval::{
-    build_eval_messages as rust_build_eval_messages, parse_verdict as rust_parse_verdict,
-    verdict_output_schema as rust_verdict_output_schema, Criterion as RustCriterion,
+    Criterion as RustCriterion, build_eval_messages as rust_build_eval_messages,
+    parse_verdict as rust_parse_verdict, verdict_output_schema as rust_verdict_output_schema,
 };
-use deepstrike_core::memory::curator::CurationResult as RustCurationResult;
 use deepstrike_core::memory::durable::SessionData as RustSessionData;
-use deepstrike_core::memory::idle_pipeline::{
-    IdleAction as RustIdleAction, IdleEvent as RustIdleEvent, IdlePipeline as RustIdlePipeline,
-    IdlePolicy as RustIdlePolicy,
+use deepstrike_core::mm::memory::{
+    MemoryAuthor as RustMemoryAuthor, MemoryKind as RustMemoryKind,
+    MemoryProvenance as RustMemoryProvenance, MemoryRecord as RustMemoryRecord,
+    MemoryScope as RustMemoryScope, MemoryTrustLevel as RustMemoryTrustLevel,
 };
-use deepstrike_core::memory::semantic::MemoryEntry as RustMemoryEntry;
 use deepstrike_core::runtime::KernelRuntime as RustKernelRuntime;
 use deepstrike_core::scheduler::policy::SchedulerBudget as RustLoopPolicy;
+use deepstrike_core::scheduler::tcb::TaskLifecycle;
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
 use deepstrike_core::types::agent::AgentIdentity;
 use deepstrike_core::types::contract::{
@@ -166,7 +170,6 @@ pub struct VerificationContract {
     pub evidence_required: Vec<String>,
 }
 
-
 #[napi(object)]
 #[derive(Clone)]
 pub struct LoopPolicy {
@@ -206,12 +209,19 @@ pub struct RuntimeSignal {
     pub dedupe_key: Option<String>,
     /// Target a specific session loop (sessionId). Omitted ⇒ broadcast.
     pub recipient: Option<String>,
-    /// Optional pub/sub topic (carried through; routing deferred).
-    pub topic: Option<String>,
+    /// Absolute journal-clock deadline for optional urgency escalation.
+    pub deadline_ms: Option<f64>,
+    /// Merge this signal with an unconsumed queued signal carrying the same key.
+    pub coalesce_key: Option<String>,
+    /// Deterministic number of host signals represented by this value.
+    pub coalesced_count: Option<u32>,
     pub timestamp_ms: f64,
 }
 
 fn runtime_signal_to_rust(s: RuntimeSignal) -> Result<RustRuntimeSignal> {
+    let id =
+        s.id.parse()
+            .map_err(|_| Error::from_reason("signal id must be a UUID"))?;
     let source = match s.source.as_str() {
         "cron" => RustSignalSource::Cron,
         "gateway" => RustSignalSource::Gateway,
@@ -234,15 +244,20 @@ fn runtime_signal_to_rust(s: RuntimeSignal) -> Result<RustRuntimeSignal> {
     let mut sig = RustRuntimeSignal::new(source, signal_type, urgency, s.summary.as_str())
         .with_payload(payload)
         .with_timestamp(s.timestamp_ms as u64);
+    sig.id = id;
     if let Some(key) = s.dedupe_key {
         sig = sig.with_dedupe(key.as_str());
     }
     if let Some(recipient) = s.recipient {
         sig = sig.with_recipient(recipient.as_str());
     }
-    if let Some(topic) = s.topic {
-        sig = sig.with_topic(topic.as_str());
+    if let Some(deadline_ms) = s.deadline_ms {
+        sig = sig.with_deadline(deadline_ms as u64);
     }
+    if let Some(coalesce_key) = s.coalesce_key {
+        sig = sig.with_coalesce(coalesce_key.as_str());
+    }
+    sig.coalesced_count = s.coalesced_count.unwrap_or(1).max(1);
     Ok(sig)
 }
 
@@ -273,7 +288,9 @@ fn runtime_signal_from_rust(s: &RustRuntimeSignal) -> RuntimeSignal {
         payload: serde_json::to_string(&s.payload).unwrap_or_else(|_| "null".into()),
         dedupe_key: s.dedupe_key.as_ref().map(|k| k.to_string()),
         recipient: s.recipient.as_ref().map(|r| r.to_string()),
-        topic: s.topic.as_ref().map(|t| t.to_string()),
+        deadline_ms: s.deadline_ms.map(|value| value as f64),
+        coalesce_key: s.coalesce_key.as_ref().map(|key| key.to_string()),
+        coalesced_count: Some(s.coalesced_count.max(1)),
         timestamp_ms: s.timestamp_ms as f64,
     }
 }
@@ -314,6 +331,16 @@ pub struct RenderedContext {
     /// P1-E: count of leading `turns` forming the frozen prefix (byte-stable until the next
     /// compaction). Providers pin a deep cache breakpoint here; absent ⇒ rolling-pair fallback.
     pub frozen_prefix_len: Option<u32>,
+    /// Fail-closed evidence: this projection must not be submitted to a provider.
+    pub budget_overflow: Option<ContextBudgetOverflow>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct ContextBudgetOverflow {
+    pub kind: String,
+    pub required_tokens: u32,
+    pub max_tokens: u32,
 }
 
 // ────────────────────────────────── FFI panic guard ──────────────────────────────────
@@ -558,6 +585,19 @@ fn rendered_context_from_rust(rc: RustRenderedContext) -> RenderedContext {
         turns: rc.turns.iter().map(message_from_rust).collect(),
         state_turn: rc.state_turn.as_ref().map(message_from_rust),
         frozen_prefix_len: rc.frozen_prefix_len.map(|n| n as u32),
+        budget_overflow: rc.budget_overflow.as_ref().map(context_budget_overflow_from_rust),
+    }
+}
+
+fn context_budget_overflow_from_rust(value: &RustContextBudgetOverflow) -> ContextBudgetOverflow {
+    ContextBudgetOverflow {
+        kind: match value.kind {
+            RustContextBudgetOverflowKind::FixedContext => "fixed_context",
+            RustContextBudgetOverflowKind::ProtectedTail => "protected_tail",
+        }
+        .to_string(),
+        required_tokens: value.required_tokens,
+        max_tokens: value.max_tokens,
     }
 }
 
@@ -717,15 +757,14 @@ impl KernelRuntime {
         // Guard render's truncation/projection — any mis-sliced string must throw,
         // not abort the process. `Result<T>` maps to the same TS shape as `T`.
         ffi_guard("KernelRuntime.render", || {
-            Ok(rendered_context_from_rust(
-                self.inner.render(),
-            ))
+            Ok(rendered_context_from_rust(self.inner.render()))
         })
     }
 
     #[napi]
     pub fn drain_new_messages(&mut self) -> Vec<Message> {
-        self.inner.drain_new_messages()
+        self.inner
+            .drain_new_messages()
             .iter()
             .map(message_from_rust)
             .collect()
@@ -756,9 +795,22 @@ impl SignalRouter {
     /// Ingest a signal. Returns the disposition string:
     /// "ignore" | "observe" | "queue" | "run" | "interrupt" | "interrupt_now" | "dropped"
     #[napi]
-    pub fn ingest(&mut self, signal: RuntimeSignal, is_running: bool) -> Result<String> {
+    pub fn ingest(&mut self, signal: RuntimeSignal, lifecycle: String) -> Result<String> {
         let rust_sig = runtime_signal_to_rust(signal)?;
-        Ok(disposition_to_str(self.inner.ingest(rust_sig, is_running)).into())
+        let lifecycle = match lifecycle.as_str() {
+            "ready" => TaskLifecycle::Ready,
+            "running" => TaskLifecycle::Running,
+            "suspended" => TaskLifecycle::Suspended,
+            "done" => {
+                TaskLifecycle::Done(deepstrike_core::types::result::TerminationReason::Completed)
+            }
+            other => {
+                return Err(Error::from_reason(format!(
+                    "invalid task lifecycle {other:?}; expected ready|running|suspended|done"
+                )));
+            }
+        };
+        Ok(disposition_to_str(self.inner.ingest(rust_sig, lifecycle)).into())
     }
 
     /// Pull the next queued signal (highest priority first).
@@ -947,7 +999,7 @@ impl Governance {
 
 // ──────────────────────────────── Dream / idle-pipeline POD types ────────────────────────────────
 
-/// A single session of agent messages, used as input to `IdlePipeline.feedTrigger`.
+/// A completed session transcript for durable-memory extraction.
 #[napi(object)]
 #[derive(Clone)]
 pub struct SessionData {
@@ -963,54 +1015,41 @@ pub struct SessionData {
     pub updated_at_ms: f64,
 }
 
-/// A long-term memory entry as stored by the agent.
 #[napi(object)]
 #[derive(Clone)]
-pub struct MemoryEntry {
-    pub text: String,
-    pub score: f64,
-    /// JSON-encoded metadata blob.
-    pub metadata: String,
+pub struct MemoryScope {
+    pub tenant_id: String,
+    pub namespace: String,
 }
 
 #[napi(object)]
 #[derive(Clone)]
-pub struct CurationStats {
-    pub insights_processed: u32,
-    pub duplicates_removed: u32,
-    pub conflicts_resolved: u32,
-    pub entries_added: u32,
+pub struct MemoryProvenance {
+    pub session_id: Option<String>,
+    pub author: String,
+    pub trust: String,
+    pub evidence_refs: Vec<String>,
 }
 
-/// The delta the `DreamStore.commit` must apply: add `toAdd`, remove `toRemoveIndices`.
+/// The single public long-term memory wire.
 #[napi(object)]
 #[derive(Clone)]
-pub struct CurationResult {
-    pub to_add: Vec<MemoryEntry>,
-    /// Indices into the `existingMemories` slice passed to `feedTrigger`.
-    pub to_remove_indices: Vec<u32>,
-    pub stats: CurationStats,
-}
-
-#[napi(object)]
-#[derive(Clone)]
-pub struct IdleRunResult {
-    pub sessions_processed: u32,
-    pub insights_extracted: u32,
-}
-
-/// Discriminated union returned by `IdlePipeline` methods. Inspect `kind`:
-/// - `"synthesize_insights"` → `messages` (SDK must call LLM, then `feedSynthesisResult`)
-/// - `"commit_memories"`     → `agentId`, `curationResult`, `runResult`
-/// - `"noop"` | `"aborted"`
-#[napi(object)]
-#[derive(Clone)]
-pub struct IdlePipelineAction {
+pub struct MemoryRecord {
+    pub record_id: String,
+    pub scope: MemoryScope,
+    pub name: String,
     pub kind: String,
-    pub messages: Option<Vec<Message>>,
-    pub agent_id: Option<String>,
-    pub curation_result: Option<CurationResult>,
-    pub run_result: Option<IdleRunResult>,
+    pub content: String,
+    pub description: String,
+    pub provenance: MemoryProvenance,
+    pub created_at: f64,
+    pub updated_at: f64,
+    pub last_recalled_at: Option<f64>,
+    pub recall_count: f64,
+    pub confidence: f64,
+    pub links: Vec<String>,
+    pub pinned: bool,
+    pub ttl_days: Option<u32>,
 }
 
 // ─────────────────────── Dream conversion helpers ───────────────────────
@@ -1033,80 +1072,91 @@ fn session_data_to_rust(s: SessionData) -> Result<RustSessionData> {
     })
 }
 
-fn memory_entry_to_rust(e: MemoryEntry) -> RustMemoryEntry {
-    let metadata: serde_json::Value =
-        serde_json::from_str(&e.metadata).unwrap_or(serde_json::Value::Null);
-    RustMemoryEntry {
-        text: e.text,
-        score: e.score,
-        metadata,
-    }
+fn memory_record_to_rust(record: MemoryRecord) -> Result<RustMemoryRecord> {
+    let kind = match record.kind.as_str() {
+        "user" => RustMemoryKind::User,
+        "feedback" => RustMemoryKind::Feedback,
+        "project" => RustMemoryKind::Project,
+        "reference" => RustMemoryKind::Reference,
+        other => return Err(Error::from_reason(format!("invalid memory kind {other:?}"))),
+    };
+    let author = match record.provenance.author.as_str() {
+        "model" => RustMemoryAuthor::Model,
+        "host" => RustMemoryAuthor::Host,
+        "extraction" => RustMemoryAuthor::Extraction,
+        other => return Err(Error::from_reason(format!("invalid memory author {other:?}"))),
+    };
+    let trust = match record.provenance.trust.as_str() {
+        "untrusted" => RustMemoryTrustLevel::Untrusted,
+        "user_asserted" => RustMemoryTrustLevel::UserAsserted,
+        "host_verified" => RustMemoryTrustLevel::HostVerified,
+        other => return Err(Error::from_reason(format!("invalid memory trust {other:?}"))),
+    };
+    Ok(RustMemoryRecord {
+        record_id: record.record_id,
+        scope: RustMemoryScope::new(record.scope.tenant_id, record.scope.namespace),
+        name: record.name,
+        kind,
+        content: record.content,
+        description: record.description,
+        provenance: RustMemoryProvenance {
+            session_id: record.provenance.session_id,
+            author,
+            trust,
+            evidence_refs: record.provenance.evidence_refs,
+        },
+        created_at: record.created_at as u64,
+        updated_at: record.updated_at as u64,
+        last_recalled_at: record.last_recalled_at.map(|value| value as u64),
+        recall_count: record.recall_count as u64,
+        confidence: record.confidence,
+        links: record.links,
+        pinned: record.pinned,
+        ttl_days: record.ttl_days,
+    })
 }
 
-fn memory_entry_from_rust(e: &RustMemoryEntry) -> MemoryEntry {
-    MemoryEntry {
-        text: e.text.clone(),
-        score: e.score,
-        metadata: serde_json::to_string(&e.metadata).unwrap_or_else(|_| "null".into()),
-    }
-}
-
-fn curation_result_from_rust(r: RustCurationResult) -> CurationResult {
-    CurationResult {
-        to_add: r.to_add.iter().map(memory_entry_from_rust).collect(),
-        to_remove_indices: r.to_remove_indices.iter().map(|&i| i as u32).collect(),
-        stats: CurationStats {
-            insights_processed: r.stats.insights_processed as u32,
-            duplicates_removed: r.stats.duplicates_removed as u32,
-            conflicts_resolved: r.stats.conflicts_resolved as u32,
-            entries_added: r.stats.entries_added as u32,
+fn memory_record_from_rust(record: &RustMemoryRecord) -> MemoryRecord {
+    MemoryRecord {
+        record_id: record.record_id.clone(),
+        scope: MemoryScope {
+            tenant_id: record.scope.tenant_id.clone(),
+            namespace: record.scope.namespace.clone(),
         },
-    }
-}
-
-fn idle_pipeline_action_from_rust(a: RustIdleAction) -> IdlePipelineAction {
-    match a {
-        RustIdleAction::SynthesizeInsights { messages } => IdlePipelineAction {
-            kind: "synthesize_insights".into(),
-            messages: Some(messages.iter().map(message_from_rust).collect()),
-            agent_id: None,
-            curation_result: None,
-            run_result: None,
+        name: record.name.clone(),
+        kind: record.kind.label().into(),
+        content: record.content.clone(),
+        description: record.description.clone(),
+        provenance: MemoryProvenance {
+            session_id: record.provenance.session_id.clone(),
+            author: match record.provenance.author {
+                RustMemoryAuthor::Model => "model",
+                RustMemoryAuthor::Host => "host",
+                RustMemoryAuthor::Extraction => "extraction",
+            }
+            .into(),
+            trust: match record.provenance.trust {
+                RustMemoryTrustLevel::Untrusted => "untrusted",
+                RustMemoryTrustLevel::UserAsserted => "user_asserted",
+                RustMemoryTrustLevel::HostVerified => "host_verified",
+            }
+            .into(),
+            evidence_refs: record.provenance.evidence_refs.clone(),
         },
-        RustIdleAction::CommitMemories {
-            agent_id,
-            result,
-            run_result,
-        } => IdlePipelineAction {
-            kind: "commit_memories".into(),
-            messages: None,
-            agent_id: Some(agent_id),
-            curation_result: Some(curation_result_from_rust(result)),
-            run_result: Some(IdleRunResult {
-                sessions_processed: run_result.sessions_processed as u32,
-                insights_extracted: run_result.insights_extracted as u32,
-            }),
-        },
-        RustIdleAction::Noop => IdlePipelineAction {
-            kind: "noop".into(),
-            messages: None,
-            agent_id: None,
-            curation_result: None,
-            run_result: None,
-        },
-        RustIdleAction::Aborted => IdlePipelineAction {
-            kind: "aborted".into(),
-            messages: None,
-            agent_id: None,
-            curation_result: None,
-            run_result: None,
-        },
+        created_at: record.created_at as f64,
+        updated_at: record.updated_at as f64,
+        last_recalled_at: record.last_recalled_at.map(|value| value as f64),
+        recall_count: record.recall_count as f64,
+        confidence: record.confidence,
+        links: record.links.clone(),
+        pinned: record.pinned,
+        ttl_days: record.ttl_days,
     }
 }
 
 // ─────────────────────────────────────────── Eval primitives ────────────────────────────────────
 // The generate→evaluate quality gate's stateless compute (0.5.0 fold of the former `EvalPipeline`
-// class, OS-axis #6). The SDK `HarnessLoop` drives the loop; these expose the kernel's prompt
+// class, OS-axis #6). The SDK `AttemptLoop` drives the loop; these expose the kernel's prompt
 // builder + verdict parser + verdict schema so eval compute stays single-sourced in the kernel.
 
 #[napi(object)]
@@ -1165,10 +1215,16 @@ pub fn build_eval_messages(
             weight: c.weight.map(|w| w as f32).unwrap_or(1.0),
         })
         .collect();
-    rust_build_eval_messages(&goal, &rust_criteria, &result, attempt, extract_skill_on_pass)
-        .iter()
-        .map(message_from_rust)
-        .collect()
+    rust_build_eval_messages(
+        &goal,
+        &rust_criteria,
+        &result,
+        attempt,
+        extract_skill_on_pass,
+    )
+    .iter()
+    .map(message_from_rust)
+    .collect()
 }
 
 /// Parse the evaluator LLM's JSON response into a structured [`Verdict`] (tolerant of fences / missing
@@ -1204,67 +1260,4 @@ pub fn parse_verdict(content: String) -> Verdict {
 #[napi]
 pub fn verdict_output_schema(extract_skill_on_pass: bool) -> String {
     rust_verdict_output_schema(extract_skill_on_pass).to_string()
-}
-
-/// Kernel state machine for the idle dreaming cycle.
-///
-/// Drive it like this:
-/// 1. `feedTrigger(sessions, existingMemories, nowMs)` → `"synthesize_insights"` action
-/// 2. Call LLM with `action.messages`, collect the text response
-/// 3. `feedSynthesisResult(text)` → `"commit_memories"` action
-/// 4. Apply `action.curationResult` via `DreamStore.commit`, then call `reset()`
-#[napi]
-pub struct IdlePipeline {
-    inner: RustIdlePipeline,
-}
-
-#[napi]
-impl IdlePipeline {
-    #[napi(constructor)]
-    pub fn new(agent_id: String) -> Self {
-        Self {
-            inner: RustIdlePipeline::new(RustIdlePolicy::new(agent_id)),
-        }
-    }
-
-    /// Phase 1 — provide sessions + current memory snapshot; kernel builds the LLM prompt.
-    #[napi]
-    pub fn feed_trigger(
-        &mut self,
-        sessions: Vec<SessionData>,
-        existing_memories: Vec<MemoryEntry>,
-        now_ms: f64,
-    ) -> Result<IdlePipelineAction> {
-        let rust_sessions: Vec<RustSessionData> = sessions
-            .into_iter()
-            .map(session_data_to_rust)
-            .collect::<Result<_>>()?;
-        let rust_memories: Vec<RustMemoryEntry> = existing_memories
-            .into_iter()
-            .map(memory_entry_to_rust)
-            .collect();
-        let action = self.inner.feed(RustIdleEvent::Trigger {
-            sessions: rust_sessions,
-            existing_memories: rust_memories,
-            now_ms: now_ms as u64,
-        });
-        Ok(idle_pipeline_action_from_rust(action))
-    }
-
-    /// Phase 2 — feed back the LLM's synthesis text; kernel parses and curates.
-    #[napi]
-    pub fn feed_synthesis_result(&mut self, content: String) -> IdlePipelineAction {
-        idle_pipeline_action_from_rust(self.inner.feed(RustIdleEvent::SynthesisResult { content }))
-    }
-
-    #[napi]
-    pub fn is_idle(&self) -> bool {
-        self.inner.is_idle()
-    }
-
-    /// Reset to `Idle` after handling `CommitMemories` to allow the next cycle.
-    #[napi]
-    pub fn reset(&mut self) {
-        self.inner.reset();
-    }
 }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -83,11 +84,12 @@ def build_workflow_node_completed_event(
   *,
   turn: int,
   agent_id: str,
+  status: str,
   termination: str,
   classify_branch: str | None = None,
   tournament_winner: str | None = None,
   loop_continue: bool | None = None,
-  output: str | None = None,
+  output: Any | None = None,
 ) -> dict[str, Any]:
   """Build a workflow_node_completed event for persistence after a node finishes. W-1: carries the
   result-borne control signals + output so resume replays control flow and re-seeds outputs."""
@@ -95,6 +97,7 @@ def build_workflow_node_completed_event(
     "kind": "workflow_node_completed",
     "turn": turn,
     "agent_id": agent_id,
+    "status": status,
     "termination": termination,
   }
   if classify_branch is not None:
@@ -104,35 +107,54 @@ def build_workflow_node_completed_event(
   if loop_continue is not None:
     event["loop_continue"] = loop_continue
   if output:
-    event["output"] = output
+    event["output"] = {
+      "role": getattr(output, "role", "assistant"),
+      "content": getattr(output, "content", ""),
+      "tool_calls": [
+        {"id": c.id, "name": c.name, "arguments": _safe_tool_arguments(c.arguments)}
+        for c in (getattr(output, "tool_calls", None) or [])
+      ],
+      **({"token_count": output.token_count} if getattr(output, "token_count", None) is not None else {}),
+    }
   return event
 
 
+def _safe_tool_arguments(raw: str | None) -> dict[str, Any]:
+  try:
+    return json.loads(raw or "{}")
+  except (TypeError, ValueError):
+    return {}
+
+
 @dataclass
-class RecoveredNodeCompletion:
+class RecoveredNodeOutcome:
   """One recovered node completion: the agent id plus its persisted control signals and output."""
 
   agent_id: str
+  status: str
+  termination: str
   classify_branch: str | None = None
   tournament_winner: str | None = None
   loop_continue: bool | None = None
-  output: str | None = None
+  output: dict[str, Any] | None = None
 
 
-def recover_completed_workflow_nodes(events: list[Any]) -> list[RecoveredNodeCompletion]:
+def recover_workflow_node_outcomes(events: list[Any]) -> list[RecoveredNodeOutcome]:
   """Recover completed workflow node records from a session event stream. Scans for
   workflow_node_completed events with termination "completed" and returns them WITH their
   result-borne control signals (W-1) — resume_workflow lowers these to the kernel's
-  ``resumed_results`` so a classifier re-prunes and a loop stop is honored, and re-seeds the
+  ``resumed_outcomes`` so a classifier re-prunes and a loop stop is honored, and re-seeds the
   driver's outputs map from the persisted output text."""
-  completed: list[RecoveredNodeCompletion] = []
+  completed: list[RecoveredNodeOutcome] = []
   for entry in events:
     event = entry.event if hasattr(entry, "event") else entry
-    if event.get("kind") == "workflow_node_completed" and event.get("termination") == "completed":
+    if event.get("kind") == "workflow_node_completed":
       agent_id = event.get("agent_id")
       if agent_id:
-        completed.append(RecoveredNodeCompletion(
+        completed.append(RecoveredNodeOutcome(
           agent_id=agent_id,
+          status=event["status"],
+          termination=event["termination"],
           classify_branch=event.get("classify_branch"),
           tournament_winner=event.get("tournament_winner"),
           loop_continue=event.get("loop_continue"),
@@ -158,9 +180,8 @@ def build_workflow_nodes_submitted_event(
 
 
 def recover_submitted_workflow_nodes(events: list[Any]) -> tuple[list, list[int], list[str | None]]:
-  """R3-1: recover the runtime submission batches (in order) plus their recorded base indices.
-  A mixed log (some records without ``base_index``) degrades to order-only replay (empty bases).
-  W-N3: ``submitters`` is parallel to ``submissions`` (None = host/bootstrap submission)."""
+  """Recover runtime submission batches with one mandatory base index per batch.
+  ``submitters`` is parallel to ``submissions`` (None = host/bootstrap submission)."""
   submissions: list = []
   bases: list[int] = []
   submitters: list[str | None] = []
@@ -169,6 +190,7 @@ def recover_submitted_workflow_nodes(events: list[Any]) -> tuple[list, list[int]
     if event.get("kind") == "workflow_nodes_submitted":
       submissions.append(event.get("nodes") or [])
       submitters.append(event.get("submitter_agent_id"))
-      if event.get("base_index") is not None:
-        bases.append(int(event["base_index"]))
-  return submissions, (bases if len(bases) == len(submissions) else []), submitters
+      if event.get("base_index") is None:
+        raise ValueError("workflow_nodes_submitted is missing required base_index")
+      bases.append(int(event["base_index"]))
+  return submissions, bases, submitters

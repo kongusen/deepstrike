@@ -283,15 +283,18 @@ class ContextRenewedEvent(TypedDict, total=False):
 class MemoryWrittenEvent(TypedDict, total=False):
     kind: Literal["memory_written"]
     turn: int
-    memory_id: str
+    record_id: str
+    scope: dict[str, str]
     memory_kind: str
+    name: str
     size_bytes: int
 
 
 class MemoryQueriedEvent(TypedDict, total=False):
     kind: Literal["memory_queried"]
     turn: int
-    query_context: str
+    scope: dict[str, str]
+    query: str
     requested_k: int
     requires_async_response: bool
 
@@ -299,29 +302,27 @@ class MemoryQueriedEvent(TypedDict, total=False):
 class MemoryValidationFailedEvent(TypedDict, total=False):
     kind: Literal["memory_validation_failed"]
     turn: int
-    memory_id: str
+    record_id: str
     error: str
 
 
 class MemoryRetrievalResultEvent(TypedDict, total=False):
     kind: Literal["memory_retrieval_result"]
-    selected_memory_ids: list[str]
-    selection_rationale: str
+    hits: list[dict[str, Any]]
 
 
 class WorkflowNodeCompletedEvent(TypedDict, total=False):
     kind: Literal["workflow_node_completed"]
     turn: int
     agent_id: str
+    status: str
     termination: str
     # W-1: result-borne control signals, persisted so resume replays control flow faithfully —
     # a classifier re-prunes its rejected branches, a recorded loop stop is honored.
     classify_branch: str
     tournament_winner: str
     loop_continue: bool
-    # W-1: the node's final output text — resume re-seeds the driver's outputs map from it so
-    # post-resume reduce/judge/dependent nodes still see their dependencies' outputs.
-    output: str
+    output: dict[str, Any]
 
 
 class WorkflowBatchSpawnedEvent(TypedDict, total=False):
@@ -334,8 +335,7 @@ class WorkflowBatchSpawnedEvent(TypedDict, total=False):
 class WorkflowCompletedEvent(TypedDict, total=False):
     kind: Literal["workflow_completed"]
     turn: int
-    completed: list[str]
-    failed: list[str]
+    node_outcomes: list[dict[str, Any]]
     total_nodes: int
 
 

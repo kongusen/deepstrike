@@ -7,6 +7,4 @@ pub mod tcb;
 
 pub use entropy::{EntropySample, EntropyTracker, EntropyWatchConfig};
 pub use milestone::MilestoneTracker;
-pub use tcb::{
-    BudgetLedger, TaskId, TaskLifecycle, TaskTable, Tcb, WaitReason,
-};
+pub use tcb::{BudgetLedger, TaskId, TaskLifecycle, TaskTable, Tcb, WaitReason};

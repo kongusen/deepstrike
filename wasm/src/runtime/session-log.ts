@@ -1,4 +1,5 @@
 import type { ProviderReplay, ToolCall, ToolErrorKind } from "../types.js"
+import type { MemoryRecall, MemoryScope } from "../memory/index.js"
 import type { KernelPrimitive } from "./kernel-event-log.js"
 import { primitiveForKind } from "./kernel-event-log.js"
 import type {
@@ -111,22 +112,22 @@ export type SessionEvent =
       permitted_capability_ids: string[]
       result_termination?: string
     }
-  | { kind: "memory_written"; turn: number; memory_id: string; memory_kind: string; size_bytes: number }
-  | { kind: "memory_queried"; turn: number; query_context: string; requested_k: number; requires_async_response: boolean }
-  | { kind: "memory_validation_failed"; turn: number; memory_id: string; error: string }
+  | { kind: "memory_written"; turn: number; record_id: string; scope: MemoryScope; memory_kind: string; name: string; size_bytes: number }
+  | { kind: "memory_queried"; turn: number; scope: MemoryScope; query: string; requested_k: number; requires_async_response: boolean }
+  | { kind: "memory_validation_failed"; turn: number; record_id: string; error: string }
+  | { kind: "memory_retrieval_result"; hits: MemoryRecall[] }
   | {
       kind: "workflow_node_completed"
       turn: number
       agent_id: string
+      status: import("./types/agent.js").WorkflowNodeStatus
       termination: string
       /** W-1: result-borne control signals, persisted so resume replays control flow faithfully —
        *  a classifier re-prunes its rejected branches, a recorded loop stop is honored. */
       classify_branch?: string
       tournament_winner?: string
       loop_continue?: boolean
-      /** W-1: the node's final output text — resume re-seeds the driver's outputs map from it so
-       *  post-resume reduce/judge/dependent nodes still see their dependencies' outputs. */
-      output?: string
+      output?: import("../types.js").Message
     }
   | {
       kind: "workflow_nodes_submitted"
@@ -149,8 +150,7 @@ export type SessionEvent =
   | {
       kind: "workflow_completed"
       turn: number
-      completed: string[]
-      failed: string[]
+      node_outcomes: import("./types/agent.js").KernelWorkflowNodeOutcome[]
       total_nodes: number
     }
   | { kind: "run_terminal"; reason: string; turns_used: number; total_tokens: number }

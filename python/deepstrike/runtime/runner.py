@@ -7,7 +7,7 @@ import re
 import time
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
@@ -62,6 +62,7 @@ from deepstrike.runtime.kernel_step import (
 )
 from deepstrike.runtime.replay_sanitize import sanitize_replay_text
 from deepstrike.runtime.session_repair import (
+  RecoveredNodeOutcome,
   build_llm_completed_event,
   build_run_terminal_event,
   repair_events_for_recovery,
@@ -76,12 +77,13 @@ from deepstrike.runtime.reliability import (
   OperationContext,
 )
 from deepstrike.signals.types import RuntimeSignal, SignalDeliveryReceipt
+from deepstrike.types.agent import WorkflowOutcome, workflow_node_outcome_from_kernel
 
 if TYPE_CHECKING:
   from deepstrike.governance import Governance, GovernancePolicy
-  from deepstrike.runtime.os_profile import AttentionPolicy, OsProfile
+  from deepstrike.runtime.os_profile import OsProfile, SignalPolicy
   from deepstrike.knowledge.source import KnowledgeSource
-  from deepstrike.memory.protocols import DreamResult, DreamStore
+  from deepstrike.memory.protocols import DreamStore, MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope
   from deepstrike.signals.types import SignalSource
   from deepstrike.types.agent import AgentRunSpec, SubAgentResult, MilestonePolicy, MilestoneContract, MilestoneCheckResult
   from deepstrike.runtime.large_result_spool import LargeResultSpool
@@ -89,7 +91,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class SubAgentHarnessConfig:
-  """When set on RuntimeOptions, spawned sub-agents run through HarnessLoop."""
+  """When set on RuntimeOptions, spawned sub-agents run through AttemptLoop."""
   eval_provider: LLMProvider
   max_attempts: int = 3
 
@@ -140,9 +142,21 @@ class MemoryPolicy:
 
 
 @dataclass
-class SchedulerBudget:
-  """Optional scheduler budget overrides installed through the kernel JSON event ABI."""
-  max_wall_ms: int | None = None
+class SchedulerPolicy:
+  """Versioned deterministic DAG scheduler policy installed through ConfigureRun."""
+  version: int
+  critical_path_weight: int
+  fanout_weight: int
+  age_weight: int
+  token_cost_weight: int
+
+
+@dataclass
+class PromptBudget:
+  """Host-counted provider envelope and response reserves journaled before start."""
+  prompt_overhead_tokens: int
+  output_reserve_tokens: int
+  safety_margin_tokens: int
 
 
 @dataclass
@@ -203,6 +217,7 @@ class RuntimeOptions:
   max_total_tokens: int | None = None
   timeout_ms: int | None = None
   agent_id: str | None = None
+  memory_scope: "MemoryScope | None" = None
   # I4: run-start memory pre-fetch hook. Callable receiving kwarg `goal=`; returns a list of query
   # strings (or None). Each query becomes a dreamStore search; hits page into the knowledge
   # partition before turn 1. Requires dream_store + agent_id. Errs-open. Mirrors Node ``preQueryMemory``.
@@ -216,10 +231,11 @@ class RuntimeOptions:
   extensions: dict | None = None
   governance: "Governance | None" = None
   governance_policy: "GovernancePolicy | None" = None
-  attention_policy: "AttentionPolicy | dict | None" = None
+  signal_policy: "SignalPolicy | dict | None" = None
+  prompt_budget: PromptBudget | dict[str, Any] | None = None
   # Stable replayable context behavior. Public ratios are normalized to integer ppm on the wire.
   context_policy: dict[str, Any] | None = None
-  scheduler_budget: SchedulerBudget | dict[str, Any] | None = None
+  scheduler_policy: SchedulerPolicy | dict[str, Any] | None = None
   kernel_reliability: KernelReliability | dict[str, Any] | None = None
   # Attempts allowed for a workflow node to satisfy its output schema, 1..16.
   workflow_schema_validation_attempts: int = 2
@@ -381,7 +397,7 @@ class RuntimeRunner:
 
   async def write_memory(
     self,
-    memory: dict[str, Any],
+    memory: "MemoryRecord",
     *,
     session_id: str | None = None,
     agent_id: str | None = None,
@@ -393,7 +409,7 @@ class RuntimeRunner:
 
     observations: list[dict[str, Any]] = []
     target_runtime = self._create_syscall_runtime()
-    action = kernel_maybe_action(target_runtime, observations, {"kind": "write_memory", "memory": memory})
+    action = kernel_maybe_action(target_runtime, observations, {"kind": "write_memory", "memory": asdict(memory)})
     if action is None:
       await self._append_memory_syscall_observations(resolved_session_id, observations)
       return
@@ -402,29 +418,8 @@ class RuntimeRunner:
 
     error: Exception | None = None
     try:
-      from deepstrike.memory.protocols import CurationResult, CurationStats, MemoryEntry
-      existing = await self._opts.dream_store.load_memories(resolved_agent_id)
-      content = str(memory.get("content") or "")
-      # Curator-style jaccard dedup at the single write path: a near-duplicate of an
-      # existing entry is dropped (the observation is still logged for audit).
-      if any(_jaccard_similarity(e.text, content) >= 0.9 for e in existing):
-        pass
-      else:
-        meta = memory.get("metadata") if isinstance(memory.get("metadata"), dict) else {}
-        score = meta.get("score") if isinstance(meta.get("score"), (int, float)) else 1.0
-        await self._opts.dream_store.commit(
-          resolved_agent_id,
-          CurationResult(
-            to_add=[MemoryEntry(
-              text=content,
-              score=float(score),
-              metadata={**meta, "source": meta.get("source") or "write_memory_syscall"},
-            )],
-            to_remove_indices=[],
-            stats=CurationStats(insights_processed=1, entries_added=1),
-          ),
-          existing,
-        )
+      canonical = _memory_record_from_mapping(action.memory or asdict(memory))
+      await self._opts.dream_store.upsert(resolved_agent_id, canonical)
     except Exception as exc:
       error = exc
     kernel_apply(target_runtime, observations, {
@@ -438,12 +433,11 @@ class RuntimeRunner:
 
   async def query_memory(
     self,
-    query: dict[str, Any],
+    query: "MemoryQuery",
     *,
     session_id: str | None = None,
     agent_id: str | None = None,
-  ) -> list[Any]:
-    from deepstrike.memory.agent import memories_to_index, select_memories
+  ) -> list["MemoryRecall"]:
 
     resolved_session_id = session_id or self._current_session_id
     resolved_agent_id = agent_id or self._opts.agent_id
@@ -452,59 +446,37 @@ class RuntimeRunner:
 
     observations: list[dict[str, Any]] = []
     runtime = self._create_syscall_runtime()
-    action = kernel_action(runtime, observations, {"kind": "query_memory", "query": query})
+    action = kernel_action(runtime, observations, {"kind": "query_memory", "query": asdict(query)})
     if action.kind != "query_memory":
       raise RuntimeError(f"query_memory returned unexpected kernel effect: {action.kind}")
 
     hits: list[Any] = []
-    retrieval: dict[str, Any] = {"selected_memory_ids": [], "selection_rationale": "memory query failed"}
     error = None
     try:
-      all_memories = await self._opts.dream_store.load_memories(resolved_agent_id)
-      retrieval = await select_memories(query, memories_to_index(all_memories))
-      selected_ids = set(retrieval.get("selected_memory_ids") or [])
-      if selected_ids:
-        for entry in all_memories:
-          meta = entry.metadata if hasattr(entry, "metadata") else {}
-          name = meta.get("name") if isinstance(meta, dict) else None
-          if name in selected_ids:
-            hits.append(entry)
-        hits = hits[: int(action.requested_k or 0)]
-      else:
-        hits = await self._opts.dream_store.search(
-          resolved_agent_id, str(query.get("current_context") or ""), int(action.requested_k or 0),
-        )
-        if hits and retrieval.get("selection_rationale") == "No candidates after filtering":
-          retrieval["selected_memory_ids"] = [
-            (entry.metadata.get("name") if hasattr(entry, "metadata") and isinstance(entry.metadata, dict) else None)
-            or getattr(entry, "text", "")[:32] for entry in hits
-          ]
-          retrieval["selection_rationale"] = f"DreamStore.search returned {len(hits)} hit(s)"
+      from dataclasses import replace
+      hits = await self._opts.dream_store.search(
+        resolved_agent_id, replace(query, top_k=int(action.requested_k or 0)),
+      )
     except Exception as exc:
       error = exc
 
     kernel_apply(runtime, observations, {
       "kind": "memory_query_result",
       "effect_id": action.effect_id,
-      "entries": [{
-        "content": entry.text,
-        "source": "dream_store",
-        "key": entry.metadata.get("name") if isinstance(entry.metadata, dict) else None,
-        "pinned": False,
-      } for entry in hits],
+      "hits": [asdict(hit) for hit in hits],
       **({"error": format_tool_error(error)} if error else {}),
     })
 
     await self._append_memory_syscall_observations(resolved_session_id, observations)
     if error:
       raise error
-    await self._log_memory_retrieval_result(resolved_session_id, retrieval)
+    await self._log_memory_retrieval_result(resolved_session_id, hits)
     return hits
 
   async def _log_memory_retrieval_result(
     self,
     session_id: str | None,
-    retrieval: dict[str, Any],
+    hits: list["MemoryRecall"],
   ) -> None:
     if not session_id:
       return
@@ -512,8 +484,7 @@ class RuntimeRunner:
     # acknowledgment (the former kernel event was a no-op and was removed).
     await self._opts.session_log.append(session_id, {
       "kind": "memory_retrieval_result",
-      "selected_memory_ids": list(retrieval.get("selected_memory_ids") or []),
-      "selection_rationale": str(retrieval.get("selection_rationale") or ""),
+      "hits": [asdict(hit) for hit in hits],
     })
 
   def _create_syscall_runtime(self) -> KernelRuntime:
@@ -663,7 +634,7 @@ class RuntimeRunner:
     spec: "WorkflowSpec",
     *,
     submitter_agent_id: str | None = None,
-  ) -> dict[str, list[str]]:
+  ) -> WorkflowOutcome:
     """M5/G1: bootstrap an *agent-authored* workflow ("the model writes its own harness").
 
     Unlike :meth:`run_workflow` (the host fires the privileged ``load_workflow``), this routes the
@@ -683,18 +654,13 @@ class RuntimeRunner:
     self,
     spec: "WorkflowSpec",
     *,
-    resumed_completed: list[str] | None = None,
-    # W-1: recovered completions WITH control signals (classify branch / loop stop) — lowered to
-    # the kernel's ``resumed_results`` so control flow replays faithfully. Supersedes
-    # ``resumed_completed`` for ids present in both.
-    resumed_results: "list | None" = None,
+    # Typed recovered terminal outcomes, including control signals and output.
+    resumed_outcomes: list[RecoveredNodeOutcome] | None = None,
     resumed_submissions: list | None = None,
     resumed_submission_bases: list[int] | None = None,
-    # W-1: recovered node outputs (agent id → output text) to pre-seed the driver's outputs map.
-    resumed_outputs: dict[str, str] | None = None,
     session_id: str | None = None,
     _initial_event: dict[str, Any] | None = None,
-  ) -> dict[str, list[str]]:
+  ) -> WorkflowOutcome:
     """Run a declarative workflow DAG, standalone or mid-run.
 
     With no active parent run (e.g. a stateless request handler) this auto-bootstraps a kernel
@@ -734,11 +700,9 @@ class RuntimeRunner:
         standalone_runtime = self._bootstrap_workflow_kernel(sid, group_budget_scope)
       outcome = await self._run_workflow_inner(
         spec,
-        resumed_completed=resumed_completed,
-        resumed_results=resumed_results,
+        resumed_outcomes=resumed_outcomes,
         resumed_submissions=resumed_submissions,
         resumed_submission_bases=resumed_submission_bases,
-        resumed_outputs=resumed_outputs,
         _initial_event=_initial_event,
       )
       if bootstrapped:
@@ -789,20 +753,21 @@ class RuntimeRunner:
     gov_policy = self._opts.governance_policy or os_profile.governance_policy
     governance = {k: v for k, v in governance_policy_to_kernel_event(gov_policy).items() if k != "kind"}
     config: dict[str, Any] = {"governance": governance}
+    reliability = _kernel_reliability_to_kernel(self._opts.kernel_reliability)
+    if reliability is not None:
+      config["reliability"] = reliability
+    signal_policy = self._opts.signal_policy or os_profile.signal_policy
+    config["signal_policy"] = _signal_policy_to_kernel(signal_policy)
+    prompt_budget = _prompt_budget_to_kernel(self._opts.prompt_budget)
+    if prompt_budget is not None:
+      config["prompt_budget"] = prompt_budget
     if self._opts.context_policy is not None:
       config["context_policy"] = normalize_context_policy_v1(
         context_policy_v1(self._opts.context_policy)
       )
-    reliability = _kernel_reliability_to_kernel(self._opts.kernel_reliability)
-    if reliability is not None:
-      config["reliability"] = reliability
-    ap = self._opts.attention_policy or os_profile.attention_policy
-    max_q = ap.get("max_queue_size") if isinstance(ap, dict) else getattr(ap, "max_queue_size", None)
-    if max_q is not None:
-      config["attention_max_queue_size"] = max_q
-    scheduler_budget = _scheduler_budget_to_kernel(self._opts.scheduler_budget)
-    if scheduler_budget is not None and scheduler_budget.get("max_wall_ms") is not None:
-      config["scheduler_max_wall_ms"] = scheduler_budget["max_wall_ms"]
+    scheduler_policy = _scheduler_policy_to_kernel(self._opts.scheduler_policy)
+    if scheduler_policy is not None:
+      config["scheduler_policy"] = scheduler_policy
     if group_budget_scope is not None:
       granted = group_budget_scope.granted
       config["budget_grant"] = {
@@ -824,23 +789,19 @@ class RuntimeRunner:
     self,
     spec: "WorkflowSpec",
     *,
-    resumed_completed: list[str] | None = None,
-    resumed_results: "list | None" = None,
+    resumed_outcomes: list[RecoveredNodeOutcome] | None = None,
     resumed_submissions: list | None = None,
     resumed_submission_bases: list[int] | None = None,
-    resumed_outputs: dict[str, str] | None = None,
     _initial_event: dict[str, Any] | None = None,
-  ) -> dict[str, list[str]]:
+  ) -> WorkflowOutcome:
     """W0-ABI: run a declarative workflow DAG.
 
     The kernel owns the DAG and gates every node spawn through the syscall trap; this driver
     runs each kernel-emitted batch of nodes in parallel via the sub-agent orchestrator, feeds
-    their results back, and loops until the kernel reports completion. Returns
-    ``{"completed": [...], "failed": [...]}`` (node agent-ids).
+    their results back, and loops until the kernel reports one typed terminal outcome per node.
 
     Args:
         spec: The workflow specification.
-        resumed_completed: List of node agent_ids already completed (for resume recovery).
         _initial_event: Internal — the kernel event that loads the DAG. Defaults to ``load_workflow``
             (host drive); :meth:`bootstrap_workflow` passes a ``submit_workflow`` event instead so an
             agent-authored spec is bootstrapped through the syscall trap with identical driving.
@@ -863,6 +824,7 @@ class RuntimeRunner:
       submit_workflow_nodes_to_kernel,
       workflow_node_to_manifest,
       workflow_node_to_spec,
+      workflow_node_status_from_termination,
       workflow_spec_to_kernel,
     )
     from dataclasses import replace as _dc_replace
@@ -897,19 +859,19 @@ class RuntimeRunner:
         "spec": workflow_spec_to_kernel(spec),
         "parent_session_id": parent_session_id,
       }
-      # Only include resumed_completed if non-empty (kernel uses presence to detect resume mode).
-      if resumed_completed and len(resumed_completed) > 0:
-        load_event["resumed_completed"] = resumed_completed
-      # W-1: signal-carrying completion records (classify branch / loop stop replay).
-      if resumed_results and len(resumed_results) > 0:
-        load_event["resumed_results"] = [
+      # Exact typed terminal outcomes plus control-flow signals recovered from the journal.
+      if resumed_outcomes and len(resumed_outcomes) > 0:
+        load_event["resumed_outcomes"] = [
           {
             "agent_id": r.agent_id,
+            "status": r.status,
+            "termination": r.termination,
+            **({"output": r.output} if r.output is not None else {}),
             **({"classify_branch": r.classify_branch} if r.classify_branch is not None else {}),
             **({"tournament_winner": r.tournament_winner} if r.tournament_winner is not None else {}),
             **({"loop_continue": r.loop_continue} if r.loop_continue is not None else {}),
           }
-          for r in resumed_results
+          for r in resumed_outcomes
         ]
       # R3-1: re-apply recorded runtime submissions so dynamically-appended nodes are reconstructed.
       if resumed_submissions and len(resumed_submissions) > 0:
@@ -943,7 +905,13 @@ class RuntimeRunner:
     # outputs from here. Deps always complete in an earlier round than the reduce node consuming
     # them. W-1: on resume it is pre-seeded from the persisted node outputs, so post-resume
     # dependents still see their (pre-crash) dependencies' outputs.
-    outputs: dict[str, str] = dict(resumed_outputs or {})
+    outputs: dict[str, str] = {}
+    for recovered in resumed_outcomes or []:
+      if not recovered.output:
+        continue
+      content = str(recovered.output.get("content") or "")
+      outputs[recovered.agent_id] = content
+      outputs[re.sub(r"-i\d+$", "", recovered.agent_id)] = content
 
     def _run_reduce_node(raw: dict) -> Any:
       from deepstrike.runtime.reducers import resolve_reducer
@@ -1105,6 +1073,15 @@ class RuntimeRunner:
     def _find_done(obs: list):
       return next((o for o in obs if o.get("kind") == "workflow_completed"), None)
 
+    def _typed_outcome(done_observation: dict | None) -> WorkflowOutcome:
+      return WorkflowOutcome(
+        node_outcomes=[
+          workflow_node_outcome_from_kernel(raw)
+          for raw in ((done_observation or {}).get("node_outcomes") or [])
+        ],
+        outputs=dict(outputs),
+      )
+
     def _accept_spawn(spawn: KernelRunnerAction) -> list[dict[str, Any]]:
       observation_start = len(self._pending_observations)
       continuation = kernel_maybe_action(runtime, self._pending_observations, {
@@ -1123,9 +1100,9 @@ class RuntimeRunner:
     if done is not None:
       if initial_action is not None and initial_action.kind == "call_provider":
         self._workflow_continuation_action = initial_action
-      return {"completed": list(done.get("completed") or []), "failed": list(done.get("failed") or []), "outputs": dict(outputs)}
+      return _typed_outcome(done)
     if initial_action is None:
-      return {"completed": [], "failed": [], "outputs": dict(outputs)}
+      return _typed_outcome(None)
     if initial_action.kind != "spawn_workflow":
       raise RuntimeError(f"workflow load returned unexpected kernel effect: {initial_action.kind}")
     nodes = list(initial_action.nodes or [])
@@ -1135,7 +1112,7 @@ class RuntimeRunner:
 
     while True:
       if not nodes:
-        return {"completed": [], "failed": [], "outputs": dict(outputs)}
+        return _typed_outcome(None)
 
       # Run the currently-runnable nodes in parallel — each is independent within a round.
       round_budget = budget
@@ -1144,7 +1121,7 @@ class RuntimeRunner:
       # cancel the matching node's task → CancelledError aborts its in-flight LLM call (asyncio idiom,
       # vs node's AbortSignal). On preempt, stop driving and return the torn-down outcome.
       tasks = {n["agent_id"]: asyncio.create_task(run_node(n, round_budget)) for n in nodes}
-      preempt_outcome: dict | None = None
+      preempt_outcome: list | None = None
 
       async def _monitor() -> None:
         nonlocal preempt_outcome
@@ -1194,7 +1171,10 @@ class RuntimeRunner:
               if t is not None:
                 t.cancel()
             wc = next((o for o in obs if o.get("kind") == "workflow_completed"), None)
-            preempt_outcome = {"completed": (wc or {}).get("completed", []), "failed": (wc or {}).get("failed", [])}
+            preempt_outcome = [
+              workflow_node_outcome_from_kernel(raw)
+              for raw in ((wc or {}).get("node_outcomes") or [])
+            ]
             return
 
       monitor_task = asyncio.create_task(_monitor())
@@ -1205,7 +1185,7 @@ class RuntimeRunner:
       except asyncio.CancelledError:
         pass
       if preempt_outcome is not None:
-        return {**preempt_outcome, "outputs": dict(outputs)}
+        return WorkflowOutcome(node_outcomes=preempt_outcome, outputs=dict(outputs))
       # No preemption → re-raise any genuine node error (preserve the original gather propagation).
       for _r in results:
         if isinstance(_r, BaseException):
@@ -1254,15 +1234,16 @@ class RuntimeRunner:
           _submitted = next(
             (o for o in sub_obs if o.get("kind") == "workflow_nodes_submitted"), None
           )
-          await self._opts.session_log.append(
-            parent_session_id,
-            build_workflow_nodes_submitted_event(
-              turn=runtime.turn(),
-              nodes=submit_event.get("nodes") or [],
-              base_index=_submitted.get("base") if _submitted else None,
-              submitter_agent_id=result.agent_id,
-            ),
-          )
+          if _submitted is not None:
+            await self._opts.session_log.append(
+              parent_session_id,
+              build_workflow_nodes_submitted_event(
+                turn=runtime.turn(),
+                nodes=submit_event.get("nodes") or [],
+                base_index=_submitted.get("base"),
+                submitter_agent_id=result.agent_id,
+              ),
+            )
         observation_start = len(self._pending_observations)
         completion_action = kernel_maybe_action(runtime, self._pending_observations, {
           "kind": "sub_agent_completed",
@@ -1291,15 +1272,16 @@ class RuntimeRunner:
           build_workflow_node_completed_event(
             turn=runtime.turn(),
             agent_id=result.agent_id,
+            status=workflow_node_status_from_termination(result.result.termination),
             termination=result.result.termination,
             classify_branch=getattr(result.result, "classify_branch", None),
             tournament_winner=getattr(result.result, "tournament_winner", None),
             loop_continue=getattr(result.result, "loop_continue", None),
-            output=out_text if result.result.termination == "completed" and out_text else None,
+            output=_final,
           ),
         )
       if done is not None and not next_nodes:
-        return {"completed": list(done.get("completed") or []), "failed": list(done.get("failed") or []), "outputs": dict(outputs)}
+        return _typed_outcome(done)
       nodes = next_nodes
 
   async def _drive_authored_workflows(self, runtime: Any, action: Any) -> Any:
@@ -1315,24 +1297,15 @@ class RuntimeRunner:
     self._pending_authored_workflows = []
     self._workflow_continuation_action = None
     for spec in specs:
-      outcome = await self.bootstrap_workflow(spec)
-      kernel_apply(runtime, self._pending_observations, {
-        "kind": "add_history_message",
-        "message": {"role": "user", "content": _authored_workflow_outcome_note(outcome)},
-      })
+      await self.bootstrap_workflow(spec)
     continuation = self._workflow_continuation_action
     if continuation is None or continuation.kind != "call_provider":
       raise RuntimeError("authored workflow completed without a provider continuation")
-    return SimpleNamespace(
-      kind="call_provider",
-      effect_id=continuation.effect_id,
-      context=runtime.render(),
-      tools=continuation.tools,
-    )
+    return continuation
 
   async def resume_workflow(
     self, spec: "WorkflowSpec", *, session_id: str | None = None,
-  ) -> dict[str, list[str]]:
+  ) -> WorkflowOutcome:
     """Resume a workflow from a session's completed nodes.
 
     Reads the session log, extracts completed workflow node records (with their W-1 control
@@ -1342,7 +1315,7 @@ class RuntimeRunner:
     resume the active session.
     """
     from deepstrike.runtime.session_repair import (
-      recover_completed_workflow_nodes,
+      recover_workflow_node_outcomes,
       recover_submitted_workflow_nodes,
     )
 
@@ -1351,30 +1324,21 @@ class RuntimeRunner:
       raise RuntimeError("resume_workflow requires an active parent run or an explicit session_id")
 
     events = await self._opts.session_log.read(sid)
-    resumed_results = recover_completed_workflow_nodes(events)
-    completed_ids = {r.agent_id for r in resumed_results}
+    resumed_outcomes = recover_workflow_node_outcomes(events)
+    completed_ids = {r.agent_id for r in resumed_outcomes}
     submissions, bases, submitters = recover_submitted_workflow_nodes(events)
     # W-N3: DROP batches whose submitter did NOT complete — that node re-runs on resume and will
     # re-submit its batch; replaying the logged copy too would duplicate its nodes in the DAG.
-    # Only safe with exact bases (the dropped batch's slots become inert placeholders); a legacy
-    # order-only log keeps every batch, since dropping would shift all later indices.
-    if len(bases) == len(submissions) and len(submissions) > 0:
+    # Exact bases keep later graph indices stable while dropped slots remain inert placeholders.
+    if len(submissions) > 0:
       keep = [s is None or s in completed_ids for s in submitters]
       submissions = [sub for sub, k in zip(submissions, keep) if k]
       bases = [b for b, k in zip(bases, keep) if k]
-    resumed_outputs = {r.agent_id: r.output for r in resumed_results if r.output}
-    # Alias loop iterations onto their stable node id (last iteration wins) — dependents consume
-    # `wf-node{N}`, not `wf-node{N}-i{k}`.
-    for rec in resumed_results:
-      stable = re.sub(r"-i\d+$", "", rec.agent_id)
-      if stable != rec.agent_id and rec.output:
-        resumed_outputs[stable] = rec.output
     return await self.run_workflow(
       spec,
-      resumed_results=resumed_results,
+      resumed_outcomes=resumed_outcomes,
       resumed_submissions=submissions,
       resumed_submission_bases=bases,
-      resumed_outputs=resumed_outputs,
       session_id=sid,
     )
 
@@ -1619,100 +1583,6 @@ class RuntimeRunner:
         yield evt
     finally:
       await self._close_active_scopes()
-
-  async def dream(self, agent_id: str, now_ms: int | None = None) -> "AsyncIterator[StreamEvent]":
-    return self._dream_impl(agent_id, now_ms)
-
-  async def _dream_impl(self, agent_id: str, now_ms: int | None = None) -> "AsyncIterator[StreamEvent]":
-    from deepstrike._kernel import IdlePipeline, MemoryEntry as KernelMemoryEntry, SessionData as KernelSessionData
-    from deepstrike.memory.protocols import (
-      CurationResult,
-      CurationStats,
-      DreamResult,
-      MemoryEntry,
-    )
-
-    if self._opts.dream_store is None:
-      raise RuntimeError("dream_store not configured")
-
-    if now_ms is None:
-      now_ms = int(time.time() * 1000)
-
-    sessions = await self._opts.dream_store.load_sessions(agent_id)
-    existing = await self._opts.dream_store.load_memories(agent_id)
-    if not sessions:
-      yield DoneEvent(iterations=0, total_tokens=0, status="completed", dream_result=DreamResult())
-      return
-
-    pipeline = IdlePipeline(agent_id)
-    action1 = pipeline.feed_trigger(
-      [
-        KernelSessionData(
-          session_id=s.session_id,
-          agent_id=s.agent_id,
-          messages=[_to_kernel_message(m) for m in s.messages],
-          metadata=json.dumps(s.metadata) if s.metadata is not None else "null",
-          created_at_ms=s.created_at_ms,
-          updated_at_ms=s.updated_at_ms,
-        )
-        for s in sessions
-      ],
-      [
-        KernelMemoryEntry(text=e.text, score=e.score, metadata=json.dumps(e.metadata) if e.metadata is not None else "null")
-        for e in existing
-      ],
-      now_ms,
-    )
-    if action1.kind in ("noop", "aborted"):
-      yield DoneEvent(iterations=0, total_tokens=0, status="completed", dream_result=DreamResult())
-      return
-    if action1.kind != "synthesize_insights":
-      raise RuntimeError(f"unexpected idle action: {action1.kind}")
-
-    synthesis_text = ""
-    total_tokens = 0
-    dream_provider = self._opts.dream_provider or self._opts.provider
-    create_run_state = getattr(dream_provider, "create_run_state", None)
-    provider_state = create_run_state() if callable(create_run_state) else None
-    synth_msgs = list(action1.messages or [])
-    kernel_system_text = "\n\n".join(m.content for m in synth_msgs if m.role == "system")
-    synth_context = RenderedContext(
-      system_text="\n\n".join(filter(None, [kernel_system_text, self._opts.dream_system_prompt])),
-      turns=[m for m in synth_msgs if m.role != "system"],
-    )
-    async for evt in dream_provider.stream(synth_context, [], extensions=None, state=provider_state):
-      if isinstance(evt, TextDelta):
-        synthesis_text += evt.delta
-        yield evt
-      elif getattr(evt, "type", None) == "usage":
-        total_tokens = getattr(evt, "total_tokens", 0)
-
-    action2 = pipeline.feed_synthesis_result(synthesis_text)
-    if action2.kind != "commit_memories":
-      raise RuntimeError(f"unexpected idle action: {action2.kind}")
-
-    cr = action2.curation_result
-    rr = action2.run_result
-    ds_result = CurationResult(
-      to_add=[MemoryEntry(text=e.text, score=e.score, metadata=_parse_meta(e.metadata)) for e in (cr.to_add or [])],
-      to_remove_indices=list(cr.to_remove_indices or []),
-      stats=CurationStats(
-        insights_processed=cr.stats.insights_processed if cr.stats else 0,
-        duplicates_removed=cr.stats.duplicates_removed if cr.stats else 0,
-        conflicts_resolved=cr.stats.conflicts_resolved if cr.stats else 0,
-        entries_added=cr.stats.entries_added if cr.stats else 0,
-      ),
-    )
-    await self._opts.dream_store.commit(agent_id, ds_result, existing)
-    yield DoneEvent(
-      iterations=1, total_tokens=total_tokens, status="completed",
-      dream_result=DreamResult(
-        sessions_processed=rr.sessions_processed if rr else 0,
-        insights_extracted=rr.insights_extracted if rr else 0,
-        entries_added=ds_result.stats.entries_added,
-        entries_removed=len(ds_result.to_remove_indices),
-      ),
-    )
 
   async def _resolve_approval_requests(
     self,
@@ -2060,26 +1930,24 @@ class RuntimeRunner:
       governance_policy_to_kernel_event(gov_policy),
     )
 
-    ap = self._opts.attention_policy or os_profile.attention_policy
-    max_q = ap.get("max_queue_size") if isinstance(ap, dict) else getattr(ap, "max_queue_size", None)
-    kernel_apply(runtime, self._pending_observations, {
-      "kind": "set_attention_policy",
-      **({"max_queue_size": max_q} if max_q is not None else {}),
-    })
+    signal_policy = self._opts.signal_policy or os_profile.signal_policy
+    config: dict[str, Any] = {
+      "signal_policy": _signal_policy_to_kernel(signal_policy),
+    }
+    prompt_budget = _prompt_budget_to_kernel(self._opts.prompt_budget)
+    if prompt_budget is not None:
+      config["prompt_budget"] = prompt_budget
     if self._opts.context_policy is not None:
-      kernel_apply(runtime, self._pending_observations, {
-        "kind": "configure_run",
-        "config": {"context_policy": normalize_context_policy_v1(
-          context_policy_v1(self._opts.context_policy)
-        )},
-      })
-
-    scheduler_budget = _scheduler_budget_to_kernel(self._opts.scheduler_budget)
-    if scheduler_budget is not None:
-      kernel_apply(runtime, self._pending_observations, {
-        "kind": "set_scheduler_budget",
-        **scheduler_budget,
-      })
+      config["context_policy"] = normalize_context_policy_v1(
+        context_policy_v1(self._opts.context_policy)
+      )
+    scheduler_policy = _scheduler_policy_to_kernel(self._opts.scheduler_policy)
+    if scheduler_policy is not None:
+      config["scheduler_policy"] = scheduler_policy
+    kernel_apply(runtime, self._pending_observations, {
+      "kind": "configure_run",
+      "config": config,
+    })
 
     if self._opts.resource_quota is not None:
       kernel_apply(runtime, self._pending_observations, {
@@ -2447,6 +2315,7 @@ class RuntimeRunner:
         run_ctx = RunContext(
           operation=operation,
           agent_id=self._opts.agent_id,
+          memory_scope=self._opts.memory_scope,
           skill_dir=skill_dir,
           dream_store=self._opts.dream_store,
           knowledge_source=self._opts.knowledge_source,
@@ -2778,14 +2647,25 @@ class RuntimeRunner:
       if new_msgs:
         try:
           from deepstrike.memory.protocols import SessionData
+          from deepstrike.memory.extraction import extract_session_memories
           now_ms = int(time.time() * 1000)
-          await self._opts.dream_store.save_session(SessionData(
-            session_id=str(uuid.uuid4()),
+          completed_session = SessionData(
+            session_id=session_id,
             agent_id=self._opts.agent_id,
             messages=new_msgs,
             created_at_ms=session_start,
             updated_at_ms=now_ms,
-          ))
+          )
+          await self._opts.dream_store.save_session(completed_session)
+          if self._opts.memory_scope:
+            extracted = await extract_session_memories(
+              self._opts.dream_provider or self._opts.provider,
+              completed_session,
+              self._opts.memory_scope,
+              self._opts.dream_system_prompt,
+            )
+            for memory in extracted:
+              await self.write_memory(memory, session_id=session_id, agent_id=self._opts.agent_id)
         except Exception:
           pass
 
@@ -2866,9 +2746,12 @@ class RuntimeRunner:
     """
     # P10: recall is default-on (CC session-start recall) — with no hook configured,
     # the goal itself is the query. pre_query_memory stays as the targeting override.
-    hook = self._opts.pre_query_memory or (lambda goal: [goal])
-    if not (self._opts.dream_store and self._opts.agent_id):
+    from deepstrike.memory.protocols import MemoryQuery
+    if not (self._opts.dream_store and self._opts.agent_id and self._opts.memory_scope):
       return
+    hook = self._opts.pre_query_memory or (lambda goal: [MemoryQuery(
+      scope=self._opts.memory_scope, query=goal, top_k=5,
+    )])
     try:
       try:
         params = inspect.signature(hook).parameters
@@ -2883,11 +2766,11 @@ class RuntimeRunner:
       queries = result or []
       lines = []
       for q in queries:
-        if not isinstance(q, str) or not q.strip():
+        if not isinstance(q, MemoryQuery) or not q.query.strip():
           continue
-        hits = await self._opts.dream_store.search(self._opts.agent_id, q, 5)
+        hits = await self._opts.dream_store.search(self._opts.agent_id, q)
         for hit in hits:
-          lines.append(f"[memory score={hit.score:.3f}] {hit.text}")
+          lines.append(f"[memory record_id={hit.record.record_id} trust={hit.record.provenance.trust} score={hit.score:.3f}] {hit.record.content}")
       if lines:
         kernel_apply(runtime, self._pending_observations, {
           "kind": "add_history_message",
@@ -2902,7 +2785,7 @@ class RuntimeRunner:
     action: str | None,
     session_id: str,
   ) -> None:
-    if not self._opts.dream_store or not self._opts.agent_id:
+    if not self._opts.dream_store or not self._opts.agent_id or not self._opts.memory_scope:
       return
     if self._opts.dream_summarizer:
       result = self._opts.dream_summarizer(archived, {"action": action})
@@ -2912,17 +2795,16 @@ class RuntimeRunner:
     # P2 write-funnel: route through the ONE gated write_memory syscall so validation,
     # the rolling write quota, dedup, and the memory_written audit all apply. Score is
     # advisory (0.6) — an automatic summary must never outrank curated content.
-    import time as _time
-    await self.write_memory({
-      "content": summary,
-      "metadata": {
-        "name": f"page-out-{int(_time.time() * 1000)}",
-        "description": f"auto summary of {action or 'compaction'} archive",
-        "source": "semantic_page_out",
-        "action": action,
-        "score": 0.6,
-      },
-    }, session_id=session_id, agent_id=self._opts.agent_id)
+    from deepstrike.memory.protocols import MemoryProvenance, MemoryRecord
+    now = int(time.time() * 1000)
+    name = f"page-out-{now}"
+    await self.write_memory(MemoryRecord(
+      record_id=f"{self._opts.memory_scope.tenant_id}:{self._opts.memory_scope.namespace}:project:{name}",
+      scope=self._opts.memory_scope, name=name, kind="project", content=summary,
+      description=f"auto summary of {action or 'compaction'} archive",
+      provenance=MemoryProvenance(author="extraction", trust="untrusted", session_id=session_id),
+      created_at=now, updated_at=now, confidence=0.6,
+    ), session_id=session_id, agent_id=self._opts.agent_id)
 
   async def _summarize_for_long_term_memory(self, archived: list[Any]) -> str:
     provider = self._opts.dream_provider or self._opts.provider
@@ -3234,14 +3116,27 @@ def _memory_policy_to_kernel(policy: MemoryPolicy | dict[str, Any]) -> dict[str,
   return out
 
 
-def _scheduler_budget_to_kernel(budget: SchedulerBudget | dict[str, Any] | None) -> dict[str, Any] | None:
-  if budget is None:
+def _scheduler_policy_to_kernel(
+  policy: SchedulerPolicy | dict[str, Any] | None,
+) -> dict[str, Any] | None:
+  if policy is None:
     return None
-  if isinstance(budget, dict):
-    max_wall_ms = budget.get("max_wall_ms", budget.get("maxWallMs"))
-  else:
-    max_wall_ms = budget.max_wall_ms
-  return {"max_wall_ms": max_wall_ms} if max_wall_ms is not None else {}
+  if isinstance(policy, dict):
+    allowed = {
+      "version", "critical_path_weight", "fanout_weight", "age_weight", "token_cost_weight",
+    }
+    unknown = set(policy) - allowed
+    if unknown:
+      raise ValueError(f"unknown scheduler policy field(s): {', '.join(sorted(unknown))}")
+  get = policy.__getitem__ if isinstance(policy, dict) else lambda key: getattr(policy, key)
+  out = {
+    "version": get("version"),
+    "critical_path_weight": get("critical_path_weight"),
+    "fanout_weight": get("fanout_weight"),
+    "age_weight": get("age_weight"),
+    "token_cost_weight": get("token_cost_weight"),
+  }
+  return out
 
 
 def _kernel_reliability_to_kernel(
@@ -3269,6 +3164,38 @@ def _kernel_reliability_to_kernel(
   return out
 
 
+def _signal_policy_to_kernel(policy: "SignalPolicy | dict[str, Any]") -> dict[str, Any]:
+  queue_max = policy.get("queue_max") if isinstance(policy, dict) else policy.queue_max
+  ttl_ms = policy.get("ttl_ms") if isinstance(policy, dict) else policy.ttl_ms
+  deadline_escalation = (
+    policy.get("deadline_escalation") if isinstance(policy, dict) else policy.deadline_escalation
+  )
+  return {
+    "version": 1,
+    "queue_max": queue_max,
+    **({"ttl_ms": ttl_ms} if ttl_ms is not None else {}),
+    **({"deadline_escalation": deadline_escalation} if deadline_escalation is not None else {}),
+  }
+
+
+def _prompt_budget_to_kernel(
+  budget: PromptBudget | dict[str, Any] | None,
+) -> dict[str, Any] | None:
+  if budget is None:
+    return None
+  if isinstance(budget, dict):
+    return {
+      "prompt_overhead_tokens": budget["prompt_overhead_tokens"],
+      "output_reserve_tokens": budget["output_reserve_tokens"],
+      "safety_margin_tokens": budget["safety_margin_tokens"],
+    }
+  return {
+    "prompt_overhead_tokens": budget.prompt_overhead_tokens,
+    "output_reserve_tokens": budget.output_reserve_tokens,
+    "safety_margin_tokens": budget.safety_margin_tokens,
+  }
+
+
 def _to_kernel_message(message: object) -> Message:
   if isinstance(message, Message):
     return message
@@ -3279,15 +3206,25 @@ def _to_kernel_message(message: object) -> Message:
   return Message(role=role, content=content, token_count=token_count, tool_calls=tool_calls)
 
 
-def _parse_meta(raw: object) -> object | None:
-  if raw is None:
-    return None
-  if isinstance(raw, str):
-    try:
-      return json.loads(raw)
-    except Exception:
-      return raw
-  return raw
+def _memory_record_from_mapping(value: dict[str, Any]) -> "MemoryRecord":
+  from deepstrike.memory.protocols import MemoryProvenance, MemoryRecord, MemoryScope
+  scope = value["scope"]
+  provenance = value["provenance"]
+  return MemoryRecord(
+    record_id=str(value["record_id"]),
+    scope=MemoryScope(tenant_id=str(scope["tenant_id"]), namespace=str(scope["namespace"])),
+    name=str(value["name"]), kind=value["kind"], content=str(value["content"]),
+    description=str(value["description"]),
+    provenance=MemoryProvenance(
+      author=provenance["author"], trust=provenance["trust"],
+      evidence_refs=list(provenance.get("evidence_refs") or []),
+      session_id=provenance.get("session_id"),
+    ),
+    created_at=int(value["created_at"]), updated_at=int(value["updated_at"]),
+    last_recalled_at=value.get("last_recalled_at"), recall_count=int(value.get("recall_count") or 0),
+    confidence=float(value["confidence"]), links=list(value.get("links") or []),
+    pinned=bool(value.get("pinned")), ttl_days=value.get("ttl_days"),
+  )
 
 
 async def collect_text(stream: AsyncIterator[StreamEvent]) -> str:
@@ -3381,20 +3318,24 @@ def _parse_start_workflow_spec(args_str: str):
   return WorkflowSpec(nodes=nodes) if nodes else None
 
 
-def _authored_workflow_outcome_note(outcome: dict) -> str:
+def _authored_workflow_outcome_note(outcome: WorkflowOutcome) -> str:
   """M5 v2.1: render an authored-workflow outcome into a user-message note injected back into the
   agent's context, so its next turn continues with the sub-workflow's results in view."""
-  completed = outcome.get("completed") or []
-  failed = outcome.get("failed") or []
-  outputs = outcome.get("outputs") or {}
+  counts: dict[str, int] = {}
+  for node in outcome.node_outcomes:
+    counts[node.status] = counts.get(node.status, 0) + 1
   lines = [
-    f"[authored workflow result] {len(completed)} node(s) completed"
-    + (f", {len(failed)} failed" if failed else "") + "."
+    f"[authored workflow result] {len(outcome.node_outcomes)} terminal node(s): "
+    + ", ".join(f"{count} {status}" for status, count in counts.items()) + "."
   ]
-  for node_id in completed:
-    out = outputs.get(node_id)
+  for node in outcome.node_outcomes:
+    out = outcome.outputs.get(node.node_id)
+    if not out and node.output:
+      out = str(node.output.get("content") or "")
     if out:
-      lines.append(f"- {node_id}: {out[:500] + '…' if len(out) > 500 else out}")
+      lines.append(
+        f"- {node.node_id} ({node.status}): {out[:500] + '…' if len(out) > 500 else out}"
+      )
   return "\n".join(lines)
 
 
@@ -3415,17 +3356,9 @@ def _signal_to_kernel_event(delivery: _InboundSignalDelivery) -> dict:
       "payload": sig.payload,
       **({"dedupe_key": sig.dedupe_key} if sig.dedupe_key else {}),
       **({"recipient": sig.recipient} if getattr(sig, "recipient", None) else {}),
-      **({"topic": sig.topic} if getattr(sig, "topic", None) else {}),
+      **({"deadline_ms": sig.deadline_ms} if getattr(sig, "deadline_ms", None) is not None else {}),
+      **({"coalesce_key": sig.coalesce_key} if getattr(sig, "coalesce_key", None) else {}),
+      "coalesced_count": max(1, getattr(sig, "coalesced_count", 1)),
       "timestamp_ms": int(time.time() * 1000),
     },
   }
-
-def _jaccard_similarity(a: str, b: str) -> float:
-  """Word-set jaccard — the curator's dedup rule as a pure helper at the write funnel."""
-  sa = set(w for w in a.split() if w)
-  sb = set(w for w in b.split() if w)
-  if not sa and not sb:
-    return 1.0
-  inter = len(sa & sb)
-  union = len(sa | sb)
-  return inter / union if union else 0.0

@@ -1,247 +1,320 @@
 import type { RuntimeRunner } from "../runtime/runner.js"
-import { collectText } from "../runtime/runner.js"
-import type { DoneEvent, StreamEvent, TextDelta } from "../types.js"
-import { writeFile } from "fs/promises"
-import path from "path"
-import { type AttemptJudge, HybridJudge, VerdictFnJudge, LlmEvalJudge } from "./judge.js"
+import type { SessionEvent } from "../runtime/session-log.js"
+import type {
+  DoneEvent,
+  TextDelta,
+  WorkflowNodesSubmittedEvent,
+} from "../types.js"
+import type { WorkflowNodeSpec } from "../types/agent.js"
+import type { Criterion, Verdict } from "../runtime/eval.js"
+import type { AttemptJudge, JudgeResult } from "./judge.js"
 
-export interface Criterion {
-  text: string
-  required: boolean
-  weight?: number
-  /** I3.3 (A4): optional stable identifier from the host's contract layer (e.g. an
-   *  `acceptance[].id` field). The harness does not interpret it; it just threads it through to
-   *  `verdictFn` so the host can dispatch per-criterion deterministic checks by id. */
-  id?: string
-  /** I3.3 (A4): host hint — when true, the host has a deterministic check for this criterion
-   *  and would short-circuit the LLM eval. The harness still defers to the host's `verdictFn`
-   *  for the actual decision; this is purely a transparency field on the request. */
-  machineCheckable?: boolean
-}
+export type { Criterion, Verdict } from "../runtime/eval.js"
 
-export interface CriterionResult {
-  criterion: string
-  passed: boolean
-  score: number
-  feedback: string
-}
-
-export interface HarnessRequest {
+export interface AttemptRequest {
+  sessionId?: string
   goal: string
   criteria?: Criterion[]
   extensions?: Record<string, unknown>
+  /** Parent transcript inherited by the first attempt only. */
+  inheritEvents?: Array<{ seq: number; event: SessionEvent }>
 }
 
-export interface HarnessOutcome {
-  result: string
-  passed: boolean
-  iterations: number
-  totalTokens: number
-  status: string
-  overallScore?: number
-  feedback?: string
-  details?: CriterionResult[]
-  /** R3-1: nodes the agent submitted via `submit_workflow_nodes` while running under the harness. */
-  submittedNodes?: import("../types/agent.js").WorkflowNodeSpec[]
+export interface AttemptBodyContext extends AttemptRequest {
+  sessionId: string
+  attempt: number
+  /** Carry material delivered as context, never folded into `goal` by the default policy. */
+  contextInput?: string
 }
 
-export interface Verdict {
-  passed: boolean
-  overallScore: number
-  feedback: string
-  details: CriterionResult[]
-}
-
-export type HarnessEvent =
+export type AttemptProgressEvent =
   | { type: "token"; text: string }
   | { type: "tool_call"; id: string; name: string }
   | { type: "tool_delta"; callId: string; delta?: string; chunk?: Record<string, unknown> }
   | { type: "tool_suspend"; callId: string; suspensionId: string; payload?: Record<string, unknown> }
   | { type: "tool_result"; callId: string; content: string; isError: boolean }
-  | { type: "workflow_nodes_submitted"; nodes: import("../types/agent.js").WorkflowNodeSpec[] }
-  | { type: "supervising" }
-  | { type: "revising"; verdict: Verdict }
-  | { type: "done"; verdict: Verdict; iterations: number; totalTokens: number; status: string }
-  | { type: "max_attempts_reached" }
+  | { type: "workflow_nodes_submitted"; nodes: WorkflowNodeSpec[] }
+  | { type: "body_error"; message: string }
 
-async function runOnce(runner: RuntimeRunner, req: HarnessRequest): Promise<HarnessOutcome> {
-  let text = ""
-  let done: DoneEvent | undefined
-  const sessionId = crypto.randomUUID()
-  for await (const evt of runner.run({ sessionId, goal: req.goal, criteria: req.criteria?.map(c => c.text), extensions: req.extensions })) {
-    if (evt.type === "text_delta") text += (evt as TextDelta).delta
-    else if (evt.type === "done") done = evt as DoneEvent
-  }
-  return { result: text, passed: false, iterations: done?.iterations ?? 0, totalTokens: done?.totalTokens ?? 0, status: done?.status ?? "error" }
+export interface AttemptBodyTerminal {
+  type: "body_done"
+  runStatus: string
+  result: string
+  turns: number
+  totalTokens: number
+  submittedNodes?: WorkflowNodeSpec[]
 }
 
-export interface QualityGate {
-  evaluate(request: HarnessRequest, outcome: HarnessOutcome): Promise<boolean>
+export type AttemptBodyEvent = AttemptProgressEvent | AttemptBodyTerminal
+
+export interface AttemptBody {
+  run(context: AttemptBodyContext): AsyncIterable<AttemptBodyEvent>
 }
 
-export class SinglePassHarness {
-  constructor(private runner: RuntimeRunner) {}
-  async run(request: HarnessRequest): Promise<HarnessOutcome> {
-    return { ...await runOnce(this.runner, request), passed: true }
-  }
-  async *stream(request: HarnessRequest): AsyncIterable<StreamEvent> {
-    yield* this.runner.run({ sessionId: crypto.randomUUID(), goal: request.goal, criteria: request.criteria?.map(c => c.text), extensions: request.extensions })
-  }
-}
+/** Adapts RuntimeRunner to the body slot without giving the loop knowledge of kernel events. */
+export class RuntimeAttemptBody implements AttemptBody {
+  constructor(private readonly runner: RuntimeRunner) {}
 
-/**
- * @deprecated I3.4 (A1): prefer {@link HarnessLoop} with `verdictFn` for host-defined judgment.
- * `EvalLoopHarness.stream()` does NOT honor the `gate` passed via `request.gate` (only `.run()`
- * does), which is a long-standing footgun for streaming hosts. `HarnessLoop` runs the eval loop
- * uniformly across both stream and run, accepts an optional `verdictFn` for short-circuiting the
- * built-in LLM eval, and otherwise mirrors `EvalLoopHarness`'s behavior. New code should use
- * `HarnessLoop`; existing call sites can migrate by switching the class + (if applicable)
- * passing a `verdictFn` for the same gate logic. Slated for removal in a future major. */
-export class EvalLoopHarness {
-  constructor(private runner: RuntimeRunner, private gate: QualityGate, private maxAttempts = 3) {}
+  async *run(context: AttemptBodyContext): AsyncIterable<AttemptBodyEvent> {
+    if (context.contextInput) this.runner.injectNote(context.contextInput)
 
-  async run(request: HarnessRequest): Promise<HarnessOutcome> {
-    let outcome: HarnessOutcome = { result: "", passed: false, iterations: 0, totalTokens: 0, status: "error" }
-    for (let i = 0; i < this.maxAttempts; i++) {
-      outcome = await runOnce(this.runner, request)
-      if (await this.gate.evaluate(request, outcome)) return { ...outcome, passed: true }
+    let result = ""
+    let done: DoneEvent | undefined
+    const submittedNodes: WorkflowNodeSpec[] = []
+    for await (const event of this.runner.run({
+      sessionId: context.sessionId,
+      goal: context.goal,
+      criteria: (context.criteria ?? []).map(criterion => criterion.text),
+      extensions: context.extensions,
+      ...(context.attempt === 1 && context.inheritEvents
+        ? { inheritEvents: context.inheritEvents }
+        : {}),
+    })) {
+      if (event.type === "text_delta") {
+        const text = (event as TextDelta).delta
+        result += text
+        yield { type: "token", text }
+      } else if (event.type === "tool_call") {
+        const call = event as unknown as { id: string; name: string }
+        yield { type: "tool_call", id: call.id, name: call.name }
+      } else if (event.type === "tool_delta") {
+        const delta = event as unknown as { callId: string; delta?: string; chunk?: Record<string, unknown> }
+        yield {
+          type: "tool_delta",
+          callId: delta.callId,
+          ...(delta.delta !== undefined ? { delta: delta.delta } : {}),
+          ...(delta.chunk !== undefined ? { chunk: delta.chunk } : {}),
+        }
+      } else if (event.type === "tool_suspend") {
+        const suspended = event as unknown as { callId: string; suspensionId: string; payload?: Record<string, unknown> }
+        yield {
+          type: "tool_suspend",
+          callId: suspended.callId,
+          suspensionId: suspended.suspensionId,
+          ...(suspended.payload !== undefined ? { payload: suspended.payload } : {}),
+        }
+      } else if (event.type === "tool_result") {
+        const toolResult = event as unknown as { callId: string; content: string; isError: boolean }
+        yield {
+          type: "tool_result",
+          callId: toolResult.callId,
+          content: toolResult.content,
+          isError: toolResult.isError,
+        }
+      } else if (event.type === "workflow_nodes_submitted") {
+        const nodes = (event as WorkflowNodesSubmittedEvent).nodes
+        submittedNodes.push(...nodes)
+        yield { type: "workflow_nodes_submitted", nodes }
+      } else if (event.type === "error") {
+        yield { type: "body_error", message: String((event as { message?: string }).message ?? "run failed") }
+      } else if (event.type === "done") {
+        done = event as DoneEvent
+      }
     }
-    return outcome
-  }
-  async *stream(request: HarnessRequest): AsyncIterable<StreamEvent> {
-    yield* this.runner.run({ sessionId: crypto.randomUUID(), goal: request.goal, criteria: request.criteria?.map(c => c.text), extensions: request.extensions })
+
+    yield {
+      type: "body_done",
+      runStatus: done?.status ?? "error",
+      result,
+      turns: done?.iterations ?? 0,
+      totalTokens: done?.totalTokens ?? 0,
+      ...(submittedNodes.length > 0 ? { submittedNodes } : {}),
+    }
   }
 }
 
-/** I3.2 (A2/A3): host-supplied judgment for each attempt's result. Returning a `Verdict` short-
- *  circuits the built-in LLM eval (no `evalProvider.stream` call); returning `undefined` defers to
- *  the built-in eval (enables hybrid judgment: machine-checkable items deterministic, subjective
- *  items LLM). Pure addition — when not set, HarnessLoop.stream() is byte-equivalent to its prior
- *  behavior. The closure owns its own context (doc reader, deterministic checks, etc.); the SDK
- *  is intentionally agnostic about what it inspects. */
-export type VerdictFn = (ctx: {
+export type VerdictFn = (context: {
   goal: string
   criteria: Criterion[]
   attempt: number
   result: string
 }) => Verdict | undefined | Promise<Verdict | undefined>
 
-export interface HarnessLoopOptions {
-  maxAttempts?: number
-  skillDir?: string
-  verdictFn?: VerdictFn
+export interface PreparedAttempt {
+  sessionId: string
+  goal: string
+  contextInput?: string
 }
 
-export class HarnessLoop {
-  private maxAttempts: number
-  private skillDir?: string
-  /** How each attempt is judged. Hybrid (host verdictFn → LLM eval) when a verdictFn is supplied,
-   *  otherwise the built-in LLM eval. The loop just calls `this.judge.judge(...)`. */
-  private judge: AttemptJudge
+export type CarryPolicy = (context: {
+  rootSessionId: string
+  goal: string
+  attempt: number
+  previousVerdict?: Verdict
+}) => PreparedAttempt | Promise<PreparedAttempt>
 
-  constructor(
-    private runner: RuntimeRunner,
-    evalProvider: import("../types.js").LLMProvider,
-    options: HarnessLoopOptions = {},
-  ) {
-    this.maxAttempts = options.maxAttempts ?? 3
-    this.skillDir = options.skillDir
-    const llmJudge = new LlmEvalJudge(evalProvider)
-    this.judge = options.verdictFn
-      ? new HybridJudge(new VerdictFnJudge(options.verdictFn), llmJudge)
-      : llmJudge
+/** Default: retain the transcript and deliver judge feedback through the runner's signal input. */
+export const continueSession: CarryPolicy = context => ({
+  sessionId: context.rootSessionId,
+  goal: context.goal,
+  ...(context.previousVerdict?.feedback
+    ? { contextInput: context.previousVerdict.feedback }
+    : {}),
+})
+
+/** Explicit isolation policy preserving the old fresh-session + goal-feedback behavior. */
+export const freshWithFeedback: CarryPolicy = context => ({
+  sessionId: context.attempt === 1 ? context.rootSessionId : crypto.randomUUID(),
+  goal: context.previousVerdict?.feedback
+    ? `${context.goal}\n\n[Attempt ${context.attempt - 1} feedback: ${context.previousVerdict.feedback}]`
+    : context.goal,
+})
+
+export function freshWithDigest(
+  digest: (verdict: Verdict, attempt: number) => string | Promise<string>,
+): CarryPolicy {
+  return async context => ({
+    sessionId: context.attempt === 1 ? context.rootSessionId : crypto.randomUUID(),
+    goal: context.previousVerdict
+      ? `${context.goal}\n\n[Prior attempt digest: ${await digest(context.previousVerdict, context.attempt - 1)}]`
+      : context.goal,
+  })
+}
+
+export interface StopPolicy {
+  maxAttempts: number
+  maxTotalTokens?: number
+  /** Useful for one-shot gates; retry loops normally leave this false. */
+  stopOnFailedVerdict?: boolean
+}
+
+export type AttemptOutcomeKind = "passed" | "failed_judge" | "exhausted" | "run_error"
+
+export interface AttemptOutcome {
+  outcome: AttemptOutcomeKind
+  runStatus: string
+  verdict?: Verdict
+  result: string
+  attempts: number
+  turns: number
+  totalTokens: number
+  submittedNodes?: WorkflowNodeSpec[]
+}
+
+export type AttemptLoopEvent =
+  | AttemptProgressEvent
+  | { type: "judging"; attempt: number }
+  | { type: "retrying"; attempt: number; verdict: Verdict }
+  | { type: "completed"; outcome: AttemptOutcome }
+
+export interface AttemptLoopOptions {
+  body: AttemptBody
+  judge: AttemptJudge
+  carry?: CarryPolicy
+  stop: StopPolicy
+  onPass?: (context: { outcome: AttemptOutcome; judgeResult: JudgeResult }) => Promise<void> | void
+}
+
+function isRunError(status: string): boolean {
+  const normalized = status.toLocaleLowerCase()
+  return normalized === "error" || normalized === "invalid_arg" || normalized === "user_abort"
+}
+
+/** One attempt engine. Body, judgment, carry, and stopping are independent policy slots. */
+export class AttemptLoop {
+  private readonly carry: CarryPolicy
+
+  constructor(private readonly options: AttemptLoopOptions) {
+    if (!Number.isInteger(options.stop.maxAttempts) || options.stop.maxAttempts < 1) {
+      throw new Error("AttemptLoop stop.maxAttempts must be a positive integer")
+    }
+    if (options.stop.maxTotalTokens !== undefined && options.stop.maxTotalTokens < 0) {
+      throw new Error("AttemptLoop stop.maxTotalTokens must be non-negative")
+    }
+    this.carry = options.carry ?? continueSession
   }
 
-  async run(request: HarnessRequest): Promise<HarnessOutcome> {
-    let last: HarnessEvent | undefined
-    // R3-1: collect nodes the agent submitted while running under the harness, so dynamic fan-out
-    // works in harness mode too (not just the plain streaming path).
-    const submittedNodes: import("../types/agent.js").WorkflowNodeSpec[] = []
-    for await (const evt of this.stream(request)) {
-      last = evt
-      if (evt.type === "workflow_nodes_submitted") submittedNodes.push(...evt.nodes)
+  async run(request: AttemptRequest): Promise<AttemptOutcome> {
+    let outcome: AttemptOutcome | undefined
+    for await (const event of this.stream(request)) {
+      if (event.type === "completed") outcome = event.outcome
     }
-    const done = last?.type === "done" ? last as Extract<HarnessEvent, { type: "done" }> : undefined
-    return {
-      result: "",
-      passed: done?.verdict.passed ?? false,
-      iterations: done?.iterations ?? 0,
-      totalTokens: done?.totalTokens ?? 0,
-      status: done?.status ?? "error",
-      overallScore: done?.verdict.overallScore,
-      feedback: done?.verdict.feedback,
-      details: done?.verdict.details,
-      ...(submittedNodes.length ? { submittedNodes } : {}),
-    }
+    if (!outcome) throw new Error("AttemptLoop ended without an outcome")
+    return outcome
   }
 
-  async *stream(request: HarnessRequest): AsyncIterable<HarnessEvent> {
+  async *stream(request: AttemptRequest): AsyncIterable<AttemptLoopEvent> {
+    const rootSessionId = request.sessionId ?? crypto.randomUUID()
     const criteria = request.criteria ?? []
+    const submittedNodes: WorkflowNodeSpec[] = []
+    let totalTokens = 0
+    let totalTurns = 0
+    let previousVerdict: Verdict | undefined
 
-    let currentGoal = request.goal
-    let lastIterations = 0
-    let lastTotalTokens = 0
-    let lastStatus = "error"
-    let lastResult = ""
-
-    for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
-      const sessionId = crypto.randomUUID()
-      for await (const evt of this.runner.run({ sessionId, goal: currentGoal, criteria: criteria.map(c => c.text), extensions: request.extensions })) {
-        if (evt.type === "text_delta") {
-          lastResult += (evt as TextDelta).delta
-          yield { type: "token", text: (evt as TextDelta).delta }
-        } else if (evt.type === "tool_call") {
-          const tc = evt as unknown as { id: string; name: string }
-          yield { type: "tool_call", id: tc.id, name: tc.name }
-        } else if (evt.type === "tool_delta") {
-          const td = evt as unknown as { callId: string; delta?: string; chunk?: Record<string, unknown> }
-          yield { type: "tool_delta", callId: td.callId, ...(td.delta ? { delta: td.delta } : {}), ...(td.chunk ? { chunk: td.chunk } : {}) }
-        } else if (evt.type === "tool_suspend") {
-          const ts = evt as unknown as { callId: string; suspensionId: string; payload?: Record<string, unknown> }
-          yield { type: "tool_suspend", callId: ts.callId, suspensionId: ts.suspensionId, ...(ts.payload ? { payload: ts.payload } : {}) }
-        } else if (evt.type === "tool_result") {
-          const tr = evt as unknown as { callId: string; content: string; isError: boolean }
-          yield { type: "tool_result", callId: tr.callId, content: tr.content, isError: tr.isError }
-        } else if (evt.type === "workflow_nodes_submitted") {
-          const ws = evt as unknown as { nodes: import("../types/agent.js").WorkflowNodeSpec[] }
-          yield { type: "workflow_nodes_submitted", nodes: ws.nodes }
-        } else if (evt.type === "done") {
-          const d = evt as DoneEvent
-          lastIterations = d.iterations
-          lastTotalTokens = d.totalTokens
-          lastStatus = d.status
+    for (let attempt = 1; attempt <= this.options.stop.maxAttempts; attempt++) {
+      const prepared = await this.carry({
+        rootSessionId,
+        goal: request.goal,
+        attempt,
+        previousVerdict,
+      })
+      let terminal: AttemptBodyTerminal | undefined
+      for await (const event of this.options.body.run({
+        ...request,
+        sessionId: prepared.sessionId,
+        goal: prepared.goal,
+        criteria,
+        attempt,
+        ...(prepared.contextInput ? { contextInput: prepared.contextInput } : {}),
+      })) {
+        if (event.type === "body_done") {
+          terminal = event
+          if (event.submittedNodes) submittedNodes.push(...event.submittedNodes)
+        } else {
+          yield event
         }
       }
+      if (!terminal) throw new Error("AttemptBody ended without body_done")
 
-      yield { type: "supervising" }
+      totalTokens += terminal.totalTokens
+      totalTurns += terminal.turns
+      const base = {
+        runStatus: terminal.runStatus,
+        result: terminal.result,
+        attempts: attempt,
+        turns: totalTurns,
+        totalTokens,
+        ...(submittedNodes.length > 0 ? { submittedNodes } : {}),
+      }
 
-      // I3.2 (A2/A3): the judge Strategy encapsulates "host verdictFn short-circuit → built-in LLM
-      // eval". HarnessLoop's judge always terminates in LlmEvalJudge, so a verdict is guaranteed.
-      const judged = await this.judge.judge({ goal: request.goal, criteria, attempt, result: lastResult })
-      const verdict = judged?.verdict
-      const skillCandidate = judged?.skillCandidate
-      if (!verdict) throw new Error("HarnessLoop: judge produced no verdict")
-
-      if (verdict.passed) {
-        if (skillCandidate && this.skillDir) {
-          const { name, description, whenToUse, content } = skillCandidate
-          const fm = ["---", `name: ${name}`, `description: ${description}`,
-            whenToUse ? `when_to_use: ${whenToUse}` : null, "---", ""]
-            .filter(Boolean).join("\n")
-          await writeFile(path.join(this.skillDir, `${name}.md`), fm + content, "utf8")
-        }
-        yield { type: "done", verdict, iterations: lastIterations, totalTokens: lastTotalTokens, status: lastStatus }
+      if (isRunError(terminal.runStatus)) {
+        yield { type: "completed", outcome: { outcome: "run_error", ...base } }
         return
       }
 
-      yield { type: "revising", verdict }
-      currentGoal = `${request.goal}\n\n[Attempt ${attempt} feedback: ${verdict.feedback}]`
-      lastResult = ""
-    }
+      yield { type: "judging", attempt }
+      const judged = await this.options.judge.judge({
+        goal: request.goal,
+        criteria,
+        attempt,
+        result: terminal.result,
+      })
+      if (!judged) throw new Error("AttemptLoop judge produced no verdict")
+      const verdict = judged.verdict
 
-    yield { type: "max_attempts_reached" }
+      if (verdict.passed) {
+        const outcome: AttemptOutcome = { outcome: "passed", ...base, verdict }
+        await this.options.onPass?.({ outcome, judgeResult: judged })
+        yield { type: "completed", outcome }
+        return
+      }
+
+      previousVerdict = verdict
+      const tokenLimitReached = this.options.stop.maxTotalTokens !== undefined
+        && totalTokens >= this.options.stop.maxTotalTokens
+      if (this.options.stop.stopOnFailedVerdict || attempt === this.options.stop.maxAttempts || tokenLimitReached) {
+        yield {
+          type: "completed",
+          outcome: {
+            outcome: this.options.stop.stopOnFailedVerdict ? "failed_judge" : "exhausted",
+            ...base,
+            verdict,
+          },
+        }
+        return
+      }
+
+      yield { type: "retrying", attempt, verdict }
+    }
   }
 }
-
-// Re-export collectText so harness callers can use it without knowing runner internals.
-export { collectText }

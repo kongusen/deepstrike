@@ -11,11 +11,15 @@ use crate::types::signal::RuntimeSignal;
 use super::super::tcb::TaskLifecycle;
 
 impl LoopStateMachine {
-    /// Rebuild the signal router with a new bounded queue size. Inbound signals
-    /// are always dispatched through the kernel router (dedup + disposition + queue);
-    /// this only resizes the `feed` path.
-    pub fn set_attention(&mut self, max_queue_size: usize) {
-        self.signal_router = SignalRouter::new(max_queue_size);
+    /// Atomically replace the versioned signal policy after protocol validation. Keeping TTL in
+    /// the deterministic router lets replay use journaled timestamps.
+    pub fn set_signal_policy(
+        &mut self,
+        max_queue_size: usize,
+        ttl_ms: Option<u64>,
+        deadline_escalation: bool,
+    ) {
+        self.signal_router = SignalRouter::with_policy(max_queue_size, ttl_ms, deadline_escalation);
     }
 
     /// ABI entry for an inbound signal: clears observations, sweeps leases, then
@@ -58,47 +62,63 @@ impl LoopStateMachine {
         &mut self,
         signal: RuntimeSignal,
     ) -> (Option<LoopAction>, SignalDisposition, u32) {
-        let is_running = !matches!(
-            self.lifecycle(),
-            TaskLifecycle::Ready | TaskLifecycle::Done(_)
-        );
+        let lifecycle = self.lifecycle();
+        let signal_id = signal.id.to_string();
+        let summary = signal_summary(&signal);
+        let now_ms = self.last_now_ms.unwrap_or(signal.timestamp_ms);
         let router = &mut self.signal_router;
-        let summary = signal.summary.to_string();
-        let disposition = router.ingest(signal, is_running);
+        let outcome = router.ingest_at(signal, lifecycle, now_ms);
+        let disposition = outcome.disposition;
         let queue_depth = router.depth() as u32;
-        // Acted-on external signals are user/agent directives: also promote into the durable
-        // directive channel so they survive compaction/renewal (the ephemeral signal copy below is
-        // cleared at the next sprint boundary). Queue/Ignore/Dropped are not acted on → not durable.
+        for expired_signal_id in outcome.expired_signal_ids {
+            self.observations.push(KernelObservation::SignalExpired {
+                turn: self.turn,
+                signal_id: expired_signal_id,
+                queue_depth,
+            });
+        }
+        if let Some(displaced_signal_id) = outcome.displaced_signal_id {
+            self.observations.push(KernelObservation::SignalDisplaced {
+                turn: self.turn,
+                admitted_signal_id: signal_id,
+                displaced_signal_id,
+                queue_depth,
+            });
+        }
+        if lifecycle.is_terminal() && disposition == SignalDisposition::Queue {
+            self.observations.push(KernelObservation::SignalsPending {
+                turn: self.turn,
+                depth: queue_depth,
+            });
+        }
+        // External signals are one-request attention inputs. They remain in the volatile signal
+        // partition until the correlated provider result commits that request; they must never be
+        // promoted implicitly into the standing directive channel.
         let action = match disposition {
             // #2-A/B: hard preempt (Critical while busy). Stop in-flight work NOW and reason about the
             // interrupt this turn. When the root is suspended awaiting running sub-agents/workflow,
             // `preempt_running_for_interrupt` aborts them (emits `AgentPreempted`) and clears the
             // suspend before we force the turn; otherwise it's a plain forced reason turn.
             SignalDisposition::InterruptNow => {
-                self.ctx.record_directive(summary.clone());
                 self.ctx.push_signal(format!("[INTERRUPT] {summary}"));
                 self.phase = LoopPhase::Reason;
                 self.request_preempt_for_interrupt(&summary)
                     .or_else(|| Some(self.emit_call_llm()))
             }
-            // #2-A: soft interrupt (High while busy) — record the directive so the agent handles it at
-            // the NEXT turn boundary (when running children complete and the root resumes). Does NOT
-            // force a turn or abort in-flight work — that distinction is `InterruptNow`'s alone.
+            // #2-A: soft interrupt (High while busy) — expose it at the NEXT turn boundary (when
+            // running children complete and the root resumes). Does NOT force a turn or abort
+            // in-flight work — that distinction is `InterruptNow`'s alone.
             SignalDisposition::Interrupt => {
-                self.ctx.record_directive(summary.clone());
                 self.ctx.push_signal(format!("[SIGNAL] {summary}"));
                 None
             }
             SignalDisposition::Run => {
-                self.ctx.record_directive(summary.clone());
                 self.ctx.push_signal(format!("[SIGNAL] {summary}"));
                 self.phase = LoopPhase::Reason;
                 Some(self.emit_call_llm())
             }
-            // Observe (Low urgency): ephemeral note only — no durable directive, no forced
-            // turn. Durability is monotone in urgency: Low = ephemeral note, Normal = queued
-            // ephemeral note, High = durable directive handled at the next boundary,
-            // Critical = durable directive + immediate preempt.
+            // Observe (Low urgency): ephemeral note only — no forced turn. Urgency controls
+            // scheduling/preemption only, never persistence.
             SignalDisposition::Observe => {
                 self.ctx.push_signal(format!("[SIGNAL] {summary}"));
                 None
@@ -165,12 +185,11 @@ impl LoopStateMachine {
             .is_some_and(|w| agent_ids.iter().any(|id| w.owns_agent(id)))
         {
             if let Some(run) = self.workflow.take() {
-                let (completed, failed) = run.abort_outcome();
+                let node_outcomes = run.abort_outcomes();
                 self.observations
                     .push(KernelObservation::WorkflowCompleted {
                         turn: self.turn,
-                        completed,
-                        failed,
+                        node_outcomes,
                     });
             }
         }
@@ -207,13 +226,33 @@ impl LoopStateMachine {
     /// Drain all kernel-queued signals into the current context as runtime notes.
     /// Called at turn boundaries.
     pub(super) fn drain_queued_signals(&mut self) {
+        let expired = self
+            .last_now_ms
+            .map(|now_ms| self.signal_router.expire(now_ms))
+            .unwrap_or_default();
+        let queue_depth = self.signal_router.depth() as u32;
+        for signal_id in expired {
+            self.observations.push(KernelObservation::SignalExpired {
+                turn: self.turn,
+                signal_id,
+                queue_depth,
+            });
+        }
         let mut out = Vec::new();
         let router = &mut self.signal_router;
         while let Some(sig) = router.next() {
-            out.push(sig.summary.to_string());
+            out.push(signal_summary(&sig));
         }
         for summary in out {
             self.ctx.push_signal(format!("[SIGNAL] {summary}"));
         }
+    }
+}
+
+fn signal_summary(signal: &RuntimeSignal) -> String {
+    if signal.coalesced_count > 1 {
+        format!("[x{}] {}", signal.coalesced_count, signal.summary)
+    } else {
+        signal.summary.to_string()
     }
 }

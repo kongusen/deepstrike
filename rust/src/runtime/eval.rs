@@ -3,7 +3,7 @@
 //! Rust port of node/src/runtime/eval.ts. Wraps the kernel's `gen_eval` free functions
 //! (re-exported from `deepstrike_core::harness::eval`) into a small surface for callers
 //! that just want "does this result meet the criteria?" without standing up
-//! `HarnessLoop`.
+//! `AttemptLoop`.
 
 use deepstrike_core::context::renderer::RenderedContext;
 use deepstrike_core::harness::eval::{
@@ -63,6 +63,7 @@ pub async fn judge(
         state_turn: None,
         turns,
         frozen_prefix_len: None,
+        budget_overflow: None,
     };
 
     let mut text = String::new();

@@ -125,8 +125,9 @@ impl LoopStateMachine {
             EvictionOp::Snip { per_msg_ratio: _ } => {
                 // Layer 2: route to SnipCompact via the pipeline (behavior-preserving shim).
                 // Use the public `compress_with_time` which already wires target_tokens from config.
-                let (saved, summary, archived, cache_at) =
-                    self.ctx.compress_with_time(PressureAction::SnipCompact, self.last_now_ms);
+                let (saved, summary, archived, cache_at) = self
+                    .ctx
+                    .compress_with_time(PressureAction::SnipCompact, self.last_now_ms);
                 if saved > 0 || summary.is_some() {
                     self.push_compression_observations(
                         PressureAction::SnipCompact,
@@ -138,7 +139,8 @@ impl LoopStateMachine {
             }
             EvictionOp::TimeDecayMicro => {
                 // Layer 3: idle/time-decay micro-compact. Uses non-time compress path + stamps time.
-                let (_, summary, archived, cache_at) = self.ctx.compress(PressureAction::MicroCompact);
+                let (_, summary, archived, cache_at) =
+                    self.ctx.compress(PressureAction::MicroCompact);
                 self.push_compression_observations(
                     PressureAction::MicroCompact,
                     summary,

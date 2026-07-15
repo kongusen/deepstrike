@@ -1,11 +1,11 @@
 /**
- * 11_sdk_paths.test.ts — system_prompt, initialMemory, saveSession, knowledge.init(), frontmatter, HarnessLoop streaming
+ * 11_sdk_paths.test.ts — system_prompt, initialMemory, saveSession, knowledge.init(), frontmatter, AttemptLoop streaming
  */
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import type { DoneEvent, TextDeltaEvent } from "@deepstrike/sdk"
-import { HarnessLoop } from "@deepstrike/sdk"
-import type { HarnessEvent } from "@deepstrike/sdk"
+import { AttemptLoop, LlmEvalJudge, RuntimeAttemptBody } from "@deepstrike/sdk/harness"
+import type { AttemptLoopEvent } from "@deepstrike/sdk/harness"
 import { makeAgent, makeProvider, collectEvents, text, MockDreamStore, MockKnowledgeSource, SKILL_DIR } from "./helpers.js"
 
 // ─── system_prompt ────────────────────────────────────────────────────────
@@ -76,13 +76,18 @@ describe("Skill frontmatter stripping", () => {
   })
 })
 
-// ─── HarnessLoop.runStreaming() ───────────────────────────────────────────
+// ─── AttemptLoop.stream() ─────────────────────────────────────────────────
 
-describe("HarnessLoop.runStreaming()", () => {
+describe("AttemptLoop.stream()", () => {
   it("emits token, supervising, and terminal events", { timeout: 90_000 }, async () => {
-    const events: HarnessEvent[] = []
+    const events: AttemptLoopEvent[] = []
     let result = ""
-    for await (const evt of new HarnessLoop(makeAgent(), makeProvider(), { maxAttempts: 2 }).runStreaming({
+    const loop = new AttemptLoop({
+      body: new RuntimeAttemptBody(makeAgent().runner),
+      judge: new LlmEvalJudge(makeProvider()),
+      stop: { maxAttempts: 2 },
+    })
+    for await (const evt of loop.stream({
       goal: "What is 6 * 7? Output only the number.",
       criteria: [{ text: "Answer must be 42", required: true }],
     })) {
@@ -90,28 +95,33 @@ describe("HarnessLoop.runStreaming()", () => {
       if (evt.type === "token") result += evt.text
     }
     assert.ok(result.length > 0, "should have token output")
-    assert.ok(events.some(e => e.type === "supervising"), "should emit supervising")
+    assert.ok(events.some(e => e.type === "judging"), "should emit judging")
     assert.ok(
-      events.some(e => e.type === "done" || e.type === "max_attempts_reached"),
+      events.some(e => e.type === "completed"),
       "should terminate",
     )
   })
 
   it("verdict contains structured criterion details on done", { timeout: 90_000 }, async () => {
-    let verdict: HarnessEvent & { type: "done" } | undefined
-    for await (const evt of new HarnessLoop(makeAgent(), makeProvider(), { maxAttempts: 2 }).runStreaming({
+    let verdict: Extract<AttemptLoopEvent, { type: "completed" }>["outcome"]["verdict"]
+    const loop = new AttemptLoop({
+      body: new RuntimeAttemptBody(makeAgent().runner),
+      judge: new LlmEvalJudge(makeProvider()),
+      stop: { maxAttempts: 2 },
+    })
+    for await (const evt of loop.stream({
       goal: "Output the number 99.",
       criteria: [
         { text: "Response must contain 99", required: true },
         { text: "Response should be concise", required: false, weight: 0.5 },
       ],
     })) {
-      if (evt.type === "done") verdict = evt as typeof verdict
+      if (evt.type === "completed") verdict = evt.outcome.verdict
     }
     if (verdict) {
-      assert.ok(typeof verdict.verdict.passed === "boolean")
-      assert.ok(typeof verdict.verdict.overallScore === "number")
-      assert.ok(Array.isArray(verdict.verdict.details))
+      assert.ok(typeof verdict.passed === "boolean")
+      assert.ok(typeof verdict.overallScore === "number")
+      assert.ok(Array.isArray(verdict.details))
     }
   })
 })

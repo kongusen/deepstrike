@@ -18,7 +18,7 @@ describe("submitWorkflowToKernel (wasm)", () => {
   })
 })
 
-type Obs = { kind: string; completed?: string[]; failed?: string[] }
+type Obs = { kind: string; node_outcomes?: Array<{ node_id: string; status: string }> }
 const node = (agent_id: string, goal: string) => ({
   agent_id, goal, role: "implement", isolation: "shared", context_inheritance: "none", model_hint: null, trust: "trusted",
 })
@@ -37,7 +37,7 @@ function makeFakeKernel() {
       if (event.kind === "workflow_spawn_result") return reply([], [])
       if (event.kind === "sub_agent_completed") {
         if (event.result?.agent_id === "wf-node1") {
-          return reply([{ kind: "call_provider", effect_id: "provider-next", context: {}, tools: [] }], [{ kind: "workflow_completed", completed: ["wf-node0", "wf-node1"], failed: [] }])
+          return reply([{ kind: "call_provider", effect_id: "provider-next", context: {}, tools: [] }], [{ kind: "workflow_completed", node_outcomes: ["wf-node0", "wf-node1"].map(node_id => ({ node_id, status: "completed" })) }])
         }
         return reply([], [])
       }
@@ -71,8 +71,8 @@ describe("bootstrapWorkflow drives an agent-authored DAG (wasm)", () => {
     const outcome = await runner.bootstrapWorkflow(spec)
 
     expect(ran.sort()).toEqual(["wf-node0", "wf-node1"])
-    expect(outcome.completed.sort()).toEqual(["wf-node0", "wf-node1"])
-    expect(outcome.failed).toEqual([])
+    expect(outcome.nodeOutcomes.map(node => node.nodeId).sort()).toEqual(["wf-node0", "wf-node1"])
+    expect(outcome.nodeOutcomes.every(node => node.status === "completed")).toBe(true)
     // M5 v2.1: outputs are threaded out of the driver (the auto-pivot injects them into the agent's
     // context). Each completed node's output is keyed by agent id.
     expect(outcome.outputs["wf-node0"]).toBe("ok")

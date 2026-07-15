@@ -53,9 +53,9 @@ describe("keyed knowledge entries (K1)", () => {
 
     const { runner, sessionLog } = createRunner(
       provider,
-      [tool("bulk", "bulk", { type: "object", properties: {} }, () => "z".repeat(240))],
+      [tool("bulk", "bulk", { type: "object", properties: {} }, () => "z ".repeat(200))],
       {
-        maxTokens: 480,
+        maxTokens: 1024,
         maxTurns: 30,
         // The script repeats an identical `bulk()` call to build pressure — incidental to the
         // repeat fuse's intent, so disabled (same as mm-paging-integration.test.ts).

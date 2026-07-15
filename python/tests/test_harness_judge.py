@@ -1,18 +1,18 @@
-"""P4 — AttemptJudge Strategy (Python parity with Node's harness-judge / harness-verdictfn).
-
-Two layers:
-  • Isolated strategy units (VerdictFnJudge / LlmEvalJudge / HybridJudge), mirroring
-    node/tests/harness-judge.test.ts.
-  • A HarnessLoop verdict_fn behavior-lock (short-circuit / defer-to-LLM / feedback threading),
-    which Python lacked before this refactor — proves the extraction is behavior-preserving.
-"""
+"""AttemptJudge strategies and their composition with AttemptLoop."""
 from __future__ import annotations
 
 import json
 
 import pytest
 
-from deepstrike.harness.harness import Criterion, HarnessLoop, HarnessRequest, Verdict
+from deepstrike.harness.harness import (
+    AttemptLoop,
+    AttemptRequest,
+    Criterion,
+    RuntimeAttemptBody,
+    StopPolicy,
+    Verdict,
+)
 from deepstrike.harness.judge import HybridJudge, JudgeContext, LlmEvalJudge, VerdictFnJudge
 from deepstrike.providers.stream import DoneEvent, TextDelta
 
@@ -84,15 +84,23 @@ async def test_hybrid_falls_back_when_primary_defers():
     assert res is not None and res.verdict.passed is True
 
 
-# ── HarnessLoop behavior-lock (verdict_fn wiring) ───────────────────────────
+# ── AttemptLoop composition ─────────────────────────────────────────────────
 
 class _Runner:
     """Minimal RuntimeRunner stand-in: emits the agent text then a DoneEvent."""
 
     def __init__(self, text: str = "agent output"):
         self._text = text
+        self.notes: list[str] = []
+        self.sessions: list[str] = []
 
-    async def run(self, *, goal, criteria, extensions=None):
+    def inject_note(self, text: str) -> None:
+        self.notes.append(text)
+
+    async def run(
+        self, *, goal, criteria, extensions=None, session_id=None, inherit_events=None
+    ):
+        self.sessions.append(session_id)
         yield TextDelta(delta=self._text)
         yield DoneEvent(iterations=1, total_tokens=42, status="completed")
 
@@ -102,45 +110,93 @@ async def _collect(loop, request):
 
 
 @pytest.mark.asyncio
-async def test_harness_verdictfn_short_circuits_llm():
+async def test_attempt_loop_verdictfn_short_circuits_llm():
     """A host verdict_fn returning a passing Verdict ends the loop without touching the LLM eval."""
     provider = _EvalProvider(PASS_JSON)
     fn = lambda **_: Verdict(passed=True, overall_score=1.0, feedback="host-pass", details=[])
-    loop = HarnessLoop(_Runner(), provider, verdict_fn=fn, max_attempts=3)
-    outcome = await loop.run(HarnessRequest(goal="g", criteria=[Criterion(text="c1")]))
-    assert outcome.passed is True
-    assert outcome.feedback == "host-pass"
+    loop = AttemptLoop(
+        body=RuntimeAttemptBody(_Runner()),
+        judge=HybridJudge(VerdictFnJudge(fn), LlmEvalJudge(provider)),
+        stop=StopPolicy(max_attempts=3),
+    )
+    outcome = await loop.run(AttemptRequest(goal="g", criteria=[Criterion(text="c1")]))
+    assert outcome.outcome == "passed"
+    assert outcome.verdict and outcome.verdict.feedback == "host-pass"
     assert provider.calls == 0  # LLM eval short-circuited
 
 
 @pytest.mark.asyncio
-async def test_harness_verdictfn_defers_to_llm():
+async def test_attempt_loop_verdictfn_defers_to_llm():
     """verdict_fn returning None defers to the built-in LLM eval."""
     provider = _EvalProvider(PASS_JSON)
-    loop = HarnessLoop(_Runner(), provider, verdict_fn=lambda **_: None, max_attempts=3)
-    outcome = await loop.run(HarnessRequest(goal="g", criteria=[Criterion(text="c1")]))
-    assert outcome.passed is True
+    loop = AttemptLoop(
+        body=RuntimeAttemptBody(_Runner()),
+        judge=HybridJudge(VerdictFnJudge(lambda **_: None), LlmEvalJudge(provider)),
+        stop=StopPolicy(max_attempts=3),
+    )
+    outcome = await loop.run(AttemptRequest(goal="g", criteria=[Criterion(text="c1")]))
+    assert outcome.outcome == "passed"
     assert provider.calls == 1  # fell through to the LLM eval
 
 
 @pytest.mark.asyncio
-async def test_harness_verdictfn_feedback_threaded_into_retry_goal():
-    """On a failing verdict the feedback is threaded into the next attempt's goal, then it passes."""
+async def test_attempt_loop_default_carry_keeps_session_and_injects_feedback():
+    """The default carry preserves both the stable goal and stable session transcript."""
     seen_goals: list[str] = []
 
     class _RecordingRunner(_Runner):
-        async def run(self, *, goal, criteria, extensions=None):
+        async def run(
+            self, *, goal, criteria, extensions=None, session_id=None, inherit_events=None
+        ):
             seen_goals.append(goal)
-            async for evt in super().run(goal=goal, criteria=criteria, extensions=extensions):
+            async for evt in super().run(
+                goal=goal,
+                criteria=criteria,
+                extensions=extensions,
+                session_id=session_id,
+                inherit_events=inherit_events,
+            ):
                 yield evt
 
     verdicts = iter([
         Verdict(passed=False, overall_score=0.0, feedback="fix-this", details=[]),
         Verdict(passed=True, overall_score=1.0, feedback="ok", details=[]),
     ])
-    loop = HarnessLoop(_RecordingRunner(), _EvalProvider(PASS_JSON), verdict_fn=lambda **_: next(verdicts), max_attempts=3)
-    outcome = await loop.run(HarnessRequest(goal="base-goal", criteria=[Criterion(text="c1")]))
-    assert outcome.passed is True
-    assert len(seen_goals) == 2
-    assert seen_goals[0] == "base-goal"
-    assert "fix-this" in seen_goals[1]  # feedback threaded into the retry goal
+    runner = _RecordingRunner()
+    loop = AttemptLoop(
+        body=RuntimeAttemptBody(runner),
+        judge=VerdictFnJudge(lambda **_: next(verdicts)),
+        stop=StopPolicy(max_attempts=3),
+    )
+    outcome = await loop.run(
+        AttemptRequest(session_id="stable", goal="base-goal", criteria=[Criterion(text="c1")])
+    )
+    assert outcome.outcome == "passed"
+    assert seen_goals == ["base-goal", "base-goal"]
+    assert runner.sessions == ["stable", "stable"]
+    assert runner.notes == ["fix-this"]
+
+
+@pytest.mark.asyncio
+async def test_attempt_loop_run_error_skips_judge():
+    class _ErrorRunner(_Runner):
+        async def run(self, **kwargs):
+            yield TextDelta(delta="partial")
+            yield DoneEvent(iterations=1, total_tokens=7, status="error")
+
+    calls = 0
+
+    def verdict(**_):
+        nonlocal calls
+        calls += 1
+        return Verdict(passed=True, overall_score=1, feedback="wrong")
+
+    outcome = await AttemptLoop(
+        body=RuntimeAttemptBody(_ErrorRunner()),
+        judge=VerdictFnJudge(verdict),
+        stop=StopPolicy(max_attempts=2),
+    ).run(AttemptRequest(goal="g"))
+    assert outcome.outcome == "run_error"
+    assert outcome.verdict is None
+    assert outcome.result == "partial"
+    assert calls == 0

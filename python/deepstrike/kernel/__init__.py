@@ -15,7 +15,6 @@ from deepstrike._kernel import (
     verdict_output_schema,
     Verdict,
     SkillCandidate,
-    IdlePipeline,
 )
 
 try:
@@ -34,5 +33,4 @@ __all__ = [
     "verdict_output_schema",
     "Verdict",
     "SkillCandidate",
-    "IdlePipeline",
 ]

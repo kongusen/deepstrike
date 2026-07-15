@@ -10,7 +10,7 @@
 //! ([`crate::types::policy::GovernanceVerdict`] and `SignalDisposition`). Tool/spawn/memory
 //! decisions converge on [`Disposition`]; signals feed the P2 scheduler instead.
 
-use crate::mm::memory::MemoryWriteRequest;
+use crate::mm::memory::MemoryRecord;
 use crate::scheduler::tcb::WaitReason;
 use crate::types::agent::IsolationManifest;
 use crate::types::message::ToolCall;
@@ -27,7 +27,7 @@ pub enum Syscall {
     /// Spawn a sub-agent (today: bypasses the gate).
     Spawn(IsolationManifest),
     /// Persist a long-term memory entry.
-    WriteMemory(MemoryWriteRequest),
+    WriteMemory(MemoryRecord),
     /// R3-1: append `count` nodes to the in-flight workflow DAG at runtime. Gating DAG growth through
     /// the trap lets a `ResourceQuota` backstop a runaway loop-until-done (denied past
     /// `max_workflow_nodes`); per-node spawns are still gated separately by `Spawn`.
@@ -106,7 +106,13 @@ mod tests {
             }
             other => panic!("expected Deny, got {other:?}"),
         }
-        assert!(!Disposition::Deny { stage: "veto", reason: String::new() }.is_allowed());
+        assert!(
+            !Disposition::Deny {
+                stage: "veto",
+                reason: String::new()
+            }
+            .is_allowed()
+        );
     }
 
     #[test]
@@ -124,8 +130,15 @@ mod tests {
 
     #[test]
     fn verdict_rate_limited_preserves_delay() {
-        let d: Disposition = GovernanceVerdict::RateLimited { retry_after_ms: 500 }.into();
-        assert!(matches!(d, Disposition::RateLimited { retry_after_ms: 500 }));
+        let d: Disposition = GovernanceVerdict::RateLimited {
+            retry_after_ms: 500,
+        }
+        .into();
+        assert!(matches!(
+            d,
+            Disposition::RateLimited {
+                retry_after_ms: 500
+            }
+        ));
     }
-
 }

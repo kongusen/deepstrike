@@ -80,11 +80,17 @@ export interface RuntimeSignal {
   summary: string
   payload: string
   dedupeKey?: string
+  recipient?: string
+  deadlineMs?: number
+  coalesceKey?: string
+  coalescedCount?: number
   timestampMs: number
 }
 
+export type SignalRouterLifecycle = "ready" | "running" | "suspended" | "done"
+
 interface SignalRouterInstance {
-  ingest(signal: RuntimeSignal, isRunning: boolean): string
+  ingest(signal: RuntimeSignal, lifecycle: SignalRouterLifecycle): string
   next(): RuntimeSignal | null
 }
 
@@ -110,41 +116,6 @@ export interface Verdict {
     whenToUse?: string
     content: string
   }
-}
-
-interface IdlePipelineAction {
-  kind: "synthesize_insights" | "commit_memories" | "noop" | "aborted"
-  messages?: Message[]
-  curationResult?: {
-    toAdd?: Array<{ text: string; score: number; metadata: string }>
-    toRemoveIndices?: number[]
-    stats?: {
-      insightsProcessed?: number
-      duplicatesRemoved?: number
-      conflictsResolved?: number
-      entriesAdded?: number
-    }
-  }
-  runResult?: {
-    sessionsProcessed: number
-    insightsExtracted: number
-  }
-}
-
-interface IdlePipelineInstance {
-  feedTrigger(
-    sessions: Array<{
-      sessionId: string
-      agentId: string
-      messages: Message[]
-      metadata: string
-      createdAtMs: number
-      updatedAtMs: number
-    }>,
-    existingMemories: Array<{ text: string; score: number; metadata: string }>,
-    nowMs: number,
-  ): IdlePipelineAction
-  feedSynthesisResult(content: string): IdlePipelineAction
 }
 
 export interface KernelRuntimeInstance {
@@ -178,7 +149,6 @@ interface KernelModule {
   buildEvalMessages(goal: string, criteria: NativeCriterion[], result: string, attempt: number, extractSkillOnPass: boolean): Message[]
   parseVerdict(content: string): Verdict
   verdictOutputSchema(extractSkillOnPass: boolean): string
-  IdlePipeline: new (agentId: string) => IdlePipelineInstance
 }
 
 const cjsRequire = createRequire(import.meta.url)

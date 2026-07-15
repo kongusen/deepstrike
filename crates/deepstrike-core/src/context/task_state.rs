@@ -31,10 +31,8 @@ pub struct TaskState {
     pub scratchpad: String,
     /// Reasons the current step cannot proceed.
     pub blocked_on: Vec<String>,
-    /// Durable user directives / standing constraints (e.g. mid-task corrections, "don't do X").
-    /// Promoted here from the *ephemeral* signal channel so they survive compression AND renewal
-    /// like the goal does — without this, the most recent user command loses salience exactly at
-    /// the compaction/renewal boundaries between consecutive contexts (the "goal drift" failure).
+    /// Explicit durable user directives / standing constraints (e.g. "don't do X"). Unlike
+    /// runtime signals, these are intentionally persisted across compression and renewal.
     /// Bounded + recency-ordered (oldest dropped past [`MAX_DIRECTIVES`]); newest last.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub directives: Vec<String>,
@@ -304,7 +302,10 @@ mod tests {
         ts.record_directive("use 2-space indent");
         // Re-issuing moves to most-recent, no duplicate.
         ts.record_directive("don't touch the db schema");
-        assert_eq!(ts.directives, ["use 2-space indent", "don't touch the db schema"]);
+        assert_eq!(
+            ts.directives,
+            ["use 2-space indent", "don't touch the db schema"]
+        );
 
         // Bounded at MAX_DIRECTIVES — oldest dropped.
         let mut ts = TaskState::default();
@@ -313,7 +314,10 @@ mod tests {
         }
         assert_eq!(ts.directives.len(), MAX_DIRECTIVES);
         assert_eq!(ts.directives.first().unwrap(), "rule 3"); // 0..2 dropped
-        assert_eq!(ts.directives.last().unwrap(), &format!("rule {}", MAX_DIRECTIVES + 2));
+        assert_eq!(
+            ts.directives.last().unwrap(),
+            &format!("rule {}", MAX_DIRECTIVES + 2)
+        );
 
         // Blank is ignored.
         let mut ts = TaskState::default();
@@ -323,7 +327,10 @@ mod tests {
 
     #[test]
     fn directives_render_after_goal() {
-        let mut ts = TaskState { goal: "ship it".to_string(), ..Default::default() };
+        let mut ts = TaskState {
+            goal: "ship it".to_string(),
+            ..Default::default()
+        };
         ts.record_directive("don't break the public API");
         let s = ts.format_compact();
         assert!(s.contains("active_directives"));

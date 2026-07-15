@@ -1,7 +1,7 @@
 import { createRunner, tool } from "./helpers.js"
 import { collectText } from "../../src/runtime/runner.js"
 import {
-  DEFAULT_NATIVE_ATTENTION_POLICY,
+  DEFAULT_NATIVE_SIGNAL_POLICY,
   DEFAULT_NATIVE_GOVERNANCE_POLICY,
   assertNativeProfile,
   osProfile,
@@ -15,7 +15,7 @@ describe("OS Native Profile (Phase 6)", () => {
   it("resolves and validates the native OS profile", () => {
     const profile = assertNativeProfile(osProfile("native"))
     expect(profile.id).toBe("native")
-    expect(profile.attentionPolicy.maxQueueSize).toBe(64)
+    expect(profile.signalPolicy.queueMax).toBe(64)
     expect(profile.governancePolicy.rules?.[0]).toEqual({ pattern: "*", action: "allow" })
     expect(() => assertNativeProfile({ ...profile, id: "invalid" as "native" })).toThrow(/Unsupported OS profile/)
   })
@@ -31,7 +31,7 @@ describe("OS Native Profile (Phase 6)", () => {
     }
 
     const { runner, sessionLog } = createRunner(provider, [], {
-      attentionPolicy: DEFAULT_NATIVE_ATTENTION_POLICY,
+      signalPolicy: DEFAULT_NATIVE_SIGNAL_POLICY,
       governancePolicy: DEFAULT_NATIVE_GOVERNANCE_POLICY,
     })
 
@@ -62,7 +62,7 @@ describe("OS Native Profile (Phase 6)", () => {
       provider,
       [tool("needs_approval", "Needs approval", { type: "object", properties: {} }, () => "ok")],
       {
-        attentionPolicy: DEFAULT_NATIVE_ATTENTION_POLICY,
+        signalPolicy: DEFAULT_NATIVE_SIGNAL_POLICY,
         governancePolicy: { rules: [{ pattern: "needs_approval", action: "ask_user" }] },
         onPermissionRequest: () => ({ approved: true, responder: "test" }),
         maxTurns: 6,

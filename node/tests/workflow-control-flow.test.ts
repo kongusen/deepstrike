@@ -18,7 +18,7 @@ import { stepKernelV2WithHostEffects } from "./helpers/kernel-v2.js"
 function step(rt: { step(json: string): string }, event: Record<string, unknown>) {
   return stepKernelV2WithHostEffects(rt as never, event) as {
     actions: Array<Record<string, unknown>>
-    observations: Array<{ kind: string; nodes?: WorkflowSpawnInfo[]; completed?: string[]; failed?: string[] }>
+    observations: Array<{ kind: string; nodes?: WorkflowSpawnInfo[]; node_outcomes?: Array<{ node_id: string; status: string }> }>
   }
 }
 
@@ -170,7 +170,7 @@ describe("LoadWorkflow ABI drives control-flow kinds end-to-end", () => {
 
     const fin = complete(rt, "wf-node1")
     // The loop node's completed entry is its base node id (`wf-node0`), not the iteration id.
-    expect(doneOf(fin.observations)?.completed).toEqual(expect.arrayContaining(["wf-node0", "wf-node1"]))
+    expect(doneOf(fin.observations)?.node_outcomes?.map(node => node.node_id)).toEqual(expect.arrayContaining(["wf-node0", "wf-node1"]))
   })
 
   it("classify: descriptor carries classify_labels; the chosen branch runs and the rest are pruned", () => {
@@ -193,8 +193,8 @@ describe("LoadWorkflow ABI drives control-flow kinds end-to-end", () => {
 
     const fin = complete(rt, "wf-node1")
     const done = doneOf(fin.observations)
-    expect(done?.completed).toEqual(expect.arrayContaining(["wf-node0", "wf-node1"]))
-    expect(done?.failed).toEqual(["wf-node2"])
+    expect(done?.node_outcomes?.filter(node => node.status === "completed").map(node => node.node_id)).toEqual(expect.arrayContaining(["wf-node0", "wf-node1"]))
+    expect(done?.node_outcomes?.filter(node => node.status === "failed").map(node => node.node_id)).toEqual(["wf-node2"])
   })
 
   it("tournament: entrants carry no judge_match; judges do; the winner promotes the dependent", () => {
@@ -225,6 +225,6 @@ describe("LoadWorkflow ABI drives control-flow kinds end-to-end", () => {
     expect(batchOf(afterJudge.observations).map(n => n.agent_id)).toEqual(["wf-node1"])
 
     const fin = complete(rt, "wf-node1")
-    expect(doneOf(fin.observations)?.completed).toEqual(expect.arrayContaining(["wf-node0", "wf-node1"]))
+    expect(doneOf(fin.observations)?.node_outcomes?.map(node => node.node_id)).toEqual(expect.arrayContaining(["wf-node0", "wf-node1"]))
   })
 })

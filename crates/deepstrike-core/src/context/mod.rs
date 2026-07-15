@@ -1,5 +1,6 @@
 pub mod compression;
 pub mod config;
+pub mod fault;
 pub mod manager;
 pub mod partitions;
 pub mod policy;
@@ -7,8 +8,9 @@ pub mod pressure;
 pub mod renderer;
 pub mod renewal;
 pub mod skill_catalog;
-pub mod fault;
 pub mod summarizer;
 pub mod task_state;
 pub mod text;
 pub mod token_engine;
+pub mod units;
+pub mod utility;

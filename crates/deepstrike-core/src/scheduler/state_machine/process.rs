@@ -1,22 +1,18 @@
 //! Sub-agent process lifecycle impl for [`super::LoopStateMachine`].
 
-use super::{KernelObservation, LoopAction, LoopPhase, LoopStateMachine, SuspendState};
 use super::super::tcb::{TaskLifecycle, TaskTable, Tcb, WaitReason};
+use super::{KernelObservation, LoopAction, LoopPhase, LoopStateMachine, SuspendState};
+use crate::AgentRunSpec;
 use crate::proc::AgentProcess;
 use crate::runtime::session::RollbackReason;
 use crate::syscall::{Disposition, Syscall};
 use crate::types::message::Message;
 use crate::types::result::{SubAgentResult, TerminationReason};
-use crate::AgentRunSpec;
 
 impl LoopStateMachine {
     /// Spawn a sub-agent: registers a kernel process, emits `AgentProcessChanged`,
     /// and enters `Suspended(SubAgentAwait)` until the SDK feeds `SubAgentCompleted`.
-    pub fn spawn_sub_agent(
-        &mut self,
-        spec: AgentRunSpec,
-        parent_session_id: &str,
-    ) -> LoopAction {
+    pub fn spawn_sub_agent(&mut self, spec: AgentRunSpec, parent_session_id: &str) -> LoopAction {
         let manifest = crate::types::agent::IsolationManifest::from_spec(
             &spec,
             parent_session_id,
@@ -48,11 +44,7 @@ impl LoopStateMachine {
         // `AgentProcess` view row is reconstructed from the TCB for the observation/session-log.
         let child = Tcb::spawned(&manifest, self.policy.clone());
         self.tasks.insert(child);
-        if let Some(process) = self
-            .tasks
-            .get(&agent_id)
-            .and_then(AgentProcess::from_tcb)
-        {
+        if let Some(process) = self.tasks.get(&agent_id).and_then(AgentProcess::from_tcb) {
             self.push_agent_process_changed(process);
         }
         self.suspend_state = Some(SuspendState::SubAgentAwait {
@@ -105,7 +97,11 @@ impl LoopStateMachine {
             .workflow
             .as_ref()
             .is_some_and(|w| w.is_agent_quarantined(result.agent_id.as_str()));
-        let marker = if quarantined { "quarantined sub-agent" } else { "sub-agent" };
+        let marker = if quarantined {
+            "quarantined sub-agent"
+        } else {
+            "sub-agent"
+        };
         self.ctx
             .push_signal(format!("[{marker} {}] {}", result.agent_id, summary));
 
@@ -176,20 +172,21 @@ impl LoopStateMachine {
         // Wire form: role/isolation/inheritance are debug-lowercase (`readonly`, `systemonly`),
         // state via `label()`. Preserved verbatim from the former `From<LoopObservation>` so the
         // observation merge stays byte-identical (locked by `agent_process_changed_locks_*` test).
-        self.observations.push(KernelObservation::AgentProcessChanged {
-            turn: self.turn,
-            agent_id: process.agent_id.to_string(),
-            parent_session_id: process.parent_session_id.to_string(),
-            role: format!("{:?}", process.role).to_lowercase(),
-            isolation: format!("{:?}", process.isolation).to_lowercase(),
-            context_inheritance: format!("{:?}", process.context_inheritance).to_lowercase(),
-            state: process.state.label().to_string(),
-            permitted_capability_ids: process
-                .permitted_capability_ids
-                .iter()
-                .map(|id| id.to_string())
-                .collect(),
-            result_termination: process.result_termination_label().map(str::to_string),
-        });
+        self.observations
+            .push(KernelObservation::AgentProcessChanged {
+                turn: self.turn,
+                agent_id: process.agent_id.to_string(),
+                parent_session_id: process.parent_session_id.to_string(),
+                role: format!("{:?}", process.role).to_lowercase(),
+                isolation: format!("{:?}", process.isolation).to_lowercase(),
+                context_inheritance: format!("{:?}", process.context_inheritance).to_lowercase(),
+                state: process.state.label().to_string(),
+                permitted_capability_ids: process
+                    .permitted_capability_ids
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect(),
+                result_termination: process.result_termination_label().map(str::to_string),
+            });
     }
 }

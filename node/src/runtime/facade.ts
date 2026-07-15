@@ -99,7 +99,9 @@ export async function runFanout(opts: RunFanoutOptions): Promise<{ synthesis: st
   // but fall back to the last completed node's output so a kernel id-scheme change can't silently
   // return an empty synthesis.
   const synthesisId = `wf-node${opts.tasks.length}`
-  const lastCompleted = outcome.completed[outcome.completed.length - 1]
+  const completed = outcome.nodeOutcomes.filter(node =>
+    node.status === "completed" || node.status === "completed_partial")
+  const lastCompleted = completed[completed.length - 1]?.nodeId
   const synthesis = outcome.outputs[synthesisId] ?? (lastCompleted ? outcome.outputs[lastCompleted] : undefined) ?? ""
   return { synthesis, outputs: outcome.outputs }
 }

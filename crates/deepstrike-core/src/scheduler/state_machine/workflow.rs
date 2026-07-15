@@ -134,10 +134,24 @@ impl LoopStateMachine {
                 .push_signal(note.content.as_text().unwrap_or_default().to_string());
             return LoopAction::AwaitingResume;
         }
-        if let Some(run) = self.workflow.as_mut() {
+        let submission = self
+            .workflow
+            .as_mut()
+            .map(|run| run.submit_nodes_from(submitter_agent_id, nodes));
+        if let Some(submission) = submission {
             // G1: route through the trust-aware entry point — a quarantined submitter's nodes are
             // coerced to quarantined in-kernel before append (no topological privilege escalation).
-            let appended = run.submit_nodes_from(submitter_agent_id, nodes);
+            let appended = match submission {
+                Ok(appended) => appended,
+                Err(error) => {
+                    self.observations.push(KernelObservation::NodesRejected {
+                        turn: self.turn,
+                        node_index: error.node_index as u32,
+                        reason: error.reason,
+                    });
+                    return LoopAction::AwaitingResume;
+                }
+            };
             if let Some(&base) = appended.first() {
                 // R3-1: surface the batch's base index so the SDK-persisted
                 // `workflow_nodes_submitted` record lets resume rebuild exact indices.
@@ -224,24 +238,23 @@ impl LoopStateMachine {
         }
     }
 
-    /// W0-ABI resume: load a workflow whose listed node completions were recovered from the session
-    /// log after an interruption; the kernel continues the DAG from the remaining work. `completed`
-    /// carries per-node result signals (classify branch / loop stop) so control flow replays
-    /// faithfully — see [`crate::orchestration::workflow::ResumedCompletion`].
+    /// Load a workflow whose typed terminal outcomes were recovered from the session journal.
+    /// `outcomes` carries status, termination, output and control signals so dependency semantics
+    /// faithfully — see [`crate::orchestration::workflow::ResumedNodeOutcome`].
     pub fn load_workflow_resumed(
         &mut self,
         spec: crate::orchestration::workflow::WorkflowSpec,
         parent_session_id: &str,
         submissions: &[Vec<crate::orchestration::workflow::WorkflowNode>],
         submission_bases: &[u32],
-        completed: &[crate::orchestration::workflow::ResumedCompletion],
+        outcomes: &[crate::orchestration::workflow::ResumedNodeOutcome],
     ) -> LoopAction {
         self.install_workflow(crate::orchestration::workflow::WorkflowRun::resume(
             &spec,
             parent_session_id,
             submissions,
             submission_bases,
-            completed,
+            outcomes,
         ))
     }
 
@@ -250,7 +263,8 @@ impl LoopStateMachine {
         built: crate::types::error::Result<crate::orchestration::workflow::WorkflowRun>,
     ) -> LoopAction {
         match built {
-            Ok(run) => {
+            Ok(mut run) => {
+                run.set_scheduler_policy(self.scheduler_policy);
                 self.workflow = Some(run);
                 self.drive_workflow(None)
             }
@@ -292,7 +306,7 @@ impl LoopStateMachine {
         }
         let ready = self
             .workflow
-            .as_ref()
+            .as_mut()
             .map(|w| w.ready_batch())
             .unwrap_or_default();
         let mut spawned_ids: Vec<String> = Vec::new();
@@ -349,7 +363,8 @@ impl LoopStateMachine {
                     break;
                 }
                 _ => {
-                    // Permanent denial (e.g. depth limit): the node fails; dependents starve.
+                    // Permanent denial (e.g. depth limit): the node fails and dependency policy
+                    // deterministically promotes or skips its descendants.
                     if let Some(run) = self.workflow.as_mut() {
                         run.mark_denied(node);
                     }
@@ -418,8 +433,9 @@ impl LoopStateMachine {
             return LoopAction::AwaitingResume;
         }
 
-        // Nothing running and nothing newly spawned → the DAG is done, or stalled because a
-        // gated/denied dependency starves its dependents. Resume the parent loop.
+        // Nothing running and nothing newly spawned → close every remaining node and resume the
+        // parent loop. Dependency propagation normally closes blocked descendants before this;
+        // `finish_workflow` performs the final invariant sweep.
         self.suspend_state = None;
         if let Some(id) = just_completed {
             self.observations.push(KernelObservation::Resumed {
@@ -434,13 +450,12 @@ impl LoopStateMachine {
     /// Finish the in-flight workflow: emit `WorkflowCompleted` with its outcome, clear it, and
     /// resume the parent loop. Shared by the all-gated path and the drained-no-more-ready path.
     fn finish_workflow(&mut self) -> LoopAction {
-        if let Some(run) = self.workflow.as_ref() {
-            let (completed, failed) = run.outcome();
+        if let Some(run) = self.workflow.as_mut() {
+            let node_outcomes = run.finish();
             self.observations
                 .push(KernelObservation::WorkflowCompleted {
                     turn: self.turn,
-                    completed,
-                    failed,
+                    node_outcomes,
                 });
         }
         self.workflow = None;

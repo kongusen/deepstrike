@@ -286,26 +286,29 @@ pub enum SessionEvent {
     /// Memory entry written successfully (SDK → kernel acknowledgment).
     MemoryWritten {
         turn: u32,
-        memory_id: String,
-        memory_kind: String,
+        record_id: String,
+        scope: crate::mm::memory::MemoryScope,
+        memory_kind: crate::mm::memory::MemoryKind,
+        name: String,
         size_bytes: u32,
     },
     /// Memory query request (kernel → SDK; SDK should respond asynchronously).
     MemoryQueried {
         turn: u32,
-        query_context: String,
+        scope: crate::mm::memory::MemoryScope,
+        query: String,
         requested_k: usize,
         requires_async_response: bool,
     },
     /// Memory validation failed (kernel rejected a write request).
     MemoryValidationFailed {
         turn: u32,
-        memory_id: String,
+        record_id: String,
         error: String,
     },
     /// Memory retrieval result (SDK → kernel via Resume or other async mechanism).
     MemoryRetrievalResult {
-        retrieval: crate::mm::memory::MemoryRetrieval,
+        hits: Vec<crate::mm::memory::MemoryRecall>,
     },
 }
 

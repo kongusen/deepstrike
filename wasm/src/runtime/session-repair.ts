@@ -1,5 +1,6 @@
-import type { ProviderReplay, ToolCall } from "../types.js"
+import type { Message, ProviderReplay, ToolCall } from "../types.js"
 import type { SessionEvent } from "./session-log.js"
+import type { WorkflowNodeStatus } from "./types/agent.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
 
 export { REPLAY_CONTENT_MAX_BYTES as RECOVERY_CONTENT_MAX_BYTES } from "./replay-sanitize.js"
@@ -77,16 +78,18 @@ export function buildRunTerminalEvent(input: {
 export function buildWorkflowNodeCompletedEvent(input: {
   turn: number
   agentId: string
+  status: WorkflowNodeStatus
   termination: string
   classifyBranch?: string
   tournamentWinner?: string
   loopContinue?: boolean
-  output?: string
+  output?: Message
 }): Extract<SessionEvent, { kind: "workflow_node_completed" }> {
   return {
     kind: "workflow_node_completed",
     turn: input.turn,
     agent_id: input.agentId,
+    status: input.status,
     termination: input.termination,
     ...(input.classifyBranch !== undefined ? { classify_branch: input.classifyBranch } : {}),
     ...(input.tournamentWinner !== undefined ? { tournament_winner: input.tournamentWinner } : {}),
@@ -96,29 +99,33 @@ export function buildWorkflowNodeCompletedEvent(input: {
 }
 
 /** One recovered node completion: the agent id plus its persisted control signals and output. */
-export interface RecoveredNodeCompletion {
+export interface RecoveredNodeOutcome {
   agentId: string
+  status: WorkflowNodeStatus
+  termination: string
   classifyBranch?: string
   tournamentWinner?: string
   loopContinue?: boolean
-  output?: string
+  output?: Message
 }
 
 /**
  * Recover completed workflow node records from a session event stream. Scans for
  * workflow_node_completed events with termination "completed" and returns them WITH their
  * result-borne control signals (W-1) — resumeWorkflow lowers these to the kernel's
- * `resumed_results` so a classifier re-prunes and a loop stop is honored, and re-seeds the
+ * `resumed_outcomes` so a classifier re-prunes and a loop stop is honored, and re-seeds the
  * driver's outputs map from the persisted output text.
  */
-export function recoverCompletedWorkflowNodes(
+export function recoverWorkflowNodeOutcomes(
   events: Array<{ seq: number; event: SessionEvent }>,
-): RecoveredNodeCompletion[] {
-  const completed: RecoveredNodeCompletion[] = []
+): RecoveredNodeOutcome[] {
+  const completed: RecoveredNodeOutcome[] = []
   for (const { event } of events) {
-    if (event.kind === "workflow_node_completed" && event.termination === "completed") {
+    if (event.kind === "workflow_node_completed") {
       completed.push({
         agentId: event.agent_id,
+        status: event.status,
+        termination: event.termination,
         ...(event.classify_branch !== undefined ? { classifyBranch: event.classify_branch } : {}),
         ...(event.tournament_winner !== undefined ? { tournamentWinner: event.tournament_winner } : {}),
         ...(event.loop_continue !== undefined ? { loopContinue: event.loop_continue } : {}),
@@ -159,10 +166,11 @@ export function recoverSubmittedWorkflowNodes(
     if (event.kind === "workflow_nodes_submitted") {
       submissions.push(event.nodes)
       submitters.push(event.submitter_agent_id)
-      // Absent on legacy logs → order-only replay (bases array stays parallel-short only
-      // if ALL records carry it; a mixed log degrades to order-only for safety).
-      if (event.base_index !== undefined) bases.push(event.base_index)
+      if (event.base_index === undefined) {
+        throw new Error("workflow_nodes_submitted is missing required base_index")
+      }
+      bases.push(event.base_index)
     }
   }
-  return { submissions, bases: bases.length === submissions.length ? bases : [], submitters }
+  return { submissions, bases, submitters }
 }

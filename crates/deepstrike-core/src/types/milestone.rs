@@ -66,7 +66,7 @@ impl RetryPolicy {
 pub struct MilestonePhase {
     /// Stable identifier (e.g., `"plan"`, `"implement"`, `"verify"`).
     pub id: String,
-    /// Human-readable criteria text passed to the verifier or HarnessLoop.
+    /// Human-readable criteria text passed to the verifier or AttemptLoop.
     #[serde(default)]
     pub criteria: Vec<String>,
     /// Capabilities unlocked and mounted when this phase passes.

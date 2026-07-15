@@ -5,24 +5,28 @@ use serde::{Deserialize, Serialize};
 use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
 
-use deepstrike_core::context::renderer::RenderedContext as RustRenderedContext;
+use deepstrike_core::context::renderer::{
+    ContextBudgetOverflow as RustContextBudgetOverflow,
+    ContextBudgetOverflowKind as RustContextBudgetOverflowKind,
+    RenderedContext as RustRenderedContext,
+};
 use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
 use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
 use deepstrike_core::governance::rate_limit::RateLimit;
 use deepstrike_core::harness::eval::{
-    build_eval_messages as rust_build_eval_messages, parse_verdict as rust_parse_verdict,
-    verdict_output_schema as rust_verdict_output_schema, Criterion as RustCriterion,
+    Criterion as RustCriterion, build_eval_messages as rust_build_eval_messages,
+    parse_verdict as rust_parse_verdict, verdict_output_schema as rust_verdict_output_schema,
 };
-use deepstrike_core::memory::curator::CurationResult as RustCurationResult;
 use deepstrike_core::memory::durable::SessionData as RustSessionData;
-use deepstrike_core::memory::idle_pipeline::{
-    IdleAction as RustIdleAction, IdleEvent as RustIdleEvent, IdlePipeline as RustIdlePipeline,
-    IdlePolicy as RustIdlePolicy,
+use deepstrike_core::mm::memory::{
+    MemoryAuthor as RustMemoryAuthor, MemoryKind as RustMemoryKind,
+    MemoryProvenance as RustMemoryProvenance, MemoryRecord as RustMemoryRecord,
+    MemoryScope as RustMemoryScope, MemoryTrustLevel as RustMemoryTrustLevel,
 };
-use deepstrike_core::memory::semantic::MemoryEntry as RustMemoryEntry;
 use deepstrike_core::runtime::KernelRuntime as RustKernelRuntime;
 use deepstrike_core::scheduler::policy::SchedulerBudget as RustLoopPolicy;
+use deepstrike_core::scheduler::tcb::TaskLifecycle;
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
 use deepstrike_core::types::agent::AgentIdentity;
 use deepstrike_core::types::message::{
@@ -190,13 +194,22 @@ pub struct RuntimeSignal {
     /// Target a specific session loop (sessionId). Omitted ⇒ broadcast.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipient: Option<String>,
-    /// Optional pub/sub topic (carried through; routing deferred).
+    /// Absolute journal-clock deadline for optional urgency escalation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub topic: Option<String>,
+    pub deadline_ms: Option<f64>,
+    /// Merge this signal with an unconsumed queued signal carrying the same key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coalesce_key: Option<String>,
+    /// Deterministic number of host signals represented by this value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coalesced_count: Option<u32>,
     pub timestamp_ms: f64,
 }
 
-fn runtime_signal_to_rust(s: RuntimeSignal) -> RustRuntimeSignal {
+fn runtime_signal_to_rust(s: RuntimeSignal) -> Result<RustRuntimeSignal, JsValue> {
+    let id =
+        s.id.parse()
+            .map_err(|_| JsValue::from_str("signal id must be a UUID"))?;
     let source = match s.source.as_str() {
         "cron" => RustSignalSource::Cron,
         "gateway" => RustSignalSource::Gateway,
@@ -219,16 +232,21 @@ fn runtime_signal_to_rust(s: RuntimeSignal) -> RustRuntimeSignal {
     let mut sig = RustRuntimeSignal::new(source, signal_type, urgency, s.summary.as_str())
         .with_payload(payload)
         .with_timestamp(s.timestamp_ms as u64);
+    sig.id = id;
     if let Some(key) = s.dedupe_key {
         sig = sig.with_dedupe(key.as_str());
     }
     if let Some(recipient) = s.recipient {
         sig = sig.with_recipient(recipient.as_str());
     }
-    if let Some(topic) = s.topic {
-        sig = sig.with_topic(topic.as_str());
+    if let Some(deadline_ms) = s.deadline_ms {
+        sig = sig.with_deadline(deadline_ms as u64);
     }
-    sig
+    if let Some(coalesce_key) = s.coalesce_key {
+        sig = sig.with_coalesce(coalesce_key.as_str());
+    }
+    sig.coalesced_count = s.coalesced_count.unwrap_or(1).max(1);
+    Ok(sig)
 }
 
 fn runtime_signal_from_rust(s: &RustRuntimeSignal) -> RuntimeSignal {
@@ -258,7 +276,9 @@ fn runtime_signal_from_rust(s: &RustRuntimeSignal) -> RuntimeSignal {
         payload: serde_json::to_string(&s.payload).unwrap_or_else(|_| "null".into()),
         dedupe_key: s.dedupe_key.as_ref().map(|k| k.to_string()),
         recipient: s.recipient.as_ref().map(|r| r.to_string()),
-        topic: s.topic.as_ref().map(|t| t.to_string()),
+        deadline_ms: s.deadline_ms.map(|value| value as f64),
+        coalesce_key: s.coalesce_key.as_ref().map(|key| key.to_string()),
+        coalesced_count: Some(s.coalesced_count.max(1)),
         timestamp_ms: s.timestamp_ms as f64,
     }
 }
@@ -283,6 +303,17 @@ pub struct RenderedContext {
     /// P1-E: count of leading `turns` forming the frozen prefix; absent ⇒ rolling-pair fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frozen_prefix_len: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_overflow: Option<ContextBudgetOverflow>,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBudgetOverflow {
+    pub kind: String,
+    pub required_tokens: u32,
+    pub max_tokens: u32,
 }
 
 #[derive(Tsify, Clone, Serialize, Deserialize)]
@@ -459,6 +490,19 @@ fn rendered_context_from_rust(rc: RustRenderedContext) -> RenderedContext {
         turns: rc.turns.iter().map(message_from_rust).collect(),
         state_turn: rc.state_turn.as_ref().map(message_from_rust),
         frozen_prefix_len: rc.frozen_prefix_len.map(|n| n as u32),
+        budget_overflow: rc.budget_overflow.as_ref().map(context_budget_overflow_from_rust),
+    }
+}
+
+fn context_budget_overflow_from_rust(value: &RustContextBudgetOverflow) -> ContextBudgetOverflow {
+    ContextBudgetOverflow {
+        kind: match value.kind {
+            RustContextBudgetOverflowKind::FixedContext => "fixed_context",
+            RustContextBudgetOverflowKind::ProtectedTail => "protected_tail",
+        }
+        .to_string(),
+        required_tokens: value.required_tokens,
+        max_tokens: value.max_tokens,
     }
 }
 
@@ -506,7 +550,9 @@ impl KernelRuntime {
     /// Feed a JSON-encoded KernelInput and return a JSON-encoded KernelStep.
     #[wasm_bindgen(js_name = step)]
     pub fn step(&mut self, input_json: String) -> Result<String, JsValue> {
-        let step = self.inner.step_json(&input_json)
+        let step = self
+            .inner
+            .step_json(&input_json)
             .map_err(|e| JsValue::from_str(&format!("invalid KernelInput JSON: {e}")))?;
         serde_json::to_string(&step)
             .map_err(|e| JsValue::from_str(&format!("failed to encode KernelStep: {e}")))
@@ -586,7 +632,8 @@ impl KernelRuntime {
 
     #[wasm_bindgen(js_name = drainNewMessages)]
     pub fn drain_new_messages(&mut self) -> Vec<Message> {
-        self.inner.drain_new_messages()
+        self.inner
+            .drain_new_messages()
             .iter()
             .map(message_from_rust)
             .collect()
@@ -616,12 +663,25 @@ impl SignalRouter {
 
     /// Ingest a signal. Returns disposition: "ignore"|"observe"|"queue"|"run"|"interrupt"|"interrupt_now"|"dropped"
     #[wasm_bindgen]
-    pub fn ingest(&mut self, signal: RuntimeSignal, is_running: bool) -> String {
-        disposition_str(
+    pub fn ingest(&mut self, signal: RuntimeSignal, lifecycle: String) -> Result<String, JsValue> {
+        let lifecycle = match lifecycle.as_str() {
+            "ready" => TaskLifecycle::Ready,
+            "running" => TaskLifecycle::Running,
+            "suspended" => TaskLifecycle::Suspended,
+            "done" => {
+                TaskLifecycle::Done(deepstrike_core::types::result::TerminationReason::Completed)
+            }
+            other => {
+                return Err(JsValue::from_str(&format!(
+                    "invalid task lifecycle {other:?}; expected ready|running|suspended|done"
+                )));
+            }
+        };
+        Ok(disposition_str(
             self.inner
-                .ingest(runtime_signal_to_rust(signal), is_running),
+                .ingest(runtime_signal_to_rust(signal)?, lifecycle),
         )
-        .into()
+        .into())
     }
 
     /// Pull the next queued signal (highest priority first).
@@ -643,7 +703,7 @@ impl SignalRouter {
 
 // ────────────────────────────────────────────── Eval primitives ──────────────────────────────────────────────
 // The generate→evaluate quality gate's stateless compute (0.5.0 fold of the former `EvalPipeline`
-// class, OS-axis #6). The SDK `HarnessLoop` drives the loop; these expose the kernel's prompt
+// class, OS-axis #6). The SDK `AttemptLoop` drives the loop; these expose the kernel's prompt
 // builder + verdict parser + verdict schema.
 
 /// Build the impartial-evaluator messages for one attempt. Call the evaluator LLM with these, then
@@ -664,10 +724,16 @@ pub fn build_eval_messages(
             weight: criterion.weight.map(|weight| weight as f32).unwrap_or(1.0),
         })
         .collect();
-    rust_build_eval_messages(&goal, &rust_criteria, &result, attempt, extract_skill_on_pass)
-        .iter()
-        .map(message_from_rust)
-        .collect()
+    rust_build_eval_messages(
+        &goal,
+        &rust_criteria,
+        &result,
+        attempt,
+        extract_skill_on_pass,
+    )
+    .iter()
+    .map(message_from_rust)
+    .collect()
 }
 
 /// Parse the evaluator LLM's JSON response into a structured `Verdict`.
@@ -820,10 +886,7 @@ impl Governance {
     }
 }
 
-
-// ────────────────────────────── Dream / idle consolidation pipeline ──────────────────────────────
-// Parity with the napi/pyo3 IdlePipeline (the wasm SDK's Agent.dream() drives this; the ambient
-// wasm-kernel.d.ts already promised this class).
+// ────────────────────────────── Durable-memory wire values ──────────────────────────────────────
 
 #[derive(Tsify, Clone, Serialize, Deserialize)]
 #[tsify(into_wasm_abi, from_wasm_abi)]
@@ -841,58 +904,45 @@ pub struct SessionData {
 #[derive(Tsify, Clone, Serialize, Deserialize)]
 #[tsify(into_wasm_abi, from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
-pub struct MemoryEntry {
-    pub text: String,
-    pub score: f64,
-    /// JSON-encoded metadata blob.
-    pub metadata: String,
-}
-
-#[derive(Tsify, Clone, Serialize, Deserialize)]
-#[tsify(into_wasm_abi, from_wasm_abi)]
-#[serde(rename_all = "camelCase")]
-pub struct CurationStats {
-    pub insights_processed: u32,
-    pub duplicates_removed: u32,
-    pub conflicts_resolved: u32,
-    pub entries_added: u32,
-}
-
-#[derive(Tsify, Clone, Serialize, Deserialize)]
-#[tsify(into_wasm_abi, from_wasm_abi)]
-#[serde(rename_all = "camelCase")]
-pub struct CurationResult {
-    pub to_add: Vec<MemoryEntry>,
-    /// Indices into the `existingMemories` slice passed to `feedTrigger`.
-    pub to_remove_indices: Vec<u32>,
-    pub stats: CurationStats,
-}
-
-#[derive(Tsify, Clone, Serialize, Deserialize)]
-#[tsify(into_wasm_abi, from_wasm_abi)]
-#[serde(rename_all = "camelCase")]
-pub struct IdleRunResult {
-    pub sessions_processed: u32,
-    pub insights_extracted: u32,
-}
-
-/// Discriminated union returned by `IdlePipeline` methods. Inspect `kind`:
-/// - `"synthesize_insights"` → `messages` (SDK must call the LLM, then `feedSynthesisResult`)
-/// - `"commit_memories"`     → `agentId`, `curationResult`, `runResult`
-/// - `"noop"` | `"aborted"`
-#[derive(Tsify, Clone, Serialize, Deserialize)]
-#[tsify(into_wasm_abi, from_wasm_abi)]
-#[serde(rename_all = "camelCase")]
-pub struct IdlePipelineAction {
+pub struct MemoryRecord {
+    pub record_id: String,
+    pub scope: MemoryScope,
+    pub name: String,
     pub kind: String,
+    pub content: String,
+    pub description: String,
+    pub provenance: MemoryProvenance,
+    pub created_at: f64,
+    pub updated_at: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub messages: Option<Vec<Message>>,
+    pub last_recalled_at: Option<f64>,
+    pub recall_count: f64,
+    pub confidence: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<String>,
+    pub pinned: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<String>,
+    pub ttl_days: Option<u32>,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MemoryScope {
+    pub tenant_id: String,
+    pub namespace: String,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MemoryProvenance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub curation_result: Option<CurationResult>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_result: Option<IdleRunResult>,
+    pub session_id: Option<String>,
+    pub author: String,
+    pub trust: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_refs: Vec<String>,
 }
 
 fn role_str_to_rust(role: &str) -> Result<Role, JsValue> {
@@ -975,112 +1025,82 @@ fn session_data_to_rust(s: SessionData) -> Result<RustSessionData, JsValue> {
     })
 }
 
-fn memory_entry_to_rust(e: MemoryEntry) -> RustMemoryEntry {
-    let metadata: serde_json::Value =
-        serde_json::from_str(&e.metadata).unwrap_or(serde_json::Value::Null);
-    RustMemoryEntry { text: e.text, score: e.score, metadata }
+fn memory_record_to_rust(record: MemoryRecord) -> Result<RustMemoryRecord, JsValue> {
+    let kind = match record.kind.as_str() {
+        "user" => RustMemoryKind::User,
+        "feedback" => RustMemoryKind::Feedback,
+        "project" => RustMemoryKind::Project,
+        "reference" => RustMemoryKind::Reference,
+        other => return Err(JsValue::from_str(&format!("invalid memory kind {other:?}"))),
+    };
+    let author = match record.provenance.author.as_str() {
+        "model" => RustMemoryAuthor::Model,
+        "host" => RustMemoryAuthor::Host,
+        "extraction" => RustMemoryAuthor::Extraction,
+        other => return Err(JsValue::from_str(&format!("invalid memory author {other:?}"))),
+    };
+    let trust = match record.provenance.trust.as_str() {
+        "untrusted" => RustMemoryTrustLevel::Untrusted,
+        "user_asserted" => RustMemoryTrustLevel::UserAsserted,
+        "host_verified" => RustMemoryTrustLevel::HostVerified,
+        other => return Err(JsValue::from_str(&format!("invalid memory trust {other:?}"))),
+    };
+    Ok(RustMemoryRecord {
+        record_id: record.record_id,
+        scope: RustMemoryScope::new(record.scope.tenant_id, record.scope.namespace),
+        name: record.name,
+        kind,
+        content: record.content,
+        description: record.description,
+        provenance: RustMemoryProvenance {
+            session_id: record.provenance.session_id,
+            author,
+            trust,
+            evidence_refs: record.provenance.evidence_refs,
+        },
+        created_at: record.created_at as u64,
+        updated_at: record.updated_at as u64,
+        last_recalled_at: record.last_recalled_at.map(|value| value as u64),
+        recall_count: record.recall_count as u64,
+        confidence: record.confidence,
+        links: record.links,
+        pinned: record.pinned,
+        ttl_days: record.ttl_days,
+    })
 }
 
-fn memory_entry_from_rust(e: &RustMemoryEntry) -> MemoryEntry {
-    MemoryEntry {
-        text: e.text.clone(),
-        score: e.score,
-        metadata: serde_json::to_string(&e.metadata).unwrap_or_else(|_| "null".into()),
-    }
-}
-
-fn curation_result_from_rust(r: RustCurationResult) -> CurationResult {
-    CurationResult {
-        to_add: r.to_add.iter().map(memory_entry_from_rust).collect(),
-        to_remove_indices: r.to_remove_indices.iter().map(|&i| i as u32).collect(),
-        stats: CurationStats {
-            insights_processed: r.stats.insights_processed as u32,
-            duplicates_removed: r.stats.duplicates_removed as u32,
-            conflicts_resolved: r.stats.conflicts_resolved as u32,
-            entries_added: r.stats.entries_added as u32,
+fn memory_record_from_rust(record: &RustMemoryRecord) -> MemoryRecord {
+    MemoryRecord {
+        record_id: record.record_id.clone(),
+        scope: MemoryScope {
+            tenant_id: record.scope.tenant_id.clone(),
+            namespace: record.scope.namespace.clone(),
         },
-    }
-}
-
-fn idle_pipeline_action_from_rust(a: RustIdleAction) -> IdlePipelineAction {
-    match a {
-        RustIdleAction::SynthesizeInsights { messages } => IdlePipelineAction {
-            kind: "synthesize_insights".into(),
-            messages: Some(messages.iter().map(message_from_rust).collect()),
-            agent_id: None,
-            curation_result: None,
-            run_result: None,
+        name: record.name.clone(),
+        kind: record.kind.label().into(),
+        content: record.content.clone(),
+        description: record.description.clone(),
+        provenance: MemoryProvenance {
+            session_id: record.provenance.session_id.clone(),
+            author: match record.provenance.author {
+                RustMemoryAuthor::Model => "model",
+                RustMemoryAuthor::Host => "host",
+                RustMemoryAuthor::Extraction => "extraction",
+            }.into(),
+            trust: match record.provenance.trust {
+                RustMemoryTrustLevel::Untrusted => "untrusted",
+                RustMemoryTrustLevel::UserAsserted => "user_asserted",
+                RustMemoryTrustLevel::HostVerified => "host_verified",
+            }.into(),
+            evidence_refs: record.provenance.evidence_refs.clone(),
         },
-        RustIdleAction::CommitMemories { agent_id, result, run_result } => IdlePipelineAction {
-            kind: "commit_memories".into(),
-            messages: None,
-            agent_id: Some(agent_id),
-            curation_result: Some(curation_result_from_rust(result)),
-            run_result: Some(IdleRunResult {
-                sessions_processed: run_result.sessions_processed as u32,
-                insights_extracted: run_result.insights_extracted as u32,
-            }),
-        },
-        RustIdleAction::Noop => IdlePipelineAction {
-            kind: "noop".into(),
-            messages: None,
-            agent_id: None,
-            curation_result: None,
-            run_result: None,
-        },
-        RustIdleAction::Aborted => IdlePipelineAction {
-            kind: "aborted".into(),
-            messages: None,
-            agent_id: None,
-            curation_result: None,
-            run_result: None,
-        },
-    }
-}
-
-/// Two-phase offline dream pipeline (parity with the napi/pyo3 exports):
-/// 1. `feedTrigger(sessions, existingMemories, nowMs)` → `"synthesize_insights"` + prompt messages
-/// 2. Call the LLM with those messages, collect the text response
-/// 3. `feedSynthesisResult(text)` → `"commit_memories"` with the curation delta
-#[wasm_bindgen]
-pub struct IdlePipeline {
-    inner: RustIdlePipeline,
-}
-
-#[wasm_bindgen]
-impl IdlePipeline {
-    #[wasm_bindgen(constructor)]
-    pub fn new(agent_id: String) -> Self {
-        Self {
-            inner: RustIdlePipeline::new(RustIdlePolicy::new(agent_id)),
-        }
-    }
-
-    #[wasm_bindgen(js_name = feedTrigger)]
-    pub fn feed_trigger(
-        &mut self,
-        sessions: Vec<SessionData>,
-        existing_memories: Vec<MemoryEntry>,
-        now_ms: f64,
-    ) -> Result<IdlePipelineAction, JsValue> {
-        let rust_sessions: Vec<RustSessionData> = sessions
-            .into_iter()
-            .map(session_data_to_rust)
-            .collect::<Result<_, _>>()?;
-        let rust_memories: Vec<RustMemoryEntry> = existing_memories
-            .into_iter()
-            .map(memory_entry_to_rust)
-            .collect();
-        let action = self.inner.feed(RustIdleEvent::Trigger {
-            sessions: rust_sessions,
-            existing_memories: rust_memories,
-            now_ms: now_ms as u64,
-        });
-        Ok(idle_pipeline_action_from_rust(action))
-    }
-
-    #[wasm_bindgen(js_name = feedSynthesisResult)]
-    pub fn feed_synthesis_result(&mut self, content: String) -> IdlePipelineAction {
-        idle_pipeline_action_from_rust(self.inner.feed(RustIdleEvent::SynthesisResult { content }))
+        created_at: record.created_at as f64,
+        updated_at: record.updated_at as f64,
+        last_recalled_at: record.last_recalled_at.map(|value| value as f64),
+        recall_count: record.recall_count as f64,
+        confidence: record.confidence,
+        links: record.links.clone(),
+        pinned: record.pinned,
+        ttl_days: record.ttl_days,
     }
 }

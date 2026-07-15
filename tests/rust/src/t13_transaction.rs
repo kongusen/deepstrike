@@ -59,7 +59,10 @@ fn recoverable_error_preserves_history() {
     assert_eq!(sm.turn, 1);
     assert!(sm.ctx.partitions.history.messages.len() > history_before);
     let obs = sm.take_observations();
-    assert!(!obs.iter().any(|o| matches!(o, KernelObservation::Rollbacked { .. })));
+    assert!(
+        !obs.iter()
+            .any(|o| matches!(o, KernelObservation::Rollbacked { .. }))
+    );
 }
 
 #[test]
@@ -81,7 +84,10 @@ fn none_error_kind_also_does_not_rollback() {
 
     assert_eq!(sm.turn, 1);
     let obs = sm.take_observations();
-    assert!(!obs.iter().any(|o| matches!(o, KernelObservation::Rollbacked { .. })));
+    assert!(
+        !obs.iter()
+            .any(|o| matches!(o, KernelObservation::Rollbacked { .. }))
+    );
 }
 
 // ─── G5 gate: fatal error triggers rollback ─────────────────────────────────
@@ -108,10 +114,15 @@ fn fatal_error_kind_rolls_back_to_checkpoint() {
     // History must have been truncated back to the checkpoint length
     assert!(sm.ctx.partitions.history.messages.len() <= history_at_checkpoint);
     let obs = sm.take_observations();
-    let rolled = obs.iter().find(|o| matches!(o, KernelObservation::Rollbacked { .. }));
+    let rolled = obs
+        .iter()
+        .find(|o| matches!(o, KernelObservation::Rollbacked { .. }));
     assert!(rolled.is_some(), "expected Rollbacked observation");
     if let Some(KernelObservation::Rollbacked { reason, .. }) = rolled {
-        assert!(matches!(reason, Some(RollbackReason::FatalToolError { .. })));
+        assert!(matches!(
+            reason,
+            Some(RollbackReason::FatalToolError { .. })
+        ));
     }
 }
 
@@ -133,7 +144,10 @@ fn is_fatal_flag_rolls_back() {
     });
 
     let obs = sm.take_observations();
-    assert!(obs.iter().any(|o| matches!(o, KernelObservation::Rollbacked { .. })));
+    assert!(
+        obs.iter()
+            .any(|o| matches!(o, KernelObservation::Rollbacked { .. }))
+    );
 }
 
 // ─── Checkpoint observation emitted before LLM call ─────────────────────────
@@ -146,7 +160,8 @@ fn checkpoint_taken_observation_emitted_before_llm_call() {
     // start() → emit_call_llm() → should push CheckpointTaken
     let obs = sm.take_observations();
     assert!(
-        obs.iter().any(|o| matches!(o, KernelObservation::CheckpointTaken { turn: 0, .. })),
+        obs.iter()
+            .any(|o| matches!(o, KernelObservation::CheckpointTaken { turn: 0, .. })),
         "expected CheckpointTaken at turn 0, got: {obs:?}"
     );
 }
@@ -169,7 +184,9 @@ fn checkpoint_history_len_matches_actual_history() {
     });
 
     let obs = sm.take_observations();
-    let checkpoint = obs.iter().find(|o| matches!(o, KernelObservation::CheckpointTaken { turn: 1, .. }));
+    let checkpoint = obs
+        .iter()
+        .find(|o| matches!(o, KernelObservation::CheckpointTaken { turn: 1, .. }));
     assert!(checkpoint.is_some(), "expected CheckpointTaken at turn 1");
 
     if let Some(KernelObservation::CheckpointTaken { history_len, .. }) = checkpoint {
@@ -215,13 +232,18 @@ fn replay_truncates_to_checkpoint_on_rollback() {
         },
     ];
 
-    let messages = reconstruct_messages_with_fallback(
-        &session_events,
-        "test-session",
-        usize::MAX,
-        |_| Err(ContextFault::MissingArchive { session_id: String::new(), seq: 0 }),
+    let messages =
+        reconstruct_messages_with_fallback(&session_events, "test-session", usize::MAX, |_| {
+            Err(ContextFault::MissingArchive {
+                session_id: String::new(),
+                seq: 0,
+            })
+        });
+    assert_eq!(
+        messages.len(),
+        1,
+        "history should be truncated to checkpoint length 1"
     );
-    assert_eq!(messages.len(), 1, "history should be truncated to checkpoint length 1");
 }
 
 #[test]
@@ -250,12 +272,13 @@ fn replay_without_rollback_keeps_full_history() {
         },
     ];
 
-    let messages = reconstruct_messages_with_fallback(
-        &session_events,
-        "test-session",
-        usize::MAX,
-        |_| Err(ContextFault::MissingArchive { session_id: String::new(), seq: 0 }),
-    );
+    let messages =
+        reconstruct_messages_with_fallback(&session_events, "test-session", usize::MAX, |_| {
+            Err(ContextFault::MissingArchive {
+                session_id: String::new(),
+                seq: 0,
+            })
+        });
     // RunStarted → User message + LlmCompleted → Assistant message = 2
     assert_eq!(messages.len(), 2, "no rollback: full history preserved");
 }
@@ -272,10 +295,10 @@ fn turn_checkpoint_default_is_zero() {
 
 #[test]
 fn kernel_config_transaction_rejects_partial_mutation() {
+    use deepstrike_core::runtime::kernel::RunConfig;
     use deepstrike_core::runtime::{
         KernelFaultCode, KernelInput, KernelInputEvent, KernelLifecycle, KernelRuntime,
     };
-    use deepstrike_core::runtime::kernel::RunConfig;
 
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
     let step = runtime.step(KernelInput::correlated(

@@ -12,8 +12,7 @@ type Obs = {
   kind: string
   delivery_id?: string
   attempt?: number
-  completed?: string[]
-  failed?: string[]
+  node_outcomes?: Array<{ node_id: string; status: string }>
   agent_ids?: string[]
   reason?: string
 }
@@ -39,7 +38,7 @@ function makeFakeKernel() {
       if (event.kind === "preempt_result") {
         return reply([], [
           { kind: "agent_preempted", agent_ids: ["wf-node0"], reason: "STOP" },
-          { kind: "workflow_completed", completed: [], failed: ["wf-node0"] },
+          { kind: "workflow_completed", node_outcomes: [{ node_id: "wf-node0", status: "failed" }] },
         ])
       }
       return reply([], [])
@@ -94,6 +93,6 @@ describe("#2-B-ii wasm workflow preemption (scripted kernel)", () => {
     const outcome = await runner.runWorkflow(spec)
 
     expect(orch.sawAbort).toBe(true)
-    expect(outcome.failed).toContain("wf-node0")
+    expect(outcome.nodeOutcomes).toContainEqual(expect.objectContaining({ nodeId: "wf-node0", status: "failed" }))
   })
 })

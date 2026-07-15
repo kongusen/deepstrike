@@ -233,9 +233,9 @@ mem.clear();
 #[async_trait]
 impl DreamStore for MyStore {
     async fn load_sessions(&self, agent_id: &str) -> Result<Vec<SessionData>> { ... }
-    async fn load_memories(&self, agent_id: &str) -> Result<Vec<MemoryEntry>> { ... }
-    async fn commit(&self, agent_id: &str, result: CurationResult, existing: &[MemoryEntry]) -> Result<()> { ... }
-    async fn search(&self, agent_id: &str, query: &str, top_k: usize) -> Result<Vec<MemoryEntry>> { ... }
+    async fn load_memories(&self, agent_id: &str) -> Result<Vec<MemoryRecord>> { ... }
+    async fn commit(&self, agent_id: &str, result: CurationResult, existing: &[MemoryRecord]) -> Result<()> { ... }
+    async fn search(&self, agent_id: &str, query: &MemoryQuery) -> Result<Vec<MemoryRecall>> { ... }
 }
 
 // In-session: memory(query) → history tool result
@@ -302,16 +302,14 @@ gw.destroy();
 ```rust
 use deepstrike_sdk::*;
 
-// 1. SinglePass — run once, always passes
-let outcome = SinglePassHarness::new(&runner).run(HarnessRequest::new("Say hello")).await?;
+let body = RuntimeAttemptBody::new(&runner);
+let judge = LlmEvalJudge::new(eval_provider);
+let attempt_loop = AttemptLoop::new(body, judge, StopPolicy::new(3))?;
 
-// 2. EvalLoop — retry until QualityGate passes
-let harness = EvalLoopHarness::new(&runner, MyGate, 3);
-
-// 3. HarnessLoop — LLM-as-judge with feedback injection + skill extraction
-let harness = HarnessLoop::new(&runner, eval_provider, 3, Some("./skills".into()));
-let outcome = harness.run(HarnessRequest { goal: "Write a haiku".into(), criteria: vec!["Must be 3 lines".into()], .. }).await?;
-println!("{} {}", outcome.passed, outcome.feedback.unwrap_or_default());
+let mut request = AttemptRequest::generated("Write a haiku");
+request.criteria = vec![Criterion::required("Must be 3 lines")];
+let outcome = attempt_loop.run(request).await?;
+println!("{:?} {}", outcome.outcome, outcome.run_status);
 ```
 
 ---

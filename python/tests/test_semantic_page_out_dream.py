@@ -1,6 +1,6 @@
 import pytest
 
-from deepstrike.memory.protocols import CurationResult, CurationStats, MemoryEntry
+from deepstrike.memory.protocols import MemoryQuery, MemoryRecord, MemoryScope
 from deepstrike.providers.stream import TextDelta, ToolCallEvent
 from deepstrike.runtime import RuntimeOptions, RuntimeRunner, collect_text
 from deepstrike.tools.registry import tool
@@ -12,21 +12,15 @@ async def test_semantic_page_out_commits_dream_summary():
   last_summary = ""
 
   class RecordingDreamStore:
-    async def load_sessions(self, agent_id: str):
-      return []
-
-    async def load_memories(self, agent_id: str):
-      return []
-
-    async def commit(self, agent_id: str, result: CurationResult, existing):
+    async def upsert(self, agent_id: str, record: MemoryRecord):
       nonlocal commit_calls, last_summary
       commit_calls += 1
-      last_summary = result.to_add[0].text if result.to_add else ""
+      last_summary = record.content
 
     async def save_session(self, data):
       pass
 
-    async def search(self, agent_id: str, query: str, top_k: int = 5):
+    async def search(self, agent_id: str, query: MemoryQuery):
       return []
 
   class FillProvider:
@@ -61,6 +55,7 @@ async def test_semantic_page_out_commits_dream_summary():
     max_tokens=400,
     max_turns=20,
     agent_id="agent-semantic-py",
+    memory_scope=MemoryScope("agent-semantic-py", "semantic-page-out"),
     dream_store=RecordingDreamStore(),
     dream_summarizer=dream_summarizer,
   ))

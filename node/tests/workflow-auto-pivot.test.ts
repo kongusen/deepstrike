@@ -86,7 +86,9 @@ describe("M5 v2.1 top-level start_workflow auto-pivot", () => {
       secondCtx.systemText, secondCtx.systemStable, secondCtx.systemKnowledge,
       secondCtx.stateTurn?.content, ...secondCtx.turns.map(m => m.content),
     ].filter(Boolean).join("\n")
-    expect(allContent).toContain("[authored workflow result]")
+    // The kernel-owned continuation already carries each node result in task state; the SDK must
+    // not synthesize a second, unbudgeted provider context merely to add a redundant wrapper note.
+    expect(allContent).not.toContain("[authored workflow result]")
     expect(allContent).toContain("result of wf-node0")
     // The run continued past the authoring turn and produced the final synthesis text.
     expect(text).toContain("synthesized the sub-workflow results")

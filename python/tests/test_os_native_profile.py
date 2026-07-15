@@ -12,7 +12,7 @@ from deepstrike import (
 from deepstrike.governance import GovernancePolicy, GovernancePolicyRule
 from deepstrike.providers.stream import TextDelta, ToolCallEvent
 from deepstrike.runtime.os_profile import (
-    DEFAULT_NATIVE_ATTENTION_POLICY,
+    DEFAULT_NATIVE_SIGNAL_POLICY,
     DEFAULT_NATIVE_GOVERNANCE_POLICY,
     assert_native_profile,
     os_profile,
@@ -41,7 +41,7 @@ class _StaticProvider:
 def test_native_profile_resolves_and_validates():
     profile = assert_native_profile(os_profile("native"))
     assert profile.id == "native"
-    assert profile.attention_policy.max_queue_size == 64
+    assert profile.signal_policy.queue_max == 64
     assert profile.governance_policy.rules[0].pattern == "*"
     with pytest.raises(ValueError, match="Unsupported OS profile"):
         assert_native_profile("invalid")
@@ -52,7 +52,7 @@ async def test_native_profile_writes_categorized_kernel_events():
     runner = RuntimeRunner(RuntimeOptions(
         provider=_StaticProvider(),
         session_log=InMemorySessionLog(),
-        attention_policy=DEFAULT_NATIVE_ATTENTION_POLICY,
+        signal_policy=DEFAULT_NATIVE_SIGNAL_POLICY,
         governance_policy=DEFAULT_NATIVE_GOVERNANCE_POLICY,
     ))
     await collect_text(runner.run(session_id="native-ok", goal="work"))
@@ -76,7 +76,7 @@ async def test_native_profile_ask_user_emits_syscall_sched_events():
         session_log=InMemorySessionLog(),
         execution_plane=plane,
         os_profile="native",
-        attention_policy=DEFAULT_NATIVE_ATTENTION_POLICY,
+        signal_policy=DEFAULT_NATIVE_SIGNAL_POLICY,
         governance_policy=GovernancePolicy(
             rules=[GovernancePolicyRule(pattern="needs_approval", action="ask_user")],
         ),

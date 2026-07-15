@@ -40,6 +40,21 @@ pub enum NodeTrust {
     Quarantined,
 }
 
+/// How a node interprets the terminal states of its declared dependencies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyPolicy {
+    /// Every dependency must finish with a complete (non-partial) result.
+    #[default]
+    AllSuccess,
+    /// Complete and partial results satisfy the dependency; failures do not.
+    AcceptPartial,
+    /// Wait for every dependency to terminate, regardless of its outcome.
+    AllTerminal,
+    /// Dependencies are inputs when available, but never gate execution.
+    Optional,
+}
+
 /// One branch of a [`NodeKind::Classify`] node: a label and the node indices to enable when the
 /// classifier's result selects that label. The other branches' nodes are pruned (failed) so they
 /// never run — this is how a classify node yields *conditional edges* in an otherwise static DAG.
@@ -122,6 +137,9 @@ pub struct WorkflowNode {
     /// O3 per-node wall-clock cap (ms): the SDK sets the child run's timeout. Additive ABI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_wall_ms: Option<u64>,
+    /// Policy for interpreting this node's dependency terminal states.
+    #[serde(default)]
+    pub dep_policy: DependencyPolicy,
     /// Indices into [`WorkflowSpec::nodes`] this node depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<usize>,
@@ -151,6 +169,7 @@ impl WorkflowNode {
             token_budget: None,
             max_turns: None,
             max_wall_ms: None,
+            dep_policy: DependencyPolicy::AllSuccess,
             depends_on: Vec::new(),
         }
     }
@@ -198,7 +217,9 @@ impl WorkflowNode {
     /// registered `reducer` function over its dependencies' outputs (dedupe / filter / merge). Give
     /// it `depends_on` the nodes whose outputs it consumes.
     pub fn with_reduce(mut self, reducer: impl Into<String>) -> Self {
-        self.kind = NodeKind::Reduce { reducer: reducer.into() };
+        self.kind = NodeKind::Reduce {
+            reducer: reducer.into(),
+        };
         self
     }
 
@@ -207,12 +228,17 @@ impl WorkflowNode {
         self
     }
 
+    pub fn with_dependency_policy(mut self, policy: DependencyPolicy) -> Self {
+        self.dep_policy = policy;
+        self
+    }
+
     pub fn with_isolation(mut self, isolation: AgentIsolation) -> Self {
         self.isolation = isolation;
         self
     }
 
-        pub fn with_model_hint(mut self, hint: impl Into<String>) -> Self {
+    pub fn with_model_hint(mut self, hint: impl Into<String>) -> Self {
         self.model_hint = Some(hint.into());
         self
     }
@@ -349,10 +375,7 @@ pub fn fanout_synthesize(workers: Vec<RuntimeTask>, synthesize: RuntimeTask) -> 
         .map(|t| WorkflowNode::new(t, AgentRole::Explore))
         .collect();
     let worker_ids: Vec<usize> = (0..nodes.len()).collect();
-    nodes.push(
-        WorkflowNode::new(synthesize, AgentRole::Plan)
-            .with_depends_on(worker_ids),
-    );
+    nodes.push(WorkflowNode::new(synthesize, AgentRole::Plan).with_depends_on(worker_ids));
     WorkflowSpec::new(nodes)
 }
 
@@ -371,10 +394,7 @@ pub fn generate_and_filter(generators: Vec<RuntimeTask>, filter: RuntimeTask) ->
         .map(|t| WorkflowNode::new(t, AgentRole::Implement))
         .collect();
     let gen_ids: Vec<usize> = (0..nodes.len()).collect();
-    nodes.push(
-        WorkflowNode::new(filter, AgentRole::Verify)
-            .with_depends_on(gen_ids),
-    );
+    nodes.push(WorkflowNode::new(filter, AgentRole::Verify).with_depends_on(gen_ids));
     WorkflowSpec::new(nodes)
 }
 
@@ -401,10 +421,7 @@ pub fn verify_rules(rules: Vec<RuntimeTask>, skeptic: Option<RuntimeTask>) -> Wo
         .collect();
     if let Some(skeptic) = skeptic {
         let verifier_ids: Vec<usize> = (0..nodes.len()).collect();
-        nodes.push(
-            WorkflowNode::new(skeptic, AgentRole::Verify)
-                .with_depends_on(verifier_ids),
-        );
+        nodes.push(WorkflowNode::new(skeptic, AgentRole::Verify).with_depends_on(verifier_ids));
     }
     WorkflowSpec::new(nodes)
 }
@@ -424,7 +441,7 @@ pub fn verify_rules(rules: Vec<RuntimeTask>, skeptic: Option<RuntimeTask>) -> Wo
 /// *output*, carried in via its task goal. The verdict's `passed` is the gate.
 ///
 /// For the **iterative retry-with-feedback** variant (re-run the worker with the eval's feedback
-/// folded into the next attempt), the SDK `HarnessLoop` drives this with the same
+/// folded into the next attempt), the SDK `AttemptLoop` drives this with the same
 /// [`crate::harness::build_eval_messages`] / [`crate::harness::parse_verdict`] primitives — the
 /// kernel `Loop` re-arms a single node, so per-iteration eval is necessarily SDK-driven.
 pub fn gen_eval(
@@ -433,17 +450,10 @@ pub fn gen_eval(
     max_iters: usize,
     extract_skill_on_pass: bool,
 ) -> WorkflowSpec {
-    let worker_node = WorkflowNode::new(
-        worker,
-        AgentRole::Implement,
-    )
-    .with_loop(max_iters.max(1));
-    let eval_node = WorkflowNode::new(
-        eval,
-        AgentRole::Verify,
-    )
-    .with_depends_on(vec![0])
-    .with_output_schema(crate::harness::verdict_output_schema(extract_skill_on_pass));
+    let worker_node = WorkflowNode::new(worker, AgentRole::Implement).with_loop(max_iters.max(1));
+    let eval_node = WorkflowNode::new(eval, AgentRole::Verify)
+        .with_depends_on(vec![0])
+        .with_output_schema(crate::harness::verdict_output_schema(extract_skill_on_pass));
     WorkflowSpec::new(vec![worker_node, eval_node])
 }
 
@@ -469,7 +479,7 @@ mod tests {
         assert_eq!(spec.nodes[0].isolation, AgentIsolation::ReadOnly);
         spec.validate().unwrap();
         // workers are the only ready tasks before any completion
-        let graph = spec.to_task_graph().unwrap();
+        let mut graph = spec.to_task_graph().unwrap();
         assert_eq!(graph.ready_tasks(), vec![0, 1, 2]);
     }
 
@@ -487,7 +497,11 @@ mod tests {
     #[test]
     fn verify_rules_with_skeptic_shape() {
         let spec = verify_rules(
-            vec![task("money is integer cents"), task("errors propagate"), task("utc timestamps")],
+            vec![
+                task("money is integer cents"),
+                task("errors propagate"),
+                task("utc timestamps"),
+            ],
             Some(task("skeptic: real violation or false positive?")),
         );
         assert_eq!(spec.nodes.len(), 4);
@@ -517,7 +531,12 @@ mod tests {
     fn gen_eval_shape() {
         // Worker loops; eval is a bias-resistant Verify node gated on the worker, carrying the
         // verdict output_schema.
-        let spec = gen_eval(task("implement feature"), task("score against criteria"), 3, true);
+        let spec = gen_eval(
+            task("implement feature"),
+            task("score against criteria"),
+            3,
+            true,
+        );
         assert_eq!(spec.nodes.len(), 2);
 
         let worker = &spec.nodes[0];
@@ -530,7 +549,10 @@ mod tests {
         assert_eq!(eval.context_inheritance, ContextInheritance::None);
         assert_eq!(eval.isolation, AgentIsolation::ReadOnly);
         assert_eq!(eval.depends_on, vec![0]);
-        let schema = eval.output_schema.as_ref().expect("eval node carries verdict schema");
+        let schema = eval
+            .output_schema
+            .as_ref()
+            .expect("eval node carries verdict schema");
         assert!(schema["properties"]["passed"].is_object());
         assert!(schema["properties"]["skill"].is_object()); // extract_skill_on_pass=true
 
@@ -589,20 +611,26 @@ mod tests {
     #[test]
     fn tournament_node_requires_two_entrants() {
         // ≥2 entrants is valid; <2 is a spec error (no contest).
-        let ok = WorkflowSpec::new(vec![WorkflowNode::new(task("rank"), AgentRole::Plan)
-            .with_tournament(vec![task("a"), task("b")])]);
+        let ok = WorkflowSpec::new(vec![
+            WorkflowNode::new(task("rank"), AgentRole::Plan)
+                .with_tournament(vec![task("a"), task("b")]),
+        ]);
         ok.validate().unwrap();
 
-        let one = WorkflowSpec::new(vec![WorkflowNode::new(task("rank"), AgentRole::Plan)
-            .with_tournament(vec![task("only")])]);
+        let one = WorkflowSpec::new(vec![
+            WorkflowNode::new(task("rank"), AgentRole::Plan).with_tournament(vec![task("only")]),
+        ]);
         assert!(one.validate().is_err());
     }
 
     #[test]
     fn tournament_node_kind_round_trips_and_gates_dependents() {
         let spec = WorkflowSpec::new(vec![
-            WorkflowNode::new(task("pick best"), AgentRole::Plan)
-                .with_tournament(vec![task("x"), task("y"), task("z")]),
+            WorkflowNode::new(task("pick best"), AgentRole::Plan).with_tournament(vec![
+                task("x"),
+                task("y"),
+                task("z"),
+            ]),
             WorkflowNode::new(task("use winner"), AgentRole::Implement).with_depends_on(vec![0]),
         ]);
         spec.validate().unwrap();

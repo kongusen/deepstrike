@@ -1,85 +1,81 @@
-"""
-07 — SinglePassHarness, EvalLoopHarness, HarnessLoop
-"""
+"""07 — AttemptLoop body/judge/carry/stop contract."""
+
 import pytest
 
 from deepstrike import (
-    SinglePassHarness, EvalLoopHarness, HarnessLoop,
-    HarnessRequest, HarnessOutcome,
+    AttemptLoop,
+    AttemptRequest,
+    Criterion,
+    LlmEvalJudge,
+    RuntimeAttemptBody,
+    StopPolicy,
+    Verdict,
+    VerdictFnJudge,
 )
 
 from conftest import make_agent, make_provider
 
 
-class TestSinglePassHarness:
+class TestAttemptLoop:
     @pytest.mark.timeout(60)
-    async def test_always_returns_passed_true(self):
-        outcome = await SinglePassHarness(make_agent()).run(HarnessRequest(goal='Reply "done".'))
-        assert outcome.passed is True
-        assert len(outcome.result) > 0
-        assert outcome.iterations >= 0
-        assert outcome.total_tokens >= 0
-
-
-class TestEvalLoopHarness:
-    @pytest.mark.timeout(60)
-    async def test_passes_on_first_attempt(self):
-        class AlwaysPass:
-            async def evaluate(self, request, outcome):
-                return True
-
-        outcome = await EvalLoopHarness(make_agent(), AlwaysPass(), max_attempts=3).run(
-            HarnessRequest(goal='Say "hello".')
+    async def test_host_judge_passes_and_returns_real_result(self):
+        loop = AttemptLoop(
+            body=RuntimeAttemptBody(make_agent()._runner),
+            judge=VerdictFnJudge(lambda **_: Verdict(True, 1.0, "ok")),
+            stop=StopPolicy(max_attempts=1),
         )
-        assert outcome.passed is True
+        outcome = await loop.run(AttemptRequest(goal='Reply "done".'))
+        assert outcome.outcome == "passed"
+        assert len(outcome.result) > 0
+        assert outcome.turns >= 0
+        assert outcome.total_tokens >= 0
 
     @pytest.mark.timeout(120)
     async def test_retries_then_passes(self):
-        class PassOnSecond:
-            def __init__(self):
-                self.count = 0
-            async def evaluate(self, request, outcome):
-                self.count += 1
-                return self.count >= 2
+        attempts = 0
 
-        gate = PassOnSecond()
-        outcome = await EvalLoopHarness(make_agent(), gate, max_attempts=3).run(
-            HarnessRequest(goal='Say "hello".')
+        def verdict(**_):
+            nonlocal attempts
+            attempts += 1
+            return Verdict(attempts >= 2, 1.0 if attempts >= 2 else 0.0, "retry")
+
+        loop = AttemptLoop(
+            body=RuntimeAttemptBody(make_agent()._runner),
+            judge=VerdictFnJudge(verdict),
+            stop=StopPolicy(max_attempts=3),
         )
-        assert outcome.passed is True
-        assert gate.count >= 2
+        outcome = await loop.run(AttemptRequest(session_id="stable", goal='Say "hello".'))
+        assert outcome.outcome == "passed"
+        assert outcome.attempts == 2
 
     @pytest.mark.timeout(120)
-    async def test_returns_false_when_gate_never_passes(self):
-        class NeverPass:
-            async def evaluate(self, request, outcome):
-                return False
-
-        outcome = await EvalLoopHarness(make_agent(), NeverPass(), max_attempts=2).run(
-            HarnessRequest(goal='Say "hello".')
+    async def test_exhaustion_is_not_a_body_run_error(self):
+        loop = AttemptLoop(
+            body=RuntimeAttemptBody(make_agent()._runner),
+            judge=VerdictFnJudge(lambda **_: Verdict(False, 0.0, "no")),
+            stop=StopPolicy(max_attempts=2),
         )
-        assert outcome.passed is False
+        outcome = await loop.run(AttemptRequest(goal='Say "hello".'))
+        assert outcome.outcome == "exhausted"
+        assert outcome.run_status != "error"
+        assert outcome.verdict and outcome.verdict.passed is False
 
-
-class TestHarnessLoop:
     @pytest.mark.timeout(120)
-    async def test_run_streaming_emits_events(self):
+    async def test_stream_emits_progress_judging_and_terminal(self):
         events = []
         result = ""
-        passed = False
-        async for evt in await HarnessLoop(
-            make_agent(), make_provider(), max_attempts=3,
-        ).run_streaming(HarnessRequest(
+        loop = AttemptLoop(
+            body=RuntimeAttemptBody(make_agent()._runner),
+            judge=LlmEvalJudge(make_provider()),
+            stop=StopPolicy(max_attempts=2),
+        )
+        async for event in loop.stream(AttemptRequest(
             goal="What is 9 * 9? Output only the number.",
-            criteria=[__import__('deepstrike').harness.harness.Criterion(text="Answer must be exactly 81")],
+            criteria=[Criterion(text="Answer must be exactly 81")],
         )):
-            events.append(evt)
-            if evt.type == "token":
-                result += evt.text or ""
-            if evt.type == "done":
-                passed = evt.verdict.passed if evt.verdict else False
-        assert isinstance(passed, bool)
+            events.append(event)
+            if event.type == "token" and event.progress:
+                result += str(event.progress.payload.get("text", ""))
         assert len(result) > 0
-        assert any(e.type == "token" for e in events)
-        assert any(e.type == "supervising" for e in events)
-        assert any(e.type in ("done", "max_attempts_reached") for e in events)
+        assert any(event.type == "judging" for event in events)
+        assert any(event.type == "completed" for event in events)

@@ -4,7 +4,7 @@ use deepstrike_core::runtime::session::ProviderReplay;
 use deepstrike_core::types::message::{Content, ContentPart, Message, Role, ToolCall, ToolSchema};
 use futures::{Stream, StreamExt};
 use reqwest::Client;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -54,7 +54,11 @@ impl AnthropicProvider {
             .insert(assistant_replay_key(content, tool_calls), blocks);
     }
 
-    fn context_to_anthropic(&self, context: &RenderedContext, strategy: CacheBreakpointStrategy) -> (Option<Value>, Vec<Value>) {
+    fn context_to_anthropic(
+        &self,
+        context: &RenderedContext,
+        strategy: CacheBreakpointStrategy,
+    ) -> (Option<Value>, Vec<Value>) {
         let native = self.native_assistant_blocks.lock().unwrap();
         context_to_anthropic(context, strategy, |content, tool_calls| {
             native
@@ -179,7 +183,11 @@ fn context_to_anthropic(
     // (When produced by an un-rebuilt binding, state_turn is None and the state
     // is already inside `turns` — rendered as-is above.)
     if let Some(state) = &context.state_turn {
-        let role = if state.role == Role::Assistant { "assistant" } else { "user" };
+        let role = if state.role == Role::Assistant {
+            "assistant"
+        } else {
+            "user"
+        };
         msgs.push(json!({ "role": role, "content": content_to_anthropic(&state.content) }));
     }
     (build_system(context, strategy), msgs)
@@ -235,7 +243,11 @@ fn resolve_cache_breakpoint_strategy(extensions: Option<&Value>) -> CacheBreakpo
         .unwrap_or(CacheBreakpointStrategy::Default)
 }
 
-fn tools_to_anthropic(tools: &[ToolSchema], anchor_cache: bool, strategy: CacheBreakpointStrategy) -> Vec<Value> {
+fn tools_to_anthropic(
+    tools: &[ToolSchema],
+    anchor_cache: bool,
+    strategy: CacheBreakpointStrategy,
+) -> Vec<Value> {
     let last = tools.len().saturating_sub(1);
     tools
         .iter()
@@ -272,12 +284,16 @@ fn build_system(context: &RenderedContext, strategy: CacheBreakpointStrategy) ->
     let mut blocks = Vec::new();
     if !context.system_stable.is_empty() {
         let mut b = json!({ "type": "text", "text": context.system_stable });
-        if emit { b["cache_control"] = json!({ "type": "ephemeral" }); }
+        if emit {
+            b["cache_control"] = json!({ "type": "ephemeral" });
+        }
         blocks.push(b);
     }
     if !context.system_knowledge.is_empty() {
         let mut b = json!({ "type": "text", "text": context.system_knowledge });
-        if emit { b["cache_control"] = json!({ "type": "ephemeral" }); }
+        if emit {
+            b["cache_control"] = json!({ "type": "ephemeral" });
+        }
         blocks.push(b);
     }
     if blocks.is_empty() {
@@ -323,7 +339,8 @@ fn mark_last_block_cacheable(msg: &mut Value) {
                 return; // don't synthesize an empty (API-rejected) text block
             }
             let text = s.clone();
-            msg["content"] = json!([{ "type": "text", "text": text, "cache_control": cache_control }]);
+            msg["content"] =
+                json!([{ "type": "text", "text": text, "cache_control": cache_control }]);
         }
         Some(Value::Array(arr)) => {
             if let Some(obj) = arr.last_mut().and_then(|b| b.as_object_mut()) {
@@ -508,7 +525,13 @@ fn parse_anthropic_sse(
         std::collections::HashMap::new();
 
     futures::stream::unfold(
-        (Box::pin(byte_stream), buf, tool_blocks, native_blocks, (0u32, 0u32, 0u32, 0u32)),
+        (
+            Box::pin(byte_stream),
+            buf,
+            tool_blocks,
+            native_blocks,
+            (0u32, 0u32, 0u32, 0u32),
+        ),
         |(mut stream, mut buf, mut tool_blocks, native_blocks, mut acc)| async move {
             loop {
                 if let Some(pos) = buf.find('\n') {
@@ -602,9 +625,9 @@ fn parse_anthropic_sse(
                             ));
                         }
                     } else if kind == "message_start" || kind == "message_delta" {
-                        let usage = evt.get("usage").or_else(|| {
-                            evt.get("message").and_then(|m| m.get("usage"))
-                        });
+                        let usage = evt
+                            .get("usage")
+                            .or_else(|| evt.get("message").and_then(|m| m.get("usage")));
                         if let Some((uncached, cache_read, cache_creation, output)) =
                             usage.and_then(anthropic_usage_breakdown)
                         {
@@ -716,9 +739,11 @@ mod tests {
             ],
             state_turn: None,
             frozen_prefix_len: None,
+            budget_overflow: None,
         };
 
-        let (system, messages) = context_to_anthropic(&context, CacheBreakpointStrategy::Default, |_, _| None);
+        let (system, messages) =
+            context_to_anthropic(&context, CacheBreakpointStrategy::Default, |_, _| None);
         // system_stable present -> structured cache block, not a bare string.
         assert_eq!(
             system,
@@ -769,8 +794,10 @@ mod tests {
             turns: vec![Message::user("hi")],
             state_turn: None,
             frozen_prefix_len: None,
+            budget_overflow: None,
         };
-        let (system, _msgs) = context_to_anthropic(&context, CacheBreakpointStrategy::Default, |_, _| None);
+        let (system, _msgs) =
+            context_to_anthropic(&context, CacheBreakpointStrategy::Default, |_, _| None);
         // 2 system + 2 message = 4 (tool breakpoint dropped) — at the limit, ok.
         assert!(assert_cache_budget(system.as_ref(), 3).is_ok());
     }
@@ -788,12 +815,17 @@ mod tests {
             ],
             state_turn: Some(Message::user("[TASK STATE] goal: g\n\nProceed.")),
             frozen_prefix_len: None,
+            budget_overflow: None,
         };
-        let (_system, messages) = context_to_anthropic(&context, CacheBreakpointStrategy::Default, |_, _| None);
+        let (_system, messages) =
+            context_to_anthropic(&context, CacheBreakpointStrategy::Default, |_, _| None);
         // history (2) + state (1) appended last
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[2]["role"], "user");
-        assert!(messages[2]["content"].as_str().unwrap().contains("[TASK STATE]"));
+        assert!(messages[2]["content"]
+            .as_str()
+            .unwrap()
+            .contains("[TASK STATE]"));
         // the state turn carries NO cache breakpoint (it is the uncached tail)
         assert!(messages[2].get("cache_control").is_none());
         // the last history turn DID get a breakpoint (read anchor) — it became a block array

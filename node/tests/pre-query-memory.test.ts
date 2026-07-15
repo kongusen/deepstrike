@@ -6,18 +6,26 @@
  */
 import { createRunner } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
-import type { DreamStore, MemoryEntry } from "../src/memory/protocols.js"
+import type { DreamStore, MemoryRecall } from "../src/memory/protocols.js"
 import type { LLMProvider, Message, RenderedContext, StreamEvent } from "../src/types.js"
 
 const RECALL = "PREFETCHED_LONGTERM_FACT"
+const scope = { tenant_id: "agent-prequery", namespace: "prefetch" }
 
 function dreamStore(): DreamStore {
   return {
-    loadSessions: async () => [],
-    loadMemories: async () => [],
-    commit: async () => {},
+    upsert: async () => {},
     saveSession: async () => {},
-    search: async () => [{ text: RECALL, score: 0.9, metadata: null } satisfies MemoryEntry],
+    search: async () => [{
+      record: {
+        record_id: "record-prefetch", scope, name: "prefetched", kind: "reference", content: RECALL,
+        description: "prefetch fixture",
+        provenance: { author: "host", trust: "host_verified", evidence_refs: [] },
+        created_at: 1, updated_at: 1, recall_count: 0, confidence: 0.9, links: [], pinned: false,
+      },
+      score: 0.9,
+      why: "fixture",
+    } satisfies MemoryRecall],
   }
 }
 
@@ -38,9 +46,12 @@ describe("preQueryMemory prefetch lands in history, not knowledge", () => {
 
     const { runner } = createRunner(provider, [], {
       agentId: "agent-prequery",
+      memoryScope: scope,
       dreamStore: dreamStore(),
     })
-    ;(runner as unknown as { opts: { preQueryMemory: unknown } }).opts.preQueryMemory = () => ["past facts"]
+    ;(runner as unknown as { opts: { preQueryMemory: unknown } }).opts.preQueryMemory = () => [{
+      scope, query: "past facts", top_k: 5, kinds: [],
+    }]
 
     await collectText(runner.run({ sessionId: "prequery", goal: "use the fact" }))
 

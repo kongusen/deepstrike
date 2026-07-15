@@ -77,7 +77,7 @@ const idleProvider: LLMProvider = {
 }
 
 describe("W-1: resume replays control flow over the ABI wire", () => {
-  it("resumeWorkflow lowers recorded resumed_results (classify branch) and re-seeds dependent goals from persisted outputs", async () => {
+  it("resumeWorkflow lowers typed resumed outcomes and re-seeds dependent goals from persisted outputs", async () => {
     const seen: Array<Record<string, unknown>> = []
     // Scripted kernel: honors the resumed classify choice — only branch "a" spawns (branch "b"
     // stays pruned), and the dependent carries its W-N2 data edge to the completed classifier.
@@ -93,7 +93,7 @@ describe("W-1: resume replays control flow over the ABI wire", () => {
           }])
         }
         if (event.kind === "sub_agent_completed") {
-          return reply([{ kind: "workflow_completed", completed: ["wf-node0", "wf-node1"], failed: [] }])
+          return reply([{ kind: "workflow_completed", node_outcomes: ["wf-node0", "wf-node1"].map(node_id => ({ node_id, status: "completed" })) }])
         }
         return reply([])
       },
@@ -114,7 +114,8 @@ describe("W-1: resume replays control flow over the ABI wire", () => {
     // Pre-crash history (W-1): the classifier completed, chose branch "a", output persisted.
     await sessionLog.append("wfresume", {
       kind: "workflow_node_completed", turn: 1, agent_id: "wf-node0",
-      termination: "completed", classify_branch: "a", output: "routing notes: choose a",
+      status: "completed", termination: "completed", classify_branch: "a",
+      output: { role: "assistant", content: "routing notes: choose a" },
     })
 
     const spec: WorkflowSpec = {
@@ -128,12 +129,15 @@ describe("W-1: resume replays control flow over the ABI wire", () => {
 
     // The signal-carrying record went over the wire — the kernel can re-prune the rejected branch.
     const load = seen.find(e => e.kind === "load_workflow") as Record<string, unknown>
-    expect(load.resumed_results).toEqual([{ agent_id: "wf-node0", classify_branch: "a" }])
+    expect(load.resumed_outcomes).toEqual([{
+      agent_id: "wf-node0", status: "completed", termination: "completed", classify_branch: "a",
+      output: { role: "assistant", content: "routing notes: choose a", tool_calls: [] },
+    }])
     // W-1 + W-N2: the post-resume dependent still sees its (pre-crash) dependency's output.
     expect(contexts[0].goal).toContain("[dependency wf-node0 output]\nrouting notes: choose a")
     // W-N1: a trusted workflow node asks for plane inheritance.
     expect(contexts[0].toolAccess).toBe("inherit")
-    expect(outcome.completed).toEqual(["wf-node0", "wf-node1"])
+    expect(outcome.nodeOutcomes.map(node => node.nodeId)).toEqual(["wf-node0", "wf-node1"])
   })
 
   it("subAgentResultToKernel strips the SDK-internal paceDecision but keeps loop_continue", () => {
@@ -156,6 +160,9 @@ describe("W-N2 / W-N7: spawn descriptors carry data edges and per-node caps", ()
     })
     expect(kernelJson.max_turns).toBe(4)
     expect(kernelJson.max_wall_ms).toBe(30_000)
+    expect(kernelJson.dep_policy).toBe("all_success")
+    expect(workflowNodeSpecToKernel({ task: "x", role: "plan", depPolicy: "accept_partial" }).dep_policy)
+      .toBe("accept_partial")
 
     const spec = workflowNodeToSpec(
       {
@@ -211,7 +218,7 @@ describe("W-N1: workflow nodes get tools (trusted inherit; quarantined stay deny
           return reply([{ kind: "workflow_batch_spawned", nodes: [spawn({ trust })] }])
         }
         if (event.kind === "sub_agent_completed") {
-          return reply([{ kind: "workflow_completed", completed: ["wf-node0"], failed: [] }])
+          return reply([{ kind: "workflow_completed", node_outcomes: [{ node_id: "wf-node0", status: "completed" }] }])
         }
         return reply([])
       },
@@ -226,7 +233,7 @@ describe("W-N1: workflow nodes get tools (trusted inherit; quarantined stay deny
     })
     const { runner } = createWorkflowRunner(nodeProvider(), trustParentKernel("trusted"), "wftools", [ping])
     const outcome = await runner.runWorkflow({ nodes: [{ task: "use the ping tool once, then stop", role: "implement" }] })
-    expect(outcome.completed).toEqual(["wf-node0"])
+    expect(outcome.nodeOutcomes.map(node => node.nodeId)).toEqual(["wf-node0"])
     expect(pings).toBe(1) // pre-W-N1 this was 0: the missing grant list ran every node TOOL-LESS
   })
 
@@ -240,7 +247,7 @@ describe("W-N1: workflow nodes get tools (trusted inherit; quarantined stay deny
     const outcome = await runner.runWorkflow({
       nodes: [{ task: "try the ping tool", role: "explore", isolation: "read_only", trust: "quarantined" }],
     })
-    expect(outcome.completed).toEqual(["wf-node0"])
+    expect(outcome.nodeOutcomes.map(node => node.nodeId)).toEqual(["wf-node0"])
     expect(pings).toBe(0) // untrusted-content reader: no tool reaches the host
   })
 })
@@ -290,7 +297,7 @@ describe("DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable sessi
             iter += 1
             return reply([{ kind: "workflow_batch_spawned", nodes: [loopSpawn(iter)] }])
           }
-          return reply([{ kind: "workflow_completed", completed: ["wf-node0"], failed: [] }])
+          return reply([{ kind: "workflow_completed", node_outcomes: [{ node_id: "wf-node0", status: "completed" }] }])
         }
         return reply([])
       },
@@ -304,7 +311,7 @@ describe("DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable sessi
     const outcome = await runner.runWorkflow(
       { nodes: [{ task: "polish until done", role: "implement", loop: { maxIters: 5 } }] },
     )
-    expect(outcome.completed).toEqual(["wf-node0"])
+    expect(outcome.nodeOutcomes.map(node => node.nodeId)).toEqual(["wf-node0"])
     // The pace verb ended the loop at 2 iterations, well before maxIters=5.
     const loopSession = await sessionLog.read("wfloop-wf-node0")
     const starts = loopSession.filter(e => e.event.kind === "run_started")
@@ -327,7 +334,7 @@ describe("DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable sessi
     const outcome = await runner.runWorkflow(
       { nodes: [{ task: "one-shot polish", role: "implement", loop: { maxIters: 4 } }] },
     )
-    expect(outcome.completed).toEqual(["wf-node0"])
+    expect(outcome.nodeOutcomes.map(node => node.nodeId)).toEqual(["wf-node0"])
     // default_action=stop: exactly ONE iteration ran (the kernel's pace fallback said stop).
     const starts = (await sessionLog.read("wfsilent-wf-node0")).filter(e => e.event.kind === "run_started")
     expect(starts.length).toBe(1)

@@ -119,8 +119,11 @@ impl IsolationManifest {
     ) -> Self {
         let context_inheritance = Self::role_default_context_inheritance(spec.role);
         let filtered = spec.filter_manifest(available);
-        let permitted_capability_ids =
-            filtered.capabilities().iter().map(|c| c.id.clone()).collect();
+        let permitted_capability_ids = filtered
+            .capabilities()
+            .iter()
+            .map(|c| c.id.clone())
+            .collect();
         Self {
             agent_id: spec.identity.agent_id.clone(),
             parent_session_id: parent_session_id.into(),
@@ -248,7 +251,10 @@ mod tests {
         let filtered = spec.filter_manifest(&manifest);
 
         assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered.by_kind(CapabilityKind::Skill)[0].id.as_str(), "verify");
+        assert_eq!(
+            filtered.by_kind(CapabilityKind::Skill)[0].id.as_str(),
+            "verify"
+        );
     }
 
     #[test]
@@ -260,6 +266,9 @@ mod tests {
         )
         .with_verification_contract("contract-1");
 
-        assert_eq!(spec.verification_contract_id.unwrap().as_str(), "contract-1");
+        assert_eq!(
+            spec.verification_contract_id.unwrap().as_str(),
+            "contract-1"
+        );
     }
 }

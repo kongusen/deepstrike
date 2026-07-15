@@ -9,6 +9,7 @@ from deepstrike import (
     SignalClaim,
 )
 from deepstrike.providers.stream import TextDelta
+from deepstrike.runtime.runner import _signal_to_kernel_event
 
 
 class _TextProvider:
@@ -38,6 +39,9 @@ class _RecordingLeasedSource:
             signal=RuntimeSignal(
                 source="gateway", signal_type="event", urgency="normal",
                 payload={"goal": "leased"},
+                deadline_ms=9_999_999_999_999,
+                coalesce_key="leased-updates",
+                coalesced_count=2,
             ),
             lease_expires_at_ms=30_000,
         )
@@ -60,6 +64,33 @@ def _runner(source):
         max_tokens=2048,
         max_turns=2,
     ))
+
+
+def test_signal_lowering_preserves_deadline_and_coalesce_contract():
+    signal = RuntimeSignal(
+        source="gateway",
+        signal_type="event",
+        urgency="normal",
+        payload={"goal": "batch"},
+        deadline_ms=100,
+        coalesce_key="updates",
+        coalesced_count=3,
+    )
+    delivery = SignalClaim(
+        delivery_id="delivery-abi",
+        lease_token="lease-abi",
+        signal_id="79cc2f49-5d63-42be-bc0c-ecfcb9b9a47f",
+        delivery_attempt=2,
+        signal=signal,
+        lease_expires_at_ms=30_000,
+    )
+
+    lowered = _signal_to_kernel_event(delivery)
+
+    assert lowered["signal"]["deadline_ms"] == 100
+    assert lowered["signal"]["coalesce_key"] == "updates"
+    assert lowered["signal"]["coalesced_count"] == 3
+    assert "topic" not in lowered["signal"]
 
 
 @pytest.mark.asyncio

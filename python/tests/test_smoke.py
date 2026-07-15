@@ -263,6 +263,20 @@ def test_signal_router():
     router.clear_dedup()
 
 
+def test_native_signal_abi_preserves_deadline_and_coalesce_fields():
+    from deepstrike._kernel import RuntimeSignal as NativeRuntimeSignal
+
+    signal = NativeRuntimeSignal(
+        "gateway", "normal", "batch", "event", "{}", None, 10.0, None,
+        100.0, "updates", 2,
+    )
+
+    assert signal.deadline_ms == 100.0
+    assert signal.coalesce_key == "updates"
+    assert signal.coalesced_count == 2
+    assert not hasattr(signal, "topic")
+
+
 def test_provider_instantiation():
     assert OpenAIProvider(api_key="test")._model == "gpt-4o"
     assert OllamaProvider(model="llama3")._model == "llama3"

@@ -83,7 +83,7 @@ impl AgentProcess {
 mod tests {
     use super::*;
     use crate::scheduler::policy::SchedulerBudget;
-    use crate::scheduler::tcb::{Tcb, TaskLifecycle};
+    use crate::scheduler::tcb::{TaskLifecycle, Tcb};
     use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec, IsolationManifest};
     use crate::types::capability::CapabilityManifest;
 
@@ -93,7 +93,8 @@ mod tests {
             AgentRole::Implement,
             "do work",
         );
-        let manifest = IsolationManifest::from_spec(&spec, "parent-sess", &CapabilityManifest::new());
+        let manifest =
+            IsolationManifest::from_spec(&spec, "parent-sess", &CapabilityManifest::new());
         Tcb::spawned(&manifest, SchedulerBudget::default())
     }
 
@@ -116,7 +117,10 @@ mod tests {
 
     #[test]
     fn process_state_of_maps_terminal_task_states() {
-        assert_eq!(process_state_of(TaskLifecycle::Running), ProcessState::Running);
+        assert_eq!(
+            process_state_of(TaskLifecycle::Running),
+            ProcessState::Running
+        );
         assert_eq!(
             process_state_of(TaskLifecycle::Done(TerminationReason::Completed)),
             ProcessState::Joined

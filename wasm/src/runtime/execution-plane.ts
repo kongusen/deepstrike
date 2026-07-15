@@ -3,7 +3,7 @@ import type {
   PermissionRequestEvent, ToolDeniedEvent, PermissionResponse, PermissionResolvedEvent,
 } from "../types.js"
 import type { RegisteredTool, ToolExecContext } from "../tools/index.js"
-import type { DreamStore, MemoryEntry } from "../memory/index.js"
+import type { DreamStore, MemoryScope } from "../memory/index.js"
 import type { KnowledgeSource } from "../knowledge/index.js"
 import { LargeResultSpool } from "./large-result-spool.js"
 import { formatToolError } from "../tools/errors.js"
@@ -18,6 +18,7 @@ export interface ToolSuspendEvent {
 
 export interface RunContext {
   agentId?: string
+  memoryScope?: MemoryScope
   skillContentMap?: Map<string, string>
   dreamStore?: DreamStore
   knowledgeSource?: KnowledgeSource
@@ -86,11 +87,11 @@ export class LocalExecutionPlane implements ExecutionPlane {
     for (const c of memoryCalls) {
       const args = tryParseJson(c.arguments) as Record<string, unknown>
       const topK = typeof args?.top_k === "number" ? args.top_k : 5
-      const entries = (ctx.dreamStore && ctx.agentId)
-        ? await ctx.dreamStore.search(ctx.agentId, String(args?.query ?? ""), topK)
+      const entries = (ctx.dreamStore && ctx.agentId && ctx.memoryScope)
+        ? await ctx.dreamStore.search(ctx.agentId, { scope: ctx.memoryScope, query: String(args?.query ?? ""), top_k: topK, kinds: [] })
         : []
       const content = entries.length
-        ? entries.map((e: MemoryEntry) => `[score=${e.score.toFixed(3)}] ${e.text}`).join("\n---\n")
+        ? entries.map(e => `[memory record_id=${e.record.record_id} score=${e.score.toFixed(3)}] ${e.record.content}`).join("\n---\n")
         : "No relevant memories found."
       yield { type: "tool_result", callId: c.id, name: c.name, content, isError: false } as ToolResultEvent
     }

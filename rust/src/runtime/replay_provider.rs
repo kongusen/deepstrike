@@ -31,7 +31,10 @@ pub struct ReplayProviderOpts {
 
 impl Default for ReplayProviderOpts {
     fn default() -> Self {
-        Self { tokenizer: None, wrap: false }
+        Self {
+            tokenizer: None,
+            wrap: false,
+        }
     }
 }
 
@@ -57,7 +60,9 @@ impl ReplayProvider {
         Self {
             messages,
             cursor: Mutex::new(0),
-            tokenizer: opts.tokenizer.unwrap_or_else(|| Box::new(default_tokenizer)),
+            tokenizer: opts
+                .tokenizer
+                .unwrap_or_else(|| Box::new(default_tokenizer)),
             wrap: opts.wrap,
         }
     }
@@ -123,7 +128,10 @@ fn render_context_to_text(context: &RenderedContext, tools: &[ToolSchema]) -> St
         }
     }
     for tool in tools {
-        parts.push(format!("{} {} {}", tool.name, tool.description, tool.parameters));
+        parts.push(format!(
+            "{} {} {}",
+            tool.name, tool.description, tool.parameters
+        ));
     }
     parts.join("\n")
 }
@@ -141,7 +149,11 @@ fn message_text(m: &Message) -> Option<String> {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            if joined.is_empty() { None } else { Some(joined) }
+            if joined.is_empty() {
+                None
+            } else {
+                Some(joined)
+            }
         }
         _ => None,
     }
@@ -153,7 +165,11 @@ impl LLMProvider for ReplayProvider {
         RuntimePolicy::default()
     }
 
-    fn peek_provider_replay(&self, _content: &str, _tool_calls: &[ToolCall]) -> Option<ProviderReplay> {
+    fn peek_provider_replay(
+        &self,
+        _content: &str,
+        _tool_calls: &[ToolCall],
+    ) -> Option<ProviderReplay> {
         None
     }
 

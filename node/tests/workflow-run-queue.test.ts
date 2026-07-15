@@ -12,8 +12,9 @@
  */
 import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
 import type { WorkflowSpec } from "../src/index.js"
+import { scriptedKernelV2 } from "./helpers/scripted-kernel-v2.js"
 
-type Obs = { kind: string; nodes?: unknown[]; completed?: string[]; failed?: string[] }
+type Obs = { kind: string; nodes?: unknown[]; node_outcomes?: Array<{ node_id: string; status: string }> }
 
 function node(agent_id: string, goal: string) {
   return {
@@ -36,10 +37,10 @@ function makeFakeKernel() {
 
   let pendingBatch: ReturnType<typeof node>[] = []
   let nextEffect = 1
-  function reply(actions: unknown[], observations: Obs[]): string {
-    return JSON.stringify({ version: 2, actions, observations })
+  function reply(actions: unknown[], observations: Obs[]) {
+    return { actions: actions as Array<Record<string, unknown>>, observations }
   }
-  function requestSpawn(nodes: ReturnType<typeof node>[]): string {
+  function requestSpawn(nodes: ReturnType<typeof node>[]) {
     pendingBatch = nodes
     return reply([{
       kind: "spawn_workflow",
@@ -48,21 +49,19 @@ function makeFakeKernel() {
     }], [])
   }
 
-  return {
-    turn: () => 0,
-    step(input: string): string {
-      const { event } = JSON.parse(input) as { event: { kind: string; result?: { agent_id: string } } }
-      if (event.kind === "load_workflow") {
+  return scriptedKernelV2(event => {
+      const typedEvent = event as { kind: string; result?: { agent_id: string } }
+      if (typedEvent.kind === "load_workflow") {
         // A and B have no deps → both ready in the first round.
         return requestSpawn([A, B])
       }
-      if (event.kind === "workflow_spawn_result") {
+      if (typedEvent.kind === "workflow_spawn_result") {
         const nodes = pendingBatch
         pendingBatch = []
         return reply([], [{ kind: "workflow_batch_spawned", nodes }])
       }
-      if (event.kind === "sub_agent_completed") {
-        switch (event.result?.agent_id) {
+      if (typedEvent.kind === "sub_agent_completed") {
+        switch (typedEvent.result?.agent_id) {
           // A done (B still running) → D unblocks immediately (per-node unblock).
           case "wf-node0":
             return requestSpawn([D])
@@ -75,13 +74,12 @@ function makeFakeKernel() {
           // C done → DAG complete.
           case "wf-node2":
             return reply([], [
-              { kind: "workflow_completed", completed: ["wf-node0", "wf-node1", "wf-node2", "wf-node3"], failed: [] },
+              { kind: "workflow_completed", node_outcomes: ["wf-node0", "wf-node1", "wf-node2", "wf-node3"].map(node_id => ({ node_id, status: "completed" })) },
             ])
         }
       }
       return reply([], [])
-    },
-  }
+  })
 }
 
 describe("runWorkflow over the run-queue executor", () => {
@@ -128,7 +126,7 @@ describe("runWorkflow over the run-queue executor", () => {
 
     // The critical assertion: D (unblocked by A alone) is NOT dropped — all four nodes ran.
     expect(ran.sort()).toEqual(["wf-node0", "wf-node1", "wf-node2", "wf-node3"])
-    expect(outcome.completed.sort()).toEqual(["wf-node0", "wf-node1", "wf-node2", "wf-node3"])
-    expect(outcome.failed).toEqual([])
+    expect(outcome.nodeOutcomes.map(node => node.nodeId).sort()).toEqual(["wf-node0", "wf-node1", "wf-node2", "wf-node3"])
+    expect(outcome.nodeOutcomes.every(node => node.status === "completed")).toBe(true)
   })
 })

@@ -7,7 +7,18 @@ import { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider } from 
 import { RuntimeRunner, collectText, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
 import { Governance } from "../src/governance.js"
 import type { LLMProvider, Message, ProviderRunState, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
-import { kernelEvents } from "@deepstrike/wasm-kernel"
+import { kernelEvents, SignalRouter } from "@deepstrike/wasm-kernel"
+
+describe("SignalRouter lifecycle ABI", () => {
+  it("accepts lifecycle strings and rejects the retired boolean ABI", () => {
+    const router = new SignalRouter(4)
+    const signal = { urgency: "critical" }
+
+    expect(router.ingest(signal, "ready")).toBe("run")
+    expect(router.ingest(signal, "running")).toBe("interrupt_now")
+    expect(() => router.ingest(signal, true as never)).toThrow("invalid task lifecycle")
+  })
+})
 
 describe("tool + executeTools", () => {
   const add = tool("add", "Add two numbers.", {
@@ -57,6 +68,8 @@ describe("ScheduledPrompt", () => {
     expect(sig.payload.goal).toBe("standup")
     expect(sig.payload.criteria).toEqual(["be brief"])
     expect(sig.dedupeKey).toBe("scheduled-1700000000000")
+    expect(sig.coalescedCount).toBe(1)
+    expect(sig).not.toHaveProperty("topic")
   })
 })
 
@@ -178,7 +191,7 @@ describe("RuntimeRunner", () => {
     expect(text).toBe("hi")
   })
 
-  it("emits configure_run with resourceQuota + schedulerBudget bundled (K2)", async () => {
+  it("emits configure_run with resourceQuota + versioned schedulerPolicy bundled", async () => {
     kernelEvents.length = 0
     const provider: LLMProvider = {
       async *stream() {
@@ -193,7 +206,19 @@ describe("RuntimeRunner", () => {
       sessionLog: new InMemorySessionLog(),
       executionPlane: new LocalExecutionPlane(),
       maxTokens: 2048,
-      schedulerBudget: { maxWallMs: 1234 },
+      schedulerPolicy: {
+        version: 1,
+        criticalPathWeight: 1_000_000,
+        fanoutWeight: 10_000,
+        ageWeight: 1_000,
+        tokenCostWeight: 1,
+      },
+      signalPolicy: { queueMax: 8, ttlMs: 500, deadlineEscalation: false },
+      promptBudget: {
+        promptOverheadTokens: 20,
+        outputReserveTokens: 100,
+        safetyMarginTokens: 10,
+      },
       contextPolicy: {
         pressureThresholds: { snip: 0.72 },
         preserveRecentTurns: 4,
@@ -216,7 +241,25 @@ describe("RuntimeRunner", () => {
       max_spawn_depth: 1,
       memory_writes_per_window: [3, 1000],
     })
-    expect(configure!.config.scheduler_max_wall_ms).toBe(1234)
+    expect(configure!.config.scheduler_policy).toEqual({
+      version: 1,
+      critical_path_weight: 1_000_000,
+      fanout_weight: 10_000,
+      age_weight: 1_000,
+      token_cost_weight: 1,
+    })
+    expect(configure!.config).not.toHaveProperty("scheduler_max_wall_ms")
+    expect(configure!.config.signal_policy).toEqual({
+      version: 1,
+      queue_max: 8,
+      ttl_ms: 500,
+      deadline_escalation: false,
+    })
+    expect(configure!.config.prompt_budget).toEqual({
+      prompt_overhead_tokens: 20,
+      output_reserve_tokens: 100,
+      safety_margin_tokens: 10,
+    })
     expect(configure!.config.context_policy).toEqual({
       version: 1,
       pressure_thresholds_ppm: {

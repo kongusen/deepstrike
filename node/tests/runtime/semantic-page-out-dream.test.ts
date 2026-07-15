@@ -1,7 +1,7 @@
 import { collectText } from "../../src/runtime/runner.js"
 import { createRunner, tool } from "./helpers.js"
 import type { DreamSummarizer, LLMProvider, Message, StreamEvent } from "../../src/types.js"
-import type { CurationResult, DreamStore } from "../../src/memory/protocols.js"
+import type { DreamStore } from "../../src/memory/protocols.js"
 
 describe("semantic page_out → DreamStore (Layer 5 contract)", () => {
   it("archives an LLM summary to DreamStore on semantic page_out", async () => {
@@ -9,11 +9,9 @@ describe("semantic page_out → DreamStore (Layer 5 contract)", () => {
     let lastSummary = ""
 
     const dreamStore: DreamStore = {
-      loadSessions: async () => [],
-      loadMemories: async () => [],
-      commit: async (_agentId, result: CurationResult) => {
+      upsert: async (_agentId, record) => {
         commitCalls += 1
-        lastSummary = result.toAdd[0]?.text ?? ""
+        lastSummary = record.content
       },
       saveSession: async () => {},
       search: async () => [],
@@ -47,6 +45,7 @@ describe("semantic page_out → DreamStore (Layer 5 contract)", () => {
         maxTokens: 400,
         maxTurns: 20,
         agentId: "agent-semantic",
+        memoryScope: { tenant_id: "agent-semantic", namespace: "integration" },
         dreamStore,
         dreamSummarizer,
       },

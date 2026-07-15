@@ -5,7 +5,8 @@ import pytest
 
 from deepstrike import (
     tool, WorkingMemory, Governance,
-    EvalLoopHarness, HarnessRequest, HarnessOutcome,
+    AttemptLoop, AttemptRequest, Criterion, RuntimeAttemptBody, StopPolicy,
+    Verdict, VerdictFnJudge,
 )
 from deepstrike.providers.stream import (
     ErrorEvent, DoneEvent, ToolResultEvent, TextDelta,
@@ -15,7 +16,7 @@ from conftest import (
     make_agent, make_provider, collect_events, text,
     MockDreamStore, MockKnowledgeSource, SKILL_DIR,
 )
-from deepstrike.memory.protocols import MemoryEntry, CurationResult, CurationStats
+from deepstrike.memory.protocols import MemoryProvenance, MemoryRecord, MemoryScope
 
 
 # ─── A: Tools + Governance ──────────────────────────────────────────────────
@@ -137,9 +138,9 @@ class TestSkillsTools:
         assert any(isinstance(e, DoneEvent) for e in events)
 
 
-# ─── E: EvalLoopHarness + Tools ────────────────────────────────────────────
+# ─── E: AttemptLoop + Tools ───────────────────────────────────────────────
 
-class TestEvalLoopHarnessTools:
+class TestAttemptLoopTools:
     @pytest.mark.timeout(120)
     async def test_retries_until_accepted(self):
         @tool
@@ -151,20 +152,27 @@ class TestEvalLoopHarnessTools:
         agent.register(compute_square)
         attempts = [0]
 
-        class SquareGate:
-            async def evaluate(self, request, outcome):
-                attempts[0] += 1
-                return "25" in outcome.result
+        def verdict(*, result, **_):
+            attempts[0] += 1
+            passed = "25" in result
+            return Verdict(passed, 1.0 if passed else 0.0, "retry" if not passed else "ok")
 
-        outcome = await EvalLoopHarness(agent, SquareGate(), max_attempts=3).run(
-            HarnessRequest(
+        outcome = await AttemptLoop(
+            body=RuntimeAttemptBody(agent._runner),
+            judge=VerdictFnJudge(verdict),
+            stop=StopPolicy(max_attempts=3),
+        ).run(
+            AttemptRequest(
                 goal="Use compute_square to compute 5 squared and output the result.",
-                criteria=["Must call compute_square with n=5", "Final answer must be 25"],
+                criteria=[
+                    Criterion(text="Must call compute_square with n=5"),
+                    Criterion(text="Final answer must be 25"),
+                ],
             )
         )
 
-        assert isinstance(outcome.passed, bool)
-        if outcome.passed:
+        assert outcome.outcome in {"passed", "exhausted"}
+        if outcome.outcome == "passed":
             assert "25" in outcome.result
 
 
@@ -175,13 +183,15 @@ class TestAgentDreamStore:
     async def test_preseeded_memory_accessible(self):
         store = MockDreamStore()
         agent_id = "combo-mem-agent"
-        await store.commit(agent_id, CurationResult(
-            to_add=[MemoryEntry(text="The secret code word is BANANA.", score=0.95)],
-            to_remove_indices=[],
-            stats=CurationStats(insights_processed=1, entries_added=1),
-        ), [])
+        scope = MemoryScope(agent_id, "combo")
+        await store.upsert(agent_id, MemoryRecord(
+                record_id="record-secret", scope=scope, name="secret-code", kind="reference",
+                content="The secret code word is BANANA.", description="secret code fixture",
+                provenance=MemoryProvenance(author="host", trust="host_verified"),
+                created_at=1, updated_at=1, confidence=0.95,
+            ))
 
-        result = await make_agent(dream_store=store, agent_id=agent_id).run(
+        result = await make_agent(dream_store=store, agent_id=agent_id, memory_scope=scope).run(
             "What is the secret code word from your memory? If unknown, say 'unknown'.",
         )
         assert len(result) > 0

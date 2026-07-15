@@ -24,6 +24,7 @@
 //! - **Zero-copy where possible**: CompactString, borrowed slices
 //! - **Compile-time safety**: Ownership, Send+Sync, exhaustive matches
 
+pub mod benchmark;
 pub mod context;
 pub mod governance;
 pub mod harness;
@@ -40,17 +41,17 @@ pub mod types;
 // Re-export key types at crate root for convenience
 pub use governance::quota::ResourceQuota;
 pub use mm::{
-    plan_eviction, EvictionOp, EvictionPlan, Handle, HandleId, HandleKind, HandleTable,
-    MemoryTierHint, PageInEntry, Residency,
+    EvictionOp, EvictionPlan, Handle, HandleId, HandleKind, HandleTable, MemoryTierHint,
+    PageInEntry, Residency, plan_eviction,
 };
 pub use proc::{AgentProcess, ProcessState};
 pub use runtime::session::SessionEvent;
 pub use runtime::{
-    category_for_kind, primitive_for_kind, rebuild_os_snapshot_from_events,
-    reconstruct_messages_with_fallback, CancellationReason, KernelAction, KernelEventCategory,
-    KernelInput, KernelInputEvent, KernelObservation, KernelPreparationStatus, KernelPreparedStep,
-    KernelPressureAction, KernelRuntime, KernelSnapshotPolicyV2, KernelSnapshotV2, KernelStep,
-    OsSnapshot, Primitive, KERNEL_ABI_VERSION, KERNEL_SNAPSHOT_VERSION,
+    CancellationReason, KERNEL_ABI_VERSION, KERNEL_SNAPSHOT_VERSION, KernelAction,
+    KernelEventCategory, KernelInput, KernelInputEvent, KernelObservation, KernelPreparationStatus,
+    KernelPreparedStep, KernelPressureAction, KernelRuntime, KernelSnapshotPolicyV2,
+    KernelSnapshotV2, KernelStep, OsSnapshot, Primitive, category_for_kind, primitive_for_kind,
+    rebuild_os_snapshot_from_events, reconstruct_messages_with_fallback,
 };
 pub use scheduler::entropy::{EntropySample, EntropyTracker, EntropyWatchConfig};
 pub use scheduler::tcb::{BudgetLedger, TaskId, TaskLifecycle, TaskTable, Tcb, WaitReason};

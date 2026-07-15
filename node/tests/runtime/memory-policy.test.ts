@@ -42,9 +42,25 @@ describe("kernel memory policy", () => {
 
   // ── Enforcement: the kernel honors the policy at the WriteMemory / QueryMemory traps ──
 
+  const MEMORY_SCOPE = { tenant_id: "tenant-test", namespace: "memory-policy" }
+  const memory = (content: string) => ({
+    record_id: "record-note",
+    scope: MEMORY_SCOPE,
+    name: "note",
+    kind: "feedback",
+    content,
+    description: "desc",
+    provenance: { author: "host", trust: "host_verified", evidence_refs: [] },
+    created_at: 1,
+    updated_at: 1,
+    recall_count: 0,
+    confidence: 1,
+    links: [],
+    pinned: false,
+  })
   const FORBIDDEN_WRITE = {
     kind: "write_memory",
-    memory: { metadata: { name: "note", description: "desc" }, content: "代码模式: foo" },
+    memory: memory("代码模式: foo"),
   }
 
   it("validation_enabled:false admits any structurally valid write", () => {
@@ -68,7 +84,7 @@ describe("kernel memory policy", () => {
     step(rt, { kind: "set_memory_policy", max_content_bytes: 8 })
     const out = step(rt, {
       kind: "write_memory",
-      memory: { metadata: { name: "note", description: "desc" }, content: "way more than eight bytes" },
+      memory: memory("way more than eight bytes"),
     })
     expect(out.observations.some(o => o.kind === "memory_validation_failed")).toBe(true)
   })
@@ -78,7 +94,7 @@ describe("kernel memory policy", () => {
     step(rt, { kind: "set_memory_policy", retrieval_top_k: 3 })
     const out = step(rt, {
       kind: "query_memory",
-      query: { current_context: "ctx", active_tools: [], already_surfaced: [], top_k: 50 },
+      query: { scope: MEMORY_SCOPE, query: "ctx", top_k: 50, kinds: [] },
     }) as { observations: Array<{ kind: string; requested_k?: number }> }
     const queried = out.observations.find(o => o.kind === "memory_queried")
     expect(queried?.requested_k).toBe(3)

@@ -1,5 +1,6 @@
 import type { KernelRuntimeInstance } from "../../src/kernel.js"
-import { kernelStep } from "../../src/runtime/kernel-step.js"
+import type { SessionLog } from "../../src/runtime/session-log.js"
+import { durableKernelStep, kernelStep } from "../../src/runtime/kernel-step.js"
 
 type RawStep = {
   version: number
@@ -63,7 +64,7 @@ export function stepKernelV2WithHostEffects(runtime: KernelRuntimeInstance, even
   } else if (action.kind === "persist_memory") {
     result = { kind: "memory_persist_result", effect_id: action.effect_id }
   } else if (action.kind === "query_memory") {
-    result = { kind: "memory_query_result", effect_id: action.effect_id, entries: [] }
+    result = { kind: "memory_query_result", effect_id: action.effect_id, hits: [] }
   }
   if (!result) return first
 
@@ -76,5 +77,44 @@ export function stepKernelV2WithHostEffects(runtime: KernelRuntimeInstance, even
 
 export function startKernelV2(runtime: KernelRuntimeInstance, goal = "parent"): void {
   const step = stepKernelV2(runtime, { kind: "start_run", task: { goal, criteria: [] } })
+  if (step.faults?.length) throw new Error(JSON.stringify(step.faults[0]))
+}
+
+/**
+ * Durable counterpart for runner-integration tests. A runtime must enter the transaction log on
+ * its very first transition; seeding it through `step()` and attaching it to RuntimeRunner later
+ * would create a journal whose first committed transaction starts at step_seq > 1.
+ */
+export async function durableStepKernelV2<T = RawStep>(
+  runtime: KernelRuntimeInstance,
+  sessionLog: SessionLog,
+  sessionId: string,
+  event: Record<string, unknown>,
+): Promise<T> {
+  const effects = pendingEffects.get(runtime) ?? new Map<string, string>()
+  pendingEffects.set(runtime, effects)
+  const effectKind = resultToEffect.get(String(event.kind))
+  const correlated = effectKind && event.effect_id === undefined
+    ? { ...event, effect_id: effects.get(effectKind) }
+    : event
+  const step = await durableKernelStep(runtime, sessionLog, sessionId, correlated) as RawStep
+  for (const action of step.actions) {
+    if (typeof action.kind === "string" && typeof action.effect_id === "string") {
+      effects.set(action.kind, action.effect_id)
+    }
+  }
+  return step as T
+}
+
+export async function durableStartKernelV2(
+  runtime: KernelRuntimeInstance,
+  sessionLog: SessionLog,
+  sessionId: string,
+  goal = "parent",
+): Promise<void> {
+  const step = await durableStepKernelV2(runtime, sessionLog, sessionId, {
+    kind: "start_run",
+    task: { goal, criteria: [] },
+  })
   if (step.faults?.length) throw new Error(JSON.stringify(step.faults[0]))
 }

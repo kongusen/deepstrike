@@ -11,15 +11,15 @@ Update the import path; the symbols themselves are unchanged.
 | Symbol(s) | Old | New |
 |---|---|---|
 | `endpointProfiles`, `modelProfiles`, `getModelProfile`, `CircuitBreaker`, `OpenAIChatProvider` | `@deepstrike/sdk` | `@deepstrike/sdk/providers` |
-| `SubAgentOrchestrator`, `defaultSubAgentOrchestrator`, `spawnStandalone`, `builtinReducers`, `resolveReducer`, `FileWorkflowStore`, `ContractBuilder`, `VerificationContract`, `ContractDrivenHarness`, `HandoffBus`, `CreatorVerifierMode`, `OrchestrationMode`, `submitWorkflowNodesTool`, `startWorkflowTool`, `generateAndFilter`, `verifyRules`, `genEval`, agent/milestone types | `@deepstrike/sdk` | `@deepstrike/sdk/workflow` |
+| `SubAgentOrchestrator`, `defaultSubAgentOrchestrator`, `spawnStandalone`, `builtinReducers`, `resolveReducer`, `FileWorkflowStore`, `ContractBuilder`, `VerificationContract`, `HandoffBus`, `CreatorVerifierMode`, `OrchestrationMode`, `submitWorkflowNodesTool`, `startWorkflowTool`, `generateAndFilter`, `verifyRules`, `genEval`, agent/milestone types | `@deepstrike/sdk` | `@deepstrike/sdk/workflow` |
 | `WorktreeExecutionPlane`, `GitWorktreeManager`, `FilteredExecutionPlane`, `ProcessSandboxPlane`, `McpProxyPlane`, `RemoteVpcPlane`, `NullArchiveStore`, `FileArchiveStore`, credential vaults | `@deepstrike/sdk` | `@deepstrike/sdk/planes` |
-| `WorkingMemory`, `InMemoryDreamStore`, `DreamStore`, `MemoryEntry`, `SessionData`, `CurationResult`, `KnowledgeSource`, … | `@deepstrike/sdk` | `@deepstrike/sdk/memory` |
-| `SinglePassHarness`, `EvalLoopHarness`, `HarnessLoop`, `judge`, `QualityGate`, `HarnessRequest`, `HarnessOutcome`, `Criterion`, `Verdict` | `@deepstrike/sdk` | `@deepstrike/sdk/harness` |
+| `WorkingMemory`, `InMemoryDreamStore`, `DreamStore`, `MemoryRecord`, `MemoryRecall`, `MemoryQuery`, `MemoryScope`, `SessionData`, `CurationResult`, `KnowledgeSource`, … | `@deepstrike/sdk` | `@deepstrike/sdk/memory` |
+| `AttemptLoop`, `RuntimeAttemptBody`, judge/carry policies, `judge`, `Criterion`, `Verdict` | `@deepstrike/sdk` | `@deepstrike/sdk/harness` |
 | `osProfile`, `assertNativeProfile`, `KernelPrimitivesDashboard`, `rebuildOsSnapshotFromSessionEvents`, `ReplayProvider`, `extractRecordedMessages`, `PermissionManager`, `PermissionMode`, `SignalGateway`, `ScheduledPrompt`, replay-validator utils, scheduler/quota/policy types | `@deepstrike/sdk` | `@deepstrike/sdk/os` |
 
 ```diff
-- import { HarnessLoop, DeepSeekProvider, WorkingMemory } from "@deepstrike/sdk"
-+ import { HarnessLoop } from "@deepstrike/sdk/harness"
+- import { DeepSeekProvider, WorkingMemory } from "@deepstrike/sdk"
++ import { AttemptLoop, RuntimeAttemptBody } from "@deepstrike/sdk/harness"
 + import { DeepSeekProvider } from "@deepstrike/sdk/providers"
 + import { WorkingMemory } from "@deepstrike/sdk/memory"
 ```
@@ -56,7 +56,7 @@ Or let the catalog pick the protocol/endpoint: `createProvider({ model, apiKey, 
 ## 4. Removed (internalized — no public replacement)
 
 These crossed the kernel boundary or were low-level building blocks the high-level APIs now own. If you
-were calling them directly, switch to `runWorkflow` / `HarnessLoop` / `Governance`:
+were calling them directly, switch to `runWorkflow` / `AttemptLoop` / `Governance`:
 
 `workflowSpecToKernel`, `workflowNodeSpecToKernel`, `submitWorkflowToKernel`, `submitWorkflowNodesToKernel`,
 `agentRunSpecToKernel`, `subAgentResultToKernel`, `milestoneCheckResultToKernel`, `agentIdentitySub`,

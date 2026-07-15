@@ -19,79 +19,62 @@ export interface SessionData {
   updatedAtMs: number
 }
 
-export interface MemoryEntry {
-  text: string
+export type MemoryKind = "user" | "feedback" | "project" | "reference"
+export type MemoryAuthor = "model" | "host" | "extraction"
+export type MemoryTrustLevel = "untrusted" | "user_asserted" | "host_verified"
+
+export interface MemoryScope {
+  tenant_id: string
+  namespace: string
+}
+
+export interface MemoryProvenance {
+  session_id?: string
+  author: MemoryAuthor
+  trust: MemoryTrustLevel
+  evidence_refs: string[]
+}
+
+export interface MemoryRecord {
+  record_id: string
+  scope: MemoryScope
+  name: string
+  kind: MemoryKind
+  content: string
+  description: string
+  provenance: MemoryProvenance
+  created_at: number
+  updated_at: number
+  last_recalled_at?: number
+  recall_count: number
+  confidence: number
+  links: string[]
+  pinned: boolean
+  ttl_days?: number
+}
+
+export interface MemoryRecall {
+  record: MemoryRecord
   score: number
-  metadata: unknown
-}
-
-export interface CurationStats {
-  insightsProcessed: number
-  duplicatesRemoved: number
-  conflictsResolved: number
-  entriesAdded: number
-}
-
-export interface CurationResult {
-  toAdd: MemoryEntry[]
-  /** Indices into the `existingMemories` array passed to `DreamStore.loadMemories`. */
-  toRemoveIndices: number[]
-  stats: CurationStats
+  why: string
 }
 
 export interface DreamStore {
-  loadSessions(agentId: string): Promise<SessionData[]>
-  loadMemories(agentId: string): Promise<MemoryEntry[]>
-  commit(agentId: string, result: CurationResult, existing: MemoryEntry[]): Promise<void>
+  /** The only durable memory mutation. Callers must reach this through the kernel WriteMemory gate. */
+  upsert(agentId: string, record: MemoryRecord): Promise<void>
   /** Semantic search over the agent's long-term memories. Called on demand during a run. */
-  search(agentId: string, query: string, topK?: number): Promise<MemoryEntry[]>
-  /** Persist a completed session for future consolidation via `Agent.dream()`. */
+  search(agentId: string, query: MemoryQuery): Promise<MemoryRecall[]>
+  /** Persist the completed session before the runner performs its one extraction pass. */
   saveSession(data: SessionData): Promise<void>
-}
-
-// ─── Phase 7: Long-term memory types (mirroring kernel mm/memory.rs) ─────────
-
-/** Memory kind (4 types, mirroring Claude Code). */
-export type MemoryKind = "user" | "feedback" | "project" | "reference"
-
-/** Memory metadata (kernel stores, SDK provides full content). */
-export interface MemoryMetadata {
-  name: string
-  description: string
-  kind?: MemoryKind
-  created_at: number
-  updated_at: number
-  session_id?: string
-
-  // Heuristic inference fields
-  user_role?: string
-  expertise_level?: string
-  preference_rule?: string
-  approved_pattern?: string
-  project_phase?: string
-  relative_date?: string
-  external_url?: string
-  ticket_ref?: string
-}
-
-/** Memory write request (SDK → kernel). */
-export interface MemoryWriteRequest {
-  metadata: MemoryMetadata
-  content: string
 }
 
 /** Memory query request (kernel → SDK). */
 export interface MemoryQuery {
-  current_context: string
-  active_tools: string[]
-  already_surfaced: string[]
+  scope: MemoryScope
+  query: string
   top_k: number
-}
-
-/** Memory retrieval response (SDK → kernel). */
-export interface MemoryRetrieval {
-  selected_memory_ids: string[]
-  selection_rationale: string
+  kinds: MemoryKind[]
+  min_score?: number
 }
 
 /** Memory validation error (mirroring kernel MemoryValidationError). */
@@ -103,10 +86,3 @@ export type MemoryValidationError =
   | { error_kind: "name_too_long"; length: number; limit: number }
 
 /** Durable transcript storage for same-session conversational continuity. */
-
-export interface DreamResult {
-  sessionsProcessed: number
-  insightsExtracted: number
-  entriesAdded: number
-  entriesRemoved: number
-}

@@ -5,7 +5,7 @@ export {
   runFanout,
   InMemorySessionLog,
   LocalExecutionPlane,
-  DEFAULT_NATIVE_ATTENTION_POLICY,
+  DEFAULT_NATIVE_SIGNAL_POLICY,
   DEFAULT_NATIVE_GOVERNANCE_POLICY,
   DEFAULT_SANDBOX_POLICY,
   assertNativeProfile,
@@ -33,7 +33,9 @@ export type {
   MemoryWriteRateLimit,
   ResourceQuota,
   RuntimeOptions,
-  SchedulerBudget,
+  PromptBudget,
+  SchedulerPolicy,
+  SignalPolicy,
   SessionEvent,
   SessionLog,
   KernelTransactionEntry,
@@ -60,6 +62,10 @@ export type {
   TerminationReason,
   WorkflowSpec,
   WorkflowNodeSpec,
+  WorkflowDependencyPolicy,
+  WorkflowNodeStatus,
+  WorkflowNodeOutcome,
+  WorkflowOutcome,
   WorkflowTaskSpec,
   WorkflowSpawnInfo,
 } from "./runtime/types/agent.js"
@@ -79,11 +85,20 @@ export type { ToolEnvelope, ToolEnvelopeOk, ToolEnvelopeFail } from "./tools/err
 export { WorkingMemory } from "./memory/index.js"
 export { InMemoryDreamStore } from "./memory/in-memory-store.js"
 export type {
-  DreamStore, DreamResult, SessionStore, SessionData, SessionMessage, MemoryEntry, CurationResult, CurationStats,
+  DreamStore, SessionStore, SessionData, SessionMessage, MemoryRecord, MemoryRecall,
+  MemoryQuery, MemoryScope, MemoryProvenance, MemoryKind, MemoryAuthor, MemoryTrustLevel,
 } from "./memory/index.js"
 export type { KnowledgeSource } from "./knowledge/index.js"
-export { SinglePassHarness, HarnessLoop } from "./harness/index.js"
-export type { HarnessRequest, HarnessOutcome, HarnessLoopOptions, CriterionResult, HarnessEvent, VerdictFn } from "./harness/index.js"
+export {
+  AttemptLoop, RuntimeAttemptBody, VerdictFnJudge, LlmEvalJudge, HybridJudge,
+  continueSession, freshWithFeedback, freshWithDigest,
+} from "./harness/index.js"
+export type {
+  AttemptBody, AttemptBodyContext, AttemptBodyEvent, AttemptBodyTerminal,
+  AttemptJudge, AttemptLoopEvent, AttemptLoopOptions, AttemptOutcome,
+  AttemptOutcomeKind, AttemptProgressEvent, AttemptRequest, CarryPolicy,
+  JudgeContext, JudgeResult, PreparedAttempt, StopPolicy, VerdictFn,
+} from "./harness/index.js"
 export { ScheduledPrompt } from "./signals/index.js"
 export type { RuntimeSignal, SignalSource } from "./signals/index.js"
 export { PermissionManager, PermissionMode } from "./safety/index.js"

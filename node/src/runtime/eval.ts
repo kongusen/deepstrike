@@ -4,10 +4,10 @@
  * Wraps the three kernel free functions `buildEvalMessages` / `parseVerdict` / `verdictOutputSchema`
  * (folded out of the old EvalPipeline class in 0.5.0) into a small typed surface that's safe to
  * call from a benchmark harness, a CI gate, or any caller that just wants "does this result meet
- * the criteria?" without setting up `HarnessLoop`.
+ * the criteria?" without setting up `AttemptLoop`.
  *
  * The judge is a single LLM call: build the eval prompt → stream → parse verdict. No retry loop,
- * no skill extraction, no harness state. Use `HarnessLoop` if you want the retry/refine flow.
+ * no skill extraction, no loop state. Use `AttemptLoop` if you want the retry/refine flow.
  */
 
 import type { LLMProvider, Message, RenderedContext, TextDelta } from "../types.js"
@@ -20,6 +20,10 @@ export interface Criterion {
   required?: boolean
   /** Optional weight for weighted scoring (kernel-defined semantics). */
   weight?: number
+  /** Stable host contract identifier, passed through to deterministic judges. */
+  id?: string
+  /** Signals that the host can evaluate this criterion without an LLM. */
+  machineCheckable?: boolean
 }
 
 export interface VerdictDetail {

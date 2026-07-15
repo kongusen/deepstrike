@@ -67,7 +67,10 @@ describe("WASM authoritative kernel transaction log", () => {
     await expect(kernelRecordDigest({ z: 1, a: [true, "雪"] })).resolves.toBe(
       "74ffaa09c9570f87244813a5b15514369f7b1a8996e3e80017585b4df246c1f7",
     )
-    await expect(kernelRecordDigest({ ratio: 0.5 })).rejects.toBeInstanceOf(KernelLogIntegrityError)
+    await expect(kernelRecordDigest({ ratio: 0.5 })).resolves.toBe(
+      "7ae3311a2b33b26525cf688e72ec90df645b018c033d6b9efc23f422af4f8391",
+    )
+    await expect(kernelRecordDigest({ ratio: Number.POSITIVE_INFINITY })).rejects.toBeInstanceOf(KernelLogIntegrityError)
   })
 
   it("validates the digest chain and derives a regex-free operation cursor", async () => {

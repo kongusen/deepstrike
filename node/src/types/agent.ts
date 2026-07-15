@@ -128,6 +128,14 @@ export interface LoopResult {
    *  vocabulary (stop → loopContinue=false); the legacy text-sniffed signal is the fallback.
    *  SDK-internal — stripped by `subAgentResultToKernel`. */
   paceDecision?: import("../runtime/kernel-step.js").PaceDecision
+  /** Two-axis AttemptLoop result. Serialized alongside `termination` so hosts can observe judge
+   *  failure independently from run health. */
+  attempt?: {
+    outcome: import("../harness/harness.js").AttemptOutcomeKind
+    runStatus: string
+    attempts: number
+    verdict?: import("../runtime/eval.js").Verdict
+  }
 }
 
 export interface SubAgentResult {
@@ -232,6 +240,7 @@ function safeParseToolArgs(raw: string | undefined): Record<string, unknown> {
 
 export function subAgentResultToKernel(result: SubAgentResult): Record<string, unknown> {
   const finalMessage = result.result.finalMessage
+  const attempt = result.result.attempt
   return {
     agent_id: result.agentId,
     result: {
@@ -255,6 +264,30 @@ export function subAgentResultToKernel(result: SubAgentResult): Record<string, u
       ...(result.result.loopContinue !== undefined ? { loop_continue: result.result.loopContinue } : {}),
       ...(result.result.classifyBranch !== undefined ? { classify_branch: result.result.classifyBranch } : {}),
       ...(result.result.tournamentWinner !== undefined ? { tournament_winner: result.result.tournamentWinner } : {}),
+      ...(attempt
+        ? {
+            attempt: {
+              outcome: attempt.outcome,
+              run_status: attempt.runStatus,
+              attempts: attempt.attempts,
+              ...(attempt.verdict
+                ? {
+                    verdict: {
+                      passed: attempt.verdict.passed,
+                      overall_score: attempt.verdict.overallScore,
+                      feedback: attempt.verdict.feedback,
+                      details: attempt.verdict.details.map(detail => ({
+                        criterion: detail.criterion,
+                        passed: detail.passed,
+                        score: detail.score,
+                        feedback: detail.feedback,
+                      })),
+                    },
+                  }
+                : {}),
+            },
+          }
+        : {}),
     },
   }
 }
@@ -274,6 +307,14 @@ export type WorkflowTaskSpec = { goal: string; criteria?: string[]; lane?: strin
 
 /** W3 trust level for a workflow node. */
 export type NodeTrust = "trusted" | "quarantined"
+export type WorkflowDependencyPolicy = "all_success" | "accept_partial" | "all_terminal" | "optional"
+export type WorkflowNodeStatus = "completed" | "completed_partial" | "failed" | "skipped_upstream_failed"
+
+export function workflowNodeStatusFromTermination(termination: TerminationReason | string): WorkflowNodeStatus {
+  if (termination === "completed") return "completed"
+  if (termination === "error" || termination === "user_abort") return "failed"
+  return "completed_partial"
+}
 
 /** One node in a declarative workflow DAG (camelCase host shape). */
 export interface WorkflowNodeSpec {
@@ -307,11 +348,60 @@ export interface WorkflowNodeSpec {
   maxWallMs?: number
   /** Indices of nodes this node depends on. */
   dependsOn?: number[]
+  /** How dependency terminal states gate this node. Defaults to `all_success`. */
+  depPolicy?: WorkflowDependencyPolicy
 }
 
 /** A declarative workflow DAG the kernel runs node-by-node, gating each spawn. */
 export interface WorkflowSpec {
   nodes: WorkflowNodeSpec[]
+}
+
+export interface KernelWorkflowNodeOutcome {
+  node_id: string
+  status: WorkflowNodeStatus
+  termination?: TerminationReason
+  output?: {
+    role: Message["role"]
+    content: string
+    tool_calls?: Array<{ id: string; name: string; arguments?: Record<string, unknown> }>
+    token_count?: number
+  }
+}
+
+export interface WorkflowNodeOutcome {
+  nodeId: string
+  status: WorkflowNodeStatus
+  termination?: TerminationReason
+  output?: Message
+}
+
+export interface WorkflowOutcome {
+  nodeOutcomes: WorkflowNodeOutcome[]
+  outputs: Record<string, string>
+}
+
+export function workflowNodeOutcomeFromKernel(raw: KernelWorkflowNodeOutcome): WorkflowNodeOutcome {
+  const output = raw.output
+  return {
+    nodeId: raw.node_id,
+    status: raw.status,
+    ...(raw.termination ? { termination: raw.termination } : {}),
+    ...(output
+      ? {
+          output: {
+            role: output.role,
+            content: output.content,
+            toolCalls: (output.tool_calls ?? []).map(call => ({
+              id: call.id,
+              name: call.name,
+              arguments: JSON.stringify(call.arguments ?? {}),
+            })),
+            ...(output.token_count != null ? { tokenCount: output.token_count } : {}),
+          },
+        }
+      : {}),
+  }
 }
 
 /** Per-node spawn descriptor carried in the `workflow_batch_spawned` observation. */
@@ -437,6 +527,7 @@ export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): Record<string, un
     ...(n.maxTurns != null ? { max_turns: n.maxTurns } : {}),
     ...(n.maxWallMs != null ? { max_wall_ms: n.maxWallMs } : {}),
     ...(n.dependsOn && n.dependsOn.length ? { depends_on: n.dependsOn } : {}),
+    dep_policy: n.depPolicy ?? "all_success",
   }
 }
 
@@ -577,6 +668,11 @@ const workflowNodesArraySchema = {
         type: "array",
         items: { type: "integer" },
         description: "Batch-relative, backward-only dependency indices within this submission.",
+      },
+      depPolicy: {
+        type: "string",
+        enum: ["all_success", "accept_partial", "all_terminal", "optional"],
+        description: "How dependency terminal states gate this node; defaults to all_success.",
       },
     },
     required: ["task", "role"],
@@ -722,7 +818,7 @@ export function generateAndFilter(generators: WorkflowTaskSpec[], filter: Workfl
  * Generate→evaluate quality gate (the EvalPipeline successor, #6): a `loop` worker node (re-run up
  * to `maxIters`, stopping early on a `loop_continue=false` self-signal) + a bias-resistant `verify`
  * eval node gated on it, carrying the kernel's verdict `outputSchema`. Mirrors the kernel `gen_eval`
- * template. For the iterative retry-with-feedback variant, drive it with `HarnessLoop`.
+ * template. For the iterative retry-with-feedback variant, drive it with `AttemptLoop`.
  */
 export function genEval(
   worker: WorkflowTaskSpec,

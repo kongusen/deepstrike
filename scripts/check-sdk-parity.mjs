@@ -52,7 +52,7 @@ const CHECKS = [
     id: "node-resource-quota",
     lang: "node",
     path: "node/src/runtime/runner.ts",
-    patterns: ["resourceQuota", "set_resource_quota", "max_concurrent_subagents", "SchedulerBudget"],
+    patterns: ["resourceQuota", "set_resource_quota", "max_concurrent_subagents", "SchedulerPolicy"],
   },
   {
     id: "node-public-api-shape",
@@ -64,25 +64,25 @@ const CHECKS = [
     id: "python-resource-quota",
     lang: "python",
     path: "python/deepstrike/runtime/runner.py",
-    patterns: ["resource_quota", "set_resource_quota", "max_concurrent_subagents", "SchedulerBudget"],
+    patterns: ["resource_quota", "set_resource_quota", "max_concurrent_subagents", "SchedulerPolicy"],
   },
   {
     id: "python-public-api-shape",
     lang: "python",
     path: "python/deepstrike/__init__.py",
-    patterns: ["MemoryWriteRateLimit", "ResourceQuota", "SchedulerBudget", "OsProfile", "assert_native_profile"],
+    patterns: ["MemoryWriteRateLimit", "ResourceQuota", "SchedulerPolicy", "OsProfile", "assert_native_profile"],
   },
   {
     id: "rust-resource-quota",
     lang: "rust",
     path: "rust/src/runtime/runner.rs",
-    patterns: ["resource_quota", "SetResourceQuota", "ResourceQuota", "scheduler_budget"],
+    patterns: ["resource_quota", "SetResourceQuota", "ResourceQuota", "scheduler_policy"],
   },
   {
     id: "rust-public-api-shape",
     lang: "rust",
     path: "rust/src/lib.rs",
-    patterns: ["MemoryWriteRateLimit", "ResourceQuota", "SchedulerBudget", "NativeOsProfile", "OsProfile", "assert_native_profile"],
+    patterns: ["MemoryWriteRateLimit", "ResourceQuota", "SchedulerPolicyConfig", "NativeOsProfile", "OsProfile", "assert_native_profile"],
   },
   {
     id: "wasm-resource-quota",
@@ -94,7 +94,7 @@ const CHECKS = [
     id: "wasm-public-api-shape",
     lang: "wasm",
     path: "wasm/src/index.ts",
-    patterns: ["MemoryWriteRateLimit", "ResourceQuota", "SchedulerBudget", "NativeOsProfile", "OsProfileId"],
+    patterns: ["MemoryWriteRateLimit", "ResourceQuota", "SchedulerPolicy", "NativeOsProfile", "OsProfileId"],
   },
   {
     id: "core-resource-quota",

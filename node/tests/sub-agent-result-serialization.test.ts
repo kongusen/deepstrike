@@ -42,4 +42,49 @@ describe("subAgentResultToKernel — malformed tool-call arguments must not bric
     const finalMessage = (out.result as any).final_message
     expect(finalMessage.tool_calls[0].arguments).toEqual({})
   })
+
+  it("serializes attempt and verdict metadata as observable kernel fields", () => {
+    const out = subAgentResultToKernel({
+      agentId: "child-attempt",
+      result: {
+        termination: "completed",
+        finalMessage: { role: "assistant", content: "healthy but rejected", toolCalls: [] },
+        turnsUsed: 2,
+        totalTokensUsed: 20,
+        attempt: {
+          outcome: "failed_judge",
+          runStatus: "completed",
+          attempts: 1,
+          verdict: {
+            passed: false,
+            overallScore: 0.25,
+            feedback: "criterion failed",
+            details: [{
+              criterion: "tests pass",
+              passed: false,
+              score: 0.25,
+              feedback: "one test failed",
+            }],
+          },
+        },
+      },
+    })
+
+    expect((out.result as Record<string, unknown>).attempt).toEqual({
+      outcome: "failed_judge",
+      run_status: "completed",
+      attempts: 1,
+      verdict: {
+        passed: false,
+        overall_score: 0.25,
+        feedback: "criterion failed",
+        details: [{
+          criterion: "tests pass",
+          passed: false,
+          score: 0.25,
+          feedback: "one test failed",
+        }],
+      },
+    })
+  })
 })

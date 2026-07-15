@@ -43,19 +43,19 @@ use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
 use deepstrike_core::governance::rate_limit::RateLimit;
 use deepstrike_core::harness::eval::{
+    Criterion as RustCriterion, SkillCandidate as RustSkillCandidate,
     build_eval_messages as rust_build_eval_messages, parse_verdict as rust_parse_verdict,
-    verdict_output_schema as rust_verdict_output_schema, Criterion as RustCriterion,
-    SkillCandidate as RustSkillCandidate,
+    verdict_output_schema as rust_verdict_output_schema,
 };
-use deepstrike_core::memory::curator::CurationResult as RustCurationResult;
 use deepstrike_core::memory::durable::SessionData as RustSessionData;
-use deepstrike_core::memory::idle_pipeline::{
-    IdleAction as RustIdleAction, IdleEvent as RustIdleEvent, IdlePipeline as RustIdlePipeline,
-    IdlePolicy as RustIdlePolicy,
+use deepstrike_core::mm::memory::{
+    MemoryAuthor as RustMemoryAuthor, MemoryKind as RustMemoryKind,
+    MemoryProvenance as RustMemoryProvenance, MemoryRecord as RustMemoryRecord,
+    MemoryScope as RustMemoryScope, MemoryTrustLevel as RustMemoryTrustLevel,
 };
-use deepstrike_core::memory::semantic::MemoryEntry as RustMemoryEntry;
 use deepstrike_core::runtime::KernelRuntime as RustKernelRuntime;
 use deepstrike_core::scheduler::policy::SchedulerBudget as RustLoopPolicy;
+use deepstrike_core::scheduler::tcb::TaskLifecycle;
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
 use deepstrike_core::types::agent::AgentIdentity;
 use deepstrike_core::types::message::{
@@ -91,7 +91,11 @@ struct RuntimeSignal {
     #[pyo3(get, set)]
     recipient: Option<String>,
     #[pyo3(get, set)]
-    topic: Option<String>,
+    deadline_ms: Option<f64>,
+    #[pyo3(get, set)]
+    coalesce_key: Option<String>,
+    #[pyo3(get, set)]
+    coalesced_count: u32,
     #[pyo3(get, set)]
     timestamp_ms: f64,
 }
@@ -99,7 +103,7 @@ struct RuntimeSignal {
 #[pymethods]
 impl RuntimeSignal {
     #[new]
-    #[pyo3(signature = (source, urgency, summary, signal_type="event", payload="null", dedupe_key=None, timestamp_ms=0.0, recipient=None, topic=None))]
+    #[pyo3(signature = (source, urgency, summary, signal_type="event", payload="null", dedupe_key=None, timestamp_ms=0.0, recipient=None, deadline_ms=None, coalesce_key=None, coalesced_count=1))]
     fn new(
         source: String,
         urgency: String,
@@ -109,7 +113,9 @@ impl RuntimeSignal {
         dedupe_key: Option<String>,
         timestamp_ms: f64,
         recipient: Option<String>,
-        topic: Option<String>,
+        deadline_ms: Option<f64>,
+        coalesce_key: Option<String>,
+        coalesced_count: u32,
     ) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -120,7 +126,9 @@ impl RuntimeSignal {
             payload: payload.into(),
             dedupe_key,
             recipient,
-            topic,
+            deadline_ms,
+            coalesce_key,
+            coalesced_count: coalesced_count.max(1),
             timestamp_ms,
         }
     }
@@ -134,7 +142,11 @@ impl RuntimeSignal {
 }
 
 impl RuntimeSignal {
-    fn to_rust(&self) -> RustRuntimeSignal {
+    fn to_rust(&self) -> PyResult<RustRuntimeSignal> {
+        let id = self
+            .id
+            .parse()
+            .map_err(|_| pyo3::exceptions::PyValueError::new_err("signal id must be a UUID"))?;
         let source = match self.source.as_str() {
             "cron" => RustSignalSource::Cron,
             "gateway" => RustSignalSource::Gateway,
@@ -157,16 +169,21 @@ impl RuntimeSignal {
         let mut sig = RustRuntimeSignal::new(source, signal_type, urgency, self.summary.as_str())
             .with_payload(payload)
             .with_timestamp(self.timestamp_ms as u64);
+        sig.id = id;
         if let Some(ref key) = self.dedupe_key {
             sig = sig.with_dedupe(key.as_str());
         }
         if let Some(ref recipient) = self.recipient {
             sig = sig.with_recipient(recipient.as_str());
         }
-        if let Some(ref topic) = self.topic {
-            sig = sig.with_topic(topic.as_str());
+        if let Some(deadline_ms) = self.deadline_ms {
+            sig = sig.with_deadline(deadline_ms as u64);
         }
-        sig
+        if let Some(ref coalesce_key) = self.coalesce_key {
+            sig = sig.with_coalesce(coalesce_key.as_str());
+        }
+        sig.coalesced_count = self.coalesced_count.max(1);
+        Ok(sig)
     }
 
     fn from_rust(s: &RustRuntimeSignal) -> Self {
@@ -196,7 +213,9 @@ impl RuntimeSignal {
             payload: serde_json::to_string(&s.payload).unwrap_or_else(|_| "null".into()),
             dedupe_key: s.dedupe_key.as_ref().map(|k| k.to_string()),
             recipient: s.recipient.as_ref().map(|r| r.to_string()),
-            topic: s.topic.as_ref().map(|t| t.to_string()),
+            deadline_ms: s.deadline_ms.map(|value| value as f64),
+            coalesce_key: s.coalesce_key.as_ref().map(|key| key.to_string()),
+            coalesced_count: s.coalesced_count.max(1),
             timestamp_ms: s.timestamp_ms as f64,
         }
     }
@@ -857,7 +876,9 @@ impl KernelRuntime {
 
     /// Feed a JSON-encoded KernelInput and return a JSON-encoded KernelStep.
     fn step(&mut self, input_json: String) -> PyResult<String> {
-        let step = self.inner.step_json(&input_json)
+        let step = self
+            .inner
+            .step_json(&input_json)
             .map_err(|e| PyValueError::new_err(format!("invalid KernelInput JSON: {e}")))?;
         serde_json::to_string(&step)
             .map_err(|e| PyValueError::new_err(format!("failed to encode KernelStep: {e}")))
@@ -891,17 +912,13 @@ impl KernelRuntime {
 
     fn snapshot(&self) -> PyResult<String> {
         self.inner.snapshot_json().map_err(|fault| {
-            PyValueError::new_err(
-                serde_json::to_string(&fault).unwrap_or(fault.message)
-            )
+            PyValueError::new_err(serde_json::to_string(&fault).unwrap_or(fault.message))
         })
     }
 
     fn restore(&mut self, snapshot_json: String) -> PyResult<()> {
         self.inner = RustKernelRuntime::restore_snapshot_json(&snapshot_json).map_err(|fault| {
-            PyValueError::new_err(
-                serde_json::to_string(&fault).unwrap_or(fault.message)
-            )
+            PyValueError::new_err(serde_json::to_string(&fault).unwrap_or(fault.message))
         })?;
         Ok(())
     }
@@ -934,7 +951,8 @@ impl KernelRuntime {
     }
 
     fn drain_new_messages(&mut self) -> Vec<Message> {
-        self.inner.drain_new_messages()
+        self.inner
+            .drain_new_messages()
             .iter()
             .map(Message::from_rust)
             .collect()
@@ -963,8 +981,23 @@ impl SignalRouter {
 
     /// Ingest a signal. Returns disposition string:
     /// "ignore" | "observe" | "queue" | "run" | "interrupt" | "interrupt_now" | "dropped"
-    fn ingest(&mut self, signal: RuntimeSignal, is_running: bool) -> &'static str {
-        disposition_str(self.inner.ingest(signal.to_rust(), is_running))
+    fn ingest(&mut self, signal: RuntimeSignal, lifecycle: &str) -> PyResult<&'static str> {
+        let lifecycle = match lifecycle {
+            "ready" => TaskLifecycle::Ready,
+            "running" => TaskLifecycle::Running,
+            "suspended" => TaskLifecycle::Suspended,
+            "done" => TaskLifecycle::Done(
+                deepstrike_core::types::result::TerminationReason::Completed,
+            ),
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "invalid task lifecycle {other:?}; expected ready|running|suspended|done"
+                )));
+            }
+        };
+        Ok(disposition_str(
+            self.inner.ingest(signal.to_rust()?, lifecycle),
+        ))
     }
 
     /// Pull the next queued signal (highest priority first).
@@ -1136,7 +1169,7 @@ impl Governance {
 
 // ────────────────────────── Dream / idle-pipeline types ──────────────────────────────────────────
 
-/// A single session of agent messages, used as input to `IdlePipeline.feed_trigger`.
+/// A completed session transcript for durable-memory extraction.
 #[pyclass]
 #[derive(Clone)]
 struct SessionData {
@@ -1205,248 +1238,221 @@ impl SessionData {
     }
 }
 
-/// A long-term memory entry as stored by the agent.
 #[pyclass]
 #[derive(Clone)]
-struct MemoryEntry {
+struct MemoryScope {
     #[pyo3(get, set)]
-    text: String,
+    tenant_id: String,
     #[pyo3(get, set)]
-    score: f64,
-    /// JSON-encoded metadata blob.
-    #[pyo3(get, set)]
-    metadata: String,
+    namespace: String,
 }
 
 #[pymethods]
-impl MemoryEntry {
+impl MemoryScope {
     #[new]
-    #[pyo3(signature = (text, score = 0.0, metadata = String::from("null")))]
-    fn new(text: String, score: f64, metadata: String) -> Self {
-        Self {
-            text,
-            score,
-            metadata,
-        }
-    }
-
-    fn __repr__(&self) -> String {
-        format!("MemoryEntry(text={:?}, score={})", self.text, self.score)
-    }
-}
-
-impl MemoryEntry {
-    fn to_rust(&self) -> RustMemoryEntry {
-        let metadata: serde_json::Value =
-            serde_json::from_str(&self.metadata).unwrap_or(serde_json::Value::Null);
-        RustMemoryEntry {
-            text: self.text.clone(),
-            score: self.score,
-            metadata,
-        }
-    }
-
-    fn from_rust(e: &RustMemoryEntry) -> Self {
-        Self {
-            text: e.text.clone(),
-            score: e.score,
-            metadata: serde_json::to_string(&e.metadata).unwrap_or_else(|_| "null".into()),
-        }
+    fn new(tenant_id: String, namespace: String) -> Self {
+        Self { tenant_id, namespace }
     }
 }
 
 #[pyclass]
 #[derive(Clone)]
-struct CurationStats {
-    #[pyo3(get)]
-    insights_processed: u32,
-    #[pyo3(get)]
-    duplicates_removed: u32,
-    #[pyo3(get)]
-    conflicts_resolved: u32,
-    #[pyo3(get)]
-    entries_added: u32,
+struct MemoryProvenance {
+    #[pyo3(get, set)]
+    session_id: Option<String>,
+    #[pyo3(get, set)]
+    author: String,
+    #[pyo3(get, set)]
+    trust: String,
+    #[pyo3(get, set)]
+    evidence_refs: Vec<String>,
 }
 
 #[pymethods]
-impl CurationStats {
-    fn __repr__(&self) -> String {
-        format!(
-            "CurationStats(added={}, removed={}, conflicts={})",
-            self.entries_added, self.duplicates_removed, self.conflicts_resolved
-        )
-    }
-}
-
-/// The delta `DreamStore.commit` must apply: add `to_add`, remove `to_remove_indices`.
-#[pyclass]
-#[derive(Clone)]
-struct CurationResult {
-    #[pyo3(get)]
-    to_add: Vec<MemoryEntry>,
-    /// Indices into the `existing_memories` slice passed to `feed_trigger`.
-    #[pyo3(get)]
-    to_remove_indices: Vec<u32>,
-    #[pyo3(get)]
-    stats: CurationStats,
-}
-
-impl CurationResult {
-    fn from_rust(r: RustCurationResult) -> Self {
+impl MemoryProvenance {
+    #[new]
+    #[pyo3(signature = (author, trust, session_id = None, evidence_refs = Vec::new()))]
+    fn new(
+        author: String,
+        trust: String,
+        session_id: Option<String>,
+        evidence_refs: Vec<String>,
+    ) -> Self {
         Self {
-            to_add: r.to_add.iter().map(MemoryEntry::from_rust).collect(),
-            to_remove_indices: r.to_remove_indices.iter().map(|&i| i as u32).collect(),
-            stats: CurationStats {
-                insights_processed: r.stats.insights_processed as u32,
-                duplicates_removed: r.stats.duplicates_removed as u32,
-                conflicts_resolved: r.stats.conflicts_resolved as u32,
-                entries_added: r.stats.entries_added as u32,
-            },
+            session_id,
+            author,
+            trust,
+            evidence_refs,
         }
     }
 }
 
 #[pyclass]
 #[derive(Clone)]
-struct IdleRunResult {
-    #[pyo3(get)]
-    sessions_processed: u32,
-    #[pyo3(get)]
-    insights_extracted: u32,
-}
-
-#[pymethods]
-impl IdleRunResult {
-    fn __repr__(&self) -> String {
-        format!(
-            "IdleRunResult(sessions={}, insights={})",
-            self.sessions_processed, self.insights_extracted
-        )
-    }
-}
-
-/// Tagged union returned by `IdlePipeline` methods. Inspect `kind`:
-/// - `"synthesize_insights"` → `messages`
-/// - `"commit_memories"`     → `agent_id`, `curation_result`, `run_result`
-/// - `"noop"` | `"aborted"`
-#[pyclass]
-#[derive(Clone)]
-struct IdlePipelineAction {
-    #[pyo3(get)]
+struct MemoryRecord {
+    #[pyo3(get, set)]
+    record_id: String,
+    #[pyo3(get, set)]
+    scope: MemoryScope,
+    #[pyo3(get, set)]
+    name: String,
+    #[pyo3(get, set)]
     kind: String,
-    #[pyo3(get)]
-    messages: Option<Vec<Message>>,
-    #[pyo3(get)]
-    agent_id: Option<String>,
-    #[pyo3(get)]
-    curation_result: Option<CurationResult>,
-    #[pyo3(get)]
-    run_result: Option<IdleRunResult>,
+    #[pyo3(get, set)]
+    content: String,
+    #[pyo3(get, set)]
+    description: String,
+    #[pyo3(get, set)]
+    provenance: MemoryProvenance,
+    #[pyo3(get, set)]
+    created_at: u64,
+    #[pyo3(get, set)]
+    updated_at: u64,
+    #[pyo3(get, set)]
+    last_recalled_at: Option<u64>,
+    #[pyo3(get, set)]
+    recall_count: u64,
+    #[pyo3(get, set)]
+    confidence: f64,
+    #[pyo3(get, set)]
+    links: Vec<String>,
+    #[pyo3(get, set)]
+    pinned: bool,
+    #[pyo3(get, set)]
+    ttl_days: Option<u32>,
 }
 
 #[pymethods]
-impl IdlePipelineAction {
-    fn __repr__(&self) -> String {
-        format!("IdlePipelineAction(kind={:?})", self.kind)
-    }
-}
-
-impl IdlePipelineAction {
-    fn from_rust(a: RustIdleAction) -> Self {
-        match a {
-            RustIdleAction::SynthesizeInsights { messages } => Self {
-                kind: "synthesize_insights".into(),
-                messages: Some(messages.iter().map(Message::from_rust).collect()),
-                agent_id: None,
-                curation_result: None,
-                run_result: None,
-            },
-            RustIdleAction::CommitMemories {
-                agent_id,
-                result,
-                run_result,
-            } => Self {
-                kind: "commit_memories".into(),
-                messages: None,
-                agent_id: Some(agent_id),
-                curation_result: Some(CurationResult::from_rust(result)),
-                run_result: Some(IdleRunResult {
-                    sessions_processed: run_result.sessions_processed as u32,
-                    insights_extracted: run_result.insights_extracted as u32,
-                }),
-            },
-            RustIdleAction::Noop => Self {
-                kind: "noop".into(),
-                messages: None,
-                agent_id: None,
-                curation_result: None,
-                run_result: None,
-            },
-            RustIdleAction::Aborted => Self {
-                kind: "aborted".into(),
-                messages: None,
-                agent_id: None,
-                curation_result: None,
-                run_result: None,
-            },
-        }
-    }
-}
-
-/// Kernel state machine for the idle dreaming cycle.
-///
-/// Drive it like this:
-/// 1. `feed_trigger(sessions, existing_memories, now_ms)` → `"synthesize_insights"` action
-/// 2. Call LLM with `action.messages`, collect the text response
-/// 3. `feed_synthesis_result(text)` → `"commit_memories"` action
-/// 4. Apply `action.curation_result` via `DreamStore.commit`, then call `reset()`
-#[pyclass]
-struct IdlePipeline {
-    inner: RustIdlePipeline,
-}
-
-#[pymethods]
-impl IdlePipeline {
+impl MemoryRecord {
     #[new]
-    fn new(agent_id: String) -> Self {
+    #[pyo3(signature = (record_id, scope, name, kind, content, description, provenance, created_at, updated_at, confidence, last_recalled_at = None, recall_count = 0, links = Vec::new(), pinned = false, ttl_days = None))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        record_id: String,
+        scope: MemoryScope,
+        name: String,
+        kind: String,
+        content: String,
+        description: String,
+        provenance: MemoryProvenance,
+        created_at: u64,
+        updated_at: u64,
+        confidence: f64,
+        last_recalled_at: Option<u64>,
+        recall_count: u64,
+        links: Vec<String>,
+        pinned: bool,
+        ttl_days: Option<u32>,
+    ) -> Self {
         Self {
-            inner: RustIdlePipeline::new(RustIdlePolicy::new(agent_id)),
+            record_id,
+            scope,
+            name,
+            kind,
+            content,
+            description,
+            provenance,
+            created_at,
+            updated_at,
+            last_recalled_at,
+            recall_count,
+            confidence,
+            links,
+            pinned,
+            ttl_days,
         }
     }
 
-    /// Phase 1 — provide sessions + current memory snapshot; kernel builds the LLM prompt.
-    fn feed_trigger(
-        &mut self,
-        sessions: Vec<SessionData>,
-        existing_memories: Vec<MemoryEntry>,
-        now_ms: f64,
-    ) -> PyResult<IdlePipelineAction> {
-        let rust_sessions: Vec<RustSessionData> = sessions
-            .iter()
-            .map(|s| s.to_rust())
-            .collect::<Result<_, _>>()?;
-        let rust_memories: Vec<RustMemoryEntry> =
-            existing_memories.iter().map(|e| e.to_rust()).collect();
-        let action = self.inner.feed(RustIdleEvent::Trigger {
-            sessions: rust_sessions,
-            existing_memories: rust_memories,
-            now_ms: now_ms as u64,
-        });
-        Ok(IdlePipelineAction::from_rust(action))
+    fn __repr__(&self) -> String {
+        format!(
+            "MemoryRecord(record_id={:?}, name={:?}, kind={:?})",
+            self.record_id, self.name, self.kind
+        )
+    }
+}
+
+impl MemoryRecord {
+    fn to_rust(&self) -> PyResult<RustMemoryRecord> {
+        let kind = match self.kind.as_str() {
+            "user" => RustMemoryKind::User,
+            "feedback" => RustMemoryKind::Feedback,
+            "project" => RustMemoryKind::Project,
+            "reference" => RustMemoryKind::Reference,
+            other => return Err(PyValueError::new_err(format!("invalid memory kind {other:?}"))),
+        };
+        let author = match self.provenance.author.as_str() {
+            "model" => RustMemoryAuthor::Model,
+            "host" => RustMemoryAuthor::Host,
+            "extraction" => RustMemoryAuthor::Extraction,
+            other => return Err(PyValueError::new_err(format!("invalid memory author {other:?}"))),
+        };
+        let trust = match self.provenance.trust.as_str() {
+            "untrusted" => RustMemoryTrustLevel::Untrusted,
+            "user_asserted" => RustMemoryTrustLevel::UserAsserted,
+            "host_verified" => RustMemoryTrustLevel::HostVerified,
+            other => return Err(PyValueError::new_err(format!("invalid memory trust {other:?}"))),
+        };
+        Ok(RustMemoryRecord {
+            record_id: self.record_id.clone(),
+            scope: RustMemoryScope::new(
+                self.scope.tenant_id.clone(),
+                self.scope.namespace.clone(),
+            ),
+            name: self.name.clone(),
+            kind,
+            content: self.content.clone(),
+            description: self.description.clone(),
+            provenance: RustMemoryProvenance {
+                session_id: self.provenance.session_id.clone(),
+                author,
+                trust,
+                evidence_refs: self.provenance.evidence_refs.clone(),
+            },
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            last_recalled_at: self.last_recalled_at,
+            recall_count: self.recall_count,
+            confidence: self.confidence,
+            links: self.links.clone(),
+            pinned: self.pinned,
+            ttl_days: self.ttl_days,
+        })
     }
 
-    /// Phase 2 — feed back the LLM's synthesis text; kernel parses and curates.
-    fn feed_synthesis_result(&mut self, content: String) -> IdlePipelineAction {
-        IdlePipelineAction::from_rust(self.inner.feed(RustIdleEvent::SynthesisResult { content }))
-    }
-
-    fn is_idle(&self) -> bool {
-        self.inner.is_idle()
-    }
-
-    /// Reset to `Idle` after handling `CommitMemories` to allow the next cycle.
-    fn reset(&mut self) {
-        self.inner.reset();
+    fn from_rust(record: &RustMemoryRecord) -> Self {
+        Self {
+            record_id: record.record_id.clone(),
+            scope: MemoryScope {
+                tenant_id: record.scope.tenant_id.clone(),
+                namespace: record.scope.namespace.clone(),
+            },
+            name: record.name.clone(),
+            kind: record.kind.label().into(),
+            content: record.content.clone(),
+            description: record.description.clone(),
+            provenance: MemoryProvenance {
+                session_id: record.provenance.session_id.clone(),
+                author: match record.provenance.author {
+                    RustMemoryAuthor::Model => "model",
+                    RustMemoryAuthor::Host => "host",
+                    RustMemoryAuthor::Extraction => "extraction",
+                }.into(),
+                trust: match record.provenance.trust {
+                    RustMemoryTrustLevel::Untrusted => "untrusted",
+                    RustMemoryTrustLevel::UserAsserted => "user_asserted",
+                    RustMemoryTrustLevel::HostVerified => "host_verified",
+                }.into(),
+                evidence_refs: record.provenance.evidence_refs.clone(),
+            },
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+            last_recalled_at: record.last_recalled_at,
+            recall_count: record.recall_count,
+            confidence: record.confidence,
+            links: record.links.clone(),
+            pinned: record.pinned,
+            ttl_days: record.ttl_days,
+        }
     }
 }
 
@@ -1573,10 +1579,16 @@ fn build_eval_messages(
     extract_skill_on_pass: bool,
 ) -> Vec<Message> {
     let rust_criteria = criteria_from_py(criteria);
-    rust_build_eval_messages(&goal, &rust_criteria, &result, attempt, extract_skill_on_pass)
-        .iter()
-        .map(Message::from_rust)
-        .collect()
+    rust_build_eval_messages(
+        &goal,
+        &rust_criteria,
+        &result,
+        attempt,
+        extract_skill_on_pass,
+    )
+    .iter()
+    .map(Message::from_rust)
+    .collect()
 }
 
 /// Parse the evaluator LLM's JSON response into a structured `Verdict`.
@@ -1632,14 +1644,11 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SignalRouter>()?;
     m.add_class::<GovernanceVerdict>()?;
     m.add_class::<Governance>()?;
-    // Dream / idle-pipeline
+    // Durable-memory wire values
     m.add_class::<SessionData>()?;
-    m.add_class::<MemoryEntry>()?;
-    m.add_class::<CurationStats>()?;
-    m.add_class::<CurationResult>()?;
-    m.add_class::<IdleRunResult>()?;
-    m.add_class::<IdlePipelineAction>()?;
-    m.add_class::<IdlePipeline>()?;
+    m.add_class::<MemoryScope>()?;
+    m.add_class::<MemoryProvenance>()?;
+    m.add_class::<MemoryRecord>()?;
     // Eval / harness quality gate (0.5.0 fold: free functions, was the EvalPipeline class)
     m.add_class::<PyCriterionResult>()?;
     m.add_class::<SkillCandidate>()?;

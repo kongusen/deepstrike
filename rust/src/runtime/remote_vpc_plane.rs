@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use async_stream::try_stream;
 use deepstrike_core::types::message::{ToolCall, ToolSchema};
-use futures::StreamExt;
 use futures::stream::Stream;
+use futures::StreamExt;
 
-use crate::Result;
 use crate::run_event::RunEvent;
 use crate::runtime::credential_vault::CredentialVault;
 use crate::runtime::execution_plane::{ExecutionPlane, LocalExecutionPlane, RunContext};
 use crate::tools::RegisteredTool;
+use crate::Result;
 
 pub struct RemoteVpcOptions {
     /// Base URL of the remote worker endpoint inside the customer VPC.
@@ -97,7 +97,7 @@ impl ExecutionPlane for RemoteVpcPlane {
     ) -> Pin<Box<dyn Stream<Item = Result<RunEvent>> + Send + 'a>> {
         Box::pin(try_stream! {
             let RunContext {
-                agent_id, skill_dir, dream_store, knowledge_source, governance, on_tool_suspend, on_permission_request,
+                agent_id, memory_scope, skill_dir, dream_store, knowledge_source, governance, on_tool_suspend, on_permission_request,
             } = ctx;
 
             let local_names: HashSet<String> =
@@ -110,6 +110,7 @@ impl ExecutionPlane for RemoteVpcPlane {
             if !local_calls.is_empty() {
                 let local_ctx = RunContext {
                     agent_id,
+                    memory_scope,
                     skill_dir,
                     dream_store,
                     knowledge_source,

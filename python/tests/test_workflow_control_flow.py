@@ -163,7 +163,7 @@ async def test_loop_node_stops_early_via_signal():
         WorkflowNodeSpec(task="ship", role="implement", depends_on=[0]),
     ])
     outcome = await runner.run_workflow(spec)
-    assert "wf-node0" in outcome["completed"] and "wf-node1" in outcome["completed"]
+    assert "wf-node0" in [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")] and "wf-node1" in [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]
     # The loop ran exactly once (stopped early) — only one iteration goal was dispatched.
     assert sum(1 for g in orch.goals if "runs as a LOOP" in g) == 1
 
@@ -179,8 +179,8 @@ async def test_classify_node_routes_and_prunes():
         WorkflowNodeSpec(task="branch-b", role="implement", depends_on=[0]),
     ])
     outcome = await runner.run_workflow(spec)
-    assert sorted(outcome["completed"]) == ["wf-node0", "wf-node1"]
-    assert outcome["failed"] == ["wf-node2"]
+    assert sorted([n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]) == ["wf-node0", "wf-node1"]
+    assert [n.node_id for n in outcome.node_outcomes if n.status == "failed"] == ["wf-node2"]
 
 
 @pytest.mark.asyncio
@@ -193,5 +193,5 @@ async def test_tournament_node_picks_winner_and_promotes_dependent():
     ])
     outcome = await runner.run_workflow(spec)
     # Controller (node0) + dependent (node1) both complete; a judge ran over the two candidates.
-    assert "wf-node0" in outcome["completed"] and "wf-node1" in outcome["completed"]
+    assert "wf-node0" in [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")] and "wf-node1" in [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]
     assert any("CANDIDATE left" in g for g in orch.goals)

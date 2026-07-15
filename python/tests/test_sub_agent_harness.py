@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deepstrike.harness.harness import HarnessOutcome
+from deepstrike.harness.harness import AttemptOutcome, Verdict
 from deepstrike.runtime.runner import RuntimeOptions, SubAgentHarnessConfig
 from deepstrike.runtime.sub_agent_orchestrator import SubAgentOrchestrator, SubAgentRunContext
 from deepstrike.types.agent import (
@@ -53,20 +53,22 @@ def _ctx(*, with_harness: bool) -> SubAgentRunContext:
 
 
 @pytest.mark.asyncio
-async def test_harness_path_uses_harness_loop():
+async def test_harness_path_uses_attempt_loop_and_preserves_two_axes():
   ctx = _ctx(with_harness=True)
   orchestrator = SubAgentOrchestrator()
 
   mock_loop = MagicMock()
-  mock_loop.run = AsyncMock(return_value=HarnessOutcome(
+  mock_loop.run = AsyncMock(return_value=AttemptOutcome(
+    outcome="passed",
+    run_status="completed",
     result="hello world",
-    passed=True,
-    iterations=2,
+    attempts=2,
+    turns=2,
     total_tokens=42,
-    status="completed",
+    verdict=Verdict(passed=True, overall_score=1, feedback="ok"),
   ))
 
-  with patch("deepstrike.harness.harness.HarnessLoop", return_value=mock_loop):
+  with patch("deepstrike.harness.harness.AttemptLoop", return_value=mock_loop):
     with patch("deepstrike.runtime.sub_agent_orchestrator.RuntimeRunner") as runner_cls:
       runner_cls.return_value = MagicMock()
       result = await orchestrator.run(ctx)
@@ -78,10 +80,12 @@ async def test_harness_path_uses_harness_loop():
   assert result.result.termination == "completed"
   assert result.result.turns_used == 2
   assert result.result.total_tokens_used == 42
+  assert result.result.attempt["outcome"] == "passed"
+  assert result.result.attempt["verdict"].passed is True
 
 
 @pytest.mark.asyncio
-async def test_direct_path_skips_harness_loop():
+async def test_direct_path_skips_attempt_loop():
   ctx = _ctx(with_harness=False)
   orchestrator = SubAgentOrchestrator()
 
@@ -93,7 +97,7 @@ async def test_direct_path_skips_harness_loop():
 
   mock_runner.run = _run
 
-  with patch("deepstrike.harness.harness.HarnessLoop") as harness_cls:
+  with patch("deepstrike.harness.harness.AttemptLoop") as harness_cls:
     with patch("deepstrike.runtime.sub_agent_orchestrator.RuntimeRunner", return_value=mock_runner):
       result = await orchestrator.run(ctx)
 

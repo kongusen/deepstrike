@@ -130,7 +130,7 @@ impl VerificationContract {
     }
 
     /// Derives a flat `Vec<String>` of criterion texts for use with the
-    /// `HarnessLoop` / [`crate::harness::build_eval_messages`] criteria API.
+    /// `AttemptLoop` / [`crate::harness::build_eval_messages`] criteria API.
     pub fn to_criteria_strings(&self) -> Vec<String> {
         self.acceptance.iter().map(|c| c.text.clone()).collect()
     }

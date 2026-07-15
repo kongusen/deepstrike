@@ -8,6 +8,16 @@ KernelAgentRole = Literal["explore", "plan", "implement", "verify", "custom"]
 AgentIsolation = Literal["shared", "read_only", "worktree", "remote"]
 ContextInheritance = Literal["none", "system_only", "full"]
 NodeTrust = Literal["trusted", "quarantined"]
+WorkflowDependencyPolicy = Literal["all_success", "accept_partial", "all_terminal", "optional"]
+WorkflowNodeStatus = Literal["completed", "completed_partial", "failed", "skipped_upstream_failed"]
+
+
+def workflow_node_status_from_termination(termination: str) -> WorkflowNodeStatus:
+  if termination == "completed":
+    return "completed"
+  if termination in ("error", "user_abort"):
+    return "failed"
+  return "completed_partial"
 TerminationReason = Literal[
   "completed", "max_turns", "token_budget", "timeout", "user_abort", "error", "milestone_exceeded",
   # v0.2.35 recovery ladder: compaction exhausted, prompt still exceeds the provider window.
@@ -106,6 +116,8 @@ class LoopResult:
   # iteration this is the PRIMARY continuation vocabulary (stop → loop_continue=False); the legacy
   # text-sniffed signal is the fallback. SDK-internal — stripped by ``sub_agent_result_to_kernel``.
   pace_decision: Any | None = None
+  # H4: quality judgment is observable independently from kernel run health.
+  attempt: dict[str, Any] | None = None
 
 
 @dataclass
@@ -234,6 +246,30 @@ def sub_agent_result_to_kernel(result: SubAgentResult) -> dict[str, Any]:
     res["classify_branch"] = result.result.classify_branch
   if getattr(result.result, "tournament_winner", None) is not None:
     res["tournament_winner"] = result.result.tournament_winner
+  if result.result.attempt is not None:
+    attempt = result.result.attempt
+    verdict = attempt.get("verdict")
+    res["attempt"] = {
+      "outcome": attempt["outcome"],
+      "run_status": attempt["run_status"],
+      "attempts": attempt["attempts"],
+      **({
+        "verdict": {
+          "passed": verdict.passed,
+          "overall_score": verdict.overall_score,
+          "feedback": verdict.feedback,
+          "details": [
+            {
+              "criterion": detail.criterion,
+              "passed": detail.passed,
+              "score": detail.score,
+              "feedback": detail.feedback,
+            }
+            for detail in verdict.details
+          ],
+        }
+      } if verdict is not None else {}),
+    }
   return {"agent_id": result.agent_id, "result": res}
 
 
@@ -272,6 +308,7 @@ class WorkflowNodeSpec:
   # O3: cap this node's child run at ``max_wall_ms`` wall-clock milliseconds.
   max_wall_ms: int | None = None
   depends_on: list[int] = field(default_factory=list)
+  dep_policy: WorkflowDependencyPolicy = "all_success"
 
 
 @dataclass
@@ -279,6 +316,29 @@ class WorkflowSpec:
   """A declarative workflow DAG the kernel runs node-by-node, gating each spawn."""
 
   nodes: list[WorkflowNodeSpec]
+
+
+@dataclass
+class WorkflowNodeOutcome:
+  node_id: str
+  status: WorkflowNodeStatus
+  termination: TerminationReason | None = None
+  output: dict[str, Any] | None = None
+
+
+@dataclass
+class WorkflowOutcome:
+  node_outcomes: list[WorkflowNodeOutcome]
+  outputs: dict[str, str] = field(default_factory=dict)
+
+
+def workflow_node_outcome_from_kernel(raw: dict[str, Any]) -> WorkflowNodeOutcome:
+  return WorkflowNodeOutcome(
+    node_id=str(raw["node_id"]),
+    status=raw["status"],
+    termination=raw.get("termination"),
+    output=raw.get("output"),
+  )
 
 
 @dataclass
@@ -388,6 +448,7 @@ def workflow_node_spec_to_kernel(n: WorkflowNodeSpec) -> dict[str, Any]:
     "role": n.role,
     "isolation": n.isolation,
     "context_inheritance": n.context_inheritance,
+    "dep_policy": n.dep_policy,
   }
   if n.model_hint:
     node["model_hint"] = n.model_hint
@@ -516,6 +577,11 @@ _workflow_nodes_array_schema: dict[str, Any] = {
       },
       "token_budget": {"type": "integer", "description": "Cap this node's child run at this many cumulative tokens."},
       "depends_on": {"type": "array", "items": {"type": "integer"}},
+      "dep_policy": {
+        "type": "string",
+        "enum": ["all_success", "accept_partial", "all_terminal", "optional"],
+        "description": "How dependency terminal states gate this node; defaults to all_success.",
+      },
     },
     "required": ["task", "role"],
   },
@@ -668,7 +734,7 @@ def gen_eval(worker, evaluate, max_iters: int = 3, extract_skill_on_pass: bool =
   up to ``max_iters``, stopping early on a ``loop_continue=False`` self-signal) + a bias-resistant
   ``verify`` eval node gated on it, carrying the kernel's verdict ``output_schema``. Mirrors the
   kernel ``gen_eval`` template. For the iterative retry-with-feedback variant, drive it with
-  ``HarnessLoop``."""
+  ``AttemptLoop``."""
   from deepstrike._kernel import verdict_output_schema
   schema = json.loads(verdict_output_schema(extract_skill_on_pass))
   return WorkflowSpec(nodes=[

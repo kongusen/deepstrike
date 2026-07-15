@@ -5,8 +5,10 @@ use crate::runtime::sandboxed_skill::scan_skill_dir;
 use crate::runtime::skill_watcher::SkillWatcher;
 use async_stream::try_stream;
 use deepstrike_core::governance::quota::ResourceQuota;
-use deepstrike_core::memory::idle_pipeline::{IdleAction, IdleEvent, IdlePipeline, IdlePolicy};
-use deepstrike_core::mm::memory::{MemoryPolicy, MemoryQuery, MemoryRetrieval, MemoryWriteRequest};
+use deepstrike_core::mm::memory::{
+    MemoryAuthor, MemoryKind, MemoryPolicy, MemoryProvenance, MemoryQuery, MemoryRecall,
+    MemoryRecord, MemoryScope, MemoryTrustLevel,
+};
 use deepstrike_core::runtime::kernel::{
     CancellationReason, KernelAction, KernelEffect, KernelInput, KernelInputEvent,
     KernelObservation, KernelPressureAction, KernelReliabilityConfig, KernelRuntime, KernelStep,
@@ -14,6 +16,7 @@ use deepstrike_core::runtime::kernel::{
 };
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::scheduler::policy::SchedulerBudget as KernelBudget;
+use deepstrike_core::scheduler::policy::SchedulerPolicyConfig;
 use deepstrike_core::types::message::{Message, ToolCall};
 use deepstrike_core::types::milestone::MilestoneCheckResult;
 use deepstrike_core::types::signal::{
@@ -25,7 +28,7 @@ use futures::StreamExt;
 
 use crate::governance::Governance;
 use crate::knowledge::KnowledgeSource;
-use crate::memory::{DreamResult, DreamStore};
+use crate::memory::DreamStore;
 use crate::providers::{LLMProvider, StreamEvent};
 use crate::run_event::RunEvent;
 use crate::runtime::archive::ArchiveStore;
@@ -34,7 +37,7 @@ use crate::runtime::execution_plane::{
     PermissionResponse, RunContext, ToolSuspendHandler,
 };
 use crate::runtime::os_profile::{
-    assert_native_profile, AttentionPolicy, GovernancePolicy, OsProfile, SchedulerBudget,
+    assert_native_profile, GovernancePolicy, OsProfile, SignalPolicy,
 };
 use crate::runtime::provider_replay::{peek_provider_replay, seed_provider_replay_from_events};
 use crate::runtime::replay::{
@@ -115,12 +118,14 @@ pub struct RuntimeOptions {
     pub timeout_ms: Option<u64>,
     pub extensions: Option<serde_json::Value>,
     pub agent_id: Option<String>,
+    /// Required by host-generated memory queries and semantic page-out writes.
+    pub memory_scope: Option<MemoryScope>,
     /// I4: optional run-start memory pre-fetch hook. The runner calls this once per run, before
     /// the first LLM turn, with the goal string; each returned query becomes a `dream_store.search`
     /// and the resulting hits page into the knowledge partition before turn 1. Mirrors the Node
     /// SDK `preQueryMemory`. Sync-only in Rust today — async hosts can pre-compute. Errs-open
     /// when `dream_store` or `agent_id` is missing.
-    pub pre_query_memory: Option<std::sync::Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>>,
+    pub pre_query_memory: Option<std::sync::Arc<dyn Fn(&str) -> Vec<MemoryQuery> + Send + Sync>>,
     pub system_prompt: Option<String>,
     pub initial_memory: Vec<String>,
     pub skill_dir: Option<std::path::PathBuf>,
@@ -130,8 +135,8 @@ pub struct RuntimeOptions {
     pub governance: Option<Arc<tokio::sync::Mutex<Governance>>>,
     pub os_profile: Option<OsProfile>,
     pub governance_policy: Option<GovernancePolicy>,
-    pub attention_policy: Option<AttentionPolicy>,
-    pub scheduler_budget: Option<SchedulerBudget>,
+    pub signal_policy: Option<SignalPolicy>,
+    pub scheduler_policy: Option<SchedulerPolicyConfig>,
     pub resource_quota: Option<ResourceQuota>,
     /// Opt-in long-term memory policy (`set_memory_policy`), enforced at the kernel memory traps.
     pub memory_policy: Option<MemoryPolicy>,
@@ -232,23 +237,9 @@ impl RuntimeRunner {
 
     pub async fn write_memory(
         &self,
-        memory: MemoryWriteRequest,
+        memory: MemoryRecord,
         session_id: Option<&str>,
         agent_id: Option<&str>,
-    ) -> Result<()> {
-        self.write_memory_with_score(memory, session_id, agent_id, 1.0, "write_memory_syscall")
-            .await
-    }
-
-    /// Shared gated write body; `score`/`source` are provenance for automatic writers
-    /// (page-out summaries) so they never outrank curated content.
-    async fn write_memory_with_score(
-        &self,
-        memory: MemoryWriteRequest,
-        session_id: Option<&str>,
-        agent_id: Option<&str>,
-        score: f64,
-        source: &str,
     ) -> Result<()> {
         let Some(store) = &self.opts.dream_store else {
             return Ok(());
@@ -260,50 +251,23 @@ impl RuntimeRunner {
         let (kernel, requested) = self.begin_memory_syscall(KernelInputEvent::WriteMemory {
             memory: memory.clone(),
         });
-        let persist_effect_id = requested
+        let persist_effect = requested
             .actions
             .iter()
             .find_map(|action| match &action.effect {
-                KernelEffect::PersistMemory { .. } => Some(action.effect_id.clone()),
+                KernelEffect::PersistMemory { memory } => {
+                    Some((action.effect_id.clone(), memory.clone()))
+                }
                 _ => None,
             });
-        let Some(effect_id) = persist_effect_id else {
+        let Some((effect_id, canonical)) = persist_effect else {
             self.append_memory_syscall_observations(session_id, requested.observations)
                 .await;
             return Ok(());
         };
 
         let io_result: Result<()> = async {
-            let existing = store.load_memories(agent_id).await?;
-            // Curator-style jaccard dedup at the single write path: a near-duplicate of an
-            // existing entry is dropped (the observation is still logged for audit).
-            if existing
-                .iter()
-                .any(|e| jaccard_similarity(&e.text, &memory.content) >= 0.9)
-            {
-                return Ok(());
-            }
-            let mut metadata =
-                serde_json::to_value(&memory.metadata).unwrap_or_else(|_| serde_json::json!({}));
-            if let Some(obj) = metadata.as_object_mut() {
-                obj.entry("source".to_string())
-                    .or_insert_with(|| serde_json::Value::String(source.to_string()));
-            }
-            let result = deepstrike_core::memory::curator::CurationResult {
-                to_add: vec![deepstrike_core::memory::semantic::MemoryEntry {
-                    text: memory.content,
-                    score,
-                    metadata,
-                }],
-                to_remove_indices: vec![],
-                stats: deepstrike_core::memory::curator::CurationStats {
-                    insights_processed: 1,
-                    duplicates_removed: 0,
-                    conflicts_resolved: 0,
-                    entries_added: 1,
-                },
-            };
-            store.commit(agent_id, result, &existing).await?;
+            store.upsert(agent_id, canonical).await?;
             Ok(())
         }
         .await;
@@ -325,7 +289,7 @@ impl RuntimeRunner {
         query: MemoryQuery,
         session_id: Option<&str>,
         agent_id: Option<&str>,
-    ) -> Result<Vec<deepstrike_core::memory::semantic::MemoryEntry>> {
+    ) -> Result<Vec<MemoryRecall>> {
         let Some(store) = &self.opts.dream_store else {
             return Ok(Vec::new());
         };
@@ -336,91 +300,87 @@ impl RuntimeRunner {
         let (kernel, requested) = self.begin_memory_syscall(KernelInputEvent::QueryMemory {
             query: query.clone(),
         });
-        let query_effect_id = requested
+        let query_effect = requested
             .actions
             .iter()
             .find_map(|action| match &action.effect {
-                KernelEffect::QueryMemory { .. } => Some(action.effect_id.clone()),
+                KernelEffect::QueryMemory { query, requested_k } => {
+                    Some((action.effect_id.clone(), query.clone(), *requested_k))
+                }
                 _ => None,
             });
-        let Some(effect_id) = query_effect_id else {
+        let Some((effect_id, mut canonical_query, requested_k)) = query_effect else {
             self.append_memory_syscall_observations(session_id, requested.observations)
                 .await;
             return Ok(Vec::new());
         };
 
-        let all_memories = store.load_memories(agent_id).await?;
-        let mut retrieval = select_memories(&query, &all_memories);
-        let hits = if !retrieval.selected_memory_ids.is_empty() {
-            let selected: std::collections::HashSet<_> =
-                retrieval.selected_memory_ids.iter().cloned().collect();
-            all_memories
-                .into_iter()
-                .filter(|entry| {
-                    entry
-                        .metadata
-                        .get("name")
-                        .and_then(|value| value.as_str())
-                        .is_some_and(|name| selected.contains(name))
-                })
-                .take(query.top_k)
-                .collect()
-        } else {
-            let hits = store
-                .search(agent_id, &query.current_context, query.top_k)
-                .await?;
-            if !hits.is_empty() && retrieval.selection_rationale == "No candidates after filtering"
-            {
-                retrieval.selected_memory_ids = hits
-                    .iter()
-                    .filter_map(|entry| {
-                        entry
-                            .metadata
-                            .get("name")
-                            .and_then(|value| value.as_str())
-                            .map(str::to_string)
-                    })
-                    .collect();
-                retrieval.selection_rationale =
-                    format!("DreamStore.search returned {} hit(s)", hits.len());
-            }
-            hits
-        };
-
-        let entries = hits
-            .iter()
-            .map(|entry| deepstrike_core::mm::PageInEntry {
-                content: entry.text.clone(),
-                tokens: None,
-                source: Some("dream_store".to_string()),
-                key: entry
-                    .metadata
-                    .get("name")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
-                pinned: false,
-            })
-            .collect();
+        canonical_query.top_k = requested_k;
+        let hits = store.search(agent_id, &canonical_query).await?;
         let completed =
             kernel
                 .lock()
                 .unwrap()
                 .step(KernelInput::new(KernelInputEvent::MemoryQueryResult {
                     effect_id,
-                    entries,
+                    hits: hits.clone(),
                     error: None,
                 }));
         self.append_memory_syscall_observations(session_id, completed.observations)
             .await;
-        self.log_memory_retrieval_result(session_id, retrieval)
+        self.log_memory_retrieval_result(session_id, hits.clone())
             .await;
         Ok(hits)
+    }
+
+    async fn extract_session_memories(
+        &self,
+        session: &deepstrike_core::memory::durable::SessionData,
+        scope: &MemoryScope,
+    ) -> Result<Vec<MemoryRecord>> {
+        let transcript = session
+            .messages
+            .iter()
+            .map(|message| {
+                format!(
+                    "[{:?}] {}",
+                    message.role,
+                    message.content.as_text().unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .chars()
+            .take(8_000)
+            .collect::<String>();
+        let prompt = format!(
+            "{transcript}\n\nReturn {{\"memories\":[{{\"name\":\"stable-kebab-key\",\"kind\":\"user|feedback|project|reference\",\"content\":\"fact\",\"description\":\"why durable\",\"confidence\":0.0,\"links\":[],\"pinned\":false,\"ttl_days\":null,\"evidence_refs\":[]}}]}} with at most 10 items. Return {{\"memories\":[]}} when nothing is durable."
+        );
+        let context = rendered_context_from_messages(vec![
+            Message::system("Extract durable, reusable facts from this completed session. Return only JSON; do not include transient progress or guesses."),
+            Message::user(prompt),
+        ]);
+        let state = self.opts.provider.create_run_state();
+        let mut stream = self
+            .opts
+            .provider
+            .stream(&context, &[], None, state.as_ref())
+            .await?;
+        let mut output = String::new();
+        while let Some(event) = stream.next().await {
+            if let StreamEvent::TextDelta { delta } = event? {
+                output.push_str(&delta);
+            }
+        }
+        Ok(crate::memory::parse_extracted_memories(
+            &output, session, scope,
+        ))
     }
 
     async fn log_memory_retrieval_result(
         &self,
         session_id: Option<&str>,
-        retrieval: MemoryRetrieval,
+        hits: Vec<MemoryRecall>,
     ) {
         let Some(session_id) = session_id.or(self.opts.session_id.as_deref()) else {
             return;
@@ -429,7 +389,7 @@ impl RuntimeRunner {
         // acknowledgment (the former kernel event was a no-op and was removed).
         self.log(
             session_id,
-            SessionEvent::MemoryRetrievalResult { retrieval },
+            SessionEvent::MemoryRetrievalResult { hits },
         )
         .await;
     }
@@ -439,17 +399,19 @@ impl RuntimeRunner {
         event: KernelInputEvent,
     ) -> (Arc<std::sync::Mutex<KernelRuntime>>, KernelStep) {
         if let Some(active) = self.active_kernel.lock().unwrap().clone() {
-            let step = {
-                let mut kernel = active.lock().unwrap();
-                kernel.step(KernelInput::new(event))
-            };
-            return (active, step);
+            if !active.lock().unwrap().is_terminal() {
+                let step = {
+                    let mut kernel = active.lock().unwrap();
+                    kernel.step(KernelInput::new(event))
+                };
+                return (active, step);
+            }
         }
 
         let mut kernel = KernelRuntime::new(KernelBudget {
             max_tokens: self.opts.max_tokens,
             max_turns: self.opts.max_turns.unwrap_or(25),
-            max_wall_ms: effective_wall_budget(self.opts.scheduler_budget, self.opts.timeout_ms),
+            max_wall_ms: self.opts.timeout_ms,
             ..Default::default()
         });
         if let Ok(profile) = assert_native_profile(self.opts.os_profile.clone()) {
@@ -460,19 +422,17 @@ impl RuntimeRunner {
                     .unwrap_or(profile.governance_policy)
                     .into_kernel_event(),
             ));
-            let attention = self
-                .opts
-                .attention_policy
-                .unwrap_or(profile.attention_policy);
-            kernel.step(KernelInput::new(KernelInputEvent::SetAttentionPolicy {
-                max_queue_size: attention.max_queue_size.unwrap_or(64),
+            let signal_policy = self.opts.signal_policy.unwrap_or(profile.signal_policy);
+            kernel.step(KernelInput::new(KernelInputEvent::SetSignalPolicy {
+                policy: signal_policy.into_kernel(),
             }));
         }
-        if let Some(max_wall_ms) =
-            effective_wall_budget(self.opts.scheduler_budget, self.opts.timeout_ms)
-        {
-            kernel.step(KernelInput::new(KernelInputEvent::SetSchedulerBudget {
-                max_wall_ms: Some(max_wall_ms),
+        if let Some(scheduler_policy) = self.opts.scheduler_policy {
+            kernel.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+                config: RunConfig {
+                    scheduler_policy: Some(scheduler_policy),
+                    ..RunConfig::default()
+                },
             }));
         }
         if let Some(quota) = self.opts.resource_quota.clone() {
@@ -500,16 +460,20 @@ impl RuntimeRunner {
             match obs {
                 KernelObservation::MemoryWritten {
                     turn,
-                    memory_id,
+                    record_id,
+                    scope,
                     memory_kind,
+                    name,
                     size_bytes,
                 } => {
                     self.log(
                         session_id,
                         SessionEvent::MemoryWritten {
                             turn,
-                            memory_id,
+                            record_id,
+                            scope,
                             memory_kind,
+                            name,
                             size_bytes,
                         },
                     )
@@ -517,7 +481,8 @@ impl RuntimeRunner {
                 }
                 KernelObservation::MemoryQueried {
                     turn,
-                    query_context,
+                    scope,
+                    query,
                     requested_k,
                     requires_async_response,
                 } => {
@@ -525,7 +490,8 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::MemoryQueried {
                             turn,
-                            query_context,
+                            scope,
+                            query,
                             requested_k,
                             requires_async_response,
                         },
@@ -534,14 +500,14 @@ impl RuntimeRunner {
                 }
                 KernelObservation::MemoryValidationFailed {
                     turn,
-                    memory_id,
+                    record_id,
                     error,
                 } => {
                     self.log(
                         session_id,
                         SessionEvent::MemoryValidationFailed {
                             turn,
-                            memory_id,
+                            record_id,
                             error,
                         },
                     )
@@ -641,77 +607,6 @@ impl RuntimeRunner {
         collect_text(self.wake_streaming(session_id, None).await?).await
     }
 
-    pub async fn dream(&self, agent_id: &str, now_ms: u64) -> Result<DreamResult> {
-        let store = self
-            .opts
-            .dream_store
-            .as_ref()
-            .ok_or_else(|| Error::Other("dream_store not configured".into()))?;
-
-        let sessions = store.load_sessions(agent_id).await?;
-        let existing_memories = store.load_memories(agent_id).await?;
-        if sessions.is_empty() {
-            return Ok(DreamResult::default());
-        }
-
-        let policy = IdlePolicy::new(agent_id);
-        let mut pipeline = IdlePipeline::new(policy);
-
-        let messages = match pipeline.feed(IdleEvent::Trigger {
-            sessions,
-            existing_memories: existing_memories.clone(),
-            now_ms,
-        }) {
-            IdleAction::SynthesizeInsights { messages } => messages,
-            IdleAction::Noop => return Ok(DreamResult::default()),
-            _ => {
-                return Err(Error::Other(
-                    "unexpected IdlePipeline::Trigger action".into(),
-                ));
-            }
-        };
-
-        let mut synthesis_text = String::new();
-        let context = rendered_context_from_messages(messages);
-        let synth_state = self.opts.provider.create_run_state();
-        let mut stream = self
-            .opts
-            .provider
-            .stream(&context, &[], None, synth_state.as_ref())
-            .await?;
-        while let Some(evt) = stream.next().await {
-            if let Ok(StreamEvent::TextDelta { delta }) = evt {
-                synthesis_text.push_str(&delta);
-            }
-        }
-
-        let (curation_result, run_result) = match pipeline.feed(IdleEvent::SynthesisResult {
-            content: synthesis_text,
-        }) {
-            IdleAction::CommitMemories {
-                result, run_result, ..
-            } => (result, run_result),
-            _ => {
-                return Err(Error::Other(
-                    "unexpected IdlePipeline::SynthesisResult action".into(),
-                ));
-            }
-        };
-
-        let entries_added = curation_result.stats.entries_added;
-        let entries_removed = curation_result.to_remove_indices.len();
-        store
-            .commit(agent_id, curation_result, &existing_memories)
-            .await?;
-
-        Ok(DreamResult {
-            sessions_processed: run_result.sessions_processed,
-            insights_extracted: run_result.insights_extracted,
-            entries_added,
-            entries_removed,
-        })
-    }
-
     fn execute_inner(
         &self,
         session_id: String,
@@ -732,12 +627,10 @@ impl RuntimeRunner {
             let provider_policy = self.opts.provider.runtime_policy();
             let effective_max_turns = self.opts.max_turns.or(provider_policy.max_turns).unwrap_or(25);
             let effective_timeout = self.opts.timeout_ms.or(provider_policy.timeout_ms);
-            let effective_wall_budget = effective_wall_budget(self.opts.scheduler_budget, effective_timeout);
-
             let policy = KernelBudget {
                 max_tokens: self.opts.max_tokens,
                 max_turns: effective_max_turns,
-                max_wall_ms: effective_wall_budget,
+                max_wall_ms: effective_timeout,
                 ..Default::default()
             };
 
@@ -770,11 +663,12 @@ impl RuntimeRunner {
             let mut pending_page_out_starts = std::collections::VecDeque::new();
             let mut active_page_out_start = None;
 
-            if let Some(reliability) = self.opts.kernel_reliability.clone() {
+            if self.opts.kernel_reliability.is_some() || self.opts.scheduler_policy.is_some() {
                 let mut step = kernel.lock().unwrap().step(KernelInput::new(
                     KernelInputEvent::ConfigureRun {
                         config: RunConfig {
-                            reliability: Some(reliability),
+                            reliability: self.opts.kernel_reliability.clone(),
+                            scheduler_policy: self.opts.scheduler_policy,
                             ..RunConfig::default()
                         },
                     },
@@ -955,27 +849,17 @@ impl RuntimeRunner {
                 governance_policy.into_kernel_event(),
             );
 
-            let attention_policy = self
+            let signal_policy = self
                 .opts
-                .attention_policy
-                .unwrap_or(os_profile.attention_policy);
+                .signal_policy
+                .unwrap_or(os_profile.signal_policy);
             kernel_apply(
                 &mut kernel,
                 &mut pending_observations,
-                KernelInputEvent::SetAttentionPolicy {
-                    max_queue_size: attention_policy.max_queue_size.unwrap_or(64),
+                KernelInputEvent::SetSignalPolicy {
+                    policy: signal_policy.into_kernel(),
                 },
             );
-
-            if let Some(max_wall_ms) = effective_wall_budget {
-                kernel_apply(
-                    &mut kernel,
-                    &mut pending_observations,
-                    KernelInputEvent::SetSchedulerBudget {
-                        max_wall_ms: Some(max_wall_ms),
-                    },
-                );
-            }
 
             if let Some(quota) = self.opts.resource_quota.clone() {
                 kernel_apply(
@@ -1003,29 +887,35 @@ impl RuntimeRunner {
                     self.opts.agent_id.as_deref(),
                 ) {
                     let queries = pre(goal.as_str());
-                    let mut entries: Vec<deepstrike_core::mm::PageInEntry> = Vec::new();
+                    let mut recalled = Vec::new();
                     for q in &queries {
-                        let qt = q.trim();
-                        if qt.is_empty() {
+                        if q.query.trim().is_empty() {
                             continue;
                         }
-                        if let Ok(hits) = store.search(agent_id, qt, 5).await {
+                        if let Ok(hits) = store.search(agent_id, q).await {
                             for hit in hits {
-                                entries.push(deepstrike_core::mm::PageInEntry {
-                                    content: format!("[memory score={:.3}] {}", hit.score, hit.text),
-                                    tokens: None,
-                                    source: Some("memory".to_string()),
-                                    key: None,
-                                    pinned: false,
-                                });
+                                recalled.push(format!(
+                                    "[memory record_id={} trust={} score={:.3}] {}",
+                                    hit.record.record_id,
+                                    match hit.record.provenance.trust {
+                                        MemoryTrustLevel::Untrusted => "untrusted",
+                                        MemoryTrustLevel::UserAsserted => "user_asserted",
+                                        MemoryTrustLevel::HostVerified => "host_verified",
+                                    },
+                                    hit.score,
+                                    hit.record.content
+                                ));
                             }
                         }
                     }
-                    if !entries.is_empty() {
+                    if !recalled.is_empty() {
                         kernel_apply(
                             &mut kernel,
                             &mut pending_observations,
-                            KernelInputEvent::PageIn { entries },
+                            KernelInputEvent::AddHistoryMessage {
+                                message: Message::user(recalled.join("\n")),
+                                tokens: None,
+                            },
                         );
                     }
                 }
@@ -1144,6 +1034,16 @@ impl RuntimeRunner {
                         if let Some(dedupe_key) = &claim.signal.dedupe_key {
                             kernel_sig = kernel_sig.with_dedupe(dedupe_key.clone());
                         }
+                        if let Some(recipient) = &claim.signal.recipient {
+                            kernel_sig = kernel_sig.with_recipient(recipient.clone());
+                        }
+                        if let Some(deadline_ms) = claim.signal.deadline_ms {
+                            kernel_sig = kernel_sig.with_deadline(deadline_ms);
+                        }
+                        if let Some(coalesce_key) = &claim.signal.coalesce_key {
+                            kernel_sig = kernel_sig.with_coalesce(coalesce_key.clone());
+                        }
+                        kernel_sig.coalesced_count = claim.signal.coalesced_count.max(1);
                         // Kernel-routed (parity with node/py): the kernel's attention policy decides
                         // the disposition (dedup / queue / interrupt / preempt) and emits
                         // `signal_delivery_disposed`; an actionable disposition yields the next action to
@@ -1522,7 +1422,7 @@ impl RuntimeRunner {
                             &mut pending_observations,
                             KernelInputEvent::MemoryQueryResult {
                                 effect_id,
-                                entries: Vec::new(),
+                                hits: Vec::new(),
                                 error: Some(
                                     "memory effects must be executed by RuntimeRunner::query_memory"
                                         .to_string(),
@@ -1597,6 +1497,7 @@ impl RuntimeRunner {
 
                         let run_ctx = RunContext {
                             agent_id: self.opts.agent_id.as_deref(),
+                            memory_scope: self.opts.memory_scope.as_ref(),
                             skill_dir: self.opts.skill_dir.as_deref(),
                             dream_store: self.opts.dream_store.as_deref(),
                             knowledge_source: self.opts.knowledge_source.as_deref(),
@@ -1889,14 +1790,21 @@ impl RuntimeRunner {
                                     .unwrap_or_default()
                                     .as_millis() as u64;
                                 let session = deepstrike_core::memory::durable::SessionData {
-                                    session_id: uuid::Uuid::new_v4().to_string(),
+                                    session_id: session_id.clone(),
                                     agent_id: agent_id.clone(),
                                     messages: new_msgs,
                                     metadata: serde_json::Value::Null,
                                     created_at_ms: session_start_ms,
                                     updated_at_ms: now_ms,
                                 };
-                                let _ = store.save_session(session).await;
+                                let _ = store.save_session(session.clone()).await;
+                                if let Some(scope) = self.opts.memory_scope.as_ref() {
+                                    if let Ok(memories) = self.extract_session_memories(&session, scope).await {
+                                        for memory in memories {
+                                            let _ = self.write_memory(memory, Some(&session_id), Some(agent_id)).await;
+                                        }
+                                    }
+                                }
                             }
                         }
 
@@ -1953,14 +1861,21 @@ impl RuntimeRunner {
                             .unwrap_or_default()
                             .as_millis() as u64;
                         let session = deepstrike_core::memory::durable::SessionData {
-                            session_id: uuid::Uuid::new_v4().to_string(),
+                            session_id: session_id.clone(),
                             agent_id: agent_id.clone(),
                             messages: new_msgs,
                             metadata: serde_json::Value::Null,
                             created_at_ms: session_start_ms,
                             updated_at_ms: now_ms,
                         };
-                        let _ = store.save_session(session).await;
+                        let _ = store.save_session(session.clone()).await;
+                        if let Some(scope) = self.opts.memory_scope.as_ref() {
+                            if let Ok(memories) = self.extract_session_memories(&session, scope).await {
+                                for memory in memories {
+                                    let _ = self.write_memory(memory, Some(&session_id), Some(agent_id)).await;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2135,6 +2050,7 @@ impl RuntimeRunner {
                     .await;
                 }
                 KernelObservation::Renewed { .. } => {}
+                KernelObservation::ContextBudgetExceeded { .. } => {}
                 KernelObservation::KnowledgeSwept { .. } => {}
                 KernelObservation::KnowledgeBudgetExceeded { .. } => {}
                 KernelObservation::RepeatFuseTripped { .. } => {}
@@ -2192,6 +2108,7 @@ impl RuntimeRunner {
                 KernelObservation::WorkflowBatchSpawned { .. } => {}
                 KernelObservation::WorkflowSpawnFailed { .. } => {}
                 KernelObservation::WorkflowCompleted { .. } => {}
+                KernelObservation::NodesRejected { .. } => {}
                 KernelObservation::AgentPreempted { .. } => {}
                 KernelObservation::AgentPreemptFailed { .. } => {}
                 KernelObservation::MemoryWriteFailed { .. } => {}
@@ -2203,6 +2120,9 @@ impl RuntimeRunner {
                 // signals through the kernel attention policy; observation is logged
                 // by the generic observation path elsewhere if needed.
                 KernelObservation::SignalDeliveryDisposed { .. } => {}
+                KernelObservation::SignalDisplaced { .. }
+                | KernelObservation::SignalExpired { .. }
+                | KernelObservation::SignalsPending { .. } => {}
                 KernelObservation::BudgetExceeded {
                     turn,
                     operation_id,
@@ -2268,16 +2188,20 @@ impl RuntimeRunner {
                 KernelObservation::RoundPaced { .. } => {}
                 KernelObservation::MemoryWritten {
                     turn,
-                    memory_id,
+                    record_id,
+                    scope,
                     memory_kind,
+                    name,
                     size_bytes,
                 } => {
                     self.log(
                         session_id,
                         SessionEvent::MemoryWritten {
                             turn,
-                            memory_id,
+                            record_id,
+                            scope,
                             memory_kind,
+                            name,
                             size_bytes,
                         },
                     )
@@ -2285,7 +2209,8 @@ impl RuntimeRunner {
                 }
                 KernelObservation::MemoryQueried {
                     turn,
-                    query_context,
+                    scope,
+                    query,
                     requested_k,
                     requires_async_response,
                 } => {
@@ -2293,7 +2218,8 @@ impl RuntimeRunner {
                         session_id,
                         SessionEvent::MemoryQueried {
                             turn,
-                            query_context,
+                            scope,
+                            query,
                             requested_k,
                             requires_async_response,
                         },
@@ -2303,14 +2229,14 @@ impl RuntimeRunner {
                 // Phase 7 / M3: no dedicated session kinds yet in rust SDK.
                 KernelObservation::MemoryValidationFailed {
                     turn,
-                    memory_id,
+                    record_id,
                     error,
                 } => {
                     self.log(
                         session_id,
                         SessionEvent::MemoryValidationFailed {
                             turn,
-                            memory_id,
+                            record_id,
                             error,
                         },
                     )
@@ -2358,7 +2284,11 @@ impl RuntimeRunner {
     }
 
     async fn archive_semantic_page_out(&self, archived: Vec<Message>, action: Option<String>) {
-        let (Some(store), Some(agent_id)) = (&self.opts.dream_store, &self.opts.agent_id) else {
+        let (Some(_store), Some(agent_id), Some(scope)) = (
+            &self.opts.dream_store,
+            &self.opts.agent_id,
+            &self.opts.memory_scope,
+        ) else {
             return;
         };
 
@@ -2370,25 +2300,37 @@ impl RuntimeRunner {
         // P2 write-funnel: route through the ONE gated write_memory syscall so validation,
         // the rolling write quota, dedup, and the memory_written audit all apply. Score is
         // advisory (0.6) — an automatic summary must never outrank curated content.
-        let _ = store; // reachability guard above; the funnel resolves the store itself
-        let request = deepstrike_core::mm::memory::MemoryWriteRequest {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let name = format!("page-out-{now}");
+        let request = MemoryRecord {
+            record_id: format!("{}:{}:project:{}", scope.tenant_id, scope.namespace, name),
+            scope: scope.clone(),
+            name,
+            kind: MemoryKind::Project,
             content: summary,
-            metadata: deepstrike_core::mm::memory::MemoryMetadata {
-                name: format!(
-                    "page-out-{}",
-                    self.opts.session_id.as_deref().unwrap_or("live")
-                ),
-                description: format!(
-                    "auto summary of {} archive",
-                    action.as_deref().unwrap_or("compaction")
-                ),
-                ..Default::default()
+            description: format!(
+                "auto summary of {} archive",
+                action.as_deref().unwrap_or("compaction")
+            ),
+            provenance: MemoryProvenance {
+                session_id: self.opts.session_id.clone(),
+                author: MemoryAuthor::Extraction,
+                trust: MemoryTrustLevel::Untrusted,
+                evidence_refs: Vec::new(),
             },
+            created_at: now,
+            updated_at: now,
+            last_recalled_at: None,
+            recall_count: 0,
+            confidence: 0.6,
+            links: Vec::new(),
+            pinned: false,
+            ttl_days: None,
         };
-        // Advisory score + provenance travel via the metadata JSON the funnel serializes.
-        let _ = self
-            .write_memory_with_score(request, None, Some(agent_id), 0.6, "semantic_page_out")
-            .await;
+        let _ = self.write_memory(request, None, Some(agent_id)).await;
     }
 
     async fn summarize_for_long_term_memory(&self, archived: &[Message]) -> crate::Result<String> {
@@ -2428,6 +2370,7 @@ impl RuntimeRunner {
             }],
             state_turn: None,
             frozen_prefix_len: None,
+            budget_overflow: None,
         };
 
         let synth_state = self.opts.provider.create_run_state();
@@ -2467,23 +2410,6 @@ fn message_content_as_text(content: &deepstrike_core::types::message::Content) -
             })
             .collect::<Vec<_>>()
             .join("\n"),
-    }
-}
-
-/// Word-set jaccard similarity — the curator's dedup rule at the write funnel.
-fn jaccard_similarity(a: &str, b: &str) -> f64 {
-    use std::collections::HashSet;
-    let sa: HashSet<&str> = a.split_whitespace().collect();
-    let sb: HashSet<&str> = b.split_whitespace().collect();
-    if sa.is_empty() && sb.is_empty() {
-        return 1.0;
-    }
-    let inter = sa.intersection(&sb).count();
-    let union = sa.union(&sb).count();
-    if union == 0 {
-        0.0
-    } else {
-        inter as f64 / union as f64
     }
 }
 
@@ -2591,15 +2517,6 @@ fn pending_call_ids(action: &KernelAction) -> Vec<String> {
     }
 }
 
-fn effective_wall_budget(
-    scheduler_budget: Option<SchedulerBudget>,
-    fallback_timeout_ms: Option<u64>,
-) -> Option<u64> {
-    scheduler_budget
-        .and_then(|budget| budget.max_wall_ms)
-        .or(fallback_timeout_ms)
-}
-
 /// Map the ergonomic [`MemoryPolicy`] onto the flat `set_memory_policy` kernel event.
 fn memory_policy_event(policy: MemoryPolicy) -> KernelInputEvent {
     KernelInputEvent::SetMemoryPolicy {
@@ -2647,6 +2564,7 @@ fn rendered_context_from_messages(
         turns,
         state_turn: None,
         frozen_prefix_len: None,
+        budget_overflow: None,
     }
 }
 
@@ -2698,47 +2616,5 @@ fn parse_update_plan_args(val: &serde_json::Value) -> TaskUpdate {
         // Directives are promoted in-kernel from acted-on signals; the SDK update path leaves them
         // untouched here (use `..` semantics) unless a future control plane curates them explicitly.
         directives: None,
-    }
-}
-
-fn select_memories(
-    query: &MemoryQuery,
-    entries: &[deepstrike_core::memory::semantic::MemoryEntry],
-) -> MemoryRetrieval {
-    let filter_out: std::collections::HashSet<String> = query
-        .already_surfaced
-        .iter()
-        .chain(query.active_tools.iter())
-        .cloned()
-        .collect();
-    let candidates: Vec<_> = entries
-        .iter()
-        .filter(|entry| {
-            entry
-                .metadata
-                .get("name")
-                .and_then(|value| value.as_str())
-                .is_none_or(|name| !filter_out.contains(name))
-        })
-        .collect();
-    if candidates.is_empty() {
-        return MemoryRetrieval {
-            selected_memory_ids: vec![],
-            selection_rationale: "No candidates after filtering".to_string(),
-        };
-    }
-    MemoryRetrieval {
-        selected_memory_ids: candidates
-            .iter()
-            .take(query.top_k)
-            .filter_map(|entry| {
-                entry
-                    .metadata
-                    .get("name")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string)
-            })
-            .collect(),
-        selection_rationale: "Stub selector ranked index entries".to_string(),
     }
 }

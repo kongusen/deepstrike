@@ -44,7 +44,11 @@ impl LoopStateMachine {
     /// `ResourceQuota::max_workflow_nodes` — a backstop against an unbounded loop-until-done. Reads
     /// only the kernel's own workflow node count; no I/O. No quota / no active workflow → allow.
     pub(super) fn evaluate_submit_nodes_quota(&self, count: usize) -> Disposition {
-        let Some(max) = self.resource_quota.as_ref().and_then(|q| q.max_workflow_nodes) else {
+        let Some(max) = self
+            .resource_quota
+            .as_ref()
+            .and_then(|q| q.max_workflow_nodes)
+        else {
             return Disposition::Allow;
         };
         let current = self.workflow.as_ref().map(|w| w.len()).unwrap_or(0);
@@ -52,7 +56,9 @@ impl LoopStateMachine {
         if projected > max {
             Disposition::Deny {
                 stage: "workflow_growth",
-                reason: format!("submit_nodes would grow workflow to {projected} nodes (max {max})"),
+                reason: format!(
+                    "submit_nodes would grow workflow to {projected} nodes (max {max})"
+                ),
             }
         } else {
             Disposition::Allow
@@ -245,7 +251,11 @@ impl LoopStateMachine {
             .filter(|c| !crate::context::manager::is_meta_tool(c.name.as_str()))
             .map(|c| {
                 let args = super::compact_tool_args(&c.arguments);
-                if args.is_empty() { c.name.to_string() } else { format!("{}({})", c.name, args) }
+                if args.is_empty() {
+                    c.name.to_string()
+                } else {
+                    format!("{}({})", c.name, args)
+                }
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -268,12 +278,13 @@ impl LoopStateMachine {
             .unwrap_or_default();
 
         if fuse.terminate_after > 0 && count >= fuse.terminate_after {
-            self.observations.push(KernelObservation::RepeatFuseTripped {
-                turn: self.turn,
-                signature: sig.clone(),
-                count,
-                action: "terminate".to_string(),
-            });
+            self.observations
+                .push(KernelObservation::RepeatFuseTripped {
+                    turn: self.turn,
+                    signature: sig.clone(),
+                    count,
+                    action: "terminate".to_string(),
+                });
             // Roll the dangling tool-call turn back (an assistant tool_use with no results is
             // wire-invalid on several vendors), then force one final no-tools report turn.
             let rb = RollbackReason::GovernanceDenied {
@@ -291,12 +302,13 @@ impl LoopStateMachine {
         }
 
         if fuse.deny_after > 0 && count >= fuse.deny_after {
-            self.observations.push(KernelObservation::RepeatFuseTripped {
-                turn: self.turn,
-                signature: sig.clone(),
-                count,
-                action: "deny".to_string(),
-            });
+            self.observations
+                .push(KernelObservation::RepeatFuseTripped {
+                    turn: self.turn,
+                    signature: sig.clone(),
+                    count,
+                    action: "deny".to_string(),
+                });
             let rb = RollbackReason::GovernanceDenied {
                 tool_name,
                 reason: format!(
@@ -417,10 +429,13 @@ impl LoopStateMachine {
 
         let approved_set: std::collections::HashSet<String> =
             approved_calls.iter().cloned().collect();
-        let denied_set: std::collections::HashSet<String> =
-            denied_calls.iter().cloned().collect();
+        let denied_set: std::collections::HashSet<String> = denied_calls.iter().cloned().collect();
 
-        let SuspendState::AskUser { calls, gated_reasons } = state else {
+        let SuspendState::AskUser {
+            calls,
+            gated_reasons,
+        } = state
+        else {
             return LoopAction::AwaitingResume;
         };
 
@@ -476,9 +491,7 @@ impl LoopStateMachine {
             tool_calls: to_execute.clone(),
         };
         self.set_lifecycle(TaskLifecycle::Running, None);
-        LoopAction::ExecuteTools {
-            calls: to_execute,
-        }
+        LoopAction::ExecuteTools { calls: to_execute }
     }
 
     /// Preserve suspension and reissue a failed host approval effect without

@@ -78,8 +78,8 @@ async def test_bootstrap_workflow_bootstraps_and_runs_authored_nodes():
     ])
     outcome = await runner.bootstrap_workflow(spec)
     assert sorted(orch.ran) == ["wf-node0", "wf-node1"]
-    assert sorted(outcome["completed"]) == ["wf-node0", "wf-node1"]
-    assert outcome["failed"] == []
+    assert sorted([n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]) == ["wf-node0", "wf-node1"]
+    assert [n.node_id for n in outcome.node_outcomes if n.status == "failed"] == []
 
 
 @pytest.mark.asyncio
@@ -94,4 +94,4 @@ async def test_bootstrap_workflow_denied_past_workflow_node_quota():
     ])
     outcome = await runner.bootstrap_workflow(spec)
     assert orch.ran == []
-    assert outcome["completed"] == []
+    assert [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")] == []

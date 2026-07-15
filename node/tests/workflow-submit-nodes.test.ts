@@ -7,7 +7,7 @@ import { stepKernelV2WithHostEffects } from "./helpers/kernel-v2.js"
 function step(rt: { step(json: string): string }, event: Record<string, unknown>) {
   return stepKernelV2WithHostEffects(rt as never, event) as {
     actions: Array<Record<string, unknown>>
-    observations: Array<{ kind: string; nodes?: WorkflowSpawnInfo[]; completed?: string[]; failed?: string[] }>
+    observations: Array<{ kind: string; nodes?: WorkflowSpawnInfo[]; node_outcomes?: Array<{ node_id: string; status: string }> }>
   }
 }
 
@@ -32,7 +32,13 @@ describe("submitWorkflowNodesToKernel", () => {
     expect(event).toEqual({
       kind: "submit_workflow_nodes",
       nodes: [
-        { task: { goal: "more", criteria: [] }, role: "implement", isolation: "shared", context_inheritance: "none" },
+        {
+          task: { goal: "more", criteria: [] },
+          role: "implement",
+          isolation: "shared",
+          context_inheritance: "none",
+          dep_policy: "all_success",
+        },
       ],
     })
   })
@@ -144,14 +150,14 @@ describe("submit_workflow_nodes over the kernel ABI", () => {
     expect(afterRoot.observations.some(o => o.kind === "workflow_completed")).toBe(false)
     const done = complete(rt, "wf-node1")
     const completed = done.observations.find(o => o.kind === "workflow_completed")
-    expect(completed?.completed?.sort()).toEqual(["wf-node0", "wf-node1"])
+    expect(completed?.node_outcomes?.map(node => node.node_id).sort()).toEqual(["wf-node0", "wf-node1"])
   })
 })
 
 describe("resume reconstructs dynamically-appended nodes", () => {
   it("recovers submission batches from the session log in order", () => {
-    const e1 = buildWorkflowNodesSubmittedEvent({ turn: 1, nodes: [{ task: { goal: "a", criteria: [] } }] })
-    const e2 = buildWorkflowNodesSubmittedEvent({ turn: 2, nodes: [{ task: { goal: "b", criteria: [] } }] })
+    const e1 = buildWorkflowNodesSubmittedEvent({ turn: 1, nodes: [{ task: { goal: "a", criteria: [] } }], baseIndex: 1 })
+    const e2 = buildWorkflowNodesSubmittedEvent({ turn: 2, nodes: [{ task: { goal: "b", criteria: [] } }], baseIndex: 2 })
     const events = [{ seq: 0, event: e1 }, { seq: 1, event: e2 }]
     expect(recoverSubmittedWorkflowNodes(events).submissions).toEqual([
       [{ task: { goal: "a", criteria: [] } }],
@@ -159,16 +165,14 @@ describe("resume reconstructs dynamically-appended nodes", () => {
     ])
   })
 
-  it("recovers recorded base indices, degrading to order-only on mixed logs", () => {
+  it("requires one recorded base index per submission", () => {
     const withBase = buildWorkflowNodesSubmittedEvent({ turn: 1, nodes: [{ task: { goal: "a", criteria: [] } }], baseIndex: 3 })
     const withBase2 = buildWorkflowNodesSubmittedEvent({ turn: 2, nodes: [{ task: { goal: "b", criteria: [] } }], baseIndex: 5 })
-    const legacy = buildWorkflowNodesSubmittedEvent({ turn: 3, nodes: [{ task: { goal: "c", criteria: [] } }] })
     const full = recoverSubmittedWorkflowNodes([{ seq: 0, event: withBase }, { seq: 1, event: withBase2 }])
     expect(full.bases).toEqual([3, 5])
-    // A mixed log (one record without base) degrades to order-only replay for safety.
-    const mixed = recoverSubmittedWorkflowNodes([{ seq: 0, event: withBase }, { seq: 1, event: legacy }])
-    expect(mixed.bases).toEqual([])
-    expect(mixed.submissions.length).toBe(2)
+    const invalid = { kind: "workflow_nodes_submitted", turn: 3, nodes: [{ task: { goal: "c" } }] } as never
+    expect(() => recoverSubmittedWorkflowNodes([{ seq: 0, event: withBase }, { seq: 1, event: invalid }]))
+      .toThrow("missing required base_index")
   })
 
   it("load_workflow with resumed_submissions re-applies the appended node over the ABI", () => {
@@ -179,8 +183,9 @@ describe("resume reconstructs dynamically-appended nodes", () => {
       kind: "load_workflow",
       spec: { nodes: [{ task: { goal: "root", criteria: [] }, role: "implement", isolation: "shared", context_inheritance: "none" }] },
       parent_session_id: "sess",
-      resumed_completed: ["wf-node0"],
+      resumed_outcomes: [{ agent_id: "wf-node0", status: "completed", termination: "completed" }],
       resumed_submissions: [[{ task: { goal: "discovered", criteria: [] }, role: "implement", isolation: "shared", context_inheritance: "none" }]],
+      resumed_submission_bases: [1],
     })
     // wf-node0 already done → the re-applied appended node wf-node1 is the remaining work, spawned.
     expect(
@@ -190,6 +195,6 @@ describe("resume reconstructs dynamically-appended nodes", () => {
     ).toBe(true)
     const done = complete(rt, "wf-node1")
     const completed = done.observations.find(o => o.kind === "workflow_completed")
-    expect(completed?.completed?.sort()).toEqual(["wf-node0", "wf-node1"])
+    expect(completed?.node_outcomes?.map(node => node.node_id).sort()).toEqual(["wf-node0", "wf-node1"])
   })
 })

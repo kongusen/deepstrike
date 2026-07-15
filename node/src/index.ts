@@ -18,7 +18,8 @@ export { runLoop, LoopDriver, foldLoopState } from "./runtime/loop-driver.js"
 export type { LoopSpec, LoopOutcome } from "./runtime/loop-driver.js"
 export type { RunAgentOptions, RunFanoutOptions } from "./runtime/facade.js"
 export { RuntimeRunner, collectText } from "./runtime/runner.js"
-export type { RuntimeOptions, KernelReliabilityOptions, OperationCancellationReason } from "./runtime/runner.js"
+export type { RuntimeOptions, KernelReliabilityOptions, OperationCancellationReason, PromptBudget, SchedulerPolicy } from "./runtime/runner.js"
+export type { SignalPolicy } from "./runtime/os-profile.js"
 export { readKernelDiagnostics, restoreKernelRuntime, snapshotKernelRuntime } from "./runtime/kernel-step.js"
 export type { KernelDiagnostics, KernelSnapshotV2 } from "./runtime/kernel-step.js"
 export { rebuildKernelRuntime } from "./runtime/kernel-rebuild.js"
@@ -134,4 +135,8 @@ export type {
 export type {
   WorkflowSpec,
   WorkflowNodeSpec,
+  WorkflowDependencyPolicy,
+  WorkflowNodeStatus,
+  WorkflowNodeOutcome,
+  WorkflowOutcome,
 } from "./types/agent.js"

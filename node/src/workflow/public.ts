@@ -34,14 +34,17 @@ export type {
   TerminationReason,
   WorkflowSpawnInfo,
   WorkflowTaskSpec,
+  WorkflowDependencyPolicy,
+  WorkflowNodeStatus,
+  WorkflowNodeOutcome,
+  WorkflowOutcome,
 } from "../types/agent.js"
 
 // Collaboration layer (contracts, handoff, orchestration modes).
 export type { AcceptanceCriterion, VerificationContract, ContractCheckResult } from "../collaboration/contract.js"
 export { ContractBuilder, formatContractForSystemPrompt, contractToCriteriaStrings } from "../collaboration/contract.js"
 export type { AgentRole, IsolatedVerifierContext, CoordinatorConfig } from "../collaboration/pool.js"
-export { ContractDrivenHarness } from "../collaboration/harness.js"
-export type { ContractOutcome, ContractHarnessOptions, Violation } from "../collaboration/harness.js"
+export type { ContractOutcome } from "../collaboration/harness.js"
 export { HandoffBus } from "../collaboration/handoff.js"
 export type { HandoffArtifact, ContractOutcomeInput } from "../collaboration/handoff.js"
 export { CreatorVerifierMode, OrchestrationMode } from "../collaboration/modes/creator-verifier.js"

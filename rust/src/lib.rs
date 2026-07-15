@@ -22,7 +22,8 @@ pub use deepstrike_core::governance::quota::ResourceQuota;
 // their own samples when driving the kernel manually.
 pub use deepstrike_core::{EntropySample, EntropyTracker, EntropyWatchConfig};
 pub use deepstrike_core::mm::memory::{
-    MemoryKind, MemoryMetadata, MemoryPolicy, MemoryQuery, MemoryRetrieval, MemoryWriteRequest,
+    MemoryAuthor, MemoryKind, MemoryPolicy, MemoryProvenance, MemoryQuery, MemoryRecall,
+    MemoryRecord, MemoryScope, MemoryTrustLevel,
 };
 // Workflow surface (DELIBERATE floor, not a gap): the Rust SDK has no `run_workflow` driver — the
 // node/python/wasm SDKs own async node execution. These re-exports are for MANUAL driving: build a
@@ -34,33 +35,41 @@ pub use deepstrike_core::orchestration::workflow::{
 };
 pub use deepstrike_core::orchestration::workflow::{JudgeMatch, WorkflowRun, WorkflowSpawnInfo};
 pub use governance::{Governance, GovernanceVerdict};
-pub use harness::{CriterionResult, Harness, HarnessEvent, HarnessOutcome, HarnessRequest, QualityGate};
-pub use harness_loop::{EvalLoopHarness, HarnessLoop, SinglePassHarness, VerdictCtx, VerdictFn};
+pub use harness::{Criterion, CriterionResult, Verdict};
+pub use harness_loop::{
+    AttemptBody, AttemptBodyContext, AttemptBodyEvent, AttemptBodyStream, AttemptJudge,
+    AttemptLoop, AttemptLoopEvent, AttemptLoopStream, AttemptOutcome, AttemptOutcomeKind,
+    AttemptRequest, CarryContext, CarryPolicy, ContinueSession, DigestFn, DigestFuture,
+    FreshWithDigest, FreshWithFeedback, HybridJudge, JudgeContext, JudgeResult, LlmEvalJudge,
+    PassHook, PassHookFuture, PreparedAttempt, RuntimeAttemptBody, StopPolicy, VerdictFn,
+    VerdictFnJudge,
+};
 pub use knowledge::KnowledgeSource;
-pub use memory::{DreamResult, DreamStore, InMemoryDreamStore, WorkingMemory};
+pub use memory::{DreamStore, InMemoryDreamStore, WorkingMemory};
 pub use providers::RuntimePolicy;
 pub use providers::anthropic::AnthropicProvider;
 pub use providers::openai::{OpenAIProvider, deepseek, kimi, minimax, ollama, qwen};
 pub use providers::{LLMProvider, ProviderRunState, ProviderToolSpec, StreamEvent, TokenUsage};
 pub use run_event::RunEvent;
+pub use runtime::eval::{build_eval_messages, judge, parse_verdict, verdict_output_schema};
+pub use runtime::eval::{Criterion as EvalCriterion, Verdict as EvalVerdict};
+pub use runtime::replay_provider::{ReplayProvider, ReplayProviderOpts};
+pub use runtime::replay_fixture::{extract_recorded_messages, extract_recorded_messages_from_entries};
+pub use runtime::{
+    assert_native_profile, default_native_governance_policy, os_profile, GovernancePolicy,
+    MemoryWriteRateLimit, NativeOsProfile, OsProfile, SchedulerPolicyConfig, SignalPolicy,
+    DEFAULT_NATIVE_SIGNAL_POLICY,
+};
+pub use runtime::{
+    collect_text, MilestoneEvaluationContext, MilestoneEvaluationHandler, MilestonePolicy,
+    RuntimeOptions, RuntimeRunner,
+};
 pub use runtime::{
     ChainedCredentialVault, CredentialVault, EnvCredentialVault, InMemoryCredentialVault,
 };
 pub use runtime::{ExecutionPlane, LocalExecutionPlane};
 pub use runtime::{FileSessionLog, InMemorySessionLog, SessionEntry, SessionLog};
-pub use runtime::replay_provider::{ReplayProvider, ReplayProviderOpts};
-pub use runtime::replay_fixture::{extract_recorded_messages, extract_recorded_messages_from_entries};
-pub use runtime::eval::{judge, build_eval_messages, parse_verdict, verdict_output_schema, Criterion, Verdict};
 pub use runtime::{McpProxyPlane, McpServerConfig};
-pub use runtime::{
-    AttentionPolicy, GovernancePolicy, MemoryWriteRateLimit, NativeOsProfile, OsProfile,
-    SchedulerBudget, assert_native_profile, default_native_governance_policy, os_profile,
-    DEFAULT_NATIVE_ATTENTION_POLICY,
-};
-pub use runtime::{
-    MilestoneEvaluationContext, MilestoneEvaluationHandler, MilestonePolicy, RuntimeOptions,
-    RuntimeRunner, collect_text,
-};
 pub use runtime::{
     PermissionRequest, PermissionRequestHandler, PermissionResponse, RunContext,
     ToolSuspendHandler, ToolSuspendRequest,

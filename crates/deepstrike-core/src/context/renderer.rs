@@ -1,8 +1,9 @@
-use super::partitions::ContextPartitions;
 #[cfg(test)]
 use super::fault::stable_hash;
+use super::partitions::ContextPartitions;
 use super::task_state::TaskState;
 use super::token_engine::ContextTokenEngine;
+use super::units::{strict_tool_pairing_is_valid, unit_boundaries};
 use crate::mm::handle::{HandleTable, Residency};
 use crate::types::message::{Content, ContentPart, Message, Role};
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,25 @@ pub struct RenderedContext {
     /// providers then fall back to the rolling-pair placement. Providers clamp out-of-range values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frozen_prefix_len: Option<usize>,
+    /// Explicit evidence that the fixed context or protected tail exceeded the declared input
+    /// budget. Hosts must not submit this context unchanged; the state machine uses it to trigger
+    /// compaction or terminate with `ContextOverflow`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_overflow: Option<ContextBudgetOverflow>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextBudgetOverflowKind {
+    FixedContext,
+    ProtectedTail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextBudgetOverflow {
+    pub kind: ContextBudgetOverflowKind,
+    pub required_tokens: u32,
+    pub max_tokens: u32,
 }
 
 /// Per-render fingerprint of the **cacheable prefix** — the segments a provider
@@ -114,7 +134,9 @@ impl RenderedContext {
 }
 
 fn build_system_stable(partitions: &ContextPartitions) -> String {
-    partitions.system.messages
+    partitions
+        .system
+        .messages
         .iter()
         .filter_map(|m| m.content.as_text())
         .collect::<Vec<_>>()
@@ -122,7 +144,9 @@ fn build_system_stable(partitions: &ContextPartitions) -> String {
 }
 
 fn build_system_knowledge(partitions: &ContextPartitions) -> String {
-    partitions.knowledge.messages()
+    partitions
+        .knowledge
+        .messages()
         .filter_map(|m| m.content.as_text())
         .collect::<Vec<_>>()
         .join("\n\n")
@@ -154,7 +178,11 @@ fn salience_footer(ts: &TaskState) -> Option<String> {
     let action_name = |entry: &str| entry.split('(').next().unwrap_or(entry).to_string();
     if let Some(last) = recent.last() {
         let start = recent.len().saturating_sub(3);
-        let names = recent[start..].iter().map(|e| action_name(e)).collect::<Vec<_>>().join(" → ");
+        let names = recent[start..]
+            .iter()
+            .map(|e| action_name(e))
+            .collect::<Vec<_>>()
+            .join(" → ");
         clauses.push(format!("did: {names}"));
 
         // No-progress backstop: the SAME call — name AND args — repeated on the last ≥2 turns is a
@@ -282,11 +310,14 @@ fn project_message(msg: &Message, handles: &HandleTable) -> Option<Message> {
     let new_parts: Vec<ContentPart> = parts
         .iter()
         .map(|part| match part {
-            ContentPart::ToolResult { call_id, output, is_error }
-                if matches!(
-                    handles.residency_for_source(call_id),
-                    Some(Residency::Collapsed)
-                ) =>
+            ContentPart::ToolResult {
+                call_id,
+                output,
+                is_error,
+            } if matches!(
+                handles.residency_for_source(call_id),
+                Some(Residency::Collapsed)
+            ) =>
             {
                 changed = true;
                 ContentPart::ToolResult {
@@ -318,11 +349,19 @@ pub(crate) fn render(
     partitions: &ContextPartitions,
     budget: u32,
     engine: &ContextTokenEngine,
-    preserve_recent_msgs: usize,
+    preserve_recent_units: usize,
 ) -> RenderedContext {
     // The convenience wrapper renders history verbatim (no narration collapse) — callers that want
     // Method-1 collapse drive `render_projected` with the flag (the kernel passes it from config).
-    render_projected(partitions, budget, engine, preserve_recent_msgs, &HandleTable::new(), 0, false)
+    render_projected(
+        partitions,
+        budget,
+        engine,
+        preserve_recent_units,
+        &HandleTable::new(),
+        0,
+        false,
+    )
 }
 
 /// Render with Layer-4 read-time projection driven by `handles`: tool results whose handle is
@@ -331,13 +370,13 @@ pub(crate) fn render(
 /// Token budget:
 ///   system_stable + system_knowledge tokens are subtracted first.
 ///   Remaining budget is allocated to history turns newest-first.
-///   The first `preserve_recent_msgs` history messages are always included.
-///   Text messages are truncated at the budget boundary; Parts messages are included whole.
+///   The newest protected context units are always included.
+///   Every other context unit is included or dropped atomically.
 pub fn render_projected(
     partitions: &ContextPartitions,
     budget: u32,
     engine: &ContextTokenEngine,
-    preserve_recent_msgs: usize,
+    preserve_recent_units: usize,
     handles: &HandleTable,
     frozen_history_len: usize,
     collapse_narration: bool,
@@ -351,62 +390,74 @@ pub fn render_projected(
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    let system_tokens = engine.count(&system_text).min(budget);
-    let mut remaining = budget.saturating_sub(system_tokens);
+    // Fixed context is accounted before history. Counting the real value (rather than clamping it
+    // to the budget) makes an impossible request observable instead of hiding the overage.
+    let system_tokens = engine.count(&system_text);
+    let state_turn = build_state_turn(partitions);
+    let state_tokens = state_turn
+        .as_ref()
+        .map_or(0, |message| engine.count_message(message));
+    let fixed_tokens = system_tokens.saturating_add(state_tokens);
+    let mut remaining = budget.saturating_sub(fixed_tokens);
+    let mut used_tokens = fixed_tokens;
+    let mut budget_overflow = (fixed_tokens > budget).then_some(ContextBudgetOverflow {
+        kind: ContextBudgetOverflowKind::FixedContext,
+        required_tokens: fixed_tokens,
+        max_tokens: budget,
+    });
 
-    // Fill history newest-first within remaining budget. Layer-4 projection is applied per
-    // message: a collapsed tool result renders as a preview and is costed at its reduced size.
-    let mut kept_rev: Vec<Message> = Vec::new();
-    for msg in partitions.history.messages.iter().rev() {
-        let is_protected = kept_rev.len() < preserve_recent_msgs;
-        // `projected` is `Some` only when read-time projection shrank the message. Two disjoint
-        // sources: a `Collapsed` tool-result preview (handle-driven, any age) OR — once the turn has
-        // aged past the protected recent window — an assistant-narration stub (Method 1). A message
-        // is either a tool-result Parts message or an assistant Text+tool_calls message, never both.
-        let projected = project_message(msg, handles).or_else(|| {
-            if is_protected { None } else { project_assistant_narration(msg, collapse_narration) }
-        });
-        let effective = projected.as_ref().unwrap_or(msg);
-        let tokens = match &projected {
-            Some(p) => engine.count_message(p),
-            None => msg.token_count.unwrap_or_else(|| engine.count_message(msg)),
-        };
-        if tokens == 0 { continue; }
+    let units = unit_boundaries(&partitions.history.messages);
+    let protected_from = units.len().saturating_sub(preserve_recent_units);
+    let mut kept_units_rev: Vec<Vec<Message>> = Vec::new();
 
-        if is_protected {
-            kept_rev.push(effective.clone());
-            remaining = remaining.saturating_sub(tokens);
+    for (unit_index, unit) in units.iter().enumerate().rev() {
+        let is_protected = unit_index >= protected_from;
+        let effective = partitions.history.messages[unit.clone()]
+            .iter()
+            .map(|msg| {
+                project_message(msg, handles)
+                    .or_else(|| {
+                        if is_protected {
+                            None
+                        } else {
+                            project_assistant_narration(msg, collapse_narration)
+                        }
+                    })
+                    .unwrap_or_else(|| msg.clone())
+            })
+            .collect::<Vec<_>>();
+        let tokens = effective
+            .iter()
+            .map(|msg| msg.token_count.unwrap_or_else(|| engine.count_message(msg)))
+            .sum::<u32>();
+        if tokens == 0 {
             continue;
         }
 
-        if tokens <= remaining {
-            kept_rev.push(effective.clone());
+        if is_protected || tokens <= remaining {
+            kept_units_rev.push(effective);
             remaining = remaining.saturating_sub(tokens);
-        } else if remaining > 0 {
-            match &effective.content {
-                // P0-B1: drop a Text boundary message **whole** rather than mid-truncate. A
-                // truncated body's bytes depend on `remaining`, which varies per turn — that churns
-                // turns[0] and invalidates the entire cached prefix. Compaction normally keeps
-                // history under budget, so this overflow path is a rare safety net; keeping every
-                // kept turn a complete message preserves prompt-cache reuse.
-                Content::Text(_) => {}
-                // A Parts message was already included whole (byte-stable) — unchanged.
-                Content::Parts(_) => kept_rev.push(effective.clone()),
+            used_tokens = used_tokens.saturating_add(tokens);
+            if is_protected && used_tokens > budget && budget_overflow.is_none() {
+                budget_overflow = Some(ContextBudgetOverflow {
+                    kind: ContextBudgetOverflowKind::ProtectedTail,
+                    required_tokens: used_tokens,
+                    max_tokens: budget,
+                });
             }
-            break;
         } else {
             break;
         }
     }
 
-    kept_rev.reverse();
-    let mut turns = kept_rev;
+    kept_units_rev.reverse();
+    let mut turns = kept_units_rev.into_iter().flatten().collect::<Vec<_>>();
     normalize_turn_prefix(&mut turns);
-
-    // The State turn (task_state + signals) is volatile — keep it OUT of the
-    // cacheable history. Providers render it after the history (Anthropic) or
-    // prepended (OpenAI). See RenderedContext docs.
-    let state_turn = build_state_turn(partitions);
+    debug_assert!(
+        !strict_tool_pairing_is_valid(&partitions.history.messages)
+            || strict_tool_pairing_is_valid(&turns),
+        "renderer split a valid tool transaction"
+    );
 
     // P1-E: locate the frozen-prefix boundary in rendered turns. `frozen_history_len` is the
     // history length as of the last compaction (0 before any) — messages beyond it are the hot
@@ -425,7 +476,15 @@ pub fn render_projected(
         None
     };
 
-    RenderedContext { system_text, system_stable, system_knowledge, turns, state_turn, frozen_prefix_len }
+    RenderedContext {
+        system_text,
+        system_stable,
+        system_knowledge,
+        turns,
+        state_turn,
+        frozen_prefix_len,
+        budget_overflow,
+    }
 }
 
 #[cfg(test)]
@@ -437,8 +496,12 @@ mod tests {
     use crate::context::token_engine::ContextTokenEngine;
     use crate::types::message::{Message, Role};
 
-    fn engine() -> ContextTokenEngine { ContextTokenEngine::char_approx() }
-    fn ctx() -> ContextPartitions { ContextPartitions::new(&ContextConfig::default()) }
+    fn engine() -> ContextTokenEngine {
+        ContextTokenEngine::char_approx()
+    }
+    fn ctx() -> ContextPartitions {
+        ContextPartitions::new(&ContextConfig::default())
+    }
 
     #[test]
     fn system_stable_contains_system_partition() {
@@ -461,24 +524,50 @@ mod tests {
     #[test]
     fn task_state_appears_in_state_turn() {
         let mut c = ctx();
-        c.task_state = TaskState { goal: "find the bug".to_string(), ..Default::default() };
+        c.task_state = TaskState {
+            goal: "find the bug".to_string(),
+            ..Default::default()
+        };
         let rc = render(&c, 10_000, &engine(), 4);
-        assert!(!rc.system_text.contains("[TASK STATE]"), "task_state must not be in system_text");
+        assert!(
+            !rc.system_text.contains("[TASK STATE]"),
+            "task_state must not be in system_text"
+        );
         let state = rc.state_turn.as_ref().expect("should have a state turn");
         assert_eq!(state.role, Role::User);
-        assert!(state.content.as_text().unwrap().contains("[TASK STATE] goal: find the bug"));
+        assert!(
+            state
+                .content
+                .as_text()
+                .unwrap()
+                .contains("[TASK STATE] goal: find the bug")
+        );
         // State is NOT in the cacheable history turns.
-        assert!(!rc.turns.iter().any(|m| m.content.as_text().map(|t| t.contains("[TASK STATE]")).unwrap_or(false)));
+        assert!(!rc.turns.iter().any(|m| {
+            m.content
+                .as_text()
+                .map(|t| t.contains("[TASK STATE]"))
+                .unwrap_or(false)
+        }));
     }
 
     #[test]
     fn signals_appear_in_state_turn() {
         let mut c = ctx();
-        c.task_state = TaskState { goal: "g".to_string(), ..Default::default() };
+        c.task_state = TaskState {
+            goal: "g".to_string(),
+            ..Default::default()
+        };
         c.signals.push("[ROLLBACK] tool failed".to_string());
         let rc = render(&c, 10_000, &engine(), 4);
         let state = rc.state_turn.as_ref().unwrap();
-        assert!(state.content.as_text().unwrap().contains("[ROLLBACK] tool failed"));
+        assert!(
+            state
+                .content
+                .as_text()
+                .unwrap()
+                .contains("[ROLLBACK] tool failed")
+        );
     }
 
     #[test]
@@ -493,12 +582,23 @@ mod tests {
     #[test]
     fn history_excludes_state_turn() {
         let mut c = ctx();
-        c.task_state = TaskState { goal: "g".to_string(), ..Default::default() };
+        c.task_state = TaskState {
+            goal: "g".to_string(),
+            ..Default::default()
+        };
         c.history.push(Message::user("step 1"), 5);
         c.history.push(Message::assistant("done"), 5);
         let rc = render(&c, 10_000, &engine(), 4);
         // turns is history only; state lives in state_turn.
-        assert!(rc.state_turn.as_ref().unwrap().content.as_text().unwrap().contains("[TASK STATE]"));
+        assert!(
+            rc.state_turn
+                .as_ref()
+                .unwrap()
+                .content
+                .as_text()
+                .unwrap()
+                .contains("[TASK STATE]")
+        );
         assert_eq!(rc.turns[0].role, Role::User);
         assert_eq!(rc.turns[0].content.as_text(), Some("step 1"));
         assert_eq!(rc.turns[1].role, Role::Assistant);
@@ -610,33 +710,66 @@ mod tests {
         let mut c = ctx();
         c.task_state = TaskState {
             goal: "ship the cache work".to_string(),
-            plan: vec![PlanStep { label: "do E".to_string(), done: false }],
+            plan: vec![PlanStep {
+                label: "do E".to_string(),
+                done: false,
+            }],
             current_step: Some(0),
             ..Default::default()
         };
         c.task_state.record_directive("don't break ABI");
         let rc = render(&c, 100_000, &engine(), 4);
-        let text = rc.state_turn.unwrap().content.as_text().unwrap().to_string();
+        let text = rc
+            .state_turn
+            .unwrap()
+            .content
+            .as_text()
+            .unwrap()
+            .to_string();
 
         // The full TASK STATE block still LEADS (primacy) — goal-adherence preserved ...
         assert!(text.starts_with("[TASK STATE] goal: ship the cache work"));
         // ... but the peak-attention footer leads with the forward action, not a goal restatement.
-        let before_proceed = text.rsplit_once("\n\nProceed.").expect("ends with Proceed").0;
+        let before_proceed = text
+            .rsplit_once("\n\nProceed.")
+            .expect("ends with Proceed")
+            .0;
         let last_block = before_proceed.rsplit("\n\n").next().unwrap();
-        assert!(last_block.starts_with("→ next: step 1 — do E"), "got: {last_block}");
+        assert!(
+            last_block.starts_with("→ next: step 1 — do E"),
+            "got: {last_block}"
+        );
         assert!(last_block.contains("must: don't break ABI"));
         // The bare goal must NOT be re-injected at the peak-attention tail (the repetition fuel).
-        assert!(!last_block.contains("focus: ship the cache work"), "got: {last_block}");
+        assert!(
+            !last_block.contains("focus: ship the cache work"),
+            "got: {last_block}"
+        );
     }
 
     #[test]
     fn footer_falls_back_to_focus_goal_when_nothing_done_yet() {
         // Turn 1: no actions, no plan — the footer surfaces the goal so the model knows the objective.
         let mut c = ctx();
-        c.task_state = TaskState { goal: "build the thing".to_string(), ..Default::default() };
+        c.task_state = TaskState {
+            goal: "build the thing".to_string(),
+            ..Default::default()
+        };
         let rc = render(&c, 100_000, &engine(), 4);
-        let text = rc.state_turn.unwrap().content.as_text().unwrap().to_string();
-        let footer = text.rsplit_once("\n\nProceed.").unwrap().0.rsplit("\n\n").next().unwrap();
+        let text = rc
+            .state_turn
+            .unwrap()
+            .content
+            .as_text()
+            .unwrap()
+            .to_string();
+        let footer = text
+            .rsplit_once("\n\nProceed.")
+            .unwrap()
+            .0
+            .rsplit("\n\n")
+            .next()
+            .unwrap();
         assert_eq!(footer, "→ focus: build the thing");
     }
 
@@ -645,29 +778,66 @@ mod tests {
         // No curated plan, but real tool activity (2b) → the footer shows motion + a forward nudge,
         // and the goal is NOT restated at the tail.
         let mut c = ctx();
-        c.task_state = TaskState { goal: "rebuild §4.4 as SVG".to_string(), ..Default::default() };
+        c.task_state = TaskState {
+            goal: "rebuild §4.4 as SVG".to_string(),
+            ..Default::default()
+        };
         c.task_state.note_actions("module_list");
         c.task_state.note_actions("module_read");
         let rc = render(&c, 100_000, &engine(), 4);
-        let footer = rc.state_turn.unwrap().content.as_text().unwrap()
-            .rsplit_once("\n\nProceed.").unwrap().0.rsplit("\n\n").next().unwrap().to_string();
-        assert!(footer.contains("did: module_list → module_read"), "got: {footer}");
+        let footer = rc
+            .state_turn
+            .unwrap()
+            .content
+            .as_text()
+            .unwrap()
+            .rsplit_once("\n\nProceed.")
+            .unwrap()
+            .0
+            .rsplit("\n\n")
+            .next()
+            .unwrap()
+            .to_string();
+        assert!(
+            footer.contains("did: module_list → module_read"),
+            "got: {footer}"
+        );
         assert!(footer.contains("next: advance the goal"), "got: {footer}");
-        assert!(!footer.contains("focus: rebuild §4.4 as SVG"), "goal must not lead the footer");
+        assert!(
+            !footer.contains("focus: rebuild §4.4 as SVG"),
+            "goal must not lead the footer"
+        );
     }
 
     #[test]
     fn footer_raises_stop_on_repeated_action() {
         // The same action on the last ≥2 turns ⇒ explicit STOP backstop (breaks the read-loop in-band).
         let mut c = ctx();
-        c.task_state = TaskState { goal: "g".to_string(), ..Default::default() };
+        c.task_state = TaskState {
+            goal: "g".to_string(),
+            ..Default::default()
+        };
         c.task_state.note_actions("document_read");
         c.task_state.note_actions("document_read");
         c.task_state.note_actions("document_read");
         let rc = render(&c, 100_000, &engine(), 4);
-        let footer = rc.state_turn.unwrap().content.as_text().unwrap()
-            .rsplit_once("\n\nProceed.").unwrap().0.rsplit("\n\n").next().unwrap().to_string();
-        assert!(footer.contains("STOP: `document_read` repeated 3×"), "got: {footer}");
+        let footer = rc
+            .state_turn
+            .unwrap()
+            .content
+            .as_text()
+            .unwrap()
+            .rsplit_once("\n\nProceed.")
+            .unwrap()
+            .0
+            .rsplit("\n\n")
+            .next()
+            .unwrap()
+            .to_string();
+        assert!(
+            footer.contains("STOP: `document_read` repeated 3×"),
+            "got: {footer}"
+        );
     }
 
     #[test]
@@ -675,7 +845,13 @@ mod tests {
         let mut c = ctx();
         c.signals.push("[ROLLBACK] tool failed".to_string());
         let rc = render(&c, 100_000, &engine(), 4);
-        let text = rc.state_turn.unwrap().content.as_text().unwrap().to_string();
+        let text = rc
+            .state_turn
+            .unwrap()
+            .content
+            .as_text()
+            .unwrap()
+            .to_string();
         assert!(!text.contains("→ focus:"), "no goal ⇒ no footer");
         // signals remain the last content before the anchor.
         assert!(text.contains("[ROLLBACK] tool failed"));
@@ -696,8 +872,15 @@ mod tests {
         c.history.push(Message::user("turn C"), 5);
         let fp2 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
 
-        assert!(fp2.extends(&fp1), "appending must only grow the tail, never drift the prefix");
-        assert_eq!(fp2.common_turn_prefix(&fp1), 2, "both prior turns stay cache-reusable");
+        assert!(
+            fp2.extends(&fp1),
+            "appending must only grow the tail, never drift the prefix"
+        );
+        assert_eq!(
+            fp2.common_turn_prefix(&fp1),
+            2,
+            "both prior turns stay cache-reusable"
+        );
         assert_eq!(fp2.turn_hashes.len(), 3);
     }
 
@@ -707,14 +890,23 @@ mod tests {
         // identical (state lives in the uncached tail, out of `turns`).
         let mut c = ctx();
         c.history.push(Message::user("turn A"), 5);
-        c.task_state = TaskState { goal: "first goal".to_string(), ..Default::default() };
+        c.task_state = TaskState {
+            goal: "first goal".to_string(),
+            ..Default::default()
+        };
         let fp1 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
 
-        c.task_state = TaskState { goal: "totally different goal".to_string(), ..Default::default() };
+        c.task_state = TaskState {
+            goal: "totally different goal".to_string(),
+            ..Default::default()
+        };
         c.signals.push("[ROLLBACK] whatever".to_string());
         let fp2 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
 
-        assert_eq!(fp1, fp2, "volatile state must not perturb the cacheable prefix");
+        assert_eq!(
+            fp1, fp2,
+            "volatile state must not perturb the cacheable prefix"
+        );
     }
 
     #[test]
@@ -729,7 +921,10 @@ mod tests {
         let fp2 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
 
         assert_ne!(fp1.system_stable_hash, fp2.system_stable_hash);
-        assert!(!fp2.extends(&fp1), "a system-block edit invalidates the whole prefix");
+        assert!(
+            !fp2.extends(&fp1),
+            "a system-block edit invalidates the whole prefix"
+        );
     }
 
     #[test]
@@ -757,10 +952,15 @@ mod tests {
         let mut h = Handle::resident_for(1, HandleKind::ToolResult, 250, "c1");
         h.residency = Residency::Collapsed;
         handles.insert(h);
-        let collapsed = render_projected(&c, 100_000, &engine(), 4, &handles, 0, false).prefix_fingerprint();
+        let collapsed =
+            render_projected(&c, 100_000, &engine(), 4, &handles, 0, false).prefix_fingerprint();
 
         // turn 0 ("start") is byte-stable; the collapsed tool result at turn 1 drifts.
-        assert_eq!(collapsed.common_turn_prefix(&resident), 1, "drift begins at the collapsed turn");
+        assert_eq!(
+            collapsed.common_turn_prefix(&resident),
+            1,
+            "drift begins at the collapsed turn"
+        );
         assert!(!collapsed.extends(&resident));
     }
 
@@ -781,7 +981,17 @@ mod tests {
         let mut c = ctx();
         // Oldest = a long preamble + a tool call; then enough recent turns to push it past the window.
         c.history.push(assistant_with_call(&"好的，我来将 §4.4 的 Mermaid 部署架构图重新构建为 SVG 版本。先找到当前 Mermaid 模块的位置。".repeat(1)), 60);
-        for i in 0..5 { c.history.push(Message::user(format!("recent {i}")), 5); }
+        c.history.push(
+            Message::tool(vec![ContentPart::ToolResult {
+                call_id: "c1".into(),
+                output: "located".into(),
+                is_error: false,
+            }]),
+            2,
+        );
+        for i in 0..5 {
+            c.history.push(Message::user(format!("recent {i}")), 5);
+        }
 
         // collapse ON (preserve window = 4, so the oldest narration turn is past it)
         let rc = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, true);
@@ -790,36 +1000,88 @@ mod tests {
             .iter()
             .find(|m| m.content.as_text() == Some(NARRATION_STUB))
             .expect("old narration replaced by stub");
-        assert_eq!(narration.tool_calls.len(), 1, "tool call (pairing) preserved");
+        assert_eq!(
+            narration.tool_calls.len(),
+            1,
+            "tool call (pairing) preserved"
+        );
         assert_eq!(narration.tool_calls[0].name, "module_read");
         // No verbatim preamble survives in the rendered prefix.
-        assert!(!rc.turns.iter().any(|m| m.content.as_text().map(|t| t.contains("先找到当前 Mermaid")).unwrap_or(false)));
+        assert!(!rc.turns.iter().any(|m| {
+            m.content
+                .as_text()
+                .map(|t| t.contains("先找到当前 Mermaid"))
+                .unwrap_or(false)
+        }));
         // Original history is untouched (non-destructive projection).
-        assert!(c.history.messages[0].content.as_text().unwrap().contains("先找到当前 Mermaid"));
+        assert!(
+            c.history.messages[0]
+                .content
+                .as_text()
+                .unwrap()
+                .contains("先找到当前 Mermaid")
+        );
 
         // collapse OFF → verbatim narration survives.
         let rc_off = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, false);
-        assert!(rc_off.turns.iter().any(|m| m.content.as_text().map(|t| t.contains("先找到当前 Mermaid")).unwrap_or(false)));
+        assert!(rc_off.turns.iter().any(|m| {
+            m.content
+                .as_text()
+                .map(|t| t.contains("先找到当前 Mermaid"))
+                .unwrap_or(false)
+        }));
     }
 
     #[test]
     fn recent_assistant_narration_within_window_is_not_collapsed() {
         let mut c = ctx();
         // Only 2 turns, preserve window = 4 → the narration turn is protected → never collapsed.
-        c.history.push(assistant_with_call(&"好的，我来将 §4.4 重新构建为 SVG。先定位模块位置确认范围读取内容。".to_string()), 60);
+        c.history.push(
+            assistant_with_call(
+                &"好的，我来将 §4.4 重新构建为 SVG。先定位模块位置确认范围读取内容。".to_string(),
+            ),
+            60,
+        );
+        c.history.push(
+            Message::tool(vec![ContentPart::ToolResult {
+                call_id: "c1".into(),
+                output: "located".into(),
+                is_error: false,
+            }]),
+            2,
+        );
         c.history.push(Message::user("ok"), 5);
         let rc = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, true);
-        assert!(rc.turns.iter().any(|m| m.content.as_text().map(|t| t.contains("先定位模块位置")).unwrap_or(false)), "recent narration kept verbatim");
+        assert!(
+            rc.turns.iter().any(|m| m
+                .content
+                .as_text()
+                .map(|t| t.contains("先定位模块位置"))
+                .unwrap_or(false)),
+            "recent narration kept verbatim"
+        );
     }
 
     #[test]
     fn assistant_without_tool_calls_is_never_collapsed() {
         let mut c = ctx();
         // A pure final answer (no tool calls) is substantive — must survive even when old.
-        c.history.push(Message::assistant("这是给用户的最终结论，包含实质内容，不应被折叠掉以免丢信息。"), 40);
-        for i in 0..5 { c.history.push(Message::user(format!("r{i}")), 5); }
+        c.history.push(
+            Message::assistant("这是给用户的最终结论，包含实质内容，不应被折叠掉以免丢信息。"),
+            40,
+        );
+        for i in 0..5 {
+            c.history.push(Message::user(format!("r{i}")), 5);
+        }
         let rc = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, true);
-        assert!(rc.turns.iter().any(|m| m.content.as_text().map(|t| t.contains("最终结论")).unwrap_or(false)), "answer-only turns are not narration");
+        assert!(
+            rc.turns.iter().any(|m| m
+                .content
+                .as_text()
+                .map(|t| t.contains("最终结论"))
+                .unwrap_or(false)),
+            "answer-only turns are not narration"
+        );
     }
 
     #[test]
@@ -829,12 +1091,28 @@ mod tests {
         let mut c = ctx();
         c.history.push(Message::user("start"), 5);
         c.history.push(assistant_with_call(&"好的，我来将 §4.4 重新构建为 SVG 版本。先找到 Mermaid 模块的确切位置再读取其内容。".to_string()), 60);
-        for i in 0..4 { c.history.push(Message::user(format!("recent {i}")), 5); }
+        c.history.push(
+            Message::tool(vec![ContentPart::ToolResult {
+                call_id: "c1".into(),
+                output: "located".into(),
+                is_error: false,
+            }]),
+            2,
+        );
+        for i in 0..4 {
+            c.history.push(Message::user(format!("recent {i}")), 5);
+        }
 
-        let verbatim = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, false).prefix_fingerprint();
-        let collapsed = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, true).prefix_fingerprint();
+        let verbatim = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, false)
+            .prefix_fingerprint();
+        let collapsed = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, true)
+            .prefix_fingerprint();
         // turn 0 ("start") is byte-stable; drift begins at the collapsed narration turn (index 1).
-        assert_eq!(collapsed.common_turn_prefix(&verbatim), 1, "only the collapsed turn drifts");
+        assert_eq!(
+            collapsed.common_turn_prefix(&verbatim),
+            1,
+            "only the collapsed turn drifts"
+        );
         assert!(!collapsed.extends(&verbatim));
     }
 
@@ -843,11 +1121,44 @@ mod tests {
         let mut c = ctx();
         c.history.push(Message::user("first message"), 5);
         c.history.push(Message::user("a".repeat(1000)), 250);
-        // preserve_recent_msgs=4 protects both — kept whole regardless of the 10-token budget.
-        let rc = render(&c, 10, &engine(), 4);
+        // Two protected context units are kept whole regardless of the 10-token budget.
+        let rc = render(&c, 10, &engine(), 2);
         assert!(rc.turns.iter().any(|m| {
-            m.content.as_text().map(|t| t.contains("first message")).unwrap_or(false)
+            m.content
+                .as_text()
+                .map(|t| t.contains("first message"))
+                .unwrap_or(false)
         }));
+    }
+
+    #[test]
+    fn render_drops_or_keeps_tool_transactions_as_complete_units() {
+        let mut c = ctx();
+        c.history.push(Message::user("old"), 10);
+        c.history.push(Message::assistant("old answer"), 10);
+        let mut call = Message::assistant("calling");
+        call.tool_calls.push(crate::types::message::ToolCall {
+            id: "call-1".into(),
+            name: "read".into(),
+            arguments: serde_json::json!({}),
+        });
+        c.history.push(Message::user("question"), 10);
+        c.history.push(call, 10);
+        c.history.push(
+            Message::tool(vec![crate::types::message::ContentPart::ToolResult {
+                call_id: "call-1".into(),
+                output: "ok".into(),
+                is_error: false,
+            }]),
+            10,
+        );
+        c.history.push(Message::assistant("answer"), 10);
+
+        let rc = render(&c, 25, &engine(), 1);
+
+        assert_eq!(rc.turns.len(), 4);
+        assert_eq!(rc.turns[0].content.as_text(), Some("question"));
+        assert_eq!(rc.turns[3].content.as_text(), Some("answer"));
     }
 
     #[test]
@@ -868,5 +1179,53 @@ mod tests {
                 .unwrap_or(false)),
             "no truncated body in the prefix"
         );
+    }
+
+    #[test]
+    fn state_turn_is_budgeted_before_history() {
+        let mut c = ctx();
+        c.task_state = TaskState {
+            goal: "keep the state".to_string(),
+            ..Default::default()
+        };
+        c.history.push(Message::user("x".repeat(120)), 30);
+        let state_tokens = engine().count_message(&build_state_turn(&c).expect("state"));
+
+        let rc = render(&c, state_tokens + 5, &engine(), 0);
+
+        assert!(
+            rc.turns.is_empty(),
+            "history must not consume the state reservation"
+        );
+        assert!(rc.budget_overflow.is_none());
+    }
+
+    #[test]
+    fn protected_tail_overflow_is_reported_instead_of_hidden() {
+        let mut c = ctx();
+        c.history.push(Message::user("x".repeat(400)), 100);
+
+        let rc = render(&c, 10, &engine(), 2);
+
+        let overflow = rc
+            .budget_overflow
+            .expect("protected tail overflow must be explicit");
+        assert_eq!(overflow.kind, ContextBudgetOverflowKind::ProtectedTail);
+        assert!(overflow.required_tokens > overflow.max_tokens);
+    }
+
+    #[test]
+    fn fixed_context_overflow_is_reported_with_actual_token_count() {
+        let mut c = ctx();
+        c.system.push(Message::system("x".repeat(400)), 100);
+
+        let rc = render(&c, 10, &engine(), 0);
+
+        let overflow = rc
+            .budget_overflow
+            .expect("fixed context overflow must be explicit");
+        assert_eq!(overflow.kind, ContextBudgetOverflowKind::FixedContext);
+        assert_eq!(overflow.required_tokens, 100);
+        assert_eq!(overflow.max_tokens, 10);
     }
 }

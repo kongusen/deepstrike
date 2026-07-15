@@ -2,7 +2,7 @@
 # code_refs: validated by scripts/check-docs-drift.mjs against live source — symbols must exist.
 code_refs:
   rust: [KernelInput, KernelObservation, KernelRuntime, Syscall, Disposition]
-  python: [RenderedContext, MemoryPolicy, ResourceQuota, SchedulerBudget]
+  python: [RenderedContext, MemoryPolicy, ResourceQuota, SchedulerPolicy]
 ---
 
 # Kernel ABI
@@ -91,7 +91,7 @@ Replay 时 SDK 用 observation 流 **重建** `KernelRuntime`，而非重跑 LLM
 | `GovernanceConfig` | syscall 默认策略 |
 | `MemoryPolicy` | WriteMemory 校验规则 |
 | `ResourceQuota` | spawn 深度、并发、DAG 节点上限 |
-| `SchedulerBudget` | 墙钟上限 |
+| `SchedulerPolicy` | 版本化 DAG 调度权重；不混入墙钟预算 |
 
 Python 侧多数通过 `RuntimeOptions` 在 boot 时转为 kernel events（见 [RuntimeOptions 参考](../reference/runtime-options)）。
 

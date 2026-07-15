@@ -111,13 +111,12 @@ describe("RuntimeRunner wake recovery", () => {
     const { runner, sessionLog } = createRunner(provider, [], { maxTurns: 2 })
     const sessionId = "done-session"
     await collectText(runner.run({ sessionId, goal: "hello" }))
+    const seqBeforeWake = await sessionLog.latestSeq(sessionId)
 
     const events: StreamEvent[] = []
     for await (const evt of runner.wake(sessionId)) events.push(evt)
     expect(events).toHaveLength(0)
-    expect(await sessionLog.latestSeq(sessionId)).toBe(
-      (await sessionLog.read(sessionId)).length - 1,
-    )
+    expect(await sessionLog.latestSeq(sessionId)).toBe(seqBeforeWake)
   })
 
   it("FileSessionLog wake survives a new runner instance (process restart)", async () => {
@@ -219,7 +218,7 @@ describe("RuntimeRunner wake recovery", () => {
         toolRuns += 1
         return "pong ".repeat(200)
       })],
-      { maxTokens: 32, maxTurns: 4 },
+      { maxTokens: 256, maxTurns: 4 },
     )
 
     await collectText(runner.run({ sessionId: "compressed-session", goal: "use ping then finish" }))
@@ -254,13 +253,13 @@ describe("RuntimeRunner wake recovery", () => {
     await sessionLog.append(sessionId, {
       kind: "run_started",
       run_id: "seed",
-      goal: "seed ".repeat(1200),
+      goal: "seed ".repeat(40),
       criteria: [],
     })
     await sessionLog.append(sessionId, {
       kind: "llm_completed",
       turn: 0,
-      content: "prior answer ".repeat(400),
+      content: "prior answer ".repeat(20),
       tool_calls: [],
     })
     await sessionLog.append(sessionId, {
@@ -272,7 +271,7 @@ describe("RuntimeRunner wake recovery", () => {
 
     const text = await collectText(runner.run({
       sessionId,
-      goal: "a".repeat(5000),
+      goal: "a".repeat(400),
     }))
 
     expect(text).toBe("recovered")

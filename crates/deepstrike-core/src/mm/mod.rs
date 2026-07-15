@@ -10,10 +10,11 @@ use serde::{Deserialize, Serialize};
 
 pub mod handle;
 pub mod memory;
+pub mod value;
 
 pub use handle::{
-    plan_eviction, plan_spool, EvictionOp, EvictionPlan, Handle, HandleId, HandleKind, HandleTable,
-    Residency, SpoolDecision,
+    EvictionOp, EvictionPlan, Handle, HandleId, HandleKind, HandleTable, Residency, SpoolDecision,
+    plan_eviction, plan_spool,
 };
 
 /// Long-term tier hint for a page-out event (SDK maps to durable vs semantic store).
@@ -74,5 +75,4 @@ mod tests {
             MemoryTierHint::Durable
         );
     }
-
 }

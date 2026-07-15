@@ -49,6 +49,7 @@ where
         timeout_ms: None,
         extensions: None,
         agent_id: None,
+        memory_scope: None,
         system_prompt: None,
         initial_memory: vec![],
         skill_dir: None,
@@ -58,8 +59,8 @@ where
         governance: None,
         os_profile: None,
         governance_policy: None,
-        attention_policy: None,
-        scheduler_budget: None,
+        signal_policy: None,
+        scheduler_policy: None,
         resource_quota: None,
         memory_policy: None,
         tokenizer: None,
@@ -115,35 +116,12 @@ impl KnowledgeSource for MockKnowledgeSource {
 }
 
 struct MockDreamStore {
-    sessions: Vec<deepstrike_core::memory::durable::SessionData>,
-    memories: Vec<deepstrike_core::memory::semantic::MemoryEntry>,
     committed: Arc<Mutex<bool>>,
 }
 
 impl MockDreamStore {
     fn empty() -> Self {
         Self {
-            sessions: vec![],
-            memories: vec![],
-            committed: Arc::new(Mutex::new(false)),
-        }
-    }
-
-    fn with_session() -> Self {
-        use deepstrike_core::types::message::Message;
-        Self {
-            sessions: vec![deepstrike_core::memory::durable::SessionData {
-                session_id: "s1".into(),
-                agent_id: "test-agent".into(),
-                messages: vec![
-                    Message::user("What is Rust?"),
-                    Message::assistant("Rust is a systems programming language."),
-                ],
-                metadata: serde_json::Value::Null,
-                created_at_ms: 1_000_000,
-                updated_at_ms: 1_001_000,
-            }],
-            memories: vec![],
             committed: Arc::new(Mutex::new(false)),
         }
     }
@@ -151,37 +129,40 @@ impl MockDreamStore {
 
 #[async_trait]
 impl DreamStore for MockDreamStore {
-    async fn load_sessions(
-        &self,
-        _agent_id: &str,
-    ) -> deepstrike_sdk::Result<Vec<deepstrike_core::memory::durable::SessionData>> {
-        Ok(self.sessions.clone())
-    }
-    async fn load_memories(
-        &self,
-        _agent_id: &str,
-    ) -> deepstrike_sdk::Result<Vec<deepstrike_core::memory::semantic::MemoryEntry>> {
-        Ok(self.memories.clone())
-    }
-    async fn commit(
-        &self,
-        _agent_id: &str,
-        _result: deepstrike_core::memory::curator::CurationResult,
-        _existing: &[deepstrike_core::memory::semantic::MemoryEntry],
-    ) -> deepstrike_sdk::Result<()> {
+    async fn upsert(&self, _agent_id: &str, _record: MemoryRecord) -> deepstrike_sdk::Result<()> {
         *self.committed.lock().unwrap() = true;
         Ok(())
     }
     async fn search(
         &self,
         _agent_id: &str,
-        _query: &str,
-        _top_k: usize,
-    ) -> deepstrike_sdk::Result<Vec<deepstrike_core::memory::semantic::MemoryEntry>> {
-        Ok(vec![deepstrike_core::memory::semantic::MemoryEntry {
-            text: "Rust was created by Graydon Hoare at Mozilla.".into(),
+        query: &MemoryQuery,
+    ) -> deepstrike_sdk::Result<Vec<MemoryRecall>> {
+        Ok(vec![MemoryRecall {
+            record: MemoryRecord {
+                record_id: "record-rust-origin".into(),
+                scope: query.scope.clone(),
+                name: "rust-origin".into(),
+                kind: MemoryKind::Reference,
+                content: "Rust was created by Graydon Hoare at Mozilla.".into(),
+                description: "Rust origin fact".into(),
+                provenance: MemoryProvenance {
+                    session_id: None,
+                    author: MemoryAuthor::Host,
+                    trust: MemoryTrustLevel::HostVerified,
+                    evidence_refs: Vec::new(),
+                },
+                created_at: 1,
+                updated_at: 1,
+                last_recalled_at: None,
+                recall_count: 0,
+                confidence: 0.95,
+                links: Vec::new(),
+                pinned: false,
+                ttl_days: None,
+            },
             score: 0.95,
-            metadata: serde_json::Value::Null,
+            why: "fixture".into(),
         }])
     }
     async fn save_session(
@@ -396,75 +377,29 @@ async fn runner_interrupt() {
     assert!(result.is_ok());
 }
 
-// ─── 09. DreamStore integration ─────────────────────────────────────────────
+// ─── 10. AttemptLoop with deterministic judge ──────────────────────────────
 
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
-async fn dream_with_empty_sessions() {
-    let store = MockDreamStore::empty();
-    let runner = make_runner_with(|_, opts| {
-        opts.dream_store = Some(Box::new(store));
-        opts.agent_id = Some("test-agent".into());
-    });
-
-    let result = runner.dream("test-agent", 1_000_000).await.unwrap();
-    assert_eq!(result.sessions_processed, 0);
-}
-
-#[tokio::test]
-#[ignore = "requires OPENAI_API_KEY"]
-async fn dream_processes_session() {
-    let store = MockDreamStore::with_session();
-    let committed = store.committed.clone();
-
-    let runner = make_runner_with(|_, opts| {
-        opts.dream_store = Some(Box::new(store));
-        opts.agent_id = Some("test-agent".into());
-    });
-
-    let result = runner.dream("test-agent", 2_000_000).await.unwrap();
-    assert!(result.sessions_processed >= 1);
-    assert!(*committed.lock().unwrap(), "commit should have been called");
-}
-
-// ─── 10. SinglePassHarness ──────────────────────────────────────────────────
-
-#[tokio::test]
-#[ignore = "requires OPENAI_API_KEY"]
-async fn single_pass_harness_always_passes() {
+async fn attempt_loop_with_deterministic_judge() {
     let runner = make_runner();
-    let harness = SinglePassHarness::new(&runner);
-    let outcome = harness
-        .run(HarnessRequest::new("Say hello."))
+    let judge = VerdictFnJudge::new(Arc::new(|_| {
+        Some(Verdict {
+            passed: true,
+            overall_score: 1.0,
+            feedback: "ok".into(),
+            details: vec![],
+        })
+    }));
+    let attempt_loop =
+        AttemptLoop::new(RuntimeAttemptBody::new(&runner), judge, StopPolicy::new(1)).unwrap();
+    let outcome = attempt_loop
+        .run(AttemptRequest::generated("Say hello."))
         .await
         .unwrap();
-    assert!(outcome.passed);
+    assert_eq!(outcome.outcome, AttemptOutcomeKind::Passed);
     assert!(!outcome.result.is_empty());
-    assert!(!outcome.status.is_empty());
-}
-
-// ─── 11. EvalLoopHarness ────────────────────────────────────────────────────
-
-struct AlwaysPass;
-
-#[async_trait]
-impl QualityGate for AlwaysPass {
-    async fn evaluate(
-        &self,
-        _req: &HarnessRequest,
-        _out: &HarnessOutcome,
-    ) -> deepstrike_sdk::Result<bool> {
-        Ok(true)
-    }
-}
-
-#[tokio::test]
-#[ignore = "requires OPENAI_API_KEY"]
-async fn eval_loop_harness_with_always_pass_gate() {
-    let runner = make_runner();
-    let harness = EvalLoopHarness::new(&runner, AlwaysPass, 3);
-    let outcome = harness.run(HarnessRequest::new("Say hi.")).await.unwrap();
-    assert!(outcome.passed);
+    assert!(!outcome.run_status.is_empty());
 }
 
 // ─── 12. Tools + Governance combo ───────────────────────────────────────────
@@ -540,30 +475,29 @@ async fn agent_with_dream_store_enables_memory_tool() {
     );
 }
 
-// ─── 14. HarnessLoop (LLM-as-judge) ────────────────────────────────────────
+// ─── 14. AttemptLoop (LLM-as-judge) ────────────────────────────────────────
 
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
-async fn harness_loop_llm_judge() {
+async fn attempt_loop_llm_judge() {
     let runner = make_runner();
-    let eval_provider = make_provider();
-    let harness = HarnessLoop::new(&runner, eval_provider, 2, None);
+    let attempt_loop = AttemptLoop::new(
+        RuntimeAttemptBody::new(&runner),
+        LlmEvalJudge::new(make_provider()),
+        StopPolicy::new(2),
+    )
+    .unwrap();
+    let mut req = AttemptRequest::generated("Write a haiku about the ocean.");
+    req.criteria = vec![Criterion::required("Must be exactly 3 lines.")];
 
-    let mut req = HarnessRequest::new("Write a haiku about the ocean.");
-    req.criteria = vec![deepstrike_sdk::harness::Criterion::required(
-        "Must be exactly 3 lines.",
-    )];
-
-    let stream = harness.run_streaming(req);
-    futures::pin_mut!(stream);
+    let mut stream = attempt_loop.stream(req);
     let mut result = String::new();
     let mut status = String::new();
-    while let Some(evt) = futures::StreamExt::next(&mut stream).await {
+    while let Some(evt) = stream.next().await {
         match evt.unwrap() {
-            deepstrike_sdk::harness::HarnessEvent::Token(t) => result.push_str(&t),
-            deepstrike_sdk::harness::HarnessEvent::Done { status: s, .. } => status = s,
-            deepstrike_sdk::harness::HarnessEvent::MaxAttemptsReached => {
-                status = "max_attempts".into()
+            AttemptLoopEvent::Token(text) => result.push_str(&text),
+            AttemptLoopEvent::Completed(outcome) => {
+                status = outcome.run_status;
             }
             _ => {}
         }
@@ -659,6 +593,10 @@ async fn signal_gateway_creates_and_subscribes() {
         urgency: "critical".into(),
         payload: serde_json::json!({}),
         dedupe_key: None,
+        recipient: None,
+        deadline_ms: None,
+        coalesce_key: None,
+        coalesced_count: 1,
     });
     gw.destroy();
 }

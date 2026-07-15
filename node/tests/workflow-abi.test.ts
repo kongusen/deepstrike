@@ -7,7 +7,7 @@ import {
   verifyRules,
 } from "../src/types/agent.js"
 import type { WorkflowSpec, WorkflowSpawnInfo } from "../src/types/agent.js"
-import { buildWorkflowNodeCompletedEvent, recoverCompletedWorkflowNodes } from "../src/runtime/session-repair.js"
+import { buildWorkflowNodeCompletedEvent, recoverWorkflowNodeOutcomes } from "../src/runtime/session-repair.js"
 import { stepKernelV2WithHostEffects } from "./helpers/kernel-v2.js"
 
 function step(rt: { step(json: string): string }, event: Record<string, unknown>) {
@@ -16,8 +16,7 @@ function step(rt: { step(json: string): string }, event: Record<string, unknown>
     observations: Array<{
       kind: string
       nodes?: WorkflowSpawnInfo[]
-      completed?: string[]
-      failed?: string[]
+      node_outcomes?: Array<{ node_id: string; status: string }>
     }>
   }
 }
@@ -51,6 +50,7 @@ describe("workflowSpecToKernel", () => {
       role: "explore",
       isolation: "read_only",
       context_inheritance: "system_only",
+      dep_policy: "all_success",
     })
     // node 2: defaults applied (isolation/context_inheritance always emitted), deps + criteria kept
     expect(k.nodes[1]).toEqual({
@@ -59,6 +59,7 @@ describe("workflowSpecToKernel", () => {
       isolation: "shared",
       context_inheritance: "none",
       depends_on: [0],
+      dep_policy: "all_success",
     })
     // string-task shorthand still yields an empty criteria array
     expect((k.nodes[0] as { task: { criteria: unknown } }).task.criteria).toEqual([])
@@ -152,18 +153,19 @@ describe("LoadWorkflow ABI drives the DAG end-to-end", () => {
     // Synth done → workflow completes, parent resumes.
     const afterSynth = complete(rt, "wf-node2")
     const completed = afterSynth.observations.find(o => o.kind === "workflow_completed")
-    expect(completed?.completed?.sort()).toEqual(["wf-node0", "wf-node1", "wf-node2"])
+    expect(completed?.node_outcomes?.map(node => node.node_id).sort()).toEqual(["wf-node0", "wf-node1", "wf-node2"])
     expect(afterSynth.actions[0]?.kind).toBe("call_provider")
   })
 })
 import { getKernel } from "../src/kernel.js"
-import { buildWorkflowNodeCompletedEvent, recoverCompletedWorkflowNodes } from "../src/runtime/session-repair.js"
+import { buildWorkflowNodeCompletedEvent, recoverWorkflowNodeOutcomes } from "../src/runtime/session-repair.js"
 
 describe("resume persistence", () => {
   it("buildWorkflowNodeCompletedEvent builds a valid SessionEvent", () => {
     const event = buildWorkflowNodeCompletedEvent({
       turn: 5,
       agentId: "wf-node3",
+      status: "completed",
       termination: "completed",
     })
     expect(event.kind).toBe("workflow_node_completed")
@@ -173,25 +175,26 @@ describe("resume persistence", () => {
     // category and primitive are added by the logging layer (withCategory)
   })
 
-  it("recoverCompletedWorkflowNodes extracts completed records with their control signals", () => {
+  it("recoverWorkflowNodeOutcomes extracts completed records with their control signals", () => {
     const events = [
       { seq: 0, event: { kind: "run_started", run_id: "s1", goal: "test", criteria: [] } },
-      { seq: 1, event: buildWorkflowNodeCompletedEvent({ turn: 1, agentId: "wf-node0", termination: "completed", classifyBranch: "a", output: "picked a" }) },
-      { seq: 2, event: buildWorkflowNodeCompletedEvent({ turn: 2, agentId: "wf-node1", termination: "failed" }) },
-      { seq: 3, event: buildWorkflowNodeCompletedEvent({ turn: 3, agentId: "wf-node2", termination: "completed" }) },
+      { seq: 1, event: buildWorkflowNodeCompletedEvent({ turn: 1, agentId: "wf-node0", status: "completed", termination: "completed", classifyBranch: "a", output: { role: "assistant", content: "picked a" } }) },
+      { seq: 2, event: buildWorkflowNodeCompletedEvent({ turn: 2, agentId: "wf-node1", status: "failed", termination: "error" }) },
+      { seq: 3, event: buildWorkflowNodeCompletedEvent({ turn: 3, agentId: "wf-node2", status: "completed_partial", termination: "timeout" }) },
       { seq: 4, event: { kind: "run_terminal", reason: "done", turns_used: 3, total_tokens: 10 } },
     ]
-    const completed = recoverCompletedWorkflowNodes(events)
-    // W-1: records (not bare ids) — signals + output ride along for faithful control-flow replay.
+    const completed = recoverWorkflowNodeOutcomes(events)
+    // Every terminal status, signal and output rides along for faithful dependency replay.
     expect(completed).toEqual([
-      { agentId: "wf-node0", classifyBranch: "a", output: "picked a" },
-      { agentId: "wf-node2" },
+      { agentId: "wf-node0", status: "completed", termination: "completed", classifyBranch: "a", output: { role: "assistant", content: "picked a" } },
+      { agentId: "wf-node1", status: "failed", termination: "error" },
+      { agentId: "wf-node2", status: "completed_partial", termination: "timeout" },
     ])
   })
 
-  it("recoverCompletedWorkflowNodes returns empty for empty stream", () => {
-    expect(recoverCompletedWorkflowNodes([])).toEqual([])
-    expect(recoverCompletedWorkflowNodes([{ seq: 0, event: { kind: "run_started", run_id: "s1", goal: "x", criteria: [] } }])).toEqual([])
+  it("recoverWorkflowNodeOutcomes returns empty for empty stream", () => {
+    expect(recoverWorkflowNodeOutcomes([])).toEqual([])
+    expect(recoverWorkflowNodeOutcomes([{ seq: 0, event: { kind: "run_started", run_id: "s1", goal: "x", criteria: [] } }])).toEqual([])
   })
 
   it("kernel resumes workflow from completed nodes", () => {
@@ -211,7 +214,7 @@ describe("resume persistence", () => {
       kind: "load_workflow",
       spec: workflowSpecToKernel(spec),
       parent_session_id: "sess",
-      resumed_completed: ["wf-node0"],
+      resumed_outcomes: [{ agent_id: "wf-node0", status: "completed", termination: "completed" }],
     })
 
     // Only node1 is in the ready batch; node0 is skipped.
@@ -227,7 +230,7 @@ describe("resume persistence", () => {
     // Synth done → workflow completes with all three nodes.
     const afterSynth = complete(rt, "wf-node2")
     const completed = afterSynth.observations.find(o => o.kind === "workflow_completed")
-    expect(completed?.completed?.sort()).toEqual(["wf-node0", "wf-node1", "wf-node2"])
+    expect(completed?.node_outcomes?.map(node => node.node_id).sort()).toEqual(["wf-node0", "wf-node1", "wf-node2"])
   })
 
   it("kernel resumes with all nodes already completed", () => {
@@ -246,11 +249,13 @@ describe("resume persistence", () => {
       kind: "load_workflow",
       spec: workflowSpecToKernel(spec),
       parent_session_id: "sess",
-      resumed_completed: ["wf-node0", "wf-node1"],
+      resumed_outcomes: ["wf-node0", "wf-node1"].map(agent_id => ({
+        agent_id, status: "completed", termination: "completed",
+      })),
     })
 
     const completed = loaded.observations.find(o => o.kind === "workflow_completed")
-    expect(completed?.completed?.sort()).toEqual(["wf-node0", "wf-node1"])
+    expect(completed?.node_outcomes?.map(node => node.node_id).sort()).toEqual(["wf-node0", "wf-node1"])
     expect(loaded.actions[0]?.kind).toBe("call_provider")
   })
 })

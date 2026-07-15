@@ -7,27 +7,18 @@ from __future__ import annotations
 
 from typing import Iterable
 
-from deepstrike.memory.protocols import CurationResult, DreamStore, MemoryEntry, SessionData
+from deepstrike.memory.protocols import DreamStore, MemoryQuery, MemoryRecall, MemoryRecord, SessionData
+from deepstrike.memory.ranking import rank_memories
 
 
 class InMemoryDreamStore(DreamStore):
-    def __init__(self, initial_memories: Iterable[MemoryEntry] | None = None) -> None:
-        self._sessions: dict[str, list[SessionData]] = {}
-        self._memories: dict[str, list[MemoryEntry]] = {}
-        self._initial: list[MemoryEntry] = list(initial_memories or [])
+    def __init__(self, initial_memories: Iterable[MemoryRecord] | None = None) -> None:
+        self._memories: dict[str, list[MemoryRecord]] = {}
+        self._initial: list[MemoryRecord] = list(initial_memories or [])
         #: Sessions persisted via save_session — exposed for test assertions.
         self.saved_sessions: list[SessionData] = []
 
-    def add_session(self, agent_id: str, session: SessionData) -> None:
-        self._sessions.setdefault(agent_id, []).append(session)
-
-    def add_memories(self, agent_id: str, entries: Iterable[MemoryEntry]) -> None:
-        self._memories.setdefault(agent_id, []).extend(entries)
-
-    async def load_sessions(self, agent_id: str) -> list[SessionData]:
-        return list(self._sessions.get(agent_id, []))
-
-    async def load_memories(self, agent_id: str) -> list[MemoryEntry]:
+    def _records_for(self, agent_id: str) -> list[MemoryRecord]:
         if agent_id in self._memories:
             return list(self._memories[agent_id])
         if self._initial:
@@ -35,19 +26,26 @@ class InMemoryDreamStore(DreamStore):
             return list(self._memories[agent_id])
         return []
 
-    async def commit(
-        self,
-        agent_id: str,
-        result: CurationResult,
-        existing: list[MemoryEntry],
-    ) -> None:
-        kept = [m for i, m in enumerate(existing) if i not in set(result.to_remove_indices)]
-        self._memories[agent_id] = kept + list(result.to_add)
+    async def upsert(self, agent_id: str, incoming: MemoryRecord) -> None:
+        kept = self._records_for(agent_id)
+        index = next((i for i, record in enumerate(kept) if record.scope == incoming.scope and record.kind == incoming.kind and record.name == incoming.name), None)
+        if index is None:
+            kept.append(incoming)
+        else:
+            kept[index] = incoming
+        self._memories[agent_id] = kept
 
-    async def search(self, agent_id: str, query: str, top_k: int = 5) -> list[MemoryEntry]:
-        all_memories = await self.load_memories(agent_id)
-        return all_memories[:top_k]
+    async def search(self, agent_id: str, query: MemoryQuery) -> list[MemoryRecall]:
+        candidates = [record for record in self._records_for(agent_id)
+                      if record.scope == query.scope
+                      and (not query.kinds or record.kind in query.kinds)
+                      and (query.min_score is None or record.confidence >= query.min_score)]
+        selected = rank_memories(
+            query.query, candidates, query.top_k,
+            searchable_text=lambda record: f"{record.name} {record.description} {record.content}",
+            updated_at=lambda record: record.updated_at,
+        )
+        return [MemoryRecall(record=record, score=max(0.0, min(1.0, record.confidence)), why="deterministic lexical relevance with recency tie-breaking") for record in selected]
 
     async def save_session(self, data: SessionData) -> None:
         self.saved_sessions.append(data)
-        self._sessions.setdefault(data.agent_id, []).append(data)

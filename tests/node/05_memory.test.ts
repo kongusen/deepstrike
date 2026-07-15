@@ -1,10 +1,10 @@
 /**
- * 05_memory.test.ts — WorkingMemory + DreamStore + Agent.dream()
+ * 05_memory.test.ts — WorkingMemory + DreamStore
  */
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import { WorkingMemory } from "@deepstrike/sdk"
-import { MockDreamStore, makeAgent } from "./helpers.js"
+import { MockDreamStore, TEST_MEMORY_SCOPE, memoryRecord } from "./helpers.js"
 
 describe("WorkingMemory", () => {
   it("stores and retrieves values", () => {
@@ -45,82 +45,20 @@ describe("WorkingMemory", () => {
 })
 
 describe("MockDreamStore", () => {
-  it("empty initially", async () => {
-    assert.deepEqual(await new MockDreamStore().loadSessions("a"), [])
-  })
-
-  it("addSession + loadSessions roundtrip", async () => {
+  it("upsert adds entries", async () => {
     const s = new MockDreamStore()
-    const now = Date.now()
-    s.addSession("a1", { sessionId: "s1", agentId: "a1", messages: [], metadata: null, createdAtMs: now, updatedAtMs: now })
-    assert.equal((await s.loadSessions("a1")).length, 1)
-  })
-
-  it("commit adds entries", async () => {
-    const s = new MockDreamStore()
-    await s.commit("a1", {
-      toAdd: [{ text: "fact A", score: 0.9, metadata: null }],
-      toRemoveIndices: [],
-      stats: { insightsProcessed: 1, duplicatesRemoved: 0, conflictsResolved: 0, entriesAdded: 1 },
-    }, [])
-    assert.equal((await s.loadMemories("a1")).length, 1)
-  })
-
-  it("commit removes by index", async () => {
-    const s = new MockDreamStore()
-    const existing = [
-      { text: "old A", score: 0.5, metadata: null },
-      { text: "old B", score: 0.5, metadata: null },
-    ]
-    await s.commit("a1", {
-      toAdd: [{ text: "new C", score: 0.8, metadata: null }],
-      toRemoveIndices: [0],
-      stats: { insightsProcessed: 1, duplicatesRemoved: 0, conflictsResolved: 0, entriesAdded: 1 },
-    }, existing)
-    const final = await s.loadMemories("a1")
-    assert.equal(final.length, 2)          // B + C
-    assert.ok(final.some(m => m.text === "old B"))
-    assert.ok(final.some(m => m.text === "new C"))
-    assert.ok(!final.some(m => m.text === "old A"))
+    await s.upsert("a1", memoryRecord("fact-a", "fact A", 0.9))
+    assert.equal((await s.search("a1", { scope: TEST_MEMORY_SCOPE, query: "fact", top_k: 5, kinds: [] })).length, 1)
   })
 
   it("search respects topK", async () => {
     const s = new MockDreamStore()
-    await s.commit("a1", {
-      toAdd: Array.from({ length: 5 }, (_, i) => ({ text: `m${i}`, score: 0.5, metadata: null })),
-      toRemoveIndices: [],
-      stats: { insightsProcessed: 5, duplicatesRemoved: 0, conflictsResolved: 0, entriesAdded: 5 },
-    }, [])
-    assert.equal((await s.search("a1", "q", 3)).length, 3)
-  })
-})
-
-describe("Agent.dream()", () => {
-  it("returns zero counts when no sessions", async () => {
-    const store = new MockDreamStore()
-    const agent = makeAgent({ dreamStore: store, agentId: "dreamer" })
-    const r = await agent.dream("dreamer")
-    assert.equal(r.sessionsProcessed, 0)
-  })
-
-  it("processes a session and commits memories", { timeout: 120_000 }, async () => {
-    const store = new MockDreamStore()
-    const agentId = "dreamer-2"
-    const now = Date.now()
-    store.addSession(agentId, {
-      sessionId: "sess-1", agentId,
-      messages: [
-        { role: "user",      content: "What is the capital of France?" },
-        { role: "assistant", content: "The capital of France is Paris." },
-      ],
-      metadata: null,
-      createdAtMs: now - 3_600_000,
-      updatedAtMs: now - 3_600_000,
-    })
-    const agent = makeAgent({ dreamStore: store, agentId })
-    const r = await agent.dream(agentId, now)
-    assert.ok(typeof r.sessionsProcessed === "number")
-    assert.ok(typeof r.insightsExtracted === "number")
-    assert.ok(typeof r.entriesAdded     === "number")
+    for (let i = 0; i < 5; i++) await s.upsert("a1", memoryRecord(`m-${i}`, `m${i}`))
+    assert.equal((await s.search("a1", {
+      scope: TEST_MEMORY_SCOPE,
+      query: "q",
+      top_k: 3,
+      kinds: [],
+    })).length, 3)
   })
 })

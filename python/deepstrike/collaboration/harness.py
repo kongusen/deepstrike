@@ -1,28 +1,27 @@
+"""Creator/verifier policies consumed by the shared AttemptLoop engine."""
+
 from __future__ import annotations
 
-import re
+import json
 from dataclasses import dataclass
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
-from deepstrike.collaboration.contract import (
-    VerificationContract,
-    ContractCheckResult,
-    format_contract_for_system_prompt,
-    contract_to_criteria_strings,
+from deepstrike._kernel import parse_verdict
+from deepstrike.collaboration.contract import ContractCheckResult, VerificationContract
+from deepstrike.collaboration.contract import format_contract_for_system_prompt
+from deepstrike.collaboration.handoff import HandoffArtifact
+from deepstrike.harness.harness import (
+    AttemptBodyContext,
+    AttemptBodyEvent,
+    AttemptBodyTerminal,
+    AttemptProgressEvent,
+    CriterionResult,
+    Verdict,
 )
-from deepstrike.collaboration.handoff import HandoffArtifact, HandoffBus, ContractOutcomeInput
-from deepstrike.runtime import collect_text
-import uuid
+from deepstrike.harness.judge import JudgeContext, JudgeResult
 
 if TYPE_CHECKING:
-    from deepstrike.collaboration.pool import AgentPool, CoordinatorConfig
-
-
-@dataclass
-class Violation:
-    criterion_id: str
-    text: str
-    detail: str
+    from deepstrike.collaboration.pool import AgentPool
 
 
 @dataclass
@@ -35,191 +34,86 @@ class ContractOutcome:
     handoff: HandoffArtifact
 
 
-@dataclass
-class ContractHarnessOptions:
-    max_attempts: int = 3
-    on_violation: Optional[Callable[[list[Violation]], None]] = None
-    coordinator: Optional["CoordinatorConfig"] = None
+class CreatorVerifierBody:
+    """Execution-only policy; verification belongs to StructuredContractJudge."""
 
-
-class ContractDrivenHarness:
-    """
-    Core multi-agent execution primitive.
-
-    Differs from HarnessLoop in three ways:
-      1. Executor and verifier are separate RuntimeRunner instances — no shared history.
-      2. Verifier receives only the artifact + contract, not the implementation transcript.
-      3. Feedback is a structured Violation list, not free-text.
-
-    Protocol per attempt:
-      executor.run(goal, contract) → artifact
-      verifier.run_isolated(artifact, contract) → audit text
-      parse audit → ContractCheckResult[]
-      all required pass → Done
-      violations remain → inject violation list into next executor goal
-    """
-
-    def __init__(
-        self,
-        pool: "AgentPool",
-        contract: VerificationContract,
-        options: Optional[ContractHarnessOptions] = None,
-    ) -> None:
+    def __init__(self, pool: "AgentPool", contract: VerificationContract) -> None:
         self._pool = pool
         self._contract = contract
-        self._opts = options or ContractHarnessOptions()
-        if self._opts.coordinator is not None:
-            self._pool.configure_coordinator(
-                self._opts.coordinator.opts,
-                self._opts.coordinator.session_id,
-            )
 
-    async def stream(self):
-        yield await self.run()
+    async def run(self, context: AttemptBodyContext):
+        contract_block = format_contract_for_system_prompt(self._contract)
+        result = await self._pool.execute(
+            "executor",
+            session_id=context.session_id,
+            goal=f"{contract_block}\n\n---\n\n{context.goal}",
+            context_input=context.context_input,
+            verification_contract_id=self._contract.id,
+        )
+        final = result.result.final_message
+        artifact = str(getattr(final, "content", "")) if final else ""
+        if artifact:
+            yield AttemptProgressEvent("token", {"text": artifact})
+        yield AttemptBodyTerminal(
+            run_status=result.result.termination,
+            result=artifact,
+            turns=result.result.turns_used,
+            total_tokens=result.result.total_tokens_used,
+            submitted_nodes=list(result.submitted_nodes),
+        )
 
-    async def run(self) -> ContractOutcome:
+
+class StructuredContractJudge:
+    """Accept only the shared structured verdict schema; free-text PASS/FAIL is invalid."""
+
+    def __init__(self, pool: "AgentPool", contract: VerificationContract) -> None:
+        self._pool = pool
+        self._contract = contract
+
+    async def judge(self, context: JudgeContext) -> JudgeResult:
         from deepstrike.collaboration.pool import IsolatedVerifierContext
 
-        artifact = ""
-        check_results: list[ContractCheckResult] = []
-        attempts_used = 0
-        current_goal = self._contract.goal
+        audit_text = await self._pool.run_verifier(
+            IsolatedVerifierContext(contract=self._contract, artifact=context.result)
+        )
+        wire = json.loads(audit_text)
+        if not isinstance(wire, dict):
+            raise ValueError("structured verifier output must be a JSON object")
+        parsed = parse_verdict(audit_text)
 
-        for attempt in range(1, self._opts.max_attempts + 1):
-            attempts_used = attempt
-
-            # Phase 1: Executor — sees contract + goal only
-            contract_block = format_contract_for_system_prompt(self._contract)
-            violation_note = ""
-            if attempt > 1:
-                violation_note = (
-                    "\n\n[Previous attempt failed. Violations to fix:\n"
-                    + self._format_violations_for_feedback(check_results)
-                    + "]"
-                )
-            executor_goal = f"{contract_block}\n\n---\n\n{current_goal}{violation_note}"
-
-            if self._pool.uses_spawn_path():
-                exec_result = await self._pool.spawn(
-                    "executor",
-                    executor_goal,
-                    verification_contract_id=self._contract.id,
-                )
-                final = exec_result.result.final_message
-                artifact = getattr(final, "content", "") if final else ""
-            else:
-                artifact = await collect_text(self._pool.get("executor").run(
-                    session_id=str(uuid.uuid4()),
-                    goal=executor_goal,
-                    criteria=contract_to_criteria_strings(self._contract),
-                ))
-
-            # Phase 2: Verifier — isolated context, no executor history
-            audit_text = await self._pool.run_verifier(
-                IsolatedVerifierContext(contract=self._contract, artifact=artifact)
+        parsed_details = list(parsed.details or [])
+        details: list[CriterionResult] = []
+        for criterion in self._contract.acceptance:
+            match = next(
+                (
+                    detail
+                    for detail in parsed_details
+                    if detail.criterion in {criterion.id, criterion.text}
+                ),
+                None,
             )
-
-            # Phase 3: Parse audit
-            check_results = self._parse_audit_text(audit_text)
-            violations = self._find_violations(check_results)
-
-            if not violations:
-                return ContractOutcome(
-                    success=True,
-                    artifact=artifact,
-                    check_results=check_results,
-                    attempts_used=attempts_used,
-                    total_tokens_consumed=0,
-                    handoff=HandoffBus.from_contract_outcome(
-                        ContractOutcomeInput(
-                            contract=self._contract,
-                            check_results=check_results,
-                            artifact=artifact,
-                            success=True,
-                        )
+            details.append(
+                CriterionResult(
+                    criterion=criterion.id,
+                    passed=bool(match.passed) if match else False,
+                    score=float(match.score) if match else 0.0,
+                    feedback=(
+                        str(match.feedback)
+                        if match
+                        else "criterion missing from structured verifier output"
                     ),
                 )
+            )
 
-            if self._opts.on_violation:
-                self._opts.on_violation(violations)
-
-        blocked_on = [
-            f"[{v.criterion_id}] {v.text}: {v.detail}"
-            for v in self._find_violations(check_results)
-        ]
-        return ContractOutcome(
-            success=False,
-            artifact=artifact,
-            check_results=check_results,
-            attempts_used=attempts_used,
-            total_tokens_consumed=0,
-            handoff=HandoffBus.from_contract_outcome(
-                ContractOutcomeInput(
-                    contract=self._contract,
-                    check_results=check_results,
-                    artifact=artifact,
-                    success=False,
-                    blocked_on=blocked_on,
-                )
-            ),
+        required_passed = all(
+            not criterion.required or details[index].passed
+            for index, criterion in enumerate(self._contract.acceptance)
         )
-
-    def _find_violations(self, results: list[ContractCheckResult]) -> list[Violation]:
-        violations = []
-        for result in results:
-            if not result.passed:
-                criterion = next(
-                    (c for c in self._contract.acceptance if c.id == result.criterion_id), None
-                )
-                if criterion and criterion.required:
-                    violations.append(Violation(
-                        criterion_id=result.criterion_id,
-                        text=criterion.text,
-                        detail=result.evidence or "no evidence provided",
-                    ))
-        return violations
-
-    def _format_violations_for_feedback(self, results: list[ContractCheckResult]) -> str:
-        return "\n".join(
-            f"- [{v.criterion_id}] {v.text}: {v.detail}"
-            for v in self._find_violations(results)
+        return JudgeResult(
+            verdict=Verdict(
+                passed=bool(parsed.passed) and required_passed,
+                overall_score=float(parsed.overall_score),
+                feedback=str(parsed.feedback),
+                details=details,
+            )
         )
-
-    def _parse_audit_text(self, audit_text: str) -> list[ContractCheckResult]:
-        results = []
-        lower = audit_text.lower()
-
-        for criterion in self._contract.acceptance:
-            escaped = re.escape(criterion.id)
-            pattern = re.compile(rf"\b{escaped}\b[^\n]*?(pass|fail)", re.IGNORECASE)
-            match = pattern.search(audit_text)
-
-            if match:
-                passed = match.group(1).lower() == "pass"
-                line_start = audit_text.rfind("\n", 0, match.start()) + 1
-                line_end = audit_text.find("\n", match.start())
-                evidence = audit_text[line_start: line_end if line_end > 0 else None].strip()
-                results.append(ContractCheckResult(
-                    criterion_id=criterion.id,
-                    passed=passed,
-                    evidence=evidence,
-                ))
-            else:
-                snippet = criterion.text.lower()[:30]
-                text_idx = lower.find(snippet)
-                if text_idx != -1:
-                    window = lower[text_idx: text_idx + 200]
-                    passed = "pass" in window and "fail" not in window
-                    results.append(ContractCheckResult(
-                        criterion_id=criterion.id,
-                        passed=passed,
-                        evidence="inferred from context",
-                    ))
-                else:
-                    results.append(ContractCheckResult(
-                        criterion_id=criterion.id,
-                        passed=False,
-                        evidence="criterion not mentioned in audit",
-                    ))
-
-        return results

@@ -41,7 +41,7 @@ runner = RuntimeRunner(RuntimeOptions(
 
 | Policy | Default |
 |--------|---------|
-| AttentionPolicy | `max_queue_size=64` |
+| SignalPolicy | `queue_max=64` |
 | GovernancePolicy | `pattern="*" action="allow"` |
 
 This is a basic "kernel primitives enabled" default, not a production safety boundary.
@@ -59,17 +59,17 @@ profile = assert_native_profile("native")
 - governance rules must be a list
 - rule pattern must be string
 - action must be `allow` / `deny` / `ask_user`
-- attention `max_queue_size` must be a positive integer
+- signal `queue_max` must be a positive integer; optional `ttl_ms` must also be positive
 
 ## Level 3: Custom OsProfile
 
 ```python
 from deepstrike import GovernancePolicy, GovernancePolicyRule, OsProfile
-from deepstrike.runtime.os_profile import AttentionPolicy
+from deepstrike.runtime.os_profile import SignalPolicy
 
 profile = OsProfile(
     id="review-safe",
-    attention_policy=AttentionPolicy(max_queue_size=32),
+    signal_policy=SignalPolicy(queue_max=32, ttl_ms=60_000),
     governance_policy=GovernancePolicy(
         default_action="ask_user",
         rules=[

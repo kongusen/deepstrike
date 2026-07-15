@@ -8,6 +8,7 @@ import {
   extractJsonValue,
   schemaInstruction,
 } from "../src/runtime/output-schema.js"
+import { scriptedKernelV2 } from "./helpers/scripted-kernel-v2.js"
 
 describe("validateAgainstSchema (supported subset)", () => {
   const schema = {
@@ -71,31 +72,27 @@ function node(agent_id: string) {
 /** Single-node workflow whose only node declares an output_schema; completes when node0 reports. */
 function makeFakeKernel() {
   const reply = (actions: unknown[], observations: unknown[]) =>
-    JSON.stringify({ version: 2, actions, observations })
+    ({ actions: actions as Array<Record<string, unknown>>, observations: observations as Array<Record<string, unknown>> })
   const spawn = {
     kind: "spawn_workflow",
     effect_id: "fake-workflow-spawn-1",
     nodes: [node("wf-node0")],
   }
-  return {
-    turn: () => 0,
-    step(input: string): string {
-      const { event } = JSON.parse(input) as { event: { kind: string; result?: { agent_id: string; result?: { termination?: string } } } }
-      if (event.kind === "load_workflow") return reply([spawn], [])
-      if (event.kind === "workflow_spawn_result") {
+  return scriptedKernelV2(event => {
+      const typedEvent = event as { kind: string; result?: { agent_id: string; result?: { termination?: string } } }
+      if (typedEvent.kind === "load_workflow") return reply([spawn], [])
+      if (typedEvent.kind === "workflow_spawn_result") {
         return reply([], [{ kind: "workflow_batch_spawned", nodes: spawn.nodes }])
       }
-      if (event.kind === "sub_agent_completed" && event.result?.agent_id === "wf-node0") {
-        const failed = event.result.result?.termination === "error"
+      if (typedEvent.kind === "sub_agent_completed" && typedEvent.result?.agent_id === "wf-node0") {
+        const failed = typedEvent.result.result?.termination === "error"
         return reply([], [{
           kind: "workflow_completed",
-          completed: failed ? [] : ["wf-node0"],
-          failed: failed ? ["wf-node0"] : [],
+          node_outcomes: [{ node_id: "wf-node0", status: failed ? "failed" : "completed" }],
         }])
       }
       return reply([], [])
-    },
-  }
+  })
 }
 
 function wire(runner: RuntimeRunner, kernel: unknown) {
@@ -126,7 +123,7 @@ describe("runWorkflow enforces output_schema", () => {
     const runner = new RuntimeRunner({ sessionLog: new InMemorySessionLog(), maxTokens: 8000, subAgentOrchestrator: orchestrator as never } as never)
     wire(runner, makeFakeKernel())
     const outcome = await runner.runWorkflow(spec)
-    expect(outcome.completed).toEqual(["wf-node0"])
+    expect(outcome.nodeOutcomes).toEqual([expect.objectContaining({ nodeId: "wf-node0", status: "completed" })])
     expect(goals).toHaveLength(1)
     expect(goals[0]).toContain(schemaInstruction(SCHEMA))
   })
@@ -154,7 +151,7 @@ describe("runWorkflow enforces output_schema", () => {
     wire(runner, makeFakeKernel())
     const outcome = await runner.runWorkflow(spec)
     expect(calls).toBe(2)
-    expect(outcome.completed).toEqual(["wf-node0"])
+    expect(outcome.nodeOutcomes).toEqual([expect.objectContaining({ nodeId: "wf-node0", status: "completed" })])
   })
 
   it("fails the node when output never conforms (after the retry)", async () => {
@@ -177,7 +174,7 @@ describe("runWorkflow enforces output_schema", () => {
     wire(runner, makeFakeKernel())
     const outcome = await runner.runWorkflow(spec)
     expect(calls).toBe(2) // tried, retried, still invalid
-    expect(outcome.failed).toEqual(["wf-node0"])
+    expect(outcome.nodeOutcomes).toEqual([expect.objectContaining({ nodeId: "wf-node0", status: "failed" })])
   })
 
   it("uses the SDK-configured validation attempt bound", async () => {
@@ -205,7 +202,7 @@ describe("runWorkflow enforces output_schema", () => {
     wire(runner, makeFakeKernel())
     const outcome = await runner.runWorkflow(spec)
     expect(calls).toBe(3)
-    expect(outcome.failed).toEqual(["wf-node0"])
+    expect(outcome.nodeOutcomes).toEqual([expect.objectContaining({ nodeId: "wf-node0", status: "failed" })])
   })
 
   it("rejects an unsafe validation attempt bound", () => {

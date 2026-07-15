@@ -13,8 +13,8 @@ pub enum SignalDisposition {
     Run,
     Interrupt,
     InterruptNow,
-    /// Router accepted the signal but the queue is full; signal was dropped.
-    /// SDK should surface this for backpressure handling.
+    /// Router rejected the signal because the bounded queue could not admit or displace an entry.
+    /// Its dedupe key is not committed, so the SDK may safely retry after applying backpressure.
     Dropped,
 }
 
@@ -42,4 +42,3 @@ pub enum GovernanceVerdict {
     RateLimited { retry_after_ms: u64 },
     AskUser { reason: String },
 }
-

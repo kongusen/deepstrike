@@ -65,7 +65,11 @@ pub fn parse_json_skill(path: &Path) -> Option<SkillMetadata> {
     }
     // P1-B: `allowed_tools` JSON array → declared tool ids for skill gating.
     if let Some(tools) = v["allowed_tools"].as_array() {
-        meta.allowed_tools = tools.iter().filter_map(|t| t.as_str()).map(Into::into).collect();
+        meta.allowed_tools = tools
+            .iter()
+            .filter_map(|t| t.as_str())
+            .map(Into::into)
+            .collect();
     }
     Some(meta)
 }
@@ -74,7 +78,10 @@ pub fn parse_json_skill(path: &Path) -> Option<SkillMetadata> {
 ///
 /// Variables are substituted using `{{key}}` syntax; unmatched placeholders are
 /// left as-is so the LLM can see what was missing.
-pub fn execute_json_skill(path: &Path, args: &HashMap<String, serde_json::Value>) -> (String, bool) {
+pub fn execute_json_skill(
+    path: &Path,
+    args: &HashMap<String, serde_json::Value>,
+) -> (String, bool) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => return (format!("error: could not read skill file: {e}"), true),
@@ -110,7 +117,12 @@ pub fn parse_python_skill(path: &Path) -> Option<SkillMetadata> {
     }
     // P1-B: `# allowed_tools: a, b` comment → declared tool ids for skill gating.
     if let Some(t) = extract_py_meta(&content, "allowed_tools") {
-        meta.allowed_tools = t.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).map(Into::into).collect();
+        meta.allowed_tools = t
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(Into::into)
+            .collect();
     }
     Some(meta)
 }
@@ -192,12 +204,18 @@ pub async fn execute_python_skill(
     let stderr_pipe = child.stderr.take().expect("stderr was piped");
     let read_out = tokio::spawn(async move {
         let mut buf = Vec::new();
-        tokio::io::BufReader::new(stdout_pipe).read_to_end(&mut buf).await.ok();
+        tokio::io::BufReader::new(stdout_pipe)
+            .read_to_end(&mut buf)
+            .await
+            .ok();
         buf
     });
     let read_err = tokio::spawn(async move {
         let mut buf = Vec::new();
-        tokio::io::BufReader::new(stderr_pipe).read_to_end(&mut buf).await.ok();
+        tokio::io::BufReader::new(stderr_pipe)
+            .read_to_end(&mut buf)
+            .await
+            .ok();
         buf
     });
 
@@ -234,7 +252,14 @@ pub async fn execute_python_skill(
         combined.extend_from_slice(b"\n[output truncated]");
     }
     let text = String::from_utf8_lossy(&combined).into_owned();
-    (if text.is_empty() { "(no output)".into() } else { text }, is_error)
+    (
+        if text.is_empty() {
+            "(no output)".into()
+        } else {
+            text
+        },
+        is_error,
+    )
 }
 
 // ── Template engine ───────────────────────────────────────────────────────────
@@ -304,8 +329,9 @@ pub fn scan_skill_dir(dir: &Path) -> Vec<SkillMetadata> {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     let mut meta = SkillMetadata::new(name.clone(), parse_md_description(&content));
                     // P1-B: `allowed_tools: a, b` (or `[a, b]`) frontmatter line → declared tool ids.
-                    if let Some(line) =
-                        content.lines().find(|l| l.trim_start().starts_with("allowed_tools:"))
+                    if let Some(line) = content
+                        .lines()
+                        .find(|l| l.trim_start().starts_with("allowed_tools:"))
                     {
                         let raw = line.splitn(2, ':').nth(1).unwrap_or("");
                         meta.allowed_tools = raw
@@ -358,9 +384,18 @@ mod tests {
 
     #[test]
     fn skill_kind_from_extension() {
-        assert_eq!(SkillKind::from_path(Path::new("a.md")), Some(SkillKind::Prompt));
-        assert_eq!(SkillKind::from_path(Path::new("b.json")), Some(SkillKind::ComputeJson));
-        assert_eq!(SkillKind::from_path(Path::new("c.py")), Some(SkillKind::PythonScript));
+        assert_eq!(
+            SkillKind::from_path(Path::new("a.md")),
+            Some(SkillKind::Prompt)
+        );
+        assert_eq!(
+            SkillKind::from_path(Path::new("b.json")),
+            Some(SkillKind::ComputeJson)
+        );
+        assert_eq!(
+            SkillKind::from_path(Path::new("c.py")),
+            Some(SkillKind::PythonScript)
+        );
         assert_eq!(SkillKind::from_path(Path::new("d.ts")), None);
         assert_eq!(SkillKind::from_path(Path::new("noext")), None);
     }
@@ -385,7 +420,10 @@ mod tests {
     fn extract_py_meta_parses_comment_lines() {
         let src = "# name: my_skill\n# description: Does stuff\nimport os\n";
         assert_eq!(extract_py_meta(src, "name").as_deref(), Some("my_skill"));
-        assert_eq!(extract_py_meta(src, "description").as_deref(), Some("Does stuff"));
+        assert_eq!(
+            extract_py_meta(src, "description").as_deref(),
+            Some("Does stuff")
+        );
         assert_eq!(extract_py_meta(src, "missing"), None);
     }
 

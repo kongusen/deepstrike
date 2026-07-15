@@ -11,7 +11,7 @@
 //!
 //! **History (0.5.0 fold, OS-axis #6).** This replaces the former `EvalPipeline` state machine +
 //! its public SDK class. The quality gate is now expressed on the workflow substrate: the iterative
-//! retry-with-feedback loop is driven by the SDK `HarnessLoop` (the kernel `NodeKind::Loop` re-arms
+//! retry-with-feedback loop is driven by the SDK `AttemptLoop` (the kernel `NodeKind::Loop` re-arms
 //! a single node, so per-iteration eval cannot be a static DAG), and the declarative
 //! "loop-the-worker-then-verify-with-a-structured-verdict" shape is the `gen_eval` template. Both
 //! reuse these primitives, so the verdict shape stays consistent across the two paths.

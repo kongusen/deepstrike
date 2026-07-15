@@ -226,15 +226,18 @@ export function kernelObservationToSessionEvent(
       return {
         kind: "memory_written" as const,
         turn: t,
-        memory_id: obs.memory_id ?? "",
+        record_id: obs.record_id ?? "",
+        scope: obs.scope ?? { tenant_id: "", namespace: "" },
         memory_kind: obs.memory_kind ?? "",
+        name: obs.name ?? "",
         size_bytes: obs.size_bytes ?? 0,
       }
     case "memory_queried":
       return {
         kind: "memory_queried" as const,
         turn: t,
-        query_context: obs.query_context ?? "",
+        scope: obs.scope ?? { tenant_id: "", namespace: "" },
+        query: obs.query ?? "",
         requested_k: obs.requested_k ?? 0,
         requires_async_response: obs.requires_async_response ?? false,
       }
@@ -242,7 +245,7 @@ export function kernelObservationToSessionEvent(
       return {
         kind: "memory_validation_failed" as const,
         turn: t,
-        memory_id: obs.memory_id ?? "",
+        record_id: obs.record_id ?? "",
         error: obs.error ?? "",
       }
     case "workflow_batch_spawned": {
@@ -255,14 +258,12 @@ export function kernelObservationToSessionEvent(
       }
     }
     case "workflow_completed": {
-      const completed = (obs as any).completed ?? []
-      const failed = (obs as any).failed ?? []
+      const nodeOutcomes = (obs as any).node_outcomes ?? []
       return {
         kind: "workflow_completed" as const,
         turn: t,
-        completed,
-        failed,
-        total_nodes: completed.length + failed.length,
+        node_outcomes: nodeOutcomes,
+        total_nodes: nodeOutcomes.length,
       }
     }
     default:

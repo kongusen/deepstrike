@@ -1,20 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 from deepstrike.collaboration.contract import ContractCheckResult, VerificationContract
-
-if TYPE_CHECKING:
-    from deepstrike.memory.protocols import DreamResult
-
 
 @dataclass
 class HandoffArtifact:
     """
     Structured state passed between sprints / agent instances.
 
-    Every handoff path (context renewal, sub-agent completion, dream consolidation)
+    Every handoff path (context renewal and sub-agent completion)
     produces a HandoffArtifact so the next agent knows not only *what was done*
     but *what has been proven*.
     """
@@ -85,22 +81,6 @@ class HandoffBus:
             goal=goal,
             sprint=sprint,
             progress_summary=final_message[:500],
-        )
-
-    @staticmethod
-    def from_dream(
-        *,
-        goal: str,
-        dream_result: "DreamResult",
-        sprint: int = 1,
-    ) -> HandoffArtifact:
-        return HandoffArtifact(
-            goal=goal,
-            sprint=sprint,
-            progress_summary=(
-                f"Memory consolidated: {dream_result.entries_added} added, "
-                f"{dream_result.entries_removed} removed."
-            ),
         )
 
     @staticmethod

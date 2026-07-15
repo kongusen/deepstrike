@@ -267,7 +267,13 @@ fn validate_value(
                             Some(sub @ Value::Object(_)) => {
                                 // 用子 schema 递归校验每个额外键的值（也会 auto-cast / 补默认）
                                 if let Some(child) = obj.get_mut(&k) {
-                                    validate_value(sub, child, &format!("{path}.{k}"), false, repaired)?;
+                                    validate_value(
+                                        sub,
+                                        child,
+                                        &format!("{path}.{k}"),
+                                        false,
+                                        repaired,
+                                    )?;
                                 }
                             }
                             _ => {
@@ -439,10 +445,17 @@ pub struct ToolEnvelopeFail {
 }
 
 pub fn ok(data: impl Into<Option<Value>>) -> ToolEnvelope {
-    ToolEnvelope::Ok(ToolEnvelopeOk { success: true, data: data.into() })
+    ToolEnvelope::Ok(ToolEnvelopeOk {
+        success: true,
+        data: data.into(),
+    })
 }
 
-pub fn fail(code: impl Into<String>, error: impl Into<String>, hint: Option<String>) -> ToolEnvelope {
+pub fn fail(
+    code: impl Into<String>,
+    error: impl Into<String>,
+    hint: Option<String>,
+) -> ToolEnvelope {
     ToolEnvelope::Fail(ToolEnvelopeFail {
         success: false,
         code: code.into(),
@@ -454,7 +467,11 @@ pub fn fail(code: impl Into<String>, error: impl Into<String>, hint: Option<Stri
 /// Build a coded tool-failure `Error` (parity with Node `new ToolError(message, {code, hint})`).
 /// Throwing this from a `safe_tool` body produces `{success:false, code, error, hint?}`; thrown
 /// from a classic `tool()` body, the catch site formats it via `format_tool_error` as JSON.
-pub fn tool_fail(message: impl Into<String>, code: Option<String>, hint: Option<String>) -> crate::Error {
+pub fn tool_fail(
+    message: impl Into<String>,
+    code: Option<String>,
+    hint: Option<String>,
+) -> crate::Error {
     crate::Error::ToolFail {
         output: message.into(),
         code,
@@ -489,7 +506,9 @@ where
                 Ok(SafeToolResult::Data(v)) => ok(Some(v)),
                 Err(e) => {
                     let env = match &e {
-                        crate::Error::ToolFail { output, code, hint, .. } => fail(
+                        crate::Error::ToolFail {
+                            output, code, hint, ..
+                        } => fail(
                             code.clone().unwrap_or_else(|| "internal".to_string()),
                             output.clone(),
                             hint.clone(),
@@ -514,10 +533,14 @@ pub enum SafeToolResult {
 }
 
 impl From<ToolEnvelope> for SafeToolResult {
-    fn from(e: ToolEnvelope) -> Self { Self::Envelope(e) }
+    fn from(e: ToolEnvelope) -> Self {
+        Self::Envelope(e)
+    }
 }
 impl From<Value> for SafeToolResult {
-    fn from(v: Value) -> Self { Self::Data(v) }
+    fn from(v: Value) -> Self {
+        Self::Data(v)
+    }
 }
 
 pub fn read_file_tool() -> RegisteredTool {

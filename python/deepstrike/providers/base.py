@@ -314,6 +314,13 @@ def cache_hit_rate(usage: Any) -> float:
 
 
 @dataclass
+class ContextBudgetOverflow:
+    kind: str
+    required_tokens: int
+    max_tokens: int
+
+
+@dataclass
 class RenderedContext:
     system_text: str = ""
     turns: list[Message] = field(default_factory=list)
@@ -330,6 +337,9 @@ class RenderedContext:
     # next compaction). The Anthropic provider pins a deep cache breakpoint here and
     # rolls the other at the tail; None ⇒ rolling-pair fallback.
     frozen_prefix_len: "int | None" = None
+    # Fail-closed evidence from the kernel renderer. Provider effects are never emitted with this
+    # set; direct projections expose it so hosts cannot mistake an invalid context for a sendable one.
+    budget_overflow: "ContextBudgetOverflow | None" = None
 
 
 # Opaque per-run state owned by the provider (e.g. OpenAI Responses continuation).
@@ -428,4 +438,3 @@ class ThinkingTagStreamExtractor:
         if self.buffer:
             yield {"type": "thinking" if self.in_thinking else "text", "content": self.buffer}
             self.buffer = ""
-

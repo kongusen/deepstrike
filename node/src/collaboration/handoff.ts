@@ -1,13 +1,11 @@
 import type { ContractCheckResult, VerificationContract } from "./contract.js"
-import type { DreamResult } from "../memory/protocols.js"
 
 /**
  * HandoffArtifact — the single exchange token between sprints and agent instances.
  *
  * All handoff paths converge here:
- *   - ContractDrivenHarness completion  → HandoffBus.fromContractOutcome()
+ *   - CreatorVerifier AttemptLoop completion → HandoffBus.fromContractOutcome()
  *   - Sub-agent completion              → HandoffBus.fromSubAgentResult()
- *   - Dream consolidation               → HandoffBus.fromDream()
  *   - Context renewal (kernel)          → carried in kernel's HandoffArtifact type
  *
  * The invariant: a HandoffArtifact tells the next agent not only *what was done*
@@ -44,7 +42,7 @@ export interface ContractOutcomeInput {
  */
 export class HandoffBus {
   /**
-   * Build a HandoffArtifact from a ContractDrivenHarness outcome.
+   * Build a HandoffArtifact from a creator-verifier AttemptLoop outcome.
    * The artifact field is used as the progress summary.
    */
   static fromContractOutcome(input: ContractOutcomeInput): HandoffArtifact {
@@ -82,27 +80,6 @@ export class HandoffBus {
       goal: opts.goal,
       sprint: opts.sprint ?? 1,
       progressSummary: opts.finalMessage.slice(0, 500),
-      openTasks: [],
-      contractStatus: [],
-      driftRate24h: 0,
-      blockedOn: [],
-    }
-  }
-
-  /**
-   * Build a HandoffArtifact from a dream consolidation result.
-   * Used when the idle pipeline produces new memories that should be
-   * carried into the next sprint's context.
-   */
-  static fromDream(opts: {
-    goal: string
-    dreamResult: DreamResult
-    sprint?: number
-  }): HandoffArtifact {
-    return {
-      goal: opts.goal,
-      sprint: opts.sprint ?? 1,
-      progressSummary: `Memory consolidated: ${opts.dreamResult.entriesAdded} added, ${opts.dreamResult.entriesRemoved} removed.`,
       openTasks: [],
       contractStatus: [],
       driftRate24h: 0,

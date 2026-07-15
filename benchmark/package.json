@@ -7,6 +7,8 @@
   "scripts": {
     "bench": "node cli/bench.mjs",
     "diff": "node cli/diff.mjs",
-    "list": "node cli/bench.mjs list"
+    "list": "node cli/bench.mjs list",
+    "capability": "node capability/cli/capability.mjs",
+    "capability:list": "node capability/cli/capability.mjs list"
   }
 }

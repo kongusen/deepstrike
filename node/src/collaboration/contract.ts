@@ -77,7 +77,7 @@ export class ContractBuilder {
 
 /**
  * Render the contract as a markdown block for injection into a system prompt.
- * Used by ContractDrivenHarness to inject into the executor's system partition.
+ * Used by CreatorVerifierBody to inject into the executor's system partition.
  */
 export function formatContractForSystemPrompt(contract: VerificationContract): string {
   const lines: string[] = [
@@ -106,7 +106,7 @@ export function formatContractForSystemPrompt(contract: VerificationContract): s
   return lines.join("\n")
 }
 
-/** Derive a flat string[] of criterion texts for the existing HarnessLoop criteria API. */
+/** Derive a flat string[] of criterion texts for RuntimeRunner criteria input. */
 export function contractToCriteriaStrings(contract: VerificationContract): string[] {
   return contract.acceptance.map(c => c.text)
 }

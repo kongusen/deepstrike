@@ -1,5 +1,6 @@
 from .base import (
     LLMProvider,
+    ContextBudgetOverflow,
     RenderedContext,
     ProviderRunState,
     RuntimePolicy,
@@ -52,7 +53,7 @@ from .glm import GLMProvider, GLMAnthropicProvider
 from .factories import deepseek, kimi, qwen, glm, minimax, gemini, ollama
 
 __all__ = [
-    "LLMProvider", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
+    "LLMProvider", "ContextBudgetOverflow", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
     "OpenAIResponsesProvider", "OpenAIResponsesAdapter",
     # Backend factories (one per backend; `protocol=` selects the wire where a backend speaks both):
     "deepseek", "kimi", "qwen", "glm", "minimax", "gemini", "ollama",

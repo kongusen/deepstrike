@@ -10,8 +10,12 @@ export interface RuntimeSignal {
   dedupeKey?: string
   /** Target a specific session loop. Omitted means a shared item consumed by one eligible puller. */
   recipient?: string
-  /** Optional pub/sub topic (carried through; multi-subscriber routing deferred). */
-  topic?: string
+  /** Absolute journal-clock deadline for optional urgency escalation. */
+  deadlineMs?: number
+  /** Merge with an unconsumed queued signal carrying the same key. */
+  coalesceKey?: string
+  /** Number of host signals deterministically represented by this signal. */
+  coalescedCount?: number
 }
 
 export interface SignalSource {

@@ -88,5 +88,5 @@ async def test_critical_signal_preempts_running_workflow_node():
 
     # The running node's task was cancelled mid-flight and the workflow torn down.
     assert orch.cancelled is True
-    assert "wf-node0" in outcome["failed"]
+    assert "wf-node0" in [n.node_id for n in outcome.node_outcomes if n.status == "failed"]
     assert any(o.get("kind") == "agent_preempted" for o in runner._pending_observations)

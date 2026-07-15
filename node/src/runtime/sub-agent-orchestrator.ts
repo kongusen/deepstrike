@@ -10,6 +10,7 @@ import { FilteredExecutionPlane } from "./filtered-plane.js"
 import { WorktreeExecutionPlane } from "./worktree-plane.js"
 import type { ExecutionPlane } from "./execution-plane.js"
 import { durableKernelApply, type KernelObservation } from "./kernel-step.js"
+import type { AttemptOutcome } from "../harness/harness.js"
 
 export interface SubAgentRunContext {
   parentOpts: RuntimeOptions
@@ -36,6 +37,8 @@ export interface SubAgentRunContext {
    *  `InterruptNow` → `AgentPreempted`), the orchestrator interrupts the child runner, cancelling its
    *  in-flight LLM call. */
   abortSignal?: AbortSignal
+  /** AttemptLoop carry material; injected through the child's journaled signal channel. */
+  contextInput?: string
 }
 
 function terminationFromStatus(status: string): TerminationReason | string {
@@ -183,6 +186,7 @@ export class SubAgentOrchestrator {
   async *stream(ctx: SubAgentRunContext): AsyncIterable<StreamEvent> {
     const { childRunner, inheritEvents, cleanupWorktree } = await this.buildChild(ctx)
     try {
+      if (ctx.contextInput) childRunner.injectNote(ctx.contextInput)
       yield* childRunner.run({
         sessionId: ctx.spec.identity.sessionId,
         goal: ctx.spec.goal,
@@ -195,34 +199,31 @@ export class SubAgentOrchestrator {
 
   async run(ctx: SubAgentRunContext): Promise<SubAgentResult> {
     if (ctx.harness) {
-      const { HarnessLoop } = await import("../harness/harness.js")
-      // W-N4: same construction as the direct path — the harness child now honors the inherited
-      // system prompt (`system_only`). NOTE: `full` inheritance is NOT consumable under a harness
-      // (HarnessLoop mints its own per-attempt session ids, so parent events can't be replayed) —
-      // the inherited events are dropped here by construction, not by drift.
-      const { childRunner, cleanupWorktree } = await this.buildChild(ctx)
-      const loop = new HarnessLoop(childRunner, ctx.harness.evalProvider, {
-        maxAttempts: ctx.harness.maxAttempts ?? 3,
+      const { AttemptLoop, RuntimeAttemptBody } = await import("../harness/harness.js")
+      const { LlmEvalJudge } = await import("../harness/judge.js")
+      const { childRunner, inheritEvents, cleanupWorktree } = await this.buildChild(ctx)
+      if (ctx.contextInput) childRunner.injectNote(ctx.contextInput)
+      const loop = new AttemptLoop({
+        body: new RuntimeAttemptBody(childRunner),
+        judge: new LlmEvalJudge(ctx.harness.evalProvider, false),
+        stop: { maxAttempts: ctx.harness.maxAttempts ?? 3 },
       })
-      let outcome
+      let outcome: AttemptOutcome
       try {
         outcome = await loop.run({
+          sessionId: ctx.spec.identity.sessionId,
           goal: ctx.spec.goal,
           criteria: (ctx.spec.milestones?.phases.flatMap(p => p.criteria) ?? [])
             .filter((t): t is string => typeof t === "string")
             .map(text => ({ text, required: true })),
+          inheritEvents,
         })
       } finally {
         await cleanupWorktree()
       }
       return {
         agentId: ctx.spec.identity.agentId,
-        result: {
-          termination: outcome.passed ? "completed" : "error",
-          turnsUsed: outcome.iterations,
-          totalTokensUsed: outcome.totalTokens,
-          ...(outcome.result ? { finalMessage: { role: "assistant" as const, content: outcome.result, toolCalls: [] } } : {}),
-        },
+        result: attemptOutcomeToLoopResult(outcome),
         // R3-1: surface nodes the agent submitted under the harness so `runWorkflow` appends them.
         ...(outcome.submittedNodes?.length ? { submittedNodes: outcome.submittedNodes } : {}),
       }
@@ -260,12 +261,40 @@ export class SubAgentOrchestrator {
 
 export const defaultSubAgentOrchestrator = new SubAgentOrchestrator()
 
+export function attemptOutcomeToLoopResult(outcome: AttemptOutcome): LoopResult {
+  // H4: the run-health axis survives independently from the judge axis. A one-shot judge reject
+  // is a healthy completion carrying verdict=false; only exhausting the retry policy promotes the
+  // harness-level failure to a workflow error. A body run_error keeps its concrete kernel
+  // termination when valid, and normalizes non-kernel statuses (for example invalid_arg) to error.
+  const runTermination = terminationFromStatus(outcome.runStatus)
+  const termination = outcome.outcome === "exhausted"
+    ? "error"
+    : outcome.outcome === "run_error" && runTermination !== "error" && runTermination !== "user_abort"
+      ? "error"
+      : runTermination
+  return {
+    termination,
+    ...(outcome.result
+      ? { finalMessage: { role: "assistant" as const, content: outcome.result, toolCalls: [] } }
+      : {}),
+    turnsUsed: outcome.turns,
+    totalTokensUsed: outcome.totalTokens,
+    attempt: {
+      outcome: outcome.outcome,
+      runStatus: outcome.runStatus,
+      attempts: outcome.attempts,
+      ...(outcome.verdict ? { verdict: outcome.verdict } : {}),
+    },
+  }
+}
+
 /** Kernel spawn without an active parent run loop (harness / coordinator use). */
 export async function spawnStandalone(
   parentOpts: RuntimeOptions,
   parentSessionId: string,
   spec: AgentRunSpec,
   orchestrator: SubAgentOrchestrator = defaultSubAgentOrchestrator,
+  contextInput?: string,
 ): Promise<SubAgentResult> {
   const kernel = (await import("../kernel.js")).getKernel()
   const runtime = new kernel.KernelRuntime({
@@ -312,5 +341,6 @@ export async function spawnStandalone(
     spec,
     manifest,
     sessionLog: parentOpts.sessionLog,
+    ...(contextInput ? { contextInput } : {}),
   })
 }

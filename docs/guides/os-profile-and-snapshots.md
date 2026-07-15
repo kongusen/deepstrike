@@ -41,7 +41,7 @@ runner = RuntimeRunner(RuntimeOptions(
 
 | 策略 | 默认 |
 |------|------|
-| AttentionPolicy | `max_queue_size=64` |
+| SignalPolicy | `queue_max=64` |
 | GovernancePolicy | `pattern="*" action="allow"` |
 
 它提供的是“内核原语可用”的基础默认，不是生产安全策略。
@@ -59,17 +59,17 @@ profile = assert_native_profile("native")
 - governance rules 必须是 list
 - rule pattern 必须是 string
 - action 只能是 `allow` / `deny` / `ask_user`
-- attention `max_queue_size` 必须是正整数
+- signal `queue_max` 必须是正整数；可选 `ttl_ms` 也必须为正整数
 
 ## Level 3：自定义 OsProfile
 
 ```python
 from deepstrike import GovernancePolicy, GovernancePolicyRule, OsProfile
-from deepstrike.runtime.os_profile import AttentionPolicy
+from deepstrike.runtime.os_profile import SignalPolicy
 
 profile = OsProfile(
     id="review-safe",
-    attention_policy=AttentionPolicy(max_queue_size=32),
+    signal_policy=SignalPolicy(queue_max=32, ttl_ms=60_000),
     governance_policy=GovernancePolicy(
         default_action="ask_user",
         rules=[

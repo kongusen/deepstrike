@@ -1,6 +1,6 @@
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
@@ -23,23 +23,22 @@ impl SkillWatcher {
         let version = Arc::new(AtomicU64::new(0));
         let version2 = Arc::clone(&version);
 
-        let mut watcher =
-            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-                let Ok(event) = res else { return };
-                let is_relevant = matches!(
-                    event.kind,
-                    EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-                ) && event.paths.iter().any(|p| {
-                    matches!(
-                        p.extension().and_then(|e| e.to_str()),
-                        Some("md") | Some("json") | Some("py")
-                    )
-                });
-                if is_relevant {
-                    version2.fetch_add(1, Ordering::Relaxed);
-                }
-            })
-            .ok()?;
+        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            let Ok(event) = res else { return };
+            let is_relevant = matches!(
+                event.kind,
+                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+            ) && event.paths.iter().any(|p| {
+                matches!(
+                    p.extension().and_then(|e| e.to_str()),
+                    Some("md") | Some("json") | Some("py")
+                )
+            });
+            if is_relevant {
+                version2.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .ok()?;
 
         watcher.watch(dir, RecursiveMode::NonRecursive).ok()?;
 

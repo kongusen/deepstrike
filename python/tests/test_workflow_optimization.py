@@ -72,7 +72,7 @@ def test_w1_recorded_classify_branch_reprunes_rejected_branch_on_resume():
         },
         "parent_session_id": "sess",
         # W-1: the signal-carrying record — the classifier chose "a" pre-crash.
-        "resumed_results": [{"agent_id": "wf-node0", "classify_branch": "a"}],
+        "resumed_outcomes": [{"agent_id": "wf-node0", "status": "completed", "termination": "completed", "classify_branch": "a"}],
     })
     # Only the chosen branch spawns; the rejected branch stays pruned across resume.
     batch = _batch_of(out)
@@ -196,7 +196,7 @@ async def test_trusted_workflow_node_can_call_parent_registered_tools():
     outcome = await runner.run_workflow(WorkflowSpec(nodes=[
         WorkflowNodeSpec(task="use the ping tool once, then stop", role="implement"),
     ]))
-    assert outcome["completed"] == ["wf-node0"]
+    assert [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")] == ["wf-node0"]
     assert pings["n"] == 1  # pre-W-N1 this was 0: the missing grant list ran every node TOOL-LESS
 
 
@@ -208,7 +208,7 @@ async def test_quarantined_workflow_node_stays_deny_all_filtered():
         WorkflowNodeSpec(task="try the ping tool", role="explore",
                          isolation="read_only", trust="quarantined"),
     ]))
-    assert outcome["completed"] == ["wf-node0"]
+    assert [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")] == ["wf-node0"]
     assert pings["n"] == 0  # untrusted-content reader: no tool reaches the host
 
 
@@ -255,7 +255,7 @@ async def test_pace_continue_then_stop_drives_iterations_on_one_stable_session()
         ]),
         session_id="wfloop",
     )
-    assert outcome["completed"] == ["wf-node0"]
+    assert [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")] == ["wf-node0"]
     # The pace verb ended the loop at 2 iterations, well before max_iters=5.
     loop_session = await session_log.read("wfloop-wf-node0")
     starts = [e for e in loop_session if e.event.get("kind") == "run_started"]
@@ -288,7 +288,7 @@ async def test_iteration_that_never_paces_completes_the_loop():
         ]),
         session_id="wfsilent",
     )
-    assert outcome["completed"] == ["wf-node0"]
+    assert [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")] == ["wf-node0"]
     # default_action=stop: exactly ONE iteration ran (the kernel's pace fallback said stop).
     starts = [e for e in await session_log.read("wfsilent-wf-node0") if e.event.get("kind") == "run_started"]
     assert len(starts) == 1

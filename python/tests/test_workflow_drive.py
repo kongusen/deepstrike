@@ -18,6 +18,7 @@ from deepstrike import (
 )
 from deepstrike._kernel import KernelRuntime, LoopPolicy
 from deepstrike.runtime.kernel_step import kernel_action, kernel_apply, kernel_maybe_action
+from deepstrike.runtime.session_repair import RecoveredNodeOutcome
 
 
 def _start_runtime(runtime: KernelRuntime) -> None:
@@ -56,6 +57,7 @@ def test_workflow_spec_to_kernel_shape():
         "role": "explore",
         "isolation": "read_only",
         "context_inheritance": "system_only",
+        "dep_policy": "all_success",
     }
     assert k["nodes"][1]["task"] == {"goal": "synth", "criteria": ["merge"]}
     assert k["nodes"][1]["depends_on"] == [0]
@@ -102,7 +104,7 @@ async def test_standalone_workflow_charges_node_count_to_group():
     ])
     outcome = await runner.run_workflow(spec)
 
-    assert sorted(outcome["completed"]) == ["wf-node0", "wf-node1"]
+    assert sorted([n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]) == ["wf-node0", "wf-node1"]
     ledger = await store.read("wf-group")
     assert ledger.subagents_spawned >= 2  # gap-a: the 2 nodes are counted as cumulative spawns
     assert len(await store.members("wf-group")) >= 1  # standalone workflow session joined (lineage)
@@ -132,14 +134,14 @@ async def test_run_workflow_drives_fanout_to_completion():
     ])
     outcome = await runner.run_workflow(spec)
 
-    assert sorted(outcome["completed"]) == ["wf-node0", "wf-node1", "wf-node2"]
-    assert outcome["failed"] == []
+    assert sorted([n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]) == ["wf-node0", "wf-node1", "wf-node2"]
+    assert [n.node_id for n in outcome.node_outcomes if n.status == "failed"] == []
     # Workers ran first (parallel), then synth — all goals were dispatched.
     assert sorted(orch.goals) == ["synth", "w0", "w1"]
     assert orch.goals[-1] == "synth"  # synth only after both workers
 from deepstrike.runtime.session_repair import (
     build_workflow_node_completed_event,
-    recover_completed_workflow_nodes,
+    recover_workflow_node_outcomes,
 )
 
 
@@ -147,6 +149,7 @@ def test_build_workflow_node_completed_event_shape():
     event = build_workflow_node_completed_event(
         turn=5,
         agent_id="wf-node3",
+        status="completed",
         termination="completed",
     )
     assert event["kind"] == "workflow_node_completed"
@@ -155,29 +158,30 @@ def test_build_workflow_node_completed_event_shape():
     assert event["termination"] == "completed"
 
 
-def test_recover_completed_workflow_nodes_extracts_completed():
+def test_recover_workflow_node_outcomes_extracts_completed():
     from deepstrike.runtime.session_log import SessionEntry
 
     events = [
         SessionEntry(seq=0, event={"kind": "run_started", "run_id": "s1", "goal": "test", "criteria": []}),
         SessionEntry(seq=1, event=build_workflow_node_completed_event(
-            turn=1, agent_id="wf-node0", termination="completed", classify_branch="a", output="picked a",
+            turn=1, agent_id="wf-node0", status="completed", termination="completed", classify_branch="a",
         )),
-        SessionEntry(seq=2, event=build_workflow_node_completed_event(turn=2, agent_id="wf-node1", termination="failed")),
-        SessionEntry(seq=3, event=build_workflow_node_completed_event(turn=3, agent_id="wf-node2", termination="completed")),
+        SessionEntry(seq=2, event=build_workflow_node_completed_event(turn=2, agent_id="wf-node1", status="failed", termination="error")),
+        SessionEntry(seq=3, event=build_workflow_node_completed_event(turn=3, agent_id="wf-node2", status="completed_partial", termination="timeout")),
         SessionEntry(seq=4, event={"kind": "run_terminal", "reason": "done", "turns_used": 3, "total_tokens": 10}),
     ]
-    completed = recover_completed_workflow_nodes(events)
+    completed = recover_workflow_node_outcomes(events)
     # W-1: records (not bare ids) — signals + output ride along for faithful control-flow replay.
-    assert [r.agent_id for r in completed] == ["wf-node0", "wf-node2"]
+    assert [r.agent_id for r in completed] == ["wf-node0", "wf-node1", "wf-node2"]
     assert completed[0].classify_branch == "a"
-    assert completed[0].output == "picked a"
-    assert completed[1].classify_branch is None and completed[1].output is None
+    assert completed[0].status == "completed"
+    assert completed[1].status == "failed"
+    assert completed[2].status == "completed_partial"
 
 
-def test_recover_completed_workflow_nodes_empty_stream():
-    assert recover_completed_workflow_nodes([]) == []
-    assert recover_completed_workflow_nodes([
+def test_recover_workflow_node_outcomes_empty_stream():
+    assert recover_workflow_node_outcomes([]) == []
+    assert recover_workflow_node_outcomes([
         {"kind": "run_started", "run_id": "s1", "goal": "x", "criteria": []}
     ]) == []
 
@@ -207,9 +211,11 @@ async def test_run_workflow_resumes_from_completed_nodes():
     ])
 
     # Resume with node0 already completed.
-    outcome = await runner.run_workflow(spec, resumed_completed=["wf-node0"])
-    assert sorted(outcome["completed"]) == ["wf-node0", "wf-node1", "wf-node2"]
-    assert outcome["failed"] == []
+    outcome = await runner.run_workflow(spec, resumed_outcomes=[RecoveredNodeOutcome(
+        agent_id="wf-node0", status="completed", termination="completed",
+    )])
+    assert sorted([n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]) == ["wf-node0", "wf-node1", "wf-node2"]
+    assert [n.node_id for n in outcome.node_outcomes if n.status == "failed"] == []
     # Node0 is correctly skipped (not dispatched), only w1 and synth run.
     assert "w0" not in orch.goals
     assert "w1" in orch.goals
@@ -240,9 +246,12 @@ async def test_run_workflow_with_all_nodes_resumed():
     ])
 
     # Both nodes already completed → kernel skips dispatch, batch is empty.
-    outcome = await runner.run_workflow(spec, resumed_completed=["wf-node0", "wf-node1"])
-    assert sorted(outcome["completed"]) == ["wf-node0", "wf-node1"]
-    assert outcome["failed"] == []
+    outcome = await runner.run_workflow(spec, resumed_outcomes=[
+        RecoveredNodeOutcome(agent_id=node_id, status="completed", termination="completed")
+        for node_id in ("wf-node0", "wf-node1")
+    ])
+    assert sorted([n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]) == ["wf-node0", "wf-node1"]
+    assert [n.node_id for n in outcome.node_outcomes if n.status == "failed"] == []
     # All nodes resumed → nothing dispatched.
     assert len(orch.goals) == 0
 
@@ -266,10 +275,10 @@ async def test_resume_workflow_recovers_from_session_log():
 
     # Seed the session log with completed nodes.
     await runner._opts.session_log.append("sess", build_workflow_node_completed_event(
-        turn=1, agent_id="wf-node0", termination="completed",
+        turn=1, agent_id="wf-node0", status="completed", termination="completed",
     ))
     await runner._opts.session_log.append("sess", build_workflow_node_completed_event(
-        turn=2, agent_id="wf-node1", termination="failed",
+        turn=2, agent_id="wf-node1", status="failed", termination="error",
     ))
 
     spec = WorkflowSpec(nodes=[
@@ -281,10 +290,12 @@ async def test_resume_workflow_recovers_from_session_log():
     # resume_workflow reads the log and extracts completed nodes.
     outcome = await runner.resume_workflow(spec)
     # Only node0 was recovered as completed, so it's skipped.
-    assert "wf-node0" in outcome["completed"]
-    assert "wf-node2" in outcome["completed"]  # synth runs and completes
-    # Node1 ran again (it was failed, not completed).
-    assert outcome.get("failed") == []
+    assert "wf-node0" in [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]
+    # all_success is fail-closed: the recovered failed dependency blocks synthesis.
+    assert "wf-node2" in [
+        n.node_id for n in outcome.node_outcomes if n.status == "skipped_upstream_failed"
+    ]
+    assert "wf-node1" in [n.node_id for n in outcome.node_outcomes if n.status == "failed"]
 
 
 def test_submit_workflow_nodes_to_kernel_shape():
@@ -295,7 +306,8 @@ def test_submit_workflow_nodes_to_kernel_shape():
         "kind": "submit_workflow_nodes",
         "nodes": [
             {"task": {"goal": "more", "criteria": []}, "role": "implement",
-             "isolation": "shared", "context_inheritance": "none"},
+             "isolation": "shared", "context_inheritance": "none",
+             "dep_policy": "all_success"},
         ],
     }
 
@@ -384,17 +396,17 @@ def test_recover_submitted_workflow_nodes_in_order():
         recover_submitted_workflow_nodes,
     )
 
-    e1 = build_workflow_nodes_submitted_event(turn=1, nodes=[{"task": {"goal": "a"}}])
-    e2 = build_workflow_nodes_submitted_event(turn=2, nodes=[{"task": {"goal": "b"}}])
+    e1 = build_workflow_nodes_submitted_event(turn=1, nodes=[{"task": {"goal": "a"}}], base_index=1)
+    e2 = build_workflow_nodes_submitted_event(turn=2, nodes=[{"task": {"goal": "b"}}], base_index=2)
     submissions, bases, submitters = recover_submitted_workflow_nodes([e1, e2])
     assert submissions == [
         [{"task": {"goal": "a"}}],
         [{"task": {"goal": "b"}}],
     ]
-    assert bases == []  # legacy records carry no base
-    assert submitters == [None, None]  # legacy records carry no submitter
+    assert bases == [1, 2]
+    assert submitters == [None, None]
 
-    # Recorded bases come back parallel; a mixed log degrades to order-only for safety.
+    # Recorded bases come back parallel; a missing base rejects recovery.
     # W-N3: submitters come back parallel too (None = host/bootstrap submission).
     b1 = build_workflow_nodes_submitted_event(
         turn=1, nodes=[{"task": {"goal": "a"}}], base_index=3, submitter_agent_id="wf-node0",
@@ -403,8 +415,9 @@ def test_recover_submitted_workflow_nodes_in_order():
     _, bases_full, submitters_full = recover_submitted_workflow_nodes([b1, b2])
     assert bases_full == [3, 5]
     assert submitters_full == ["wf-node0", None]
-    _, bases_mixed, _ = recover_submitted_workflow_nodes([b1, e2])
-    assert bases_mixed == []
+    invalid = {"kind": "workflow_nodes_submitted", "turn": 3, "nodes": []}
+    with pytest.raises(ValueError, match="missing required base_index"):
+        recover_submitted_workflow_nodes([b1, invalid])
 
 
 @pytest.mark.asyncio
@@ -430,8 +443,15 @@ async def test_run_workflow_resumes_dynamically_appended_nodes():
     batch = submit_workflow_nodes_to_kernel([WorkflowNodeSpec(task="discovered", role="implement")])["nodes"]
 
     # Root recovered as completed; one submission re-applied → wf-node1 reconstructed and run.
-    outcome = await runner.run_workflow(spec, resumed_completed=["wf-node0"], resumed_submissions=[batch])
-    assert sorted(outcome["completed"]) == ["wf-node0", "wf-node1"]
+    outcome = await runner.run_workflow(
+        spec,
+        resumed_outcomes=[RecoveredNodeOutcome(
+            agent_id="wf-node0", status="completed", termination="completed",
+        )],
+        resumed_submissions=[batch],
+        resumed_submission_bases=[1],
+    )
+    assert sorted([n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]) == ["wf-node0", "wf-node1"]
     assert "discovered" in orch.goals
 
 
@@ -474,8 +494,8 @@ async def test_run_workflow_submit_nodes_appends_and_completes():
     outcome = await runner.run_workflow(spec)
 
     # Both the root and the dynamically-submitted node completed.
-    assert sorted(outcome["completed"]) == ["wf-node0", "wf-node1"]
-    assert outcome["failed"] == []
+    assert sorted([n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]) == ["wf-node0", "wf-node1"]
+    assert [n.node_id for n in outcome.node_outcomes if n.status == "failed"] == []
     assert "discovered" in orch.goals
 
 
@@ -546,7 +566,7 @@ async def test_g3_run_workflow_accepts_conforming_output_first_attempt():
     runner = _g3_runner(orch)
     spec = WorkflowSpec(nodes=[WorkflowNodeSpec(task="judge", role="verify", output_schema=_G3_SCHEMA)])
     outcome = await runner.run_workflow(spec)
-    assert outcome["completed"] == ["wf-node0"]
+    assert [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")] == ["wf-node0"]
     assert len(orch.goals) == 1
     assert "JSON Schema" in orch.goals[0]
 
@@ -576,7 +596,7 @@ async def test_g3_run_workflow_retries_once_then_accepts():
     outcome = await runner.run_workflow(spec)
     assert orch.calls == 2
     assert "did NOT conform" in orch.goals[1]
-    assert outcome["completed"] == ["wf-node0"]
+    assert [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")] == ["wf-node0"]
 
 
 @pytest.mark.asyncio
@@ -600,7 +620,7 @@ async def test_g3_run_workflow_fails_node_when_never_conforms():
     spec = WorkflowSpec(nodes=[WorkflowNodeSpec(task="judge", role="verify", output_schema=_G3_SCHEMA)])
     outcome = await runner.run_workflow(spec)
     assert orch.calls == 2
-    assert outcome["failed"] == ["wf-node0"]
+    assert [n.node_id for n in outcome.node_outcomes if n.status == "failed"] == ["wf-node0"]
 
 
 @pytest.mark.asyncio
@@ -624,7 +644,7 @@ async def test_g3_run_workflow_uses_configured_attempt_bound():
     spec = WorkflowSpec(nodes=[WorkflowNodeSpec(task="judge", role="verify", output_schema=_G3_SCHEMA)])
     outcome = await runner.run_workflow(spec)
     assert orch.calls == 3
-    assert outcome["failed"] == ["wf-node0"]
+    assert [n.node_id for n in outcome.node_outcomes if n.status == "failed"] == ["wf-node0"]
 
 
 def test_g3_rejects_unsafe_attempt_bound():
@@ -750,7 +770,7 @@ async def test_g2_run_workflow_runs_reduce_node_without_llm():
         WorkflowNodeSpec(task="merge", role="implement", reducer="dedupe_lines", depends_on=[0, 1]),
     ])
     outcome = await runner.run_workflow(spec)
-    assert sorted(outcome["completed"]) == ["wf-node0", "wf-node1", "wf-node2"]
+    assert sorted([n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]) == ["wf-node0", "wf-node1", "wf-node2"]
     assert agent_calls["n"] == 2  # only the two workers called an agent; the reduce ran in-process
 
 
@@ -783,7 +803,7 @@ async def test_g2_unknown_reducer_fails_node():
         WorkflowNodeSpec(task="merge", role="implement", reducer="nope", depends_on=[0]),
     ])
     outcome = await runner.run_workflow(spec)
-    assert "wf-node1" in outcome["failed"]
+    assert "wf-node1" in [n.node_id for n in outcome.node_outcomes if n.status == "failed"]
 
 
 @pytest.mark.asyncio
@@ -806,14 +826,17 @@ async def test_run_workflow_bootstraps_standalone():
 
     # Called on a bare runner — no _active_kernel hack.
     outcome = await runner.run_workflow(spec)
-    assert sorted(outcome["completed"]) == ["wf-node0", "wf-node1", "wf-node2"]
-    assert outcome["failed"] == []
+    assert sorted([n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]) == ["wf-node0", "wf-node1", "wf-node2"]
+    assert [n.node_id for n in outcome.node_outcomes if n.status == "failed"] == []
 
     # Bootstrapped kernel was torn down → runner is reusable.
     assert runner._active_kernel is None
     assert runner._current_session_id is None
     second = await runner.run_workflow(spec)
-    assert sorted(second["completed"]) == ["wf-node0", "wf-node1", "wf-node2"]
+    assert sorted([
+        n.node_id for n in second.node_outcomes
+        if n.status in ("completed", "completed_partial")
+    ]) == ["wf-node0", "wf-node1", "wf-node2"]
 
 
 @pytest.mark.asyncio
@@ -862,7 +885,7 @@ async def test_resume_workflow_standalone_by_session_id():
     assert len(orch.goals) == 3
 
     resumed = await runner.resume_workflow(spec, session_id="resume-me")
-    assert sorted(resumed["completed"]) == ["wf-node0", "wf-node1", "wf-node2"]
+    assert sorted([n.node_id for n in resumed.node_outcomes if n.status in ("completed", "completed_partial")]) == ["wf-node0", "wf-node1", "wf-node2"]
     # No new dispatches — every node was recovered as already complete.
     assert len(orch.goals) == 3
 

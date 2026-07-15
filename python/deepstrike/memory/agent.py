@@ -1,33 +1,23 @@
 from __future__ import annotations
 
-from typing import Any
+from deepstrike.memory.protocols import MemoryQuery, MemoryRecall, MemoryRecord
+from deepstrike.memory.ranking import rank_memories
 
 
-def memories_to_index(entries: list[Any]) -> list[dict[str, Any]]:
-  out: list[dict[str, Any]] = []
-  for entry in entries:
-    meta = entry.metadata if hasattr(entry, "metadata") else (entry.get("metadata") if isinstance(entry, dict) else {})
-    if not isinstance(meta, dict):
-      meta = {}
-    text = entry.text if hasattr(entry, "text") else (entry.get("text") if isinstance(entry, dict) else "")
-    out.append({
-      "name": str(meta.get("name") or text[:40]),
-      "description": str(meta.get("description") or text[:120]),
-      "kind": meta.get("kind"),
-      "file": str(meta.get("file") or ""),
-      "updated_at": int(meta.get("updated_at") or 0),
-    })
-  return out
-
-
-async def select_memories(query: dict[str, Any], memory_index: list[dict[str, Any]]) -> dict[str, Any]:
-  filter_out = set(query.get("already_surfaced") or []) | set(query.get("active_tools") or [])
-  candidates = [entry for entry in memory_index if entry.get("name") not in filter_out]
-  top_k = int(query.get("top_k") or 5)
-  if not candidates:
-    return {"selected_memory_ids": [], "selection_rationale": "No candidates after filtering"}
-  selected = [str(entry.get("name") or "") for entry in candidates[:top_k]]
-  return {
-    "selected_memory_ids": selected,
-    "selection_rationale": "Stub selector ranked index entries",
-  }
+async def select_memories(query: MemoryQuery, records: list[MemoryRecord]) -> list[MemoryRecall]:
+  candidates = [record for record in records
+                if record.scope == query.scope
+                and (not query.kinds or record.kind in query.kinds)
+                and (query.min_score is None or record.confidence >= query.min_score)]
+  selected = rank_memories(
+    query.query,
+    candidates,
+    query.top_k,
+    searchable_text=lambda record: f"{record.name} {record.description} {record.content}",
+    updated_at=lambda record: record.updated_at,
+  )
+  return [MemoryRecall(
+    record=record,
+    score=max(0.0, min(1.0, record.confidence)),
+    why="deterministic lexical relevance with recency tie-breaking",
+  ) for record in selected]

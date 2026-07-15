@@ -1,0 +1,306 @@
+[
+  {
+    "id": "bfcl-simple-01",
+    "category": "bfcl.simple",
+    "goal": "What is the weather in Boston today in celsius?",
+    "functions": [
+      {
+        "name": "get_weather",
+        "description": "Get current weather for a city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": { "type": "string", "description": "City name" },
+            "unit": { "type": "string", "enum": ["celsius", "fahrenheit"], "description": "Temperature unit" }
+          },
+          "required": ["city"]
+        }
+      }
+    ],
+    "expected": [
+      { "name": "get_weather", "arguments": { "city": "Boston", "unit": "celsius" } }
+    ]
+  },
+  {
+    "id": "bfcl-simple-02",
+    "category": "bfcl.simple",
+    "goal": "Calculate the square root of 144.",
+    "functions": [
+      {
+        "name": "calculate",
+        "description": "Evaluate a math expression.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "expression": { "type": "string", "description": "Math expression to evaluate" }
+          },
+          "required": ["expression"]
+        }
+      }
+    ],
+    "expected": [
+      { "name": "calculate", "arguments": { "expression": "sqrt(144)" } }
+    ]
+  },
+  {
+    "id": "bfcl-simple-03",
+    "category": "bfcl.simple",
+    "goal": "Send an email to alice@example.com with subject 'Meeting' and body 'See you at 3pm'.",
+    "functions": [
+      {
+        "name": "send_email",
+        "description": "Send an email.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "to": { "type": "string" },
+            "subject": { "type": "string" },
+            "body": { "type": "string" }
+          },
+          "required": ["to", "subject", "body"]
+        }
+      }
+    ],
+    "expected": [
+      {
+        "name": "send_email",
+        "arguments": {
+          "to": "alice@example.com",
+          "subject": "Meeting",
+          "body": "See you at 3pm"
+        }
+      }
+    ]
+  },
+  {
+    "id": "bfcl-simple-04",
+    "category": "bfcl.simple",
+    "goal": "Translate 'Hello world' from English to French.",
+    "functions": [
+      {
+        "name": "translate",
+        "description": "Translate text between languages.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "text": { "type": "string" },
+            "source_lang": { "type": "string" },
+            "target_lang": { "type": "string" }
+          },
+          "required": ["text", "target_lang"]
+        }
+      }
+    ],
+    "expected": [
+      {
+        "name": "translate",
+        "arguments": {
+          "text": "Hello world",
+          "source_lang": "English",
+          "target_lang": "French"
+        }
+      }
+    ]
+  },
+  {
+    "id": "bfcl-simple-05",
+    "category": "bfcl.simple",
+    "goal": "Search for restaurants near downtown Seattle with rating at least 4.5.",
+    "functions": [
+      {
+        "name": "search_restaurants",
+        "description": "Search restaurants by location and rating.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": { "type": "string" },
+            "min_rating": { "type": "number" }
+          },
+          "required": ["location"]
+        }
+      }
+    ],
+    "expected": [
+      {
+        "name": "search_restaurants",
+        "arguments": { "location": "downtown Seattle", "min_rating": 4.5 }
+      }
+    ]
+  },
+  {
+    "id": "bfcl-simple-06",
+    "category": "bfcl.simple",
+    "goal": "Convert 100 USD to EUR.",
+    "functions": [
+      {
+        "name": "convert_currency",
+        "description": "Convert an amount between currencies.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "amount": { "type": "number" },
+            "from_currency": { "type": "string" },
+            "to_currency": { "type": "string" }
+          },
+          "required": ["amount", "from_currency", "to_currency"]
+        }
+      }
+    ],
+    "expected": [
+      {
+        "name": "convert_currency",
+        "arguments": { "amount": 100, "from_currency": "USD", "to_currency": "EUR" }
+      }
+    ]
+  },
+  {
+    "id": "bfcl-multiple-01",
+    "category": "bfcl.multiple",
+    "goal": "Book a flight from SFO to JFK on 2026-08-01 for 1 passenger, then also check the weather in New York for that day in fahrenheit.",
+    "functions": [
+      {
+        "name": "book_flight",
+        "description": "Book a flight.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "origin": { "type": "string" },
+            "destination": { "type": "string" },
+            "date": { "type": "string" },
+            "passengers": { "type": "integer" }
+          },
+          "required": ["origin", "destination", "date"]
+        }
+      },
+      {
+        "name": "get_weather",
+        "description": "Get weather for a city on a date.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": { "type": "string" },
+            "date": { "type": "string" },
+            "unit": { "type": "string", "enum": ["celsius", "fahrenheit"] }
+          },
+          "required": ["city"]
+        }
+      }
+    ],
+    "expected": [
+      {
+        "name": "book_flight",
+        "arguments": {
+          "origin": "SFO",
+          "destination": "JFK",
+          "date": "2026-08-01",
+          "passengers": 1
+        }
+      },
+      {
+        "name": "get_weather",
+        "arguments": {
+          "city": "New York",
+          "date": "2026-08-01",
+          "unit": "fahrenheit"
+        }
+      }
+    ]
+  },
+  {
+    "id": "bfcl-multiple-02",
+    "category": "bfcl.multiple",
+    "goal": "Create a calendar event titled 'Sprint Review' tomorrow at 10:00 lasting 60 minutes, and invite bob@example.com.",
+    "functions": [
+      {
+        "name": "create_event",
+        "description": "Create a calendar event.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": { "type": "string" },
+            "start_time": { "type": "string" },
+            "duration_minutes": { "type": "integer" }
+          },
+          "required": ["title", "start_time"]
+        }
+      },
+      {
+        "name": "invite_attendee",
+        "description": "Invite an attendee to an event by email.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "event_title": { "type": "string" },
+            "email": { "type": "string" }
+          },
+          "required": ["event_title", "email"]
+        }
+      }
+    ],
+    "expected": [
+      {
+        "name": "create_event",
+        "arguments": {
+          "title": "Sprint Review",
+          "start_time": "10:00",
+          "duration_minutes": 60
+        }
+      },
+      {
+        "name": "invite_attendee",
+        "arguments": {
+          "event_title": "Sprint Review",
+          "email": "bob@example.com"
+        }
+      }
+    ]
+  },
+  {
+    "id": "bfcl-simple-07",
+    "category": "bfcl.simple",
+    "goal": "Set a reminder named 'Take medicine' for 21:00.",
+    "functions": [
+      {
+        "name": "set_reminder",
+        "description": "Set a named reminder at a time.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "time": { "type": "string" }
+          },
+          "required": ["name", "time"]
+        }
+      }
+    ],
+    "expected": [
+      { "name": "set_reminder", "arguments": { "name": "Take medicine", "time": "21:00" } }
+    ]
+  },
+  {
+    "id": "bfcl-simple-08",
+    "category": "bfcl.simple",
+    "goal": "Find the distance in kilometers between Paris and Lyon.",
+    "functions": [
+      {
+        "name": "get_distance",
+        "description": "Get distance between two cities.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "from_city": { "type": "string" },
+            "to_city": { "type": "string" },
+            "unit": { "type": "string", "enum": ["km", "miles"] }
+          },
+          "required": ["from_city", "to_city"]
+        }
+      }
+    ],
+    "expected": [
+      {
+        "name": "get_distance",
+        "arguments": { "from_city": "Paris", "to_city": "Lyon", "unit": "km" }
+      }
+    ]
+  }
+]

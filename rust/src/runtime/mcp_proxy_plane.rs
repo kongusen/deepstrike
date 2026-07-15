@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use async_stream::try_stream;
 use deepstrike_core::types::message::{ToolCall, ToolSchema};
-use futures::StreamExt;
 use futures::stream::Stream;
+use futures::StreamExt;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
@@ -340,7 +340,7 @@ impl ExecutionPlane for McpProxyPlane {
     ) -> Pin<Box<dyn Stream<Item = Result<RunEvent>> + Send + 'a>> {
         Box::pin(try_stream! {
             let RunContext {
-                agent_id, skill_dir, dream_store, knowledge_source, governance, on_tool_suspend, on_permission_request,
+                agent_id, memory_scope, skill_dir, dream_store, knowledge_source, governance, on_tool_suspend, on_permission_request,
             } = ctx;
 
             let local_calls: Vec<_> = calls
@@ -357,6 +357,7 @@ impl ExecutionPlane for McpProxyPlane {
             if !local_calls.is_empty() {
                 let local_ctx = RunContext {
                     agent_id,
+                    memory_scope,
                     skill_dir,
                     dream_store,
                     knowledge_source,

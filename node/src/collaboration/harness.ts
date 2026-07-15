@@ -1,15 +1,10 @@
-import type { AgentPool, CoordinatorConfig } from "./pool.js"
-import { collectText } from "../runtime/runner.js"
-import type { VerificationContract, ContractCheckResult } from "./contract.js"
-import { formatContractForSystemPrompt, contractToCriteriaStrings } from "./contract.js"
+import type { AttemptBody, AttemptBodyContext, AttemptBodyEvent } from "../harness/harness.js"
+import type { AttemptJudge, JudgeContext, JudgeResult } from "../harness/judge.js"
+import { parseVerdict } from "../runtime/eval.js"
+import type { ContractCheckResult, VerificationContract } from "./contract.js"
+import { formatContractForSystemPrompt } from "./contract.js"
 import type { HandoffArtifact } from "./handoff.js"
-import { HandoffBus } from "./handoff.js"
-
-export interface Violation {
-  criterionId: string
-  text: string
-  detail: string
-}
+import type { AgentPool } from "./pool.js"
 
 export interface ContractOutcome {
   success: boolean
@@ -20,199 +15,69 @@ export interface ContractOutcome {
   handoff: HandoffArtifact
 }
 
-export interface ContractHarnessOptions {
-  maxAttempts?: number
-  onViolation?: (violations: Violation[]) => void
-  /** When set with pool.configureCoordinator(), enables kernel spawn path. */
-  coordinator?: CoordinatorConfig
+/** The creator-verifier body owns execution only; verification is an AttemptJudge. */
+export class CreatorVerifierBody implements AttemptBody {
+  constructor(
+    private readonly pool: AgentPool,
+    private readonly contract: VerificationContract,
+  ) {}
+
+  async *run(context: AttemptBodyContext): AsyncIterable<AttemptBodyEvent> {
+    const contractBlock = formatContractForSystemPrompt(this.contract)
+    const result = await this.pool.execute("executor", {
+      sessionId: context.sessionId,
+      goal: `${contractBlock}\n\n---\n\n${context.goal}`,
+      ...(context.contextInput ? { contextInput: context.contextInput } : {}),
+      verificationContractId: this.contract.id,
+    })
+    const artifact = result.result.finalMessage?.content ?? ""
+    if (artifact) yield { type: "token", text: artifact }
+    yield {
+      type: "body_done",
+      runStatus: String(result.result.termination),
+      result: artifact,
+      turns: result.result.turnsUsed,
+      totalTokens: result.result.totalTokensUsed,
+      ...(result.submittedNodes?.length ? { submittedNodes: result.submittedNodes } : {}),
+    }
+  }
 }
 
-/**
- * ContractDrivenHarness — the core multi-agent execution primitive.
- *
- * Differs from HarnessLoop in three ways:
- *   1. Executor and verifier are **separate Agent instances** — no shared history.
- *   2. Verifier receives only the artifact + contract, not the implementation transcript.
- *   3. Feedback returned to the executor is a structured list of Violations,
- *      not a free-text LLM summary.
- *
- * Protocol per attempt:
- *   executor.run(goal, contract) → artifact
- *   verifier.runIsolated(artifact, contract) → audit text
- *   parse audit text → ContractCheckResult[]
- *   all required criteria pass → Done
- *   violations remain → inject only violation list into next executor goal
- *   maxAttempts exceeded → produce HandoffArtifact with blocked_on
- */
-export class ContractDrivenHarness {
-  private maxAttempts: number
-  private onViolation?: (violations: Violation[]) => void
-
+/** Structured verifier output only. Free-text PASS/FAIL inference is intentionally unsupported. */
+export class StructuredContractJudge implements AttemptJudge {
   constructor(
-    private pool: AgentPool,
-    private contract: VerificationContract,
-    options: ContractHarnessOptions = {},
-  ) {
-    this.maxAttempts = options.maxAttempts ?? 3
-    this.onViolation = options.onViolation
-    if (options.coordinator) {
-      this.pool.configureCoordinator(options.coordinator.opts, options.coordinator.sessionId)
+    private readonly pool: AgentPool,
+    private readonly contract: VerificationContract,
+  ) {}
+
+  async judge(context: JudgeContext): Promise<JudgeResult> {
+    const auditText = await this.pool.verify({ contract: this.contract, artifact: context.result })
+    const wire = JSON.parse(auditText) as Record<string, unknown>
+    if (typeof wire !== "object" || wire === null || Array.isArray(wire)) {
+      throw new Error("structured verifier output must be a JSON object")
     }
-  }
-
-  async *stream(): AsyncIterable<ContractOutcome> {
-    yield await this.run()
-  }
-
-  async run(): Promise<ContractOutcome> {
-    let artifact = ""
-    let checkResults: ContractCheckResult[] = []
-    let attemptsUsed = 0
-    let currentGoal = this.contract.goal
-
-    for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
-      attemptsUsed = attempt
-
-      // ── Phase 1: Executor ──────────────────────────────────────────────────
-      // Executor sees: contract block + goal. No verifier history.
-      const contractBlock = formatContractForSystemPrompt(this.contract)
-      const violationNote = attempt > 1
-        ? `\n\n[Previous attempt failed. Violations to fix:\n${this._formatViolationsForFeedback(checkResults)}]`
-        : ""
-      const executorGoal = `${contractBlock}\n\n---\n\n${currentGoal}${violationNote}`
-
-      if (this.pool.usesSpawnPath()) {
-        const execResult = await this.pool.spawn("executor", executorGoal, {
-          verificationContractId: this.contract.id,
-        })
-        artifact = execResult.result.finalMessage?.content ?? ""
-      } else {
-        artifact = await collectText(
-          this.pool.get("executor").run({
-            sessionId: crypto.randomUUID(),
-            goal: executorGoal,
-            criteria: contractToCriteriaStrings(this.contract),
-          }),
-        )
-      }
-
-      // ── Phase 2: Verifier ──────────────────────────────────────────────────
-      // Verifier sees: artifact + contract only. No executor history.
-      const auditText = await this.pool.verify({ contract: this.contract, artifact })
-
-      // ── Phase 3: Parse audit → ContractCheckResult[] ──────────────────────
-      checkResults = this._parseAuditText(auditText)
-
-      const violations = this._findViolations(checkResults)
-
-      if (violations.length === 0) {
-        // All required criteria passed
-        return {
-          success: true,
-          artifact,
-          checkResults,
-          attemptsUsed,
-          totalTokensConsumed: 0,
-          handoff: HandoffBus.fromContractOutcome({
-            contract: this.contract,
-            checkResults,
-            artifact,
-            success: true,
-          }),
-        }
-      }
-
-      this.onViolation?.(violations)
-    }
-
-    // Max attempts exhausted
-    const blockedOn = this._findViolations(checkResults).map(v =>
-      `[${v.criterionId}] ${v.text}: ${v.detail}`,
-    )
-
-    return {
-      success: false,
-      artifact,
-      checkResults,
-      attemptsUsed,
-      totalTokensConsumed: 0,
-      handoff: HandoffBus.fromContractOutcome({
-        contract: this.contract,
-        checkResults,
-        artifact,
-        success: false,
-        blockedOn,
-      }),
-    }
-  }
-
-  private _findViolations(results: ContractCheckResult[]): Violation[] {
-    const violations: Violation[] = []
-    for (const result of results) {
-      if (!result.passed) {
-        const criterion = this.contract.acceptance.find(c => c.id === result.criterionId)
-        if (criterion?.required) {
-          violations.push({
-            criterionId: result.criterionId,
-            text: criterion.text,
-            detail: result.evidence ?? "no evidence provided",
-          })
-        }
-      }
-    }
-    return violations
-  }
-
-  private _formatViolationsForFeedback(results: ContractCheckResult[]): string {
-    return this._findViolations(results)
-      .map(v => `- [${v.criterionId}] ${v.text}: ${v.detail}`)
-      .join("\n")
-  }
-
-  /**
-   * Parse the verifier's free-text audit into structured ContractCheckResult[].
-   *
-   * The verifier is prompted to produce a structured PASS/FAIL per criterion.
-   * This parser handles the common patterns; callers can subclass and override
-   * for stricter parsing.
-   */
-  private _parseAuditText(auditText: string): ContractCheckResult[] {
-    const results: ContractCheckResult[] = []
-    const lower = auditText.toLowerCase()
-
-    for (const criterion of this.contract.acceptance) {
-      // Look for explicit "id: PASS" or "id: FAIL" patterns from the verifier prompt
-      const idPattern = new RegExp(
-        `\\b${criterion.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b[^\\n]*?(pass|fail)`,
-        "i",
-      )
-      const match = auditText.match(idPattern)
-
-      if (match) {
-        const passed = match[1].toLowerCase() === "pass"
-        // Extract the line as evidence
-        const lineStart = auditText.lastIndexOf("\n", match.index ?? 0) + 1
-        const lineEnd = auditText.indexOf("\n", match.index ?? 0)
-        const evidence = auditText.slice(lineStart, lineEnd > 0 ? lineEnd : undefined).trim()
-        results.push({ criterionId: criterion.id, passed, evidence })
-      } else {
-        // Fallback: search for criterion text near PASS/FAIL keywords
-        const textIdx = lower.indexOf(criterion.text.toLowerCase().slice(0, 30))
-        if (textIdx !== -1) {
-          const window = lower.slice(textIdx, textIdx + 200)
-          const passed = window.includes("pass") && !window.includes("fail")
-          results.push({ criterionId: criterion.id, passed, evidence: "inferred from context" })
-        } else {
-          // No mention found — conservative: treat as failed
-          results.push({
-            criterionId: criterion.id,
+    const parsed = parseVerdict(auditText)
+    const details = this.contract.acceptance.map(criterion => {
+      const detail = parsed.details.find(candidate =>
+        candidate.criterion === criterion.id || candidate.criterion === criterion.text)
+      return detail
+        ? { ...detail, criterion: criterion.id }
+        : {
+            criterion: criterion.id,
             passed: false,
-            evidence: "criterion not mentioned in audit",
-          })
-        }
-      }
+            score: 0,
+            feedback: "criterion missing from structured verifier output",
+          }
+    })
+    const requiredPassed = this.contract.acceptance.every((criterion, index) =>
+      !criterion.required || details[index]!.passed)
+    return {
+      verdict: {
+        passed: parsed.passed && requiredPassed,
+        overallScore: parsed.overallScore,
+        feedback: parsed.feedback,
+        details,
+      },
     }
-
-    return results
   }
 }

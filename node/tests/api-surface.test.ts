@@ -61,8 +61,10 @@ describe("subpath barrels", () => {
     for (const n of ["WorkingMemory", "InMemoryDreamStore"]) expect(memory).toHaveProperty(n)
   })
   it("harness carries the eval harnesses + judge", () => {
-    for (const n of ["SinglePassHarness", "EvalLoopHarness", "HarnessLoop", "judge"])
+    for (const n of ["AttemptLoop", "RuntimeAttemptBody", "judge"])
       expect(harness).toHaveProperty(n)
+    for (const n of ["SinglePassHarness", "EvalLoopHarness", "HarnessLoop", "ContractDrivenHarness"])
+      expect(harness).not.toHaveProperty(n)
   })
   it("os carries profiles, signals, permissions, replay-testing", () => {
     for (const n of ["osProfile", "assertNativeProfile", "SignalGateway", "PermissionManager", "ReplayProvider"])

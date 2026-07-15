@@ -14,29 +14,23 @@ from deepstrike import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, 
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta, ToolCallEvent
 from deepstrike.tools.registry import tool
+from deepstrike.memory.protocols import MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope
 
 RECALL = "LONGTERM_FACT_FOR_SPRINT"
-
-
-class _MemoryEntry:
-    def __init__(self, text: str, score: float) -> None:
-        self.text = text
-        self.score = score
-        self.metadata = None
+SCOPE = MemoryScope("agent-k4", "renewal")
+RECALL_HIT = MemoryRecall(MemoryRecord(
+    record_id="record-renewal", scope=SCOPE, name="renewal", kind="reference", content=RECALL,
+    description="fixture", provenance=MemoryProvenance(author="host", trust="host_verified"),
+    created_at=1, updated_at=1, confidence=0.9,
+), 0.9, "fixture")
 
 
 class FakeDreamStore:
-    async def load_sessions(self, agent_id):
-        return []
-
-    async def load_memories(self, agent_id):
-        return []
-
-    async def commit(self, *args, **kwargs):
+    async def upsert(self, *args, **kwargs):
         return None
 
-    async def search(self, agent_id, query, top_k=5):
-        return [_MemoryEntry(RECALL, 0.9)]
+    async def search(self, agent_id, query: MemoryQuery):
+        return [RECALL_HIT]
 
     async def save_session(self, data):
         return None
@@ -51,7 +45,7 @@ async def test_renewal_refires_prefetch_with_phase_and_lands_in_history():
         phases.append(phase)
         if phase == "renewal":
             st["saw_renewal"] = True
-        return ["relevant facts"]
+        return [MemoryQuery(SCOPE, "relevant facts")]
 
     class Provider:
         async def complete(self, context, tools, extensions=None):
@@ -81,6 +75,7 @@ async def test_renewal_refires_prefetch_with_phase_and_lands_in_history():
         max_tokens=200,
         max_turns=30,
         agent_id="agent-k4",
+        memory_scope=SCOPE,
         dream_store=FakeDreamStore(),
         repeat_fuse=False,
         pre_query_memory=pre_query,

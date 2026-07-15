@@ -107,6 +107,67 @@ fn snapshot_rejects_an_outstanding_prepared_transition_without_panicking() {
 }
 
 #[test]
+fn configured_prompt_reservations_are_journaled_and_fail_closed() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget {
+        max_tokens: 100,
+        ..SchedulerBudget::default()
+    });
+    let configured = runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            prompt_budget: Some(crate::context::config::PromptBudgetConfig {
+                prompt_overhead_tokens: 40,
+                output_reserve_tokens: 40,
+                safety_margin_tokens: 10,
+            }),
+            ..RunConfig::default()
+        },
+    }));
+    assert!(configured.faults.is_empty());
+
+    let started = runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("fixed context cannot fit the ten-token input allowance"),
+        run_spec: None,
+    }));
+    assert!(
+        started
+            .actions
+            .iter()
+            .all(|action| !matches!(action.effect, KernelEffect::CallProvider { .. }))
+    );
+    assert!(started.observations.iter().any(|observation| matches!(
+        observation,
+        KernelObservation::ContextBudgetExceeded { max_tokens: 10, .. }
+    )));
+}
+
+#[test]
+fn prompt_reservations_cannot_consume_the_entire_context_window() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget {
+        max_tokens: 100,
+        ..SchedulerBudget::default()
+    });
+    let rejected = runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            prompt_budget: Some(crate::context::config::PromptBudgetConfig {
+                prompt_overhead_tokens: 50,
+                output_reserve_tokens: 50,
+                safety_margin_tokens: 0,
+            }),
+            memory_enabled: Some(true),
+            ..RunConfig::default()
+        },
+    }));
+
+    assert!(matches!(
+        rejected.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::InvalidConfig,
+            ..
+        }]
+    ));
+}
+
+#[test]
 fn aborting_prepared_step_restores_the_exact_committed_runtime() {
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
     runtime.step(correlated_input(
@@ -1016,11 +1077,13 @@ fn skill_activated_input_records_active_skill() {
         step.actions.is_empty(),
         "activation is config, not an action"
     );
-    assert!(runtime
-        .state_machine()
-        .ctx
-        .active_skills
-        .contains_key("debug"));
+    assert!(
+        runtime
+            .state_machine()
+            .ctx
+            .active_skills
+            .contains_key("debug")
+    );
     let filter = runtime
         .state_machine()
         .ctx
@@ -1049,11 +1112,13 @@ fn skill_deactivated_rewidens_toolset_and_unpins_knowledge() {
         key: Some("skill:debug".to_string()),
         pinned: false,
     }));
-    assert!(runtime
-        .state_machine()
-        .ctx
-        .active_skill_tool_filter()
-        .is_some());
+    assert!(
+        runtime
+            .state_machine()
+            .ctx
+            .active_skill_tool_filter()
+            .is_some()
+    );
 
     runtime.step(KernelInput::new(KernelInputEvent::SkillDeactivated {
         name: "debug".to_string(),
@@ -1085,11 +1150,13 @@ fn skill_lease_expires_after_turns_and_reactivation_renarrows() {
         name: "debug".to_string(),
         lease_turns: Some(1),
     }));
-    assert!(runtime
-        .state_machine()
-        .ctx
-        .active_skill_tool_filter()
-        .is_some());
+    assert!(
+        runtime
+            .state_machine()
+            .ctx
+            .active_skill_tool_filter()
+            .is_some()
+    );
 
     // One full tool round advances the turn; the sweep runs at the HEAD of the next loop
     // event, so the following provider turn is what actually expires the lease.
@@ -1121,22 +1188,26 @@ fn skill_lease_expires_after_turns_and_reactivation_renarrows() {
             .contains_key("debug"),
         "lease expired after the turn advanced"
     );
-    assert!(runtime
-        .state_machine()
-        .ctx
-        .active_skill_tool_filter()
-        .is_none());
+    assert!(
+        runtime
+            .state_machine()
+            .ctx
+            .active_skill_tool_filter()
+            .is_none()
+    );
 
     // Re-activation works and re-narrows.
     runtime.step(KernelInput::new(KernelInputEvent::SkillActivated {
         name: "debug".to_string(),
         lease_turns: None,
     }));
-    assert!(runtime
-        .state_machine()
-        .ctx
-        .active_skill_tool_filter()
-        .is_some());
+    assert!(
+        runtime
+            .state_machine()
+            .ctx
+            .active_skill_tool_filter()
+            .is_some()
+    );
 }
 
 #[test]
@@ -1233,10 +1304,12 @@ fn knowledge_budget_exceeded_observed_in_live_loop() {
             token_count: None,
         }],
     }));
-    assert!(!step2
-        .observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::KnowledgeBudgetExceeded { .. })));
+    assert!(
+        !step2
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::KnowledgeBudgetExceeded { .. }))
+    );
 }
 
 #[test]
@@ -1376,10 +1449,12 @@ fn critical_signal_preemption_is_committed_only_after_correlated_result() {
         } if agent_ids == &vec!["worker".to_string()] => effect_id.clone(),
         other => panic!("expected preempt_sub_agents action, got {other:?}"),
     };
-    assert!(!requested
-        .observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::AgentPreempted { .. })));
+    assert!(
+        !requested
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::AgentPreempted { .. }))
+    );
 
     let committed = runtime.step(KernelInput::new(KernelInputEvent::PreemptResult {
         effect_id,
@@ -1848,10 +1923,9 @@ fn cancellation_cleans_pending_workflow_spawn() {
             RuntimeTask::new("merge"),
         ),
         parent_session_id: "parent".into(),
-        resumed_completed: Vec::new(),
         resumed_submissions: Vec::new(),
         resumed_submission_bases: Vec::new(),
-        resumed_results: Vec::new(),
+        resumed_outcomes: Vec::new(),
     }));
     let spawn_effect = spawning.actions[0].effect_id.clone();
 
@@ -1974,17 +2048,37 @@ fn agent_process_changed_locks_multiword_wire_form() {
 
 // ── M-memory-policy: set_memory_policy is enforced at the WriteMemory / QueryMemory traps ──
 
-fn write_memory(runtime: &mut KernelRuntime, name: &str, content: &str) -> KernelStep {
-    use crate::mm::memory::{MemoryMetadata, MemoryWriteRequest};
-    let requested = runtime.step(KernelInput::new(KernelInputEvent::WriteMemory {
-        memory: MemoryWriteRequest {
-            metadata: MemoryMetadata {
-                name: name.to_string(),
-                description: "desc".to_string(),
-                ..Default::default()
-            },
-            content: content.to_string(),
+fn memory_record(record_id: &str, name: &str, content: &str) -> crate::mm::memory::MemoryRecord {
+    use crate::mm::memory::{
+        MemoryAuthor, MemoryKind, MemoryProvenance, MemoryRecord, MemoryScope, MemoryTrustLevel,
+    };
+    MemoryRecord {
+        record_id: record_id.into(),
+        scope: MemoryScope::new("tenant-test", "kernel-tests"),
+        name: name.into(),
+        kind: MemoryKind::Project,
+        content: content.into(),
+        description: "desc".into(),
+        provenance: MemoryProvenance {
+            session_id: Some("session-test".into()),
+            author: MemoryAuthor::Host,
+            trust: MemoryTrustLevel::HostVerified,
+            evidence_refs: Vec::new(),
         },
+        created_at: 1,
+        updated_at: 1,
+        last_recalled_at: None,
+        recall_count: 0,
+        confidence: 1.0,
+        links: Vec::new(),
+        pinned: false,
+        ttl_days: None,
+    }
+}
+
+fn write_memory(runtime: &mut KernelRuntime, name: &str, content: &str) -> KernelStep {
+    let requested = runtime.step(KernelInput::new(KernelInputEvent::WriteMemory {
+        memory: memory_record(&format!("record-{name}"), name, content),
     }));
     if let Some(KernelAction {
         effect_id,
@@ -1992,16 +2086,64 @@ fn write_memory(runtime: &mut KernelRuntime, name: &str, content: &str) -> Kerne
         ..
     }) = requested.actions.first()
     {
-        assert!(!requested
-            .observations
-            .iter()
-            .any(|observation| matches!(observation, KernelObservation::MemoryWritten { .. })));
+        assert!(
+            !requested
+                .observations
+                .iter()
+                .any(|observation| matches!(observation, KernelObservation::MemoryWritten { .. }))
+        );
         return runtime.step(KernelInput::new(KernelInputEvent::MemoryPersistResult {
             effect_id: effect_id.clone(),
             error: None,
         }));
     }
     requested
+}
+
+#[test]
+fn memory_scoped_upsert_is_canonical_and_snapshot_replay_is_exact() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+
+    let first = runtime.step(KernelInput::new(KernelInputEvent::WriteMemory {
+        memory: memory_record("stable-id", "build", "cargo build"),
+    }));
+    let first_effect = first.actions[0].effect_id.clone();
+    runtime.step(KernelInput::new(KernelInputEvent::MemoryPersistResult {
+        effect_id: first_effect,
+        error: None,
+    }));
+
+    let mut replacement = memory_record("incoming-id", "build", "cargo nextest");
+    replacement.updated_at = 2;
+    let second = runtime.step(KernelInput::new(KernelInputEvent::WriteMemory {
+        memory: replacement,
+    }));
+    let (second_effect, canonical) = match &second.actions[0] {
+        KernelAction {
+            effect_id,
+            effect: KernelEffect::PersistMemory { memory },
+            ..
+        } => (effect_id.clone(), memory),
+        other => panic!("expected persist_memory, got {other:?}"),
+    };
+    assert_eq!(canonical.record_id, "stable-id");
+    assert_eq!(canonical.created_at, 1);
+    assert_eq!(canonical.updated_at, 2);
+    assert_eq!(canonical.content, "cargo nextest");
+
+    let committed = runtime.step(KernelInput::new(KernelInputEvent::MemoryPersistResult {
+        effect_id: second_effect,
+        error: None,
+    }));
+    assert!(committed.observations.iter().any(|observation| matches!(
+        observation,
+        KernelObservation::MemoryWritten { record_id, name, .. }
+            if record_id == "stable-id" && name == "build"
+    )));
+
+    let encoded = runtime.snapshot_json().expect("memory journal snapshot");
+    let restored = KernelRuntime::restore_snapshot_json(&encoded).expect("replay memory journal");
+    assert_eq!(restored.snapshot_json().expect("re-encode"), encoded);
 }
 
 #[test]
@@ -2017,14 +2159,17 @@ fn memory_policy_validation_disabled_admits_forbidden_write() {
         max_name_length: None,
     }));
     let step = write_memory(&mut runtime, "note", "代码模式: foo");
-    assert!(step
-        .observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::MemoryWritten { .. })));
-    assert!(!step
-        .observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::MemoryValidationFailed { .. })));
+    assert!(
+        step.observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::MemoryWritten { .. }))
+    );
+    assert!(
+        !step
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::MemoryValidationFailed { .. }))
+    );
 }
 
 #[test]
@@ -2033,10 +2178,11 @@ fn default_runtime_accepts_content_hosts_have_not_forbidden() {
     // valid write passes; content judgment belongs to hosts/models, not the kernel.
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
     let step = write_memory(&mut runtime, "note", "代码模式: foo");
-    assert!(step
-        .observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::MemoryWritten { .. })));
+    assert!(
+        step.observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::MemoryWritten { .. }))
+    );
 }
 
 #[test]
@@ -2064,7 +2210,7 @@ fn memory_policy_size_override_rejects_oversized_write() {
 
 #[test]
 fn memory_policy_clamps_retrieval_top_k() {
-    use crate::mm::memory::MemoryQuery;
+    use crate::mm::memory::{MemoryQuery, MemoryScope};
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
     runtime.step(KernelInput::new(KernelInputEvent::SetMemoryPolicy {
         memory_path: String::new(),
@@ -2076,6 +2222,8 @@ fn memory_policy_clamps_retrieval_top_k() {
     }));
     let step = runtime.step(KernelInput::new(KernelInputEvent::QueryMemory {
         query: MemoryQuery {
+            scope: MemoryScope::new("tenant-test", "kernel-tests"),
+            query: "build settings".into(),
             top_k: 50,
             ..Default::default()
         },
@@ -2089,27 +2237,107 @@ fn memory_policy_clamps_retrieval_top_k() {
         other => panic!("expected query_memory action, got {other:?}"),
     };
     assert_eq!(requested_k, 3);
-    assert!(!step
-        .observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::MemoryQueried { .. })));
+    assert!(
+        !step
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::MemoryQueried { .. }))
+    );
     let completed = runtime.step(KernelInput::new(KernelInputEvent::MemoryQueryResult {
         effect_id,
-        entries: Vec::new(),
+        hits: Vec::new(),
         error: None,
     }));
-    assert!(completed
-        .observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::MemoryQueried { requested_k: 3, .. })));
+    assert!(
+        completed
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::MemoryQueried { requested_k: 3, .. }))
+    );
+}
+
+#[test]
+fn memory_query_result_enforces_scope_and_replays_recalled_record() {
+    use crate::mm::memory::{MemoryQuery, MemoryRecall, MemoryScope};
+
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let query = MemoryQuery {
+        scope: MemoryScope::new("tenant-test", "kernel-tests"),
+        query: "which command builds the project".into(),
+        top_k: 2,
+        kinds: vec![crate::mm::memory::MemoryKind::Project],
+        min_score: Some(0.5),
+    };
+    let requested = runtime.step(KernelInput::new(KernelInputEvent::QueryMemory {
+        query: query.clone(),
+    }));
+    let effect_id = requested.actions[0].effect_id.clone();
+
+    let mut escaped = memory_record("other-scope", "build", "npm run build");
+    escaped.scope = MemoryScope::new("other-tenant", "kernel-tests");
+    let rejected = runtime.step(KernelInput::new(KernelInputEvent::MemoryQueryResult {
+        effect_id: effect_id.clone(),
+        hits: vec![MemoryRecall {
+            record: escaped,
+            score: 0.9,
+            why: "lexical overlap".into(),
+        }],
+        error: None,
+    }));
+    assert!(matches!(
+        rejected.faults.first().map(|fault| fault.code),
+        Some(KernelFaultCode::UnexpectedEffectResult)
+    ));
+
+    let accepted = runtime.step(KernelInput::new(KernelInputEvent::MemoryQueryResult {
+        effect_id,
+        hits: vec![MemoryRecall {
+            record: memory_record("record-build", "build", "cargo build"),
+            score: 0.9,
+            why: "lexical overlap".into(),
+        }],
+        error: None,
+    }));
+    assert!(accepted.observations.iter().any(|observation| matches!(
+        observation,
+        KernelObservation::MemoryQueried { scope, query: observed_query, .. }
+            if scope == &query.scope && observed_query == &query.query
+    )));
+    assert!(matches!(
+        accepted.actions.as_slice(),
+        [KernelAction {
+            effect: KernelEffect::CallProvider { context, .. },
+            ..
+        }] if context.turns.iter().any(|message| message.content.as_text().is_some_and(|text|
+            text.contains("record-build") && text.contains("cargo build")))
+    ));
+    assert!(
+        runtime
+            .state_machine()
+            .ctx
+            .partitions
+            .history
+            .messages
+            .iter()
+            .any(|message| message
+                .content
+                .as_text()
+                .is_some_and(|text| text.contains("record-build") && text.contains("cargo build")))
+    );
+
+    let encoded = runtime.snapshot_json().expect("recall journal snapshot");
+    let restored = KernelRuntime::restore_snapshot_json(&encoded).expect("replay recall journal");
+    assert_eq!(restored.snapshot_json().expect("re-encode"), encoded);
 }
 
 #[test]
 fn default_runtime_uses_requested_top_k_verbatim() {
-    use crate::mm::memory::MemoryQuery;
+    use crate::mm::memory::{MemoryQuery, MemoryScope};
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
     let step = runtime.step(KernelInput::new(KernelInputEvent::QueryMemory {
         query: MemoryQuery {
+            scope: MemoryScope::new("tenant-test", "kernel-tests"),
+            query: "build settings".into(),
             top_k: 50,
             ..Default::default()
         },
@@ -2184,17 +2412,19 @@ fn large_result_spool_is_a_correlated_effect_before_provider_continues() {
         }],
     }));
     let effect_id = match requested.actions.as_slice() {
-        [KernelAction {
-            effect_id,
-            effect:
-                KernelEffect::SpoolLargeResult {
-                    call_id,
-                    tool,
-                    output,
-                    ..
-                },
-            ..
-        }] => {
+        [
+            KernelAction {
+                effect_id,
+                effect:
+                    KernelEffect::SpoolLargeResult {
+                        call_id,
+                        tool,
+                        output,
+                        ..
+                    },
+                ..
+            },
+        ] => {
             assert_eq!(call_id, "call-1");
             assert_eq!(tool, "echo");
             assert_eq!(output.len(), 60 * 1024);
@@ -2202,10 +2432,12 @@ fn large_result_spool_is_a_correlated_effect_before_provider_continues() {
         }
         other => panic!("expected spool effect, got {other:?}"),
     };
-    assert!(!requested
-        .observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::LargeResultSpooled { .. })));
+    assert!(
+        !requested
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::LargeResultSpooled { .. }))
+    );
     let committed = runtime.step(KernelInput::new(KernelInputEvent::LargeResultSpoolResult {
         effect_id,
         spool_ref: Some("spool://call-1".to_string()),
@@ -2250,10 +2482,12 @@ fn failed_large_result_spool_is_observed_and_retried_without_success_fact() {
         }]
     ));
     assert!(failed.observations.iter().any(|o| matches!(o, KernelObservation::LargeResultSpoolFailed { error, .. } if error == "disk full")));
-    assert!(!failed
-        .observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::LargeResultSpooled { .. })));
+    assert!(
+        !failed
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::LargeResultSpooled { .. }))
+    );
 }
 
 #[test]
@@ -2361,21 +2595,25 @@ fn page_out_archive_is_a_correlated_effect_with_no_pre_result_success_fact() {
     let mut runtime = runtime_with_page_out();
     let requested = runtime.step(KernelInput::new(KernelInputEvent::ForceCompact));
     let effect_id = match requested.actions.as_slice() {
-        [KernelAction {
-            effect_id,
-            effect: KernelEffect::ArchivePageOut { archived, tier, .. },
-            ..
-        }] => {
+        [
+            KernelAction {
+                effect_id,
+                effect: KernelEffect::ArchivePageOut { archived, tier, .. },
+                ..
+            },
+        ] => {
             assert!(!archived.is_empty());
             assert_eq!(tier, "semantic");
             effect_id.clone()
         }
         other => panic!("expected page-out archive effect, got {other:?}"),
     };
-    assert!(!requested
-        .observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::PageOutArchived { .. })));
+    assert!(
+        !requested
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::PageOutArchived { .. }))
+    );
     let committed = runtime.step(KernelInput::new(KernelInputEvent::PageOutArchiveResult {
         effect_id,
         archive_ref: Some("archive://batch-1".to_string()),
@@ -2405,10 +2643,12 @@ fn failed_page_out_archive_is_observed_and_retried() {
         }]
     ));
     assert!(failed.observations.iter().any(|o| matches!(o, KernelObservation::PageOutArchiveFailed { error, .. } if error == "archive unavailable")));
-    assert!(!failed
-        .observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::PageOutArchived { .. })));
+    assert!(
+        !failed
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::PageOutArchived { .. }))
+    );
 }
 
 // ─── Governance gate ───────────────────────────────────────────────────
@@ -2496,7 +2736,12 @@ fn configure_run_bundle_applies_governance_equivalently_to_load_governance_polic
                 }],
                 ..GovernanceConfig::default()
             }),
-            attention_max_queue_size: Some(32),
+            signal_policy: Some(SignalPolicyConfig {
+                version: SIGNAL_POLICY_VERSION,
+                queue_max: 32,
+                ttl_ms: None,
+                deadline_escalation: None,
+            }),
             ..RunConfig::default()
         },
     }));
@@ -2597,7 +2842,10 @@ fn configure_run_round_trips_over_the_abi() {
                 max_concurrent_subagents: Some(2),
                 ..Default::default()
             }),
-            scheduler_max_wall_ms: Some(60_000),
+            scheduler_policy: Some(crate::scheduler::policy::SchedulerPolicyConfig {
+                critical_path_weight: 42,
+                ..crate::scheduler::policy::SchedulerPolicyConfig::default()
+            }),
             plan_tool_enabled: Some(true),
             ..RunConfig::default()
         },
@@ -2630,10 +2878,12 @@ fn governance_ask_user_suspends_until_resume() {
             ..
         }] if requests.len() == 1 && requests[0].tool == "sensitive.read"
     ));
-    assert!(!step
-        .observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::ToolGated { .. })));
+    assert!(
+        !step
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::ToolGated { .. }))
+    );
     assert!(
         step.observations.iter().any(|o| matches!(
             o,
@@ -2758,10 +3008,12 @@ fn no_governance_policy_executes_all_tools() {
             ..
         }]
     ));
-    assert!(!step
-        .observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::ToolGated { .. })),);
+    assert!(
+        !step
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::ToolGated { .. })),
+    );
 }
 
 fn tool_ok(call_id: &str) -> ToolResult {
@@ -2898,8 +3150,13 @@ fn signal(
 
 fn started_runtime_with_attention(max_queue: u32) -> KernelRuntime {
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
-    runtime.step(KernelInput::new(KernelInputEvent::SetAttentionPolicy {
-        max_queue_size: max_queue,
+    runtime.step(KernelInput::new(KernelInputEvent::SetSignalPolicy {
+        policy: SignalPolicyConfig {
+            version: SIGNAL_POLICY_VERSION,
+            queue_max: max_queue,
+            ttl_ms: None,
+            deadline_escalation: None,
+        },
     }));
     runtime.step(KernelInput::new(KernelInputEvent::StartRun {
         task: RuntimeTask::new("watch for signals"),
@@ -2907,6 +3164,248 @@ fn started_runtime_with_attention(max_queue: u32) -> KernelRuntime {
     }));
     runtime.clear_test_observations();
     runtime
+}
+
+#[test]
+fn signal_policy_event_serde_uses_the_single_versioned_contract() {
+    let event: KernelInputEvent = serde_json::from_value(serde_json::json!({
+        "kind": "set_signal_policy",
+        "policy": {
+            "version": 1,
+            "queue_max": 4,
+            "ttl_ms": 250,
+            "deadline_escalation": true
+        }
+    }))
+    .expect("signal policy parses");
+
+    let encoded = serde_json::to_value(&event).expect("signal policy serializes");
+    assert_eq!(encoded["kind"], "set_signal_policy");
+    assert_eq!(encoded["policy"]["version"], 1);
+    assert_eq!(encoded["policy"]["queue_max"], 4);
+    assert_eq!(encoded["policy"]["ttl_ms"], 250);
+    assert_eq!(encoded["policy"]["deadline_escalation"], true);
+
+    match event {
+        KernelInputEvent::SetSignalPolicy { policy } => {
+            assert_eq!(policy.version, SIGNAL_POLICY_VERSION);
+            assert_eq!(policy.queue_max, 4);
+            assert_eq!(policy.ttl_ms, Some(250));
+            assert_eq!(policy.deadline_escalation, Some(true));
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn legacy_attention_policy_shape_is_rejected_instead_of_silently_ignored() {
+    let parsed = serde_json::from_value::<KernelInputEvent>(serde_json::json!({
+        "kind": "configure_run",
+        "config": {
+            "attention_max_queue_size": 4
+        }
+    }));
+    let legacy_event = serde_json::from_value::<KernelInputEvent>(serde_json::json!({
+        "kind": "set_attention_policy",
+        "max_queue_size": 4
+    }));
+
+    assert!(parsed.is_err());
+    assert!(legacy_event.is_err());
+}
+
+#[test]
+fn signal_policy_rejects_invalid_values_atomically() {
+    let invalid = [
+        SignalPolicyConfig {
+            version: SIGNAL_POLICY_VERSION,
+            queue_max: 0,
+            ttl_ms: None,
+            deadline_escalation: None,
+        },
+        SignalPolicyConfig {
+            version: SIGNAL_POLICY_VERSION,
+            queue_max: 4,
+            ttl_ms: Some(0),
+            deadline_escalation: None,
+        },
+        SignalPolicyConfig {
+            version: SIGNAL_POLICY_VERSION + 1,
+            queue_max: 4,
+            ttl_ms: Some(10),
+            deadline_escalation: None,
+        },
+    ];
+
+    for policy in invalid {
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+        let rejected = runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+            config: RunConfig {
+                memory_enabled: Some(true),
+                signal_policy: Some(policy),
+                ..RunConfig::default()
+            },
+        }));
+
+        assert!(matches!(
+            rejected.faults.as_slice(),
+            [KernelFault {
+                code: KernelFaultCode::InvalidConfig,
+                ..
+            }]
+        ));
+        assert!(!runtime.state_machine().ctx.memory_enabled);
+    }
+}
+
+#[test]
+fn granular_signal_policy_rejects_invalid_ttl_before_mutation() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let rejected = runtime.step(KernelInput::new(KernelInputEvent::SetSignalPolicy {
+        policy: SignalPolicyConfig {
+            version: SIGNAL_POLICY_VERSION,
+            queue_max: 4,
+            ttl_ms: Some(0),
+            deadline_escalation: None,
+        },
+    }));
+
+    assert!(matches!(
+        rejected.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::InvalidConfig,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn granular_signal_policy_is_rejected_after_start() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("policy is frozen at start"),
+        run_spec: None,
+    }));
+
+    let rejected = runtime.step(KernelInput::new(KernelInputEvent::SetSignalPolicy {
+        policy: SignalPolicyConfig {
+            version: SIGNAL_POLICY_VERSION,
+            queue_max: 4,
+            ttl_ms: Some(10),
+            deadline_escalation: None,
+        },
+    }));
+
+    assert!(matches!(
+        rejected.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::InvalidLifecycle,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn configured_signal_policy_applies_queue_ttl_in_runtime() {
+    use crate::types::signal::Urgency;
+
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let configured = runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            signal_policy: Some(SignalPolicyConfig {
+                version: SIGNAL_POLICY_VERSION,
+                queue_max: 1,
+                ttl_ms: Some(10),
+                deadline_escalation: Some(false),
+            }),
+            ..RunConfig::default()
+        },
+    }));
+    assert!(configured.faults.is_empty());
+    runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("ttl queue"),
+        run_spec: None,
+    }));
+
+    let first = runtime.step(KernelInput::correlated(
+        "local-operation",
+        "signal-policy-first",
+        10,
+        KernelInputEvent::DeliverSignal {
+            delivery_id: "first".into(),
+            attempt: 1,
+            signal: signal(Urgency::Normal, "stale").with_timestamp(10),
+        },
+    ));
+    assert!(first.observations.iter().any(|observation| matches!(
+        observation,
+        KernelObservation::SignalDeliveryDisposed { disposition, .. }
+            if disposition == "queue"
+    )));
+
+    let second = runtime.step(KernelInput::correlated(
+        "local-operation",
+        "signal-policy-second",
+        30,
+        KernelInputEvent::DeliverSignal {
+            delivery_id: "second".into(),
+            attempt: 1,
+            signal: signal(Urgency::Normal, "fresh").with_timestamp(30),
+        },
+    ));
+    assert!(
+        second
+            .observations
+            .iter()
+            .any(|observation| matches!(observation, KernelObservation::SignalExpired { .. }))
+    );
+    assert!(second.observations.iter().any(|observation| matches!(
+        observation,
+        KernelObservation::SignalDeliveryDisposed { disposition, queue_depth: 1, .. }
+            if disposition == "queue"
+    )));
+}
+
+#[test]
+fn configured_deadline_escalation_changes_runtime_disposition() {
+    use crate::types::signal::Urgency;
+
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let configured = runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            signal_policy: Some(SignalPolicyConfig {
+                version: SIGNAL_POLICY_VERSION,
+                queue_max: 4,
+                ttl_ms: None,
+                deadline_escalation: Some(true),
+            }),
+            ..RunConfig::default()
+        },
+    }));
+    assert!(configured.faults.is_empty());
+    runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("deadline queue"),
+        run_spec: None,
+    }));
+
+    let delivered = runtime.step(KernelInput::correlated(
+        "local-operation",
+        "deadline-due",
+        100,
+        KernelInputEvent::DeliverSignal {
+            delivery_id: "deadline-due".into(),
+            attempt: 1,
+            signal: signal(Urgency::Normal, "due now")
+                .with_timestamp(90)
+                .with_deadline(100),
+        },
+    ));
+
+    assert!(delivered.observations.iter().any(|observation| matches!(
+        observation,
+        KernelObservation::SignalDeliveryDisposed { disposition, .. }
+            if disposition == "interrupt"
+    )));
 }
 
 #[test]
@@ -3048,6 +3547,135 @@ fn signal_delivery_rejects_missing_identity_or_zero_attempt() {
 }
 
 #[test]
+fn delivered_signal_is_consumed_only_by_its_correlated_provider_result() {
+    use crate::types::signal::Urgency;
+
+    let mut runtime = started_runtime_with_attention(8);
+    let requested = runtime.step(KernelInput::new(KernelInputEvent::DeliverSignal {
+        delivery_id: "delivery-consume".into(),
+        attempt: 1,
+        signal: signal(Urgency::Critical, "consume once"),
+    }));
+    let effect_id = match requested.actions.as_slice() {
+        [
+            KernelAction {
+                effect_id,
+                effect: KernelEffect::CallProvider { .. },
+                ..
+            },
+        ] => effect_id.clone(),
+        other => panic!("expected provider request, got {other:?}"),
+    };
+    assert_eq!(runtime.state_machine().ctx.partitions.signals.len(), 1);
+
+    let rejected = runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
+        effect_id: "wrong-effect".into(),
+        message: Message::assistant("wrong"),
+        observed_input_tokens: None,
+        observed_output_tokens: None,
+        now_ms: None,
+        stop_reason: None,
+    }));
+    assert!(matches!(
+        rejected.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::UnexpectedEffectResult,
+            ..
+        }]
+    ));
+    assert_eq!(runtime.state_machine().ctx.partitions.signals.len(), 1);
+
+    runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
+        effect_id,
+        message: Message::assistant("handled"),
+        observed_input_tokens: None,
+        observed_output_tokens: None,
+        now_ms: None,
+        stop_reason: None,
+    }));
+    assert!(runtime.state_machine().ctx.partitions.signals.is_empty());
+}
+
+#[test]
+fn provider_error_does_not_consume_delivered_signal() {
+    use crate::types::signal::Urgency;
+
+    let mut runtime = started_runtime_with_attention(8);
+    let requested = runtime.step(KernelInput::new(KernelInputEvent::DeliverSignal {
+        delivery_id: "delivery-provider-error".into(),
+        attempt: 1,
+        signal: signal(Urgency::Critical, "survive provider failure"),
+    }));
+    let effect_id = requested.actions[0].effect_id.clone();
+
+    runtime.step(KernelInput::new(KernelInputEvent::ProviderError {
+        effect_id,
+        message: "provider failed".into(),
+    }));
+
+    assert_eq!(runtime.state_machine().ctx.partitions.signals.len(), 1);
+}
+
+#[test]
+fn signal_arriving_during_provider_call_gets_a_follow_up_turn_before_completion() {
+    use crate::types::signal::Urgency;
+
+    let mut runtime = started_runtime_with_attention(8);
+    let in_flight_effect_id = runtime.pending_provider_effect_id();
+    let disposition = runtime.step(KernelInput::new(KernelInputEvent::DeliverSignal {
+        delivery_id: "delivery-in-flight".into(),
+        attempt: 1,
+        signal: signal(Urgency::High, "handle after current response"),
+    }));
+    assert!(disposition.actions.is_empty());
+
+    let boundary = runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
+        effect_id: in_flight_effect_id,
+        message: Message::assistant("current response"),
+        observed_input_tokens: None,
+        observed_output_tokens: None,
+        now_ms: None,
+        stop_reason: None,
+    }));
+
+    assert!(matches!(
+        boundary.actions.as_slice(),
+        [KernelAction {
+            effect: KernelEffect::CallProvider { .. },
+            ..
+        }]
+    ));
+    assert_eq!(runtime.state_machine().ctx.partitions.signals.len(), 1);
+}
+
+#[test]
+fn terminal_runtime_accepts_signal_and_reports_pending_depth() {
+    use crate::types::signal::Urgency;
+
+    let mut runtime = started_runtime_with_attention(8);
+    let terminal = runtime.step(KernelInput::new(KernelInputEvent::CompleteRun));
+    assert!(matches!(
+        terminal.actions.as_slice(),
+        [KernelAction {
+            effect: KernelEffect::Done { .. },
+            ..
+        }]
+    ));
+
+    let pending = runtime.step(KernelInput::new(KernelInputEvent::DeliverSignal {
+        delivery_id: "delivery-after-terminal".into(),
+        attempt: 1,
+        signal: signal(Urgency::Normal, "late work"),
+    }));
+
+    assert!(pending.faults.is_empty());
+    assert!(pending.observations.iter().any(|observation| matches!(
+        observation,
+        KernelObservation::SignalsPending { depth: 1, .. }
+    )));
+}
+
+#[test]
 fn page_in_populates_knowledge_partition() {
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
     runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled {
@@ -3101,19 +3729,20 @@ fn load_workflow_input_drives_dag_to_completion() {
     let event = KernelInputEvent::LoadWorkflow {
         spec,
         parent_session_id: "sess".to_string(),
-        resumed_completed: Vec::new(),
         resumed_submissions: Vec::new(),
         resumed_submission_bases: Vec::new(),
-        resumed_results: Vec::new(),
+        resumed_outcomes: Vec::new(),
     };
     let json = serde_json::to_string(&event).expect("serialize");
     let parsed: KernelInputEvent = serde_json::from_str(&json).expect("deserialize");
 
     let step = runtime.step(KernelInput::new(parsed));
-    assert!(!step
-        .observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::WorkflowBatchSpawned { .. })));
+    assert!(
+        !step
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::WorkflowBatchSpawned { .. }))
+    );
     // First batch is an effect request; it is not a completed fact until the host result arrives.
     let (spawn_effect_id, batch) = match &step.actions[0] {
         KernelAction {
@@ -3172,7 +3801,10 @@ fn load_workflow_input_drives_dag_to_completion() {
     let step = complete(&mut runtime, "wf-node2");
     assert!(step.observations.iter().any(|o| matches!(
         o,
-        KernelObservation::WorkflowCompleted { completed, .. } if completed.len() == 3
+        KernelObservation::WorkflowCompleted { node_outcomes, .. }
+            if node_outcomes.iter().filter(|outcome| {
+                outcome.status == crate::orchestration::workflow::WorkflowNodeStatus::Completed
+            }).count() == 3
     )));
 }
 
@@ -3192,10 +3824,9 @@ fn workflow_spawn_host_failure_reissues_effect_without_success_observation() {
             AgentRole::Implement,
         )]),
         parent_session_id: "sess".to_string(),
-        resumed_completed: Vec::new(),
         resumed_submissions: Vec::new(),
         resumed_submission_bases: Vec::new(),
-        resumed_results: Vec::new(),
+        resumed_outcomes: Vec::new(),
     }));
     let effect_id = first.actions[0].effect_id.clone();
 
@@ -3213,10 +3844,12 @@ fn workflow_spawn_host_failure_reissues_effect_without_success_observation() {
             ..
         }]
     ));
-    assert!(!failed
-        .observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::WorkflowBatchSpawned { .. })));
+    assert!(
+        !failed
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::WorkflowBatchSpawned { .. }))
+    );
     assert!(failed.observations.iter().any(|o| matches!(
         o,
         KernelObservation::WorkflowSpawnFailed { error, .. }
@@ -3236,10 +3869,9 @@ fn load_workflow_without_start_run_is_rejected() {
     let step = runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow {
         spec,
         parent_session_id: "sess".to_string(),
-        resumed_completed: Vec::new(),
         resumed_submissions: Vec::new(),
         resumed_submission_bases: Vec::new(),
-        resumed_results: Vec::new(),
+        resumed_outcomes: Vec::new(),
     }));
 
     assert!(step.actions.is_empty());
@@ -3277,10 +3909,9 @@ fn submit_workflow_nodes_input_appends_a_node_over_the_abi() {
     let initial = runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow {
         spec,
         parent_session_id: "sess".to_string(),
-        resumed_completed: Vec::new(),
         resumed_submissions: Vec::new(),
         resumed_submission_bases: Vec::new(),
-        resumed_results: Vec::new(),
+        resumed_outcomes: Vec::new(),
     }));
     accept_workflow_spawn(&mut runtime, initial);
     runtime.clear_test_observations();
@@ -3327,7 +3958,10 @@ fn submit_workflow_nodes_input_appends_a_node_over_the_abi() {
     let step = complete(&mut runtime, "wf-node1");
     assert!(step.observations.iter().any(|o| matches!(
         o,
-        KernelObservation::WorkflowCompleted { completed, .. } if completed.len() == 2
+        KernelObservation::WorkflowCompleted { node_outcomes, .. }
+            if node_outcomes.iter().filter(|outcome| {
+                outcome.status == crate::orchestration::workflow::WorkflowNodeStatus::Completed
+            }).count() == 2
     )));
 }
 
@@ -3384,7 +4018,10 @@ fn submit_workflow_input_bootstraps_a_dag_over_the_abi() {
     }));
     assert!(step.observations.iter().any(|o| matches!(
         o,
-        KernelObservation::WorkflowCompleted { completed, .. } if completed.len() == 1
+        KernelObservation::WorkflowCompleted { node_outcomes, .. }
+            if node_outcomes.iter().filter(|outcome| {
+                outcome.status == crate::orchestration::workflow::WorkflowNodeStatus::Completed
+            }).count() == 1
     )));
 }
 
@@ -3476,10 +4113,9 @@ fn snapshot_v2_restores_workflow_budget_and_terminal_cancellation() {
                 RuntimeTask::new("synth"),
             ),
             parent_session_id: "parent-session".into(),
-            resumed_completed: Vec::new(),
             resumed_submissions: Vec::new(),
             resumed_submission_bases: Vec::new(),
-            resumed_results: Vec::new(),
+            resumed_outcomes: Vec::new(),
         },
     ));
     let pending_ids = match &workflow.actions[0] {
@@ -3509,14 +4145,16 @@ fn snapshot_v2_restores_workflow_budget_and_terminal_cancellation() {
     let original_cancel = runtime.step(cancel.clone());
     let restored_cancel = restored.step(cancel);
     assert_same_kernel_step(&original_cancel, &restored_cancel);
-    assert!(restored_cancel
-        .observations
-        .iter()
-        .any(|observation| matches!(
-            observation,
-            KernelObservation::BudgetUsageReported { reservation_id, .. }
-                if reservation_id == "workflow-snapshot-reservation"
-        )));
+    assert!(
+        restored_cancel
+            .observations
+            .iter()
+            .any(|observation| matches!(
+                observation,
+                KernelObservation::BudgetUsageReported { reservation_id, .. }
+                    if reservation_id == "workflow-snapshot-reservation"
+            ))
+    );
     assert_eq!(restored.lifecycle(), KernelLifecycle::Cancelled);
 }
 
@@ -3672,10 +4310,11 @@ fn load_workflow_resumes_from_completed_nodes() {
     let step = runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow {
         spec,
         parent_session_id: "sess".to_string(),
-        resumed_completed: vec!["wf-node0".to_string()],
+        resumed_outcomes: vec![
+            crate::orchestration::workflow::ResumedNodeOutcome::completed("wf-node0"),
+        ],
         resumed_submissions: Vec::new(),
         resumed_submission_bases: Vec::new(),
-        resumed_results: Vec::new(),
     }));
     let step = accept_workflow_spawn(&mut runtime, step);
 

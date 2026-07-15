@@ -109,5 +109,5 @@ def format_contract_for_system_prompt(contract: VerificationContract) -> str:
 
 
 def contract_to_criteria_strings(contract: VerificationContract) -> list[str]:
-    """Derive a flat list of criterion texts for the existing HarnessLoop criteria API."""
+    """Derive criterion text for kernel in-run gates and compatibility-free body adapters."""
     return [c.text for c in contract.acceptance]

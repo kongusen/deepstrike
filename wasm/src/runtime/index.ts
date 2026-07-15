@@ -6,7 +6,7 @@ export type { KernelRebuildResult } from "./kernel-rebuild.js"
 export * from "./context-policy.js"
 export type { RunContext, ExecutionPlane } from "./execution-plane.js"
 export { LocalExecutionPlane } from "./execution-plane.js"
-export type { MemoryPolicy, MemoryWriteRateLimit, OperationCancellationReason, ResourceQuota, RuntimeOptions, SchedulerBudget } from "./runner.js"
+export type { MemoryPolicy, MemoryWriteRateLimit, OperationCancellationReason, PromptBudget, ResourceQuota, RuntimeOptions, SchedulerPolicy } from "./runner.js"
 export { RuntimeRunner, collectText } from "./runner.js"
 export { readKernelDiagnostics, restoreKernelRuntime, snapshotKernelRuntime } from "./kernel-step.js"
 export type { KernelDiagnostics } from "./kernel-step.js"
@@ -22,11 +22,11 @@ export { extractRecordedMessages } from "./replay-fixture.js"
 export { judge, buildEvalMessages, parseVerdict, verdictOutputSchema } from "./eval.js"
 export type { Criterion, Verdict, VerdictDetail, JudgeArgs } from "./eval.js"
 export {
-  DEFAULT_NATIVE_ATTENTION_POLICY,
+  DEFAULT_NATIVE_SIGNAL_POLICY,
   DEFAULT_NATIVE_GOVERNANCE_POLICY,
   DEFAULT_SANDBOX_POLICY,
   assertNativeProfile,
   osProfile,
   validateDeclarativePolicy,
 } from "./os-profile.js"
-export type { NativeOsProfile, OsProfileId } from "./os-profile.js"
+export type { NativeOsProfile, OsProfileId, SignalPolicy } from "./os-profile.js"

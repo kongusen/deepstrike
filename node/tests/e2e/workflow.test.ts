@@ -35,7 +35,7 @@ maybe("real-model workflow drive", () => {
     }
 
     const outcome = await runner.runWorkflow(spec)
-    expect(outcome.completed.sort()).toEqual(["wf-node0", "wf-node1", "wf-node2"])
-    expect(outcome.failed).toEqual([])
+    expect(outcome.nodeOutcomes.map(node => node.nodeId).sort()).toEqual(["wf-node0", "wf-node1", "wf-node2"])
+    expect(outcome.nodeOutcomes.every(node => node.status === "completed")).toBe(true)
   }, 300_000)
 })

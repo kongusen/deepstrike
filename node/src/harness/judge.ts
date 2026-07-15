@@ -1,13 +1,14 @@
-// AttemptJudge — the "how do we judge one attempt?" Strategy, factored out of HarnessLoop so the
+// AttemptJudge — the "how do we judge one attempt?" Strategy, consumed by AttemptLoop so the
 // judgment step is a named, testable, swappable unit rather than inline loop logic.
 //
-// The built-in strategies reproduce HarnessLoop's prior behavior exactly:
+// The built-in strategies are independent of retry/carry behavior:
 //   • VerdictFnJudge — host-supplied deterministic judgment; returns `undefined` to defer.
 //   • LlmEvalJudge   — the kernel's stateless eval (buildEvalMessages → stream → parseVerdict).
 //   • HybridJudge    — try the primary; on `undefined`, fall back (verdictFn ?? LLM-eval).
 import type { LLMProvider, TextDelta } from "../types.js"
 import { getKernel } from "../kernel.js"
-import type { Criterion, Verdict, VerdictFn } from "./harness.js"
+import type { VerdictFn } from "./harness.js"
+import type { Criterion, Verdict } from "../runtime/eval.js"
 
 export type SkillCandidate = ReturnType<ReturnType<typeof getKernel>["parseVerdict"]>["skillCandidate"]
 
@@ -44,12 +45,22 @@ export class VerdictFnJudge implements AttemptJudge {
 export class LlmEvalJudge implements AttemptJudge {
   constructor(
     private readonly evalProvider: LLMProvider,
-    private readonly extractSkillOnPass: boolean = true,
+    private readonly extractSkillOnPass: boolean = false,
   ) {}
 
   async judge(ctx: JudgeContext): Promise<JudgeResult> {
     const kernel = getKernel()
-    const evalMsgs = kernel.buildEvalMessages(ctx.goal, ctx.criteria, ctx.result, ctx.attempt, this.extractSkillOnPass)
+    const evalMsgs = kernel.buildEvalMessages(
+      ctx.goal,
+      ctx.criteria.map(criterion => ({
+        text: criterion.text,
+        required: criterion.required ?? true,
+        weight: criterion.weight,
+      })),
+      ctx.result,
+      ctx.attempt,
+      this.extractSkillOnPass,
+    )
     const evalContext = {
       systemText: evalMsgs.filter((m: { role: string }) => m.role === "system").map((m: { content: string }) => m.content).join("\n\n"),
       turns: evalMsgs.filter((m: { role: string }) => m.role !== "system"),
@@ -71,7 +82,7 @@ export class LlmEvalJudge implements AttemptJudge {
   }
 }
 
-/** Try `primary`; if it defers (`undefined`), use `fallback`. Models HarnessLoop's
+/** Try `primary`; if it defers (`undefined`), use `fallback`.
  *  "verdictFn short-circuits, else built-in LLM eval" hybrid judgment. */
 export class HybridJudge implements AttemptJudge {
   constructor(private readonly primary: AttemptJudge, private readonly fallback: AttemptJudge) {}

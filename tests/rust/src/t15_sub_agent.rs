@@ -4,10 +4,10 @@
 // G7 gate: sub-agent isolation + lineage replay
 
 use compact_str::CompactString;
+use deepstrike_core::proc::ProcessState;
 use deepstrike_core::scheduler::policy::SchedulerBudget;
 use deepstrike_core::scheduler::state_machine::*;
 use deepstrike_core::scheduler::tcb::{TaskLifecycle, WaitReason};
-use deepstrike_core::proc::ProcessState;
 use deepstrike_core::types::agent::{
     AgentCapabilityFilter, AgentIdentity, AgentIsolation, AgentRole, AgentRunSpec,
     ContextInheritance, IsolationManifest,
@@ -18,7 +18,10 @@ use deepstrike_core::types::result::{LoopResult, SubAgentResult, TerminationReas
 use deepstrike_core::types::task::RuntimeTask;
 
 fn default_sm() -> LoopStateMachine {
-    LoopStateMachine::new(SchedulerBudget { max_tokens: 128_000, ..SchedulerBudget::default() })
+    LoopStateMachine::new(SchedulerBudget {
+        max_tokens: 128_000,
+        ..SchedulerBudget::default()
+    })
 }
 
 fn text_response() -> LoopEvent {
@@ -98,8 +101,7 @@ fn isolation_manifest_role_defaults_context_inheritance() {
     let verify = IsolationManifest::from_spec(&verify_spec, "parent", &available);
     assert_eq!(verify.context_inheritance, ContextInheritance::SystemOnly);
 
-    let plan_spec =
-        AgentRunSpec::new(AgentIdentity::sub_agent("p", "s"), AgentRole::Plan, "plan");
+    let plan_spec = AgentRunSpec::new(AgentIdentity::sub_agent("p", "s"), AgentRole::Plan, "plan");
     let plan = IsolationManifest::from_spec(&plan_spec, "parent", &available);
     assert_eq!(plan.context_inheritance, ContextInheritance::Full);
 }
@@ -108,11 +110,14 @@ fn isolation_manifest_role_defaults_context_inheritance() {
 
 #[test]
 fn sub_agent_identity_carries_parent_session_id() {
-    let identity = AgentIdentity::sub_agent("child-agent", "child-session")
-        .with_parent("parent-session-xyz");
+    let identity =
+        AgentIdentity::sub_agent("child-agent", "child-session").with_parent("parent-session-xyz");
 
     assert!(identity.is_sub_agent);
-    assert_eq!(identity.parent_session_id.as_deref(), Some("parent-session-xyz"));
+    assert_eq!(
+        identity.parent_session_id.as_deref(),
+        Some("parent-session-xyz")
+    );
 }
 
 #[test]
@@ -129,7 +134,10 @@ fn spawn_sub_agent_emits_process_observation() {
     let action = sm.spawn_sub_agent(spec, "parent-session-001");
     assert!(matches!(action, LoopAction::AwaitingResume));
     assert_eq!(sm.lifecycle(), TaskLifecycle::Suspended);
-    assert!(matches!(sm.wait_reason(), Some(WaitReason::SubAgentJoin(_))));
+    assert!(matches!(
+        sm.wait_reason(),
+        Some(WaitReason::SubAgentJoin(_))
+    ));
 
     let obs = sm.take_observations();
     assert!(obs.iter().any(|o| matches!(
@@ -161,7 +169,9 @@ fn spawn_sub_agent_registers_kernel_process() {
     sm.spawn_sub_agent(spec, "parent-session-001");
     let obs = sm.take_observations();
 
-    let process = sm.agent_process("worker").expect("process should be registered");
+    let process = sm
+        .agent_process("worker")
+        .expect("process should be registered");
     assert_eq!(process.agent_id.as_str(), "worker");
     assert_eq!(process.parent_session_id.as_str(), "parent-session-001");
     assert_eq!(process.role, AgentRole::Implement);
@@ -262,7 +272,10 @@ fn sub_agent_completed_updates_kernel_process() {
     sm.take_observations();
 
     assert_eq!(sm.lifecycle(), TaskLifecycle::Suspended);
-    assert!(matches!(sm.wait_reason(), Some(WaitReason::SubAgentJoin(_))));
+    assert!(matches!(
+        sm.wait_reason(),
+        Some(WaitReason::SubAgentJoin(_))
+    ));
 
     let result = SubAgentResult {
         agent_id: CompactString::new("worker"),
@@ -280,7 +293,9 @@ fn sub_agent_completed_updates_kernel_process() {
 
     sm.feed(LoopEvent::SubAgentCompleted { result });
 
-    let process = sm.agent_process("worker").expect("process should remain registered");
+    let process = sm
+        .agent_process("worker")
+        .expect("process should remain registered");
     assert_eq!(process.state, ProcessState::Joined);
     assert!(process.result.is_some());
     assert!(sm.take_observations().iter().any(|o| {
@@ -304,8 +319,7 @@ fn sub_agent_completed_updates_kernel_process() {
 fn isolation_manifest_serializes_round_trip() {
     let available = simple_manifest_with_tools();
     let spec = AgentRunSpec::new(
-        AgentIdentity::sub_agent("agent-x", "session-y")
-            .with_parent("session-parent"),
+        AgentIdentity::sub_agent("agent-x", "session-y").with_parent("session-parent"),
         AgentRole::Verify,
         "verify output",
     )
@@ -320,5 +334,8 @@ fn isolation_manifest_serializes_round_trip() {
     assert_eq!(restored.role, manifest.role);
     assert_eq!(restored.isolation, manifest.isolation);
     assert_eq!(restored.context_inheritance, manifest.context_inheritance);
-    assert_eq!(restored.permitted_capability_ids, manifest.permitted_capability_ids);
+    assert_eq!(
+        restored.permitted_capability_ids,
+        manifest.permitted_capability_ids
+    );
 }

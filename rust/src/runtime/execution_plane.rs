@@ -11,15 +11,16 @@ use deepstrike_core::types::message::{Content, ToolCall, ToolResult, ToolSchema}
 use futures::stream::FuturesUnordered;
 use futures::stream::{self, Stream, StreamExt};
 
-use crate::Result;
 use crate::governance::Governance;
 use crate::knowledge::KnowledgeSource;
 use crate::memory::DreamStore;
+use deepstrike_core::mm::memory::{MemoryQuery, MemoryScope};
 use crate::run_event::RunEvent;
 use crate::runtime::sandboxed_skill::{
-    PythonSkillPolicy, SkillKind, execute_json_skill, execute_python_skill, resolve_skill_path,
+    execute_json_skill, execute_python_skill, resolve_skill_path, PythonSkillPolicy, SkillKind,
 };
-use crate::tools::{RegisteredTool, ToolChunk, ToolStep, validate_tool_arguments};
+use crate::tools::{validate_tool_arguments, RegisteredTool, ToolChunk, ToolStep};
+use crate::Result;
 
 #[derive(Clone)]
 pub struct ToolSuspendRequest {
@@ -59,6 +60,7 @@ pub type PermissionRequestHandler = std::sync::Arc<
 /// Per-run context passed into `ExecutionPlane::execute_all`.
 pub struct RunContext<'a> {
     pub agent_id: Option<&'a str>,
+    pub memory_scope: Option<&'a MemoryScope>,
     pub skill_dir: Option<&'a Path>,
     pub dream_store: Option<&'a dyn DreamStore>,
     pub knowledge_source: Option<&'a dyn KnowledgeSource>,
@@ -312,12 +314,21 @@ fn execute_all_local<'a>(
         for c in memory_calls {
             let query = c.arguments.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let top_k = c.arguments.get("top_k").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
-            let (content, is_error) = match (ctx.dream_store, ctx.agent_id) {
-                (Some(store), Some(agent_id)) => match store.search(agent_id, &query, top_k).await {
+            let (content, is_error) = match (ctx.dream_store, ctx.agent_id, ctx.memory_scope) {
+                (Some(store), Some(agent_id), Some(scope)) => match store.search(agent_id, &MemoryQuery {
+                    scope: scope.clone(),
+                    query,
+                    top_k,
+                    kinds: Vec::new(),
+                    min_score: None,
+                }).await {
                     Ok(entries) if !entries.is_empty() => {
                         let text = entries
                             .iter()
-                            .map(|e| format!("[score={:.3}] {}", e.score, e.text))
+                            .map(|e| format!(
+                                "[memory record_id={} score={:.3}] {}",
+                                e.record.record_id, e.score, e.record.content
+                            ))
                             .collect::<Vec<_>>()
                             .join("\n---\n");
                         (text, false)
@@ -590,7 +601,6 @@ async fn resolve_permission_request(
         },
     }
 }
-
 
 async fn try_read_spooled_argument(call: &ToolCall) -> Option<String> {
     let is_read_tool = matches!(

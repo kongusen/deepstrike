@@ -52,7 +52,7 @@ mod tests {
     use deepstrike_core::context::renderer::RenderedContext;
     use deepstrike_core::runtime::session::SessionEvent;
     use deepstrike_core::types::message::{Content, Message, Role, ToolSchema};
-    use futures::{Stream, stream};
+    use futures::{stream, Stream};
     use std::sync::Mutex;
 
     #[derive(Default)]

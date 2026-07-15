@@ -231,6 +231,9 @@ mod tests {
 
         // Vetoed tool is denied regardless of the Allow default
         let deny = pipeline.evaluate(&call("exec_shell"), &caller());
-        assert!(matches!(deny, GovernanceVerdict::Deny { stage: "veto", .. }));
+        assert!(matches!(
+            deny,
+            GovernanceVerdict::Deny { stage: "veto", .. }
+        ));
     }
 }

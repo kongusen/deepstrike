@@ -2,7 +2,7 @@ import { getKernel } from "../../src/kernel.js"
 import { stepKernelV2WithHostEffects } from "../helpers/kernel-v2.js"
 
 // End-to-end through the native module: drive the KernelRuntime ABI directly and
-// assert the in-kernel attention policy routes signals (Phase 1 OS-ification).
+// assert the in-kernel signal policy routes signals.
 
 interface StepObservation {
   kind: string
@@ -35,10 +35,13 @@ function deliverSignal(urgency: string, summary: string, deliveryId = crypto.ran
   }
 }
 
-describe("in-kernel attention policy", () => {
-  function startedRuntime(maxQueueSize: number) {
+describe("in-kernel signal policy", () => {
+  function startedRuntime(queueMax: number) {
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    step(rt, { kind: "set_attention_policy", max_queue_size: maxQueueSize })
+    step(rt, {
+      kind: "set_signal_policy",
+      policy: { version: 1, queue_max: queueMax },
+    })
     step(rt, { kind: "start_run", task: { goal: "watch", criteria: [] } })
     return rt
   }
@@ -64,11 +67,58 @@ describe("in-kernel attention policy", () => {
     expect(s.observations.some(o => o.kind === "signal_delivery_disposed" && o.disposition === "dropped")).toBe(true)
   })
 
-  it("without set_attention_policy uses the default SignalRouter queue (64)", () => {
+  it("without set_signal_policy uses the default SignalRouter queue (64)", () => {
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
     step(rt, { kind: "start_run", task: { goal: "watch", criteria: [] } })
     const s = step(rt, deliverSignal("normal", "tick"))
     expect(s.actions).toHaveLength(0)
     expect(s.observations.some(o => o.kind === "signal_delivery_disposed" && o.disposition === "queue" && o.queue_depth === 1)).toBe(true)
+  })
+
+  it("SignalRouter accepts lifecycle strings and rejects the retired boolean ABI", () => {
+    const router = new (getKernel().SignalRouter)(4)
+    const signal = {
+      id: crypto.randomUUID(),
+      source: "gateway" as const,
+      signalType: "alert" as const,
+      urgency: "critical" as const,
+      summary: "wake now",
+      payload: "{}",
+      timestampMs: 1,
+    }
+
+    expect(router.ingest(signal, "ready")).toBe("run")
+    expect(() => router.ingest({ ...signal, id: crypto.randomUUID() }, true as never)).toThrow()
+  })
+
+  it("SignalRouter preserves the deadline/coalesce ABI and merges queued entries", () => {
+    const router = new (getKernel().SignalRouter)(1)
+    const firstId = crypto.randomUUID()
+    const first = {
+      id: firstId,
+      source: "gateway" as const,
+      signalType: "event" as const,
+      urgency: "normal" as const,
+      summary: "batch",
+      payload: "{}",
+      deadlineMs: 200,
+      coalesceKey: "updates",
+      coalescedCount: 1,
+      timestampMs: 10,
+    }
+    const second = { ...first, id: crypto.randomUUID(), deadlineMs: 100, timestampMs: 20 }
+
+    expect(router.ingest(first, "running")).toBe("queue")
+    expect(router.ingest(second, "running")).toBe("queue")
+    const merged = router.next()
+
+    expect(merged).toMatchObject({
+      id: firstId,
+      deadlineMs: 100,
+      coalesceKey: "updates",
+      coalescedCount: 2,
+    })
+    expect(merged).not.toHaveProperty("topic")
+    expect(router.next()).toBeNull()
   })
 })

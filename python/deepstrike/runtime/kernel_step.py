@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from deepstrike._kernel import ContentPartObj, Message, TaskUpdate, ToolCall, ToolResult, ToolSchema
-from deepstrike.providers.base import RenderedContext
+from deepstrike.providers.base import ContextBudgetOverflow, RenderedContext
 
 
 KERNEL_ABI_VERSION = 2
@@ -247,6 +247,7 @@ def _context_from_kernel(raw: dict[str, Any]) -> RenderedContext:
   frozen_raw = raw.get("frozen_prefix_len")
   if frozen_raw is None:
     frozen_raw = raw.get("frozenPrefixLen")
+  overflow_raw = raw.get("budget_overflow") or raw.get("budgetOverflow")
   return RenderedContext(
     system_text=str(raw.get("system_text") or raw.get("systemText") or ""),
     system_stable=str(raw.get("system_stable") or raw.get("systemStable") or ""),
@@ -254,6 +255,11 @@ def _context_from_kernel(raw: dict[str, Any]) -> RenderedContext:
     turns=[_message_from_kernel(m) for m in raw.get("turns", []) or []],
     state_turn=_message_from_kernel(state_raw) if state_raw else None,
     frozen_prefix_len=int(frozen_raw) if isinstance(frozen_raw, (int, float)) else None,
+    budget_overflow=ContextBudgetOverflow(
+      kind=str(overflow_raw.get("kind") or ""),
+      required_tokens=int(overflow_raw.get("required_tokens") or overflow_raw.get("requiredTokens") or 0),
+      max_tokens=int(overflow_raw.get("max_tokens") or overflow_raw.get("maxTokens") or 0),
+    ) if isinstance(overflow_raw, dict) else None,
   )
 
 

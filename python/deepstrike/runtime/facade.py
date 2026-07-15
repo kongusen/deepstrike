@@ -83,8 +83,11 @@ async def run_fanout(
         node.role = worker_role
     spec.nodes[-1].role = synthesis_role
     outcome = await runner.run_workflow(spec, **({"session_id": session_id} if session_id else {}))
-    outputs = outcome.get("outputs", {})
-    completed = outcome.get("completed", [])
+    outputs = outcome.outputs
+    completed = [
+        node.node_id for node in outcome.node_outcomes
+        if node.status in ("completed", "completed_partial")
+    ]
     synthesis_id = f"wf-node{len(tasks)}"
     synthesis = outputs.get(synthesis_id)
     if synthesis is None and completed:

@@ -14,13 +14,8 @@ export {
 export { AgentPool } from "./pool.js"
 export type { AgentRole, IsolatedVerifierContext } from "./pool.js"
 
-// ContractDrivenHarness
-export { ContractDrivenHarness } from "./harness.js"
-export type {
-  ContractOutcome,
-  ContractHarnessOptions,
-  Violation,
-} from "./harness.js"
+export { CreatorVerifierBody, StructuredContractJudge } from "./harness.js"
+export type { ContractOutcome } from "./harness.js"
 
 // HandoffBus
 export { HandoffBus } from "./handoff.js"

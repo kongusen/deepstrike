@@ -40,7 +40,8 @@ from deepstrike.runtime import (
 )
 from deepstrike.providers.stream import StreamEvent, TextDelta, DoneEvent
 from deepstrike.memory.protocols import (
-    DreamStore, SessionData, MemoryEntry, CurationResult, CurationStats,
+    DreamStore, SessionData, MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord,
+    MemoryScope,
 )
 
 ENV = {
@@ -91,10 +92,6 @@ class RunnerHandle:
             **kwargs,
         ))
 
-    async def dream(self, agent_id: str, now_ms: int | None = None):
-        return await self._runner.dream(agent_id, now_ms)
-
-
 def make_runner(**overrides: Any) -> RunnerHandle:
     defaults: dict[str, Any] = dict(max_tokens=4096, max_turns=10)
     defaults.update(overrides)
@@ -119,25 +116,22 @@ make_agent = make_runner
 
 class MockDreamStore:
     def __init__(self):
-        self._sessions: dict[str, list[SessionData]] = {}
-        self._memories: dict[str, list[MemoryEntry]] = {}
+        self._memories: dict[str, list[MemoryRecord]] = {}
         self.saved_sessions: list[SessionData] = []
 
-    def add_session(self, agent_id: str, session: SessionData):
-        self._sessions.setdefault(agent_id, []).append(session)
+    async def upsert(self, agent_id: str, incoming: MemoryRecord):
+        records = list(self._memories.get(agent_id, []))
+        index = next((i for i, record in enumerate(records)
+                      if record.scope == incoming.scope and record.kind == incoming.kind and record.name == incoming.name), None)
+        if index is None:
+            records.append(incoming)
+        else:
+            records[index] = incoming
+        self._memories[agent_id] = records
 
-    async def load_sessions(self, agent_id: str) -> list[SessionData]:
-        return self._sessions.get(agent_id, [])
-
-    async def load_memories(self, agent_id: str) -> list[MemoryEntry]:
-        return self._memories.get(agent_id, [])
-
-    async def commit(self, agent_id: str, result: CurationResult, existing: list[MemoryEntry]):
-        kept = [e for i, e in enumerate(existing) if i not in result.to_remove_indices]
-        self._memories[agent_id] = kept + result.to_add
-
-    async def search(self, agent_id: str, query: str, top_k: int = 5) -> list[MemoryEntry]:
-        return (self._memories.get(agent_id, []))[:top_k]
+    async def search(self, agent_id: str, query: MemoryQuery) -> list[MemoryRecall]:
+        records = [record for record in self._memories.get(agent_id, []) if record.scope == query.scope]
+        return [MemoryRecall(record=record, score=record.confidence, why="fixture") for record in records[:query.top_k]]
 
     async def save_session(self, data: SessionData) -> None:
         self.saved_sessions.append(data)

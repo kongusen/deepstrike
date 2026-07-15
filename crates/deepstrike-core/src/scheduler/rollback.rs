@@ -48,10 +48,14 @@ pub(crate) fn build_rollback_note(reason: &RollbackReason, verbose: bool) -> Str
     }
     match reason {
         RollbackReason::FatalToolError { tool_name, error } => {
-            format!("The previous step failed (`{tool_name}`: {error}). Please try a different approach.")
+            format!(
+                "The previous step failed (`{tool_name}`: {error}). Please try a different approach."
+            )
         }
         RollbackReason::GovernanceDenied { tool_name, reason } => {
-            format!("Action `{tool_name}` was not allowed ({reason}). Please choose a different approach.")
+            format!(
+                "Action `{tool_name}` was not allowed ({reason}). Please choose a different approach."
+            )
         }
         RollbackReason::ProviderFailure { .. } => {
             "The previous attempt failed. Please try again.".to_string()

@@ -14,8 +14,12 @@ class RuntimeSignal:
     dedupe_key: str | None = None
     # Target a specific session loop. None means a shared item consumed by one eligible puller.
     recipient: str | None = None
-    # Optional pub/sub topic (carried through; multi-subscriber routing deferred).
-    topic: str | None = None
+    # Absolute journal-clock deadline for optional urgency escalation.
+    deadline_ms: int | None = None
+    # Merge with an unconsumed queued signal carrying the same key.
+    coalesce_key: str | None = None
+    # Number of host signals deterministically represented by this signal.
+    coalesced_count: int = 1
 
     def to_kernel_signal(self):
         from deepstrike._kernel import RuntimeSignal as KernelRuntimeSignal
@@ -30,7 +34,9 @@ class RuntimeSignal:
             self.dedupe_key,
             float(int(time.time() * 1000)),
             self.recipient,
-            self.topic,
+            float(self.deadline_ms) if self.deadline_ms is not None else None,
+            self.coalesce_key,
+            max(1, self.coalesced_count),
         )
 
 

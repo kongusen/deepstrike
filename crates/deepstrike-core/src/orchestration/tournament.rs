@@ -145,8 +145,7 @@ impl Tournament {
             matches,
         }
     }
-
-    }
+}
 
 #[cfg(test)]
 mod tests {

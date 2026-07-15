@@ -21,7 +21,8 @@ from deepstrike.runtime import (
     OperationCancellationReason,
     restore_kernel_runtime,
     snapshot_kernel_runtime,
-    SchedulerBudget,
+    SchedulerPolicy,
+    PromptBudget,
     SubAgentHarnessConfig,
     builtin_reducers,
     resolve_reducer,
@@ -42,6 +43,7 @@ from deepstrike.runtime import (
     run_loop,
     signal_aware_sleeper,
     OsProfile,
+    SignalPolicy,
     assert_native_profile,
     os_profile,
     collect_text,
@@ -122,7 +124,7 @@ from deepstrike.runtime import (
 )
 from deepstrike.governance import Governance, GovernanceVerdict
 from deepstrike.providers import (
-    LLMProvider, RenderedContext, ProviderRunState, RuntimePolicy,
+    LLMProvider, ContextBudgetOverflow, RenderedContext, ProviderRunState, RuntimePolicy,
     AnthropicProvider, OpenAIProvider, OpenAIResponsesProvider,
     QwenProvider, DeepSeekProvider, MiniMaxAnthropicProvider, MiniMaxOpenAIProvider, OllamaProvider, KimiProvider,
     StreamEvent, TextDelta, ThinkingDelta,
@@ -138,17 +140,18 @@ from deepstrike.providers.stream import ToolAuditFailedEvent
 from deepstrike.providers.stream import EntropySample, EntropySampleEvent, EntropyAlertEvent
 from deepstrike.memory import (
     WorkingMemory,
-    DreamStore, DreamResult, SessionData, MemoryEntry, CurationResult, CurationStats,
+    DreamStore, SessionData, MemoryRecord, MemoryRecall, MemoryQuery,
+    MemoryScope, MemoryProvenance, MemoryKind, MemoryAuthor, MemoryTrustLevel,
     InMemoryDreamStore,
 )
 from deepstrike.safety import PermissionManager, PermissionMode, Permission, PermissionDecision
 from deepstrike.harness import (
-    QualityGate,
-    SinglePassHarness, HarnessLoop, EvalLoopHarness,
-    HarnessRequest, HarnessOutcome,
-    # I3.1: surface harness types so hosts can construct verdicts and stream-event handlers
-    # without importing from deepstrike.harness.harness directly.
-    HarnessEvent, CriterionResult,
+    AttemptBody, AttemptBodyContext, AttemptBodyEvent, AttemptBodyTerminal,
+    AttemptJudge, AttemptLoop, AttemptLoopEvent, AttemptOutcome,
+    AttemptProgressEvent, AttemptRequest, CarryContext, CarryPolicy,
+    Criterion, CriterionResult, HybridJudge, JudgeContext, JudgeResult,
+    LlmEvalJudge, PreparedAttempt, RuntimeAttemptBody, StopPolicy, Verdict,
+    VerdictFnJudge, continue_session, fresh_with_digest, fresh_with_feedback,
 )
 from deepstrike.skills import SkillRegistry
 from deepstrike.knowledge import KnowledgeSource
@@ -162,7 +165,8 @@ from deepstrike.types.agent import (
     KernelAgentRole, AgentIsolation, ContextInheritance,
     MilestoneContract, MilestonePhase, MilestoneCheckResult, MilestonePolicy,
     milestone_check_pass, milestone_check_fail,
-    WorkflowSpec, WorkflowNodeSpec, WorkflowSpawnInfo, workflow_spec_to_kernel,
+    WorkflowSpec, WorkflowNodeSpec, WorkflowSpawnInfo, WorkflowDependencyPolicy,
+    WorkflowNodeStatus, WorkflowNodeOutcome, WorkflowOutcome, workflow_spec_to_kernel,
     workflow_node_spec_to_kernel, submit_workflow_nodes_to_kernel, submit_workflow_to_kernel, submit_workflow_nodes_tool, start_workflow_tool,
     workflow_budget_note,
     fanout_synthesize, generate_and_filter, verify_rules, gen_eval,
@@ -171,7 +175,7 @@ from deepstrike.collaboration import (
     AcceptanceCriterion, VerificationContract, ContractCheckResult,
     ContractBuilder, format_contract_for_system_prompt, contract_to_criteria_strings,
     AgentPool, AgentRole, IsolatedVerifierContext,
-    ContractDrivenHarness, ContractOutcome, ContractHarnessOptions, Violation,
+    ContractOutcome, CreatorVerifierBody, StructuredContractJudge,
     HandoffArtifact, HandoffBus, ContractOutcomeInput,
     CreatorVerifierMode, OrchestrationMode, CreatorVerifierMetrics,
 )
@@ -207,9 +211,11 @@ __all__ = [
     "restore_kernel_runtime",
     "snapshot_kernel_runtime",
     "MemoryWriteRateLimit",
-    "SchedulerBudget",
+    "SchedulerPolicy",
+    "PromptBudget",
     "SubAgentHarnessConfig",
     "OsProfile",
+    "SignalPolicy",
     "assert_native_profile",
     "os_profile",
     "collect_text",
@@ -273,7 +279,7 @@ __all__ = [
     "ProviderReplay",
     "ProviderReplay",
     "ProviderReplay",
-    "LLMProvider", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
+    "LLMProvider", "ContextBudgetOverflow", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
     "OpenAIResponsesProvider",
     "QwenProvider", "DeepSeekProvider", "MiniMaxAnthropicProvider", "MiniMaxOpenAIProvider", "OllamaProvider", "KimiProvider",
     "StreamEvent", "TextDelta", "ThinkingDelta",
@@ -284,11 +290,15 @@ __all__ = [
     "ToolError", "safe_tool", "ok", "fail", "format_tool_error", "ToolAuditFailedEvent",
     "EntropySample", "EntropySampleEvent", "EntropyAlertEvent",
     "WorkingMemory",
-    "DreamStore", "DreamResult", "SessionData", "MemoryEntry", "CurationResult", "CurationStats",
+    "DreamStore", "SessionData", "MemoryRecord", "MemoryRecall", "MemoryQuery",
+    "MemoryScope", "MemoryProvenance", "MemoryKind", "MemoryAuthor", "MemoryTrustLevel",
     "PermissionManager", "PermissionMode", "Permission", "PermissionDecision",
-    "QualityGate",
-    "SinglePassHarness", "HarnessLoop", "EvalLoopHarness", "HarnessRequest", "HarnessOutcome",
-    "HarnessEvent", "CriterionResult",
+    "AttemptBody", "AttemptBodyContext", "AttemptBodyEvent", "AttemptBodyTerminal",
+    "AttemptJudge", "AttemptLoop", "AttemptLoopEvent", "AttemptOutcome",
+    "AttemptProgressEvent", "AttemptRequest", "CarryContext", "CarryPolicy",
+    "Criterion", "CriterionResult", "HybridJudge", "JudgeContext", "JudgeResult",
+    "LlmEvalJudge", "PreparedAttempt", "RuntimeAttemptBody", "StopPolicy", "Verdict",
+    "VerdictFnJudge", "continue_session", "fresh_with_digest", "fresh_with_feedback",
     "SkillRegistry",
     "KnowledgeSource",
     "RuntimeSignal", "SignalClaim", "SignalDeliveryReceipt",
@@ -309,11 +319,12 @@ __all__ = [
     "AcceptanceCriterion", "VerificationContract", "ContractCheckResult",
     "ContractBuilder", "format_contract_for_system_prompt", "contract_to_criteria_strings",
     "AgentPool", "AgentRole", "IsolatedVerifierContext",
-    "ContractDrivenHarness", "ContractOutcome", "ContractHarnessOptions", "Violation",
+    "ContractOutcome", "CreatorVerifierBody", "StructuredContractJudge",
     "HandoffArtifact", "HandoffBus", "ContractOutcomeInput",
     "CreatorVerifierMode", "OrchestrationMode", "CreatorVerifierMetrics",
     # Workflow DAG drive (W0-ABI)
-    "WorkflowSpec", "WorkflowNodeSpec", "WorkflowSpawnInfo", "workflow_spec_to_kernel",
+    "WorkflowSpec", "WorkflowNodeSpec", "WorkflowSpawnInfo", "WorkflowDependencyPolicy",
+    "WorkflowNodeStatus", "WorkflowNodeOutcome", "WorkflowOutcome", "workflow_spec_to_kernel",
     "workflow_node_spec_to_kernel", "submit_workflow_nodes_to_kernel", "submit_workflow_to_kernel", "submit_workflow_nodes_tool", "start_workflow_tool",
     "workflow_budget_note",
     "fanout_synthesize", "generate_and_filter", "verify_rules", "gen_eval",

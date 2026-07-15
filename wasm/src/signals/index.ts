@@ -4,6 +4,14 @@ export interface RuntimeSignal {
   urgency: "low" | "normal" | "high" | "critical"
   payload: Record<string, unknown>
   dedupeKey?: string
+  /** Target a specific session loop. Omitted means a shared signal. */
+  recipient?: string
+  /** Absolute journal-clock deadline for optional urgency escalation. */
+  deadlineMs?: number
+  /** Merge with an unconsumed queued signal carrying the same key. */
+  coalesceKey?: string
+  /** Number of host signals deterministically represented by this signal. */
+  coalescedCount?: number
 }
 
 export interface SignalSource {
@@ -38,6 +46,7 @@ export class ScheduledPrompt {
       signalType: "job",
       urgency: "normal",
       payload: { goal: this.goal, criteria: this.criteria, runAtMs: this.runAtMs, ...this.metadata },
+      coalescedCount: 1,
       dedupeKey: `scheduled-${this.runAtMs}`,
     }
   }

@@ -7,9 +7,9 @@ use async_trait::async_trait;
 use compact_str::CompactString;
 use deepstrike_core::context::renderer::RenderedContext;
 use deepstrike_core::governance::permission::PermissionAction;
+use deepstrike_core::runtime::kernel::KernelReliabilityConfig;
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::runtime::{KernelEffect, KernelInput, KernelInputEvent, KernelRuntime};
-use deepstrike_core::runtime::kernel::KernelReliabilityConfig;
 use deepstrike_core::scheduler::policy::SchedulerBudget;
 use deepstrike_core::scheduler::state_machine::{KernelObservation, LoopStateMachine};
 use deepstrike_core::types::capability::{CapabilityDescriptor, CapabilityKind};
@@ -141,6 +141,7 @@ fn default_runtime_opts(
         timeout_ms: None,
         extensions: None,
         agent_id: None,
+        memory_scope: None,
         system_prompt: None,
         initial_memory: vec![],
         skill_dir: None,
@@ -150,8 +151,8 @@ fn default_runtime_opts(
         governance: None,
         os_profile: None,
         governance_policy: None,
-        attention_policy: None,
-        scheduler_budget: None,
+        signal_policy: None,
+        scheduler_policy: None,
         resource_quota: None,
         memory_policy: None,
         tokenizer: None,
@@ -208,7 +209,13 @@ async fn runtime_applies_bounded_kernel_reliability_config() {
         snapshot_journal_bytes_limit: Some(16 * 1024 * 1024),
     });
 
-    assert_eq!(RuntimeRunner::new(opts).execute("configured").await.unwrap(), "ok");
+    assert_eq!(
+        RuntimeRunner::new(opts)
+            .execute("configured")
+            .await
+            .unwrap(),
+        "ok"
+    );
 }
 
 #[tokio::test]
@@ -223,7 +230,10 @@ async fn runtime_surfaces_invalid_kernel_reliability_config() {
         ..KernelReliabilityConfig::default()
     });
 
-    let error = RuntimeRunner::new(opts).execute("invalid").await.unwrap_err();
+    let error = RuntimeRunner::new(opts)
+        .execute("invalid")
+        .await
+        .unwrap_err();
     assert!(error.to_string().contains("InvalidConfig"));
 }
 
@@ -248,6 +258,7 @@ async fn governance_denies_tool_on_plane() {
 
     let ctx = RunContext {
         agent_id: None,
+        memory_scope: None,
         skill_dir: None,
         dream_store: None,
         knowledge_source: None,
@@ -298,6 +309,7 @@ async fn governance_ask_user_without_handler_resolves_denied() {
 
     let ctx = RunContext {
         agent_id: None,
+        memory_scope: None,
         skill_dir: None,
         dream_store: None,
         knowledge_source: None,
@@ -374,6 +386,7 @@ async fn governance_ask_user_runs_tool_after_handler_approval() {
 
     let ctx = RunContext {
         agent_id: None,
+        memory_scope: None,
         skill_dir: None,
         dream_store: None,
         knowledge_source: None,

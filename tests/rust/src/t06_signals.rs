@@ -1,3 +1,4 @@
+use deepstrike_core::scheduler::tcb::TaskLifecycle;
 use deepstrike_core::signals::router::SignalRouter;
 use deepstrike_core::types::policy::SignalDisposition;
 use deepstrike_core::types::signal::{RuntimeSignal, SignalSource, SignalType, Urgency};
@@ -25,7 +26,7 @@ fn critical_signal(summary: &str) -> RuntimeSignal {
 #[test]
 fn normal_signal_queued() {
     let mut router = SignalRouter::new(100);
-    let d = router.ingest(normal_signal("job"), false);
+    let d = router.ingest(normal_signal("job"), TaskLifecycle::Suspended);
     assert_eq!(d, SignalDisposition::Queue);
     assert_eq!(router.depth(), 1);
 }
@@ -33,7 +34,7 @@ fn normal_signal_queued() {
 #[test]
 fn critical_signal_interrupts_now() {
     let mut router = SignalRouter::new(100);
-    let d = router.ingest(critical_signal("fire"), true);
+    let d = router.ingest(critical_signal("fire"), TaskLifecycle::Running);
     assert_eq!(d, SignalDisposition::InterruptNow);
     assert_eq!(router.depth(), 0);
 }
@@ -41,7 +42,7 @@ fn critical_signal_interrupts_now() {
 #[test]
 fn next_returns_queued_signal() {
     let mut router = SignalRouter::new(100);
-    router.ingest(normal_signal("task"), false);
+    router.ingest(normal_signal("task"), TaskLifecycle::Suspended);
     let sig = router.next().unwrap();
     assert_eq!(sig.summary.as_str(), "task");
     assert_eq!(router.depth(), 0);
@@ -60,10 +61,10 @@ fn deduplicates_by_key() {
     let mut router = SignalRouter::new(100);
     let sig = normal_signal("tick").with_dedupe("cron-tick-1");
 
-    let d1 = router.ingest(sig.clone(), false);
+    let d1 = router.ingest(sig.clone(), TaskLifecycle::Suspended);
     assert_ne!(d1, SignalDisposition::Ignore);
 
-    let d2 = router.ingest(sig, false);
+    let d2 = router.ingest(sig, TaskLifecycle::Suspended);
     assert_eq!(d2, SignalDisposition::Ignore);
 }
 
@@ -73,8 +74,8 @@ fn different_dedupe_keys_not_deduped() {
     let s1 = normal_signal("a").with_dedupe("key-1");
     let s2 = normal_signal("b").with_dedupe("key-2");
 
-    let d1 = router.ingest(s1, false);
-    let d2 = router.ingest(s2, false);
+    let d1 = router.ingest(s1, TaskLifecycle::Suspended);
+    let d2 = router.ingest(s2, TaskLifecycle::Suspended);
     assert_ne!(d1, SignalDisposition::Ignore);
     assert_ne!(d2, SignalDisposition::Ignore);
     assert_eq!(router.depth(), 2);
@@ -83,8 +84,8 @@ fn different_dedupe_keys_not_deduped() {
 #[test]
 fn no_dedupe_key_never_deduplicates() {
     let mut router = SignalRouter::new(100);
-    let d1 = router.ingest(normal_signal("a"), false);
-    let d2 = router.ingest(normal_signal("a"), false);
+    let d1 = router.ingest(normal_signal("a"), TaskLifecycle::Suspended);
+    let d2 = router.ingest(normal_signal("a"), TaskLifecycle::Suspended);
     assert_ne!(d1, SignalDisposition::Ignore);
     assert_ne!(d2, SignalDisposition::Ignore);
 }
@@ -94,11 +95,17 @@ fn clear_dedup_allows_reingest() {
     let mut router = SignalRouter::new(100);
     let sig = normal_signal("tick").with_dedupe("key-1");
 
-    router.ingest(sig.clone(), false);
-    assert_eq!(router.ingest(sig.clone(), false), SignalDisposition::Ignore);
+    router.ingest(sig.clone(), TaskLifecycle::Suspended);
+    assert_eq!(
+        router.ingest(sig.clone(), TaskLifecycle::Suspended),
+        SignalDisposition::Ignore
+    );
 
     router.clear_dedup();
-    assert_ne!(router.ingest(sig, false), SignalDisposition::Ignore);
+    assert_ne!(
+        router.ingest(sig, TaskLifecycle::Suspended),
+        SignalDisposition::Ignore
+    );
 }
 
 // ─── Queue capacity ─────────────────────────────────────────────────────────
@@ -107,11 +114,11 @@ fn clear_dedup_allows_reingest() {
 fn full_queue_drops_signal() {
     let mut router = SignalRouter::new(1);
     assert_eq!(
-        router.ingest(normal_signal("first"), false),
+        router.ingest(normal_signal("first"), TaskLifecycle::Suspended),
         SignalDisposition::Queue
     );
     assert_eq!(
-        router.ingest(normal_signal("second"), false),
+        router.ingest(normal_signal("second"), TaskLifecycle::Suspended),
         SignalDisposition::Dropped
     );
     assert_eq!(router.depth(), 1);
@@ -120,10 +127,10 @@ fn full_queue_drops_signal() {
 #[test]
 fn drain_queue_makes_room() {
     let mut router = SignalRouter::new(1);
-    router.ingest(normal_signal("first"), false);
+    router.ingest(normal_signal("first"), TaskLifecycle::Suspended);
     router.next(); // drain
     assert_eq!(
-        router.ingest(normal_signal("second"), false),
+        router.ingest(normal_signal("second"), TaskLifecycle::Suspended),
         SignalDisposition::Queue
     );
 }
@@ -139,7 +146,7 @@ fn high_urgency_when_running_interrupts() {
         Urgency::High,
         "warn",
     );
-    let d = router.ingest(sig, true);
+    let d = router.ingest(sig, TaskLifecycle::Running);
     assert!(d == SignalDisposition::Interrupt || d == SignalDisposition::InterruptNow);
 }
 
@@ -147,7 +154,7 @@ fn high_urgency_when_running_interrupts() {
 fn low_urgency_observed_or_queued() {
     let mut router = SignalRouter::new(100);
     let sig = RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Low, "bg");
-    let d = router.ingest(sig, false);
+    let d = router.ingest(sig, TaskLifecycle::Suspended);
     assert!(d == SignalDisposition::Queue || d == SignalDisposition::Observe);
 }
 
@@ -216,6 +223,10 @@ fn signal_gateway_subscribe_ingest() {
         urgency: "normal".into(),
         payload: serde_json::json!({"event": "push"}),
         dedupe_key: None,
+        recipient: None,
+        deadline_ms: None,
+        coalesce_key: None,
+        coalesced_count: 1,
     });
     gw.destroy();
 }

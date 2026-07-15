@@ -1,9 +1,10 @@
 """
-11 — system_prompt, initialMemory, saveSession, knowledge.init(), frontmatter, HarnessLoop streaming
+11 — system_prompt, initialMemory, saveSession, knowledge.init(), frontmatter, AttemptLoop streaming
 """
 import pytest
-from deepstrike import HarnessLoop
-from deepstrike.harness.harness import Criterion, HarnessRequest
+from deepstrike import (
+    AttemptLoop, AttemptRequest, Criterion, LlmEvalJudge, RuntimeAttemptBody, StopPolicy,
+)
 from conftest import make_agent, make_provider, collect_events, text, MockDreamStore, MockKnowledgeSource, SKILL_DIR
 
 
@@ -71,40 +72,46 @@ class TestFrontmatterStripping:
         assert len(output) > 0
 
 
-# ─── HarnessLoop.run_streaming() ─────────────────────────────────────────
+# ─── AttemptLoop.stream() ────────────────────────────────────────────────
 
-class TestHarnessLoopStreaming:
+class TestAttemptLoopStreaming:
     @pytest.mark.timeout(90)
     async def test_emits_token_supervising_terminal(self):
         events = []
         result = ""
-        async for evt in await HarnessLoop(
-            make_agent(), make_provider(), max_attempts=2,
-        ).run_streaming(HarnessRequest(
+        loop = AttemptLoop(
+            body=RuntimeAttemptBody(make_agent()._runner),
+            judge=LlmEvalJudge(make_provider()),
+            stop=StopPolicy(max_attempts=2),
+        )
+        async for evt in loop.stream(AttemptRequest(
             goal="What is 6 * 7? Output only the number.",
             criteria=[Criterion(text="Answer must be 42")],
         )):
             events.append(evt)
             if evt.type == "token":
-                result += evt.text or ""
+                result += str(evt.progress.payload.get("text", "")) if evt.progress else ""
         assert len(result) > 0
-        assert any(e.type == "supervising" for e in events)
-        assert any(e.type in ("done", "max_attempts_reached") for e in events)
+        assert any(e.type == "judging" for e in events)
+        assert any(e.type == "completed" for e in events)
 
     @pytest.mark.timeout(90)
     async def test_done_verdict_has_details(self):
         verdict = None
-        async for evt in await HarnessLoop(
-            make_agent(), make_provider(), max_attempts=2,
-        ).run_streaming(HarnessRequest(
+        loop = AttemptLoop(
+            body=RuntimeAttemptBody(make_agent()._runner),
+            judge=LlmEvalJudge(make_provider()),
+            stop=StopPolicy(max_attempts=2),
+        )
+        async for evt in loop.stream(AttemptRequest(
             goal="Output the number 99.",
             criteria=[
                 Criterion(text="Response must contain 99", required=True),
                 Criterion(text="Response should be concise", required=False, weight=0.5),
             ],
         )):
-            if evt.type == "done":
-                verdict = evt.verdict
+            if evt.type == "completed" and evt.outcome:
+                verdict = evt.outcome.verdict
         if verdict is not None:
             assert isinstance(verdict.passed, bool)
             assert isinstance(verdict.overall_score, float)

@@ -9,7 +9,7 @@ import { getKernel } from "../src/kernel.js"
 import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/index.js"
 import { SignalGateway } from "../src/os/public.js"
 import type { WorkflowSpec } from "../src/index.js"
-import { startKernelV2 } from "./helpers/kernel-v2.js"
+import { durableStartKernelV2 } from "./helpers/kernel-v2.js"
 
 describe("#2-B-ii mid-flight workflow preemption", () => {
   it("a Critical signal aborts the running node and tears the workflow down", async () => {
@@ -35,8 +35,9 @@ describe("#2-B-ii mid-flight workflow preemption", () => {
     // Queue a Critical signal so the batch monitor picks it up on its first poll, mid-run.
     gateway.ingest({ source: "gateway", signalType: "alert", urgency: "critical", payload: { goal: "STOP NOW" } })
 
+    const sessionLog = new InMemorySessionLog()
     const runner = new RuntimeRunner({
-      sessionLog: new InMemorySessionLog(),
+      sessionLog,
       executionPlane: new LocalExecutionPlane(),
       maxTokens: 8000,
       subAgentOrchestrator: orch as never,
@@ -44,7 +45,7 @@ describe("#2-B-ii mid-flight workflow preemption", () => {
     } as never)
 
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    startKernelV2(rt)
+    await durableStartKernelV2(rt, sessionLog, "wf-preempt")
     ;(runner as never as { activeKernel: unknown }).activeKernel = rt
     ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-preempt"
     ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
@@ -54,7 +55,7 @@ describe("#2-B-ii mid-flight workflow preemption", () => {
 
     // The running node was aborted mid-flight and the workflow torn down.
     expect(orch.sawAbort).toBe(true)
-    expect(outcome.failed).toContain("wf-node0")
+    expect(outcome.nodeOutcomes).toContainEqual(expect.objectContaining({ nodeId: "wf-node0", status: "failed" }))
     const pending = (runner as never as { pendingObservations: Array<{ kind: string; agent_ids?: string[] }> }).pendingObservations
     const preempt = pending.find(o => o.kind === "agent_preempted")
     expect(preempt).toBeDefined()

@@ -2,7 +2,8 @@
 export { WorkingMemory } from "./working.js"
 export { InMemoryDreamStore } from "./in-memory-store.js"
 export type {
-  DreamStore, DreamResult, SessionData, SessionMessage, MemoryEntry, CurationResult, CurationStats,
-  MemoryWriteRequest, MemoryQuery, MemoryRetrieval, MemoryMetadata, MemoryKind,
+  DreamStore, SessionData, SessionMessage, MemoryRecord, MemoryRecall,
+  MemoryQuery, MemoryScope, MemoryProvenance,
+  MemoryKind, MemoryAuthor, MemoryTrustLevel,
 } from "./protocols.js"
 export type { KnowledgeSource } from "../knowledge/source.js"

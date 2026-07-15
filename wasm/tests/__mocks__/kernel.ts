@@ -57,8 +57,6 @@ export class KernelRuntime {
         this.governanceAskUser = rules.some(r => r.action === "ask_user")
         break
       }
-      case "set_attention_policy":
-        break
       case "start_run":
         this.phase = 0
         this.terminal = false
@@ -258,7 +256,21 @@ export class Governance {
 
 export class SignalRouter {
   constructor(_maxQueueSize: number) {}
-  ingest(_signal: unknown, _isRunning: boolean): string { return "ignore" }
+  ingest(signal: unknown, lifecycle: "ready" | "running" | "suspended" | "done"): string {
+    if (!["ready", "running", "suspended", "done"].includes(lifecycle)) {
+      throw new TypeError(`invalid task lifecycle ${String(lifecycle)}`)
+    }
+    if (lifecycle === "done") return "queue"
+    const urgency = (signal as { urgency?: string }).urgency
+    if (urgency === "critical") {
+      return lifecycle === "ready" ? "run" : "interrupt_now"
+    }
+    if (urgency === "high") {
+      return lifecycle === "ready" ? "run" : "interrupt"
+    }
+    if (urgency === "normal") return lifecycle === "ready" ? "run" : "queue"
+    return "observe"
+  }
   next(): null { return null }
   depth(): number { return 0 }
   clearDedup(): void {}

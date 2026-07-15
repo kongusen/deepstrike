@@ -1,5 +1,7 @@
 /** Ambient types when `@deepstrike/wasm-kernel` is not installed (e.g. `tsc` without `build:wasm`). */
 declare module "@deepstrike/wasm-kernel" {
+  export type SignalRouterLifecycle = "ready" | "running" | "suspended" | "done"
+
   export class KernelRuntime {
     constructor(policy: { maxTokens: number; maxTurns?: number; maxTotalTokens?: number; timeoutMs?: number })
     step(inputJson: string): string
@@ -19,7 +21,7 @@ declare module "@deepstrike/wasm-kernel" {
 
   export class SignalRouter {
     constructor(maxQueueSize: number)
-    ingest(signal: unknown, isRunning: boolean): string
+    ingest(signal: unknown, lifecycle: SignalRouterLifecycle): string
     next(): { urgency: string } | null
   }
 
@@ -34,12 +36,6 @@ declare module "@deepstrike/wasm-kernel" {
     limitParamRange(toolName: string, paramPath: string, min?: number, max?: number): void
     setTime(nowMs: number): void
     evaluate(toolName: string, argsJson: string): { kind: string; reason?: string; retryAfterMs?: number }
-  }
-
-  export class IdlePipeline {
-    constructor(agentId: string)
-    feedTrigger(sessions: unknown[], memories: unknown[], nowMs: number): { kind: string; messages?: unknown[]; curationResult?: unknown; runResult?: unknown }
-    feedSynthesisResult(content: string): { kind: string; curationResult?: unknown; runResult?: unknown }
   }
 
   // Eval / harness quality gate (0.5.0 fold: free functions, was the EvalPipeline class).

@@ -1,3 +1,4 @@
+use crate::scheduler::tcb::TaskLifecycle;
 use crate::types::policy::SignalDisposition;
 use crate::types::signal::{RuntimeSignal, Urgency};
 
@@ -5,23 +6,33 @@ use crate::types::signal::{RuntimeSignal, Urgency};
 pub struct UrgencyBasedPolicy;
 
 impl UrgencyBasedPolicy {
-    pub fn evaluate(&self, signal: &RuntimeSignal, is_running: bool) -> SignalDisposition {
+    pub fn evaluate(&self, signal: &RuntimeSignal, lifecycle: TaskLifecycle) -> SignalDisposition {
+        if lifecycle.is_terminal() {
+            return SignalDisposition::Queue;
+        }
+
         match signal.urgency {
             Urgency::Critical => {
-                if is_running {
+                if matches!(lifecycle, TaskLifecycle::Running | TaskLifecycle::Suspended) {
                     SignalDisposition::InterruptNow
                 } else {
                     SignalDisposition::Run
                 }
             }
             Urgency::High => {
-                if is_running {
+                if matches!(lifecycle, TaskLifecycle::Running | TaskLifecycle::Suspended) {
                     SignalDisposition::Interrupt
                 } else {
                     SignalDisposition::Run
                 }
             }
-            Urgency::Normal => SignalDisposition::Queue,
+            Urgency::Normal => {
+                if matches!(lifecycle, TaskLifecycle::Ready) {
+                    SignalDisposition::Run
+                } else {
+                    SignalDisposition::Queue
+                }
+            }
             Urgency::Low => SignalDisposition::Observe,
         }
     }
@@ -30,6 +41,8 @@ impl UrgencyBasedPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scheduler::tcb::TaskLifecycle;
+    use crate::types::result::TerminationReason;
     use crate::types::signal::{SignalSource, SignalType};
 
     #[test]
@@ -42,7 +55,7 @@ mod tests {
             "fire",
         );
         assert_eq!(
-            policy.evaluate(&signal, true),
+            policy.evaluate(&signal, TaskLifecycle::Running),
             SignalDisposition::InterruptNow
         );
     }
@@ -52,6 +65,45 @@ mod tests {
         let policy = UrgencyBasedPolicy;
         let signal =
             RuntimeSignal::new(SignalSource::Cron, SignalType::Event, Urgency::Low, "tick");
-        assert_eq!(policy.evaluate(&signal, false), SignalDisposition::Observe);
+        assert_eq!(
+            policy.evaluate(&signal, TaskLifecycle::Ready),
+            SignalDisposition::Observe
+        );
+    }
+
+    #[test]
+    fn normal_signal_runs_an_idle_nonterminal_task() {
+        let policy = UrgencyBasedPolicy;
+        let signal = RuntimeSignal::new(
+            SignalSource::Cron,
+            SignalType::Job,
+            Urgency::Normal,
+            "work ready",
+        );
+
+        assert_eq!(
+            policy.evaluate(&signal, TaskLifecycle::Ready),
+            SignalDisposition::Run
+        );
+        assert_eq!(
+            policy.evaluate(&signal, TaskLifecycle::Running),
+            SignalDisposition::Queue
+        );
+    }
+
+    #[test]
+    fn terminal_task_queues_signal_for_host_decision() {
+        let policy = UrgencyBasedPolicy;
+        let signal = RuntimeSignal::new(
+            SignalSource::Gateway,
+            SignalType::Alert,
+            Urgency::Critical,
+            "late signal",
+        );
+
+        assert_eq!(
+            policy.evaluate(&signal, TaskLifecycle::Done(TerminationReason::Completed),),
+            SignalDisposition::Queue
+        );
     }
 }

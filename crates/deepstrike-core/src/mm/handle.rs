@@ -82,7 +82,13 @@ pub struct Handle {
 
 impl Handle {
     pub fn resident(id: HandleId, kind: HandleKind, tokens: u32) -> Self {
-        Self { id, kind, residency: Residency::Resident, tokens, source: None }
+        Self {
+            id,
+            kind,
+            residency: Residency::Resident,
+            tokens,
+            source: None,
+        }
     }
 
     /// A resident handle anchored to a source object (e.g. a tool `call_id`).
@@ -92,7 +98,13 @@ impl Handle {
         tokens: u32,
         source: impl Into<CompactString>,
     ) -> Self {
-        Self { id, kind, residency: Residency::Resident, tokens, source: Some(source.into()) }
+        Self {
+            id,
+            kind,
+            residency: Residency::Resident,
+            tokens,
+            source: Some(source.into()),
+        }
     }
 }
 
@@ -265,15 +277,23 @@ impl EvictionPlan {
 
     /// Whether the plan includes the Layer-3 idle/time-decay micro op.
     pub fn has_time_decay(&self) -> bool {
-        self.ops.iter().any(|op| matches!(op, EvictionOp::TimeDecayMicro))
+        self.ops
+            .iter()
+            .any(|op| matches!(op, EvictionOp::TimeDecayMicro))
     }
 
     /// Map legacy `PressureAction` → the new specific op (for behavior-preserving migration).
     /// The old `recommend()` returns one of 5 actions; we map them 1:1 onto the new ops.
-    pub fn from_legacy_action(action: PressureAction, target_tokens: u32, preserve_turns: usize) -> Self {
+    pub fn from_legacy_action(
+        action: PressureAction,
+        target_tokens: u32,
+        preserve_turns: usize,
+    ) -> Self {
         let ops = match action {
             PressureAction::None => vec![],
-            PressureAction::SnipCompact => vec![EvictionOp::Snip { per_msg_ratio: 0.10 }],
+            PressureAction::SnipCompact => vec![EvictionOp::Snip {
+                per_msg_ratio: 0.10,
+            }],
             PressureAction::MicroCompact => vec![EvictionOp::TimeDecayMicro],
             PressureAction::ContextCollapse => vec![EvictionOp::Collapse { target_tokens }],
             PressureAction::AutoCompact => vec![EvictionOp::AutoCompact { preserve_turns }],
@@ -306,9 +326,14 @@ pub fn plan_spool(output: &str, threshold_bytes: u32, preview_bytes: u32) -> Opt
     }
     let preview = format!(
         "{}\n[…tool result spooled: {} bytes total, {} byte preview shown; full content persisted to disk by the SDK…]",
-        &output[..end], size, end
+        &output[..end],
+        size,
+        end
     );
-    Some(SpoolDecision { original_size: size as u32, preview })
+    Some(SpoolDecision {
+        original_size: size as u32,
+        preview,
+    })
 }
 
 /// Pure eviction planner (M3): the **single decision point** for the per-turn compression
@@ -339,7 +364,9 @@ pub fn plan_eviction(
     }
     // Map the pressure recommendation to a specific op; `None` yields an empty plan (no op appended).
     if recommended != PressureAction::None {
-        ops.extend(EvictionPlan::from_legacy_action(recommended, target_tokens, preserve_turns).ops);
+        ops.extend(
+            EvictionPlan::from_legacy_action(recommended, target_tokens, preserve_turns).ops,
+        );
     }
     EvictionPlan { ops }
 }
@@ -355,7 +382,9 @@ mod tests {
         table.insert(Handle {
             id: 2,
             kind: HandleKind::SpoolFile,
-            residency: Residency::SpooledOut { r: "disk://x".into() },
+            residency: Residency::SpooledOut {
+                r: "disk://x".into(),
+            },
             tokens: 5000,
             source: None,
         });
@@ -382,7 +411,12 @@ mod tests {
     fn residency_occupies_context_only_when_resident() {
         assert!(Residency::Resident.occupies_context());
         assert!(!Residency::Collapsed.occupies_context());
-        assert!(!Residency::PagedOut { tier: MemoryTierHint::Semantic }.occupies_context());
+        assert!(
+            !Residency::PagedOut {
+                tier: MemoryTierHint::Semantic
+            }
+            .occupies_context()
+        );
     }
 
     #[test]
@@ -394,7 +428,10 @@ mod tests {
     fn plan_eviction_emits_specific_op_for_recommended_action() {
         let plan = plan_eviction(PressureAction::AutoCompact, false, 50_000, 3);
         // The op carries the real preserve_turns the caller passed, not a placeholder.
-        assert!(matches!(&plan.ops[..], [EvictionOp::AutoCompact { preserve_turns: 3 }]));
+        assert!(matches!(
+            &plan.ops[..],
+            [EvictionOp::AutoCompact { preserve_turns: 3 }]
+        ));
     }
 
     #[test]
@@ -402,7 +439,12 @@ mod tests {
         // W1-1 收口: the planner stamps the caller's real target into the Collapse op (no placeholder),
         // and the executor honors it verbatim.
         let plan = plan_eviction(PressureAction::ContextCollapse, false, 12_345, 2);
-        assert!(matches!(&plan.ops[..], [EvictionOp::Collapse { target_tokens: 12_345 }]));
+        assert!(matches!(
+            &plan.ops[..],
+            [EvictionOp::Collapse {
+                target_tokens: 12_345
+            }]
+        ));
     }
 
     #[test]
@@ -429,7 +471,10 @@ mod tests {
         // machine's compaction checkpoint must assert the implication (`idle_decay ⇒ has_time_decay`),
         // NOT equality (the old `debug_assert_eq!(has_time_decay, idle_decay)` wrongly aborted here).
         let plan = plan_eviction(PressureAction::MicroCompact, false, 50_000, 2);
-        assert!(plan.has_time_decay(), "MicroCompact yields a time-decay op even when not idle");
+        assert!(
+            plan.has_time_decay(),
+            "MicroCompact yields a time-decay op even when not idle"
+        );
         // And the checkpoint invariant the fixed assertion encodes holds for every combination:
         for recommended in [
             PressureAction::None,
@@ -439,7 +484,10 @@ mod tests {
         ] {
             for idle in [false, true] {
                 let p = plan_eviction(recommended, idle, 50_000, 2);
-                assert!(!idle || p.has_time_decay(), "idle_decay must imply a time-decay op");
+                assert!(
+                    !idle || p.has_time_decay(),
+                    "idle_decay must imply a time-decay op"
+                );
             }
         }
     }
@@ -449,8 +497,17 @@ mod tests {
         assert_eq!(EvictionOp::Spool(1).label(), "spool");
         assert_eq!(EvictionOp::Snip { per_msg_ratio: 0.1 }.label(), "snip");
         assert_eq!(EvictionOp::TimeDecayMicro.label(), "time_decay_micro");
-        assert_eq!(EvictionOp::Collapse { target_tokens: 5000 }.label(), "collapse");
-        assert_eq!(EvictionOp::AutoCompact { preserve_turns: 2 }.label(), "auto_compact");
+        assert_eq!(
+            EvictionOp::Collapse {
+                target_tokens: 5000
+            }
+            .label(),
+            "collapse"
+        );
+        assert_eq!(
+            EvictionOp::AutoCompact { preserve_turns: 2 }.label(),
+            "auto_compact"
+        );
     }
 
     #[test]

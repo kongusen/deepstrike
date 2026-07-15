@@ -12,6 +12,10 @@ pub struct RuntimeSignal {
     pub urgency: String,
     pub payload: serde_json::Value,
     pub dedupe_key: Option<String>,
+    pub recipient: Option<String>,
+    pub deadline_ms: Option<u64>,
+    pub coalesce_key: Option<String>,
+    pub coalesced_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +68,10 @@ impl ScheduledPrompt {
                 "run_at_ms": self.run_at_ms,
             }),
             dedupe_key: Some(format!("cron:{}:{}", self.goal, self.run_at_ms)),
+            recipient: None,
+            deadline_ms: None,
+            coalesce_key: None,
+            coalesced_count: 1,
         }
     }
 }
@@ -186,7 +194,10 @@ impl SignalSource for GatewayReceiver {
                 signal,
             });
         }
-        let pending = state.pending.as_mut().expect("pending delivery initialized");
+        let pending = state
+            .pending
+            .as_mut()
+            .expect("pending delivery initialized");
         if pending.lease_token.is_some() {
             return Ok(None);
         }

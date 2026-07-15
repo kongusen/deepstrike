@@ -37,7 +37,10 @@ describe("InMemorySessionLog", () => {
     expect(kernelRecordDigest({ z: 1, a: [true, "雪"] })).toBe(
       "74ffaa09c9570f87244813a5b15514369f7b1a8996e3e80017585b4df246c1f7",
     )
-    expect(() => kernelRecordDigest({ ratio: 0.5 })).toThrow(KernelLogIntegrityError)
+    expect(kernelRecordDigest({ ratio: 0.5 })).toBe(
+      "7ae3311a2b33b26525cf688e72ec90df645b018c033d6b9efc23f422af4f8391",
+    )
+    expect(() => kernelRecordDigest({ ratio: Number.POSITIVE_INFINITY })).toThrow(KernelLogIntegrityError)
   })
 
   it("validates the complete digest chain and derives a regex-free operation cursor", async () => {

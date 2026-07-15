@@ -17,10 +17,6 @@ from deepstrike.types.agent import (
   agent_run_spec_to_kernel as spec_to_kernel,
 )
 
-if TYPE_CHECKING:
-  from deepstrike.harness.harness import HarnessLoop
-
-
 @dataclass
 class SubAgentRunContext:
   parent_opts: RuntimeOptions
@@ -39,6 +35,8 @@ class SubAgentRunContext:
   # filtering on the missing list ran every DAG node TOOL-LESS); "filtered" (default) = filter
   # to the manifest grants, empty ⇒ deny-all (spawn path, quarantined nodes).
   tool_access: str = "filtered"  # "inherit" | "filtered"
+  # AttemptLoop carry material; delivered through the child's signal input.
+  context_input: str | None = None
 
 
 def _termination_from_status(status: str) -> str:
@@ -243,27 +241,38 @@ class SubAgentOrchestrator:
     return await self._run_direct(ctx)
 
   async def _run_with_harness(self, ctx: SubAgentRunContext) -> SubAgentResult:
-    from deepstrike.harness.harness import HarnessLoop, HarnessRequest
+    from deepstrike.harness.harness import (
+      AttemptLoop,
+      AttemptRequest,
+      RuntimeAttemptBody,
+      StopPolicy,
+    )
+    from deepstrike.harness.judge import LlmEvalJudge
 
     # W-N1: same grant resolution as the direct path (inherit vs filtered).
     base_plane, meta_tools = _resolve_tool_grants(ctx)
     # M3/G4: worktree isolation for a worktree node (cleaned up in `finally` below).
     exec_plane, cleanup_worktree = _wrap_worktree(ctx, base_plane)
+    system_prompt, inherit_events = await _resolve_inheritance(ctx)
     child_runner = RuntimeRunner(_build_child_opts(
       ctx,
-      system_prompt=ctx.parent_opts.system_prompt,
+      system_prompt=system_prompt,
       filtered_plane=exec_plane,
       meta_tools=meta_tools,
     ))
-    loop = HarnessLoop(
-      child_runner,
-      ctx.harness.eval_provider,
-      max_attempts=ctx.harness.max_attempts,
+    if ctx.context_input:
+      child_runner.inject_note(ctx.context_input)
+    loop = AttemptLoop(
+      body=RuntimeAttemptBody(child_runner),
+      judge=LlmEvalJudge(ctx.harness.eval_provider),
+      stop=StopPolicy(max_attempts=ctx.harness.max_attempts),
     )
     try:
-      outcome = await loop.run(HarnessRequest(
+      outcome = await loop.run(AttemptRequest(
+        session_id=ctx.spec.identity.session_id,
         goal=ctx.spec.goal,
         criteria=_harness_criteria(ctx.spec),
+        inherit_events=inherit_events,
       ))
     finally:
       await cleanup_worktree()
@@ -274,17 +283,33 @@ class SubAgentOrchestrator:
     if outcome.result:
       final_message = Message(role="assistant", content=outcome.result)
 
+    run_termination = _termination_from_status(outcome.run_status)
+    termination = (
+      "error"
+      if outcome.outcome == "exhausted"
+      or (
+        outcome.outcome == "run_error"
+        and run_termination not in {"error", "user_abort"}
+      )
+      else run_termination
+    )
     loop_result = LoopResult(
-      termination="completed" if outcome.passed else "error",
-      turns_used=outcome.iterations,
+      termination=termination,
+      turns_used=outcome.turns,
       total_tokens_used=outcome.total_tokens,
       final_message=final_message,
+      attempt={
+        "outcome": outcome.outcome,
+        "run_status": outcome.run_status,
+        "attempts": outcome.attempts,
+        "verdict": outcome.verdict,
+      },
     )
     # R3-1: surface nodes the agent submitted under the harness so run_workflow appends them.
     return SubAgentResult(
       agent_id=ctx.spec.identity.agent_id,
       result=loop_result,
-      submitted_nodes=list(getattr(outcome, "submitted_nodes", []) or []),
+      submitted_nodes=list(outcome.submitted_nodes),
     )
 
   async def _run_direct(self, ctx: SubAgentRunContext) -> SubAgentResult:
@@ -301,6 +326,8 @@ class SubAgentOrchestrator:
       filtered_plane=exec_plane,
       meta_tools=meta_tools,
     ))
+    if ctx.context_input:
+      child_runner.inject_note(ctx.context_input)
 
     done: DoneEvent | None = None
     final_text = ""
@@ -351,6 +378,7 @@ async def spawn_standalone(
   spec: AgentRunSpec,
   *,
   orchestrator: SubAgentOrchestrator | None = None,
+  context_input: str | None = None,
 ) -> SubAgentResult:
   """Kernel spawn path without an active parent run loop (harness / coordinator use)."""
   policy = LoopPolicy(max_tokens=parent_opts.max_tokens, max_turns=parent_opts.max_turns)
@@ -379,4 +407,5 @@ async def spawn_standalone(
     manifest=manifest,
     session_log=parent_opts.session_log,
     harness=parent_opts.sub_agent_harness,
+    context_input=context_input,
   ))

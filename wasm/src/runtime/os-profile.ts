@@ -2,14 +2,20 @@ import type { GovernancePolicy } from "../governance.js"
 
 export type OsProfileId = "native"
 
+export interface SignalPolicy {
+  queueMax: number
+  ttlMs?: number
+  deadlineEscalation?: boolean
+}
+
 export interface NativeOsProfile {
   id: OsProfileId
-  attentionPolicy: { maxQueueSize?: number }
+  signalPolicy: SignalPolicy
   governancePolicy: GovernancePolicy
 }
 
-/** Default attention policy for native profile smoke tests. */
-export const DEFAULT_NATIVE_ATTENTION_POLICY = { maxQueueSize: 64 }
+/** Default signal policy for native profile smoke tests. */
+export const DEFAULT_NATIVE_SIGNAL_POLICY: SignalPolicy = { queueMax: 64 }
 
 /** Permissive governance policy for native runs that do not need AskUser. */
 export const DEFAULT_NATIVE_GOVERNANCE_POLICY: GovernancePolicy = {
@@ -32,7 +38,7 @@ export function osProfile(profile: OsProfileId | NativeOsProfile = "native"): Na
   if (profile !== "native") throw new Error(`Unsupported OS profile: ${profile}`)
   return {
     id: "native",
-    attentionPolicy: DEFAULT_NATIVE_ATTENTION_POLICY,
+    signalPolicy: DEFAULT_NATIVE_SIGNAL_POLICY,
     governancePolicy: DEFAULT_NATIVE_GOVERNANCE_POLICY,
   }
 }
@@ -43,7 +49,7 @@ export function assertNativeProfile(profile: OsProfileId | NativeOsProfile = "na
   if (resolved.id !== "native") {
     throw new Error(`Unsupported OS profile: ${resolved.id}`)
   }
-  const validation = validateDeclarativePolicy(resolved.governancePolicy, resolved.attentionPolicy)
+  const validation = validateDeclarativePolicy(resolved.governancePolicy, resolved.signalPolicy)
   if (!validation.valid) {
     throw new Error(`Invalid native OS profile: ${validation.errors.join("; ")}`)
   }
@@ -55,7 +61,7 @@ export function assertNativeProfile(profile: OsProfileId | NativeOsProfile = "na
  */
 export function validateDeclarativePolicy(
   govPolicy?: GovernancePolicy,
-  attentionPolicy?: { maxQueueSize?: number },
+  signalPolicy?: SignalPolicy,
 ): { valid: boolean; errors: string[] } {
   const errors: string[] = []
 
@@ -74,11 +80,15 @@ export function validateDeclarativePolicy(
     }
   }
 
-  if (attentionPolicy) {
-    if (attentionPolicy.maxQueueSize !== undefined) {
-      if (typeof attentionPolicy.maxQueueSize !== "number" || attentionPolicy.maxQueueSize <= 0) {
-        errors.push("AttentionPolicy maxQueueSize must be a positive integer")
-      }
+  if (signalPolicy) {
+    if (!Number.isInteger(signalPolicy.queueMax) || signalPolicy.queueMax <= 0) {
+      errors.push("SignalPolicy queueMax must be a positive integer")
+    }
+    if (signalPolicy.ttlMs !== undefined && (!Number.isInteger(signalPolicy.ttlMs) || signalPolicy.ttlMs <= 0)) {
+      errors.push("SignalPolicy ttlMs must be a positive integer")
+    }
+    if (signalPolicy.deadlineEscalation !== undefined && typeof signalPolicy.deadlineEscalation !== "boolean") {
+      errors.push("SignalPolicy deadlineEscalation must be a boolean")
     }
   }
 

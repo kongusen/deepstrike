@@ -19,13 +19,15 @@ export function createRunner(
     maxTurns?: number
     sessionLog?: InMemorySessionLog
     agentId?: string
+    memoryScope?: import("../../src/memory/protocols.js").MemoryScope
     dreamStore?: DreamStore
     compressionStore?: ArchiveStore
     resultSpool?: LargeResultSpool
     onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
     onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
     governancePolicy?: GovernancePolicy
-    attentionPolicy?: { maxQueueSize?: number }
+    signalPolicy?: import("../../src/runtime/os-profile.js").SignalPolicy
+    promptBudget?: import("../../src/runtime/runner.js").PromptBudget
     asyncSummarizer?: AsyncSummarizer
     dreamSummarizer?: DreamSummarizer
     dreamProvider?: LLMProvider
@@ -51,13 +53,15 @@ export function createRunner(
     maxTokens: opts.maxTokens ?? 2048,
     maxTurns: opts.maxTurns ?? 25,
     agentId: opts.agentId,
+    memoryScope: opts.memoryScope,
     dreamStore: opts.dreamStore,
     compressionStore: opts.compressionStore,
     resultSpool: opts.resultSpool,
     onToolSuspend: opts.onToolSuspend,
     onPermissionRequest: opts.onPermissionRequest,
     governancePolicy: opts.governancePolicy,
-    attentionPolicy: opts.attentionPolicy,
+    signalPolicy: opts.signalPolicy,
+    promptBudget: opts.promptBudget,
     asyncSummarizer: opts.asyncSummarizer,
     dreamSummarizer: opts.dreamSummarizer,
     dreamProvider: opts.dreamProvider,

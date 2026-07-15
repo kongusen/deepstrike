@@ -82,10 +82,6 @@ pub enum ConstraintSpec {
     },
 }
 
-fn default_signal_queue_size() -> u32 {
-    64
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KernelInput {
     pub version: u32,
@@ -166,6 +162,20 @@ pub struct GovernanceConfig {
     pub rate_limits: Vec<RateLimitSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constraints: Vec<ConstraintSpec>,
+}
+
+pub const SIGNAL_POLICY_VERSION: u32 = 1;
+
+/// Versioned, atomically validated signal-routing policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignalPolicyConfig {
+    pub version: u32,
+    pub queue_max: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_escalation: Option<bool>,
 }
 
 /// Host-selectable reliability policy. These values bound retained replay
@@ -281,6 +291,7 @@ impl TryFrom<&KernelSnapshotPolicyV2> for SchedulerBudget {
 /// Each field maps 1:1 to a granular `Set*` / `Load*` event; `None`/absent leaves that aspect untouched.
 /// This is the host-side analogue of the SDK's `applyKernelPolicies` — one event for the whole setup.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reliability: Option<KernelReliabilityConfig>,
@@ -302,12 +313,16 @@ pub struct RunConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub governance: Option<GovernanceConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attention_max_queue_size: Option<u32>,
+    pub signal_policy: Option<SignalPolicyConfig>,
+    /// Host-counted provider request overhead and hard output/safety reserves. These journaled
+    /// facts are deducted before the kernel renders any prompt content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_budget: Option<crate::context::config::PromptBudgetConfig>,
     /// Stable, replayable context behavior. Ratios use integer ppm on the ABI wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_policy: Option<crate::context::policy::ContextPolicyV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scheduler_max_wall_ms: Option<u64>,
+    pub scheduler_policy: Option<crate::scheduler::policy::SchedulerPolicyConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_quota: Option<crate::governance::quota::ResourceQuota>,
     /// RunGroup admission result. The kernel enforces these as local hard limits and reports
@@ -505,11 +520,9 @@ pub enum KernelInputEvent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         constraints: Vec<ConstraintSpec>,
     },
-    /// Override the default in-kernel signal router queue size (default 64).
-    /// The router is always active; this only adjusts capacity.
-    SetAttentionPolicy {
-        #[serde(default = "default_signal_queue_size")]
-        max_queue_size: u32,
+    /// Atomically replace the complete signal-routing policy.
+    SetSignalPolicy {
+        policy: SignalPolicyConfig,
     },
     ForceCompact,
     UpdateTask {
@@ -520,10 +533,9 @@ pub enum KernelInputEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run_spec: Option<AgentRunSpec>,
     },
-    /// K2: apply a bundle of run-setup configuration in a single event — the consolidation of the
-    /// ~10 discrete `Set*` / `Load*` config events the SDK used to fire one-by-one before `StartRun`.
-    /// Every field is optional; an absent field leaves that aspect untouched. The granular events
-    /// remain for runtime mutation (a skill mount changing tools, a mid-run budget change). ABI-additive.
+    /// K2: apply a bundle of run-setup configuration in a single event. Every field is optional;
+    /// an absent field leaves that aspect untouched. This is a strict single-version contract:
+    /// unknown and superseded policy fields are rejected rather than silently ignored.
     ConfigureRun {
         config: RunConfig,
     },
@@ -566,7 +578,7 @@ pub enum KernelInputEvent {
     MemoryQueryResult {
         effect_id: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        entries: Vec<crate::mm::PageInEntry>,
+        hits: Vec<crate::mm::memory::MemoryRecall>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -688,24 +700,19 @@ pub enum KernelInputEvent {
     LoadWorkflow {
         spec: crate::orchestration::workflow::WorkflowSpec,
         parent_session_id: String,
-        /// W0-ABI resume: node agent-ids already completed (recovered from the log). Empty = fresh.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        resumed_completed: Vec<String>,
         /// R3-1 resume: the runtime `submit_workflow_nodes` batches (in order) recovered from the log,
         /// re-applied before completions so dynamically-appended nodes are reconstructed. Additive:
         /// empty for a fresh run or a resume without dynamic submissions.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         resumed_submissions: Vec<Vec<crate::orchestration::workflow::WorkflowNode>>,
-        /// R3-1: base graph index recorded for each submission batch (parallel to
-        /// `resumed_submissions`); absent/short = legacy order-only replay.
+        /// Exact base graph index for every recovered submission batch. Length must equal
+        /// `resumed_submissions`; mismatch rejects the resume atomically.
         #[serde(default)]
         resumed_submission_bases: Vec<u32>,
-        /// W-1: recovered completions WITH their result-borne control signals (classify branch /
-        /// loop stop), so a resumed classifier re-prunes and a semantic loop stop is honored.
-        /// Additive: SDKs that only send `resumed_completed` (bare ids) get signal-less replay.
-        /// When both fields name the same agent id, this one wins.
+        /// Typed recovered terminal outcomes plus control signals. Status, termination and output
+        /// are mandatory facts for exact dependency-policy replay; bare completed ids are invalid.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        resumed_results: Vec<crate::orchestration::workflow::ResumedCompletion>,
+        resumed_outcomes: Vec<crate::orchestration::workflow::ResumedNodeOutcome>,
     },
     /// Feed a completed sub-agent result back into the parent loop.
     SubAgentCompleted {
@@ -765,7 +772,7 @@ pub enum KernelInputEvent {
     },
     /// Write a long-term memory entry (SDK background agent calls this).
     WriteMemory {
-        memory: crate::mm::memory::MemoryWriteRequest,
+        memory: crate::mm::memory::MemoryRecord,
     },
     /// Query long-term memory for context (kernel calls this; SDK responds asynchronously).
     QueryMemory {
@@ -935,7 +942,7 @@ pub enum KernelEffect {
         reason: String,
     },
     PersistMemory {
-        memory: crate::mm::memory::MemoryWriteRequest,
+        memory: crate::mm::memory::MemoryRecord,
     },
     QueryMemory {
         query: crate::mm::memory::MemoryQuery,
@@ -1047,6 +1054,14 @@ pub enum KernelObservation {
     },
     Renewed {
         sprint: u32,
+    },
+    /// Rendering proved that fixed context or the protected transaction tail cannot fit inside the
+    /// declared input budget. No provider effect is emitted for this turn.
+    ContextBudgetExceeded {
+        turn: u32,
+        overflow_kind: crate::context::renderer::ContextBudgetOverflowKind,
+        required_tokens: u32,
+        max_tokens: u32,
     },
     /// K1: a boundary sweep of the knowledge partition applied deferred upserts and/or dropped
     /// marked entries. `removed_keys` lists keyed removals (unkeyed drops count only in
@@ -1174,10 +1189,7 @@ pub enum KernelObservation {
     /// W0-ABI: a workflow finished (all nodes terminal, or stalled by a gated dependency).
     WorkflowCompleted {
         turn: u32,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        completed: Vec<String>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        failed: Vec<String>,
+        node_outcomes: Vec<crate::orchestration::workflow::run::WorkflowNodeOutcome>,
     },
     /// #2-B: a high-urgency `InterruptNow` signal preempted in-flight work. The kernel has already
     /// marked these agents `Done(UserAbort)` and reclaimed the root to reason about the interrupt; the
@@ -1215,6 +1227,12 @@ pub enum KernelObservation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         submitter: Option<String>,
     },
+    /// A runtime node batch was rejected before any graph mutation.
+    NodesRejected {
+        turn: u32,
+        node_index: u32,
+        reason: String,
+    },
     /// A tool call needs user approval (governance `AskUser`). Not blocked by the
     /// kernel — the SDK must obtain approval before executing the named call.
     ToolGated {
@@ -1232,6 +1250,21 @@ pub enum KernelObservation {
         signal_id: String,
         disposition: String,
         queue_depth: u32,
+    },
+    SignalDisplaced {
+        turn: u32,
+        admitted_signal_id: String,
+        displaced_signal_id: String,
+        queue_depth: u32,
+    },
+    SignalExpired {
+        turn: u32,
+        signal_id: String,
+        queue_depth: u32,
+    },
+    SignalsPending {
+        turn: u32,
+        depth: u32,
     },
     /// A budget axis (turns / tokens / wall-time) was exhausted.
     BudgetExceeded {
@@ -1279,31 +1312,35 @@ pub enum KernelObservation {
     /// Memory entry written successfully (Phase 7).
     MemoryWritten {
         turn: u32,
-        memory_id: String,
-        memory_kind: String,
+        record_id: String,
+        scope: crate::mm::memory::MemoryScope,
+        memory_kind: crate::mm::memory::MemoryKind,
+        name: String,
         size_bytes: u32,
     },
     /// Memory validation failed (Phase 7).
     MemoryValidationFailed {
         turn: u32,
-        memory_id: String,
+        record_id: String,
         error: String,
     },
     MemoryWriteFailed {
         turn: u32,
-        memory_id: String,
+        record_id: String,
         error: String,
     },
     /// Memory query request (Phase 7).
     MemoryQueried {
         turn: u32,
-        query_context: String,
+        scope: crate::mm::memory::MemoryScope,
+        query: String,
         requested_k: usize,
         requires_async_response: bool,
     },
     MemoryQueryFailed {
         turn: u32,
-        query_context: String,
+        scope: crate::mm::memory::MemoryScope,
+        query: String,
         error: String,
     },
     /// Large tool result spooled (Layer 1).

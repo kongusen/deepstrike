@@ -15,6 +15,8 @@ export interface Criterion {
   text: string
   required?: boolean
   weight?: number
+  id?: string
+  machineCheckable?: boolean
 }
 
 export interface VerdictDetail {

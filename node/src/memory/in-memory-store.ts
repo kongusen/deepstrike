@@ -6,23 +6,24 @@
  *
  * Use cases:
  *   - Benchmark A/B variants where memory is on/off (preload via constructor).
- *   - Unit tests that exercise `Agent.dream()` or the `memory_query` path without disk I/O.
+ *   - Unit tests that exercise session extraction or the `memory_query` path without disk I/O.
  *   - Local development / CI where a persistent memory store isn't needed.
  *
- * The `search()` impl is intentionally trivial — it returns the first `topK` memories for the
- * agent regardless of `query`. The kernel ranks by score before deciding what to surface, so the
- * order memories were inserted is what callers see. For semantic search, plug in a real store.
+ * Search is a deterministic local reference implementation: distinct lexical overlap first,
+ * `metadata.updated_at` recency second, and insertion order as the final stable tie-breaker.
+ * Non-empty queries never return unrelated entries. For semantic search, plug in a real store.
  */
 import type {
-  CurationResult,
   DreamStore,
-  MemoryEntry,
+  MemoryQuery,
+  MemoryRecall,
+  MemoryRecord,
   SessionData,
 } from "./protocols.js"
+import { rankMemories } from "./ranking.js"
 
 export class InMemoryDreamStore implements DreamStore {
-  private sessions = new Map<string, SessionData[]>()
-  private memories = new Map<string, MemoryEntry[]>()
+  private memories = new Map<string, MemoryRecord[]>()
   /** Sessions persisted via `saveSession`; exposed for test assertions. */
   readonly savedSessions: SessionData[] = []
 
@@ -30,25 +31,9 @@ export class InMemoryDreamStore implements DreamStore {
    * @param initialMemories Optional seed memories applied to every agent that asks for memories
    *                        for the first time. Useful for benchmark scenarios that preload a fact.
    */
-  constructor(private readonly initialMemories: MemoryEntry[] = []) {}
+  constructor(private readonly initialMemories: MemoryRecord[] = []) {}
 
-  /** Pre-populate sessions for a specific agent (test/benchmark setup). */
-  addSession(agentId: string, session: SessionData): void {
-    const list = this.sessions.get(agentId) ?? []
-    list.push(session)
-    this.sessions.set(agentId, list)
-  }
-
-  /** Pre-populate memories for a specific agent (test/benchmark setup). */
-  addMemories(agentId: string, entries: MemoryEntry[]): void {
-    this.memories.set(agentId, [...(this.memories.get(agentId) ?? []), ...entries])
-  }
-
-  async loadSessions(agentId: string): Promise<SessionData[]> {
-    return this.sessions.get(agentId) ?? []
-  }
-
-  async loadMemories(agentId: string): Promise<MemoryEntry[]> {
+  private recordsFor(agentId: string): MemoryRecord[] {
     if (this.memories.has(agentId)) return this.memories.get(agentId)!
     if (this.initialMemories.length > 0) {
       this.memories.set(agentId, [...this.initialMemories])
@@ -57,24 +42,43 @@ export class InMemoryDreamStore implements DreamStore {
     return []
   }
 
-  async commit(
-    agentId: string,
-    result: CurationResult,
-    existing: MemoryEntry[],
-  ): Promise<void> {
-    const kept = existing.filter((_, i) => !result.toRemoveIndices.includes(i))
-    this.memories.set(agentId, [...kept, ...result.toAdd])
+  async upsert(agentId: string, incoming: MemoryRecord): Promise<void> {
+    const kept = [...this.recordsFor(agentId)]
+    const index = kept.findIndex(record =>
+        record.scope.tenant_id === incoming.scope.tenant_id
+        && record.scope.namespace === incoming.scope.namespace
+        && record.kind === incoming.kind
+        && record.name === incoming.name,
+    )
+    if (index >= 0) kept[index] = incoming
+    else kept.push(incoming)
+    this.memories.set(agentId, kept)
   }
 
-  async search(agentId: string, _query: string, topK = 5): Promise<MemoryEntry[]> {
-    const all = await this.loadMemories(agentId)
-    return all.slice(0, topK)
+  async search(agentId: string, query: MemoryQuery): Promise<MemoryRecall[]> {
+    const all = this.recordsFor(agentId)
+    const candidates = all.filter(record =>
+      record.scope.tenant_id === query.scope.tenant_id
+      && record.scope.namespace === query.scope.namespace
+      && (query.kinds.length === 0 || query.kinds.includes(record.kind))
+      && (query.min_score === undefined || record.confidence >= query.min_score),
+    )
+    const selected = rankMemories(query.query, candidates.map((record, insertionIndex) => {
+      return {
+        value: record,
+        searchableText: `${record.name} ${record.description} ${record.content}`,
+        updatedAt: Number.isFinite(record.updated_at) ? record.updated_at : 0,
+        insertionIndex,
+      }
+    }), query.top_k)
+    return selected.map(record => ({
+      record,
+      score: Math.max(0, Math.min(1, record.confidence)),
+      why: "deterministic lexical relevance with recency tie-breaking",
+    }))
   }
 
   async saveSession(data: SessionData): Promise<void> {
     this.savedSessions.push(data)
-    const list = this.sessions.get(data.agentId) ?? []
-    list.push(data)
-    this.sessions.set(data.agentId, list)
   }
 }

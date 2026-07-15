@@ -28,11 +28,7 @@ impl RenewalPolicy {
     /// Perform renewal: carry system + knowledge + task_state into new sprint.
     /// History is reset; only the last `carryover_tokens` worth of turns are kept.
     /// Signals are cleared (they are per-turn ephemeral).
-    pub fn renew(
-        &self,
-        partitions: &ContextPartitions,
-        max_tokens: u32,
-    ) -> ContextPartitions {
+    pub fn renew(&self, partitions: &ContextPartitions, max_tokens: u32) -> ContextPartitions {
         let config = ContextConfig {
             carryover_ratio: self.carryover_ratio,
             renewal_threshold: self.renewal_threshold,
@@ -42,7 +38,9 @@ impl RenewalPolicy {
 
         // Identity and Knowledge slots carry over unchanged.
         for msg in &partitions.system.messages {
-            renewed.system.push(msg.clone(), msg.token_count.unwrap_or(0));
+            renewed
+                .system
+                .push(msg.clone(), msg.token_count.unwrap_or(0));
         }
         // Cloned wholesale (not re-pushed message-by-message) so entry identity — keys, pins,
         // pending upserts, boundary-eviction marks — survives renewal; the caller sweeps right
@@ -57,10 +55,19 @@ impl RenewalPolicy {
         // History: carry recent turns up to carryover budget.
         let carryover_budget = config.carryover_tokens(max_tokens);
         let mut remaining = carryover_budget;
-        let mut carried: Vec<_> = partitions.history.messages.iter().rev()
+        let mut carried: Vec<_> = partitions
+            .history
+            .messages
+            .iter()
+            .rev()
             .take_while(|msg| {
                 let t = msg.token_count.unwrap_or(0);
-                if t <= remaining { remaining = remaining.saturating_sub(t); true } else { false }
+                if t <= remaining {
+                    remaining = remaining.saturating_sub(t);
+                    true
+                } else {
+                    false
+                }
             })
             .cloned()
             .collect();
@@ -75,7 +82,9 @@ impl RenewalPolicy {
 }
 
 impl Default for RenewalPolicy {
-    fn default() -> Self { Self::from_config(&ContextConfig::default()) }
+    fn default() -> Self {
+        Self::from_config(&ContextConfig::default())
+    }
 }
 
 #[cfg(test)]
@@ -87,7 +96,10 @@ mod tests {
     use crate::types::message::Message;
 
     fn make_policy(carryover_ratio: f64) -> RenewalPolicy {
-        RenewalPolicy::from_config(&ContextConfig { carryover_ratio, ..Default::default() })
+        RenewalPolicy::from_config(&ContextConfig {
+            carryover_ratio,
+            ..Default::default()
+        })
     }
 
     #[test]

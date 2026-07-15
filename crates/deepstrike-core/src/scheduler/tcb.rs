@@ -94,7 +94,12 @@ pub struct BudgetLedger {
 
 impl BudgetLedger {
     pub fn new(limits: SchedulerBudget) -> Self {
-        Self { limits, turns: 0, total_tokens: 0, started_at_ms: None }
+        Self {
+            limits,
+            turns: 0,
+            total_tokens: 0,
+            started_at_ms: None,
+        }
     }
 
     /// Delegates to the existing budget logic — single source of truth, no axis drift.
@@ -231,7 +236,10 @@ mod tests {
 
     #[test]
     fn process_state_maps_to_lifecycle() {
-        assert_eq!(TaskLifecycle::from(ProcessState::Running), TaskLifecycle::Running);
+        assert_eq!(
+            TaskLifecycle::from(ProcessState::Running),
+            TaskLifecycle::Running
+        );
         assert_eq!(
             TaskLifecycle::from(ProcessState::Joined),
             TaskLifecycle::Done(TerminationReason::Completed)
@@ -279,33 +287,57 @@ mod tests {
 
     #[test]
     fn budget_verdict_none_within_budget() {
-        let tcb = Tcb::root("root", SchedulerBudget { max_turns: 5, ..SchedulerBudget::default() });
+        let tcb = Tcb::root(
+            "root",
+            SchedulerBudget {
+                max_turns: 5,
+                ..SchedulerBudget::default()
+            },
+        );
         assert_eq!(budget_verdict(&tcb, None), None);
     }
 
     #[test]
     fn budget_verdict_matches_should_terminate_axis() {
-        let limits = SchedulerBudget { max_turns: 2, ..SchedulerBudget::default() };
+        let limits = SchedulerBudget {
+            max_turns: 2,
+            ..SchedulerBudget::default()
+        };
         let mut tcb = Tcb::root("root", limits.clone());
         tcb.budget.turns = 2;
         // budget_verdict and the underlying budget check must agree on verdict and reason.
         assert_eq!(limits.should_terminate(2, 0, None, None), Some("max_turns"));
-        assert_eq!(budget_verdict(&tcb, None), Some(TerminationReason::MaxTurns));
+        assert_eq!(
+            budget_verdict(&tcb, None),
+            Some(TerminationReason::MaxTurns)
+        );
     }
 
     #[test]
     fn budget_verdict_wall_time_maps_to_timeout() {
-        let limits = SchedulerBudget { max_wall_ms: Some(1_000), ..SchedulerBudget::default() };
+        let limits = SchedulerBudget {
+            max_wall_ms: Some(1_000),
+            ..SchedulerBudget::default()
+        };
         let mut tcb = Tcb::root("root", limits);
         tcb.budget.started_at_ms = Some(0);
-        assert_eq!(budget_verdict(&tcb, Some(2_000)), Some(TerminationReason::Timeout));
+        assert_eq!(
+            budget_verdict(&tcb, Some(2_000)),
+            Some(TerminationReason::Timeout)
+        );
     }
 
     #[test]
     fn baseline_token_budget_terminates() {
-        let limits = SchedulerBudget { max_total_tokens: 100, ..SchedulerBudget::default() };
+        let limits = SchedulerBudget {
+            max_total_tokens: 100,
+            ..SchedulerBudget::default()
+        };
         let mut tcb = Tcb::root("root", limits);
         tcb.budget.total_tokens = 200;
-        assert_eq!(budget_verdict(&tcb, None), Some(TerminationReason::TokenBudget));
+        assert_eq!(
+            budget_verdict(&tcb, None),
+            Some(TerminationReason::TokenBudget)
+        );
     }
 }

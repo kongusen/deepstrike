@@ -119,7 +119,7 @@ policy = provider.runtime_policy()
 print(policy.max_turns)
 ```
 
-You can still override with `RuntimeOptions(max_turns=...)` or `scheduler_budget`.
+You can still override the provider recommendation with `RuntimeOptions(max_turns=...)`.
 
 ## Level 6: Replay Compatibility
 

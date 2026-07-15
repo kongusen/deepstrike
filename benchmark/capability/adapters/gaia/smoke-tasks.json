@@ -1,0 +1,51 @@
+[
+  {
+    "id": "gaia-smoke-01",
+    "category": "gaia.l1",
+    "goal": "Read the file notes/facts.txt and report the capital of France mentioned there.",
+    "expected": "Paris",
+    "meta": {
+      "files": {
+        "notes/facts.txt": "Country facts:\n- France: capital is Paris\n- Japan: capital is Tokyo\n"
+      }
+    }
+  },
+  {
+    "id": "gaia-smoke-02",
+    "category": "gaia.l1",
+    "goal": "Using code_exec, compute 17 * 19 and report the product.",
+    "expected": "323",
+    "meta": {}
+  },
+  {
+    "id": "gaia-smoke-03",
+    "category": "gaia.l1",
+    "goal": "Search for 'DeepStrike Agent OS' and report the one-word product category mentioned in the top result snippet (the word immediately after 'product:').",
+    "expected": "runtime",
+    "meta": {
+      "searchHits": {
+        "DeepStrike Agent OS": [
+          { "title": "DeepStrike", "snippet": "product: runtime for dynamic agent workflows" }
+        ]
+      }
+    }
+  },
+  {
+    "id": "gaia-smoke-04",
+    "category": "gaia.l1",
+    "goal": "Read inventory/stock.csv. How many units of widget-A are in stock? Answer with the integer only.",
+    "expected": "42",
+    "meta": {
+      "files": {
+        "inventory/stock.csv": "sku,units\nwidget-A,42\nwidget-B,7\nwidget-C,15\n"
+      }
+    }
+  },
+  {
+    "id": "gaia-smoke-05",
+    "category": "gaia.l1",
+    "goal": "Use code_exec to evaluate (2**10) - 24. Report the result.",
+    "expected": "1000",
+    "meta": {}
+  }
+]

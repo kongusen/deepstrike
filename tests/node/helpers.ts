@@ -14,8 +14,15 @@ import {
   LocalExecutionPlane,
   type StreamEvent,
 } from "@deepstrike/sdk"
-import type { DreamStore, SessionData, MemoryEntry, CurationResult } from "@deepstrike/sdk"
-import type { KnowledgeSource } from "@deepstrike/sdk"
+import type {
+  DreamStore,
+  KnowledgeSource,
+  MemoryQuery,
+  MemoryRecall,
+  MemoryRecord,
+  MemoryScope,
+  SessionData,
+} from "@deepstrike/sdk/memory"
 import type { RegisteredTool } from "@deepstrike/sdk"
 import type { Governance } from "@deepstrike/sdk"
 
@@ -37,6 +44,7 @@ export interface MakeRunnerOptions {
   skillDir?: string
   dreamStore?: DreamStore
   agentId?: string
+  memoryScope?: MemoryScope
   knowledgeSource?: KnowledgeSource
   governance?: Governance
   tools?: RegisteredTool[]
@@ -69,9 +77,6 @@ export class RunnerHandle {
     return collectText(this.runStreaming(goal, opts))
   }
 
-  async dream(agentId: string, nowMs?: number) {
-    return this.runner.dream(agentId, nowMs)
-  }
 }
 
 export function makeRunner(options: MakeRunnerOptions = {}): RunnerHandle {
@@ -89,6 +94,7 @@ export function makeRunner(options: MakeRunnerOptions = {}): RunnerHandle {
     skillDir: options.skillDir,
     dreamStore: options.dreamStore,
     agentId: options.agentId,
+    memoryScope: options.memoryScope,
     knowledgeSource: options.knowledgeSource,
     governance: options.governance,
   })
@@ -100,32 +106,58 @@ export const makeAgent = makeRunner
 
 export const SKILL_DIR = resolve(__dirname, "fixtures/skills")
 
+export const TEST_MEMORY_SCOPE: MemoryScope = {
+  tenant_id: "tests",
+  namespace: "node-sdk",
+}
+
+export function memoryRecord(
+  name: string,
+  content: string,
+  confidence = 0.5,
+  scope: MemoryScope = TEST_MEMORY_SCOPE,
+): MemoryRecord {
+  const now = Date.now()
+  return {
+    record_id: `fixture-${name}`,
+    scope,
+    name,
+    kind: "reference",
+    content,
+    description: content,
+    provenance: {
+      author: "host",
+      trust: "host_verified",
+      evidence_refs: [],
+    },
+    created_at: now,
+    updated_at: now,
+    recall_count: 0,
+    confidence,
+    links: [],
+    pinned: false,
+  }
+}
+
 export class MockDreamStore implements DreamStore {
-  private sessions = new Map<string, SessionData[]>()
-  private memories = new Map<string, MemoryEntry[]>()
+  private memories = new Map<string, MemoryRecord[]>()
   savedSessions: SessionData[] = []
 
-  addSession(agentId: string, session: SessionData): void {
-    const list = this.sessions.get(agentId) ?? []
-    list.push(session)
-    this.sessions.set(agentId, list)
+  async upsert(agentId: string, incoming: MemoryRecord): Promise<void> {
+    const kept = [...(this.memories.get(agentId) ?? [])]
+    const index = kept.findIndex(record => record.scope.tenant_id === incoming.scope.tenant_id
+      && record.scope.namespace === incoming.scope.namespace
+      && record.kind === incoming.kind && record.name === incoming.name)
+    if (index >= 0) kept[index] = incoming
+    else kept.push(incoming)
+    this.memories.set(agentId, kept)
   }
 
-  async loadSessions(agentId: string): Promise<SessionData[]> {
-    return this.sessions.get(agentId) ?? []
-  }
-
-  async loadMemories(agentId: string): Promise<MemoryEntry[]> {
-    return this.memories.get(agentId) ?? []
-  }
-
-  async commit(agentId: string, result: CurationResult, existing: MemoryEntry[]): Promise<void> {
-    const kept = existing.filter((_, i) => !result.toRemoveIndices.includes(i))
-    this.memories.set(agentId, [...kept, ...result.toAdd])
-  }
-
-  async search(agentId: string, _query: string, topK = 5): Promise<MemoryEntry[]> {
-    return (this.memories.get(agentId) ?? []).slice(0, topK)
+  async search(agentId: string, query: MemoryQuery): Promise<MemoryRecall[]> {
+    return (this.memories.get(agentId) ?? [])
+      .filter(record => record.scope.tenant_id === query.scope.tenant_id && record.scope.namespace === query.scope.namespace)
+      .slice(0, query.top_k)
+      .map(record => ({ record, score: record.confidence, why: "fixture" }))
   }
 
   async saveSession(data: SessionData): Promise<void> {

@@ -10,10 +10,12 @@ from deepstrike.runtime import (
   KernelReliability,
   LocalExecutionPlane,
   MemoryWriteRateLimit,
+  PromptBudget,
   ResourceQuota,
   RuntimeOptions,
   RuntimeRunner,
-  SchedulerBudget,
+  SchedulerPolicy,
+  SignalPolicy,
   collect_text,
 )
 
@@ -87,7 +89,19 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
     session_log=InMemorySessionLog(),
     execution_plane=LocalExecutionPlane(),
     max_tokens=1024,
-    scheduler_budget=SchedulerBudget(max_wall_ms=1234),
+    scheduler_policy=SchedulerPolicy(
+      version=1,
+      critical_path_weight=1_000_000,
+      fanout_weight=10_000,
+      age_weight=1_000,
+      token_cost_weight=1,
+    ),
+    signal_policy=SignalPolicy(queue_max=8, ttl_ms=500, deadline_escalation=False),
+    prompt_budget=PromptBudget(
+      prompt_overhead_tokens=20,
+      output_reserve_tokens=100,
+      safety_margin_tokens=10,
+    ),
     context_policy={
       "pressure_thresholds": {"snip": 0.72},
       "preserve_recent_turns": 4,
@@ -115,13 +129,31 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
     "max_spawn_depth": 1,
     "memory_writes_per_window": [3, 1000],
   }
-  budget_event = next(e for e in CapturingKernelRuntime.events if e["kind"] == "set_scheduler_budget")
-  assert budget_event["max_wall_ms"] == 1234
-  context_event = next(
+  signal_event = next(
     e for e in CapturingKernelRuntime.events
-    if e["kind"] == "configure_run" and "context_policy" in e["config"]
+    if e["kind"] == "configure_run" and "signal_policy" in e["config"]
   )
-  assert context_event["config"]["context_policy"] == {
+  assert signal_event["config"]["scheduler_policy"] == {
+    "version": 1,
+    "critical_path_weight": 1_000_000,
+    "fanout_weight": 10_000,
+    "age_weight": 1_000,
+    "token_cost_weight": 1,
+  }
+  assert "scheduler_max_wall_ms" not in signal_event["config"]
+  assert not any(e["kind"] == "set_scheduler_budget" for e in CapturingKernelRuntime.events)
+  assert signal_event["config"]["signal_policy"] == {
+    "version": 1,
+    "queue_max": 8,
+    "ttl_ms": 500,
+    "deadline_escalation": False,
+  }
+  assert signal_event["config"]["prompt_budget"] == {
+    "prompt_overhead_tokens": 20,
+    "output_reserve_tokens": 100,
+    "safety_margin_tokens": 10,
+  }
+  assert signal_event["config"]["context_policy"] == {
     "version": 1,
     "pressure_thresholds_ppm": {
       "snip": 720_000,
@@ -148,6 +180,29 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
     "max_input_bytes": 1024 * 1024,
     "snapshot_journal_bytes_limit": 16 * 1024 * 1024,
   }
+
+
+def test_scheduler_policy_dict_rejects_camel_case_aliases():
+  with pytest.raises(ValueError, match="unknown scheduler policy field"):
+    runner_mod._scheduler_policy_to_kernel({
+      "version": 1,
+      "criticalPathWeight": 1_000_000,
+      "fanoutWeight": 10_000,
+      "ageWeight": 1_000,
+      "tokenCostWeight": 1,
+    })
+
+
+def test_scheduler_policy_dict_rejects_retired_wall_budget():
+  with pytest.raises(ValueError, match="max_wall_ms"):
+    runner_mod._scheduler_policy_to_kernel({
+      "version": 1,
+      "critical_path_weight": 1,
+      "fanout_weight": 1,
+      "age_weight": 1,
+      "token_cost_weight": 1,
+      "max_wall_ms": 1234,
+    })
 
 
 def test_native_kernel_accepts_set_resource_quota_event():

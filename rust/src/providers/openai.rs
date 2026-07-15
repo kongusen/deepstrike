@@ -3,7 +3,7 @@ use deepstrike_core::context::renderer::RenderedContext;
 use deepstrike_core::types::message::{Content, ContentPart, Role, ToolSchema};
 use futures::{Stream, StreamExt};
 use reqwest::Client;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::{LLMProvider, RuntimePolicy, StreamEvent};
 use crate::{Error, Result};
@@ -158,20 +158,18 @@ fn context_to_openai(context: &RenderedContext) -> Vec<Value> {
             "content": content_to_openai(&message.content),
         });
         if message.role == Role::Assistant && !message.tool_calls.is_empty() {
-            next["tool_calls"] = json!(
-                message
-                    .tool_calls
-                    .iter()
-                    .map(|tc| json!({
-                        "id": tc.id.as_str(),
-                        "type": "function",
-                        "function": {
-                            "name": tc.name.as_str(),
-                            "arguments": tc.arguments.to_string(),
-                        }
-                    }))
-                    .collect::<Vec<_>>()
-            );
+            next["tool_calls"] = json!(message
+                .tool_calls
+                .iter()
+                .map(|tc| json!({
+                    "id": tc.id.as_str(),
+                    "type": "function",
+                    "function": {
+                        "name": tc.name.as_str(),
+                        "arguments": tc.arguments.to_string(),
+                    }
+                }))
+                .collect::<Vec<_>>());
         }
         messages.push(next);
     }
@@ -374,7 +372,13 @@ fn parse_openai_sse(
         // 5th element: the last finish_reason seen — "length" flags an output-cap truncation, which
         // arrives on a choices frame before the trailing usage frame, so it's carried in state and
         // attached to the Usage event the runner reads.
-        (Box::pin(byte_stream), String::new(), tool_accum, false, None::<String>),
+        (
+            Box::pin(byte_stream),
+            String::new(),
+            tool_accum,
+            false,
+            None::<String>,
+        ),
         move |(mut stream, mut buf, mut tool_accum, mut flushed, mut finish_reason)| async move {
             if flushed {
                 return None;
@@ -399,7 +403,10 @@ fn parse_openai_sse(
                                 arguments,
                             };
                             flushed = true;
-                            return Some((Ok(evt), (stream, buf, tool_accum, flushed, finish_reason)));
+                            return Some((
+                                Ok(evt),
+                                (stream, buf, tool_accum, flushed, finish_reason),
+                            ));
                         }
                         return None;
                     }
@@ -418,7 +425,8 @@ fn parse_openai_sse(
                             Ok(StreamEvent::Usage {
                                 total_tokens: total as u32,
                                 input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-                                output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0) as u32,
+                                output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0)
+                                    as u32,
                                 cache_read_input_tokens: openai_cached_prompt_tokens(usage),
                                 cache_creation_input_tokens: 0,
                                 // I1: OpenAI-family providers auto-cache; no per-slot attribution.
@@ -498,6 +506,7 @@ mod tests {
             system_text: "system rules".into(),
             system_stable: "system rules".into(),
             system_knowledge: String::new(),
+            budget_overflow: None,
             turns: vec![
                 Message::user("What is the weather?"),
                 Message {
@@ -551,12 +560,16 @@ mod tests {
             turns: vec![Message::user("history msg")],
             state_turn: Some(Message::user("[TASK STATE] goal: g\n\nProceed.")),
             frozen_prefix_len: None,
+            budget_overflow: None,
         };
         let msgs = context_to_openai(&context);
         // [system][history][state] — history is the stable cacheable prefix, state last.
         assert_eq!(msgs[0]["role"], "system");
         assert_eq!(msgs[1]["content"], "history msg");
         assert_eq!(msgs[2]["role"], "user");
-        assert!(msgs[2]["content"].as_str().unwrap().contains("[TASK STATE]"));
+        assert!(msgs[2]["content"]
+            .as_str()
+            .unwrap()
+            .contains("[TASK STATE]"));
     }
 }

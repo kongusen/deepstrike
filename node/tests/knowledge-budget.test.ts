@@ -44,8 +44,8 @@ describe("knowledge budget (K2)", () => {
 
     const { runner, sessionLog } = createRunner(
       provider,
-      [tool("bulk", "bulk", { type: "object", properties: {} }, () => "z".repeat(240))],
-      { maxTokens: 480, maxTurns: 30, repeatFuse: false },
+      [tool("bulk", "bulk", { type: "object", properties: {} }, () => "z ".repeat(200))],
+      { maxTokens: 1024, maxTurns: 30, repeatFuse: false, knowledgeBudgetRatio: 0.12 },
     )
 
     const text = await collectText(runner.run({ sessionId: "knowledge-budget", goal: "exercise the budget" }))
@@ -90,8 +90,8 @@ describe("knowledge budget (K2)", () => {
 
     const { runner } = createRunner(
       provider,
-      [tool("bulk", "bulk", { type: "object", properties: {} }, () => "z".repeat(240))],
-      { maxTokens: 480, maxTurns: 30, repeatFuse: false, knowledgeBudgetRatio: 0 },
+      [tool("bulk", "bulk", { type: "object", properties: {} }, () => "z ".repeat(200))],
+      { maxTokens: 1024, maxTurns: 30, repeatFuse: false, knowledgeBudgetRatio: 0 },
     )
 
     await collectText(runner.run({ sessionId: "knowledge-budget-off", goal: "no cap" }))

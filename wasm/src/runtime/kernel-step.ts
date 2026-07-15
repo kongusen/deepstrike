@@ -192,10 +192,12 @@ export interface KernelObservation {
   archive_ref?: string
   spool_ref?: string
   // Phase 7 / M3: Memory observations
-  memory_id?: string
+  record_id?: string
+  scope?: { tenant_id: string; namespace: string }
+  name?: string
   memory_kind?: string
   size_bytes?: number
-  query_context?: string
+  query?: string
   requested_k?: number
   requires_async_response?: boolean
   /** memory_validation_failed (Phase 7). */
@@ -209,8 +211,8 @@ export interface KernelObservation {
     context_inheritance: string
     model_hint?: string
   }>
-  completed?: string[]
-  failed?: string[]
+  node_outcomes?: import("./types/agent.js").KernelWorkflowNodeOutcome[]
+  node_index?: number
   // entropy_sample / entropy_alert: kernel session-entropy measurement + opt-in watch trip.
   score?: number
   score_version?: number

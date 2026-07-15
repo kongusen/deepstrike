@@ -42,11 +42,12 @@ impl LoopStateMachine {
                         Some("phase_advance".to_string()),
                     );
                 }
-                self.observations.push(KernelObservation::MilestoneAdvanced {
-                    turn: self.turn,
-                    phase_id: phase.id,
-                    capabilities_unlocked: unlocked,
-                });
+                self.observations
+                    .push(KernelObservation::MilestoneAdvanced {
+                        turn: self.turn,
+                        phase_id: phase.id,
+                        capabilities_unlocked: unlocked,
+                    });
             }
             self.milestone.advance();
 
@@ -73,7 +74,10 @@ impl LoopStateMachine {
         } else {
             // Phase blocked — increment retry count.
             let blocked_count = self.milestone.record_block();
-            let reason = result.reason.as_deref().unwrap_or("milestone criteria not met");
+            let reason = result
+                .reason
+                .as_deref()
+                .unwrap_or("milestone criteria not met");
 
             // Retrieve the rollback_policy and retry budget for the current phase.
             let (rollback_policy, max_attempts) = self

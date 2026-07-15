@@ -93,7 +93,7 @@ The root export is the **intent layer** — what you reach for to run an agent, 
 | `@deepstrike/sdk/workflow` | `SubAgentOrchestrator`, `spawnStandalone`, reducers, contracts, handoff/modes, agent + spec types |
 | `@deepstrike/sdk/planes` | `WorktreeExecutionPlane`, `ProcessSandboxPlane`, `McpProxyPlane`, `RemoteVpcPlane`, archive/credential stores |
 | `@deepstrike/sdk/memory` | `DreamStore`, `WorkingMemory`, `InMemoryDreamStore`, `KnowledgeSource` |
-| `@deepstrike/sdk/harness` | `SinglePassHarness`, `EvalLoopHarness`, `HarnessLoop`, `judge` |
+| `@deepstrike/sdk/harness` | `AttemptLoop`, body/judge/carry policies, `judge` |
 | `@deepstrike/sdk/os` | profiles, `KernelPrimitivesDashboard`, signals, `PermissionManager`, replay-testing utilities |
 
 > **Migration from 0.2.x:** the kernel-lowering converters (`*ToKernel`), low-level prompt/eval builders, and the `OpenAIChatProvider` alias are no longer exported from root; backend providers, planes, memory, harness, and OS utilities moved to the subpaths above. See [`MIGRATION-v0.2.300.md`](./MIGRATION-v0.2.300.md).
@@ -190,7 +190,7 @@ Tool calls, spawns, compression, and signals pass through one kernel gate with a
 Oversized tool results (> 50 KB) stay in context as a preview plus a `.spool/` reference — the model reads the full payload on demand via ordinary file tools. When pressure triggers semantic eviction, the SDK summarizes archived content into `DreamStore`. Long tasks survive token pressure instead of failing mid-run.
 
 **Safety and governance by default (OS native profile)**  
-Every run loads declarative `governancePolicy` (deny / ask_user / rate-limit / param rules) and in-kernel signal routing (`attentionPolicy`, default queue 64). Dangerous tools, external interrupts, and approval flows are policy — not ad-hoc `if` checks in your handlers.
+Every run loads declarative `governancePolicy` (deny / ask_user / rate-limit / param rules) and in-kernel signal routing (`signalPolicy`, default queue 64). Dangerous tools, external interrupts, and approval flows are policy — not ad-hoc `if` checks in your handlers.
 
 **Long-term memory as syscalls (Phase-7)**  
 `writeMemory` and `queryMemory` run outside the main tool loop: kernel validation before `DreamStore.commit`, search → `selectMemories` → `memory_retrieval_result` on query. Failed writes emit `memory_validation_failed` for audit; good memory is durable without polluting history.
@@ -204,7 +204,7 @@ Spool, page-out, signals, processes, budgets, and memory events land in `Session
 | You need… | Use… |
 |---|---|
 | Policy before tools run | `governancePolicy` (default: allow-all native profile) |
-| External interrupts | `signalSource` + in-kernel `attentionPolicy` |
+| External interrupts | `signalSource` + in-kernel `signalPolicy` |
 | Huge tool output | Automatic Layer-1 spool; optional custom `resultSpool` |
 | Durable recall across runs | `DreamStore` + semantic `page_out` via `dreamSummarizer` |
 | Programmatic memory I/O | `runner.writeMemory()` / `runner.queryMemory()` |
@@ -336,7 +336,7 @@ Full reference: [docs/concepts/context-slots-compression.md](../docs/concepts/co
 ```typescript
 import {
   DEFAULT_NATIVE_GOVERNANCE_POLICY,
-  DEFAULT_NATIVE_ATTENTION_POLICY,
+  DEFAULT_NATIVE_SIGNAL_POLICY,
 } from "@deepstrike/sdk"
 
 const runner = new RuntimeRunner({
@@ -348,7 +348,13 @@ const runner = new RuntimeRunner({
   maxTokens: 128_000,
   maxTurns: 25,
   timeoutMs: 60_000,
-  schedulerBudget: { maxWallMs: 300_000 },
+  schedulerPolicy: {
+    version: 1,
+    criticalPathWeight: 1_000_000,
+    fanoutWeight: 10_000,
+    ageWeight: 1_000,
+    tokenCostWeight: 1,
+  },
 
   // Resource quotas (M2) — enforced at the kernel syscall trap. Opt-in; omit for unbounded.
   resourceQuota: {
@@ -369,7 +375,12 @@ const runner = new RuntimeRunner({
 
   // Agent OS native profile (defaults shown)
   governancePolicy: DEFAULT_NATIVE_GOVERNANCE_POLICY,
-  attentionPolicy: DEFAULT_NATIVE_ATTENTION_POLICY, // SignalRouter queue size 64
+  signalPolicy: DEFAULT_NATIVE_SIGNAL_POLICY, // SignalRouter queue size 64
+  promptBudget: {
+    promptOverheadTokens: 20,
+    outputReserveTokens: 4096,
+    safetyMarginTokens: 256,
+  },
 
   // Host I/O
   extensions: { temperature: 0.1 },
@@ -404,7 +415,8 @@ const runner = new RuntimeRunner({
 | Option | Purpose |
 |--------|---------|
 | `governancePolicy` | Declarative deny / ask_user / rate-limit / param rules loaded into the kernel before `start_run` |
-| `attentionPolicy` | In-kernel signal router queue size (default 64) |
+| `signalPolicy` | Versioned in-kernel signal queue/TTL policy (default queue 64) |
+| `promptBudget` | Provider-envelope overhead, output reserve, and safety margin deducted from the context window |
 | `resourceQuota` | M2 declarative limits — `maxConcurrentSubagents` / `maxSpawnDepth` / `memoryWritesPerWindow` — enforced at the kernel syscall trap (`set_resource_quota`); over-quota spawns roll back, over-rate writes surface as `memory_validation_failed` |
 | `memoryPolicy` | Long-term memory config sent as `set_memory_policy` and **kernel-enforced**: `validationEnabled: false` admits writes without validation, `maxContentBytes` / `maxNameLength` override validation limits, `retrievalTopK` caps `query_memory` breadth; `memoryPath` / `staleWarningDays` are SDK-consumed (requires `dreamStore` + `agentId` to enable memory) |
 | `onPermissionRequest` | Resolves `tool_gated` + `suspended` → kernel `resume` with approved/denied call IDs |
@@ -528,7 +540,7 @@ const runner = new RuntimeRunner({
 `WorkingMemory` is an SDK helper — not the kernel working partition. Kernel task state lives in `task_state` and renders into Slot 3 (`turns[0]`).
 
 ```typescript
-import { WorkingMemory } from "@deepstrike/sdk"
+import { WorkingMemory } from "@deepstrike/sdk/memory"
 const mem = new WorkingMemory()
 mem.set("step", 1)
 mem.get("step")  // 1
@@ -538,13 +550,13 @@ mem.clear()
 ### DreamStore (long-term memory)
 
 ```typescript
-import type { DreamStore } from "@deepstrike/sdk"
+import type { DreamStore } from "@deepstrike/sdk/memory"
 
 class MyStore implements DreamStore {
   async loadSessions(agentId) { ... }
   async loadMemories(agentId) { ... }
   async commit(agentId, result, existing) { ... }
-  async search(agentId, query, topK) { ... }
+  async search(agentId, query) { ... } // Promise<MemoryRecall[]>
 }
 
 const runner = new RuntimeRunner({
@@ -577,21 +589,26 @@ Kernel-validated long-term memory I/O outside the main tool loop:
 
 ```typescript
 await runner.writeMemory({
-  metadata: {
-    name: "prefers-small-tests",
-    description: "User prefers focused unit tests",
-    kind: "feedback",
-    created_at: Date.now(),
-    updated_at: Date.now(),
-  },
+  record_id: crypto.randomUUID(),
+  scope: { tenant_id: "acme", namespace: "assistant" },
+  name: "prefers-small-tests",
+  kind: "feedback",
   content: "User prefers focused unit tests for SDK behavior.",
+  description: "Testing preference",
+  provenance: { author: "host", trust: "user_asserted", evidence_refs: [] },
+  created_at: Date.now(),
+  updated_at: Date.now(),
+  recall_count: 0,
+  confidence: 1,
+  links: [],
+  pinned: false,
 }, { sessionId: "my-session" })
 
 const hits = await runner.queryMemory({
-  current_context: "Need testing preferences",
-  active_tools: [],
-  already_surfaced: [],
+  scope: { tenant_id: "acme", namespace: "assistant" },
+  query: "Need testing preferences",
   top_k: 5,
+  kinds: ["feedback"],
 }, { sessionId: "my-session" })
 ```
 
@@ -676,7 +693,7 @@ const runner = new RuntimeRunner({
   executionPlane: plane,
   sessionLog,
   signalSource: gw,
-  attentionPolicy: { maxQueueSize: 64 },
+  signalPolicy: { queueMax: 64, ttlMs: 60_000 },
 })
 
 runner.interrupt() // cooperative abort → kernel timeout path
@@ -709,15 +726,25 @@ Requires an active parent run (`run()` / `wake()` in progress). The kernel emits
 ## Harness (evaluation framework)
 
 ```typescript
-import { SinglePassHarness, EvalLoopHarness, HarnessLoop } from "@deepstrike/sdk"
+import {
+  AttemptLoop,
+  RuntimeAttemptBody,
+  LlmEvalJudge,
+  freshWithFeedback,
+} from "@deepstrike/sdk/harness"
 
-const outcome = await new SinglePassHarness(runner).run({ goal: "Say hello" })
-
-const harness = new EvalLoopHarness(runner, {
-  async evaluate(_req, out) { return out.result.includes("hello") },
-}, 3)
-
-const loop = new HarnessLoop(runner, evalProvider, { maxAttempts: 3, skillDir: "./skills" })
+const loop = new AttemptLoop({
+  body: new RuntimeAttemptBody(runner),
+  judge: new LlmEvalJudge(evalProvider, false),
+  stop: { maxAttempts: 3 },
+  // carry defaults to continueSession: stable session + journaled feedback signal.
+  // Use `carry: freshWithFeedback` only when attempts must be isolated.
+})
+const outcome = await loop.run({
+  sessionId: "task-42",
+  goal: "Say hello",
+  criteria: [{ text: "result greets the user", required: true }],
+})
 
 const runnerWithHarness = new RuntimeRunner({
   provider,
@@ -726,6 +753,9 @@ const runnerWithHarness = new RuntimeRunner({
   subAgentHarness: { evalProvider, maxAttempts: 3 },
 })
 ```
+
+`AttemptOutcome` keeps run health (`runStatus`) separate from evaluation (`verdict`) and reports a
+terminal `outcome`: `passed`, `failed_judge`, `exhausted`, or `run_error`.
 
 ---
 

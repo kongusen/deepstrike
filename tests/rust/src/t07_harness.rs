@@ -1,4 +1,6 @@
-use deepstrike_core::harness::{build_eval_messages, parse_verdict, verdict_output_schema, Criterion};
+use deepstrike_core::harness::{
+    build_eval_messages, parse_verdict, verdict_output_schema, Criterion,
+};
 
 // ─── Eval prompt builder ────────────────────────────────────────────────────
 
@@ -105,29 +107,181 @@ fn verdict_output_schema_shape() {
     assert!(verdict_output_schema(false)["properties"]["skill"].is_null());
 }
 
-// ─── SDK-level Harness types ────────────────────────────────────────────────
+// ─── SDK AttemptLoop contract ───────────────────────────────────────────────
 
-#[test]
-fn harness_request_builder() {
-    let req = deepstrike_sdk::HarnessRequest::new("Write a poem");
-    assert_eq!(req.goal, "Write a poem");
-    assert!(req.criteria.is_empty());
-    assert!(req.extensions.is_none());
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
+use deepstrike_sdk::{
+    AttemptBody, AttemptBodyContext, AttemptBodyEvent, AttemptBodyStream, AttemptLoop,
+    AttemptOutcomeKind, AttemptRequest, HybridJudge, JudgeContext, StopPolicy, Verdict,
+    VerdictFnJudge,
+};
+
+#[derive(Clone)]
+struct ScriptedBody {
+    script: Arc<Mutex<VecDeque<(String, String, u32, u64)>>>,
+    contexts: Arc<Mutex<Vec<AttemptBodyContext>>>,
 }
 
-#[test]
-fn harness_outcome_fields() {
-    let outcome = deepstrike_sdk::HarnessOutcome {
-        result: "A poem".into(),
-        passed: true,
-        iterations: 1,
-        total_tokens: 100,
-        status: "completed".into(),
-        overall_score: 1.0,
-        feedback: Some("Great work!".into()),
+impl AttemptBody for ScriptedBody {
+    fn run<'a>(&'a self, context: AttemptBodyContext) -> AttemptBodyStream<'a> {
+        self.contexts.lock().unwrap().push(context);
+        let (result, run_status, turns, tokens) = self.script.lock().unwrap().pop_front().unwrap();
+        Box::pin(futures::stream::iter(vec![Ok(
+            AttemptBodyEvent::BodyDone {
+                run_status,
+                result,
+                turns,
+                total_tokens: tokens,
+            },
+        )]))
+    }
+}
+
+fn body(
+    script: Vec<(&str, &str, u32, u64)>,
+) -> (ScriptedBody, Arc<Mutex<Vec<AttemptBodyContext>>>) {
+    let contexts = Arc::new(Mutex::new(Vec::new()));
+    (
+        ScriptedBody {
+            script: Arc::new(Mutex::new(
+                script
+                    .into_iter()
+                    .map(|(result, status, turns, tokens)| {
+                        (result.to_string(), status.to_string(), turns, tokens)
+                    })
+                    .collect(),
+            )),
+            contexts: contexts.clone(),
+        },
+        contexts,
+    )
+}
+
+fn verdict(passed: bool, feedback: &str) -> Verdict {
+    Verdict {
+        passed,
+        overall_score: if passed { 1.0 } else { 0.0 },
+        feedback: feedback.to_string(),
         details: vec![],
-    };
-    assert!(outcome.passed);
-    assert_eq!(outcome.iterations, 1);
-    assert_eq!(outcome.feedback.as_deref(), Some("Great work!"));
+    }
+}
+
+#[tokio::test]
+async fn attempt_loop_defaults_to_continue_session_and_carries_feedback_as_context() {
+    let (body, contexts) = body(vec![
+        ("draft", "completed", 1, 10),
+        ("final", "completed", 2, 20),
+    ]);
+    let judge = VerdictFnJudge::new(Arc::new(|context: &JudgeContext| {
+        Some(if context.attempt == 2 {
+            verdict(true, "ok")
+        } else {
+            verdict(false, "fix the assertion")
+        })
+    }));
+    let attempt_loop = AttemptLoop::new(body, judge, StopPolicy::new(2)).unwrap();
+
+    let outcome = attempt_loop
+        .run(AttemptRequest::new("stable-session", "original goal"))
+        .await
+        .unwrap();
+
+    let contexts = contexts.lock().unwrap();
+    assert_eq!(contexts.len(), 2);
+    assert_eq!(contexts[0].session_id, "stable-session");
+    assert_eq!(contexts[1].session_id, "stable-session");
+    assert_eq!(contexts[0].goal, "original goal");
+    assert_eq!(contexts[1].goal, "original goal");
+    assert_eq!(
+        contexts[1].context_input.as_deref(),
+        Some("fix the assertion")
+    );
+    assert_eq!(outcome.outcome, AttemptOutcomeKind::Passed);
+    assert_eq!(outcome.result, "final");
+    assert_eq!(outcome.attempts, 2);
+    assert_eq!(outcome.turns, 3);
+    assert_eq!(outcome.total_tokens, 30);
+}
+
+#[tokio::test]
+async fn attempt_loop_keeps_run_health_and_failed_judge_independent() {
+    let (body, _) = body(vec![("healthy output", "completed", 1, 8)]);
+    let judge = VerdictFnJudge::new(Arc::new(|_: &JudgeContext| {
+        Some(verdict(false, "criterion failed"))
+    }));
+    let attempt_loop =
+        AttemptLoop::new(body, judge, StopPolicy::new(3).stop_on_failed_verdict(true)).unwrap();
+
+    let outcome = attempt_loop
+        .run(AttemptRequest::new("one-shot", "goal"))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.outcome, AttemptOutcomeKind::FailedJudge);
+    assert_eq!(outcome.run_status, "completed");
+    assert_eq!(outcome.verdict.as_ref().map(|v| v.passed), Some(false));
+}
+
+#[tokio::test]
+async fn attempt_loop_allows_partial_run_health_to_be_judged() {
+    let (body, _) = body(vec![("useful partial", "max_turns", 4, 40)]);
+    let judge = VerdictFnJudge::new(Arc::new(|_: &JudgeContext| {
+        Some(verdict(true, "partial result is sufficient"))
+    }));
+    let attempt_loop = AttemptLoop::new(body, judge, StopPolicy::new(1)).unwrap();
+
+    let outcome = attempt_loop
+        .run(AttemptRequest::new("partial", "goal"))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.outcome, AttemptOutcomeKind::Passed);
+    assert_eq!(outcome.run_status, "max_turns");
+    assert!(outcome.verdict.unwrap().passed);
+}
+
+#[tokio::test]
+async fn attempt_loop_does_not_judge_run_errors() {
+    let (body, _) = body(vec![("partial", "error", 1, 7)]);
+    let calls = Arc::new(Mutex::new(0u32));
+    let calls_for_judge = calls.clone();
+    let judge = VerdictFnJudge::new(Arc::new(move |_: &JudgeContext| {
+        *calls_for_judge.lock().unwrap() += 1;
+        Some(verdict(true, "unused"))
+    }));
+    let attempt_loop = AttemptLoop::new(body, judge, StopPolicy::new(3)).unwrap();
+
+    let outcome = attempt_loop
+        .run(AttemptRequest::new("error", "goal"))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.outcome, AttemptOutcomeKind::RunError);
+    assert_eq!(*calls.lock().unwrap(), 0);
+    assert!(outcome.verdict.is_none());
+}
+
+#[tokio::test]
+async fn hybrid_judge_uses_fallback_only_when_primary_defers() {
+    let (body, _) = body(vec![("answer", "completed", 1, 3)]);
+    let primary = VerdictFnJudge::new(Arc::new(|_: &JudgeContext| None));
+    let fallback = VerdictFnJudge::new(Arc::new(|_: &JudgeContext| {
+        Some(verdict(true, "fallback accepted"))
+    }));
+    let attempt_loop = AttemptLoop::new(
+        body,
+        HybridJudge::new(primary, fallback),
+        StopPolicy::new(1),
+    )
+    .unwrap();
+
+    let outcome = attempt_loop
+        .run(AttemptRequest::new("hybrid", "goal"))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.outcome, AttemptOutcomeKind::Passed);
+    assert_eq!(outcome.verdict.unwrap().feedback, "fallback accepted");
 }

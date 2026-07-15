@@ -270,6 +270,14 @@ export type WorkflowTaskSpec = { goal: string; criteria?: string[]; lane?: strin
 
 /** One node in a declarative workflow DAG (camelCase host shape). */
 export type NodeTrust = "trusted" | "quarantined"
+export type WorkflowDependencyPolicy = "all_success" | "accept_partial" | "all_terminal" | "optional"
+export type WorkflowNodeStatus = "completed" | "completed_partial" | "failed" | "skipped_upstream_failed"
+
+export function workflowNodeStatusFromTermination(termination: TerminationReason | string): WorkflowNodeStatus {
+  if (termination === "completed") return "completed"
+  if (termination === "error" || termination === "user_abort") return "failed"
+  return "completed_partial"
+}
 
 export interface WorkflowNodeSpec {
   task: WorkflowTaskSpec
@@ -301,11 +309,60 @@ export interface WorkflowNodeSpec {
   maxWallMs?: number
   /** Indices of nodes this node depends on. */
   dependsOn?: number[]
+  /** How dependency terminal states gate this node. Defaults to `all_success`. */
+  depPolicy?: WorkflowDependencyPolicy
 }
 
 /** A declarative workflow DAG the kernel runs node-by-node, gating each spawn. */
 export interface WorkflowSpec {
   nodes: WorkflowNodeSpec[]
+}
+
+export interface KernelWorkflowNodeOutcome {
+  node_id: string
+  status: WorkflowNodeStatus
+  termination?: TerminationReason
+  output?: {
+    role: Message["role"]
+    content: string
+    tool_calls?: Array<{ id: string; name: string; arguments?: Record<string, unknown> }>
+    token_count?: number
+  }
+}
+
+export interface WorkflowNodeOutcome {
+  nodeId: string
+  status: WorkflowNodeStatus
+  termination?: TerminationReason
+  output?: Message
+}
+
+export interface WorkflowOutcome {
+  nodeOutcomes: WorkflowNodeOutcome[]
+  outputs: Record<string, string>
+}
+
+export function workflowNodeOutcomeFromKernel(raw: KernelWorkflowNodeOutcome): WorkflowNodeOutcome {
+  const output = raw.output
+  return {
+    nodeId: raw.node_id,
+    status: raw.status,
+    ...(raw.termination ? { termination: raw.termination } : {}),
+    ...(output
+      ? {
+          output: {
+            role: output.role,
+            content: output.content,
+            toolCalls: (output.tool_calls ?? []).map(call => ({
+              id: call.id,
+              name: call.name,
+              arguments: JSON.stringify(call.arguments ?? {}),
+            })),
+            ...(output.token_count != null ? { tokenCount: output.token_count } : {}),
+          },
+        }
+      : {}),
+  }
 }
 
 /** Per-node spawn descriptor carried in the `workflow_batch_spawned` observation. */
@@ -427,6 +484,7 @@ export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): Record<string, un
     ...(n.maxTurns != null ? { max_turns: n.maxTurns } : {}),
     ...(n.maxWallMs != null ? { max_wall_ms: n.maxWallMs } : {}),
     ...(n.dependsOn && n.dependsOn.length ? { depends_on: n.dependsOn } : {}),
+    dep_policy: n.depPolicy ?? "all_success",
   }
 }
 
@@ -524,6 +582,11 @@ const workflowNodesArraySchema = {
       },
       tokenBudget: { type: "integer", description: "Cap this node's child run at this many cumulative tokens." },
       dependsOn: { type: "array", items: { type: "integer" } },
+      depPolicy: {
+        type: "string",
+        enum: ["all_success", "accept_partial", "all_terminal", "optional"],
+        description: "How dependency terminal states gate this node; defaults to all_success.",
+      },
     },
     required: ["task", "role"],
   },

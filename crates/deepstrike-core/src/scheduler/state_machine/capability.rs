@@ -33,16 +33,17 @@ impl LoopStateMachine {
         mounted_by: Option<String>,
         mount_reason: Option<String>,
     ) {
-        self.observations.push(KernelObservation::CapabilityChanged {
-            turn: self.turn,
-            added,
-            removed,
-            change_kind: Some(change_kind.to_string()),
-            capability_id,
-            version,
-            mounted_by,
-            mount_reason,
-        });
+        self.observations
+            .push(KernelObservation::CapabilityChanged {
+                turn: self.turn,
+                added,
+                removed,
+                change_kind: Some(change_kind.to_string()),
+                capability_id,
+                version,
+                mounted_by,
+                mount_reason,
+            });
     }
 
     pub fn execute_capability_command(&mut self, cmd: crate::types::capability::CapabilityCommand) {

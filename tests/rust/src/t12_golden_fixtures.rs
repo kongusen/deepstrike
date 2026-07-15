@@ -1,8 +1,8 @@
+use deepstrike_core::runtime::{KernelInput, KernelObservation, KernelStep};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::fs;
 use std::path::PathBuf;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
-use deepstrike_core::runtime::{KernelInput, KernelStep, KernelObservation};
 
 fn load_fixture(filename: &str) -> String {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
@@ -18,15 +18,21 @@ where
     T: Serialize + DeserializeOwned + std::fmt::Debug,
 {
     let raw = load_fixture(filename);
-    
+
     // Deserialize
-    let parsed: T = serde_json::from_str(&raw)
-        .unwrap_or_else(|e| panic!("failed to deserialize {} as {}: {}", filename, std::any::type_name::<T>(), e));
-    
+    let parsed: T = serde_json::from_str(&raw).unwrap_or_else(|e| {
+        panic!(
+            "failed to deserialize {} as {}: {}",
+            filename,
+            std::any::type_name::<T>(),
+            e
+        )
+    });
+
     // Serialize back to Value to compare structures, avoiding whitespace issues
     let reserialized = serde_json::to_value(&parsed).unwrap();
     let expected: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    
+
     assert_eq!(
         reserialized, expected,
         "roundtrip failed for {}. Reserialized: {:#?}, Expected: {:#?}",
@@ -126,7 +132,9 @@ fn test_observation_milestone_blocked_fixture() {
 
 #[test]
 fn spawn_sub_agent_fixture_updates_process_table_via_kernel() {
-    use deepstrike_core::runtime::{KernelInput, KernelInputEvent, KernelObservation, KernelRuntime};
+    use deepstrike_core::runtime::{
+        KernelInput, KernelInputEvent, KernelObservation, KernelRuntime,
+    };
     use deepstrike_core::scheduler::policy::SchedulerBudget;
     use deepstrike_core::types::task::RuntimeTask;
 
@@ -138,7 +146,11 @@ fn spawn_sub_agent_fixture_updates_process_table_via_kernel() {
         task: RuntimeTask::new("parent"),
         run_spec: None,
     }));
-    let KernelInputEvent::SpawnSubAgent { spec, parent_session_id } = input.event else {
+    let KernelInputEvent::SpawnSubAgent {
+        spec,
+        parent_session_id,
+    } = input.event
+    else {
         panic!("expected spawn_sub_agent event");
     };
     let step = runtime.step(KernelInput::new(KernelInputEvent::SpawnSubAgent {
@@ -156,7 +168,7 @@ fn spawn_sub_agent_fixture_updates_process_table_via_kernel() {
 
 #[test]
 fn kernel_snapshot_v2_roundtrips_pending_effect_identity() {
-    use deepstrike_core::runtime::{KernelInputEvent, KernelRuntime, KERNEL_SNAPSHOT_VERSION};
+    use deepstrike_core::runtime::{KERNEL_SNAPSHOT_VERSION, KernelInputEvent, KernelRuntime};
     use deepstrike_core::scheduler::policy::SchedulerBudget;
     use deepstrike_core::types::task::RuntimeTask;
 

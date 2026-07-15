@@ -60,7 +60,10 @@ fn evaluate_milestone_carries_verifier_type() {
     sm.start(RuntimeTask::new("test"));
     let action = sm.feed(text_response());
 
-    if let LoopAction::EvaluateMilestone { verifier, phase_id, .. } = action {
+    if let LoopAction::EvaluateMilestone {
+        verifier, phase_id, ..
+    } = action
+    {
         assert_eq!(phase_id, "verify");
         assert_eq!(verifier, Some(MilestoneVerifier::MachineCheck));
     } else {
@@ -81,7 +84,10 @@ fn evaluate_milestone_carries_required_evidence() {
     sm.start(RuntimeTask::new("test"));
     let action = sm.feed(text_response());
 
-    if let LoopAction::EvaluateMilestone { required_evidence, .. } = action {
+    if let LoopAction::EvaluateMilestone {
+        required_evidence, ..
+    } = action
+    {
         assert_eq!(required_evidence, vec!["test_suite_pass", "coverage_80pct"]);
     } else {
         panic!("expected EvaluateMilestone");
@@ -91,14 +97,15 @@ fn evaluate_milestone_carries_required_evidence() {
 #[test]
 fn evaluate_milestone_defaults_to_no_verifier_when_unset() {
     let mut sm = default_sm();
-    sm.load_milestone_contract(
-        MilestoneContract::new().phase(MilestonePhase::new("plan")),
-    );
+    sm.load_milestone_contract(MilestoneContract::new().phase(MilestonePhase::new("plan")));
     sm.start(RuntimeTask::new("test"));
     let action = sm.feed(text_response());
 
     if let LoopAction::EvaluateMilestone { verifier, .. } = action {
-        assert_eq!(verifier, None, "verifier should be None when not configured");
+        assert_eq!(
+            verifier, None,
+            "verifier should be None when not configured"
+        );
     } else {
         panic!("expected EvaluateMilestone");
     }
@@ -131,7 +138,8 @@ fn retry_policy_terminate_on_exceed() {
         "first fail should continue (CallLLM), not terminate"
     );
     assert!(
-        obs1.iter().any(|o| matches!(o, KernelObservation::MilestoneBlocked { .. })),
+        obs1.iter()
+            .any(|o| matches!(o, KernelObservation::MilestoneBlocked { .. })),
         "first fail should emit MilestoneBlocked, got: {obs1:?}"
     );
 
@@ -151,12 +159,9 @@ fn retry_policy_terminate_on_exceed() {
 #[test]
 fn retry_policy_zero_means_unlimited() {
     let mut sm = default_sm();
-    sm.load_milestone_contract(
-        MilestoneContract::new().phase(
-            MilestonePhase::new("plan")
-                .with_retry_policy(RetryPolicy::max(0)), // 0 = unlimited
-        ),
-    );
+    sm.load_milestone_contract(MilestoneContract::new().phase(
+        MilestonePhase::new("plan").with_retry_policy(RetryPolicy::max(0)), // 0 = unlimited
+    ));
     sm.start(RuntimeTask::new("test"));
 
     // Block many times — should never terminate
@@ -192,7 +197,8 @@ fn retry_policy_rollback_on_exceed() {
     });
     let obs = sm.take_observations();
     assert!(
-        obs.iter().any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
+        obs.iter()
+            .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
         "should rollback when MilestoneRollbackPolicy::Rollback and budget exceeded"
     );
 }
@@ -200,9 +206,7 @@ fn retry_policy_rollback_on_exceed() {
 #[test]
 fn no_retry_policy_means_unlimited_retries() {
     let mut sm = default_sm();
-    sm.load_milestone_contract(
-        MilestoneContract::new().phase(MilestonePhase::new("plan")),
-    );
+    sm.load_milestone_contract(MilestoneContract::new().phase(MilestonePhase::new("plan")));
     sm.start(RuntimeTask::new("test"));
 
     for _ in 0..5 {
@@ -229,9 +233,7 @@ fn capability_unlock_has_milestone_provenance() {
 
     let mut sm = default_sm();
     sm.load_milestone_contract(
-        MilestoneContract::new().phase(
-            MilestonePhase::new("plan").unlocking(cap),
-        ),
+        MilestoneContract::new().phase(MilestonePhase::new("plan").unlocking(cap)),
     );
     sm.start(RuntimeTask::new("test"));
     sm.feed(text_response());
@@ -248,7 +250,12 @@ fn capability_unlock_has_milestone_provenance() {
         "capability unlock should carry mounted_by = 'milestone:{{phase_id}}'"
     );
 
-    if let Some(KernelObservation::CapabilityChanged { mounted_by, mount_reason, .. }) = capability_changed {
+    if let Some(KernelObservation::CapabilityChanged {
+        mounted_by,
+        mount_reason,
+        ..
+    }) = capability_changed
+    {
         assert_eq!(mounted_by.as_deref(), Some("milestone:plan"));
         assert_eq!(mount_reason.as_deref(), Some("phase_advance"));
     }
@@ -295,7 +302,9 @@ fn milestone_advance_resets_blocked_count() {
 
 #[test]
 fn external_command_verifier_serializes() {
-    let v = MilestoneVerifier::ExternalCommand { cmd: "make test".into() };
+    let v = MilestoneVerifier::ExternalCommand {
+        cmd: "make test".into(),
+    };
     let json = serde_json::to_string(&v).unwrap();
     assert!(json.contains("external_command"));
     assert!(json.contains("make test"));

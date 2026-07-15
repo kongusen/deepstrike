@@ -33,9 +33,15 @@ pub struct RepeatFuseConfig {
     pub terminate_after: u32,
 }
 
-fn default_enabled() -> bool { true }
-fn default_deny_after() -> u32 { 5 }
-fn default_terminate_after() -> u32 { 8 }
+fn default_enabled() -> bool {
+    true
+}
+fn default_deny_after() -> u32 {
+    5
+}
+fn default_terminate_after() -> u32 {
+    8
+}
 
 impl Default for RepeatFuseConfig {
     fn default() -> Self {
