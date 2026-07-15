@@ -204,6 +204,8 @@ async fn runtime_applies_bounded_kernel_reliability_config() {
         spool_threshold_bytes: Some(2048),
         spool_preview_bytes: Some(256),
         snapshot_input_limit: Some(4096),
+        max_input_bytes: Some(1024 * 1024),
+        snapshot_journal_bytes_limit: Some(16 * 1024 * 1024),
     });
 
     assert_eq!(RuntimeRunner::new(opts).execute("configured").await.unwrap(), "ok");

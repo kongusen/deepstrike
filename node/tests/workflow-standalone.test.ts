@@ -97,6 +97,8 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
         hostEffectRetryAttempts: 4,
         spoolThresholdBytes: 2048,
         spoolPreviewBytes: 256,
+        maxInputBytes: 1024 * 1024,
+        snapshotJournalBytesLimit: 16 * 1024 * 1024,
       },
       subAgentOrchestrator: stubOrchestrator() as never,
     } as never)

@@ -93,6 +93,8 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
       host_effect_retry_attempts=4,
       spool_threshold_bytes=2048,
       spool_preview_bytes=256,
+      max_input_bytes=1024 * 1024,
+      snapshot_journal_bytes_limit=16 * 1024 * 1024,
     ),
     resource_quota=ResourceQuota(
       max_concurrent_subagents=2,
@@ -120,6 +122,8 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
     "host_effect_retry_attempts": 4,
     "spool_threshold_bytes": 2048,
     "spool_preview_bytes": 256,
+    "max_input_bytes": 1024 * 1024,
+    "snapshot_journal_bytes_limit": 16 * 1024 * 1024,
   }
 
 

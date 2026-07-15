@@ -880,6 +880,12 @@ impl KernelRuntime {
         Ok(())
     }
 
+    /// Return a read-only JSON resource projection without mutating kernel state.
+    fn diagnostics(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner.diagnostics())
+            .map_err(|e| PyValueError::new_err(format!("failed to encode kernel diagnostics: {e}")))
+    }
+
     fn is_terminal(&self) -> bool {
         self.inner.is_terminal()
     }

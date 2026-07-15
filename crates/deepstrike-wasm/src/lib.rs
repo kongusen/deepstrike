@@ -527,6 +527,14 @@ impl KernelRuntime {
         Ok(())
     }
 
+    /// Return a read-only JSON resource projection without mutating kernel state.
+    #[wasm_bindgen(js_name = diagnostics)]
+    pub fn diagnostics(&self) -> Result<String, JsValue> {
+        serde_json::to_string(&self.inner.diagnostics()).map_err(|error| {
+            JsValue::from_str(&format!("failed to encode kernel diagnostics: {error}"))
+        })
+    }
+
     #[wasm_bindgen(js_name = isTerminal)]
     pub fn is_terminal(&self) -> bool {
         self.inner.is_terminal()

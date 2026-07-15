@@ -4,6 +4,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 pub(super) const EVENT_REPLAY_WINDOW_CAPACITY: usize = 256;
 const COMPLETED_EFFECT_REPLAY_WINDOW_CAPACITY: usize = 256;
 const SNAPSHOT_INPUT_LIMIT: usize = 10_000;
+const MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
+const SNAPSHOT_JOURNAL_BYTES_LIMIT: usize = 64 * 1024 * 1024;
 
 #[derive(Clone)]
 struct RecordedTransition {
@@ -21,6 +23,9 @@ struct KernelSnapshotRefV2<'a> {
     operation_id: Option<&'a str>,
     next_step_seq: u64,
     snapshot_input_limit: usize,
+    max_input_bytes: usize,
+    snapshot_journal_bytes_limit: usize,
+    accepted_input_bytes: usize,
     accepted_inputs: &'a [KernelInput],
     #[serde(skip_serializing_if = "Option::is_none")]
     last_step: Option<&'a KernelStep>,
@@ -101,6 +106,12 @@ enum LifecycleTransition {
     Resume,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StepMode {
+    Live,
+    SnapshotReplay,
+}
+
 struct StepIdentity {
     operation_id: String,
     input_event_id: String,
@@ -144,7 +155,11 @@ pub struct KernelRuntime {
     budget_usage_reported: bool,
     accepted_cancellation: Option<AcceptedCancellation>,
     accepted_inputs: Vec<KernelInput>,
+    accepted_input_count: usize,
+    accepted_input_bytes: usize,
     snapshot_input_limit: usize,
+    max_input_bytes: usize,
+    snapshot_journal_bytes_limit: usize,
     snapshot_overflowed: bool,
     last_step: Option<KernelStep>,
 }
@@ -165,7 +180,11 @@ impl KernelRuntime {
             budget_usage_reported: false,
             accepted_cancellation: None,
             accepted_inputs: Vec::new(),
+            accepted_input_count: 0,
+            accepted_input_bytes: 0,
             snapshot_input_limit: SNAPSHOT_INPUT_LIMIT,
+            max_input_bytes: MAX_INPUT_BYTES,
+            snapshot_journal_bytes_limit: SNAPSHOT_JOURNAL_BYTES_LIMIT,
             snapshot_overflowed: false,
             last_step: None,
         }
@@ -182,6 +201,9 @@ impl KernelRuntime {
             operation_id: self.operation_id.clone(),
             next_step_seq: self.next_step_seq,
             snapshot_input_limit: self.snapshot_input_limit,
+            max_input_bytes: self.max_input_bytes,
+            snapshot_journal_bytes_limit: self.snapshot_journal_bytes_limit,
+            accepted_input_bytes: self.accepted_input_bytes,
             accepted_inputs: self.accepted_inputs.clone(),
             last_step: self.last_step.clone(),
         })
@@ -197,6 +219,9 @@ impl KernelRuntime {
             operation_id: self.operation_id.as_deref(),
             next_step_seq: self.next_step_seq,
             snapshot_input_limit: self.snapshot_input_limit,
+            max_input_bytes: self.max_input_bytes,
+            snapshot_journal_bytes_limit: self.snapshot_journal_bytes_limit,
+            accepted_input_bytes: self.accepted_input_bytes,
             accepted_inputs: &self.accepted_inputs,
             last_step: self.last_step.as_ref(),
         };
@@ -214,7 +239,10 @@ impl KernelRuntime {
         if snapshot.snapshot_version != KERNEL_SNAPSHOT_VERSION
             || snapshot.abi_version != KERNEL_ABI_VERSION
             || !(1..=100_000).contains(&snapshot.snapshot_input_limit)
+            || !(256..=64 * 1024 * 1024).contains(&snapshot.max_input_bytes)
+            || !(256..=1024 * 1024 * 1024usize).contains(&snapshot.snapshot_journal_bytes_limit)
             || snapshot.accepted_inputs.len() > snapshot.snapshot_input_limit
+            || snapshot.accepted_input_bytes > snapshot.snapshot_journal_bytes_limit
         {
             return Err(snapshot_fault(
                 snapshot.operation_id,
@@ -232,6 +260,8 @@ impl KernelRuntime {
         }
         let mut runtime = Self::new(initial_policy);
         runtime.snapshot_input_limit = snapshot.snapshot_input_limit;
+        runtime.max_input_bytes = snapshot.max_input_bytes;
+        runtime.snapshot_journal_bytes_limit = snapshot.snapshot_journal_bytes_limit;
         let mut event_ids = HashSet::with_capacity(snapshot.accepted_inputs.len());
         for input in snapshot.accepted_inputs.iter().cloned() {
             if !event_ids.insert(input.event_id.clone()) {
@@ -243,7 +273,7 @@ impl KernelRuntime {
                     ),
                 ));
             }
-            let step = runtime.step_internal(input, false);
+            let step = runtime.step_internal(input, StepMode::SnapshotReplay);
             if let Some(fault) = step.faults.first() {
                 return Err(snapshot_fault(
                     snapshot.operation_id.clone(),
@@ -260,6 +290,11 @@ impl KernelRuntime {
             || runtime.operation_id != snapshot.operation_id
             || runtime.next_step_seq != snapshot.next_step_seq
             || runtime.snapshot_input_limit != snapshot.snapshot_input_limit
+            || runtime.max_input_bytes != snapshot.max_input_bytes
+            || runtime.snapshot_journal_bytes_limit != snapshot.snapshot_journal_bytes_limit
+            || runtime.accepted_input_count != snapshot.accepted_inputs.len()
+            || runtime.accepted_input_bytes != snapshot.accepted_input_bytes
+            || runtime.snapshot_overflowed
             || rebuilt_last != expected_last
         {
             return Err(snapshot_fault(
@@ -300,6 +335,22 @@ impl KernelRuntime {
 
     pub fn is_terminal(&self) -> bool {
         self.lifecycle.is_terminal()
+    }
+
+    pub fn diagnostics(&self) -> KernelDiagnostics {
+        KernelDiagnostics {
+            lifecycle: self.lifecycle,
+            next_step_seq: self.next_step_seq,
+            accepted_input_count: self.accepted_input_count,
+            accepted_input_bytes: self.accepted_input_bytes,
+            snapshot_input_limit: self.snapshot_input_limit,
+            snapshot_journal_bytes_limit: self.snapshot_journal_bytes_limit,
+            max_input_bytes: self.max_input_bytes,
+            snapshot_overflowed: self.snapshot_overflowed,
+            recorded_event_count: self.recorded_events.entries.len(),
+            completed_effect_count: self.completed_effects.entries.len(),
+            pending_effect_count: self.pending_effects.len(),
+        }
     }
 
     pub fn lifecycle(&self) -> KernelLifecycle {
@@ -375,6 +426,19 @@ impl KernelRuntime {
     /// the v2 envelope so a v1 payload receives a structured kernel fault rather
     /// than a host-language deserialization error.
     pub fn step_json(&mut self, input_json: &str) -> Result<KernelStep, serde_json::Error> {
+        if input_json.len() > self.max_input_bytes {
+            return Ok(self.fault_step(
+                String::new(),
+                String::new(),
+                KernelFaultCode::ResourceLimitExceeded,
+                format!(
+                    "kernel input is {} bytes; configured maximum is {} bytes",
+                    input_json.len(),
+                    self.max_input_bytes
+                ),
+                None,
+            ));
+        }
         let value: serde_json::Value = serde_json::from_str(input_json)?;
         if value.get("version").and_then(serde_json::Value::as_u64)
             != Some(KERNEL_ABI_VERSION as u64)
@@ -408,10 +472,10 @@ impl KernelRuntime {
     }
 
     pub fn step(&mut self, input: KernelInput) -> KernelStep {
-        self.step_internal(input, true)
+        self.step_internal(input, StepMode::Live)
     }
 
-    fn step_internal(&mut self, mut input: KernelInput, record_snapshot_input: bool) -> KernelStep {
+    fn step_internal(&mut self, mut input: KernelInput, mode: StepMode) -> KernelStep {
         if let KernelInputEvent::CancelOperation {
             pending_call_ids, ..
         } = &mut input.event
@@ -447,6 +511,19 @@ impl KernelRuntime {
 
         let fingerprint = serde_json::to_vec(&input)
             .expect("KernelInput serialization must succeed after typed construction");
+        let input_bytes = fingerprint.len();
+        if mode == StepMode::Live && input_bytes > self.max_input_bytes {
+            return self.fault_step(
+                operation_id,
+                event_id,
+                KernelFaultCode::ResourceLimitExceeded,
+                format!(
+                    "kernel input is {input_bytes} bytes; configured maximum is {} bytes",
+                    self.max_input_bytes
+                ),
+                None,
+            );
+        }
         if let Some(recorded) = self.recorded_events.get(&event_id) {
             if recorded.fingerprint == fingerprint {
                 return recorded.step.clone();
@@ -509,9 +586,10 @@ impl KernelRuntime {
                             step: step.clone(),
                         },
                     );
-                    if record_snapshot_input {
-                        self.record_accepted_input(input);
-                    }
+                    self.record_accepted_input(
+                        (mode == StepMode::Live).then_some(input),
+                        input_bytes,
+                    );
                     self.last_step = Some(step.clone());
                     return step;
                 }
@@ -543,9 +621,10 @@ impl KernelRuntime {
                             step: step.clone(),
                         },
                     );
-                    if record_snapshot_input {
-                        self.record_accepted_input(input);
-                    }
+                    self.record_accepted_input(
+                        (mode == StepMode::Live).then_some(input),
+                        input_bytes,
+                    );
                     self.last_step = Some(step.clone());
                     return step;
                 }
@@ -585,7 +664,7 @@ impl KernelRuntime {
                 .reliability
                 .as_ref()
                 .and_then(|reliability| reliability.snapshot_input_limit)
-                .is_some_and(|limit| limit <= self.accepted_inputs.len())
+                .is_some_and(|limit| limit <= self.accepted_input_count)
             {
                 return self.fault_step(
                     operation_id,
@@ -593,6 +672,35 @@ impl KernelRuntime {
                     KernelFaultCode::InvalidConfig,
                     "snapshot_input_limit must leave room for the configure transaction"
                         .to_string(),
+                    None,
+                );
+            }
+            if config
+                .reliability
+                .as_ref()
+                .and_then(|reliability| reliability.snapshot_journal_bytes_limit)
+                .is_some_and(|limit| limit < self.accepted_input_bytes.saturating_add(input_bytes))
+            {
+                return self.fault_step(
+                    operation_id,
+                    event_id,
+                    KernelFaultCode::InvalidConfig,
+                    "snapshot_journal_bytes_limit must leave room for the configure transaction"
+                        .to_string(),
+                    None,
+                );
+            }
+            if config
+                .reliability
+                .as_ref()
+                .and_then(|reliability| reliability.max_input_bytes)
+                .is_some_and(|limit| limit < input_bytes)
+            {
+                return self.fault_step(
+                    operation_id,
+                    event_id,
+                    KernelFaultCode::InvalidConfig,
+                    "max_input_bytes must admit the configure transaction".to_string(),
                     None,
                 );
             }
@@ -676,7 +784,7 @@ impl KernelRuntime {
             self.sm.set_observed_time(input.observed_at_ms);
         }
 
-        let accepted_input = record_snapshot_input.then(|| input.clone());
+        let accepted_input = (mode == StepMode::Live).then(|| input.clone());
         let step_seq = self.allocate_step_seq();
         let cancellation_identity = match &input.event {
             KernelInputEvent::CancelOperation {
@@ -764,29 +872,37 @@ impl KernelRuntime {
                 step: step.clone(),
             },
         );
-        if let Some(accepted_input) = accepted_input {
-            self.record_accepted_input(accepted_input);
-        }
+        self.record_accepted_input(accepted_input, input_bytes);
         self.last_step = Some(step.clone());
         step
     }
 
     fn ensure_snapshot_available(&self) -> Result<(), KernelFault> {
-        if self.snapshot_overflowed || self.accepted_inputs.len() > self.snapshot_input_limit {
+        if self.snapshot_overflowed
+            || self.accepted_input_count > self.snapshot_input_limit
+            || self.accepted_input_bytes > self.snapshot_journal_bytes_limit
+        {
             return Err(snapshot_fault(
                 self.operation_id.clone(),
                 format!(
-                    "snapshot input journal exceeded configured limit {}",
-                    self.snapshot_input_limit
+                    "snapshot input journal exceeded configured limits: {} inputs / {} bytes",
+                    self.snapshot_input_limit, self.snapshot_journal_bytes_limit
                 ),
             ));
         }
         Ok(())
     }
 
-    fn record_accepted_input(&mut self, input: KernelInput) {
-        if self.accepted_inputs.len() < self.snapshot_input_limit {
-            self.accepted_inputs.push(input);
+    fn record_accepted_input(&mut self, input: Option<KernelInput>, input_bytes: usize) {
+        if self.accepted_input_count < self.snapshot_input_limit
+            && self.accepted_input_bytes.saturating_add(input_bytes)
+                <= self.snapshot_journal_bytes_limit
+        {
+            self.accepted_input_count += 1;
+            self.accepted_input_bytes += input_bytes;
+            if let Some(input) = input {
+                self.accepted_inputs.push(input);
+            }
         } else {
             self.snapshot_overflowed = true;
         }
@@ -1008,6 +1124,12 @@ impl KernelRuntime {
                     }
                     if let Some(limit) = reliability.snapshot_input_limit {
                         self.snapshot_input_limit = limit;
+                    }
+                    if let Some(limit) = reliability.max_input_bytes {
+                        self.max_input_bytes = limit;
+                    }
+                    if let Some(limit) = reliability.snapshot_journal_bytes_limit {
+                        self.snapshot_journal_bytes_limit = limit;
                     }
                     self.sm.set_reliability_config(&reliability);
                 }
@@ -1677,6 +1799,20 @@ fn validate_run_config(config: &RunConfig) -> Result<(), String> {
             .is_some_and(|value| !(1..=100_000).contains(&value))
         {
             return Err("snapshot_input_limit must be between 1 and 100000".to_string());
+        }
+        if reliability
+            .max_input_bytes
+            .is_some_and(|value| !(256..=64 * 1024 * 1024).contains(&value))
+        {
+            return Err("max_input_bytes must be between 256 and 67108864".to_string());
+        }
+        if reliability
+            .snapshot_journal_bytes_limit
+            .is_some_and(|value| !(256..=1024 * 1024 * 1024).contains(&value))
+        {
+            return Err(
+                "snapshot_journal_bytes_limit must be between 256 and 1073741824".to_string(),
+            );
         }
         if reliability
             .provider_recovery_attempts

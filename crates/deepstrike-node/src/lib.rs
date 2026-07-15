@@ -629,6 +629,17 @@ impl KernelRuntime {
         Ok(())
     }
 
+    /// Return a read-only JSON resource projection without mutating kernel state.
+    #[napi]
+    pub fn diagnostics(&self) -> Result<String> {
+        serde_json::to_string(&self.inner.diagnostics()).map_err(|error| {
+            Error::new(
+                Status::GenericFailure,
+                format!("failed to encode kernel diagnostics: {error}"),
+            )
+        })
+    }
+
     #[napi]
     pub fn is_terminal(&self) -> bool {
         self.inner.is_terminal()

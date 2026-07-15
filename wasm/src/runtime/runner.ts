@@ -113,6 +113,10 @@ export interface KernelReliabilityOptions {
   spoolPreviewBytes?: number
   /** Max accepted ABI transactions retained for a portable KernelSnapshotV2 rebuild. */
   snapshotInputLimit?: number
+  /** Max canonical JSON bytes accepted for one kernel input, 256..64MiB. */
+  maxInputBytes?: number
+  /** Max canonical JSON bytes retained by the snapshot journal, 256..1GiB. */
+  snapshotJournalBytesLimit?: number
 }
 
 interface InboundSignalDelivery {
@@ -1633,6 +1637,10 @@ export class RuntimeRunner {
         ...(r.spoolThresholdBytes !== undefined ? { spool_threshold_bytes: r.spoolThresholdBytes } : {}),
         ...(r.spoolPreviewBytes !== undefined ? { spool_preview_bytes: r.spoolPreviewBytes } : {}),
         ...(r.snapshotInputLimit !== undefined ? { snapshot_input_limit: r.snapshotInputLimit } : {}),
+        ...(r.maxInputBytes !== undefined ? { max_input_bytes: r.maxInputBytes } : {}),
+        ...(r.snapshotJournalBytesLimit !== undefined
+          ? { snapshot_journal_bytes_limit: r.snapshotJournalBytesLimit }
+          : {}),
       }
     }
     if (this.opts.resourceQuota) {

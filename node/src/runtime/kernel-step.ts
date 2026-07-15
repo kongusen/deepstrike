@@ -16,12 +16,32 @@ export interface KernelRuntimeHandle {
   step(inputJson: string): string
   snapshot(): string
   restore(snapshotJson: string): void
+  diagnostics?(): string
   isTerminal(): boolean
   turn(): number
   recoveryContentBytes(): number
   render(): RenderedContext
   drainNewMessages(): Message[]
   preservedRefs(): string[]
+}
+
+export interface KernelDiagnostics {
+  lifecycle: string
+  next_step_seq: number
+  accepted_input_count: number
+  accepted_input_bytes: number
+  snapshot_input_limit: number
+  snapshot_journal_bytes_limit: number
+  max_input_bytes: number
+  snapshot_overflowed: boolean
+  recorded_event_count: number
+  completed_effect_count: number
+  pending_effect_count: number
+}
+
+export function readKernelDiagnostics(runtime: KernelRuntimeHandle): KernelDiagnostics {
+  if (!runtime.diagnostics) throw new Error("kernel diagnostics require the current ABI-v2 native binding")
+  return JSON.parse(runtime.diagnostics()) as KernelDiagnostics
 }
 
 export interface KernelSnapshotV2 {
@@ -37,6 +57,9 @@ export interface KernelSnapshotV2 {
   operation_id?: string
   next_step_seq: number
   snapshot_input_limit: number
+  max_input_bytes: number
+  snapshot_journal_bytes_limit: number
+  accepted_input_bytes: number
   accepted_inputs: Array<{ event_id: string; [key: string]: unknown }>
   last_step?: Record<string, unknown>
 }

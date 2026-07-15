@@ -163,6 +163,29 @@ pub struct KernelReliabilityConfig {
     /// Maximum accepted ABI inputs retained for a portable snapshot rebuild.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_input_limit: Option<usize>,
+    /// Maximum canonical JSON bytes accepted for one ABI input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_input_bytes: Option<usize>,
+    /// Maximum canonical JSON bytes retained by the portable snapshot journal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_journal_bytes_limit: Option<usize>,
+}
+
+/// Read-only runtime resource projection. Hosts use this for admission and monitoring; mutating
+/// kernel state still requires a versioned input transaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelDiagnostics {
+    pub lifecycle: KernelLifecycle,
+    pub next_step_seq: u64,
+    pub accepted_input_count: usize,
+    pub accepted_input_bytes: usize,
+    pub snapshot_input_limit: usize,
+    pub snapshot_journal_bytes_limit: usize,
+    pub max_input_bytes: usize,
+    pub snapshot_overflowed: bool,
+    pub recorded_event_count: usize,
+    pub completed_effect_count: usize,
+    pub pending_effect_count: usize,
 }
 
 /// Portable runtime checkpoint. State is rebuilt from accepted public ABI transactions rather
@@ -177,6 +200,9 @@ pub struct KernelSnapshotV2 {
     pub operation_id: Option<String>,
     pub next_step_seq: u64,
     pub snapshot_input_limit: usize,
+    pub max_input_bytes: usize,
+    pub snapshot_journal_bytes_limit: usize,
+    pub accepted_input_bytes: usize,
     #[serde(default)]
     pub accepted_inputs: Vec<KernelInput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -814,6 +840,7 @@ pub enum KernelFaultCode {
     OperationMismatch,
     InvalidLifecycle,
     InvalidConfig,
+    ResourceLimitExceeded,
     DuplicateEventConflict,
     UnexpectedEffectResult,
     SnapshotIncompatible,

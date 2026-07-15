@@ -204,7 +204,25 @@ export class KernelRuntime {
       operation_id: this.operationId,
       next_step_seq: this.nextEffect,
       snapshot_input_limit: 10_000,
+      max_input_bytes: 16 * 1024 * 1024,
+      snapshot_journal_bytes_limit: 64 * 1024 * 1024,
+      accepted_input_bytes: JSON.stringify(this.acceptedInputs).length,
       accepted_inputs: this.acceptedInputs,
+    })
+  }
+  diagnostics(): string {
+    return JSON.stringify({
+      lifecycle: this.terminal ? "completed" : (this.operationId ? "running" : "created"),
+      next_step_seq: this.nextEffect,
+      accepted_input_count: this.acceptedInputs.length,
+      accepted_input_bytes: JSON.stringify(this.acceptedInputs).length,
+      snapshot_input_limit: 10_000,
+      snapshot_journal_bytes_limit: 64 * 1024 * 1024,
+      max_input_bytes: 16 * 1024 * 1024,
+      snapshot_overflowed: false,
+      recorded_event_count: this.acceptedInputs.length,
+      completed_effect_count: 0,
+      pending_effect_count: 0,
     })
   }
   restore(snapshotJson: string): void {

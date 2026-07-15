@@ -381,6 +381,7 @@ fn reliability_config_bounds_replay_windows_from_the_sdk_boundary() {
                 spool_threshold_bytes: Some(4096),
                 spool_preview_bytes: Some(512),
                 snapshot_input_limit: Some(32),
+                ..KernelReliabilityConfig::default()
             }),
             ..RunConfig::default()
         },
@@ -406,6 +407,116 @@ fn reliability_config_bounds_replay_windows_from_the_sdk_boundary() {
         4096
     );
     assert_eq!(runtime.state_machine().ctx.config.spool_preview_bytes, 512);
+}
+
+#[test]
+fn reliability_limits_reject_oversized_inputs_before_state_changes() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let configured = runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            reliability: Some(KernelReliabilityConfig {
+                max_input_bytes: Some(512),
+                ..KernelReliabilityConfig::default()
+            }),
+            ..RunConfig::default()
+        },
+    }));
+    assert!(configured.faults.is_empty());
+    let before = runtime.diagnostics();
+
+    let rejected = runtime.step(KernelInput::new(KernelInputEvent::AddSystemMessage {
+        content: "x".repeat(2_048),
+        tokens: 512,
+    }));
+
+    assert!(matches!(
+        rejected.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::ResourceLimitExceeded,
+            ..
+        }]
+    ));
+    let after = runtime.diagnostics();
+    assert_eq!(after.accepted_input_count, before.accepted_input_count);
+    assert_eq!(after.accepted_input_bytes, before.accepted_input_bytes);
+}
+
+#[test]
+fn snapshot_journal_is_bounded_by_bytes_and_restores_its_watermark() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let configured = runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            reliability: Some(KernelReliabilityConfig {
+                max_input_bytes: Some(4_096),
+                snapshot_journal_bytes_limit: Some(1_024),
+                ..KernelReliabilityConfig::default()
+            }),
+            ..RunConfig::default()
+        },
+    }));
+    assert!(configured.faults.is_empty());
+
+    let before_overflow = runtime.snapshot().expect("journal initially fits");
+    let restored =
+        KernelRuntime::restore_snapshot(before_overflow).expect("restore byte watermark");
+    assert_eq!(
+        restored.diagnostics().accepted_input_bytes,
+        runtime.diagnostics().accepted_input_bytes
+    );
+    assert_eq!(restored.diagnostics().snapshot_journal_bytes_limit, 1_024);
+
+    for index in 0..16 {
+        runtime.step(KernelInput::new(KernelInputEvent::AddSystemMessage {
+            content: format!("entry-{index}-{}", "x".repeat(160)),
+            tokens: 48,
+        }));
+        if runtime.diagnostics().snapshot_overflowed {
+            break;
+        }
+    }
+
+    let diagnostics = runtime.diagnostics();
+    assert!(diagnostics.snapshot_overflowed);
+    assert!(diagnostics.accepted_input_bytes <= diagnostics.snapshot_journal_bytes_limit);
+    assert!(matches!(
+        runtime.snapshot(),
+        Err(KernelFault {
+            code: KernelFaultCode::SnapshotIncompatible,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn snapshot_replay_accepts_historical_inputs_larger_than_the_final_live_limit() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            reliability: Some(KernelReliabilityConfig {
+                max_input_bytes: Some(4_096),
+                ..KernelReliabilityConfig::default()
+            }),
+            ..RunConfig::default()
+        },
+    }));
+    runtime.step(KernelInput::new(KernelInputEvent::AddSystemMessage {
+        content: "historical".repeat(240),
+        tokens: 720,
+    }));
+    let lowered = runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            reliability: Some(KernelReliabilityConfig {
+                max_input_bytes: Some(512),
+                ..KernelReliabilityConfig::default()
+            }),
+            ..RunConfig::default()
+        },
+    }));
+    assert!(lowered.faults.is_empty());
+
+    let restored = KernelRuntime::restore_snapshot(runtime.snapshot().expect("bounded snapshot"))
+        .expect("historical accepted input remains replayable");
+    assert_eq!(restored.diagnostics().max_input_bytes, 512);
 }
 
 #[test]

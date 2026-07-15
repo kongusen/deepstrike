@@ -174,6 +174,10 @@ export interface KernelReliabilityOptions {
   spoolPreviewBytes?: number
   /** Max accepted ABI transactions retained for a portable KernelSnapshotV2 rebuild. */
   snapshotInputLimit?: number
+  /** Max canonical JSON bytes accepted for one kernel input, 256..64MiB. */
+  maxInputBytes?: number
+  /** Max canonical JSON bytes retained by the snapshot journal, 256..1GiB. */
+  snapshotJournalBytesLimit?: number
 }
 
 export type OperationCancellationReason = "user" | "deadline" | "lease_lost" | "host_shutdown"
@@ -704,6 +708,12 @@ export class RuntimeRunner {
           : {}),
         ...(reliability.snapshotInputLimit !== undefined
           ? { snapshot_input_limit: reliability.snapshotInputLimit }
+          : {}),
+        ...(reliability.maxInputBytes !== undefined
+          ? { max_input_bytes: reliability.maxInputBytes }
+          : {}),
+        ...(reliability.snapshotJournalBytesLimit !== undefined
+          ? { snapshot_journal_bytes_limit: reliability.snapshotJournalBytesLimit }
           : {}),
       }
     }

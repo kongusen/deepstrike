@@ -156,6 +156,10 @@ class KernelReliability:
   spool_preview_bytes: int | None = None
   # Max accepted ABI transactions retained for a portable KernelSnapshotV2 rebuild.
   snapshot_input_limit: int | None = None
+  # Max canonical JSON bytes accepted for one kernel input, 256..64MiB.
+  max_input_bytes: int | None = None
+  # Max canonical JSON bytes retained by the snapshot journal, 256..1GiB.
+  snapshot_journal_bytes_limit: int | None = None
 
 
 @dataclass
@@ -3242,6 +3246,8 @@ def _kernel_reliability_to_kernel(
     "spool_threshold_bytes",
     "spool_preview_bytes",
     "snapshot_input_limit",
+    "max_input_bytes",
+    "snapshot_journal_bytes_limit",
   ):
     value = get(field)
     if value is not None:
