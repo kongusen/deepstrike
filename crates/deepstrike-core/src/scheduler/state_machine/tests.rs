@@ -146,7 +146,9 @@
         let history_len_before = sm.ctx.partitions.history.messages.len();
 
         let sig = RuntimeSignal::new(SignalSource::Gateway, SignalType::Alert, Urgency::Critical, "fire");
-        let action = sm.signal_event(sig).expect("critical signal drives a turn");
+        let action = sm
+            .signal_event("op".into(), "delivery".into(), 1, sig)
+            .expect("critical signal drives a turn");
         assert!(matches!(action, LoopAction::CallLLM { .. }));
         assert!(matches!(sm.phase, LoopPhase::Reason));
         assert!(sm.ctx.partitions.signals.iter().any(|s| s.contains("[INTERRUPT]")));
@@ -173,7 +175,7 @@
         sm.take_observations();
 
         let sig = RuntimeSignal::new(SignalSource::Gateway, SignalType::Alert, Urgency::Critical, "stop and handle this");
-        let action = sm.signal_event(sig);
+        let action = sm.signal_event("op".into(), "delivery".into(), 1, sig);
         assert!(matches!(
             action,
             Some(LoopAction::PreemptSubAgents { ref agent_ids, .. })
@@ -216,7 +218,7 @@
         sm.take_observations();
 
         let sig = RuntimeSignal::new(SignalSource::Gateway, SignalType::Alert, Urgency::Critical, "abort");
-        let action = sm.signal_event(sig);
+        let action = sm.signal_event("op".into(), "delivery".into(), 1, sig);
         assert!(matches!(action, Some(LoopAction::PreemptSubAgents { .. })));
         assert!(sm.workflow_active(), "request does not tear down workflow");
         assert!(!sm.take_observations().iter().any(|o| matches!(
@@ -251,7 +253,7 @@
         sm.take_observations();
 
         let sig = RuntimeSignal::new(SignalSource::Gateway, SignalType::Alert, Urgency::High, "fyi handle soon");
-        let action = sm.signal_event(sig);
+        let action = sm.signal_event("op".into(), "delivery".into(), 1, sig);
         assert!(action.is_none(), "soft Interrupt does not force a turn");
         assert!(sm.is_suspended(), "running sub-agent is NOT aborted");
         let obs = sm.take_observations();
@@ -279,7 +281,8 @@
             Urgency::Critical,
             "do NOT modify the migration files",
         );
-        sm.signal_event(sig).expect("critical signal drives a turn");
+        sm.signal_event("op".into(), "delivery".into(), 1, sig)
+            .expect("critical signal drives a turn");
         assert!(
             sm.ctx.partitions.task_state.directives.iter().any(|d| d.contains("migration files")),
             "acted-on signal is promoted to a durable directive"
@@ -3150,9 +3153,12 @@
             let obs = entropy_drive_turn(&mut sm, serde_json::json!({"same": true}), true);
             if obs.iter().any(|o| matches!(o, KernelObservation::EntropyAlert { .. })) {
                 saw_alert = true;
-                // The self-signal went through the normal dispatch: disposition observed…
-                assert!(obs.iter().any(|o| matches!(o, KernelObservation::SignalDisposed { .. })));
-                // …and (High while running ⇒ Interrupt) the directive reached the model channel.
+                // The internal signal is not a leased host delivery, but still traverses the
+                // attention policy and reaches the model channel.
+                assert!(!obs.iter().any(|o| matches!(
+                    o,
+                    KernelObservation::SignalDeliveryDisposed { .. }
+                )));
                 assert!(
                     sm.ctx.partitions.signals.iter().any(|s| s.contains("[entropy]")),
                     "entropy directive must land in signals: {:?}",

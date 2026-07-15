@@ -98,6 +98,9 @@ export interface KernelObservation {
   tier_hint?: string
   call_id?: string
   tool?: string
+  operation_id?: string
+  delivery_id?: string
+  attempt?: number
   signal_id?: string
   disposition?: string
   queue_depth?: number

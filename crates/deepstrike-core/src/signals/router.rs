@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use compact_str::CompactString;
 
@@ -10,14 +10,20 @@ use crate::types::signal::RuntimeSignal;
 /// Signal router: dedup set + urgency-based attention + bounded priority queue.
 pub struct SignalRouter {
     seen: HashSet<CompactString>,
+    seen_order: VecDeque<CompactString>,
+    dedupe_capacity: usize,
     queue: SignalQueue,
     attention: UrgencyBasedPolicy,
 }
 
 impl SignalRouter {
+    pub const DEFAULT_DEDUPE_CAPACITY: usize = 256;
+
     pub fn new(max_queue_size: usize) -> Self {
         Self {
-            seen: HashSet::new(),
+            seen: HashSet::with_capacity(Self::DEFAULT_DEDUPE_CAPACITY),
+            seen_order: VecDeque::with_capacity(Self::DEFAULT_DEDUPE_CAPACITY),
+            dedupe_capacity: Self::DEFAULT_DEDUPE_CAPACITY,
             queue: SignalQueue::new(max_queue_size),
             attention: UrgencyBasedPolicy,
         }
@@ -32,6 +38,12 @@ impl SignalRouter {
             if !self.seen.insert(key.clone()) {
                 return SignalDisposition::Ignore;
             }
+            if self.seen_order.len() == self.dedupe_capacity {
+                if let Some(expired) = self.seen_order.pop_front() {
+                    self.seen.remove(&expired);
+                }
+            }
+            self.seen_order.push_back(key.clone());
         }
 
         let disposition = self.attention.evaluate(&signal, is_running);
@@ -58,6 +70,12 @@ impl SignalRouter {
     /// Clear the dedup set (call at session boundaries to prevent unbounded growth).
     pub fn clear_dedup(&mut self) {
         self.seen.clear();
+        self.seen_order.clear();
+    }
+
+    #[cfg(test)]
+    fn dedupe_len(&self) -> usize {
+        self.seen.len()
     }
 }
 
@@ -151,5 +169,30 @@ mod tests {
 
         router.clear_dedup();
         assert_ne!(router.ingest(sig, false), SignalDisposition::Ignore);
+    }
+
+    #[test]
+    fn dedupe_window_is_bounded_and_expires_oldest_key() {
+        let mut router = SignalRouter::new(1);
+        for index in 0..=SignalRouter::DEFAULT_DEDUPE_CAPACITY {
+            let signal = RuntimeSignal::new(
+                SignalSource::Cron,
+                SignalType::Event,
+                Urgency::Low,
+                "tick",
+            )
+            .with_dedupe(format!("key-{index}"));
+            assert_ne!(router.ingest(signal, false), SignalDisposition::Ignore);
+        }
+
+        assert_eq!(router.dedupe_len(), SignalRouter::DEFAULT_DEDUPE_CAPACITY);
+        let expired = RuntimeSignal::new(
+            SignalSource::Cron,
+            SignalType::Event,
+            Urgency::Low,
+            "tick",
+        )
+        .with_dedupe("key-0");
+        assert_ne!(router.ingest(expired, false), SignalDisposition::Ignore);
     }
 }

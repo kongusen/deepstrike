@@ -220,12 +220,18 @@ async def test_dw6_signal_aware_sleeper_wakes_on_recipient_addressed_signal():
     sleeping = asyncio.ensure_future(sleeper(60_000, int(t0 * 1000) + 60_000))
     await asyncio.sleep(0)  # let the sleeper register its listener
     # A signal addressed to ANOTHER loop must not wake us.
-    gateway.ingest(RuntimeSignal(kind="external", payload={}, recipient="someone-else"))
+    gateway.ingest(RuntimeSignal(
+        source="custom", signal_type="event", urgency="normal",
+        payload={}, recipient="someone-else",
+    ))
 
     async def _wake() -> None:
         await asyncio.sleep(0.01)
         # The completion→wake bridge: a signal addressed to THIS loop ends the sleep immediately.
-        gateway.ingest(RuntimeSignal(kind="external", payload={"goal": "wf done"}, recipient="loop-wake"))
+        gateway.ingest(RuntimeSignal(
+            source="custom", signal_type="event", urgency="normal",
+            payload={"goal": "wf done"}, recipient="loop-wake",
+        ))
 
     asyncio.ensure_future(_wake())
     woke = await sleeping

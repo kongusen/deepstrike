@@ -8,7 +8,7 @@ import type {
 import type { ToolSuspendEvent } from "./execution-plane.js"
 import type { DreamStore, DreamResult, MemoryEntry, CurationResult, SessionData } from "../memory/index.js"
 import type { KnowledgeSource } from "../knowledge/index.js"
-import type { SignalSource, RuntimeSignal } from "../signals/index.js"
+import type { SignalSource, RuntimeSignal, SignalDeliveryReceipt } from "../signals/index.js"
 import type { SessionLog, SessionEvent } from "./session-log.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
 import { resolvePermissionRequest } from "./execution-plane.js"
@@ -111,6 +111,15 @@ export interface KernelReliabilityOptions {
   hostEffectRetryAttempts?: number
   spoolThresholdBytes?: number
   spoolPreviewBytes?: number
+}
+
+interface InboundSignalDelivery {
+  signalId: string
+  deliveryId: string
+  deliveryAttempt: number
+  signal: RuntimeSignal
+  ack(): Promise<boolean>
+  nack(): Promise<boolean>
 }
 
 export interface ArchiveStore {
@@ -292,11 +301,54 @@ export class RuntimeRunner {
 
   /** Injected-note drain shared with the main loop's per-turn poll: injected notes first (FIFO), then
    *  the configured `signalSource` — one code path so the two inbound channels never drift. */
-  private async nextInboundSignal(): Promise<RuntimeSignal | null> {
+  private async nextInboundSignal(): Promise<InboundSignalDelivery | null> {
     const injected = this.injectedSignals.shift()
-    if (injected) return injected
+    if (injected) return {
+      signalId: crypto.randomUUID(),
+      deliveryId: `injected-${crypto.randomUUID()}`,
+      deliveryAttempt: 1,
+      signal: injected,
+      ack: async () => true,
+      nack: async () => true,
+    }
     if (!this.opts.signalSource) return null
-    return this.opts.signalSource.nextSignal()
+    const source = this.opts.signalSource
+    const claim = await source.claimSignal()
+    if (!claim) return null
+    const receipt: SignalDeliveryReceipt = {
+      deliveryId: claim.deliveryId,
+      leaseToken: claim.leaseToken,
+    }
+    return {
+      signalId: claim.signalId,
+      deliveryId: claim.deliveryId,
+      deliveryAttempt: claim.deliveryAttempt,
+      signal: claim.signal,
+      ack: () => source.ackSignal(receipt),
+      nack: () => source.nackSignal(receipt),
+    }
+  }
+
+  private async consumeInboundSignal<T>(
+    delivery: InboundSignalDelivery,
+    consume: (delivery: InboundSignalDelivery) => T,
+  ): Promise<T> {
+    try {
+      const observationStart = this.pendingObservations.length
+      const result = consume(delivery)
+      const dispositions = this.pendingObservations.slice(observationStart).filter(observation =>
+        observation.kind === "signal_delivery_disposed"
+        && observation.delivery_id === delivery.deliveryId
+        && observation.attempt === delivery.deliveryAttempt)
+      if (dispositions.length !== 1) {
+        throw new Error("kernel did not return the matching signal delivery disposition")
+      }
+      if (!await delivery.ack()) throw new Error("signal lease was lost before acknowledgement")
+      return result
+    } catch (cause) {
+      await delivery.nack()
+      throw cause
+    }
   }
 
   async *run(req: {
@@ -785,12 +837,13 @@ export class RuntimeRunner {
       }
 
       if (this.opts.signalSource || this.injectedSignals.length > 0) {
-        const sig = await this.nextInboundSignal()
-        if (sig) {
-          const sigAction = kernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(sig))
+        const delivery = await this.nextInboundSignal()
+        if (delivery) {
+          const sigAction = await this.consumeInboundSignal(delivery, claimed =>
+            kernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(claimed)))
           if (sigAction) action = sigAction
           // I0a: Critical signal carries user_abort intent; see Node runner for full rationale.
-          if (sig.urgency === "critical") this.interrupted = true
+          if (delivery.signal.urgency === "critical") this.interrupted = true
         }
       }
       if (runtime.isTerminal()) break
@@ -1782,14 +1835,15 @@ export class RuntimeRunner {
     batchState: { settled: boolean },
   ): Promise<{ completed: string[]; failed: string[] } | null> {
     const source = this.opts.signalSource
-    if (!source) return null
+    if (!source && this.injectedSignals.length === 0) return null
     while (!batchState.settled) {
       // O2: injected notes participate in the monitor too (drain order matches nextInboundSignal).
-      const sig = this.injectedSignals.shift() ?? await source.nextSignal()
+      const delivery = await this.nextInboundSignal()
       if (batchState.settled) break
-      if (!sig) { await new Promise(resolve => setTimeout(resolve, 5)); continue }
+      if (!delivery) { await new Promise(resolve => setTimeout(resolve, 5)); continue }
       const observationStart = this.pendingObservations.length
-      const signalAction = kernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(sig))
+      const signalAction = await this.consumeInboundSignal(delivery, claimed =>
+        kernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(claimed)))
       if (signalAction) {
         if (signalAction.kind !== "preempt_sub_agents") {
           throw new Error(`workflow signal returned unexpected effect: ${signalAction.kind}`)
@@ -2308,13 +2362,16 @@ function authoredWorkflowOutcomeNote(outcome: {
   return lines.join("\n")
 }
 
-/** Lower a host `RuntimeSignal` to the kernel's snake_case `signal` input event. Shared by the main
+/** Lower a claimed signal delivery to the kernel's `deliver_signal` input event. Shared by the main
  *  loop's per-turn poll and #2-B-ii's workflow-batch preemption monitor (so the two never drift). */
-function signalToKernelEvent(sig: RuntimeSignal): Record<string, unknown> {
+function signalToKernelEvent(delivery: InboundSignalDelivery): Record<string, unknown> {
+  const sig = delivery.signal
   return {
-    kind: "signal",
+    kind: "deliver_signal",
+    delivery_id: delivery.deliveryId,
+    attempt: delivery.deliveryAttempt,
     signal: {
-      id: crypto.randomUUID(),
+      id: delivery.signalId,
       source: sig.source ?? "custom",
       signal_type: sig.signalType ?? "event",
       urgency: sig.urgency ?? "normal",

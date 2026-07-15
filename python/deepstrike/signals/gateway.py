@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass, replace
 from typing import Callable
@@ -12,6 +13,8 @@ from deepstrike.runtime.reliability import ObserverErrorHandler, report_observer
 @dataclass
 class _QueuedSignal:
     delivery_id: str
+    signal_id: str
+    delivery_attempts: int
     signal: RuntimeSignal
     lease_token: str | None = None
     lease_expires_at_ms: int | None = None
@@ -31,7 +34,9 @@ class SignalGateway:
         gateway = SignalGateway()
         gateway.on_signal(lambda sig: ...)
         gateway.schedule(ScheduledPrompt("summarize", int(time.time() * 1000) + 60_000))
-        gateway.ingest(RuntimeSignal(kind="external", payload={"foo": "bar"}))
+        gateway.ingest(RuntimeSignal(
+            source="gateway", signal_type="event", urgency="normal", payload={"foo": "bar"},
+        ))
         # call gateway.destroy() when done to cancel pending timers
     """
 
@@ -108,19 +113,6 @@ class SignalGateway:
             seen.add(recipient)
             self._emit(replace(signal, recipient=recipient))
 
-    async def next_signal(self, recipient: str | None = None) -> RuntimeSignal | None:
-        """Return the next pending signal so the gateway can be passed directly to RuntimeRunner.
-
-        When ``recipient`` is given, return only the oldest signal addressed to it (plus
-        unaddressed shared items); signals addressed to other recipients stay queued, so one
-        shared gateway can serve N peer loops. None ⇒ legacy FIFO drain (any signal).
-        """
-        claim = await self.claim_signal(recipient)
-        if claim is None:
-            return None
-        await self.ack_signal(claim)
-        return claim.signal
-
     async def claim_signal(
         self, recipient: str | None = None, lease_ms: int | None = None,
     ) -> SignalClaim | None:
@@ -139,11 +131,19 @@ class SignalGateway:
             if not visible or not available:
                 continue
             self._lease_seq += 1
+            entry.delivery_attempts += 1
             token = f"{entry.delivery_id}:lease-{self._lease_seq}"
             expires_at = now + duration
             entry.lease_token = token
             entry.lease_expires_at_ms = expires_at
-            return SignalClaim(entry.delivery_id, token, entry.signal, expires_at)
+            return SignalClaim(
+                entry.delivery_id,
+                token,
+                entry.signal_id,
+                entry.delivery_attempts,
+                entry.signal,
+                expires_at,
+            )
         return None
 
     async def ack_signal(self, receipt: SignalDeliveryReceipt) -> bool:
@@ -175,7 +175,12 @@ class SignalGateway:
 
     def _emit(self, signal: RuntimeSignal) -> None:
         self._delivery_seq += 1
-        self._pending.append(_QueuedSignal(f"signal-{self._delivery_seq}", signal))
+        self._pending.append(_QueuedSignal(
+            f"signal-{self._delivery_seq}",
+            str(uuid.uuid4()),
+            0,
+            signal,
+        ))
         for listener in self._listeners:
             try:
                 listener(signal)

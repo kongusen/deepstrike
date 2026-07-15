@@ -7,15 +7,34 @@ use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeSignal {
-    pub kind: String, // "interrupt" | "scheduled" | "external"
+    pub source: String,
+    pub signal_type: String,
+    pub urgency: String,
     pub payload: serde_json::Value,
-    pub priority: u8,
+    pub dedupe_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignalDeliveryReceipt {
+    pub delivery_id: String,
+    pub lease_token: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SignalClaim {
+    pub delivery_id: String,
+    pub lease_token: String,
+    pub signal_id: String,
+    pub delivery_attempt: u32,
+    pub signal: RuntimeSignal,
 }
 
 /// Feed signals from any external source (cron, webhook, queue).
 #[async_trait]
 pub trait SignalSource: Send + Sync {
-    async fn next_signal(&self) -> crate::Result<Option<RuntimeSignal>>;
+    async fn claim_signal(&self) -> crate::Result<Option<SignalClaim>>;
+    async fn ack_signal(&self, receipt: &SignalDeliveryReceipt) -> crate::Result<bool>;
+    async fn nack_signal(&self, receipt: &SignalDeliveryReceipt) -> crate::Result<bool>;
 }
 
 #[derive(Debug, Clone)]
@@ -36,13 +55,15 @@ impl ScheduledPrompt {
 
     pub fn to_signal(&self) -> RuntimeSignal {
         RuntimeSignal {
-            kind: "scheduled".into(),
+            source: "cron".into(),
+            signal_type: "job".into(),
+            urgency: "normal".into(),
             payload: serde_json::json!({
                 "goal": self.goal,
                 "criteria": self.criteria,
                 "run_at_ms": self.run_at_ms,
             }),
-            priority: 0,
+            dedupe_key: Some(format!("cron:{}:{}", self.goal, self.run_at_ms)),
         }
     }
 }
@@ -70,7 +91,10 @@ impl SignalGateway {
     /// Returns a [`GatewayReceiver`] that implements [`SignalSource`].
     pub fn subscribe(&self) -> GatewayReceiver {
         GatewayReceiver {
-            rx: tokio::sync::Mutex::new(self.tx.subscribe()),
+            state: tokio::sync::Mutex::new(GatewayReceiverState {
+                rx: self.tx.subscribe(),
+                pending: None,
+            }),
         }
     }
 
@@ -128,16 +152,79 @@ impl Default for SignalGateway {
 
 /// A broadcast receiver from a [`SignalGateway`] that implements [`SignalSource`].
 pub struct GatewayReceiver {
-    rx: tokio::sync::Mutex<broadcast::Receiver<RuntimeSignal>>,
+    state: tokio::sync::Mutex<GatewayReceiverState>,
+}
+
+struct PendingDelivery {
+    delivery_id: String,
+    signal_id: String,
+    delivery_attempt: u32,
+    lease_token: Option<String>,
+    signal: RuntimeSignal,
+}
+
+struct GatewayReceiverState {
+    rx: broadcast::Receiver<RuntimeSignal>,
+    pending: Option<PendingDelivery>,
 }
 
 #[async_trait]
 impl SignalSource for GatewayReceiver {
-    async fn next_signal(&self) -> crate::Result<Option<RuntimeSignal>> {
-        match self.rx.lock().await.recv().await {
-            Ok(sig) => Ok(Some(sig)),
-            Err(broadcast::error::RecvError::Lagged(_)) => Ok(None),
-            Err(broadcast::error::RecvError::Closed) => Ok(None),
+    async fn claim_signal(&self) -> crate::Result<Option<SignalClaim>> {
+        let mut state = self.state.lock().await;
+        if state.pending.is_none() {
+            let signal = match state.rx.recv().await {
+                Ok(signal) => signal,
+                Err(broadcast::error::RecvError::Lagged(_))
+                | Err(broadcast::error::RecvError::Closed) => return Ok(None),
+            };
+            state.pending = Some(PendingDelivery {
+                delivery_id: uuid::Uuid::new_v4().to_string(),
+                signal_id: uuid::Uuid::new_v4().to_string(),
+                delivery_attempt: 0,
+                lease_token: None,
+                signal,
+            });
         }
+        let pending = state.pending.as_mut().expect("pending delivery initialized");
+        if pending.lease_token.is_some() {
+            return Ok(None);
+        }
+        pending.delivery_attempt = pending.delivery_attempt.saturating_add(1);
+        let lease_token = uuid::Uuid::new_v4().to_string();
+        pending.lease_token = Some(lease_token.clone());
+        Ok(Some(SignalClaim {
+            delivery_id: pending.delivery_id.clone(),
+            lease_token,
+            signal_id: pending.signal_id.clone(),
+            delivery_attempt: pending.delivery_attempt,
+            signal: pending.signal.clone(),
+        }))
+    }
+
+    async fn ack_signal(&self, receipt: &SignalDeliveryReceipt) -> crate::Result<bool> {
+        let mut state = self.state.lock().await;
+        let matches = state.pending.as_ref().is_some_and(|pending| {
+            pending.delivery_id == receipt.delivery_id
+                && pending.lease_token.as_deref() == Some(receipt.lease_token.as_str())
+        });
+        if matches {
+            state.pending = None;
+        }
+        Ok(matches)
+    }
+
+    async fn nack_signal(&self, receipt: &SignalDeliveryReceipt) -> crate::Result<bool> {
+        let mut state = self.state.lock().await;
+        let Some(pending) = state.pending.as_mut() else {
+            return Ok(false);
+        };
+        if pending.delivery_id != receipt.delivery_id
+            || pending.lease_token.as_deref() != Some(receipt.lease_token.as_str())
+        {
+            return Ok(false);
+        }
+        pending.lease_token = None;
+        Ok(true)
     }
 }

@@ -654,9 +654,11 @@ async fn signal_gateway_creates_and_subscribes() {
     let _rx = gw.subscribe();
 
     gw.ingest(deepstrike_sdk::RuntimeSignal {
-        kind: "interrupt".into(),
+        source: "gateway".into(),
+        signal_type: "alert".into(),
+        urgency: "critical".into(),
         payload: serde_json::json!({}),
-        priority: 10,
+        dedupe_key: None,
     });
     gw.destroy();
 }
@@ -676,8 +678,13 @@ async fn signal_gateway_schedule_fires() {
     // Give time for schedule to fire
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
-    let sig = rx.next_signal().await;
-    assert!(sig.is_ok());
+    let claim = rx.claim_signal().await.expect("claim signal").expect("scheduled signal");
+    assert_eq!(claim.signal.source, "cron");
+    let receipt = deepstrike_sdk::SignalDeliveryReceipt {
+        delivery_id: claim.delivery_id,
+        lease_token: claim.lease_token,
+    };
+    assert!(rx.ack_signal(&receipt).await.expect("ack signal"));
     gw.destroy();
 }
 

@@ -1006,7 +1006,9 @@ fn critical_signal_preemption_is_committed_only_after_correlated_result() {
         parent_session_id: "parent-session".to_string(),
     }));
 
-    let requested = runtime.step(KernelInput::new(KernelInputEvent::Signal {
+    let requested = runtime.step(KernelInput::new(KernelInputEvent::DeliverSignal {
+        delivery_id: "delivery-preempt".into(),
+        attempt: 1,
         signal: signal(Urgency::Critical, "stop child"),
     }));
     let effect_id = match &requested.actions[0] {
@@ -2138,7 +2140,9 @@ fn started_runtime_with_attention(max_queue: u32) -> KernelRuntime {
 fn attention_policy_critical_signal_interrupts() {
     use crate::types::signal::Urgency;
     let mut runtime = started_runtime_with_attention(8);
-    let step = runtime.step(KernelInput::new(KernelInputEvent::Signal {
+    let step = runtime.step(KernelInput::new(KernelInputEvent::DeliverSignal {
+        delivery_id: "delivery-critical".into(),
+        attempt: 1,
         signal: signal(Urgency::Critical, "fire"),
     }));
     assert!(
@@ -2154,7 +2158,12 @@ fn attention_policy_critical_signal_interrupts() {
     );
     assert!(step.observations.iter().any(|o| matches!(
         o,
-        KernelObservation::SignalDisposed { disposition, .. } if disposition == "interrupt_now"
+        KernelObservation::SignalDeliveryDisposed {
+            delivery_id,
+            attempt: 1,
+            disposition,
+            ..
+        } if delivery_id == "delivery-critical" && disposition == "interrupt_now"
     )));
 }
 
@@ -2162,7 +2171,9 @@ fn attention_policy_critical_signal_interrupts() {
 fn attention_policy_normal_signal_queues_without_action() {
     use crate::types::signal::Urgency;
     let mut runtime = started_runtime_with_attention(8);
-    let step = runtime.step(KernelInput::new(KernelInputEvent::Signal {
+    let step = runtime.step(KernelInput::new(KernelInputEvent::DeliverSignal {
+        delivery_id: "delivery-normal".into(),
+        attempt: 1,
         signal: signal(Urgency::Normal, "job"),
     }));
     assert!(
@@ -2172,7 +2183,7 @@ fn attention_policy_normal_signal_queues_without_action() {
     );
     assert!(step.observations.iter().any(|o| matches!(
         o,
-        KernelObservation::SignalDisposed { disposition, queue_depth, .. }
+        KernelObservation::SignalDeliveryDisposed { disposition, queue_depth, .. }
         if disposition == "queue" && *queue_depth == 1
     )));
 }
@@ -2181,16 +2192,86 @@ fn attention_policy_normal_signal_queues_without_action() {
 fn attention_policy_full_queue_drops() {
     use crate::types::signal::Urgency;
     let mut runtime = started_runtime_with_attention(1);
-    runtime.step(KernelInput::new(KernelInputEvent::Signal {
+    runtime.step(KernelInput::new(KernelInputEvent::DeliverSignal {
+        delivery_id: "delivery-first".into(),
+        attempt: 1,
         signal: signal(Urgency::Normal, "first"),
     }));
-    let step = runtime.step(KernelInput::new(KernelInputEvent::Signal {
+    let step = runtime.step(KernelInput::new(KernelInputEvent::DeliverSignal {
+        delivery_id: "delivery-second".into(),
+        attempt: 1,
         signal: signal(Urgency::Normal, "second"),
     }));
     assert!(step.observations.iter().any(|o| matches!(
         o,
-        KernelObservation::SignalDisposed { disposition, .. } if disposition == "dropped"
+        KernelObservation::SignalDeliveryDisposed { disposition, .. } if disposition == "dropped"
     )));
+}
+
+#[test]
+fn signal_redelivery_attempts_are_correlated_and_distinct() {
+    use crate::types::signal::Urgency;
+    let mut runtime = started_runtime_with_attention(8);
+    let signal = signal(Urgency::Low, "leased").with_dedupe("logical-signal");
+
+    let first = runtime.step(KernelInput::correlated(
+        "local-operation",
+        "delivery-event-1",
+        1,
+        KernelInputEvent::DeliverSignal {
+            delivery_id: "delivery-1".into(),
+            attempt: 1,
+            signal: signal.clone(),
+        },
+    ));
+    let second = runtime.step(KernelInput::correlated(
+        "local-operation",
+        "delivery-event-2",
+        2,
+        KernelInputEvent::DeliverSignal {
+            delivery_id: "delivery-1".into(),
+            attempt: 2,
+            signal,
+        },
+    ));
+
+    assert!(first.observations.iter().any(|observation| matches!(
+        observation,
+        KernelObservation::SignalDeliveryDisposed {
+            delivery_id,
+            attempt: 1,
+            disposition,
+            ..
+        } if delivery_id == "delivery-1" && disposition == "observe"
+    )));
+    assert!(second.observations.iter().any(|observation| matches!(
+        observation,
+        KernelObservation::SignalDeliveryDisposed {
+            delivery_id,
+            attempt: 2,
+            disposition,
+            ..
+        } if delivery_id == "delivery-1" && disposition == "ignore"
+    )));
+}
+
+#[test]
+fn signal_delivery_rejects_missing_identity_or_zero_attempt() {
+    use crate::types::signal::Urgency;
+    let mut runtime = started_runtime_with_attention(8);
+    let step = runtime.step(KernelInput::new(KernelInputEvent::DeliverSignal {
+        delivery_id: String::new(),
+        attempt: 0,
+        signal: signal(Urgency::Low, "invalid"),
+    }));
+
+    assert!(matches!(
+        step.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::InvalidConfig,
+            ..
+        }]
+    ));
 }
 
 #[test]

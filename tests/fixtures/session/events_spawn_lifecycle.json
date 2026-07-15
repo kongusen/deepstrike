@@ -11,8 +11,11 @@
     "permitted_capability_ids": []
   },
   {
-    "kind": "signal_disposed",
+    "kind": "signal_delivery_disposed",
     "turn": 2,
+    "operation_id": "operation-a",
+    "delivery_id": "delivery-a",
+    "attempt": 1,
     "signal_id": "sig-a",
     "disposition": "queue",
     "queue_depth": 1

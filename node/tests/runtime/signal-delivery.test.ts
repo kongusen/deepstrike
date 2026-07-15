@@ -4,13 +4,13 @@ import {
   RuntimeRunner,
 } from "../../src/index.js"
 import type {
-  LeasedSignalSource,
   LLMProvider,
   Message,
   RenderedContext,
   RuntimeSignal,
   SignalClaim,
   SignalDeliveryReceipt,
+  SignalSource,
   StreamEvent,
   ToolSchema,
 } from "../../src/index.js"
@@ -24,16 +24,12 @@ class TextProvider implements LLMProvider {
   }
 }
 
-class RecordingLeasedSource implements LeasedSignalSource {
+class RecordingLeasedSource implements SignalSource {
   readonly acked: SignalDeliveryReceipt[] = []
   readonly nacked: SignalDeliveryReceipt[] = []
   private claimed = false
 
   constructor(private readonly ackSucceeds = true) {}
-
-  async nextSignal(): Promise<RuntimeSignal | null> {
-    throw new Error("legacy destructive pull must not be used")
-  }
 
   async claimSignal(): Promise<SignalClaim | null> {
     if (this.claimed) return null
@@ -41,6 +37,8 @@ class RecordingLeasedSource implements LeasedSignalSource {
     return {
       deliveryId: "delivery-1",
       leaseToken: "lease-1",
+      signalId: crypto.randomUUID(),
+      deliveryAttempt: 1,
       leaseExpiresAtMs: Date.now() + 30_000,
       signal: {
         source: "gateway",
@@ -62,7 +60,7 @@ class RecordingLeasedSource implements LeasedSignalSource {
   }
 }
 
-function runnerWith(source: LeasedSignalSource): RuntimeRunner {
+function runnerWith(source: SignalSource): RuntimeRunner {
   return new RuntimeRunner({
     provider: new TextProvider(),
     sessionLog: new InMemorySessionLog(),

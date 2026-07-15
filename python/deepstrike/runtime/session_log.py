@@ -222,9 +222,12 @@ class ToolGatedEvent(TypedDict, total=False):
     reason: str
 
 
-class SignalDisposedEvent(TypedDict, total=False):
-    kind: Literal["signal_disposed"]
+class SignalDeliveryDisposedEvent(TypedDict, total=False):
+    kind: Literal["signal_delivery_disposed"]
     turn: int
+    operation_id: str
+    delivery_id: str
+    attempt: int
     signal_id: str
     disposition: str
     queue_depth: int
@@ -326,7 +329,7 @@ SessionEvent = (
     | SuspendedEvent
     | ResumedEvent
     | ToolGatedEvent
-    | SignalDisposedEvent
+    | SignalDeliveryDisposedEvent
     | BudgetExceededEvent
     | ContextRenewedEvent
     | MemoryWrittenEvent

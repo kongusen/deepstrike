@@ -16,7 +16,6 @@ import type {
 } from "../memory/protocols.js"
 import { memoriesToIndex, selectMemories } from "../memory/agent.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
-import { isLeasedSignalSource } from "../signals/types.js"
 import type {
   RuntimeSignal,
   RuntimeSignalUrgency,
@@ -104,6 +103,9 @@ export interface SchedulerBudget {
 }
 
 interface InboundSignalDelivery {
+  signalId: string
+  deliveryId: string
+  deliveryAttempt: number
   signal: RuntimeSignal
   ack(): Promise<boolean>
   nack(): Promise<boolean>
@@ -229,8 +231,8 @@ export interface RuntimeOptions {
   /**
    * Enable in-kernel signal routing (`set_attention_policy`). When set, inbound
    * signals are dispatched through the kernel attention policy (dedup + disposition
-   * + queue) and surface as `signal_disposed` observations, instead of the legacy
-   * SDK-side router. `maxQueueSize` defaults to 64.
+   * + queue) and surface as correlated `signal_delivery_disposed` observations.
+   * `maxQueueSize` defaults to 64.
    */
   attentionPolicy?: { maxQueueSize?: number }
   /**
@@ -1475,32 +1477,46 @@ export class RuntimeRunner {
    *  the configured `signalSource`. Keeps the two inbound channels on one code path so they never drift. */
   private async nextInboundSignal(): Promise<InboundSignalDelivery | null> {
     const injected = this.injectedSignals.shift()
-    if (injected) return { signal: injected, ack: async () => true, nack: async () => true }
+    if (injected) return {
+      signalId: crypto.randomUUID(),
+      deliveryId: `injected-${crypto.randomUUID()}`,
+      deliveryAttempt: 1,
+      signal: injected,
+      ack: async () => true,
+      nack: async () => true,
+    }
     if (!this.opts.signalSource) return null
     const source = this.opts.signalSource
-    if (isLeasedSignalSource(source)) {
-      const claim = await source.claimSignal(this.currentSessionId ?? undefined)
-      if (!claim) return null
-      const receipt: SignalDeliveryReceipt = {
-        deliveryId: claim.deliveryId,
-        leaseToken: claim.leaseToken,
-      }
-      return {
-        signal: claim.signal,
-        ack: () => source.ackSignal(receipt),
-        nack: () => source.nackSignal(receipt),
-      }
+    const claim = await source.claimSignal(this.currentSessionId ?? undefined)
+    if (!claim) return null
+    const receipt: SignalDeliveryReceipt = {
+      deliveryId: claim.deliveryId,
+      leaseToken: claim.leaseToken,
     }
-    const signal = await source.nextSignal(this.currentSessionId ?? undefined)
-    return signal ? { signal, ack: async () => true, nack: async () => true } : null
+    return {
+      signalId: claim.signalId,
+      deliveryId: claim.deliveryId,
+      deliveryAttempt: claim.deliveryAttempt,
+      signal: claim.signal,
+      ack: () => source.ackSignal(receipt),
+      nack: () => source.nackSignal(receipt),
+    }
   }
 
   private async consumeInboundSignal<T>(
     delivery: InboundSignalDelivery,
-    consume: (signal: RuntimeSignal) => T,
+    consume: (delivery: InboundSignalDelivery) => T,
   ): Promise<T> {
     try {
-      const result = consume(delivery.signal)
+      const observationStart = this.pendingObservations.length
+      const result = consume(delivery)
+      const dispositions = this.pendingObservations.slice(observationStart).filter(observation =>
+        observation.kind === "signal_delivery_disposed"
+        && observation.delivery_id === delivery.deliveryId
+        && observation.attempt === delivery.deliveryAttempt)
+      if (dispositions.length !== 1) {
+        throw new Error("kernel did not return the matching signal delivery disposition")
+      }
       if (!await delivery.ack()) throw new Error("signal lease was lost before acknowledgement")
       return result
     } catch (cause) {
@@ -2056,7 +2072,7 @@ export class RuntimeRunner {
         const delivery = await this.nextInboundSignal()
         if (delivery) {
           // Kernel-routed: the kernel decides disposition (dedup/queue/interrupt) and emits
-          // `signal_disposed`. An actionable disposition yields a new action to adopt; queued/observed/
+          // `signal_delivery_disposed`. An actionable disposition yields a new action to adopt; queued/observed/
           // ignored yields none (kernel buffers).
           const sigAction = await this.consumeInboundSignal(delivery, sig =>
             kernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(sig)))
@@ -3271,15 +3287,18 @@ function jaccardSimilarity(a: string, b: string): number {
   return union === 0 ? 0 : inter / union
 }
 
-function signalToKernelEvent(sig: RuntimeSignal): Record<string, unknown> {
+function signalToKernelEvent(delivery: InboundSignalDelivery): Record<string, unknown> {
+  const sig = delivery.signal
   return {
-    kind: "signal",
+    kind: "deliver_signal",
+    delivery_id: delivery.deliveryId,
+    attempt: delivery.deliveryAttempt,
     signal: {
-      id: crypto.randomUUID(),
+      id: delivery.signalId,
       source: sig.source ?? "custom",
       signal_type: sig.signalType ?? "event",
       urgency: sig.urgency ?? "normal",
-      summary: String((sig.payload as Record<string, unknown>)?.goal ?? sig.kind ?? "signal"),
+      summary: String((sig.payload as Record<string, unknown>)?.goal ?? "signal"),
       payload: sig.payload ?? {},
       ...(sig.dedupeKey ? { dedupe_key: sig.dedupeKey } : {}),
       ...(sig.recipient ? { recipient: sig.recipient } : {}),

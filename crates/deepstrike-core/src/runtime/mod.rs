@@ -23,6 +23,6 @@ pub use event_log::{
 };
 pub use replay::{
     rebuild_os_snapshot_from_events, BudgetExceededRecord,
-    OsSnapshot, ProcessRecord, SignalDisposedRecord, SuspendRecord,
+    OsSnapshot, ProcessRecord, SignalDeliveryDisposedRecord, SuspendRecord,
 };
 pub use session::{ProviderReplay, SessionEvent};

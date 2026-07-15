@@ -58,7 +58,16 @@ export type SessionEvent =
   | { kind: "suspended"; turn: number; reason: string; pending_calls?: string[] }
   | { kind: "resumed"; turn: number; approved?: string[]; denied?: string[] }
   | { kind: "tool_gated"; turn: number; call_id: string; tool: string; reason: string }
-  | { kind: "signal_disposed"; turn: number; signal_id: string; disposition: string; queue_depth: number }
+  | {
+      kind: "signal_delivery_disposed"
+      turn: number
+      operation_id: string
+      delivery_id: string
+      attempt: number
+      signal_id: string
+      disposition: string
+      queue_depth: number
+    }
   | { kind: "budget_exceeded"; turn: number; budget: string }
   | { kind: "milestone_advanced"; turn: number; phase_id: string; capabilities_unlocked: string[] }
   | { kind: "milestone_blocked"; turn: number; phase_id: string; reason: string }

@@ -22,7 +22,7 @@ export function categoryForKind(kind: string): KernelEventCategory {
       return "mm"
     case "agent_process_changed":
       return "proc"
-    case "signal_disposed":
+    case "signal_delivery_disposed":
       return "ipc"
     default:
       return "sched"
@@ -149,10 +149,13 @@ export function kernelObservationToSessionEvent(
         tool: obs.tool ?? "",
         reason: typeof obs.reason === "string" ? obs.reason : "",
       }
-    case "signal_disposed":
+    case "signal_delivery_disposed":
       return {
-        kind: "signal_disposed" as const,
+        kind: "signal_delivery_disposed" as const,
         turn: t,
+        operation_id: obs.operation_id ?? "",
+        delivery_id: obs.delivery_id ?? "",
+        attempt: obs.attempt ?? 0,
         signal_id: obs.signal_id ?? "",
         disposition: obs.disposition ?? "",
         queue_depth: obs.queue_depth ?? 0,

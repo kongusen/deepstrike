@@ -19,39 +19,57 @@ impl LoopStateMachine {
     }
 
     /// ABI entry for an inbound signal: clears observations, sweeps leases, then
-    /// dispatches through the in-kernel router (or the legacy path). Returns
+    /// dispatches through the in-kernel router. Returns
     /// `None` when the signal does not drive a provider call this step
     /// (queued / observed / ignored / dropped).
-    pub fn signal_event(&mut self, signal: RuntimeSignal) -> Option<LoopAction> {
+    pub fn signal_event(
+        &mut self,
+        operation_id: String,
+        delivery_id: String,
+        attempt: u32,
+        signal: RuntimeSignal,
+    ) -> Option<LoopAction> {
         self.observations.clear();
         self.sweep_expired_leases();
         // K3: skill leases expire on the same head-of-event cadence as capability leases.
         self.ctx.sweep_expired_skill_leases(self.turn);
-        self.dispatch_signal(signal)
+        let signal_id = signal.id.to_string();
+        let (action, disposition, queue_depth) = self.route_signal(signal);
+        self.observations
+            .push(KernelObservation::SignalDeliveryDisposed {
+                turn: self.turn,
+                operation_id,
+                delivery_id,
+                attempt,
+                signal_id,
+                disposition: disposition.label().to_string(),
+                queue_depth,
+            });
+        action
     }
 
     /// Route a signal and decide whether it drives a turn now. Assumes the caller
     /// has already cleared observations / swept leases (see `feed` and `signal_event`).
     pub(super) fn dispatch_signal(&mut self, signal: RuntimeSignal) -> Option<LoopAction> {
+        self.route_signal(signal).0
+    }
+
+    fn route_signal(
+        &mut self,
+        signal: RuntimeSignal,
+    ) -> (Option<LoopAction>, SignalDisposition, u32) {
         let is_running = !matches!(
             self.lifecycle(),
             TaskLifecycle::Ready | TaskLifecycle::Done(_)
         );
         let router = &mut self.signal_router;
-        let signal_id = signal.id.to_string();
         let summary = signal.summary.to_string();
         let disposition = router.ingest(signal, is_running);
         let queue_depth = router.depth() as u32;
-        self.observations.push(KernelObservation::SignalDisposed {
-            turn: self.turn,
-            signal_id,
-            disposition: disposition.label().to_string(),
-            queue_depth,
-        });
         // Acted-on external signals are user/agent directives: also promote into the durable
         // directive channel so they survive compaction/renewal (the ephemeral signal copy below is
         // cleared at the next sprint boundary). Queue/Ignore/Dropped are not acted on → not durable.
-        match disposition {
+        let action = match disposition {
             // #2-A/B: hard preempt (Critical while busy). Stop in-flight work NOW and reason about the
             // interrupt this turn. When the root is suspended awaiting running sub-agents/workflow,
             // `preempt_running_for_interrupt` aborts them (emits `AgentPreempted`) and clears the
@@ -90,7 +108,8 @@ impl LoopStateMachine {
             SignalDisposition::Queue | SignalDisposition::Ignore | SignalDisposition::Dropped => {
                 None
             }
-        }
+        };
+        (action, disposition, queue_depth)
     }
 
     /// #2-B: when an `InterruptNow` arrives while the root is suspended awaiting running sub-agents /

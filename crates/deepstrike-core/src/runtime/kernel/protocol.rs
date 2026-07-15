@@ -538,7 +538,9 @@ pub enum KernelInputEvent {
         effect_id: String,
         message: String,
     },
-    Signal {
+    DeliverSignal {
+        delivery_id: String,
+        attempt: u32,
         signal: RuntimeSignal,
     },
     MilestoneResult {
@@ -1079,9 +1081,12 @@ pub enum KernelObservation {
         tool: String,
         reason: String,
     },
-    /// An inbound signal was routed by the in-kernel attention policy.
-    SignalDisposed {
+    /// A leased inbound signal delivery was routed by the in-kernel attention policy.
+    SignalDeliveryDisposed {
         turn: u32,
+        operation_id: String,
+        delivery_id: String,
+        attempt: u32,
         signal_id: String,
         disposition: String,
         queue_depth: u32,

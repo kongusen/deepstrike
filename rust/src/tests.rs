@@ -5,7 +5,7 @@ mod tests {
     use crate::RunEvent;
     use crate::memory::WorkingMemory;
     use crate::safety::{PermissionManager, PermissionMode};
-    use crate::signals::ScheduledPrompt;
+    use crate::signals::{ScheduledPrompt, SignalSource};
     use crate::tools::{
         RegisteredTool, ToolChunk, execute_tools, read_file_tool, validate_tool_arguments,
     };
@@ -54,8 +54,42 @@ mod tests {
     fn scheduled_prompt_to_signal() {
         let p = ScheduledPrompt::new("standup", 1_700_000_000_000);
         let sig = p.to_signal();
-        assert_eq!(sig.kind, "scheduled");
+        assert_eq!(sig.source, "cron");
+        assert_eq!(sig.signal_type, "job");
+        assert_eq!(sig.urgency, "normal");
         assert_eq!(sig.payload["goal"], "standup");
+    }
+
+    #[tokio::test]
+    async fn signal_gateway_redelivery_preserves_identity_and_increments_attempt() {
+        let gateway = crate::SignalGateway::new();
+        let receiver = gateway.subscribe();
+        gateway.ingest(crate::RuntimeSignal {
+            source: "gateway".into(),
+            signal_type: "event".into(),
+            urgency: "normal".into(),
+            payload: serde_json::json!({"goal": "retry"}),
+            dedupe_key: Some("logical-signal".into()),
+        });
+
+        let first = receiver
+            .claim_signal()
+            .await
+            .expect("claim")
+            .expect("first delivery");
+        let first_receipt = crate::SignalDeliveryReceipt {
+            delivery_id: first.delivery_id.clone(),
+            lease_token: first.lease_token.clone(),
+        };
+        assert!(receiver.nack_signal(&first_receipt).await.expect("nack"));
+        let second = receiver
+            .claim_signal()
+            .await
+            .expect("claim")
+            .expect("redelivery");
+        assert_eq!(second.delivery_id, first.delivery_id);
+        assert_eq!(second.signal_id, first.signal_id);
+        assert_eq!(second.delivery_attempt, 2);
     }
 
     #[test]

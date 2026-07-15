@@ -77,7 +77,7 @@ export class KernelPrimitivesDashboard {
         this.stats.sched.lastSuspendReason = event.reason
       } else if (event.kind === "resumed") {
         this.stats.sched.resumedCount++
-      } else if (event.kind === "signal_disposed") {
+      } else if (event.kind === "signal_delivery_disposed") {
         this.stats.sched.signalDisposedCount++
       } else if (event.kind === "budget_exceeded") {
         this.stats.sched.budgetExceededCount++

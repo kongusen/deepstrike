@@ -7,41 +7,20 @@ from typing import Any, Protocol, runtime_checkable
 
 @dataclass
 class RuntimeSignal:
-    kind: str
+    source: str
+    signal_type: str
+    urgency: str
     payload: dict[str, Any] = field(default_factory=dict)
-    source: str = "custom"
-    signal_type: str = "event"
-    urgency: str = "normal"
     dedupe_key: str | None = None
     # Target a specific session loop. None means a shared item consumed by one eligible puller.
     recipient: str | None = None
     # Optional pub/sub topic (carried through; multi-subscriber routing deferred).
     topic: str | None = None
-    priority: int | None = None
-
-    def __post_init__(self) -> None:
-        # Preserve the old ergonomic kinds while normalizing onto the kernel contract.
-        if self.kind == "scheduled":
-            self.source = "cron"
-            self.signal_type = "job"
-        elif self.kind == "interrupt":
-            self.source = "gateway"
-            self.signal_type = "alert"
-            if self.urgency == "normal":
-                self.urgency = "critical"
-
-        if self.priority is not None and self.urgency == "normal":
-            if self.priority >= 10:
-                self.urgency = "critical"
-            elif self.priority >= 5:
-                self.urgency = "high"
-            elif self.priority < 0:
-                self.urgency = "low"
 
     def to_kernel_signal(self):
         from deepstrike._kernel import RuntimeSignal as KernelRuntimeSignal
 
-        summary = str(self.payload.get("goal") or self.kind)
+        summary = str(self.payload.get("goal") or "signal")
         return KernelRuntimeSignal(
             self.source,
             self.urgency,
@@ -57,15 +36,12 @@ class RuntimeSignal:
 
 @runtime_checkable
 class SignalSource(Protocol):
-    """Implement this to feed signals into a RuntimeRunner from any external source."""
-    async def next_signal(self, recipient: str | None = None) -> RuntimeSignal | None:
-        """Return the next pending signal, or None if none available.
-
-        When ``recipient`` is given, return only signals addressed to it (plus
-        unaddressed shared items); other recipients' signals stay queued. None ⇒
-        legacy FIFO drain (any signal).
-        """
-        ...
+    """Delivery-aware signal source used by RuntimeRunner."""
+    async def claim_signal(
+        self, recipient: str | None = None, lease_ms: int | None = None,
+    ) -> SignalClaim | None: ...
+    async def ack_signal(self, receipt: SignalDeliveryReceipt) -> bool: ...
+    async def nack_signal(self, receipt: SignalDeliveryReceipt) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -77,15 +53,7 @@ class SignalDeliveryReceipt:
 
 @dataclass(frozen=True)
 class SignalClaim(SignalDeliveryReceipt):
+    signal_id: str
+    delivery_attempt: int
     signal: RuntimeSignal
     lease_expires_at_ms: int
-
-
-@runtime_checkable
-class LeasedSignalSource(SignalSource, Protocol):
-    """Additive lease capability for sources that redeliver work after consumer failure."""
-    async def claim_signal(
-        self, recipient: str | None = None, lease_ms: int | None = None,
-    ) -> SignalClaim | None: ...
-    async def ack_signal(self, receipt: SignalDeliveryReceipt) -> bool: ...
-    async def nack_signal(self, receipt: SignalDeliveryReceipt) -> bool: ...

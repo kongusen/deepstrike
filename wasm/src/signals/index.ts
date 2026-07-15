@@ -7,7 +7,21 @@ export interface RuntimeSignal {
 }
 
 export interface SignalSource {
-  nextSignal(): Promise<RuntimeSignal | null>
+  claimSignal(): Promise<SignalClaim | null>
+  ackSignal(receipt: SignalDeliveryReceipt): Promise<boolean>
+  nackSignal(receipt: SignalDeliveryReceipt): Promise<boolean>
+}
+
+export interface SignalDeliveryReceipt {
+  deliveryId: string
+  leaseToken: string
+}
+
+export interface SignalClaim extends SignalDeliveryReceipt {
+  signalId: string
+  deliveryAttempt: number
+  signal: RuntimeSignal
+  leaseExpiresAtMs: number
 }
 
 export class ScheduledPrompt {

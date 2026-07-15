@@ -120,7 +120,10 @@ export interface KernelObservation {
   // tool_gated (governance AskUser): the call needing user approval.
   call_id?: string
   tool?: string
-  // signal_disposed (in-kernel attention policy): the routing decision.
+  // signal_delivery_disposed: the correlated routing decision.
+  operation_id?: string
+  delivery_id?: string
+  attempt?: number
   signal_id?: string
   disposition?: string
   queue_depth?: number

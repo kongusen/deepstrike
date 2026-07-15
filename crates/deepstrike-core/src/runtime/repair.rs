@@ -315,8 +315,11 @@ mod tests {
                 message_count: 3,
                 archive_ref: None,
             },
-            SessionEvent::SignalDisposed {
+            SessionEvent::SignalDeliveryDisposed {
                 turn: 1,
+                operation_id: "op".into(),
+                delivery_id: "delivery".into(),
+                attempt: 1,
                 signal_id: "sig-1".into(),
                 disposition: "queue".into(),
                 queue_depth: 1,

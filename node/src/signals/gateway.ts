@@ -1,8 +1,8 @@
 import type {
-  LeasedSignalSource,
   RuntimeSignal,
   SignalClaim,
   SignalDeliveryReceipt,
+  SignalSource,
 } from "./types.js"
 import type { ScheduledPrompt } from "./scheduled.js"
 import type { ObserverErrorHandler } from "../runtime/reliability.js"
@@ -18,6 +18,8 @@ export interface SignalGatewayOptions {
 
 interface QueuedSignal {
   deliveryId: string
+  signalId: string
+  deliveryAttempts: number
   signal: RuntimeSignal
   lease?: { token: string; expiresAtMs: number }
 }
@@ -26,15 +28,14 @@ interface QueuedSignal {
  * SignalGateway — entry point for all external signals into the agent.
  *
  * Implements `SignalSource` so it can be passed directly to `AgentOptions.signalSource`.
- * The gateway maintains an internal FIFO queue; `nextSignal()` drains it one entry at a time
- * on each agent turn.
+ * The gateway maintains an internal FIFO queue and exposes claim/ack/nack delivery leases.
  *
  * Responsibilities:
  * - Cron scheduling: fires ScheduledPrompts at the right wall-clock time (idempotent by goal+time)
  * - Webhook / push ingestion: external code calls `ingest()` to push a signal in
  * - Listener API: `onSignal()` for side-channel observers that don't need the pull interface
  */
-export class SignalGateway implements LeasedSignalSource {
+export class SignalGateway implements SignalSource {
   private timers = new Map<string, ReturnType<typeof setTimeout>>()
   private queue: QueuedSignal[] = []
   private listeners: Array<(sig: RuntimeSignal) => void> = []
@@ -44,19 +45,6 @@ export class SignalGateway implements LeasedSignalSource {
   constructor(private readonly opts: SignalGatewayOptions = {}) {}
 
   // ── SignalSource interface (pull model) ─────────────────────────────────────
-
-  /**
-   * Called by the agent loop each turn. Returns the oldest queued signal or null.
-   * When `recipient` is given, returns only the oldest signal addressed to it (plus
-   * unaddressed shared items); signals addressed to other recipients stay queued, so one
-   * shared gateway can serve N peer loops. Omit ⇒ legacy FIFO drain (any signal).
-   */
-  async nextSignal(recipient?: string): Promise<RuntimeSignal | null> {
-    const claim = await this.claimSignal(recipient)
-    if (!claim) return null
-    await this.ackSignal(claim)
-    return claim.signal
-  }
 
   /** Claim one visible signal without deleting it. Unacked claims are redelivered after expiry. */
   async claimSignal(recipient?: string, leaseMs = this.opts.defaultLeaseMs ?? 30_000): Promise<SignalClaim | null> {
@@ -71,12 +59,15 @@ export class SignalGateway implements LeasedSignalSource {
     })
     if (idx === -1) return null
     const entry = this.queue[idx]
+    entry.deliveryAttempts += 1
     const token = `${entry.deliveryId}:lease-${++this.leaseSeq}`
     const expiresAtMs = now + leaseMs
     entry.lease = { token, expiresAtMs }
     return {
       deliveryId: entry.deliveryId,
       leaseToken: token,
+      signalId: entry.signalId,
+      deliveryAttempt: entry.deliveryAttempts,
       leaseExpiresAtMs: expiresAtMs,
       signal: entry.signal,
     }
@@ -119,7 +110,6 @@ export class SignalGateway implements LeasedSignalSource {
     const fire = () => {
       this.timers.delete(key)
       this.emit({
-        kind: "scheduled",
         source: "cron",
         signalType: "job",
         urgency: "normal",
@@ -173,7 +163,12 @@ export class SignalGateway implements LeasedSignalSource {
   // ── Internal ────────────────────────────────────────────────────────────────
 
   private emit(sig: RuntimeSignal): void {
-    this.queue.push({ deliveryId: `signal-${++this.deliverySeq}`, signal: sig })
+    this.queue.push({
+      deliveryId: `signal-${++this.deliverySeq}`,
+      signalId: crypto.randomUUID(),
+      deliveryAttempts: 0,
+      signal: sig,
+    })
     for (const listener of this.listeners) {
       try {
         listener(sig)

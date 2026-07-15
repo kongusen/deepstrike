@@ -13,11 +13,9 @@ class ScheduledPrompt:
     def to_signal(self) -> "RuntimeSignal":
         from deepstrike.signals.types import RuntimeSignal
         return RuntimeSignal(
-            kind="scheduled",
-            payload={"goal": self.goal, "criteria": self.criteria, **self.metadata},
             source="cron",
             signal_type="job",
             urgency=self.metadata.get("urgency", "normal"),
+            payload={"goal": self.goal, "criteria": self.criteria, **self.metadata},
             dedupe_key=f"cron:{self.goal}:{self.run_at_ms}",
-            priority=self.metadata.get("priority"),
         )

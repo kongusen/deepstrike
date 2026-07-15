@@ -23,7 +23,7 @@ def category_for_kind(kind: str) -> KernelEventCategory:
         return "mm"
     if kind == "agent_process_changed":
         return "proc"
-    if kind == "signal_disposed":
+    if kind == "signal_delivery_disposed":
         return "ipc"
     return "sched"
 
@@ -157,10 +157,13 @@ def kernel_observation_to_session_event(
             "tool": obs.get("tool") or "",
             "reason": obs.get("reason") or "",
         }
-    if kind == "signal_disposed":
+    if kind == "signal_delivery_disposed":
         return {
-            "kind": "signal_disposed",
+            "kind": "signal_delivery_disposed",
             "turn": t,
+            "operation_id": obs.get("operation_id") or "",
+            "delivery_id": obs.get("delivery_id") or "",
+            "attempt": obs.get("attempt") or 0,
             "signal_id": obs.get("signal_id") or "",
             "disposition": obs.get("disposition") or "",
             "queue_depth": obs.get("queue_depth") or 0,

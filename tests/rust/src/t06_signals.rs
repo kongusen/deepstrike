@@ -199,7 +199,9 @@ fn urgency_ordering() {
 fn scheduled_prompt_to_signal() {
     let prompt = deepstrike_sdk::ScheduledPrompt::new("daily standup", 1_700_000_000_000);
     let sig = prompt.to_signal();
-    assert_eq!(sig.kind, "scheduled");
+    assert_eq!(sig.source, "cron");
+    assert_eq!(sig.signal_type, "job");
+    assert_eq!(sig.urgency, "normal");
     assert_eq!(sig.payload["goal"], "daily standup");
     assert_eq!(sig.payload["run_at_ms"], 1_700_000_000_000u64);
 }
@@ -209,9 +211,11 @@ fn signal_gateway_subscribe_ingest() {
     let gw = deepstrike_sdk::SignalGateway::new();
     let _rx = gw.subscribe();
     gw.ingest(deepstrike_sdk::RuntimeSignal {
-        kind: "webhook".into(),
+        source: "gateway".into(),
+        signal_type: "event".into(),
+        urgency: "normal".into(),
         payload: serde_json::json!({"event": "push"}),
-        priority: 1,
+        dedupe_key: None,
     });
     gw.destroy();
 }

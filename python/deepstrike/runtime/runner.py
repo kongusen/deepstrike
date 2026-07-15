@@ -73,7 +73,7 @@ from deepstrike.runtime.reliability import (
   ManagedTaskScope,
   OperationContext,
 )
-from deepstrike.signals.types import LeasedSignalSource, RuntimeSignal, SignalDeliveryReceipt
+from deepstrike.signals.types import RuntimeSignal, SignalDeliveryReceipt
 
 if TYPE_CHECKING:
   from deepstrike.governance import Governance, GovernancePolicy
@@ -94,6 +94,9 @@ class SubAgentHarnessConfig:
 
 @dataclass
 class _InboundSignalDelivery:
+  signal_id: str
+  delivery_id: str
+  delivery_attempt: int
   signal: RuntimeSignal
   ack: Callable[[], Awaitable[bool]]
   nack: Callable[[], Awaitable[bool]]
@@ -1375,7 +1378,9 @@ class RuntimeRunner:
     kernel disposition ladder: ``"normal"`` queues for the next boundary (default), ``"high"``
     soft-interrupts, ``"critical"`` preempts.
     """
-    self._injected_signals.append(RuntimeSignal(kind="note", payload={"goal": text}, urgency=urgency))
+    self._injected_signals.append(RuntimeSignal(
+      source="custom", signal_type="event", urgency=urgency, payload={"goal": text},
+    ))
 
   def latest_entropy(self) -> "EntropySample | None":
     """The most recent kernel session-entropy sample (one per completed turn), or ``None`` before
@@ -1389,31 +1394,38 @@ class RuntimeRunner:
     if self._injected_signals:
       async def _committed() -> bool:
         return True
-      return _InboundSignalDelivery(self._injected_signals.pop(0), _committed, _committed)
+      return _InboundSignalDelivery(
+        str(uuid.uuid4()), f"injected-{uuid.uuid4()}", 1,
+        self._injected_signals.pop(0), _committed, _committed,
+      )
     if self._opts.signal_source is None:
       return None
     source = self._opts.signal_source
-    if isinstance(source, LeasedSignalSource):
-      claim = await source.claim_signal(self._current_session_id)
-      if claim is None:
-        return None
-      receipt = SignalDeliveryReceipt(claim.delivery_id, claim.lease_token)
-      return _InboundSignalDelivery(
-        claim.signal,
-        lambda: source.ack_signal(receipt),
-        lambda: source.nack_signal(receipt),
-      )
-    signal = await source.next_signal(self._current_session_id)
-    if signal is None:
+    claim = await source.claim_signal(self._current_session_id)
+    if claim is None:
       return None
+    receipt = SignalDeliveryReceipt(claim.delivery_id, claim.lease_token)
+    return _InboundSignalDelivery(
+      claim.signal_id,
+      claim.delivery_id,
+      claim.delivery_attempt,
+      claim.signal,
+      lambda: source.ack_signal(receipt),
+      lambda: source.nack_signal(receipt),
+    )
 
-    async def _committed() -> bool:
-      return True
-    return _InboundSignalDelivery(signal, _committed, _committed)
-
-  async def _consume_inbound_signal(self, delivery: _InboundSignalDelivery, consume: Callable[[RuntimeSignal], Any]):
+  async def _consume_inbound_signal(self, delivery: _InboundSignalDelivery, consume: Callable[[_InboundSignalDelivery], Any]):
     try:
-      result = consume(delivery.signal)
+      observation_start = len(self._pending_observations)
+      result = consume(delivery)
+      dispositions = [
+        observation for observation in self._pending_observations[observation_start:]
+        if observation.get("kind") == "signal_delivery_disposed"
+        and observation.get("delivery_id") == delivery.delivery_id
+        and observation.get("attempt") == delivery.delivery_attempt
+      ]
+      if len(dispositions) != 1:
+        raise RuntimeError("kernel did not return the matching signal delivery disposition")
       if not await delivery.ack():
         raise RuntimeError("signal lease was lost before acknowledgement")
       return result
@@ -3281,17 +3293,20 @@ def _authored_workflow_outcome_note(outcome: dict) -> str:
   return "\n".join(lines)
 
 
-def _signal_to_kernel_event(sig) -> dict:
-  """Lower a host RuntimeSignal to the kernel's snake_case ``signal`` event. Shared by the main loop's
+def _signal_to_kernel_event(delivery: _InboundSignalDelivery) -> dict:
+  """Lower a claimed host delivery to the kernel's ``deliver_signal`` event. Shared by the main loop's
   per-turn poll and #2-B-ii's workflow-batch preemption monitor (so the two never drift)."""
+  sig = delivery.signal
   return {
-    "kind": "signal",
+    "kind": "deliver_signal",
+    "delivery_id": delivery.delivery_id,
+    "attempt": delivery.delivery_attempt,
     "signal": {
-      "id": str(uuid.uuid4()),
+      "id": delivery.signal_id,
       "source": sig.source,
       "signal_type": sig.signal_type,
       "urgency": sig.urgency,
-      "summary": str(sig.payload.get("goal") or sig.kind),
+      "summary": str(sig.payload.get("goal") or "signal"),
       "payload": sig.payload,
       **({"dedupe_key": sig.dedupe_key} if sig.dedupe_key else {}),
       **({"recipient": sig.recipient} if getattr(sig, "recipient", None) else {}),

@@ -11,7 +11,7 @@ const KERNEL_KINDS = new Set([
   "suspended",
   "resumed",
   "tool_gated",
-  "signal_disposed",
+  "signal_delivery_disposed",
   "budget_exceeded",
   "checkpoint_taken",
   "rollbacked",
@@ -25,7 +25,15 @@ export interface OsSnapshot {
   lastResumedTurn?: number
   processByAgent: Array<{ turn: number; agent_id: string; parent_session_id: string; state: string }>
   budgetExceeded: Array<{ turn: number; budget: string }>
-  signals: Array<{ turn: number; signal_id: string; disposition: string; queue_depth: number }>
+  signals: Array<{
+    turn: number
+    operation_id: string
+    delivery_id: string
+    attempt: number
+    signal_id: string
+    disposition: string
+    queue_depth: number
+  }>
   pageOutCount: number
   pageInCount: number
   spoolCount: number
@@ -82,9 +90,12 @@ export function rebuildOsSnapshotFromSessionEvents(
       case "budget_exceeded":
         snap.budgetExceeded.push({ turn: event.turn, budget: event.budget })
         break
-      case "signal_disposed":
+      case "signal_delivery_disposed":
         snap.signals.push({
           turn: event.turn,
+          operation_id: event.operation_id,
+          delivery_id: event.delivery_id,
+          attempt: event.attempt,
           signal_id: event.signal_id,
           disposition: event.disposition,
           queue_depth: event.queue_depth,
@@ -105,4 +116,3 @@ export function rebuildOsSnapshotFromSessionEvents(
   }
   return snap
 }
-

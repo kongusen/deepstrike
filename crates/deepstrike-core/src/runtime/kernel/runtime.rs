@@ -360,6 +360,22 @@ impl KernelRuntime {
                 );
             }
         }
+        if let KernelInputEvent::DeliverSignal {
+            delivery_id,
+            attempt,
+            ..
+        } = &input.event
+        {
+            if delivery_id.is_empty() || *attempt == 0 {
+                return self.fault_step(
+                    operation_id,
+                    event_id,
+                    KernelFaultCode::InvalidConfig,
+                    "deliver_signal requires a non-empty delivery_id and attempt >= 1".to_string(),
+                    None,
+                );
+            }
+        }
         if let KernelInputEvent::WorkflowSpawnResult {
             effect_id,
             started_agent_ids,
@@ -899,10 +915,19 @@ impl KernelRuntime {
                 // returning the next action (retry or honest terminal) through the common tail.
                 self.sm.recover_from_provider_error(&message)
             }
-            KernelInputEvent::Signal { signal } => match self.sm.signal_event(signal) {
+            KernelInputEvent::DeliverSignal {
+                delivery_id,
+                attempt,
+                signal,
+            } => match self.sm.signal_event(
+                identity.operation_id.clone(),
+                delivery_id,
+                attempt,
+                signal,
+            ) {
                 Some(action) => action,
                 // Non-actionable disposition (queued / observed / ignored / dropped):
-                // no provider call this step, just the SignalDisposed observation.
+                // no provider call this step, just the correlated delivery disposition.
                 None => {
                     return identity.empty(self.sm.take_observations());
                 }
@@ -1149,7 +1174,7 @@ impl KernelRuntime {
             },
             KernelInputEvent::SubmitWorkflow { .. }
             | KernelInputEvent::SubmitWorkflowNodes { .. }
-            | KernelInputEvent::Signal { .. }
+            | KernelInputEvent::DeliverSignal { .. }
             | KernelInputEvent::Timeout => match self.lifecycle {
                 KernelLifecycle::Running | KernelLifecycle::Suspended => {
                     Ok(LifecycleTransition::Stay)

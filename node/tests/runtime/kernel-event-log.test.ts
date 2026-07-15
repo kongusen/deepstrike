@@ -9,7 +9,7 @@ describe("kernel event log (Phase 5)", () => {
   it("maps observation kinds to OS categories", () => {
     expect(categoryForKind("tool_gated")).toBe("syscall")
     expect(categoryForKind("page_out")).toBe("mm")
-    expect(categoryForKind("signal_disposed")).toBe("ipc")
+    expect(categoryForKind("signal_delivery_disposed")).toBe("ipc")
     expect(categoryForKind("agent_process_changed")).toBe("proc")
     expect(categoryForKind("suspended")).toBe("sched")
   })
@@ -23,11 +23,14 @@ describe("kernel event log (Phase 5)", () => {
     expect(categoryForKind(ev!.kind)).toBe("sched")
   })
 
-  it("maps signal_disposed to ipc session event", () => {
+  it("maps signal_delivery_disposed to ipc session event", () => {
     const ev = kernelObservationToSessionEvent(
       {
-        kind: "signal_disposed",
+        kind: "signal_delivery_disposed",
         turn: 1,
+        operation_id: "op-1",
+        delivery_id: "delivery-1",
+        attempt: 1,
         signal_id: "sig-1",
         disposition: "queue",
         queue_depth: 2,
@@ -35,7 +38,8 @@ describe("kernel event log (Phase 5)", () => {
       1,
     )
     expect(ev).toMatchObject({
-      kind: "signal_disposed",
+      kind: "signal_delivery_disposed",
+      delivery_id: "delivery-1",
       disposition: "queue",
       queue_depth: 2,
     })

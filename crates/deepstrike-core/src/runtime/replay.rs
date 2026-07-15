@@ -8,8 +8,11 @@ use serde::{Deserialize, Serialize};
 use crate::runtime::session::SessionEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SignalDisposedRecord {
+pub struct SignalDeliveryDisposedRecord {
     pub turn: u32,
+    pub operation_id: String,
+    pub delivery_id: String,
+    pub attempt: u32,
     pub signal_id: String,
     pub disposition: String,
     pub queue_depth: u32,
@@ -43,7 +46,7 @@ pub struct OsSnapshot {
     pub last_resumed_turn: Option<u32>,
     pub process_by_agent: Vec<ProcessRecord>,
     pub budget_exceeded: Vec<BudgetExceededRecord>,
-    pub signals: Vec<SignalDisposedRecord>,
+    pub signals: Vec<SignalDeliveryDisposedRecord>,
     pub page_out_count: u32,
     pub page_in_count: u32,
     pub tool_gated_count: u32,
@@ -118,15 +121,21 @@ pub fn rebuild_os_snapshot_from_events(events: &[SessionEvent]) -> OsSnapshot {
                     budget: budget.clone(),
                 });
             }
-            SessionEvent::SignalDisposed {
+            SessionEvent::SignalDeliveryDisposed {
                 turn,
+                operation_id,
+                delivery_id,
+                attempt,
                 signal_id,
                 disposition,
                 queue_depth,
                 ..
             } => {
-                snap.signals.push(SignalDisposedRecord {
+                snap.signals.push(SignalDeliveryDisposedRecord {
                     turn: *turn,
+                    operation_id: operation_id.clone(),
+                    delivery_id: delivery_id.clone(),
+                    attempt: *attempt,
                     signal_id: signal_id.clone(),
                     disposition: disposition.clone(),
                     queue_depth: *queue_depth,
@@ -175,8 +184,11 @@ mod tests {
                 permitted_capability_ids: vec![],
                 result_termination: None,
             },
-            SessionEvent::SignalDisposed {
+            SessionEvent::SignalDeliveryDisposed {
                 turn: 2,
+                operation_id: "op".into(),
+                delivery_id: "delivery".into(),
+                attempt: 1,
                 signal_id: "sig-a".into(),
                 disposition: "queue".into(),
                 queue_depth: 1,

@@ -187,8 +187,11 @@ pub enum SessionEvent {
         reason: String,
     },
     /// In-kernel signal disposition (attention policy).
-    SignalDisposed {
+    SignalDeliveryDisposed {
         turn: u32,
+        operation_id: String,
+        delivery_id: String,
+        attempt: u32,
         signal_id: String,
         disposition: String,
         queue_depth: u32,
@@ -308,7 +311,7 @@ impl SessionEvent {
             Self::Suspended { .. } => "suspended",
             Self::Resumed { .. } => "resumed",
             Self::ToolGated { .. } => "tool_gated",
-            Self::SignalDisposed { .. } => "signal_disposed",
+            Self::SignalDeliveryDisposed { .. } => "signal_delivery_disposed",
             Self::BudgetExceeded { .. } => "budget_exceeded",
             Self::CheckpointTaken { .. } => "checkpoint_taken",
             Self::EntropySample { .. } => "entropy_sample",
@@ -337,7 +340,7 @@ impl SessionEvent {
                 | Self::Suspended { .. }
                 | Self::Resumed { .. }
                 | Self::ToolGated { .. }
-                | Self::SignalDisposed { .. }
+                | Self::SignalDeliveryDisposed { .. }
                 | Self::BudgetExceeded { .. }
                 | Self::CheckpointTaken { .. }
                 | Self::EntropySample { .. }

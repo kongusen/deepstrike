@@ -68,7 +68,10 @@ pub use runtime::{
 pub use runtime::{ProcessSandboxPlane, SandboxOptions};
 pub use runtime::{RemoteVpcOptions, RemoteVpcPlane};
 pub use safety::{Permission, PermissionDecision, PermissionManager, PermissionMode};
-pub use signals::{GatewayReceiver, RuntimeSignal, ScheduledPrompt, SignalGateway, SignalSource};
+pub use signals::{
+    GatewayReceiver, RuntimeSignal, ScheduledPrompt, SignalClaim, SignalDeliveryReceipt,
+    SignalGateway, SignalSource,
+};
 pub use tools::{
     RegisteredTool, SafeToolResult, TextToolSession, ToolChunk, ToolEnvelope, ToolEnvelopeFail,
     ToolEnvelopeOk, ToolSession, ToolStep, execute_tools, fail, ok, read_file_tool, safe_tool,

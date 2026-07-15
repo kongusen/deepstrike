@@ -169,14 +169,16 @@ class ReactiveSession:
 
     async def interrupt(self, persona_id: str, *, payload: dict | None = None) -> None:
         self._gateway.ingest(RuntimeSignal(
-            kind="interrupt", payload=payload or {}, source="gateway",
-            signal_type="alert", urgency="critical", recipient=persona_id,
+            source="gateway", signal_type="alert", urgency="critical",
+            payload=payload or {}, recipient=persona_id,
         ))
 
     async def broadcast(self, *, payload: dict | None = None) -> None:
         self._gateway.broadcast(
             self.peers(),
-            RuntimeSignal(kind="external", payload=payload or {}, source="gateway"),
+            RuntimeSignal(
+                source="gateway", signal_type="event", urgency="normal", payload=payload or {},
+            ),
         )
 
     def _get_runner(self, persona_id: str) -> "RuntimeRunner":

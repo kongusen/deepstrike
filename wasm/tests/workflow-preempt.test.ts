@@ -8,12 +8,20 @@ import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
 import { LocalExecutionPlane } from "../src/runtime/execution-plane.js"
 import type { WorkflowSpec } from "../src/index.js"
 
-type Obs = { kind: string; completed?: string[]; failed?: string[]; agent_ids?: string[]; reason?: string }
+type Obs = {
+  kind: string
+  delivery_id?: string
+  attempt?: number
+  completed?: string[]
+  failed?: string[]
+  agent_ids?: string[]
+  reason?: string
+}
 const node = (agent_id: string, goal: string) => ({
   agent_id, goal, role: "implement", isolation: "shared", context_inheritance: "none", model_hint: null, trust: "trusted",
 })
 
-/** Scripted kernel: load spawns wf-node0; a `signal` (the monitor's Critical) preempts it. */
+/** Scripted kernel: load spawns wf-node0; a claimed signal delivery preempts it. */
 function makeFakeKernel() {
   const reply = (actions: unknown[], obs: Obs[]) => JSON.stringify({ version: 2, actions, observations: obs, faults: [] })
   return {
@@ -22,8 +30,11 @@ function makeFakeKernel() {
       const { event } = JSON.parse(input) as { event: { kind: string } }
       if (event.kind === "load_workflow") return reply([{ kind: "spawn_workflow", effect_id: "spawn-1", nodes: [node("wf-node0", "A")] }], [])
       if (event.kind === "workflow_spawn_result") return reply([], [])
-      if (event.kind === "signal") {
-        return reply([{ kind: "preempt_sub_agents", effect_id: "preempt-1", agent_ids: ["wf-node0"], reason: "STOP" }], [])
+      if (event.kind === "deliver_signal") {
+        return reply(
+          [{ kind: "preempt_sub_agents", effect_id: "preempt-1", agent_ids: ["wf-node0"], reason: "STOP" }],
+          [{ kind: "signal_delivery_disposed", delivery_id: "delivery-critical", attempt: 1 }],
+        )
       }
       if (event.kind === "preempt_result") {
         return reply([], [
@@ -53,7 +64,19 @@ describe("#2-B-ii wasm workflow preemption (scripted kernel)", () => {
     }
     const signalSource = {
       pending: [{ source: "gateway", signalType: "alert", urgency: "critical", payload: { goal: "STOP NOW" } }] as unknown[],
-      async nextSignal() { return (this.pending.shift() as never) ?? null },
+      async claimSignal() {
+        const signal = this.pending.shift()
+        return signal ? {
+          deliveryId: "delivery-critical",
+          leaseToken: "lease-critical",
+          signalId: "79cc2f49-5d63-42be-bc0c-ecfcb9b9a47f",
+          deliveryAttempt: 1,
+          leaseExpiresAtMs: Date.now() + 30_000,
+          signal,
+        } : null
+      },
+      async ackSignal() { return true },
+      async nackSignal() { return true },
     }
 
     const runner = new RuntimeRunner({

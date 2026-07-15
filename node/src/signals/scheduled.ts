@@ -10,7 +10,6 @@ export class ScheduledPrompt {
 
   toSignal(): RuntimeSignal {
     return {
-      kind: "scheduled",
       source: "cron",
       signalType: "job",
       urgency: "normal",

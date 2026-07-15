@@ -112,7 +112,6 @@ describe("ScheduledPrompt", () => {
   it("preserves kernel routing metadata", () => {
     const sig = new ScheduledPrompt("standup", 123).toSignal()
     expect(sig).toMatchObject({
-      kind: "scheduled",
       source: "cron",
       signalType: "job",
       urgency: "normal",

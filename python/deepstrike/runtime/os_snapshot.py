@@ -19,7 +19,7 @@ _KERNEL_KINDS = frozenset({
     "suspended",
     "resumed",
     "tool_gated",
-    "signal_disposed",
+    "signal_delivery_disposed",
     "budget_exceeded",
     "checkpoint_taken",
     "rollbacked",
@@ -88,9 +88,12 @@ def rebuild_os_snapshot_from_session_events(events: list[dict[str, Any]]) -> OsS
                 "turn": event.get("turn"),
                 "budget": event.get("budget"),
             })
-        elif kind == "signal_disposed":
+        elif kind == "signal_delivery_disposed":
             snap.signals.append({
                 "turn": event.get("turn"),
+                "operation_id": event.get("operation_id"),
+                "delivery_id": event.get("delivery_id"),
+                "attempt": event.get("attempt"),
                 "signal_id": event.get("signal_id"),
                 "disposition": event.get("disposition"),
                 "queue_depth": event.get("queue_depth"),
@@ -108,5 +111,4 @@ def rebuild_os_snapshot_from_session_events(events: list[dict[str, Any]]) -> OsS
         elif kind == "memory_validation_failed":
             snap.memory_validation_failed_count += 1
     return snap
-
 

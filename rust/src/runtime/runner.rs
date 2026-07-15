@@ -22,7 +22,7 @@ use deepstrike_core::types::signal::{
 use deepstrike_core::types::task::RuntimeTask;
 use futures::StreamExt;
 
-use crate::SignalSource;
+use crate::{SignalDeliveryReceipt, SignalSource};
 use crate::governance::Governance;
 use crate::knowledge::KnowledgeSource;
 use crate::memory::{DreamResult, DreamStore};
@@ -1077,33 +1077,84 @@ impl RuntimeRunner {
                 }
 
                 if let Some(ss) = &self.opts.signal_source {
-                    if let Some(sdk_sig) = ss.next_signal().await? {
-                        let urgency = match sdk_sig.kind.as_str() {
-                            "interrupt" => Urgency::Critical,
+                    if let Some(claim) = ss.claim_signal().await? {
+                        let urgency = match claim.signal.urgency.as_str() {
+                            "low" => Urgency::Low,
+                            "high" => Urgency::High,
+                            "critical" => Urgency::Critical,
                             _ => Urgency::Normal,
                         };
-                        let kernel_sig = KernelSignal::new(
-                            KernelSignalSource::Custom,
-                            KernelSignalType::Event,
+                        let source = match claim.signal.source.as_str() {
+                            "cron" => KernelSignalSource::Cron,
+                            "gateway" => KernelSignalSource::Gateway,
+                            "heartbeat" => KernelSignalSource::Heartbeat,
+                            _ => KernelSignalSource::Custom,
+                        };
+                        let signal_type = match claim.signal.signal_type.as_str() {
+                            "job" => KernelSignalType::Job,
+                            "alert" => KernelSignalType::Alert,
+                            _ => KernelSignalType::Event,
+                        };
+                        let summary = claim
+                            .signal
+                            .payload
+                            .get("goal")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("signal");
+                        let mut kernel_sig = KernelSignal::new(
+                            source,
+                            signal_type,
                             urgency,
-                            sdk_sig.kind.as_str(),
+                            summary,
                         )
-                        .with_payload(sdk_sig.payload.clone())
+                        .with_payload(claim.signal.payload.clone())
                         .with_timestamp(
                             std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
                                 .as_millis() as u64,
                         );
+                        kernel_sig.id = uuid::Uuid::parse_str(&claim.signal_id).map_err(|_| {
+                            crate::Error::Other("signal claim requires a UUID signal_id".into())
+                        })?;
+                        if let Some(dedupe_key) = &claim.signal.dedupe_key {
+                            kernel_sig = kernel_sig.with_dedupe(dedupe_key.clone());
+                        }
                         // Kernel-routed (parity with node/py): the kernel's attention policy decides
                         // the disposition (dedup / queue / interrupt / preempt) and emits
-                        // `signal_disposed`; an actionable disposition yields the next action to
+                        // `signal_delivery_disposed`; an actionable disposition yields the next action to
                         // adopt (e.g. a forced Reason turn on Critical), queued/observed yields none.
                         let mut kguard = kernel.lock().unwrap();
-                        let mut step = kguard.step(KernelInput::new(KernelInputEvent::Signal {
+                        let mut step = kguard.step(KernelInput::new(KernelInputEvent::DeliverSignal {
+                            delivery_id: claim.delivery_id.clone(),
+                            attempt: claim.delivery_attempt,
                             signal: kernel_sig,
                         }));
                         drop(kguard);
+                        let disposition_matches = step.observations.iter().filter(|observation| matches!(
+                            observation,
+                            KernelObservation::SignalDeliveryDisposed {
+                                delivery_id,
+                                attempt,
+                                ..
+                            } if delivery_id == &claim.delivery_id && *attempt == claim.delivery_attempt
+                        )).count() == 1;
+                        let receipt = SignalDeliveryReceipt {
+                            delivery_id: claim.delivery_id,
+                            lease_token: claim.lease_token,
+                        };
+                        if !step.faults.is_empty() || !disposition_matches {
+                            let _ = ss.nack_signal(&receipt).await?;
+                            Err(crate::Error::Other(
+                                "kernel did not return the matching signal delivery disposition".into(),
+                            ))?;
+                        }
+                        if !ss.ack_signal(&receipt).await? {
+                            let _ = ss.nack_signal(&receipt).await?;
+                            Err(crate::Error::Other(
+                                "signal lease was lost before acknowledgement".into(),
+                            ))?;
+                        }
                         pending_observations.append(&mut step.observations);
                         if let Some(sig_action) = step.actions.pop() {
                             action = sig_action;
@@ -2112,7 +2163,7 @@ impl RuntimeRunner {
                 // In-kernel signal routing decision. The rust SDK does not yet drive
                 // signals through the kernel attention policy; observation is logged
                 // by the generic observation path elsewhere if needed.
-                KernelObservation::SignalDisposed { .. } => {}
+                KernelObservation::SignalDeliveryDisposed { .. } => {}
                 KernelObservation::BudgetExceeded { .. } => {}
                 KernelObservation::Suspended { .. }
                 | KernelObservation::ApprovalResolutionFailed { .. } => {}

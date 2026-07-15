@@ -26,9 +26,6 @@ class _RecordingLeasedSource:
         self.acked = []
         self.nacked = []
 
-    async def next_signal(self, recipient=None):
-        raise RuntimeError("legacy destructive pull must not be used")
-
     async def claim_signal(self, recipient=None, lease_ms=None):
         if self.claimed:
             return None
@@ -36,7 +33,12 @@ class _RecordingLeasedSource:
         return SignalClaim(
             delivery_id="delivery-1",
             lease_token="lease-1",
-            signal=RuntimeSignal(kind="external", payload={"goal": "leased"}, source="gateway"),
+            signal_id="79cc2f49-5d63-42be-bc0c-ecfcb9b9a47f",
+            delivery_attempt=1,
+            signal=RuntimeSignal(
+                source="gateway", signal_type="event", urgency="normal",
+                payload={"goal": "leased"},
+            ),
             lease_expires_at_ms=30_000,
         )
 

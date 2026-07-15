@@ -136,7 +136,7 @@ from deepstrike.harness import (
 from deepstrike.skills import SkillRegistry
 from deepstrike.knowledge import KnowledgeSource
 from deepstrike.signals import (
-    LeasedSignalSource, RuntimeSignal, SignalClaim, SignalDeliveryReceipt,
+    RuntimeSignal, SignalClaim, SignalDeliveryReceipt,
     SignalSource, ScheduledPrompt, SignalGateway,
 )
 from deepstrike.types.agent import (
@@ -257,7 +257,7 @@ __all__ = [
     "HarnessEvent", "CriterionResult",
     "SkillRegistry",
     "KnowledgeSource",
-    "LeasedSignalSource", "RuntimeSignal", "SignalClaim", "SignalDeliveryReceipt",
+    "RuntimeSignal", "SignalClaim", "SignalDeliveryReceipt",
     "SignalSource", "ScheduledPrompt", "SignalGateway",
     "Message", "ToolCall", "ToolResult", "ToolSchema",
     "SkillMetadata",
