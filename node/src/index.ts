@@ -21,6 +21,8 @@ export { RuntimeRunner, collectText } from "./runtime/runner.js"
 export type { RuntimeOptions, KernelReliabilityOptions, OperationCancellationReason } from "./runtime/runner.js"
 export { readKernelDiagnostics, restoreKernelRuntime, snapshotKernelRuntime } from "./runtime/kernel-step.js"
 export type { KernelDiagnostics, KernelSnapshotV2 } from "./runtime/kernel-step.js"
+export { rebuildKernelRuntime } from "./runtime/kernel-rebuild.js"
+export type { KernelRebuildResult } from "./runtime/kernel-rebuild.js"
 
 // ── Execution plane + session log (the defaults) ────────────────────────────
 export { LocalExecutionPlane } from "./runtime/execution-plane.js"
@@ -37,11 +39,13 @@ export {
   kernelRecordDigest,
   verifyKernelOperationGenesis,
   verifyKernelTransaction,
+  verifyKernelTransactionStream,
   verifyKernelTransactionSuccessor,
 } from "./runtime/kernel-transaction-log.js"
 export type {
   DurableAppendReceipt,
   KernelGenesisReceipt,
+  KernelOperationCursor,
   KernelOperationGenesis,
   KernelOperationGenesisBody,
   KernelTransaction,

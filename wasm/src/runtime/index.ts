@@ -1,6 +1,8 @@
 export type { KernelTransactionEntry, SessionEvent, SessionLog } from "./session-log.js"
 export { InMemorySessionLog } from "./session-log.js"
 export * from "./kernel-transaction-log.js"
+export { rebuildKernelRuntime } from "./kernel-rebuild.js"
+export type { KernelRebuildResult } from "./kernel-rebuild.js"
 export type { RunContext, ExecutionPlane } from "./execution-plane.js"
 export { LocalExecutionPlane } from "./execution-plane.js"
 export type { MemoryPolicy, MemoryWriteRateLimit, OperationCancellationReason, ResourceQuota, RuntimeOptions, SchedulerBudget } from "./runner.js"

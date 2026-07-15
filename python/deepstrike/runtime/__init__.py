@@ -40,6 +40,7 @@ from deepstrike.runtime.kernel_transaction_log import (
   verify_kernel_transaction_stream,
   verify_kernel_transaction_successor,
 )
+from deepstrike.runtime.kernel_rebuild import KernelRebuildResult, rebuild_kernel_runtime
 from deepstrike.runtime.run_group import (
   GroupBudgetStore,
   GroupBudgetGrant,
@@ -215,6 +216,8 @@ __all__ = [
   "verify_kernel_transaction",
   "verify_kernel_transaction_stream",
   "verify_kernel_transaction_successor",
+  "KernelRebuildResult",
+  "rebuild_kernel_runtime",
   "RunGroup",
   "GroupBudgetStore",
   "GroupBudgetGrant",

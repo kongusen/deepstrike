@@ -12,6 +12,7 @@ from deepstrike.runtime.kernel_transaction_log import (
     verify_kernel_transaction_stream,
 )
 from deepstrike.runtime.session_log import FileSessionLog, InMemorySessionLog
+from deepstrike.runtime.kernel_rebuild import rebuild_kernel_runtime
 
 
 def genesis(operation_id: str = "op-python"):
@@ -57,6 +58,81 @@ def test_validates_digest_chain_and_derives_regex_free_operation_cursor():
     }
     with pytest.raises(KernelLogIntegrityError):
         verify_kernel_transaction_stream(operation_genesis, [second, first])
+
+
+def test_deterministically_rebuilds_fresh_runtime_from_committed_transactions():
+    phases: list[str] = []
+    operation_genesis = create_kernel_operation_genesis(
+        abi_version=2,
+        operation_id="op-python",
+        initial_scheduler_policy={"max_tokens": 8_000},
+        resolved_runtime_defaults={
+            "snapshot_version": 2,
+            "snapshot_input_limit": 10_000,
+            "max_input_bytes": 16_777_216,
+            "snapshot_journal_bytes_limit": 67_108_864,
+        },
+        default_policy_version=1,
+    )
+    input_value = {"version": 2, "operation_id": "op-python", "event_id": "opaque"}
+    step = {
+        "version": 2,
+        "operation_id": "op-python",
+        "input_event_id": "opaque",
+        "step_seq": 1,
+        "actions": [],
+        "observations": [],
+        "faults": [],
+    }
+    committed = create_kernel_transaction(
+        operation_id="op-python",
+        step_seq=1,
+        base_generation=0,
+        input=input_value,
+        step=step,
+        previous_transaction_digest=operation_genesis["genesis_digest"],
+    )
+
+    class Runtime:
+        def snapshot(self):
+            import json
+            return json.dumps({
+                "snapshot_version": 2,
+                "abi_version": 2,
+                "initial_policy": {"max_tokens": 8_000},
+                "lifecycle": "created",
+                "next_step_seq": 1,
+                "snapshot_input_limit": 10_000,
+                "max_input_bytes": 16_777_216,
+                "snapshot_journal_bytes_limit": 67_108_864,
+                "accepted_input_bytes": 0,
+                "accepted_inputs": [],
+            })
+
+        def prepare_step(self, input_json):
+            import json
+            phases.append("prepare")
+            return json.dumps({
+                "status": "prepared",
+                "base_generation": 0,
+                "prepare_token": "token",
+                "input": json.loads(input_json),
+                "step": step,
+            })
+
+        def commit_prepared(self, token):
+            import json
+            assert token == "token"
+            phases.append("commit")
+            return json.dumps(step)
+
+        def abort_prepared(self, _token):
+            phases.append("abort")
+
+    rebuilt = rebuild_kernel_runtime(Runtime(), operation_genesis, [committed])
+    assert phases == ["prepare", "commit"]
+    assert rebuilt["cursor"]["next_event_sequence"] == 2
+    assert rebuilt["cursor"]["transaction_head_digest"] == committed["transaction_digest"]
 
 
 @pytest.mark.asyncio
