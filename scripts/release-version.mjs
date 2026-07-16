@@ -4,6 +4,9 @@ import { join } from "node:path"
 const semverPattern = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/
 const cargoWorkspacePackages = [
   "deepstrike-core",
+  // deepstrike-lab is version.workspace=true: without a lock rewrite here, every release
+  // leaves its Cargo.lock entry one version behind (dirty tree after the next local cargo run).
+  "deepstrike-lab",
   "deepstrike-node",
   "deepstrike-py",
   "deepstrike-sdk",
