@@ -74,7 +74,7 @@ export type {
 export { InMemoryEventStream, isVisibleTo } from "./runtime/event-stream.js"
 export type { EventStream, EventStreamOptions, BlackboardEvent, EventViewer } from "./runtime/event-stream.js"
 export type { ObserverFailure, ObserverErrorHandler } from "./runtime/reliability.js"
-export { ManagedTaskScope } from "./runtime/reliability.js"
+export { ManagedTaskScope, operationAbortSignal } from "./runtime/reliability.js"
 export type { OperationContext, BackgroundTaskFailure, BackgroundTaskErrorHandler } from "./runtime/reliability.js"
 export { reactByMention, directorDriven, roundRobin, firstNonEmpty, union } from "./runtime/turn-policy.js"
 export type { TurnPolicy, PeerView } from "./runtime/turn-policy.js"

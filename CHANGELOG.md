@@ -6,6 +6,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.41] - 2026-07-16
+
+### Added
+
+- **Public SDK helpers previously host-side only.** Downstream adapters no longer need to copy or
+  re-implement these:
+  - `operationAbortSignal` (Node root; Python: `run_with_operation`) — compose adapter timeout with
+    the operation cancellation/deadline boundary.
+  - `rankMemories` (+ `RankableMemory` / `RankedMemory` / `RankOptions`) and
+    `extractSessionMemories` / `parseExtractedMemories` from `@deepstrike/sdk/memory`
+    (Python: `rank_memories` / `extract_session_memories` / `parse_extracted_memories`; WASM root) —
+    so hosts can rank and distill session memory outside the default runner path.
+  - `KernelPrimitive` / `primitiveForKind` (+ `primitiveForCategory`) from `@deepstrike/sdk/os`
+    (Python: `deepstrike.runtime` / top-level; WASM root) — so persistence adapters can filter the
+    kernel event log without duplicating the kind→primitive map.
+- **Release CI gate.** Tag-triggered publish workflows wait for the tagged SHA's `CI` workflow to
+  succeed (`_gate-ci.yml`) before publishing, avoiding a race with `git push main && git push v*`.
+- **Orchestration benchmark scenarios** (F1/F2 + scheduler) in `benchmark/scenarios`.
+
+## [0.2.40] - 2026-07-16
+
 ### Changed — BREAKING: single-version kernel ABI v2
 
 - **Kernel snapshot ABI is a single version with no back-compat shims.** `KernelSnapshotV2` /

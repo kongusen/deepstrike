@@ -101,6 +101,11 @@ node cli/bench.mjs gating-dwell --variants on --tasks 2 --provider openai
 
 # Custom output dir:
 node cli/bench.mjs gating-dwell --variants off,on --output /tmp/bench-test --compare
+
+# Orchestration F1–F3 (stub driver — no API key):
+node cli/bench.mjs orchestration-f1 --variants weighted,fifo --compare
+node cli/bench.mjs orchestration-f2 --variants weighted,fifo --compare
+node cli/bench.mjs orchestration-f3 --variants weighted,fifo --compare
 ```
 
 ## Replay mode — deterministic re-runs from a prior fixture (PR #3 path)
@@ -293,25 +298,28 @@ the metric Δ isolates one mechanism's contribution. `bench list` prints the sam
 | `memory-recall`         | long-term memory (DreamStore) | `memory-empty` / `memory-preloaded` | pre-seeded memory cuts `turnsToDone` **−57%**, `wallMs` −47%, `inputTokens` −65%, `dollars` −55% at preserved quality |
 | `signal-injection`      | RuntimeSignal urgency | `no-signal` / `soft-interrupt` / `hard-interrupt` | soft (High) injects `[SIGNAL]` and completes 12/12; hard (Critical) preempts in-flight LLM call within ~1 turn of inject |
 | `prefix-cache`          | Anthropic `cache_control` strategy | `default` / `tools-only` / `system-only` / `frozen-prefix` / `none` | DeepSeek smoke verified plumbing (no-op on auto-cache providers as designed); **Anthropic A/B verify deferred** until an `ANTHROPIC_API_KEY` is wired up — strategy delta is observable above the 1024-token cacheable-block threshold |
+| `orchestration-f1`      | DAG scheduler critical-path | `weighted` / `fifo` | stub `runWorkflow` (no LLM): weighted starts chain in wave 0 (`firstHeadIsChain=1`); fifo delays to wave 2 |
+| `orchestration-f2`      | DAG scheduler loop fairness | `weighted` / `fifo` | concurrency=1: `independentWaitWaves=1` under both policies (re-arm yields to peer) |
+| `orchestration-f3`      | DAG failure propagation | `weighted` / `fifo` | upstream fail → `failedNodes=1`, `skippedUpstreamNodes=2` (transitive close) |
 
 ### §7 mechanism coverage matrix
 
 The harness spec ([`benchmark-harness.md` §7](../.local-docs/specs/benchmark-harness.md))
-calls out 8 kernel mechanisms that should each get an A/B scenario. Current state — **6 shipped,
-1 unblocked (bench scenario buildable), 1 deferred** (designs preserved in [`.local-docs/specs/bench-scenarios-deferred.md`](../.local-docs/specs/bench-scenarios-deferred.md)):
+calls out 8 kernel mechanisms that should each get an A/B scenario. Current state — **7 shipped,
+1 deferred** (designs preserved in [`.local-docs/specs/bench-scenarios-deferred.md`](../.local-docs/specs/bench-scenarios-deferred.md)):
 
 | § | mechanism | scenario | status | notes |
 | - | --------- | -------- | ------ | ----- |
 | 7.1 | tool gating | `gating-dwell` | ✅ shipped | full A/B with cache-bust tension surfaced |
 | 7.2 | prefix-cache / attention | `prefix-cache` | ✅ shipped | unblocked in v0.2.22 by the `cacheBreakpointStrategy` SDK knob; 5-variant A/B over `default` / `tools-only` / `system-only` / `frozen-prefix` / `none`; Anthropic-only signal (non-Anthropic providers ignore the extension by design) |
 | 7.3 | context compression / paging | `compression-stress` | ✅ shipped | reveals task-completion cost of tight budget |
-| 7.4 | memory / knowledge | `memory-recall` | ✅ shipped | pre-seeded `DreamStore` vs. empty; uses the public `InMemoryDreamStore` (promoted to SDK in v0.2.21) |
-| 7.5 | orchestration / sub-agents | — | 🔨 unblocked | the single-variable blocker is resolved: `scheduler_policy` (critical-path / fanout / age / token weights) is now a first-class config axis, so an A/B is config-driven (weighted vs. zeroed = FIFO) instead of agent-driven. Deterministic scheduler behavior is kernel-validated by F1–F3 scenario tests (`orchestration::workflow::run::tests::{f1_critical_path…, f2_rearming_loop…, f3_failure_and_partial…}`): critical-path skew, loop fairness, transitive failure propagation. Full bench `BenchScenario` (needs a provider to run end-to-end) is now buildable |
+| 7.4 | memory / aspiration | `memory-recall` | ✅ shipped | pre-seeded `DreamStore` vs. empty; uses the public `InMemoryDreamStore` (promoted to SDK in v0.2.21) |
+| 7.5 | orchestration / sub-agents | `orchestration-f1` / `orchestration-f2` / `orchestration-f3` | ✅ shipped | `scheduler_policy` A/B (`weighted` vs `fifo`); stub `runWorkflow` driver (no LLM). F1 critical-path makespan, F2 loop fairness, F3 failure→`skipped_upstream_failed`. Kernel twins: `orchestration::workflow::run::tests::{f1,f2,f3}_*` |
 | 7.6 | signal preemption | `signal-injection` | ✅ shipped | soft `Interrupt` (High) vs. `InterruptNow` (Critical) A/B; soft path keeps run going (12/12 fetches), hard path preempts at the inject turn |
 | 7.7 | governance gate | `governance-write-deny` | ✅ shipped | rollbacked-event signal documented in scenario header |
 | 7.8 | token-count tiering | — | ⏸ deferred | no natural variant dimension that doesn't reduce to tokenizer-accuracy noise rather than run-behavior signal; framework's A/B pattern is a poor fit. Design preserved in the deferred-scenarios doc; kernel `SetTokenizer` work also pending |
 
-Legend: ✅ shipped · 🔨 unblocked (config axis + kernel-validated; bench scenario buildable) · ⏸ deferred (design preserved, scenario not built).
+Legend: ✅ shipped · ⏸ deferred (design preserved, scenario not built).
 
 ## Adding a scenario
 
@@ -321,7 +329,9 @@ A `BenchScenario` is a strategy object exposing `tasks`, `mkTools`, `systemPromp
 files, `stableCoreToolIds`, compaction policy, `extensions`, etc.). See
 [`scenarios/gating-dwell.mjs`](scenarios/gating-dwell.mjs) for the gating pattern and
 [`scenarios/compression-stress.mjs`](scenarios/compression-stress.mjs) for a single-task long-loop
-pattern. Register the scenario in [`scenarios/index.mjs`](scenarios/index.mjs).
+pattern. Kernel-deterministic workflow benches use optional `driveTask` + `requiresProvider: false`
+(see [`scenarios/orchestration-scheduler.mjs`](scenarios/orchestration-scheduler.mjs)). Register the
+scenario in [`scenarios/index.mjs`](scenarios/index.mjs).
 
 Mechanism-specific metrics ride in `BenchScenario.mechanismHook({ events, turnMetrics })` →
 `Record<string, number>`. The aggregator turns the per-session outputs into the `mechanism` layer of

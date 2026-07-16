@@ -9,11 +9,14 @@ on:
   workflow_dispatch:
 
 env:
-  NODE_VERSION: 20
+  NODE_VERSION: 24
 
 jobs:
   verify:
     uses: ./.github/workflows/_verify-version.yml
+
+  gate:
+    uses: ./.github/workflows/_gate-ci.yml
 
   # ──────────────────────────────────────────────────────────────────────────
   # 阶段一：各平台分别编译 .node 原生 addon
@@ -28,7 +31,7 @@ jobs:
   #   - musl 默认静态链接 libc；Node 需动态链 musl，故 RUSTFLAGS=-C target-feature=-crt-static
   # ──────────────────────────────────────────────────────────────────────────
   build-native:
-    needs: verify
+    needs: [verify, gate]
     strategy:
       fail-fast: false
       matrix:
@@ -177,7 +180,7 @@ jobs:
   #   3. @deepstrike/sdk              （TypeScript SDK，tsc 编译后发布）
   # ──────────────────────────────────────────────────────────────────────────
   publish:
-    needs: [verify, build-native]
+    needs: [verify, gate, build-native]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

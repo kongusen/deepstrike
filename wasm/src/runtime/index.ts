@@ -30,3 +30,5 @@ export {
   validateDeclarativePolicy,
 } from "./os-profile.js"
 export type { NativeOsProfile, OsProfileId, SignalPolicy } from "./os-profile.js"
+export type { KernelEventCategory, KernelPrimitive } from "./kernel-event-log.js"
+export { primitiveForCategory, primitiveForKind } from "./kernel-event-log.js"

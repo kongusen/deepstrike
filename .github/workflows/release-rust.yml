@@ -8,8 +8,11 @@ jobs:
   verify:
     uses: ./.github/workflows/_verify-version.yml
 
+  gate:
+    uses: ./.github/workflows/_gate-ci.yml
+
   publish:
-    needs: verify
+    needs: [verify, gate]
     runs-on: ubuntu-latest
     env:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

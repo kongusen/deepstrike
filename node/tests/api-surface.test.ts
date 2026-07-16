@@ -19,6 +19,7 @@ describe("root surface", () => {
       "tool", "streamingTool", "safeTool", "ok", "fail",
       "AnthropicProvider", "OpenAIProvider", "OpenAIResponsesProvider", "createProvider",
       "Governance", "AgentPool",
+      "ManagedTaskScope", "operationAbortSignal",
     ]) {
       expect(root).toHaveProperty(name)
     }
@@ -58,7 +59,8 @@ describe("subpath barrels", () => {
       expect(planes).toHaveProperty(n)
   })
   it("memory carries dream + working memory", () => {
-    for (const n of ["WorkingMemory", "InMemoryDreamStore"]) expect(memory).toHaveProperty(n)
+    for (const n of ["WorkingMemory", "InMemoryDreamStore", "rankMemories", "extractSessionMemories", "parseExtractedMemories"])
+      expect(memory).toHaveProperty(n)
   })
   it("harness carries the eval harnesses + judge", () => {
     for (const n of ["AttemptLoop", "RuntimeAttemptBody", "judge"])
@@ -67,7 +69,7 @@ describe("subpath barrels", () => {
       expect(harness).not.toHaveProperty(n)
   })
   it("os carries profiles, signals, permissions, replay-testing", () => {
-    for (const n of ["osProfile", "assertNativeProfile", "SignalGateway", "PermissionManager", "ReplayProvider"])
+    for (const n of ["osProfile", "assertNativeProfile", "SignalGateway", "PermissionManager", "ReplayProvider", "primitiveForKind"])
       expect(os).toHaveProperty(n)
   })
 })

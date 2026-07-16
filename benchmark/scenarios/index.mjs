@@ -14,6 +14,11 @@ import { governanceWriteDenyScenario } from "./governance-write-deny.mjs"
 import { memoryRecallScenario } from "./memory-recall.mjs"
 import { signalInjectionScenario } from "./signal-injection.mjs"
 import { prefixCacheScenario } from "./prefix-cache.mjs"
+import {
+  orchestrationF1Scenario,
+  orchestrationF2Scenario,
+  orchestrationF3Scenario,
+} from "./orchestration-scheduler.mjs"
 
 /** @type {BenchScenario[]} */
 export const SCENARIOS = [
@@ -23,6 +28,9 @@ export const SCENARIOS = [
   memoryRecallScenario,
   signalInjectionScenario,
   prefixCacheScenario,
+  orchestrationF1Scenario,
+  orchestrationF2Scenario,
+  orchestrationF3Scenario,
 ]
 
 /** @param {string} id @returns {BenchScenario | undefined} */

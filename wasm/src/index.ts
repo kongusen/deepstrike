@@ -41,7 +41,10 @@ export type {
   KernelTransactionEntry,
   RunContext,
   ExecutionPlane,
+  KernelEventCategory,
+  KernelPrimitive,
 } from "./runtime/index.js"
+export { primitiveForCategory, primitiveForKind } from "./runtime/index.js"
 export { FilteredExecutionPlane } from "./runtime/filtered-plane.js"
 export { SubAgentOrchestrator, defaultSubAgentOrchestrator, spawnStandalone } from "./runtime/sub-agent-orchestrator.js"
 export type { SubAgentRunContext } from "./runtime/sub-agent-orchestrator.js"
@@ -86,6 +89,9 @@ export { WorkingMemory } from "./memory/index.js"
 export { InMemoryDreamStore } from "./memory/in-memory-store.js"
 export type { InMemoryDreamStoreOptions } from "./memory/in-memory-store.js"
 export { memoryRetentionScore } from "./memory/retention.js"
+export { rankMemories } from "./memory/ranking.js"
+export type { RankableMemory, RankedMemory, RankOptions } from "./memory/ranking.js"
+export { extractSessionMemories, parseExtractedMemories } from "./memory/extraction.js"
 export type {
   DreamStore, SessionStore, SessionData, SessionMessage, MemoryRecord, MemoryRecall, MemoryRecallLifecycle,
   MemoryQuery, MemoryScope, MemoryProvenance, MemoryKind, MemoryAuthor, MemoryTrustLevel,

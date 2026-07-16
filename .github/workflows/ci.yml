@@ -5,7 +5,21 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel stale PR runs; never cancel main (release gate may be waiting on it).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 24 }
+      - name: Check docs ↔ code drift
+        run: node scripts/check-docs-drift.mjs
+
   rust:
     runs-on: ubuntu-latest
     steps:
@@ -119,6 +133,9 @@ jobs:
         working-directory: wasm
       - name: Build WASM SDK
         run: npm run build
+        working-directory: wasm
+      - name: Test WASM SDK
+        run: npm test
         working-directory: wasm
 
   python:

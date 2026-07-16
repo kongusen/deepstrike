@@ -9,8 +9,11 @@ jobs:
   verify:
     uses: ./.github/workflows/_verify-version.yml
 
+  gate:
+    uses: ./.github/workflows/_gate-ci.yml
+
   publish:
-    needs: verify
+    needs: [verify, gate]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

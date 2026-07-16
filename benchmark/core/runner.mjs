@@ -117,26 +117,29 @@ export async function runBench(opts) {
     for (const t of tools) plane.register(t)
 
     const turnMetrics = []
-    const provider = mode === "live"
-      ? createProvider({
-        provider: providerDesc.provider,
-        model: providerDesc.model,
-        apiKey: providerDesc.apiKey,
-        ...(providerDesc.baseURL ? { baseURL: providerDesc.baseURL } : {}),
-        ...(providerDesc.endpoint ? { endpoint: providerDesc.endpoint } : {}),
-        retry: { maxRetries: 2, baseDelay: 600 },
-      })
-      : buildReplayProvider({
-        fixtureRoot: opts.fixtureRoot,
-        scenarioId: scenario.id,
-        fixtureVariantId: opts.fixtureFromVariant ?? variantId,
-        taskId: task.id,
-        ReplayProvider,
-        extractRecordedMessages,
-      })
+    const stubDriver = scenario.requiresProvider === false || typeof scenario.driveTask === "function"
+    const provider = stubDriver
+      ? undefined
+      : mode === "live"
+        ? createProvider({
+          provider: providerDesc.provider,
+          model: providerDesc.model,
+          apiKey: providerDesc.apiKey,
+          ...(providerDesc.baseURL ? { baseURL: providerDesc.baseURL } : {}),
+          ...(providerDesc.endpoint ? { endpoint: providerDesc.endpoint } : {}),
+          retry: { maxRetries: 2, baseDelay: 600 },
+        })
+        : buildReplayProvider({
+          fixtureRoot: opts.fixtureRoot,
+          scenarioId: scenario.id,
+          fixtureVariantId: opts.fixtureFromVariant ?? variantId,
+          taskId: task.id,
+          ReplayProvider,
+          extractRecordedMessages,
+        })
 
     const runnerOpts = {
-      provider,
+      ...(provider ? { provider } : {}),
       sessionLog,
       executionPlane: plane,
       maxTokens: scenario.maxTokens,
@@ -146,37 +149,61 @@ export async function runBench(opts) {
       ...overlay,
     }
 
-    const runner = new RuntimeRunner(runnerOpts)
-
     let finalStatus = "error"
     let errorMsg
     let finalText = ""
     /** @type {Array<{ name: string, arguments: Record<string, unknown> }>} */
-    const streamToolCalls = []
+    let streamToolCalls = []
     let wallStart = Date.now()
     const timeoutMs = scenario.timeoutMs ?? 300_000
 
     try {
-      const runPromise = (async () => {
-        for await (const evt of runner.run({
+      if (typeof scenario.driveTask === "function") {
+        // Custom driver (e.g. orchestration F1–F3 stub `runWorkflow`). Owns session lifecycle.
+        const driven = await scenario.driveTask({
+          sdk,
+          scenario,
+          task,
+          variantId,
           sessionId,
-          goal: task.goal,
-          criteria: task.criteria,
-        })) {
-          if (evt.type === "done") finalStatus = evt.status ?? "error"
-          else if (evt.type === "text_delta") finalText += evt.delta ?? ""
-          else if (evt.type === "tool_call") {
-            // BM5 #29: model-attempted calls (governance may intercept before tool_requested
-            // lands in session log, so this is the only way to count attempts vs executed).
-            streamToolCalls.push({ name: evt.name, arguments: evt.arguments ?? {} })
-          }
-          onEvent?.(task.id, evt)
+          sessionLog,
+          plane,
+          tools,
+          runnerOpts,
+          provider,
+          onEvent,
+          timeoutMs,
+        })
+        finalStatus = driven.finalStatus ?? "error"
+        finalText = driven.finalText ?? ""
+        if (Array.isArray(driven.turnMetrics) && driven.turnMetrics.length) {
+          turnMetrics.push(...driven.turnMetrics)
         }
-      })()
-      await Promise.race([
-        runPromise,
-        new Promise((_, rej) => setTimeout(() => rej(new Error(`task ${task.id} timeout after ${timeoutMs}ms`)), timeoutMs)),
-      ])
+        if (Array.isArray(driven.streamToolCalls)) streamToolCalls = driven.streamToolCalls
+        if (typeof driven.wallMs === "number") wallStart = Date.now() - driven.wallMs
+      } else {
+        const runner = new RuntimeRunner(runnerOpts)
+        const runPromise = (async () => {
+          for await (const evt of runner.run({
+            sessionId,
+            goal: task.goal,
+            criteria: task.criteria,
+          })) {
+            if (evt.type === "done") finalStatus = evt.status ?? "error"
+            else if (evt.type === "text_delta") finalText += evt.delta ?? ""
+            else if (evt.type === "tool_call") {
+              // BM5 #29: model-attempted calls (governance may intercept before tool_requested
+              // lands in session log, so this is the only way to count attempts vs executed).
+              streamToolCalls.push({ name: evt.name, arguments: evt.arguments ?? {} })
+            }
+            onEvent?.(task.id, evt)
+          }
+        })()
+        await Promise.race([
+          runPromise,
+          new Promise((_, rej) => setTimeout(() => rej(new Error(`task ${task.id} timeout after ${timeoutMs}ms`)), timeoutMs)),
+        ])
+      }
     } catch (e) {
       errorMsg = e?.message ? String(e.message) : String(e)
       finalStatus = finalStatus === "error" ? "exception" : finalStatus

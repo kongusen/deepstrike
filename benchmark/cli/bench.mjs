@@ -78,6 +78,8 @@ if (mode === "replay" && !fixtureRoot) {
   process.exit(1)
 }
 
+const stubDriver = scenario.requiresProvider === false || typeof scenario.driveTask === "function"
+
 let providerDesc
 if (mode === "replay") {
   // No API key needed under replay — synthesise a metadata-only descriptor.
@@ -87,6 +89,13 @@ if (mode === "replay") {
     provider: typeof flags.provider === "string" ? flags.provider : (fallbackPM?.provider ?? "replay"),
     model: typeof flags.model === "string" ? flags.model : (fallbackPM?.model ?? "replay"),
     apiKey: "(replay)",
+  }
+} else if (stubDriver) {
+  // Kernel/stub drivers (e.g. orchestration F1–F3) need no LLM key.
+  providerDesc = {
+    provider: typeof flags.provider === "string" ? flags.provider : "stub",
+    model: typeof flags.model === "string" ? flags.model : "stub",
+    apiKey: "(stub)",
   }
 } else {
   try {
@@ -99,17 +108,21 @@ if (mode === "replay") {
 }
 
 // BM3 judge: default on for live mode, forced off for replay (no model behavior to evaluate).
+// Stub/kernel drivers default judge off — there is no model output to score.
 const judgeRequested = flags["no-judge"] === true
   ? false
   : flags.judge === true
     ? true
-    : mode === "live" // implicit default
+    : mode === "live" && !stubDriver // implicit default
 let judgeProviderDesc
 if (judgeRequested && mode === "replay") {
   console.error(`[bench] --judge ignored under --mode replay (replayed responses are deterministic; ` +
     `judge would produce identical verdicts across variants).`)
 }
-if (judgeRequested && mode === "live") {
+if (judgeRequested && stubDriver) {
+  console.error(`[bench] --judge ignored for stub/kernel scenario ${scenarioId} (no LLM submission).`)
+}
+if (judgeRequested && mode === "live" && !stubDriver) {
   const judgeProviderId = typeof flags["judge-provider"] === "string"
     ? flags["judge-provider"]
     : providerDesc.provider

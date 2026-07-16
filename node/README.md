@@ -88,13 +88,13 @@ The root export is the **intent layer** — what you reach for to run an agent, 
 
 | Import | Contains |
 |--------|----------|
-| `@deepstrike/sdk` | `runAgent` · `runFanout` · `RuntimeRunner` · `tool` · `LocalExecutionPlane` · `InMemorySessionLog`/`FileSessionLog` · `AnthropicProvider`/`OpenAIProvider`/`OpenAIResponsesProvider` · `createProvider` · `Governance` · `AgentPool` · core types |
+| `@deepstrike/sdk` | `runAgent` · `runFanout` · `RuntimeRunner` · `tool` · `LocalExecutionPlane` · `InMemorySessionLog`/`FileSessionLog` · `AnthropicProvider`/`OpenAIProvider`/`OpenAIResponsesProvider` · `createProvider` · `Governance` · `AgentPool` · `operationAbortSignal` · core types |
 | `@deepstrike/sdk/providers` | backend factories (`deepseek`, `kimi`, `qwen`, `glm`, `minimax`, `gemini`, `ollama`), profiles, `CircuitBreaker` |
 | `@deepstrike/sdk/workflow` | `SubAgentOrchestrator`, `spawnStandalone`, reducers, contracts, handoff/modes, agent + spec types |
 | `@deepstrike/sdk/planes` | `WorktreeExecutionPlane`, `ProcessSandboxPlane`, `McpProxyPlane`, `RemoteVpcPlane`, archive/credential stores |
-| `@deepstrike/sdk/memory` | `DreamStore`, `WorkingMemory`, `InMemoryDreamStore`, `KnowledgeSource` |
+| `@deepstrike/sdk/memory` | `DreamStore`, `WorkingMemory`, `InMemoryDreamStore`, `rankMemories`, `extractSessionMemories`, `KnowledgeSource` |
 | `@deepstrike/sdk/harness` | `AttemptLoop`, body/judge/carry policies, `judge` |
-| `@deepstrike/sdk/os` | profiles, `KernelPrimitivesDashboard`, signals, `PermissionManager`, replay-testing utilities |
+| `@deepstrike/sdk/os` | profiles, `KernelPrimitivesDashboard`, `primitiveForKind` / `KernelPrimitive`, signals, `PermissionManager`, replay-testing utilities |
 
 > **Migration from 0.2.x:** the kernel-lowering converters (`*ToKernel`), low-level prompt/eval builders, and the `OpenAIChatProvider` alias are no longer exported from root; backend providers, planes, memory, harness, and OS utilities moved to the subpaths above. See [`MIGRATION-v0.2.300.md`](./MIGRATION-v0.2.300.md).
 

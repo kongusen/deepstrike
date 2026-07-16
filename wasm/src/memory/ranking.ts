@@ -1,4 +1,4 @@
-interface RankableMemory<T> {
+export interface RankableMemory<T> {
   value: T
   searchableText: string
   updatedAt: number

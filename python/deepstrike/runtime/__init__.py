@@ -103,6 +103,7 @@ from deepstrike.runtime.reliability import (
   ObserverErrorHandler,
   ObserverFailure,
   OperationContext,
+  run_with_operation,
 )
 from deepstrike.runtime.provider_replay import (
   ProviderReplay,
@@ -157,6 +158,13 @@ from deepstrike.runtime.os_profile import (
   assert_native_profile,
   os_profile,
   validate_declarative_policy,
+)
+from deepstrike.runtime.kernel_event_log import (
+  KernelEventCategory,
+  KernelPrimitive,
+  category_for_kind,
+  primitive_for_category,
+  primitive_for_kind,
 )
 from deepstrike.runtime.replay_provider import ReplayProvider, ReplayProviderOpts
 from deepstrike.runtime.replay_fixture import extract_recorded_messages
@@ -279,6 +287,12 @@ __all__ = [
   "BackgroundTaskFailure",
   "BackgroundTaskErrorHandler",
   "ManagedTaskScope",
+  "run_with_operation",
+  "KernelEventCategory",
+  "KernelPrimitive",
+  "category_for_kind",
+  "primitive_for_category",
+  "primitive_for_kind",
   "SessionEvent",
   "SessionEntry",
   "ProviderReplay",

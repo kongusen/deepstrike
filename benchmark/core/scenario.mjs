@@ -13,8 +13,10 @@
  *
  * @typedef {Object} BenchTask
  * @property {string} id                    Stable task id (used in session ids).
- * @property {string} goal                  The user goal handed to runner.run.
- * @property {string[]} [criteria]          Optional criteria passed to runner.run.
+ * @property {string} goal                  The user goal handed to runner.run (unused when driveTask is set).
+ * @property {string[]} [criteria]          Optional criteria passed to runner.run / judge.
+ * @property {any} [workflow]               Optional WorkflowSpec for `driveTask` workflow drivers.
+ * @property {string[]} [failAgentIds]      Optional stub-orchestrator fail set (orchestration benches).
  *
  * @typedef {Object} BenchSkill
  * @property {string} name                  File-safe skill name.
@@ -66,5 +68,30 @@
  *                                          what the kernel let through (`tool_requested`). The two
  *                                          differ when governance / capability filters / rate limits
  *                                          intercept a call.
+ * @property {boolean} [requiresProvider]   When false, CLI may run without an API key (stub / kernel
+ *                                          drivers). Defaults to true for LLM-backed scenarios.
+ * @property {(args: {
+ *   sdk: any,
+ *   scenario: BenchScenario,
+ *   task: BenchTask,
+ *   variantId: string,
+ *   sessionId: string,
+ *   sessionLog: any,
+ *   plane: any,
+ *   tools: any[],
+ *   runnerOpts: Record<string, any>,
+ *   provider: any,
+ *   onEvent?: (taskId: string, evt: any) => void,
+ *   timeoutMs: number,
+ * }) => Promise<{
+ *   finalStatus: string,
+ *   finalText?: string,
+ *   turnMetrics?: any[],
+ *   streamToolCalls?: Array<{ name: string, arguments: Record<string, unknown> }>,
+ *   wallMs?: number,
+ * }>} [driveTask]
+ *                                          Optional custom session driver. When set, the runner
+ *                                          skips `runner.run({ goal })` and uses this instead
+ *                                          (e.g. orchestration stubs calling `runWorkflow`).
  */
 export {}

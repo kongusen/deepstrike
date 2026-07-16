@@ -1,0 +1,78 @@
+name: Gate on CI
+
+# Reusable gate: block release publish until the tagged commit's CI workflow
+# has completed successfully. Avoids the race where `git push main && git push v*`
+# starts registry publishes before main CI finishes.
+on:
+  workflow_call:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  wait:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Wait for CI success on this SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEADLINE=$((SECONDS + 3600))
+          POLL=30
+          SEEN_RUN=0
+
+          echo "Waiting for workflow \"CI\" (ci.yml) on commit ${SHA}"
+
+          while (( SECONDS < DEADLINE )); do
+            JSON=$(gh api "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&per_page=5")
+            COUNT=$(echo "$JSON" | jq '.total_count // 0')
+
+            if [[ "$COUNT" -eq 0 ]]; then
+              echo "No CI run yet for ${SHA} — waiting (push the commit to main so CI starts)..."
+              sleep "$POLL"
+              continue
+            fi
+
+            SEEN_RUN=1
+            # Prefer an in-progress run; otherwise the newest completed run.
+            RUN=$(echo "$JSON" | jq -c '
+              (.workflow_runs // [])
+              | (map(select(.status != "completed")) | .[0])
+                // .[0]
+                // empty
+            ')
+            if [[ -z "$RUN" || "$RUN" == "null" ]]; then
+              echo "Unexpected empty workflow_runs payload"
+              sleep "$POLL"
+              continue
+            fi
+
+            STATUS=$(echo "$RUN" | jq -r '.status')
+            CONCLUSION=$(echo "$RUN" | jq -r '.conclusion // empty')
+            RUN_URL=$(echo "$RUN" | jq -r '.html_url')
+            echo "CI run: status=${STATUS} conclusion=${CONCLUSION:-none} ${RUN_URL}"
+
+            if [[ "$STATUS" == "completed" ]]; then
+              if [[ "$CONCLUSION" == "success" ]]; then
+                echo "CI passed — release may proceed"
+                exit 0
+              fi
+              echo "::error::CI finished with conclusion=${CONCLUSION} — refusing to release. See ${RUN_URL}"
+              exit 1
+            fi
+
+            sleep "$POLL"
+          done
+
+          if [[ "$SEEN_RUN" -eq 0 ]]; then
+            echo "::error::No CI run found for ${SHA} within timeout. Push the commit to main first so CI runs, then push the tag."
+            exit 1
+          fi
+          echo "::error::Timed out waiting for CI on ${SHA}"
+          exit 1
