@@ -1,6 +1,7 @@
 import type { RuntimeRunner } from "../runtime/runner.js"
 import type { SessionEvent } from "../runtime/session-log.js"
 import type {
+  ContentPart,
   DoneEvent,
   TextDelta,
   WorkflowNodesSubmittedEvent,
@@ -15,6 +16,12 @@ export interface AttemptRequest {
   sessionId?: string
   goal: string
   criteria?: Criterion[]
+  /**
+   * Multimodal inputs (images / audio) attached to the task. Forwarded to every attempt
+   * unconditionally; the runner seeds them per session idempotently, so fresh-session carries
+   * re-seed while same-session carries do not double.
+   */
+  attachments?: ContentPart[]
   extensions?: Record<string, unknown>
   /** Parent transcript inherited by the first attempt only. */
   inheritEvents?: Array<{ seq: number; event: SessionEvent }>
@@ -65,6 +72,7 @@ export class RuntimeAttemptBody implements AttemptBody {
       sessionId: context.sessionId,
       goal: context.goal,
       criteria: (context.criteria ?? []).map(criterion => criterion.text),
+      ...(context.attachments?.length ? { attachments: context.attachments } : {}),
       extensions: context.extensions,
       ...(context.attempt === 1 && context.inheritEvents
         ? { inheritEvents: context.inheritEvents }

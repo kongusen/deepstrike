@@ -154,6 +154,48 @@ describe("AttemptLoop", () => {
     expect(workflowNodeStatusFromTermination(result.termination)).toBe("completed")
   })
 
+  it("forwards attachments to every attempt (same-session carry)", async () => {
+    const attachments = [{ type: "image" as const, data: "iVBORw0KGgo=", mediaType: "image/png" }]
+    const { runner, runs } = scriptedRunner([
+      { text: "first", status: "completed", turns: 1, tokens: 1 },
+      { text: "second", status: "completed", turns: 1, tokens: 1 },
+    ])
+    const loop = new AttemptLoop({
+      body: new RuntimeAttemptBody(runner),
+      judge: new VerdictFnJudge(({ attempt }) => verdict(attempt === 2, "retry")),
+      stop: { maxAttempts: 2 },
+    })
+
+    await loop.run({ sessionId: "with-image", goal: "describe", attachments })
+
+    expect(runs).toHaveLength(2)
+    for (const request of runs as Array<{ attachments?: unknown }>) {
+      expect(request.attachments).toEqual(attachments)
+    }
+  })
+
+  it("re-seeds attachments on fresh-session retries (the silent-loss case)", async () => {
+    const attachments = [{ type: "image" as const, data: "iVBORw0KGgo=", mediaType: "image/png" }]
+    const { runner, runs } = scriptedRunner([
+      { text: "first", status: "completed", turns: 1, tokens: 1 },
+      { text: "second", status: "completed", turns: 1, tokens: 1 },
+    ])
+    const loop = new AttemptLoop({
+      body: new RuntimeAttemptBody(runner),
+      judge: new VerdictFnJudge(({ attempt }) => verdict(attempt === 2, "needs another pass")),
+      carry: freshWithFeedback,
+      stop: { maxAttempts: 2 },
+    })
+
+    await loop.run({ sessionId: "fresh-image", goal: "describe", attachments })
+
+    expect(runs).toHaveLength(2)
+    expect((runs[0] as { sessionId: string }).sessionId)
+      .not.toBe((runs[1] as { sessionId: string }).sessionId)
+    // Attempt 2 runs in a brand-new session: without forwarding it would silently lose the image.
+    expect((runs[1] as { attachments?: unknown }).attachments).toEqual(attachments)
+  })
+
   it("keeps fresh-session goal concatenation behind an explicit carry policy", async () => {
     const { runner, runs, notes } = scriptedRunner([
       { text: "first", status: "completed", turns: 1, tokens: 1 },

@@ -250,6 +250,26 @@ const CHECKS = [
   },
   // wasm LoopDriver: EXPLICIT node+python-first decision (edge cron loops re-arm via wake_at_ms
   // from the host today); revisit when a wasm host needs in-process pacing.
+  // ── multimodal attempt parity: AttemptLoop forwards attachments unconditionally; each driver
+  // runner seeds them idempotently per session (dedupe against prior run_started records). ──
+  {
+    id: "node-attachment-seeding",
+    lang: "node",
+    path: "node/src/runtime/runner.ts",
+    patterns: ["attachmentsAlreadySeeded"],
+  },
+  {
+    id: "python-attachment-seeding",
+    lang: "python",
+    path: "python/deepstrike/runtime/runner.py",
+    patterns: ["_attachments_already_seeded"],
+  },
+  {
+    id: "wasm-attachment-seeding",
+    lang: "wasm",
+    path: "wasm/src/runtime/runner.ts",
+    patterns: ["attachmentsAlreadySeeded"],
+  },
 ]
 
 let failed = 0

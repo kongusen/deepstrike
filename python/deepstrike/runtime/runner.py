@@ -1706,6 +1706,11 @@ class RuntimeRunner:
     mid_run = _is_mid_run(prior)
     resumed_start = next((entry for entry in reversed(prior) if entry.event.get("kind") == "run_started"), None)
     run_id = resumed_start.event["run_id"] if mid_run and resumed_start is not None else str(uuid.uuid4())
+    # Idempotent per session: an earlier run's `run_started` already carries these attachments
+    # (same-session retry attempt), so replay reconstructs them — recording and seeding again
+    # would double them in history. Deduping at the append keeps live and replay in agreement.
+    if attachments and _attachments_already_seeded(prior, attachments):
+      attachments = None
     if not mid_run:
       await self._opts.session_log.append(sid, {
         "kind": "run_started",
@@ -3058,6 +3063,18 @@ def _is_mid_run(events: list[SessionEntry]) -> bool:
     elif kind == "run_terminal":
       last_terminal = i
   return last_started >= 0 and last_started > last_terminal
+
+
+def _attachments_already_seeded(prior: list[SessionEntry], attachments: list[dict]) -> bool:
+  """True when an earlier run in this session already seeded the same attachments. Replay
+  reconstructs the attachment message from that run's ``run_started``, so recording and
+  live-seeding them again (a same-session retry attempt) would double them in history."""
+  wanted = json.dumps(attachments, sort_keys=True)
+  return any(
+    entry.event.get("kind") == "run_started"
+    and json.dumps(entry.event.get("attachments") or [], sort_keys=True) == wanted
+    for entry in prior
+  )
 
 
 def _normalize_attachment_parts(parts: list[dict]) -> list[dict]:

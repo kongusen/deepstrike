@@ -45,6 +45,10 @@ class AttemptRequest:
     goal: str
     session_id: str | None = None
     criteria: list[Criterion] = field(default_factory=list)
+    # Multimodal inputs (images / audio) attached to the task. Forwarded to every attempt
+    # unconditionally; the runner seeds them per session idempotently, so fresh-session
+    # carries re-seed while same-session carries do not double.
+    attachments: list[dict] | None = None
     extensions: dict[str, Any] | None = None
     inherit_events: list[Any] | None = None
 
@@ -57,6 +61,7 @@ class AttemptBodyContext:
     extensions: dict[str, Any] | None
     inherit_events: list[Any] | None
     attempt: int
+    attachments: list[dict] | None = None
     context_input: str | None = None
 
 
@@ -102,6 +107,7 @@ class RuntimeAttemptBody:
                 session_id=context.session_id,
                 goal=context.goal,
                 criteria=[criterion.text for criterion in context.criteria],
+                **({"attachments": context.attachments} if context.attachments else {}),
                 extensions=context.extensions,
                 inherit_events=context.inherit_events if context.attempt == 1 else None,
             )
@@ -294,6 +300,7 @@ class AttemptLoop:
                     extensions=request.extensions,
                     inherit_events=request.inherit_events,
                     attempt=attempt,
+                    attachments=request.attachments,
                     context_input=prepared.context_input,
                 )
             ):

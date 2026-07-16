@@ -450,6 +450,12 @@ export class RuntimeRunner {
   }): AsyncIterable<StreamEvent> {
     const prior = req.inheritEvents ?? await this.opts.sessionLog.read(req.sessionId)
     const midRun = isMidRun(prior)
+    // Idempotent per session: an earlier run's `run_started` already carries these attachments
+    // (same-session retry attempt), so replay reconstructs them — recording and seeding again
+    // would double them in history. Deduping at the append keeps live and replay in agreement.
+    const attachments = req.attachments?.length && !attachmentsAlreadySeeded(prior, req.attachments)
+      ? req.attachments
+      : undefined
     if (!midRun) {
       await this.opts.sessionLog.append(req.sessionId, {
         kind: "run_started",
@@ -458,7 +464,7 @@ export class RuntimeRunner {
         criteria: req.criteria ?? [],
         agent_id: this.opts.agentId,
         system_prompt: this.opts.systemPrompt,
-        ...(req.attachments?.length ? { attachments: req.attachments } : {}),
+        ...(attachments ? { attachments } : {}),
       })
     }
     yield* this.execute(
@@ -468,7 +474,7 @@ export class RuntimeRunner {
       req.extensions,
       prior.length > 0 ? prior : undefined,
       midRun,
-      req.attachments,
+      attachments,
     )
   }
 
@@ -2531,6 +2537,20 @@ function signalToKernelEvent(delivery: InboundSignalDelivery): Record<string, un
       timestamp_ms: Date.now(),
     },
   }
+}
+
+/**
+ * True when an earlier run in this session already seeded the same attachments. Replay
+ * reconstructs the attachment message from that run's `run_started`, so recording and
+ * live-seeding them again (a same-session retry attempt) would double them in history.
+ */
+function attachmentsAlreadySeeded(
+  prior: Array<{ seq: number; event: SessionEvent }>,
+  attachments: import("../types.js").ContentPart[],
+): boolean {
+  const wanted = JSON.stringify(attachments)
+  return prior.some(({ event }) =>
+    event.kind === "run_started" && JSON.stringify(event.attachments ?? []) === wanted)
 }
 
 /** Convert SDK ContentParts (camelCase mediaType) to kernel serde shape (media_type). */

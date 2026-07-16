@@ -46,6 +46,29 @@ describe("AttemptLoop", () => {
     expect(contexts.map(context => context.contextInput)).toEqual([undefined, "fix it"])
   })
 
+  it("forwards attachments into every attempt's body context", async () => {
+    const attachments = [{ type: "image" as const, data: "QUJD", mediaType: "image/png" }]
+    const contexts: AttemptBodyContext[] = []
+    const body: AttemptBody = {
+      async *run(context): AsyncIterable<AttemptBodyEvent> {
+        contexts.push(context)
+        yield { type: "body_done", runStatus: "completed", result: `attempt-${context.attempt}`, turns: 1, totalTokens: 5 }
+      },
+    }
+    const judge: AttemptJudge = {
+      async judge(context) {
+        return {
+          verdict: { passed: context.attempt === 2, overallScore: 0, feedback: "retry", details: [] },
+        }
+      },
+    }
+
+    await new AttemptLoop({ body, judge, stop: { maxAttempts: 2 } }).run({ goal: "describe", attachments })
+
+    // Attempt 2 must keep the multimodal input — a retry without it is judging different work.
+    expect(contexts.map(context => context.attachments)).toEqual([attachments, attachments])
+  })
+
   it("keeps run health separate and skips the judge on a body error", async () => {
     let judgeCalls = 0
     const body: AttemptBody = {

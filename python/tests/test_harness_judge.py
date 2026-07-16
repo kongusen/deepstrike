@@ -178,6 +178,40 @@ async def test_attempt_loop_default_carry_keeps_session_and_injects_feedback():
 
 
 @pytest.mark.asyncio
+async def test_attempt_loop_forwards_attachments_to_every_attempt():
+    """Retry attempts must keep the multimodal input — a retry without it is judging different
+    work. The runner seeds per session idempotently, so unconditional forwarding is safe for
+    both carry policies."""
+    seen: list = []
+
+    class _AttachmentRunner(_Runner):
+        async def run(
+            self, *, goal, criteria, extensions=None, session_id=None,
+            inherit_events=None, attachments=None,
+        ):
+            seen.append(attachments)
+            async for evt in super().run(
+                goal=goal, criteria=criteria, extensions=extensions,
+                session_id=session_id, inherit_events=inherit_events,
+            ):
+                yield evt
+
+    attachments = [{"type": "image", "data": "iVBORw0KGgo=", "media_type": "image/png"}]
+    verdicts = iter([
+        Verdict(passed=False, overall_score=0.0, feedback="retry", details=[]),
+        Verdict(passed=True, overall_score=1.0, feedback="ok", details=[]),
+    ])
+    loop = AttemptLoop(
+        body=RuntimeAttemptBody(_AttachmentRunner()),
+        judge=VerdictFnJudge(lambda **_: next(verdicts)),
+        stop=StopPolicy(max_attempts=2),
+    )
+    outcome = await loop.run(AttemptRequest(goal="describe", attachments=attachments))
+    assert outcome.outcome == "passed"
+    assert seen == [attachments, attachments]
+
+
+@pytest.mark.asyncio
 async def test_attempt_loop_run_error_skips_judge():
     class _ErrorRunner(_Runner):
         async def run(self, **kwargs):
