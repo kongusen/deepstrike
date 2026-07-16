@@ -82,13 +82,8 @@ pub const MAX_DIRECTIVES: usize = 8;
 /// Maximum recent action-turns retained for the recency footer (bounded ring).
 pub const MAX_RECENT_ACTIONS: usize = 6;
 
-/// Compression-log entries retained in state (rolling window; render may show fewer).
+/// Compression-log entries retained in state (rolling window; render shows the last 3).
 pub const MAX_COMPRESSION_LOG: usize = 64;
-/// Flat character budget for rendering compression digests into the State turn (~600
-/// char-approx tokens). Newest digests win; older ones are omitted with an honest counter.
-const COMPRESSION_RENDER_CHAR_BUDGET: usize = 2400;
-/// Hard entry cap for the rendered digest window (bounds pathological many-tiny-digest cases).
-const COMPRESSION_RENDER_MAX_ENTRIES: usize = 12;
 
 /// Partial update applied by the SDK or via `update_plan` meta-tool.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -153,32 +148,17 @@ impl TaskState {
             lines.push(format!("scratchpad: {}", self.scratchpad));
         }
 
-        // Render compression digests newest-first under a flat character budget, then print
-        // oldest-first. A fixed last-3 window silently erased early-task process state on long
-        // runs (measured: a 12-PR review at a 2048 budget compacts ~10 times, so the digests
-        // for PRs 1-8 vanished from the model's view and its final summary invented
-        // placeholders). A budget window keeps every digest visible while digests fit, and
-        // says how many it had to omit when they don't.
+        // Render only the most recent compression events (fixed cap of 3). A wider budgeted
+        // window was tried and withdrawn: live A/B at n≤4 (12-PR review @ 2048, DeepSeek)
+        // could not distinguish it from provider drift — a control run on the unmodified
+        // kernel showed the same failures — and a window full of old `tool X args` digest
+        // lines is plausible re-execution bait. Absent replay-lab evidence FOR widening, the
+        // proven shape stays. Older digests remain in `compression_log` (bounded at
+        // [`MAX_COMPRESSION_LOG`]); making their *content* durably useful to the model is
+        // semantic-summary (P2) territory, not a bigger raw window.
         if !self.compression_log.is_empty() {
-            let mut visible = 0usize;
-            let mut budget = COMPRESSION_RENDER_CHAR_BUDGET;
-            for entry in self.compression_log.iter().rev() {
-                let cost = entry.action.len() + entry.summary.len() + 6;
-                if visible > 0
-                    && (cost > budget || visible >= COMPRESSION_RENDER_MAX_ENTRIES)
-                {
-                    break;
-                }
-                budget = budget.saturating_sub(cost);
-                visible += 1;
-            }
-            let omitted =
-                self.compression_log.len() - visible + self.compression_log_dropped as usize;
             lines.push("compression_history:".to_string());
-            if omitted > 0 {
-                lines.push(format!("  … {omitted} earlier compaction(s) omitted"));
-            }
-            let start = self.compression_log.len() - visible;
+            let start = self.compression_log.len().saturating_sub(3);
             for entry in &self.compression_log[start..] {
                 if entry.summary.is_empty() {
                     lines.push(format!("  [{}]", entry.action));
@@ -395,32 +375,19 @@ mod tests {
     }
 
     #[test]
-    fn compression_render_keeps_early_digests_while_budget_allows() {
-        // The regression this guards: 10 compactions at a tight budget used to render only the
-        // last 3 digests, so early-task process state (PRs 1-8) vanished from the model's view.
+    fn compression_render_shows_exactly_the_last_three_digests() {
+        // Pin the 3-entry window (see format_compact for why widening was withdrawn) so a
+        // future widening must re-justify itself with replay-lab evidence.
         let mut ts = TaskState::default();
         ts.goal = "review PRs".into();
         for n in 1..=10 {
-            ts.log_compression("auto_compact", format!("PR {n}: change summary"));
+            ts.log_compression("auto_compact", format!("digest {n}"));
         }
         let rendered = ts.format_compact();
-        assert!(rendered.contains("PR 1: change summary"));
-        assert!(rendered.contains("PR 10: change summary"));
-        assert!(!rendered.contains("omitted"));
-    }
-
-    #[test]
-    fn compression_render_omits_oldest_with_honest_counter_when_over_budget() {
-        let mut ts = TaskState::default();
-        ts.goal = "review PRs".into();
-        let big = "x".repeat(700);
-        for n in 1..=6 {
-            ts.log_compression("auto_compact", format!("digest {n}: {big}"));
-        }
-        let rendered = ts.format_compact();
-        assert!(rendered.contains("digest 6:"), "newest always renders");
-        assert!(!rendered.contains("digest 1:"), "oldest falls off past the budget");
-        assert!(rendered.contains("earlier compaction(s) omitted"));
+        assert!(!rendered.contains("digest 7\n"));
+        assert!(rendered.contains("digest 8"));
+        assert!(rendered.contains("digest 9"));
+        assert!(rendered.contains("digest 10"));
     }
 
     #[test]
