@@ -43,6 +43,19 @@ describe("governancePolicyToKernelEvent", () => {
     expect(event).not.toHaveProperty("default_action")
   })
 
+  it("maps denyMode to deny_mode and omits it when absent", () => {
+    const withMode = governancePolicyToKernelEvent({
+      rules: [{ pattern: "write_file", action: "deny" }],
+      denyMode: "result",
+    })
+    expect(withMode).toHaveProperty("deny_mode", "result")
+
+    const without = governancePolicyToKernelEvent({
+      rules: [{ pattern: "write_file", action: "deny" }],
+    })
+    expect(without).not.toHaveProperty("deny_mode")
+  })
+
   it("only includes range bounds that are provided", () => {
     const event = governancePolicyToKernelEvent({
       constraints: [{ kind: "range", tool: "t", path: "p", max: 5 }],
