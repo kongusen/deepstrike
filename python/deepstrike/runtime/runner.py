@@ -139,6 +139,9 @@ class MemoryPolicy:
   validation_enabled: bool | None = None
   max_content_bytes: int | None = None
   max_name_length: int | None = None
+  # M4: recall count at which the kernel emits an advisory (edge-triggered) ``promotion_suggested``
+  # for a recalled record. Omitted = suggestions disabled. Mirrors Node ``promotionRecallThreshold``.
+  promotion_recall_threshold: int | None = None
 
 
 @dataclass
@@ -340,6 +343,20 @@ def _pending_call_ids(action: Any) -> list[str]:
   return [effect_id] if effect_id else []
 
 
+# Kernel observation kinds owned by the memory lifecycle consumer (journal + store mirror).
+_MEMORY_LIFECYCLE_KINDS = frozenset({
+  "memory_written",
+  "memory_queried",
+  "memory_validation_failed",
+  "memory_recalled",
+  "promotion_suggested",
+})
+
+
+def _is_memory_lifecycle_observation(obs: dict[str, Any]) -> bool:
+  return obs.get("kind") in _MEMORY_LIFECYCLE_KINDS
+
+
 class RuntimeRunner:
   def __init__(self, opts: RuntimeOptions) -> None:
     if (
@@ -414,7 +431,7 @@ class RuntimeRunner:
     target_runtime = self._create_syscall_runtime()
     action = kernel_maybe_action(target_runtime, observations, {"kind": "write_memory", "memory": asdict(memory)})
     if action is None:
-      await self._append_memory_syscall_observations(resolved_session_id, observations)
+      await self._consume_memory_lifecycle_observations(resolved_session_id, observations)
       return
     if action.kind != "persist_memory":
       raise RuntimeError(f"write_memory returned unexpected kernel effect: {action.kind}")
@@ -430,9 +447,87 @@ class RuntimeRunner:
       "effect_id": action.effect_id,
       **({"error": format_tool_error(error)} if error else {}),
     })
-    await self._append_memory_syscall_observations(resolved_session_id, observations)
+    await self._consume_memory_lifecycle_observations(resolved_session_id, observations)
     if error:
       raise error
+
+  async def _retrieve_memory_from_store(
+    self,
+    query: "MemoryQuery",
+    requested_k: int,
+    agent_id: str,
+  ) -> list["MemoryRecall"]:
+    if not self._opts.dream_store:
+      raise RuntimeError("memory queries require dream_store")
+    from dataclasses import replace
+    hits = await self._opts.dream_store.search(agent_id, replace(query, top_k=requested_k))
+    # The kernel faults a memory_query_result whose hit count exceeds requested_k, so cap here.
+    return list(hits)[:requested_k]
+
+  async def _query_memory_through_kernel(
+    self,
+    runtime: KernelRuntime,
+    query: "MemoryQuery",
+    agent_id: str,
+    session_id: str | None,
+    seen_record_ids: set[str] | None = None,
+    leftovers: list[dict[str, Any]] | None = None,
+  ) -> tuple[list["MemoryRecall"], KernelRunnerAction | None]:
+    """T5: run one memory query through the kernel's ``query_memory → memory_query_result``
+    effect lifecycle on the given runtime. The kernel injects each routed hit into history
+    itself (``[MEMORY …]``, one message per hit) and derives the recall lifecycle
+    (``memory_recalled``, edge-triggered ``promotion_suggested``) statelessly from the routed
+    hits — the store stays a pure query.
+
+    ``seen_record_ids`` is one dedupe horizon: a record hit by several queries of the same
+    prefetch is routed (recalled, injected) once. The kernel derives counts statelessly from
+    each hit's payload, so host-side pre-filtering is the only place duplicates can be stopped.
+
+    The recall lifecycle is consumed immediately rather than via the per-turn drain: the store
+    must be up to date before any same-turn re-query, and a renewal prefetch fires inside the
+    drain loop where queued observations would not be consumed until the next boundary.
+    Non-memory observations are forwarded to ``leftovers`` (the run's pending queue) when given,
+    and discarded for detached syscall runtimes (their kernel is throwaway).
+    """
+    observations: list[dict[str, Any]] = []
+    action = kernel_action(runtime, observations, {"kind": "query_memory", "query": asdict(query)})
+    if action.kind != "query_memory":
+      raise RuntimeError(f"query_memory returned unexpected kernel effect: {action.kind}")
+
+    hits: list[Any] = []
+    error: Exception | None = None
+    try:
+      hits = await self._retrieve_memory_from_store(query, int(action.requested_k or 0), agent_id)
+      if seen_record_ids is not None:
+        deduped = []
+        for hit in hits:
+          rid = hit.record.record_id
+          if rid in seen_record_ids:
+            continue
+          seen_record_ids.add(rid)
+          deduped.append(hit)
+        hits = deduped
+    except Exception as exc:
+      error = exc
+
+    # Close the kernel effect even when the store failed — never leave a dangling query. The
+    # result commit resumes the kernel's reasoning path (``resume_after_preload``), which re-emits
+    # the next loop action with the routed hits now in history — callers on a live run kernel must
+    # adopt it (a query is a preload, not a detached side-channel).
+    resumed = kernel_maybe_action(runtime, observations, {
+      "kind": "memory_query_result",
+      "effect_id": action.effect_id,
+      "hits": [asdict(hit) for hit in hits],
+      **({"error": format_tool_error(error)} if error else {}),
+    })
+    await self._consume_memory_lifecycle_observations(session_id, observations)
+    if leftovers is not None:
+      for obs in observations:
+        if not _is_memory_lifecycle_observation(obs):
+          leftovers.append(obs)
+    if error:
+      raise error
+    return hits, resumed
 
   async def query_memory(
     self,
@@ -447,32 +542,12 @@ class RuntimeRunner:
     if not self._opts.dream_store or not resolved_agent_id:
       return []
 
-    observations: list[dict[str, Any]] = []
+    # Detached syscall runtime: the kernel's history injection and resumed action are inert (the
+    # kernel is throwaway), but the recall lifecycle is identical to an in-run query (T5 parity).
     runtime = self._create_syscall_runtime()
-    action = kernel_action(runtime, observations, {"kind": "query_memory", "query": asdict(query)})
-    if action.kind != "query_memory":
-      raise RuntimeError(f"query_memory returned unexpected kernel effect: {action.kind}")
-
-    hits: list[Any] = []
-    error = None
-    try:
-      from dataclasses import replace
-      hits = await self._opts.dream_store.search(
-        resolved_agent_id, replace(query, top_k=int(action.requested_k or 0)),
-      )
-    except Exception as exc:
-      error = exc
-
-    kernel_apply(runtime, observations, {
-      "kind": "memory_query_result",
-      "effect_id": action.effect_id,
-      "hits": [asdict(hit) for hit in hits],
-      **({"error": format_tool_error(error)} if error else {}),
-    })
-
-    await self._append_memory_syscall_observations(resolved_session_id, observations)
-    if error:
-      raise error
+    hits, _ = await self._query_memory_through_kernel(
+      runtime, query, resolved_agent_id, resolved_session_id,
+    )
     await self._log_memory_retrieval_result(resolved_session_id, hits)
     return hits
 
@@ -549,16 +624,47 @@ class RuntimeRunner:
         if attempt >= retries:
           raise
 
-  async def _append_memory_syscall_observations(
+  async def _mirror_memory_lifecycle(self, obs: dict[str, Any]) -> None:
+    """Mirror one kernel memory-lifecycle observation into the durable store / host callbacks.
+    Shared by the main run drain, the prefetch path, and the host memory syscalls so every query
+    route has identical recall + promotion semantics (T5).
+
+    M3: ``memory_recalled`` carries the kernel-derived count — the runner never computes
+    ``recall_count + 1`` itself. M4: ``promotion_suggested`` is advisory and already edge-triggered
+    by the kernel; the runner surfaces it and never auto-pins.
+    """
+    if obs.get("kind") == "memory_recalled" and obs.get("recalls"):
+      agent_id = self._opts.agent_id
+      record_recall = getattr(self._opts.dream_store, "record_recall", None) if self._opts.dream_store else None
+      if agent_id and record_recall is not None:
+        from deepstrike.memory.protocols import MemoryRecallLifecycle
+        recalls = [
+          MemoryRecallLifecycle(
+            record_id=str(r["record_id"]),
+            recall_count=int(r["recall_count"]),
+            last_recalled_at=int(r["last_recalled_at"]),
+          )
+          for r in obs["recalls"]
+        ]
+        await record_recall(agent_id, recalls)
+    if obs.get("kind") == "promotion_suggested" and obs.get("record_id"):
+      if self._opts.on_promotion_suggested is not None:
+        self._opts.on_promotion_suggested(
+          record_id=str(obs["record_id"]),
+          recall_count=int(obs.get("recall_count") or 0),
+        )
+
+  async def _consume_memory_lifecycle_observations(
     self,
     session_id: str | None,
     observations: list[dict[str, Any]],
   ) -> None:
-    if not session_id:
-      return
     turn = self._active_kernel.turn() if self._active_kernel else 0
     for obs in observations:
-      if obs.get("kind") not in ("memory_written", "memory_queried", "memory_validation_failed"):
+      if not _is_memory_lifecycle_observation(obs):
+        continue
+      await self._mirror_memory_lifecycle(obs)
+      if not session_id:
         continue
       event = kernel_observation_to_session_event(obs, turn)
       if event:
@@ -2045,21 +2151,26 @@ class RuntimeRunner:
         "message": {"role": "user", "content": _normalize_attachment_parts(attachments)},
       })
 
-    # I4: pre-fetch memory before the first LLM turn so the model sees it on turn 1 instead of
-    # discovering it via the memory tool on turn 3+ (mirrors Node). Strict dynamic context control:
-    # this is single-use retrieval content, not a stable method/skill — so it lands in `history` as
-    # an ordinary turn (exactly like a real `memory` tool result would) and decays with the
-    # compression pyramid over subsequent turns, instead of pinning itself in `knowledge` forever.
-    # K4: the same prefetch re-fires after each sprint renewal (see _prefetch_memory_into_history).
     self._current_goal = goal
-    if not resume_mid_run:
-      await self._prefetch_memory_into_history(runtime, "initial")
 
     action = (
       kernel_action(runtime, self._pending_observations, {"kind": "resume"})
       if resume_mid_run
       else kernel_action(runtime, self._pending_observations, start_payload)
     )
+    # I4/T5: pre-fetch memory before the first LLM turn so the model sees it on turn 1 instead of
+    # discovering it via the memory tool on turn 3+ (mirrors Node). It routes through the kernel's
+    # query_memory lifecycle and therefore runs AFTER start_run — a memory query is a kernel preload
+    # whose result resumes the reasoning path, so issuing it pre-run would leave the kernel Running
+    # and start_run would fault (invalid_lifecycle). The resumed action from the last query
+    # supersedes start_run's (same pull contract; it renders the injected hits). Hits land in
+    # `history` as ordinary turns — single-use retrieval content that decays with the compression
+    # pyramid, never pinned into `knowledge`. Skipped on resumes (already in prior context).
+    # K4: the same prefetch re-fires after each sprint renewal (see _prefetch_memory_into_history).
+    if not resume_mid_run:
+      resumed = await self._prefetch_memory_into_history(runtime, "initial")
+      if resumed is not None:
+        action = resumed
     # P0-C: the skill loaded and in effect going into the current turn → per-turn ``active_skill`` metric.
     active_skill: str | None = None
 
@@ -2710,29 +2821,10 @@ class RuntimeRunner:
         )
         self._active_group_budget_scope = None
 
-      # M3: mirror the kernel's journaled recall lifecycle into the durable store so recall
-      # history survives across sessions.
-      if obs.get("kind") == "memory_recalled" and obs.get("recalls"):
-        agent_id = self._opts.agent_id
-        record_recall = getattr(self._opts.dream_store, "record_recall", None) if self._opts.dream_store else None
-        if agent_id and record_recall is not None:
-          from deepstrike.memory.protocols import MemoryRecallLifecycle
-          recalls = [
-            MemoryRecallLifecycle(
-              record_id=str(r["record_id"]),
-              recall_count=int(r["recall_count"]),
-              last_recalled_at=int(r["last_recalled_at"]),
-            )
-            for r in obs["recalls"]
-          ]
-          await record_recall(agent_id, recalls)
-      # M4: a recall crossed the promotion threshold. Advisory — surface for the host/model to act.
-      if obs.get("kind") == "promotion_suggested" and obs.get("record_id"):
-        if self._opts.on_promotion_suggested is not None:
-          self._opts.on_promotion_suggested(
-            record_id=str(obs["record_id"]),
-            recall_count=int(obs.get("recall_count") or 0),
-          )
+      # M3/M4: mirror the kernel's journaled recall lifecycle into the durable store / host
+      # callbacks (shared consumer — identical semantics on every query route). Journaling stays
+      # inline below (this drain owns the compression-aware session-log projection).
+      await self._mirror_memory_lifecycle(obs)
 
       latest = (
         await self._opts.session_log.latest_seq(session_id)
@@ -2761,21 +2853,30 @@ class RuntimeRunner:
         await self._prefetch_memory_into_history(runtime, "renewal")
     return next_archive_start
 
-  async def _prefetch_memory_into_history(self, runtime: KernelRuntime, phase: str) -> None:
+  async def _prefetch_memory_into_history(
+    self, runtime: KernelRuntime, phase: str,
+  ) -> KernelRunnerAction | None:
     """I4 + K4: fetch long-term memory hits for the current goal and land them in ``history`` as
-    an ordinary user turn — single-use retrieval content that decays with the compression
-    pyramid, never pinned into ``knowledge``. Called once before turn 1 (``phase="initial"``) and
-    re-fired after each sprint renewal (``phase="renewal"``): renewal drops the old history
-    INCLUDING the earlier memory hits, so the new sprint gets a fresh recall pass. Errs-open.
+    ordinary user turns — single-use retrieval content that decays with the compression pyramid,
+    never pinned into ``knowledge``. Called once before turn 1 (``phase="initial"``) and re-fired
+    after each sprint renewal (``phase="renewal"``): renewal drops the old history INCLUDING the
+    earlier memory hits, so the new sprint gets a fresh recall pass. Errs-open.
 
     The ``phase`` kwarg is passed only when the hook's signature accepts it, so pre-K4 hooks
     (``lambda goal: [...]``) keep working unchanged.
+
+    T5: each query routes through the kernel's query_memory lifecycle instead of calling the store
+    directly — the kernel injects each routed hit into history itself and the recall lifecycle
+    (record_recall / promotion) fires exactly like an in-run query. Returns the resumed action from
+    the LAST query (each memory_query_result resumes the reasoning path and re-emits the pending
+    loop action; the caller must continue from the last one — it renders the injected hits), or
+    None when nothing was routed.
     """
     # P10: recall is default-on (CC session-start recall) — with no hook configured,
     # the goal itself is the query. pre_query_memory stays as the targeting override.
     from deepstrike.memory.protocols import MemoryQuery
     if not (self._opts.dream_store and self._opts.agent_id and self._opts.memory_scope):
-      return
+      return None
     hook = self._opts.pre_query_memory or (lambda goal: [MemoryQuery(
       scope=self._opts.memory_scope, query=goal, top_k=5,
     )])
@@ -2791,20 +2892,27 @@ class RuntimeRunner:
       if hasattr(result, "__await__"):
         result = await result
       queries = result or []
-      lines = []
+      # One prefetch = one dedupe horizon: a record hit by several short queries recalls and
+      # injects once. A renewal prefetch starts a fresh horizon — renewal dropped the earlier
+      # injection with the old history, so re-exposure is a genuine new recall.
+      seen_record_ids: set[str] = set()
+      resumed: KernelRunnerAction | None = None
       for q in queries:
         if not isinstance(q, MemoryQuery) or not q.query.strip():
           continue
-        hits = await self._opts.dream_store.search(self._opts.agent_id, q)
-        for hit in hits:
-          lines.append(f"[memory record_id={hit.record.record_id} trust={hit.record.provenance.trust} score={hit.score:.3f}] {hit.record.content}")
-      if lines:
-        kernel_apply(runtime, self._pending_observations, {
-          "kind": "add_history_message",
-          "message": {"role": "user", "content": "\n".join(lines)},
-        })
+        _hits, action = await self._query_memory_through_kernel(
+          runtime,
+          q,
+          self._opts.agent_id,
+          self._current_session_id,
+          seen_record_ids,
+          self._pending_observations,
+        )
+        resumed = action if action is not None else resumed
+      return resumed
     except Exception:
       pass  # errs-open — a faulty pre-fetch never breaks the run
+    return None
 
   async def _archive_semantic_page_out(
     self,
@@ -3189,6 +3297,7 @@ def _memory_policy_to_kernel(policy: MemoryPolicy | dict[str, Any]) -> dict[str,
     "validation_enabled",
     "max_content_bytes",
     "max_name_length",
+    "promotion_recall_threshold",
   ):
     value = get(field)
     if value is not None:
