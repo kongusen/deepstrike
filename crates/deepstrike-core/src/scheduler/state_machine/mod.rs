@@ -1092,6 +1092,7 @@ impl LoopStateMachine {
                     // correlated result commits.
                     let (output, spooled) = match crate::mm::plan_spool(
                         &raw_output,
+                        r.call_id.as_str(),
                         self.ctx.config.spool_threshold_bytes,
                         self.ctx.config.spool_preview_bytes,
                     ) {
@@ -1269,6 +1270,31 @@ impl LoopStateMachine {
             LoopEvent::Complete => self.terminate(TerminationReason::Completed, None),
 
             LoopEvent::Timeout => {
+                // A timed-out tool batch commits per-call timeout error results — the trained
+                // convention ("command timed out" as a visible error) — so the model sees which
+                // call stalled and can verify or change approach. Only a Reason-phase timeout
+                // (nothing model-visible pending) keeps the rollback + note path.
+                if let LoopPhase::Act { tool_calls } = &self.phase {
+                    if !tool_calls.is_empty() {
+                        let results: Vec<ToolResult> = tool_calls
+                            .iter()
+                            .map(|call| ToolResult {
+                                call_id: call.id.clone(),
+                                output: Content::Text(format!(
+                                    "Tool call `{}` timed out before completing. The operation \
+                                     may or may not have taken effect — verify before assuming, \
+                                     then retry with a smaller step or a faster approach.",
+                                    call.name
+                                )),
+                                is_error: true,
+                                is_fatal: false,
+                                error_kind: Some(ToolErrorKind::Timeout),
+                                token_count: None,
+                            })
+                            .collect();
+                        return self.feed(LoopEvent::ToolResults { results });
+                    }
+                }
                 let reason = RollbackReason::Timeout;
                 let note = Message::user(super::rollback::build_rollback_note(
                     &reason,
@@ -1324,20 +1350,18 @@ impl LoopStateMachine {
             "stop" => PaceAction::Stop,
             other => {
                 // Malformed proposal: governance-style directive note + fresh reason turn.
-                let rb = RollbackReason::GovernanceDenied {
-                    tool_name: "pace".to_string(),
-                    reason: format!("invalid pace next={other:?} (expected continue|sleep|stop)"),
-                };
-                let note = Message::user(super::rollback::build_rollback_note(
-                    &rb,
+                let rejection_reason =
+                    format!("invalid pace next={other:?} (expected continue|sleep|stop)");
+                let note = super::rollback::build_control_rejection_note(
+                    "pace",
+                    &rejection_reason,
                     self.ctx.config.verbose_control_notes,
-                ));
+                );
                 self.push_synthetic_tool_result(
                     &call.id,
                     "pace rejected: next must be continue|sleep|stop",
                 );
-                self.ctx
-                    .push_signal(note.content.as_text().unwrap_or_default().to_string());
+                self.ctx.push_signal(note);
                 self.phase = LoopPhase::Reason;
                 return self.emit_call_llm();
             }
@@ -1650,31 +1674,16 @@ impl LoopStateMachine {
         });
     }
 
+    /// Which tool results still roll the turn back. Models are trained on "tool failed → an
+    /// error tool result stays in history and the model adapts" — the convention every major
+    /// harness produces — so fatal / timeout / provider-failure / denied results all COMMIT as
+    /// visible errors (same evidence class as the governance-denial A/B: erasing the attempt
+    /// makes the model re-try what it cannot see). The one survivor is `UserInterrupt`: the
+    /// user's escape is a host-owned control event, not model feedback.
     fn rollback_reason_for_tool_result(&self, result: &ToolResult) -> Option<RollbackReason> {
-        let tool_name = self.tool_name_for_call(&result.call_id);
-        let output = super::rollback::tool_result_output_text(result);
-
-        if result.is_fatal {
-            return Some(RollbackReason::FatalToolError {
-                tool_name,
-                error: output,
-            });
-        }
-
         match result.error_kind {
-            Some(ToolErrorKind::Fatal) => Some(RollbackReason::FatalToolError {
-                tool_name,
-                error: output,
-            }),
-            // A governance denial is a rejected syscall, not a failed transaction: nothing ran,
-            // so the visible error result remains committed and the model can adapt in place.
-            Some(ToolErrorKind::GovernanceDenied) => None,
-            Some(ToolErrorKind::ProviderFailure) => {
-                Some(RollbackReason::ProviderFailure { error: output })
-            }
-            Some(ToolErrorKind::Timeout) => Some(RollbackReason::Timeout),
             Some(ToolErrorKind::UserInterrupt) => Some(RollbackReason::UserInterrupt),
-            Some(ToolErrorKind::Recoverable) | None => None,
+            _ => None,
         }
     }
 

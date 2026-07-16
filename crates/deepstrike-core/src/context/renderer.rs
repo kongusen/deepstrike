@@ -256,7 +256,10 @@ fn normalize_turn_prefix(turns: &mut Vec<Message>) {
 /// preview, leaving a marker. Non-destructive — the full output stays in `partitions.history`;
 /// only the rendered copy shrinks. Un-collapse is boundary-only (P0-C): handles re-evaluate
 /// from Resident at the next compaction/renewal, never mid-generation (cache-safe monotonic).
-fn collapse_preview(output: &str) -> String {
+/// Trained-convention truncation marker: says what was cut and how to get it back (the
+/// `read_result` tool + this result's `call_id`), instead of kernel-internal vocabulary
+/// ("projected out of view") the model has never seen in training.
+fn collapse_preview(output: &str, call_id: &str) -> String {
     const PREVIEW_BYTES: usize = 160;
     let mut end = PREVIEW_BYTES.min(output.len());
     while end > 0 && !output.is_char_boundary(end) {
@@ -264,7 +267,7 @@ fn collapse_preview(output: &str) -> String {
     }
     let dropped = output.len().saturating_sub(end);
     format!(
-        "{}…\n[collapsed: {dropped} chars projected out of view; full result retained in history]",
+        "{}…\n[Output truncated: {dropped} bytes omitted. Call the read_result tool with call_id \"{call_id}\" to re-read the full result.]",
         &output[..end]
     )
 }
@@ -322,7 +325,7 @@ fn project_message(msg: &Message, handles: &HandleTable) -> Option<Message> {
                 changed = true;
                 ContentPart::ToolResult {
                     call_id: call_id.clone(),
-                    output: collapse_preview(output),
+                    output: collapse_preview(output, call_id.as_str()),
                     is_error: *is_error,
                 }
             }
@@ -656,8 +659,10 @@ mod tests {
                 _ => None,
             })
             .expect("tool result rendered");
-        // Rendered copy is a preview; original full output is retained in history.
-        assert!(rendered.contains("[collapsed:"));
+        // Rendered copy is a preview with the trained truncation phrasing + retrieval instruction.
+        assert!(rendered.contains("[Output truncated:"));
+        assert!(rendered.contains("read_result"));
+        assert!(rendered.contains("\"c1\""));
         assert!(rendered.len() < long.len());
         let stored = match &c.history.messages[0].content {
             Content::Parts(parts) => match &parts[0] {
@@ -700,7 +705,7 @@ mod tests {
             })
             .expect("tool result rendered");
         assert_eq!(rendered, body);
-        assert!(!rendered.contains("[collapsed:"));
+        assert!(!rendered.contains("[Output truncated:"));
     }
 
     // ── P1-F: state-turn recency footer ───────────────────────────────────

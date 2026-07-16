@@ -798,9 +798,9 @@ impl ContextManager {
         }
         Some(ToolSchema {
             name: CompactString::new(READ_RESULT_TOOL_NAME),
-            description: "Re-read a tool result that was evicted from context (you see a \
-                          placeholder like '[…tool result spooled…]' or a collapsed entry). \
-                          Pass the tool call's call_id; use offset/max_bytes to page through \
+            description: "Re-read the full content of a tool result that was truncated to save \
+                          context (marked '[Output truncated: … call the read_result tool …]'). \
+                          Pass that marker's call_id; use offset/max_bytes to page through \
                           large content."
                 .to_string(),
             parameters: serde_json::json!({

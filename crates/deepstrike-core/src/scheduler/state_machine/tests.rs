@@ -1567,6 +1567,25 @@ fn rollback_note_is_verbose_when_opted_in() {
     );
 }
 
+#[test]
+fn control_rejection_note_never_claims_a_transaction_rollback() {
+    let concise = crate::scheduler::rollback::build_control_rejection_note(
+        "start_workflow",
+        "quota exhausted",
+        false,
+    );
+    assert!(concise.contains("start_workflow"));
+    assert!(!concise.to_ascii_lowercase().contains("rollback"));
+
+    let verbose = crate::scheduler::rollback::build_control_rejection_note(
+        "start_workflow",
+        "quota exhausted",
+        true,
+    );
+    assert!(verbose.starts_with("[SYSTEM] Control request rejected:"));
+    assert!(!verbose.contains("Transaction rollback"));
+}
+
 // ─── Governance denial commits as a visible error result ─────────────────────────────
 
 fn sm_with_deny_rule() -> LoopStateMachine {
@@ -2737,7 +2756,13 @@ fn submit_workflow_nodes_denied_past_max_workflow_nodes_quota() {
         )],
         None,
     );
-    assert_eq!(count_spawned(&sm.take_observations()), 0);
+    let observations = sm.take_observations();
+    assert_eq!(count_spawned(&observations), 0);
+    assert!(observations.iter().any(|o| matches!(
+        o,
+        KernelObservation::ControlRequestRejected { operation, reason, .. }
+            if operation == "submit_workflow_nodes" && reason.contains("would grow workflow")
+    )));
     assert!(
         sm.agent_process("wf-node1").is_none(),
         "denied submission does not spawn"
@@ -2899,8 +2924,14 @@ fn submit_workflow_denied_past_max_workflow_nodes_quota() {
         WorkflowNode::new(RuntimeTask::new("c"), AgentRole::Implement),
     ]);
     let action = submit_workflow_started(&mut sm, spec, "sess", None);
-    assert!(matches!(action, LoopAction::AwaitingResume { .. }));
-    assert_eq!(count_spawned(&sm.take_observations()), 0);
+    assert!(matches!(action, LoopAction::CallLLM { .. }));
+    let observations = sm.take_observations();
+    assert_eq!(count_spawned(&observations), 0);
+    assert!(observations.iter().any(|o| matches!(
+        o,
+        KernelObservation::ControlRequestRejected { operation, reason, .. }
+            if operation == "start_workflow" && reason.contains("would grow workflow")
+    )));
     assert!(
         !sm.workflow_active(),
         "denied authoring installs no workflow"
@@ -3583,6 +3614,78 @@ fn single_spawn_path_leaves_workflow_inactive() {
     assert!(!sm.workflow_active());
 }
 
+// ── Trained-convention error surfaces: failures commit as visible error results ───────────
+
+#[test]
+fn fatal_tool_error_commits_as_visible_error_result() {
+    // Models are trained on "tool failed → error tool result stays in history"; erasing the
+    // attempt (rollback) is out-of-distribution and the model cannot adapt to what it never saw.
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("write the file"));
+    let a = sm.feed(LoopEvent::LLMResponse {
+        message: fuse_tool_turn("write_file", serde_json::json!({"path": "a.txt"})),
+    });
+    assert!(matches!(a, LoopAction::ExecuteTools { .. }));
+
+    let action = sm.feed(LoopEvent::ToolResults {
+        results: vec![ToolResult {
+            call_id: compact_str::CompactString::new("c1"),
+            output: Content::Text("disk corrupt".into()),
+            is_error: true,
+            is_fatal: true,
+            error_kind: Some(ToolErrorKind::Fatal),
+            token_count: None,
+        }],
+    });
+    assert!(matches!(action, LoopAction::CallLLM { .. }));
+    assert!(
+        !sm.observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
+        "fatal tool errors commit as visible error results, not rollbacks"
+    );
+    let error_visible = sm.ctx.partitions.history.messages.iter().any(|m| {
+        matches!(&m.content, Content::Parts(parts) if parts.iter().any(|p| matches!(
+            p,
+            ContentPart::ToolResult { output, is_error: true, .. } if output.contains("disk corrupt")
+        )))
+    });
+    assert!(error_visible, "the failed attempt must stay in history");
+    assert_eq!(sm.turn, 1, "the errored turn still completes");
+}
+
+#[test]
+fn tool_batch_timeout_commits_timeout_error_results() {
+    // Trained convention: a timed-out call surfaces as an error tool result ("timed out"), the
+    // same shape every major harness produces — not an erased turn plus a volatile note.
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("run the job"));
+    let a = sm.feed(LoopEvent::LLMResponse {
+        message: fuse_tool_turn("run_job", serde_json::json!({"id": 7})),
+    });
+    assert!(matches!(a, LoopAction::ExecuteTools { .. }));
+
+    let action = sm.feed(LoopEvent::Timeout);
+    assert!(matches!(action, LoopAction::CallLLM { .. }));
+    assert!(
+        !sm.observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
+        "a tool-batch timeout commits error results, not a rollback"
+    );
+    let timeout_visible = sm.ctx.partitions.history.messages.iter().any(|m| {
+        matches!(&m.content, Content::Parts(parts) if parts.iter().any(|p| matches!(
+            p,
+            ContentPart::ToolResult { call_id, output, is_error: true }
+                if call_id == "c1" && output.contains("timed out")
+        )))
+    });
+    assert!(
+        timeout_visible,
+        "every pending call gets a visible timeout error result"
+    );
+}
+
 // ── Budget verdict at the provider-call funnel ─────────────────────────────────────────────
 
 #[test]
@@ -3716,26 +3819,35 @@ fn repeat_fuse_denies_at_threshold_and_feeds_directive_back() {
         );
     }
 
-    // Turn 3: streak hits deny_after ⇒ turn rolled back, directive note in signals.
+    // Turn 3: streak hits deny_after ⇒ the repeated call commits with a visible not-executed
+    // error result carrying the directive (trained convention), and the loop re-calls.
     let a = sm.feed(LoopEvent::LLMResponse {
         message: fuse_tool_turn("set_title", serde_json::json!({"title": "same"})),
     });
     assert!(
         matches!(a, LoopAction::CallLLM { .. }),
-        "deny re-calls with the note, got {a:?}"
+        "deny re-calls with the visible error result, got {a:?}"
     );
     assert!(sm.observations.iter().any(|o| matches!(
             o,
             KernelObservation::RepeatFuseTripped { action, count, .. } if action == "deny" && *count == 3
         )));
     assert!(
-        sm.ctx
-            .partitions
-            .signals
+        !sm.observations
             .iter()
-            .any(|s| s.contains("repeat fuse")),
-        "directive note must reach the model: {:?}",
-        sm.ctx.partitions.signals
+            .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
+        "deny rung commits the attempt — no rollback"
+    );
+    let directive_visible = sm.ctx.partitions.history.messages.iter().any(|m| {
+        matches!(&m.content, Content::Parts(parts) if parts.iter().any(|p| matches!(
+            p,
+            ContentPart::ToolResult { output, is_error: true, .. }
+                if output.contains("do something DIFFERENT")
+        )))
+    });
+    assert!(
+        directive_visible,
+        "the directive must reach the model as an error tool result"
     );
     assert!(!sm.is_terminal(), "deny rung must not terminate the run");
 }
@@ -4429,15 +4541,17 @@ fn entropy_watch_notify_model_routes_a_heartbeat_signal() {
 #[test]
 fn entropy_rollbacks_accrue_into_the_next_completed_turn() {
     let mut sm = sm();
-    sm.start(RuntimeTask::new("fatal then recover"));
-    // Turn A: fatal tool result ⇒ rollback, no boundary sample.
+    sm.start(RuntimeTask::new("interrupt then recover"));
+    // Turn A: user-interrupt tool result ⇒ rollback (the one surviving tool-result rollback —
+    // fatal/timeout errors now commit as visible error results), no boundary sample.
     let a = sm.feed(LoopEvent::LLMResponse {
         message: fuse_tool_turn("step", serde_json::json!({"n": 1})),
     });
     assert!(matches!(a, LoopAction::ExecuteTools { .. }));
     sm.feed(LoopEvent::ToolResults {
         results: vec![ToolResult {
-            is_fatal: true,
+            error_kind: Some(ToolErrorKind::UserInterrupt),
+            is_error: true,
             ..fuse_tool_result()
         }],
     });

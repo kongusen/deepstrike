@@ -90,10 +90,10 @@ fn none_error_kind_also_does_not_rollback() {
     );
 }
 
-// ─── G5 gate: fatal error triggers rollback ─────────────────────────────────
+// ─── G5 gate: fatal errors commit as visible error results (trained convention) ─────────
 
 #[test]
-fn fatal_error_kind_rolls_back_to_checkpoint() {
+fn fatal_error_kind_commits_as_visible_error_result() {
     let mut sm = default_sm();
     sm.start(RuntimeTask::new("test"));
     sm.feed(make_llm_response_with_tool_call("c1", "write_file"));
@@ -111,23 +111,19 @@ fn fatal_error_kind_rolls_back_to_checkpoint() {
         }],
     });
 
-    // History must have been truncated back to the checkpoint length
-    assert!(sm.ctx.partitions.history.messages.len() <= history_at_checkpoint);
+    // The failed attempt stays in history (models adapt to errors they can see) and the turn
+    // completes — no rollback.
+    assert!(sm.ctx.partitions.history.messages.len() > history_at_checkpoint);
+    assert_eq!(sm.turn, 1);
     let obs = sm.take_observations();
     let rolled = obs
         .iter()
         .find(|o| matches!(o, KernelObservation::Rollbacked { .. }));
-    assert!(rolled.is_some(), "expected Rollbacked observation");
-    if let Some(KernelObservation::Rollbacked { reason, .. }) = rolled {
-        assert!(matches!(
-            reason,
-            Some(RollbackReason::FatalToolError { .. })
-        ));
-    }
+    assert!(rolled.is_none(), "fatal errors commit, they do not roll back");
 }
 
 #[test]
-fn is_fatal_flag_rolls_back() {
+fn is_fatal_flag_commits_without_rollback() {
     let mut sm = default_sm();
     sm.start(RuntimeTask::new("test"));
     sm.feed(make_llm_response_with_tool_call("c1", "deploy"));
@@ -143,9 +139,12 @@ fn is_fatal_flag_rolls_back() {
         }],
     });
 
+    // The is_fatal severity flag no longer erases the attempt: the error result commits and
+    // the model sees "deploy crashed" in history (the shape it is trained to adapt to).
+    assert_eq!(sm.turn, 1);
     let obs = sm.take_observations();
     assert!(
-        obs.iter()
+        !obs.iter()
             .any(|o| matches!(o, KernelObservation::Rollbacked { .. }))
     );
 }

@@ -7,10 +7,9 @@ use super::{
     ApprovalRequest, GateToolOutcome, KernelObservation, LoopAction, LoopEvent, LoopPhase,
     LoopStateMachine, SuspendState,
 };
-use crate::runtime::session::RollbackReason;
 use crate::syscall::{Disposition, Syscall};
 use crate::types::agent::AgentIdentity;
-use crate::types::message::{Content, Message, ToolCall, ToolErrorKind, ToolResult};
+use crate::types::message::{Content, ToolCall, ToolErrorKind, ToolResult};
 
 impl LoopStateMachine {
     /// P1 (M2): the single syscall trap. Every effectful request the SDK proposes is adjudicated
@@ -272,10 +271,6 @@ impl LoopStateMachine {
 
         let fuse = self.repeat_fuse;
         let count = self.repeat_count;
-        let tool_name = calls
-            .first()
-            .map(|c| c.name.to_string())
-            .unwrap_or_default();
 
         if fuse.terminate_after > 0 && count >= fuse.terminate_after {
             self.observations
@@ -285,20 +280,16 @@ impl LoopStateMachine {
                     count,
                     action: "terminate".to_string(),
                 });
-            // Roll the dangling tool-call turn back (an assistant tool_use with no results is
-            // wire-invalid on several vendors), then force one final no-tools report turn.
-            let rb = RollbackReason::GovernanceDenied {
-                tool_name,
-                reason: format!("repeat fuse: `{sig}` re-issued {count}x consecutively"),
-            };
-            self.rollback(rb);
+            // Close every pair with a visible not-executed error result (trained convention;
+            // also keeps the committed assistant tool_use wire-valid), then force one final
+            // no-tools report turn.
             self.ctx.push_signal(format!(
                 "[NO-PROGRESS] `{sig}` was re-issued {count}x consecutively with no new outcome. \
                  The run is terminating. Report what was accomplished and what remains, in plain text."
             ));
             self.pending_termination = Some(crate::types::result::TerminationReason::NoProgress);
-            self.phase = LoopPhase::Reason;
-            return Some(self.emit_call_llm());
+            let results = fuse_denied_results(calls, count);
+            return Some(self.commit_synthetic_results(results));
         }
 
         if fuse.deny_after > 0 && count >= fuse.deny_after {
@@ -309,26 +300,24 @@ impl LoopStateMachine {
                     count,
                     action: "deny".to_string(),
                 });
-            let rb = RollbackReason::GovernanceDenied {
-                tool_name,
-                reason: format!(
-                    "repeat fuse: this exact call (same tool, same arguments) has been issued \
-                     {count}x consecutively with no new outcome — do something DIFFERENT: change \
-                     the arguments, use another tool, or report the task state as it stands"
-                ),
-            };
-            let note = Message::user(super::super::rollback::build_rollback_note(
-                &rb,
-                self.ctx.config.verbose_control_notes,
-            ));
-            self.rollback(rb);
-            self.ctx
-                .push_signal(note.content.as_text().unwrap_or_default().to_string());
-            self.phase = LoopPhase::Reason;
-            return Some(self.emit_call_llm());
+            // The directive rides IN the error result — the model sees its own repeated attempt
+            // and the refusal in one place, exactly the shape it is trained to adapt to.
+            let results = fuse_denied_results(calls, count);
+            return Some(self.commit_synthetic_results(results));
         }
 
         None
+    }
+
+    /// Commit kernel-synthesized tool results through the ordinary `ToolResults` funnel,
+    /// preserving observations already collected this step (the recursive feed clears them).
+    pub(super) fn commit_synthetic_results(&mut self, results: Vec<ToolResult>) -> LoopAction {
+        self.phase = LoopPhase::Reason;
+        let kept = std::mem::take(&mut self.observations);
+        let action = self.feed(LoopEvent::ToolResults { results });
+        let inner = std::mem::replace(&mut self.observations, kept);
+        self.observations.extend(inner);
+        action
     }
 
     /// Evaluate proposed tool calls through the syscall trap (governance gate).
@@ -385,14 +374,7 @@ impl LoopStateMachine {
         };
         if remaining.is_empty() {
             let results = std::mem::take(&mut self.pending_denied_results);
-            self.phase = LoopPhase::Reason;
-            // The recursive feed clears `observations` at its head; keep what this step already
-            // collected (expired signals / lease sweeps) and prepend it to the tool turn's own.
-            let kept = std::mem::take(&mut self.observations);
-            let action = self.feed(LoopEvent::ToolResults { results });
-            let inner = std::mem::replace(&mut self.observations, kept);
-            self.observations.extend(inner);
-            return GateToolOutcome::Blocked(action);
+            return GateToolOutcome::Blocked(self.commit_synthetic_results(results));
         }
 
         if gated.is_empty() {
@@ -551,4 +533,25 @@ impl LoopStateMachine {
             .collect();
         LoopAction::RequestApproval { requests }
     }
+}
+
+/// One not-executed error result per call in a fuse-tripped batch. The directive lives in the
+/// result text (the trained "blocked call → error result" shape); every pair closes so the
+/// committed assistant tool_use stays wire-valid.
+fn fuse_denied_results(calls: &[ToolCall], count: u32) -> Vec<ToolResult> {
+    calls
+        .iter()
+        .map(|call| ToolResult {
+            call_id: call.id.clone(),
+            output: Content::Text(format!(
+                "not executed: this exact call (same tool, same arguments) has been issued \
+                 {count}x consecutively with no new outcome — do something DIFFERENT: change \
+                 the arguments, use another tool, or report the task state as it stands"
+            )),
+            is_error: true,
+            is_fatal: false,
+            error_kind: None,
+            token_count: None,
+        })
+        .collect()
 }

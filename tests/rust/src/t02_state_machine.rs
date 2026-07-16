@@ -210,7 +210,7 @@ fn recoverable_tool_error_does_not_rollback() {
 }
 
 #[test]
-fn fatal_tool_error_triggers_rollback_with_reason() {
+fn fatal_tool_error_commits_with_visible_reason() {
     let mut sm = default_sm();
     sm.start(RuntimeTask::new("test"));
 
@@ -240,19 +240,23 @@ fn fatal_tool_error_triggers_rollback_with_reason() {
     });
 
     assert!(matches!(action, LoopAction::CallLLM { .. }));
-    assert_eq!(sm.ctx.partitions.history.messages.len(), 1);
-
-    let obs = sm.take_observations();
-    assert!(obs.iter().any(|o| {
-        matches!(
-            o,
-            KernelObservation::Rollbacked {
-                checkpoint_history_len: 1,
-                reason: Some(RollbackReason::FatalToolError { tool_name, error }),
-                ..
-            } if tool_name == "write_file" && error == "disk corrupt"
-        )
+    // Trained convention: the failed attempt and its error stay visible in history
+    // (assistant tool_use + error tool result), and the turn completes — no rollback.
+    assert_eq!(sm.ctx.partitions.history.messages.len(), 3);
+    assert_eq!(sm.turn, 1);
+    assert!(sm.ctx.partitions.history.messages.iter().any(|m| {
+        matches!(&m.content, Content::Parts(parts) if parts.iter().any(|p| matches!(
+            p,
+            ContentPart::ToolResult { output, is_error: true, .. }
+                if output.contains("disk corrupt")
+        )))
     }));
+    let obs = sm.take_observations();
+    assert!(
+        !obs.iter()
+            .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
+        "fatal errors commit as visible error results"
+    );
 }
 
 // ─── Criteria injection ─────────────────────────────────────────────────────

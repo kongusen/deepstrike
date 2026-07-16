@@ -315,7 +315,11 @@ pub struct SpoolDecision {
 /// [`SpoolDecision`] whose `preview` is the first `preview_bytes` (truncated at a char boundary)
 /// plus a marker. `None` means keep the output inline. The kernel keeps `preview` in context and
 /// emits a `SpoolLargeResult` effect; success is observed only after the host result. No I/O here.
-pub fn plan_spool(output: &str, threshold_bytes: u32, preview_bytes: u32) -> Option<SpoolDecision> {
+///
+/// The marker uses the truncation phrasing models are trained on ("Output truncated: showing X of
+/// Y…") and carries the retrieval instruction inline — `call_id` + the `read_result` tool — so the
+/// model never has to connect a bare placeholder to a separately-described tool.
+pub fn plan_spool(output: &str, call_id: &str, threshold_bytes: u32, preview_bytes: u32) -> Option<SpoolDecision> {
     let size = output.len();
     if threshold_bytes == 0 || size <= threshold_bytes as usize {
         return None;
@@ -325,10 +329,11 @@ pub fn plan_spool(output: &str, threshold_bytes: u32, preview_bytes: u32) -> Opt
         end -= 1;
     }
     let preview = format!(
-        "{}\n[…tool result spooled: {} bytes total, {} byte preview shown; full content persisted to disk by the SDK…]",
+        "{}\n[Output truncated: showing first {} of {} bytes. Call the read_result tool with call_id \"{}\" (use offset/max_bytes to page) to read the rest.]",
         &output[..end],
+        end,
         size,
-        end
+        call_id
     );
     Some(SpoolDecision {
         original_size: size as u32,
@@ -512,18 +517,22 @@ mod tests {
 
     #[test]
     fn plan_spool_keeps_small_output_inline() {
-        assert_eq!(plan_spool("small", 50, 16), None);
+        assert_eq!(plan_spool("small", "c1", 50, 16), None);
         // threshold 0 disables spooling.
-        assert_eq!(plan_spool(&"x".repeat(1000), 0, 16), None);
+        assert_eq!(plan_spool(&"x".repeat(1000), "c1", 0, 16), None);
     }
 
     #[test]
-    fn plan_spool_previews_large_output() {
+    fn plan_spool_previews_large_output_with_retrieval_instruction() {
         let output = "y".repeat(1000);
-        let d = plan_spool(&output, 100, 32).expect("should spool");
+        let d = plan_spool(&output, "call-42", 100, 32).expect("should spool");
         assert_eq!(d.original_size, 1000);
         assert!(d.preview.starts_with(&"y".repeat(32)));
-        assert!(d.preview.contains("1000 bytes total"));
+        // Trained truncation phrasing + the inline retrieval instruction: what was cut,
+        // and exactly how to read the rest.
+        assert!(d.preview.contains("Output truncated: showing first 32 of 1000 bytes"));
+        assert!(d.preview.contains("read_result"));
+        assert!(d.preview.contains("call-42"));
         assert!(d.preview.len() < output.len());
     }
 
@@ -531,8 +540,8 @@ mod tests {
     fn plan_spool_truncates_on_char_boundary() {
         // multi-byte chars: preview cut must not split a char.
         let output = "🚀".repeat(100); // 4 bytes each = 400 bytes
-        let d = plan_spool(&output, 50, 10).expect("should spool");
+        let d = plan_spool(&output, "c1", 50, 10).expect("should spool");
         // No panic / valid UTF-8 preview is the assertion.
-        assert!(d.preview.contains("400 bytes total"));
+        assert!(d.preview.contains("of 400 bytes"));
     }
 }
