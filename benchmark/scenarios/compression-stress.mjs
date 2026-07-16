@@ -289,5 +289,18 @@ export const compressionStressScenario = {
         },
       }),
     },
+    "budget-tight-deep": {
+      description:
+        "maxTokens = 2048 + targetAfterCompress 0.40 — compact deeper, less often (batch-then-rewrite " +
+        "pacing from the prefix-cache spec §3.D); expects fewer compressions and a higher cacheHitRate " +
+        "at equal completion",
+      setup: () => ({
+        runtimeOverlay: {
+          maxTokens: 2048,
+          contextPolicy: { targetAfterCompress: 0.4 },
+          extensions: { degradeMissingReasoningReplay: true },
+        },
+      }),
+    },
   },
 }

@@ -24,7 +24,13 @@ export async function loadSdk() {
   if (!existsSync(p)) {
     throw new Error(`Node SDK dist not found at ${p}. Run: npm run build --prefix node`)
   }
-  return import(pathToFileURL(p).href)
+  const root = await import(pathToFileURL(p).href)
+  // judge()/AttemptLoop live on the @deepstrike/sdk/harness subpath since the H2 harness
+  // unification; merge them in so runner code can keep destructuring one namespace.
+  const harnessPath = path.join(nodeRoot, "dist", "harness", "public.js")
+  if (!existsSync(harnessPath)) return root
+  const harness = await import(pathToFileURL(harnessPath).href)
+  return { ...root, ...harness }
 }
 
 /**
@@ -48,6 +54,18 @@ const PROVIDER_REGISTRY = {
     apiKey: process.env.DEEPSEEK_API_KEY,
     model: process.env.DEEPSEEK_MODEL || "deepseek-chat",
     endpoint: "deepseek.openai",
+  }),
+  glm: () => ({
+    provider: "glm",
+    apiKey: process.env.GLM_API_KEY,
+    model: process.env.GLM_MODEL || "glm-5.2",
+    endpoint: "glm.openai",
+  }),
+  kimi: () => ({
+    provider: "kimi",
+    apiKey: process.env.KIMI_API_KEY,
+    model: process.env.KIMI_MODEL || "kimi-k2.6",
+    endpoint: "kimi.openai",
   }),
   anthropic: () => ({
     provider: "anthropic",
