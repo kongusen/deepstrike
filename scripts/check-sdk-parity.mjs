@@ -99,7 +99,8 @@ const CHECKS = [
   {
     id: "core-resource-quota",
     lang: "core",
-    path: "crates/deepstrike-core/src/runtime/kernel.rs",
+    // kernel.rs split into kernel/{runtime,protocol}.rs; the event arm + setter live in runtime.rs.
+    path: "crates/deepstrike-core/src/runtime/kernel/runtime.rs",
     patterns: ["SetResourceQuota", "set_resource_quota"],
   },
   {
@@ -133,7 +134,8 @@ const CHECKS = [
     // WriteMemory / QueryMemory traps read it back.
     id: "core-memory-policy",
     lang: "core",
-    path: "crates/deepstrike-core/src/runtime/kernel.rs",
+    // kernel.rs split into kernel/{runtime,protocol}.rs; the event arm + setter live in runtime.rs.
+    path: "crates/deepstrike-core/src/runtime/kernel/runtime.rs",
     patterns: ["SetMemoryPolicy", "set_memory_policy", "memory_policy()"],
   },
   {
@@ -202,7 +204,7 @@ const CHECKS = [
     id: "core-workflow-resume",
     lang: "core",
     path: "crates/deepstrike-core/src/orchestration/workflow/run.rs",
-    patterns: ["ResumedCompletion", "resumed_result", "parse_loop_iteration_id"],
+    patterns: ["ResumedNodeOutcome", "resumed_placeholder_result", "parse_loop_iteration_id"],
   },
   {
     id: "core-workflow-submit-gate",
@@ -214,7 +216,7 @@ const CHECKS = [
     id: "node-workflow-driver",
     lang: "node",
     path: "node/src/runtime/runner.ts",
-    patterns: ["resumed_results", "recoverSubmittedWorkflowNodes", "dependencyOutputsNote", "buildWorkflowNodeCompletedEvent"],
+    patterns: ["resumed_outcomes", "recoverSubmittedWorkflowNodes", "dependencyOutputsNote", "buildWorkflowNodeCompletedEvent"],
   },
   {
     id: "node-workflow-loop-pace",
@@ -232,7 +234,7 @@ const CHECKS = [
     id: "python-workflow-driver",
     lang: "python",
     path: "python/deepstrike/runtime/runner.py",
-    patterns: ["resumed_results", "recover_submitted_workflow_nodes", "dependency_outputs_note"],
+    patterns: ["resumed_outcomes", "recover_submitted_workflow_nodes", "dependency_outputs_note"],
   },
   {
     id: "python-loop-driver",
@@ -244,7 +246,7 @@ const CHECKS = [
     id: "wasm-workflow-driver",
     lang: "wasm",
     path: "wasm/src/runtime/runner.ts",
-    patterns: ["resumed_results", "recoverSubmittedWorkflowNodes", "dependencyOutputsNote"],
+    patterns: ["resumed_outcomes", "recoverSubmittedWorkflowNodes", "dependencyOutputsNote"],
   },
   // wasm LoopDriver: EXPLICIT node+python-first decision (edge cron loops re-arm via wake_at_ms
   // from the host today); revisit when a wasm host needs in-process pacing.
