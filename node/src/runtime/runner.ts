@@ -439,6 +439,15 @@ export interface RuntimeOptions {
   enableDiagnosticsDashboard?: boolean
 }
 
+/** Kernel observation kinds owned by the memory lifecycle consumer (journal + store mirror). */
+function isMemoryLifecycleObservation(obs: KernelObservation): boolean {
+  return obs.kind === "memory_written"
+    || obs.kind === "memory_queried"
+    || obs.kind === "memory_validation_failed"
+    || obs.kind === "memory_recalled"
+    || obs.kind === "promotion_suggested"
+}
+
 function pendingCallIds(action: KernelRunnerAction): string[] {
   switch (action.kind) {
     case "call_provider":
@@ -573,6 +582,76 @@ export class RuntimeRunner {
       .slice(0, requestedK)
   }
 
+  /**
+   * T5: run one memory query through the kernel's `query_memory → memory_query_result`
+   * effect lifecycle on the given runtime. The kernel injects each routed hit into history
+   * itself and derives the recall lifecycle (`memory_recalled`, edge-triggered
+   * `promotion_suggested`) from the routed hits — the store stays a pure query.
+   *
+   * `seenRecordIds` is one dedupe horizon: a record hit by several queries of the same
+   * prefetch is routed (recalled, injected) once. The kernel derives counts statelessly from
+   * each hit's payload, so host-side pre-filtering is the only place duplicates can be stopped.
+   *
+   * The recall lifecycle is consumed immediately rather than via the per-turn drain: the store
+   * must be up to date before any same-turn re-query, and a renewal prefetch fires inside the
+   * drain loop where queued observations would not be consumed until the next boundary.
+   * Non-memory observations are forwarded to `leftovers` (the run's pending queue) when given,
+   * and discarded for detached syscall runtimes (their kernel is throwaway).
+   */
+  private async queryMemoryThroughKernel(
+    runtime: KernelRuntimeInstance,
+    query: MemoryQuery,
+    agentId: string,
+    sessionId: string | null | undefined,
+    seenRecordIds?: Set<string>,
+    leftovers?: KernelObservation[],
+  ): Promise<{ hits: MemoryRecall[]; action: KernelRunnerAction | null }> {
+    const observations: KernelObservation[] = []
+    const action = await this.commitKernelAction(
+      runtime,
+      observations,
+      { kind: "query_memory", query },
+      sessionId,
+    )
+    if (action.kind !== "query_memory") {
+      throw new Error(`query_memory returned unexpected kernel effect: ${action.kind}`)
+    }
+
+    let hits: MemoryRecall[] = []
+    let ioError: unknown
+    try {
+      hits = await this.retrieveMemoryFromStore(query, action.requestedK, agentId)
+      if (seenRecordIds) {
+        hits = hits.filter(hit => {
+          const id = hit.record.record_id
+          if (seenRecordIds.has(id)) return false
+          seenRecordIds.add(id)
+          return true
+        })
+      }
+    } catch (cause) {
+      ioError = cause
+    }
+    // Close the kernel effect even when the store failed — never leave a dangling query.
+    // The result commit resumes the kernel's reasoning path (`resume_after_preload`), which
+    // re-emits the next loop action with the routed hits now in history — callers on a live
+    // run kernel must adopt it (a query is a preload, not a detached side-channel).
+    const resumed = await this.commitKernelMaybeAction(runtime, observations, {
+      kind: "memory_query_result",
+      effect_id: action.effectId,
+      hits,
+      ...(ioError ? { error: formatToolError(ioError) } : {}),
+    }, sessionId)
+    await this.consumeMemoryLifecycleObservations(sessionId, observations)
+    if (leftovers) {
+      for (const obs of observations) {
+        if (!isMemoryLifecycleObservation(obs)) leftovers.push(obs)
+      }
+    }
+    if (ioError) throw ioError
+    return { hits, action: resumed }
+  }
+
   async writeMemory(
     memory: MemoryRecord,
     opts: { sessionId?: string; agentId?: string } = {},
@@ -591,7 +670,7 @@ export class RuntimeRunner {
       durableSessionId,
     )
     if (!action) {
-      await this.appendMemorySyscallObservations(sessionId, observations)
+      await this.consumeMemoryLifecycleObservations(sessionId, observations)
       return
     }
     if (action.kind !== "persist_memory") {
@@ -609,7 +688,7 @@ export class RuntimeRunner {
       effect_id: action.effectId,
       ...(ioError ? { error: formatToolError(ioError) } : {}),
     }, durableSessionId)
-    await this.appendMemorySyscallObservations(durableSessionId, observations)
+    await this.consumeMemoryLifecycleObservations(durableSessionId, observations)
     if (ioError) throw ioError
   }
 
@@ -622,33 +701,11 @@ export class RuntimeRunner {
     if (!this.opts.dreamStore || !agentId) return []
     const durableSessionId = this.durableSessionId(sessionId)
 
-    const observations: KernelObservation[] = []
+    // Detached syscall runtime: the kernel's history injection and resumed action are inert
+    // (the kernel is throwaway), but the recall lifecycle is identical to an in-run query
+    // (T5 parity).
     const runtime = this.createSyscallRuntime()
-    const action = await this.commitKernelAction(
-      runtime,
-      observations,
-      { kind: "query_memory", query },
-      durableSessionId,
-    )
-    if (action.kind !== "query_memory") {
-      throw new Error(`query_memory returned unexpected kernel effect: ${action.kind}`)
-    }
-
-    let hits: MemoryRecall[] = []
-    let ioError: unknown
-    try {
-      hits = await this.retrieveMemoryFromStore(query, action.requestedK, agentId)
-    } catch (cause) {
-      ioError = cause
-    }
-    await this.commitKernelApply(runtime, observations, {
-      kind: "memory_query_result",
-      effect_id: action.effectId,
-      hits,
-      ...(ioError ? { error: formatToolError(ioError) } : {}),
-    }, durableSessionId)
-    await this.appendMemorySyscallObservations(durableSessionId, observations)
-    if (ioError) throw ioError
+    const { hits } = await this.queryMemoryThroughKernel(runtime, query, agentId, durableSessionId)
     await this.logMemoryRetrievalResult(durableSessionId, hits)
     return hits
   }
@@ -849,18 +906,39 @@ export class RuntimeRunner {
     await this.commitKernelApply(runtime, this.pendingObservations, { kind: "configure_run", config })
   }
 
-  private async appendMemorySyscallObservations(
+  /**
+   * Mirror one kernel memory-lifecycle observation into the durable store / host callbacks.
+   * Shared by the main run drain, the prefetch path, and the host memory syscalls so every
+   * query route has identical recall + promotion semantics (T5).
+   *
+   * M3: `memory_recalled` carries the kernel-derived count — the runner never computes
+   * `recall_count + 1` itself. M4: `promotion_suggested` is advisory and already
+   * edge-triggered by the kernel; the runner surfaces it and never auto-pins.
+   */
+  private async mirrorMemoryLifecycle(obs: KernelObservation): Promise<void> {
+    if (obs.kind === "memory_recalled" && obs.recalls?.length) {
+      const agentId = this.opts.agentId
+      if (agentId && this.opts.dreamStore?.recordRecall) {
+        await this.opts.dreamStore.recordRecall(agentId, obs.recalls)
+      }
+    }
+    if (obs.kind === "promotion_suggested" && obs.record_id) {
+      this.opts.onPromotionSuggested?.({
+        recordId: obs.record_id,
+        recallCount: obs.recall_count ?? 0,
+      })
+    }
+  }
+
+  private async consumeMemoryLifecycleObservations(
     sessionId: string | null | undefined,
     observations: KernelObservation[],
   ): Promise<void> {
-    if (!sessionId) return
     const turn = this.activeKernel?.turn() ?? 0
     for (const obs of observations) {
-      if (
-        obs.kind !== "memory_written"
-        && obs.kind !== "memory_queried"
-        && obs.kind !== "memory_validation_failed"
-      ) continue
+      if (!isMemoryLifecycleObservation(obs)) continue
+      await this.mirrorMemoryLifecycle(obs)
+      if (!sessionId) continue
       const event = kernelObservationToSessionEvent(obs, turn)
       if (event) await this.opts.sessionLog.append(sessionId, event)
     }
@@ -1968,6 +2046,9 @@ export class RuntimeRunner {
         ...(m.validationEnabled !== undefined ? { validation_enabled: m.validationEnabled } : {}),
         ...(m.maxContentBytes !== undefined ? { max_content_bytes: m.maxContentBytes } : {}),
         ...(m.maxNameLength !== undefined ? { max_name_length: m.maxNameLength } : {}),
+        ...(m.promotionRecallThreshold !== undefined
+          ? { promotion_recall_threshold: m.promotionRecallThreshold }
+          : {}),
       })
     }
     if (this.opts.knowledgeSource) {
@@ -2085,22 +2166,24 @@ export class RuntimeRunner {
         message: attachmentsToKernelMessage(attachments),
       })
     }
-    // I4: pre-fetch memory before the first LLM turn so the model sees it on turn 1 instead of
-    // discovering it via the `memory` tool on turn 3+. Skipped on resumes (already in prior
-    // context) and when dreamStore/agentId is absent.
-    //
-    // Strict dynamic context control: this is single-use retrieval content (facts relevant to
-    // THIS run's goal right now), not a stable method/skill — so it lands in `history` as an
-    // ordinary turn, exactly like a real `memory` tool result would, and decays with the
-    // compression pyramid over subsequent turns instead of pinning itself in `knowledge` forever.
     this.currentGoal = goal
-    if (!resumeMidRun) {
-      await this.prefetchMemoryIntoHistory(runtime, "initial")
-    }
 
     let action: KernelRunnerAction = resumeMidRun
       ? await this.commitKernelAction(runtime, this.pendingObservations, { kind: "resume" })
       : await this.commitKernelAction(runtime, this.pendingObservations, startPayload)
+    // I4/T5: pre-fetch memory before the first LLM turn so the model sees it on turn 1 instead
+    // of discovering it via the `memory` tool on turn 3+. It routes through the kernel's
+    // query_memory lifecycle and therefore runs AFTER start_run — a memory query is a kernel
+    // preload whose result resumes the reasoning path, so issuing it pre-run would leave the
+    // kernel Running and start_run would fault. The resumed action from the last query
+    // supersedes start_run's (same pull contract; it renders the injected hits). Hits land in
+    // `history` as ordinary turns — single-use retrieval content that decays with the
+    // compression pyramid, never pinned into `knowledge`. Skipped on resumes (already in
+    // prior context) and when dreamStore/agentId is absent.
+    if (!resumeMidRun) {
+      const resumed = await this.prefetchMemoryIntoHistory(runtime, "initial")
+      if (resumed) action = resumed
+    }
     // P0-C: the skill loaded and in effect going into the current turn (updated when the model's
     // `skill` tool call resolves). Drives the per-turn `activeSkill` metric → dwell measurement.
     let activeSkill: string | undefined
@@ -2848,8 +2931,8 @@ export class RuntimeRunner {
   private async prefetchMemoryIntoHistory(
     runtime: KernelRuntimeInstance,
     phase: "initial" | "renewal",
-  ): Promise<void> {
-    if (!this.opts.dreamStore || !this.opts.agentId || !this.opts.memoryScope) return
+  ): Promise<KernelRunnerAction | undefined> {
+    if (!this.opts.dreamStore || !this.opts.agentId || !this.opts.memoryScope) return undefined
     // P10: recall is default-on (CC session-start recall) — with no hook configured,
     // the goal itself is the query. preQueryMemory stays as the targeting override.
     const preQuery = this.opts.preQueryMemory
@@ -2865,21 +2948,32 @@ export class RuntimeRunner {
         runSpec: this.opts.runSpec,
         phase,
       })
-      const lines: string[] = []
+      // T5: route each query through the kernel's query_memory lifecycle instead of calling
+      // the store directly — the kernel injects each routed hit into history itself and the
+      // recall lifecycle (recordRecall / promotion) fires exactly like an in-run query.
+      //
+      // One prefetch = one dedupe horizon: a record hit by several short queries recalls and
+      // injects once. A renewal prefetch starts a fresh horizon — renewal dropped the earlier
+      // injection with the old history, so re-exposure is a genuine new recall.
+      const seenRecordIds = new Set<string>()
+      let resumed: KernelRunnerAction | undefined
       for (const q of queries ?? []) {
         if (!q.query.trim()) continue
-        const hits = await this.opts.dreamStore.search(this.opts.agentId, q)
-        for (const hit of hits) {
-          lines.push(`[memory record_id=${hit.record.record_id} trust=${hit.record.provenance.trust} score=${hit.score.toFixed(3)}] ${hit.record.content}`)
-        }
+        const { action } = await this.queryMemoryThroughKernel(
+          runtime,
+          q,
+          this.opts.agentId,
+          this.durableSessionId(this.currentSessionId),
+          seenRecordIds,
+          this.pendingObservations,
+        )
+        resumed = action ?? resumed
       }
-      if (lines.length > 0) {
-        await this.commitKernelApply(runtime, this.pendingObservations, {
-          kind: "add_history_message",
-          message: { role: "user", content: lines.join("\n") },
-        })
-      }
+      // Each memory_query_result resumes the reasoning path and re-emits the pending loop
+      // action; the caller must continue from the LAST one (it renders the injected hits).
+      return resumed
     } catch { /* errs-open — a faulty pre-fetch never breaks the run */ }
+    return undefined
   }
 
   private async appendObservations(
@@ -2906,22 +3000,9 @@ export class RuntimeRunner {
         this.activeGroupBudgetScope = undefined
       }
 
-      // M3: mirror the kernel's journaled recall lifecycle into the durable store so recall
-      // history (count + last-recalled turn) survives across sessions.
-      if (obs.kind === "memory_recalled" && obs.recalls?.length) {
-        const agentId = this.opts.agentId
-        if (agentId && this.opts.dreamStore?.recordRecall) {
-          await this.opts.dreamStore.recordRecall(agentId, obs.recalls)
-        }
-      }
-      // M4: a recall crossed the promotion threshold. Advisory — surface it for the host/model to
-      // act on (pin or promote to knowledge); the runner does not auto-pin.
-      if (obs.kind === "promotion_suggested" && obs.record_id) {
-        this.opts.onPromotionSuggested?.({
-          recordId: obs.record_id,
-          recallCount: obs.recall_count ?? 0,
-        })
-      }
+      // M3/M4: mirror the kernel's journaled recall lifecycle into the durable store /
+      // host callbacks (shared consumer — identical semantics on every query route).
+      await this.mirrorMemoryLifecycle(obs)
 
       const latest =
         obs.kind === "compressed" ? await this.opts.sessionLog.latestSeq(sessionId) : undefined

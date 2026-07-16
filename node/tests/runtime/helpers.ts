@@ -41,6 +41,8 @@ export function createRunner(
     skillLeaseTurns?: number
     entropyWatch?: import("../../src/types.js").EntropyWatchOptions
     preQueryMemory?: import("../../src/runtime/runner.js").RuntimeOptions["preQueryMemory"]
+    memoryPolicy?: import("../../src/kernel.js").MemoryPolicy
+    onPromotionSuggested?: import("../../src/runtime/runner.js").RuntimeOptions["onPromotionSuggested"]
   } = {},
 ): { runner: RuntimeRunner; sessionLog: InMemorySessionLog; plane: LocalExecutionPlane } {
   const sessionLog = opts.sessionLog ?? new InMemorySessionLog()
@@ -75,6 +77,8 @@ export function createRunner(
     skillLeaseTurns: opts.skillLeaseTurns,
     entropyWatch: opts.entropyWatch,
     preQueryMemory: opts.preQueryMemory,
+    memoryPolicy: opts.memoryPolicy,
+    onPromotionSuggested: opts.onPromotionSuggested,
   })
   return { runner, sessionLog, plane }
 }

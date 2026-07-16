@@ -58,6 +58,9 @@ export interface MemoryPolicy {
   maxContentBytes?: number
   /** Override the kernel's `write_memory` name-length limit. */
   maxNameLength?: number
+  /** M4: recall count at which the kernel emits an advisory (edge-triggered)
+   *  `promotion_suggested` for a recalled record. Omitted = suggestions disabled. */
+  promotionRecallThreshold?: number
 }
 
 export interface GovernanceInstance {
