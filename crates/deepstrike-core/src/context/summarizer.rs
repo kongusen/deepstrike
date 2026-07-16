@@ -5,6 +5,11 @@ use crate::types::message::{Content, ContentPart, Message};
 /// Deterministic six-slot summariser used before archived units page out.
 pub struct RuleSummarizer;
 
+/// Items rendered per slot before an honest `(+N more)` line. Bounds each digest so the
+/// task-state compression history can afford to keep MANY digests visible instead of a few
+/// bloated ones.
+const SLOT_ITEM_CAP: usize = 6;
+
 impl RuleSummarizer {
     /// Produce a structured summary whose char-approx token count never exceeds
     /// `max_tokens`. Slot order is the deterministic truncation priority.
@@ -95,10 +100,18 @@ impl RuleSummarizer {
             if values.is_empty() {
                 push_line(&mut output, "- none", max_tokens, &engine);
             } else {
-                for value in values {
+                for value in values.iter().take(SLOT_ITEM_CAP) {
                     push_line(
                         &mut output,
-                        &format!("- {}", compact(&value, 240)),
+                        &format!("- {}", compact(value, 240)),
+                        max_tokens,
+                        &engine,
+                    );
+                }
+                if values.len() > SLOT_ITEM_CAP {
+                    push_line(
+                        &mut output,
+                        &format!("- (+{} more)", values.len() - SLOT_ITEM_CAP),
                         max_tokens,
                         &engine,
                     );
@@ -126,6 +139,9 @@ struct SummarySlots {
 
 fn classify_text(text: &str, slots: &mut SummarySlots) {
     for statement in statements(text) {
+        if is_diff_noise(&statement) {
+            continue;
+        }
         let folded = statement.to_lowercase();
         if contains_any(
             &folded,
@@ -199,11 +215,45 @@ fn classify_text(text: &str, slots: &mut SummarySlots) {
 }
 
 fn statements(text: &str) -> Vec<String> {
-    text.split(['\n', '.', '!', '?', ';', '。', '！', '？', '；'])
-        .map(str::trim)
-        .filter(|statement| !statement.is_empty())
-        .map(|statement| compact(statement, 240))
-        .collect()
+    let mut output = Vec::new();
+    let mut current = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        let boundary = match character {
+            '\n' | '!' | '?' | ';' | '。' | '！' | '？' | '；' => true,
+            // A '.' splits only at a sentence boundary (followed by whitespace or end of
+            // text). Splitting inside paths/versions shredded `src/auth.js` into useless
+            // `js b/src/auth` fragments that polluted every digest.
+            '.' => chars.peek().is_none_or(|next| next.is_whitespace()),
+            _ => false,
+        };
+        if boundary {
+            flush_statement(&mut current, &mut output);
+        } else {
+            current.push(character);
+        }
+    }
+    flush_statement(&mut current, &mut output);
+    output
+}
+
+fn flush_statement(current: &mut String, output: &mut Vec<String>) {
+    let statement = current.trim();
+    if !statement.is_empty() {
+        output.push(compact(statement, 240));
+    }
+    current.clear();
+}
+
+/// Structural diff/patch header lines carry no summarizable content — dropping them keeps
+/// digests dense so more real process state survives a given summary budget.
+fn is_diff_noise(statement: &str) -> bool {
+    let trimmed = statement.trim_start();
+    trimmed.starts_with("diff --git")
+        || trimmed.starts_with("+++")
+        || trimmed.starts_with("---")
+        || trimmed.starts_with("@@")
+        || trimmed.starts_with("index ")
 }
 
 fn contains_any(text: &str, markers: &[&str]) -> bool {
