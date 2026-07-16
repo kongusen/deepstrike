@@ -1,6 +1,6 @@
 {
   "name": "@deepstrike/core-darwin-arm64",
-  "version": "0.2.40",
+  "version": "0.2.41",
   "cpu": [
     "arm64"
   ],
