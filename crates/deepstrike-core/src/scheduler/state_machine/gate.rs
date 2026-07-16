@@ -336,9 +336,12 @@ impl LoopStateMachine {
         if self.governance.is_none() {
             return GateToolOutcome::Proceed;
         }
+        let deny_as_result = self.governance_deny_mode
+            == crate::runtime::kernel::GovernanceDenyMode::Result;
 
         let mut gated: Vec<(String, String, String)> = Vec::new();
         let mut hard_block: Option<(String, String)> = None;
+        let mut denied: Vec<(compact_str::CompactString, String)> = Vec::new();
         for call in calls {
             match self.evaluate_syscall(&Syscall::Invoke(call.clone())) {
                 Disposition::Allow => {}
@@ -346,16 +349,18 @@ impl LoopStateMachine {
                     gated.push((call.id.to_string(), call.name.to_string(), reason));
                 }
                 Disposition::Deny { reason, .. } => {
-                    if hard_block.is_none() {
+                    if deny_as_result {
+                        denied.push((call.id.clone(), reason));
+                    } else if hard_block.is_none() {
                         hard_block = Some((call.name.to_string(), reason));
                     }
                 }
                 Disposition::RateLimited { retry_after_ms } => {
-                    if hard_block.is_none() {
-                        hard_block = Some((
-                            call.name.to_string(),
-                            format!("rate limited, retry after {retry_after_ms}ms"),
-                        ));
+                    let reason = format!("rate limited, retry after {retry_after_ms}ms");
+                    if deny_as_result {
+                        denied.push((call.id.clone(), reason));
+                    } else if hard_block.is_none() {
+                        hard_block = Some((call.name.to_string(), reason));
                     }
                 }
                 // Backpressure deferral is not produced by the governance gate today.
@@ -376,8 +381,54 @@ impl LoopStateMachine {
             return GateToolOutcome::Blocked(self.emit_call_llm());
         }
 
+        // Result mode: denials become committed error results — the model sees its own attempt.
+        // Allowed siblings still execute; the synthetic results merge into their `ToolResults`
+        // feed via `pending_denied_results` (the same funnel the approval path uses). When
+        // EVERYTHING was denied there is nothing to execute, so the results commit as a normal
+        // tool turn directly. `remaining` (= calls minus denied) is what the rest of the gate
+        // operates on, so an AskUser suspend can never resurrect a denied call.
+        let denied_ids: std::collections::HashSet<compact_str::CompactString> =
+            denied.iter().map(|(id, _)| id.clone()).collect();
+        for (call_id, reason) in denied {
+            self.pending_denied_results.push(ToolResult {
+                call_id,
+                output: Content::Text(format!("permission denied: {reason}")),
+                is_error: true,
+                is_fatal: false,
+                error_kind: Some(ToolErrorKind::GovernanceDenied),
+                token_count: None,
+            });
+        }
+        let remaining: Vec<ToolCall> = if denied_ids.is_empty() {
+            calls.to_vec()
+        } else {
+            calls
+                .iter()
+                .filter(|call| !denied_ids.contains(&call.id))
+                .cloned()
+                .collect()
+        };
+        if remaining.is_empty() {
+            let results = std::mem::take(&mut self.pending_denied_results);
+            self.phase = LoopPhase::Reason;
+            // The recursive feed clears `observations` at its head; keep what this step already
+            // collected (expired signals / lease sweeps) and prepend it to the tool turn's own.
+            let kept = std::mem::take(&mut self.observations);
+            let action = self.feed(LoopEvent::ToolResults { results });
+            let inner = std::mem::replace(&mut self.observations, kept);
+            self.observations.extend(inner);
+            return GateToolOutcome::Blocked(action);
+        }
+
         if gated.is_empty() {
-            return GateToolOutcome::Proceed;
+            if denied_ids.is_empty() {
+                return GateToolOutcome::Proceed;
+            }
+            self.phase = LoopPhase::Act {
+                tool_calls: remaining.clone(),
+            };
+            self.set_lifecycle(TaskLifecycle::Running, None);
+            return GateToolOutcome::Blocked(LoopAction::ExecuteTools { calls: remaining });
         }
 
         let pending_calls: Vec<String> = gated.iter().map(|(id, _, _)| id.clone()).collect();
@@ -385,7 +436,7 @@ impl LoopStateMachine {
             .iter()
             .map(|(id, _, reason)| (id.clone(), reason.clone()))
             .collect();
-        let requests = calls
+        let requests = remaining
             .iter()
             .filter_map(|call| {
                 gated_reasons
@@ -399,7 +450,7 @@ impl LoopStateMachine {
             })
             .collect();
         self.suspend_state = Some(SuspendState::AskUser {
-            calls: calls.to_vec(),
+            calls: remaining,
             gated_reasons,
         });
         self.set_lifecycle(TaskLifecycle::Suspended, Some(WaitReason::Approval));

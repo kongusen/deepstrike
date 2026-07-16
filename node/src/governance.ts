@@ -72,6 +72,15 @@ export interface GovernancePolicy {
    *  back to the v0.2.22 rollback-based behavior (useful for measuring the delta or when the
    *  agent should learn the denial via a real attempt). */
   surfaceDeniedInSystem?: boolean
+  /** How the kernel surfaces a hard deny when the model does attempt the call:
+   *  - `"rollback"` (default) — the turn is rolled back and a directive note re-prompts; the
+   *    model never sees its own attempt.
+   *  - `"result"` — the denial commits as an error tool result; the attempt stays visible in
+   *    history and allowed sibling calls in the same batch still execute.
+   *  Only observable with `surfaceDeniedInSystem: false` for statically denied tools (otherwise
+   *  the schema pre-filter prevents the attempt); rate-limit / constraint denials are dynamic and
+   *  always reach this path. */
+  denyMode?: "rollback" | "result"
 }
 
 /** I5: walk the tool list and bucket each tool into `allowed` / `denied` based on a declarative
@@ -117,6 +126,7 @@ export function governancePolicyToKernelEvent(policy: GovernancePolicy): Record<
   return {
     kind: "load_governance_policy",
     ...(policy.defaultAction ? { default_action: policy.defaultAction } : {}),
+    ...(policy.denyMode ? { deny_mode: policy.denyMode } : {}),
     rules: (policy.rules ?? []).map(r => ({ tool_pattern: r.pattern, action: r.action })),
     vetoed_tools: policy.vetoes ?? [],
     rate_limits: (policy.rateLimits ?? []).map(rl => ({

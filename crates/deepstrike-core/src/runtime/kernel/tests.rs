@@ -2787,6 +2787,7 @@ fn governance_deny_blocks_tool_and_reprompts() {
         vetoed_tools: vec![],
         rate_limits: vec![],
         constraints: vec![],
+        deny_mode: None,
     }));
 
     let step = run_with_tool_call(&mut runtime, "danger.delete");
@@ -2958,6 +2959,7 @@ fn governance_ask_user_suspends_until_resume() {
         vetoed_tools: vec![],
         rate_limits: vec![],
         constraints: vec![],
+        deny_mode: None,
     }));
 
     let step = run_with_tool_call(&mut runtime, "sensitive.read");
@@ -3021,6 +3023,7 @@ fn approval_host_failure_reissues_effect_without_success_observation() {
         vetoed_tools: vec![],
         rate_limits: vec![],
         constraints: vec![],
+        deny_mode: None,
     }));
     let approval = run_with_tool_call(&mut runtime, "sensitive.read");
 
@@ -3063,6 +3066,7 @@ fn governance_ask_user_resume_all_denied_feeds_tool_results() {
         vetoed_tools: vec![],
         rate_limits: vec![],
         constraints: vec![],
+        deny_mode: None,
     }));
     let approval = run_with_tool_call(&mut runtime, "sensitive.read");
     runtime.clear_test_observations();
@@ -3131,6 +3135,7 @@ fn governance_rate_limit_blocks_second_call() {
             window_ms: 60_000,
         }],
         constraints: vec![],
+        deny_mode: None,
     }));
     runtime.step(KernelInput::new(KernelInputEvent::StartRun {
         task: RuntimeTask::new("fetch twice"),
@@ -3206,6 +3211,7 @@ fn governance_constraint_required_param_denies() {
             tool: "write".to_string(),
             path: "path".to_string(),
         }],
+        deny_mode: None,
     }));
 
     // assistant_calling emits empty args `{}` → required "path" is missing → deny.

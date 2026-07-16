@@ -1567,6 +1567,117 @@ fn rollback_note_is_verbose_when_opted_in() {
     );
 }
 
+// ─── Governance deny_mode=result: denial commits as a visible error result ────────────
+
+fn sm_with_deny_rule_result_mode() -> LoopStateMachine {
+    use crate::governance::permission::{PermissionAction, PermissionRule};
+    use crate::governance::pipeline::GovernancePipeline;
+
+    let mut sm = sm();
+    let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
+    pipeline.permission.add_rule(PermissionRule {
+        tool_pattern: "write_file".into(),
+        action: PermissionAction::Deny,
+    });
+    sm.set_governance(pipeline);
+    sm.set_governance_deny_mode(crate::runtime::kernel::GovernanceDenyMode::Result);
+    sm
+}
+
+fn gov_call(id: &str, name: &str) -> ToolCall {
+    ToolCall {
+        id: compact_str::CompactString::new(id),
+        name: compact_str::CompactString::new(name),
+        arguments: serde_json::json!({"path": "src/auth.js"}),
+    }
+}
+
+#[test]
+fn deny_result_mode_commits_denial_as_error_result_without_rollback() {
+    let mut sm = sm_with_deny_rule_result_mode();
+    sm.start(RuntimeTask::new("fix the bug"));
+    let mut msg = Message::assistant("");
+    msg.tool_calls.push(gov_call("call_w", "write_file"));
+    let history_before = sm.ctx.partitions.history.messages.len();
+
+    let action = sm.feed(LoopEvent::LLMResponse { message: msg });
+
+    // The whole denied turn commits and the loop re-calls — no rollback, no suspend.
+    assert!(
+        matches!(action, LoopAction::CallLLM { .. }),
+        "expected CallLLM, got {action:?}"
+    );
+    assert!(
+        !sm.observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
+        "result mode must not roll the turn back"
+    );
+    let history = &sm.ctx.partitions.history.messages;
+    assert!(
+        history.len() >= history_before + 2,
+        "assistant attempt + denial result must be committed"
+    );
+    let denial = history.iter().any(|m| match &m.content {
+        Content::Parts(parts) => parts.iter().any(|p| matches!(
+            p,
+            ContentPart::ToolResult { call_id, output, is_error: true }
+                if call_id == "call_w" && output.contains("permission denied")
+        )),
+        _ => false,
+    });
+    assert!(denial, "denial must be visible as an error tool result");
+    // The committed denial counts as a completed turn.
+    assert_eq!(sm.turn, 1);
+}
+
+#[test]
+fn deny_result_mode_executes_allowed_siblings() {
+    let mut sm = sm_with_deny_rule_result_mode();
+    sm.start(RuntimeTask::new("fix the bug"));
+    let mut msg = Message::assistant("");
+    msg.tool_calls.push(gov_call("call_r", "read_file"));
+    msg.tool_calls.push(gov_call("call_w", "write_file"));
+
+    let action = sm.feed(LoopEvent::LLMResponse { message: msg });
+    let calls = match action {
+        LoopAction::ExecuteTools { calls } => calls,
+        other => panic!("allowed sibling must execute, got {other:?}"),
+    };
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].name.as_str(), "read_file");
+
+    // Real result comes back; the stashed denial merges into the same turn.
+    let next = sm.feed(LoopEvent::ToolResults {
+        results: vec![ToolResult {
+            call_id: compact_str::CompactString::new("call_r"),
+            output: Content::Text("file contents".into()),
+            is_error: false,
+            is_fatal: false,
+            error_kind: None,
+            token_count: Some(3),
+        }],
+    });
+    assert!(matches!(next, LoopAction::CallLLM { .. }));
+    assert!(
+        !sm.observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
+        "merged denial must not roll the committed turn back"
+    );
+    let history = &sm.ctx.partitions.history.messages;
+    let has = |id: &str| {
+        history.iter().any(|m| match &m.content {
+            Content::Parts(parts) => parts.iter().any(
+                |p| matches!(p, ContentPart::ToolResult { call_id, .. } if call_id == id),
+            ),
+            _ => false,
+        })
+    };
+    assert!(has("call_r"), "real result committed");
+    assert!(has("call_w"), "denial result committed");
+}
+
 // ─── Phase 2: suspend / resume lifecycle ─────────────────────────────────
 
 fn sm_with_ask_user_rule() -> LoopStateMachine {

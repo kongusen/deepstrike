@@ -194,7 +194,7 @@ export const governanceWriteDenyScenario = {
   timeoutMs: 240_000,
   mechanismHook,
 
-  variantOrder: ["unrestricted", "write-denied", "write-denied-pre-filtered"],
+  variantOrder: ["unrestricted", "write-denied", "write-denied-result", "write-denied-pre-filtered"],
   variants: {
     unrestricted: {
       description: "no governance policy — write_file + run_bash freely callable",
@@ -214,6 +214,27 @@ export const governanceWriteDenyScenario = {
             ],
             // I5: explicit opt-out — preserves v0.2.22 behavior so this variant is the baseline.
             surfaceDeniedInSystem: false,
+          },
+          extensions: { degradeMissingReasoningReplay: true },
+        },
+      }),
+    },
+    // deny_mode experiment: same policy + same surface=false as `write-denied` (the model really
+    // attempts the call), but the kernel commits the denial as an error tool result instead of
+    // rolling the turn back — the model sees its own attempt and adapts in place. A/B against
+    // `write-denied` isolates ONLY the deny-handling mechanism.
+    "write-denied-result": {
+      description: "policy denies write_file + run_bash, deny_mode=result — denial commits as an error tool result (no rollback)",
+      setup: () => ({
+        runtimeOverlay: {
+          governancePolicy: {
+            defaultAction: "allow",
+            rules: [
+              { pattern: "write_file", action: "deny" },
+              { pattern: "run_bash", action: "deny" },
+            ],
+            surfaceDeniedInSystem: false,
+            denyMode: "result",
           },
           extensions: { degradeMissingReasoningReplay: true },
         },

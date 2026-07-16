@@ -1423,6 +1423,7 @@ impl KernelRuntime {
                 vetoed_tools,
                 rate_limits,
                 constraints,
+                deny_mode,
             } => {
                 self.sm.set_governance(build_governance_pipeline(
                     default_action,
@@ -1431,6 +1432,9 @@ impl KernelRuntime {
                     rate_limits,
                     constraints,
                 ));
+                if let Some(mode) = deny_mode {
+                    self.sm.set_governance_deny_mode(mode);
+                }
                 return identity.empty(self.sm.take_observations());
             }
             KernelInputEvent::ConfigureRun { config } => {
@@ -1492,6 +1496,9 @@ impl KernelRuntime {
                         g.rate_limits,
                         g.constraints,
                     ));
+                    if let Some(mode) = g.deny_mode {
+                        self.sm.set_governance_deny_mode(mode);
+                    }
                 }
                 if let Some(policy) = signal_policy {
                     self.sm.set_signal_policy(
