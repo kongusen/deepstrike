@@ -9,6 +9,11 @@ jobs:
     uses: ./.github/workflows/_verify-version.yml
 
   gate:
+    # Grant the reusable gate exactly what it needs to poll the Actions API.
+    # Without this, the repo's default token (actions: none) rejects the call.
+    permissions:
+      actions: read
+      contents: read
     uses: ./.github/workflows/_gate-ci.yml
 
   publish:
