@@ -14,13 +14,33 @@ use crate::types::result::TerminationReason;
 /// Classify a provider error message as a context-overflow (prompt-too-long / 413). Centralizes
 /// the case-insensitive string match the four SDK runners (node/python/rust/wasm) each used to
 /// own, so the recovery vocabulary lives in exactly one place.
+///
+/// "413" must stand alone (non-alphanumeric on both sides): a bare substring match also fires on
+/// request ids and unrelated numbers ("req_abc413", "4130ms"), misclassifying an ordinary failure
+/// as an overflow and mislabeling the terminal as `ContextOverflow` after the retry ladder.
 pub(crate) fn is_prompt_too_long(message: &str) -> bool {
     let msg = message.to_lowercase();
-    msg.contains("413")
+    contains_standalone_413(&msg)
         || msg.contains("too long")
         || msg.contains("prompt too long")
         || msg.contains("context length exceeded")
         || msg.contains("context_length_exceeded")
+        || msg.contains("maximum context length")
+}
+
+fn contains_standalone_413(msg: &str) -> bool {
+    let bytes = msg.as_bytes();
+    for (i, window) in bytes.windows(3).enumerate() {
+        if window != b"413" {
+            continue;
+        }
+        let left_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+        let right_ok = i + 3 >= bytes.len() || !bytes[i + 3].is_ascii_alphanumeric();
+        if left_ok && right_ok {
+            return true;
+        }
+    }
+    false
 }
 
 impl LoopStateMachine {

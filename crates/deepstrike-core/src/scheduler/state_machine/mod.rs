@@ -26,6 +26,12 @@ use crate::types::task::RuntimeTask;
 /// only needs to make `same-tool / different-args` calls distinguishable (so a legit loop isn't
 /// flagged as a no-progress repeat) and to read sensibly in the "just did: …" footer. Empty for
 /// no-arg / `{}` calls. Lives in the volatile State turn, so length here never churns the cache.
+///
+/// The 2c STOP and the O6 fuse compare these digests for EQUALITY, so identity must cover the
+/// FULL arguments even though the display truncates: serde_json orders keys alphabetically, and
+/// a long leading value (an `edit` call's `file_path`) otherwise swallows the whole window —
+/// collapsing distinct same-file edits into one signature. A truncated digest therefore carries
+/// a hash of the complete canonical JSON as its suffix.
 fn compact_tool_args(args: &serde_json::Value) -> String {
     if args.is_null() {
         return String::new();
@@ -38,7 +44,15 @@ fn compact_tool_args(args: &serde_json::Value) -> String {
     if s.chars().count() <= MAX {
         s
     } else {
-        format!("{}…", s.chars().take(MAX).collect::<String>())
+        // FNV-1a 64 folded to 32 bits: deterministic across processes/replays (no SipHash
+        // random keys), 8 hex chars of noise in a footer line that already truncates.
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in s.as_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let fold = (h ^ (h >> 32)) as u32;
+        format!("{}…#{fold:08x}", s.chars().take(MAX).collect::<String>())
     }
 }
 
@@ -980,6 +994,16 @@ impl LoopStateMachine {
                 {
                     if let Some(pace_call) = calls.iter().find(|c| c.name.as_str() == "pace") {
                         let call = pace_call.clone();
+                        // The assistant message carrying `pace` is already committed to history
+                        // and the kernel adjudicates pace itself — sibling calls batched with it
+                        // are never executed, so close their transcript pairs here or they remain
+                        // orphaned tool_use blocks (wire-invalid on several vendors).
+                        for sibling in calls.iter().filter(|c| c.id != call.id) {
+                            self.push_synthetic_tool_result(
+                                &sibling.id,
+                                "not executed: superseded by pace — the round is ending",
+                            );
+                        }
                         return self.handle_pace_call(call);
                     }
                 }
@@ -1104,29 +1128,9 @@ impl LoopStateMachine {
                     self.ctx.push_history(tool_msg, tokens);
                 }
                 self.turn += 1;
-
-                // M1 收口: the pure `schedule()` is now the single budget decision point.
-                // It evaluates the same three axes (turn/token/wall) via `BudgetLedger`, which
-                // delegates to `SchedulerBudget::should_terminate` internally — one source of truth.
-                if let Some(term) = super::tcb::budget_verdict(&self.root_tcb(), self.last_now_ms) {
-                    let budget = match term {
-                        TerminationReason::MaxTurns => "max_turns",
-                        TerminationReason::Timeout => "wall_time",
-                        _ => "token_budget",
-                    };
-                    self.observations.push(KernelObservation::BudgetExceeded {
-                        turn: self.turn,
-                        budget: budget.to_string(),
-                        operation_id: String::new(),
-                        reservation_id: self
-                            .budget_grant
-                            .as_ref()
-                            .map(|grant| grant.reservation_id.clone()),
-                    });
-                    self.pending_termination = Some(term);
-                    self.phase = LoopPhase::Reason;
-                    return self.emit_call_llm();
-                }
+                // The budget verdict (turn/token/wall) fires inside `emit_call_llm` at the end of
+                // this arm — the single provider-call funnel — so the eviction checkpoint and
+                // entropy sample below still run on the exhaustion turn before the final report.
 
                 // ━━ Eviction checkpoint (M3): one decision model (`plan_eviction`), one
                 // execution funnel (`execute_eviction_op`). Layer 3 (idle/time-decay) must run
@@ -1505,6 +1509,32 @@ impl LoopStateMachine {
         // Calling the provider is definitionally "running" — the single funnel for entering the
         // Running lifecycle (covers start, resume, signal-driven turns, budget final-call).
         self.set_lifecycle(TaskLifecycle::Running, None);
+
+        // M1 収口 (completed): the budget verdict lives at the same single funnel. Every edge that
+        // requests a provider call — tool-turn completion, milestone retry, signal-forced turns,
+        // criteria gate, recovery ladders — passes the three axes here, so a loop that completes
+        // no tool turns (and therefore never increments `turn`) is still bounded by the token and
+        // wall axes. The final-report turn itself (`pending_termination` set) is exempt: it is the
+        // one bounded call the verdict buys, so the check fires exactly once per exhaustion.
+        if self.pending_termination.is_none() {
+            if let Some(term) = super::tcb::budget_verdict(&self.root_tcb(), self.last_now_ms) {
+                let budget = match term {
+                    TerminationReason::MaxTurns => "max_turns",
+                    TerminationReason::Timeout => "wall_time",
+                    _ => "token_budget",
+                };
+                self.observations.push(KernelObservation::BudgetExceeded {
+                    turn: self.turn,
+                    budget: budget.to_string(),
+                    operation_id: String::new(),
+                    reservation_id: self
+                        .budget_grant
+                        .as_ref()
+                        .map(|grant| grant.reservation_id.clone()),
+                });
+                self.pending_termination = Some(term);
+            }
+        }
         self.checkpoint.history_len = self.ctx.partitions.history.messages.len();
         self.checkpoint.signals_len = self.ctx.partitions.signals.len();
         self.checkpoint.task_state = Some(self.ctx.partitions.task_state.clone());

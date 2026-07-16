@@ -1066,10 +1066,20 @@ fn recovery_attempts_reset_on_successful_response() {
 fn is_prompt_too_long_classifier() {
     use super::eviction::is_prompt_too_long;
     assert!(is_prompt_too_long("Error 413"));
+    assert!(is_prompt_too_long("HTTP 413 Payload Too Large"));
+    assert!(is_prompt_too_long("status=413"));
     assert!(is_prompt_too_long("prompt is TOO LONG"));
     assert!(is_prompt_too_long("context_length_exceeded"));
+    // OpenAI wording carries neither "413" nor "exceeded".
+    assert!(is_prompt_too_long(
+        "This model's maximum context length is 128000 tokens"
+    ));
     assert!(!is_prompt_too_long("429 rate limited"));
     assert!(!is_prompt_too_long("connection reset"));
+    // "413" as a substring of an id / a larger number is NOT an overflow.
+    assert!(!is_prompt_too_long("request req_abc413x7 timed out"));
+    assert!(!is_prompt_too_long("upstream error 5413"));
+    assert!(!is_prompt_too_long("completed in 4130ms"));
 }
 
 // ---- Max-output-tokens recovery (Phase 4) ----
@@ -3461,6 +3471,74 @@ fn single_spawn_path_leaves_workflow_inactive() {
     assert!(!sm.workflow_active());
 }
 
+// ── Budget verdict at the provider-call funnel ─────────────────────────────────────────────
+
+#[test]
+fn milestone_retry_loop_is_bounded_by_the_token_budget() {
+    // Regression: a text-only "finish → verifier fails → retry" loop completes no tool turns,
+    // so `turn` never increments — the token/wall axes must still bound it at the provider-call
+    // funnel, or an unlimited-retry milestone burns tokens forever.
+    let mut machine = LoopStateMachine::new(SchedulerBudget {
+        max_tokens: 128_000,
+        max_turns: 1_000, // the turn axis cannot fire here — no tool turn ever completes
+        max_total_tokens: 500,
+        max_wall_ms: None,
+    });
+    machine.load_milestone_contract(
+        crate::types::milestone::MilestoneContract::new()
+            .phase(crate::types::milestone::MilestonePhase::new("verify")),
+    );
+    machine.start(RuntimeTask::new("finish the phase"));
+
+    let mut budget_fired = false;
+    for _ in 0..100 {
+        let action = machine.feed(LoopEvent::LLMResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: Content::Text("done, please check".into()),
+                tool_calls: vec![],
+                token_count: Some(60),
+            },
+        });
+        let action = match action {
+            LoopAction::EvaluateMilestone { phase_id, .. } => {
+                machine.feed(LoopEvent::MilestoneResult {
+                    result: crate::types::milestone::MilestoneCheckResult::fail(
+                        phase_id, "not yet",
+                    ),
+                })
+            }
+            other => other,
+        };
+        assert!(
+            matches!(action, LoopAction::CallLLM { .. }),
+            "loop should keep re-calling until the budget fires, got {action:?}"
+        );
+        if machine.observations.iter().any(|o| matches!(
+            o,
+            KernelObservation::BudgetExceeded { budget, .. } if budget == "token_budget"
+        )) {
+            budget_fired = true;
+            break;
+        }
+    }
+    assert!(
+        budget_fired,
+        "token budget must bound a no-tool-turn retry loop"
+    );
+
+    // The final-report turn ends the run with the budget termination.
+    let done = machine.feed(LoopEvent::LLMResponse {
+        message: Message::assistant("out of budget: verify phase still failing"),
+    });
+    match done {
+        LoopAction::Done { result } => {
+            assert_eq!(result.termination, TerminationReason::TokenBudget);
+        }
+        other => panic!("expected Done(TokenBudget), got {other:?}"),
+    }
+}
+
 // ── O6: RepeatFuse — the hard rungs above the 2c soft STOP ────────────────────────────────
 
 /// An assistant turn proposing exactly one tool call.
@@ -3570,6 +3648,82 @@ fn repeat_fuse_ignores_same_tool_with_different_args() {
             .iter()
             .any(|o| matches!(o, KernelObservation::RepeatFuseTripped { .. })),
         "args-varying iteration is progress, not a stall"
+    );
+}
+
+#[test]
+fn repeat_fuse_ignores_long_args_that_differ_past_the_display_cap() {
+    // Regression: the args digest is truncated for display, but IDENTITY must cover the FULL
+    // arguments. serde_json orders keys alphabetically, so an `edit`-style call renders
+    // `{"file_path":"…"}` first and a long path swallows the whole display window — consecutive
+    // legit edits to the SAME file (different old/new strings) must not read as a stall.
+    let mut sm = sm();
+    sm.set_repeat_fuse(crate::governance::repeat_fuse::RepeatFuseConfig {
+        enabled: true,
+        deny_after: 3,
+        terminate_after: 5,
+    });
+    sm.start(RuntimeTask::new("refactor the module"));
+
+    let path = "/very/long/absolute/path/to/some/project/src/module.rs";
+    for i in 0..6 {
+        let args = serde_json::json!({
+            "file_path": path,
+            "old_string": format!("let old_{i} = {i};"),
+            "new_string": format!("let new_{i} = {i};"),
+        });
+        let a = sm.feed(LoopEvent::LLMResponse {
+            message: fuse_tool_turn("edit", args),
+        });
+        assert!(
+            matches!(a, LoopAction::ExecuteTools { .. }),
+            "edit {i} must execute, got {a:?}"
+        );
+        let _ = sm.feed(LoopEvent::ToolResults {
+            results: vec![fuse_tool_result()],
+        });
+        assert!(
+            !sm.observations
+                .iter()
+                .any(|o| matches!(o, KernelObservation::RepeatFuseTripped { .. })),
+            "same-file edits with different content are progress, not a repeat (edit {i})"
+        );
+    }
+
+}
+
+#[test]
+fn repeat_fuse_still_trips_on_identical_long_args() {
+    let mut machine = sm();
+    machine.set_repeat_fuse(crate::governance::repeat_fuse::RepeatFuseConfig {
+        enabled: true,
+        deny_after: 3,
+        terminate_after: 0,
+    });
+    machine.start(RuntimeTask::new("refactor the module"));
+    let same_args = serde_json::json!({
+        "file_path": "/very/long/absolute/path/to/some/project/src/module.rs",
+        "old_string": "identical every turn",
+        "new_string": "identical every turn",
+    });
+    for _ in 0..2 {
+        let a = machine.feed(LoopEvent::LLMResponse {
+            message: fuse_tool_turn("edit", same_args.clone()),
+        });
+        assert!(matches!(a, LoopAction::ExecuteTools { .. }));
+        let _ = machine.feed(LoopEvent::ToolResults {
+            results: vec![fuse_tool_result()],
+        });
+    }
+    let _ = machine.feed(LoopEvent::LLMResponse {
+        message: fuse_tool_turn("edit", same_args),
+    });
+    assert!(
+        machine.observations.iter().any(|o| matches!(
+            o,
+            KernelObservation::RepeatFuseTripped { action, count, .. } if action == "deny" && *count == 3
+        )),
+        "identical long args must still count as a repeat"
     );
 }
 
@@ -3749,6 +3903,61 @@ fn pace_tool_exposed_only_on_loop_rounds() {
         assert!(tools.iter().any(|t| t.name.as_str() == "pace"));
     } else {
         panic!("expected CallLLM");
+    }
+}
+
+#[test]
+fn pace_with_sibling_tool_calls_leaves_no_orphan_pairs() {
+    // Wire validity: when the model batches `pace` with other tool calls, the kernel adjudicates
+    // pace and the round ends — the sibling calls are never executed, so the kernel must close
+    // their transcript pairs (an assistant tool_use with no tool_result is invalid on several
+    // vendors' wire formats).
+    let mut sm = loop_sm(crate::types::agent::LoopRoundSpec::default());
+    let message = Message {
+        role: Role::Assistant,
+        content: Content::Text("".into()),
+        tool_calls: vec![
+            ToolCall {
+                id: compact_str::CompactString::new("call-work"),
+                name: compact_str::CompactString::new("set_title"),
+                arguments: serde_json::json!({"title": "x"}),
+            },
+            ToolCall {
+                id: compact_str::CompactString::new("call-pace"),
+                name: compact_str::CompactString::new("pace"),
+                arguments: serde_json::json!({"next": "stop", "reason": "round done"}),
+            },
+        ],
+        token_count: Some(5),
+    };
+    let action = sm.feed(LoopEvent::LLMResponse { message });
+    assert!(
+        matches!(action, LoopAction::CallLLM { ref tools, .. } if tools.is_empty()),
+        "an allowed pace strips tools for the final report turn, got {action:?}"
+    );
+
+    // Every tool_use id in history must have a matching tool_result.
+    let history = &sm.ctx.partitions.history.messages;
+    let call_ids: Vec<String> = history
+        .iter()
+        .flat_map(|m| m.tool_calls.iter().map(|c| c.id.to_string()))
+        .collect();
+    let result_ids: Vec<String> = history
+        .iter()
+        .filter_map(|m| match &m.content {
+            Content::Parts(parts) => Some(parts.iter().filter_map(|p| match p {
+                ContentPart::ToolResult { call_id, .. } => Some(call_id.to_string()),
+                _ => None,
+            })),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    for id in &call_ids {
+        assert!(
+            result_ids.contains(id),
+            "tool_use `{id}` has no tool_result — orphan pair (results: {result_ids:?})"
+        );
     }
 }
 
