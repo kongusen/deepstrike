@@ -6,6 +6,7 @@ use std::ops::Range;
 
 use super::token_engine::ContextTokenEngine;
 use super::units::unit_boundaries;
+use crate::lexical::{overlap_count, terms};
 use crate::types::message::{Content, ContentPart, Message};
 
 pub struct UtilitySelectionContext<'a> {
@@ -215,35 +216,6 @@ fn unit_text(messages: &[Message]) -> String {
     parts.join("\n")
 }
 
-fn terms(text: &str) -> BTreeSet<String> {
-    let mut output = BTreeSet::new();
-    let mut ascii = String::new();
-    for character in text.chars().flat_map(char::to_lowercase) {
-        if character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '/' | '.' | ':') {
-            ascii.push(character);
-            continue;
-        }
-        if !ascii.is_empty() {
-            if ascii.chars().count() > 1 {
-                output.insert(std::mem::take(&mut ascii));
-            } else {
-                ascii.clear();
-            }
-        }
-        if !character.is_whitespace() && !character.is_ascii_punctuation() {
-            output.insert(character.to_string());
-        }
-    }
-    if ascii.chars().count() > 1 {
-        output.insert(ascii);
-    }
-    output
-}
-
-fn overlap_count(left: &BTreeSet<String>, right: &BTreeSet<String>) -> u32 {
-    left.intersection(right).count() as u32
-}
-
 fn contains_folded(text: &str, pattern: &str) -> bool {
     !pattern.trim().is_empty() && text.to_lowercase().contains(&pattern.to_lowercase())
 }
@@ -365,6 +337,41 @@ mod tests {
         assert!(plan.scores[0].mandatory);
         assert!(plan.scores[0].has_unresolved);
         assert_eq!(plan.retained_tokens, 40);
+    }
+
+    #[test]
+    fn chinese_directive_dependency_requires_bigram_overlap_not_shared_characters() {
+        // Under the old per-character CJK vocabulary, any Chinese unit sharing two
+        // common characters (中/文/回…) with an active directive was marked mandatory,
+        // so compression could never archive unrelated Chinese history.
+        let mut unrelated = Message::assistant("我们在文中回顾了天气");
+        unrelated.token_count = Some(30);
+        let mut on_topic = Message::user("已按要求保持中文回答");
+        on_topic.token_count = Some(30);
+        let mut recent = Message::user("recent");
+        recent.token_count = Some(10);
+        let messages = vec![unrelated, on_topic, recent];
+        let plan = plan_utility_archive(
+            &messages,
+            70,
+            10,
+            1,
+            &ContextTokenEngine::char_approx(),
+            &UtilitySelectionContext {
+                goal: "",
+                criteria: &[],
+                preserved_refs: &[],
+                active_directives: &["必须用中文回答".into()],
+            },
+        );
+        assert!(
+            !plan.scores[0].mandatory,
+            "unrelated Chinese text must not bind to the directive"
+        );
+        assert!(
+            plan.scores[1].mandatory,
+            "text restating the directive must stay mandatory"
+        );
     }
 
     #[test]

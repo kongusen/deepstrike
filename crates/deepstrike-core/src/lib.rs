@@ -28,6 +28,7 @@ pub mod benchmark;
 pub mod context;
 pub mod governance;
 pub mod harness;
+pub mod lexical;
 pub mod memory;
 pub mod mm;
 pub mod orchestration;

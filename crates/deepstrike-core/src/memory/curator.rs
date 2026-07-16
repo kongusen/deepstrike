@@ -4,8 +4,6 @@
 //! travel through the kernel `WriteMemory` syscall; hosts may use these helpers inside their
 //! upsert implementation to resolve a candidate against an already-loaded snapshot.
 
-use std::collections::HashSet;
-
 use crate::mm::memory::MemoryRecord;
 
 /// Conflict rule used by a host while resolving a fuzzy duplicate.
@@ -20,17 +18,13 @@ pub fn same_scoped_key(left: &MemoryRecord, right: &MemoryRecord) -> bool {
     left.scope == right.scope && left.kind == right.kind && left.name == right.name
 }
 
-/// Deterministic token-set Jaccard score used only after scoped-key lookup misses.
+/// Deterministic term-set Jaccard score used only after scoped-key lookup misses.
+///
+/// Tokenizes through the shared [`crate::lexical`] vocabulary (word runs + Han
+/// bigrams) rather than whitespace, so near-duplicate CJK content — which has no
+/// whitespace to split on — is actually detectable against a dedupe threshold.
 pub fn jaccard_similarity(left: &str, right: &str) -> f64 {
-    let left: HashSet<&str> = left.split_whitespace().collect();
-    let right: HashSet<&str> = right.split_whitespace().collect();
-    let intersection = left.intersection(&right).count();
-    let union = left.union(&right).count();
-    if union == 0 {
-        0.0
-    } else {
-        intersection as f64 / union as f64
-    }
+    crate::lexical::jaccard(left, right)
 }
 
 /// Select the record retained for a conflict without performing any I/O.
@@ -94,6 +88,16 @@ mod tests {
             jaccard_similarity(&existing.content, &other_key.content),
             1.0
         );
+    }
+
+    #[test]
+    fn cjk_near_duplicates_are_detectable_after_key_miss() {
+        // Whitespace tokenization turned a whole Chinese sentence into one token, so
+        // near-duplicates scored ~0 and no dedupe threshold could ever fire on them.
+        let near = jaccard_similarity("用户偏好深色模式界面", "用户偏好浅色模式界面");
+        let unrelated = jaccard_similarity("用户偏好深色模式界面", "周五之前完成部署上线");
+        assert!(near > 0.5, "near-duplicate CJK must be detectable: {near}");
+        assert!(unrelated < 0.2, "unrelated CJK must stay low: {unrelated}");
     }
 
     #[test]
