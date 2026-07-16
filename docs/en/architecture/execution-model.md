@@ -55,7 +55,7 @@ Each tool call → **`Syscall::Invoke`** → `Disposition`:
 
 ```text
 Invoke(read_file)  →  Allow → ExecuteTools
-Invoke(rm_rf)      →  Deny  → rollback note in context
+Invoke(rm_rf)      →  Deny  → error ToolResult in context, not executed
 Invoke(deploy)     →  Gate  → Suspended, PermissionRequestEvent
 ```
 

@@ -34,7 +34,7 @@ features:
     details: Four-slot rendering, pressure compression, handle paging, prompt-cache aware.
   - icon: 🛡️
     title: In-Kernel Governance
-    details: Syscall traps, quotas, rate limits, rollback notes — not post-hoc SDK filtering.
+    details: Syscall traps, quotas, rate limits, denied tool results — not post-hoc SDK filtering.
   - icon: 💾
     title: Memory Syscalls
     details: Kernel-validated writeMemory / queryMemory + DreamStore + idle consolidation pipeline.

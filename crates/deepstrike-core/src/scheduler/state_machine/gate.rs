@@ -336,11 +336,7 @@ impl LoopStateMachine {
         if self.governance.is_none() {
             return GateToolOutcome::Proceed;
         }
-        let deny_as_result = self.governance_deny_mode
-            == crate::runtime::kernel::GovernanceDenyMode::Result;
-
         let mut gated: Vec<(String, String, String)> = Vec::new();
-        let mut hard_block: Option<(String, String)> = None;
         let mut denied: Vec<(compact_str::CompactString, String)> = Vec::new();
         for call in calls {
             match self.evaluate_syscall(&Syscall::Invoke(call.clone())) {
@@ -349,39 +345,18 @@ impl LoopStateMachine {
                     gated.push((call.id.to_string(), call.name.to_string(), reason));
                 }
                 Disposition::Deny { reason, .. } => {
-                    if deny_as_result {
-                        denied.push((call.id.clone(), reason));
-                    } else if hard_block.is_none() {
-                        hard_block = Some((call.name.to_string(), reason));
-                    }
+                    denied.push((call.id.clone(), reason));
                 }
                 Disposition::RateLimited { retry_after_ms } => {
                     let reason = format!("rate limited, retry after {retry_after_ms}ms");
-                    if deny_as_result {
-                        denied.push((call.id.clone(), reason));
-                    } else if hard_block.is_none() {
-                        hard_block = Some((call.name.to_string(), reason));
-                    }
+                    denied.push((call.id.clone(), reason));
                 }
                 // Backpressure deferral is not produced by the governance gate today.
                 Disposition::Defer { .. } => {}
             }
         }
 
-        if let Some((tool_name, reason)) = hard_block {
-            let rb = RollbackReason::GovernanceDenied { tool_name, reason };
-            let note = Message::user(super::super::rollback::build_rollback_note(
-                &rb,
-                self.ctx.config.verbose_control_notes,
-            ));
-            self.rollback(rb);
-            self.ctx
-                .push_signal(note.content.as_text().unwrap_or_default().to_string());
-            self.phase = LoopPhase::Reason;
-            return GateToolOutcome::Blocked(self.emit_call_llm());
-        }
-
-        // Result mode: denials become committed error results — the model sees its own attempt.
+        // Denials become committed error results — the model sees its own attempt.
         // Allowed siblings still execute; the synthetic results merge into their `ToolResults`
         // feed via `pending_denied_results` (the same funnel the approval path uses). When
         // EVERYTHING was denied there is nothing to execute, so the results commit as a normal

@@ -104,7 +104,7 @@ Observation 回到内核与 SessionLog
 | Rust | `deepstrike-sdk` | `cargo add deepstrike-sdk` |
 | Browser / Edge / WASM | `@deepstrike/wasm` | `npm install @deepstrike/wasm` |
 
-当前工作区 SDK 版本：`0.2.35`。
+当前工作区 SDK 版本：`0.2.42`。
 
 ## 快速开始
 

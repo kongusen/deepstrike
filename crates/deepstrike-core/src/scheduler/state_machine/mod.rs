@@ -314,9 +314,6 @@ pub struct LoopStateMachine {
     /// model is evaluated before `ExecuteTools` is emitted. `None` (default)
     /// skips the gate entirely, preserving the pre-governance behavior.
     pub(super) governance: Option<GovernancePipeline>,
-    /// How a hard governance `Deny` reaches the model: turn rollback + directive note
-    /// (default, v0 behavior) or a committed error tool result (experimental).
-    pub(super) governance_deny_mode: crate::runtime::kernel::GovernanceDenyMode,
     /// Optional resource quota evaluated at the syscall trap (M2). `None` (default) leaves spawn /
     /// memory syscalls unconditionally allowed, preserving pre-M2 behavior.
     pub(super) resource_quota: Option<crate::governance::quota::ResourceQuota>,
@@ -428,7 +425,6 @@ impl LoopStateMachine {
             run_spec: None,
             tasks,
             governance: None,
-            governance_deny_mode: crate::runtime::kernel::GovernanceDenyMode::default(),
             resource_quota: None,
             memory_write_times: Vec::new(),
             memory_policy: None,
@@ -717,16 +713,11 @@ impl LoopStateMachine {
     }
 
     /// Install a governance pipeline. Once set, all model-proposed tool calls
-    /// are evaluated before execution. Denied/rate-limited calls roll the turn
-    /// back (reusing the `GovernanceDenied` path); `AskUser` calls surface a
-    /// `ToolGated` observation for the SDK to enforce.
+    /// are evaluated before execution. Denied/rate-limited calls commit visible
+    /// error tool results; `AskUser` calls surface a `ToolGated` observation for
+    /// the SDK to enforce.
     pub fn set_governance(&mut self, pipeline: GovernancePipeline) {
         self.governance = Some(pipeline);
-    }
-
-    /// Select how a hard governance `Deny` reaches the model (see [`GovernanceDenyMode`]).
-    pub fn set_governance_deny_mode(&mut self, mode: crate::runtime::kernel::GovernanceDenyMode) {
-        self.governance_deny_mode = mode;
     }
 
     /// Install resource quotas (M2). Once set, `Spawn` and `WriteMemory` syscalls are bounded by
@@ -1675,18 +1666,9 @@ impl LoopStateMachine {
                 tool_name,
                 error: output,
             }),
-            // Result mode commits a denial as a visible error result instead of rolling the
-            // turn back — the model sees its own attempt and adapts in place.
-            Some(ToolErrorKind::GovernanceDenied)
-                if self.governance_deny_mode
-                    == crate::runtime::kernel::GovernanceDenyMode::Result =>
-            {
-                None
-            }
-            Some(ToolErrorKind::GovernanceDenied) => Some(RollbackReason::GovernanceDenied {
-                tool_name,
-                reason: output,
-            }),
+            // A governance denial is a rejected syscall, not a failed transaction: nothing ran,
+            // so the visible error result remains committed and the model can adapt in place.
+            Some(ToolErrorKind::GovernanceDenied) => None,
             Some(ToolErrorKind::ProviderFailure) => {
                 Some(RollbackReason::ProviderFailure { error: output })
             }

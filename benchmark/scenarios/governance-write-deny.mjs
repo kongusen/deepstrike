@@ -137,8 +137,7 @@ async function mkTools(_sessionId) {
  * Three sources of signal for a denial scenario:
  *   1. `streamToolCalls` — every `tool_call` the MODEL emitted (the agent's intent).
  *   2. `events` `tool_requested` — what the kernel actually executed.
- *   3. `events` `rollbacked` — denial round count (one per turn where the kernel discarded ≥1 calls
- *       and asked the model to retry).
+ *   3. `events` `rollbacked` — regression signal; governance tool denials must keep this at zero.
  *
  * `attempts − executed = denials` for each tool, separating "the model tried" from "the kernel let
  * it through". That's the real governance signal — under `write-denied` the model should attempt
@@ -194,7 +193,7 @@ export const governanceWriteDenyScenario = {
   timeoutMs: 240_000,
   mechanismHook,
 
-  variantOrder: ["unrestricted", "write-denied", "write-denied-result", "write-denied-pre-filtered"],
+  variantOrder: ["unrestricted", "write-denied", "write-denied-pre-filtered"],
   variants: {
     unrestricted: {
       description: "no governance policy — write_file + run_bash freely callable",
@@ -203,7 +202,7 @@ export const governanceWriteDenyScenario = {
       }),
     },
     "write-denied": {
-      description: "policy denies write_file + run_bash, surface=false → kernel rollback on call (v0.2.22 baseline)",
+      description: "policy denies write_file + run_bash, surface=false → visible error tool result",
       setup: () => ({
         runtimeOverlay: {
           governancePolicy: {
@@ -212,29 +211,8 @@ export const governanceWriteDenyScenario = {
               { pattern: "write_file", action: "deny" },
               { pattern: "run_bash", action: "deny" },
             ],
-            // I5: explicit opt-out — preserves v0.2.22 behavior so this variant is the baseline.
+            // I5: explicit opt-out — the model attempts the call and learns from its denial result.
             surfaceDeniedInSystem: false,
-          },
-          extensions: { degradeMissingReasoningReplay: true },
-        },
-      }),
-    },
-    // deny_mode experiment: same policy + same surface=false as `write-denied` (the model really
-    // attempts the call), but the kernel commits the denial as an error tool result instead of
-    // rolling the turn back — the model sees its own attempt and adapts in place. A/B against
-    // `write-denied` isolates ONLY the deny-handling mechanism.
-    "write-denied-result": {
-      description: "policy denies write_file + run_bash, deny_mode=result — denial commits as an error tool result (no rollback)",
-      setup: () => ({
-        runtimeOverlay: {
-          governancePolicy: {
-            defaultAction: "allow",
-            rules: [
-              { pattern: "write_file", action: "deny" },
-              { pattern: "run_bash", action: "deny" },
-            ],
-            surfaceDeniedInSystem: false,
-            denyMode: "result",
           },
           extensions: { degradeMissingReasoningReplay: true },
         },
@@ -242,7 +220,7 @@ export const governanceWriteDenyScenario = {
     },
     // I5: same policy, but the runner now pre-filters denied tools out of the schema (and adds a
     // note to systemKnowledge). The model never sees the denied tools and never tries them; expect
-    // rollbacks → 0, wallMs to drop toward the unrestricted baseline.
+    // denied attempts → 0 and wallMs to drop toward the unrestricted baseline.
     "write-denied-pre-filtered": {
       description: "policy denies write_file + run_bash, schema-level pre-filter (I5) — model never tries denied tools",
       setup: () => ({

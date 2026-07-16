@@ -66,21 +66,11 @@ export interface GovernancePolicy {
   rateLimits?: { tool: string; maxCalls: number; windowMs: number }[]
   constraints?: GovernanceConstraint[]
   /** I5: when true (default), the runner pre-filters denied tools out of the schema passed to the
-   *  provider — the model never sees them and never tries to call them, eliminating the rollback
-   *  turn the kernel would otherwise produce. The denied tool names are also surfaced as a single
-   *  line on the system slot so the model knows not to plan around them. Set to false to fall
-   *  back to the v0.2.22 rollback-based behavior (useful for measuring the delta or when the
-   *  agent should learn the denial via a real attempt). */
+   *  provider — the model never sees them and never tries to call them. The denied tool names are
+   *  also surfaced as a single line on the system slot so the model knows not to plan around them.
+   *  Set to false when the agent should learn the denial through a real attempted call and its
+   *  visible error tool result. */
   surfaceDeniedInSystem?: boolean
-  /** How the kernel surfaces a hard deny when the model does attempt the call:
-   *  - `"rollback"` (default) — the turn is rolled back and a directive note re-prompts; the
-   *    model never sees its own attempt.
-   *  - `"result"` — the denial commits as an error tool result; the attempt stays visible in
-   *    history and allowed sibling calls in the same batch still execute.
-   *  Only observable with `surfaceDeniedInSystem: false` for statically denied tools (otherwise
-   *  the schema pre-filter prevents the attempt); rate-limit / constraint denials are dynamic and
-   *  always reach this path. */
-  denyMode?: "rollback" | "result"
 }
 
 /** I5: walk the tool list and bucket each tool into `allowed` / `denied` based on a declarative
@@ -126,7 +116,6 @@ export function governancePolicyToKernelEvent(policy: GovernancePolicy): Record<
   return {
     kind: "load_governance_policy",
     ...(policy.defaultAction ? { default_action: policy.defaultAction } : {}),
-    ...(policy.denyMode ? { deny_mode: policy.denyMode } : {}),
     rules: (policy.rules ?? []).map(r => ({ tool_pattern: r.pattern, action: r.action })),
     vetoed_tools: policy.vetoes ?? [],
     rate_limits: (policy.rateLimits ?? []).map(rl => ({

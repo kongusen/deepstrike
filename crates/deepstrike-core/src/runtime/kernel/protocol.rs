@@ -48,20 +48,6 @@ pub struct PolicyRule {
     pub action: PolicyAction,
 }
 
-/// How the kernel surfaces a hard governance `Deny` (or rate-limit) to the model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GovernanceDenyMode {
-    /// Roll the whole turn back and re-prompt with a directive note. The model never sees its
-    /// own attempt; allowed sibling calls in the same batch are discarded with it.
-    #[default]
-    Rollback,
-    /// Commit the denial as an error tool result — the attempt and the denial stay visible in
-    /// history and allowed sibling calls still execute. (Experimental alternative; see the
-    /// governance-write-deny benchmark scenario for the A/B.)
-    Result,
-}
-
 /// Per-tool rate limit for the governance ABI.
 /// Maps to [`crate::governance::rate_limit::RateLimit`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,9 +162,6 @@ pub struct GovernanceConfig {
     pub rate_limits: Vec<RateLimitSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constraints: Vec<ConstraintSpec>,
-    /// How a hard `Deny` reaches the model. Additive ABI: absent ⇒ `Rollback` (the v0 behavior).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deny_mode: Option<GovernanceDenyMode>,
 }
 
 pub const SIGNAL_POLICY_VERSION: u32 = 1;
@@ -536,9 +519,6 @@ pub enum KernelInputEvent {
         rate_limits: Vec<RateLimitSpec>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         constraints: Vec<ConstraintSpec>,
-        /// How a hard `Deny` reaches the model. Additive: absent ⇒ `Rollback` (v0 behavior).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        deny_mode: Option<GovernanceDenyMode>,
     },
     /// Atomically replace the complete signal-routing policy.
     SetSignalPolicy {

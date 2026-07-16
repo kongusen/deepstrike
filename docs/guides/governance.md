@@ -1,6 +1,6 @@
 # Governance
 
-Governance 是 Agent OS 的 **Syscall Governance Plane**。它在工具执行、memory 写入、workflow 增长和 sub-agent spawn 之前裁决权限、配额与参数约束；拒绝不是事后日志，而是会写回 context 的 rollback note。
+Governance 是 Agent OS 的 **Syscall Governance Plane**。它在工具执行、memory 写入、workflow 增长和 sub-agent spawn 之前裁决权限、配额与参数约束；被拒绝的工具调用不会执行，而是作为可见的 error tool result 写回 context，让模型能够调整行为。
 
 **代码**：`crates/deepstrike-core/src/governance/`、`python/deepstrike/governance.py`
 
@@ -14,7 +14,7 @@ Governance 是 Agent OS 的 **Syscall Governance Plane**。它在工具执行、
 | Workflow syscall | `SubmitNodes` / `LoadWorkflow` 受节点数、深度和资源配额限制 |
 | Memory syscall | 写入频率、内容大小和 metadata 由 policy 控制 |
 | Process spawn | sub-agent 并发、总数、隔离模式可被拦截 |
-| Context feedback | deny / ask_user 结果作为 rollback note 进入下一轮上下文 |
+| Context feedback | deny / ask_user 决策作为可见的 error tool result 进入下一轮上下文 |
 
 治理面的目标是让 agent 的每个外部动作都像 OS syscall 一样可解释、可拒绝、可追踪，而不是把风险留给工具函数自己处理。
 

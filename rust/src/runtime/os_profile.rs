@@ -69,8 +69,6 @@ impl GovernancePolicy {
             vetoed_tools: self.vetoed_tools,
             rate_limits: self.rate_limits,
             constraints: self.constraints,
-            // Rust SDK does not surface the deny-mode experiment yet; kernel default (rollback).
-            deny_mode: None,
         }
     }
 }

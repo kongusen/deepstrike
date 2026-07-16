@@ -1567,9 +1567,9 @@ fn rollback_note_is_verbose_when_opted_in() {
     );
 }
 
-// ─── Governance deny_mode=result: denial commits as a visible error result ────────────
+// ─── Governance denial commits as a visible error result ─────────────────────────────
 
-fn sm_with_deny_rule_result_mode() -> LoopStateMachine {
+fn sm_with_deny_rule() -> LoopStateMachine {
     use crate::governance::permission::{PermissionAction, PermissionRule};
     use crate::governance::pipeline::GovernancePipeline;
 
@@ -1580,7 +1580,6 @@ fn sm_with_deny_rule_result_mode() -> LoopStateMachine {
         action: PermissionAction::Deny,
     });
     sm.set_governance(pipeline);
-    sm.set_governance_deny_mode(crate::runtime::kernel::GovernanceDenyMode::Result);
     sm
 }
 
@@ -1593,8 +1592,8 @@ fn gov_call(id: &str, name: &str) -> ToolCall {
 }
 
 #[test]
-fn deny_result_mode_commits_denial_as_error_result_without_rollback() {
-    let mut sm = sm_with_deny_rule_result_mode();
+fn governance_deny_commits_error_result_without_rollback() {
+    let mut sm = sm_with_deny_rule();
     sm.start(RuntimeTask::new("fix the bug"));
     let mut msg = Message::assistant("");
     msg.tool_calls.push(gov_call("call_w", "write_file"));
@@ -1611,7 +1610,7 @@ fn deny_result_mode_commits_denial_as_error_result_without_rollback() {
         !sm.observations
             .iter()
             .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
-        "result mode must not roll the turn back"
+        "governance denial must not roll the turn back"
     );
     let history = &sm.ctx.partitions.history.messages;
     assert!(
@@ -1619,11 +1618,13 @@ fn deny_result_mode_commits_denial_as_error_result_without_rollback() {
         "assistant attempt + denial result must be committed"
     );
     let denial = history.iter().any(|m| match &m.content {
-        Content::Parts(parts) => parts.iter().any(|p| matches!(
-            p,
-            ContentPart::ToolResult { call_id, output, is_error: true }
-                if call_id == "call_w" && output.contains("permission denied")
-        )),
+        Content::Parts(parts) => parts.iter().any(|p| {
+            matches!(
+                p,
+                ContentPart::ToolResult { call_id, output, is_error: true }
+                    if call_id == "call_w" && output.contains("permission denied")
+            )
+        }),
         _ => false,
     });
     assert!(denial, "denial must be visible as an error tool result");
@@ -1632,8 +1633,8 @@ fn deny_result_mode_commits_denial_as_error_result_without_rollback() {
 }
 
 #[test]
-fn deny_result_mode_executes_allowed_siblings() {
-    let mut sm = sm_with_deny_rule_result_mode();
+fn governance_deny_executes_allowed_siblings() {
+    let mut sm = sm_with_deny_rule();
     sm.start(RuntimeTask::new("fix the bug"));
     let mut msg = Message::assistant("");
     msg.tool_calls.push(gov_call("call_r", "read_file"));
@@ -1668,9 +1669,9 @@ fn deny_result_mode_executes_allowed_siblings() {
     let history = &sm.ctx.partitions.history.messages;
     let has = |id: &str| {
         history.iter().any(|m| match &m.content {
-            Content::Parts(parts) => parts.iter().any(
-                |p| matches!(p, ContentPart::ToolResult { call_id, .. } if call_id == id),
-            ),
+            Content::Parts(parts) => parts
+                .iter()
+                .any(|p| matches!(p, ContentPart::ToolResult { call_id, .. } if call_id == id)),
             _ => false,
         })
     };

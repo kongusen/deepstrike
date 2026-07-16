@@ -55,7 +55,7 @@ into a 4-SDK consumer without re-housing later.
 
 - **PR #7 — Judge tool-arg fix + governance scenario + `--samples N`** (BM3 backlog #24 + BM5 #2 + BM1.2):
   - `core/runner.mjs` `buildJudgeResult` now folds every tool-call's name + truncated arguments (cap 1500 chars per arg) into the judge prompt — scenarios whose deliverable rides in a tool argument (e.g. `summarize_findings(summary)`) are no longer invisible to the judge. Closes BM3 backlog #24; compression-stress's `budget-loose` rerun went from judge score 0 → 0.5.
-  - `scenarios/governance-write-deny.mjs` — second BM5 scenario: "diagnose + fix the failing auth test"; variants `unrestricted` vs `write-denied` (kernel `governancePolicy.rules` denies `write_file` + `run_bash`). mechanismHook tracks executed-tool counts + `rollbacks` (the kernel's denial signal — the model's call was intercepted and the turn rolled back). Verified: quality preserved at 100% in both variants (graceful degradation), but write-denied costs +42% wallMs + 2 rollbacks + 1 extra turn.
+  - `scenarios/governance-write-deny.mjs` — second BM5 scenario: "diagnose + fix the failing auth test". The original v0.2.22 run used rollback-mode denial and found +42% wallMs, 2 rollbacks, and 1 extra turn; current kernels commit a visible denied result and retain `rollbacks` only as a zero-regression metric.
   - `--samples N` flag (default 1) repeats the full task list N times per variant; the aggregator pools sessions × samples so stdev tightens. Verified with `--samples 2` on the governance scenario.
 - BM3 — `gen_eval` LLM-judge for quality (`successRate` is the empty slot in `quality{}` today)
 - BM4 — `baselines/*.json` regression gate (CI)
@@ -294,7 +294,7 @@ the metric Δ isolates one mechanism's contribution. `bench list` prints the sam
 | ----------------------- | --------- | ------------------------------- | ---------------- |
 | `gating-dwell`          | tool gating + skill A/B | `off` / `on` | 30-tool surface → `avgToolsExposed` **−66.6%**, `tokensPerTurn` **−32.8%**; `cacheHitRate` −9.3% (epoch-switch cache-bust tension surfaced) |
 | `compression-stress`    | context compression budget | `budget-loose` / `budget-tight` | tight saves **88%** dollars but only completes **33%** of the 12-PR review — first framework-quantified cost/quality trade-off |
-| `governance-write-deny` | kernel governance policy | `unrestricted` / `write-denied` | quality preserved at 100% (graceful degradation), `rollbacks` 0 → 2, wallMs +42%; denial signal is `rollbacked` event (NOT `tool_denied`) |
+| `governance-write-deny` | kernel governance policy | `unrestricted` / `write-denied` / `write-denied-pre-filtered` | attempted denials commit visible error results; `rollbacks` must remain 0; pre-filtering prevents known-denied attempts entirely |
 | `memory-recall`         | long-term memory (DreamStore) | `memory-empty` / `memory-preloaded` | pre-seeded memory cuts `turnsToDone` **−57%**, `wallMs` −47%, `inputTokens` −65%, `dollars` −55% at preserved quality |
 | `signal-injection`      | RuntimeSignal urgency | `no-signal` / `soft-interrupt` / `hard-interrupt` | soft (High) injects `[SIGNAL]` and completes 12/12; hard (Critical) preempts in-flight LLM call within ~1 turn of inject |
 | `prefix-cache`          | Anthropic `cache_control` strategy | `default` / `tools-only` / `system-only` / `frozen-prefix` / `none` | DeepSeek smoke verified plumbing (no-op on auto-cache providers as designed); **Anthropic A/B verify deferred** until an `ANTHROPIC_API_KEY` is wired up — strategy delta is observable above the 1024-token cacheable-block threshold |
@@ -316,7 +316,7 @@ calls out 8 kernel mechanisms that should each get an A/B scenario. Current stat
 | 7.4 | memory / aspiration | `memory-recall` | ✅ shipped | pre-seeded `DreamStore` vs. empty; uses the public `InMemoryDreamStore` (promoted to SDK in v0.2.21) |
 | 7.5 | orchestration / sub-agents | `orchestration-f1` / `orchestration-f2` / `orchestration-f3` | ✅ shipped | `scheduler_policy` A/B (`weighted` vs `fifo`); stub `runWorkflow` driver (no LLM). F1 critical-path makespan, F2 loop fairness, F3 failure→`skipped_upstream_failed`. Kernel twins: `orchestration::workflow::run::tests::{f1,f2,f3}_*` |
 | 7.6 | signal preemption | `signal-injection` | ✅ shipped | soft `Interrupt` (High) vs. `InterruptNow` (Critical) A/B; soft path keeps run going (12/12 fetches), hard path preempts at the inject turn |
-| 7.7 | governance gate | `governance-write-deny` | ✅ shipped | rollbacked-event signal documented in scenario header |
+| 7.7 | governance gate | `governance-write-deny` | ✅ shipped | visible denial results + zero-rollback regression signal |
 | 7.8 | token-count tiering | — | ⏸ deferred | no natural variant dimension that doesn't reduce to tokenizer-accuracy noise rather than run-behavior signal; framework's A/B pattern is a poor fit. Design preserved in the deferred-scenarios doc; kernel `SetTokenizer` work also pending |
 
 Legend: ✅ shipped · ⏸ deferred (design preserved, scenario not built).

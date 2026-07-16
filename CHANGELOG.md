@@ -6,6 +6,45 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.42] - 2026-07-16
+
+### Changed — BREAKING: governance denials are visible results
+
+- **Tool deny / rate-limit / constraint failures no longer roll back the model turn.** The attempted
+  call and a visible `permission denied` error tool result remain in history, while allowed siblings
+  in the same batch still execute. A rejected syscall never ran, so there is no transaction to undo.
+- Removed the unreleased `GovernancePolicy.denyMode` / `deny_mode` switch and its rollback branch
+  from the kernel ABI plus Node, Python, WASM, and Rust SDKs. Static schema pre-filtering remains the
+  way to hide known-denied tools; dynamic denials always return a result the model can learn from.
+- DeepSeek live A/B (`governance-write-deny`, n=3): success `0.67 → 1.00`, input tokens `−81%`,
+  wall time `−77%`, rollbacks `39.7 → 0`, and denied write retries `21 → 1.3`.
+- GLM-5.2 replication (n=3): judge `0.73 → 0.95`, input tokens `−75%`, wall time `−71%`,
+  rollbacks `17.3 → 0`, and denied write retries `10.3 → 1.3`.
+
+### Fixed — agent-loop guards
+
+Four kernel correctness fixes that close unbounded or misclassified agent-loop edges:
+
+1. **Budget funnel.** Token / wall / turn checks run inside `emit_call_llm` (the single provider-call
+   funnel). Text-only loops that never complete a tool turn (milestone retry, signal-forced turns)
+   previously skipped every budget axis. Final-report turns (`pending_termination`) stay exempt so the
+   verdict fires once.
+2. **Repeat-fuse / STOP digest identity.** `compact_tool_args` digests now cover the full canonical
+   arguments (display stays truncated; identity appends an FNV-1a hash). Same-file edit batches no
+   longer collide into one signature and trip false `NoProgress` / deny.
+3. **Pace sibling pairs.** When `pace` batches with sibling tool calls, the kernel closes every
+   sibling transcript pair with a synthetic "superseded by pace" result before adjudicating — no
+   orphan `tool_use` without `tool_result` on vendor wires.
+4. **413 classifier.** `"413"` must stand alone (non-alphanumeric boundaries) so request ids /
+   durations stop classifying as context overflow; also recognizes OpenAI's "maximum context length"
+   wording.
+
+### Fixed — memory prefetch recall lifecycle (T5)
+
+- Prefetch / host `queryMemory` / in-run `query_memory` share one kernel route so `memory_recalled`,
+  `DreamStore.recordRecall`, and `promotion_suggested` fire for prefetched hits too (previously
+  prefetch bypassed the recall journal). Node + Python.
+
 ## [0.2.41] - 2026-07-16
 
 ### Added

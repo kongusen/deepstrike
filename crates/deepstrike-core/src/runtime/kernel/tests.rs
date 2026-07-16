@@ -2775,6 +2775,27 @@ fn run_with_tool_call_named(runtime: &mut KernelRuntime, tool: &str, _call_id: &
     }))
 }
 
+fn step_has_permission_denied_result(step: &KernelStep) -> bool {
+    match step.actions.as_slice() {
+        [
+            KernelAction {
+                effect: KernelEffect::CallProvider { context, .. },
+                ..
+            },
+        ] => context.turns.iter().any(|message| match &message.content {
+            crate::types::message::Content::Parts(parts) => parts.iter().any(|part| {
+                matches!(
+                    part,
+                    crate::types::message::ContentPart::ToolResult { output, is_error: true, .. }
+                        if output.contains("permission denied")
+                )
+            }),
+            _ => false,
+        }),
+        _ => false,
+    }
+}
+
 #[test]
 fn governance_deny_blocks_tool_and_reprompts() {
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
@@ -2787,12 +2808,12 @@ fn governance_deny_blocks_tool_and_reprompts() {
         vetoed_tools: vec![],
         rate_limits: vec![],
         constraints: vec![],
-        deny_mode: None,
     }));
 
     let step = run_with_tool_call(&mut runtime, "danger.delete");
 
-    // Denied call must NOT reach ExecuteTool; the turn rolls back and re-prompts.
+    // Denied call must NOT reach ExecuteTool; the denial commits as an error tool result and the
+    // loop re-prompts without rollback.
     assert!(
         matches!(
             step.actions.as_slice(),
@@ -2801,14 +2822,49 @@ fn governance_deny_blocks_tool_and_reprompts() {
                 ..
             }]
         ),
-        "denied tool should roll back and re-call provider, got {:?}",
+        "denied tool should commit the denial and re-call provider, got {:?}",
         step.actions
     );
     assert!(
-        step.observations
+        !step
+            .observations
             .iter()
             .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
-        "expected a Rollbacked observation for the denied turn",
+        "governance denial must not roll the turn back",
+    );
+    assert!(
+        step_has_permission_denied_result(&step),
+        "the denial must be visible to the model as an error tool result"
+    );
+}
+
+#[test]
+fn legacy_deny_mode_field_cannot_restore_governance_rollback() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let event: KernelInputEvent = serde_json::from_value(serde_json::json!({
+        "kind": "load_governance_policy",
+        "default_action": "allow",
+        "rules": [{ "tool_pattern": "danger.*", "action": "deny" }],
+        "vetoed_tools": [],
+        "rate_limits": [],
+        "constraints": [],
+        "deny_mode": "rollback"
+    }))
+    .expect("legacy development event must remain readable");
+    runtime.step(KernelInput::new(event));
+
+    let step = run_with_tool_call(&mut runtime, "danger.delete");
+
+    assert!(
+        !step
+            .observations
+            .iter()
+            .any(|observation| matches!(observation, KernelObservation::Rollbacked { .. })),
+        "a stale deny_mode field must not restore the removed rollback behavior",
+    );
+    assert!(
+        step_has_permission_denied_result(&step),
+        "the denial must remain visible to the model"
     );
 }
 
@@ -2848,14 +2904,15 @@ fn configure_run_bundle_applies_governance_equivalently_to_load_governance_polic
                 ..
             }]
         ),
-        "bundle-configured deny should roll back and re-call provider, got {:?}",
+        "bundle-configured deny should commit the denial and re-call provider, got {:?}",
         step.actions
     );
     assert!(
-        step.observations
+        !step
+            .observations
             .iter()
             .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
-        "expected a Rollbacked observation for the bundle-denied turn",
+        "bundle deny must behave like the granular event: visible result, no rollback",
     );
 }
 
@@ -2959,7 +3016,6 @@ fn governance_ask_user_suspends_until_resume() {
         vetoed_tools: vec![],
         rate_limits: vec![],
         constraints: vec![],
-        deny_mode: None,
     }));
 
     let step = run_with_tool_call(&mut runtime, "sensitive.read");
@@ -3023,7 +3079,6 @@ fn approval_host_failure_reissues_effect_without_success_observation() {
         vetoed_tools: vec![],
         rate_limits: vec![],
         constraints: vec![],
-        deny_mode: None,
     }));
     let approval = run_with_tool_call(&mut runtime, "sensitive.read");
 
@@ -3066,7 +3121,6 @@ fn governance_ask_user_resume_all_denied_feeds_tool_results() {
         vetoed_tools: vec![],
         rate_limits: vec![],
         constraints: vec![],
-        deny_mode: None,
     }));
     let approval = run_with_tool_call(&mut runtime, "sensitive.read");
     runtime.clear_test_observations();
@@ -3135,7 +3189,6 @@ fn governance_rate_limit_blocks_second_call() {
             window_ms: 60_000,
         }],
         constraints: vec![],
-        deny_mode: None,
     }));
     runtime.step(KernelInput::new(KernelInputEvent::StartRun {
         task: RuntimeTask::new("fetch twice"),
@@ -3171,7 +3224,7 @@ fn governance_rate_limit_blocks_second_call() {
     }));
     runtime.clear_test_observations();
 
-    // Second call to the same tool within the window — rate limited → rollback.
+    // Second call to the same tool within the window — rate limited → visible error result.
     let s2 = runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
         effect_id: runtime.pending_provider_effect_id(),
         message: assistant_calling("fetch"),
@@ -3188,14 +3241,18 @@ fn governance_rate_limit_blocks_second_call() {
                 ..
             }]
         ),
-        "rate-limited call should roll back and re-call provider, got {:?}",
+        "rate-limited call should commit the denial and re-call provider, got {:?}",
         s2.actions
     );
     assert!(
-        s2.observations
+        !s2.observations
             .iter()
             .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
-        "expected a Rollbacked observation for the rate-limited turn",
+        "rate-limited calls must not roll back",
+    );
+    assert!(
+        step_has_permission_denied_result(&s2),
+        "the rate-limit denial must be visible to the model"
     );
 }
 
@@ -3211,10 +3268,10 @@ fn governance_constraint_required_param_denies() {
             tool: "write".to_string(),
             path: "path".to_string(),
         }],
-        deny_mode: None,
     }));
 
-    // assistant_calling emits empty args `{}` → required "path" is missing → deny.
+    // assistant_calling emits empty args `{}` → required "path" is missing → deny. The violation
+    // commits as an error result — a dynamic denial the model must see to correct its arguments.
     let step = run_with_tool_call(&mut runtime, "write");
     assert!(
         matches!(
@@ -3224,14 +3281,19 @@ fn governance_constraint_required_param_denies() {
                 ..
             }]
         ),
-        "missing required param should roll back, got {:?}",
+        "missing required param should commit the denial and re-prompt, got {:?}",
         step.actions
     );
     assert!(
-        step.observations
+        !step
+            .observations
             .iter()
             .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
-        "expected a Rollbacked observation for the constraint violation",
+        "constraint violation commits as a visible error result, not a rollback",
+    );
+    assert!(
+        step_has_permission_denied_result(&step),
+        "the constraint denial must be visible to the model"
     );
 }
 

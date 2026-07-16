@@ -65,7 +65,7 @@ Provider 返回 `tool_calls` 或纯文本。
 
 ```text
 Invoke(read_file)  →  Allow → ExecuteTools
-Invoke(rm_rf)      →  Deny  → rollback note 写入 context，不执行
+Invoke(rm_rf)      →  Deny  → error ToolResult 写入 context，不执行
 Invoke(deploy)     →  Gate(AskUser) → Suspended，SDK 弹 PermissionRequestEvent
 ```
 

@@ -1,6 +1,6 @@
 # Governance
 
-Governance is the Agent OS **Syscall Governance Plane**. It adjudicates permissions, quotas, and argument constraints before tool execution, memory writes, workflow growth, and sub-agent spawn. A denial is not a post-hoc log; it becomes a rollback note written back into context.
+Governance is the Agent OS **Syscall Governance Plane**. It adjudicates permissions, quotas, and argument constraints before tool execution, memory writes, workflow growth, and sub-agent spawn. A denied tool call never executes; it becomes a visible error tool result in context so the model can adapt.
 
 **Source code:** `crates/deepstrike-core/src/governance/`, `python/deepstrike/governance.py`
 
@@ -14,7 +14,7 @@ Governance is the Agent OS **Syscall Governance Plane**. It adjudicates permissi
 | Workflow syscall | `SubmitNodes` / `LoadWorkflow` are bounded by node count, depth, and resource quota |
 | Memory syscall | Write frequency, content size, and metadata are controlled by policy |
 | Process spawn | Sub-agent concurrency, total count, and isolation mode can be trapped |
-| Context feedback | deny / ask_user results become rollback notes in the next turn |
+| Context feedback | deny / ask_user decisions become visible error tool results in the next turn |
 
 The governance plane makes every external agent action behave like an OS syscall: explainable, rejectable, and traceable instead of delegated to individual tool functions.
 
@@ -137,7 +137,8 @@ observer/enrichment failure isolation—it cannot retroactively claim that the t
 ## Kernel behavior
 
 - Every tool call and workflow syscall is evaluated before execution
-- Denials append rollback notes to context so the model sees why the action failed
+- Tool denials commit error tool results to context so the model sees its attempt and why it failed
+- Allowed sibling calls in the same batch continue executing
 - Rate limits use sliding windows per tool id
 
 ---

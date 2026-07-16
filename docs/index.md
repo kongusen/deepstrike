@@ -34,7 +34,7 @@ features:
     details: 四槽位渲染、压力压缩、Handle 分页、Prompt Cache 感知。
   - icon: 🛡️
     title: 内核级治理
-    details: Syscall trap、配额、rate limit、rollback note — 不是 SDK 事后拦截。
+    details: Syscall trap、配额、rate limit、denied tool result — 不是 SDK 事后拦截。
   - icon: 💾
     title: Memory Syscall
     details: writeMemory / queryMemory 内核校验 + DreamStore + 空闲整理管线。

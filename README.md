@@ -104,7 +104,7 @@ That boundary gives you properties a one-off orchestrator script does not:
 | Rust | `deepstrike-sdk` | `cargo add deepstrike-sdk` |
 | Browser / Edge / WASM | `@deepstrike/wasm` | `npm install @deepstrike/wasm` |
 
-Current SDK version in this workspace: `0.2.35`.
+Current SDK version in this workspace: `0.2.42`.
 
 ## Quick Start
 
