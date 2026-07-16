@@ -327,9 +327,18 @@ class WorkflowNodeOutcome:
 
 
 @dataclass
+class ControlRequestRejection:
+  """A control-plane request rejected before any workflow effect started."""
+  operation: str
+  reason: str
+  subject: str | None = None
+
+
+@dataclass
 class WorkflowOutcome:
   node_outcomes: list[WorkflowNodeOutcome]
   outputs: dict[str, str] = field(default_factory=dict)
+  rejection: ControlRequestRejection | None = None
 
 
 def workflow_node_outcome_from_kernel(raw: dict[str, Any]) -> WorkflowNodeOutcome:

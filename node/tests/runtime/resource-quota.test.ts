@@ -9,7 +9,14 @@ import { stepKernelV2WithHostEffects } from "../helpers/kernel-v2.js"
 function step(rt: { step(json: string): string }, event: Record<string, unknown>) {
   return stepKernelV2WithHostEffects(rt as never, event) as {
     actions: Array<{ kind: string }>
-    observations: Array<{ kind: string; reason?: string; agent_id?: string; state?: string }>
+    observations: Array<{
+      kind: string
+      reason?: string
+      operation?: string
+      subject?: string
+      agent_id?: string
+      state?: string
+    }>
   }
 }
 
@@ -28,7 +35,7 @@ describe("kernel resource quota (M2)", () => {
     expect(out.actions).toHaveLength(0)
   })
 
-  it("denies a spawn that exceeds max_spawn_depth, rolling the turn back", () => {
+  it("denies a spawn that exceeds max_spawn_depth without rolling the turn back", () => {
     const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
     step(rt, { kind: "set_resource_quota", quota: { max_spawn_depth: 0 } })
     step(rt, { kind: "start_run", task: { goal: "parent", criteria: [] } })
@@ -39,8 +46,14 @@ describe("kernel resource quota (M2)", () => {
       parent_session_id: "parent-sess",
     })
 
-    // Denied spawn rolls back to another reasoning pass — no process registered, no suspend.
-    expect(spawn.actions[0]?.kind).toBe("call_provider")
+    // The rejected control request is observable, but no child starts and no rollback occurs.
+    expect(spawn.actions).toHaveLength(0)
+    expect(spawn.observations).toContainEqual(expect.objectContaining({
+      kind: "control_request_rejected",
+      operation: "spawn_sub_agent",
+      subject: "worker",
+    }))
+    expect(spawn.observations.some(o => o.kind === "rollbacked")).toBe(false)
     expect(spawn.observations.some(o => o.kind === "agent_process_changed")).toBe(false)
     expect(spawn.observations.some(o => o.kind === "suspended")).toBe(false)
   })

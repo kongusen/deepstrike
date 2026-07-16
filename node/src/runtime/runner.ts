@@ -448,6 +448,22 @@ function isMemoryLifecycleObservation(obs: KernelObservation): boolean {
     || obs.kind === "promotion_suggested"
 }
 
+function controlRequestRejection(
+  observations: KernelObservation[],
+  operation?: string,
+): { operation: string; subject?: string; reason: string } | undefined {
+  const rejected = observations.find(observation =>
+    observation.kind === "control_request_rejected"
+      && (!operation || observation.operation === operation),
+  )
+  if (!rejected) return undefined
+  return {
+    operation: rejected.operation ?? operation ?? "control_request",
+    ...(rejected.subject ? { subject: rejected.subject } : {}),
+    reason: typeof rejected.reason === "string" ? rejected.reason : "request denied",
+  }
+}
+
 function pendingCallIds(action: KernelRunnerAction): string[] {
   switch (action.kind) {
     case "call_provider":
@@ -854,6 +870,7 @@ export class RuntimeRunner {
         ...(q.maxConcurrentSubagents !== undefined ? { max_concurrent_subagents: q.maxConcurrentSubagents } : {}),
         ...(q.maxTotalSubagents !== undefined ? { max_total_subagents: q.maxTotalSubagents } : {}),
         ...(q.maxSpawnDepth !== undefined ? { max_spawn_depth: q.maxSpawnDepth } : {}),
+        ...(q.maxWorkflowNodes !== undefined ? { max_workflow_nodes: q.maxWorkflowNodes } : {}),
         ...(q.memoryWritesPerWindow !== undefined
           ? { memory_writes_per_window: [q.memoryWritesPerWindow.maxWrites, q.memoryWritesPerWindow.windowMs] }
           : {}),
@@ -1025,7 +1042,14 @@ export class RuntimeRunner {
     this.nextArchiveStart = await this.appendObservations(parentSessionId, runtime, this.nextArchiveStart)
 
     const spawned = findSpawnProcessObservation(observations)
-    if (!spawned) throw new Error("spawn_sub_agent did not emit agent_process_changed")
+    if (!spawned) {
+      const rejected = controlRequestRejection(observations, "spawn_sub_agent")
+      if (rejected) {
+        yield { type: "error", message: `spawn_sub_agent denied: ${rejected.reason}` } as ErrorEvent
+        return
+      }
+      throw new Error("spawn_sub_agent did not emit agent_process_changed")
+    }
 
     const manifest = spawnObservationToManifest(spawned, spec, parentSessionId)
 
@@ -1493,6 +1517,11 @@ export class RuntimeRunner {
       return { nodeOutcomes: (done.node_outcomes ?? []).map(workflowNodeOutcomeFromKernel), outputs: {} }
     }
     if (!initialAction) return { nodeOutcomes: [], outputs: {} }
+    const workflowRejection = controlRequestRejection(observations)
+    if (initialAction.kind === "call_provider" && workflowRejection) {
+      this.workflowContinuation = initialAction
+      return { nodeOutcomes: [], outputs: {}, rejection: workflowRejection }
+    }
     if (initialAction.kind !== "spawn_workflow") {
       throw new Error(`workflow load returned unexpected kernel effect: ${initialAction.kind}`)
     }
@@ -1554,6 +1583,20 @@ export class RuntimeRunner {
           const observationStart = this.pendingObservations.length
           const submitAction = await this.commitKernelMaybeAction(runtime, this.pendingObservations, submitEvent)
           const subObs = this.pendingObservations.slice(observationStart)
+          const rejected = controlRequestRejection(subObs, "submit_workflow_nodes")
+            ?? (subObs.find(o => o.kind === "nodes_rejected")
+              ? { operation: "submit_workflow_nodes", reason: String(subObs.find(o => o.kind === "nodes_rejected")?.reason ?? "request denied") }
+              : undefined)
+          if (rejected) {
+            const denial = `workflow node submission denied: ${rejected.reason}`
+            result.result = {
+              ...result.result,
+              termination: "error",
+              finalMessage: { role: "assistant", content: denial, toolCalls: [] },
+            }
+            outputs.set(result.agentId, denial)
+            if (stableId !== result.agentId) outputs.set(stableId, denial)
+          }
           if (submitAction?.kind === "spawn_workflow") {
             nextNodes.push(...submitAction.nodes as unknown as WorkflowSpawnInfo[])
             budget = submitAction.budget as unknown as WorkflowBudget | undefined ?? budget
@@ -2562,7 +2605,7 @@ export class RuntimeRunner {
             const spec = parseStartWorkflowSpec(call.arguments)
             if (spec) {
               this.pendingAuthoredWorkflows.push(spec)
-              const out = "workflow authored; executing now"
+              const out = "workflow submitted for governance adjudication"
               toolResults.push({ callId: call.id, output: out, isError: false })
               yield { type: "tool_result", callId: call.id, content: out, isError: false } as ToolResultEvent
               continue
@@ -2573,14 +2616,14 @@ export class RuntimeRunner {
             ? parseStartWorkflowArgs(call.arguments)
             : parseSubmitWorkflowNodesArgs(call.arguments)
           yield { type: "workflow_nodes_submitted", nodes } as WorkflowNodesSubmittedEvent
-          const result = { callId: call.id, output: "submitted", isError: false }
+          const result = { callId: call.id, output: "workflow nodes submitted for parent governance adjudication", isError: false }
           toolResults.push(result)
-          yield { type: "tool_result", callId: call.id, content: "submitted", isError: false } as ToolResultEvent
+          yield { type: "tool_result", callId: call.id, content: result.output, isError: false } as ToolResultEvent
         }
 
         // O5 (PreToolUse-hook analog): give the host a STATEFUL veto over each kernel-approved
-        // call. A blocked call never executes; its reason reaches the model as a governance-denied
-        // tool result (the kernel rolls the turn back with the note). Decision failures are closed
+        // call. A blocked call never executes; its reason reaches the model as a committed
+        // governance-denied tool result. Decision failures are closed
         // unless the host explicitly marks this hook advisory with `onToolCallFailure: "open"`.
         let executableCalls = normalCalls
         if (this.opts.onToolCall) {

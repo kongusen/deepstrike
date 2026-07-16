@@ -69,6 +69,24 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
     expect(outcome.outputs["wf-node2"]).toBe("wf-node2")
   })
 
+  it("returns a typed rejection for an invalid DAG instead of an unexpected-effect error", async () => {
+    const runner = new RuntimeRunner({
+      sessionLog: new InMemorySessionLog(),
+      maxTokens: 8000,
+      subAgentOrchestrator: stubOrchestrator() as never,
+    } as never)
+
+    const outcome = await runner.runWorkflow({
+      nodes: [{ task: "self-cycle", role: "implement", dependsOn: [0] }],
+    })
+
+    expect(outcome.nodeOutcomes).toEqual([])
+    expect(outcome.rejection).toMatchObject({
+      operation: "load_workflow",
+      reason: expect.stringContaining("depends on itself"),
+    })
+  })
+
   it("settles standalone workflow node usage from the kernel terminal report", async () => {
     const store = new InMemoryGroupBudgetStore()
     const runner = new RuntimeRunner({

@@ -235,12 +235,12 @@ impl LoopStateMachine {
 
     /// O6 RepeatFuse: track consecutive identical turn signatures (non-meta `name(args)` joined —
     /// the SAME key the 2c soft STOP uses, so the ladder's rungs agree on what "a repeat" is) and
-    /// escalate: `deny_after` ⇒ roll the turn back with a directive note; `terminate_after` ⇒ end
+    /// escalate: `deny_after` ⇒ commit a visible synthetic error result; `terminate_after` ⇒ end
     /// the run [`TerminationReason::NoProgress`] after one final no-tools report turn. Returns
     /// `Some(action)` when a rung fires, `None` to proceed. A meta-tool-only turn records no
     /// signature and neither advances nor resets the streak (control-plane chatter must not
-    /// launder a stall). The streak state is deliberately NOT checkpointed — a deny's rollback
-    /// must not erase the very streak it tripped on.
+    /// launder a stall). The streak state remains independent from turn checkpoints so recovery
+    /// cannot erase the evidence that tripped the fuse.
     pub(super) fn check_repeat_fuse(&mut self, calls: &[ToolCall]) -> Option<LoopAction> {
         if !self.repeat_fuse.enabled {
             return None;

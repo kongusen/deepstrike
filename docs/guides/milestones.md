@@ -91,7 +91,9 @@ milestone_check_pass("design")
 milestone_check_fail("impl", reason="Missing error handling")
 ```
 
-Kernel 收到 `milestone_result` event 后 unlock 或 rollback。
+Kernel 收到 `milestone_result` event 后 unlock 或按 retry policy 处理。达到 `max_attempts` 时，
+`terminate` 直接结束；`rollback` 回滚一次阶段事务后以 `milestone_exceeded` 结束，不会重新进入
+已经耗尽的重试循环。
 
 ---
 

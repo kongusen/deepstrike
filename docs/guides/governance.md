@@ -98,7 +98,9 @@ Workflow 增长走内核 syscall：
 - `SubmitNodes { count }` — append 节点
 - `LoadWorkflow { node_count }` — bootstrap / flatten DAG
 
-超 `max_workflow_nodes` 时 deny + rollback note，workflow 继续但拒绝增长。
+超 `max_workflow_nodes` 时，kernel 提交 `control_request_rejected` observation；请求从未执行，
+因此不会 rollback。顶层 `bootstrap_workflow` 通过 `WorkflowOutcome.rejection` 返回原因；运行中
+的节点提交被拒时，该提交者节点以失败 outcome 结束，root agent 可直接看到真实结果。
 
 ---
 

@@ -32,6 +32,8 @@ export interface ResourceQuota {
   maxTotalSubagents?: number
   /** Max sub-agent nesting depth (direct children of the root loop are depth 1). */
   maxSpawnDepth?: number
+  /** Max nodes in one in-kernel workflow DAG, including dynamically submitted nodes. */
+  maxWorkflowNodes?: number
   /** Rolling-window memory-write rate limit: at most `maxWrites` per any `windowMs` span. */
   memoryWritesPerWindow?: MemoryWriteRateLimit
 }

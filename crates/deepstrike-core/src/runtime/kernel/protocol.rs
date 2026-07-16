@@ -1089,6 +1089,16 @@ pub enum KernelObservation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<RollbackReason>,
     },
+    /// A control-plane request was rejected before its effect started. Unlike `Rollbacked`, this is
+    /// a committed result: there is no transaction to undo, and hosts can route the reason back to
+    /// the caller without mistaking a missing success observation for an internal failure.
+    ControlRequestRejected {
+        turn: u32,
+        operation: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject: Option<String>,
+        reason: String,
+    },
     CapabilityChanged {
         turn: u32,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]

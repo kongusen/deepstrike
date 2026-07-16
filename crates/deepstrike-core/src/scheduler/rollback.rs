@@ -2,19 +2,9 @@
 //!
 //! Extracted from `LoopStateMachine` — these functions carry no state machine
 //! context, only formatting a [`RollbackReason`] into the text surfaced to the
-//! model (concise) or telemetry (verbose) and extracting tool-result output.
+//! model (concise) or telemetry (verbose).
 
 use crate::runtime::session::RollbackReason;
-use crate::types::message::{Content, ToolResult};
-
-/// Flatten a tool result's output into plain text.
-/// `Content::Parts` are serialised to JSON so the text can be carried faithfully.
-pub(crate) fn tool_result_output_text(result: &ToolResult) -> String {
-    match &result.output {
-        Content::Text(s) => s.clone(),
-        Content::Parts(parts) => serde_json::to_string(parts).unwrap_or_default(),
-    }
-}
 
 /// Internal, telemetry-oriented description of a rollback reason.
 pub(crate) fn rollback_reason_message(reason: &RollbackReason) -> String {
@@ -68,4 +58,14 @@ pub(crate) fn build_rollback_note(reason: &RollbackReason, verbose: bool) -> Str
             "Context inconsistency detected. Please continue.".to_string()
         }
     }
+}
+
+/// Build model-facing feedback for a request rejected before any transaction began. Keeping this
+/// separate from `build_rollback_note` prevents telemetry and prompts from falsely claiming state
+/// was reverted when the requested effect never ran.
+pub(crate) fn build_control_rejection_note(operation: &str, reason: &str, verbose: bool) -> String {
+    if verbose {
+        return format!("[SYSTEM] Control request rejected: {operation}: {reason}");
+    }
+    format!("Action `{operation}` was not allowed ({reason}). Please choose a different approach.")
 }

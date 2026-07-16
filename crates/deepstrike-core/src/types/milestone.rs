@@ -39,7 +39,8 @@ pub enum MilestoneRollbackPolicy {
     /// Terminate the run with `MilestoneExceeded` (default).
     #[default]
     Terminate,
-    /// Roll back context to the last checkpoint and let the LLM retry from there.
+    /// Roll back context to the last checkpoint once, then terminate with `MilestoneExceeded` —
+    /// the budget is already exhausted, so re-entering the same retry loop is never productive.
     Rollback,
     /// Continue injecting blocked messages indefinitely (no budget enforcement).
     Continue,

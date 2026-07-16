@@ -5,9 +5,7 @@ use super::{
     KernelObservation, LoopAction, LoopPhase, LoopStateMachine, PendingWorkflowSpawn, SuspendState,
 };
 use crate::proc::AgentProcess;
-use crate::runtime::session::RollbackReason;
 use crate::syscall::{Disposition, Syscall};
-use crate::types::message::Message;
 use crate::types::result::SubAgentResult;
 
 impl LoopStateMachine {
@@ -60,17 +58,18 @@ impl LoopStateMachine {
     }
 
     /// W0: load a workflow DAG and spawn its first gated batch. On an invalid spec (cycle /
-    /// out-of-range dependency) the workflow is not installed and the loop continues with a
-    /// rollback note, mirroring how a denied effect is surfaced.
+    /// out-of-range dependency) the workflow is not installed and the rejection is surfaced as a
+    /// committed control result.
     pub fn load_workflow(
         &mut self,
         spec: crate::orchestration::workflow::WorkflowSpec,
         parent_session_id: &str,
     ) -> LoopAction {
-        self.install_workflow(crate::orchestration::workflow::WorkflowRun::new(
-            &spec,
-            parent_session_id,
-        ))
+        self.install_workflow(
+            crate::orchestration::workflow::WorkflowRun::new(&spec, parent_session_id),
+            "load_workflow",
+            None,
+        )
     }
 
     /// R3-1: append nodes to the in-flight workflow DAG at runtime, then drive one gated spawn round
@@ -115,23 +114,26 @@ impl LoopStateMachine {
         };
         // R3-1 governance: gate DAG growth through the syscall trap. A `max_workflow_nodes` quota
         // denies a submission that would grow the workflow past the cap (runaway loop-until-done
-        // backstop); the workflow continues with its existing nodes and a rollback note is surfaced.
+        // backstop); the workflow continues with its existing nodes and a rejection note is surfaced.
         let disposition = self.evaluate_syscall(&syscall);
         if !disposition.is_allowed() {
             let reason = match &disposition {
                 Disposition::Deny { reason, .. } => reason.clone(),
                 _ => "workflow node submission denied".to_string(),
             };
-            let rb = RollbackReason::GovernanceDenied {
-                tool_name: tool_label.to_string(),
-                reason,
-            };
-            let note = Message::user(super::super::rollback::build_rollback_note(
-                &rb,
+            let note = super::super::rollback::build_control_rejection_note(
+                tool_label,
+                &reason,
                 self.ctx.config.verbose_control_notes,
-            ));
-            self.ctx
-                .push_signal(note.content.as_text().unwrap_or_default().to_string());
+            );
+            self.ctx.push_signal(note);
+            self.observations
+                .push(KernelObservation::ControlRequestRejected {
+                    turn: self.turn,
+                    operation: tool_label.to_string(),
+                    subject: submitter_agent_id.map(str::to_string),
+                    reason,
+                });
             return LoopAction::AwaitingResume;
         }
         let submission = self
@@ -206,17 +208,21 @@ impl LoopStateMachine {
                         Disposition::Deny { reason, .. } => reason.clone(),
                         _ => "workflow authoring denied".to_string(),
                     };
-                    let rb = RollbackReason::GovernanceDenied {
-                        tool_name: "start_workflow".to_string(),
-                        reason,
-                    };
-                    let note = Message::user(super::super::rollback::build_rollback_note(
-                        &rb,
+                    let note = super::super::rollback::build_control_rejection_note(
+                        "start_workflow",
+                        &reason,
                         self.ctx.config.verbose_control_notes,
-                    ));
-                    self.ctx
-                        .push_signal(note.content.as_text().unwrap_or_default().to_string());
-                    return LoopAction::AwaitingResume;
+                    );
+                    self.ctx.push_signal(note);
+                    self.observations
+                        .push(KernelObservation::ControlRequestRejected {
+                            turn: self.turn,
+                            operation: "start_workflow".to_string(),
+                            subject: submitter_agent_id.map(str::to_string),
+                            reason,
+                        });
+                    self.phase = LoopPhase::Reason;
+                    return self.emit_call_llm();
                 }
                 // W-3: announce the bootstrap batch like any other submission (base 0), so the SDK
                 // can persist an agent-authored workflow's nodes and reconstruct them on resume —
@@ -233,7 +239,7 @@ impl LoopStateMachine {
                             submitter: submitter_agent_id.map(str::to_string),
                         });
                 }
-                self.install_workflow(built)
+                self.install_workflow(built, "start_workflow", submitter_agent_id)
             }
         }
     }
@@ -249,18 +255,24 @@ impl LoopStateMachine {
         submission_bases: &[u32],
         outcomes: &[crate::orchestration::workflow::ResumedNodeOutcome],
     ) -> LoopAction {
-        self.install_workflow(crate::orchestration::workflow::WorkflowRun::resume(
-            &spec,
-            parent_session_id,
-            submissions,
-            submission_bases,
-            outcomes,
-        ))
+        self.install_workflow(
+            crate::orchestration::workflow::WorkflowRun::resume(
+                &spec,
+                parent_session_id,
+                submissions,
+                submission_bases,
+                outcomes,
+            ),
+            "load_workflow",
+            None,
+        )
     }
 
     fn install_workflow(
         &mut self,
         built: crate::types::error::Result<crate::orchestration::workflow::WorkflowRun>,
+        operation: &str,
+        subject: Option<&str>,
     ) -> LoopAction {
         match built {
             Ok(mut run) => {
@@ -269,16 +281,19 @@ impl LoopStateMachine {
                 self.drive_workflow(None)
             }
             Err(err) => {
-                let rb = RollbackReason::GovernanceDenied {
-                    tool_name: "load_workflow".to_string(),
-                    reason: err.to_string(),
-                };
-                let note = Message::user(super::super::rollback::build_rollback_note(
-                    &rb,
+                let note = super::super::rollback::build_control_rejection_note(
+                    operation,
+                    &err.to_string(),
                     self.ctx.config.verbose_control_notes,
-                ));
-                self.ctx
-                    .push_signal(note.content.as_text().unwrap_or_default().to_string());
+                );
+                self.ctx.push_signal(note);
+                self.observations
+                    .push(KernelObservation::ControlRequestRejected {
+                        turn: self.turn,
+                        operation: operation.to_string(),
+                        subject: subject.map(str::to_string),
+                        reason: err.to_string(),
+                    });
                 self.phase = LoopPhase::Reason;
                 self.emit_call_llm()
             }
@@ -323,20 +338,16 @@ impl LoopStateMachine {
                 if let Some(run) = self.workflow.as_mut() {
                     run.mark_denied(node);
                 }
-                let rb = RollbackReason::GovernanceDenied {
-                    tool_name: format!(
-                        "workflow-node:{}",
-                        crate::orchestration::workflow::node_agent_id(node)
-                    ),
-                    reason: "quarantine: quarantined node requested write-capable isolation"
-                        .to_string(),
-                };
-                let note = Message::user(super::super::rollback::build_rollback_note(
-                    &rb,
+                let operation = format!(
+                    "workflow-node:{}",
+                    crate::orchestration::workflow::node_agent_id(node)
+                );
+                let note = super::super::rollback::build_control_rejection_note(
+                    &operation,
+                    "quarantine: quarantined node requested write-capable isolation",
                     self.ctx.config.verbose_control_notes,
-                ));
-                self.ctx
-                    .push_signal(note.content.as_text().unwrap_or_default().to_string());
+                );
+                self.ctx.push_signal(note);
                 continue;
             }
             // Owned manifest — releases the immutable `self.workflow` borrow before the gate.

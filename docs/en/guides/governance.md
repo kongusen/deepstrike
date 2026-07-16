@@ -112,7 +112,10 @@ Workflow growth goes through kernel syscalls:
 - `SubmitNodes { count }` — append nodes
 - `LoadWorkflow { node_count }` — bootstrap / flatten DAG
 
-When `max_workflow_nodes` is exceeded: deny + rollback note; the workflow continues but growth is rejected.
+When `max_workflow_nodes` is exceeded, the kernel commits a `control_request_rejected` observation.
+Nothing executed, so nothing is rolled back. Top-level `bootstrapWorkflow` returns the reason through
+`WorkflowOutcome.rejection`; a rejected in-flight node submission fails the submitting node so the
+root agent receives the real outcome.
 
 ### I5: Schema pre-filter
 

@@ -142,6 +142,8 @@ export type KernelRunnerAction =
 
 export interface KernelObservation {
   kind: string
+  operation?: string
+  subject?: string
   action?: string
   rho_after?: number
   sprint?: number

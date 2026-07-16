@@ -2304,6 +2304,9 @@ impl RuntimeRunner {
                     .await;
                 }
                 KernelObservation::LargeResultSpoolFailed { .. } => {}
+                // Rejections are already durable in the kernel transaction record. Call-specific
+                // APIs inspect the observation directly; the generic runner has no host effect.
+                KernelObservation::ControlRequestRejected { .. } => {}
             }
         }
         next_archive_start

@@ -117,6 +117,7 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
     resource_quota=ResourceQuota(
       max_concurrent_subagents=2,
       max_spawn_depth=1,
+      max_workflow_nodes=7,
       memory_writes_per_window=MemoryWriteRateLimit(max_writes=3, window_ms=1000),
     ),
   ))
@@ -127,6 +128,7 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
   assert quota_event["quota"] == {
     "max_concurrent_subagents": 2,
     "max_spawn_depth": 1,
+    "max_workflow_nodes": 7,
     "memory_writes_per_window": [3, 1000],
   }
   signal_event = next(

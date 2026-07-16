@@ -77,9 +77,16 @@ describe("onToolCall (pre-tool hook)", () => {
       toolName: "write_thing",
       reason: "duplicate call — do something different",
     }))
-    // The reason reaches the model: the turn after the block carries the governance note.
+    // The reason reaches the model in the committed structured tool result.
     const later = provider.calls.slice(2).map(c =>
-      [c.systemText, c.stateTurn?.content, ...c.turns.map(m => m.content)].filter(Boolean).join("\n"),
+      [
+        c.systemText,
+        c.stateTurn?.content,
+        ...c.turns.flatMap(m => [
+          m.content,
+          ...(m.contentParts ?? []).map(part => part.type === "tool_result" ? part.output : ""),
+        ]),
+      ].filter(Boolean).join("\n"),
     ).join("\n")
     expect(later).toContain("duplicate call — do something different")
   })

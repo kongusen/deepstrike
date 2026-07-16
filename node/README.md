@@ -245,7 +245,7 @@ A node's `kind` selects the control-flow shape; the same executor drives them al
 
 ### 0.2.11 capabilities
 
-- **Runtime fan-out** — give a node the `submitWorkflowNodesTool` and its agent can append nodes to the live DAG mid-run (true loop-until-done; one verifier per claim it discovers). Recorded and replayed on `resumeWorkflow`.
+- **Runtime fan-out** — give a node the `submitWorkflowNodesTool` and its agent can append nodes to the live DAG mid-run (true loop-until-done; one verifier per claim it discovers). Recorded and replayed on `resumeWorkflow`. Governance rejection fails the submitting node instead of acknowledging work that was never appended.
 - **Quarantine, no escape** — set `trust: "quarantined"` on a node that reads untrusted content; it's denied write-capable isolation in-kernel, and any nodes it submits are coerced to quarantined too (no privilege escalation).
 - **Structured output** — set `outputSchema` on a node; the runner instructs the agent, validates the result against the JSON-Schema subset, and re-runs once with the errors on mismatch. A node that never conforms fails (its dependents starve).
 - **Budget as signal** — with a `maxWorkflowNodes` / `maxConcurrentSubagents` quota installed, each spawned node's goal carries its remaining headroom so a coordinator can size its fan-out to fit.
@@ -719,7 +719,7 @@ for await (const evt of runner.spawnSubAgent({
 }
 ```
 
-Requires an active parent run (`run()` / `wake()` in progress). The kernel emits `agent_process_changed`; the default `SubAgentOrchestrator` runs the child with a filtered execution plane and feeds `sub_agent_completed` back.
+Requires an active parent run (`run()` / `wake()` in progress). The kernel emits `agent_process_changed`; the default `SubAgentOrchestrator` runs the child with a filtered execution plane and feeds `sub_agent_completed` back. If governance rejects the spawn before execution, the iterator yields one `error` event containing the denial reason; the parent turn is not rolled back.
 
 ---
 

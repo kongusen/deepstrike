@@ -2104,7 +2104,7 @@ fn spawn_quota_denies_beyond_concurrency_limit() {
     assert_eq!(sm.task_table().children_of("root").len(), 1);
     sm.take_observations();
 
-    // Second spawn while one is still Running: denied by quota → rolled back, no new child.
+    // Second spawn while one is still Running: denied before execution, no new child.
     let a2 = sm.spawn_sub_agent(
         AgentRunSpec::new(
             AgentIdentity::sub_agent("b", "b-sess"),
@@ -2113,9 +2113,21 @@ fn spawn_quota_denies_beyond_concurrency_limit() {
         ),
         "parent-sess",
     );
-    assert!(matches!(a2, LoopAction::CallLLM { .. }));
+    assert!(matches!(a2, LoopAction::AwaitingResume));
     assert_eq!(sm.task_table().children_of("root").len(), 1);
     assert!(sm.agent_process("b").is_none());
+    let observations = sm.take_observations();
+    assert!(observations.iter().any(|o| matches!(
+        o,
+        KernelObservation::ControlRequestRejected {
+            operation,
+            subject: Some(subject),
+            ..
+        } if operation == "spawn_sub_agent" && subject == "b"
+    )));
+    assert!(!observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::Rollbacked { .. })));
 }
 
 #[test]
@@ -2138,9 +2150,21 @@ fn spawn_quota_denies_when_depth_exceeds_limit() {
         ),
         "parent-sess",
     );
-    assert!(matches!(action, LoopAction::CallLLM { .. }));
+    assert!(matches!(action, LoopAction::AwaitingResume));
     assert!(!sm.is_suspended());
     assert!(sm.agent_process("c").is_none());
+    let observations = sm.take_observations();
+    assert!(observations.iter().any(|o| matches!(
+        o,
+        KernelObservation::ControlRequestRejected {
+            operation,
+            subject: Some(subject),
+            ..
+        } if operation == "spawn_sub_agent" && subject == "c"
+    )));
+    assert!(!observations
+        .iter()
+        .any(|o| matches!(o, KernelObservation::Rollbacked { .. })));
 }
 
 #[test]
@@ -2814,6 +2838,36 @@ fn malformed_workflow_submission_emits_typed_rejection() {
             ..
         } if reason.contains("out of range")
     )));
+}
+
+#[test]
+fn invalid_loaded_workflow_emits_control_rejection_without_rollback() {
+    use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+    use crate::types::agent::AgentRole;
+
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("parent"));
+    sm.take_observations();
+
+    let spec = WorkflowSpec::new(vec![
+        WorkflowNode::new(RuntimeTask::new("self-cycle"), AgentRole::Implement)
+            .with_depends_on(vec![0]),
+    ]);
+    let action = load_workflow_started(&mut sm, spec, "sess");
+    assert!(matches!(action, LoopAction::CallLLM { .. }));
+    let observations = sm.take_observations();
+    assert!(
+        observations.iter().any(|observation| matches!(
+            observation,
+            KernelObservation::ControlRequestRejected { operation, reason, .. }
+                if operation == "load_workflow" && reason.contains("depends on itself")
+        )),
+        "expected typed load rejection, got {observations:?}"
+    );
+    assert!(!observations
+        .iter()
+        .any(|observation| matches!(observation, KernelObservation::Rollbacked { .. })));
+    assert!(!sm.workflow_active());
 }
 
 #[test]

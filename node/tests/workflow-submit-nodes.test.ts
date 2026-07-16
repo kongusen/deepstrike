@@ -1,4 +1,6 @@
 import { getKernel } from "../src/kernel.js"
+import { RuntimeRunner } from "../src/runtime/runner.js"
+import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import { submitWorkflowNodesToKernel } from "../src/types/agent.js"
 import type { WorkflowSpec, WorkflowSpawnInfo } from "../src/types/agent.js"
 import { buildWorkflowNodesSubmittedEvent, recoverSubmittedWorkflowNodes } from "../src/runtime/session-repair.js"
@@ -151,6 +153,39 @@ describe("submit_workflow_nodes over the kernel ABI", () => {
     const done = complete(rt, "wf-node1")
     const completed = done.observations.find(o => o.kind === "workflow_completed")
     expect(completed?.node_outcomes?.map(node => node.node_id).sort()).toEqual(["wf-node0", "wf-node1"])
+  })
+
+  it("marks the submitting node failed when the parent kernel rejects its proposed batch", async () => {
+    const goals: string[] = []
+    const orchestrator = {
+      async run(ctx: { spec: { goal: string }; manifest: { agent_id: string } }) {
+        goals.push(ctx.spec.goal)
+        return {
+          agentId: ctx.manifest.agent_id,
+          result: {
+            termination: "completed",
+            finalMessage: { role: "assistant", content: "submitted", toolCalls: [] },
+            turnsUsed: 1,
+            totalTokensUsed: 1,
+          },
+          submittedNodes: [{ task: "discovered", role: "implement" }],
+        }
+      },
+    }
+    const runner = new RuntimeRunner({
+      sessionLog: new InMemorySessionLog(),
+      maxTokens: 8000,
+      resourceQuota: { maxWorkflowNodes: 1 },
+      subAgentOrchestrator: orchestrator as never,
+    } as never)
+
+    const outcome = await runner.runWorkflow({ nodes: [{ task: "root", role: "implement" }] })
+
+    expect(goals).toEqual([expect.stringContaining("root")])
+    expect(outcome.nodeOutcomes).toEqual([
+      expect.objectContaining({ nodeId: "wf-node0", status: "failed", termination: "error" }),
+    ])
+    expect(outcome.outputs["wf-node0"]).toContain("workflow node submission denied")
   })
 })
 

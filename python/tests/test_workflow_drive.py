@@ -499,6 +499,41 @@ async def test_run_workflow_submit_nodes_appends_and_completes():
     assert "discovered" in orch.goals
 
 
+@pytest.mark.asyncio
+async def test_run_workflow_rejected_submission_fails_the_submitting_node():
+    class _SubmitOnceOrchestrator:
+        def __init__(self):
+            self.goals: list[str] = []
+
+        async def run(self, ctx):
+            self.goals.append(ctx.spec.goal)
+            return SubAgentResult(
+                agent_id=ctx.spec.identity.agent_id,
+                result=LoopResult(termination="completed", turns_used=1, total_tokens_used=1),
+                submitted_nodes=[WorkflowNodeSpec(task="discovered", role="implement")],
+            )
+
+    orch = _SubmitOnceOrchestrator()
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=_StubProvider(),
+        session_log=InMemorySessionLog(),
+        execution_plane=LocalExecutionPlane(),
+        sub_agent_orchestrator=orch,
+        resource_quota={"max_workflow_nodes": 1},
+        max_tokens=1000,
+    ))
+
+    outcome = await runner.run_workflow(
+        WorkflowSpec(nodes=[WorkflowNodeSpec(task="root", role="implement")])
+    )
+
+    assert len(orch.goals) == 1
+    assert [(node.node_id, node.status, node.termination) for node in outcome.node_outcomes] == [
+        ("wf-node0", "failed", "error")
+    ]
+    assert "workflow node submission denied" in outcome.outputs["wf-node0"]
+
+
 # ── G3 structured output ─────────────────────────────────────────────────────────────────────────
 
 def test_g3_validate_against_schema_subset():
@@ -862,6 +897,27 @@ async def test_standalone_workflow_requires_durable_start_before_dispatch():
     assert orch.goals == []
     assert runner._active_kernel is None
     assert runner._current_session_id is None
+
+
+@pytest.mark.asyncio
+async def test_standalone_invalid_workflow_returns_typed_rejection():
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=_StubProvider(),
+        session_log=InMemorySessionLog(),
+        execution_plane=LocalExecutionPlane(),
+        sub_agent_orchestrator=_StubOrchestrator(),
+        max_tokens=1000,
+    ))
+    spec = WorkflowSpec(nodes=[
+        WorkflowNodeSpec(task="self-cycle", role="implement", depends_on=[0]),
+    ])
+
+    outcome = await runner.run_workflow(spec)
+
+    assert outcome.node_outcomes == []
+    assert outcome.rejection is not None
+    assert outcome.rejection.operation == "load_workflow"
+    assert "depends on itself" in outcome.rejection.reason
 
 
 @pytest.mark.asyncio

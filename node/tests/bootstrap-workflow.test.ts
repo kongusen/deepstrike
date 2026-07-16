@@ -108,5 +108,9 @@ describe("bootstrapWorkflow drives an agent-authored DAG over the real kernel", 
     const outcome = await runner.bootstrapWorkflow(spec)
     expect(ran).toEqual([])
     expect(outcome.nodeOutcomes).toEqual([])
+    expect(outcome.rejection).toMatchObject({
+      operation: "start_workflow",
+      reason: expect.stringContaining("would grow workflow"),
+    })
   })
 })

@@ -165,6 +165,9 @@ export type KernelRunnerAction =
 
 export interface KernelObservation {
   kind: string
+  /** control_request_rejected: stable control-plane operation name and optional subject id. */
+  operation?: string
+  subject?: string
   action?: string
   rho_after?: number
   sprint?: number

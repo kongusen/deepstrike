@@ -95,3 +95,6 @@ async def test_bootstrap_workflow_denied_past_workflow_node_quota():
     outcome = await runner.bootstrap_workflow(spec)
     assert orch.ran == []
     assert [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")] == []
+    assert outcome.rejection is not None
+    assert outcome.rejection.operation == "start_workflow"
+    assert "would grow workflow" in outcome.rejection.reason

@@ -219,7 +219,7 @@ describe("E2E mechanism contract tests", () => {
     expect(sawSummary).toBe(true)
   })
 
-  it("K05 rolls back fatal tool failures and retries to success", async () => {
+  it("K05 commits fatal tool failures as visible errors and retries to success", async () => {
     let attempts = 0
     const provider = new ScriptedProvider((context) => {
       if (contextText(context).includes("success on attempt 3")) {
@@ -251,7 +251,8 @@ describe("E2E mechanism contract tests", () => {
 
     expect(text).toContain("SUCCESS")
     expect(attempts).toBe(3)
-    expect(events.filter(e => e.event.kind === "rollbacked")).toHaveLength(2)
+    expect(provider.calls.some(context => contextText(context).includes("transient error"))).toBe(true)
+    expect(events.filter(e => e.event.kind === "rollbacked")).toHaveLength(0)
   })
 
   it("K06 completes a 20-turn tool loop within a wide budget without compression", async () => {

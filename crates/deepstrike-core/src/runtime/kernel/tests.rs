@@ -1505,15 +1505,19 @@ fn set_resource_quota_input_denies_spawn_over_quota() {
         parent_session_id: "parent-session".to_string(),
     }));
 
-    // Denied spawn rolls the turn back to another reasoning pass — no process registered,
-    // not suspended on a sub-agent join.
-    assert!(matches!(
-        step.actions.as_slice(),
-        [KernelAction {
-            effect: KernelEffect::CallProvider { .. },
-            ..
-        }]
-    ));
+    // A rejected spawn never executed, so it is a committed control result rather than a rollback.
+    assert!(step.actions.is_empty());
+    assert!(step.observations.iter().any(|o| matches!(
+        o,
+        KernelObservation::ControlRequestRejected { operation, subject, reason, .. }
+            if operation == "spawn_sub_agent"
+                && subject.as_deref() == Some("worker")
+                && reason.contains("max_spawn_depth")
+    )));
+    assert!(!step.observations.iter().any(|o| matches!(
+        o,
+        KernelObservation::Rollbacked { .. }
+    )));
     assert!(!step.observations.iter().any(|o| matches!(
         o,
         KernelObservation::AgentProcessChanged { agent_id, .. } if agent_id == "worker"
@@ -1625,14 +1629,13 @@ fn budget_grant_enforces_local_spawn_cap() {
         parent_session_id: "parent-session".to_string(),
     }));
 
-    // Denied: domain already at the cumulative cap → rolled back, no process registered.
-    assert!(matches!(
-        step.actions.as_slice(),
-        [KernelAction {
-            effect: KernelEffect::CallProvider { .. },
-            ..
-        }]
-    ));
+    // Denied before execution: surface the rejection without rolling the parent turn back.
+    assert!(step.actions.is_empty());
+    assert!(step.observations.iter().any(|o| matches!(
+        o,
+        KernelObservation::ControlRequestRejected { operation, subject, .. }
+            if operation == "spawn_sub_agent" && subject.as_deref() == Some("worker")
+    )));
     assert!(runtime.state_machine().agent_process("worker").is_none());
     assert_eq!(runtime.local_subagents_spawned(), 0);
 }

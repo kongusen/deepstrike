@@ -2,12 +2,10 @@
 
 use super::super::tcb::{TaskLifecycle, TaskTable, Tcb, WaitReason};
 use super::{KernelObservation, LoopAction, LoopPhase, LoopStateMachine, SuspendState};
-use crate::AgentRunSpec;
 use crate::proc::AgentProcess;
-use crate::runtime::session::RollbackReason;
 use crate::syscall::{Disposition, Syscall};
-use crate::types::message::Message;
 use crate::types::result::{SubAgentResult, TerminationReason};
+use crate::AgentRunSpec;
 
 impl LoopStateMachine {
     /// Spawn a sub-agent: registers a kernel process, emits `AgentProcessChanged`,
@@ -19,25 +17,19 @@ impl LoopStateMachine {
             &self.ctx.capabilities,
         );
         // M2b: spawning is an effectful request — route it through the same syscall trap as tool
-        // calls. No spawn policy stages exist yet, so this defaults to `Allow`; a `Deny` rolls the
-        // turn back exactly like a denied tool call. Establishing the chokepoint now means quotas /
-        // spawn rules can attach later without a new code path.
+        // calls. A rejected spawn has not executed, so it is surfaced as a committed control result
+        // instead of rolling back the parent transaction.
         if let Disposition::Deny { reason, .. } =
             self.evaluate_syscall(&Syscall::Spawn(manifest.clone()))
         {
-            let rb = RollbackReason::GovernanceDenied {
-                tool_name: format!("spawn:{}", manifest.agent_id),
-                reason,
-            };
-            let note = Message::user(super::super::rollback::build_rollback_note(
-                &rb,
-                self.ctx.config.verbose_control_notes,
-            ));
-            self.rollback(rb);
-            self.ctx
-                .push_signal(note.content.as_text().unwrap_or_default().to_string());
-            self.phase = LoopPhase::Reason;
-            return self.emit_call_llm();
+            self.observations
+                .push(KernelObservation::ControlRequestRejected {
+                    turn: self.turn,
+                    operation: "spawn_sub_agent".to_string(),
+                    subject: Some(manifest.agent_id.to_string()),
+                    reason,
+                });
+            return LoopAction::AwaitingResume;
         }
         let agent_id = manifest.agent_id.to_string();
         // M1 収口: register the sub-agent as a child task — the single source of truth. The

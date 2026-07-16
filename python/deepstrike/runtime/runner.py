@@ -121,6 +121,7 @@ class ResourceQuota:
   # run_group this spans N stateless top-level runs (seeded/charged via the group ledger).
   max_total_subagents: int | None = None
   max_spawn_depth: int | None = None
+  max_workflow_nodes: int | None = None
   memory_writes_per_window: MemoryWriteRateLimit | tuple[int, int] | None = None
 
 
@@ -355,6 +356,23 @@ _MEMORY_LIFECYCLE_KINDS = frozenset({
 
 def _is_memory_lifecycle_observation(obs: dict[str, Any]) -> bool:
   return obs.get("kind") in _MEMORY_LIFECYCLE_KINDS
+
+
+def _control_request_rejection(
+  observations: list[dict[str, Any]], operation: str | None = None,
+) -> dict[str, str] | None:
+  rejected = next((
+    observation for observation in observations
+    if observation.get("kind") == "control_request_rejected"
+    and (operation is None or observation.get("operation") == operation)
+  ), None)
+  if rejected is None:
+    return None
+  return {
+    "operation": str(rejected.get("operation") or operation or "control_request"),
+    "subject": str(rejected.get("subject") or ""),
+    "reason": str(rejected.get("reason") or "request denied"),
+  }
 
 
 class RuntimeRunner:
@@ -704,6 +722,10 @@ class RuntimeRunner:
 
     spawned_obs = _find_spawn_obs(observations)
     if spawned_obs is None:
+      rejected = _control_request_rejection(observations, "spawn_sub_agent")
+      if rejected is not None:
+        yield ErrorEvent(message=f"spawn_sub_agent denied: {rejected['reason']}")
+        return
       raise RuntimeError("spawn_sub_agent did not emit agent_process_changed")
 
     manifest = AgentProcessChangedObservation(
@@ -928,6 +950,7 @@ class RuntimeRunner:
     from deepstrike.types.agent import (
       LoopResult,
       SubAgentResult,
+      ControlRequestRejection,
       WorkflowSpawnInfo,
       sub_agent_result_to_kernel,
       submit_workflow_nodes_to_kernel,
@@ -1182,13 +1205,24 @@ class RuntimeRunner:
     def _find_done(obs: list):
       return next((o for o in obs if o.get("kind") == "workflow_completed"), None)
 
-    def _typed_outcome(done_observation: dict | None) -> WorkflowOutcome:
+    def _typed_outcome(
+      done_observation: dict | None,
+      rejection: dict[str, str] | None = None,
+    ) -> WorkflowOutcome:
       return WorkflowOutcome(
         node_outcomes=[
           workflow_node_outcome_from_kernel(raw)
           for raw in ((done_observation or {}).get("node_outcomes") or [])
         ],
         outputs=dict(outputs),
+        rejection=(
+          ControlRequestRejection(
+            operation=rejection["operation"],
+            reason=rejection["reason"],
+            subject=rejection.get("subject") or None,
+          )
+          if rejection is not None else None
+        ),
       )
 
     def _accept_spawn(spawn: KernelRunnerAction) -> list[dict[str, Any]]:
@@ -1212,6 +1246,10 @@ class RuntimeRunner:
       return _typed_outcome(done)
     if initial_action is None:
       return _typed_outcome(None)
+    workflow_rejection = _control_request_rejection(observations)
+    if initial_action.kind == "call_provider" and workflow_rejection is not None:
+      self._workflow_continuation_action = initial_action
+      return _typed_outcome(None, workflow_rejection)
     if initial_action.kind != "spawn_workflow":
       raise RuntimeError(f"workflow load returned unexpected kernel effect: {initial_action.kind}")
     nodes = list(initial_action.nodes or [])
@@ -1326,6 +1364,27 @@ class RuntimeRunner:
           observation_start = len(self._pending_observations)
           submit_action = kernel_maybe_action(runtime, self._pending_observations, submit_event)
           sub_obs = self._pending_observations[observation_start:]
+          rejected = _control_request_rejection(sub_obs, "submit_workflow_nodes")
+          if rejected is None:
+            nodes_rejected = next((o for o in sub_obs if o.get("kind") == "nodes_rejected"), None)
+            if nodes_rejected is not None:
+              rejected = {
+                "operation": "submit_workflow_nodes",
+                "subject": result.agent_id,
+                "reason": str(nodes_rejected.get("reason") or "request denied"),
+              }
+          if rejected is not None:
+            from deepstrike._kernel import Message
+            denial = f"workflow node submission denied: {rejected['reason']}"
+            result.result = LoopResult(
+              termination="error",
+              turns_used=result.result.turns_used,
+              total_tokens_used=result.result.total_tokens_used,
+              final_message=Message(role="assistant", content=denial),
+            )
+            outputs[result.agent_id] = denial
+            if stable_id != result.agent_id:
+              outputs[stable_id] = denial
           if submit_action is not None:
             if submit_action.kind != "spawn_workflow":
               raise RuntimeError(
@@ -2478,7 +2537,7 @@ class RuntimeRunner:
             spec = _parse_start_workflow_spec(call.arguments)
             if spec is not None:
               self._pending_authored_workflows.append(spec)
-              out = "workflow authored; executing now"
+              out = "workflow submitted for governance adjudication"
               tool_results.append(ToolResult(call_id=call.id, output=out, is_error=False))
               yield ToolResultEvent(call_id=call.id, content=out, is_error=False)
               continue
@@ -2489,8 +2548,9 @@ class RuntimeRunner:
             else _parse_submit_workflow_nodes_args(call.arguments)
           )
           yield WorkflowNodesSubmittedEvent(nodes=nodes)
-          tool_results.append(ToolResult(call_id=call.id, output="submitted", is_error=False))
-          yield ToolResultEvent(call_id=call.id, content="submitted", is_error=False)
+          out = "workflow nodes submitted for parent governance adjudication"
+          tool_results.append(ToolResult(call_id=call.id, output=out, is_error=False))
+          yield ToolResultEvent(call_id=call.id, content=out, is_error=False)
 
         # O5 (PreToolUse-hook analog): give the host a STATEFUL veto over each kernel-approved
         # call. A blocked call never executes; its reason reaches the model as a governance-denied
@@ -3252,11 +3312,13 @@ def _resource_quota_to_kernel(quota: ResourceQuota | dict[str, Any]) -> dict[str
     max_concurrent = quota.get("max_concurrent_subagents")
     max_total = quota.get("max_total_subagents")
     max_depth = quota.get("max_spawn_depth")
+    max_workflow_nodes = quota.get("max_workflow_nodes")
     rate = quota.get("memory_writes_per_window")
   else:
     max_concurrent = quota.max_concurrent_subagents
     max_total = quota.max_total_subagents
     max_depth = quota.max_spawn_depth
+    max_workflow_nodes = quota.max_workflow_nodes
     rate = quota.memory_writes_per_window
 
   out: dict[str, Any] = {}
@@ -3266,6 +3328,8 @@ def _resource_quota_to_kernel(quota: ResourceQuota | dict[str, Any]) -> dict[str
     out["max_total_subagents"] = max_total
   if max_depth is not None:
     out["max_spawn_depth"] = max_depth
+  if max_workflow_nodes is not None:
+    out["max_workflow_nodes"] = max_workflow_nodes
   if rate is not None:
     if isinstance(rate, dict):
       out["memory_writes_per_window"] = [

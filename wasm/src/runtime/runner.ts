@@ -88,6 +88,8 @@ export interface ResourceQuota {
   maxConcurrentSubagents?: number
   /** Max sub-agent nesting depth (direct children of the root loop are depth 1). */
   maxSpawnDepth?: number
+  /** Max nodes in one in-kernel workflow DAG, including dynamically submitted nodes. */
+  maxWorkflowNodes?: number
   /** Rolling-window memory-write rate limit: at most `maxWrites` per any `windowMs` span. */
   memoryWritesPerWindow?: MemoryWriteRateLimit
 }
@@ -311,6 +313,22 @@ function pendingCallIds(action: KernelRunnerAction): string[] {
     case "spawn_workflow": return action.nodes.map(node => String(node.agent_id ?? "")).filter(Boolean)
     case "preempt_sub_agents": return action.agentIds
     default: return "effectId" in action ? [action.effectId] : []
+  }
+}
+
+function controlRequestRejection(
+  observations: KernelObservation[],
+  operation?: string,
+): { operation: string; subject?: string; reason: string } | undefined {
+  const rejected = observations.find(observation =>
+    observation.kind === "control_request_rejected"
+      && (!operation || observation.operation === operation),
+  )
+  if (!rejected) return undefined
+  return {
+    operation: rejected.operation ?? operation ?? "control_request",
+    ...(rejected.subject ? { subject: rejected.subject } : {}),
+    reason: typeof rejected.reason === "string" ? rejected.reason : "request denied",
   }
 }
 
@@ -1178,7 +1196,7 @@ export class RuntimeRunner {
             const spec = parseStartWorkflowSpec(call.arguments)
             if (spec) {
               this.pendingAuthoredWorkflows.push(spec)
-              const out = "workflow authored; executing now"
+              const out = "workflow submitted for governance adjudication"
               toolResults.push({ callId: call.id, output: out, isError: false })
               yield { type: "tool_result", callId: call.id, content: out, isError: false } as ToolResultEvent
               continue
@@ -1188,8 +1206,9 @@ export class RuntimeRunner {
             ? parseStartWorkflowArgs(call.arguments)
             : parseSubmitWorkflowNodesArgs(call.arguments)
           yield { type: "workflow_nodes_submitted", nodes } as WorkflowNodesSubmittedEvent
-          toolResults.push({ callId: call.id, output: "submitted", isError: false })
-          yield { type: "tool_result", callId: call.id, content: "submitted", isError: false } as ToolResultEvent
+          const out = "workflow nodes submitted for parent governance adjudication"
+          toolResults.push({ callId: call.id, output: out, isError: false })
+          yield { type: "tool_result", callId: call.id, content: out, isError: false } as ToolResultEvent
         }
         // O5 (PreToolUse-hook analog): stateful host veto over each kernel-approved call.
         // A blocked call never executes; its reason reaches the model as a denied result.
@@ -1487,7 +1506,25 @@ export class RuntimeRunner {
     this.nextArchiveStart = await this.appendObservations(parentSessionId, runtime, this.nextArchiveStart)
 
     const spawned = findSpawnProcessObservation(observations)
-    if (!spawned) throw new Error("spawn_sub_agent did not emit agent_process_changed")
+    if (!spawned) {
+      const rejected = controlRequestRejection(observations, "spawn_sub_agent")
+      if (rejected) {
+        return {
+          agentId: rejected.subject ?? spec.identity.agentId,
+          result: {
+            termination: "error",
+            finalMessage: {
+              role: "assistant",
+              content: `spawn_sub_agent denied: ${rejected.reason}`,
+              toolCalls: [],
+            },
+            turnsUsed: 0,
+            totalTokensUsed: 0,
+          },
+        }
+      }
+      throw new Error("spawn_sub_agent did not emit agent_process_changed")
+    }
 
     const manifest = spawnObservationToManifest(spawned, spec, parentSessionId)
 
@@ -1710,6 +1747,7 @@ export class RuntimeRunner {
       config.resource_quota = {
         ...(q.maxConcurrentSubagents !== undefined ? { max_concurrent_subagents: q.maxConcurrentSubagents } : {}),
         ...(q.maxSpawnDepth !== undefined ? { max_spawn_depth: q.maxSpawnDepth } : {}),
+        ...(q.maxWorkflowNodes !== undefined ? { max_workflow_nodes: q.maxWorkflowNodes } : {}),
         ...(q.memoryWritesPerWindow !== undefined
           ? { memory_writes_per_window: [q.memoryWritesPerWindow.maxWrites, q.memoryWritesPerWindow.windowMs] }
           : {}),
@@ -2000,6 +2038,11 @@ export class RuntimeRunner {
       return { nodeOutcomes: (done.node_outcomes ?? []).map(workflowNodeOutcomeFromKernel), outputs: {} }
     }
     if (!initialAction) return { nodeOutcomes: [], outputs: {} }
+    const workflowRejection = controlRequestRejection(observations)
+    if (initialAction.kind === "call_provider" && workflowRejection) {
+      this.workflowContinuation = initialAction
+      return { nodeOutcomes: [], outputs: {}, rejection: workflowRejection }
+    }
     if (initialAction.kind !== "spawn_workflow") {
       throw new Error(`workflow load returned unexpected kernel effect: ${initialAction.kind}`)
     }
@@ -2048,6 +2091,21 @@ export class RuntimeRunner {
           const observationStart = this.pendingObservations.length
           const submitAction = kernelMaybeAction(runtime, this.pendingObservations, submitEvent)
           const subObs = this.pendingObservations.slice(observationStart)
+          const nodesRejected = subObs.find(observation => observation.kind === "nodes_rejected")
+          const rejected = controlRequestRejection(subObs, "submit_workflow_nodes")
+            ?? (nodesRejected
+              ? { operation: "submit_workflow_nodes", reason: String(nodesRejected.reason ?? "request denied") }
+              : undefined)
+          if (rejected) {
+            const denial = `workflow node submission denied: ${rejected.reason}`
+            result.result = {
+              ...result.result,
+              termination: "error",
+              finalMessage: { role: "assistant", content: denial, toolCalls: [] },
+            }
+            outputs.set(result.agentId, denial)
+            if (stableId !== result.agentId) outputs.set(stableId, denial)
+          }
           if (submitAction?.kind === "spawn_workflow") {
             nextNodes.push(...submitAction.nodes as unknown as WorkflowSpawnInfo[])
             budget = submitAction.budget as unknown as WorkflowBudget | undefined ?? budget

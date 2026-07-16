@@ -337,9 +337,16 @@ export interface WorkflowNodeOutcome {
   output?: Message
 }
 
+export interface ControlRequestRejection {
+  operation: string
+  subject?: string
+  reason: string
+}
+
 export interface WorkflowOutcome {
   nodeOutcomes: WorkflowNodeOutcome[]
   outputs: Record<string, string>
+  rejection?: ControlRequestRejection
 }
 
 export function workflowNodeOutcomeFromKernel(raw: KernelWorkflowNodeOutcome): WorkflowNodeOutcome {

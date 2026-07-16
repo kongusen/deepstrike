@@ -78,4 +78,67 @@ describe("bootstrapWorkflow drives an agent-authored DAG (wasm)", () => {
     expect(outcome.outputs["wf-node0"]).toBe("ok")
     expect(outcome.outputs["wf-node1"]).toBe("ok")
   })
+
+  it("keeps the provider continuation when governance rejects the authored workflow", async () => {
+    const reply = JSON.stringify({
+      version: 2,
+      actions: [{ kind: "call_provider", effect_id: "provider-rejected", context: {}, tools: [] }],
+      observations: [{
+        kind: "control_request_rejected",
+        operation: "start_workflow",
+        reason: "submit_nodes would grow workflow to 2 nodes (max 1)",
+      }],
+      faults: [],
+    })
+    const runner = new RuntimeRunner({ sessionLog: new InMemorySessionLog(), maxTokens: 8000 } as never)
+    ;(runner as never as { activeKernel: unknown }).activeKernel = {
+      turn: () => 0,
+      step: () => reply,
+    }
+    ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-rejected"
+    ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
+
+    await expect(runner.bootstrapWorkflow({ nodes: [
+      { task: "A", role: "implement" },
+      { task: "B", role: "implement" },
+    ] })).resolves.toEqual({
+      nodeOutcomes: [],
+      outputs: {},
+      rejection: {
+        operation: "start_workflow",
+        reason: "submit_nodes would grow workflow to 2 nodes (max 1)",
+      },
+    })
+  })
+
+  it("returns a typed rejection when a host-loaded workflow is invalid", async () => {
+    const reply = JSON.stringify({
+      version: 2,
+      actions: [{ kind: "call_provider", effect_id: "provider-invalid", context: {}, tools: [] }],
+      observations: [{
+        kind: "control_request_rejected",
+        operation: "load_workflow",
+        reason: "workflow node 0 cannot depend on itself",
+      }],
+      faults: [],
+    })
+    const runner = new RuntimeRunner({ sessionLog: new InMemorySessionLog(), maxTokens: 8000 } as never)
+    ;(runner as never as { activeKernel: unknown }).activeKernel = {
+      turn: () => 0,
+      step: () => reply,
+    }
+    ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-invalid"
+    ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
+
+    await expect(runner.runWorkflow({ nodes: [
+      { task: "self-cycle", role: "implement", dependsOn: [0] },
+    ] })).resolves.toEqual({
+      nodeOutcomes: [],
+      outputs: {},
+      rejection: {
+        operation: "load_workflow",
+        reason: "workflow node 0 cannot depend on itself",
+      },
+    })
+  })
 })

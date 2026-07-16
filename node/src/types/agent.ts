@@ -376,9 +376,18 @@ export interface WorkflowNodeOutcome {
   output?: Message
 }
 
+/** A control-plane request rejected before any workflow effect started. */
+export interface ControlRequestRejection {
+  operation: string
+  subject?: string
+  reason: string
+}
+
 export interface WorkflowOutcome {
   nodeOutcomes: WorkflowNodeOutcome[]
   outputs: Record<string, string>
+  /** Present when the workflow itself was rejected before any node ran. */
+  rejection?: ControlRequestRejection
 }
 
 export function workflowNodeOutcomeFromKernel(raw: KernelWorkflowNodeOutcome): WorkflowNodeOutcome {

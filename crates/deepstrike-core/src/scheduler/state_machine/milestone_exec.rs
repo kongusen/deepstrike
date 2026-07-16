@@ -117,8 +117,7 @@ impl LoopStateMachine {
                             reason: format!("milestone {} retry budget exhausted", result.phase_id),
                         };
                         self.rollback(rb_reason);
-                        self.phase = LoopPhase::Reason;
-                        return self.emit_call_llm();
+                        return self.terminate(TerminationReason::MilestoneExceeded, None);
                     }
                     MilestoneRollbackPolicy::Continue => {
                         // Fall through to normal blocked handling below.

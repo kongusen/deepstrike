@@ -93,4 +93,36 @@ describe("M5 v2.1 top-level start_workflow auto-pivot", () => {
     // The run continued past the authoring turn and produced the final synthesis text.
     expect(text).toContain("synthesized the sub-workflow results")
   })
+
+  it("surfaces a quota rejection to the author instead of crashing after a false success", async () => {
+    const provider = new AuthoringProvider()
+    const plane = new LocalExecutionPlane()
+    plane.register(tool(startWorkflowTool.name, startWorkflowTool.description, JSON.parse(startWorkflowTool.parameters), async () => ""))
+    const runner = new RuntimeRunner({
+      provider,
+      sessionLog: new InMemorySessionLog(),
+      executionPlane: plane,
+      maxTokens: 8000,
+      maxTurns: 5,
+      resourceQuota: { maxWorkflowNodes: 1 },
+    } as never)
+
+    const events: StreamEvent[] = []
+    for await (const event of runner.run({ sessionId: "auto-pivot-denied", goal: "author an oversized workflow" })) {
+      events.push(event)
+    }
+
+    expect(events.some(event => event.type === "error")).toBe(false)
+    const toolResult = events.find(event => event.type === "tool_result") as
+      | { content?: string; isError?: boolean }
+      | undefined
+    expect(toolResult?.content).toContain("submitted for governance adjudication")
+    expect(toolResult?.isError).toBe(false)
+    const allContexts = provider.contexts.map(context => [
+      context.systemText, context.systemStable, context.systemKnowledge,
+      context.stateTurn?.content, ...context.turns.map(message => message.content),
+    ].filter(Boolean).join("\n")).join("\n")
+    expect(allContexts).toContain("start_workflow")
+    expect(allContexts).toContain("not allowed")
+  })
 })

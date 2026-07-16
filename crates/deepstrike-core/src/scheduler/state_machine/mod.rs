@@ -1026,7 +1026,7 @@ impl LoopStateMachine {
 
                 // O6 RepeatFuse: the hard rungs above the 2c soft STOP. Runs BEFORE the governance
                 // gate and independent of whether a policy is loaded — a batteries-included kernel
-                // protection, not a policy feature. Deny rolls the turn back with a directive note;
+                // protection, not a policy feature. Deny commits a visible synthetic error result;
                 // the terminate rung ends the run `NoProgress` after one final no-tools report turn.
                 if let Some(action) = self.check_repeat_fuse(&calls) {
                     return action;
@@ -1064,11 +1064,11 @@ impl LoopStateMachine {
                     self.phase = LoopPhase::Reason;
                     return self.emit_call_llm();
                 }
-                // Non-fatal errors are committed to history so the LLM can
-                // see them and self-correct without losing turn state.
+                // Tool errors are committed to history so the LLM can see them and self-correct
+                // without losing turn state. UserInterrupt was handled by the rollback arm above.
 
-                // Entropy: this completed turn's failure tally (fatal errors never get
-                // here — they rolled back above and accrued via `note_rollback`).
+                // Entropy: this completed turn's failure tally. All model-visible tool failures,
+                // including fatal and timeout results, accrue at this committed boundary.
                 let errored_results = results.iter().filter(|r| r.is_error).count() as u32;
                 let total_results = results.len() as u32;
                 let tool_by_call_id: HashMap<String, String> = match &self.phase {
@@ -1687,16 +1687,6 @@ impl LoopStateMachine {
         }
     }
 
-    fn tool_name_for_call(&self, call_id: &compact_str::CompactString) -> String {
-        match &self.phase {
-            LoopPhase::Act { tool_calls } => tool_calls
-                .iter()
-                .find(|call| call.id == *call_id)
-                .map(|call| call.name.to_string())
-                .unwrap_or_else(|| call_id.to_string()),
-            _ => call_id.to_string(),
-        }
-    }
 }
 
 #[cfg(test)]

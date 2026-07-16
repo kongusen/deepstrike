@@ -39,6 +39,22 @@ Four kernel correctness fixes that close unbounded or misclassified agent-loop e
    durations stop classifying as context overflow; also recognizes OpenAI's "maximum context length"
    wording.
 
+### Fixed — committed control-plane rejections
+
+- `spawn_sub_agent`, `start_workflow`, and runtime workflow-node submissions now return a durable
+  `control_request_rejected` observation when governance refuses them before execution. They no
+  longer roll back an unrelated parent turn or fail later with a misleading missing-observation /
+  missing-continuation exception.
+- Agent-authored workflow tools report that a request is pending governance adjudication instead of
+  claiming it is already executing. A rejected dynamic submission marks its submitting workflow node
+  failed, so the root agent receives the real outcome. Direct `bootstrapWorkflow` /
+  `bootstrap_workflow` callers receive the additive `WorkflowOutcome.rejection` field. Invalid
+  host-loaded DAGs use the same typed rejection instead of a misleading unexpected-effect exception.
+- Added the previously missing `maxWorkflowNodes` / `max_workflow_nodes` SDK quota mapping in Node,
+  Python, and WASM; the kernel limit now applies when configured through ordinary runner options.
+- An exhausted milestone `rollback` retry policy now rolls back once and terminates with
+  `milestone_exceeded`; it no longer re-enters the same exhausted retry loop until global budget.
+
 ### Fixed — memory prefetch recall lifecycle (T5)
 
 - Prefetch / host `queryMemory` / in-run `query_memory` share one kernel route so `memory_recalled`,

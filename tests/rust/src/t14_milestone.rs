@@ -187,20 +187,22 @@ fn retry_policy_rollback_on_exceed() {
     sm.start(RuntimeTask::new("test"));
     sm.feed(text_response());
 
-    // First block — budget exhausted immediately (max=1)
-    sm.feed(LoopEvent::MilestoneResult {
+    // First block exhausts max=1: rollback the phase transaction, then terminate monotonically.
+    let action = sm.feed(LoopEvent::MilestoneResult {
         result: MilestoneCheckResult::fail("plan", "bad"),
     });
-    sm.feed(text_response());
-    sm.feed(LoopEvent::MilestoneResult {
-        result: MilestoneCheckResult::fail("plan", "bad again"),
-    });
+    assert!(
+        matches!(action, LoopAction::Done { ref result }
+            if result.termination == TerminationReason::MilestoneExceeded),
+        "rollback policy must not re-enter an already exhausted retry loop: {action:?}"
+    );
     let obs = sm.take_observations();
     assert!(
         obs.iter()
             .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
         "should rollback when MilestoneRollbackPolicy::Rollback and budget exceeded"
     );
+    assert!(sm.is_terminal());
 }
 
 #[test]

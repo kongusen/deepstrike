@@ -91,7 +91,9 @@ milestone_check_pass("design")
 milestone_check_fail("impl", reason="Missing error handling")
 ```
 
-The kernel receives a `milestone_result` event and unlocks or rolls back.
+The kernel receives a `milestone_result` event and applies the phase retry policy. At `max_attempts`,
+`terminate` ends immediately; `rollback` restores the phase transaction once and then ends with
+`milestone_exceeded`, rather than re-entering an already exhausted retry loop.
 
 ---
 
