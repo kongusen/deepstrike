@@ -282,7 +282,6 @@ interface KernelWireState {
   nextEventSequence: number
 }
 
-let nextOperationSequence = 1
 const kernelWireStates = new WeakMap<object, KernelWireState>()
 
 function tryParseJson(s: string): unknown {
@@ -647,8 +646,12 @@ function mapKernelAction(raw: Record<string, unknown>): KernelRunnerAction {
 function stepInput(runtime: KernelRuntimeHandle, event: Record<string, unknown>): string {
   let state = kernelWireStates.get(runtime)
   if (!state) {
+    // Globally unique, never a process-local counter: durable session logs key the kernel
+    // genesis/transaction chains by (sessionId, operationId) and outlive this process, so a
+    // counter that restarts at 1 collides with yesterday's chain on the same session (genesis
+    // digest conflict, or step_seq successor violation when the policy digest happens to match).
     state = {
-      operationId: `node-operation-${nextOperationSequence++}`,
+      operationId: `node-operation-${crypto.randomUUID()}`,
       nextEventSequence: 1,
     }
     kernelWireStates.set(runtime, state)

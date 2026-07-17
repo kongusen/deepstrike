@@ -241,7 +241,6 @@ interface KernelWireState {
   nextEventSequence: number
 }
 
-let nextOperationSequence = 1
 const kernelWireStates = new WeakMap<object, KernelWireState>()
 
 function tryParseJson(s: string): unknown {
@@ -497,7 +496,10 @@ function mapKernelAction(raw: Record<string, unknown>): KernelRunnerAction {
 function stepInput(runtime: KernelRuntimeHandle, event: Record<string, unknown>): string {
   let state = kernelWireStates.get(runtime)
   if (!state) {
-    state = { operationId: `wasm-operation-${nextOperationSequence++}`, nextEventSequence: 1 }
+    // Globally unique, never a process-local counter: durable session logs key the kernel
+    // genesis/transaction chains by (sessionId, operationId) and outlive this isolate, so a
+    // counter that restarts at 1 collides with a prior chain on the same session.
+    state = { operationId: `wasm-operation-${crypto.randomUUID()}`, nextEventSequence: 1 }
     kernelWireStates.set(runtime, state)
   }
   const correlatedEvent = event.kind === "cancel_operation"

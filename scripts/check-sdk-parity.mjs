@@ -250,6 +250,27 @@ const CHECKS = [
   },
   // wasm LoopDriver: EXPLICIT node+python-first decision (edge cron loops re-arm via wake_at_ms
   // from the host today); revisit when a wasm host needs in-process pacing.
+  // ── kernel operation identity: process-unique (UUID), never a process-local counter. Durable
+  // session logs key genesis/transaction chains by (sessionId, operationId) and outlive the
+  // process — an ordinal restarting at 1 collides with a prior chain on the same session. ──
+  {
+    id: "node-operation-identity",
+    lang: "node",
+    path: "node/src/runtime/kernel-step.ts",
+    patterns: ["node-operation-${crypto.randomUUID()}"],
+  },
+  {
+    id: "python-operation-identity",
+    lang: "python",
+    path: "python/deepstrike/runtime/kernel_step.py",
+    patterns: ["python-operation-{uuid.uuid4()}"],
+  },
+  {
+    id: "wasm-operation-identity",
+    lang: "wasm",
+    path: "wasm/src/runtime/kernel-step.ts",
+    patterns: ["wasm-operation-${crypto.randomUUID()}"],
+  },
   // ── multimodal attempt parity: AttemptLoop forwards attachments unconditionally; each driver
   // runner seeds them idempotently per session (dedupe against prior run_started records). ──
   {

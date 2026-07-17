@@ -91,6 +91,39 @@ describe("durableKernelStep", () => {
     expect(phases).toEqual(["genesis", "prepare", "durable_append", "commit"])
   })
 
+  it("each runtime mints a process-unique operation identity (no counter collision across restarts)", async () => {
+    // The durable kernel log keys genesis/transaction chains by (sessionId, operationId) and
+    // OUTLIVES the process (e.g. a Postgres SessionLog). The old module-level counter restarted
+    // at `node-operation-1` in every process, so a restarted host re-entered yesterday's chain on
+    // the same session: genesis digest conflict (different policy) or step_seq successor violation
+    // (same policy) — either way the run died. Identity must be random per runtime, never ordinal.
+    const seenOperationIds: string[] = []
+    class CapturingLog extends InMemorySessionLog {
+      override async appendKernelGenesis(...args: Parameters<InMemorySessionLog["appendKernelGenesis"]>) {
+        seenOperationIds.push(args[1].operation_id)
+        return super.appendKernelGenesis(...args)
+      }
+    }
+
+    // Same persistent log + same sessionId, two runtime instances (the restart shape): both
+    // must commit — each starts its own chain instead of resuming the old one by accident.
+    const log = new CapturingLog()
+    await durableKernelStep(fakeRuntime([]), log, "persistent-session", {
+      kind: "start_run",
+      task: { goal: "before restart", criteria: [] },
+    })
+    await durableKernelStep(fakeRuntime([]), log, "persistent-session", {
+      kind: "start_run",
+      task: { goal: "after restart", criteria: [] },
+    })
+
+    expect(seenOperationIds).toHaveLength(2)
+    expect(seenOperationIds[0]).not.toBe(seenOperationIds[1])
+    for (const id of seenOperationIds) {
+      expect(id).toMatch(/^node-operation-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+    }
+  })
+
   it("aborts the prepared transition and publishes nothing when durable append fails", async () => {
     const phases: string[] = []
     class FailingLog extends InMemorySessionLog {
