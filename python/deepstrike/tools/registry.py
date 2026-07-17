@@ -2,6 +2,7 @@ from __future__ import annotations
 import copy
 import inspect
 import json
+import re
 from collections.abc import AsyncIterable
 from typing import Any, Callable
 from deepstrike._kernel import ToolSchema
@@ -212,8 +213,7 @@ def _validate_value(schema: dict[str, Any], parent: Any, key: Any, path: str, st
         return f"{path} must be one of enum values"
     # `const` is THE discriminator convention for oneOf variants (kind: {const: "edit"}). Without
     # it, union branches match on required+type alone and the WRONG branch can win — then its
-    # allow-list strips keys the right branch declared. Checked keywords are deliberately a subset
-    # (no not/minLength/pattern: repair-first philosophy); const is structural, not stylistic.
+    # allow-list strips keys the right branch declared.
     if "const" in schema:
         want = schema["const"]
         if isinstance(want, bool) or isinstance(value, bool):
@@ -222,4 +222,46 @@ def _validate_value(schema: dict[str, Any], parent: Any, key: Any, path: str, st
             matches = value == want
         if not matches:
             return f"{path} must equal the const value {json.dumps(want)}"
+    # Constraint keywords, checked per the value's actual type (JSON Schema semantics: string
+    # constraints ignore non-strings, etc.). Keywords outside this set (allOf, multipleOf,
+    # uniqueItems, format, if/then/else, …) are ignored, not rejected.
+    if isinstance(value, str):
+        min_length = schema.get("minLength")
+        if isinstance(min_length, int) and len(value) < min_length:
+            return f"{path} must be at least {min_length} characters"
+        max_length = schema.get("maxLength")
+        if isinstance(max_length, int) and len(value) > max_length:
+            return f"{path} must be at most {max_length} characters"
+        pattern = schema.get("pattern")
+        if isinstance(pattern, str):
+            try:
+                compiled = re.compile(pattern)
+            except re.error:
+                compiled = None  # author-side bad regex: skip, never fail the call
+            if compiled is not None and compiled.search(value) is None:
+                return f"{path} must match pattern {pattern}"
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        for keyword, ok in (
+            ("minimum", lambda bound: value >= bound),
+            ("maximum", lambda bound: value <= bound),
+            ("exclusiveMinimum", lambda bound: value > bound),
+            ("exclusiveMaximum", lambda bound: value < bound),
+        ):
+            bound = schema.get(keyword)
+            if isinstance(bound, (int, float)) and not isinstance(bound, bool) and not ok(bound):
+                op = {"minimum": ">=", "maximum": "<=", "exclusiveMinimum": ">", "exclusiveMaximum": "<"}[keyword]
+                return f"{path} must be {op} {bound}"
+    elif isinstance(value, list):
+        min_items = schema.get("minItems")
+        if isinstance(min_items, int) and len(value) < min_items:
+            return f"{path} must have at least {min_items} items"
+        max_items = schema.get("maxItems")
+        if isinstance(max_items, int) and len(value) > max_items:
+            return f"{path} must have at most {max_items} items"
+    # `not`: probe on a deep copy so a matching (= rejected) subschema's repairs never leak out.
+    not_schema = schema.get("not")
+    if isinstance(not_schema, dict):
+        probe = {"v": copy.deepcopy(value)}
+        if _validate_value(not_schema, probe, "v", path, {"repaired": False}) is None:
+            return f"{path} must not match the disallowed shape"
     return None

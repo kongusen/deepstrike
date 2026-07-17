@@ -176,6 +176,65 @@ describe("validateToolArguments — union at the schema ROOT", () => {
   })
 })
 
+describe("validateToolArguments — constraint keywords", () => {
+  const wrap = (prop: Record<string, unknown>) =>
+    JSON.stringify({ type: "object", properties: { v: prop }, required: ["v"] })
+
+  it("minLength/maxLength enforce string bounds", () => {
+    const schema = wrap({ type: "string", minLength: 2, maxLength: 4 })
+    expect(validateToolArguments(schema, { v: "ok" }).error).toBeUndefined()
+    expect(validateToolArguments(schema, { v: "x" }).error).toBe("$.v must be at least 2 characters")
+    expect(validateToolArguments(schema, { v: "toolong" }).error).toBe("$.v must be at most 4 characters")
+  })
+
+  it("pattern enforces an unanchored regex; an invalid author regex never fails the call", () => {
+    const schema = wrap({ type: "string", pattern: "^[a-z]+$" })
+    expect(validateToolArguments(schema, { v: "abc" }).error).toBeUndefined()
+    expect(validateToolArguments(schema, { v: "ABC" }).error).toBe("$.v must match pattern ^[a-z]+$")
+    const badRegex = wrap({ type: "string", pattern: "([" })
+    expect(validateToolArguments(badRegex, { v: "anything" }).error).toBeUndefined()
+  })
+
+  it("minimum/maximum and exclusive bounds enforce numeric ranges", () => {
+    const schema = wrap({ type: "number", minimum: 0, exclusiveMaximum: 10 })
+    expect(validateToolArguments(schema, { v: 0 }).error).toBeUndefined()
+    expect(validateToolArguments(schema, { v: -1 }).error).toBe("$.v must be >= 0")
+    expect(validateToolArguments(schema, { v: 10 }).error).toBe("$.v must be < 10")
+  })
+
+  it("bounds apply after the string→number auto-cast", () => {
+    const schema = wrap({ type: "integer", minimum: 1 })
+    const args: Record<string, unknown> = { v: "0" }
+    expect(validateToolArguments(schema, args).error).toBe("$.v must be >= 1")
+  })
+
+  it("minItems/maxItems enforce array cardinality", () => {
+    const schema = wrap({ type: "array", items: { type: "string" }, minItems: 1, maxItems: 2 })
+    expect(validateToolArguments(schema, { v: ["a"] }).error).toBeUndefined()
+    expect(validateToolArguments(schema, { v: [] }).error).toBe("$.v must have at least 1 items")
+    expect(validateToolArguments(schema, { v: ["a", "b", "c"] }).error).toBe("$.v must have at most 2 items")
+  })
+
+  it("not rejects the disallowed shape without leaking probe repairs", () => {
+    const schema = wrap({ type: "string", not: { enum: ["forbidden"] } })
+    expect(validateToolArguments(schema, { v: "fine" }).error).toBeUndefined()
+    expect(validateToolArguments(schema, { v: "forbidden" }).error).toBe("$.v must not match the disallowed shape")
+  })
+
+  it("minLength inside a union branch participates in discrimination", () => {
+    // discuss-style: an empty assistantMessage no longer matches the branch that requires one.
+    const schema = JSON.stringify({
+      type: "object",
+      properties: { m: { type: "string" } },
+      oneOf: [
+        { type: "object", properties: { m: { type: "string", minLength: 1 } }, required: ["m"] },
+      ],
+    })
+    expect(validateToolArguments(schema, { m: "hello" }).error).toBeUndefined()
+    expect(validateToolArguments(schema, { m: "" }).error).toBe("$ does not match any allowed shape")
+  })
+})
+
 describe("tool() registration guard", () => {
   it("rejects a parameters root that is not type object (providers 400 on it at call time)", () => {
     expect(() => tool("bad", "d", { oneOf: [{ type: "string" }] }, () => "x"))

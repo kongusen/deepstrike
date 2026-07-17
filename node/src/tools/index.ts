@@ -240,14 +240,44 @@ function validateValue(
   if (Array.isArray(schema.enum) && !schema.enum.includes(value)) return `${path} must be one of enum values`
   // `const` is THE discriminator convention for oneOf variants (kind: {const: "edit"}). Without
   // it, union branches match on required+type alone and the WRONG branch can win — then its
-  // allow-list strips keys the right branch declared. Checked keywords are deliberately a subset
-  // (no not/minLength/pattern: repair-first philosophy); const is structural, not stylistic.
+  // allow-list strips keys the right branch declared.
   if ("const" in schema) {
     const want = schema.const
     const matches = want !== null && typeof want === "object"
       ? JSON.stringify(value) === JSON.stringify(want)
       : value === want
     if (!matches) return `${path} must equal the const value ${JSON.stringify(want)}`
+  }
+  // Constraint keywords, checked per the value's actual type (JSON Schema semantics: string
+  // constraints ignore non-strings, etc.). Keywords outside this set (allOf, multipleOf,
+  // uniqueItems, format, if/then/else, …) are ignored, not rejected.
+  if (typeof value === "string") {
+    if (typeof schema.minLength === "number" && value.length < schema.minLength) {
+      return `${path} must be at least ${schema.minLength} characters`
+    }
+    if (typeof schema.maxLength === "number" && value.length > schema.maxLength) {
+      return `${path} must be at most ${schema.maxLength} characters`
+    }
+    if (typeof schema.pattern === "string") {
+      let re: RegExp | undefined
+      try { re = new RegExp(schema.pattern) } catch { re = undefined } // author-side bad regex: skip, never fail the call
+      if (re && !re.test(value)) return `${path} must match pattern ${schema.pattern}`
+    }
+  } else if (typeof value === "number") {
+    if (typeof schema.minimum === "number" && value < schema.minimum) return `${path} must be >= ${schema.minimum}`
+    if (typeof schema.maximum === "number" && value > schema.maximum) return `${path} must be <= ${schema.maximum}`
+    if (typeof schema.exclusiveMinimum === "number" && value <= schema.exclusiveMinimum) return `${path} must be > ${schema.exclusiveMinimum}`
+    if (typeof schema.exclusiveMaximum === "number" && value >= schema.exclusiveMaximum) return `${path} must be < ${schema.exclusiveMaximum}`
+  } else if (Array.isArray(value)) {
+    if (typeof schema.minItems === "number" && value.length < schema.minItems) return `${path} must have at least ${schema.minItems} items`
+    if (typeof schema.maxItems === "number" && value.length > schema.maxItems) return `${path} must have at most ${schema.maxItems} items`
+  }
+  // `not`: probe on a clone so a matching (= rejected) subschema's repairs never leak out.
+  if (schema.not && typeof schema.not === "object" && !Array.isArray(schema.not)) {
+    const probe = { v: structuredClone(value) }
+    if (!validateValue(schema.not as Record<string, unknown>, probe, "v", path, { repaired: false })) {
+      return `${path} must not match the disallowed shape`
+    }
   }
   return undefined
 }
