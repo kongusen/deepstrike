@@ -22,7 +22,9 @@ async def execute_tools(
             if validation.get("error"):
                 results.append(ToolResult(call_id=call.id, output=f"invalid arguments: {validation['error']}", is_error=True))
                 continue
-            output = await tool(**kwargs)
+            # validation["args"], not kwargs: a oneOf/anyOf ROOT accepts a repaired probe
+            # deep-copy — the original dict never sees those repairs (auto-casts, strips, defaults).
+            output = await tool(**validation["args"])
             if isinstance(output, AsyncIterable):
                 chunks = []
                 async for chunk in output:

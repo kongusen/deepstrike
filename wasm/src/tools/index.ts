@@ -27,6 +27,14 @@ export function tool(
   parameters: Record<string, unknown>,
   fn: (args: Record<string, unknown>, ctx?: ToolExecContext) => Promise<string> | string,
 ): RegisteredTool {
+  // Fail at registration, not as a vendor 400 at call time: every major provider rejects a tool
+  // whose parameters root is not `type: "object"` — wrap union variants under an object root.
+  if (!parameters || typeof parameters !== "object" || Array.isArray(parameters) || parameters.type !== "object") {
+    throw new Error(
+      `tool "${name}": parameters must be a JSON Schema with root type "object" `
+      + `(got type: ${JSON.stringify((parameters as Record<string, unknown> | null)?.type ?? null)})`,
+    )
+  }
   return {
     schema: { name, description, parameters: JSON.stringify(parameters) },
     async execute(args, ctx) { return fn(args, ctx) },

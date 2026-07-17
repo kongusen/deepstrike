@@ -22,12 +22,27 @@ export interface RegisteredTool {
   execute(args: Record<string, unknown>, ctx?: ToolExecContext): Promise<string> | AsyncIterable<ToolChunk>
 }
 
+/** Fail at registration, not as a vendor 400 at call time: every major provider (OpenAI-compat,
+ *  Anthropic, Gemini) rejects a tool whose parameters root is not `type: "object"` — the wire
+ *  error ("schema must be a JSON Schema of 'type: \"object\"'") surfaces far from the tool that
+ *  caused it. Union roots must be wrapped: object root + flattened properties + `oneOf` sibling. */
+function assertObjectRootSchema(name: string, parameters: Record<string, unknown>): void {
+  if (!parameters || typeof parameters !== "object" || Array.isArray(parameters) || parameters.type !== "object") {
+    throw new Error(
+      `tool "${name}": parameters must be a JSON Schema with root type "object" `
+      + `(got type: ${JSON.stringify((parameters as Record<string, unknown> | null)?.type ?? null)}); `
+      + `providers reject any other root — wrap union variants as an object root with a oneOf sibling`,
+    )
+  }
+}
+
 export function tool(
   name: string,
   description: string,
   parameters: Record<string, unknown>,
   fn: (args: Record<string, unknown>, ctx?: ToolExecContext) => Promise<string> | string,
 ): RegisteredTool {
+  assertObjectRootSchema(name, parameters)
   return {
     schema: { name, description, parameters: JSON.stringify(parameters) },
     async execute(args, ctx) { return fn(args, ctx) },
@@ -40,6 +55,7 @@ export function streamingTool(
   parameters: Record<string, unknown>,
   fn: (args: Record<string, unknown>, ctx?: ToolExecContext) => AsyncIterable<ToolChunk>,
 ): RegisteredTool {
+  assertObjectRootSchema(name, parameters)
   return {
     schema: { name, description, parameters: JSON.stringify(parameters) },
     execute(args, ctx) { return fn(args, ctx) },
@@ -59,13 +75,18 @@ export function toolChunkText(chunk: ToolChunk): string {
   return normalized.type === "text" ? normalized.text : ""
 }
 
-export function validateToolArguments(schemaJson: string, args: Record<string, unknown>): { error?: string; repaired: boolean } {
+export function validateToolArguments(
+  schemaJson: string,
+  args: Record<string, unknown>,
+): { error?: string; repaired: boolean; args: Record<string, unknown> } {
   let schema: Record<string, unknown>
-  try { schema = JSON.parse(schemaJson) as Record<string, unknown> } catch { return { error: "invalid tool schema", repaired: false } }
+  try { schema = JSON.parse(schemaJson) as Record<string, unknown> } catch { return { error: "invalid tool schema", repaired: false, args } }
   const state = { repaired: false }
   const wrapper = { root: args }
   const error = validateValue(schema, wrapper, "root", "$", state)
-  return { error, repaired: state.repaired }
+  // A oneOf/anyOf ROOT replaces the value with its accepted probe clone — in-place mutation of
+  // the caller's object only covers non-union roots. Callers must use the returned `args`.
+  return { error, repaired: state.repaired, args: wrapper.root }
 }
 
 function validateValue(
@@ -210,11 +231,24 @@ function validateValue(
       if (!Number.isInteger(value)) return `${path} must be integer`
     } else if (expectedType === "boolean") {
       if (typeof value !== "boolean") return `${path} must be boolean`
+    } else if (expectedType === "null") {
+      if (value !== null) return `${path} must be null`
     }
   } else if (path === "$" && (!value || typeof value !== "object" || Array.isArray(value))) {
     return `${path} must be object`
   }
   if (Array.isArray(schema.enum) && !schema.enum.includes(value)) return `${path} must be one of enum values`
+  // `const` is THE discriminator convention for oneOf variants (kind: {const: "edit"}). Without
+  // it, union branches match on required+type alone and the WRONG branch can win — then its
+  // allow-list strips keys the right branch declared. Checked keywords are deliberately a subset
+  // (no not/minLength/pattern: repair-first philosophy); const is structural, not stylistic.
+  if ("const" in schema) {
+    const want = schema.const
+    const matches = want !== null && typeof want === "object"
+      ? JSON.stringify(value) === JSON.stringify(want)
+      : value === want
+    if (!matches) return `${path} must equal the const value ${JSON.stringify(want)}`
+  }
   return undefined
 }
 
@@ -229,7 +263,9 @@ export async function executeTools(
       const args = JSON.parse(c.arguments || "{}") as Record<string, unknown>
       const validation = validateToolArguments(t.schema.parameters, args)
       if (validation.error) return { callId: c.id, output: `invalid arguments: ${validation.error}`, isError: true }
-      const output = await t.execute(args)
+      // validation.args, not args: a oneOf/anyOf ROOT accepts a repaired probe CLONE — the
+      // original reference never sees those repairs (auto-casts, strips, defaults).
+      const output = await t.execute(validation.args)
       if (isAsyncIterable<ToolChunk>(output)) {
         let combined = ""
         for await (const chunk of output) combined += toolChunkText(chunk)

@@ -176,9 +176,11 @@ export class LocalExecutionPlane implements ExecutionPlane {
       },
     }
     try {
-      const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>
-      const originalArgsStr = JSON.stringify(args)
-      const validation = validateToolArguments(registered.schema.parameters, args)
+      const rawArgs = JSON.parse(call.arguments || "{}") as Record<string, unknown>
+      const originalArgsStr = JSON.stringify(rawArgs)
+      // validation.args, not rawArgs, from here on: a oneOf/anyOf ROOT accepts a repaired probe
+      // CLONE — the original reference never sees those repairs (auto-casts, strips, defaults).
+      const validation = validateToolArguments(registered.schema.parameters, rawArgs)
       if (validation.error) return { callId: call.id, output: `invalid arguments: ${validation.error}`, isError: true }
       if (validation.repaired) {
         yield {
@@ -186,13 +188,13 @@ export class LocalExecutionPlane implements ExecutionPlane {
           callId: call.id,
           name: call.name,
           originalArguments: originalArgsStr,
-          repairedArguments: JSON.stringify(args),
+          repairedArguments: JSON.stringify(validation.args),
         } as StreamEvent
       }
       // M3/G4: pass the run context (incl. `cwd`) so cwd-aware tools scope their work to the
       // sub-agent's worktree. `RunContext` is structurally assignable to the tool's `ToolExecContext`.
       // The per-call `audit` helper (above) layers best-effort side-effect handling on top.
-      const output = await registered.execute(args, callCtx)
+      const output = await registered.execute(validation.args, callCtx)
       if (isAsyncIterable(output)) {
         let combined = ""
         const iterator = output[Symbol.asyncIterator]()

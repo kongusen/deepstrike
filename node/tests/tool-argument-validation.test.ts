@@ -1,4 +1,4 @@
-import { validateToolArguments } from "../src/tools/index.js"
+import { executeTools, tool, validateToolArguments } from "../src/tools/index.js"
 
 describe("validateToolArguments — additionalProperties", () => {
   it("additionalProperties:true keeps arbitrary nested keys", () => {
@@ -98,6 +98,90 @@ describe("validateToolArguments — oneOf / anyOf", () => {
     const r = validateToolArguments(schema, args)
     expect(r.error).toBeUndefined()
     expect(args.v).toBe("5") // string branch wins, untouched by the object branch's probe
+  })
+})
+
+describe("validateToolArguments — union at the schema ROOT", () => {
+  // inline_result-style discriminated union: object root (providers require it) with the
+  // variant constraints in a oneOf sibling.
+  const inlineResultShaped = JSON.stringify({
+    type: "object",
+    properties: {
+      kind: { enum: ["edit", "discuss"] },
+      delivery: { enum: ["content", "tool"] },
+      documentContent: {},
+      summary: { type: "string" },
+      assistantMessage: { type: "string" },
+    },
+    required: ["kind"],
+    oneOf: [
+      {
+        type: "object",
+        properties: { kind: { const: "edit" }, delivery: { const: "content" }, documentContent: { type: "string" }, summary: { type: "string" } },
+        required: ["kind", "delivery", "documentContent"],
+      },
+      {
+        type: "object",
+        properties: { kind: { const: "edit" }, delivery: { const: "tool" }, documentContent: { type: "null" }, summary: { type: "string" } },
+        required: ["kind", "delivery", "documentContent"],
+      },
+      {
+        type: "object",
+        properties: { kind: { const: "discuss" }, assistantMessage: { type: "string" } },
+        required: ["kind", "assistantMessage"],
+      },
+    ],
+  })
+
+  it("const discriminates branches — the wrong branch can no longer win and strip the right branch's keys", () => {
+    // Without const checking, branch 1 (kind=edit) matched this discuss-shaped call on
+    // required+type alone and stripped assistantMessage — silent data mangling.
+    const args: Record<string, unknown> = {
+      kind: "discuss", delivery: "content", documentContent: "stray", assistantMessage: "the actual answer",
+    }
+    const r = validateToolArguments(inlineResultShaped, args)
+    expect(r.error).toBeUndefined()
+    expect(r.args).toEqual({ kind: "discuss", assistantMessage: "the actual answer" })
+  })
+
+  it('type: "null" is enforced (delivery=tool requires documentContent null)', () => {
+    const ok = validateToolArguments(inlineResultShaped, { kind: "edit", delivery: "tool", documentContent: null })
+    expect(ok.error).toBeUndefined()
+    const bad = validateToolArguments(inlineResultShaped, { kind: "edit", delivery: "tool", documentContent: "not null" })
+    expect(bad.error).toBeDefined()
+  })
+
+  it("returns the accepted branch's value as `args` — in-place mutation misses union roots", () => {
+    const original: Record<string, unknown> = { kind: "discuss", assistantMessage: "hi", hallucinated: true }
+    const r = validateToolArguments(inlineResultShaped, original)
+    expect(r.error).toBeUndefined()
+    expect(r.repaired).toBe(true)
+    // The repair (key strip) lives on the returned clone, NOT the original reference.
+    expect(r.args).toEqual({ kind: "discuss", assistantMessage: "hi" })
+    expect(original.hallucinated).toBe(true)
+  })
+
+  it("executeTools hands the handler the repaired union-root args (was: original, repairs lost)", async () => {
+    const seen: Record<string, unknown>[] = []
+    const t = tool("finish", "terminal", JSON.parse(inlineResultShaped), args => {
+      seen.push(args)
+      return "ok"
+    })
+    const results = await executeTools(
+      [{ id: "c1", name: "finish", arguments: JSON.stringify({ kind: "discuss", assistantMessage: "done", hallucinated: 1 }) }],
+      new Map([["finish", t]]),
+    )
+    expect(results[0]!.isError).toBe(false)
+    expect(seen[0]).toEqual({ kind: "discuss", assistantMessage: "done" })
+  })
+})
+
+describe("tool() registration guard", () => {
+  it("rejects a parameters root that is not type object (providers 400 on it at call time)", () => {
+    expect(() => tool("bad", "d", { oneOf: [{ type: "string" }] }, () => "x"))
+      .toThrow(/root type "object"/)
+    expect(() => tool("worse", "d", { type: null } as unknown as Record<string, unknown>, () => "x"))
+      .toThrow(/root type "object"/)
   })
 })
 

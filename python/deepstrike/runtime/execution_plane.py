@@ -248,9 +248,11 @@ class LocalExecutionPlane:
       audit=_audit,
     )
     try:
-      kwargs = json.loads(call.arguments or "{}")
-      original_args_str = json.dumps(kwargs)
-      validation = validate_tool_arguments(registered.schema.parameters, kwargs)
+      raw_kwargs = json.loads(call.arguments or "{}")
+      original_args_str = json.dumps(raw_kwargs)
+      # validation["args"], not raw_kwargs, from here on: a oneOf/anyOf ROOT accepts a repaired
+      # probe deep-copy — the original dict never sees those repairs (auto-casts, strips, defaults).
+      validation = validate_tool_arguments(registered.schema.parameters, raw_kwargs)
       if validation.get("error"):
         yield ToolResultEvent(
           call_id=call.id,
@@ -261,6 +263,7 @@ class LocalExecutionPlane:
           error_kind="recoverable",
         )
         return
+      kwargs = validation["args"]
       if validation.get("repaired"):
         yield ToolArgumentRepairedEvent(
           call_id=call.id,

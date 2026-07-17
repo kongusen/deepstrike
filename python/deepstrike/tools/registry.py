@@ -73,11 +73,13 @@ def validate_tool_arguments(schema_json: str, args: dict[str, Any]) -> dict[str,
     try:
         schema = json.loads(schema_json)
     except Exception:
-        return {"error": "invalid tool schema", "repaired": False}
+        return {"error": "invalid tool schema", "repaired": False, "args": args}
     state = {"repaired": False}
     wrapper = {"root": args}
     error = _validate_value(schema, wrapper, "root", "$", state)
-    return {"error": error, "repaired": state["repaired"]}
+    # A oneOf/anyOf ROOT replaces the value with its accepted probe deep-copy — in-place mutation
+    # of the caller's dict only covers non-union roots. Callers must use the returned "args".
+    return {"error": error, "repaired": state["repaired"], "args": wrapper["root"]}
 
 
 def _validate_value(schema: dict[str, Any], parent: Any, key: Any, path: str, state: dict[str, bool]) -> str | None:
@@ -200,10 +202,24 @@ def _validate_value(schema: dict[str, Any], parent: Any, key: Any, path: str, st
             return f"{path} must be integer"
         elif expected == "boolean" and not isinstance(value, bool):
             return f"{path} must be boolean"
+        elif expected == "null" and value is not None:
+            return f"{path} must be null"
     elif path == "$" and not isinstance(value, dict):
         return f"{path} must be object"
 
     enum_values = schema.get("enum")
     if enum_values is not None and value not in enum_values:
         return f"{path} must be one of enum values"
+    # `const` is THE discriminator convention for oneOf variants (kind: {const: "edit"}). Without
+    # it, union branches match on required+type alone and the WRONG branch can win — then its
+    # allow-list strips keys the right branch declared. Checked keywords are deliberately a subset
+    # (no not/minLength/pattern: repair-first philosophy); const is structural, not stylistic.
+    if "const" in schema:
+        want = schema["const"]
+        if isinstance(want, bool) or isinstance(value, bool):
+            matches = value is want
+        else:
+            matches = value == want
+        if not matches:
+            return f"{path} must equal the const value {json.dumps(want)}"
     return None
