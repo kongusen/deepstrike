@@ -1864,7 +1864,7 @@ class RuntimeRunner:
     from deepstrike.runtime.large_result_spool import LargeResultSpool
     spool = self._opts.result_spool or LargeResultSpool()
     try:
-      full = await spool.find_by_call_id(call_id)
+      full = await spool.find_by_call_id(session_id, call_id)
     except Exception:
       full = None
 
@@ -2440,7 +2440,7 @@ class RuntimeRunner:
         spool_ref = None
         error = None
         try:
-          spool_ref = await spool.persist_output(action.call_id or "", action.output or "")
+          spool_ref = await spool.persist_output(session_id, action.call_id or "", action.output or "")
         except Exception as exc:
           error = format_tool_error(exc)
         action = kernel_action(runtime, self._pending_observations, {

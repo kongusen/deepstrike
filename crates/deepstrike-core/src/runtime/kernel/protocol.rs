@@ -92,6 +92,13 @@ pub struct KernelInput {
 }
 
 impl KernelInput {
+    /// Operation identity used by [`Self::new`] for in-process callers. Hosts that correlate
+    /// against it (e.g. a `cancel_operation` for an operation started via `new`) must use this
+    /// constant, never a re-typed literal. NOT for durable wire hosts: anything keyed by
+    /// `(session, operation)` in storage that outlives the process needs a unique identity via
+    /// [`Self::correlated`].
+    pub const LOCAL_OPERATION_ID: &'static str = "local-operation";
+
     /// Build an in-process input for callers that do not cross a durable wire boundary.
     /// Wire hosts should use [`Self::correlated`] with their durable identities.
     pub fn new(event: KernelInputEvent) -> Self {
@@ -99,7 +106,7 @@ impl KernelInput {
         static LOCAL_EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
         let event_seq = LOCAL_EVENT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         Self::correlated(
-            "local-operation",
+            Self::LOCAL_OPERATION_ID,
             format!("local-event-{event_seq}"),
             0,
             event,

@@ -138,9 +138,17 @@ omitted: ${omitted} chars
     }
   }
 
-  async persistOutput(callId: string, content: string): Promise<string> {
+  private callKey(sessionId: string, callId: string): string {
+    // Session-scoped and hashed: the driver's key space is shared across sessions and outlives
+    // runs, while vendor call ids can be index-style ("call_0") and repeat — an unscoped key
+    // lets read_result in one session fetch another session's spooled output. Hashing also keeps
+    // untrusted call-id characters out of driver keys (parity with Node/Python).
+    return simpleHash(`${sessionId}\u0000${callId}`)
+  }
+
+  async persistOutput(sessionId: string, callId: string, content: string): Promise<string> {
     const hash = simpleHash(content)
-    const key = `.spool/${callId}-${hash.slice(0, 16)}.txt`
+    const key = `.spool/${this.callKey(sessionId, callId)}-${hash.slice(0, 16)}.txt`
 
     let promise = this.activeWrites.get(key)
     if (!promise) {
@@ -164,17 +172,17 @@ omitted: ${omitted} chars
   /**
    * O7: locate a spooled output by the tool call's id (the `read_result` meta-tool only knows
    * `call_id`, not the content-hashed key `persistOutput` chose). Scans the driver's key list for
-   * the `.spool/${callId}-*.txt` naming convention; returns `undefined` if nothing was ever
+   * the hashed session-scoped call-key prefix; returns `undefined` if nothing was ever
    * spooled for that call.
    */
-  async findByCallId(callId: string): Promise<string | undefined> {
+  async findByCallId(sessionId: string, callId: string): Promise<string | undefined> {
     let keys: string[]
     try {
       keys = await this.driver.list()
     } catch {
       return undefined
     }
-    const prefix = `.spool/${callId}-`
+    const prefix = `.spool/${this.callKey(sessionId, callId)}-`
     const match = keys.find(k => k.startsWith(prefix) && k.endsWith('.txt'))
     if (!match) return undefined
     try {

@@ -1018,7 +1018,7 @@ impl RuntimeRunner {
                         &mut kernel,
                         &mut pending_observations,
                         KernelInputEvent::CancelOperation {
-                            operation_id: "local-operation".into(),
+                            operation_id: KernelInput::LOCAL_OPERATION_ID.into(),
                             reason: cancellation_reason_from_code(self.cancellation_reason.load(Ordering::Relaxed)),
                             pending_call_ids: pending_call_ids(&action),
                         },
@@ -1247,7 +1247,7 @@ impl RuntimeRunner {
                                 &mut kernel,
                                 &mut pending_observations,
                                 KernelInputEvent::CancelOperation {
-                                    operation_id: "local-operation".into(),
+                                    operation_id: KernelInput::LOCAL_OPERATION_ID.into(),
                                     reason: cancellation_reason_from_code(self.cancellation_reason.load(Ordering::Relaxed)),
                                     pending_call_ids: vec![provider_effect_id],
                                 },

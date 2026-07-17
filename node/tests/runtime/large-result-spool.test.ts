@@ -73,8 +73,8 @@ describe("LargeResultSpool", () => {
     const data = "duplicate-content-to-spool"
 
     // Trigger concurrent writes using persistOutput
-    const p1 = spool.persistOutput("call-c", data)
-    const p2 = spool.persistOutput("call-c", data)
+    const p1 = spool.persistOutput("session", "call-c", data)
+    const p2 = spool.persistOutput("session", "call-c", data)
 
     const [ref1, ref2] = await Promise.all([p1, p2])
     expect(ref1).toBe(ref2)
@@ -87,12 +87,26 @@ describe("LargeResultSpool", () => {
     const spool = new LargeResultSpool({ spoolDir: testSpoolDir })
     const callId = "../../deepstrike-spool-escape"
 
-    const ref = await spool.persistOutput(callId, "safe content")
+    const ref = await spool.persistOutput("session", callId, "safe content")
 
     expect(path.dirname(ref)).toBe(testSpoolDir)
     expect(path.basename(ref)).not.toContain("..")
     expect(path.relative(testSpoolDir, ref)).not.toMatch(/^\.\./)
-    expect(await spool.findByCallId(callId)).toBe("safe content")
+    expect(await spool.findByCallId("session", callId)).toBe("safe content")
+  })
+
+  it("scopes call-id lookup by session: one session cannot read another's spooled output", async () => {
+    // The spool dir is shared across sessions and outlives runs, while vendor call ids can be
+    // index-style ("call_0") and repeat — an unscoped key let read_result in one session fetch
+    // another session's spooled output (data bleed) or a stale run's content.
+    const spool = new LargeResultSpool({ spoolDir: testSpoolDir })
+
+    await spool.persistOutput("session-a", "call_0", "secret output of session A")
+    await spool.persistOutput("session-b", "call_0", "output of session B")
+
+    expect(await spool.findByCallId("session-a", "call_0")).toBe("secret output of session A")
+    expect(await spool.findByCallId("session-b", "call_0")).toBe("output of session B")
+    expect(await spool.findByCallId("session-c", "call_0")).toBeUndefined()
   })
 
   it("performs TTL cleanup for expired spool files", async () => {

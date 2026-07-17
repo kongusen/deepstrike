@@ -4,6 +4,7 @@ import json
 import re
 import time
 import uuid
+import weakref
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -13,7 +14,11 @@ from deepstrike.providers.base import ContextBudgetOverflow, RenderedContext
 
 
 KERNEL_ABI_VERSION = 2
-_wire_states: dict[int, tuple[str, int]] = {}
+# Keyed by the runtime OBJECT, not id(runtime): a plain dict keyed by id() aliases recycled
+# addresses (a new runtime inherits a dead one's operation identity — fatal once a durable log
+# keys chains by that identity) and leaks an entry per runtime. WeakKeyDictionary mirrors the
+# Node/WASM WeakMap; the pyo3 KernelRuntime declares `weakref` support for exactly this.
+_wire_states: "weakref.WeakKeyDictionary[Any, tuple[str, int]]" = weakref.WeakKeyDictionary()
 
 
 def snapshot_kernel_runtime(runtime: Any) -> dict[str, Any]:
@@ -24,14 +29,14 @@ def restore_kernel_runtime(runtime: Any, snapshot: dict[str, Any]) -> None:
   runtime.restore(json.dumps(snapshot))
   operation_id = snapshot.get("operation_id")
   if not operation_id:
-    _wire_states.pop(id(runtime), None)
+    _wire_states.pop(runtime, None)
     return
   next_sequence = 1
   for accepted in snapshot.get("accepted_inputs") or []:
     match = re.search(r"-event-(\d+)$", str(accepted.get("event_id") or ""))
     if match:
       next_sequence = max(next_sequence, int(match.group(1)) + 1)
-  _wire_states[id(runtime)] = (str(operation_id), next_sequence)
+  _wire_states[runtime] = (str(operation_id), next_sequence)
 
 
 @dataclass
@@ -373,12 +378,11 @@ def _action_from_kernel(raw: dict[str, Any]) -> KernelRunnerAction:
 
 
 def _step_input(runtime: Any, event: dict[str, Any]) -> str:
-  key = id(runtime)
-  state = _wire_states.get(key)
+  state = _wire_states.get(runtime)
   if state is None:
     state = (f"python-operation-{uuid.uuid4()}", 1)
   operation_id, sequence = state
-  _wire_states[key] = (operation_id, sequence + 1)
+  _wire_states[runtime] = (operation_id, sequence + 1)
   correlated_event = (
     {**event, "operation_id": operation_id}
     if event.get("kind") == "cancel_operation"

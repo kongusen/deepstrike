@@ -67,4 +67,18 @@ describe("WASM LargeResultSpool", () => {
     expect(customStore.has(processed.spoolRef)).toBe(true)
     expect(customStore.get(processed.spoolRef)).toBe("large data that needs storing")
   })
+
+  it("scopes call-id lookup by session: one session cannot read another's spooled output", async () => {
+    // The driver's key space is shared across sessions and outlives runs, while vendor call ids
+    // can be index-style ("call_0") and repeat — an unscoped key let read_result in one session
+    // fetch another session's spooled output (data bleed) or a stale run's content.
+    const spool = new LargeResultSpool()
+
+    await spool.persistOutput("session-a", "call_0", "secret output of session A")
+    await spool.persistOutput("session-b", "call_0", "output of session B")
+
+    expect(await spool.findByCallId("session-a", "call_0")).toBe("secret output of session A")
+    expect(await spool.findByCallId("session-b", "call_0")).toBe("output of session B")
+    expect(await spool.findByCallId("session-c", "call_0")).toBeUndefined()
+  })
 })

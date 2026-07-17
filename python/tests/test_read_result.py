@@ -94,7 +94,7 @@ async def test_spool_hashes_untrusted_call_ids_and_commits_atomically(tmp_path):
     spool = LargeResultSpool(spool_dir=str(tmp_path / "spool"))
     call_id = "../../outside/../tool-call"
     refs = await asyncio.gather(*[
-        spool.persist_output(call_id, "stable-output") for _ in range(8)
+        spool.persist_output("session", call_id, "stable-output") for _ in range(8)
     ])
 
     assert len(set(refs)) == 1
@@ -102,4 +102,19 @@ async def test_spool_hashes_untrusted_call_ids_and_commits_atomically(tmp_path):
     assert ref.parent == tmp_path / "spool"
     assert "tool-call" not in ref.name
     assert not list(ref.parent.glob("*.tmp"))
-    assert await spool.find_by_call_id(call_id) == "stable-output"
+    assert await spool.find_by_call_id("session", call_id) == "stable-output"
+
+
+@pytest.mark.asyncio
+async def test_spool_call_id_lookup_is_session_scoped(tmp_path):
+    """The spool dir is shared across sessions and outlives runs, while vendor call ids can be
+    index-style ("call_0") and repeat — an unscoped key let read_result in one session fetch
+    another session's spooled output (data bleed) or a stale run's content."""
+    spool = LargeResultSpool(spool_dir=str(tmp_path / "spool"))
+
+    await spool.persist_output("session-a", "call_0", "secret output of session A")
+    await spool.persist_output("session-b", "call_0", "output of session B")
+
+    assert await spool.find_by_call_id("session-a", "call_0") == "secret output of session A"
+    assert await spool.find_by_call_id("session-b", "call_0") == "output of session B"
+    assert await spool.find_by_call_id("session-c", "call_0") is None

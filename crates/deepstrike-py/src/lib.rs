@@ -860,7 +860,10 @@ impl RenderedContext {
 
 // ──────────────────────────────────────── KernelRuntime ────────────────────────────────────
 
-#[pyclass]
+// `weakref` so the SDK can key per-runtime wire state in a WeakKeyDictionary — a module dict
+// keyed by id() aliases recycled addresses (a new runtime inherits a dead one's operation
+// identity) and leaks an entry per runtime.
+#[pyclass(weakref)]
 struct KernelRuntime {
     inner: RustKernelRuntime,
 }

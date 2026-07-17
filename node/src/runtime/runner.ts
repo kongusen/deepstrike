@@ -1945,7 +1945,7 @@ export class RuntimeRunner {
     let full: string | undefined
     const spool = this.opts.resultSpool ?? new LargeResultSpool()
     try {
-      full = await spool.findByCallId(callId)
+      full = await spool.findByCallId(sessionId, callId)
     } catch {
       full = undefined
     }
@@ -2484,7 +2484,7 @@ export class RuntimeRunner {
         let spoolRef: string | undefined
         let error: string | undefined
         try {
-          spoolRef = await spool.persistOutput(action.callId, action.output)
+          spoolRef = await spool.persistOutput(sessionId, action.callId, action.output)
         } catch (cause) {
           error = formatToolError(cause)
         }

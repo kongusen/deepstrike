@@ -84,8 +84,11 @@ export class LargeResultSpool {
     return path.join(this.spoolDir, `${hash}.txt`)
   }
 
-  private callKey(callId: string): string {
-    return this.hashContent(callId).slice(0, 32)
+  private callKey(sessionId: string, callId: string): string {
+    // Session-scoped: the spool dir is shared across sessions and outlives runs, while vendor
+    // call ids can be index-style ("call_0") and repeat — an unscoped key lets read_result in
+    // one session fetch another session's spooled output.
+    return this.hashContent(`${sessionId}\u0000${callId}`).slice(0, 32)
   }
 
   private async atomicWrite(spoolPath: string, content: string): Promise<void> {
@@ -178,9 +181,9 @@ omitted: ${omitted} chars
   /**
    * Persist a kernel-spooled tool output to disk. Returns the on-disk path ref.
    */
-  async persistOutput(callId: string, content: string): Promise<string> {
+  async persistOutput(sessionId: string, callId: string, content: string): Promise<string> {
     const hash = this.hashContent(content)
-    const spoolPath = this.getSpoolPath(`${this.callKey(callId)}-${hash.slice(0, 16)}`)
+    const spoolPath = this.getSpoolPath(`${this.callKey(sessionId, callId)}-${hash.slice(0, 16)}`)
 
     let promise = this.activeWrites.get(spoolPath)
     if (!promise) {
@@ -216,14 +219,14 @@ omitted: ${omitted} chars
    * for the hashed call-key prefix; returns `undefined` if nothing was ever spooled
    * for that call (e.g. it never actually exceeded the threshold, or the spool dir was cleaned up).
    */
-  async findByCallId(callId: string): Promise<string | undefined> {
+  async findByCallId(sessionId: string, callId: string): Promise<string | undefined> {
     let files: string[]
     try {
       files = await fs.readdir(this.spoolDir)
     } catch {
       return undefined
     }
-    const prefix = `${this.callKey(callId)}-`
+    const prefix = `${this.callKey(sessionId, callId)}-`
     const match = files.find(f => f.startsWith(prefix) && f.endsWith('.txt'))
     if (!match) return undefined
     try {
