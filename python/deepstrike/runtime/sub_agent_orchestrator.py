@@ -200,6 +200,10 @@ def _build_child_opts(
     enable_plan_tool=ctx.parent_opts.enable_plan_tool if "update_plan" in meta_tools else None,
     # M5 v2.1: a workflow node's `start_workflow` flattens to the parent kernel (no nested pivot).
     is_workflow_node=ctx.is_workflow_node,
+    # Nested vehicle: the child joins the inherited run_group for lineage/settlement only — it
+    # must NOT re-reserve budget axes the parent already holds (that double-reserve squeezed the
+    # child's grant to 0 and the kernel stripped its first-turn tools).
+    nested_group_vehicle=True,
     # The child runs under ITS OWN spec, never the parent's: the replace() above would otherwise
     # leak the parent's ``run_spec`` (identity, capability filter — and a LoopDriver's armed
     # ``loop_round``, giving every child a phantom pace tool). A loop-node iteration carries its

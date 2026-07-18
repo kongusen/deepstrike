@@ -5,6 +5,8 @@ import {
   InMemorySessionLog,
   LocalExecutionPlane,
   RuntimeRunner,
+  type GroupBudgetRequest,
+  type GroupBudgetReservation,
   type RunGroup,
 } from "../src/index.js"
 import { tool } from "../src/tools/index.js"
@@ -124,8 +126,24 @@ describe("RunGroup reservation-backed budgets", () => {
     expect(store.attempts).toBe(2)
   })
 
-  it("enforces an exhausted group through a zero-capacity reservation", async () => {
-    const store = new InMemoryGroupBudgetStore()
+  it("enforces an exhausted group through a zero-capacity admission rejection", async () => {
+    // Records reservations so the test can read the id of the one the exhausted group grants 0
+    // tokens to — the kernel's admission rejection names it.
+    // The record field is deliberately NOT named `reservations` — that collides with the base
+    // store's private `reservations` Map and breaks `super.reserve` at runtime (TS `private` is
+    // compile-time only).
+    class RecordingStore extends InMemoryGroupBudgetStore {
+      readonly recorded: GroupBudgetReservation[] = []
+      override reserve(
+        groupId: string,
+        request: GroupBudgetRequest & { memberId: string },
+      ): GroupBudgetReservation {
+        const reservation = super.reserve(groupId, request)
+        this.recorded.push(reservation)
+        return reservation
+      }
+    }
+    const store = new RecordingStore()
     const group: RunGroup = { id: "exhausted", budgetStore: store }
     const seed = await GroupBudgetScope.open(
       group,
@@ -133,7 +151,15 @@ describe("RunGroup reservation-backed budgets", () => {
       { limits: { tokens: 100_000 }, requested: { tokens: 100_000 } },
     )
     await seed.settle({ tokens: 100_000 })
-    expect((await runToDone(makeRunner(group), "director")).status).toBe("token_budget")
+
+    // The exhausted group squeezes the new vehicle's grant to 0 tokens, and the kernel rejects
+    // that zero-capacity grant at admission (configure_run InvalidConfig) instead of running a
+    // tool-less final round — the run now throws.
+    const run = runToDone(makeRunner(group), "director")
+    await expect(run).rejects.toThrow(/budget_grant tokens must be positive/)
+    const zeroGrant = store.recorded.find(reservation => reservation.granted.tokens === 0)
+    expect(zeroGrant).toBeDefined()
+    await expect(run).rejects.toThrow(`reservation_id=${zeroGrant!.id}`)
   })
 
   it("settles kernel-reported local usage and preserves member lineage", async () => {

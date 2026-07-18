@@ -829,29 +829,54 @@ impl LoopStateMachine {
         // A loop vehicle with no admitted round capacity must not make even one provider call.
         // The host may have raced another member between reading its durable loop log and reserve;
         // the reservation is the authoritative admission decision.
-        if self
+        let zero_round_grant = self
             .run_spec
             .as_ref()
             .and_then(|spec| spec.loop_round.as_ref())
             .is_some()
-            && self.budget_grant.as_ref().and_then(|grant| grant.rounds) == Some(0)
-        {
-            self.observations.push(KernelObservation::BudgetExceeded {
-                turn: self.turn,
-                budget: "rounds".into(),
-                operation_id: String::new(),
-                reservation_id: self
-                    .budget_grant
-                    .as_ref()
-                    .map(|grant| grant.reservation_id.clone()),
-            });
-            self.pending_pace = Some(crate::types::result::PaceDecision {
-                action: crate::types::result::PaceAction::Stop,
-                delay_ms: None,
-                reason: "round budget grant exhausted before start".into(),
-                coerced_from: None,
-            });
-            return self.terminate(TerminationReason::Completed, None);
+            && self.budget_grant.as_ref().and_then(|grant| grant.rounds) == Some(0);
+        // A zero-token grant is the same exhausted admission on the token axis, but it binds
+        // every vehicle, loop or not. Both axes can race to zero on one reservation; report
+        // each before terminating so no provider call is ever dispatched.
+        let zero_token_grant = self.budget_grant.as_ref().and_then(|grant| grant.tokens) == Some(0);
+        if zero_round_grant || zero_token_grant {
+            if zero_round_grant {
+                self.observations.push(KernelObservation::BudgetExceeded {
+                    turn: self.turn,
+                    budget: "rounds".into(),
+                    operation_id: String::new(),
+                    reservation_id: self
+                        .budget_grant
+                        .as_ref()
+                        .map(|grant| grant.reservation_id.clone()),
+                });
+                self.pending_pace = Some(crate::types::result::PaceDecision {
+                    action: crate::types::result::PaceAction::Stop,
+                    delay_ms: None,
+                    reason: "round budget grant exhausted before start".into(),
+                    coerced_from: None,
+                });
+            }
+            if zero_token_grant {
+                self.observations.push(KernelObservation::BudgetExceeded {
+                    turn: self.turn,
+                    budget: "tokens".into(),
+                    operation_id: String::new(),
+                    reservation_id: self
+                        .budget_grant
+                        .as_ref()
+                        .map(|grant| grant.reservation_id.clone()),
+                });
+            }
+            // Token exhaustion is the harder stop: prefer it when both axes are zero.
+            return self.terminate(
+                if zero_token_grant {
+                    TerminationReason::TokenBudget
+                } else {
+                    TerminationReason::Completed
+                },
+                None,
+            );
         }
 
         let user_msg = "Proceed with the task described in [TASK STATE].".to_string();

@@ -169,6 +169,10 @@ export class SubAgentOrchestrator {
       enablePlanTool: metaTools.has("update_plan") ? ctx.parentOpts.enablePlanTool : undefined,
       // M5 v2.1: a workflow node's `start_workflow` flattens to the parent kernel (no nested pivot).
       isWorkflowNode: ctx.isWorkflowNode,
+      // Nested vehicle: the child joins the inherited runGroup for lineage/settlement only — it
+      // must NOT re-reserve budget axes the parent already holds (that double-reserve squeezed the
+      // child's grant to 0 and the kernel stripped its first-turn tools).
+      nestedGroupVehicle: true,
       // The child runs under ITS OWN spec, never the parent's: the spread above would otherwise
       // leak the parent's `runSpec` (identity, capability filter — and a LoopDriver's armed
       // `loopRound`, giving every child a phantom pace tool). A loop-node iteration carries its

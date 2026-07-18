@@ -48,11 +48,17 @@ settle(reservation_id, actual) / 失败前 release(reservation_id)
 | `max_spawn_depth` | 当前 lineage 的结构限制，不跨 vehicle |
 | `memory_writes_per_window` | 当前 kernel observed clock 的速率限制 |
 
-未申请的轴在 `budget_grant` 中省略，表示本次 admission 不限制该轴；它不是零容量。kernel 的 usage report 仍可记录该轴实际用量。
+未申请的轴在 `budget_grant` 中省略，表示本次 admission 不限制该轴；它不是零容量。kernel 的 usage report 仍可记录该轴实际用量。显式给出 `tokens = 0` 的 grant 则相反——它是 admission 错误：kernel 在 configure_run 校验时以 `InvalidConfig` fault 拒绝（message 含 reservation_id），不会再静默跑一个无工具收尾轮。
 
 ## Standalone Workflow
 
 `run_workflow()` 没有 active parent 时会创建一个真实 kernel run。SDK 先 reserve，再启动 workflow；DAG 完成后发送 `complete_run`，由 kernel 产生普通 `done` 和一次 correlated `budget_usage_reported`。因此 workflow node 数来自 kernel TaskTable，而不是宿主旁路计数。
+
+## 嵌套 vehicle
+
+`SubAgentOrchestrator` 派生的子 run（spawn 子 agent 与 workflow node）仍 join 父 run 的 RunGroup，但 join 只保留成员 lineage、并在终态把实际用量 settle 进 group ledger；它不 reserve 任何预算轴（tokens / subagents / rounds）。RunGroup admission 只管平级 vehicle——顶层 run、persona session、LoopDriver 轮次；父子派生是单 vehicle 的内部事务。
+
+子的上限由本地执行：kernel policy 的 `maxTotalTokens` 与 `resourceQuota`（含 spawn gate 的并发与深度闸门），与子 agent「独立执行、同父工具面/skill 面」的定位一致。
 
 ## 示例
 

@@ -278,6 +278,11 @@ class RuntimeOptions:
   # L1 (RunGroup): bind this runner to a governance domain shared by N peer sessions of one logical
   # run. The store must atomically reserve, settle, and release capacity. None ⇒ N=1.
   run_group: "RunGroup | None" = None
+  # Set by the SubAgentOrchestrator for host-derived child runs: the child still joins the
+  # `run_group` (lineage) and settles its actual terminal usage into the group ledger, but reserves
+  # no budget axes — group admission governs peer vehicles only. The child's caps stay local
+  # (kernel `max_total_tokens` policy + `resource_quota`). Never set this for a top-level run.
+  nested_group_vehicle: bool = False
   memory_policy: MemoryPolicy | dict[str, Any] | None = None
   os_profile: "OsProfile | None" = None
   tokenizer: str | None = None
@@ -2180,7 +2185,10 @@ class RuntimeRunner:
     # only local granted capacity and reports exact terminal usage against the same reservation id.
     group_budget_scope: GroupBudgetScope | None = None
     if self._opts.run_group is not None:
-      request = self._group_budget_request()
+      # A nested vehicle (derived by the SubAgentOrchestrator) joins for lineage and settles actual
+      # usage, but reserves no budget axes — group admission governs peer vehicles only; the
+      # child's caps stay local (kernel policy + resource quota).
+      request = ({}, {}) if self._opts.nested_group_vehicle else self._group_budget_request()
       group_budget_scope = await GroupBudgetScope.open(
         self._opts.run_group,
         GroupMember(session_id, self._opts.agent_id, kind="vehicle"),
@@ -2189,15 +2197,22 @@ class RuntimeRunner:
       )
       self._active_group_budget_scope = group_budget_scope
       granted = group_budget_scope.granted
-      kernel_apply(runtime, self._pending_observations, {
-        "kind": "configure_run",
-        "config": {"budget_grant": {
-          "reservation_id": group_budget_scope.reservation_id,
-          **({"tokens": granted.tokens} if granted.tokens is not None else {}),
-          **({"subagents": granted.subagents} if granted.subagents is not None else {}),
-          **({"rounds": granted.rounds} if granted.rounds is not None else {}),
-        }},
-      })
+      try:
+        kernel_apply(runtime, self._pending_observations, {
+          "kind": "configure_run",
+          "config": {"budget_grant": {
+            "reservation_id": group_budget_scope.reservation_id,
+            **({"tokens": granted.tokens} if granted.tokens is not None else {}),
+            **({"subagents": granted.subagents} if granted.subagents is not None else {}),
+            **({"rounds": granted.rounds} if granted.rounds is not None else {}),
+          }},
+        })
+      except Exception:
+        # Admission failure (e.g. the kernel rejecting a zero-capacity grant): release the
+        # reservation so it cannot linger in the group ledger, then surface the error.
+        await group_budget_scope.release()
+        self._active_group_budget_scope = None
+        raise
 
     if self._opts.memory_policy is not None:
       kernel_apply(runtime, self._pending_observations, {

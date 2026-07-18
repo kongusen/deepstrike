@@ -145,7 +145,21 @@ async def test_runner_retries_terminal_settlement_from_reliability_policy():
 
 @pytest.mark.asyncio
 async def test_exhausted_group_is_enforced_as_zero_capacity_grant():
-    store = InMemoryGroupBudgetStore()
+    # Records reservations so the test can read the id of the one the exhausted group grants 0
+    # tokens to — the kernel's admission rejection names it.
+    class _RecordingStore(InMemoryGroupBudgetStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.recorded: list = []
+
+        async def reserve(self, group_id, *, member_id, limits, requested):
+            reservation = await super().reserve(
+                group_id, member_id=member_id, limits=limits, requested=requested
+            )
+            self.recorded.append(reservation)
+            return reservation
+
+    store = _RecordingStore()
     group = RunGroup(id="exhausted", budget_store=store)
     seed = await GroupBudgetScope.open(
         group,
@@ -154,8 +168,15 @@ async def test_exhausted_group_is_enforced_as_zero_capacity_grant():
         requested={"tokens": 100_000},
     )
     await seed.settle(tokens=100_000)
-    status, _ = await _run_to_done(_make_runner(group), "director")
-    assert status == "token_budget"
+
+    # The exhausted group squeezes the new vehicle's grant to 0 tokens, and the kernel rejects that
+    # zero-capacity grant at admission (configure_run invalid_config) instead of running a tool-less
+    # final round — the run now raises.
+    with pytest.raises(RuntimeError, match="budget_grant tokens must be positive") as excinfo:
+        await _run_to_done(_make_runner(group), "director")
+    zero_grant = next((r for r in store.recorded if r.granted.tokens == 0), None)
+    assert zero_grant is not None
+    assert f"reservation_id={zero_grant.id}" in str(excinfo.value)
 
 
 @pytest.mark.asyncio

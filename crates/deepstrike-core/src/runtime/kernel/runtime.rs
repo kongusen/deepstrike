@@ -2352,6 +2352,19 @@ fn validate_run_config(config: &RunConfig, max_tokens: u32) -> Result<(), String
     {
         return Err("budget_grant reservation_id must be non-empty".to_string());
     }
+    // A zero-token grant admits no runnable work: the run would silently degrade to a
+    // tool-less final round. Reject it at admission so the host surfaces the exhausted
+    // reservation instead of a phantom completion.
+    if let Some(grant) = config
+        .budget_grant
+        .as_ref()
+        .filter(|grant| grant.tokens == Some(0))
+    {
+        return Err(format!(
+            "budget_grant tokens must be positive (zero-token grant admits no runnable work), reservation_id={}",
+            grant.reservation_id
+        ));
+    }
     if let Some(reliability) = &config.reliability {
         for (name, capacity) in [
             ("event_replay_capacity", reliability.event_replay_capacity),

@@ -6,6 +6,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.46] - 2026-07-18
+
+### Fixed — nested vehicle group budget
+
+- Sub-agent child runs derived by `SubAgentOrchestrator` (spawn sub-agents and workflow nodes)
+  inherited the parent's RunGroup and re-reserved its token axis as if they were top-level
+  vehicles; the peer-contention formula squeezed the grant to zero, so the kernel cleared the
+  first frame's tool list and the model could only emit pseudo tool-call text. Nested vehicles
+  still join the group (lineage) and settle actual usage into the group ledger, but no longer
+  reserve any budget axis (tokens / subagents / rounds) — child limits are enforced locally by
+  the kernel policy (`maxTotalTokens`) and `resourceQuota`. (Node + Python.)
+
+### Changed — BREAKING: zero-token grants fail admission
+
+- `budget_grant.tokens == 0` is now an admission error instead of silently running a tool-less
+  wrap-up round: the kernel rejects `configure_run` with an `InvalidConfig` fault whose message
+  carries the `reservation_id`. Runs that previously "finished" this way now surface an explicit
+  error.
+
 ## [0.2.42] - 2026-07-16
 
 ### Changed — BREAKING: governance denials are visible results

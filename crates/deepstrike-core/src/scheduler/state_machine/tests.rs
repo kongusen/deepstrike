@@ -4341,6 +4341,34 @@ fn zero_round_grant_stops_before_provider_dispatch() {
 }
 
 #[test]
+fn zero_token_grant_stops_before_provider_dispatch() {
+    let mut sm = sm();
+    sm.set_budget_grant(crate::runtime::kernel::BudgetGrant {
+        reservation_id: "no-tokens".into(),
+        tokens: Some(0),
+        subagents: None,
+        rounds: None,
+    });
+
+    let action = sm.start(RuntimeTask::new("write"));
+
+    match action {
+        LoopAction::Done { result } => {
+            assert_eq!(result.termination, TerminationReason::TokenBudget);
+        }
+        other => panic!("expected Done, got {other:?}"),
+    }
+    assert_eq!(
+        sm.turn, 0,
+        "no provider turn may start without token capacity"
+    );
+    assert!(sm.take_observations().iter().any(|observation| matches!(
+        observation,
+        KernelObservation::BudgetExceeded { budget, .. } if budget == "tokens"
+    )));
+}
+
+#[test]
 fn pace_stop_routes_through_criteria_gate_then_honors_the_redecision() {
     let mut sm = loop_sm(crate::types::agent::LoopRoundSpec::default());
     sm.ctx.partitions.task_state.criteria =

@@ -168,6 +168,35 @@ fn prompt_reservations_cannot_consume_the_entire_context_window() {
 }
 
 #[test]
+fn zero_token_budget_grant_is_rejected_at_configure() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let rejected = runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            budget_grant: Some(BudgetGrant {
+                reservation_id: "r0".into(),
+                tokens: Some(0),
+                subagents: None,
+                rounds: None,
+            }),
+            ..RunConfig::default()
+        },
+    }));
+
+    assert!(matches!(
+        rejected.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::InvalidConfig,
+            ..
+        }]
+    ));
+    assert!(
+        rejected.faults[0].message.contains("r0"),
+        "fault message must name the rejected reservation: {}",
+        rejected.faults[0].message
+    );
+}
+
+#[test]
 fn aborting_prepared_step_restores_the_exact_committed_runtime() {
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
     runtime.step(correlated_input(

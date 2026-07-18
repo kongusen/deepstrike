@@ -357,6 +357,13 @@ export interface RuntimeOptions {
    */
   runGroup?: RunGroup
   /**
+   * Set by the SubAgentOrchestrator for host-derived child runs: the child still joins the
+   * `runGroup` (lineage) and settles its actual terminal usage into the group ledger, but reserves
+   * no budget axes — group admission governs peer vehicles only. The child's caps stay local
+   * (kernel `maxTotalTokens` policy + `resourceQuota`). Never set this for a top-level run.
+   */
+  nestedGroupVehicle?: boolean
+  /**
    * Optional long-term memory policy (`set_memory_policy`). Tunes the kernel's memory subsystem
    * (retrieval top-k, stale-warning age, write validation, memory path). Unset leaves the kernel
    * defaults. Enabling memory still requires `dreamStore` + `agentId`.
@@ -2194,17 +2201,27 @@ export class RuntimeRunner {
       startPayload.run_spec = agentRunSpecToKernel(spec)
     }
     // Reserve capacity before start_run. The kernel enforces only this vehicle's grant and reports
-    // exact terminal usage against the same opaque reservation identity.
+    // exact terminal usage against the same opaque reservation identity. A nested vehicle joins for
+    // lineage/settlement only: it reserves no budget axes (group admission governs peer vehicles),
+    // so the parent's held reservation cannot squeeze the child's grant to zero.
     if (this.opts.runGroup) {
       const g = this.opts.runGroup
       groupBudgetScope = await GroupBudgetScope.open(
         g,
         { sessionId, role: this.opts.agentId, kind: "vehicle" },
-        this.groupBudgetRequest(),
+        this.opts.nestedGroupVehicle ? { limits: {}, requested: {} } : this.groupBudgetRequest(),
       )
       this.activeGroupBudgetScope = groupBudgetScope
     }
-    await this.applyKernelPolicies(runtime, groupBudgetScope)
+    try {
+      await this.applyKernelPolicies(runtime, groupBudgetScope)
+    } catch (err) {
+      // Admission failure (e.g. the kernel rejecting a zero-capacity grant): release the
+      // reservation so it cannot linger in the group ledger, then surface the error.
+      await groupBudgetScope?.release()
+      this.activeGroupBudgetScope = undefined
+      throw err
+    }
     // Multimodal upload: seed the user's attachments (images/audio) as a history
     // message before start_run pushes the "[TASK STATE]" anchor. init_task does not
     // clear history, so order becomes [attachment user msg, "Proceed…"] — both land
