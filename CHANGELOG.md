@@ -25,6 +25,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   carries the `reservation_id`. Runs that previously "finished" this way now surface an explicit
   error.
 
+### Added — sub-agent tool access on the spawn path
+
+- `AgentRunSpec.toolAccess` (`tool_access` in Python) lets a public `spawnSubAgent` caller run the
+  child on the parent's execution plane (`"inherit"`) instead of the deny-all-safe default
+  (`"filtered"`). Host-side only (like `modelHint`) — never reaches the kernel wire. The spawn path
+  now threads it through; the child's surface is a subset of the parent's (no privilege escalation).
+  Workflow nodes were already inherit-by-default — only the public spawn path changes.
+- A `"filtered"` spawn that resolves to zero tools (no capability grant, no meta-tools) now emits a
+  host-visible warning naming the child and the fix (mount + `capabilityFilter`, or
+  `toolAccess:"inherit"`) instead of silently handing the model an empty toolset. (Node + Python + WASM.)
+  Quarantined workflow nodes (deliberately tool-less) are exempt.
+
 ## [0.2.42] - 2026-07-16
 
 ### Changed — BREAKING: governance denials are visible results

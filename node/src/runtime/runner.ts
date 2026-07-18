@@ -1067,6 +1067,7 @@ export class RuntimeRunner {
       spec,
       manifest,
       sessionLog: this.opts.sessionLog,
+      toolAccess: spec.toolAccess,
       ...(this.opts.subAgentHarness ? { harness: this.opts.subAgentHarness } : {}),
     })
 

@@ -130,6 +130,17 @@ export class SubAgentOrchestrator {
     const inherit = ctx.toolAccess === "inherit"
     const permitted = new Set(ctx.manifest.permitted_capability_ids ?? [])
     const metaTools = inherit ? availableMetaTools(ctx.parentOpts) : deriveMetaTools(permitted, ctx.parentOpts)
+    // A "filtered" spawn with no capability grants and no meta-tools resolves to a deny-all plane —
+    // the child model sees zero tools and reports "no tools available". Warn the host (visible, not
+    // fatal) with the fix, mirroring `maybeWarnFailureShapedChunk`'s tone. Exempt workflow nodes:
+    // `!inherit && workflow-node ⇒ quarantined ⇒ intentional deny-all, not a misconfiguration.
+    if (!inherit && !ctx.isWorkflowNode && permitted.size === 0 && metaTools.size === 0) {
+      console.warn(
+        `[deepstrike] spawned sub-agent "${ctx.spec.identity.agentId}" resolved to zero tools ` +
+        `(deny-all filter). Mount tools as capabilities and grant via spec.capabilityFilter, or pass ` +
+        `spec.toolAccess:'inherit' to run on the parent's plane. If a tool-less child is intentional, ignore this.`,
+      )
+    }
     const basePlane = inherit
       ? ctx.parentOpts.executionPlane
       : new FilteredExecutionPlane(ctx.parentOpts.executionPlane, permitted, metaTools)

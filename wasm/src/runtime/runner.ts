@@ -1541,6 +1541,7 @@ export class RuntimeRunner {
       spec,
       manifest,
       sessionLog: this.opts.sessionLog,
+      toolAccess: spec.toolAccess,
     })
 
     kernelApply(runtime, this.pendingObservations, {

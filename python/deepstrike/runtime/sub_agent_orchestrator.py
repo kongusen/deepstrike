@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
@@ -141,6 +142,19 @@ def _resolve_tool_grants(ctx: SubAgentRunContext) -> tuple[Any, frozenset[str]]:
     return plane, _available_meta_tools(ctx.parent_opts)
   permitted = set(ctx.manifest.permitted_capability_ids)
   meta_tools = _derive_meta_tools(permitted, ctx.parent_opts)
+  # A "filtered" spawn with no capability grants and no meta-tools resolves to a deny-all plane —
+  # the child model sees zero tools and reports "no tools available". Warn the host (visible, not
+  # fatal) with the fix, mirroring execution_plane's failure-shaped-chunk warning. Exempt workflow
+  # nodes: not-inherit + workflow-node ⇒ quarantined ⇒ intentional deny-all, not a misconfiguration.
+  if not ctx.is_workflow_node and not permitted and not meta_tools:
+    warnings.warn(
+      f'spawned sub-agent "{ctx.spec.identity.agent_id}" resolved to zero tools (deny-all filter). '
+      "Mount tools as capabilities and grant via spec.capability_filter, or pass "
+      "spec.tool_access='inherit' to run on the parent's plane. If a tool-less child is intentional, "
+      "ignore this.",
+      RuntimeWarning,
+      stacklevel=2,
+    )
   return FilteredExecutionPlane(plane, permitted, meta_tools), meta_tools
 
 

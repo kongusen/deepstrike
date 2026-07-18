@@ -86,18 +86,39 @@ function availableMetaTools(opts: RuntimeOptions): Set<string> {
   return metaTools
 }
 
+/** Resolve a child's execution plane + meta-tool set from its spawn context.
+ *
+ * W-N1: `"inherit"` runs the child on the parent's plane with availability-derived meta-tools
+ * (trusted workflow nodes); `"filtered"` (default) filters to the manifest grants, empty ⇒ deny-all
+ * (spawn path, quarantined nodes). Extracted as a pure seam (mirrors the Python
+ * `_resolve_tool_grants`) so the zero-tool warning is unit-testable without spinning a child loop. */
+export function resolveToolGrants(
+  ctx: SubAgentRunContext,
+): { plane: RuntimeOptions["executionPlane"]; metaTools: Set<string> } {
+  const inherit = ctx.toolAccess === "inherit"
+  const permitted = new Set(ctx.manifest.permitted_capability_ids ?? [])
+  const metaTools = inherit ? availableMetaTools(ctx.parentOpts) : deriveMetaTools(permitted, ctx.parentOpts)
+  // A "filtered" spawn with no capability grants and no meta-tools resolves to a deny-all plane —
+  // the child model sees zero tools and reports "no tools available". Warn the host (visible, not
+  // fatal) with the fix. Exempt workflow nodes: not-inherit + workflow-node ⇒ quarantined ⇒
+  // intentional deny-all, not a misconfiguration.
+  if (!inherit && !ctx.isWorkflowNode && permitted.size === 0 && metaTools.size === 0) {
+    console.warn(
+      `[deepstrike] spawned sub-agent "${ctx.spec.identity.agentId}" resolved to zero tools ` +
+      `(deny-all filter). Mount tools as capabilities and grant via spec.capabilityFilter, or pass ` +
+      `spec.toolAccess:'inherit' to run on the parent's plane. If a tool-less child is intentional, ignore this.`,
+    )
+  }
+  const plane = inherit
+    ? ctx.parentOpts.executionPlane
+    : new FilteredExecutionPlane(ctx.parentOpts.executionPlane, permitted, metaTools)
+  return { plane, metaTools }
+}
+
 /** Host-side driver for kernel-isolated sub-agent runs. */
 export class SubAgentOrchestrator {
   async run(ctx: SubAgentRunContext): Promise<SubAgentResult> {
-    // W-N1: "inherit" runs the child on the parent's plane with availability-derived meta-tools
-    // (trusted workflow nodes); "filtered" (default) filters to the manifest grants, empty ⇒
-    // deny-all (spawn path, quarantined nodes).
-    const inherit = ctx.toolAccess === "inherit"
-    const permitted = new Set(ctx.manifest.permitted_capability_ids ?? [])
-    const metaTools = inherit ? availableMetaTools(ctx.parentOpts) : deriveMetaTools(permitted, ctx.parentOpts)
-    const execPlane = inherit
-      ? ctx.parentOpts.executionPlane
-      : new FilteredExecutionPlane(ctx.parentOpts.executionPlane, permitted, metaTools)
+    const { plane: execPlane, metaTools } = resolveToolGrants(ctx)
 
     let systemPrompt = ctx.parentOpts.systemPrompt
     let inheritEvents: Array<{ seq: number; event: SessionEvent }> | undefined

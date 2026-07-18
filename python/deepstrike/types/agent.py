@@ -81,6 +81,13 @@ class AgentRunSpec:
   # dict: {"max_rounds"?, "min_sleep_ms"?, "max_sleep_ms"?, "default_action"?}. Only set keys are
   # lowered to the kernel; None ⇒ no trap (a plain run).
   loop_round: dict[str, Any] | None = None
+  # Tool surface for a spawned sub-agent. Host-side only (like ``model_hint``) — NOT sent to the
+  # kernel (``agent_run_spec_to_kernel`` maps fields explicitly and omits it). Default "filtered"
+  # keeps the spawn path's deny-all-safe default: the child is filtered to its manifest grants, and a
+  # grant-less spawn resolves to zero tools. "inherit" runs the child on the parent's execution plane
+  # with the parent's meta-tool availability (same mechanism trusted workflow nodes use) — the child's
+  # surface is a subset of the parent's, never a privilege escalation.
+  tool_access: str = "filtered"  # "inherit" | "filtered"
 
 
 @dataclass

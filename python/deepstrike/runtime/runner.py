@@ -752,6 +752,7 @@ class RuntimeRunner:
       spec=spec,
       manifest=manifest,
       session_log=self._opts.session_log,
+      tool_access=spec.tool_access or "filtered",
       harness=self._opts.sub_agent_harness,
     ))
 

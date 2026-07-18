@@ -111,6 +111,18 @@ It composes with:
 - Governance: allow / deny / gate at the syscall trap
 - ResourceQuota: spawn, memory write, workflow growth, and related resource caps
 
+## Three paths to a sub-agent's tool surface
+
+What tools a spawned sub-agent gets is decided host-side by `AgentRunSpec.tool_access` (Node
+`toolAccess`; host-side only, never sent to the kernel) together with capability mounting. There are
+three paths:
+
+| Path | Configuration | Meaning |
+|------|---------------|---------|
+| Inherit parent surface | `tool_access="inherit"` | The child runs directly on the parent's execution plane, getting the parent's tools and meta-tool availability (the same mechanism trusted workflow nodes use). The child's surface is a subset of the parent's — no privilege escalation. |
+| Fine-grained grant | default `"filtered"` + capability mount + `capability_filter` | The child gets only the capabilities granted in its manifest. Note `set_tools` populates `sm.tools` only and **does not reach the spawn manifest** — to give the child a tool it must be mounted as a capability and then granted via `capability_filter`. |
+| Default deny-all | default `"filtered"`, no mount / no filter | The child's tool surface is empty and the model reports "no tools available". The SDK emits a host-visible warning with the fix; if a tool-less child is intentional, ignore it. |
+
 ## NodeTrust and Quarantine
 
 Workflow nodes also carry `NodeTrust`:

@@ -64,6 +64,13 @@ export interface AgentRunSpec {
   maxTurns?: number
   /** O3: per-child wall-clock cap in ms (sets the child runner's `timeoutMs`; falls back to the parent's). */
   maxWallMs?: number
+  /** Tool surface for a spawned sub-agent. Host-side only (like `modelHint`) — NOT sent to the kernel
+   *  (`agentRunSpecToKernel` maps fields explicitly and omits it). Default `"filtered"` keeps the spawn
+   *  path's deny-all-safe default: the child is filtered to its manifest grants, and a grant-less spawn
+   *  resolves to zero tools. `"inherit"` runs the child on the parent's execution plane with the
+   *  parent's meta-tool availability (same mechanism trusted workflow nodes use) — the child's surface
+   *  is a subset of the parent's, never a privilege escalation. */
+  toolAccess?: "inherit" | "filtered"
 }
 
 /** Kernel process-table observation (Phase 3 canonical spawn signal). */
