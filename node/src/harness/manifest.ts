@@ -159,10 +159,73 @@ function validateRuntimePatch(runtime: HarnessRuntimePatch): void {
   if (typeof runtime !== "object" || runtime === null) {
     throw new TypeError("manifest.runtime must be an object")
   }
-  for (const key of Object.keys(runtime)) {
+  for (const [key, value] of Object.entries(runtime)) {
     if (!RUNTIME_PATCH_KEYS.includes(key)) {
       throw new RangeError(`runtime patch key not in the editable whitelist: ${key}`)
     }
+    if (value !== undefined) validateRuntimeValue(key, value)
+  }
+}
+
+/** Per-key value typing for runtime patches. An LLM proposer WILL eventually put instruction prose
+ *  where a boolean belongs; rejecting it here turns a mid-run kernel `InvalidConfig` crash into a
+ *  discardable candidate. */
+function validateRuntimeValue(key: string, value: unknown): void {
+  const positiveInt = (v: unknown) => typeof v === "number" && Number.isInteger(v) && v > 0
+  switch (key) {
+    case "maxTurns":
+    case "maxTotalTokens":
+    case "skillLeaseTurns":
+      if (!positiveInt(value)) throw new TypeError(`runtime.${key} must be a positive integer`)
+      return
+    case "criteriaGate":
+      if (typeof value !== "boolean") throw new TypeError("runtime.criteriaGate must be a boolean")
+      return
+    case "knowledgeBudgetRatio":
+      if (typeof value !== "number" || !(value > 0 && value <= 1)) {
+        throw new TypeError("runtime.knowledgeBudgetRatio must be a number in (0, 1]")
+      }
+      return
+    case "repeatFuse": {
+      if (value === false) return
+      if (typeof value !== "object" || value === null) {
+        throw new TypeError("runtime.repeatFuse must be false or { denyAfter?, terminateAfter? }")
+      }
+      const fuse = value as Record<string, unknown>
+      for (const k of Object.keys(fuse)) {
+        if (k !== "denyAfter" && k !== "terminateAfter") {
+          throw new RangeError(`runtime.repeatFuse has unknown key: ${k}`)
+        }
+        if (fuse[k] !== undefined && !positiveInt(fuse[k])) {
+          throw new TypeError(`runtime.repeatFuse.${k} must be a positive integer`)
+        }
+      }
+      return
+    }
+    case "entropyWatch": {
+      if (typeof value !== "object" || value === null) {
+        throw new TypeError("runtime.entropyWatch must be an object")
+      }
+      const watch = value as Record<string, unknown>
+      for (const k of Object.keys(watch)) {
+        const v = watch[k]
+        if (v === undefined) continue
+        if (k === "enabled" || k === "notifyModel") {
+          if (typeof v !== "boolean") throw new TypeError(`runtime.entropyWatch.${k} must be a boolean`)
+        } else if (k === "threshold" || k === "hysteresis") {
+          if (typeof v !== "number" || !(v >= 0 && v <= 1)) {
+            throw new TypeError(`runtime.entropyWatch.${k} must be a number in [0, 1]`)
+          }
+        } else if (k === "cooldownTurns") {
+          if (!positiveInt(v)) throw new TypeError("runtime.entropyWatch.cooldownTurns must be a positive integer")
+        } else {
+          throw new RangeError(`runtime.entropyWatch has unknown key: ${k}`)
+        }
+      }
+      return
+    }
+    default:
+      throw new RangeError(`runtime patch key not in the editable whitelist: ${key}`)
   }
 }
 
@@ -260,7 +323,10 @@ function editRuntime(manifest: HarnessManifest, key: string | undefined, patch: 
   if (patch.op === "append") throw new RangeError("append applies only to nudges")
   const runtime: Record<string, unknown> = { ...(manifest.runtime ?? {}) }
   if (patch.op === "remove") delete runtime[key]
-  else runtime[key] = patch.value
+  else {
+    validateRuntimeValue(key, patch.value)
+    runtime[key] = patch.value
+  }
   manifest.runtime = runtime as HarnessRuntimePatch
 }
 

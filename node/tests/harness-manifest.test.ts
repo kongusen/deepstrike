@@ -187,3 +187,38 @@ describe("validateManifest", () => {
     expect(() => validateManifest({ ...seed(), runtime: { skillLeaseTurns: 4, badKey: 1 } as unknown as HarnessManifest["runtime"] })).toThrow(/whitelist/)
   })
 })
+
+describe("runtime value typing", () => {
+  // Live-run regression: a DeepSeek proposer set runtime.criteriaGate to instruction PROSE; the key
+  // whitelist let it through and the kernel refused the run mid-flight. Values must type-check at
+  // the patch/load boundary so the candidate dies as `apply_failed`, not as a loop crash.
+  it("rejects a string where runtime.criteriaGate expects a boolean (patch path)", () => {
+    const p = patch({ targetSurface: "runtime.criteriaGate", value: "Check the output for truncation." })
+    expect(() => applyPatch(seed(), p)).toThrow(/boolean/)
+    expect(applyPatch(seed(), patch({ targetSurface: "runtime.criteriaGate", value: false })).runtime?.criteriaGate).toBe(false)
+  })
+
+  it("rejects bad runtime values at load", () => {
+    const bad = (runtime: unknown) =>
+      validateManifest({ ...seed(), runtime: runtime as HarnessManifest["runtime"] })
+    expect(() => bad({ criteriaGate: "yes" })).toThrow(/boolean/)
+    expect(() => bad({ maxTurns: 2.5 })).toThrow(/positive integer/)
+    expect(() => bad({ knowledgeBudgetRatio: 1.5 })).toThrow(/\(0, 1\]/)
+    expect(() => bad({ repeatFuse: { bogus: 1 } })).toThrow(/unknown key/)
+    expect(() => bad({ entropyWatch: { threshold: "high" } })).toThrow(/\[0, 1\]/)
+    expect(() => bad({ entropyWatch: { surprise: true } })).toThrow(/unknown key/)
+  })
+
+  it("accepts well-typed runtime values", () => {
+    expect(() => validateManifest({
+      ...seed(),
+      runtime: {
+        maxTurns: 8,
+        criteriaGate: false,
+        repeatFuse: { denyAfter: 3 },
+        entropyWatch: { enabled: true, threshold: 0.7, cooldownTurns: 2 },
+        knowledgeBudgetRatio: 0.25,
+      },
+    })).not.toThrow()
+  })
+})
