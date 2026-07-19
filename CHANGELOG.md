@@ -6,6 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.47] - 2026-07-19
+
 ### Added — self-harness loop (H1–H3)
 
 - **Editable harness surfaces as data** (Node SDK): `RuntimeOptions.instructions` splits the system
