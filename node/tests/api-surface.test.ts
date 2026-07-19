@@ -68,6 +68,10 @@ describe("subpath barrels", () => {
     for (const n of ["SinglePassHarness", "EvalLoopHarness", "HarnessLoop", "ContractDrivenHarness"])
       expect(harness).not.toHaveProperty(n)
   })
+  it("harness carries the self-harness manifest + nudge API", () => {
+    for (const n of ["composeSystemPrompt", "manifestDigest", "applyManifest", "applyPatch", "validateManifest", "NudgeEngine", "validateNudgeRules"])
+      expect(harness).toHaveProperty(n)
+  })
   it("os carries profiles, signals, permissions, replay-testing", () => {
     for (const n of ["osProfile", "assertNativeProfile", "SignalGateway", "PermissionManager", "ReplayProvider", "primitiveForKind"])
       expect(os).toHaveProperty(n)

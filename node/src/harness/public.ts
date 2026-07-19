@@ -15,3 +15,21 @@ export { VerdictFnJudge, LlmEvalJudge, HybridJudge } from "./judge.js"
 export type { AttemptJudge, JudgeContext, JudgeResult, SkillCandidate } from "./judge.js"
 export { judge } from "../runtime/eval.js"
 export type { VerdictDetail, JudgeArgs } from "../runtime/eval.js"
+
+// Self-Harness H1: the harness face as data (manifest lineage + declarative event→note rules). The
+// lab layer loads these through the compiled dist, so they live on this public barrel.
+export {
+  composeSystemPrompt,
+  manifestDigest,
+  applyManifest,
+  applyPatch,
+  validateManifest,
+} from "./manifest.js"
+export type {
+  InstructionProfile,
+  HarnessManifest,
+  HarnessRuntimePatch,
+  HarnessPatch,
+} from "./manifest.js"
+export { NudgeEngine, validateNudgeRules } from "./nudge.js"
+export type { NudgeTrigger, NudgeRule, NudgeOutput } from "./nudge.js"

@@ -104,6 +104,8 @@ import {
   normalizeContextPolicyV1,
   type ContextPolicyOverridesV1,
 } from "./context-policy.js"
+import { composeSystemPrompt, type InstructionProfile } from "../harness/manifest.js"
+import { NudgeEngine, type NudgeRule } from "../harness/nudge.js"
 
 export interface SchedulerPolicy {
   version: 1
@@ -257,6 +259,16 @@ export interface RuntimeOptions {
     phase?: "initial" | "renewal"
   }) => Promise<MemoryQuery[] | undefined> | MemoryQuery[] | undefined
   systemPrompt?: string
+  /** Self-Harness H1.1: the four instruction slots (bootstrap/execution/verification/failureRecovery)
+   *  composed onto `systemPrompt` in fixed order at option normalization. The kernel still sees ONE
+   *  system prompt; this is the editable instruction surface the self-harness loop rewrites. Absent ⇒
+   *  `systemPrompt` is used verbatim (zero behavior difference). */
+  instructions?: InstructionProfile
+  /** Self-Harness H1.2: declarative event→note rules. On each matching session event a rendered note
+   *  is pushed through the `injectNote` signal channel (same path as `onToolResult`'s `{note}`).
+   *  ≤16 rules, validated at construction. Absent/empty ⇒ no engine, no append wrapping, zero
+   *  behavior difference. */
+  nudges?: NudgeRule[]
   initialMemory?: string[]
   skillDir?: string
   dreamStore?: DreamStore
@@ -515,12 +527,18 @@ export class RuntimeRunner {
   private dashboard: KernelPrimitivesDashboard | null = null
   /** Most recent kernel entropy sample of the active/last run (see `latestEntropy`). */
   private lastEntropySample: EntropySample | null = null
+  /** H1.1: `systemPrompt` with the instruction slots composed in, computed ONCE so `run_started` and
+   *  the kernel AddSystemMessage take the identical string. */
+  private readonly composedSystemPrompt: string | undefined
+  /** H1.2: present only when `opts.nudges` is non-empty; else null and the append funnel is untouched. */
+  private readonly nudgeEngine: NudgeEngine | null
 
   constructor(private readonly opts: RuntimeOptions) {
     const schemaAttempts = opts.workflowSchemaValidationAttempts ?? 2
     if (!Number.isInteger(schemaAttempts) || schemaAttempts < 1 || schemaAttempts > 16) {
       throw new RangeError("workflowSchemaValidationAttempts must be an integer between 1 and 16")
     }
+    this.composedSystemPrompt = composeSystemPrompt(opts.systemPrompt, opts.instructions)
     if (opts.enableDiagnosticsDashboard) {
       const originalAppend = opts.sessionLog.append.bind(opts.sessionLog)
       opts.sessionLog.append = async (sessionId, event) => {
@@ -528,6 +546,21 @@ export class RuntimeRunner {
         if (this.dashboard) {
           this.dashboard.ingest(event)
           this.dashboard.print()
+        }
+        return seq
+      }
+    }
+    // H1.2: feed the nudge engine at the append funnel, stacking OVER any prior wrapping so the event
+    // is durably logged before a nudge observes it. Notes drain through the same `injectNote` channel
+    // as host `onToolResult` notes, surfacing in the NEXT provider request. Skipped entirely when no
+    // rules are configured, keeping the default event stream byte-identical.
+    this.nudgeEngine = opts.nudges?.length ? new NudgeEngine(opts.nudges) : null
+    if (this.nudgeEngine) {
+      const priorAppend = opts.sessionLog.append.bind(opts.sessionLog)
+      opts.sessionLog.append = async (sessionId, event) => {
+        const seq = await priorAppend(sessionId, event)
+        for (const { note, urgency } of this.nudgeEngine!.observe(event)) {
+          this.injectNote(note, urgency)
         }
         return seq
       }
@@ -1816,7 +1849,7 @@ export class RuntimeRunner {
         goal: req.goal,
         criteria: req.criteria ?? [],
         agent_id: this.opts.agentId,
-        system_prompt: this.opts.systemPrompt,
+        system_prompt: this.composedSystemPrompt,
         ...(attachments ? { attachments } : {}),
       })
     }
@@ -2050,11 +2083,11 @@ export class RuntimeRunner {
       tools: this.opts.executionPlane.schemas().map(toolSchemaToKernel),
     })
 
-    if (this.opts.systemPrompt) {
+    if (this.composedSystemPrompt) {
       await this.commitKernelApply(runtime, this.pendingObservations, {
         kind: "add_system_message",
-        content: this.opts.systemPrompt,
-        tokens: Math.max(1, Math.ceil(this.opts.systemPrompt.length / 4)),
+        content: this.composedSystemPrompt,
+        tokens: Math.max(1, Math.ceil(this.composedSystemPrompt.length / 4)),
       })
     }
 

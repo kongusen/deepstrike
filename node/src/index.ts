@@ -19,6 +19,9 @@ export type { LoopSpec, LoopOutcome } from "./runtime/loop-driver.js"
 export type { RunAgentOptions, RunFanoutOptions } from "./runtime/facade.js"
 export { RuntimeRunner, collectText } from "./runtime/runner.js"
 export type { RuntimeOptions, KernelReliabilityOptions, OperationCancellationReason, PromptBudget, SchedulerPolicy } from "./runtime/runner.js"
+// Self-Harness H1 instruction/nudge surfaces named on `RuntimeOptions`; the full manifest API lives
+// on the `@deepstrike/sdk/harness` subpath.
+export type { InstructionProfile, NudgeRule, NudgeTrigger } from "./harness/public.js"
 export type { SignalPolicy } from "./runtime/os-profile.js"
 export { readKernelDiagnostics, restoreKernelRuntime, snapshotKernelRuntime } from "./runtime/kernel-step.js"
 export type { KernelDiagnostics, KernelSnapshot } from "./runtime/kernel-step.js"

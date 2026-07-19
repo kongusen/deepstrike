@@ -43,6 +43,9 @@ export function createRunner(
     preQueryMemory?: import("../../src/runtime/runner.js").RuntimeOptions["preQueryMemory"]
     memoryPolicy?: import("../../src/kernel.js").MemoryPolicy
     onPromotionSuggested?: import("../../src/runtime/runner.js").RuntimeOptions["onPromotionSuggested"]
+    systemPrompt?: string
+    instructions?: import("../../src/runtime/runner.js").RuntimeOptions["instructions"]
+    nudges?: import("../../src/runtime/runner.js").RuntimeOptions["nudges"]
   } = {},
 ): { runner: RuntimeRunner; sessionLog: InMemorySessionLog; plane: LocalExecutionPlane } {
   const sessionLog = opts.sessionLog ?? new InMemorySessionLog()
@@ -79,6 +82,9 @@ export function createRunner(
     preQueryMemory: opts.preQueryMemory,
     memoryPolicy: opts.memoryPolicy,
     onPromotionSuggested: opts.onPromotionSuggested,
+    systemPrompt: opts.systemPrompt,
+    instructions: opts.instructions,
+    nudges: opts.nudges,
   })
   return { runner, sessionLog, plane }
 }

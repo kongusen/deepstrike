@@ -1,0 +1,189 @@
+/**
+ * Self-Harness H1.1 + H1.3 — HarnessManifest as data.
+ *  - manifestDigest: deterministic, key-order invariant, undefined-skipping.
+ *  - applyPatch: whitelist + bound rejection, parent-chain linkage, no source mutation.
+ *  - applyManifest: whitelisted fold onto RuntimeOptions, unknown-runtime-key rejection.
+ *  - composeSystemPrompt: fixed order, byte stability, empty-slot skipping.
+ */
+import {
+  composeSystemPrompt,
+  manifestDigest,
+  applyManifest,
+  applyPatch,
+  validateManifest,
+  type HarnessManifest,
+  type HarnessPatch,
+} from "../src/harness/manifest.js"
+import type { RuntimeOptions } from "../src/runtime/runner.js"
+
+function seed(): HarnessManifest {
+  return {
+    manifestVersion: 1,
+    parent: null,
+    instructions: { bootstrap: "boot", verification: "verify" },
+    nudges: [],
+    runtime: { maxTurns: 10 },
+    editableSurfaces: [
+      "instructions.bootstrap",
+      "instructions.execution",
+      "instructions.verification",
+      "instructions.failureRecovery",
+      "nudges",
+      "runtime.maxTurns",
+      "runtime.criteriaGate",
+    ],
+  }
+}
+
+function patch(over: Partial<HarnessPatch>): HarnessPatch {
+  return { targetSurface: "instructions.bootstrap", op: "set", value: "x", rationale: "r", targetCluster: "c", expectedEffect: "e", ...over }
+}
+
+describe("manifestDigest", () => {
+  it("is invariant to object key insertion order", () => {
+    const a = seed()
+    const b: HarnessManifest = {
+      editableSurfaces: [...a.editableSurfaces], // same array order (arrays are ordered)
+      runtime: { maxTurns: 10 },
+      nudges: [],
+      instructions: { verification: "verify", bootstrap: "boot" }, // slot keys reordered
+      parent: null,
+      manifestVersion: 1,
+    }
+    expect(manifestDigest(a)).toBe(manifestDigest(b))
+  })
+
+  it("ignores undefined-valued keys (no empty slots)", () => {
+    const a = seed()
+    const withUndef = { ...a, modelProfile: undefined } as HarnessManifest
+    expect(manifestDigest(withUndef)).toBe(manifestDigest(a))
+  })
+
+  it("changes when any surface value changes", () => {
+    const a = seed()
+    const b: HarnessManifest = { ...a, instructions: { bootstrap: "boot2", verification: "verify" } }
+    expect(manifestDigest(b)).not.toBe(manifestDigest(a))
+  })
+
+  it("is sensitive to editableSurfaces order (arrays are ordered)", () => {
+    const a = seed()
+    const b: HarnessManifest = { ...a, editableSurfaces: [...a.editableSurfaces].reverse() }
+    expect(manifestDigest(b)).not.toBe(manifestDigest(a))
+  })
+})
+
+describe("composeSystemPrompt", () => {
+  it("joins base then slots in fixed order, skipping empty slots", () => {
+    const out = composeSystemPrompt("BASE", { failureRecovery: "FR", bootstrap: "BOOT", verification: "VER" })
+    expect(out).toBe("BASE\n\nBOOT\n\nVER\n\nFR") // execution absent → skipped; order fixed
+  })
+
+  it("returns base unchanged when all slots are empty", () => {
+    expect(composeSystemPrompt("BASE", {})).toBe("BASE")
+    expect(composeSystemPrompt("BASE", undefined)).toBe("BASE")
+    expect(composeSystemPrompt(undefined, undefined)).toBeUndefined()
+  })
+
+  it("drops an absent base", () => {
+    expect(composeSystemPrompt(undefined, { bootstrap: "BOOT", execution: "EXE" })).toBe("BOOT\n\nEXE")
+  })
+
+  it("is byte-stable across slot key insertion order", () => {
+    expect(composeSystemPrompt("B", { bootstrap: "x", execution: "y" }))
+      .toBe(composeSystemPrompt("B", { execution: "y", bootstrap: "x" }))
+  })
+})
+
+describe("applyPatch", () => {
+  it("rejects a surface outside editableSurfaces", () => {
+    expect(() => applyPatch(seed(), patch({ targetSurface: "runtime.entropyWatch", value: {} }))).toThrow(/whitelist/)
+  })
+
+  it("rejects an instruction over 4000 chars", () => {
+    expect(() => applyPatch(seed(), patch({ targetSurface: "instructions.execution", value: "x".repeat(4001) }))).toThrow(/4000/)
+  })
+
+  it("accepts an instruction at exactly 4000 chars", () => {
+    const next = applyPatch(seed(), patch({ targetSurface: "instructions.execution", value: "x".repeat(4000) }))
+    expect(next.instructions?.execution).toHaveLength(4000)
+  })
+
+  it("rejects append on a non-nudge surface", () => {
+    expect(() => applyPatch(seed(), patch({ targetSurface: "instructions.bootstrap", op: "append", value: "x" }))).toThrow(/append/)
+  })
+
+  it("rejects a malformed patch (missing rationale)", () => {
+    expect(() => applyPatch(seed(), { targetSurface: "instructions.bootstrap", op: "set", value: "x", targetCluster: "c", expectedEffect: "e" } as unknown as HarnessPatch)).toThrow(/rationale/)
+  })
+
+  it("links parent to the source digest without mutating the source", () => {
+    const m = seed()
+    const before = manifestDigest(m)
+    const child = applyPatch(m, patch({ targetSurface: "instructions.bootstrap", value: "new boot" }))
+    expect(child.parent).toBe(before)
+    expect(child.instructions?.bootstrap).toBe("new boot")
+    // source untouched
+    expect(m.instructions?.bootstrap).toBe("boot")
+    expect(manifestDigest(m)).toBe(before)
+    // grandchild chains onto the child
+    const grand = applyPatch(child, patch({
+      targetSurface: "nudges", op: "set",
+      value: [{ id: "n1", on: { kind: "turns_at_least", count: 2 }, note: "keep going" }],
+    }))
+    expect(grand.parent).toBe(manifestDigest(child))
+    expect(grand.nudges).toHaveLength(1)
+  })
+
+  it("appends and removes nudges by id", () => {
+    const withRule = applyPatch(seed(), patch({
+      targetSurface: "nudges", op: "append",
+      value: { id: "n1", on: { kind: "tool_error" }, note: "oops" },
+    }))
+    expect(withRule.nudges).toHaveLength(1)
+    const removed = applyPatch(withRule, patch({ targetSurface: "nudges", op: "remove", value: "n1" }))
+    expect(removed.nudges).toHaveLength(0)
+  })
+
+  it("clears an instruction slot on remove", () => {
+    const cleared = applyPatch(seed(), patch({ targetSurface: "instructions.verification", op: "remove" }))
+    expect(cleared.instructions?.verification).toBeUndefined()
+    expect(cleared.instructions?.bootstrap).toBe("boot")
+  })
+})
+
+describe("applyManifest", () => {
+  const base = { provider: { tag: "P" }, maxTokens: 42, maxTurns: 3 } as unknown as RuntimeOptions
+
+  it("folds instructions, nudges, and whitelisted runtime keys onto base", () => {
+    const m = seed()
+    const out = applyManifest(m, base)
+    expect(out.maxTurns).toBe(10) // manifest runtime wins over base
+    expect(out.instructions).toEqual(m.instructions)
+    expect(out.nudges).toEqual(m.nudges)
+    expect(out.maxTokens).toBe(42) // untouched base field survives
+    expect((out.provider as unknown as { tag: string }).tag).toBe("P")
+  })
+
+  it("degrades to the whitelist: a non-whitelisted runtime key throws", () => {
+    const m = { ...seed(), runtime: { governancePolicy: {} } as unknown as HarnessManifest["runtime"] }
+    expect(() => applyManifest(m, base)).toThrow(/whitelist/)
+  })
+
+  it("does not mutate the base options", () => {
+    const b = { ...base }
+    applyManifest(seed(), b)
+    expect(b.maxTurns).toBe(3)
+    expect((b as RuntimeOptions).instructions).toBeUndefined()
+  })
+})
+
+describe("validateManifest", () => {
+  it("rejects a wrong version and a bad parent", () => {
+    expect(() => validateManifest({ ...seed(), manifestVersion: 2 as unknown as 1 })).toThrow(/manifestVersion/)
+    expect(() => validateManifest({ ...seed(), parent: 5 as unknown as string })).toThrow(/parent/)
+  })
+
+  it("rejects an unknown runtime key at load", () => {
+    expect(() => validateManifest({ ...seed(), runtime: { skillLeaseTurns: 4, badKey: 1 } as unknown as HarnessManifest["runtime"] })).toThrow(/whitelist/)
+  })
+})
