@@ -152,8 +152,16 @@ export async function selfHarnessLoop({
         decisions.push({ surface: patch.targetSurface, accepted: false, reason: `apply_failed: ${e.message ?? e}` })
         continue
       }
-      const candIn = await evaluate({ manifest: candidate, adapter, tasks: heldInTasks, repeats })
-      const candOut = await evaluate({ manifest: candidate, adapter, tasks: heldOutTasks, repeats })
+      // Paper §3.4: a proposal that fails execution before a valid evaluation result is REJECTED,
+      // never allowed to kill the loop (e.g. a candidate the kernel refuses at ConfigureRun).
+      let candIn, candOut
+      try {
+        candIn = await evaluate({ manifest: candidate, adapter, tasks: heldInTasks, repeats })
+        candOut = await evaluate({ manifest: candidate, adapter, tasks: heldOutTasks, repeats })
+      } catch (e) {
+        decisions.push({ surface: patch.targetSurface, accepted: false, reason: `eval_failed: ${e.message ?? e}` })
+        continue
+      }
       const dIn = candIn.passCount - baseIn.passCount
       const dHo = candOut.passCount - baseOut.passCount
       const ok = acceptanceRule(dIn, dHo)

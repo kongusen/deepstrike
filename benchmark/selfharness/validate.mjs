@@ -59,7 +59,18 @@ export async function evaluate({ manifest, adapter, tasks, repeats = 1 }) {
     let passes = 0
     let last = null
     for (let r = 0; r < reps; r++) {
-      last = await adapter.runTask(task, manifest)
+      // A repeat that throws (provider hiccup, adapter fault) counts as a failed run — conservative
+      // for candidates, and it keeps one bad task from killing a whole evaluation sweep.
+      try {
+        last = await adapter.runTask(task, manifest)
+      } catch (e) {
+        last = {
+          passed: false,
+          verdict: { passed: false, overallScore: 0, feedback: `adapter_error: ${e.message ?? e}`, details: [] },
+          events: [],
+          termination: "adapter_error",
+        }
+      }
       if (last.passed) passes++
     }
     const passed = passes * 2 > reps // strict majority (ties fail)

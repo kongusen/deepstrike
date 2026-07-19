@@ -43,7 +43,7 @@ export function createLiveAdapter(config) {
     tasks,
     systemPrompt = "You are an agent operating under a self-improving harness.",
     maxTurns = 12,
-    maxTokens,
+    maxTokens = 32_000, // RuntimeOptions.maxTokens is REQUIRED by KernelRuntime (context budget)
     mkTools,
     timeoutMs = 300_000,
   } = config
@@ -87,7 +87,7 @@ export function createLiveAdapter(config) {
       const base = {
         systemPrompt,
         maxTurns: task.maxTurns ?? maxTurns,
-        ...(maxTokens ? { maxTokens } : {}),
+        maxTokens,
       }
       const runtimeOptions = applyManifest(manifest, base)
       const runner = new RuntimeRunner({ ...runtimeOptions, provider, sessionLog, executionPlane: plane })

@@ -175,3 +175,25 @@ test("mergeAccepted with no accepted edits returns the manifest unchanged", asyn
   assert.equal(kept.length, 0)
   assert.equal(manifestDigest(merged), manifestDigest(manifest))
 })
+
+test("evaluate survives a throwing adapter: the repeat counts as a failed run", async () => {
+  const { evaluate } = await import("../selfharness/validate.mjs")
+  const tasks = [
+    { id: "ok", goal: "g", criteria: [{ text: "c" }] },
+    { id: "boom", goal: "g", criteria: [{ text: "c" }] },
+  ]
+  const adapter = {
+    id: "stub",
+    listTasks: () => tasks,
+    async runTask(task) {
+      if (task.id === "boom") throw new Error("kernel refused ConfigureRun")
+      return { passed: true, verdict: { passed: true, overallScore: 1, feedback: "", details: [] }, events: [], termination: "completed" }
+    },
+  }
+  const { passCount, results } = await evaluate({ manifest: fixtureSeedManifest(), adapter, tasks, repeats: 1 })
+  assert.equal(passCount, 1)
+  const boom = results.find(r => r.taskId === "boom")
+  assert.equal(boom.passed, false)
+  assert.equal(boom.termination, "adapter_error")
+  assert.match(boom.verdict.feedback, /kernel refused/)
+})
