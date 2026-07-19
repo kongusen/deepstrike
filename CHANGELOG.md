@@ -6,6 +6,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — self-harness loop (H1–H3)
+
+- **Editable harness surfaces as data** (Node SDK): `RuntimeOptions.instructions` splits the system
+  prompt into four named instruction slots (`bootstrap` / `execution` / `verification` /
+  `failureRecovery`), composed once in byte-stable order — the kernel still sees one system prompt.
+  `RuntimeOptions.nudges` adds declarative event→note rules (`tool_error` / `tool_denied` /
+  `tool_calls_at_least` / `turns_at_least` / `entropy_alert` triggers, cooldown + max-fires),
+  lowered onto the existing `injectNote` signal channel. Both absent ⇒ zero behavior difference.
+- **`HarnessManifest`** (`@deepstrike/sdk/harness`): content-addressed (sha-256 over canonical
+  JSON), parent-linked harness lineage with an `editableSurfaces` whitelist and bounded
+  `HarnessPatch` edits (`set`/`append`/`remove`; safety surfaces — governance/quota/reliability —
+  are not patchable). `applyManifest` lowers a manifest onto `RuntimeOptions`.
+- **Self-harness lab** (`benchmark/selfharness/`): an offline propose–validate–promote loop after
+  *Self-Harness* (arXiv:2606.09498). Deterministic, verifier-anchored failure-signature clustering
+  over bench `*.events.json` + `Verdict` (`evidence.mjs`), bounded Fig-7-style trace excerpts,
+  model-attributed mechanism mining with an addressability filter, K diverse minimal patch
+  proposals, and the paper's conservative promotion rule (Δ_in ≥ 0 ∧ Δ_ho ≥ 0 ∧ max > 0) over
+  held-in/held-out splits. Lineage persists as `<digest>.json` + `rounds.jsonl`. Ships fixture
+  (deterministic, LLM-free) and live (`RuntimeRunner` + `judge()`) task adapters plus a CLI.
+  Held-out isolation is structural: only held-in evidence ever reaches the proposer.
+
 ## [0.2.46] - 2026-07-18
 
 ### Fixed — nested vehicle group budget
