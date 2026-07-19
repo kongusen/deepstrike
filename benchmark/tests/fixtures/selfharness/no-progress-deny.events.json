@@ -1,0 +1,100 @@
+[
+  {
+    "seq": 0,
+    "event": {
+      "kind": "run_started",
+      "run_id": "deny-1-0000",
+      "goal": "Fix the failing auth test by editing the source.",
+      "criteria": [
+        "the agent locates the failing module",
+        "the agent reports findings as plain text"
+      ],
+      "system_prompt": "You are a senior engineer. If a tool is denied, do not retry it more than twice."
+    }
+  },
+  {
+    "seq": 1,
+    "event": {
+      "kind": "llm_completed",
+      "turn": 0,
+      "content": "",
+      "tool_calls": [
+        { "id": "call_d0", "name": "write_file", "arguments": "{\"path\":\"src/auth.js\",\"content\":\"...\"}" }
+      ],
+      "token_count": 55
+    }
+  },
+  {
+    "seq": 2,
+    "event": {
+      "kind": "tool_denied",
+      "turn": 0,
+      "call_id": "call_d0",
+      "tool_name": "write_file",
+      "reason": "tool 'write_file' denied by rule 'write_file'"
+    }
+  },
+  {
+    "seq": 3,
+    "event": {
+      "kind": "llm_completed",
+      "turn": 1,
+      "content": "",
+      "tool_calls": [
+        { "id": "call_d1", "name": "write_file", "arguments": "{\"path\":\"src/auth.js\",\"content\":\"...\"}" }
+      ],
+      "token_count": 55
+    }
+  },
+  {
+    "seq": 4,
+    "event": {
+      "kind": "tool_denied",
+      "turn": 1,
+      "call_id": "call_d1",
+      "tool_name": "write_file",
+      "reason": "tool 'write_file' denied by rule 'write_file'"
+    }
+  },
+  {
+    "seq": 5,
+    "event": {
+      "kind": "llm_completed",
+      "turn": 2,
+      "content": "",
+      "tool_calls": [
+        { "id": "call_d2", "name": "run_bash", "arguments": "{\"cmd\":\"sed -i ...\"}" }
+      ],
+      "token_count": 48
+    }
+  },
+  {
+    "seq": 6,
+    "event": {
+      "kind": "tool_denied",
+      "turn": 2,
+      "call_id": "call_d2",
+      "tool_name": "run_bash",
+      "reason": "tool 'run_bash' denied by rule 'run_bash'"
+    }
+  },
+  {
+    "seq": 7,
+    "event": {
+      "kind": "llm_completed",
+      "turn": 3,
+      "content": "Every edit tool is denied so I cannot land a fix.",
+      "tool_calls": [],
+      "token_count": 40
+    }
+  },
+  {
+    "seq": 8,
+    "event": {
+      "kind": "run_terminal",
+      "reason": "no_progress",
+      "turns_used": 4,
+      "total_tokens": 700
+    }
+  }
+]

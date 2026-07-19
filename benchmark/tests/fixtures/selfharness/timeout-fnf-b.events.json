@@ -1,0 +1,120 @@
+[
+  {
+    "seq": 0,
+    "event": {
+      "kind": "run_started",
+      "run_id": "fnf-b-0000",
+      "goal": "Find the module responsible for the 500 error and fix it.",
+      "criteria": [
+        "the agent locates the failing module",
+        "the agent reports findings as plain text"
+      ],
+      "system_prompt": "You are a senior engineer. Read files, find the bug, report findings."
+    }
+  },
+  {
+    "seq": 1,
+    "event": {
+      "kind": "llm_completed",
+      "turn": 0,
+      "content": "",
+      "tool_calls": [
+        { "id": "call_b0", "name": "list_dir", "arguments": "{\"path\":\"src\"}" }
+      ],
+      "token_count": 38
+    }
+  },
+  {
+    "seq": 2,
+    "event": {
+      "kind": "tool_requested",
+      "turn": 0,
+      "calls": [
+        { "id": "call_b0", "name": "list_dir", "arguments": "{\"path\":\"src\"}" }
+      ]
+    }
+  },
+  {
+    "seq": 3,
+    "event": {
+      "kind": "tool_completed",
+      "turn": 0,
+      "results": [
+        { "call_id": "call_b0", "output": "{\"error\":\"no such directory\"}", "is_error": true, "error_kind": "file_not_found" }
+      ]
+    }
+  },
+  {
+    "seq": 4,
+    "event": {
+      "kind": "llm_completed",
+      "turn": 1,
+      "content": "",
+      "tool_calls": [
+        { "id": "call_b1", "name": "read_file", "arguments": "{\"path\":\"server/handler.js\"}" }
+      ],
+      "token_count": 45
+    }
+  },
+  {
+    "seq": 5,
+    "event": {
+      "kind": "tool_requested",
+      "turn": 1,
+      "calls": [
+        { "id": "call_b1", "name": "read_file", "arguments": "{\"path\":\"server/handler.js\"}" }
+      ]
+    }
+  },
+  {
+    "seq": 6,
+    "event": {
+      "kind": "tool_completed",
+      "turn": 1,
+      "results": [
+        { "call_id": "call_b1", "output": "{\"error\":\"no such file\"}", "is_error": true, "error_kind": "file_not_found" }
+      ]
+    }
+  },
+  {
+    "seq": 7,
+    "event": {
+      "kind": "llm_completed",
+      "turn": 2,
+      "content": "",
+      "tool_calls": [
+        { "id": "call_b2", "name": "run_tests", "arguments": "{}" }
+      ],
+      "token_count": 30
+    }
+  },
+  {
+    "seq": 8,
+    "event": {
+      "kind": "tool_requested",
+      "turn": 2,
+      "calls": [
+        { "id": "call_b2", "name": "run_tests", "arguments": "{}" }
+      ]
+    }
+  },
+  {
+    "seq": 9,
+    "event": {
+      "kind": "tool_completed",
+      "turn": 2,
+      "results": [
+        { "call_id": "call_b2", "output": "{\"error\":\"runner timed out\"}", "is_error": true, "error_kind": "timeout" }
+      ]
+    }
+  },
+  {
+    "seq": 10,
+    "event": {
+      "kind": "run_terminal",
+      "reason": "timeout",
+      "turns_used": 6,
+      "total_tokens": 1200
+    }
+  }
+]
