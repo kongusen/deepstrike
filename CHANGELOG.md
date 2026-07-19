@@ -17,7 +17,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`HarnessManifest`** (`@deepstrike/sdk/harness`): content-addressed (sha-256 over canonical
   JSON), parent-linked harness lineage with an `editableSurfaces` whitelist and bounded
   `HarnessPatch` edits (`set`/`append`/`remove`; safety surfaces — governance/quota/reliability —
-  are not patchable). `applyManifest` lowers a manifest onto `RuntimeOptions`.
+  are not patchable). Runtime patch values are type-checked per key at the patch/load boundary
+  (an LLM proposer putting prose where a boolean belongs dies as a discardable candidate, not a
+  mid-run kernel refusal). `applyManifest` lowers a manifest onto `RuntimeOptions`.
 - **Self-harness lab** (`benchmark/selfharness/`): an offline propose–validate–promote loop after
   *Self-Harness* (arXiv:2606.09498). Deterministic, verifier-anchored failure-signature clustering
   over bench `*.events.json` + `Verdict` (`evidence.mjs`), bounded Fig-7-style trace excerpts,

@@ -258,6 +258,35 @@ Output:
 `sig ✓` = `|Δ| > 2σ` (live with stdev on both sides). `—` = cannot decide (modes/stdev mismatch);
 caller judges by Δ%.
 
+## Self-harness lab — `selfharness/`
+
+An offline propose–validate–promote loop after *Self-Harness: Harnesses That Improve Themselves*
+(arXiv:2606.09498): a fixed model mines its own verifier-anchored failure clusters, proposes bounded
+JSON patches against the declared editable surfaces of a `HarnessManifest` (SDK
+`@deepstrike/sdk/harness`), and only edits that pass the paper's conservative rule
+(`Δ_in ≥ 0 ∧ Δ_ho ≥ 0 ∧ max > 0`) on a held-in/held-out split are promoted into the lineage.
+Held-out isolation is structural: only held-in evidence ever reaches the proposer.
+Spec: [`.local-docs/specs/self-harness-loop.md`](../.local-docs/specs/self-harness-loop.md).
+
+```
+node benchmark/selfharness/cli.mjs \
+     --adapter ./benchmark/selfharness/adapters/format-discipline.mjs \
+     --held-in json-strict,word-limit,checklist --held-out csv-strict,summary-limit \
+     --rounds 2 --k 3 --repeats 2 --provider deepseek
+```
+
+- `evidence.mjs` / `trace-excerpt.mjs` — deterministic failure-signature clustering + bounded
+  Fig-7-style excerpts from `*.events.json` streams (LLM-free)
+- `miner.mjs` / `proposer.mjs` — the two LLM slots (`complete(prompt)` injected; canned in tests)
+- `validate.mjs` / `loop.mjs` — acceptance rule, disjoint-surface merge, `.harness-lab/` lineage
+  (`<digest>.json` per manifest + `rounds.jsonl` per round; no timestamps — byte-stable records)
+- `adapters/` — `fixture` (deterministic, zero-cost, CI), `live` (real runs + `judge()`),
+  `format-discipline` (small live task set exercising strict-output-format failure mechanisms)
+
+Statistical honesty: a handful of tasks × `--repeats 1` cannot adjudicate fine-grained deltas (a
+lucky +1 will get promoted and evaporate). Production per-model profile runs need a real task
+corpus and `--repeats ≥ 2` — the paper used 64 tasks × 2 repeats.
+
 ## Files
 
 ```
@@ -276,6 +305,15 @@ benchmark/
 │   └── dwell-report.mjs    legacy dwell-report.json → MetricSet
 ├── pricing/
 │   └── pricing.json        provider:model → $/M tokens (hand-maintained)
+├── selfharness/
+│   ├── evidence.mjs        failure records → deterministic signature clusters → EvidenceBundle
+│   ├── trace-excerpt.mjs   bounded Fig-7-style trajectory rendering
+│   ├── miner.mjs           mechanism attribution (LLM slot, addressability filter)
+│   ├── proposer.mjs        ≤K bounded HarnessPatch proposals (LLM slot)
+│   ├── validate.mjs        evaluate + acceptance rule + disjoint merge
+│   ├── loop.mjs            propose→validate→promote ring + lineage store
+│   ├── cli.mjs             shell driver
+│   └── adapters/           fixture (CI) · live (real runs) · format-discipline (live task set)
 ├── utils/
 │   ├── env.mjs             .env loader (matches existing scripts)
 │   └── sdk.mjs             loadSdk + resolveProvider
