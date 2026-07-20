@@ -6,6 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.48] - 2026-07-20
+
 ### Added — self-harness v2: tool/skill surfaces, scope isolation, tiered promotion
 
 - **Memory-policy knobs join the harness whitelist** (Node SDK): `HarnessRuntimePatch` gains
