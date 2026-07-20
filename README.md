@@ -55,6 +55,7 @@ DeepStrike moves the control plane into `deepstrike-core`, a pure Rust state mac
 | **Sub-agent isolation** | Roles, context inheritance, capability filters, worktree / read-only / remote isolation, process lineage, contracts, and handoff artifacts. |
 | **Replay and recovery** | Append-only `SessionLog`, provider replay envelopes, kernel observations, workflow resume, `wake(session_id)`, OS snapshots, and repair utilities. |
 | **Memory as an OS device** | Kernel-validated `write_memory` / `query_memory`, DreamStore integration, retrieval closure, idle consolidation, and memory write quotas. |
+| **Self-improving harness lab** | Node-first, content-addressed `HarnessManifest` profiles, declarative instruction and nudge surfaces, verifier-anchored failure mining, held-in/held-out validation, and auditable propose–validate–promote lineage. |
 | **Provider routing** | Kernel carries `model_hint`; the host resolves it to OpenAI, Anthropic, Gemini, DeepSeek, Kimi, Qwen, GLM, Minimax, Ollama, or your own provider. |
 | **Multimodal input** | Image and audio via `run({ attachments })` across all four SDKs, per-vendor serialization (Anthropic blocks, OpenAI `image_url` / `input_audio`, Gemini `inlineData`), detail-weighted token accounting, and `UnsupportedModalityError` instead of silent drops. |
 | **Cross-language runtime** | One kernel ABI and matching semantics across Node.js, Python, Rust, and WASM. |
@@ -104,7 +105,7 @@ That boundary gives you properties a one-off orchestrator script does not:
 | Rust | `deepstrike-sdk` | `cargo add deepstrike-sdk` |
 | Browser / Edge / WASM | `@deepstrike/wasm` | `npm install @deepstrike/wasm` |
 
-Current SDK version in this workspace: `0.2.42`.
+Current SDK version in this workspace: `0.2.47`.
 
 ## Quick Start
 
@@ -210,6 +211,32 @@ DeepStrike implements the common harness patterns as first-class workflow nodes 
 
 Read the workflow guide: [Dynamic Workflows](./docs/en/guides/workflow.md).
 
+## Self-Improving Harnesses (Experimental)
+
+The Node SDK exposes the model-visible harness as bounded data rather than arbitrary middleware code:
+
+- `RuntimeOptions.instructions` provides ordered `bootstrap`, `execution`, `verification`, and `failureRecovery` slots while the kernel still receives one byte-stable system prompt.
+- `RuntimeOptions.nudges` maps runtime events such as tool errors, denials, turn thresholds, and entropy alerts onto the existing `injectNote` signal path.
+- `HarnessManifest` and `HarnessPatch` provide canonical digests, parent-linked lineage, and an explicit editable-surface whitelist. Governance, quota, and reliability controls are not proposer-editable.
+
+The repository also includes a Node-first self-harness lab based on a conservative propose–validate–promote loop. It clusters verifier-anchored failures, asks the fixed target model to propose minimal JSON patches, evaluates every candidate on held-in and held-out task splits, and promotes only non-regressing improvements:
+
+```text
+accept when Δ_in >= 0 and Δ_held_out >= 0 and at least one delta is positive
+```
+
+Run the included live format-discipline example after configuring a supported provider:
+
+```bash
+node benchmark/selfharness/cli.mjs \
+  --adapter ./benchmark/selfharness/adapters/format-discipline.mjs \
+  --held-in json-strict,word-limit,checklist \
+  --held-out csv-strict,summary-limit \
+  --rounds 2 --k 3 --repeats 2 --provider deepseek
+```
+
+Every promoted manifest is stored as `<digest>.json`, with per-round proposals and decisions in `rounds.jsonl`. Held-out task content never enters the miner or proposer prompt. This lab is currently Node.js-only; production profile generation requires a representative task corpus, repeated evaluation, and real provider budget. See the [benchmark guide](./benchmark/README.md#self-harness-lab--selfharness) and the [accepted design spec](./.local-docs/specs/self-harness-loop.md).
+
 ## Documentation
 
 | Reader path | Start here |
@@ -233,6 +260,7 @@ npm run docs:build
 ## Repository Layout
 
 ```text
+benchmark/                Evaluation scenarios, replay baselines, and self-harness lab
 crates/deepstrike-core/   Pure Rust kernel state machine
 crates/deepstrike-node/   Node.js native bindings
 crates/deepstrike-py/     Python native bindings
