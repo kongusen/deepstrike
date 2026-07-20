@@ -152,12 +152,24 @@ describe("applyPatch", () => {
 })
 
 describe("applyManifest", () => {
-  const base = { provider: { tag: "P" }, maxTokens: 42, maxTurns: 3 } as unknown as RuntimeOptions
+  const base = {
+    provider: { tag: "P" },
+    maxTokens: 42,
+    maxTurns: 3,
+    memoryPolicy: { memoryPath: ".memory", validationEnabled: false },
+  } as unknown as RuntimeOptions
 
   it("folds instructions, nudges, and whitelisted runtime keys onto base", () => {
-    const m = seed()
+    const m: HarnessManifest = {
+      ...seed(),
+      runtime: { maxTurns: 10, retrievalTopK: 5, promotionRecallThreshold: 2 },
+    }
     const out = applyManifest(m, base)
     expect(out.maxTurns).toBe(10) // manifest runtime wins over base
+    expect(out.memoryPolicy?.retrievalTopK).toBe(5)
+    expect(out.memoryPolicy?.promotionRecallThreshold).toBe(2)
+    expect(out.memoryPolicy?.memoryPath).toBe(".memory")
+    expect(out.memoryPolicy?.validationEnabled).toBe(false)
     expect(out.instructions).toEqual(m.instructions)
     expect(out.nudges).toEqual(m.nudges)
     expect(out.maxTokens).toBe(42) // untouched base field survives
@@ -204,6 +216,8 @@ describe("runtime value typing", () => {
     expect(() => bad({ criteriaGate: "yes" })).toThrow(/boolean/)
     expect(() => bad({ maxTurns: 2.5 })).toThrow(/positive integer/)
     expect(() => bad({ knowledgeBudgetRatio: 1.5 })).toThrow(/\(0, 1\]/)
+    expect(() => bad({ retrievalTopK: 0 })).toThrow(/positive integer/)
+    expect(() => bad({ promotionRecallThreshold: 1.5 })).toThrow(/positive integer/)
     expect(() => bad({ repeatFuse: { bogus: 1 } })).toThrow(/unknown key/)
     expect(() => bad({ entropyWatch: { threshold: "high" } })).toThrow(/\[0, 1\]/)
     expect(() => bad({ entropyWatch: { surprise: true } })).toThrow(/unknown key/)
@@ -218,7 +232,20 @@ describe("runtime value typing", () => {
         repeatFuse: { denyAfter: 3 },
         entropyWatch: { enabled: true, threshold: 0.7, cooldownTurns: 2 },
         knowledgeBudgetRatio: 0.25,
+        retrievalTopK: 5,
+        promotionRecallThreshold: 2,
       },
     })).not.toThrow()
+  })
+
+  it("accepts retrieval behavior patches on editable runtime surfaces", () => {
+    const m: HarnessManifest = {
+      ...seed(),
+      editableSurfaces: ["runtime.retrievalTopK", "runtime.promotionRecallThreshold"],
+    }
+    const withTopK = applyPatch(m, patch({ targetSurface: "runtime.retrievalTopK", value: 7 }))
+    const withRecall = applyPatch(withTopK, patch({ targetSurface: "runtime.promotionRecallThreshold", value: 3 }))
+    expect(withRecall.runtime?.retrievalTopK).toBe(7)
+    expect(withRecall.runtime?.promotionRecallThreshold).toBe(3)
   })
 })

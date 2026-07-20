@@ -11,6 +11,7 @@
  * absent, so a proposer can never rewrite them (spec design principle: conservative promotion).
  */
 import { createHash } from "node:crypto"
+import type { MemoryPolicy } from "../kernel.js"
 import type { RuntimeOptions } from "../runtime/runner.js"
 import type { NudgeRule } from "./nudge.js"
 import { validateNudgeRules } from "./nudge.js"
@@ -68,7 +69,10 @@ export type HarnessRuntimePatch = Pick<
   | "entropyWatch"
   | "knowledgeBudgetRatio"
   | "skillLeaseTurns"
->
+> & Pick<MemoryPolicy, "retrievalTopK" | "promotionRecallThreshold">
+
+const MEMORY_POLICY_PATCH_KEYS = ["retrievalTopK", "promotionRecallThreshold"] as const
+type MemoryPolicyPatchKey = (typeof MEMORY_POLICY_PATCH_KEYS)[number]
 
 const RUNTIME_PATCH_KEYS: readonly string[] = [
   "maxTurns",
@@ -78,6 +82,7 @@ const RUNTIME_PATCH_KEYS: readonly string[] = [
   "entropyWatch",
   "knowledgeBudgetRatio",
   "skillLeaseTurns",
+  ...MEMORY_POLICY_PATCH_KEYS,
 ]
 
 // ── Manifest + patch shapes ──────────────────────────────────────────────────
@@ -176,6 +181,8 @@ function validateRuntimeValue(key: string, value: unknown): void {
     case "maxTurns":
     case "maxTotalTokens":
     case "skillLeaseTurns":
+    case "retrievalTopK":
+    case "promotionRecallThreshold":
       if (!positiveInt(value)) throw new TypeError(`runtime.${key} must be a positive integer`)
       return
     case "criteriaGate":
@@ -258,7 +265,12 @@ export function applyManifest(manifest: HarnessManifest, base: RuntimeOptions): 
   if (manifest.nudges !== undefined) out.nudges = manifest.nudges
   if (manifest.runtime !== undefined) {
     for (const [key, value] of Object.entries(manifest.runtime)) {
-      if (value !== undefined) (out as unknown as Record<string, unknown>)[key] = value
+      if (value === undefined) continue
+      if (MEMORY_POLICY_PATCH_KEYS.includes(key as MemoryPolicyPatchKey)) {
+        out.memoryPolicy = { ...out.memoryPolicy, [key]: value }
+      } else {
+        (out as unknown as Record<string, unknown>)[key] = value
+      }
     }
   }
   return out
