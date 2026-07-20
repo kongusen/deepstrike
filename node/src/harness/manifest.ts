@@ -35,6 +35,9 @@ type InstructionSlot = (typeof INSTRUCTION_SLOTS)[number]
 /** Per-slot upper bound enforced at load and on every `applyPatch` set. */
 const MAX_INSTRUCTION_CHARS = 4000
 
+/** A scope key becomes a directory segment; restrict it to a single path-safe token (no separators). */
+const SCOPE_PATTERN = /^[A-Za-z0-9._-]{1,64}$/
+
 /**
  * Compose the four instruction slots onto `base` in the fixed order base → bootstrap → execution →
  * verification → failureRecovery, joined with `"\n\n"`, skipping empty slots. All-empty ⇒ `base`
@@ -93,6 +96,14 @@ export interface HarnessManifest {
   parent: string | null
   /** Target-model identifier (per-model profile scenarios). */
   modelProfile?: string
+  /**
+   * Opaque isolation key — host decides its semantics (user / tenant / agent-group). Orthogonal to
+   * `modelProfile` (never concatenate the two — that reprises the identity-scoping bug class); absent
+   * ⇒ the host treats it as `"default"`. It rides canonical JSON, so digests domain-separate by scope,
+   * but an absent scope leaves a v1-shaped manifest's digest byte-identical (canonicalJson skips
+   * undefined). Becomes a lineage directory name downstream, hence the path-safe character bound.
+   */
+  scope?: string
   instructions?: InstructionProfile
   nudges?: NudgeRule[]
   runtime?: HarnessRuntimePatch
@@ -245,6 +256,11 @@ export function validateManifest(manifest: HarnessManifest): void {
   }
   if (!Array.isArray(manifest.editableSurfaces) || manifest.editableSurfaces.some(s => typeof s !== "string")) {
     throw new TypeError("manifest.editableSurfaces must be a string[]")
+  }
+  if (manifest.scope !== undefined) {
+    if (typeof manifest.scope !== "string" || !SCOPE_PATTERN.test(manifest.scope)) {
+      throw new TypeError("manifest.scope must be a non-empty path-safe token matching /^[A-Za-z0-9._-]{1,64}$/")
+    }
   }
   if (manifest.instructions !== undefined) validateInstructionProfile(manifest.instructions)
   if (manifest.nudges !== undefined) validateNudgeRules(manifest.nudges)

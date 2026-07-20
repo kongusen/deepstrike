@@ -12,9 +12,12 @@
  * leakage is prevented structurally: only the held-in bundle ever reaches the miner/proposer, and
  * non-addressable clusters are filtered before the proposer sees them.
  *
- * Lineage on disk (`lineageDir`, default `.harness-lab/`):
- *   - `<digest>.json`  one file per persisted manifest (seed + every promoted manifest)
- *   - `rounds.jsonl`   one line per round: { round, baseline, proposals, discarded, decisions, ... }
+ * Lineage on disk (`lineageDir`, default `.harness-lab/`), laned by scope × modelProfile so parallel
+ * runs never collide (`"default"` substitutes for an absent axis — the two are ORTHOGONAL, never joined):
+ *   - `<scope>/<modelProfile>/<digest>.json`  one file per persisted manifest (seed + every promotion)
+ *   - `<scope>/<modelProfile>/rounds.jsonl`   one line per round: { round, scope, baseline, ... }
+ * The scope is derived from the seed manifest — the single source of truth, so no caller-supplied
+ * option can disagree with the manifest it stamps.
  *
  * @typedef {import("../../node/src/harness/manifest.js").HarnessManifest} HarnessManifest
  * @typedef {import("./adapters/fixture.mjs").TaskAdapter} TaskAdapter
@@ -75,7 +78,12 @@ export async function selfHarnessLoop({
   lineageDir = ".harness-lab",
   log = () => {},
 }) {
-  const { manifestDigest, applyPatch } = await sdk()
+  const { manifestDigest, applyPatch, validateManifest } = await sdk()
+
+  // Fail fast AND guard the lineage path: validateManifest enforces the scope pattern before scope is
+  // ever used as a directory segment, so a path-hostile seed scope can't escape lineageDir.
+  validateManifest(seedManifest)
+  const scope = seedManifest.scope // orthogonal to modelProfile; never concatenated
 
   const allTasks = await adapter.listTasks()
   const byId = new Map(allTasks.map(t => [t.id, t]))
@@ -87,12 +95,16 @@ export async function selfHarnessLoop({
   const heldInTasks = resolve(heldIn)
   const heldOutTasks = resolve(heldOut)
 
-  mkdirSync(lineageDir, { recursive: true })
-  const roundsLogPath = path.join(lineageDir, "rounds.jsonl")
+  // <lineageDir>/<scope>/<modelProfile>/ — scope is pattern-validated above; modelProfile is advisory
+  // metadata so it is sanitized (not rejected) to a path token, letting a slash-bearing model id lane
+  // without escaping. Absent axis ⇒ "default".
+  const laneDir = path.join(lineageDir, scope ?? "default", laneSegment(seedManifest.modelProfile))
+  mkdirSync(laneDir, { recursive: true })
+  const roundsLogPath = path.join(laneDir, "rounds.jsonl")
   writeFileSync(roundsLogPath, "") // fresh run — deterministic content, freshness via mtime
 
   let current = seedManifest
-  writeManifest(lineageDir, current, manifestDigest) // persist the seed
+  writeManifest(laneDir, current, manifestDigest) // persist the seed
 
   /** @type {RoundRecord[]} */
   const trajectory = []
@@ -113,6 +125,7 @@ export async function selfHarnessLoop({
       verdict: r.verdict ?? { passed: r.passed, overallScore: r.passed ? 1 : 0, feedback: "", details: [] },
       criteria: byId.get(r.taskId)?.criteria ?? [],
       eventsPath: `${r.taskId}.events.json`,
+      scope,
     }))
     /** @type {Record<string, any>} */
     const eventsByTask = {}
@@ -121,6 +134,7 @@ export async function selfHarnessLoop({
       round,
       harnessDigest: manifestDigest(current),
       records,
+      scope,
       previousAttempts: [...previousAttempts],
       eventsByTask,
     })
@@ -195,12 +209,13 @@ export async function selfHarnessLoop({
           deltaHeldOut: top.dHo,
         },
       }
-      writeManifest(lineageDir, promoted, manifestDigest)
+      writeManifest(laneDir, promoted, manifestDigest)
     }
 
     // 7. Lineage record.
     const roundRecord = {
       round,
+      scope: scope ?? "default",
       baseline: { heldIn: baseIn.passCount, heldOut: baseOut.passCount },
       proposals: patches.map(p => ({ surface: p.targetSurface, op: p.op, targetCluster: p.targetCluster })),
       discarded,
@@ -214,6 +229,17 @@ export async function selfHarnessLoop({
   }
 
   return { finalManifest: current, trajectory }
+}
+
+/**
+ * Coerce a modelProfile into a single path-safe directory token. Unlike `scope` (a validated data
+ * contract), modelProfile is advisory metadata and may legitimately carry separators (e.g. a
+ * `vendor/model` id), so it is sanitized rather than rejected. Absent / empty ⇒ "default".
+ */
+function laneSegment(raw) {
+  if (raw === undefined || raw === null || raw === "") return "default"
+  const token = String(raw).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 64)
+  return token.length > 0 ? token : "default"
 }
 
 /** Persist a manifest as `<digest>.json`; returns the digest. */

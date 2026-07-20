@@ -268,6 +268,45 @@ describe("buildEvidenceBundle", () => {
   })
 })
 
+// ── scope isolation (V2-S1) — stamp + mixed-scope guard ──────────────────────
+
+describe("scope isolation", () => {
+  const scoped = (taskId, scope) =>
+    extractFailureRecord({ taskId, events: loadEvents("timeout-fnf-a"), verdict: FAIL_VERDICT, criteria: CRITERIA, scope })
+
+  test("extractFailureRecord stamps scope only when supplied (absent ⇒ no key)", () => {
+    assert.equal(Object.hasOwn(scoped("t", undefined), "scope"), false)
+    assert.equal(scoped("t", "alice").scope, "alice")
+  })
+
+  test("bundle stamps its scope; matching records pass", () => {
+    const bundle = buildEvidenceBundle({ round: 0, harnessDigest: "d", scope: "alice", records: [scoped("a", "alice")] })
+    assert.equal(bundle.scope, "alice")
+    assert.equal(bundle.totals.tasks, 1)
+  })
+
+  test("absent record scope ≡ 'default' bundle scope (both normalize to default)", () => {
+    // Bundle with no scope, records with no scope: normalize to "default" on both sides ⇒ no throw.
+    const bundle = buildEvidenceBundle({ round: 0, harnessDigest: "d", records: [recordFor("fnf-a", "timeout-fnf-a")] })
+    assert.equal(bundle.scope, "default")
+    // Explicit "default" bundle scope also matches an absent-scope record.
+    const explicit = buildEvidenceBundle({ round: 0, harnessDigest: "d", scope: "default", records: [recordFor("fnf-a", "timeout-fnf-a")] })
+    assert.equal(explicit.totals.tasks, 1)
+  })
+
+  test("a foreign-scope record THROWS, naming both scopes (never silently filtered)", () => {
+    assert.throws(
+      () => buildEvidenceBundle({ round: 0, harnessDigest: "d", scope: "alice", records: [scoped("a", "alice"), scoped("b", "bob")] }),
+      /scope "bob".*bundle scope is "alice"|"alice".*"bob"/,
+    )
+    // A record retains ALL its members — a scope mismatch is a fault, not a subset to keep.
+    assert.throws(
+      () => buildEvidenceBundle({ round: 0, harnessDigest: "d", records: [scoped("a", "alice")] }), // bundle "default" vs record "alice"
+      /refusing to mix scopes/,
+    )
+  })
+})
+
 // ── renderExcerpt — determinism, bound, truncation marker ─────────────────────
 
 describe("renderExcerpt", () => {

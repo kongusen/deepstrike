@@ -92,6 +92,9 @@ function withLineageDir(fn) {
   return fn(dir).finally(() => rmSync(dir, { recursive: true, force: true }))
 }
 
+// The fixture seed has no scope and modelProfile "fixture-model" ⇒ lane <dir>/default/fixture-model.
+const laneOf = (dir, scope = "default", profile = "fixture-model") => path.join(dir, scope, profile)
+
 test("① good patch is promoted and the final manifest takes effect", async () => {
   await withLineageDir(async dir => {
     const { finalManifest } = await runRound(dir)
@@ -124,8 +127,8 @@ test("③ lineage digest chain is continuous (child.parent === digest(parent))",
   await withLineageDir(async dir => {
     const { finalManifest, seed } = await runRound(dir)
     assert.equal(finalManifest.parent, manifestDigest(seed))
-    // both the seed and the promoted manifest are persisted under <digest>.json.
-    const files = readdirSync(dir).filter(f => f.endsWith(".json"))
+    // both the seed and the promoted manifest are persisted under <scope>/<modelProfile>/<digest>.json.
+    const files = readdirSync(laneOf(dir)).filter(f => f.endsWith(".json"))
     assert.ok(files.includes(`${manifestDigest(seed)}.json`))
     assert.ok(files.includes(`${manifestDigest(finalManifest)}.json`))
   })
@@ -134,10 +137,11 @@ test("③ lineage digest chain is continuous (child.parent === digest(parent))",
 test("④ rounds.jsonl has exactly one line per round, each with decisions", async () => {
   await withLineageDir(async dir => {
     await runRound(dir)
-    const lines = readFileSync(path.join(dir, "rounds.jsonl"), "utf8").split("\n").filter(Boolean)
+    const lines = readFileSync(path.join(laneOf(dir), "rounds.jsonl"), "utf8").split("\n").filter(Boolean)
     assert.equal(lines.length, 1)
     const rec = JSON.parse(lines[0])
     assert.equal(rec.round, 0)
+    assert.equal(rec.scope, "default") // absent seed scope logged as "default" for auditability
     assert.equal(rec.decisions.length, 2)
     assert.deepEqual(rec.baseline, { heldIn: 1, heldOut: 2 })
     assert.equal(rec.proposals.length, 2)
@@ -177,5 +181,54 @@ test("determinism — two identical rounds produce the same final digest", async
       const b = await runRound(dirB)
       assert.equal(manifestDigest(a.finalManifest), manifestDigest(b.finalManifest))
     })
+  })
+})
+
+// V2-S1: two scopes against ONE lineageDir must land in disjoint subtrees and never read each other's
+// files — the isolation guarantee the whole slice exists for.
+async function runScopedRound(lineageDir, scopeKey) {
+  const complete = cannedComplete([MINE_VERIFY, MINE_CEILING, PROPOSE])
+  const seed = { ...fixtureSeedManifest(), scope: scopeKey }
+  const result = await selfHarnessLoop({
+    seedManifest: seed,
+    adapter: createFixtureAdapter(),
+    heldIn: FIXTURE_SPLITS.heldIn,
+    heldOut: FIXTURE_SPLITS.heldOut,
+    rounds: 1,
+    k: 2,
+    repeats: 1,
+    complete,
+    lineageDir,
+  })
+  return { ...result, seed }
+}
+
+test("two scopes share one lineageDir but produce disjoint, non-overlapping subtrees", async () => {
+  await withLineageDir(async dir => {
+    const alice = await runScopedRound(dir, "alice")
+    const bob = await runScopedRound(dir, "bob")
+
+    // Each scope has its own lane; neither writes outside it.
+    const aliceLane = laneOf(dir, "alice")
+    const bobLane = laneOf(dir, "bob")
+    // Manifest lineage files (<digest>.json); rounds.jsonl is per-lane and shares a name by design.
+    const aliceFiles = readdirSync(aliceLane).filter(f => f.endsWith(".json")).sort()
+    const bobFiles = readdirSync(bobLane).filter(f => f.endsWith(".json")).sort()
+
+    // The scope rides the digest ⇒ the two seeds hash differently ⇒ zero manifest-filename overlap.
+    assert.equal(alice.seed.scope, "alice")
+    assert.equal(bob.seed.scope, "bob")
+    assert.notEqual(manifestDigest(alice.seed), manifestDigest(bob.seed))
+    assert.ok(aliceFiles.length >= 2 && bobFiles.length >= 2) // seed + promotion in each lane
+    for (const f of aliceFiles) assert.ok(!bobFiles.includes(f), `manifest "${f}" appears in both scopes' lanes`)
+
+    // rounds.jsonl in each lane records only its own scope.
+    const aliceRound = JSON.parse(readFileSync(path.join(aliceLane, "rounds.jsonl"), "utf8").trim())
+    const bobRound = JSON.parse(readFileSync(path.join(bobLane, "rounds.jsonl"), "utf8").trim())
+    assert.equal(aliceRound.scope, "alice")
+    assert.equal(bobRound.scope, "bob")
+
+    // The top-level lineageDir holds ONLY the two scope directories — no stray flat artifacts.
+    assert.deepEqual(readdirSync(dir).sort(), ["alice", "bob"])
   })
 })

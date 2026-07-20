@@ -24,6 +24,7 @@
  * @property {number} turns               run_terminal.turns_used (0 when absent).
  * @property {number} totalTokens         run_terminal.total_tokens (0 when absent).
  * @property {string} eventsPath          Provenance path to the source events dump.
+ * @property {string} [scope]             Isolation key the record was produced under (absent ⇒ "default").
  *
  * @typedef {Object} FailureSignature
  * @property {string} cause               `${termination}:${sorted(failedCriteria).join(",")}`.
@@ -50,6 +51,7 @@
  *
  * @typedef {Object} EvidenceBundle
  * @property {number} round
+ * @property {string} scope               Isolation key the bundle was built for ("default" when absent).
  * @property {string} harnessDigest
  * @property {{ tasks: number, passed: number, failed: number }} totals
  * @property {FailureCluster[]} clusters
@@ -76,6 +78,14 @@
 
 import { renderExcerpt } from "./trace-excerpt.mjs"
 
+/** Absent scope normalizes to this — one convention so absent ≡ "default" holds everywhere. */
+const DEFAULT_SCOPE = "default"
+
+/** @param {string | undefined | null} scope @returns {string} */
+function normalizeScope(scope) {
+  return scope === undefined || scope === null ? DEFAULT_SCOPE : scope
+}
+
 /** Unwrap `{seq, event}[]` (bench dump) or a bare event array into inner event objects. */
 function eventsOf(stream) {
   if (!Array.isArray(stream)) return []
@@ -97,10 +107,11 @@ function criterionKey(criterionText, criteria) {
 
 /**
  * Extract one per-task FailureRecord from an event stream + its verdict. Machine facts only.
- * @param {{ taskId: string, events: EventEnvelope[], verdict: Verdict, criteria?: Criterion[], eventsPath?: string }} args
+ * `scope` is stamped only when supplied, so pre-scope goldens stay byte-identical (absent ⇒ "default").
+ * @param {{ taskId: string, events: EventEnvelope[], verdict: Verdict, criteria?: Criterion[], eventsPath?: string, scope?: string }} args
  * @returns {FailureRecord}
  */
-export function extractFailureRecord({ taskId, events, verdict, criteria = [], eventsPath = "" }) {
+export function extractFailureRecord({ taskId, events, verdict, criteria = [], eventsPath = "", scope }) {
   const evs = eventsOf(events)
 
   let termination = "unknown"
@@ -157,6 +168,7 @@ export function extractFailureRecord({ taskId, events, verdict, criteria = [], e
     turns,
     totalTokens,
     eventsPath,
+    ...(scope === undefined ? {} : { scope }),
   }
 }
 
@@ -234,10 +246,14 @@ function median(values) {
 
 /**
  * Assemble the EvidenceBundle the miner/proposer consume.
+ * Every record must belong to the bundle's scope (absent ⇒ "default"); a foreign-scope record THROWS
+ * rather than being silently dropped — cross-scope evidence contamination is a data-integrity fault,
+ * not a filterable input (guards the "process-internal id × process-external store" bug class).
  * @param {{
  *   round: number,
  *   harnessDigest: string,
  *   records: FailureRecord[],
+ *   scope?: string,
  *   previousAttempts?: PreviousAttempt[],
  *   eventsByTask?: Record<string, EventEnvelope[]>,
  *   maxExcerptChars?: number,
@@ -248,10 +264,21 @@ export function buildEvidenceBundle({
   round,
   harnessDigest,
   records,
+  scope,
   previousAttempts = [],
   eventsByTask = {},
   maxExcerptChars = 4000,
 }) {
+  const bundleScope = normalizeScope(scope)
+  for (const record of records) {
+    const recordScope = normalizeScope(record.scope)
+    if (recordScope !== bundleScope) {
+      throw new Error(
+        `buildEvidenceBundle: record "${record.taskId}" carries scope "${recordScope}" but the bundle scope is "${bundleScope}" — refusing to mix scopes`,
+      )
+    }
+  }
+
   const failing = records.filter(r => !r.passed)
   const passing = records.filter(r => r.passed)
 
@@ -272,6 +299,7 @@ export function buildEvidenceBundle({
 
   return {
     round,
+    scope: bundleScope,
     harnessDigest,
     totals: { tasks: records.length, passed: passing.length, failed: failing.length },
     clusters,

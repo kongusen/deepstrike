@@ -72,6 +72,45 @@ describe("manifestDigest", () => {
   })
 })
 
+describe("manifest scope (V2-S1)", () => {
+  // Golden digest of the v1-shaped seed() with NO scope field. The scope type addition must not shift
+  // it (canonicalJson skips undefined), or every existing lineage digest on disk would break.
+  const ABSENT_SCOPE_DIGEST = "07fe15dd850dca52a9a8b82a68f11cc2350b8988d92fc6bc10e94e9f59a651ab"
+
+  it("domain-separates the digest: scope a / b / absent are three distinct digests", () => {
+    const absent = manifestDigest(seed())
+    const a = manifestDigest({ ...seed(), scope: "a" })
+    const b = manifestDigest({ ...seed(), scope: "b" })
+    expect(new Set([absent, a, b]).size).toBe(3)
+  })
+
+  it("leaves a v1-shaped (absent-scope) manifest digest byte-identical to the pre-change golden", () => {
+    expect(manifestDigest(seed())).toBe(ABSENT_SCOPE_DIGEST)
+  })
+
+  it("rejects empty / path-hostile / non-string scope at load", () => {
+    expect(() => validateManifest({ ...seed(), scope: "" })).toThrow(/scope/)
+    expect(() => validateManifest({ ...seed(), scope: "../x" })).toThrow(/scope/)
+    expect(() => validateManifest({ ...seed(), scope: "a/b" })).toThrow(/scope/)
+    expect(() => validateManifest({ ...seed(), scope: 5 as unknown as string })).toThrow(/scope/)
+    expect(() => validateManifest({ ...seed(), scope: "x".repeat(65) })).toThrow(/scope/)
+  })
+
+  it("accepts a well-formed scope and lets applyPatch's child inherit it", () => {
+    const m: HarnessManifest = { ...seed(), scope: "tenant-42" }
+    expect(() => validateManifest(m)).not.toThrow()
+    const child = applyPatch(m, patch({ targetSurface: "instructions.bootstrap", value: "new boot" }))
+    expect(child.scope).toBe("tenant-42")
+  })
+
+  it("refuses a patch targeting scope even when it is listed in editableSurfaces", () => {
+    const m: HarnessManifest = { ...seed(), scope: "s", editableSurfaces: [...seed().editableSurfaces, "scope"] }
+    expect(() => applyPatch(m, patch({ targetSurface: "scope", value: "other" }))).toThrow(/unknown surface path/)
+    // scope untouched on the source.
+    expect(m.scope).toBe("s")
+  })
+})
+
 describe("composeSystemPrompt", () => {
   it("joins base then slots in fixed order, skipping empty slots", () => {
     const out = composeSystemPrompt("BASE", { failureRecovery: "FR", bootstrap: "BOOT", verification: "VER" })

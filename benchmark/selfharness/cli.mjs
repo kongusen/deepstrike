@@ -5,7 +5,7 @@
  * Usage:
  *   node benchmark/selfharness/cli.mjs --adapter <fixture|live|./path.mjs>
  *        --held-in a,b --held-out c,d --rounds T --k K --repeats R
- *        [--seed manifest.json] [--provider deepseek] [--lineage .harness-lab]
+ *        [--seed manifest.json] [--scope key] [--provider deepseek] [--lineage .harness-lab]
  *
  * The adapter module supplies tasks; `--held-in` / `--held-out` name the split by task id. The miner
  * and proposer are driven by a real provider `complete(prompt)` (resolved from env, matching the bench
@@ -92,10 +92,17 @@ const seedManifest = str(flags.seed)
       ? adapterModule.seedManifest()
       : fail("no --seed given and adapter exposes no default seedManifest()"))
 
+// --scope stamps the seed BEFORE the loop reads it — the manifest stays the single source of scope
+// truth (the loop validates it and derives the lineage lane from it). Empty/bad values are rejected
+// there, not silently sanitized.
+const scope = str(flags.scope)
+if (scope) seedManifest.scope = scope
+
 console.log(JSON.stringify({
   adapter: adapter.id,
   provider: providerDesc.provider,
   model: providerDesc.model,
+  scope: seedManifest.scope ?? "default",
   heldIn,
   heldOut,
   rounds,
@@ -183,9 +190,13 @@ function printUsage() {
   process.stdout.write(`Usage:
   node benchmark/selfharness/cli.mjs --adapter <fixture|live|./module.mjs> \\
        --held-in a,b --held-out c,d --rounds T --k K --repeats R \\
-       [--seed manifest.json] [--provider ${PROVIDER_IDS.join("|")}] [--lineage .harness-lab]
+       [--seed manifest.json] [--scope key] [--provider ${PROVIDER_IDS.join("|")}] [--lineage .harness-lab]
 
 The adapter module supplies tasks; --held-in / --held-out name the split by task id.
 The miner + proposer are driven by the resolved provider's LLM.
+
+--scope stamps the seed manifest with an isolation key (user / tenant / agent-group; path-safe token
+matching /^[A-Za-z0-9._-]{1,64}$/). Lineage lands under <lineage>/<scope>/<modelProfile>/, so parallel
+scopes never share files. Absent ⇒ "default".
 `)
 }
