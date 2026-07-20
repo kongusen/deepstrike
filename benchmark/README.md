@@ -266,20 +266,32 @@ JSON patches against the declared editable surfaces of a `HarnessManifest` (SDK
 `@deepstrike/sdk/harness`), and only edits that pass the paper's conservative rule
 (`Δ_in ≥ 0 ∧ Δ_ho ≥ 0 ∧ max > 0`) on a held-in/held-out split are promoted into the lineage.
 Held-out isolation is structural: only held-in evidence ever reaches the proposer.
-Spec: [`.local-docs/specs/self-harness-loop.md`](../.local-docs/specs/self-harness-loop.md).
+v2 extends the editable surfaces to tool/skill exposure (`allowedToolIds` / `stableCoreToolIds` /
+`enablePlanTool` / `skillFilter`) under an intersection-only rule — a manifest can narrow the host's
+exposure but widening is structurally inexpressible — grounded in per-cluster `toolUsage` evidence;
+adds a `scope` isolation key (multi-tenant lineage, mixed-scope evidence throws); and tiers
+promotion: runtime knobs auto-promote, free-text edits pass a fail-closed injection screen, and an
+`onPromotionDecision` hook seats a human veto.
+Specs: [`self-harness-loop.md`](../.local-docs/specs/self-harness-loop.md),
+[`self-harness-v2-tools-scope-security.md`](../.local-docs/specs/self-harness-v2-tools-scope-security.md).
 
 ```
 node benchmark/selfharness/cli.mjs \
      --adapter ./benchmark/selfharness/adapters/format-discipline.mjs \
      --held-in json-strict,word-limit,checklist --held-out csv-strict,summary-limit \
-     --rounds 2 --k 3 --repeats 2 --provider deepseek
+     --rounds 2 --k 3 --repeats 2 --provider deepseek [--scope tenant-a]
 ```
 
-- `evidence.mjs` / `trace-excerpt.mjs` — deterministic failure-signature clustering + bounded
-  Fig-7-style excerpts from `*.events.json` streams (LLM-free)
-- `miner.mjs` / `proposer.mjs` — the two LLM slots (`complete(prompt)` injected; canned in tests)
-- `validate.mjs` / `loop.mjs` — acceptance rule, disjoint-surface merge, `.harness-lab/` lineage
-  (`<digest>.json` per manifest + `rounds.jsonl` per round; no timestamps — byte-stable records)
+- `evidence.mjs` / `trace-excerpt.mjs` — deterministic failure-signature clustering + per-tool
+  call/error usage + bounded Fig-7-style excerpts from `*.events.json` streams (LLM-free)
+- `miner.mjs` / `proposer.mjs` / `screen.mjs` — the three LLM slots (`complete(prompt)` injected;
+  canned in tests); the screen guards Tier B free-text edits before any evaluation spend and its
+  verdict is folded in code from three booleans, never trusted as a model string
+- `validate.mjs` / `loop.mjs` — acceptance rule, disjoint-surface merge, tiered promotion +
+  `onPromotionDecision`, `.harness-lab/<scope>/<modelProfile>/` lineage (`<digest>.json` per
+  manifest + `rounds.jsonl` per round; no timestamps — byte-stable records)
+- `shared.mjs` — cross-scope promotion gate (signature-only aggregate, ≥2 scopes, explicit human
+  approval; design-final, production aggregation deferred)
 - `adapters/` — `fixture` (deterministic, zero-cost, CI), `live` (real runs + `judge()`),
   `format-discipline` (small live task set exercising strict-output-format failure mechanisms)
 
