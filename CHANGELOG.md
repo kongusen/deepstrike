@@ -6,6 +6,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — self-harness v2 (memory-policy surfaces)
+
+- **Memory-policy knobs join the harness whitelist** (Node SDK): `HarnessRuntimePatch` gains
+  `retrievalTopK` and `promotionRecallThreshold` (positive-integer typed, same patch/load
+  validation as every runtime key); `applyManifest` folds them into `RuntimeOptions.memoryPolicy`
+  without disturbing host-set fields. A self-harness proposer can now tune memory retrieval
+  breadth and promotion sensitivity per failure cluster.
+
 ## [0.2.47] - 2026-07-19
 
 ### Added — self-harness loop (H1–H3)
