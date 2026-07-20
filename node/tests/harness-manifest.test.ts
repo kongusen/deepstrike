@@ -11,6 +11,7 @@ import {
   applyManifest,
   applyPatch,
   validateManifest,
+  surfaceTier,
   type HarnessManifest,
   type HarnessPatch,
 } from "../src/harness/manifest.js"
@@ -384,5 +385,43 @@ describe("applyManifest intersection fold (capability ceiling, V2-S2)", () => {
         for (const id of eff) expect(base).toContain(id) // effective ⊆ host base — never a new capability
       }
     }
+  })
+})
+
+// ── V2-S3: promotion tiers ────────────────────────────────────────────────────
+describe("surfaceTier (V2-S3 promotion tiers)", () => {
+  // Every whitelisted runtime.* surface is Tier A (auto): typed validation + the ceiling invariant guard it.
+  const RUNTIME_SURFACES = [
+    "maxTurns", "maxTotalTokens", "criteriaGate", "repeatFuse", "entropyWatch",
+    "knowledgeBudgetRatio", "skillLeaseTurns", "allowedToolIds", "stableCoreToolIds",
+    "enablePlanTool", "skillFilter", "retrievalTopK", "promotionRecallThreshold",
+  ]
+
+  it("maps every runtime.* whitelist surface to auto", () => {
+    for (const key of RUNTIME_SURFACES) expect(surfaceTier(`runtime.${key}`)).toBe("auto")
+  })
+
+  it("maps instructions.* and nudges to screened (free text ⇒ injection screen)", () => {
+    for (const slot of ["bootstrap", "execution", "verification", "failureRecovery"]) {
+      expect(surfaceTier(`instructions.${slot}`)).toBe("screened")
+    }
+    expect(surfaceTier("nudges")).toBe("screened")
+  })
+
+  it("throws on an unknown surface, an unknown slot / runtime key, and a mis-shaped path", () => {
+    expect(() => surfaceTier("governance.limits")).toThrow(/unknown surface path/)
+    expect(() => surfaceTier("scope")).toThrow(/unknown surface path/)
+    expect(() => surfaceTier("instructions.bogus")).toThrow(/instruction slot/)
+    expect(() => surfaceTier("runtime.governancePolicy")).toThrow(/whitelist/)
+    expect(() => surfaceTier("nudges.extra")).toThrow(/no sub-path/)
+  })
+
+  it("never returns human in v2 — no capability-widening surface is expressible", () => {
+    const all = [
+      "instructions.bootstrap", "instructions.execution", "instructions.verification",
+      "instructions.failureRecovery", "nudges",
+      ...RUNTIME_SURFACES.map(k => `runtime.${k}`),
+    ]
+    for (const s of all) expect(surfaceTier(s)).not.toBe("human")
   })
 })

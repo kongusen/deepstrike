@@ -24,12 +24,14 @@ export {
   applyManifest,
   applyPatch,
   validateManifest,
+  surfaceTier,
 } from "./manifest.js"
 export type {
   InstructionProfile,
   HarnessManifest,
   HarnessRuntimePatch,
   HarnessPatch,
+  SurfaceTier,
 } from "./manifest.js"
 export { NudgeEngine, validateNudgeRules } from "./nudge.js"
 export type { NudgeTrigger, NudgeRule, NudgeOutput } from "./nudge.js"

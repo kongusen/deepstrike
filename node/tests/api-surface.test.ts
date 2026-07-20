@@ -69,7 +69,7 @@ describe("subpath barrels", () => {
       expect(harness).not.toHaveProperty(n)
   })
   it("harness carries the self-harness manifest + nudge API", () => {
-    for (const n of ["composeSystemPrompt", "manifestDigest", "applyManifest", "applyPatch", "validateManifest", "NudgeEngine", "validateNudgeRules"])
+    for (const n of ["composeSystemPrompt", "manifestDigest", "applyManifest", "applyPatch", "validateManifest", "surfaceTier", "NudgeEngine", "validateNudgeRules"])
       expect(harness).toHaveProperty(n)
   })
   it("os carries profiles, signals, permissions, replay-testing", () => {

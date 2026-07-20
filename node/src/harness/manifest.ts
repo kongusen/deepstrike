@@ -112,6 +112,51 @@ const RUNTIME_PATCH_KEYS: readonly string[] = [
 const MAX_TOOL_ID_CHARS = 128
 const MAX_TOOL_LIST_ENTRIES = 128
 
+// ── Promotion tiers (spec design principle C — graded promotion) ──────────────
+
+/**
+ * The promotion tier of an editable surface — the SECOND axis of the safety boundary (the whitelist is
+ * the first). Even a whitelisted surface may need a heavier gate than "typed validation passed".
+ */
+export type SurfaceTier = "auto" | "screened" | "human"
+
+/**
+ * Map an editable surface to its promotion tier. Maintained HERE beside the whitelist so a surface can
+ * never be whitelisted without also being assigned a tier (spec V2-S3 same-place maintenance):
+ *   - "auto"     (Tier A): every `runtime.*` whitelist surface. Typed validation + the capability
+ *                 ceiling invariant + the v1 acceptance rule already guard them, so promotion is fully
+ *                 automatic — there is no free text and no injection surface.
+ *   - "screened" (Tier B): `instructions.*` and `nudges`. Free text can smuggle instructions
+ *                 (persistent prompt-injection laundered through the evidence loop), so a screen runs
+ *                 before promotion.
+ *   - "human"    (Tier C): reserved for capability-WIDENING surfaces. None exist in v2 — intersection
+ *                 semantics make widening structurally inexpressible — but the enum value exists so a v3
+ *                 surface cannot be added without consciously assigning it a tier (and building the
+ *                 human gate). `surfaceTier` therefore never returns "human" in v2.
+ * An unknown surface / slot / runtime key THROWS (same discipline as applySurfaceEdit): a surface with
+ * no tier must never fall through to auto-promotion.
+ */
+export function surfaceTier(targetSurface: string): SurfaceTier {
+  const [head, sub] = targetSurface.split(".")
+  if (head === "instructions") {
+    if (sub === undefined || !INSTRUCTION_SLOTS.includes(sub as InstructionSlot)) {
+      throw new RangeError(`unknown instruction slot: ${targetSurface}`)
+    }
+    return "screened"
+  }
+  if (head === "nudges") {
+    if (sub !== undefined) throw new RangeError(`nudges surface takes no sub-path: ${targetSurface}`)
+    return "screened"
+  }
+  if (head === "runtime") {
+    if (sub === undefined || !RUNTIME_PATCH_KEYS.includes(sub)) {
+      throw new RangeError(`runtime patch key not in the editable whitelist: ${targetSurface}`)
+    }
+    return "auto"
+  }
+  throw new RangeError(`unknown surface path: ${targetSurface}`)
+}
+
 // ── Manifest + patch shapes ──────────────────────────────────────────────────
 
 export interface HarnessManifest {
@@ -140,6 +185,10 @@ export interface HarnessManifest {
     rationale?: string
     deltaHeldIn?: number
     deltaHeldOut?: number
+    /** Promotion tier of the driving edit (V2-S3). */
+    tier?: SurfaceTier
+    /** Injection-screen verdict — present only for a screened (Tier B) promotion (V2-S3). */
+    screenVerdict?: "pass" | "screened_out"
   }
 }
 

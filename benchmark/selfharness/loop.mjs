@@ -20,14 +20,15 @@
  * option can disagree with the manifest it stamps.
  *
  * @typedef {import("../../node/src/harness/manifest.js").HarnessManifest} HarnessManifest
+ * @typedef {import("../../node/src/harness/manifest.js").HarnessPatch} HarnessPatch
  * @typedef {import("./adapters/fixture.mjs").TaskAdapter} TaskAdapter
  *
  * @typedef {Object} RoundRecord
  * @property {number} round
  * @property {{ heldIn: number, heldOut: number }} baseline
  * @property {Array<{ surface: string, op: string, targetCluster: string }>} proposals
- * @property {Array<{ patch?: unknown, reason: string }>} discarded
- * @property {Array<{ surface: string, targetCluster?: string, accepted: boolean, deltaIn?: number, deltaHo?: number, reason?: string }>} decisions
+ * @property {Array<{ patch?: unknown, surface?: string, reason: string, decision?: string }>} discarded  Proposer-illegal + Tier B `screened_out` intake rejections.
+ * @property {Array<{ surface: string, targetCluster?: string, accepted: boolean, deltaIn?: number, deltaHo?: number, reason?: string, tier?: string, screenVerdict?: string }>} decisions
  * @property {string} promotedDigest
  * @property {string | null} parent
  *
@@ -43,6 +44,7 @@ import { loadSdk } from "../utils/sdk.mjs"
 import { extractFailureRecord, buildEvidenceBundle } from "./evidence.mjs"
 import { mineMechanisms } from "./miner.mjs"
 import { propose } from "./proposer.mjs"
+import { screenPatch } from "./screen.mjs"
 import { evaluate, acceptanceRule, mergeAccepted } from "./validate.mjs"
 
 let _sdk
@@ -62,6 +64,7 @@ async function sdk() {
  *   repeats?: number,
  *   complete: (prompt: string) => Promise<string>,
  *   lineageDir?: string,
+ *   onPromotionDecision?: (proposal: { patch: HarnessPatch, tier: string, screenVerdict: (string|null), deltaHeldIn: number, deltaHeldOut: number }) => ("approve" | "reject" | Promise<"approve" | "reject">),
  *   log?: (msg: string) => void,
  * }} args
  * @returns {Promise<LoopResult>}
@@ -76,9 +79,10 @@ export async function selfHarnessLoop({
   repeats = 1,
   complete,
   lineageDir = ".harness-lab",
+  onPromotionDecision,
   log = () => {},
 }) {
-  const { manifestDigest, applyPatch, validateManifest } = await sdk()
+  const { manifestDigest, applyPatch, validateManifest, surfaceTier } = await sdk()
 
   // Fail fast AND guard the lineage path: validateManifest enforces the scope pattern before scope is
   // ever used as a directory segment, so a path-hostile seed scope can't escape lineageDir.
@@ -166,6 +170,28 @@ export async function selfHarnessLoop({
         decisions.push({ surface: patch.targetSurface, accepted: false, reason: `apply_failed: ${e.message ?? e}` })
         continue
       }
+      // Tier of the surface (V2-S3). An unknown surface can't reach here (applyPatch already whitelisted
+      // it), but surfaceTier is the authority on "no tier ⇒ never auto-promote", so treat a throw as a
+      // rejection rather than a silent pass.
+      let tier
+      try {
+        tier = surfaceTier(patch.targetSurface)
+      } catch (e) {
+        decisions.push({ surface: patch.targetSurface, accepted: false, reason: `tier_failed: ${e.message ?? e}` })
+        continue
+      }
+      // Tier B (free-text) intake injection screen — ONE cheap LLM call, run BEFORE candidate evaluation
+      // (which runs whole task sets) so a poisoned patch never spends eval budget. Tier A skips it
+      // entirely: typed validation + the capability ceiling already guard numeric/boolean/id-list edits.
+      let screenVerdict = null
+      if (tier === "screened") {
+        const screen = await screenPatch({ patch, complete })
+        screenVerdict = screen.verdict
+        if (screen.verdict === "screened_out") {
+          discarded.push({ patch, surface: patch.targetSurface, reason: screen.reason, decision: "screened_out" })
+          continue // never evaluated, never promoted; the round continues
+        }
+      }
       // Paper §3.4: a proposal that fails execution before a valid evaluation result is REJECTED,
       // never allowed to kill the loop (e.g. a candidate the kernel refuses at ConfigureRun).
       let candIn, candOut
@@ -173,19 +199,34 @@ export async function selfHarnessLoop({
         candIn = await evaluate({ manifest: candidate, adapter, tasks: heldInTasks, repeats })
         candOut = await evaluate({ manifest: candidate, adapter, tasks: heldOutTasks, repeats })
       } catch (e) {
-        decisions.push({ surface: patch.targetSurface, accepted: false, reason: `eval_failed: ${e.message ?? e}` })
+        decisions.push({ surface: patch.targetSurface, accepted: false, reason: `eval_failed: ${e.message ?? e}`, tier, ...(screenVerdict ? { screenVerdict } : {}) })
         continue
       }
       const dIn = candIn.passCount - baseIn.passCount
       const dHo = candOut.passCount - baseOut.passCount
-      const ok = acceptanceRule(dIn, dHo)
-      const decision = { surface: patch.targetSurface, targetCluster: patch.targetCluster, accepted: ok, deltaIn: dIn, deltaHo: dHo }
+      const passesRule = acceptanceRule(dIn, dHo)
+      const decision = { surface: patch.targetSurface, targetCluster: patch.targetCluster, accepted: passesRule, deltaIn: dIn, deltaHo: dHo, tier, ...(screenVerdict ? { screenVerdict } : {}) }
       decisions.push(decision)
-      if (ok) accepted.push({ patch, dIn, dHo, decision })
+
+      // The promotion decision is the FINAL gate, applied only to a candidate that already cleared the
+      // acceptance rule. Default policy: Tier A auto-approves; Tier B approves iff its screen passed
+      // (it always has by here — screened_out never reaches this point). A host `onPromotionDecision`
+      // hook overrides the default and is the human/host veto; a throwing hook fails CLOSED (reject).
+      let finalAccepted = passesRule
+      if (passesRule) {
+        const gate = await promotionGate({ patch, tier, screenVerdict, deltaHeldIn: dIn, deltaHeldOut: dHo, onPromotionDecision })
+        if (gate.approved) {
+          accepted.push({ patch, dIn, dHo, decision })
+        } else {
+          decision.accepted = false
+          decision.reason = gate.reason
+          finalAccepted = false
+        }
+      }
       previousAttempts.push({
         surface: patch.targetSurface,
         summary: patch.expectedEffect ?? patch.rationale ?? "",
-        accepted: ok,
+        accepted: finalAccepted,
         deltaIn: dIn,
         deltaHo: dHo,
       })
@@ -207,6 +248,9 @@ export async function selfHarnessLoop({
           rationale: top.patch.rationale,
           deltaHeldIn: top.dIn,
           deltaHeldOut: top.dHo,
+          // Tier of the driving edit, and (for a Tier B edit) the screen verdict it carried through.
+          tier: top.decision?.tier ?? surfaceTier(top.patch.targetSurface),
+          ...(top.decision?.screenVerdict ? { screenVerdict: top.decision.screenVerdict } : {}),
         },
       }
       writeManifest(laneDir, promoted, manifestDigest)
@@ -229,6 +273,39 @@ export async function selfHarnessLoop({
   }
 
   return { finalManifest: current, trajectory }
+}
+
+/**
+ * Resolve the FINAL promotion verdict for one acceptance-passing candidate (V2-S3). A host
+ * `onPromotionDecision` hook, when supplied, is authoritative — it can approve or reject any tier
+ * (the human/host veto). A hook that throws, or returns anything other than "approve", fails CLOSED
+ * (reject) with the reason recorded. Absent hook ⇒ the default tier policy.
+ * @param {{ patch: HarnessPatch, tier: string, screenVerdict: (string|null), deltaHeldIn: number, deltaHeldOut: number, onPromotionDecision?: Function }} args
+ * @returns {Promise<{ approved: boolean, reason?: string }>}
+ */
+async function promotionGate({ patch, tier, screenVerdict, deltaHeldIn, deltaHeldOut, onPromotionDecision }) {
+  if (typeof onPromotionDecision === "function") {
+    let verdict
+    try {
+      verdict = await onPromotionDecision({ patch, tier, screenVerdict, deltaHeldIn, deltaHeldOut })
+    } catch (e) {
+      return { approved: false, reason: `host_rejected: ${e?.message ?? e}` } // fail-closed
+    }
+    if (verdict === "approve") return { approved: true }
+    if (verdict === "reject") return { approved: false, reason: "host_rejected" }
+    return { approved: false, reason: `host_rejected: unexpected verdict ${JSON.stringify(verdict)}` }
+  }
+  // Default policy: Tier A auto-approves; Tier B approves iff its screen passed (it always has by here —
+  // screened_out is dropped at intake). A hypothetical Tier C (human-only) has no auto path ⇒ reject.
+  if (defaultTierPolicy(tier, screenVerdict)) return { approved: true }
+  return { approved: false, reason: "tier_policy_rejected" }
+}
+
+/** The default (no-hook) tier policy: A auto / B iff screen passed / anything else (human) not auto. */
+function defaultTierPolicy(tier, screenVerdict) {
+  if (tier === "auto") return true
+  if (tier === "screened") return screenVerdict === "pass"
+  return false
 }
 
 /**
