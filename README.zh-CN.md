@@ -42,7 +42,7 @@ DeepStrike 把 Agent 的「harness」升级为内核原语。
 DeepStrike 把控制面放进 `deepstrike-core` 这个纯 Rust 状态机。宿主 SDK 仍然拥有所有真实 I/O：LLM 调用、工具、文件、worktree、网络、长期记忆与存储。内核决定 effect 何时、是否、在什么预算内发生；宿主执行获批的 effect，再把 observation 回灌给内核。
 
 <p align="center">
-  <img src="docs/public/readme_agent_os_map_zh.svg" alt="DeepStrike Agent OS 能力地图" width="100%" />
+  <img src="docs/public/readme_agent_os_map_zh.svg" alt="DeepStrike 运行机制：宿主 I/O、RuntimeRunner、内核、四语言 SDK 与 Self-Harness 外环" width="100%" />
 </p>
 
 ## 你会得到什么

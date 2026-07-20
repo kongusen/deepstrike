@@ -1,146 +1,166 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 620" role="img" aria-labelledby="title desc">
-  <title id="title">DeepStrike Agent OS 能力地图</title>
-  <desc id="desc">分层展示宿主 SDK、Kernel ABI、内核运行面、工作流模式与生产级属性。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">DeepStrike 当前运行机制</title>
+  <desc id="desc">展示 DeepStrike 当前架构：宿主拥有真实 I/O，RuntimeRunner 驱动控制环，纯 Rust 内核负责治理与状态，四语言 SDK 共享语义，Node self-harness 在外环改进下一次运行。</desc>
+
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#08111f"/>
-      <stop offset="0.55" stop-color="#101827"/>
-      <stop offset="1" stop-color="#07101a"/>
-    </linearGradient>
-    <linearGradient id="kernel" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#102b3a"/>
-      <stop offset="1" stop-color="#0e1726"/>
-    </linearGradient>
-    <linearGradient id="host" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#291b3e"/>
-      <stop offset="1" stop-color="#111827"/>
-    </linearGradient>
-    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
-      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.28"/>
-    </filter>
-    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#7dd3fc"/>
+    <marker id="arrow-coral" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 1 10 5 0 9Z" fill="#FF6B4A"/>
+    </marker>
+    <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
     </marker>
     <style>
-      .title { font: 800 28px system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #f8fafc; letter-spacing: 0; }
-      .subtitle { font: 500 14px system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #9ca3af; letter-spacing: 0; }
-      .section { font: 800 15px system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #f8fafc; letter-spacing: 0; }
-      .label { font: 700 13px system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #e5e7eb; letter-spacing: 0; }
-      .small { font: 500 11px system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #aeb8c5; letter-spacing: 0; }
-      .tiny { font: 700 10px system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; fill: #0b1220; letter-spacing: 0; }
-      .card { fill: #111827; stroke: #263449; stroke-width: 1; rx: 8; }
-      .chip { fill: #bae6fd; rx: 11; }
-      .line { stroke: #7dd3fc; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
-      .dash { stroke: #475569; stroke-width: 1.5; stroke-dasharray: 5 5; }
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif; }
+      .eyebrow { fill: #FF6B4A; font-size: 11px; font-weight: 700; letter-spacing: 2px; }
+      .title { fill: #F7F3EA; font-size: 28px; font-weight: 700; letter-spacing: -0.5px; }
+      .subtitle { fill: #A8A49C; font-size: 13px; font-weight: 450; }
+      .band-title { fill: #F7F3EA; font-size: 15px; font-weight: 700; }
+      .band-note { fill: #8F8C86; font-size: 11px; font-weight: 500; letter-spacing: 0.3px; }
+      .card-title { fill: #F7F3EA; font-size: 13px; font-weight: 650; }
+      .card-text { fill: #A8A49C; font-size: 10.5px; font-weight: 450; }
+      .micro { fill: #8F8C86; font-size: 9.5px; font-weight: 600; letter-spacing: 0.55px; }
+      .accent { fill: #FF6B4A; }
+      .panel { fill: #15171A; stroke: #303236; stroke-width: 1; }
+      .panel-strong { fill: #191A1D; stroke: #F7F3EA; stroke-width: 1.2; }
+      .kernel-card { fill: #121316; stroke: #34363A; stroke-width: 1; }
+      .rule { stroke: #303236; stroke-width: 1; }
+      .flow { fill: none; stroke: #F7F3EA; stroke-width: 1.5; marker-end: url(#arrow-ivory); }
+      .flow-coral { fill: none; stroke: #FF6B4A; stroke-width: 1.8; marker-end: url(#arrow-coral); }
+      .flow-dash { fill: none; stroke: #FF6B4A; stroke-width: 1.4; stroke-dasharray: 5 5; marker-end: url(#arrow-coral); }
     </style>
   </defs>
 
-  <rect width="1120" height="620" fill="url(#bg)"/>
-  <path d="M 0 92 H 1120 M 0 196 H 1120 M 0 300 H 1120 M 0 404 H 1120 M 0 508 H 1120" stroke="#1f2937" stroke-width="1" opacity="0.45"/>
-  <path d="M 140 0 V 620 M 280 0 V 620 M 420 0 V 620 M 560 0 V 620 M 700 0 V 620 M 840 0 V 620 M 980 0 V 620" stroke="#1f2937" stroke-width="1" opacity="0.28"/>
+  <rect width="1200" height="760" fill="#111318"/>
+  <path d="M0 90H1200M0 244H1200M0 354H1200M0 610H1200" class="rule" opacity="0.7"/>
 
-  <text x="560" y="44" text-anchor="middle" class="title">DeepStrike Agent OS</text>
-  <text x="560" y="69" text-anchor="middle" class="subtitle">控制流在纯 Rust 内核；Provider、工具、存储与网络 I/O 留在宿主 SDK。</text>
+  <!-- 标题 -->
+  <text x="48" y="34" class="eyebrow">运行机制 / v0.2.47</text>
+  <text x="48" y="68" class="title">每个 Agent effect，都经过同一个受治理运行环。</text>
+  <text x="1152" y="38" text-anchor="end" class="band-note">控制流在内核</text>
+  <text x="1152" y="58" text-anchor="end" class="band-note">真实 I/O 在宿主</text>
+  <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent"/>
 
-  <g filter="url(#shadow)">
-    <rect x="40" y="110" width="245" height="380" rx="14" fill="url(#host)" stroke="#a78bfa" stroke-width="1.5"/>
-    <text x="162" y="142" text-anchor="middle" class="section">宿主 SDK</text>
-    <text x="162" y="163" text-anchor="middle" class="small">Python · Node.js · Rust · WASM</text>
-
-    <rect x="62" y="190" width="201" height="52" class="card"/>
-    <text x="82" y="213" class="label">Provider 客户端</text>
-    <text x="82" y="230" class="small">OpenAI、Anthropic、Gemini、Qwen...</text>
-
-    <rect x="62" y="258" width="201" height="56" class="card"/>
-    <text x="82" y="281" class="label">ExecutionPlane</text>
-    <text x="82" y="298" class="small">本地工具、worktree、沙箱</text>
-
-    <rect x="62" y="330" width="201" height="56" class="card"/>
-    <text x="82" y="353" class="label">SessionLog / 存储</text>
-    <text x="82" y="370" class="small">重放证据、记忆、归档</text>
-
-    <rect x="62" y="402" width="201" height="56" class="card"/>
-    <text x="82" y="425" class="label">RuntimeRunner</text>
-    <text x="82" y="442" class="small">流式事件与 observation 回灌</text>
-  </g>
+  <!-- 宿主真实 I/O -->
+  <text x="48" y="116" class="band-title">宿主拥有真实 I/O</text>
+  <text x="1152" y="116" text-anchor="end" class="band-note">凭据 · 网络 · 文件系统 · 持久存储</text>
 
   <g>
-    <line x1="318" y1="110" x2="318" y2="490" class="dash"/>
-    <text x="318" y="102" text-anchor="middle" class="subtitle">Kernel ABI</text>
-    <path d="M 286 246 C 312 226, 336 226, 365 246" class="line"/>
-    <path d="M 365 354 C 336 374, 312 374, 286 354" class="line"/>
-    <rect x="302" y="214" width="86" height="24" rx="12" fill="#1e293b" stroke="#38bdf8"/>
-    <text x="345" y="230" text-anchor="middle" class="small">事件进入</text>
-    <rect x="296" y="382" width="98" height="24" rx="12" fill="#1e293b" stroke="#a78bfa"/>
-    <text x="345" y="398" text-anchor="middle" class="small">动作返回</text>
+    <rect x="48" y="134" width="258" height="86" rx="5" class="panel"/>
+    <text x="66" y="160" class="card-title">Provider 适配器</text>
+    <text x="66" y="181" class="card-text">流式 LLM 调用 · 模型路由</text>
+    <text x="66" y="199" class="card-text">文本 · 图像 · 音频序列化</text>
+    <rect x="290" y="146" width="3" height="19" rx="1.5" class="accent"/>
+
+    <rect x="324" y="134" width="258" height="86" rx="5" class="panel"/>
+    <text x="342" y="160" class="card-title">ExecutionPlane</text>
+    <text x="342" y="181" class="card-text">工具 · 流式执行 · 挂起 / 恢复</text>
+    <text x="342" y="199" class="card-text">worktree · 沙箱 · 远程 VPC</text>
+
+    <rect x="600" y="134" width="258" height="86" rx="5" class="panel"/>
+    <text x="618" y="160" class="card-title">证据与持久存储</text>
+    <text x="618" y="181" class="card-text">SessionLog · 事务流 · snapshot</text>
+    <text x="618" y="199" class="card-text">DreamStore · 归档 · 大结果 spool</text>
+
+    <rect x="876" y="134" width="276" height="86" rx="5" class="panel"/>
+    <text x="894" y="160" class="card-title">外部控制</text>
+    <text x="894" y="181" class="card-text">审批 · signal · webhook · cron</text>
+    <text x="894" y="199" class="card-text">取消 · deadline · 宿主策略</text>
   </g>
 
-  <g filter="url(#shadow)">
-    <rect x="390" y="110" width="690" height="380" rx="14" fill="url(#kernel)" stroke="#38bdf8" stroke-width="1.5"/>
-    <text x="735" y="142" text-anchor="middle" class="section">deepstrike-core 内核运行面</text>
-    <text x="735" y="163" text-anchor="middle" class="small">可序列化状态机 · 零 provider I/O · 跨语言一致语义</text>
+  <!-- RuntimeRunner 宿主环 -->
+  <text x="48" y="273" class="band-title">宿主运行环</text>
+  <rect x="48" y="288" width="1104" height="46" rx="5" class="panel-strong"/>
+  <rect x="48" y="288" width="6" height="46" rx="3" class="accent"/>
+  <text x="72" y="316" class="card-title">RuntimeRunner</text>
+  <text x="194" y="316" class="card-text">分派内核 action</text>
+  <text x="365" y="316" class="card-text">执行获批 effect</text>
+  <text x="537" y="316" class="card-text">追加证据</text>
+  <text x="653" y="316" class="card-text">回灌 observation</text>
+  <text x="816" y="316" class="card-text">渲染 signal 与 harness instruction</text>
 
-    <rect x="420" y="193" width="150" height="84" class="card"/>
-    <text x="443" y="219" class="label">Syscall Gate</text>
-    <text x="443" y="238" class="small">Invoke · Spawn</text>
-    <text x="443" y="254" class="small">WriteMemory</text>
-    <rect x="446" y="261" width="62" height="22" class="chip"/>
-    <text x="477" y="276" text-anchor="middle" class="tiny">治理</text>
+  <!-- 双向 ABI -->
+  <path d="M510 334V347H398V371" class="flow"/>
+  <text x="426" y="348" class="micro">ACTION 返回宿主</text>
+  <path d="M690 371V347H584V334" class="flow-coral"/>
+  <text x="702" y="348" class="micro">OBSERVATION 进入内核</text>
 
-    <rect x="590" y="193" width="150" height="84" class="card"/>
-    <text x="613" y="219" class="label">调度器</text>
-    <text x="613" y="238" class="small">TCB · 进程表</text>
-    <text x="613" y="254" class="small">预算账本</text>
-    <rect x="620" y="261" width="64" height="22" class="chip"/>
-    <text x="652" y="276" text-anchor="middle" class="tiny">预算</text>
-
-    <rect x="760" y="193" width="150" height="84" class="card"/>
-    <text x="783" y="219" class="label">Context VM</text>
-    <text x="783" y="238" class="small">四槽位渲染</text>
-    <text x="783" y="254" class="small">压缩 · handle</text>
-    <rect x="789" y="261" width="66" height="22" class="chip"/>
-    <text x="822" y="276" text-anchor="middle" class="tiny">缓存</text>
-
-    <rect x="930" y="193" width="120" height="84" class="card"/>
-    <text x="952" y="219" class="label">Signals</text>
-    <text x="952" y="238" class="small">中断</text>
-    <text x="952" y="254" class="small">webhook · cron</text>
-
-    <rect x="420" y="305" width="150" height="84" class="card"/>
-    <text x="443" y="331" class="label">Workflow DAG</text>
-    <text x="443" y="350" class="small">Loop · Classify</text>
-    <text x="443" y="366" class="small">Tournament · Reduce</text>
-
-    <rect x="590" y="305" width="150" height="84" class="card"/>
-    <text x="613" y="331" class="label">Memory Plane</text>
-    <text x="613" y="350" class="small">校验后写入</text>
-    <text x="613" y="366" class="small">可审计检索闭环</text>
-
-    <rect x="760" y="305" width="150" height="84" class="card"/>
-    <text x="783" y="331" class="label">Replay State</text>
-    <text x="783" y="350" class="small">observation</text>
-    <text x="783" y="366" class="small">快照 · 唤醒</text>
-
-    <rect x="930" y="305" width="120" height="84" class="card"/>
-    <text x="952" y="331" class="label">Provider Hint</text>
-    <text x="952" y="350" class="small">模型路由</text>
-    <text x="952" y="366" class="small">宿主解析</text>
-
-    <path d="M 570 235 H 590 M 740 235 H 760 M 910 235 H 930" stroke="#334155" stroke-width="2"/>
-    <path d="M 495 277 V 305 M 665 277 V 305 M 835 277 V 305 M 990 277 V 305" stroke="#334155" stroke-width="2"/>
-  </g>
+  <!-- 内核 -->
+  <rect x="48" y="372" width="1104" height="215" rx="6" fill="#0D0F11" stroke="#3B3D41" stroke-width="1.2"/>
+  <text x="68" y="402" class="band-title">deepstrike-core</text>
+  <text x="207" y="402" class="band-note">纯 RUST · 可序列化状态机 · ABI v2 · 零 PROVIDER I/O</text>
+  <rect x="1081" y="388" width="52" height="20" rx="10" fill="#FF6B4A"/>
+  <text x="1107" y="402" text-anchor="middle" fill="#111318" font-size="10" font-weight="750">内核</text>
 
   <g>
-    <text x="90" y="535" class="section">生产级属性</text>
-    <rect x="286" y="515" width="118" height="34" rx="17" fill="#0f172a" stroke="#38bdf8"/>
-    <text x="345" y="537" text-anchor="middle" class="small">可重放</text>
-    <rect x="424" y="515" width="118" height="34" rx="17" fill="#0f172a" stroke="#38bdf8"/>
-    <text x="483" y="537" text-anchor="middle" class="small">受治理</text>
-    <rect x="562" y="515" width="118" height="34" rx="17" fill="#0f172a" stroke="#38bdf8"/>
-    <text x="621" y="537" text-anchor="middle" class="small">可恢复</text>
-    <rect x="700" y="515" width="142" height="34" rx="17" fill="#0f172a" stroke="#38bdf8"/>
-    <text x="771" y="537" text-anchor="middle" class="small">跨语言</text>
-    <rect x="862" y="515" width="170" height="34" rx="17" fill="#0f172a" stroke="#38bdf8"/>
-    <text x="947" y="537" text-anchor="middle" class="small">I/O 归宿主</text>
+    <rect x="68" y="426" width="249" height="132" rx="4" class="kernel-card"/>
+    <text x="86" y="452" class="card-title">Syscall Gate 与治理</text>
+    <text x="86" y="475" class="card-text">Invoke · Spawn · Memory syscall</text>
+    <text x="86" y="494" class="card-text">SubmitNodes · LoadWorkflow · PageIn</text>
+    <line x1="86" y1="510" x2="299" y2="510" class="rule"/>
+    <text x="86" y="532" class="micro">允许 · 拒绝 · 询问用户 · 限流</text>
+
+    <rect x="329" y="426" width="249" height="132" rx="4" class="kernel-card"/>
+    <text x="347" y="452" class="card-title">调度器、进程树与 DAG</text>
+    <text x="347" y="475" class="card-text">TCB · 子 Agent · dependency barrier</text>
+    <text x="347" y="494" class="card-text">预算 · quota · trust · quarantine</text>
+    <line x1="347" y1="510" x2="560" y2="510" class="rule"/>
+    <text x="347" y="532" class="micro">LOOP · CLASSIFY · TOURNAMENT · REDUCE</text>
+
+    <rect x="590" y="426" width="249" height="132" rx="4" class="kernel-card"/>
+    <text x="608" y="452" class="card-title">Context VM 与知识</text>
+    <text x="608" y="475" class="card-text">stable · knowledge · history · state</text>
+    <text x="608" y="494" class="card-text">压缩 · handle · prompt-cache 边界</text>
+    <line x1="608" y1="510" x2="821" y2="510" class="rule"/>
+    <text x="608" y="532" class="micro">键控知识 · 预算 · SKILL 租约</text>
+
+    <rect x="851" y="426" width="281" height="132" rx="4" class="kernel-card"/>
+    <text x="869" y="452" class="card-title">Observation、Signal 与恢复</text>
+    <text x="869" y="475" class="card-text">Provider / 工具结果 · 模型可见拒绝</text>
+    <text x="869" y="494" class="card-text">事务 · snapshot · wake / resume</text>
+    <line x1="869" y1="510" x2="1114" y2="510" class="rule"/>
+    <text x="869" y="532" class="micro">可重放 · 可恢复 · 可审计</text>
+  </g>
+
+  <!-- 四语言宿主 -->
+  <text x="48" y="632" class="band-title">一套行为，四个宿主 SDK</text>
+  <text x="48" y="654" class="card-text">同一内核状态机驱动每个宿主；只有真实 effect 的执行随语言而异。</text>
+  <g>
+    <rect x="48" y="674" width="94" height="32" rx="16" class="panel"/>
+    <text x="95" y="695" text-anchor="middle" class="card-title">Node.js</text>
+    <rect x="152" y="674" width="94" height="32" rx="16" class="panel"/>
+    <text x="199" y="695" text-anchor="middle" class="card-title">Python</text>
+    <rect x="256" y="674" width="94" height="32" rx="16" class="panel"/>
+    <text x="303" y="695" text-anchor="middle" class="card-title">Rust</text>
+    <rect x="360" y="674" width="94" height="32" rx="16" class="panel"/>
+    <text x="407" y="695" text-anchor="middle" class="card-title">WASM</text>
+  </g>
+
+  <!-- Self-harness 外环 -->
+  <line x1="494" y1="626" x2="494" y2="716" class="rule"/>
+  <text x="522" y="632" class="band-title">Node Self-Harness 实验室</text>
+  <text x="1128" y="632" text-anchor="end" class="band-note">外部优化环 · 安全面不允许编辑</text>
+
+  <g>
+    <rect x="522" y="657" width="122" height="49" rx="4" class="panel"/>
+    <text x="583" y="678" text-anchor="middle" class="card-title">证据</text>
+    <text x="583" y="695" text-anchor="middle" class="card-text">失败签名聚类</text>
+
+    <rect x="666" y="657" width="122" height="49" rx="4" class="panel"/>
+    <text x="727" y="678" text-anchor="middle" class="card-title">提案</text>
+    <text x="727" y="695" text-anchor="middle" class="card-text">有边界 patch</text>
+
+    <rect x="810" y="657" width="146" height="49" rx="4" class="panel"/>
+    <text x="883" y="678" text-anchor="middle" class="card-title">验证</text>
+    <text x="883" y="695" text-anchor="middle" class="card-text">held-in + held-out</text>
+
+    <rect x="978" y="657" width="150" height="49" rx="4" class="panel"/>
+    <text x="1053" y="678" text-anchor="middle" class="card-title">晋升</text>
+    <text x="1053" y="695" text-anchor="middle" class="card-text">manifest 谱系</text>
+
+    <path d="M644 681H662" class="flow-coral"/>
+    <path d="M788 681H806" class="flow-coral"/>
+    <path d="M956 681H974" class="flow-coral"/>
+    <path d="M1053 706V730H583V710" class="flow-dash"/>
+    <text x="818" y="744" text-anchor="middle" class="micro">下一次运行：INSTRUCTION · NUDGE · RUNTIME PATCH</text>
   </g>
 </svg>

@@ -42,7 +42,7 @@ Modern agents increasingly solve hard tasks by writing a small workflow: classif
 DeepStrike moves the control plane into `deepstrike-core`, a pure Rust state machine. Host SDKs still own all real I/O: LLM calls, tools, files, worktrees, network, long-term memory, and storage. The kernel decides when and whether effects may happen; the host executes approved effects and feeds observations back.
 
 <p align="center">
-  <img src="docs/public/readme_agent_os_map.svg" alt="DeepStrike Agent OS capability map" width="100%" />
+  <img src="docs/public/readme_agent_os_map.svg" alt="DeepStrike runtime mechanism: host-owned I/O, RuntimeRunner, kernel, SDKs, and self-harness loop" width="100%" />
 </p>
 
 ## What You Get
