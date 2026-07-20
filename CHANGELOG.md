@@ -6,13 +6,50 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Added — self-harness v2 (memory-policy surfaces)
+### Added — self-harness v2: tool/skill surfaces, scope isolation, tiered promotion
 
 - **Memory-policy knobs join the harness whitelist** (Node SDK): `HarnessRuntimePatch` gains
   `retrievalTopK` and `promotionRecallThreshold` (positive-integer typed, same patch/load
   validation as every runtime key); `applyManifest` folds them into `RuntimeOptions.memoryPolicy`
   without disturbing host-set fields. A self-harness proposer can now tune memory retrieval
   breadth and promotion sensitivity per failure cluster.
+- **Scope key** (`HarnessManifest.scope`): an opaque, host-defined isolation key (user / tenant /
+  agent-group), orthogonal to `modelProfile` and never concatenated with it. Rides canonical JSON,
+  so digests domain-separate by scope while absent-scope manifests keep byte-identical v1 digests.
+  Not an editable surface. Lab lineage moves to `<lineageDir>/<scope>/<modelProfile>/` and
+  `buildEvidenceBundle` THROWS on mixed-scope evidence (never silently filters) — the
+  cross-tenant contamination guard. CLI gains `--scope`. **Breaking (lab layer only):** flat
+  `<digest>.json` lineage layout is gone.
+- **Tool/skill surfaces, intersection-only** (capability-ceiling invariant): the whitelist gains
+  `runtime.allowedToolIds` / `stableCoreToolIds` (string[]), `enablePlanTool` (boolean), and the
+  new `RuntimeOptions.skillFilter` (host-layer allowlist over the skill catalog by name; absent ⇒
+  zero behavior difference). The three id-lists fold onto the host baseline by INTERSECTION, never
+  assignment — a manifest can narrow tool/skill exposure but capability expansion is structurally
+  inexpressible. Empty tool-id arrays are rejected at validation and empty intersections throw
+  (the runner reads an empty `allowedToolIds` as "no gating", so `[]` would silently widen to full
+  exposure); an empty `skillFilter` is a legitimate "no skills" narrowing. Evidence grows
+  `FailureRecord.toolUsage` (per-tool call/error counts, per-cluster aggregate) so the proposer
+  can ground narrowing edits in which tools burned turns inside a failure cluster.
+- **Tiered promotion + injection screen**: `surfaceTier()` (exported beside the whitelist) routes
+  every surface to `auto` (runtime knobs — typed validation + ceiling invariant suffice),
+  `screened` (free text: `instructions.*`, `nudges`), or `human` (reserved for capability-widening
+  surfaces; none exist in v2). Tier B edits pass `screenPatch` — a fourth injectable LLM slot that
+  screens the edit text for external-resource directives, off-cluster behavior, and weakened
+  verification BEFORE any evaluation spend; the verdict is folded in code from three booleans
+  (never trusted as a model string — the text under review may instruct the screen to say "pass")
+  and fails CLOSED on unparseable replies. Motivation: the acceptance rule measures "did it get
+  better", not "did it carry a rider" — without a screen, a prompt injection that survives into
+  evidence could be laundered into a persistent, cross-session harness edit. A new
+  `onPromotionDecision` hook is the human-veto seat: final gate after the acceptance rule,
+  fail-closed on throw/malformed return; lineage audit records `tier` + `screenVerdict`.
+  Evidence bundles carry a fixed provenance line, and miner/proposer prompts pin down that quoted
+  excerpt content is data, never instructions.
+- **Shared-layer gate (design-final, implementation deferred)**: `aggregateSharedEvidence`
+  produces signature-only cross-scope aggregates (no excerpts, no task ids — nothing verbatim
+  from any tenant's transcripts survives, enforced by construction), and `promoteToShared`
+  requires a cluster seen in ≥2 distinct scopes plus an explicit human approval token — there is
+  no auto path to shared promotion. Production aggregation ships with the per-model-profile
+  corpus work.
 
 ## [0.2.47] - 2026-07-19
 
