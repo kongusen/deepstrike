@@ -271,6 +271,12 @@ export interface RuntimeOptions {
   nudges?: NudgeRule[]
   initialMemory?: string[]
   skillDir?: string
+  /** Host-layer allowlist over the `skillDir` catalog by skill NAME. When set, only scanned skills
+   *  whose name is listed are fed to the kernel via `set_available_skills` (the manifest layer
+   *  intersects onto this host baseline in `applyManifest`). Absent ⇒ zero behavior difference (all
+   *  scanned skills fed); empty array ⇒ no skills (a legitimate narrowing — unlike an empty
+   *  `allowedToolIds`, which the runner reads as "no gating"). Only takes effect when `skillDir` is set. */
+  skillFilter?: string[]
   dreamStore?: DreamStore
   /** M4: advisory callback when a recalled record crosses the promotion threshold. The host/model
    *  decides whether to pin the record or promote its content into knowledge. */
@@ -2104,11 +2110,17 @@ export class RuntimeRunner {
     if (this.opts.skillDir) {
       const { scanSkillDir } = await import("../skills/loader.js")
       const metas = await scanSkillDir(this.opts.skillDir)
+      // S2 host-layer skill allowlist: keep only scanned skills named in `skillFilter` before feeding
+      // the catalog. Absent ⇒ feed all (identical to the pre-feature message); empty ⇒ feed none. The
+      // `set_available_skills` message is ALWAYS sent when a skillDir exists (shape preserved) — only
+      // the list narrows; the no-skillDir path stays untouched.
+      const filter = this.opts.skillFilter
+      const selected = filter === undefined ? metas : metas.filter(m => filter.includes(m.name))
       // P1-B: pass the full SkillMetadata (incl. `allowedTools`) straight through — re-mapping it
       // field-by-field previously dropped `allowedTools`.
       await this.commitKernelApply(runtime, this.pendingObservations, {
         kind: "set_available_skills",
-        skills: metas.map(m => skillMetadataToKernel(m)),
+        skills: selected.map(m => skillMetadataToKernel(m)),
       })
     }
 

@@ -9,6 +9,14 @@
  *
  * The whitelist is the safety boundary: governance / quota / reliability surfaces are deliberately
  * absent, so a proposer can never rewrite them (spec design principle: conservative promotion).
+ *
+ * Tool/skill surfaces add the SECOND safety invariant (spec design principle A — the capability
+ * ceiling): `allowedToolIds`, `stableCoreToolIds`, and `skillFilter` fold onto the host baseline by
+ * INTERSECTION, never assignment. A manifest can only NARROW the tools/skills the host already
+ * exposes — never widen. Capability expansion (naming a tool the host does not expose) is therefore
+ * structurally inexpressible, and the whole security audit stays O(1): read the whitelist, check the
+ * one invariant. (`enablePlanTool` is exempt — it toggles a kernel-owned meta-tool, attention-shaping
+ * not capability-granting, so it folds by plain assignment.)
  */
 import { createHash } from "node:crypto"
 import type { MemoryPolicy } from "../kernel.js"
@@ -72,10 +80,18 @@ export type HarnessRuntimePatch = Pick<
   | "entropyWatch"
   | "knowledgeBudgetRatio"
   | "skillLeaseTurns"
+  | "allowedToolIds"
+  | "stableCoreToolIds"
+  | "enablePlanTool"
+  | "skillFilter"
 > & Pick<MemoryPolicy, "retrievalTopK" | "promotionRecallThreshold">
 
 const MEMORY_POLICY_PATCH_KEYS = ["retrievalTopK", "promotionRecallThreshold"] as const
 type MemoryPolicyPatchKey = (typeof MEMORY_POLICY_PATCH_KEYS)[number]
+
+/** Tool/skill surfaces whose fold is intersection-with-baseline (capability ceiling), not assignment. */
+const INTERSECTION_PATCH_KEYS = ["allowedToolIds", "stableCoreToolIds", "skillFilter"] as const
+type IntersectionPatchKey = (typeof INTERSECTION_PATCH_KEYS)[number]
 
 const RUNTIME_PATCH_KEYS: readonly string[] = [
   "maxTurns",
@@ -85,8 +101,16 @@ const RUNTIME_PATCH_KEYS: readonly string[] = [
   "entropyWatch",
   "knowledgeBudgetRatio",
   "skillLeaseTurns",
+  "allowedToolIds",
+  "stableCoreToolIds",
+  "enablePlanTool",
+  "skillFilter",
   ...MEMORY_POLICY_PATCH_KEYS,
 ]
+
+/** Bounds for the id-list surfaces (allowedToolIds / stableCoreToolIds / skillFilter). */
+const MAX_TOOL_ID_CHARS = 128
+const MAX_TOOL_LIST_ENTRIES = 128
 
 // ── Manifest + patch shapes ──────────────────────────────────────────────────
 
@@ -181,6 +205,51 @@ function validateRuntimePatch(runtime: HarnessRuntimePatch): void {
     }
     if (value !== undefined) validateRuntimeValue(key, value)
   }
+  // Same-manifest structural invariant: stable-core keeps tools exposed while a skill narrows, so it
+  // must never name a tool outside this manifest's OWN exposure ceiling (`allowedToolIds`). Checked
+  // only when both are present; either absent means the ceiling is broader (the whole registered set).
+  const allowed = (runtime as Record<string, unknown>).allowedToolIds
+  const stable = (runtime as Record<string, unknown>).stableCoreToolIds
+  if (Array.isArray(allowed) && Array.isArray(stable)) {
+    const allowedSet = new Set(allowed as string[])
+    const outside = (stable as string[]).filter(id => !allowedSet.has(id))
+    if (outside.length > 0) {
+      throw new RangeError(
+        `runtime.stableCoreToolIds must be a subset of runtime.allowedToolIds; outside the ceiling: ${outside.join(", ")}`,
+      )
+    }
+  }
+}
+
+/**
+ * Validate an id-list surface: array of unique, non-empty strings (each ≤128 chars), ≤128 entries.
+ * `allowEmpty` is the load-bearing asymmetry. For the tool-id arrays it is FALSE: the runner reads an
+ * empty/absent `allowedToolIds` as "no gating — expose ALL registered tools", so an empty array would
+ * WIDEN exposure to everything if it reached the runner (and a zero-tool run is the v0.2.46 pathology).
+ * For `skillFilter` it is TRUE: the runner's no-gating sentinel is ONLY `undefined`, and an empty array
+ * legitimately means "no skills available" (a proposer may find skills are a distraction) — a narrowing.
+ */
+function validateIdList(key: string, value: unknown, allowEmpty: boolean): void {
+  if (!Array.isArray(value)) throw new TypeError(`runtime.${key} must be a string[]`)
+  if (value.length > MAX_TOOL_LIST_ENTRIES) {
+    throw new RangeError(`runtime.${key} exceeds ${MAX_TOOL_LIST_ENTRIES} entries`)
+  }
+  if (!allowEmpty && value.length === 0) {
+    throw new RangeError(
+      `runtime.${key} must be a non-empty list — an empty array is read by the runner as "no gating" (expose all registered tools), which WIDENS exposure`,
+    )
+  }
+  const seen = new Set<string>()
+  for (const entry of value) {
+    if (typeof entry !== "string" || entry.length === 0) {
+      throw new TypeError(`runtime.${key} entries must be non-empty strings`)
+    }
+    if (entry.length > MAX_TOOL_ID_CHARS) {
+      throw new RangeError(`runtime.${key} entry exceeds ${MAX_TOOL_ID_CHARS} chars: ${entry.slice(0, 16)}…`)
+    }
+    if (seen.has(entry)) throw new RangeError(`runtime.${key} entries must be unique; duplicate: ${entry}`)
+    seen.add(entry)
+  }
 }
 
 /** Per-key value typing for runtime patches. An LLM proposer WILL eventually put instruction prose
@@ -198,6 +267,16 @@ function validateRuntimeValue(key: string, value: unknown): void {
       return
     case "criteriaGate":
       if (typeof value !== "boolean") throw new TypeError("runtime.criteriaGate must be a boolean")
+      return
+    case "enablePlanTool":
+      if (typeof value !== "boolean") throw new TypeError("runtime.enablePlanTool must be a boolean")
+      return
+    case "allowedToolIds":
+    case "stableCoreToolIds":
+      validateIdList(key, value, /* allowEmpty */ false)
+      return
+    case "skillFilter":
+      validateIdList(key, value, /* allowEmpty */ true)
       return
     case "knowledgeBudgetRatio":
       if (typeof value !== "number" || !(value > 0 && value <= 1)) {
@@ -284,12 +363,55 @@ export function applyManifest(manifest: HarnessManifest, base: RuntimeOptions): 
       if (value === undefined) continue
       if (MEMORY_POLICY_PATCH_KEYS.includes(key as MemoryPolicyPatchKey)) {
         out.memoryPolicy = { ...out.memoryPolicy, [key]: value }
+      } else if (INTERSECTION_PATCH_KEYS.includes(key as IntersectionPatchKey)) {
+        (out as unknown as Record<string, unknown>)[key] = foldIntersection(
+          key as IntersectionPatchKey,
+          value as string[],
+          (out as unknown as Record<string, unknown>)[key] as string[] | undefined,
+        )
       } else {
+        // enablePlanTool + numeric/boolean knobs: plain assignment.
         (out as unknown as Record<string, unknown>)[key] = value
       }
     }
   }
   return out
+}
+
+/**
+ * Fold one intersection surface (capability ceiling): effective = manifest ∩ host-baseline, so a
+ * manifest can only NARROW. The empty-baseline meaning is surface-specific and load-bearing:
+ *
+ *   - allowedToolIds / stableCoreToolIds — the runner reads an empty OR absent baseline as
+ *     "no gating = all registered tools" (the universe), so a non-array/empty baseline yields the
+ *     manifest list verbatim; only a NON-EMPTY baseline is a real ceiling to intersect against. An
+ *     empty intersection THROWS: a zero-tool run reprises the v0.2.46 pathology AND the runner would
+ *     silently reinterpret the empty result as "no gating" (full exposure) — so we turn the candidate
+ *     into a discardable error instead.
+ *   - skillFilter — the runner's no-gating sentinel is ONLY `undefined`; an empty-array baseline is a
+ *     genuine, maximally-tight ceiling (no skills). So ANY present array (even `[]`) is intersected,
+ *     and an empty result is FINE (= no skills). This mirrors the validation asymmetry exactly.
+ */
+function foldIntersection(
+  key: IntersectionPatchKey,
+  manifestList: string[],
+  baseList: string[] | undefined,
+): string[] {
+  const skillLike = key === "skillFilter"
+  // Is the host baseline a real constraining set?  Tool ids: non-empty array only (empty == universe).
+  // skillFilter: any array (empty == the empty set).
+  const constrained = Array.isArray(baseList) && (skillLike || baseList.length > 0)
+  const effective = constrained
+    ? manifestList.filter(id => (baseList as string[]).includes(id)) // manifest order → deterministic
+    : manifestList
+  if (!skillLike && effective.length === 0) {
+    throw new RangeError(
+      `applyManifest: runtime.${key} intersection is empty — manifest [${manifestList.join(", ")}] ∩ ` +
+        `host [${(baseList ?? []).join(", ")}] names no shared tool. A zero-tool run is rejected (it ` +
+        `reprises the v0.2.46 pathology and the runner would read empty as "no gating" = full exposure).`,
+    )
+  }
+  return effective
 }
 
 function validatePatchShape(patch: HarnessPatch): void {

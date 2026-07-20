@@ -34,6 +34,7 @@ export function createRunner(
     allowedToolIds?: string[]
     onTurnMetrics?: (m: import("../../src/runtime/runner.js").TurnMetrics) => void
     skillDir?: string
+    skillFilter?: string[]
     stableCoreToolIds?: string[]
     repeatFuse?: { denyAfter?: number; terminateAfter?: number } | false
     criteriaGate?: boolean
@@ -73,6 +74,7 @@ export function createRunner(
     allowedToolIds: opts.allowedToolIds,
     onTurnMetrics: opts.onTurnMetrics,
     skillDir: opts.skillDir,
+    skillFilter: opts.skillFilter,
     stableCoreToolIds: opts.stableCoreToolIds,
     repeatFuse: opts.repeatFuse,
     criteriaGate: opts.criteriaGate,

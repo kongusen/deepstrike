@@ -45,7 +45,8 @@
  * @property {(task: Task, manifest: import("../../../node/src/harness/manifest.js").HarnessManifest) => Promise<RunOutcome>} runTask
  */
 
-/** The full editable-surface vocabulary a seed manifest opens to the proposer. */
+/** The full editable-surface vocabulary a seed manifest opens to the proposer. `runtime.allowedToolIds`
+ *  is opened so the loop can discover tool-routing edits (V2-S2); it is intersection-only at the runner. */
 export const EDITABLE_SURFACES = [
   "instructions.bootstrap",
   "instructions.execution",
@@ -54,7 +55,11 @@ export const EDITABLE_SURFACES = [
   "nudges",
   "runtime.maxTurns",
   "runtime.maxTotalTokens",
+  "runtime.allowedToolIds",
 ]
+
+/** The distractor tool id the `tool-route` task fails on until the manifest narrows it away. */
+export const DISTRACTOR_TOOL_ID = "distracting_search"
 
 /** Case-insensitive substring test over a possibly-undefined instruction slot. */
 function mentions(text, keyword) {
@@ -64,6 +69,16 @@ function mentions(text, keyword) {
 /** True when the manifest carries a nudge rule whose trigger kind matches. */
 function hasNudgeKind(manifest, kind) {
   return Array.isArray(manifest?.nudges) && manifest.nudges.some(r => r && r.on && r.on.kind === kind)
+}
+
+/**
+ * True when `runtime.allowedToolIds` is a NON-EMPTY list that excludes `toolId`. Unset ⇒ false (the
+ * runner would expose all tools, distractor included); a list still carrying `toolId` ⇒ false. This is
+ * the fixture analog of the intersection ceiling: the only way to pass is to actively narrow the tool out.
+ */
+function narrowsAwayTool(manifest, toolId) {
+  const ids = manifest?.runtime?.allowedToolIds
+  return Array.isArray(ids) && ids.length > 0 && !ids.includes(toolId)
 }
 
 // ── Fixture task specifications ───────────────────────────────────────────────
@@ -119,6 +134,28 @@ const TASK_SPECS = [
         { tool: "read_file", args: '{"path":"src/missing.js"}', error_kind: "file_not_found" },
       ],
       finalNote: "Kept hitting the same missing file and gave up.",
+    },
+  },
+  {
+    id: "tool-route",
+    goal: "Investigate the reported issue using only the tools that matter.",
+    criteria: [
+      { id: "TR_focus", text: "the agent stays on the core tools and does not burn turns on the distractor" },
+    ],
+    // Addressable via a TOOL surface: the scripted provider keeps calling the distractor tool until it
+    // runs out of turns. Passes ONLY once the manifest narrows allowedToolIds to exclude the distractor.
+    decide: m => narrowsAwayTool(m, DISTRACTOR_TOOL_ID),
+    failure: {
+      termination: "no_progress",
+      turns: 5,
+      tokens: 800,
+      failedCriteriaIds: ["TR_focus"],
+      steps: [
+        { tool: DISTRACTOR_TOOL_ID, args: '{"q":"unrelated tangent"}' },
+        { tool: DISTRACTOR_TOOL_ID, args: '{"q":"another tangent"}' },
+        { tool: DISTRACTOR_TOOL_ID, args: '{"q":"still off track"}' },
+      ],
+      finalNote: "Kept calling the distractor tool and never made progress.",
     },
   },
   {

@@ -19,6 +19,10 @@
  * @property {string} termination         run_terminal.reason, or "unknown" when the run has none.
  * @property {string[]} failedCriteria    Unpassed verdict details → criterion id, else text ≤64 chars.
  * @property {Record<string, number>} toolErrors  error_kind → count (missing kind bucketed "unknown").
+ * @property {Record<string, { calls: number, errors: number }>} toolUsage  Per-tool-NAME usage, name-sorted:
+ *   `calls` counts kernel-admitted `tool_requested` entries; `errors` counts `tool_completed` results
+ *   with `is_error`, joined call_id → name. Empty object when no tool calls were admitted. Distinct axis
+ *   from `toolErrors` (which keys by error_kind) and from `denies` (denied calls never reach tool_requested).
  * @property {number} denies              Count of tool_denied events.
  * @property {number | null} entropyPeak  Peak entropy_sample.score, or null when no samples.
  * @property {number} turns               run_terminal.turns_used (0 when absent).
@@ -35,6 +39,8 @@
  * @property {FailureSignature} signature
  * @property {number} size
  * @property {string[]} taskIds           Member task ids, sorted ascending.
+ * @property {Record<string, { calls: number, errors: number }>} [toolUsage]  Cluster-summed per-tool
+ *   usage (name-sorted) so the proposer sees which tools burned turns across the failure cluster.
  * @property {Array<{ taskId: string, text: string }>} [excerpt]  ≤2 representative rendered traces.
  *
  * @typedef {Object} PreviousAttempt
@@ -121,6 +127,13 @@ export function extractFailureRecord({ taskId, events, verdict, criteria = [], e
   let entropyPeak = null
   /** @type {Record<string, number>} */
   const toolErrors = {}
+  // call_id → tool name, resolved from tool_requested (authoritative) with llm_completed as fallback,
+  // so a tool_completed error can be attributed to the tool that produced it.
+  /** @type {Record<string, string>} */
+  const callNames = {}
+  /** @type {Record<string, { calls: number, errors: number }>} */
+  const usage = {}
+  const usageOf = name => (usage[name] ??= { calls: 0, errors: 0 })
 
   for (const ev of evs) {
     switch (ev.kind) {
@@ -137,12 +150,33 @@ export function extractFailureRecord({ taskId, events, verdict, criteria = [], e
         if (Number.isFinite(score)) entropyPeak = entropyPeak === null ? score : Math.max(entropyPeak, score)
         break
       }
+      case "llm_completed":
+        // Fallback name map only — llm_completed proposes calls; the kernel decides which to admit.
+        if (Array.isArray(ev.tool_calls)) {
+          for (const c of ev.tool_calls) {
+            if (c && typeof c.id === "string" && callNames[c.id] === undefined) {
+              callNames[c.id] = typeof c.name === "string" ? c.name : "unknown"
+            }
+          }
+        }
+        break
+      case "tool_requested":
+        // Admitted calls: authoritative name map + the `calls` count (this tool burned a turn).
+        if (Array.isArray(ev.calls)) {
+          for (const c of ev.calls) {
+            const name = typeof c?.name === "string" ? c.name : "unknown"
+            if (c && typeof c.id === "string") callNames[c.id] = name
+            usageOf(name).calls += 1
+          }
+        }
+        break
       case "tool_completed":
         if (Array.isArray(ev.results)) {
           for (const r of ev.results) {
             if (r && r.is_error) {
               const kind = r.error_kind ?? "unknown"
               toolErrors[kind] = (toolErrors[kind] ?? 0) + 1
+              usageOf(callNames[r?.call_id] ?? "unknown").errors += 1
             }
           }
         }
@@ -151,6 +185,11 @@ export function extractFailureRecord({ taskId, events, verdict, criteria = [], e
         break
     }
   }
+
+  // Name-sorted so the record is byte-stable regardless of encounter order.
+  /** @type {Record<string, { calls: number, errors: number }>} */
+  const toolUsage = {}
+  for (const name of Object.keys(usage).sort()) toolUsage[name] = usage[name]
 
   const details = Array.isArray(verdict?.details) ? verdict.details : []
   const failedCriteria = details
@@ -163,6 +202,7 @@ export function extractFailureRecord({ taskId, events, verdict, criteria = [], e
     termination,
     failedCriteria,
     toolErrors,
+    toolUsage,
     denies,
     entropyPeak,
     turns,
@@ -170,6 +210,28 @@ export function extractFailureRecord({ taskId, events, verdict, criteria = [], e
     eventsPath,
     ...(scope === undefined ? {} : { scope }),
   }
+}
+
+/**
+ * Sum per-tool usage across records into one name-sorted aggregate (deterministic).
+ * @param {FailureRecord[]} records
+ * @returns {Record<string, { calls: number, errors: number }>}
+ */
+function aggregateToolUsage(records) {
+  /** @type {Record<string, { calls: number, errors: number }>} */
+  const agg = {}
+  for (const r of records) {
+    for (const [name, u] of Object.entries(r?.toolUsage ?? {})) {
+      const cur = agg[name] ?? { calls: 0, errors: 0 }
+      cur.calls += u.calls
+      cur.errors += u.errors
+      agg[name] = cur
+    }
+  }
+  /** @type {Record<string, { calls: number, errors: number }>} */
+  const sorted = {}
+  for (const name of Object.keys(agg).sort()) sorted[name] = agg[name]
+  return sorted
 }
 
 /**
@@ -281,14 +343,18 @@ export function buildEvidenceBundle({
 
   const failing = records.filter(r => !r.passed)
   const passing = records.filter(r => r.passed)
+  const failingByTask = new Map(failing.map(r => [r.taskId, r]))
 
   const clusters = clusterFailures(failing).map(cluster => {
+    // Cluster-summed per-tool usage (name-sorted) — shows the proposer which tools burned turns in
+    // this failure cluster, the evidence for a tool/skill-narrowing edit.
+    const toolUsage = aggregateToolUsage(cluster.taskIds.map(id => failingByTask.get(id)).filter(Boolean))
     const excerpt = []
     for (const taskId of cluster.taskIds.slice(0, 2)) {
       const events = eventsByTask[taskId]
       if (events) excerpt.push({ taskId, text: renderExcerpt(events, { maxChars: maxExcerptChars }) })
     }
-    return { ...cluster, excerpt }
+    return { ...cluster, toolUsage, excerpt }
   })
 
   const passingNote = {

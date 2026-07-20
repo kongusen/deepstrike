@@ -20,7 +20,7 @@ import { mkdtempSync, readFileSync, rmSync, readdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
-import { createFixtureAdapter, fixtureSeedManifest, FIXTURE_SPLITS } from "../selfharness/adapters/fixture.mjs"
+import { createFixtureAdapter, fixtureSeedManifest, FIXTURE_SPLITS, DISTRACTOR_TOOL_ID } from "../selfharness/adapters/fixture.mjs"
 import { selfHarnessLoop } from "../selfharness/loop.mjs"
 import { loadSdk } from "../utils/sdk.mjs"
 
@@ -230,5 +230,82 @@ test("two scopes share one lineageDir but produce disjoint, non-overlapping subt
 
     // The top-level lineageDir holds ONLY the two scope directories — no stray flat artifacts.
     assert.deepEqual(readdirSync(dir).sort(), ["alice", "bob"])
+  })
+})
+
+// V2-S2: the loop discovers a TOOL-ROUTING edit — a failure cluster driven by a distractor tool is
+// fixed by an allowedToolIds-narrowing patch, promoted, and the lineage advances. Then the reject side:
+// an allowedToolIds:[] patch dies at the applyPatch gate and the loop continues unharmed.
+const MINE_ROUTE = JSON.stringify({
+  mechanism: "distractor tool burns the turn budget",
+  addressable: true,
+  reasoning: "every turn is spent on the distractor tool instead of the core task",
+})
+const NARROW_PATCH = {
+  targetSurface: "runtime.allowedToolIds",
+  op: "set",
+  value: ["read_file", "search"], // excludes DISTRACTOR_TOOL_ID
+  rationale: "drop the distractor tool the cluster keeps calling",
+  targetCluster: "cluster-route",
+  expectedEffect: "tool-route stops burning turns and passes",
+}
+const ROUTE_SPLITS = { heldIn: ["tool-route", "stable-1"], heldOut: ["stable-2"] }
+
+async function runRouteRound(lineageDir, proposeReply) {
+  const complete = cannedComplete([MINE_ROUTE, proposeReply])
+  const seed = fixtureSeedManifest() // allowedToolIds unset ⇒ tool-route fails at baseline
+  const result = await selfHarnessLoop({
+    seedManifest: seed,
+    adapter: createFixtureAdapter(),
+    heldIn: ROUTE_SPLITS.heldIn,
+    heldOut: ROUTE_SPLITS.heldOut,
+    rounds: 1,
+    k: 2,
+    repeats: 1,
+    complete,
+    lineageDir,
+  })
+  return { ...result, complete, seed }
+}
+
+test("tool-routing arc: distractor cluster → allowedToolIds narrowing → promoted", async () => {
+  await withLineageDir(async dir => {
+    const { finalManifest, trajectory, seed } = await runRouteRound(dir, JSON.stringify([NARROW_PATCH]))
+    // The narrowing was promoted: allowedToolIds is set and excludes the distractor.
+    assert.deepEqual(finalManifest.runtime.allowedToolIds, ["read_file", "search"])
+    assert.ok(!finalManifest.runtime.allowedToolIds.includes(DISTRACTOR_TOOL_ID))
+    // Effectiveness: the previously-failing routing task now passes under the promoted harness.
+    const adapter = createFixtureAdapter()
+    const [task] = adapter.listTasks().filter(t => t.id === "tool-route")
+    assert.equal((await adapter.runTask(task, finalManifest)).passed, true)
+    // Lineage advanced and the decision was accepted with dIn +1 / dHo 0.
+    assert.equal(finalManifest.parent, manifestDigest(seed))
+    const decision = trajectory[0].decisions.find(d => d.surface === "runtime.allowedToolIds")
+    assert.deepEqual([decision.accepted, decision.deltaIn, decision.deltaHo], [true, 1, 0])
+  })
+})
+
+test("tool-routing prompt surfaces the distractor's toolUsage to the proposer", async () => {
+  await withLineageDir(async dir => {
+    const { complete } = await runRouteRound(dir, JSON.stringify([NARROW_PATCH]))
+    const proposePrompt = complete.prompts[complete.prompts.length - 1]
+    assert.match(proposePrompt, /runtime\.allowedToolIds/) // surface vocabulary present
+    assert.match(proposePrompt, /INTERSECTION-ONLY/)       // narrowing rule stated verbatim
+    assert.match(proposePrompt, new RegExp(`${DISTRACTOR_TOOL_ID}\\(calls=3,errors=0\\)`)) // toolUsage evidence
+  })
+})
+
+test("reject side: an allowedToolIds:[] patch dies at the applyPatch gate; loop continues", async () => {
+  await withLineageDir(async dir => {
+    const emptyPatch = { ...NARROW_PATCH, value: [] }
+    const { finalManifest, trajectory, seed } = await runRouteRound(dir, JSON.stringify([emptyPatch]))
+    // Nothing promoted — the empty-array patch was discarded at the structural gate.
+    assert.equal(manifestDigest(finalManifest), manifestDigest(seed))
+    assert.equal(finalManifest.runtime?.allowedToolIds, undefined)
+    // The round records the discard with a non-empty-list reason, and the loop finished a full round.
+    assert.equal(trajectory.length, 1)
+    const discarded = trajectory[0].discarded
+    assert.equal(discarded.length, 1)
+    assert.match(discarded[0].reason, /non-empty/)
   })
 })

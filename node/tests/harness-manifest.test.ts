@@ -288,3 +288,101 @@ describe("runtime value typing", () => {
     expect(withRecall.runtime?.promotionRecallThreshold).toBe(3)
   })
 })
+
+// ── V2-S2: tool/skill editable surfaces ──────────────────────────────────────
+describe("tool/skill surface typing + bounds (V2-S2)", () => {
+  const bad = (runtime: unknown) => validateManifest({ ...seed(), runtime: runtime as HarnessManifest["runtime"] })
+
+  it("accepts well-typed tool/skill surfaces", () => {
+    expect(() => validateManifest({
+      ...seed(),
+      runtime: {
+        allowedToolIds: ["read", "search"],
+        stableCoreToolIds: ["read"],
+        enablePlanTool: true,
+        skillFilter: ["debug"],
+      },
+    })).not.toThrow()
+  })
+
+  it("rejects an EMPTY allowedToolIds / stableCoreToolIds (empty ⇒ runner reads as no-gating = WIDEN)", () => {
+    expect(() => bad({ allowedToolIds: [] })).toThrow(/non-empty/)
+    expect(() => bad({ stableCoreToolIds: [] })).toThrow(/non-empty/)
+  })
+
+  it("ACCEPTS an empty skillFilter (empty ⇒ no skills, a legitimate narrowing)", () => {
+    expect(() => bad({ skillFilter: [] })).not.toThrow()
+  })
+
+  it("rejects non-string, duplicate, over-long, or oversized id lists", () => {
+    expect(() => bad({ allowedToolIds: ["ok", 5] })).toThrow(/non-empty strings/)
+    expect(() => bad({ allowedToolIds: ["dup", "dup"] })).toThrow(/unique/)
+    expect(() => bad({ skillFilter: ["dup", "dup"] })).toThrow(/unique/)
+    expect(() => bad({ allowedToolIds: [""] })).toThrow(/non-empty strings/)
+    expect(() => bad({ allowedToolIds: ["x".repeat(129)] })).toThrow(/128 chars/)
+    expect(() => bad({ allowedToolIds: Array.from({ length: 129 }, (_, i) => `t${i}`) })).toThrow(/128 entries/)
+  })
+
+  it("rejects a non-boolean enablePlanTool", () => {
+    expect(() => bad({ enablePlanTool: "yes" })).toThrow(/boolean/)
+  })
+
+  it("enforces stableCoreToolIds ⊆ allowedToolIds within one manifest", () => {
+    expect(() => bad({ allowedToolIds: ["a", "b"], stableCoreToolIds: ["a", "c"] })).toThrow(/subset|ceiling/)
+    // subset ok; either absent ⇒ no cross-check
+    expect(() => bad({ allowedToolIds: ["a", "b"], stableCoreToolIds: ["a"] })).not.toThrow()
+    expect(() => bad({ stableCoreToolIds: ["a"] })).not.toThrow()
+  })
+
+  it("applyPatch rejects an empty allowedToolIds set at the structural gate (→ apply_failed)", () => {
+    const m: HarnessManifest = { ...seed(), editableSurfaces: [...seed().editableSurfaces, "runtime.allowedToolIds"] }
+    expect(() => applyPatch(m, patch({ targetSurface: "runtime.allowedToolIds", value: [] }))).toThrow(/non-empty/)
+    expect(applyPatch(m, patch({ targetSurface: "runtime.allowedToolIds", value: ["read"] })).runtime?.allowedToolIds).toEqual(["read"])
+  })
+})
+
+describe("applyManifest intersection fold (capability ceiling, V2-S2)", () => {
+  const baseWith = (over: Record<string, unknown>) => ({ maxTokens: 1, ...over } as unknown as RuntimeOptions)
+
+  it("intersects with a NON-EMPTY host baseline (effective = manifest ∩ base, manifest order)", () => {
+    const m: HarnessManifest = { ...seed(), runtime: { allowedToolIds: ["c", "a", "z"] } }
+    const out = applyManifest(m, baseWith({ allowedToolIds: ["a", "b", "c"] }))
+    expect(out.allowedToolIds).toEqual(["c", "a"]) // z dropped (not in base); order follows manifest
+  })
+
+  it("returns the manifest list verbatim when the host baseline is unset OR empty (both mean 'all tools')", () => {
+    const m: HarnessManifest = { ...seed(), runtime: { allowedToolIds: ["a", "b"] } }
+    expect(applyManifest(m, baseWith({})).allowedToolIds).toEqual(["a", "b"]) // unset host ⇒ universe
+    expect(applyManifest(m, baseWith({ allowedToolIds: [] })).allowedToolIds).toEqual(["a", "b"]) // empty host ⇒ universe
+  })
+
+  it("THROWS on an empty allowedToolIds / stableCoreToolIds intersection, naming both operands", () => {
+    const m: HarnessManifest = { ...seed(), runtime: { allowedToolIds: ["x", "y"] } }
+    expect(() => applyManifest(m, baseWith({ allowedToolIds: ["a", "b"] }))).toThrow(/allowedToolIds intersection is empty[\s\S]*x, y[\s\S]*a, b/)
+    const s: HarnessManifest = { ...seed(), runtime: { stableCoreToolIds: ["x"] } }
+    expect(() => applyManifest(s, baseWith({ stableCoreToolIds: ["a"] }))).toThrow(/stableCoreToolIds intersection is empty/)
+  })
+
+  it("skillFilter: an EMPTY intersection is fine (= no skills), and a present [] baseline intersects", () => {
+    const m: HarnessManifest = { ...seed(), runtime: { skillFilter: ["x", "y"] } }
+    expect(applyManifest(m, baseWith({ skillFilter: ["a", "b"] })).skillFilter).toEqual([]) // disjoint ⇒ empty, no throw
+    expect(applyManifest(m, baseWith({ skillFilter: [] })).skillFilter).toEqual([]) // [] host is a real ceiling
+    expect(applyManifest(m, baseWith({})).skillFilter).toEqual(["x", "y"]) // absent host ⇒ all skills
+  })
+
+  it("enablePlanTool folds by plain assignment (both directions)", () => {
+    expect(applyManifest({ ...seed(), runtime: { enablePlanTool: true } }, baseWith({ enablePlanTool: false })).enablePlanTool).toBe(true)
+    expect(applyManifest({ ...seed(), runtime: { enablePlanTool: false } }, baseWith({ enablePlanTool: true })).enablePlanTool).toBe(false)
+  })
+
+  it("NEVER-WIDEN property: whenever the host baseline was set, the effective set ⊆ it", () => {
+    const base = ["a", "b", "c", "d"]
+    for (const manifestList of [["a"], ["b", "d"], ["a", "b", "c"], ["a", "x"], ["c", "b", "a"]]) {
+      for (const key of ["allowedToolIds", "stableCoreToolIds", "skillFilter"] as const) {
+        const out = applyManifest({ ...seed(), runtime: { [key]: manifestList } }, baseWith({ [key]: base }))
+        const eff = (out as unknown as Record<string, string[]>)[key] ?? []
+        for (const id of eff) expect(base).toContain(id) // effective ⊆ host base — never a new capability
+      }
+    }
+  })
+})

@@ -79,3 +79,64 @@ describe("P1-B B3: skill-activated tool gating (end-to-end)", () => {
     for (const t of perTurn) expect(t).toEqual(expect.arrayContaining(["read", "write", "bash", "grep"]))
   })
 })
+
+/**
+ * V2-S2: `skillFilter` is a host-layer allowlist over the scanned catalog by skill NAME. It executes at
+ * the `scanSkillDir → set_available_skills` feed, so its effect is observable in the model-facing
+ * catalog: the `skill` meta-tool's description embeds an `<available_skills>` block listing exactly the
+ * fed skills. Absent ⇒ all scanned skills advertised (zero behavior difference); a list ⇒ only named
+ * skills; `[]` ⇒ none. (Skill FILE activation reads from disk directly, so it is NOT a proxy for the
+ * feed — we assert the advertised catalog itself.)
+ */
+describe("V2-S2: skillFilter host allowlist over the skill catalog", () => {
+  // A provider that only records the exposed schemas (no tool calls) — turn 0 carries the full catalog.
+  function schemaRecorder(captured: ToolSchema[][]): LLMProvider {
+    return {
+      async complete(_ctx, tools: ToolSchema[]): Promise<Message> {
+        captured.push(tools); return { role: "assistant", content: "done" }
+      },
+      async *stream(_ctx, tools: ToolSchema[]): AsyncIterable<StreamEvent> {
+        captured.push(tools); yield { type: "text_delta", delta: "done" }
+      },
+    }
+  }
+
+  // A two-skill catalog so "keep only the named one" is distinguishable from "keep all".
+  async function twoSkillCatalog() {
+    const dir = await mkdtemp(join(tmpdir(), "ds-skillfilter-"))
+    await writeFile(join(dir, "debug.md"), "---\nname: debug\ndescription: Debug helper\n---\nDebug guidance.")
+    await writeFile(join(dir, "noise.md"), "---\nname: noise\ndescription: Unrelated helper\n---\nNoise guidance.")
+    return dir
+  }
+
+  /** The `<available_skills>` catalog advertised on turn 0. */
+  async function advertisedSkills(skillFilter: string[] | undefined): Promise<string> {
+    const dir = await twoSkillCatalog()
+    const captured: ToolSchema[][] = []
+    const { runner } = createRunner(schemaRecorder(captured), baseTools(), {
+      skillDir: dir,
+      ...(skillFilter === undefined ? {} : { skillFilter }),
+    })
+    await collectText(runner.run({ sessionId: "skillfilter", goal: "go" }))
+    const skillTool = captured[0].find(t => t.name === "skill")
+    return skillTool?.description ?? ""
+  }
+
+  it("absent ⇒ every scanned skill advertised (zero behavior difference)", async () => {
+    const desc = await advertisedSkills(undefined)
+    expect(desc).toContain("<name>debug</name>")
+    expect(desc).toContain("<name>noise</name>")
+  })
+
+  it("a list keeps ONLY the named skills (debug in, noise filtered out)", async () => {
+    const desc = await advertisedSkills(["debug"])
+    expect(desc).toContain("<name>debug</name>")
+    expect(desc).not.toContain("<name>noise</name>")
+  })
+
+  it("empty array ⇒ NO skills advertised (message shape preserved, list empty)", async () => {
+    const desc = await advertisedSkills([])
+    expect(desc).not.toContain("<name>debug</name>")
+    expect(desc).not.toContain("<name>noise</name>")
+  })
+})

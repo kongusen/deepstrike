@@ -71,6 +71,7 @@ describe("extractFailureRecord", () => {
       termination: "timeout",
       failedCriteria: ["C_locate"],
       toolErrors: { file_not_found: 3 },
+      toolUsage: { read_file: { calls: 3, errors: 3 } },
       denies: 0,
       entropyPeak: 0.71,
       turns: 4,
@@ -120,6 +121,35 @@ describe("extractFailureRecord", () => {
     assert.equal(r.failedCriteria.length, 1)
     assert.equal(r.failedCriteria[0].length, 64)
     assert.equal(r.failedCriteria[0], "an unregistered criterion whose text is deliberately longer than")
+  })
+})
+
+// ── toolUsage — per-tool calls/errors, joined call_id → name (V2-S2) ─────────
+
+describe("toolUsage extraction", () => {
+  test("counts admitted tool_requested calls and joins tool_completed errors by call_id", () => {
+    // fnf-a: three read_file calls, each errors → calls 3 / errors 3.
+    assert.deepEqual(recordFor("fnf-a", "timeout-fnf-a").toolUsage, { read_file: { calls: 3, errors: 3 } })
+  })
+
+  test("multi-tool cluster: distinct tools counted separately, name-sorted", () => {
+    // fnf-b: list_dir, read_file, run_tests each 1 call / 1 error; keys must be sorted.
+    const u = recordFor("fnf-b", "timeout-fnf-b").toolUsage
+    assert.deepEqual(Object.keys(u), ["list_dir", "read_file", "run_tests"]) // name-sorted
+    assert.deepEqual(u, {
+      list_dir: { calls: 1, errors: 1 },
+      read_file: { calls: 1, errors: 1 },
+      run_tests: { calls: 1, errors: 1 },
+    })
+  })
+
+  test("denied-only run has empty toolUsage (denied calls never reach tool_requested)", () => {
+    // no-progress-deny emits only llm_completed + tool_denied — no admitted calls.
+    assert.deepEqual(recordFor("deny-1", "no-progress-deny").toolUsage, {})
+  })
+
+  test("a passing (non-error) call counts under calls with zero errors", () => {
+    assert.deepEqual(recordFor("pass-1", "passing", PASS_VERDICT).toolUsage, { read_file: { calls: 1, errors: 0 } })
   })
 })
 
@@ -250,6 +280,18 @@ describe("buildEvidenceBundle", () => {
     assert.ok(c0.excerpt.every(e => typeof e.text === "string" && e.text.length > 0))
     // clusters without supplied events get an empty excerpt list.
     assert.deepEqual(bundle.clusters[1].excerpt, [])
+  })
+
+  test("cluster toolUsage aggregate sums member records, name-sorted (V2-S2)", () => {
+    // cluster[0] = {fnf-a, fnf-b}: read_file 3+1 calls / 3+1 errors, plus fnf-b's list_dir + run_tests.
+    assert.deepEqual(bundle.clusters[0].toolUsage, {
+      list_dir: { calls: 1, errors: 1 },
+      read_file: { calls: 4, errors: 4 },
+      run_tests: { calls: 1, errors: 1 },
+    })
+    // singleton denied cluster has no admitted tool calls.
+    const denyCluster = bundle.clusters.find(c => c.taskIds.includes("deny-1"))
+    assert.deepEqual(denyCluster.toolUsage, {})
   })
 
   test("passingNote medians correct", () => {
