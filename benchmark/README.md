@@ -263,17 +263,16 @@ caller judges by Δ%.
 An offline propose–validate–promote loop after *Self-Harness: Harnesses That Improve Themselves*
 (arXiv:2606.09498): a fixed model mines its own verifier-anchored failure clusters, proposes bounded
 JSON patches against the declared editable surfaces of a `HarnessManifest` (SDK
-`@deepstrike/sdk/harness`), and only edits that pass the paper's conservative rule
+`@deepstrike/sdk/harness`) — instruction slots, nudge rules, runtime knobs, and tool/skill exposure
+(`allowedToolIds` / `stableCoreToolIds` / `enablePlanTool` / `skillFilter`; intersection-only, so a
+manifest can narrow the host's exposure but widening is structurally inexpressible, grounded in
+per-cluster `toolUsage` evidence) — and only edits that pass the paper's conservative rule
 (`Δ_in ≥ 0 ∧ Δ_ho ≥ 0 ∧ max > 0`) on a held-in/held-out split are promoted into the lineage.
-Held-out isolation is structural: only held-in evidence ever reaches the proposer.
-v2 extends the editable surfaces to tool/skill exposure (`allowedToolIds` / `stableCoreToolIds` /
-`enablePlanTool` / `skillFilter`) under an intersection-only rule — a manifest can narrow the host's
-exposure but widening is structurally inexpressible — grounded in per-cluster `toolUsage` evidence;
-adds a `scope` isolation key (multi-tenant lineage, mixed-scope evidence throws); and tiers
-promotion: runtime knobs auto-promote, free-text edits pass a fail-closed injection screen, and an
+Held-out isolation is structural: only held-in evidence ever reaches the proposer. A `scope` key
+isolates tenants (scoped lineage; mixed-scope evidence throws), and promotion is tiered: runtime
+knobs auto-promote, free-text edits pass a fail-closed injection screen, and an
 `onPromotionDecision` hook seats a human veto.
-Specs: [`self-harness-loop.md`](../.local-docs/specs/self-harness-loop.md),
-[`self-harness-v2-tools-scope-security.md`](../.local-docs/specs/self-harness-v2-tools-scope-security.md).
+Spec: [`self-harness.md`](../.local-docs/specs/self-harness.md).
 
 ```
 node benchmark/selfharness/cli.mjs \
