@@ -1,5 +1,5 @@
 /**
- * Self-Harness proposal validation + promotion (H3).
+ * Self-Harness proposal validation + promotion.
  *
  * `evaluate` runs a manifest against a task set through the adapter, repeating each task `repeats`
  * times and folding to a per-task majority pass; `passCount` is the number of tasks that pass. The

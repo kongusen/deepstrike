@@ -1,5 +1,5 @@
 /**
- * Self-Harness evidence pipeline (H2) — verifier-anchored, LLM-free, fully deterministic.
+ * Self-Harness evidence pipeline — verifier-anchored, LLM-free, fully deterministic.
  *
  * Turns bench `*.events.json` streams (`{seq, event}[]`) + `Verdict`s into a structured
  * `EvidenceBundle`: per-task `FailureRecord`s, a machine-fact `failureSignature`, deterministic
@@ -63,7 +63,7 @@
  * @property {FailureCluster[]} clusters
  * @property {PassingNote} passingNote
  * @property {PreviousAttempt[]} previousAttempts
- * @property {string} provenance          Fixed data-vs-instructions declaration (V2-S3); same on every bundle.
+ * @property {string} provenance          Fixed data-vs-instructions declaration; same on every bundle.
  *
  * @typedef {Object} Criterion
  * @property {string} text
@@ -89,7 +89,7 @@ import { renderExcerpt } from "./trace-excerpt.mjs"
 const DEFAULT_SCOPE = "default"
 
 /**
- * The provenance hard line the loop's model-facing stages carry (V2-S3). Cluster excerpts quote raw
+ * The provenance hard line the loop's model-facing stages carry. Cluster excerpts quote raw
  * transcript content — model text and tool output that an adversary may have shaped — so every prompt
  * that renders them must treat the quoted bytes as DATA, never as instructions. Deterministic and
  * identical on every bundle so it rides the byte-stable prefix.

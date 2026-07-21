@@ -1,9 +1,9 @@
 /**
- * Self-Harness shared layer (V2-S4) tests — Node built-in runner.
+ * Self-Harness shared layer tests — Node built-in runner.
  *
  * Run:  node --test benchmark/tests/selfharness-shared.test.mjs
  *
- * v2 ships the shared layer's TYPES + GATE only. These tests pin the two invariants that make a
+ * The shared layer ships its TYPES + GATE only. These tests pin the two invariants that make a
  * cross-tenant promotion safe: (1) `aggregateSharedEvidence` strips every scope's verbatim transcript
  * (no excerpt text, no taskIds survive serialization) while keeping signatures + counts; (2)
  * `promoteToShared` throws unless the signature recurs in ≥2 distinct scopes AND an explicit human

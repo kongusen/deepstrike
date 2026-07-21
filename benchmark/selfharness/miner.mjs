@@ -1,7 +1,7 @@
 /**
- * Self-Harness weakness mining (H3) — the mechanism-attribution stage.
+ * Self-Harness weakness mining — the mechanism-attribution stage.
  *
- * The evidence pipeline (S2) already did the deterministic, verifier-anchored half: it clustered
+ * The evidence pipeline already did the deterministic, verifier-anchored half: it clustered
  * failures by exact machine-fact signature. Mining is the one place the *model* enters weakness
  * analysis — for each of the top clusters it names the failure MECHANISM and, critically, judges
  * whether that mechanism is ADDRESSABLE by editing the harness at all (an instruction slot, a nudge

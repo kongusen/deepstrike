@@ -1,5 +1,5 @@
 /**
- * Tolerant JSON extraction for LLM replies (H3 miner/proposer helper).
+ * Tolerant JSON extraction for LLM replies (miner/proposer helper).
  *
  * Models wrap JSON in prose or ```json fences. `firstJsonValue` strips a fenced block if present,
  * tries a straight parse, and otherwise scans for the first balanced `{...}` or `[...]` value —

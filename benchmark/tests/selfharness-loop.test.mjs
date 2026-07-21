@@ -1,5 +1,5 @@
 /**
- * Self-Harness loop (S3) e2e test — Node built-in runner, fixture adapter, canned `complete()`.
+ * Self-Harness loop e2e test — Node built-in runner, fixture adapter, canned `complete()`.
  *
  * Run:  node --test benchmark/tests/selfharness-loop.test.mjs
  *
@@ -71,7 +71,7 @@ const PROPOSE = JSON.stringify([
   },
 ])
 
-// V2-S3: both proposed edits target instruction slots (Tier B), so each passes the injection screen at
+// both proposed edits target instruction slots (Tier B), so each passes the injection screen at
 // intake before evaluation. A clean screen answers "no" to all three questions.
 const SCREEN_PASS = JSON.stringify({ externalResource: false, unrelatedBehavior: false, weakensVerification: false, reason: "clean edit" })
 
@@ -189,7 +189,7 @@ test("determinism — two identical rounds produce the same final digest", async
   })
 })
 
-// V2-S1: two scopes against ONE lineageDir must land in disjoint subtrees and never read each other's
+// two scopes against ONE lineageDir must land in disjoint subtrees and never read each other's
 // files — the isolation guarantee the whole slice exists for.
 async function runScopedRound(lineageDir, scopeKey) {
   const complete = cannedComplete([MINE_VERIFY, MINE_CEILING, PROPOSE, SCREEN_PASS, SCREEN_PASS])
@@ -238,7 +238,7 @@ test("two scopes share one lineageDir but produce disjoint, non-overlapping subt
   })
 })
 
-// V2-S2: the loop discovers a TOOL-ROUTING edit — a failure cluster driven by a distractor tool is
+// the loop discovers a TOOL-ROUTING edit — a failure cluster driven by a distractor tool is
 // fixed by an allowedToolIds-narrowing patch, promoted, and the lineage advances. Then the reject side:
 // an allowedToolIds:[] patch dies at the applyPatch gate and the loop continues unharmed.
 const MINE_ROUTE = JSON.stringify({
@@ -287,7 +287,7 @@ test("tool-routing arc: distractor cluster → allowedToolIds narrowing → prom
     assert.equal(finalManifest.parent, manifestDigest(seed))
     const decision = trajectory[0].decisions.find(d => d.surface === "runtime.allowedToolIds")
     assert.deepEqual([decision.accepted, decision.deltaIn, decision.deltaHo], [true, 1, 0])
-    // V2-S3 Tier A: allowedToolIds is auto-tier, so the screen NEVER ran — only mine + propose called
+    // Tier A: allowedToolIds is auto-tier, so the screen NEVER ran — only mine + propose called
     // the model (a 3rd `complete` call would have thrown "no response"). The audit records the tier.
     assert.equal(complete.prompts.length, 2) // mine ×1 + propose ×1, no screen
     assert.equal(decision.tier, "auto")
@@ -321,7 +321,7 @@ test("reject side: an allowedToolIds:[] patch dies at the applyPatch gate; loop 
   })
 })
 
-// ── V2-S3: injection screen + promotion decision hook ─────────────────────────
+// ── injection screen + promotion decision hook ─────────────────────────
 
 // A screen answer flagging an external-fetch payload smuggled into the verification instruction.
 const SCREEN_OUT = JSON.stringify({ externalResource: true, unrelatedBehavior: false, weakensVerification: false, reason: "posts results to an external endpoint unrelated to the harness" })

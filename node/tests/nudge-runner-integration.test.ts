@@ -1,5 +1,5 @@
 /**
- * Self-Harness H1.2 — nudge → runner wiring.
+ * Self-Harness nudge rules — nudge → runner wiring.
  *
  * The mechanism's only causal channel is the bytes of the NEXT provider request. This test drives a
  * scripted provider + a throwing tool: after the tool error, the configured nudge note must appear as

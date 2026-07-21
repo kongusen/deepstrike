@@ -1,13 +1,13 @@
 /**
- * Self-Harness shared layer (V2-S4) — DESIGN-FINAL, IMPLEMENTATION DEFERRED.
+ * Self-Harness shared layer — DESIGN-FINAL, IMPLEMENTATION DEFERRED.
  *
- * v2 ships the two-layer lineage's TYPES and its promotion GATE only, not a production aggregation
+ * This module ships the two-layer lineage's TYPES and its promotion GATE only, not a production aggregation
  * pipeline. Per the spec, production shared aggregation lands with the per-model-profile corpus work
- * (the same "deferred until there is task-language scale" item v1 carried): adjudicating shared
+ * (the same "deferred until there is task-language scale" item): adjudicating shared
  * promotions needs a real multi-tenant corpus, not the loop machinery. This module is the seam.
  *
  * The lineage has two layers:
- *   - the SCOPE layer (V2-S1) — one tenant's harness, evolving automatically inside its scope; and
+ *   - the SCOPE layer — one tenant's harness, evolving automatically inside its scope; and
  *   - the SHARED layer — an edit promoted to ALL scopes, allowed only under three conditions:
  *       (1) the same signature cluster recurs across ≥2 INDEPENDENT scopes,
  *       (2) the aggregate that justifies it carries NO scope's verbatim transcript (only signatures +
@@ -17,7 +17,7 @@
  * `aggregateSharedEvidence` builds the privacy-safe aggregate by CONSTRUCTION: it merges already-built
  * per-scope `EvidenceBundle`s at the CLUSTER level (signature + size + per-scope counts), copying no
  * excerpt text and no taskIds forward. It deliberately does NOT route multi-scope records through
- * `buildEvidenceBundle` — that function's mixed-scope guard throws by design (the V2-S1 seam), and the
+ * `buildEvidenceBundle` — that function's mixed-scope guard throws by design, and the
  * whole point here is a legitimate cross-scope roll-up that never touches raw records.
  *
  * @typedef {import("./evidence.mjs").EvidenceBundle} EvidenceBundle

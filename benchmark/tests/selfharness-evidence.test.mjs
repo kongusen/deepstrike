@@ -1,9 +1,9 @@
 /**
- * Self-Harness evidence pipeline (S2) tests — Node built-in runner, no external deps.
+ * Self-Harness evidence pipeline tests — Node built-in runner, no external deps.
  *
  * Run:  node --test benchmark/tests/selfharness-evidence.test.mjs
  *
- * Covers H2: extractFailureRecord field-exact values, deterministic failureSignature, exact-match
+ * Covers extractFailureRecord field-exact values, deterministic failureSignature, exact-match
  * clustering (same mechanism ⇒ same cluster; different mechanism ⇒ distinct), a full clusters
  * golden, buildEvidenceBundle totals/ordering/median/passthrough, and renderExcerpt determinism +
  * bound + truncation marker. Fixtures are synthetic event dumps shaped exactly like bench
@@ -124,7 +124,7 @@ describe("extractFailureRecord", () => {
   })
 })
 
-// ── toolUsage — per-tool calls/errors, joined call_id → name (V2-S2) ─────────
+// ── toolUsage — per-tool calls/errors, joined call_id → name ─────────
 
 describe("toolUsage extraction", () => {
   test("counts admitted tool_requested calls and joins tool_completed errors by call_id", () => {
@@ -282,7 +282,7 @@ describe("buildEvidenceBundle", () => {
     assert.deepEqual(bundle.clusters[1].excerpt, [])
   })
 
-  test("cluster toolUsage aggregate sums member records, name-sorted (V2-S2)", () => {
+  test("cluster toolUsage aggregate sums member records, name-sorted", () => {
     // cluster[0] = {fnf-a, fnf-b}: read_file 3+1 calls / 3+1 errors, plus fnf-b's list_dir + run_tests.
     assert.deepEqual(bundle.clusters[0].toolUsage, {
       list_dir: { calls: 1, errors: 1 },
@@ -310,7 +310,7 @@ describe("buildEvidenceBundle", () => {
   })
 })
 
-// ── scope isolation (V2-S1) — stamp + mixed-scope guard ──────────────────────
+// ── scope isolation — stamp + mixed-scope guard ──────────────────────
 
 describe("scope isolation", () => {
   const scoped = (taskId, scope) =>

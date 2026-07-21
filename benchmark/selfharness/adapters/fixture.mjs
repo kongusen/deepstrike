@@ -1,11 +1,11 @@
 /**
- * Self-Harness fixture TaskAdapter (H3) — deterministic, zero-LLM, zero-runner.
+ * Self-Harness fixture TaskAdapter — deterministic, zero-LLM, zero-runner.
  *
  * The CI/e2e adapter for the propose→validate→promote loop. Every task's pass/fail is a pure
  * function of the HarnessManifest handed to `runTask(task, manifest)` — no provider, no `RuntimeRunner`,
  * no clock, no randomness — so a full loop run is byte-for-byte reproducible and costs nothing. Failing
  * tasks emit synthetic event streams shaped exactly like a bench `*.events.json` dump (`{seq, event}[]`
- * with `run_terminal` and `tool_completed` `is_error` results) plus a matching `Verdict`, so the S2
+ * with `run_terminal` and `tool_completed` `is_error` results) plus a matching `Verdict`, so the
  * evidence pipeline (`extractFailureRecord` / `failureSignature` / `clusterFailures` / `renderExcerpt`)
  * consumes them unchanged.
  *
@@ -18,7 +18,7 @@
  *   - `ceiling`         ALWAYS fails — models a model capability ceiling, not harness-addressable
  *   - `stable-1/2/3`    ALWAYS pass — behavior the loop must preserve
  *
- * Approved deviation from the H3 contract: the adapter interface is `runTask(task, manifest)` (not
+ * Approved deviation from the adapter contract: the adapter interface is `runTask(task, manifest)` (not
  * `runTask(task, runtimeOptionsPatch)`). The fixture adapter inspects the manifest directly to decide
  * pass/fail; the live adapter (see live.mjs) is the one that builds base RuntimeOptions and `applyManifest`s.
  *
@@ -46,7 +46,7 @@
  */
 
 /** The full editable-surface vocabulary a seed manifest opens to the proposer. `runtime.allowedToolIds`
- *  is opened so the loop can discover tool-routing edits (V2-S2); it is intersection-only at the runner. */
+ *  is opened so the loop can discover tool-routing edits; it is intersection-only at the runner. */
 export const EDITABLE_SURFACES = [
   "instructions.bootstrap",
   "instructions.execution",
@@ -84,7 +84,7 @@ function narrowsAwayTool(manifest, toolId) {
 // ── Fixture task specifications ───────────────────────────────────────────────
 // Each spec has a pure `decide(manifest) -> boolean` and, when failing, a `failure` profile the
 // synthetic event/verdict builders render. Failure profiles are chosen so distinct mechanisms cluster
-// into distinct signatures (S2 clusters by EXACT signature match).
+// into distinct signatures (the evidence pipeline clusters by EXACT signature match).
 
 /**
  * @typedef {Object} FailureProfile

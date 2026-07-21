@@ -4,7 +4,7 @@
  * Turns a bench `*.events.json` stream (`{seq, event}[]`) into a small, byte-stable text block a
  * model (miner / proposer) can read as evidence for one failure. It is pure: no clock, no random,
  * no Map iteration-order dependence — the same events always render the same bytes. This is the
- * evidence-anchoring half of the Self-Harness weakness-mining stage (H2): the LLM sees a faithful
+ * evidence-anchoring half of the Self-Harness weakness-mining stage: the LLM sees a faithful
  * excerpt, never the raw log.
  *
  * Rendered lines (in event-stream order):

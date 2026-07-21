@@ -259,12 +259,12 @@ export interface RuntimeOptions {
     phase?: "initial" | "renewal"
   }) => Promise<MemoryQuery[] | undefined> | MemoryQuery[] | undefined
   systemPrompt?: string
-  /** Self-Harness H1.1: the four instruction slots (bootstrap/execution/verification/failureRecovery)
+  /** Self-Harness instruction surface: the four instruction slots (bootstrap/execution/verification/failureRecovery)
    *  composed onto `systemPrompt` in fixed order at option normalization. The kernel still sees ONE
    *  system prompt; this is the editable instruction surface the self-harness loop rewrites. Absent ⇒
    *  `systemPrompt` is used verbatim (zero behavior difference). */
   instructions?: InstructionProfile
-  /** Self-Harness H1.2: declarative event→note rules. On each matching session event a rendered note
+  /** Self-Harness nudge surface: declarative event→note rules. On each matching session event a rendered note
    *  is pushed through the `injectNote` signal channel (same path as `onToolResult`'s `{note}`).
    *  ≤16 rules, validated at construction. Absent/empty ⇒ no engine, no append wrapping, zero
    *  behavior difference. */

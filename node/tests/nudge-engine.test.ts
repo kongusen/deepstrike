@@ -1,5 +1,5 @@
 /**
- * Self-Harness H1.2 — NudgeEngine.
+ * Self-Harness nudge rules — NudgeEngine.
  *  - trigger matrix ×5 (tool_error errorKind/toolName filters, tool_denied reasonIncludes,
  *    tool_calls_at_least cumulative first-reach, turns_at_least, entropy_alert).
  *  - template variable substitution ({{tool_name}} {{error_kind}} {{turn}}).

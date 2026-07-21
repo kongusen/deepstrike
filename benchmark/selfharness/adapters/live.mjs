@@ -1,5 +1,5 @@
 /**
- * Self-Harness live TaskAdapter (H3) — a real single-attempt run + judge verdict.
+ * Self-Harness live TaskAdapter — a real single-attempt run + judge verdict.
  *
  * Where the fixture adapter fakes outcomes, this one actually drives the model: it folds the manifest
  * onto base `RuntimeOptions` with `applyManifest` (instructions → composed system prompt, nudge rules →

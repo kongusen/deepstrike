@@ -1,5 +1,5 @@
 /**
- * Self-Harness miner / proposer / merge unit tests (S3) — Node built-in runner.
+ * Self-Harness miner / proposer / merge unit tests — Node built-in runner.
  *
  * Run:  node --test benchmark/tests/selfharness-propose.test.mjs
  *

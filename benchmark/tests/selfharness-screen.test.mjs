@@ -1,5 +1,5 @@
 /**
- * Self-Harness injection screen (V2-S3) tests — Node built-in runner, canned `complete()`.
+ * Self-Harness injection screen tests — Node built-in runner, canned `complete()`.
  *
  * Run:  node --test benchmark/tests/selfharness-screen.test.mjs
  *

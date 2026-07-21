@@ -81,14 +81,14 @@ describe("P1-B B3: skill-activated tool gating (end-to-end)", () => {
 })
 
 /**
- * V2-S2: `skillFilter` is a host-layer allowlist over the scanned catalog by skill NAME. It executes at
+ * `skillFilter` is a host-layer allowlist over the scanned catalog by skill NAME. It executes at
  * the `scanSkillDir → set_available_skills` feed, so its effect is observable in the model-facing
  * catalog: the `skill` meta-tool's description embeds an `<available_skills>` block listing exactly the
  * fed skills. Absent ⇒ all scanned skills advertised (zero behavior difference); a list ⇒ only named
  * skills; `[]` ⇒ none. (Skill FILE activation reads from disk directly, so it is NOT a proxy for the
  * feed — we assert the advertised catalog itself.)
  */
-describe("V2-S2: skillFilter host allowlist over the skill catalog", () => {
+describe("skillFilter host allowlist over the skill catalog", () => {
   // A provider that only records the exposed schemas (no tool calls) — turn 0 carries the full catalog.
   function schemaRecorder(captured: ToolSchema[][]): LLMProvider {
     return {

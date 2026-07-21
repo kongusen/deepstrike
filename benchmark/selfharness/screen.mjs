@@ -1,5 +1,5 @@
 /**
- * Self-Harness injection screen (V2-S3) — the fourth LLM slot, guarding free-text promotion.
+ * Self-Harness injection screen — the fourth LLM slot, guarding free-text promotion.
  *
  * `screenPatch` is the Tier B gate. A numeric / boolean / id-list edit (Tier A) is fully guarded by
  * typed validation + the capability-ceiling invariant, so it never comes here; only `instructions.*`

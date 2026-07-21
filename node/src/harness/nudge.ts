@@ -1,5 +1,5 @@
 /**
- * Self-Harness H1.2 — declarative event→note rules (the runtime control-policy surface).
+ * Self-Harness nudge rules — declarative event→note rules (the runtime control-policy surface).
  *
  * A `NudgeRule` says "when this session event fires, push this note to the model". It generalizes the
  * two hard-coded precedents (EntropyWatch.notify_model, the RepeatFuse STOP text) into data the

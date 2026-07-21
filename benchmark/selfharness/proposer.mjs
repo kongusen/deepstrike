@@ -1,5 +1,5 @@
 /**
- * Self-Harness harness proposal (H3) — the same fixed model M proposes edits to its OWN harness.
+ * Self-Harness harness proposal — the same fixed model M proposes edits to its OWN harness.
  *
  * Given the mined evidence bundle (addressable clusters only, each annotated with its attributed
  * mechanism), the current manifest's editable surfaces + current values, and the record of previous

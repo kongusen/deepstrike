@@ -1,5 +1,5 @@
 /**
- * Self-Harness propose→validate→promote loop (H3) — the outer optimization ring.
+ * Self-Harness propose→validate→promote loop — the outer optimization ring.
  *
  * Each round: evaluate the current manifest on BOTH splits (baseline) → build a held-in evidence
  * bundle from the failures → mine mechanisms → keep only addressable clusters as proposer targets →
@@ -170,7 +170,7 @@ export async function selfHarnessLoop({
         decisions.push({ surface: patch.targetSurface, accepted: false, reason: `apply_failed: ${e.message ?? e}` })
         continue
       }
-      // Tier of the surface (V2-S3). An unknown surface can't reach here (applyPatch already whitelisted
+      // Tier of the surface. An unknown surface can't reach here (applyPatch already whitelisted
       // it), but surfaceTier is the authority on "no tier ⇒ never auto-promote", so treat a throw as a
       // rejection rather than a silent pass.
       let tier
@@ -276,7 +276,7 @@ export async function selfHarnessLoop({
 }
 
 /**
- * Resolve the FINAL promotion verdict for one acceptance-passing candidate (V2-S3). A host
+ * Resolve the FINAL promotion verdict for one acceptance-passing candidate. A host
  * `onPromotionDecision` hook, when supplied, is authoritative — it can approve or reject any tier
  * (the human/host veto). A hook that throws, or returns anything other than "approve", fails CLOSED
  * (reject) with the reason recorded. Absent hook ⇒ the default tier policy.

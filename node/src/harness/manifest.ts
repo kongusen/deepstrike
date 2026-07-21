@@ -1,5 +1,5 @@
 /**
- * Self-Harness H1.1 + H1.3 — the harness face as DATA.
+ * Self-Harness editable surfaces — the harness face as DATA.
  *
  * A `HarnessManifest` is a versioned, hashable lineage node: the editable surfaces a fixed model may
  * rewrite about its OWN harness — instruction slots, nudge rules, and a whitelisted `RuntimeOptions`
@@ -122,17 +122,18 @@ export type SurfaceTier = "auto" | "screened" | "human"
 
 /**
  * Map an editable surface to its promotion tier. Maintained HERE beside the whitelist so a surface can
- * never be whitelisted without also being assigned a tier (spec V2-S3 same-place maintenance):
+ * never be whitelisted without also being assigned a tier (the spec's same-place maintenance rule):
  *   - "auto"     (Tier A): every `runtime.*` whitelist surface. Typed validation + the capability
- *                 ceiling invariant + the v1 acceptance rule already guard them, so promotion is fully
+ *                 ceiling invariant + the acceptance rule already guard them, so promotion is fully
  *                 automatic — there is no free text and no injection surface.
  *   - "screened" (Tier B): `instructions.*` and `nudges`. Free text can smuggle instructions
  *                 (persistent prompt-injection laundered through the evidence loop), so a screen runs
  *                 before promotion.
- *   - "human"    (Tier C): reserved for capability-WIDENING surfaces. None exist in v2 — intersection
- *                 semantics make widening structurally inexpressible — but the enum value exists so a v3
- *                 surface cannot be added without consciously assigning it a tier (and building the
- *                 human gate). `surfaceTier` therefore never returns "human" in v2.
+ *   - "human"    (Tier C): reserved for capability-WIDENING surfaces. None currently exist — intersection
+ *                 semantics make widening structurally inexpressible — but the enum value exists so a new
+ *                 capability-widening surface cannot be added without consciously assigning it a tier (and
+ *                 building the human gate). `surfaceTier` therefore never returns "human" today — no
+ *                 capability-widening surface is expressible.
  * An unknown surface / slot / runtime key THROWS (same discipline as applySurfaceEdit): a surface with
  * no tier must never fall through to auto-promotion.
  */
@@ -169,7 +170,7 @@ export interface HarnessManifest {
    * Opaque isolation key — host decides its semantics (user / tenant / agent-group). Orthogonal to
    * `modelProfile` (never concatenate the two — that reprises the identity-scoping bug class); absent
    * ⇒ the host treats it as `"default"`. It rides canonical JSON, so digests domain-separate by scope,
-   * but an absent scope leaves a v1-shaped manifest's digest byte-identical (canonicalJson skips
+   * but an absent scope leaves a pre-scope manifest's digest byte-identical (canonicalJson skips
    * undefined). Becomes a lineage directory name downstream, hence the path-safe character bound.
    */
   scope?: string
@@ -185,9 +186,9 @@ export interface HarnessManifest {
     rationale?: string
     deltaHeldIn?: number
     deltaHeldOut?: number
-    /** Promotion tier of the driving edit (V2-S3). */
+    /** Promotion tier of the driving edit. */
     tier?: SurfaceTier
-    /** Injection-screen verdict — present only for a screened (Tier B) promotion (V2-S3). */
+    /** Injection-screen verdict — present only for a screened (Tier B) promotion. */
     screenVerdict?: "pass" | "screened_out"
   }
 }

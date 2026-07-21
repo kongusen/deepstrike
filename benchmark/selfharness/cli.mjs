@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * self-harness CLI (H3) — drive the propose→validate→promote loop from the shell.
+ * self-harness CLI — drive the propose→validate→promote loop from the shell.
  *
  * Usage:
  *   node benchmark/selfharness/cli.mjs --adapter <fixture|live|./path.mjs>

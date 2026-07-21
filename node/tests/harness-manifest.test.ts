@@ -1,5 +1,5 @@
 /**
- * Self-Harness H1.1 + H1.3 — HarnessManifest as data.
+ * Self-Harness editable surfaces — HarnessManifest as data.
  *  - manifestDigest: deterministic, key-order invariant, undefined-skipping.
  *  - applyPatch: whitelist + bound rejection, parent-chain linkage, no source mutation.
  *  - applyManifest: whitelisted fold onto RuntimeOptions, unknown-runtime-key rejection.
@@ -73,8 +73,8 @@ describe("manifestDigest", () => {
   })
 })
 
-describe("manifest scope (V2-S1)", () => {
-  // Golden digest of the v1-shaped seed() with NO scope field. The scope type addition must not shift
+describe("manifest scope", () => {
+  // Golden digest of the pre-scope seed() with NO scope field. The scope type addition must not shift
   // it (canonicalJson skips undefined), or every existing lineage digest on disk would break.
   const ABSENT_SCOPE_DIGEST = "07fe15dd850dca52a9a8b82a68f11cc2350b8988d92fc6bc10e94e9f59a651ab"
 
@@ -85,7 +85,7 @@ describe("manifest scope (V2-S1)", () => {
     expect(new Set([absent, a, b]).size).toBe(3)
   })
 
-  it("leaves a v1-shaped (absent-scope) manifest digest byte-identical to the pre-change golden", () => {
+  it("leaves a pre-scope (absent-scope) manifest digest byte-identical to the pre-change golden", () => {
     expect(manifestDigest(seed())).toBe(ABSENT_SCOPE_DIGEST)
   })
 
@@ -290,8 +290,8 @@ describe("runtime value typing", () => {
   })
 })
 
-// ── V2-S2: tool/skill editable surfaces ──────────────────────────────────────
-describe("tool/skill surface typing + bounds (V2-S2)", () => {
+// ── tool/skill editable surfaces ──────────────────────────────────────
+describe("tool/skill surface typing + bounds", () => {
   const bad = (runtime: unknown) => validateManifest({ ...seed(), runtime: runtime as HarnessManifest["runtime"] })
 
   it("accepts well-typed tool/skill surfaces", () => {
@@ -342,7 +342,7 @@ describe("tool/skill surface typing + bounds (V2-S2)", () => {
   })
 })
 
-describe("applyManifest intersection fold (capability ceiling, V2-S2)", () => {
+describe("applyManifest intersection fold (capability ceiling)", () => {
   const baseWith = (over: Record<string, unknown>) => ({ maxTokens: 1, ...over } as unknown as RuntimeOptions)
 
   it("intersects with a NON-EMPTY host baseline (effective = manifest ∩ base, manifest order)", () => {
@@ -388,8 +388,8 @@ describe("applyManifest intersection fold (capability ceiling, V2-S2)", () => {
   })
 })
 
-// ── V2-S3: promotion tiers ────────────────────────────────────────────────────
-describe("surfaceTier (V2-S3 promotion tiers)", () => {
+// ── promotion tiers ────────────────────────────────────────────────────
+describe("surfaceTier (promotion tiers)", () => {
   // Every whitelisted runtime.* surface is Tier A (auto): typed validation + the ceiling invariant guard it.
   const RUNTIME_SURFACES = [
     "maxTurns", "maxTotalTokens", "criteriaGate", "repeatFuse", "entropyWatch",
@@ -416,7 +416,7 @@ describe("surfaceTier (V2-S3 promotion tiers)", () => {
     expect(() => surfaceTier("nudges.extra")).toThrow(/no sub-path/)
   })
 
-  it("never returns human in v2 — no capability-widening surface is expressible", () => {
+  it("never returns human today — no capability-widening surface is expressible", () => {
     const all = [
       "instructions.bootstrap", "instructions.execution", "instructions.verification",
       "instructions.failureRecovery", "nudges",

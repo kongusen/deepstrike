@@ -16,7 +16,7 @@ export type { AttemptJudge, JudgeContext, JudgeResult, SkillCandidate } from "./
 export { judge } from "../runtime/eval.js"
 export type { VerdictDetail, JudgeArgs } from "../runtime/eval.js"
 
-// Self-Harness H1: the harness face as data (manifest lineage + declarative event→note rules). The
+// Self-Harness editable surfaces: the harness face as data (manifest lineage + declarative event→note rules). The
 // lab layer loads these through the compiled dist, so they live on this public barrel.
 export {
   composeSystemPrompt,
