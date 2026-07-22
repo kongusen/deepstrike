@@ -1,202 +1,171 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="100%" height="100%" style="background-color: #0b0f19; font-family: system-ui, -apple-system, sans-serif;">
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">DeepStrike Context VM</title>
+  <desc id="desc">Four-slot context address space, prompt-cache boundaries, pressure accounting, compression, handle paging, and distinct knowledge, skill, and memory lifecycles.</desc>
   <defs>
-    <!-- Gradients -->
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0b0f19" />
-      <stop offset="50%" stop-color="#111827" />
-      <stop offset="100%" stop-color="#070a13" />
-    </linearGradient>
-    <linearGradient id="boxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#1e293b" />
-      <stop offset="100%" stop-color="#0f172a" />
-    </linearGradient>
-    
-    <!-- Arrows -->
-    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+    <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
     </marker>
-    <marker id="arrowAmber" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#eab308" />
+    <marker id="arrow-coral" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#FF6B4A"/>
     </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif; }
+      .eyebrow { fill:#FF6B4A; font-size:11px; font-weight:700; letter-spacing:2px; }
+      .title { fill:#F7F3EA; font-size:29px; font-weight:700; letter-spacing:-.45px; }
+      .subtitle { fill:#A8A49C; font-size:13px; font-weight:450; }
+      .section-title { fill:#F7F3EA; font-size:15px; font-weight:700; }
+      .section-note { fill:#8F8C86; font-size:10px; font-weight:600; letter-spacing:.65px; }
+      .card-title { fill:#F7F3EA; font-size:13px; font-weight:650; }
+      .card-text { fill:#A8A49C; font-size:10.5px; font-weight:450; }
+      .body { fill:#A8A49C; font-size:11px; font-weight:450; }
+      .label { fill:#F7F3EA; font-size:11px; font-weight:650; }
+      .micro { fill:#8F8C86; font-size:9.5px; font-weight:650; letter-spacing:.55px; }
+      .pill-text { fill:#111318; font-size:9px; font-weight:750; letter-spacing:.5px; }
+      .footer { fill:#77746F; font-size:9px; font-weight:600; letter-spacing:.8px; }
+      .panel { fill:#15171A; stroke:#303236; stroke-width:1; }
+      .panel-strong { fill:#191A1D; stroke:#F7F3EA; stroke-width:1.15; }
+      .kernel { fill:#0D0F11; stroke:#3B3D41; stroke-width:1.2; }
+      .soft { fill:#121316; stroke:#26282C; stroke-width:1; }
+      .accent-fill { fill:#FF6B4A; }
+      .pill.coral { fill:#FF6B4A; }
+      .pill.ivory { fill:#F7F3EA; }
+      .pill.muted { fill:#8F8C86; }
+      .rule { fill:none; stroke:#303236; stroke-width:1; }
+      .rule-coral { fill:none; stroke:#FF6B4A; stroke-width:1.2; }
+      .flow { fill:none; stroke:#F7F3EA; stroke-width:1.45; marker-end:url(#arrow-ivory); }
+      .flow-coral { stroke:#FF6B4A; stroke-width:1.75; marker-end:url(#arrow-coral); }
+      .flow-dash { stroke-dasharray:5 5; }
+    </style>
   </defs>
+  <rect width="1200" height="760" fill="#111318"/>
+  <path d="M0 94H1200M0 724H1200" class="rule"/>
+  <text x="48" y="33" class="eyebrow" text-anchor="start">CONTEXT VM / v0.2.48</text>
+  <text x="48" y="68" class="title" text-anchor="start">Context is partitioned state, not an ever-growing chat log.</text>
+  <text x="1152" y="39" class="subtitle" text-anchor="end">FOUR SLOTS · PRESSURE · COMPACTION · RESIDENCY</text>
+  <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>
 
-  <!-- Background -->
-  <rect width="800" height="480" fill="url(#bgGrad)" />
-  <rect width="800" height="480" fill="none" stroke="#1e293b" stroke-width="2" />
 
-  <!-- Grid lines -->
-  <path d="M 0 60 L 800 60 M 0 120 L 800 120 M 0 180 L 800 180 M 0 240 L 800 240 M 0 300 L 800 300 M 0 360 L 800 360 M 0 420 L 800 420" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
-  <path d="M 100 0 L 100 480 M 200 0 L 200 480 M 300 0 L 300 480 M 400 0 L 400 480 M 500 0 L 500 480 M 600 0 L 600 480 M 700 0 L 700 480" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+  <text x="48" y="124" class="section-title" text-anchor="start">Address space rendered before every provider call</text>
+  <text x="1152" y="124" class="section-note" text-anchor="end">STABLE PREFIX ON THE LEFT · TURN-LOCAL STATE ON THE RIGHT</text>
 
-  <!-- Title -->
-  <text x="400" y="35" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="700" letter-spacing="2">CONTEXT VM &amp; COMPACTION MECHANISMS</text>
-  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-size="11">Four-Slot VM Address Space, Prompt Cache &amp; Residency</text>
+  <g>
+    <rect x="48" y="146" width="258" height="126" rx="6" class="panel"/>
+    <rect x="48" y="146" width="5" height="126" rx="2.5" class="accent-fill"/>
+    <text x="66" y="175" class="card-title" text-anchor="start">1 · system_stable</text>
+    <text x="66" y="199" class="card-text" text-anchor="start">Identity + immutable directives</text>
+<text x="66" y="217" class="card-text" text-anchor="start">Byte-stable prompt-cache target</text>
+<text x="66" y="235" class="card-text" text-anchor="start">Changes invalidate the long prefix</text>
 
-  <!-- CONTEXT VM: FOUR SLOTS (Left) -->
-  <g transform="translate(30, 80)">
-    <rect width="250" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
-    <rect width="250" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
-    <text x="125" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">Context VM Address Space</text>
-    
-    <!-- Slot 1: system_stable -->
-    <g transform="translate(12, 50)">
-      <rect width="226" height="50" rx="4" fill="#111827" stroke="#10b981" stroke-width="1" />
-      <text x="12" y="18" fill="#10b981" font-size="10.5" font-weight="bold">Slot 1: system_stable</text>
-      <text x="12" y="32" fill="#e2e8f0" font-size="9">Identity &amp; immutable system directives</text>
-      <text x="12" y="42" fill="#94a3b8" font-size="8">→ Long-term prompt cache target</text>
-    </g>
-
-    <!-- Slot 2: system_knowledge -->
-    <g transform="translate(12, 110)">
-      <rect width="226" height="55" rx="4" fill="#111827" stroke="#10b981" stroke-width="1" />
-      <text x="12" y="18" fill="#10b981" font-size="10.5" font-weight="bold">Slot 2: system_knowledge</text>
-      <text x="12" y="32" fill="#e2e8f0" font-size="9">Skill bodies, initial_memory, host-pinned refs</text>
-      <text x="12" y="45" fill="#94a3b8" font-size="8">→ Medium-term prompt cache target</text>
-    </g>
-
-    <!-- Slot 3: turns (History) -->
-    <g transform="translate(12, 175)">
-      <rect width="226" height="120" rx="4" fill="#111827" stroke="#3b82f6" stroke-width="1" />
-      <text x="12" y="18" fill="#60a5fa" font-size="10.5" font-weight="bold">Slot 3: turns (Chat History)</text>
-      <text x="12" y="34" fill="#e2e8f0" font-size="9">Turn 1 (User / Assistant)</text>
-      <text x="12" y="47" fill="#e2e8f0" font-size="9">Turn 2 (Tool call / Observation)</text>
-      <text x="12" y="60" fill="#e2e8f0" font-size="9">Turn 3 (Assistant replan)...</text>
-      
-      <!-- Prompt Cache line -->
-      <line x1="5" y1="85" x2="221" y2="85" stroke="#10b981" stroke-width="1" stroke-dasharray="3 3" />
-      <text x="12" y="98" fill="#10b981" font-size="8.5" font-weight="bold">--- Prompt Cache Boundary (Frozen Prefix) ---</text>
-      <text x="12" y="110" fill="#94a3b8" font-size="8">Tail is dynamic, prefix remains byte-stable</text>
-    </g>
-
-    <!-- Slot 4: state_turn -->
-    <g transform="translate(12, 305)">
-      <rect width="226" height="50" rx="4" fill="#111827" stroke="#fbbf24" stroke-width="1" />
-      <text x="12" y="18" fill="#fbbf24" font-size="10.5" font-weight="bold">Slot 4: state_turn (Transient)</text>
-      <text x="12" y="32" fill="#e2e8f0" font-size="9">Task state, runtime signals &amp; directives</text>
-      <text x="12" y="42" fill="#f87171" font-size="8" font-weight="bold">→ Recalculated every turn (No caching)</text>
-    </g>
   </g>
 
-  <!-- COMPRESSION PIPELINE (Center) -->
-  <g transform="translate(310, 80)">
-    <rect width="210" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
-    <rect width="210" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
-    <text x="105" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">Compaction Pipeline</text>
+  <g>
+    <rect x="324" y="146" width="258" height="126" rx="6" class="panel"/>
 
-    <!-- Pressure Gauge -->
-    <g transform="translate(15, 50)">
-      <rect width="180" height="60" rx="6" fill="#111827" stroke="#334155" />
-      <text x="10" y="18" fill="#ffffff" font-size="10" font-weight="bold">Token Pressure Meter</text>
-      <!-- Gauge Bar -->
-      <rect x="10" y="30" width="160" height="12" rx="3" fill="#1e293b" />
-      <rect x="10" y="30" width="130" height="12" rx="3" fill="#f87171" />
-      <line x1="120" y1="26" x2="120" y2="46" stroke="#ffffff" stroke-width="1.5" />
-      <text x="122" y="25" fill="#f87171" font-size="7" font-weight="bold">Limit</text>
-      <text x="10" y="52" fill="#f87171" font-size="8" font-weight="bold">Pressure > Threshold! Active Compaction</text>
-    </g>
+    <text x="342" y="175" class="card-title" text-anchor="start">2 · system_knowledge</text>
+    <text x="342" y="199" class="card-text" text-anchor="start">Skill bodies · initialMemory</text>
+<text x="342" y="217" class="card-text" text-anchor="start">Host-pinned keyed references</text>
+<text x="342" y="235" class="card-text" text-anchor="start">Budgeted + boundary-evicted</text>
 
-    <!-- Compression steps -->
-    <g transform="translate(15, 125)">
-      <text x="10" y="16" fill="#ffffff" font-size="11" font-weight="bold">Pipeline Stages</text>
-      
-      <!-- Stage 1: Snip -->
-      <g transform="translate(10, 25)">
-        <rect width="160" height="35" rx="4" fill="#111827" stroke="#fb923c" />
-        <text x="10" y="16" fill="#fb923c" font-size="10" font-weight="bold">Stage 1: Snip</text>
-        <text x="10" y="28" fill="#94a3b8" font-size="8.5">Truncate and prune older tool outputs</text>
-      </g>
-      
-      <path d="M 90,190 L 90,205" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)" />
-
-      <!-- Stage 2: Drop -->
-      <g transform="translate(10, 95)">
-        <rect width="160" height="35" rx="4" fill="#111827" stroke="#fb923c" />
-        <text x="10" y="16" fill="#fb923c" font-size="10" font-weight="bold">Stage 2: Drop</text>
-        <text x="10" y="28" fill="#94a3b8" font-size="8.5">Evict entire older dialog turns</text>
-      </g>
-
-      <path d="M 90,260 L 90,275" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)" />
-
-      <!-- Stage 3: Summarize -->
-      <g transform="translate(10, 165)">
-        <rect width="160" height="42" rx="4" fill="#111827" stroke="#fb923c" stroke-width="1.2" />
-        <text x="10" y="16" fill="#fb923c" font-size="10" font-weight="bold">Stage 3: Summarize</text>
-        <text x="10" y="28" fill="#94a3b8" font-size="8">Trigger LLM summarizer to condense</text>
-        <text x="10" y="37" fill="#94a3b8" font-size="8">messages into archived summary block</text>
-      </g>
-      
-      <!-- Cache Invalidated Notification -->
-      <g transform="translate(10, 222)">
-        <rect width="160" height="15" rx="2" fill="#ef4444" opacity="0.15" />
-        <text x="80" y="32" text-anchor="middle" fill="#f87171" font-size="8" font-weight="bold">Prefix Cache Invalidated at Compaction Point</text>
-      </g>
-    </g>
   </g>
 
-  <!-- HANDLE TABLE & RESIDENCY (Right) -->
-  <g transform="translate(550, 80)">
-    <rect width="220" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
-    <rect width="220" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
-    <text x="110" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">Handle Table &amp; Page I/O</text>
+  <g>
+    <rect x="600" y="146" width="258" height="126" rx="6" class="panel"/>
 
-    <!-- Handle Table representation -->
-    <g transform="translate(15, 50)">
-      <rect width="190" height="150" rx="6" fill="#111827" stroke="#334155" />
-      <text x="10" y="18" fill="#ffffff" font-size="11" font-weight="bold">Handle Table Registry</text>
-      <text x="10" y="30" fill="#94a3b8" font-size="8">Large outputs mapped to descriptors</text>
+    <text x="618" y="175" class="card-title" text-anchor="start">3 · turns</text>
+    <text x="618" y="199" class="card-text" text-anchor="start">Conversation + tool observations</text>
+<text x="618" y="217" class="card-text" text-anchor="start">Memory / knowledge retrieval hits</text>
+<text x="618" y="235" class="card-text" text-anchor="start">Frozen prefix + growing tail</text>
 
-      <!-- Registry Rows -->
-      <g transform="translate(10, 45)">
-        <!-- Row 1 -->
-        <rect width="170" height="25" rx="3" fill="#1e293b" stroke="#334155" />
-        <text x="8" y="16" fill="#e2e8f0" font-size="9" font-family="monospace">H#001 (file_contents)</text>
-        <rect x="120" y="4" width="45" height="16" rx="2" fill="#10b981" opacity="0.2" />
-        <text x="142.5" y="15" text-anchor="middle" fill="#34d399" font-size="8" font-weight="bold">InMem</text>
-
-        <!-- Row 2 -->
-        <g transform="translate(0, 32)">
-          <rect width="170" height="25" rx="3" fill="#1e293b" stroke="#334155" />
-          <text x="8" y="16" fill="#e2e8f0" font-size="9" font-family="monospace">H#002 (db_query_res)</text>
-          <rect x="120" y="4" width="45" height="16" rx="2" fill="#6b7280" opacity="0.2" stroke="#9ca3af" stroke-width="0.5" />
-          <text x="142.5" y="15" text-anchor="middle" fill="#d1d5db" font-size="8">PagedOut</text>
-        </g>
-        
-        <!-- Row 3 -->
-        <g transform="translate(0, 64)">
-          <rect width="170" height="25" rx="3" fill="#1e293b" stroke="#334155" />
-          <text x="8" y="16" fill="#e2e8f0" font-size="9" font-family="monospace">H#003 (compiled_bin)</text>
-          <rect x="120" y="4" width="45" height="16" rx="2" fill="#6b7280" opacity="0.2" stroke="#9ca3af" stroke-width="0.5" />
-          <text x="142.5" y="15" text-anchor="middle" fill="#d1d5db" font-size="8">PagedOut</text>
-        </g>
-      </g>
-    </g>
-
-    <!-- Page In / Page Out flow -->
-    <g transform="translate(15, 215)">
-      <rect width="190" height="135" rx="6" fill="#111827" stroke="#334155" />
-      <text x="10" y="20" fill="#ffffff" font-size="11" font-weight="bold">SDK Store (Disk/DB)</text>
-      
-      <!-- Spool / Page Flow -->
-      <path d="M 40,65 L 40,35" stroke="#eab308" stroke-width="2" marker-end="url(#arrowAmber)" />
-      <text x="48" y="42" fill="#eab308" font-size="8" font-weight="bold">PAGE-IN (Demand)</text>
-      
-      <path d="M 140,35 L 140,65" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)" />
-      <text x="148" y="60" fill="#94a3b8" font-size="8">PAGE-OUT (Evict)</text>
-      
-      <!-- Memory device -->
-      <rect x="35" y="70" width="120" height="45" rx="4" fill="#1e293b" stroke="#475569" />
-      <text x="95" y="90" text-anchor="middle" fill="#e2e8f0" font-size="10" font-weight="bold">DreamStore / Disk</text>
-      <text x="95" y="103" text-anchor="middle" fill="#94a3b8" font-size="8.5">Stores actual handle payloads</text>
-    </g>
   </g>
 
-  <!-- Connectors -->
-  <!-- Context VM -> Compression Pipeline -->
-  <path d="M 280,240 L 302,240" stroke="#00f0ff" stroke-width="1.5" marker-end="url(#arrow)" />
-  <!-- Compression Pipeline Summarize -> Context VM history write back -->
-  <path d="M 320,335 C 290,335 290,265 264,265" fill="none" stroke="#fb923c" stroke-width="1" stroke-dasharray="2 2" marker-end="url(#arrow)" />
-  
-  <!-- Handle Table -> Context VM Slot referencing -->
-  <path d="M 540,160 C 400,160 400,240 264,240" fill="none" stroke="#60a5fa" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrow)" />
-  <text x="410" y="152" fill="#60a5fa" font-size="8" font-weight="bold">Handles reside in Turns history slot</text>
+  <g>
+    <rect x="876" y="146" width="276" height="126" rx="6" class="panel"/>
+
+    <text x="894" y="175" class="card-title" text-anchor="start">4 · state_turn</text>
+    <text x="894" y="199" class="card-text" text-anchor="start">Task state · signals · directives</text>
+<text x="894" y="217" class="card-text" text-anchor="start">Recomputed every turn</text>
+<text x="894" y="235" class="card-text" text-anchor="start">Never treated as cache-stable</text>
+
+  </g>
+    <path d="M48 292H858" class="rule"/>
+    <text x="453" y="312" class="micro" text-anchor="middle">PROMPT-CACHE-AWARE STABLE / FROZEN REGION</text>
+
+
+  <text x="48" y="354" class="section-title" text-anchor="start">Pressure and compaction</text>
+  <text x="1152" y="354" class="section-note" text-anchor="end">ρ INCLUDES TEXT, IMAGES, AUDIO, TOOL RESULTS, AND RESERVES</text>
+
+  <g>
+    <rect x="48" y="374" width="250" height="108" rx="6" class="panel"/>
+
+    <text x="66" y="403" class="card-title" text-anchor="start">Pressure meter</text>
+    <text x="66" y="427" class="card-text" text-anchor="start">TokenEngine estimates all slots</text>
+<text x="66" y="445" class="card-text" text-anchor="start">Threshold and hard limit are policy</text>
+
+  </g>
+    <path d="M298 428H364" class="flow flow-coral"/>
+
+  <g>
+    <rect x="366" y="374" width="300" height="108" rx="6" class="panel"/>
+    <rect x="366" y="374" width="5" height="108" rx="2.5" class="accent-fill"/>
+    <text x="384" y="403" class="card-title" text-anchor="start">Compression pyramid</text>
+    <text x="384" y="427" class="card-text" text-anchor="start">Snip large results → drop old turns</text>
+<text x="384" y="445" class="card-text" text-anchor="start">Summarize archive when required</text>
+
+  </g>
+    <path d="M666 428H732" class="flow flow-coral"/>
+
+  <g>
+    <rect x="734" y="374" width="418" height="108" rx="6" class="panel"/>
+
+    <text x="752" y="403" class="card-title" text-anchor="start">Renewal boundary</text>
+    <text x="752" y="427" class="card-text" text-anchor="start">Re-query memory · sweep knowledge · expire leases</text>
+<text x="752" y="445" class="card-text" text-anchor="start">Recompute cache generation and frozen prefix</text>
+
+  </g>
+
+
+  <text x="48" y="532" class="section-title" text-anchor="start">Residency and content lifetimes</text>
+  <text x="1152" y="532" class="section-note" text-anchor="end">LARGE VALUES USE HANDLES · DIFFERENT FACTS HAVE DIFFERENT LIFETIMES</text>
+
+  <g>
+    <rect x="48" y="552" width="258" height="102" rx="6" class="panel"/>
+
+    <text x="66" y="581" class="card-title" text-anchor="start">Large tool output</text>
+    <text x="66" y="605" class="card-text" text-anchor="start">Inline preview + H# descriptor</text>
+<text x="66" y="623" class="card-text" text-anchor="start">Payload pages to host spool</text>
+
+  </g>
+
+  <g>
+    <rect x="324" y="552" width="258" height="102" rx="6" class="panel"/>
+
+    <text x="342" y="581" class="card-title" text-anchor="start">Skill body</text>
+    <text x="342" y="605" class="card-text" text-anchor="start">Key: skill:&lt;name&gt;</text>
+<text x="342" y="623" class="card-text" text-anchor="start">Resident until deactivate / lease expiry</text>
+
+  </g>
+
+  <g>
+    <rect x="600" y="552" width="258" height="102" rx="6" class="panel"/>
+
+    <text x="618" y="581" class="card-title" text-anchor="start">Retrieval hit</text>
+    <text x="618" y="605" class="card-text" text-anchor="start">Ordinary history turn</text>
+<text x="618" y="623" class="card-text" text-anchor="start">Decays through compaction</text>
+
+  </g>
+
+  <g>
+    <rect x="876" y="552" width="276" height="102" rx="6" class="panel"/>
+
+    <text x="894" y="581" class="card-title" text-anchor="start">Pinned knowledge</text>
+    <text x="894" y="605" class="card-text" text-anchor="start">Host-keyed + pinned</text>
+<text x="894" y="623" class="card-text" text-anchor="start">Exempt from knowledge-budget eviction</text>
+
+  </g>
+
+  <text x="48" y="694" class="section-title" text-anchor="start">Invariant</text>
+  <text x="1152" y="694" class="section-note" text-anchor="end">EACH CONTENT CLASS ENTERS ONE SLOT WITH AN EXPLICIT EVICTION POLICY</text>
+
+  <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>
 </svg>

@@ -1,124 +1,166 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="100%" height="100%" style="background-color: #0b0f19; font-family: system-ui, -apple-system, sans-serif;">
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">DeepStrike ExecutionPlane</title>
+  <desc id="desc">Approved tool calls move through host decision hooks into local, worktree, sandbox, or remote execution, with streaming, suspension, result redaction, and large-result spooling.</desc>
   <defs>
-    <!-- Gradients -->
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0b0f19" />
-      <stop offset="50%" stop-color="#111827" />
-      <stop offset="100%" stop-color="#070a13" />
-    </linearGradient>
-    <linearGradient id="boxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#1e293b" />
-      <stop offset="100%" stop-color="#0f172a" />
-    </linearGradient>
-    
-    <!-- Arrows -->
-    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+    <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
     </marker>
-    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#bd00ff" />
+    <marker id="arrow-coral" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#FF6B4A"/>
     </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif; }
+      .eyebrow { fill:#FF6B4A; font-size:11px; font-weight:700; letter-spacing:2px; }
+      .title { fill:#F7F3EA; font-size:29px; font-weight:700; letter-spacing:-.45px; }
+      .subtitle { fill:#A8A49C; font-size:13px; font-weight:450; }
+      .section-title { fill:#F7F3EA; font-size:15px; font-weight:700; }
+      .section-note { fill:#8F8C86; font-size:10px; font-weight:600; letter-spacing:.65px; }
+      .card-title { fill:#F7F3EA; font-size:13px; font-weight:650; }
+      .card-text { fill:#A8A49C; font-size:10.5px; font-weight:450; }
+      .body { fill:#A8A49C; font-size:11px; font-weight:450; }
+      .label { fill:#F7F3EA; font-size:11px; font-weight:650; }
+      .micro { fill:#8F8C86; font-size:9.5px; font-weight:650; letter-spacing:.55px; }
+      .pill-text { fill:#111318; font-size:9px; font-weight:750; letter-spacing:.5px; }
+      .footer { fill:#77746F; font-size:9px; font-weight:600; letter-spacing:.8px; }
+      .panel { fill:#15171A; stroke:#303236; stroke-width:1; }
+      .panel-strong { fill:#191A1D; stroke:#F7F3EA; stroke-width:1.15; }
+      .kernel { fill:#0D0F11; stroke:#3B3D41; stroke-width:1.2; }
+      .soft { fill:#121316; stroke:#26282C; stroke-width:1; }
+      .accent-fill { fill:#FF6B4A; }
+      .pill.coral { fill:#FF6B4A; }
+      .pill.ivory { fill:#F7F3EA; }
+      .pill.muted { fill:#8F8C86; }
+      .rule { fill:none; stroke:#303236; stroke-width:1; }
+      .rule-coral { fill:none; stroke:#FF6B4A; stroke-width:1.2; }
+      .flow { fill:none; stroke:#F7F3EA; stroke-width:1.45; marker-end:url(#arrow-ivory); }
+      .flow-coral { stroke:#FF6B4A; stroke-width:1.75; marker-end:url(#arrow-coral); }
+      .flow-dash { stroke-dasharray:5 5; }
+    </style>
   </defs>
+  <rect width="1200" height="760" fill="#111318"/>
+  <path d="M0 94H1200M0 724H1200" class="rule"/>
+  <text x="48" y="33" class="eyebrow" text-anchor="start">EXECUTION PLANE / v0.2.48</text>
+  <text x="48" y="68" class="title" text-anchor="start">The kernel grants authority; the host performs the effect.</text>
+  <text x="1152" y="39" class="subtitle" text-anchor="end">TOOLS · STREAMING · ISOLATION · SUSPEND · SPOOL</text>
+  <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>
 
-  <!-- Background -->
-  <rect width="800" height="480" fill="url(#bgGrad)" />
-  <rect width="800" height="480" fill="none" stroke="#1e293b" stroke-width="2" />
 
-  <!-- Grid lines -->
-  <path d="M 0 60 L 800 60 M 0 120 L 800 120 M 0 180 L 800 180 M 0 240 L 800 240 M 0 300 L 800 300 M 0 360 L 800 360 M 0 420 L 800 420" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
-  <path d="M 100 0 L 100 480 M 200 0 L 200 480 M 300 0 L 300 480 M 400 0 L 400 480 M 500 0 L 500 480 M 600 0 L 600 480 M 700 0 L 700 480" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+  <text x="48" y="124" class="section-title" text-anchor="start">Approved-call path</text>
+  <text x="1152" y="124" class="section-note" text-anchor="end">NO TOOL FUNCTION RUNS INSIDE deepstrike-core</text>
 
-  <!-- Title -->
-  <text x="400" y="35" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="700" letter-spacing="2">EXECUTION PLANE &amp; TOOLS</text>
-  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-size="11">Tool Execution, Sandboxing &amp; Spooling</text>
+  <g>
+    <rect x="48" y="146" width="220" height="112" rx="6" class="panel"/>
+    <rect x="48" y="146" width="5" height="112" rx="2.5" class="accent-fill"/>
+    <text x="66" y="175" class="card-title" text-anchor="start">KernelEffect</text>
+    <text x="66" y="199" class="card-text" text-anchor="start">ExecuteTool(calls)</text>
+<text x="66" y="217" class="card-text" text-anchor="start">Already passed kernel governance</text>
 
-  <!-- INPUT: APPROVED SYS CALL (Left) -->
-  <g transform="translate(30, 160)">
-    <rect width="180" height="150" rx="8" fill="url(#boxGrad)" stroke="#bd00ff" stroke-width="1.5" />
-    <rect width="180" height="30" rx="8" fill="#bd00ff" opacity="0.1" />
-    <text x="90" y="19" text-anchor="middle" fill="#c084fc" font-size="11" font-weight="bold">Approved Syscall</text>
-    
-    <g transform="translate(10, 45)">
-      <rect width="160" height="85" rx="4" fill="#111827" stroke="#334155" />
-      <text x="12" y="20" fill="#e2e8f0" font-size="10" font-weight="bold" font-family="monospace">Syscall::Invoke(call)</text>
-      <text x="12" y="38" fill="#94a3b8" font-size="8.5">▪ Tool name &amp; args</text>
-      <text x="12" y="50" fill="#94a3b8" font-size="8.5">▪ Caller TCB context</text>
-      <text x="12" y="62" fill="#94a3b8" font-size="8.5">▪ Scoped capability filters</text>
-      <text x="12" y="74" fill="#10b981" font-size="8" font-weight="bold">✓ Governance Approved</text>
-    </g>
+  </g>
+    <path d="M268 202H314" class="flow flow-coral"/>
+
+  <g>
+    <rect x="316" y="146" width="220" height="112" rx="6" class="panel"/>
+
+    <text x="334" y="175" class="card-title" text-anchor="start">Host pre-hook</text>
+    <text x="334" y="199" class="card-text" text-anchor="start">onToolCall for stateful policy</text>
+<text x="334" y="217" class="card-text" text-anchor="start">Throw → fail closed by default</text>
+
+  </g>
+    <path d="M536 202H582" class="flow flow-coral"/>
+
+  <g>
+    <rect x="584" y="146" width="220" height="112" rx="6" class="panel"/>
+
+    <text x="602" y="175" class="card-title" text-anchor="start">ExecutionPlane</text>
+    <text x="602" y="199" class="card-text" text-anchor="start">Lookup schema + implementation</text>
+<text x="602" y="217" class="card-text" text-anchor="start">Validate / repair arguments</text>
+
+  </g>
+    <path d="M804 202H850" class="flow flow-coral"/>
+
+  <g>
+    <rect x="852" y="146" width="300" height="112" rx="6" class="panel"/>
+
+    <text x="870" y="175" class="card-title" text-anchor="start">Host post-hook + observation</text>
+    <text x="870" y="199" class="card-text" text-anchor="start">Redact / replace output · inject note</text>
+<text x="870" y="217" class="card-text" text-anchor="start">Return ToolResult to kernel + SessionLog</text>
+
   </g>
 
-  <!-- MIDDLE: EXECUTION PLANE ROUTER -->
-  <g transform="translate(250, 80)">
-    <rect width="280" height="320" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
-    <rect width="280" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
-    <text x="140" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">ExecutionPlane Router</text>
 
-    <!-- Sub Planes Stack -->
-    <!-- Local Python -->
-    <g transform="translate(15, 50)">
-      <rect width="250" height="50" rx="4" fill="#111827" stroke="#334155" />
-      <text x="10" y="18" fill="#ffffff" font-size="10" font-weight="bold">LocalExecutionPlane (Python Registry)</text>
-      <text x="10" y="32" fill="#94a3b8" font-size="8">Binds Python async functions decorated with @tool</text>
-      <text x="10" y="42" fill="#94a3b8" font-size="8">Runs in host process environment</text>
-    </g>
+  <text x="48" y="306" class="section-title" text-anchor="start">Execution backends</text>
+  <text x="1152" y="306" class="section-note" text-anchor="end">THE SAME TOOL CONTRACT CAN RUN IN DIFFERENT TRUST ZONES</text>
 
-    <!-- Worktree Plane -->
-    <g transform="translate(15, 110)">
-      <rect width="250" height="50" rx="4" fill="#111827" stroke="#334155" />
-      <text x="10" y="18" fill="#ffffff" font-size="10" font-weight="bold">WorktreePlane (Cwd Isolation)</text>
-      <text x="10" y="32" fill="#94a3b8" font-size="8">Injects git worktree cwd to restrict filesystem access</text>
-      <text x="10" y="42" fill="#94a3b8" font-size="8">Guarantees branch workspace safety</text>
-    </g>
+  <g>
+    <rect x="48" y="326" width="258" height="106" rx="6" class="panel"/>
 
-    <!-- Process Sandbox -->
-    <g transform="translate(15, 170)">
-      <rect width="250" height="50" rx="4" fill="#111827" stroke="#334155" />
-      <text x="10" y="18" fill="#ffffff" font-size="10" font-weight="bold">ProcessSandboxPlane (CLI Sandboxing)</text>
-      <text x="10" y="32" fill="#94a3b8" font-size="8">Spawns external commands in isolation containers</text>
-      <text x="10" y="42" fill="#94a3b8" font-size="8">Captures stdout, stderr, and resource limits</text>
-    </g>
+    <text x="66" y="355" class="card-title" text-anchor="start">Local</text>
+    <text x="66" y="379" class="card-text" text-anchor="start">In-process functions</text>
+<text x="66" y="397" class="card-text" text-anchor="start">RunContext carries cwd + signal</text>
 
-    <!-- Remote VPC -->
-    <g transform="translate(15, 230)">
-      <rect width="250" height="50" rx="4" fill="#111827" stroke="#334155" />
-      <text x="10" y="18" fill="#ffffff" font-size="10" font-weight="bold">RemoteVpcPlane (VPC Agent API)</text>
-      <text x="10" y="32" fill="#94a3b8" font-size="8">Dispatches execution to secure remote sandboxes</text>
-      <text x="10" y="42" fill="#94a3b8" font-size="8">Executes safely outside host SDK environment</text>
-    </g>
   </g>
 
-  <!-- OUTPUT PLANE: RESULT HANDLERS (Right) -->
-  
-  <!-- Path A: Normal Output -->
-  <g transform="translate(570, 95)">
-    <rect width="200" height="90" rx="6" fill="#10b981" opacity="0.1" stroke="#10b981" stroke-width="1.2" />
-    <text x="100" y="24" text-anchor="middle" fill="#34d399" font-size="11" font-weight="bold">Normal Result ( &lt; threshold )</text>
-    <text x="100" y="44" text-anchor="middle" fill="#ffffff" font-size="9" font-weight="bold">Direct Feedback</text>
-    <text x="100" y="58" text-anchor="middle" fill="#94a3b8" font-size="8">Appends directly as plain text observation</text>
-    <text x="100" y="70" text-anchor="middle" fill="#94a3b8" font-size="8">into the Context VM History</text>
+  <g>
+    <rect x="324" y="326" width="258" height="106" rx="6" class="panel"/>
+
+    <text x="342" y="355" class="card-title" text-anchor="start">Worktree</text>
+    <text x="342" y="379" class="card-text" text-anchor="start">Per-agent git worktree cwd</text>
+<text x="342" y="397" class="card-text" text-anchor="start">Lifecycle managed by host</text>
+
   </g>
 
-  <!-- Path B: Large Output -->
-  <g transform="translate(570, 265)">
-    <rect width="200" height="120" rx="6" fill="#ef4444" opacity="0.1" stroke="#ef4444" stroke-width="1.2" />
-    <text x="100" y="24" text-anchor="middle" fill="#f87171" font-size="11" font-weight="bold">Large Result ( &gt; threshold )</text>
-    
-    <!-- Spooler detail -->
-    <rect x="15" y="38" width="170" height="65" rx="4" fill="#111827" stroke="#ef4444" stroke-width="0.8" />
-    <text x="100" y="52" text-anchor="middle" fill="#fca5a5" font-size="9.5" font-weight="bold">LargeResultSpool</text>
-    <text x="25" y="68" fill="#94a3b8" font-size="7.5">1. Spools payload to Disk / Store</text>
-    <text x="25" y="78" fill="#94a3b8" font-size="7.5">2. Returns Handle SHA-256 identifier</text>
-    <text x="25" y="88" fill="#f87171" font-size="7.5" font-weight="bold">3. Replaces direct text to prevent VM crash</text>
+  <g>
+    <rect x="600" y="326" width="258" height="106" rx="6" class="panel"/>
+
+    <text x="618" y="355" class="card-title" text-anchor="start">Process sandbox</text>
+    <text x="618" y="379" class="card-text" text-anchor="start">Subprocess boundary</text>
+<text x="618" y="397" class="card-text" text-anchor="start">Timeout · cancellation · limits</text>
+
   </g>
 
-  <!-- Connectors -->
-  <!-- Syscall -> Router -->
-  <path d="M 210,235 L 242,235" stroke="#bd00ff" stroke-width="2" marker-end="url(#arrowPurple)" />
-  
-  <!-- Router -> Normal Result -->
-  <path d="M 530,140 L 562,140" stroke="#10b981" stroke-width="2" marker-end="url(#arrow)" />
-  
-  <!-- Router -> Large Result -->
-  <path d="M 530,325 L 562,325" stroke="#ef4444" stroke-width="2" marker-end="url(#arrow)" />
+  <g>
+    <rect x="876" y="326" width="276" height="106" rx="6" class="panel"/>
+
+    <text x="894" y="355" class="card-title" text-anchor="start">Remote VPC / MCP proxy</text>
+    <text x="894" y="379" class="card-text" text-anchor="start">Customer-network execution</text>
+<text x="894" y="397" class="card-text" text-anchor="start">Protocol adapter stays host-side</text>
+
+  </g>
+
+
+  <text x="48" y="480" class="section-title" text-anchor="start">Long-running and large-result paths</text>
+  <text x="1152" y="480" class="section-note" text-anchor="end">STREAM PROGRESS WITHOUT FLOODING CONTEXT</text>
+
+  <g>
+    <rect x="48" y="500" width="344" height="116" rx="6" class="panel"/>
+
+    <text x="66" y="529" class="card-title" text-anchor="start">Streaming tool</text>
+    <text x="66" y="553" class="card-text" text-anchor="start">Async chunks become progress events</text>
+<text x="66" y="571" class="card-text" text-anchor="start">Final chunk closes the tool-call pair</text>
+
+  </g>
+
+  <g>
+    <rect x="428" y="500" width="344" height="116" rx="6" class="panel"/>
+
+    <text x="446" y="529" class="card-title" text-anchor="start">Suspend / resume</text>
+    <text x="446" y="553" class="card-text" text-anchor="start">Tool yields a suspend token</text>
+<text x="446" y="571" class="card-text" text-anchor="start">Host callback resolves external work</text>
+
+  </g>
+
+  <g>
+    <rect x="808" y="500" width="344" height="116" rx="6" class="panel"/>
+
+    <text x="826" y="529" class="card-title" text-anchor="start">LargeResultSpool</text>
+    <text x="826" y="553" class="card-text" text-anchor="start">Inline preview + content handle</text>
+<text x="826" y="571" class="card-text" text-anchor="start">Payload stored on disk / DB and paged</text>
+
+  </g>
+
+  <text x="48" y="666" class="section-title" text-anchor="start">Cancellation boundary</text>
+  <text x="1152" y="666" class="section-note" text-anchor="end">USER · DEADLINE · LEASE LOST · HOST SHUTDOWN COMPOSE INTO THE OPERATION SIGNAL</text>
+
+  <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>
 </svg>

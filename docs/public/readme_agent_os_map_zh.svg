@@ -1,166 +1,179 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
-  <title id="title">DeepStrike 当前运行机制</title>
-  <desc id="desc">展示 DeepStrike 当前架构：宿主拥有真实 I/O，RuntimeRunner 驱动控制环，纯 Rust 内核负责治理与状态，四语言 SDK 共享语义，Node self-harness 在外环改进下一次运行。</desc>
 
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">DeepStrike 运行机制</title>
+  <desc id="desc">DeepStrike 0.2.48 的完整运行边界：宿主拥有真实 I/O，RuntimeRunner 驱动 ABI v2，Rust 内核治理控制流，Self-Harness v2 在隔离外环中改进下一次运行。</desc>
   <defs>
-    <marker id="arrow-coral" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0 1 10 5 0 9Z" fill="#FF6B4A"/>
-    </marker>
-    <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
     </marker>
+    <marker id="arrow-coral" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#FF6B4A"/>
+    </marker>
     <style>
-      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif; }
-      .eyebrow { fill: #FF6B4A; font-size: 11px; font-weight: 700; letter-spacing: 2px; }
-      .title { fill: #F7F3EA; font-size: 28px; font-weight: 700; letter-spacing: -0.5px; }
-      .subtitle { fill: #A8A49C; font-size: 13px; font-weight: 450; }
-      .band-title { fill: #F7F3EA; font-size: 15px; font-weight: 700; }
-      .band-note { fill: #8F8C86; font-size: 11px; font-weight: 500; letter-spacing: 0.3px; }
-      .card-title { fill: #F7F3EA; font-size: 13px; font-weight: 650; }
-      .card-text { fill: #A8A49C; font-size: 10.5px; font-weight: 450; }
-      .micro { fill: #8F8C86; font-size: 9.5px; font-weight: 600; letter-spacing: 0.55px; }
-      .accent { fill: #FF6B4A; }
-      .panel { fill: #15171A; stroke: #303236; stroke-width: 1; }
-      .panel-strong { fill: #191A1D; stroke: #F7F3EA; stroke-width: 1.2; }
-      .kernel-card { fill: #121316; stroke: #34363A; stroke-width: 1; }
-      .rule { stroke: #303236; stroke-width: 1; }
-      .flow { fill: none; stroke: #F7F3EA; stroke-width: 1.5; marker-end: url(#arrow-ivory); }
-      .flow-coral { fill: none; stroke: #FF6B4A; stroke-width: 1.8; marker-end: url(#arrow-coral); }
-      .flow-dash { fill: none; stroke: #FF6B4A; stroke-width: 1.4; stroke-dasharray: 5 5; marker-end: url(#arrow-coral); }
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif; }
+      .eyebrow { fill:#FF6B4A; font-size:11px; font-weight:700; letter-spacing:2px; }
+      .title { fill:#F7F3EA; font-size:29px; font-weight:700; letter-spacing:-.45px; }
+      .subtitle { fill:#A8A49C; font-size:13px; font-weight:450; }
+      .section-title { fill:#F7F3EA; font-size:15px; font-weight:700; }
+      .section-note { fill:#8F8C86; font-size:10px; font-weight:600; letter-spacing:.65px; }
+      .card-title { fill:#F7F3EA; font-size:13px; font-weight:650; }
+      .card-text { fill:#A8A49C; font-size:10.5px; font-weight:450; }
+      .body { fill:#A8A49C; font-size:11px; font-weight:450; }
+      .label { fill:#F7F3EA; font-size:11px; font-weight:650; }
+      .micro { fill:#8F8C86; font-size:9.5px; font-weight:650; letter-spacing:.55px; }
+      .pill-text { fill:#111318; font-size:9px; font-weight:750; letter-spacing:.5px; }
+      .footer { fill:#77746F; font-size:9px; font-weight:600; letter-spacing:.8px; }
+      .panel { fill:#15171A; stroke:#303236; stroke-width:1; }
+      .panel-strong { fill:#191A1D; stroke:#F7F3EA; stroke-width:1.15; }
+      .kernel { fill:#0D0F11; stroke:#3B3D41; stroke-width:1.2; }
+      .soft { fill:#121316; stroke:#26282C; stroke-width:1; }
+      .accent-fill { fill:#FF6B4A; }
+      .pill.coral { fill:#FF6B4A; }
+      .pill.ivory { fill:#F7F3EA; }
+      .pill.muted { fill:#8F8C86; }
+      .rule { fill:none; stroke:#303236; stroke-width:1; }
+      .rule-coral { fill:none; stroke:#FF6B4A; stroke-width:1.2; }
+      .flow { fill:none; stroke:#F7F3EA; stroke-width:1.45; marker-end:url(#arrow-ivory); }
+      .flow-coral { stroke:#FF6B4A; stroke-width:1.75; marker-end:url(#arrow-coral); }
+      .flow-dash { stroke-dasharray:5 5; }
     </style>
   </defs>
-
   <rect width="1200" height="760" fill="#111318"/>
-  <path d="M0 90H1200M0 244H1200M0 354H1200M0 610H1200" class="rule" opacity="0.7"/>
+  <path d="M0 94H1200M0 724H1200" class="rule"/>
+  <text x="48" y="33" class="eyebrow" text-anchor="start">运行机制 / v0.2.48</text>
+  <text x="48" y="68" class="title" text-anchor="start">所有 Agent 副作用，共用一个受治理的控制环。</text>
+  <text x="1152" y="39" class="subtitle" text-anchor="end">内核负责控制流 · 宿主负责真实 I/O</text>
+  <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>
 
-  <!-- 标题 -->
-  <text x="48" y="34" class="eyebrow">运行机制 / v0.2.47</text>
-  <text x="48" y="68" class="title">每个 Agent effect，都经过同一个受治理运行环。</text>
-  <text x="1152" y="38" text-anchor="end" class="band-note">控制流在内核</text>
-  <text x="1152" y="58" text-anchor="end" class="band-note">真实 I/O 在宿主</text>
-  <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent"/>
 
-  <!-- 宿主真实 I/O -->
-  <text x="48" y="116" class="band-title">宿主拥有真实 I/O</text>
-  <text x="1152" y="116" text-anchor="end" class="band-note">凭据 · 网络 · 文件系统 · 持久存储</text>
+  <text x="48" y="122" class="section-title" text-anchor="start">宿主拥有的 I/O</text>
+  <text x="1152" y="122" class="section-note" text-anchor="end">凭据 · 网络 · 文件系统 · 持久存储</text>
 
   <g>
-    <rect x="48" y="134" width="258" height="86" rx="5" class="panel"/>
-    <text x="66" y="160" class="card-title">Provider 适配器</text>
-    <text x="66" y="181" class="card-text">流式 LLM 调用 · 模型路由</text>
-    <text x="66" y="199" class="card-text">文本 · 图像 · 音频序列化</text>
-    <rect x="290" y="146" width="3" height="19" rx="1.5" class="accent"/>
+    <rect x="48" y="140" width="258" height="82" rx="6" class="panel"/>
+    <rect x="48" y="140" width="5" height="82" rx="2.5" class="accent-fill"/>
+    <text x="66" y="169" class="card-title" text-anchor="start">Provider 适配器</text>
+    <text x="66" y="193" class="card-text" text-anchor="start">流式 LLM · 模型路由</text>
+<text x="66" y="211" class="card-text" text-anchor="start">文本 · 图像 · 音频序列化</text>
 
-    <rect x="324" y="134" width="258" height="86" rx="5" class="panel"/>
-    <text x="342" y="160" class="card-title">ExecutionPlane</text>
-    <text x="342" y="181" class="card-text">工具 · 流式执行 · 挂起 / 恢复</text>
-    <text x="342" y="199" class="card-text">worktree · 沙箱 · 远程 VPC</text>
-
-    <rect x="600" y="134" width="258" height="86" rx="5" class="panel"/>
-    <text x="618" y="160" class="card-title">证据与持久存储</text>
-    <text x="618" y="181" class="card-text">SessionLog · 事务流 · snapshot</text>
-    <text x="618" y="199" class="card-text">DreamStore · 归档 · 大结果 spool</text>
-
-    <rect x="876" y="134" width="276" height="86" rx="5" class="panel"/>
-    <text x="894" y="160" class="card-title">外部控制</text>
-    <text x="894" y="181" class="card-text">审批 · signal · webhook · cron</text>
-    <text x="894" y="199" class="card-text">取消 · deadline · 宿主策略</text>
   </g>
-
-  <!-- RuntimeRunner 宿主环 -->
-  <text x="48" y="273" class="band-title">宿主运行环</text>
-  <rect x="48" y="288" width="1104" height="46" rx="5" class="panel-strong"/>
-  <rect x="48" y="288" width="6" height="46" rx="3" class="accent"/>
-  <text x="72" y="316" class="card-title">RuntimeRunner</text>
-  <text x="194" y="316" class="card-text">分派内核 action</text>
-  <text x="365" y="316" class="card-text">执行获批 effect</text>
-  <text x="537" y="316" class="card-text">追加证据</text>
-  <text x="653" y="316" class="card-text">回灌 observation</text>
-  <text x="816" y="316" class="card-text">渲染 signal 与 harness instruction</text>
-
-  <!-- 双向 ABI -->
-  <path d="M510 334V347H398V371" class="flow"/>
-  <text x="426" y="348" class="micro">ACTION 返回宿主</text>
-  <path d="M690 371V347H584V334" class="flow-coral"/>
-  <text x="702" y="348" class="micro">OBSERVATION 进入内核</text>
-
-  <!-- 内核 -->
-  <rect x="48" y="372" width="1104" height="215" rx="6" fill="#0D0F11" stroke="#3B3D41" stroke-width="1.2"/>
-  <text x="68" y="402" class="band-title">deepstrike-core</text>
-  <text x="207" y="402" class="band-note">纯 RUST · 可序列化状态机 · ABI v2 · 零 PROVIDER I/O</text>
-  <rect x="1081" y="388" width="52" height="20" rx="10" fill="#FF6B4A"/>
-  <text x="1107" y="402" text-anchor="middle" fill="#111318" font-size="10" font-weight="750">内核</text>
 
   <g>
-    <rect x="68" y="426" width="249" height="132" rx="4" class="kernel-card"/>
-    <text x="86" y="452" class="card-title">Syscall Gate 与治理</text>
-    <text x="86" y="475" class="card-text">Invoke · Spawn · Memory syscall</text>
-    <text x="86" y="494" class="card-text">SubmitNodes · LoadWorkflow · PageIn</text>
-    <line x1="86" y1="510" x2="299" y2="510" class="rule"/>
-    <text x="86" y="532" class="micro">允许 · 拒绝 · 询问用户 · 限流</text>
+    <rect x="324" y="140" width="258" height="82" rx="6" class="panel"/>
 
-    <rect x="329" y="426" width="249" height="132" rx="4" class="kernel-card"/>
-    <text x="347" y="452" class="card-title">调度器、进程树与 DAG</text>
-    <text x="347" y="475" class="card-text">TCB · 子 Agent · dependency barrier</text>
-    <text x="347" y="494" class="card-text">预算 · quota · trust · quarantine</text>
-    <line x1="347" y1="510" x2="560" y2="510" class="rule"/>
-    <text x="347" y="532" class="micro">LOOP · CLASSIFY · TOURNAMENT · REDUCE</text>
+    <text x="342" y="169" class="card-title" text-anchor="start">ExecutionPlane</text>
+    <text x="342" y="193" class="card-text" text-anchor="start">工具 · 流式 · 挂起 / 恢复</text>
+<text x="342" y="211" class="card-text" text-anchor="start">Worktree · Sandbox · Remote VPC</text>
 
-    <rect x="590" y="426" width="249" height="132" rx="4" class="kernel-card"/>
-    <text x="608" y="452" class="card-title">Context VM 与知识</text>
-    <text x="608" y="475" class="card-text">stable · knowledge · history · state</text>
-    <text x="608" y="494" class="card-text">压缩 · handle · prompt-cache 边界</text>
-    <line x1="608" y1="510" x2="821" y2="510" class="rule"/>
-    <text x="608" y="532" class="micro">键控知识 · 预算 · SKILL 租约</text>
-
-    <rect x="851" y="426" width="281" height="132" rx="4" class="kernel-card"/>
-    <text x="869" y="452" class="card-title">Observation、Signal 与恢复</text>
-    <text x="869" y="475" class="card-text">Provider / 工具结果 · 模型可见拒绝</text>
-    <text x="869" y="494" class="card-text">事务 · snapshot · wake / resume</text>
-    <line x1="869" y1="510" x2="1114" y2="510" class="rule"/>
-    <text x="869" y="532" class="micro">可重放 · 可恢复 · 可审计</text>
   </g>
-
-  <!-- 四语言宿主 -->
-  <text x="48" y="632" class="band-title">一套行为，四个宿主 SDK</text>
-  <text x="48" y="654" class="card-text">同一内核状态机驱动每个宿主；只有真实 effect 的执行随语言而异。</text>
-  <g>
-    <rect x="48" y="674" width="94" height="32" rx="16" class="panel"/>
-    <text x="95" y="695" text-anchor="middle" class="card-title">Node.js</text>
-    <rect x="152" y="674" width="94" height="32" rx="16" class="panel"/>
-    <text x="199" y="695" text-anchor="middle" class="card-title">Python</text>
-    <rect x="256" y="674" width="94" height="32" rx="16" class="panel"/>
-    <text x="303" y="695" text-anchor="middle" class="card-title">Rust</text>
-    <rect x="360" y="674" width="94" height="32" rx="16" class="panel"/>
-    <text x="407" y="695" text-anchor="middle" class="card-title">WASM</text>
-  </g>
-
-  <!-- Self-harness 外环 -->
-  <line x1="494" y1="626" x2="494" y2="716" class="rule"/>
-  <text x="522" y="632" class="band-title">Node Self-Harness 实验室</text>
-  <text x="1128" y="632" text-anchor="end" class="band-note">外部优化环 · 安全面不允许编辑</text>
 
   <g>
-    <rect x="522" y="657" width="122" height="49" rx="4" class="panel"/>
-    <text x="583" y="678" text-anchor="middle" class="card-title">证据</text>
-    <text x="583" y="695" text-anchor="middle" class="card-text">失败签名聚类</text>
+    <rect x="600" y="140" width="258" height="82" rx="6" class="panel"/>
 
-    <rect x="666" y="657" width="122" height="49" rx="4" class="panel"/>
-    <text x="727" y="678" text-anchor="middle" class="card-title">提案</text>
-    <text x="727" y="695" text-anchor="middle" class="card-text">有边界 patch</text>
+    <text x="618" y="169" class="card-title" text-anchor="start">证据与持久存储</text>
+    <text x="618" y="193" class="card-text" text-anchor="start">SessionLog · ABI 事务 · 快照</text>
+<text x="618" y="211" class="card-text" text-anchor="start">DreamStore · Archive · 大结果 spool</text>
 
-    <rect x="810" y="657" width="146" height="49" rx="4" class="panel"/>
-    <text x="883" y="678" text-anchor="middle" class="card-title">验证</text>
-    <text x="883" y="695" text-anchor="middle" class="card-text">held-in + held-out</text>
-
-    <rect x="978" y="657" width="150" height="49" rx="4" class="panel"/>
-    <text x="1053" y="678" text-anchor="middle" class="card-title">晋升</text>
-    <text x="1053" y="695" text-anchor="middle" class="card-text">manifest 谱系</text>
-
-    <path d="M644 681H662" class="flow-coral"/>
-    <path d="M788 681H806" class="flow-coral"/>
-    <path d="M956 681H974" class="flow-coral"/>
-    <path d="M1053 706V730H583V710" class="flow-dash"/>
-    <text x="818" y="744" text-anchor="middle" class="micro">下一次运行：INSTRUCTION · NUDGE · RUNTIME PATCH</text>
   </g>
+
+  <g>
+    <rect x="876" y="140" width="276" height="82" rx="6" class="panel"/>
+
+    <text x="894" y="169" class="card-title" text-anchor="start">外部控制</text>
+    <text x="894" y="193" class="card-text" text-anchor="start">审批 · 信号 · Webhook · Cron</text>
+<text x="894" y="211" class="card-text" text-anchor="start">取消 · Deadline · 宿主策略</text>
+
+  </g>
+
+  <text x="48" y="260" class="section-title" text-anchor="start">宿主运行循环</text>
+  <text x="1152" y="260" class="section-note" text-anchor="end">RUNTIMERUNNER · ACTIONS OUT · OBSERVATIONS IN</text>
+
+  <g>
+    <rect x="48" y="278" width="1104" height="48" rx="6" class="panel-strong"/>
+    <rect x="48" y="278" width="5" height="48" rx="2.5" class="accent-fill"/>
+    <text x="66" y="307" class="card-title" text-anchor="start">RuntimeRunner</text>
+
+
+  </g>
+    <text x="210" y="308" class="card-text" text-anchor="start">分派 KernelEffect</text>
+    <text x="408" y="308" class="card-text" text-anchor="start">执行获批 Effect</text>
+    <text x="620" y="308" class="card-text" text-anchor="start">追加证据</text>
+    <text x="760" y="308" class="card-text" text-anchor="start">回灌 Observation</text>
+    <text x="928" y="308" class="card-text" text-anchor="start">信号 · Harness 指令</text>
+    <path d="M488 326V347H386V368" class="flow"/>
+    <path d="M704 368V347H592V326" class="flow flow-coral"/>
+    <text x="410" y="350" class="micro" text-anchor="start">EFFECT 向外</text>
+    <text x="720" y="350" class="micro" text-anchor="start">OBSERVATION 向内</text>
+    <rect x="48" y="370" width="1104" height="214" rx="7" class="kernel"/>
+    <text x="68" y="400" class="section-title" text-anchor="start">deepstrike-core</text>
+    <text x="205" y="400" class="section-note" text-anchor="start">纯 Rust · 可序列化状态机 · ABI v2 · 零 Provider I/O</text>
+
+  <rect x="1067" y="384" width="66" height="22" rx="11" class="pill coral"/>
+  <text x="1100" y="399" class="pill-text" text-anchor="middle">内核</text>
+
+  <g>
+    <rect x="68" y="422" width="249" height="136" rx="6" class="panel"/>
+
+    <text x="86" y="451" class="card-title" text-anchor="start">Syscall Gate 与治理</text>
+    <text x="86" y="475" class="card-text" text-anchor="start">Invoke · Spawn · Memory</text>
+<text x="86" y="493" class="card-text" text-anchor="start">SubmitNodes · LoadWorkflow</text>
+
+  </g>
+        <path d="M86 509H299" class="rule"/>
+        <text x="86" y="536" class="micro" text-anchor="start">允许 · 拒绝 · 询问 · 限流</text>
+
+  <g>
+    <rect x="329" y="422" width="249" height="136" rx="6" class="panel"/>
+
+    <text x="347" y="451" class="card-title" text-anchor="start">调度器、进程树与 DAG</text>
+    <text x="347" y="475" class="card-text" text-anchor="start">TCB · 子 Agent · 依赖屏障</text>
+<text x="347" y="493" class="card-text" text-anchor="start">预算 · 配额 · 信任 · 隔离</text>
+
+  </g>
+        <path d="M347 509H560" class="rule"/>
+        <text x="347" y="536" class="micro" text-anchor="start">LOOP · CLASSIFY · REDUCE</text>
+
+  <g>
+    <rect x="590" y="422" width="249" height="136" rx="6" class="panel"/>
+
+    <text x="608" y="451" class="card-title" text-anchor="start">Context VM 与知识</text>
+    <text x="608" y="475" class="card-text" text-anchor="start">稳定 · 知识 · 历史 · 状态</text>
+<text x="608" y="493" class="card-text" text-anchor="start">压缩 · Handle · Cache 边界</text>
+
+  </g>
+        <path d="M608 509H821" class="rule"/>
+        <text x="608" y="536" class="micro" text-anchor="start">SKILL LEASE · KNOWLEDGE BUDGET</text>
+
+  <g>
+    <rect x="851" y="422" width="281" height="136" rx="6" class="panel"/>
+
+    <text x="869" y="451" class="card-title" text-anchor="start">Observation 与恢复</text>
+    <text x="869" y="475" class="card-text" text-anchor="start">Provider / Tool 结果 · 可见拒绝</text>
+<text x="869" y="493" class="card-text" text-anchor="start">信号 · 事务 · 快照 · 唤醒</text>
+
+  </g>
+        <path d="M869 509H1114" class="rule"/>
+        <text x="869" y="536" class="micro" text-anchor="start">APPEND-ONLY EVIDENCE</text>
+
+  <text x="48" y="620" class="section-title" text-anchor="start">Self-Harness v2 外环</text>
+  <text x="1152" y="620" class="section-note" text-anchor="end">只改下一次运行 · 不绕过治理</text>
+
+  <g>
+    <rect x="48" y="638" width="770" height="62" rx="6" class="panel"/>
+    <rect x="48" y="638" width="5" height="62" rx="2.5" class="accent-fill"/>
+    <text x="66" y="667" class="card-title" text-anchor="start">证据 → 聚类 → 提案 → 筛查 → held-in / held-out 验证 → 分级晋升</text>
+    <text x="66" y="691" class="card-text" text-anchor="start">Scope 隔离 · 能力面只取交集 · 内容寻址谱系</text>
+
+  </g>
+
+  <g>
+    <rect x="838" y="638" width="314" height="62" rx="6" class="panel"/>
+
+    <text x="856" y="667" class="card-title" text-anchor="start">同一 ABI 的宿主 SDK</text>
+    <text x="856" y="691" class="card-text" text-anchor="start">Node.js · Python · Rust · WASM</text>
+
+  </g>
+    <path d="M818 669H836" class="flow flow-coral flow-dash"/>
+
+  <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · 控制流在内核 · 真实 I/O 在宿主</text>
 </svg>

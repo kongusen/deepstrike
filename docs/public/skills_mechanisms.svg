@@ -1,162 +1,149 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="100%" height="100%" style="background-color: #0b0f19; font-family: system-ui, -apple-system, sans-serif;">
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">DeepStrike skills, knowledge, and capability gating</title>
+  <desc id="desc">Skill metadata enters the stable catalog, bodies load on demand into keyed knowledge, activation narrows tools by intersection, leases expire at boundaries, and manifests can only narrow the host baseline.</desc>
   <defs>
-    <!-- Gradients -->
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0b0f19" />
-      <stop offset="50%" stop-color="#111827" />
-      <stop offset="100%" stop-color="#070a13" />
-    </linearGradient>
-    <linearGradient id="boxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#1e293b" />
-      <stop offset="100%" stop-color="#0f172a" />
-    </linearGradient>
-    
-    <!-- Arrows -->
-    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+    <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
     </marker>
-    <marker id="arrowGreen" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#10b981" />
+    <marker id="arrow-coral" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#FF6B4A"/>
     </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif; }
+      .eyebrow { fill:#FF6B4A; font-size:11px; font-weight:700; letter-spacing:2px; }
+      .title { fill:#F7F3EA; font-size:29px; font-weight:700; letter-spacing:-.45px; }
+      .subtitle { fill:#A8A49C; font-size:13px; font-weight:450; }
+      .section-title { fill:#F7F3EA; font-size:15px; font-weight:700; }
+      .section-note { fill:#8F8C86; font-size:10px; font-weight:600; letter-spacing:.65px; }
+      .card-title { fill:#F7F3EA; font-size:13px; font-weight:650; }
+      .card-text { fill:#A8A49C; font-size:10.5px; font-weight:450; }
+      .body { fill:#A8A49C; font-size:11px; font-weight:450; }
+      .label { fill:#F7F3EA; font-size:11px; font-weight:650; }
+      .micro { fill:#8F8C86; font-size:9.5px; font-weight:650; letter-spacing:.55px; }
+      .pill-text { fill:#111318; font-size:9px; font-weight:750; letter-spacing:.5px; }
+      .footer { fill:#77746F; font-size:9px; font-weight:600; letter-spacing:.8px; }
+      .panel { fill:#15171A; stroke:#303236; stroke-width:1; }
+      .panel-strong { fill:#191A1D; stroke:#F7F3EA; stroke-width:1.15; }
+      .kernel { fill:#0D0F11; stroke:#3B3D41; stroke-width:1.2; }
+      .soft { fill:#121316; stroke:#26282C; stroke-width:1; }
+      .accent-fill { fill:#FF6B4A; }
+      .pill.coral { fill:#FF6B4A; }
+      .pill.ivory { fill:#F7F3EA; }
+      .pill.muted { fill:#8F8C86; }
+      .rule { fill:none; stroke:#303236; stroke-width:1; }
+      .rule-coral { fill:none; stroke:#FF6B4A; stroke-width:1.2; }
+      .flow { fill:none; stroke:#F7F3EA; stroke-width:1.45; marker-end:url(#arrow-ivory); }
+      .flow-coral { stroke:#FF6B4A; stroke-width:1.75; marker-end:url(#arrow-coral); }
+      .flow-dash { stroke-dasharray:5 5; }
+    </style>
   </defs>
+  <rect width="1200" height="760" fill="#111318"/>
+  <path d="M0 94H1200M0 724H1200" class="rule"/>
+  <text x="48" y="33" class="eyebrow" text-anchor="start">SKILLS &amp; CAPABILITIES / v0.2.48</text>
+  <text x="48" y="68" class="title" text-anchor="start">Load expertise on demand and narrow authority with it.</text>
+  <text x="1152" y="39" class="subtitle" text-anchor="end">CATALOG · ACTIVATE · KNOWLEDGE · INTERSECTION · LEASE</text>
+  <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>
 
-  <!-- Background -->
-  <rect width="800" height="480" fill="url(#bgGrad)" />
-  <rect width="800" height="480" fill="none" stroke="#1e293b" stroke-width="2" />
 
-  <!-- Grid lines -->
-  <path d="M 0 60 L 800 60 M 0 120 L 800 120 M 0 180 L 800 180 M 0 240 L 800 240 M 0 300 L 800 300 M 0 360 L 800 360 M 0 420 L 800 420" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
-  <path d="M 100 0 L 100 480 M 200 0 L 200 480 M 300 0 L 300 480 M 400 0 L 400 480 M 500 0 L 500 480 M 600 0 L 600 480 M 700 0 L 700 480" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+  <text x="48" y="124" class="section-title" text-anchor="start">Catalog and activation</text>
+  <text x="1152" y="124" class="section-note" text-anchor="end">ONLY METADATA IS RESIDENT BEFORE THE MODEL CHOOSES A SKILL</text>
 
-  <!-- Title -->
-  <text x="400" y="35" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="700" letter-spacing="2">SKILL REGISTER &amp; CAPABILITY GATING</text>
-  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-size="11">On-Demand Capability Loading, Context VM Partitioning &amp; Tool Filtering</text>
+  <g>
+    <rect x="48" y="146" width="258" height="112" rx="6" class="panel"/>
 
-  <!-- LEFT: SKILL REGISTRY &amp; SCANNING -->
-  <g transform="translate(30, 80)">
-    <rect width="210" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
-    <rect width="210" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
-    <text x="105" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">1. Skill Registry Scan</text>
+    <text x="66" y="175" class="card-title" text-anchor="start">skillDir scan</text>
+    <text x="66" y="199" class="card-text" text-anchor="start">Frontmatter: name · description</text>
+<text x="66" y="217" class="card-text" text-anchor="start">allowedTools · effort · token estimate</text>
 
-    <text x="15" y="55" fill="#94a3b8" font-size="9">Scans markdown catalog folder:</text>
+  </g>
+    <path d="M306 202H372" class="flow flow-coral"/>
 
-    <!-- Scan box -->
-    <g transform="translate(15, 70)">
-      <rect width="180" height="155" rx="4" fill="#111827" stroke="#334155" />
-      <text x="10" y="16" fill="#fb923c" font-size="9" font-family="monospace">code-review.md</text>
-      
-      <!-- YAML Metadata -->
-      <rect x="10" y="25" width="160" height="60" rx="3.5" fill="#1e293b" stroke="#334155" />
-      <text x="15" y="38" fill="#e2e8f0" font-size="8" font-family="monospace">name: code-review</text>
-      <text x="15" y="48" fill="#e2e8f0" font-size="8" font-family="monospace">allowed_tools: [read_file]</text>
-      <text x="15" y="58" fill="#e2e8f0" font-size="8" font-family="monospace">description: Review logic...</text>
-      <text x="15" y="68" fill="#e2e8f0" font-size="8" font-family="monospace">when_to_use: Review PRs</text>
+  <g>
+    <rect x="374" y="146" width="258" height="112" rx="6" class="panel"/>
+    <rect x="374" y="146" width="5" height="112" rx="2.5" class="accent-fill"/>
+    <text x="392" y="175" class="card-title" text-anchor="start">Stable catalog</text>
+    <text x="392" y="199" class="card-text" text-anchor="start">Metadata only in context</text>
+<text x="392" y="217" class="card-text" text-anchor="start">skill meta-tool selects by name</text>
 
-      <text x="10" y="105" fill="#94a3b8" font-size="8">Skill registry compiles scans,</text>
-      <text x="10" y="117" fill="#94a3b8" font-size="8">sends Metadata list to kernel.</text>
-      <text x="10" y="129" fill="#10b981" font-size="8" font-weight="bold">✓ XML List: &lt;available_skills&gt;</text>
-    </g>
+  </g>
+    <path d="M632 202H698" class="flow flow-coral"/>
 
-    <!-- Available skills XML box -->
-    <g transform="translate(15, 240)">
-      <rect width="180" height="110" rx="4" fill="#111827" stroke="#334155" />
-      <text x="10" y="18" fill="#ffffff" font-size="10.5" font-weight="bold">XML System Prompt</text>
-      <text x="10" y="32" fill="#94a3b8" font-size="8">Injected to System Stable slot:</text>
-      <rect x="10" y="42" width="160" height="55" rx="3" fill="#1e293b" stroke="#334155" />
-      <text x="16" y="56" fill="#fde047" font-size="7.5" font-family="monospace">&lt;available_skills&gt;</text>
-      <text x="16" y="68" fill="#e2e8f0" font-size="7.5" font-family="monospace">  * code-review: Review bugs</text>
-      <text x="16" y="80" fill="#fde047" font-size="7.5" font-family="monospace">&lt;/available_skills&gt;</text>
-    </g>
+  <g>
+    <rect x="700" y="146" width="208" height="112" rx="6" class="panel"/>
+
+    <text x="718" y="175" class="card-title" text-anchor="start">Activation</text>
+    <text x="718" y="199" class="card-text" text-anchor="start">Body returned once</text>
+<text x="718" y="217" class="card-text" text-anchor="start">Kernel records active skill</text>
+
+  </g>
+    <path d="M908 202H974" class="flow flow-coral"/>
+
+  <g>
+    <rect x="976" y="146" width="176" height="112" rx="6" class="panel"/>
+
+    <text x="994" y="175" class="card-title" text-anchor="start">Knowledge pin</text>
+    <text x="994" y="199" class="card-text" text-anchor="start">key: skill:&lt;name&gt;</text>
+<text x="994" y="217" class="card-text" text-anchor="start">lease tracked</text>
+
   </g>
 
-  <!-- MIDDLE: METATOOL INVOCATION -->
-  <g transform="translate(265, 80)">
-    <rect width="260" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
-    <rect width="260" height="35" rx="8" fill="#bd00ff" opacity="0.08" />
-    <text x="130" y="22" text-anchor="middle" fill="#c084fc" font-size="12" font-weight="bold">2. On-Demand Loading</text>
 
-    <!-- Meta-tool invocation -->
-    <g transform="translate(15, 55)">
-      <rect width="230" height="80" rx="6" fill="#111827" stroke="#bd00ff" stroke-width="1.2" />
-      <text x="12" y="20" fill="#ffffff" font-size="11" font-weight="bold">Agent Meta-Tool Call</text>
-      <text x="12" y="34" fill="#94a3b8" font-size="8.5">Agent reads XML, decides to load skill:</text>
-      <rect x="12" y="44" width="206" height="24" rx="3" fill="#1e293b" stroke="#334155" />
-      <text x="18" y="58" fill="#c084fc" font-size="8.5" font-family="monospace">skill(name="code-review")</text>
-    </g>
+  <text x="48" y="306" class="section-title" text-anchor="start">Capability intersection</text>
+  <text x="1152" y="306" class="section-note" text-anchor="end">EVERY LAYER CAN NARROW · NO LAYER CAN WIDEN ITS BASELINE</text>
+    <rect x="48" y="326" width="1104" height="130" rx="7" class="kernel"/>
+    <text x="68" y="357" class="label" text-anchor="start">Registered tools</text>
+    <text x="200" y="357" class="label" text-anchor="start">∩ host allowedToolIds</text>
+    <text x="382" y="357" class="label" text-anchor="start">∩ HarnessManifest ids</text>
+    <text x="570" y="357" class="label" text-anchor="start">∩ skillFilter / allowedTools</text>
+    <text x="786" y="357" class="label" text-anchor="start">∪ stableCore + meta-tools</text>
+    <path d="M68 382H1080" class="flow flow-coral"/>
+    <text x="68" y="420" class="card-title" text-anchor="start">Effective tool schema</text>
+    <text x="218" y="420" class="card-text" text-anchor="start">is the safe subset exposed on the next provider call; an empty tool intersection throws instead of widening.</text>
 
-    <!-- Active skills state -->
-    <g transform="translate(15, 150)">
-      <rect width="230" height="90" rx="6" fill="#111827" stroke="#334155" />
-      <text x="12" y="20" fill="#ffffff" font-size="11" font-weight="bold">Active Skills Registration</text>
-      <text x="12" y="35" fill="#94a3b8" font-size="8.5">Loaded skill metadata registers in TCB:</text>
-      
-      <rect x="12" y="47" width="206" height="32" rx="3" fill="#1e293b" />
-      <text x="18" y="60" fill="#e2e8f0" font-size="8" font-family="monospace">tcb.active_skills: ["code-review"]</text>
-      <text x="18" y="70" fill="#10b981" font-size="8" font-weight="bold">✓ Enables tool filtering narrow down</text>
-    </g>
 
-    <!-- SDK returns markdown content to Knowledge slot -->
-    <g transform="translate(15, 255)">
-      <rect width="230" height="95" rx="6" fill="#111827" stroke="#10b981" stroke-width="1" />
-      <text x="12" y="20" fill="#34d399" font-size="11" font-weight="bold">Knowledge Injection</text>
-      <text x="12" y="35" fill="#94a3b8" font-size="8.5">SDK reads code-review.md markdown body,</text>
-      <text x="12" y="47" fill="#94a3b8" font-size="8.5">injects it directly as observation stream</text>
-      <text x="12" y="59" fill="#10b981" font-size="8.5" font-weight="bold">→ Appends to system_knowledge slot</text>
-      <text x="12" y="71" fill="#94a3b8" font-size="8">Updates LLM context with detail guidelines.</text>
-    </g>
+  <text x="48" y="504" class="section-title" text-anchor="start">Lease and boundary lifecycle</text>
+  <text x="1152" y="504" class="section-note" text-anchor="end">ACTIVATION IS AN EPOCH EVENT BECAUSE IT CHANGES THE PROMPT CACHE</text>
+
+  <g>
+    <rect x="48" y="524" width="258" height="106" rx="6" class="panel"/>
+
+    <text x="66" y="553" class="card-title" text-anchor="start">Active</text>
+    <text x="66" y="577" class="card-text" text-anchor="start">Tool surface narrowed</text>
+<text x="66" y="595" class="card-text" text-anchor="start">Body resident in knowledge</text>
+
   </g>
 
-  <!-- RIGHT: TOOL SCHEMA FILTERING (Gating) -->
-  <g transform="translate(550, 80)">
-    <rect width="220" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
-    <rect width="220" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
-    <text x="110" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">3. Tool Schema Filtering</text>
+  <g>
+    <rect x="324" y="524" width="258" height="106" rx="6" class="panel"/>
 
-    <text x="15" y="55" fill="#94a3b8" font-size="9">Allowed tools list in code-review metadata</text>
-    <text x="15" y="67" fill="#94a3b8" font-size="9">narrow down the global tool schemas:</text>
+    <text x="342" y="553" class="card-title" text-anchor="start">Refresh</text>
+    <text x="342" y="577" class="card-text" text-anchor="start">Repeat skill(name)</text>
+<text x="342" y="595" class="card-text" text-anchor="start">resets lease turn count</text>
 
-    <!-- Filter action -->
-    <g transform="translate(15, 85)">
-      <rect width="190" height="260" rx="6" fill="#111827" stroke="#334155" />
-      <text x="10" y="20" fill="#ffffff" font-size="10.5" font-weight="bold">Registry Schema Filter</text>
-
-      <!-- Allowed -->
-      <g transform="translate(10, 35)">
-        <rect width="170" height="35" rx="3.5" fill="#10b981" opacity="0.1" stroke="#10b981" stroke-width="0.8" />
-        <text x="8" y="16" fill="#34d399" font-size="9" font-weight="bold">read_file</text>
-        <text x="8" y="26" fill="#ffffff" font-size="7.5">Allowed in code-review.md</text>
-        <rect x="135" y="4" width="30" height="12" rx="2" fill="#10b981" opacity="0.2" />
-        <text x="150" y="13" text-anchor="middle" fill="#34d399" font-size="6.5" font-weight="bold">PASS</text>
-      </g>
-
-      <!-- Denied -->
-      <g transform="translate(10, 80)">
-        <rect width="170" height="35" rx="3.5" fill="#ef4444" opacity="0.1" stroke="#ef4444" stroke-width="0.8" />
-        <text x="8" y="16" fill="#f87171" font-size="9" font-weight="bold">write_file</text>
-        <text x="8" y="26" fill="#94a3b8" font-size="7.5">Excluded from allowed list</text>
-        <rect x="135" y="4" width="30" height="12" rx="2" fill="#ef4444" opacity="0.2" />
-        <text x="150" y="13" text-anchor="middle" fill="#f87171" font-size="6.5" font-weight="bold">FILTER</text>
-      </g>
-
-      <!-- Denied 2 -->
-      <g transform="translate(10, 125)">
-        <rect width="170" height="35" rx="3.5" fill="#ef4444" opacity="0.1" stroke="#ef4444" stroke-width="0.8" />
-        <text x="8" y="16" fill="#f87171" font-size="9" font-weight="bold">dangerous_tool</text>
-        <text x="8" y="26" fill="#94a3b8" font-size="7.5">Excluded from allowed list</text>
-        <rect x="135" y="4" width="30" height="12" rx="2" fill="#ef4444" opacity="0.2" />
-        <text x="150" y="13" text-anchor="middle" fill="#f87171" font-size="6.5" font-weight="bold">FILTER</text>
-      </g>
-
-      <text x="10" y="185" fill="#94a3b8" font-size="8.5">Narrows exposed schema list</text>
-      <text x="10" y="197" fill="#94a3b8" font-size="8.5">during next CallLLM render,</text>
-      <text x="10" y="209" fill="#94a3b8" font-size="8.5">improving agent focus and</text>
-      <text x="10" y="221" fill="#94a3b8" font-size="8.5">reducing hallucinated tool calls.</text>
-    </g>
   </g>
 
-  <!-- Connectors -->
-  <!-- Meta-tool invocation triggers SDK loading -->
-  <path d="M 400,135 Q 400,10 135,10 C 135,10 135,30 135,50" fill="none" stroke="#bd00ff" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrow)" />
-  <!-- Active skills triggers filtering -->
-  <path d="M 480,195 L 542,195" stroke="#00f0ff" stroke-width="2" marker-end="url(#arrow)" />
+  <g>
+    <rect x="600" y="524" width="258" height="106" rx="6" class="panel"/>
+
+    <text x="618" y="553" class="card-title" text-anchor="start">Deactivate / expire</text>
+    <text x="618" y="577" class="card-text" text-anchor="start">Host command or lease end</text>
+<text x="618" y="595" class="card-text" text-anchor="start">Tool surface re-widens to baseline</text>
+
+  </g>
+
+  <g>
+    <rect x="876" y="524" width="276" height="106" rx="6" class="panel"/>
+
+    <text x="894" y="553" class="card-title" text-anchor="start">Boundary sweep</text>
+    <text x="894" y="577" class="card-text" text-anchor="start">Drop skill knowledge pin</text>
+<text x="894" y="595" class="card-text" text-anchor="start">Advance cache generation</text>
+
+  </g>
+    <path d="M306 577H322" class="flow"/><path d="M582 577H598" class="flow"/><path d="M858 577H874" class="flow flow-coral"/>
+
+  <text x="48" y="678" class="section-title" text-anchor="start">Separation</text>
+  <text x="1152" y="678" class="section-note" text-anchor="end">SKILL = METHOD · KNOWLEDGE = PINNED REFERENCE · MEMORY HIT = DECAYING FACT</text>
+
+  <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>
 </svg>

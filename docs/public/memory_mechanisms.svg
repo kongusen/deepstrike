@@ -1,165 +1,177 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="100%" height="100%" style="background-color: #0b0f19; font-family: system-ui, -apple-system, sans-serif;">
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">DeepStrike memory lifecycle</title>
+  <desc id="desc">Working, session, and durable memory paths, including kernel-validated writes and queries, prefetch and renewal recall, recall journaling, retention, promotion suggestions, and host-authoritative DreamStore state.</desc>
   <defs>
-    <!-- Gradients -->
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0b0f19" />
-      <stop offset="50%" stop-color="#111827" />
-      <stop offset="100%" stop-color="#070a13" />
-    </linearGradient>
-    <linearGradient id="boxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#1e293b" />
-      <stop offset="100%" stop-color="#0f172a" />
-    </linearGradient>
-    
-    <!-- Arrows -->
-    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+    <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
     </marker>
-    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#bd00ff" />
+    <marker id="arrow-coral" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#FF6B4A"/>
     </marker>
-    <marker id="arrowGreen" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#10b981" />
-    </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif; }
+      .eyebrow { fill:#FF6B4A; font-size:11px; font-weight:700; letter-spacing:2px; }
+      .title { fill:#F7F3EA; font-size:29px; font-weight:700; letter-spacing:-.45px; }
+      .subtitle { fill:#A8A49C; font-size:13px; font-weight:450; }
+      .section-title { fill:#F7F3EA; font-size:15px; font-weight:700; }
+      .section-note { fill:#8F8C86; font-size:10px; font-weight:600; letter-spacing:.65px; }
+      .card-title { fill:#F7F3EA; font-size:13px; font-weight:650; }
+      .card-text { fill:#A8A49C; font-size:10.5px; font-weight:450; }
+      .body { fill:#A8A49C; font-size:11px; font-weight:450; }
+      .label { fill:#F7F3EA; font-size:11px; font-weight:650; }
+      .micro { fill:#8F8C86; font-size:9.5px; font-weight:650; letter-spacing:.55px; }
+      .pill-text { fill:#111318; font-size:9px; font-weight:750; letter-spacing:.5px; }
+      .footer { fill:#77746F; font-size:9px; font-weight:600; letter-spacing:.8px; }
+      .panel { fill:#15171A; stroke:#303236; stroke-width:1; }
+      .panel-strong { fill:#191A1D; stroke:#F7F3EA; stroke-width:1.15; }
+      .kernel { fill:#0D0F11; stroke:#3B3D41; stroke-width:1.2; }
+      .soft { fill:#121316; stroke:#26282C; stroke-width:1; }
+      .accent-fill { fill:#FF6B4A; }
+      .pill.coral { fill:#FF6B4A; }
+      .pill.ivory { fill:#F7F3EA; }
+      .pill.muted { fill:#8F8C86; }
+      .rule { fill:none; stroke:#303236; stroke-width:1; }
+      .rule-coral { fill:none; stroke:#FF6B4A; stroke-width:1.2; }
+      .flow { fill:none; stroke:#F7F3EA; stroke-width:1.45; marker-end:url(#arrow-ivory); }
+      .flow-coral { stroke:#FF6B4A; stroke-width:1.75; marker-end:url(#arrow-coral); }
+      .flow-dash { stroke-dasharray:5 5; }
+    </style>
   </defs>
+  <rect width="1200" height="760" fill="#111318"/>
+  <path d="M0 94H1200M0 724H1200" class="rule"/>
+  <text x="48" y="33" class="eyebrow" text-anchor="start">MEMORY LIFECYCLE / v0.2.48</text>
+  <text x="48" y="68" class="title" text-anchor="start">Durable memory is a governed host device, not hidden context.</text>
+  <text x="1152" y="39" class="subtitle" text-anchor="end">QUERY · VALIDATE · COMMIT · RECALL · RETAIN · PROMOTE</text>
+  <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>
 
-  <!-- Background -->
-  <rect width="800" height="480" fill="url(#bgGrad)" />
-  <rect width="800" height="480" fill="none" stroke="#1e293b" stroke-width="2" />
 
-  <!-- Grid lines -->
-  <path d="M 0 60 L 800 60 M 0 120 L 800 120 M 0 180 L 800 180 M 0 240 L 800 240 M 0 300 L 800 300 M 0 360 L 800 360 M 0 420 L 800 420" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
-  <path d="M 100 0 L 100 480 M 200 0 L 200 480 M 300 0 L 300 480 M 400 0 L 400 480 M 500 0 L 500 480 M 600 0 L 600 480 M 700 0 L 700 480" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+  <text x="48" y="124" class="section-title" text-anchor="start">Three memory layers</text>
+  <text x="1152" y="124" class="section-note" text-anchor="end">THEIR OWNERSHIP AND LIFETIMES ARE DIFFERENT</text>
 
-  <!-- Title -->
-  <text x="400" y="35" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="700" letter-spacing="2">MEMORY MECHANISMS &amp; LAYERS</text>
-  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-size="11">Working, Session &amp; Durable Memory Gated Paths</text>
+  <g>
+    <rect x="48" y="146" width="344" height="104" rx="6" class="panel"/>
 
-  <!-- LEFT: KERNEL SPACE (Context VM &amp; Syscall Gate) -->
-  <g transform="translate(30, 80)">
-    <rect width="260" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
-    <rect width="260" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
-    <text x="130" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">DeepStrike Core (Kernel)</text>
+    <text x="66" y="175" class="card-title" text-anchor="start">Working</text>
+    <text x="66" y="199" class="card-text" text-anchor="start">Scratch state for the current run</text>
+<text x="66" y="217" class="card-text" text-anchor="start">No cross-session durability guarantee</text>
 
-    <!-- Context slots in relation to memory -->
-    <!-- system_knowledge -->
-    <g transform="translate(15, 55)">
-      <rect width="230" height="60" rx="4" fill="#111827" stroke="#10b981" stroke-width="1.2" />
-      <text x="10" y="16" fill="#10b981" font-size="10.5" font-weight="bold">Knowledge Slot (Address Space)</text>
-      <text x="10" y="32" fill="#e2e8f0" font-size="8.5">Reads paged-in Durable Memories</text>
-      <text x="10" y="44" fill="#94a3b8" font-size="8">→ Injected dynamically during Query path</text>
-    </g>
-
-    <!-- turns (chat history) -->
-    <g transform="translate(15, 125)">
-      <rect width="230" height="60" rx="4" fill="#111827" stroke="#334155" />
-      <text x="10" y="16" fill="#60a5fa" font-size="10.5" font-weight="bold">Turns History Slot (Working Memory)</text>
-      <text x="10" y="32" fill="#e2e8f0" font-size="8.5">Stores transient scratch pad conversations</text>
-      <text x="10" y="44" fill="#94a3b8" font-size="8">→ Cleared and reset across runs</text>
-    </g>
-
-    <!-- Syscall Traps -->
-    <g transform="translate(15, 205)">
-      <rect width="230" height="135" rx="6" fill="#111827" stroke="#bd00ff" stroke-width="1.2" />
-      <rect x="0" y="0" width="230" height="24" rx="6" fill="#bd00ff" opacity="0.1" />
-      <text x="115" y="16" text-anchor="middle" fill="#c084fc" font-size="10.5" font-weight="bold">Memory Syscall Trap</text>
-      
-      <!-- Write memory gate -->
-      <g transform="translate(10, 35)">
-        <rect width="210" height="35" rx="3" fill="#1e293b" stroke="#334155" />
-        <text x="8" y="15" fill="#f87171" font-size="9" font-weight="bold">Syscall::WriteMemory</text>
-        <text x="8" y="26" fill="#94a3b8" font-size="7.5">Performs schema policy validation &amp; rate limit</text>
-      </g>
-      
-      <!-- Query memory gate -->
-      <g transform="translate(10, 80)">
-        <rect width="210" height="35" rx="3" fill="#1e293b" stroke="#334155" />
-        <text x="8" y="15" fill="#38bdf8" font-size="9" font-weight="bold">Syscall::QueryMemory</text>
-        <text x="8" y="26" fill="#94a3b8" font-size="7.5">Checks retrieve permission &amp; scopes queries</text>
-      </g>
-    </g>
   </g>
 
-  <!-- MIDDLE: MEMORY LAYERS -->
-  <g transform="translate(325, 80)">
-    <rect width="180" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
-    <rect width="180" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
-    <text x="90" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">Memory Layers</text>
+  <g>
+    <rect x="428" y="146" width="344" height="104" rx="6" class="panel"/>
 
-    <!-- Working -->
-    <g transform="translate(10, 55)">
-      <rect width="160" height="70" rx="6" fill="#111827" stroke="#60a5fa" stroke-dasharray="1" />
-      <text x="10" y="20" fill="#60a5fa" font-size="10.5" font-weight="bold">1. Working Memory</text>
-      <text x="10" y="38" fill="#e2e8f0" font-size="8.5">Scratch pad / Chat turns</text>
-      <text x="10" y="50" fill="#94a3b8" font-size="7.5">▪ Dynamic in-run context</text>
-      <text x="10" y="60" fill="#94a3b8" font-size="7.5">▪ Volatile: reset on close</text>
-    </g>
+    <text x="446" y="175" class="card-title" text-anchor="start">Session</text>
+    <text x="446" y="199" class="card-text" text-anchor="start">Evidence events in SessionLog</text>
+<text x="446" y="217" class="card-text" text-anchor="start">Auditable and recoverable</text>
 
-    <!-- Session -->
-    <g transform="translate(10, 145)">
-      <rect width="160" height="80" rx="6" fill="#111827" stroke="#bd00ff" />
-      <text x="10" y="20" fill="#c084fc" font-size="10.5" font-weight="bold">2. Session Memory</text>
-      <text x="10" y="38" fill="#e2e8f0" font-size="8.5">Evidence &amp; Trace audit</text>
-      <text x="10" y="52" fill="#94a3b8" font-size="7.5">▪ Orderly appended events</text>
-      <text x="10" y="62" fill="#94a3b8" font-size="7.5">▪ Saved to SessionLog</text>
-      <text x="10" y="72" fill="#94a3b8" font-size="7.5">▪ Essential for Wake/Replay</text>
-    </g>
-
-    <!-- Durable -->
-    <g transform="translate(10, 245)">
-      <rect width="160" height="95" rx="6" fill="#111827" stroke="#10b981" stroke-width="1.5" />
-      <text x="10" y="20" fill="#34d399" font-size="10.5" font-weight="bold">3. Durable Memory</text>
-      <text x="10" y="38" fill="#e2e8f0" font-size="8.5">DreamStore knowledge</text>
-      <text x="10" y="52" fill="#94a3b8" font-size="7.5">▪ Long-term storage</text>
-      <text x="10" y="62" fill="#94a3b8" font-size="7.5">▪ Vector retrieval indices</text>
-      <text x="10" y="72" fill="#94a3b8" font-size="7.5">▪ Cross-session shareable</text>
-      <text x="10" y="82" fill="#94a3b8" font-size="7.5">▪ Organized by idle pipeline</text>
-    </g>
   </g>
 
-  <!-- RIGHT: HOST SDK STORE (DreamStore &amp; Session Store) -->
-  <g transform="translate(540, 80)">
-    <rect width="230" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
-    <rect width="230" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
-    <text x="115" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">Host SDK Storage</text>
+  <g>
+    <rect x="808" y="146" width="344" height="104" rx="6" class="panel"/>
+    <rect x="808" y="146" width="5" height="104" rx="2.5" class="accent-fill"/>
+    <text x="826" y="175" class="card-title" text-anchor="start">Durable</text>
+    <text x="826" y="199" class="card-text" text-anchor="start">DreamStore owns full record set</text>
+<text x="826" y="217" class="card-text" text-anchor="start">Host decides retention, pinning, eviction</text>
 
-    <!-- Session log database -->
-    <g transform="translate(15, 60)">
-      <rect width="200" height="80" rx="6" fill="#111827" stroke="#bd00ff" stroke-width="1" />
-      <text x="10" y="20" fill="#ffffff" font-size="11" font-weight="bold">Session Log Store</text>
-      <text x="10" y="35" fill="#94a3b8" font-size="8.5">Appends allowed written metadata</text>
-      <text x="10" y="47" fill="#94a3b8" font-size="8.5">FileSessionLog / DB Store</text>
-      <rect x="10" y="57" width="180" height="15" rx="2.5" fill="#bd00ff" opacity="0.1" />
-      <text x="100" y="68" text-anchor="middle" fill="#c084fc" font-size="7.5" font-weight="bold">Evidence Commit (Session Log)</text>
-    </g>
-
-    <!-- DreamStore (Semantic index database) -->
-    <g transform="translate(15, 180)">
-      <rect width="200" height="140" rx="6" fill="#111827" stroke="#10b981" stroke-width="1.5" />
-      <text x="10" y="20" fill="#ffffff" font-size="11" font-weight="bold">DreamStore (Vector DB)</text>
-      <text x="10" y="35" fill="#94a3b8" font-size="8.5">Stores embeddings &amp; query matches</text>
-
-      <!-- DB icons -->
-      <g transform="translate(10, 50)">
-        <rect width="180" height="30" rx="3" fill="#1e293b" stroke="#334155" />
-        <text x="10" y="18" fill="#e2e8f0" font-size="9" font-family="monospace">Vector Index search()</text>
-        <path d="M 170,15 L 140,15" stroke="#10b981" stroke-width="1" marker-end="url(#arrowGreen)" />
-      </g>
-      <g transform="translate(10, 90)">
-        <rect width="180" height="30" rx="3" fill="#1e293b" stroke="#334155" />
-        <text x="10" y="18" fill="#e2e8f0" font-size="9" font-family="monospace">Semantic commit()</text>
-      </g>
-    </g>
   </g>
 
-  <!-- Connectors -->
-  <!-- Write Path -->
-  <!-- Syscall write to Gate -> Session Store & DreamStore -->
-  <path d="M 135,340 C 135,420 620,420 620,323" fill="none" stroke="#bd00ff" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrowPurple)" />
-  <text x="360" y="415" text-anchor="middle" fill="#c084fc" font-size="9.5" font-weight="bold">Write Path: Gated Syscall → Commit in DreamStore &amp; SessionLog</text>
 
-  <!-- Query Path -->
-  <!-- DreamStore search -> Injects into Knowledge Slot -->
-  <path d="M 640,175 C 640,25 130,25 130,50" fill="none" stroke="#10b981" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrowGreen)" />
-  <text x="360" y="18" text-anchor="middle" fill="#34d399" font-size="9.5" font-weight="bold">Query Path: Search DreamStore → Inject into Context VM Knowledge Slot</text>
+  <text x="48" y="298" class="section-title" text-anchor="start">Recall path</text>
+  <text x="1152" y="298" class="section-note" text-anchor="end">PREFETCH AND IN-RUN QUERY SHARE ONE JOURNALED ROUTE</text>
+
+  <g>
+    <rect x="48" y="318" width="210" height="112" rx="6" class="panel"/>
+
+    <text x="66" y="347" class="card-title" text-anchor="start">Run start / renewal</text>
+    <text x="66" y="371" class="card-text" text-anchor="start">preQueryMemory(goal)</text>
+<text x="66" y="389" class="card-text" text-anchor="start">Re-fires after context renewal</text>
+
+  </g>
+
+  <g>
+    <rect x="274" y="318" width="210" height="112" rx="6" class="panel"/>
+
+    <text x="292" y="347" class="card-title" text-anchor="start">Scoped query</text>
+    <text x="292" y="371" class="card-text" text-anchor="start">Kernel validates memory scope</text>
+<text x="292" y="389" class="card-text" text-anchor="start">DreamStore.search(topK)</text>
+
+  </g>
+
+  <g>
+    <rect x="500" y="318" width="210" height="112" rx="6" class="panel"/>
+
+    <text x="518" y="347" class="card-title" text-anchor="start">Rank + recall</text>
+    <text x="518" y="371" class="card-text" text-anchor="start">Host ranks records</text>
+<text x="518" y="389" class="card-text" text-anchor="start">memory_recalled increments count</text>
+
+  </g>
+
+  <g>
+    <rect x="726" y="318" width="210" height="112" rx="6" class="panel"/>
+
+    <text x="744" y="347" class="card-title" text-anchor="start">Context placement</text>
+    <text x="744" y="371" class="card-text" text-anchor="start">Hits enter turns history</text>
+<text x="744" y="389" class="card-text" text-anchor="start">Single-use and compressible</text>
+
+  </g>
+
+  <g>
+    <rect x="952" y="318" width="200" height="112" rx="6" class="panel"/>
+
+    <text x="970" y="347" class="card-title" text-anchor="start">Promotion signal</text>
+    <text x="970" y="371" class="card-text" text-anchor="start">Threshold crossed</text>
+<text x="970" y="389" class="card-text" text-anchor="start">Host decides whether to pin</text>
+
+  </g>
+    <path d="M258 374H272" class="flow"/><path d="M484 374H498" class="flow"/><path d="M710 374H724" class="flow"/><path d="M936 374H950" class="flow flow-coral"/>
+
+
+  <text x="48" y="478" class="section-title" text-anchor="start">Write and retention path</text>
+  <text x="1152" y="478" class="section-note" text-anchor="end">EVERY WRITE PASSES VALIDATION AND RESOURCE QUOTA</text>
+
+  <g>
+    <rect x="48" y="498" width="258" height="112" rx="6" class="panel"/>
+    <rect x="48" y="498" width="5" height="112" rx="2.5" class="accent-fill"/>
+    <text x="66" y="527" class="card-title" text-anchor="start">write_memory</text>
+    <text x="66" y="551" class="card-text" text-anchor="start">Content + metadata + scope</text>
+<text x="66" y="569" class="card-text" text-anchor="start">Kernel validation + write-rate quota</text>
+
+  </g>
+    <path d="M306 554H372" class="flow flow-coral"/>
+
+  <g>
+    <rect x="374" y="498" width="258" height="112" rx="6" class="panel"/>
+
+    <text x="392" y="527" class="card-title" text-anchor="start">Host commit</text>
+    <text x="392" y="551" class="card-text" text-anchor="start">Dedup + durable DreamStore write</text>
+<text x="392" y="569" class="card-text" text-anchor="start">memory_written evidence</text>
+
+  </g>
+    <path d="M632 554H698" class="flow flow-coral"/>
+
+  <g>
+    <rect x="700" y="498" width="208" height="112" rx="6" class="panel"/>
+
+    <text x="718" y="527" class="card-title" text-anchor="start">Idle pipeline</text>
+    <text x="718" y="551" class="card-text" text-anchor="start">Extract + consolidate</text>
+<text x="718" y="569" class="card-text" text-anchor="start">Dream after session boundary</text>
+
+  </g>
+    <path d="M908 554H974" class="flow flow-coral"/>
+
+  <g>
+    <rect x="976" y="498" width="176" height="112" rx="6" class="panel"/>
+
+    <text x="994" y="527" class="card-title" text-anchor="start">Retention</text>
+    <text x="994" y="551" class="card-text" text-anchor="start">Recall-aware score</text>
+<text x="994" y="569" class="card-text" text-anchor="start">Host evicts / pins</text>
+
+  </g>
+
+  <text x="48" y="660" class="section-title" text-anchor="start">Invariant</text>
+  <text x="1152" y="660" class="section-note" text-anchor="end">DREAMSTORE IS AUTHORITATIVE · RETRIEVAL HITS DECAY · PROMOTION IS ADVISORY</text>
+    <text x="48" y="690" class="body" text-anchor="start">A recalled fact becomes durable knowledge only when the host explicitly promotes or pins it; the kernel never silently upgrades authority.</text>
+
+  <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>
 </svg>

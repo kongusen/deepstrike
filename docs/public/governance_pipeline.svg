@@ -1,158 +1,176 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="100%" height="100%" style="background-color: #0b0f19; font-family: system-ui, -apple-system, sans-serif;">
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">DeepStrike syscall governance funnel</title>
+  <desc id="desc">All effect requests cross pre-exposure filtering, veto, rate, permission, parameter constraints, resource quota, and optional host hooks before execution; denials return visible results without rollback.</desc>
   <defs>
-    <!-- Gradients -->
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0b0f19" />
-      <stop offset="50%" stop-color="#111827" />
-      <stop offset="100%" stop-color="#070a13" />
-    </linearGradient>
-    <linearGradient id="funnelGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#1e293b" />
-      <stop offset="100%" stop-color="#0f172a" />
-    </linearGradient>
-    
-    <!-- Arrows -->
-    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+    <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
     </marker>
-    <marker id="arrowRed" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#ef4444" />
+    <marker id="arrow-coral" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#FF6B4A"/>
     </marker>
-    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#bd00ff" />
-    </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif; }
+      .eyebrow { fill:#FF6B4A; font-size:11px; font-weight:700; letter-spacing:2px; }
+      .title { fill:#F7F3EA; font-size:29px; font-weight:700; letter-spacing:-.45px; }
+      .subtitle { fill:#A8A49C; font-size:13px; font-weight:450; }
+      .section-title { fill:#F7F3EA; font-size:15px; font-weight:700; }
+      .section-note { fill:#8F8C86; font-size:10px; font-weight:600; letter-spacing:.65px; }
+      .card-title { fill:#F7F3EA; font-size:13px; font-weight:650; }
+      .card-text { fill:#A8A49C; font-size:10.5px; font-weight:450; }
+      .body { fill:#A8A49C; font-size:11px; font-weight:450; }
+      .label { fill:#F7F3EA; font-size:11px; font-weight:650; }
+      .micro { fill:#8F8C86; font-size:9.5px; font-weight:650; letter-spacing:.55px; }
+      .pill-text { fill:#111318; font-size:9px; font-weight:750; letter-spacing:.5px; }
+      .footer { fill:#77746F; font-size:9px; font-weight:600; letter-spacing:.8px; }
+      .panel { fill:#15171A; stroke:#303236; stroke-width:1; }
+      .panel-strong { fill:#191A1D; stroke:#F7F3EA; stroke-width:1.15; }
+      .kernel { fill:#0D0F11; stroke:#3B3D41; stroke-width:1.2; }
+      .soft { fill:#121316; stroke:#26282C; stroke-width:1; }
+      .accent-fill { fill:#FF6B4A; }
+      .pill.coral { fill:#FF6B4A; }
+      .pill.ivory { fill:#F7F3EA; }
+      .pill.muted { fill:#8F8C86; }
+      .rule { fill:none; stroke:#303236; stroke-width:1; }
+      .rule-coral { fill:none; stroke:#FF6B4A; stroke-width:1.2; }
+      .flow { fill:none; stroke:#F7F3EA; stroke-width:1.45; marker-end:url(#arrow-ivory); }
+      .flow-coral { stroke:#FF6B4A; stroke-width:1.75; marker-end:url(#arrow-coral); }
+      .flow-dash { stroke-dasharray:5 5; }
+    </style>
   </defs>
+  <rect width="1200" height="760" fill="#111318"/>
+  <path d="M0 94H1200M0 724H1200" class="rule"/>
+  <text x="48" y="33" class="eyebrow" text-anchor="start">GOVERNANCE FUNNEL / v0.2.48</text>
+  <text x="48" y="68" class="title" text-anchor="start">Authority is enforced below the model.</text>
+  <text x="1152" y="39" class="subtitle" text-anchor="end">SCHEMA FILTER → SYSCALL TRAP → DISPOSITION → HOST EXECUTION</text>
+  <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>
 
-  <!-- Background -->
-  <rect width="800" height="480" fill="url(#bgGrad)" />
-  <rect width="800" height="480" fill="none" stroke="#1e293b" stroke-width="2" />
 
-  <!-- Grid lines -->
-  <path d="M 0 60 L 800 60 M 0 120 L 800 120 M 0 180 L 800 180 M 0 240 L 800 240 M 0 300 L 800 300 M 0 360 L 800 360 M 0 420 L 800 420" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
-  <path d="M 100 0 L 100 480 M 200 0 L 200 480 M 300 0 L 300 480 M 400 0 L 400 480 M 500 0 L 500 480 M 600 0 L 600 480 M 700 0 L 700 480" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+  <text x="48" y="124" class="section-title" text-anchor="start">Before the provider call</text>
+  <text x="1152" y="124" class="section-note" text-anchor="end">STATIC DENIALS CAN DISAPPEAR FROM THE TOOL SCHEMA</text>
 
-  <!-- Title -->
-  <text x="400" y="35" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="700" letter-spacing="2">SYSCALL GOVERNANCE FUNNEL</text>
-  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-size="11">Side-Effect Trap Pipeline &amp; Decision Logic</text>
+  <g>
+    <rect x="48" y="144" width="334" height="92" rx="6" class="panel"/>
 
-  <!-- INPUT: SYSCALL (Left) -->
-  <g transform="translate(30, 140)">
-    <!-- Container -->
-    <rect width="160" height="220" rx="8" fill="url(#funnelGrad)" stroke="#1e293b" />
-    <rect width="160" height="30" rx="8" fill="#bd00ff" opacity="0.1" />
-    <text x="80" y="19" text-anchor="middle" fill="#c084fc" font-size="11" font-weight="bold">Syscall Trap Input</text>
-    
-    <!-- Syscall Types -->
-    <g transform="translate(10, 45)">
-      <rect width="140" height="35" rx="4" fill="#111827" stroke="#334155" />
-      <text x="12" y="21" fill="#e2e8f0" font-size="10.5" font-weight="bold">Invoke(tool_call)</text>
-      <text x="12" y="29" fill="#94a3b8" font-size="7">Tool execution request</text>
-    </g>
+    <text x="66" y="173" class="card-title" text-anchor="start">Registered capabilities</text>
+    <text x="66" y="197" class="card-text" text-anchor="start">ExecutionPlane tools · meta-tools</text>
+<text x="66" y="215" class="card-text" text-anchor="start">Skill / manifest capability ceiling</text>
 
-    <g transform="translate(10, 95)">
-      <rect width="140" height="35" rx="4" fill="#111827" stroke="#334155" />
-      <text x="12" y="21" fill="#e2e8f0" font-size="10.5" font-weight="bold">Spawn(manifest)</text>
-      <text x="12" y="29" fill="#94a3b8" font-size="7">Sub-agent creation request</text>
-    </g>
+  </g>
+    <path d="M382 190H430" class="flow flow-coral"/>
 
-    <g transform="translate(10, 145)">
-      <rect width="140" height="35" rx="4" fill="#111827" stroke="#334155" />
-      <text x="12" y="21" fill="#e2e8f0" font-size="10.5" font-weight="bold">WriteMemory(req)</text>
-      <text x="12" y="29" fill="#94a3b8" font-size="7">Semantic store insertion</text>
-    </g>
+  <g>
+    <rect x="432" y="144" width="334" height="92" rx="6" class="panel"/>
+    <rect x="432" y="144" width="5" height="92" rx="2.5" class="accent-fill"/>
+    <text x="450" y="173" class="card-title" text-anchor="start">Schema pre-filter</text>
+    <text x="450" y="197" class="card-text" text-anchor="start">Known-denied tools never reach the model</text>
+<text x="450" y="215" class="card-text" text-anchor="start">Visible set = intersection of all gates</text>
+
+  </g>
+    <path d="M766 190H814" class="flow flow-coral"/>
+
+  <g>
+    <rect x="816" y="144" width="336" height="92" rx="6" class="panel"/>
+
+    <text x="834" y="173" class="card-title" text-anchor="start">Provider sees narrowed tools</text>
+    <text x="834" y="197" class="card-text" text-anchor="start">No prompt can call a schema-hidden tool</text>
+<text x="834" y="215" class="card-text" text-anchor="start">Dynamic checks still run at call time</text>
+
   </g>
 
-  <!-- PIPELINE FUNNEL (Center 5 Stages) -->
-  <g transform="translate(230, 90)">
-    <rect width="340" height="320" rx="8" fill="url(#funnelGrad)" stroke="#1e293b" />
-    <text x="170" y="20" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold" letter-spacing="1">Governance Adjudication Funnel</text>
 
-    <!-- Stage 1: Veto List -->
-    <g transform="translate(15, 35)">
-      <rect width="310" height="40" rx="4" fill="#111827" stroke="#334155" />
-      <rect x="5" y="5" width="45" height="30" rx="3" fill="#ef4444" opacity="0.2" />
-      <text x="27.5" y="23" text-anchor="middle" fill="#f87171" font-size="9" font-weight="bold">VETO</text>
-      <text x="60" y="18" fill="#ffffff" font-size="10" font-weight="bold">1. Blacklist Check (Vetoes)</text>
-      <text x="60" y="30" fill="#94a3b8" font-size="8.5">Rejects dangerous tools (e.g. rm_rf) immediately</text>
-      <!-- Connection out -->
-      <path d="M 310,20 L 320,20" stroke="#ef4444" stroke-width="1.5" />
-    </g>
+  <text x="48" y="282" class="section-title" text-anchor="start">At the syscall trap</text>
+  <text x="1152" y="282" class="section-note" text-anchor="end">INVOKE · SPAWN · WRITE MEMORY · SUBMIT NODES · LOAD WORKFLOW</text>
 
-    <!-- Stage 2: Rate Limit -->
-    <g transform="translate(15, 85)">
-      <rect width="310" height="40" rx="4" fill="#111827" stroke="#334155" />
-      <rect x="5" y="5" width="45" height="30" rx="3" fill="#3b82f6" opacity="0.2" />
-      <text x="27.5" y="23" text-anchor="middle" fill="#60a5fa" font-size="9" font-weight="bold">LIMIT</text>
-      <text x="60" y="18" fill="#ffffff" font-size="10" font-weight="bold">2. Rate Limiting (Sliding Window)</text>
-      <text x="60" y="30" fill="#94a3b8" font-size="8.5">Blocks calls exceeding rate configs (max_calls/window)</text>
-    </g>
+  <g>
+    <rect x="48" y="302" width="188" height="108" rx="6" class="panel"/>
 
-    <!-- Stage 3: Permission Rules -->
-    <g transform="translate(15, 135)">
-      <rect width="310" height="47" rx="4" fill="#111827" stroke="#334155" />
-      <rect x="5" y="5" width="45" height="37" rx="3" fill="#eab308" opacity="0.2" />
-      <text x="27.5" y="22" text-anchor="middle" fill="#fde047" font-size="9" font-weight="bold">RULE</text>
-      <text x="27.5" y="32" text-anchor="middle" fill="#fde047" font-size="7">Pattern</text>
-      <text x="60" y="18" fill="#ffffff" font-size="10" font-weight="bold">3. Rule Evaluation (Regex Matching)</text>
-      <text x="60" y="30" fill="#94a3b8" font-size="8.5">Matches glob/regex patterns (e.g. read_* -> allow)</text>
-      <text x="60" y="40" fill="#a78bfa" font-size="8.5">Default action: ask_user / deny</text>
-    </g>
+    <text x="66" y="331" class="card-title" text-anchor="start">1 · Veto</text>
+    <text x="66" y="355" class="card-text" text-anchor="start">Hard block list</text>
+<text x="66" y="373" class="card-text" text-anchor="start">Immediate deny</text>
 
-    <!-- Stage 4: Constraints -->
-    <g transform="translate(15, 192)">
-      <rect width="310" height="40" rx="4" fill="#111827" stroke="#334155" />
-      <rect x="5" y="5" width="45" height="30" rx="3" fill="#ec4899" opacity="0.2" />
-      <text x="27.5" y="23" text-anchor="middle" fill="#f472b6" font-size="9" font-weight="bold">TYPE</text>
-      <text x="60" y="18" fill="#ffffff" font-size="10" font-weight="bold">4. Parameter Constraint Check</text>
-      <text x="60" y="30" fill="#94a3b8" font-size="8.5">Validates arguments: required check, types, and ranges</text>
-    </g>
-
-    <!-- Stage 5: Gate -->
-    <g transform="translate(15, 242)">
-      <rect width="310" height="47" rx="4" fill="#111827" stroke="#334155" />
-      <rect x="5" y="5" width="45" height="37" rx="3" fill="#f97316" opacity="0.2" />
-      <text x="27.5" y="22" text-anchor="middle" fill="#fb923c" font-size="9" font-weight="bold">GATE</text>
-      <text x="27.5" y="32" text-anchor="middle" fill="#fb923c" font-size="7">AskUser</text>
-      <text x="60" y="18" fill="#ffffff" font-size="10" font-weight="bold">5. Gate (Human-In-The-Loop)</text>
-      <text x="60" y="30" fill="#94a3b8" font-size="8.5">Suspends task, fires PermissionRequestEvent,</text>
-      <text x="60" y="40" fill="#fb923c" font-size="8.5">resumes on user feedback (allow / deny)</text>
-    </g>
   </g>
 
-  <!-- OUTPUT: DISPOSITIONS (Right) -->
-  
-  <!-- ALLOW Path -->
-  <g transform="translate(610, 100)">
-    <rect width="160" height="80" rx="6" fill="#10b981" opacity="0.1" stroke="#10b981" stroke-width="1.5" />
-    <text x="80" y="28" text-anchor="middle" fill="#34d399" font-size="13" font-weight="bold">ALLOW</text>
-    <text x="80" y="48" text-anchor="middle" fill="#ffffff" font-size="10" font-weight="bold">Execute in Host SDK</text>
-    <text x="80" y="62" text-anchor="middle" fill="#94a3b8" font-size="8.5">ExecutionPlane / Sandbox</text>
+  <g>
+    <rect x="250" y="302" width="188" height="108" rx="6" class="panel"/>
+
+    <text x="268" y="331" class="card-title" text-anchor="start">2 · Rate</text>
+    <text x="268" y="355" class="card-text" text-anchor="start">Sliding window</text>
+<text x="268" y="373" class="card-text" text-anchor="start">Retry-after result</text>
+
   </g>
 
-  <!-- DENY Path + Rollback feedback -->
-  <g transform="translate(610, 260)">
-    <rect width="160" height="120" rx="6" fill="#ef4444" opacity="0.1" stroke="#ef4444" stroke-width="1.5" />
-    <text x="80" y="28" text-anchor="middle" fill="#f87171" font-size="13" font-weight="bold">DENY</text>
-    <text x="80" y="48" text-anchor="middle" fill="#ffffff" font-size="10" font-weight="bold">Abort execution</text>
-    
-    <!-- Rollback note box -->
-    <rect x="15" y="65" width="130" height="42" rx="4" fill="#111827" stroke="#ef4444" stroke-width="0.8" />
-    <text x="80" y="80" text-anchor="middle" fill="#fca5a5" font-size="8" font-weight="bold">Create Rollback Note</text>
-    <text x="80" y="92" text-anchor="middle" fill="#94a3b8" font-size="7">Feed back into Context VM</text>
-    <text x="80" y="100" text-anchor="middle" fill="#94a3b8" font-size="7">so LLM learns and replans</text>
+  <g>
+    <rect x="452" y="302" width="188" height="108" rx="6" class="panel"/>
+
+    <text x="470" y="331" class="card-title" text-anchor="start">3 · Permission</text>
+    <text x="470" y="355" class="card-text" text-anchor="start">Allow · deny</text>
+<text x="470" y="373" class="card-text" text-anchor="start">ask_user</text>
+
   </g>
 
-  <!-- Connector Paths -->
-  <!-- Trap Input -> Funnel -->
-  <path d="M 190,250 L 222,250" stroke="#bd00ff" stroke-width="2" marker-end="url(#arrowPurple)" />
-  
-  <!-- Funnel -> ALLOW -->
-  <path d="M 570,140 L 602,140" stroke="#10b981" stroke-width="2" marker-end="url(#arrow)" />
-  
-  <!-- Funnel -> DENY -->
-  <path d="M 570,320 L 602,320" stroke="#ef4444" stroke-width="2" marker-end="url(#arrowRed)" />
+  <g>
+    <rect x="654" y="302" width="188" height="108" rx="6" class="panel"/>
 
-  <!-- Rollback Note back to Context VM (feedback loop) -->
-  <path d="M 690,380 C 690,440 110,440 110,368" fill="none" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrowRed)" />
-  <text x="400" y="432" text-anchor="middle" fill="#f87171" font-size="9" font-weight="bold">Feedback loop: Rollback injected as Observation to Next Turn</text>
+    <text x="672" y="331" class="card-title" text-anchor="start">4 · Constraint</text>
+    <text x="672" y="355" class="card-text" text-anchor="start">Required · enum</text>
+<text x="672" y="373" class="card-text" text-anchor="start">numeric range</text>
+
+  </g>
+
+  <g>
+    <rect x="856" y="302" width="296" height="108" rx="6" class="panel"/>
+
+    <text x="874" y="331" class="card-title" text-anchor="start">5 · Resource quota + host hook</text>
+    <text x="874" y="355" class="card-text" text-anchor="start">Spawn depth / count · memory rate</text>
+<text x="874" y="373" class="card-text" text-anchor="start">Stateful onToolCall fails closed</text>
+
+  </g>
+    <path d="M236 356H248" class="flow"/><path d="M438 356H450" class="flow"/><path d="M640 356H652" class="flow"/><path d="M842 356H854" class="flow"/>
+
+
+  <text x="48" y="458" class="section-title" text-anchor="start">Disposition</text>
+  <text x="1152" y="458" class="section-note" text-anchor="end">THE MODEL NEVER EXECUTES AN EFFECT DIRECTLY</text>
+
+  <g>
+    <rect x="48" y="478" width="250" height="116" rx="6" class="panel"/>
+
+    <text x="66" y="507" class="card-title" text-anchor="start">Allow</text>
+    <text x="66" y="531" class="card-text" text-anchor="start">Host ExecutionPlane may run</text>
+<text x="66" y="549" class="card-text" text-anchor="start">Result returns as observation</text>
+
+  </g>
+
+  <g>
+    <rect x="314" y="478" width="250" height="116" rx="6" class="panel"/>
+    <rect x="314" y="478" width="5" height="116" rx="2.5" class="accent-fill"/>
+    <text x="332" y="507" class="card-title" text-anchor="start">Deny / RateLimited</text>
+    <text x="332" y="531" class="card-text" text-anchor="start">Effect does not run</text>
+<text x="332" y="549" class="card-text" text-anchor="start">Error ToolResult stays visible</text>
+
+  </g>
+
+  <g>
+    <rect x="580" y="478" width="250" height="116" rx="6" class="panel"/>
+
+    <text x="598" y="507" class="card-title" text-anchor="start">Gate</text>
+    <text x="598" y="531" class="card-text" text-anchor="start">Task suspends for approval</text>
+<text x="598" y="549" class="card-text" text-anchor="start">Correlated resolution resumes</text>
+
+  </g>
+
+  <g>
+    <rect x="846" y="478" width="306" height="116" rx="6" class="panel"/>
+
+    <text x="864" y="507" class="card-title" text-anchor="start">Defer / control rejection</text>
+    <text x="864" y="531" class="card-text" text-anchor="start">Backpressure or typed rejection</text>
+<text x="864" y="549" class="card-text" text-anchor="start">Decision is appended durably</text>
+
+  </g>
+
+  <text x="48" y="642" class="section-title" text-anchor="start">Current denial contract</text>
+  <text x="1152" y="642" class="section-note" text-anchor="end">SINCE v0.2.42: NO ROLLBACK · ALLOWED SIBLINGS STILL EXECUTE</text>
+    <text x="48" y="674" class="body" text-anchor="start">A dynamic denial closes the tool-call pair with a visible error result, so the next turn can replan from evidence instead of replaying the failed turn.</text>
+
+  <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>
 </svg>

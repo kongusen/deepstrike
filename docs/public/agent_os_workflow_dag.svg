@@ -1,112 +1,152 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400" width="100%" height="100%" style="background-color: #0b0f19; font-family: system-ui, -apple-system, sans-serif;">
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">DeepStrike workflow DAG execution</title>
+  <desc id="desc">A concrete typed workflow DAG showing parallel isolated research nodes, a deterministic reducer, a writer, and a verifier gate, all scheduled through child TCBs.</desc>
   <defs>
-    <!-- Gradients -->
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0b0f19" />
-      <stop offset="50%" stop-color="#111827" />
-      <stop offset="100%" stop-color="#070a13" />
-    </linearGradient>
-    <linearGradient id="tcbGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#1e293b" />
-      <stop offset="100%" stop-color="#0f172a" />
-    </linearGradient>
-    
-    <!-- Arrows -->
-    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+    <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
     </marker>
-    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#bd00ff" />
+    <marker id="arrow-coral" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#FF6B4A"/>
     </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif; }
+      .eyebrow { fill:#FF6B4A; font-size:11px; font-weight:700; letter-spacing:2px; }
+      .title { fill:#F7F3EA; font-size:29px; font-weight:700; letter-spacing:-.45px; }
+      .subtitle { fill:#A8A49C; font-size:13px; font-weight:450; }
+      .section-title { fill:#F7F3EA; font-size:15px; font-weight:700; }
+      .section-note { fill:#8F8C86; font-size:10px; font-weight:600; letter-spacing:.65px; }
+      .card-title { fill:#F7F3EA; font-size:13px; font-weight:650; }
+      .card-text { fill:#A8A49C; font-size:10.5px; font-weight:450; }
+      .body { fill:#A8A49C; font-size:11px; font-weight:450; }
+      .label { fill:#F7F3EA; font-size:11px; font-weight:650; }
+      .micro { fill:#8F8C86; font-size:9.5px; font-weight:650; letter-spacing:.55px; }
+      .pill-text { fill:#111318; font-size:9px; font-weight:750; letter-spacing:.5px; }
+      .footer { fill:#77746F; font-size:9px; font-weight:600; letter-spacing:.8px; }
+      .panel { fill:#15171A; stroke:#303236; stroke-width:1; }
+      .panel-strong { fill:#191A1D; stroke:#F7F3EA; stroke-width:1.15; }
+      .kernel { fill:#0D0F11; stroke:#3B3D41; stroke-width:1.2; }
+      .soft { fill:#121316; stroke:#26282C; stroke-width:1; }
+      .accent-fill { fill:#FF6B4A; }
+      .pill.coral { fill:#FF6B4A; }
+      .pill.ivory { fill:#F7F3EA; }
+      .pill.muted { fill:#8F8C86; }
+      .rule { fill:none; stroke:#303236; stroke-width:1; }
+      .rule-coral { fill:none; stroke:#FF6B4A; stroke-width:1.2; }
+      .flow { fill:none; stroke:#F7F3EA; stroke-width:1.45; marker-end:url(#arrow-ivory); }
+      .flow-coral { stroke:#FF6B4A; stroke-width:1.75; marker-end:url(#arrow-coral); }
+      .flow-dash { stroke-dasharray:5 5; }
+    </style>
   </defs>
+  <rect width="1200" height="760" fill="#111318"/>
+  <path d="M0 94H1200M0 724H1200" class="rule"/>
+  <text x="48" y="33" class="eyebrow" text-anchor="start">WORKFLOW DATAFLOW / v0.2.48</text>
+  <text x="48" y="68" class="title" text-anchor="start">DAG edges carry outputs, not just ordering.</text>
+  <text x="1152" y="39" class="subtitle" text-anchor="end">PARALLEL RESEARCH → ZERO-TOKEN REDUCE → WRITE → VERIFY</text>
+  <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>
 
-  <!-- Background -->
-  <rect width="800" height="400" fill="url(#bgGrad)" />
-  <rect width="800" height="400" fill="none" stroke="#1e293b" stroke-width="2" />
 
-  <!-- Grid lines -->
-  <path d="M 0 50 L 800 50 M 0 100 L 800 100 M 0 150 L 800 150 M 0 200 L 800 200 M 0 250 L 800 250 M 0 300 L 800 300 M 0 350 L 800 350" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
-  <path d="M 100 0 L 100 400 M 200 0 L 200 400 M 300 0 L 300 400 M 400 0 L 400 400 M 500 0 L 500 400 M 600 0 L 600 400 M 700 0 L 700 400" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+  <text x="48" y="124" class="section-title" text-anchor="start">Typed five-node pipeline</text>
+  <text x="1152" y="124" class="section-note" text-anchor="end">EVERY SPAWN CROSSES THE SAME SYSCALL GATE</text>
 
-  <!-- Title -->
-  <text x="400" y="35" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="700" letter-spacing="2">DYNAMICAL WORKFLOW ORCHESTRATION</text>
-  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-size="11">DAG Scheduling &amp; Task Isolation</text>
+  <g>
+    <rect x="48" y="158" width="224" height="112" rx="6" class="panel"/>
+    <rect x="48" y="158" width="5" height="112" rx="2.5" class="accent-fill"/>
+    <text x="66" y="187" class="card-title" text-anchor="start">wf-node0 · explore</text>
+    <text x="66" y="211" class="card-text" text-anchor="start">Research source A</text>
+<text x="66" y="229" class="card-text" text-anchor="start">outputSchema: Finding[]</text>
+<text x="66" y="247" class="card-text" text-anchor="start">isolation: read_only</text>
 
-  <!-- BUDGET LEDGER BAR -->
-  <g transform="translate(240, 75)">
-    <rect width="320" height="28" rx="14" fill="#ef4444" opacity="0.1" stroke="#f87171" stroke-width="1" stroke-dasharray="2 2" />
-    <text x="160" y="18" text-anchor="middle" fill="#f87171" font-size="10.5" font-weight="bold">BudgetLedger: Track and Deduct Max Token/Node Quota</text>
   </g>
 
-  <!-- ROOT PROCESS / TASK (Left) -->
-  <g transform="translate(40, 160)">
-    <!-- Glow Effect -->
-    <rect x="-2" y="-2" width="154" height="74" rx="10" fill="none" stroke="#bd00ff" stroke-width="3" opacity="0.3" />
-    <!-- Main Box -->
-    <rect width="150" height="70" rx="8" fill="url(#tcbGrad)" stroke="#bd00ff" stroke-width="1.5" />
-    <text x="15" y="25" fill="#ffffff" font-size="13" font-weight="bold">Root TCB</text>
-    <text x="15" y="42" fill="#bd00ff" font-size="10" font-weight="bold">Parent Agent Run</text>
-    <text x="15" y="55" fill="#94a3b8" font-size="9">Submits Workflow DAG</text>
+  <g>
+    <rect x="48" y="304" width="224" height="112" rx="6" class="panel"/>
+    <rect x="48" y="304" width="5" height="112" rx="2.5" class="accent-fill"/>
+    <text x="66" y="333" class="card-title" text-anchor="start">wf-node1 · explore</text>
+    <text x="66" y="357" class="card-text" text-anchor="start">Research source B</text>
+<text x="66" y="375" class="card-text" text-anchor="start">outputSchema: Finding[]</text>
+<text x="66" y="393" class="card-text" text-anchor="start">isolation: read_only</text>
+
   </g>
 
-  <!-- SUB-AGENTS / TCB NODES (Middle) -->
-  
-  <!-- TCB Node 1 -->
-  <g transform="translate(320, 120)">
-    <rect width="180" height="60" rx="8" fill="url(#tcbGrad)" stroke="#00f0ff" stroke-width="1.2" />
-    <rect x="0" y="0" width="180" height="20" rx="8" fill="#00f0ff" opacity="0.1" />
-    <text x="10" y="14" fill="#00f0ff" font-size="10.5" font-weight="bold">TCB #1 [Classify Node]</text>
-    <text x="10" y="36" fill="#ffffff" font-size="10" font-weight="600">Context Partition A</text>
-    <text x="10" y="48" fill="#94a3b8" font-size="8.5">Budget: 5,000 tokens | Isolation: none</text>
+  <g>
+    <rect x="374" y="230" width="224" height="124" rx="6" class="panel"/>
+
+    <text x="392" y="259" class="card-title" text-anchor="start">wf-node2 · reduce</text>
+    <text x="392" y="283" class="card-text" text-anchor="start">dependsOn: [0, 1]</text>
+<text x="392" y="301" class="card-text" text-anchor="start">reducer: concat</text>
+<text x="392" y="319" class="card-text" text-anchor="start">provider calls: 0</text>
+
   </g>
 
-  <!-- TCB Node 2 -->
-  <g transform="translate(320, 200)">
-    <rect width="180" height="60" rx="8" fill="url(#tcbGrad)" stroke="#00f0ff" stroke-width="1.2" />
-    <rect x="0" y="0" width="180" height="20" rx="8" fill="#00f0ff" opacity="0.1" />
-    <text x="10" y="14" fill="#00f0ff" font-size="10.5" font-weight="bold">TCB #2 [Verify Node]</text>
-    <text x="10" y="36" fill="#ffffff" font-size="10" font-weight="600">Context Partition B</text>
-    <text x="10" y="48" fill="#94a3b8" font-size="8.5">Budget: 8,000 tokens | Isolation: quarantine</text>
-    
-    <!-- Red Lock / Quarantine Tag -->
-    <rect x="125" y="30" width="48" height="13" rx="3" fill="#ef4444" opacity="0.2" />
-    <text x="149" y="39" text-anchor="middle" fill="#f87171" font-size="7" font-weight="bold">QUARANTINED</text>
+  <g>
+    <rect x="700" y="230" width="224" height="124" rx="6" class="panel"/>
+
+    <text x="718" y="259" class="card-title" text-anchor="start">wf-node3 · implement</text>
+    <text x="718" y="283" class="card-text" text-anchor="start">Receives reducer output</text>
+<text x="718" y="301" class="card-text" text-anchor="start">Writes structured brief</text>
+<text x="718" y="319" class="card-text" text-anchor="start">modelHint: strong</text>
+
   </g>
 
-  <!-- TCB Node 3 -->
-  <g transform="translate(320, 280)">
-    <rect width="180" height="60" rx="8" fill="url(#tcbGrad)" stroke="#00f0ff" stroke-width="1.2" />
-    <rect x="0" y="0" width="180" height="20" rx="8" fill="#00f0ff" opacity="0.1" />
-    <text x="10" y="14" fill="#00f0ff" font-size="10.5" font-weight="bold">TCB #3 [Loop Node]</text>
-    <text x="10" y="36" fill="#ffffff" font-size="10" font-weight="600">Context Partition C</text>
-    <text x="10" y="48" fill="#94a3b8" font-size="8.5">Budget: 10,000 tokens | Isolation: worktree</text>
+  <g>
+    <rect x="1028" y="230" width="124" height="124" rx="6" class="panel"/>
+
+    <text x="1046" y="259" class="card-title" text-anchor="start">wf-node4</text>
+    <text x="1046" y="283" class="card-text" text-anchor="start">Verifier</text>
+<text x="1046" y="301" class="card-text" text-anchor="start">pass / fail</text>
+<text x="1046" y="319" class="card-text" text-anchor="start">blocks Done</text>
+
+  </g>
+    <path d="M272 214H322V270H372" class="flow"/><path d="M272 360H322V314H372" class="flow"/><path d="M598 292H698" class="flow flow-coral"/><path d="M924 292H1026" class="flow flow-coral"/>
+    <text x="322" y="252" class="micro" text-anchor="middle">dependsOn</text>
+    <text x="648" y="281" class="micro" text-anchor="middle">typed output</text>
+    <text x="976" y="281" class="micro" text-anchor="middle">draft</text>
+
+
+  <text x="48" y="474" class="section-title" text-anchor="start">Kernel scheduling view</text>
+  <text x="1152" y="474" class="section-note" text-anchor="end">BLOCKED NODES CONSUME NO LLM TOKENS</text>
+    <rect x="48" y="494" width="1104" height="142" rx="7" class="kernel"/>
+
+  <g>
+    <rect x="68" y="516" width="238" height="94" rx="6" class="panel"/>
+
+    <text x="86" y="545" class="card-title" text-anchor="start">TaskTable</text>
+    <text x="86" y="569" class="card-text" text-anchor="start">One child TCB per spawn</text>
+<text x="86" y="587" class="card-text" text-anchor="start">Ready · Running · Suspended · Done</text>
+
   </g>
 
-  <!-- REDUCE NODE (Right) -->
-  <g transform="translate(590, 165)">
-    <!-- Glow Effect -->
-    <rect x="-2" y="-2" width="174" height="64" rx="10" fill="none" stroke="#10b981" stroke-width="3" opacity="0.3" />
-    <!-- Main Box -->
-    <rect width="170" height="60" rx="8" fill="url(#tcbGrad)" stroke="#10b981" stroke-width="1.5" />
-    <text x="15" y="25" fill="#ffffff" font-size="13" font-weight="bold">Reduce Node</text>
-    <text x="15" y="42" fill="#10b981" font-size="10" font-weight="bold">Deterministic Synthesis</text>
-    <text x="15" y="52" fill="#94a3b8" font-size="8">Zero token cost reduction</text>
+  <g>
+    <rect x="322" y="516" width="238" height="94" rx="6" class="panel"/>
+
+    <text x="340" y="545" class="card-title" text-anchor="start">Dependency barrier</text>
+    <text x="340" y="569" class="card-text" text-anchor="start">Advance only on durable output</text>
+<text x="340" y="587" class="card-text" text-anchor="start">Schema failure starves dependents</text>
+
   </g>
 
-  <!-- CONNECTORS -->
-  <!-- Spawn Syscall paths from Root to TCBs -->
-  <path d="M 190,185 C 230,185 230,150 310,150" fill="none" stroke="#bd00ff" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrowPurple)" />
-  <path d="M 190,195 L 310,230" fill="none" stroke="#bd00ff" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrowPurple)" />
-  <path d="M 190,205 C 230,205 230,310 310,310" fill="none" stroke="#bd00ff" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrowPurple)" />
-  
-  <text x="240" y="145" text-anchor="middle" fill="#bd00ff" font-size="8.5" font-weight="bold">Syscall::Spawn</text>
-  <text x="250" y="275" text-anchor="middle" fill="#bd00ff" font-size="8.5" font-weight="bold">Gated Dispatch</text>
+  <g>
+    <rect x="576" y="516" width="238" height="94" rx="6" class="panel"/>
 
-  <!-- Joining paths from TCBs to Reduce Node -->
-  <path d="M 500,150 C 540,150 540,185 580,185" fill="none" stroke="#00f0ff" stroke-width="1.5" marker-end="url(#arrow)" />
-  <path d="M 500,230 L 580,195" fill="none" stroke="#00f0ff" stroke-width="1.5" marker-end="url(#arrow)" />
-  <path d="M 500,310 C 540,310 540,205 580,205" fill="none" stroke="#00f0ff" stroke-width="1.5" marker-end="url(#arrow)" />
+    <text x="594" y="545" class="card-title" text-anchor="start">Trust &amp; capability</text>
+    <text x="594" y="569" class="card-text" text-anchor="start">Inherited or filtered tools</text>
+<text x="594" y="587" class="card-text" text-anchor="start">Quarantine cannot escalate</text>
 
-  <text x="545" y="140" text-anchor="middle" fill="#00f0ff" font-size="8.5" font-weight="bold">Join Barrier</text>
-  <text x="545" y="270" text-anchor="middle" fill="#00f0ff" font-size="8.5" font-weight="bold">Output Sync</text>
+  </g>
+
+  <g>
+    <rect x="830" y="516" width="302" height="94" rx="6" class="panel"/>
+
+    <text x="848" y="545" class="card-title" text-anchor="start">Budget &amp; lineage</text>
+    <text x="848" y="569" class="card-text" text-anchor="start">Per-node caps + RunGroup settlement</text>
+<text x="848" y="587" class="card-text" text-anchor="start">modelHint resolved only by host</text>
+
+  </g>
+
+  <text x="48" y="680" class="section-title" text-anchor="start">Recovery</text>
+  <text x="1152" y="680" class="section-note" text-anchor="end">COMPLETED OUTPUTS AND RUNTIME APPENDS REBUILD FROM SESSIONLOG</text>
+    <text x="48" y="708" class="body" text-anchor="start">resumeWorkflow skips completed nodes, restores submitted nodes, and schedules only the remaining ready frontier.</text>
+
+  <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>
 </svg>

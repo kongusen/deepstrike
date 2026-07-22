@@ -1,166 +1,179 @@
+
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
   <title id="title">DeepStrike runtime mechanism</title>
-  <desc id="desc">The current DeepStrike architecture: host-owned I/O, the RuntimeRunner control loop, the pure Rust kernel, four language SDKs, and the Node self-harness improvement loop.</desc>
-
+  <desc id="desc">The complete DeepStrike 0.2.48 runtime boundary: host-owned I/O, RuntimeRunner driving ABI v2, a Rust kernel governing control flow, and an isolated Self-Harness v2 outer loop improving the next run.</desc>
   <defs>
-    <marker id="arrow-coral" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0 1 10 5 0 9Z" fill="#FF6B4A"/>
-    </marker>
-    <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
     </marker>
+    <marker id="arrow-coral" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#FF6B4A"/>
+    </marker>
     <style>
-      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
-      .eyebrow { fill: #FF6B4A; font-size: 11px; font-weight: 700; letter-spacing: 2px; }
-      .title { fill: #F7F3EA; font-size: 29px; font-weight: 700; letter-spacing: -0.5px; }
-      .subtitle { fill: #A8A49C; font-size: 13px; font-weight: 450; }
-      .band-title { fill: #F7F3EA; font-size: 15px; font-weight: 700; }
-      .band-note { fill: #8F8C86; font-size: 11px; font-weight: 500; letter-spacing: 0.3px; }
-      .card-title { fill: #F7F3EA; font-size: 13px; font-weight: 650; }
-      .card-text { fill: #A8A49C; font-size: 10.5px; font-weight: 450; }
-      .micro { fill: #8F8C86; font-size: 9.5px; font-weight: 600; letter-spacing: 0.55px; }
-      .accent { fill: #FF6B4A; }
-      .panel { fill: #15171A; stroke: #303236; stroke-width: 1; }
-      .panel-strong { fill: #191A1D; stroke: #F7F3EA; stroke-width: 1.2; }
-      .kernel-card { fill: #121316; stroke: #34363A; stroke-width: 1; }
-      .rule { stroke: #303236; stroke-width: 1; }
-      .flow { fill: none; stroke: #F7F3EA; stroke-width: 1.5; marker-end: url(#arrow-ivory); }
-      .flow-coral { fill: none; stroke: #FF6B4A; stroke-width: 1.8; marker-end: url(#arrow-coral); }
-      .flow-dash { fill: none; stroke: #FF6B4A; stroke-width: 1.4; stroke-dasharray: 5 5; marker-end: url(#arrow-coral); }
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif; }
+      .eyebrow { fill:#FF6B4A; font-size:11px; font-weight:700; letter-spacing:2px; }
+      .title { fill:#F7F3EA; font-size:29px; font-weight:700; letter-spacing:-.45px; }
+      .subtitle { fill:#A8A49C; font-size:13px; font-weight:450; }
+      .section-title { fill:#F7F3EA; font-size:15px; font-weight:700; }
+      .section-note { fill:#8F8C86; font-size:10px; font-weight:600; letter-spacing:.65px; }
+      .card-title { fill:#F7F3EA; font-size:13px; font-weight:650; }
+      .card-text { fill:#A8A49C; font-size:10.5px; font-weight:450; }
+      .body { fill:#A8A49C; font-size:11px; font-weight:450; }
+      .label { fill:#F7F3EA; font-size:11px; font-weight:650; }
+      .micro { fill:#8F8C86; font-size:9.5px; font-weight:650; letter-spacing:.55px; }
+      .pill-text { fill:#111318; font-size:9px; font-weight:750; letter-spacing:.5px; }
+      .footer { fill:#77746F; font-size:9px; font-weight:600; letter-spacing:.8px; }
+      .panel { fill:#15171A; stroke:#303236; stroke-width:1; }
+      .panel-strong { fill:#191A1D; stroke:#F7F3EA; stroke-width:1.15; }
+      .kernel { fill:#0D0F11; stroke:#3B3D41; stroke-width:1.2; }
+      .soft { fill:#121316; stroke:#26282C; stroke-width:1; }
+      .accent-fill { fill:#FF6B4A; }
+      .pill.coral { fill:#FF6B4A; }
+      .pill.ivory { fill:#F7F3EA; }
+      .pill.muted { fill:#8F8C86; }
+      .rule { fill:none; stroke:#303236; stroke-width:1; }
+      .rule-coral { fill:none; stroke:#FF6B4A; stroke-width:1.2; }
+      .flow { fill:none; stroke:#F7F3EA; stroke-width:1.45; marker-end:url(#arrow-ivory); }
+      .flow-coral { stroke:#FF6B4A; stroke-width:1.75; marker-end:url(#arrow-coral); }
+      .flow-dash { stroke-dasharray:5 5; }
     </style>
   </defs>
-
   <rect width="1200" height="760" fill="#111318"/>
-  <path d="M0 90H1200M0 244H1200M0 354H1200M0 610H1200" class="rule" opacity="0.7"/>
+  <path d="M0 94H1200M0 724H1200" class="rule"/>
+  <text x="48" y="33" class="eyebrow" text-anchor="start">RUNTIME MECHANISM / v0.2.48</text>
+  <text x="48" y="68" class="title" text-anchor="start">One governed loop for every agent effect.</text>
+  <text x="1152" y="39" class="subtitle" text-anchor="end">CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>
+  <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>
 
-  <!-- Heading -->
-  <text x="48" y="34" class="eyebrow">RUNTIME MECHANISM / v0.2.47</text>
-  <text x="48" y="68" class="title">One governed loop for every agent effect.</text>
-  <text x="1152" y="38" text-anchor="end" class="band-note">CONTROL FLOW IN THE KERNEL</text>
-  <text x="1152" y="58" text-anchor="end" class="band-note">REAL I/O IN THE HOST</text>
-  <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent"/>
 
-  <!-- Host-owned I/O -->
-  <text x="48" y="116" class="band-title">Host-owned I/O</text>
-  <text x="1152" y="116" text-anchor="end" class="band-note">CREDENTIALS · NETWORK · FILESYSTEM · DURABLE STORAGE</text>
+  <text x="48" y="122" class="section-title" text-anchor="start">Host-owned I/O</text>
+  <text x="1152" y="122" class="section-note" text-anchor="end">CREDENTIALS · NETWORK · FILESYSTEM · DURABLE STORAGE</text>
 
   <g>
-    <rect x="48" y="134" width="258" height="86" rx="5" class="panel"/>
-    <text x="66" y="160" class="card-title">Provider adapters</text>
-    <text x="66" y="181" class="card-text">Streaming LLM calls · model routing</text>
-    <text x="66" y="199" class="card-text">Text · image · audio serialization</text>
-    <rect x="290" y="146" width="3" height="19" rx="1.5" class="accent"/>
+    <rect x="48" y="140" width="258" height="82" rx="6" class="panel"/>
+    <rect x="48" y="140" width="5" height="82" rx="2.5" class="accent-fill"/>
+    <text x="66" y="169" class="card-title" text-anchor="start">Provider adapters</text>
+    <text x="66" y="193" class="card-text" text-anchor="start">Streaming LLM calls · model routing</text>
+<text x="66" y="211" class="card-text" text-anchor="start">Text · image · audio serialization</text>
 
-    <rect x="324" y="134" width="258" height="86" rx="5" class="panel"/>
-    <text x="342" y="160" class="card-title">ExecutionPlane</text>
-    <text x="342" y="181" class="card-text">Tools · streaming · suspend / resume</text>
-    <text x="342" y="199" class="card-text">Worktrees · sandboxes · remote VPC</text>
-
-    <rect x="600" y="134" width="258" height="86" rx="5" class="panel"/>
-    <text x="618" y="160" class="card-title">Evidence &amp; durable stores</text>
-    <text x="618" y="181" class="card-text">SessionLog · transaction stream · snapshots</text>
-    <text x="618" y="199" class="card-text">DreamStore · archives · large-result spool</text>
-
-    <rect x="876" y="134" width="276" height="86" rx="5" class="panel"/>
-    <text x="894" y="160" class="card-title">External control</text>
-    <text x="894" y="181" class="card-text">Approvals · signals · webhooks · cron</text>
-    <text x="894" y="199" class="card-text">Cancellation · deadlines · host policy</text>
   </g>
-
-  <!-- RuntimeRunner host loop -->
-  <text x="48" y="273" class="band-title">Host runtime loop</text>
-  <rect x="48" y="288" width="1104" height="46" rx="5" class="panel-strong"/>
-  <rect x="48" y="288" width="6" height="46" rx="3" class="accent"/>
-  <text x="72" y="316" class="card-title">RuntimeRunner</text>
-  <text x="194" y="316" class="card-text">dispatch kernel actions</text>
-  <text x="365" y="316" class="card-text">execute approved effects</text>
-  <text x="564" y="316" class="card-text">append evidence</text>
-  <text x="696" y="316" class="card-text">feed observations</text>
-  <text x="858" y="316" class="card-text">render signals &amp; harness instructions</text>
-
-  <!-- Bidirectional ABI -->
-  <path d="M510 334V347H398V371" class="flow"/>
-  <text x="426" y="348" class="micro">ACTIONS OUT</text>
-  <path d="M690 371V347H584V334" class="flow-coral"/>
-  <text x="702" y="348" class="micro">OBSERVATIONS IN</text>
-
-  <!-- Kernel -->
-  <rect x="48" y="372" width="1104" height="215" rx="6" fill="#0D0F11" stroke="#3B3D41" stroke-width="1.2"/>
-  <text x="68" y="402" class="band-title">deepstrike-core</text>
-  <text x="207" y="402" class="band-note">PURE RUST · SERIALIZABLE STATE MACHINE · ABI v2 · ZERO PROVIDER I/O</text>
-  <rect x="1081" y="388" width="52" height="20" rx="10" fill="#FF6B4A"/>
-  <text x="1107" y="402" text-anchor="middle" fill="#111318" font-size="10" font-weight="750">KERNEL</text>
 
   <g>
-    <rect x="68" y="426" width="249" height="132" rx="4" class="kernel-card"/>
-    <text x="86" y="452" class="card-title">Syscall gate &amp; governance</text>
-    <text x="86" y="475" class="card-text">Invoke · Spawn · memory syscalls</text>
-    <text x="86" y="494" class="card-text">SubmitNodes · LoadWorkflow · PageIn</text>
-    <line x1="86" y1="510" x2="299" y2="510" class="rule"/>
-    <text x="86" y="532" class="micro">ALLOW · DENY · ASK · RATE LIMIT</text>
+    <rect x="324" y="140" width="258" height="82" rx="6" class="panel"/>
 
-    <rect x="329" y="426" width="249" height="132" rx="4" class="kernel-card"/>
-    <text x="347" y="452" class="card-title">Scheduler, process tree &amp; DAG</text>
-    <text x="347" y="475" class="card-text">TCBs · child agents · dependency barriers</text>
-    <text x="347" y="494" class="card-text">Budgets · quota · trust · quarantine</text>
-    <line x1="347" y1="510" x2="560" y2="510" class="rule"/>
-    <text x="347" y="532" class="micro">LOOP · CLASSIFY · TOURNEY · REDUCE</text>
+    <text x="342" y="169" class="card-title" text-anchor="start">ExecutionPlane</text>
+    <text x="342" y="193" class="card-text" text-anchor="start">Tools · streaming · suspend / resume</text>
+<text x="342" y="211" class="card-text" text-anchor="start">Worktrees · sandboxes · remote VPC</text>
 
-    <rect x="590" y="426" width="249" height="132" rx="4" class="kernel-card"/>
-    <text x="608" y="452" class="card-title">Context VM &amp; knowledge</text>
-    <text x="608" y="475" class="card-text">stable · knowledge · history · state</text>
-    <text x="608" y="494" class="card-text">Compression · handles · cache boundaries</text>
-    <line x1="608" y1="510" x2="821" y2="510" class="rule"/>
-    <text x="608" y="532" class="micro">KNOWLEDGE · BUDGET · SKILL LEASES</text>
-
-    <rect x="851" y="426" width="281" height="132" rx="4" class="kernel-card"/>
-    <text x="869" y="452" class="card-title">Observation, signals &amp; recovery</text>
-    <text x="869" y="475" class="card-text">Provider / tool results · visible denials</text>
-    <text x="869" y="494" class="card-text">Transactions · snapshots · wake / resume</text>
-    <line x1="869" y1="510" x2="1114" y2="510" class="rule"/>
-    <text x="869" y="532" class="micro">REPLAYABLE · RESUMABLE · AUDITABLE</text>
   </g>
-
-  <!-- Runtime implementations -->
-  <text x="48" y="632" class="band-title">One behavior, four host SDKs</text>
-  <text x="48" y="654" class="card-text">The same kernel state machine drives each host; only effect execution is language-specific.</text>
-  <g>
-    <rect x="48" y="674" width="94" height="32" rx="16" class="panel"/>
-    <text x="95" y="695" text-anchor="middle" class="card-title">Node.js</text>
-    <rect x="152" y="674" width="94" height="32" rx="16" class="panel"/>
-    <text x="199" y="695" text-anchor="middle" class="card-title">Python</text>
-    <rect x="256" y="674" width="94" height="32" rx="16" class="panel"/>
-    <text x="303" y="695" text-anchor="middle" class="card-title">Rust</text>
-    <rect x="360" y="674" width="94" height="32" rx="16" class="panel"/>
-    <text x="407" y="695" text-anchor="middle" class="card-title">WASM</text>
-  </g>
-
-  <!-- Self-harness outer loop -->
-  <line x1="494" y1="626" x2="494" y2="716" class="rule"/>
-  <text x="522" y="632" class="band-title">Node self-harness lab</text>
-  <text x="1128" y="632" text-anchor="end" class="band-note">OUTER OPTIMIZATION LOOP · SAFETY SURFACES EXCLUDED</text>
 
   <g>
-    <rect x="522" y="657" width="122" height="49" rx="4" class="panel"/>
-    <text x="583" y="678" text-anchor="middle" class="card-title">Evidence</text>
-    <text x="583" y="695" text-anchor="middle" class="card-text">failure clusters</text>
+    <rect x="600" y="140" width="258" height="82" rx="6" class="panel"/>
 
-    <rect x="666" y="657" width="122" height="49" rx="4" class="panel"/>
-    <text x="727" y="678" text-anchor="middle" class="card-title">Propose</text>
-    <text x="727" y="695" text-anchor="middle" class="card-text">bounded patches</text>
+    <text x="618" y="169" class="card-title" text-anchor="start">Evidence &amp; durable stores</text>
+    <text x="618" y="193" class="card-text" text-anchor="start">SessionLog · ABI transactions · snapshots</text>
+<text x="618" y="211" class="card-text" text-anchor="start">DreamStore · archives · large-result spool</text>
 
-    <rect x="810" y="657" width="146" height="49" rx="4" class="panel"/>
-    <text x="883" y="678" text-anchor="middle" class="card-title">Validate</text>
-    <text x="883" y="695" text-anchor="middle" class="card-text">held-in + held-out</text>
-
-    <rect x="978" y="657" width="150" height="49" rx="4" class="panel"/>
-    <text x="1053" y="678" text-anchor="middle" class="card-title">Promote</text>
-    <text x="1053" y="695" text-anchor="middle" class="card-text">manifest lineage</text>
-
-    <path d="M644 681H662" class="flow-coral"/>
-    <path d="M788 681H806" class="flow-coral"/>
-    <path d="M956 681H974" class="flow-coral"/>
-    <path d="M1053 706V730H583V710" class="flow-dash"/>
-    <text x="818" y="744" text-anchor="middle" class="micro">NEXT RUN: INSTRUCTIONS · NUDGES · RUNTIME PATCH</text>
   </g>
+
+  <g>
+    <rect x="876" y="140" width="276" height="82" rx="6" class="panel"/>
+
+    <text x="894" y="169" class="card-title" text-anchor="start">External control</text>
+    <text x="894" y="193" class="card-text" text-anchor="start">Approvals · signals · webhooks · cron</text>
+<text x="894" y="211" class="card-text" text-anchor="start">Cancellation · deadlines · host policy</text>
+
+  </g>
+
+  <text x="48" y="260" class="section-title" text-anchor="start">Host runtime loop</text>
+  <text x="1152" y="260" class="section-note" text-anchor="end">RUNTIMERUNNER · ACTIONS OUT · OBSERVATIONS IN</text>
+
+  <g>
+    <rect x="48" y="278" width="1104" height="48" rx="6" class="panel-strong"/>
+    <rect x="48" y="278" width="5" height="48" rx="2.5" class="accent-fill"/>
+    <text x="66" y="307" class="card-title" text-anchor="start">RuntimeRunner</text>
+
+
+  </g>
+    <text x="210" y="308" class="card-text" text-anchor="start">dispatch KernelEffect</text>
+    <text x="408" y="308" class="card-text" text-anchor="start">execute approved effects</text>
+    <text x="620" y="308" class="card-text" text-anchor="start">append evidence</text>
+    <text x="760" y="308" class="card-text" text-anchor="start">feed observations</text>
+    <text x="928" y="308" class="card-text" text-anchor="start">signals · harness instructions</text>
+    <path d="M488 326V347H386V368" class="flow"/>
+    <path d="M704 368V347H592V326" class="flow flow-coral"/>
+    <text x="410" y="350" class="micro" text-anchor="start">EFFECTS OUT</text>
+    <text x="720" y="350" class="micro" text-anchor="start">OBSERVATIONS IN</text>
+    <rect x="48" y="370" width="1104" height="214" rx="7" class="kernel"/>
+    <text x="68" y="400" class="section-title" text-anchor="start">deepstrike-core</text>
+    <text x="205" y="400" class="section-note" text-anchor="start">PURE RUST · SERIALIZABLE STATE MACHINE · ABI v2 · ZERO PROVIDER I/O</text>
+
+  <rect x="1067" y="384" width="66" height="22" rx="11" class="pill coral"/>
+  <text x="1100" y="399" class="pill-text" text-anchor="middle">KERNEL</text>
+
+  <g>
+    <rect x="68" y="422" width="249" height="136" rx="6" class="panel"/>
+
+    <text x="86" y="451" class="card-title" text-anchor="start">Syscall gate &amp; governance</text>
+    <text x="86" y="475" class="card-text" text-anchor="start">Invoke · Spawn · memory</text>
+<text x="86" y="493" class="card-text" text-anchor="start">SubmitNodes · LoadWorkflow</text>
+
+  </g>
+        <path d="M86 509H299" class="rule"/>
+        <text x="86" y="536" class="micro" text-anchor="start">ALLOW · DENY · ASK · RATE LIMIT</text>
+
+  <g>
+    <rect x="329" y="422" width="249" height="136" rx="6" class="panel"/>
+
+    <text x="347" y="451" class="card-title" text-anchor="start">Scheduler, process tree &amp; DAG</text>
+    <text x="347" y="475" class="card-text" text-anchor="start">TCBs · child agents · dependency barriers</text>
+<text x="347" y="493" class="card-text" text-anchor="start">Budgets · quota · trust · isolation</text>
+
+  </g>
+        <path d="M347 509H560" class="rule"/>
+        <text x="347" y="536" class="micro" text-anchor="start">LOOP · CLASSIFY · REDUCE</text>
+
+  <g>
+    <rect x="590" y="422" width="249" height="136" rx="6" class="panel"/>
+
+    <text x="608" y="451" class="card-title" text-anchor="start">Context VM &amp; knowledge</text>
+    <text x="608" y="475" class="card-text" text-anchor="start">stable · knowledge · history · state</text>
+<text x="608" y="493" class="card-text" text-anchor="start">Compression · handles · cache boundaries</text>
+
+  </g>
+        <path d="M608 509H821" class="rule"/>
+        <text x="608" y="536" class="micro" text-anchor="start">SKILL LEASE · KNOWLEDGE BUDGET</text>
+
+  <g>
+    <rect x="851" y="422" width="281" height="136" rx="6" class="panel"/>
+
+    <text x="869" y="451" class="card-title" text-anchor="start">Observation &amp; recovery</text>
+    <text x="869" y="475" class="card-text" text-anchor="start">Provider / tool results · visible denials</text>
+<text x="869" y="493" class="card-text" text-anchor="start">Signals · transactions · snapshots · wake</text>
+
+  </g>
+        <path d="M869 509H1114" class="rule"/>
+        <text x="869" y="536" class="micro" text-anchor="start">APPEND-ONLY EVIDENCE</text>
+
+  <text x="48" y="620" class="section-title" text-anchor="start">Self-Harness v2 outer loop</text>
+  <text x="1152" y="620" class="section-note" text-anchor="end">IMPROVES THE NEXT RUN · NEVER BYPASSES GOVERNANCE</text>
+
+  <g>
+    <rect x="48" y="638" width="770" height="62" rx="6" class="panel"/>
+    <rect x="48" y="638" width="5" height="62" rx="2.5" class="accent-fill"/>
+    <text x="66" y="667" class="card-title" text-anchor="start">evidence → cluster → propose → screen → held-in / held-out validation → tiered promote</text>
+    <text x="66" y="691" class="card-text" text-anchor="start">scope isolation · capability intersection · content-addressed lineage</text>
+
+  </g>
+
+  <g>
+    <rect x="838" y="638" width="314" height="62" rx="6" class="panel"/>
+
+    <text x="856" y="667" class="card-title" text-anchor="start">Host SDKs on one ABI</text>
+    <text x="856" y="691" class="card-text" text-anchor="start">Node.js · Python · Rust · WASM</text>
+
+  </g>
+    <path d="M818 669H836" class="flow flow-coral flow-dash"/>
+
+  <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>
 </svg>

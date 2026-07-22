@@ -18,6 +18,8 @@ DeepStrike accepts **image and audio** input alongside text. The kernel's conten
 | To pressure | Images and audio contribute real token weight to ρ, so compaction sees their cost instead of treating them as free |
 | To replay | Attachments persist in the session log and are restored on resume, so a crashed multimodal run recovers the image |
 
+![Multimodal input across context pressure, provider serialization, and replay](/multimodal_mechanisms.svg)
+
 Multimodal input is a content-shape concern, not a routing one: [Provider Routing](./provider-routing) selects *which* vendor answers, while this guide covers *how* non-text content reaches that vendor.
 
 ## Level 1: Send an image with the run

@@ -260,6 +260,8 @@ caller judges by Δ%.
 
 ## Self-harness lab — `selfharness/`
 
+![Self-Harness v2 scope isolation, proposal screening, validation, and promotion](../docs/public/self_harness_mechanisms.svg)
+
 An offline propose–validate–promote loop after *Self-Harness: Harnesses That Improve Themselves*
 (arXiv:2606.09498): a fixed model mines its own verifier-anchored failure clusters, proposes bounded
 JSON patches against the declared editable surfaces of a `HarnessManifest` (SDK

@@ -1,0 +1,167 @@
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">DeepStrike runtime reliability mechanisms</title>
+  <desc id="desc">Bounded input and snapshot journals, replay deduplication, provider and durability recovery attempts, cancellation, repeat fuse, criteria gate, entropy watch, and explicit terminal reasons.</desc>
+  <defs>
+    <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
+    </marker>
+    <marker id="arrow-coral" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#FF6B4A"/>
+    </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif; }
+      .eyebrow { fill:#FF6B4A; font-size:11px; font-weight:700; letter-spacing:2px; }
+      .title { fill:#F7F3EA; font-size:29px; font-weight:700; letter-spacing:-.45px; }
+      .subtitle { fill:#A8A49C; font-size:13px; font-weight:450; }
+      .section-title { fill:#F7F3EA; font-size:15px; font-weight:700; }
+      .section-note { fill:#8F8C86; font-size:10px; font-weight:600; letter-spacing:.65px; }
+      .card-title { fill:#F7F3EA; font-size:13px; font-weight:650; }
+      .card-text { fill:#A8A49C; font-size:10.5px; font-weight:450; }
+      .body { fill:#A8A49C; font-size:11px; font-weight:450; }
+      .label { fill:#F7F3EA; font-size:11px; font-weight:650; }
+      .micro { fill:#8F8C86; font-size:9.5px; font-weight:650; letter-spacing:.55px; }
+      .pill-text { fill:#111318; font-size:9px; font-weight:750; letter-spacing:.5px; }
+      .footer { fill:#77746F; font-size:9px; font-weight:600; letter-spacing:.8px; }
+      .panel { fill:#15171A; stroke:#303236; stroke-width:1; }
+      .panel-strong { fill:#191A1D; stroke:#F7F3EA; stroke-width:1.15; }
+      .kernel { fill:#0D0F11; stroke:#3B3D41; stroke-width:1.2; }
+      .soft { fill:#121316; stroke:#26282C; stroke-width:1; }
+      .accent-fill { fill:#FF6B4A; }
+      .pill.coral { fill:#FF6B4A; }
+      .pill.ivory { fill:#F7F3EA; }
+      .pill.muted { fill:#8F8C86; }
+      .rule { fill:none; stroke:#303236; stroke-width:1; }
+      .rule-coral { fill:none; stroke:#FF6B4A; stroke-width:1.2; }
+      .flow { fill:none; stroke:#F7F3EA; stroke-width:1.45; marker-end:url(#arrow-ivory); }
+      .flow-coral { stroke:#FF6B4A; stroke-width:1.75; marker-end:url(#arrow-coral); }
+      .flow-dash { stroke-dasharray:5 5; }
+    </style>
+  </defs>
+  <rect width="1200" height="760" fill="#111318"/>
+  <path d="M0 94H1200M0 724H1200" class="rule"/>
+  <text x="48" y="33" class="eyebrow" text-anchor="start">RUNTIME RELIABILITY / v0.2.48</text>
+  <text x="48" y="68" class="title" text-anchor="start">Every recovery path has a bound and an observable outcome.</text>
+  <text x="1152" y="39" class="subtitle" text-anchor="end">LIMITS · RETRIES · FUSES · CANCELLATION · EVIDENCE</text>
+  <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>
+
+
+  <text x="48" y="124" class="section-title" text-anchor="start">ABI and durability bounds</text>
+  <text x="1152" y="124" class="section-note" text-anchor="end">STRICT INPUTS PREVENT SILENTLY PARTIAL RECOVERY</text>
+
+  <g>
+    <rect x="48" y="146" width="258" height="116" rx="6" class="panel"/>
+
+    <text x="66" y="175" class="card-title" text-anchor="start">Input validation</text>
+    <text x="66" y="199" class="card-text" text-anchor="start">Canonical JSON byte limit</text>
+<text x="66" y="217" class="card-text" text-anchor="start">Unknown ABI v2 fields rejected</text>
+
+  </g>
+
+  <g>
+    <rect x="324" y="146" width="258" height="116" rx="6" class="panel"/>
+
+    <text x="342" y="175" class="card-title" text-anchor="start">Replay windows</text>
+    <text x="342" y="199" class="card-text" text-anchor="start">Input-event dedupe capacity</text>
+<text x="342" y="217" class="card-text" text-anchor="start">Completed-effect replay capacity</text>
+
+  </g>
+
+  <g>
+    <rect x="600" y="146" width="258" height="116" rx="6" class="panel"/>
+    <rect x="600" y="146" width="5" height="116" rx="2.5" class="accent-fill"/>
+    <text x="618" y="175" class="card-title" text-anchor="start">Snapshot journal</text>
+    <text x="618" y="199" class="card-text" text-anchor="start">Input-count + byte bounds</text>
+<text x="618" y="217" class="card-text" text-anchor="start">Overflow → snapshot_incompatible</text>
+
+  </g>
+
+  <g>
+    <rect x="876" y="146" width="276" height="116" rx="6" class="panel"/>
+
+    <text x="894" y="175" class="card-title" text-anchor="start">Durability retry</text>
+    <text x="894" y="199" class="card-text" text-anchor="start">Host effect retry attempts</text>
+<text x="894" y="217" class="card-text" text-anchor="start">Best-effort failures surface to handler</text>
+
+  </g>
+
+
+  <text x="48" y="310" class="section-title" text-anchor="start">Loop recovery and termination</text>
+  <text x="1152" y="310" class="section-note" text-anchor="end">NO UNBOUNDED RETRY LADDER</text>
+
+  <g>
+    <rect x="48" y="330" width="210" height="126" rx="6" class="panel"/>
+
+    <text x="66" y="359" class="card-title" text-anchor="start">Provider recovery</text>
+    <text x="66" y="383" class="card-text" text-anchor="start">Context-overflow attempts</text>
+<text x="66" y="401" class="card-text" text-anchor="start">Truncated-output attempts</text>
+<text x="66" y="419" class="card-text" text-anchor="start">Both capped 0..16</text>
+
+  </g>
+
+  <g>
+    <rect x="274" y="330" width="210" height="126" rx="6" class="panel"/>
+
+    <text x="292" y="359" class="card-title" text-anchor="start">Repeat fuse</text>
+    <text x="292" y="383" class="card-text" text-anchor="start">Digest full tool arguments</text>
+<text x="292" y="401" class="card-text" text-anchor="start">Deny repeated call</text>
+<text x="292" y="419" class="card-text" text-anchor="start">Terminate persistent no-progress</text>
+
+  </g>
+
+  <g>
+    <rect x="500" y="330" width="210" height="126" rx="6" class="panel"/>
+
+    <text x="518" y="359" class="card-title" text-anchor="start">Criteria gate</text>
+    <text x="518" y="383" class="card-text" text-anchor="start">One verification turn</text>
+<text x="518" y="401" class="card-text" text-anchor="start">before accepting completion</text>
+<text x="518" y="419" class="card-text" text-anchor="start">Does not loop forever</text>
+
+  </g>
+
+  <g>
+    <rect x="726" y="330" width="210" height="126" rx="6" class="panel"/>
+
+    <text x="744" y="359" class="card-title" text-anchor="start">Entropy watch</text>
+    <text x="744" y="383" class="card-text" text-anchor="start">Per-turn sample</text>
+<text x="744" y="401" class="card-text" text-anchor="start">Hysteresis + cooldown</text>
+<text x="744" y="419" class="card-text" text-anchor="start">Optional signal to model</text>
+
+  </g>
+
+  <g>
+    <rect x="952" y="330" width="200" height="126" rx="6" class="panel"/>
+
+    <text x="970" y="359" class="card-title" text-anchor="start">Budget funnel</text>
+    <text x="970" y="383" class="card-text" text-anchor="start">Turns · tokens · wall time</text>
+<text x="970" y="401" class="card-text" text-anchor="start">Checked before provider call</text>
+<text x="970" y="419" class="card-text" text-anchor="start">Final report bounded</text>
+
+  </g>
+
+
+  <text x="48" y="504" class="section-title" text-anchor="start">Operation cancellation</text>
+  <text x="1152" y="504" class="section-note" text-anchor="end">ONE SIGNAL COMPOSES HOST AND USER TERMINAL CONDITIONS</text>
+    <rect x="48" y="524" width="1104" height="106" rx="7" class="kernel"/>
+
+  <rect x="78" y="552" width="74" height="22" rx="11" class="pill ivory"/>
+  <text x="115" y="567" class="pill-text" text-anchor="middle">USER</text>
+  <rect x="196" y="552" width="92" height="22" rx="11" class="pill ivory"/>
+  <text x="242" y="567" class="pill-text" text-anchor="middle">DEADLINE</text>
+  <rect x="332" y="552" width="104" height="22" rx="11" class="pill ivory"/>
+  <text x="384" y="567" class="pill-text" text-anchor="middle">LEASE LOST</text>
+  <rect x="480" y="552" width="128" height="22" rx="11" class="pill ivory"/>
+  <text x="544" y="567" class="pill-text" text-anchor="middle">HOST SHUTDOWN</text>
+    <path d="M628 563H784" class="flow flow-coral"/>
+
+  <rect x="806" y="552" width="148" height="22" rx="11" class="pill coral"/>
+  <text x="880" y="567" class="pill-text" text-anchor="middle">ABORT OPERATION</text>
+    <path d="M974 563H1080" class="flow flow-coral"/>
+    <text x="1098" y="567" class="label" text-anchor="start">Done</text>
+    <text x="78" y="608" class="body" text-anchor="start">Cancellation, quota, no-progress, invalid config, and recovery exhaustion each produce an explicit terminal reason in evidence.</text>
+
+  <text x="48" y="684" class="section-title" text-anchor="start">Invariant</text>
+  <text x="1152" y="684" class="section-note" text-anchor="end">RETRY ONLY WHEN THE POLICY NAMES A LIMIT · FAIL CLOSED WHEN RECOVERY CANNOT PROVE STATE</text>
+
+  <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>
+</svg>

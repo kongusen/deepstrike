@@ -1,162 +1,158 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="100%" height="100%" style="background-color: #0b0f19; font-family: system-ui, -apple-system, sans-serif;">
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">DeepStrike session replay and recovery</title>
+  <desc id="desc">The append-only SessionLog evidence stream records provider, tool, governance, workflow, memory, multimodal, and lifecycle events for audit, provider replay, workflow resume, repair, and OS snapshots.</desc>
   <defs>
-    <!-- Gradients -->
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0b0f19" />
-      <stop offset="50%" stop-color="#111827" />
-      <stop offset="100%" stop-color="#070a13" />
-    </linearGradient>
-    <linearGradient id="boxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#1e293b" />
-      <stop offset="100%" stop-color="#0f172a" />
-    </linearGradient>
-    
-    <!-- Arrows -->
-    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+    <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
     </marker>
-    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#bd00ff" />
+    <marker id="arrow-coral" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#FF6B4A"/>
     </marker>
-    <marker id="arrowGreen" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#10b981" />
-    </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif; }
+      .eyebrow { fill:#FF6B4A; font-size:11px; font-weight:700; letter-spacing:2px; }
+      .title { fill:#F7F3EA; font-size:29px; font-weight:700; letter-spacing:-.45px; }
+      .subtitle { fill:#A8A49C; font-size:13px; font-weight:450; }
+      .section-title { fill:#F7F3EA; font-size:15px; font-weight:700; }
+      .section-note { fill:#8F8C86; font-size:10px; font-weight:600; letter-spacing:.65px; }
+      .card-title { fill:#F7F3EA; font-size:13px; font-weight:650; }
+      .card-text { fill:#A8A49C; font-size:10.5px; font-weight:450; }
+      .body { fill:#A8A49C; font-size:11px; font-weight:450; }
+      .label { fill:#F7F3EA; font-size:11px; font-weight:650; }
+      .micro { fill:#8F8C86; font-size:9.5px; font-weight:650; letter-spacing:.55px; }
+      .pill-text { fill:#111318; font-size:9px; font-weight:750; letter-spacing:.5px; }
+      .footer { fill:#77746F; font-size:9px; font-weight:600; letter-spacing:.8px; }
+      .panel { fill:#15171A; stroke:#303236; stroke-width:1; }
+      .panel-strong { fill:#191A1D; stroke:#F7F3EA; stroke-width:1.15; }
+      .kernel { fill:#0D0F11; stroke:#3B3D41; stroke-width:1.2; }
+      .soft { fill:#121316; stroke:#26282C; stroke-width:1; }
+      .accent-fill { fill:#FF6B4A; }
+      .pill.coral { fill:#FF6B4A; }
+      .pill.ivory { fill:#F7F3EA; }
+      .pill.muted { fill:#8F8C86; }
+      .rule { fill:none; stroke:#303236; stroke-width:1; }
+      .rule-coral { fill:none; stroke:#FF6B4A; stroke-width:1.2; }
+      .flow { fill:none; stroke:#F7F3EA; stroke-width:1.45; marker-end:url(#arrow-ivory); }
+      .flow-coral { stroke:#FF6B4A; stroke-width:1.75; marker-end:url(#arrow-coral); }
+      .flow-dash { stroke-dasharray:5 5; }
+    </style>
   </defs>
+  <rect width="1200" height="760" fill="#111318"/>
+  <path d="M0 94H1200M0 724H1200" class="rule"/>
+  <text x="48" y="33" class="eyebrow" text-anchor="start">SESSION EVIDENCE / v0.2.48</text>
+  <text x="48" y="68" class="title" text-anchor="start">Recovery folds durable observations instead of guessing state.</text>
+  <text x="1152" y="39" class="subtitle" text-anchor="end">APPEND-ONLY LOG · REPLAY · REPAIR · RESUME</text>
+  <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>
 
-  <!-- Background -->
-  <rect width="800" height="480" fill="url(#bgGrad)" />
-  <rect width="800" height="480" fill="none" stroke="#1e293b" stroke-width="2" />
 
-  <!-- Grid lines -->
-  <path d="M 0 60 L 800 60 M 0 120 L 800 120 M 0 180 L 800 180 M 0 240 L 800 240 M 0 300 L 800 300 M 0 360 L 800 360 M 0 420 L 800 420" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
-  <path d="M 100 0 L 100 480 M 200 0 L 200 480 M 300 0 L 300 480 M 400 0 L 400 480 M 500 0 L 500 480 M 600 0 L 600 480 M 700 0 L 700 480" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+  <text x="48" y="124" class="section-title" text-anchor="start">Live evidence stream</text>
+  <text x="1152" y="124" class="section-note" text-anchor="end">HOST APPENDS EVENTS AFTER SEMANTIC BOUNDARIES COMMIT</text>
 
-  <!-- Title -->
-  <text x="400" y="35" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="700" letter-spacing="2">SESSION REPLAY &amp; RECOVERY</text>
-  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-size="11">Append-only Evidence Stream Journal, Replay &amp; Resume Paths</text>
+  <g>
+    <rect x="48" y="146" width="208" height="116" rx="6" class="panel"/>
+    <rect x="48" y="146" width="5" height="116" rx="2.5" class="accent-fill"/>
+    <text x="66" y="175" class="card-title" text-anchor="start">Run lifecycle</text>
+    <text x="66" y="199" class="card-text" text-anchor="start">run_started + attachments</text>
+<text x="66" y="217" class="card-text" text-anchor="start">suspended · resumed · terminal</text>
 
-  <!-- LEFT: LIVE EXECUTION (Generates events) -->
-  <g transform="translate(30, 90)">
-    <rect width="220" height="340" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
-    <rect width="220" height="35" rx="8" fill="#bd00ff" opacity="0.08" />
-    <text x="110" y="22" text-anchor="middle" fill="#c084fc" font-size="12" font-weight="bold">Live Run Loop</text>
-    
-    <!-- Step blocks -->
-    <g transform="translate(15, 50)">
-      <rect width="190" height="40" rx="4" fill="#111827" stroke="#334155" />
-      <text x="10" y="16" fill="#ffffff" font-size="10" font-weight="bold">1. Start Runner</text>
-      <text x="10" y="28" fill="#94a3b8" font-size="8">Trigger run(goal)</text>
-    </g>
-
-    <g transform="translate(15, 105)">
-      <rect width="190" height="40" rx="4" fill="#111827" stroke="#334155" />
-      <text x="10" y="16" fill="#ffffff" font-size="10" font-weight="bold">2. LLM Call</text>
-      <text x="10" y="28" fill="#94a3b8" font-size="8">Streams texts &amp; tool_calls</text>
-    </g>
-
-    <g transform="translate(15, 160)">
-      <rect width="190" height="40" rx="4" fill="#111827" stroke="#334155" />
-      <text x="10" y="16" fill="#ffffff" font-size="10" font-weight="bold">3. Execute Approved Tool</text>
-      <text x="10" y="28" fill="#94a3b8" font-size="8">Runs in Local/Sandbox Cwd</text>
-    </g>
-
-    <g transform="translate(15, 215)">
-      <rect width="190" height="40" rx="4" fill="#111827" stroke="#334155" />
-      <text x="10" y="16" fill="#ffffff" font-size="10" font-weight="bold">4. Delta Compact</text>
-      <text x="10" y="28" fill="#94a3b8" font-size="8">Context VM token compaction</text>
-    </g>
-    
-    <!-- Logging Arrow out -->
-    <path d="M 205,270 L 232,270" stroke="#bd00ff" stroke-width="2" marker-end="url(#arrowPurple)" />
-    <text x="145" y="282" fill="#c084fc" font-size="8.5" font-weight="bold">Log Observations →</text>
   </g>
 
-  <!-- MIDDLE: JOURNAL FILE (SessionLog) -->
-  <g transform="translate(290, 80)">
-    <rect width="220" height="360" rx="8" fill="url(#boxGrad)" stroke="#bd00ff" stroke-width="1.5" />
-    <rect width="220" height="35" rx="8" fill="#bd00ff" opacity="0.1" />
-    <text x="110" y="22" text-anchor="middle" fill="#c084fc" font-size="12" font-weight="bold">SessionLog (Evidence Journal)</text>
+  <g>
+    <rect x="272" y="146" width="208" height="116" rx="6" class="panel"/>
 
-    <!-- JSONL Entries stack -->
-    <g transform="translate(15, 50)">
-      <rect width="190" height="280" rx="4" fill="#111827" stroke="#334155" />
-      <text x="10" y="18" fill="#94a3b8" font-size="9" font-family="monospace">Append-only JSONL stream</text>
+    <text x="290" y="175" class="card-title" text-anchor="start">Provider</text>
+    <text x="290" y="199" class="card-text" text-anchor="start">text · tool calls</text>
+<text x="290" y="217" class="card-text" text-anchor="start">protocol-shaped replay envelope</text>
 
-      <!-- Row 1 -->
-      <rect x="8" y="28" width="174" height="35" rx="2.5" fill="#1e293b" />
-      <text x="14" y="42" fill="#c084fc" font-size="7.5" font-family="monospace">{"kind": "run_started", ...}</text>
-      <text x="14" y="52" fill="#94a3b8" font-size="6.5">Initial session boundary</text>
-
-      <!-- Row 2 -->
-      <rect x="8" y="70" width="174" height="35" rx="2.5" fill="#1e293b" />
-      <text x="14" y="84" fill="#38bdf8" font-size="7.5" font-family="monospace">{"kind": "tool_invoked", ...}</text>
-      <text x="14" y="94" fill="#94a3b8" font-size="6.5">Gated Syscall execution logs</text>
-
-      <!-- Row 3 -->
-      <rect x="8" y="112" width="174" height="35" rx="2.5" fill="#1e293b" />
-      <text x="14" y="126" fill="#38bdf8" font-size="7.5" font-family="monospace">{"kind": "provider_result", ...}</text>
-      <text x="14" y="136" fill="#94a3b8" font-size="6.5">LLM raw completions &amp; tool_calls</text>
-
-      <!-- Row 4 -->
-      <rect x="8" y="154" width="174" height="35" rx="2.5" fill="#1e293b" />
-      <text x="14" y="168" fill="#38bdf8" font-size="7.5" font-family="monospace">{"kind": "tool_results", ...}</text>
-      <text x="14" y="178" fill="#94a3b8" font-size="6.5">Outcome data fed back to kernel</text>
-
-      <!-- Row 5 -->
-      <rect x="8" y="196" width="174" height="35" rx="2.5" fill="#1e293b" />
-      <text x="14" y="210" fill="#fb923c" font-size="7.5" font-family="monospace">{"kind": "pressure_compact", ...}</text>
-      <text x="14" y="220" fill="#94a3b8" font-size="6.5">Delta compaction validation trace</text>
-
-      <!-- Row 6 -->
-      <rect x="8" y="238" width="174" height="35" rx="2.5" fill="#1e293b" />
-      <text x="14" y="252" fill="#f87171" font-size="7.5" font-family="monospace">{"kind": "run_terminal", ...}</text>
-      <text x="14" y="262" fill="#94a3b8" font-size="6.5">Outcome status complete trace</text>
-    </g>
   </g>
 
-  <!-- RIGHT: TELEMETRY PATHS -->
+  <g>
+    <rect x="496" y="146" width="208" height="116" rx="6" class="panel"/>
 
-  <!-- Path A: Wake & Resume (Top Right) -->
-  <g transform="translate(540, 90)">
-    <rect width="230" height="150" rx="8" fill="url(#boxGrad)" stroke="#10b981" stroke-width="1.5" />
-    <rect width="230" height="30" rx="8" fill="#10b981" opacity="0.1" />
-    <text x="115" y="19" text-anchor="middle" fill="#34d399" font-size="12" font-weight="bold">Wake / Resume Path</text>
-    
-    <g transform="translate(12, 40)">
-      <text x="5" y="15" fill="#e2e8f0" font-size="9.5" font-weight="bold">State Reconstruction Flow:</text>
-      <text x="10" y="30" fill="#94a3b8" font-size="8.5">1. Reads append-only journal stream</text>
-      <text x="10" y="42" fill="#94a3b8" font-size="8.5">2. Folds observations sequentially</text>
-      <text x="10" y="54" fill="#94a3b8" font-size="8.5">3. Recreates kernel TCB &amp; state</text>
-      
-      <!-- Resume text -->
-      <rect x="5" y="65" width="195" height="30" rx="3" fill="#10b981" opacity="0.1" />
-      <text x="102.5" y="84" text-anchor="middle" fill="#34d399" font-size="9" font-weight="bold">Resumes exactly at suspended turn</text>
-    </g>
+    <text x="514" y="175" class="card-title" text-anchor="start">Tools &amp; governance</text>
+    <text x="514" y="199" class="card-text" text-anchor="start">requested · gated · completed</text>
+<text x="514" y="217" class="card-text" text-anchor="start">permission request + resolution</text>
+
   </g>
 
-  <!-- Path B: Deterministic Replay (Bottom Right) -->
-  <g transform="translate(540, 260)">
-    <rect width="230" height="180" rx="8" fill="url(#boxGrad)" stroke="#00f0ff" stroke-width="1.5" />
-    <rect width="230" height="30" rx="8" fill="#00f0ff" opacity="0.1" />
-    <text x="115" y="19" text-anchor="middle" fill="#38bdf8" font-size="12" font-weight="bold">Deterministic Replay Path</text>
-    
-    <g transform="translate(12, 40)">
-      <text x="5" y="15" fill="#e2e8f0" font-size="9.5" font-weight="bold">ReplayProvider Testing:</text>
-      <text x="10" y="32" fill="#94a3b8" font-size="8.5">1. Intercepts LLM Call requests</text>
-      <text x="10" y="45" fill="#94a3b8" font-size="8.5">2. Reads recorded provider_results</text>
-      <text x="10" y="58" fill="#94a3b8" font-size="8.5">3. Feeds static completions back</text>
-      
-      <!-- Replay box -->
-      <rect x="5" y="70" width="195" height="55" rx="3" fill="#00f0ff" opacity="0.1" />
-      <text x="102.5" y="86" text-anchor="middle" fill="#38bdf8" font-size="9.5" font-weight="bold">No network API dependency</text>
-      <text x="102.5" y="100" text-anchor="middle" fill="#ffffff" font-size="8">Allows unit &amp; integration test validation</text>
-      <text x="102.5" y="112" text-anchor="middle" fill="#ffffff" font-size="8">without costing cloud LLM tokens</text>
-    </g>
+  <g>
+    <rect x="720" y="146" width="208" height="116" rx="6" class="panel"/>
+
+    <text x="738" y="175" class="card-title" text-anchor="start">Workflow &amp; process</text>
+    <text x="738" y="199" class="card-text" text-anchor="start">node output · submissions</text>
+<text x="738" y="217" class="card-text" text-anchor="start">agent_process_changed lineage</text>
+
   </g>
 
-  <!-- Connectors -->
-  <!-- Journal -> Recovery -->
-  <path d="M 440,80 C 440,25 655,25 655,87" fill="none" stroke="#10b981" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrowGreen)" />
-  <!-- Journal -> Replay -->
-  <path d="M 500,290 L 532,290" stroke="#00f0ff" stroke-width="1.5" marker-end="url(#arrow)" />
+  <g>
+    <rect x="944" y="146" width="208" height="116" rx="6" class="panel"/>
+
+    <text x="962" y="175" class="card-title" text-anchor="start">Memory &amp; context</text>
+    <text x="962" y="199" class="card-text" text-anchor="start">write · query · recall</text>
+<text x="962" y="217" class="card-text" text-anchor="start">compression · renewal · spool</text>
+
+  </g>
+
+
+  <text x="48" y="310" class="section-title" text-anchor="start">Four consumers of the same evidence</text>
+  <text x="1152" y="310" class="section-note" text-anchor="end">ONE LOG · DIFFERENT FOLDS</text>
+
+  <g>
+    <rect x="48" y="330" width="258" height="126" rx="6" class="panel"/>
+
+    <text x="66" y="359" class="card-title" text-anchor="start">Audit &amp; primitive view</text>
+    <text x="66" y="383" class="card-text" text-anchor="start">Filter by category / kernel primitive</text>
+<text x="66" y="401" class="card-text" text-anchor="start">Explain who requested and who executed</text>
+<text x="66" y="419" class="card-text" text-anchor="start">No claim of filesystem rollback</text>
+
+  </g>
+
+  <g>
+    <rect x="324" y="330" width="258" height="126" rx="6" class="panel"/>
+
+    <text x="342" y="359" class="card-title" text-anchor="start">Provider replay</text>
+    <text x="342" y="383" class="card-text" text-anchor="start">ReplayProvider reads envelopes</text>
+<text x="342" y="401" class="card-text" text-anchor="start">No live network or model tokens</text>
+<text x="342" y="419" class="card-text" text-anchor="start">Validate deterministic host behavior</text>
+
+  </g>
+
+  <g>
+    <rect x="600" y="330" width="258" height="126" rx="6" class="panel"/>
+
+    <text x="618" y="359" class="card-title" text-anchor="start">Workflow resume</text>
+    <text x="618" y="383" class="card-text" text-anchor="start">Fold completed node outputs</text>
+<text x="618" y="401" class="card-text" text-anchor="start">Restore runtime submissions</text>
+<text x="618" y="419" class="card-text" text-anchor="start">Schedule remaining frontier</text>
+
+  </g>
+
+  <g>
+    <rect x="876" y="330" width="276" height="126" rx="6" class="panel"/>
+
+    <text x="894" y="359" class="card-title" text-anchor="start">OS Snapshot</text>
+    <text x="894" y="383" class="card-text" text-anchor="start">Fold processes · budgets · signals</text>
+<text x="894" y="401" class="card-text" text-anchor="start">Permissions · paging · memory</text>
+<text x="894" y="419" class="card-text" text-anchor="start">Dashboard state, not restore state</text>
+
+  </g>
+
+
+  <text x="48" y="504" class="section-title" text-anchor="start">Kernel recovery path</text>
+  <text x="1152" y="504" class="section-note" text-anchor="end">PORTABLE SNAPSHOT REPLAYS ACCEPTED PUBLIC ABI TRANSACTIONS</text>
+    <rect x="48" y="524" width="1104" height="118" rx="7" class="kernel"/>
+    <text x="68" y="554" class="label" text-anchor="start">Session / transaction stream</text>
+    <path d="M258 551H356" class="flow flow-coral"/>
+    <text x="376" y="554" class="label" text-anchor="start">validate + repair</text>
+    <path d="M500 551H598" class="flow flow-coral"/>
+    <text x="618" y="554" class="label" text-anchor="start">fold public ABI</text>
+    <path d="M742 551H840" class="flow flow-coral"/>
+    <text x="860" y="554" class="label" text-anchor="start">restore lifecycle / operation / effect ids</text>
+    <text x="68" y="602" class="body" text-anchor="start">Malformed events can be sanitized or rejected; bounded snapshot journals fail explicitly instead of emitting partial checkpoints.</text>
+
+  <text x="48" y="686" class="section-title" text-anchor="start">Boundary</text>
+  <text x="1152" y="686" class="section-note" text-anchor="end">SESSIONLOG RECOVERS CONTROL STATE · TOOL SIDE EFFECTS STILL REQUIRE IDEMPOTENCY OR COMPENSATION</text>
+
+  <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>
 </svg>

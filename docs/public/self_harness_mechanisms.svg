@@ -1,0 +1,158 @@
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">DeepStrike Self-Harness v2</title>
+  <desc id="desc">Verifier-anchored failure evidence is isolated by scope, clustered, mined, patched only through whitelisted surfaces, screened by promotion tier, validated on held-in and held-out tasks, human-vetoed, and persisted as content-addressed lineage.</desc>
+  <defs>
+    <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
+    </marker>
+    <marker id="arrow-coral" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#FF6B4A"/>
+    </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif; }
+      .eyebrow { fill:#FF6B4A; font-size:11px; font-weight:700; letter-spacing:2px; }
+      .title { fill:#F7F3EA; font-size:29px; font-weight:700; letter-spacing:-.45px; }
+      .subtitle { fill:#A8A49C; font-size:13px; font-weight:450; }
+      .section-title { fill:#F7F3EA; font-size:15px; font-weight:700; }
+      .section-note { fill:#8F8C86; font-size:10px; font-weight:600; letter-spacing:.65px; }
+      .card-title { fill:#F7F3EA; font-size:13px; font-weight:650; }
+      .card-text { fill:#A8A49C; font-size:10.5px; font-weight:450; }
+      .body { fill:#A8A49C; font-size:11px; font-weight:450; }
+      .label { fill:#F7F3EA; font-size:11px; font-weight:650; }
+      .micro { fill:#8F8C86; font-size:9.5px; font-weight:650; letter-spacing:.55px; }
+      .pill-text { fill:#111318; font-size:9px; font-weight:750; letter-spacing:.5px; }
+      .footer { fill:#77746F; font-size:9px; font-weight:600; letter-spacing:.8px; }
+      .panel { fill:#15171A; stroke:#303236; stroke-width:1; }
+      .panel-strong { fill:#191A1D; stroke:#F7F3EA; stroke-width:1.15; }
+      .kernel { fill:#0D0F11; stroke:#3B3D41; stroke-width:1.2; }
+      .soft { fill:#121316; stroke:#26282C; stroke-width:1; }
+      .accent-fill { fill:#FF6B4A; }
+      .pill.coral { fill:#FF6B4A; }
+      .pill.ivory { fill:#F7F3EA; }
+      .pill.muted { fill:#8F8C86; }
+      .rule { fill:none; stroke:#303236; stroke-width:1; }
+      .rule-coral { fill:none; stroke:#FF6B4A; stroke-width:1.2; }
+      .flow { fill:none; stroke:#F7F3EA; stroke-width:1.45; marker-end:url(#arrow-ivory); }
+      .flow-coral { stroke:#FF6B4A; stroke-width:1.75; marker-end:url(#arrow-coral); }
+      .flow-dash { stroke-dasharray:5 5; }
+    </style>
+  </defs>
+  <rect width="1200" height="760" fill="#111318"/>
+  <path d="M0 94H1200M0 724H1200" class="rule"/>
+  <text x="48" y="33" class="eyebrow" text-anchor="start">SELF-HARNESS v2 / v0.2.48</text>
+  <text x="48" y="68" class="title" text-anchor="start">Improve the harness without letting evidence rewrite authority.</text>
+  <text x="1152" y="39" class="subtitle" text-anchor="end">SCOPE · WHITELIST · SCREEN · HELD-OUT · TIERED PROMOTION</text>
+  <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>
+
+
+  <text x="48" y="124" class="section-title" text-anchor="start">Evidence and proposal lane</text>
+  <text x="1152" y="124" class="section-note" text-anchor="end">HELD-OUT TASK CONTENT NEVER ENTERS THE MINER OR PROPOSER</text>
+
+  <g>
+    <rect x="48" y="146" width="210" height="126" rx="6" class="panel"/>
+    <rect x="48" y="146" width="5" height="126" rx="2.5" class="accent-fill"/>
+    <text x="66" y="175" class="card-title" text-anchor="start">Failure evidence</text>
+    <text x="66" y="199" class="card-text" text-anchor="start">Verifier-anchored records</text>
+<text x="66" y="217" class="card-text" text-anchor="start">Trace excerpts marked as data</text>
+<text x="66" y="235" class="card-text" text-anchor="start">Tool usage by failure cluster</text>
+
+  </g>
+    <path d="M258 210H304" class="flow flow-coral"/>
+
+  <g>
+    <rect x="306" y="146" width="210" height="126" rx="6" class="panel"/>
+
+    <text x="324" y="175" class="card-title" text-anchor="start">Scope isolation</text>
+    <text x="324" y="199" class="card-text" text-anchor="start">One tenant / agent-group lane</text>
+<text x="324" y="217" class="card-text" text-anchor="start">Mixed-scope bundle throws</text>
+<text x="324" y="235" class="card-text" text-anchor="start">scope × modelProfile lineage</text>
+
+  </g>
+    <path d="M516 210H562" class="flow flow-coral"/>
+
+  <g>
+    <rect x="564" y="146" width="210" height="126" rx="6" class="panel"/>
+
+    <text x="582" y="175" class="card-title" text-anchor="start">Mine mechanism</text>
+    <text x="582" y="199" class="card-text" text-anchor="start">Cluster by failure signature</text>
+<text x="582" y="217" class="card-text" text-anchor="start">Addressable causes only</text>
+<text x="582" y="235" class="card-text" text-anchor="start">No per-task patching</text>
+
+  </g>
+    <path d="M774 210H820" class="flow flow-coral"/>
+
+  <g>
+    <rect x="822" y="146" width="330" height="126" rx="6" class="panel"/>
+
+    <text x="840" y="175" class="card-title" text-anchor="start">Propose minimal HarnessPatch</text>
+    <text x="840" y="199" class="card-text" text-anchor="start">Exactly one editable surface</text>
+<text x="840" y="217" class="card-text" text-anchor="start">Bound to targetCluster</text>
+<text x="840" y="235" class="card-text" text-anchor="start">Canonical JSON + parent-linked digest</text>
+
+  </g>
+
+
+  <text x="48" y="320" class="section-title" text-anchor="start">Safety boundary</text>
+  <text x="1152" y="320" class="section-note" text-anchor="end">THE MANIFEST CAN TUNE BEHAVIOR OR NARROW CAPABILITY · NEVER WIDEN IT</text>
+
+  <g>
+    <rect x="48" y="340" width="258" height="126" rx="6" class="panel"/>
+
+    <text x="66" y="369" class="card-title" text-anchor="start">Editable whitelist</text>
+    <text x="66" y="393" class="card-text" text-anchor="start">instructions.* · nudges</text>
+<text x="66" y="411" class="card-text" text-anchor="start">typed runtime knobs</text>
+<text x="66" y="429" class="card-text" text-anchor="start">memory retrieval / promotion knobs</text>
+
+  </g>
+
+  <g>
+    <rect x="324" y="340" width="258" height="126" rx="6" class="panel"/>
+    <rect x="324" y="340" width="5" height="126" rx="2.5" class="accent-fill"/>
+    <text x="342" y="369" class="card-title" text-anchor="start">Capability ceiling</text>
+    <text x="342" y="393" class="card-text" text-anchor="start">allowedToolIds · stableCoreToolIds</text>
+<text x="342" y="411" class="card-text" text-anchor="start">enablePlanTool · skillFilter</text>
+<text x="342" y="429" class="card-text" text-anchor="start">effective = manifest ∩ host baseline</text>
+
+  </g>
+
+  <g>
+    <rect x="600" y="340" width="258" height="126" rx="6" class="panel"/>
+
+    <text x="618" y="369" class="card-title" text-anchor="start">Promotion tier</text>
+    <text x="618" y="393" class="card-text" text-anchor="start">Tier A typed knobs: auto</text>
+<text x="618" y="411" class="card-text" text-anchor="start">Tier B free text: screened</text>
+<text x="618" y="429" class="card-text" text-anchor="start">Tier C widening: human only</text>
+
+  </g>
+
+  <g>
+    <rect x="876" y="340" width="276" height="126" rx="6" class="panel"/>
+
+    <text x="894" y="369" class="card-title" text-anchor="start">Injection screen</text>
+    <text x="894" y="393" class="card-text" text-anchor="start">Runs before evaluation spend</text>
+<text x="894" y="411" class="card-text" text-anchor="start">Any suspicious flag rejects</text>
+<text x="894" y="429" class="card-text" text-anchor="start">Unparseable verdict fails closed</text>
+
+  </g>
+
+
+  <text x="48" y="514" class="section-title" text-anchor="start">Validate and promote</text>
+  <text x="1152" y="514" class="section-note" text-anchor="end">ACCEPT ONLY NON-REGRESSING CHANGE ON BOTH SPLITS</text>
+    <rect x="48" y="534" width="1104" height="106" rx="7" class="panel-strong"/>
+    <text x="68" y="565" class="label" text-anchor="start">held-in Δ ≥ 0</text>
+    <text x="216" y="565" class="label" text-anchor="start">+</text>
+    <text x="252" y="565" class="label" text-anchor="start">held-out Δ ≥ 0</text>
+    <text x="420" y="565" class="label" text-anchor="start">+</text>
+    <text x="456" y="565" class="label" text-anchor="start">at least one Δ &gt; 0</text>
+    <path d="M620 562H728" class="flow flow-coral"/>
+    <text x="748" y="565" class="label" text-anchor="start">onPromotionDecision</text>
+    <path d="M906 562H1014" class="flow flow-coral"/>
+    <text x="1034" y="565" class="label" text-anchor="start">persist</text>
+    <text x="68" y="608" class="body" text-anchor="start">Every promoted manifest stores parent digest, round, rationale, tier, screen verdict, split deltas, and target cluster.</text>
+
+  <text x="48" y="684" class="section-title" text-anchor="start">Shared layer</text>
+  <text x="1152" y="684" class="section-note" text-anchor="end">SIGNATURE-ONLY AGGREGATE · ≥2 SCOPES · EXPLICIT HUMAN APPROVAL · NO AUTO PATH</text>
+
+  <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>
+</svg>

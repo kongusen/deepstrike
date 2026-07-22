@@ -1,0 +1,180 @@
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">DeepStrike multimodal input path</title>
+  <desc id="desc">Image and audio attachments enter as typed content parts, receive kernel token weighting and durable persistence, then serialize to provider-native formats or fail explicitly when unsupported.</desc>
+  <defs>
+    <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
+    </marker>
+    <marker id="arrow-coral" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#FF6B4A"/>
+    </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif; }
+      .eyebrow { fill:#FF6B4A; font-size:11px; font-weight:700; letter-spacing:2px; }
+      .title { fill:#F7F3EA; font-size:29px; font-weight:700; letter-spacing:-.45px; }
+      .subtitle { fill:#A8A49C; font-size:13px; font-weight:450; }
+      .section-title { fill:#F7F3EA; font-size:15px; font-weight:700; }
+      .section-note { fill:#8F8C86; font-size:10px; font-weight:600; letter-spacing:.65px; }
+      .card-title { fill:#F7F3EA; font-size:13px; font-weight:650; }
+      .card-text { fill:#A8A49C; font-size:10.5px; font-weight:450; }
+      .body { fill:#A8A49C; font-size:11px; font-weight:450; }
+      .label { fill:#F7F3EA; font-size:11px; font-weight:650; }
+      .micro { fill:#8F8C86; font-size:9.5px; font-weight:650; letter-spacing:.55px; }
+      .pill-text { fill:#111318; font-size:9px; font-weight:750; letter-spacing:.5px; }
+      .footer { fill:#77746F; font-size:9px; font-weight:600; letter-spacing:.8px; }
+      .panel { fill:#15171A; stroke:#303236; stroke-width:1; }
+      .panel-strong { fill:#191A1D; stroke:#F7F3EA; stroke-width:1.15; }
+      .kernel { fill:#0D0F11; stroke:#3B3D41; stroke-width:1.2; }
+      .soft { fill:#121316; stroke:#26282C; stroke-width:1; }
+      .accent-fill { fill:#FF6B4A; }
+      .pill.coral { fill:#FF6B4A; }
+      .pill.ivory { fill:#F7F3EA; }
+      .pill.muted { fill:#8F8C86; }
+      .rule { fill:none; stroke:#303236; stroke-width:1; }
+      .rule-coral { fill:none; stroke:#FF6B4A; stroke-width:1.2; }
+      .flow { fill:none; stroke:#F7F3EA; stroke-width:1.45; marker-end:url(#arrow-ivory); }
+      .flow-coral { stroke:#FF6B4A; stroke-width:1.75; marker-end:url(#arrow-coral); }
+      .flow-dash { stroke-dasharray:5 5; }
+    </style>
+  </defs>
+  <rect width="1200" height="760" fill="#111318"/>
+  <path d="M0 94H1200M0 724H1200" class="rule"/>
+  <text x="48" y="33" class="eyebrow" text-anchor="start">MULTIMODAL INPUT / v0.2.48</text>
+  <text x="48" y="68" class="title" text-anchor="start">Attachments survive pressure accounting, replay, and resume.</text>
+  <text x="1152" y="39" class="subtitle" text-anchor="end">TYPED PARTS · TOKEN WEIGHT · VENDOR SERIALIZATION</text>
+  <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>
+
+
+  <text x="48" y="124" class="section-title" text-anchor="start">Ingress and kernel contract</text>
+  <text x="1152" y="124" class="section-note" text-anchor="end">run({ attachments }) WORKS ACROSS NODE.JS · PYTHON · RUST · WASM</text>
+
+  <g>
+    <rect x="48" y="146" width="258" height="112" rx="6" class="panel"/>
+    <rect x="48" y="146" width="5" height="112" rx="2.5" class="accent-fill"/>
+    <text x="66" y="175" class="card-title" text-anchor="start">Image part</text>
+    <text x="66" y="199" class="card-text" text-anchor="start">url or base64 data</text>
+<text x="66" y="217" class="card-text" text-anchor="start">mediaType · detail: low / auto / high</text>
+
+  </g>
+
+  <g>
+    <rect x="324" y="146" width="258" height="112" rx="6" class="panel"/>
+
+    <text x="342" y="175" class="card-title" text-anchor="start">Audio part</text>
+    <text x="342" y="199" class="card-text" text-anchor="start">base64 data + mediaType</text>
+<text x="342" y="217" class="card-text" text-anchor="start">No URL form</text>
+
+  </g>
+    <path d="M582 202H648" class="flow flow-coral"/>
+
+  <g>
+    <rect x="650" y="146" width="226" height="112" rx="6" class="panel"/>
+
+    <text x="668" y="175" class="card-title" text-anchor="start">Content::Parts</text>
+    <text x="668" y="199" class="card-text" text-anchor="start">Typed kernel message</text>
+<text x="668" y="217" class="card-text" text-anchor="start">Persisted in run_started</text>
+
+  </g>
+    <path d="M876 202H942" class="flow flow-coral"/>
+
+  <g>
+    <rect x="944" y="146" width="208" height="112" rx="6" class="panel"/>
+
+    <text x="962" y="175" class="card-title" text-anchor="start">Context pressure</text>
+    <text x="962" y="199" class="card-text" text-anchor="start">Image + audio have weight</text>
+<text x="962" y="217" class="card-text" text-anchor="start">No modality is treated free</text>
+
+  </g>
+
+
+  <text x="48" y="306" class="section-title" text-anchor="start">Token weighting</text>
+  <text x="1152" y="306" class="section-note" text-anchor="end">DETERMINISTIC ESTIMATES FEED THE SAME ρ PRESSURE METER</text>
+
+  <g>
+    <rect x="48" y="326" width="258" height="94" rx="6" class="panel"/>
+
+    <text x="66" y="355" class="card-title" text-anchor="start">Image · low</text>
+    <text x="66" y="379" class="card-text" text-anchor="start">85 tokens</text>
+
+  </g>
+
+  <g>
+    <rect x="324" y="326" width="258" height="94" rx="6" class="panel"/>
+
+    <text x="342" y="355" class="card-title" text-anchor="start">Image · auto</text>
+    <text x="342" y="379" class="card-text" text-anchor="start">255 tokens</text>
+
+  </g>
+
+  <g>
+    <rect x="600" y="326" width="258" height="94" rx="6" class="panel"/>
+
+    <text x="618" y="355" class="card-title" text-anchor="start">Image · high</text>
+    <text x="618" y="379" class="card-text" text-anchor="start">680 tokens</text>
+
+  </g>
+
+  <g>
+    <rect x="876" y="326" width="276" height="94" rx="6" class="panel"/>
+
+    <text x="894" y="355" class="card-title" text-anchor="start">Audio</text>
+    <text x="894" y="379" class="card-text" text-anchor="start">approximately decoded bytes / 1600</text>
+
+  </g>
+
+
+  <text x="48" y="468" class="section-title" text-anchor="start">Host serialization</text>
+  <text x="1152" y="468" class="section-note" text-anchor="end">UNSUPPORTED MODALITY FAILS EXPLICITLY · NEVER SILENTLY DROPS INPUT</text>
+
+  <g>
+    <rect x="48" y="488" width="210" height="118" rx="6" class="panel"/>
+
+    <text x="66" y="517" class="card-title" text-anchor="start">Anthropic</text>
+    <text x="66" y="541" class="card-text" text-anchor="start">image source block</text>
+<text x="66" y="559" class="card-text" text-anchor="start">audio → UnsupportedModalityError</text>
+
+  </g>
+
+  <g>
+    <rect x="274" y="488" width="210" height="118" rx="6" class="panel"/>
+
+    <text x="292" y="517" class="card-title" text-anchor="start">OpenAI Chat</text>
+    <text x="292" y="541" class="card-text" text-anchor="start">image_url</text>
+<text x="292" y="559" class="card-text" text-anchor="start">input_audio: mp3 / wav</text>
+
+  </g>
+
+  <g>
+    <rect x="500" y="488" width="210" height="118" rx="6" class="panel"/>
+
+    <text x="518" y="517" class="card-title" text-anchor="start">OpenAI Responses</text>
+    <text x="518" y="541" class="card-text" text-anchor="start">input_image</text>
+<text x="518" y="559" class="card-text" text-anchor="start">audio unsupported</text>
+
+  </g>
+
+  <g>
+    <rect x="726" y="488" width="210" height="118" rx="6" class="panel"/>
+
+    <text x="744" y="517" class="card-title" text-anchor="start">Gemini</text>
+    <text x="744" y="541" class="card-text" text-anchor="start">inlineData / fileData</text>
+<text x="744" y="559" class="card-text" text-anchor="start">audio inlineData</text>
+
+  </g>
+
+  <g>
+    <rect x="952" y="488" width="200" height="118" rx="6" class="panel"/>
+
+    <text x="970" y="517" class="card-title" text-anchor="start">Ollama</text>
+    <text x="970" y="541" class="card-text" text-anchor="start">images[]</text>
+<text x="970" y="559" class="card-text" text-anchor="start">audio unsupported</text>
+
+  </g>
+
+  <text x="48" y="654" class="section-title" text-anchor="start">Crash and resume</text>
+  <text x="1152" y="654" class="section-note" text-anchor="end">SESSION RECONSTRUCTION RESTORES Content::Parts, NOT A TEXT-ONLY APPROXIMATION</text>
+    <text x="48" y="686" class="body" text-anchor="start">Attachments are durable run evidence and are rebuilt into the initial multimodal turn before provider replay or live continuation.</text>
+
+  <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>
+</svg>

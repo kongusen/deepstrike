@@ -1,161 +1,156 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="100%" height="100%" style="background-color: #0b0f19; font-family: system-ui, -apple-system, sans-serif;">
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">DeepStrike signals and reactive sessions</title>
+  <desc id="desc">Signals enter through scheduled prompts, webhooks, injected notes, or broadcasts, use leased claim and acknowledgment, receive kernel attention dispositions, then feed a reactive multi-peer session with shared budget and idempotent checkpoints.</desc>
   <defs>
-    <!-- Gradients -->
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0b0f19" />
-      <stop offset="50%" stop-color="#111827" />
-      <stop offset="100%" stop-color="#070a13" />
-    </linearGradient>
-    <linearGradient id="boxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#1e293b" />
-      <stop offset="100%" stop-color="#0f172a" />
-    </linearGradient>
-    
-    <!-- Arrows -->
-    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+    <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
     </marker>
-    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#bd00ff" />
+    <marker id="arrow-coral" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#FF6B4A"/>
     </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif; }
+      .eyebrow { fill:#FF6B4A; font-size:11px; font-weight:700; letter-spacing:2px; }
+      .title { fill:#F7F3EA; font-size:29px; font-weight:700; letter-spacing:-.45px; }
+      .subtitle { fill:#A8A49C; font-size:13px; font-weight:450; }
+      .section-title { fill:#F7F3EA; font-size:15px; font-weight:700; }
+      .section-note { fill:#8F8C86; font-size:10px; font-weight:600; letter-spacing:.65px; }
+      .card-title { fill:#F7F3EA; font-size:13px; font-weight:650; }
+      .card-text { fill:#A8A49C; font-size:10.5px; font-weight:450; }
+      .body { fill:#A8A49C; font-size:11px; font-weight:450; }
+      .label { fill:#F7F3EA; font-size:11px; font-weight:650; }
+      .micro { fill:#8F8C86; font-size:9.5px; font-weight:650; letter-spacing:.55px; }
+      .pill-text { fill:#111318; font-size:9px; font-weight:750; letter-spacing:.5px; }
+      .footer { fill:#77746F; font-size:9px; font-weight:600; letter-spacing:.8px; }
+      .panel { fill:#15171A; stroke:#303236; stroke-width:1; }
+      .panel-strong { fill:#191A1D; stroke:#F7F3EA; stroke-width:1.15; }
+      .kernel { fill:#0D0F11; stroke:#3B3D41; stroke-width:1.2; }
+      .soft { fill:#121316; stroke:#26282C; stroke-width:1; }
+      .accent-fill { fill:#FF6B4A; }
+      .pill.coral { fill:#FF6B4A; }
+      .pill.ivory { fill:#F7F3EA; }
+      .pill.muted { fill:#8F8C86; }
+      .rule { fill:none; stroke:#303236; stroke-width:1; }
+      .rule-coral { fill:none; stroke:#FF6B4A; stroke-width:1.2; }
+      .flow { fill:none; stroke:#F7F3EA; stroke-width:1.45; marker-end:url(#arrow-ivory); }
+      .flow-coral { stroke:#FF6B4A; stroke-width:1.75; marker-end:url(#arrow-coral); }
+      .flow-dash { stroke-dasharray:5 5; }
+    </style>
   </defs>
+  <rect width="1200" height="760" fill="#111318"/>
+  <path d="M0 94H1200M0 724H1200" class="rule"/>
+  <text x="48" y="33" class="eyebrow" text-anchor="start">SIGNALS &amp; REACTIVE / v0.2.48</text>
+  <text x="48" y="68" class="title" text-anchor="start">Signals turn external events into governed peer work.</text>
+  <text x="1152" y="39" class="subtitle" text-anchor="end">INGEST · LEASE · ATTENTION · BLACKBOARD · RUNGROUP</text>
+  <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>
 
-  <!-- Background -->
-  <rect width="800" height="480" fill="url(#bgGrad)" />
-  <rect width="800" height="480" fill="none" stroke="#1e293b" stroke-width="2" />
 
-  <!-- Grid lines -->
-  <path d="M 0 60 L 800 60 M 0 120 L 800 120 M 0 180 L 800 180 M 0 240 L 800 240 M 0 300 L 800 300 M 0 360 L 800 360 M 0 420 L 800 420" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
-  <path d="M 100 0 L 100 480 M 200 0 L 200 480 M 300 0 L 300 480 M 400 0 L 400 480 M 500 0 L 500 480 M 600 0 L 600 480 M 700 0 L 700 480" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+  <text x="48" y="124" class="section-title" text-anchor="start">Signal ingress and delivery</text>
+  <text x="1152" y="124" class="section-note" text-anchor="end">A DURABLE SOURCE MAY IMPLEMENT THE SAME LEASED CONTRACT</text>
 
-  <!-- Title -->
-  <text x="400" y="35" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="700" letter-spacing="2">SIGNALS &amp; REACTIVE SESSION</text>
-  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-size="11">External Interrupts Ingestion Gateway &amp; Multilateral Run Coordination</text>
+  <g>
+    <rect x="48" y="146" width="210" height="116" rx="6" class="panel"/>
+    <rect x="48" y="146" width="5" height="116" rx="2.5" class="accent-fill"/>
+    <text x="66" y="175" class="card-title" text-anchor="start">Ingress</text>
+    <text x="66" y="199" class="card-text" text-anchor="start">schedule · ingest · injectNote</text>
+<text x="66" y="217" class="card-text" text-anchor="start">broadcast · targeted interrupt</text>
 
-  <!-- LEFT: EXTERNAL EVENT SOURCES -->
-  <g transform="translate(30, 80)">
-    <rect width="180" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
-    <rect width="180" height="35" rx="8" fill="#bd00ff" opacity="0.08" />
-    <text x="90" y="22" text-anchor="middle" fill="#c084fc" font-size="12" font-weight="bold">External Event sources</text>
+  </g>
+    <path d="M258 204H304" class="flow flow-coral"/>
 
-    <!-- Cron -->
-    <g transform="translate(10, 50)">
-      <rect width="160" height="50" rx="4" fill="#111827" stroke="#334155" />
-      <text x="10" y="18" fill="#ffffff" font-size="10.5" font-weight="bold">Cron / Timed Prompts</text>
-      <text x="10" y="32" fill="#94a3b8" font-size="8">gateway.schedule(ScheduledPrompt)</text>
-      <text x="10" y="42" fill="#94a3b8" font-size="8">Triggers periodically (e.g. check status)</text>
-    </g>
+  <g>
+    <rect x="306" y="146" width="210" height="116" rx="6" class="panel"/>
 
-    <!-- Webhooks -->
-    <g transform="translate(10, 115)">
-      <rect width="160" height="50" rx="4" fill="#111827" stroke="#334155" />
-      <text x="10" y="18" fill="#ffffff" font-size="10.5" font-weight="bold">Webhooks / API Notify</text>
-      <text x="10" y="32" fill="#94a3b8" font-size="8">gateway.ingest(RuntimeSignal)</text>
-      <text x="10" y="42" fill="#94a3b8" font-size="8">Pushes code updates / build failures</text>
-    </g>
+    <text x="324" y="175" class="card-title" text-anchor="start">Recipient + dedupe</text>
+    <text x="324" y="199" class="card-text" text-anchor="start">recipient routing</text>
+<text x="324" y="217" class="card-text" text-anchor="start">dedupe key + TTL / deadline</text>
 
-    <!-- User Interrupt -->
-    <g transform="translate(10, 180)">
-      <rect width="160" height="50" rx="4" fill="#111827" stroke="#334155" />
-      <text x="10" y="18" fill="#ffffff" font-size="10.5" font-weight="bold">User Interrupt / Chat</text>
-      <text x="10" y="32" fill="#94a3b8" font-size="8">Manual pause or cancellation</text>
-      <text x="10" y="42" fill="#94a3b8" font-size="8">Sends cancel signal to running process</text>
-    </g>
+  </g>
+    <path d="M516 204H562" class="flow flow-coral"/>
 
-    <!-- Peer Communication -->
-    <g transform="translate(10, 245)">
-      <rect width="160" height="50" rx="4" fill="#111827" stroke="#334155" />
-      <text x="10" y="18" fill="#ffffff" font-size="10.5" font-weight="bold">Peer Messages</text>
-      <text x="10" y="32" fill="#94a3b8" font-size="8">Signals from sibling sub-agents</text>
-      <text x="10" y="42" fill="#94a3b8" font-size="8">Carries progress reports or handoffs</text>
-    </g>
+  <g>
+    <rect x="564" y="146" width="210" height="116" rx="6" class="panel"/>
+
+    <text x="582" y="175" class="card-title" text-anchor="start">Claim lease</text>
+    <text x="582" y="199" class="card-text" text-anchor="start">claim → ack on kernel accept</text>
+<text x="582" y="217" class="card-text" text-anchor="start">nack / expiry makes visible again</text>
+
+  </g>
+    <path d="M774 204H820" class="flow flow-coral"/>
+
+  <g>
+    <rect x="822" y="146" width="330" height="116" rx="6" class="panel"/>
+
+    <text x="840" y="175" class="card-title" text-anchor="start">Attention disposition</text>
+    <text x="840" y="199" class="card-text" text-anchor="start">ignore · observe · queue · run</text>
+<text x="840" y="217" class="card-text" text-anchor="start">interrupt · interrupt_now · dropped</text>
+
   </g>
 
-  <!-- MIDDLE: SIGNAL GATEWAY (Queue &amp; Recipient Filter) -->
-  <g transform="translate(240, 80)">
-    <rect width="240" height="370" rx="8" fill="url(#boxGrad)" stroke="#1e293b" />
-    <rect width="240" height="35" rx="8" fill="#00f0ff" opacity="0.08" />
-    <text x="120" y="22" text-anchor="middle" fill="#00f0ff" font-size="12" font-weight="bold">SignalGateway Engine</text>
 
-    <!-- Queue Box -->
-    <g transform="translate(15, 55)">
-      <rect width="210" height="150" rx="6" fill="#111827" stroke="#334155" />
-      <text x="10" y="20" fill="#ffffff" font-size="11" font-weight="bold">Attention Signal Queue</text>
-      
-      <!-- Ingest funnel -->
-      <g transform="translate(10, 35)">
-        <rect width="190" height="24" rx="2" fill="#1e293b" stroke="#334155" />
-        <text x="8" y="15" fill="#e2e8f0" font-size="8.5">Signal #01 (cron)  → recipient: "explorer"</text>
-      </g>
-      <g transform="translate(10, 65)">
-        <rect width="190" height="24" rx="2" fill="#1e293b" stroke="#334155" />
-        <text x="8" y="15" fill="#e2e8f0" font-size="8.5">Signal #02 (webhook) → recipient: "builder"</text>
-      </g>
-      <g transform="translate(10, 95)">
-        <rect width="190" height="24" rx="2" fill="#1e293b" stroke="#334155" />
-        <text x="8" y="15" fill="#e2e8f0" font-size="8.5">Signal #03 (user)    → recipient: "runner"</text>
-      </g>
-    </g>
+  <text x="48" y="310" class="section-title" text-anchor="start">Kernel attention plane</text>
+  <text x="1152" y="310" class="section-note" text-anchor="end">SIGNALS RENDER IN state_turn, NEVER IN THE CACHE-STABLE PREFIX</text>
+    <rect x="48" y="330" width="1104" height="118" rx="7" class="kernel"/>
+    <text x="68" y="361" class="label" text-anchor="start">Urgency + task lifecycle + deadline escalation</text>
+    <path d="M346 358H466" class="flow flow-coral"/>
+    <text x="486" y="361" class="label" text-anchor="start">bounded queue / displacement / dedupe</text>
+    <path d="M716 358H836" class="flow flow-coral"/>
+    <text x="856" y="361" class="label" text-anchor="start">[SIGNAL] directive on a turn boundary</text>
+    <text x="68" y="410" class="body" text-anchor="start">Queue overflow returns dropped without committing the dedupe key, so the SDK can apply backpressure and retry safely.</text>
 
-    <!-- Recipient routing filter -->
-    <g transform="translate(15, 220)">
-      <rect width="210" height="125" rx="6" fill="#111827" stroke="#00f0ff" stroke-width="1.2" />
-      <text x="10" y="20" fill="#00f0ff" font-size="11" font-weight="bold">Routing &amp; Attention Policy</text>
-      <text x="10" y="38" fill="#94a3b8" font-size="8.5">1. Pop signal from priority gateway queue</text>
-      <text x="10" y="50" fill="#94a3b8" font-size="8.5">2. Match recipient_id of target agent process</text>
-      <text x="10" y="62" fill="#94a3b8" font-size="8.5">3. Route and insert event payload into target</text>
-      
-      <rect x="10" y="80" width="190" height="35" rx="3.5" fill="#00f0ff" opacity="0.1" />
-      <text x="105" y="93" text-anchor="middle" fill="#38bdf8" font-size="9" font-weight="bold">Injects to Context VM Slot 4</text>
-      <text x="105" y="105" text-anchor="middle" fill="#ffffff" font-size="8">(state_turn.signals partition)</text>
-    </g>
+
+  <text x="48" y="496" class="section-title" text-anchor="start">ReactiveSession governance domain</text>
+  <text x="1152" y="496" class="section-note" text-anchor="end">BLACKBOARD SELECTS WORK · RUNGROUP ACCOUNTS FOR IT</text>
+
+  <g>
+    <rect x="48" y="516" width="210" height="116" rx="6" class="panel"/>
+
+    <text x="66" y="545" class="card-title" text-anchor="start">EventStream</text>
+    <text x="66" y="569" class="card-text" text-anchor="start">Shared blackboard</text>
+<text x="66" y="587" class="card-text" text-anchor="start">visibility by channel / audience</text>
+
   </g>
 
-  <!-- RIGHT: MULTI-AGENT REACTIVE SESSION (Coordination) -->
-  <g transform="translate(510, 80)">
-    <rect width="260" height="370" rx="8" fill="url(#boxGrad)" stroke="#bd00ff" stroke-width="1.5" />
-    <rect width="260" height="35" rx="8" fill="#bd00ff" opacity="0.1" />
-    <text x="130" y="22" text-anchor="middle" fill="#c084fc" font-size="12" font-weight="bold">ReactiveSession Plane</text>
+  <g>
+    <rect x="274" y="516" width="210" height="116" rx="6" class="panel"/>
 
-    <!-- RunGroup budget -->
-    <g transform="translate(15, 55)">
-      <rect width="230" height="70" rx="6" fill="#111827" stroke="#ef4444" stroke-width="1.2" />
-      <text x="10" y="20" fill="#f87171" font-size="11" font-weight="bold">RunGroup (Shared Budget)</text>
-      <text x="10" y="38" fill="#94a3b8" font-size="8.5">Coordinates token counts &amp; wall-clock bounds</text>
-      <text x="10" y="50" fill="#94a3b8" font-size="8.5">across multiple concurrent agent processes</text>
-      <text x="10" y="60" fill="#ffffff" font-size="8" font-weight="bold">→ Prevents budget runaway in group run loops</text>
-    </g>
+    <text x="292" y="545" class="card-title" text-anchor="start">TurnPolicy</text>
+    <text x="292" y="569" class="card-text" text-anchor="start">Select visible peers</text>
+<text x="292" y="587" class="card-text" text-anchor="start">reactByMention or custom</text>
 
-    <!-- Shared event blackboard -->
-    <g transform="translate(15, 140)">
-      <rect width="230" height="85" rx="6" fill="#111827" stroke="#334155" />
-      <text x="10" y="20" fill="#ffffff" font-size="11" font-weight="bold">EventStream (Blackboard)</text>
-      <text x="10" y="38" fill="#e2e8f0" font-size="8.5">Shared blackboard registry:</text>
-      
-      <rect x="10" y="47" width="210" height="28" rx="2.5" fill="#1e293b" stroke="#334155" />
-      <text x="16" y="60" fill="#94a3b8" font-size="7.5" font-family="monospace">peer_report: "design completed successfully"</text>
-      <text x="16" y="69" fill="#34d399" font-size="6.5">Visible to all peer group members</text>
-    </g>
-
-    <!-- TurnPolicy -->
-    <g transform="translate(15, 240)">
-      <rect width="230" height="105" rx="6" fill="#111827" stroke="#334155" />
-      <text x="10" y="20" fill="#ffffff" font-size="11" font-weight="bold">TurnPolicy Selector</text>
-      <text x="10" y="38" fill="#94a3b8" font-size="8.5">Determines process execution orders:</text>
-      
-      <!-- Logic list -->
-      <g transform="translate(10, 50)">
-        <text x="0" y="12" fill="#e2e8f0" font-size="8.5">▪ Reactive: runs agent matching signal recipient</text>
-        <text x="0" y="24" fill="#e2e8f0" font-size="8.5">▪ Collaborative: passes handoff tokens</text>
-        <text x="0" y="36" fill="#94a3b8" font-size="8.5">▪ Suspends when no signals are queued</text>
-      </g>
-    </g>
   </g>
 
-  <!-- Connectors -->
-  <!-- Webhook -> Gateway -->
-  <path d="M 210,210 C 220,210 220,180 232,180" stroke="#c084fc" stroke-width="1.5" marker-end="url(#arrowPurple)" />
-  
-  <!-- Gateway -> Blackboard -->
-  <path d="M 480,265 C 495,265 495,190 510,190" stroke="#00f0ff" stroke-width="1.5" marker-end="url(#arrow)" />
+  <g>
+    <rect x="500" y="516" width="210" height="116" rx="6" class="panel"/>
+
+    <text x="518" y="545" class="card-title" text-anchor="start">Reaction checkpoint</text>
+    <text x="518" y="569" class="card-text" text-anchor="start">Idempotency key + lease</text>
+<text x="518" y="587" class="card-text" text-anchor="start">Save plan and partial outputs</text>
+
+  </g>
+
+  <g>
+    <rect x="726" y="516" width="210" height="116" rx="6" class="panel"/>
+
+    <text x="744" y="545" class="card-title" text-anchor="start">Peer RuntimeRunner</text>
+    <text x="744" y="569" class="card-text" text-anchor="start">One durable session per persona</text>
+<text x="744" y="587" class="card-text" text-anchor="start">Retry only unfinished reactions</text>
+
+  </g>
+
+  <g>
+    <rect x="952" y="516" width="200" height="116" rx="6" class="panel"/>
+
+    <text x="970" y="545" class="card-title" text-anchor="start">RunGroup</text>
+    <text x="970" y="569" class="card-text" text-anchor="start">Shared cumulative budget</text>
+<text x="970" y="587" class="card-text" text-anchor="start">Membership + lineage</text>
+
+  </g>
+    <path d="M258 574H272" class="flow"/><path d="M484 574H498" class="flow"/><path d="M710 574H724" class="flow"/><path d="M936 574H950" class="flow flow-coral"/>
+
+  <text x="48" y="684" class="section-title" text-anchor="start">Deployment boundary</text>
+  <text x="1152" y="684" class="section-note" text-anchor="end">IN-MEMORY STORES ARE PROCESS-LOCAL · MULTI-REPLICA USES ATOMIC DURABLE IMPLEMENTATIONS</text>
+
+  <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>
 </svg>

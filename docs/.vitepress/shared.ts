@@ -20,6 +20,7 @@ function sidebar(prefix: '' | '/en'): SidebarGroup[] {
       text: prefix ? 'Architecture' : '架构',
       items: [
         { text: prefix ? 'Overview' : '总览', link: `${p}/architecture/` },
+        { text: prefix ? 'System Diagram Atlas' : '系统图谱', link: `${p}/architecture/diagram-atlas` },
         { text: prefix ? 'What is Agent OS?' : '什么是 Agent OS', link: `${p}/architecture/agent-os` },
         { text: prefix ? 'Kernel / Host Split' : '内核与宿主分层', link: `${p}/architecture/overview` },
         { text: prefix ? 'Execution Model' : '执行模型', link: `${p}/architecture/execution-model` },

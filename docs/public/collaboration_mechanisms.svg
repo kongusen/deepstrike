@@ -1,143 +1,186 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="100%" height="100%" style="background-color: #0b0f19; font-family: system-ui, -apple-system, sans-serif;">
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">DeepStrike sub-agent collaboration and isolation</title>
+  <desc id="desc">Parent-child TCB lineage, role and context inheritance, capability subsets, shared, read-only, worktree, and remote isolation, contracts, handoff artifacts, and RunGroup settlement.</desc>
   <defs>
-    <!-- Gradients -->
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0b0f19" />
-      <stop offset="50%" stop-color="#111827" />
-      <stop offset="100%" stop-color="#070a13" />
-    </linearGradient>
-    <linearGradient id="boxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#1e293b" />
-      <stop offset="100%" stop-color="#0f172a" />
-    </linearGradient>
-    
-    <!-- Arrows -->
-    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+    <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
     </marker>
-    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#bd00ff" />
+    <marker id="arrow-coral" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 10 5 0 9Z" fill="#FF6B4A"/>
     </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif; }
+      .eyebrow { fill:#FF6B4A; font-size:11px; font-weight:700; letter-spacing:2px; }
+      .title { fill:#F7F3EA; font-size:29px; font-weight:700; letter-spacing:-.45px; }
+      .subtitle { fill:#A8A49C; font-size:13px; font-weight:450; }
+      .section-title { fill:#F7F3EA; font-size:15px; font-weight:700; }
+      .section-note { fill:#8F8C86; font-size:10px; font-weight:600; letter-spacing:.65px; }
+      .card-title { fill:#F7F3EA; font-size:13px; font-weight:650; }
+      .card-text { fill:#A8A49C; font-size:10.5px; font-weight:450; }
+      .body { fill:#A8A49C; font-size:11px; font-weight:450; }
+      .label { fill:#F7F3EA; font-size:11px; font-weight:650; }
+      .micro { fill:#8F8C86; font-size:9.5px; font-weight:650; letter-spacing:.55px; }
+      .pill-text { fill:#111318; font-size:9px; font-weight:750; letter-spacing:.5px; }
+      .footer { fill:#77746F; font-size:9px; font-weight:600; letter-spacing:.8px; }
+      .panel { fill:#15171A; stroke:#303236; stroke-width:1; }
+      .panel-strong { fill:#191A1D; stroke:#F7F3EA; stroke-width:1.15; }
+      .kernel { fill:#0D0F11; stroke:#3B3D41; stroke-width:1.2; }
+      .soft { fill:#121316; stroke:#26282C; stroke-width:1; }
+      .accent-fill { fill:#FF6B4A; }
+      .pill.coral { fill:#FF6B4A; }
+      .pill.ivory { fill:#F7F3EA; }
+      .pill.muted { fill:#8F8C86; }
+      .rule { fill:none; stroke:#303236; stroke-width:1; }
+      .rule-coral { fill:none; stroke:#FF6B4A; stroke-width:1.2; }
+      .flow { fill:none; stroke:#F7F3EA; stroke-width:1.45; marker-end:url(#arrow-ivory); }
+      .flow-coral { stroke:#FF6B4A; stroke-width:1.75; marker-end:url(#arrow-coral); }
+      .flow-dash { stroke-dasharray:5 5; }
+    </style>
   </defs>
+  <rect width="1200" height="760" fill="#111318"/>
+  <path d="M0 94H1200M0 724H1200" class="rule"/>
+  <text x="48" y="33" class="eyebrow" text-anchor="start">SUB-AGENTS / v0.2.48</text>
+  <text x="48" y="68" class="title" text-anchor="start">Delegation creates a child process with less or equal authority.</text>
+  <text x="1152" y="39" class="subtitle" text-anchor="end">IDENTITY · CONTEXT · CAPABILITY · ISOLATION · HANDOFF</text>
+  <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>
 
-  <!-- Background -->
-  <rect width="800" height="480" fill="url(#bgGrad)" />
-  <rect width="800" height="480" fill="none" stroke="#1e293b" stroke-width="2" />
 
-  <!-- Grid lines -->
-  <path d="M 0 60 L 800 60 M 0 120 L 800 120 M 0 180 L 800 180 M 0 240 L 800 240 M 0 300 L 800 300 M 0 360 L 800 360 M 0 420 L 800 420" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
-  <path d="M 100 0 L 100 480 M 200 0 L 200 480 M 300 0 L 300 480 M 400 0 L 400 480 M 500 0 L 500 480 M 600 0 L 600 480 M 700 0 L 700 480" stroke="#1e293b" stroke-width="0.5" opacity="0.3" />
+  <text x="48" y="124" class="section-title" text-anchor="start">Spawn contract</text>
+  <text x="1152" y="124" class="section-note" text-anchor="end">THE CHILD BECOMES A TCB IN THE SAME TASKTABLE</text>
 
-  <!-- Title -->
-  <text x="400" y="35" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="700" letter-spacing="2">PROCESS ISOLATION &amp; SUB-AGENTS</text>
-  <text x="400" y="52" text-anchor="middle" fill="#94a3b8" font-size="11">Parent-Child TCB Lineage, Context Inheritance &amp; Workspace Isolation Modes</text>
+  <g>
+    <rect x="48" y="146" width="258" height="120" rx="6" class="panel"/>
+    <rect x="48" y="146" width="5" height="120" rx="2.5" class="accent-fill"/>
+    <text x="66" y="175" class="card-title" text-anchor="start">Parent RuntimeRunner</text>
+    <text x="66" y="199" class="card-text" text-anchor="start">AgentRunSpec or workflow node</text>
+<text x="66" y="217" class="card-text" text-anchor="start">Parent session + RunGroup identity</text>
 
-  <!-- TOP: PARENT PROCESS (Root TCB) -->
-  <g transform="translate(290, 80)">
-    <rect width="220" height="70" rx="8" fill="url(#boxGrad)" stroke="#bd00ff" stroke-width="1.5" />
-    <text x="15" y="24" fill="#ffffff" font-size="12" font-weight="bold">Parent Process (Root TCB)</text>
-    <text x="15" y="42" fill="#bd00ff" font-size="9.5" font-weight="bold">Role: coordinator | context_inheritance: full</text>
-    <text x="15" y="54" fill="#94a3b8" font-size="8">Workspace: host main directory CWD</text>
+  </g>
+    <path d="M306 206H372" class="flow flow-coral"/>
+
+  <g>
+    <rect x="374" y="146" width="258" height="120" rx="6" class="panel"/>
+
+    <text x="392" y="175" class="card-title" text-anchor="start">Syscall::Spawn</text>
+    <text x="392" y="199" class="card-text" text-anchor="start">Governance + ResourceQuota</text>
+<text x="392" y="217" class="card-text" text-anchor="start">Depth · concurrency · total count</text>
+
+  </g>
+    <path d="M632 206H698" class="flow flow-coral"/>
+
+  <g>
+    <rect x="700" y="146" width="208" height="120" rx="6" class="panel"/>
+
+    <text x="718" y="175" class="card-title" text-anchor="start">Child TCB</text>
+    <text x="718" y="199" class="card-text" text-anchor="start">Role · lifecycle · budget</text>
+<text x="718" y="217" class="card-text" text-anchor="start">Parent waits on join</text>
+
+  </g>
+    <path d="M908 206H974" class="flow flow-coral"/>
+
+  <g>
+    <rect x="976" y="146" width="176" height="120" rx="6" class="panel"/>
+
+    <text x="994" y="175" class="card-title" text-anchor="start">Result</text>
+    <text x="994" y="199" class="card-text" text-anchor="start">Termination</text>
+<text x="994" y="217" class="card-text" text-anchor="start">output + artifact</text>
+<text x="994" y="235" class="card-text" text-anchor="start">durable lineage</text>
+
   </g>
 
-  <!-- SPAWN BOUNDARY (Syscall::Spawn) -->
-  <g transform="translate(400, 160)">
-    <path d="M 0,0 L 0,20" stroke="#bd00ff" stroke-width="1.5" />
-    <path d="M 0,20 L -250,55 M 0,20 L -80,55 M 0,20 L 80,55 M 0,20 L 250,55" fill="none" stroke="#bd00ff" stroke-dasharray="3" stroke-width="1" />
-    
-    <!-- Arrows at endpoints -->
-    <path d="M -250,55 L -250,60" stroke="#bd00ff" stroke-width="1" marker-end="url(#arrowPurple)" />
-    <path d="M -80,55 L -80,60" stroke="#bd00ff" stroke-width="1" marker-end="url(#arrowPurple)" />
-    <path d="M 80,55 L 80,60" stroke="#bd00ff" stroke-width="1" marker-end="url(#arrowPurple)" />
-    <path d="M 250,55 L 250,60" stroke="#bd00ff" stroke-width="1" marker-end="url(#arrowPurple)" />
-    
-    <rect x="-65" y="-5" width="130" height="18" rx="9" fill="#bd00ff" />
-    <text x="0" y="7" text-anchor="middle" fill="#ffffff" font-size="9" font-weight="bold">Syscall::Spawn(manifest)</text>
+
+  <text x="48" y="314" class="section-title" text-anchor="start">Authority and context inheritance</text>
+  <text x="1152" y="314" class="section-note" text-anchor="end">CAPABILITIES ARE SUBSETS · QUARANTINE CANNOT ESCALATE</text>
+
+  <g>
+    <rect x="48" y="334" width="258" height="112" rx="6" class="panel"/>
+
+    <text x="66" y="363" class="card-title" text-anchor="start">Context: none</text>
+    <text x="66" y="387" class="card-text" text-anchor="start">Fresh system / task context</text>
+<text x="66" y="405" class="card-text" text-anchor="start">Best for independent verifier</text>
+
   </g>
 
-  <!-- BOTTOM: FOUR ISOLATION SUB-AGENTS -->
+  <g>
+    <rect x="324" y="334" width="258" height="112" rx="6" class="panel"/>
 
-  <!-- 1. shared isolation -->
-  <g transform="translate(30, 230)">
-    <rect width="165" height="180" rx="6" fill="url(#boxGrad)" stroke="#1e293b" />
-    <rect width="165" height="30" rx="6" fill="#3b82f6" opacity="0.1" />
-    <text x="82.5" y="19" text-anchor="middle" fill="#60a5fa" font-size="11" font-weight="bold">1. isolation: shared</text>
-    
-    <g transform="translate(10, 40)">
-      <text x="0" y="15" fill="#e2e8f0" font-size="9" font-weight="bold">Workspace:</text>
-      <text x="5" y="27" fill="#94a3b8" font-size="8">Shared with parent CWD</text>
+    <text x="342" y="363" class="card-title" text-anchor="start">Context: system_only</text>
+    <text x="342" y="387" class="card-text" text-anchor="start">Identity and stable directives</text>
+<text x="342" y="405" class="card-text" text-anchor="start">No parent conversation history</text>
 
-      <text x="0" y="47" fill="#e2e8f0" font-size="9" font-weight="bold">Context Inheritance:</text>
-      <text x="5" y="59" fill="#10b981" font-size="8" font-weight="bold">full (Default)</text>
-      <text x="5" y="69" fill="#94a3b8" font-size="8">Inherits complete history</text>
-
-      <text x="0" y="89" fill="#e2e8f0" font-size="9" font-weight="bold">Capability filter:</text>
-      <text x="5" y="101" fill="#94a3b8" font-size="8">Unfiltered (Parent tools)</text>
-    </g>
   </g>
 
-  <!-- 2. read_only isolation -->
-  <g transform="translate(215, 230)">
-    <rect width="165" height="180" rx="6" fill="url(#boxGrad)" stroke="#1e293b" />
-    <rect width="165" height="30" rx="6" fill="#eab308" opacity="0.1" />
-    <text x="82.5" y="19" text-anchor="middle" fill="#fde047" font-size="11" font-weight="bold">2. isolation: read_only</text>
+  <g>
+    <rect x="600" y="334" width="258" height="112" rx="6" class="panel"/>
 
-    <g transform="translate(10, 40)">
-      <text x="0" y="15" fill="#e2e8f0" font-size="9" font-weight="bold">Workspace:</text>
-      <text x="5" y="27" fill="#f87171" font-size="8" font-weight="bold">Read-Only directory</text>
+    <text x="618" y="363" class="card-title" text-anchor="start">Context: full</text>
+    <text x="618" y="387" class="card-text" text-anchor="start">Explicit parent context inheritance</text>
+<text x="618" y="405" class="card-text" text-anchor="start">Still bounded by child policy</text>
 
-      <text x="0" y="47" fill="#e2e8f0" font-size="9" font-weight="bold">Context Inheritance:</text>
-      <text x="5" y="59" fill="#fb923c" font-size="8" font-weight="bold">system_only</text>
-      <text x="5" y="69" fill="#94a3b8" font-size="8">Prunes history dialogs</text>
-
-      <text x="0" y="89" fill="#e2e8f0" font-size="9" font-weight="bold">Capability filter:</text>
-      <text x="5" y="101" fill="#94a3b8" font-size="8">Only explore / read tools</text>
-    </g>
   </g>
 
-  <!-- 3. worktree isolation -->
-  <g transform="translate(400, 230)">
-    <rect width="165" height="180" rx="6" fill="url(#boxGrad)" stroke="#1e293b" />
-    <rect width="165" height="30" rx="6" fill="#10b981" opacity="0.1" />
-    <text x="82.5" y="19" text-anchor="middle" fill="#34d399" font-size="11" font-weight="bold">3. isolation: worktree</text>
+  <g>
+    <rect x="876" y="334" width="276" height="112" rx="6" class="panel"/>
+    <rect x="876" y="334" width="5" height="112" rx="2.5" class="accent-fill"/>
+    <text x="894" y="363" class="card-title" text-anchor="start">Capability filter</text>
+    <text x="894" y="387" class="card-text" text-anchor="start">inherit or filtered tool access</text>
+<text x="894" y="405" class="card-text" text-anchor="start">effective child set ⊆ parent set</text>
 
-    <g transform="translate(10, 40)">
-      <text x="0" y="15" fill="#e2e8f0" font-size="9" font-weight="bold">Workspace:</text>
-      <text x="5" y="27" fill="#34d399" font-size="8" font-weight="bold">Cloned git worktree CWD</text>
-      <text x="5" y="37" fill="#94a3b8" font-size="8">Isolated branch folder</text>
-
-      <text x="0" y="57" fill="#e2e8f0" font-size="9" font-weight="bold">Context Inheritance:</text>
-      <text x="5" y="69" fill="#10b981" font-size="8" font-weight="bold">full / system_only</text>
-
-      <text x="0" y="89" fill="#e2e8f0" font-size="9" font-weight="bold">Capability filter:</text>
-      <text x="5" y="101" fill="#94a3b8" font-size="8">Binds code-writing tools</text>
-    </g>
   </g>
 
-  <!-- 4. remote isolation -->
-  <g transform="translate(585, 230)">
-    <rect width="165" height="180" rx="6" fill="url(#boxGrad)" stroke="#ef4444" stroke-width="1" />
-    <rect width="165" height="30" rx="6" fill="#ef4444" opacity="0.1" />
-    <text x="82.5" y="19" text-anchor="middle" fill="#f87171" font-size="11" font-weight="bold">4. isolation: remote</text>
 
-    <g transform="translate(10, 40)">
-      <text x="0" y="15" fill="#e2e8f0" font-size="9" font-weight="bold">Workspace:</text>
-      <text x="5" y="27" fill="#fca5a5" font-size="8" font-weight="bold">Isolated Sandbox VPC</text>
-      <text x="5" y="37" fill="#94a3b8" font-size="8">No host access</text>
+  <text x="48" y="494" class="section-title" text-anchor="start">Execution isolation modes</text>
+  <text x="1152" y="494" class="section-note" text-anchor="end">HOST MAPS THE MANIFEST TO A CONCRETE EXECUTION PLANE</text>
 
-      <text x="0" y="57" fill="#e2e8f0" font-size="9" font-weight="bold">Context Inheritance:</text>
-      <text x="5" y="69" fill="#ef4444" font-size="8" font-weight="bold">none</text>
-      <text x="5" y="79" fill="#94a3b8" font-size="8">Zero context carried</text>
+  <g>
+    <rect x="48" y="514" width="210" height="108" rx="6" class="panel"/>
 
-      <text x="0" y="99" fill="#e2e8f0" font-size="9" font-weight="bold">Capability filter:</text>
-      <text x="5" y="111" fill="#94a3b8" font-size="8">Restricted remote tools only</text>
-    </g>
+    <text x="66" y="543" class="card-title" text-anchor="start">shared</text>
+    <text x="66" y="567" class="card-text" text-anchor="start">Parent plane / cwd</text>
+<text x="66" y="585" class="card-text" text-anchor="start">Fastest · least isolation</text>
+
   </g>
 
-  <!-- RESOURCE TRACKING LEDGER (Bottom) -->
-  <g transform="translate(30, 430)">
-    <rect width="720" height="28" rx="4" fill="#111827" stroke="#334155" />
-    <text x="15" y="18" fill="#94a3b8" font-size="9.5" font-weight="bold">Process Table (TaskTable):</text>
-    <text x="145" y="18" fill="#ffffff" font-size="9.5">Roots parent-child process relationship lineage: explorer node is child of planner process tree.</text>
+  <g>
+    <rect x="274" y="514" width="210" height="108" rx="6" class="panel"/>
+
+    <text x="292" y="543" class="card-title" text-anchor="start">read_only</text>
+    <text x="292" y="567" class="card-text" text-anchor="start">Explore without writes</text>
+<text x="292" y="585" class="card-text" text-anchor="start">Filtered capability surface</text>
+
   </g>
+
+  <g>
+    <rect x="500" y="514" width="210" height="108" rx="6" class="panel"/>
+
+    <text x="518" y="543" class="card-title" text-anchor="start">worktree</text>
+    <text x="518" y="567" class="card-text" text-anchor="start">Dedicated git worktree cwd</text>
+<text x="518" y="585" class="card-text" text-anchor="start">Host creates and removes</text>
+
+  </g>
+
+  <g>
+    <rect x="726" y="514" width="210" height="108" rx="6" class="panel"/>
+
+    <text x="744" y="543" class="card-title" text-anchor="start">remote</text>
+    <text x="744" y="567" class="card-text" text-anchor="start">VPC or sandbox plane</text>
+<text x="744" y="585" class="card-text" text-anchor="start">Credentials stay remote / host</text>
+
+  </g>
+
+  <g>
+    <rect x="952" y="514" width="200" height="108" rx="6" class="panel"/>
+
+    <text x="970" y="543" class="card-title" text-anchor="start">quarantined</text>
+    <text x="970" y="567" class="card-text" text-anchor="start">Deny-all tools</text>
+<text x="970" y="585" class="card-text" text-anchor="start">Taint propagates to children</text>
+
+  </g>
+
+  <text x="48" y="670" class="section-title" text-anchor="start">Join boundary</text>
+  <text x="1152" y="670" class="section-note" text-anchor="end">CONTRACT + HANDOFF ARTIFACT TURN CHILD OUTPUT INTO PARENT-CONSUMABLE EVIDENCE</text>
+    <text x="48" y="700" class="body" text-anchor="start">Nested children join RunGroup lineage and settle actual usage, while local kernel budgets and ResourceQuota remain the child safety boundary.</text>
+
+  <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>
 </svg>
