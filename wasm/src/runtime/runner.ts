@@ -34,6 +34,7 @@ import {
   kernelMaybeAction,
   messageToKernelMessage,
   skillMetadataToKernel,
+  taskUpdateToKernel,
   toolResultToKernel,
   toolSchemaToKernel,
   type KernelObservation,
@@ -1186,9 +1187,22 @@ export class RuntimeRunner {
         // host-resolved: (a) this turn's in-memory pending spool map, (b) the on-disk result spool,
         // (c) a session-log scan for the original `tool_completed` event.
         const readResultCalls = allCalls.filter(c => c.name === "read_result")
+        const planCalls = allCalls.filter(c => c.name === "update_plan")
         const normalCalls = allCalls.filter(
-          c => c.name !== "submit_workflow_nodes" && c.name !== "start_workflow" && c.name !== "read_result",
+          c => c.name !== "submit_workflow_nodes" && c.name !== "start_workflow" && c.name !== "read_result"
+            && c.name !== "update_plan",
         )
+        // `update_plan` is a kernel meta-tool (exposed via `enablePlanTool`), not a registered
+        // plane tool — resolve it here as an `update_task` apply, mirroring the node/python runners.
+        for (const call of planCalls) {
+          const update = parseUpdatePlanArgs(call.arguments)
+          kernelApply(runtime, this.pendingObservations, {
+            kind: "update_task",
+            update: taskUpdateToKernel(update),
+          })
+          toolResults.push({ callId: call.id, output: "success", isError: false })
+          yield { type: "tool_result", callId: call.id, content: "success", isError: false } as ToolResultEvent
+        }
         for (const call of readResultCalls) {
           const out = await this.resolveReadResult(sessionId, call.arguments)
           toolResults.push({ callId: call.id, output: out.text, isError: out.isError })
@@ -2448,6 +2462,26 @@ export async function collectText(stream: AsyncIterable<StreamEvent>): Promise<s
     if (evt.type === "text_delta") text += (evt as TextDelta).delta
   }
   return text
+}
+
+/** Parse `update_plan` meta-tool args into a task update (snake_case aliases accepted, mirroring
+ *  the node/python runners). Malformed payload → an empty update (a no-op `update_task`). */
+function parseUpdatePlanArgs(argsStr: string): Parameters<typeof taskUpdateToKernel>[0] {
+  let parsed: Record<string, unknown> = {}
+  try {
+    parsed = JSON.parse(argsStr) as Record<string, unknown>
+  } catch {
+    // Ignore parse error → empty update.
+  }
+  return {
+    plan: parsed.plan as string[] | undefined,
+    currentStep: parsed.currentStep !== undefined ? Number(parsed.currentStep) : parsed.current_step !== undefined ? Number(parsed.current_step) : undefined,
+    progress: parsed.progress as string | undefined,
+    scratchpad: parsed.scratchpad as string | undefined,
+    blockedOn: parsed.blockedOn !== undefined
+      ? parsed.blockedOn as string[]
+      : parsed.blocked_on as string[] | undefined,
+  }
 }
 
 /** R3-1: parse `submit_workflow_nodes` tool args (`{ nodes: WorkflowNodeSpec[] }`). Node shapes are
