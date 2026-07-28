@@ -6,6 +6,59 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.50] - 2026-07-28
+
+### Added — exposure baseline: narrow→wide progressive disclosure
+
+- **`baselineToolIds`** (all four SDKs; kernel `run_spec.exposure_baseline`, additive ABI): the
+  pre-activation tool surface selected from under the `allowedToolIds` ceiling. Per turn:
+  `exposed = meta ∪ ((baseline ∪ stableCore ∪ ⋃ activeSkills.allowed_tools) ∩ ceiling)` — a run
+  can start advertising a minimal toolset and widen by exactly a skill's declared `allowed_tools`
+  on activation, still bounded by the ceiling. Strict by design: an active skill declaring no
+  tools contributes nothing (the legacy errs-open widening is not inherited), and ceiling-external
+  baseline entries silently intersect away. `undefined`/`None` ⇒ legacy behavior byte-identical;
+  `[]` is a distinct, legitimate value — the minimal surface (meta-tools + `stableCoreToolIds`
+  only). The `allowedToolIds` "empty means no gating" trap does not recur here.
+- **Harness surface** (self-harness S2): `baselineToolIds` joins the intersection-fold id-lists —
+  a manifest can only narrow the baseline. The fold follows the `skillFilter` convention (an
+  empty HOST baseline is a real maximally-tight value, never "no gating"); the harness surface
+  rejects `[]` as a drastic edit reserved for the host. `toolDispatchGate` is deliberately NOT an
+  editable surface: a proposer must not be able to disable the ceiling's enforcement.
+
+### Changed — **BREAKING (behavioral)**: tool dispatch is fail-closed by default
+
+- The kernel now enforces the exposure surface at dispatch: a tool call the model was never
+  advertised this turn no longer executes — it commits a model-visible `governance_denied` result
+  ("Tool 'X' is not part of this run's toolset…") that feeds the repeat fuse like any other
+  denial. Allowed siblings in the same batch still execute; `pace` and the meta-tool family
+  always pass through; a freshly resumed/rebuilt kernel is unarmed until its first provider call,
+  so wake-path re-execution is untouched. This applies to ALL runs, including runs that register
+  zero tools. **Migration:** hosts that deliberately rely on blind calls to unadvertised tools
+  set `toolDispatchGate: "registered"` (`configure_run.tool_dispatch_gate`) to restore the
+  permissive behavior.
+- **BREAKING (source, Rust SDK only)**: `deepstrike_sdk::RuntimeOptions` gained two public fields
+  (`baseline_tool_ids`, `tool_dispatch_gate`); exhaustive struct-literal construction downstream
+  must add them.
+
+### Fixed
+
+- **Denied tool calls could be resurrected by the memory/knowledge continuation** (pre-existing):
+  when one batch mixed a denied call with a `memory`/`knowledge` call, the mid-turn continuation
+  rescanned history for unanswered calls — the denial's result was still pending, so the kernel
+  re-executed a tool it had just refused and delivered two results for one call_id. The
+  continuation now treats "answered" as history plus the results synthesized this turn.
+  Governance denials were affected all along; the new dispatch gate made it easy to hit.
+- **Approval suspends no longer drop same-turn denials** (pre-existing): resolving an `ask_user`
+  suspend overwrote the pending denied-results buffer, orphaning the tool_call of a sibling
+  denied earlier in the same turn (wire-invalid on strict OpenAI-compatible vendors).
+
+### Docs
+
+- `allowedToolIds` is now documented as the **exposure ceiling** across all four SDKs — the same
+  intersection vocabulary `harness/manifest` and the kernel comments already used: applied every
+  turn, skills/baseline/stableCore narrow within it, meta-tools exempt on the id axis, enforced
+  by the dispatch gate.
+
 ## [0.2.49] - 2026-07-28
 
 ### Fixed — kernel meta-tool exposure contract
