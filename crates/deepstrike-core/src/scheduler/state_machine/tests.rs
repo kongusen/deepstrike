@@ -841,6 +841,142 @@ fn top_level_run_without_spec_exposes_all_tools() {
     }
 }
 
+/// The run-level capability filter enumerates *task* tools; it must not silently delete the
+/// kernel's own meta surfaces. `allowedToolIds` lowers to `allowed_ids` only, so before the fix a
+/// non-empty id list dropped skill/memory/knowledge/update_plan/read_result — including the
+/// `read_result` tool that truncation markers explicitly tell the model to call. (The pre-existing
+/// P0-A test never caught this: its fixture configures no skills, memory, or plan tool, so there
+/// were no meta-tools in the toolset to drop.)
+#[test]
+fn run_capability_filter_id_axis_never_drops_kernel_meta_tools() {
+    use crate::types::agent::{AgentCapabilityFilter, AgentIdentity, AgentRole, AgentRunSpec};
+    let mut sm = sm();
+    sm.tools = vec![
+        make_tool_schema("read"),
+        make_tool_schema("write"),
+        make_tool_schema("bash"),
+    ];
+    // Make every meta surface actually exist this turn.
+    sm.ctx
+        .set_available_skills(vec![SkillMetadata::new("debug", "Debug helper")]);
+    sm.ctx.set_plan_tool_enabled(true);
+    sm.ctx.set_memory_enabled(true);
+    sm.ctx.set_knowledge_enabled(true);
+
+    let mut spec = AgentRunSpec::new(
+        AgentIdentity::new("root", "root-session"),
+        AgentRole::Custom,
+        "do the task",
+    );
+    spec.capability_filter = AgentCapabilityFilter {
+        allowed_kinds: Vec::new(),
+        allowed_ids: vec![compact_str::CompactString::new("read")],
+    };
+    sm.run_spec = Some(spec);
+
+    match sm.start(RuntimeTask::new("do the task")) {
+        LoopAction::CallLLM { tools, .. } => {
+            let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+            assert!(names.contains(&"read"), "read allow-listed: {names:?}");
+            assert!(!names.contains(&"write"), "write gated out: {names:?}");
+            assert!(!names.contains(&"bash"), "bash gated out: {names:?}");
+            for meta in ["skill", "memory", "knowledge", "update_plan"] {
+                assert!(
+                    names.contains(&meta),
+                    "{meta} must survive the id axis unlisted: {names:?}"
+                );
+            }
+        }
+        _ => panic!("expected CallLLM"),
+    }
+}
+
+/// The exemption is id-axis only. An explicit KIND restriction is a deliberate statement about
+/// capability families — sub-agent isolation admitting only `Tool` still excludes the
+/// skill/memory/knowledge meta-tools, while `update_plan` (kind `Tool`) survives unlisted.
+#[test]
+fn run_capability_filter_kind_axis_still_excludes_meta_tool_families() {
+    use crate::types::agent::{AgentCapabilityFilter, AgentIdentity, AgentRole, AgentRunSpec};
+    use crate::types::capability::CapabilityKind;
+    let mut sm = sm();
+    sm.tools = vec![make_tool_schema("read"), make_tool_schema("write")];
+    sm.ctx
+        .set_available_skills(vec![SkillMetadata::new("debug", "Debug helper")]);
+    sm.ctx.set_plan_tool_enabled(true);
+    sm.ctx.set_memory_enabled(true);
+    sm.ctx.set_knowledge_enabled(true);
+
+    let mut spec = AgentRunSpec::new(
+        AgentIdentity::new("child", "child-session"),
+        AgentRole::Explore,
+        "look around",
+    );
+    spec.capability_filter = AgentCapabilityFilter {
+        allowed_kinds: vec![CapabilityKind::Tool],
+        allowed_ids: vec![compact_str::CompactString::new("read")],
+    };
+    sm.run_spec = Some(spec);
+
+    match sm.start(RuntimeTask::new("look around")) {
+        LoopAction::CallLLM { tools, .. } => {
+            let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+            assert!(names.contains(&"read"), "read allow-listed: {names:?}");
+            assert!(!names.contains(&"write"), "write gated out: {names:?}");
+            assert!(
+                names.contains(&"update_plan"),
+                "update_plan is kind Tool ⇒ id-exempt and admitted: {names:?}"
+            );
+            for excluded in ["skill", "memory", "knowledge"] {
+                assert!(
+                    !names.contains(&excluded),
+                    "{excluded} kind is not admitted by the kind axis: {names:?}"
+                );
+            }
+        }
+        _ => panic!("expected CallLLM"),
+    }
+}
+
+/// P1-B epoch gating exempts the kernel's meta surfaces — `read_result` included. A skill that
+/// declares `allowed_tools` narrows task tools, but the truncation marker in context still says
+/// "call the read_result tool with call_id …", so removing it would break the kernel's own contract.
+#[test]
+fn skill_epoch_filter_keeps_read_result_meta_tool() {
+    use crate::mm::handle::{Handle, HandleKind, Residency};
+    let mut sm = sm();
+    sm.tools = vec![make_tool_schema("read"), make_tool_schema("write")];
+    let mut debug = SkillMetadata::new("debug", "Debug helper");
+    debug.allowed_tools = vec![compact_str::CompactString::new("read")];
+    sm.ctx.set_available_skills(vec![debug]);
+
+    sm.start(RuntimeTask::new("go"));
+    sm.ctx.activate_skill("debug");
+    // A tool result the kernel evicted from context ⇒ `read_result` is exposed this turn.
+    sm.ctx.handles.insert(Handle {
+        id: 1,
+        kind: HandleKind::ToolResult,
+        residency: Residency::Collapsed,
+        tokens: 100,
+        source: Some(compact_str::CompactString::new("call_1")),
+    });
+
+    match sm.emit_call_llm() {
+        LoopAction::CallLLM { tools, .. } => {
+            let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+            assert!(
+                names.contains(&"read_result"),
+                "read_result must survive skill-epoch narrowing: {names:?}"
+            );
+            assert!(names.contains(&"read"), "declared tool kept: {names:?}");
+            assert!(
+                !names.contains(&"write"),
+                "undeclared tool still gated out: {names:?}"
+            );
+        }
+        _ => panic!("expected CallLLM"),
+    }
+}
+
 #[test]
 fn compression_emits_observation() {
     let mut sm = LoopStateMachine::new(SchedulerBudget {

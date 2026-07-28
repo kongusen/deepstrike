@@ -314,8 +314,9 @@ class RuntimeOptions:
   on_milestone_evaluate: Callable[[dict[str, Any]], Awaitable[Any] | Any] | None = None
   milestone_contract: "MilestoneContract | None" = None
   run_spec: "AgentRunSpec | None" = None
-  # P0-A tool gating: a static per-run tool profile — only these tool ids (plus the meta-tools)
-  # are exposed to the model each turn. Lowers to the same ``capability_filter`` sub-agents use;
+  # P0-A tool gating: a static per-run tool profile — only these tool ids (plus the
+  # skill/memory/knowledge/update_plan/read_result meta-tools) are exposed to the model each turn.
+  # Lowers to the same ``capability_filter`` sub-agents use;
   # byte-stable across the run, so it never busts the prompt-cache prefix. Augments ``run_spec``'s
   # filter when both set; synthesizes a minimal spec otherwise. None/empty => no gating.
   allowed_tool_ids: "list[str] | None" = None

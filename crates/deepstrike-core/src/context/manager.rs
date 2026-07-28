@@ -38,6 +38,37 @@ pub(crate) fn is_meta_tool(name: &str) -> bool {
     META_TOOL_NAMES.contains(&name)
 }
 
+/// The kernel-owned meta surfaces injected by [`ContextManager::meta_tool_schemas`] — exactly the
+/// tools the kernel itself adds to every turn's toolset, and the single source of truth for which
+/// names tool *config* must not be able to remove.
+///
+/// **Invariant**: these are how the model reaches kernel state — load a skill, search
+/// memory/knowledge, update the plan, re-read a result the kernel evicted (truncation markers
+/// literally instruct the model to "call the read_result tool with call_id …"). Run-level tool
+/// config (`allowedToolIds` ⇒ `capability_filter.allowed_ids`) and skill-level `allowed_tools` both
+/// enumerate *task* tools; neither is a statement about kernel surfaces, so neither may narrow one
+/// away — the same rationale the pace tool encodes by being pushed after every filter.
+///
+/// Scope: this exempts the **id axis** only. An explicit *kind* restriction
+/// (`capability_filter.allowed_kinds`, e.g. sub-agent isolation admitting only
+/// [`CapabilityKind::Tool`]) is a deliberate statement about capability families and still applies.
+///
+/// Distinct from [`META_TOOL_NAMES`], which is the wider "not task progress" set (it also covers
+/// pace and workflow authoring) used for the recency log and repeat fuse.
+pub(crate) const EXPOSURE_EXEMPT_META_TOOLS: &[&str] = &[
+    "skill",
+    MEMORY_TOOL_NAME,
+    KNOWLEDGE_TOOL_NAME,
+    "update_plan",
+    READ_RESULT_TOOL_NAME,
+];
+
+/// Whether `name` is a kernel-owned meta surface exempt from tool-config narrowing
+/// (see [`EXPOSURE_EXEMPT_META_TOOLS`]). Used by both filters in `emit_call_llm`.
+pub(crate) fn is_exposure_exempt_meta_tool(name: &str) -> bool {
+    EXPOSURE_EXEMPT_META_TOOLS.contains(&name)
+}
+
 /// Internal context engine backing [`crate::runtime::KernelRuntime`].
 ///
 /// Exposed for in-crate use and tests; external callers should drive the kernel

@@ -408,7 +408,7 @@ export interface RuntimeOptions {
   /** Passed to kernel start_run for role/isolation metadata. */
   runSpec?: AgentRunSpec
   /** P0-A tool gating: a static per-run tool profile — only these tool ids (plus the
-   *  skill/memory/knowledge/update_plan meta-tools) are exposed to the model each turn.
+   *  skill/memory/knowledge/update_plan/read_result meta-tools) are exposed to the model each turn.
    *  Sugar that lowers to the same `capability_filter` sub-agents use; byte-stable across
    *  the run, so it never busts the prompt-cache prefix. Augments `runSpec`'s filter when
    *  both are set; synthesizes a minimal run spec when `runSpec` is absent. Omitted/empty

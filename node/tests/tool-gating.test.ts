@@ -1,3 +1,6 @@
+import { mkdtemp, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { createRunner, tool } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
 import type { LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
@@ -37,6 +40,26 @@ describe("P0-A tool gating (allowedToolIds)", () => {
     expect(captured.tools).toContain("read")
     expect(captured.tools).not.toContain("write")
     expect(captured.tools).not.toContain("bash")
+  })
+
+  it("keeps the kernel meta-tools exposed alongside the allow-listed tools", async () => {
+    // The documented contract: `allowedToolIds` is a *task*-tool profile — the skill/memory/
+    // knowledge/update_plan/read_result meta surfaces stay exposed without being listed, so the
+    // model can still load a skill, update the plan, or re-read an evicted result.
+    const dir = await mkdtemp(join(tmpdir(), "ds-gate-meta-"))
+    await writeFile(join(dir, "debug.md"), "---\nname: debug\ndescription: Debug helper\n---\nDebug guidance.")
+
+    const captured = { tools: [] as string[] }
+    const { runner } = createRunner(toolCapturingProvider(captured), baseTools(), {
+      allowedToolIds: ["read"],
+      enablePlanTool: true,
+      skillDir: dir,
+    })
+    await collectText(runner.run({ sessionId: "gate-meta", goal: "do it" }))
+    expect(captured.tools).toContain("read")
+    expect(captured.tools).not.toContain("write")
+    expect(captured.tools).not.toContain("bash")
+    expect(captured.tools).toEqual(expect.arrayContaining(["skill", "update_plan"]))
   })
 
   it("exposes all tools when no profile is set (no config = old behavior)", async () => {

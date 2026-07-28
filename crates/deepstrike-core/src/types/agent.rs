@@ -81,6 +81,20 @@ impl AgentCapabilityFilter {
         let id_allowed = self.allowed_ids.is_empty() || self.allowed_ids.contains(&capability.id);
         kind_allowed && id_allowed
     }
+
+    /// The **kind axis alone** — the id allow-list is ignored.
+    ///
+    /// Used only for kernel-owned meta surfaces (`EXPOSURE_EXEMPT_META_TOOLS`) when the scheduler
+    /// filters the exposed toolset: an id profile enumerates *task* tools, so it must not delete
+    /// the model's route back to kernel state, while an explicit kind restriction (sub-agent
+    /// isolation admitting only [`CapabilityKind::Tool`]) is a deliberate statement about
+    /// capability families and still applies.
+    ///
+    /// Deliberately NOT routed through by [`Self::allows`], which stays the full two-axis contract
+    /// every other consumer (notably `IsolationManifest::from_spec`) depends on.
+    pub fn allows_kind(&self, kind: CapabilityKind) -> bool {
+        self.allowed_kinds.is_empty() || self.allowed_kinds.contains(&kind)
+    }
 }
 
 /// Context a sub-agent inherits from its parent at spawn time.

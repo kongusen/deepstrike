@@ -32,6 +32,7 @@ export function createRunner(
     dreamSummarizer?: DreamSummarizer
     dreamProvider?: LLMProvider
     allowedToolIds?: string[]
+    enablePlanTool?: boolean
     onTurnMetrics?: (m: import("../../src/runtime/runner.js").TurnMetrics) => void
     skillDir?: string
     skillFilter?: string[]
@@ -72,6 +73,7 @@ export function createRunner(
     dreamSummarizer: opts.dreamSummarizer,
     dreamProvider: opts.dreamProvider,
     allowedToolIds: opts.allowedToolIds,
+    enablePlanTool: opts.enablePlanTool,
     onTurnMetrics: opts.onTurnMetrics,
     skillDir: opts.skillDir,
     skillFilter: opts.skillFilter,

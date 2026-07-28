@@ -1627,6 +1627,7 @@ impl LoopStateMachine {
         tools.extend(self.ctx.meta_tool_schemas());
 
         if let Some(ref spec) = self.run_spec {
+            use crate::context::manager::is_exposure_exempt_meta_tool;
             use crate::types::capability::CapabilityKind;
             tools.retain(|tool| {
                 let kind = match tool.name.as_str() {
@@ -1635,6 +1636,15 @@ impl LoopStateMachine {
                     "knowledge" => CapabilityKind::Knowledge,
                     _ => CapabilityKind::Tool,
                 };
+                // Kernel-owned meta surfaces are exempt from the ID axis: `allowedToolIds` lists
+                // the run's *task* tools, and silently deleting the model's route back to kernel
+                // state (load a skill, re-read an evicted result) is never what that means — the
+                // same rationale the pace tool encodes below. The KIND axis still applies, so a
+                // sub-agent isolation filter that admits only `Tool` still excludes
+                // skill/memory/knowledge outright. See `EXPOSURE_EXEMPT_META_TOOLS`.
+                if is_exposure_exempt_meta_tool(&tool.name) {
+                    return spec.capability_filter.allows_kind(kind);
+                }
                 let desc = crate::types::capability::CapabilityDescriptor::marker(
                     kind,
                     tool.name.clone(),
@@ -1647,15 +1657,15 @@ impl LoopStateMachine {
         // P1-B epoch skill gating (applied *after* the run-level filter ③, so A is the outer bound
         // and B narrows within it — D6). When skills are active and declare tools, expose only
         // `meta-tools ∪ stable-core ∪ ⋃(active skills' allowed_tools)`. `None` ⇒ no active/declared
-        // skill ⇒ no narrowing (D3, errs-open). Meta-tools are always exempt (D5) so the model can
-        // still load more skills. Byte-stable within an epoch: the set only changes on activation.
+        // skill ⇒ no narrowing (D3, errs-open). Kernel-owned meta surfaces are always exempt (D5)
+        // so the model can still load more skills — and still re-read an evicted result, which the
+        // truncation marker explicitly instructs it to do. Byte-stable within an epoch: the set
+        // only changes on activation.
         if let Some(allowed) = self.ctx.active_skill_tool_filter() {
             let stable = &self.ctx.stable_core_tools;
             tools.retain(|tool| {
-                matches!(
-                    tool.name.as_str(),
-                    "skill" | "memory" | "knowledge" | "update_plan"
-                ) || stable.contains(&tool.name)
+                crate::context::manager::is_exposure_exempt_meta_tool(&tool.name)
+                    || stable.contains(&tool.name)
                     || allowed.contains(&tool.name)
             });
         }
