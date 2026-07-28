@@ -81,6 +81,15 @@ class AgentRunSpec:
   # dict: {"max_rounds"?, "min_sleep_ms"?, "max_sleep_ms"?, "default_action"?}. Only set keys are
   # lowered to the kernel; None ⇒ no trap (a plain run).
   loop_round: dict[str, Any] | None = None
+  # Exposure baseline — the PRE-ACTIVATION tool surface *under* the ``capability_filter`` ceiling.
+  # The ceiling bounds what this run may EVER expose; the baseline selects which of those are
+  # advertised before any skill activates, so ``exposed = meta ∪ ((baseline ∪ stable_core ∪
+  # ⋃ active_skills.allowed_tools) ∩ ceiling)``. That makes narrow→wide progressive disclosure
+  # expressible: a tool can be reachable after ``skill(x)`` without being advertised beforehand.
+  # None ⇒ legacy behavior (ceiling + errs-open skill narrowing). ``[]`` is meaningful and distinct
+  # from None: the minimal surface (meta-tools + stable-core only). Entries outside the ceiling
+  # silently intersect away. Lowered from ``RuntimeOptions.baseline_tool_ids``.
+  exposure_baseline: "list[str] | None" = None
   # Tool surface for a spawned sub-agent. Host-side only (like ``model_hint``) — NOT sent to the
   # kernel (``agent_run_spec_to_kernel`` maps fields explicitly and omits it). Default "filtered"
   # keeps the spawn path's deny-all-safe default: the child is filtered to its manifest grants, and a
@@ -173,6 +182,11 @@ def agent_run_spec_to_kernel(spec: AgentRunSpec) -> dict[str, Any]:
   }
   if spec.verification_contract_id:
     out["verification_contract_id"] = spec.verification_contract_id
+  # Exposure baseline: None ⇒ omit the field entirely (kernel ``None`` = legacy behavior); ``[]`` ⇒
+  # send ``[]`` (kernel ``Some([])`` = the minimal surface). The unset/minimal distinction is
+  # load-bearing, so this is deliberately NOT the truthiness idiom ``allowed_tool_ids`` uses.
+  if getattr(spec, "exposure_baseline", None) is not None:
+    out["exposure_baseline"] = list(spec.exposure_baseline or [])
   # ③ loop-agent pacing: lower only the set knobs (kernel defaults fill the rest).
   if getattr(spec, "loop_round", None):
     lr = spec.loop_round or {}

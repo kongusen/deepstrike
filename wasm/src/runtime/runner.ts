@@ -286,11 +286,52 @@ export interface RuntimeOptions {
   milestoneContract?: MilestoneContract
   onMilestoneEvaluate?: (ctx: { phaseId: string; criteria: string[]; requiredEvidence: string[] }) => Promise<MilestoneCheckResult> | MilestoneCheckResult
   runSpec?: AgentRunSpec
-  /** P0-A tool gating: a static per-run tool profile — only these tool ids (plus the meta-tools)
-   *  are exposed to the model each turn. Lowers to the same `capability_filter` sub-agents use;
-   *  byte-stable across the run, so it never busts the prompt-cache prefix. Augments `runSpec`'s
-   *  filter when both set; synthesizes a minimal spec otherwise. Omitted/empty ⇒ no gating. */
+  /**
+   * The run's **exposure ceiling** — the outer bound on what this run may EVER advertise to the
+   * model. Not a static profile: it is an INTERSECTION applied on every turn (`exposed ⊆ ceiling`),
+   * so every narrowing mechanism operates *within* it and none can widen past it. Skills narrow
+   * inside the ceiling (`allowed_tools`), `baselineToolIds` selects which of the ceiling's tools are
+   * exposed before any skill activates, and `stableCoreToolIds` pins tools against skill narrowing.
+   *
+   * Exempt on the id axis: the kernel-owned meta-tools (`skill`, `memory`, `knowledge`,
+   * `update_plan`, `read_result`) stay exposed regardless of this list — a ceiling that hid `skill`
+   * would make progressive disclosure unreachable. The KIND axis
+   * (`runSpec.capabilityFilter.allowedKinds`) still applies to them.
+   *
+   * Byte-stable across the run, so it never busts the prompt-cache prefix. Lowers to the same
+   * `capability_filter` sub-agents use: augments `runSpec`'s filter when both are set, else
+   * synthesizes a minimal run spec. Omitted **or empty** ⇒ no ceiling (all registered tools) — the
+   * empty array is NOT a minimal surface here; use `baselineToolIds: []` for that.
+   *
+   * Enforcement: `toolDispatchGate` (default `"exposed"`) makes this a real boundary — a call to a
+   * tool outside the advertised set never executes.
+   */
   allowedToolIds?: string[]
+  /**
+   * The **pre-activation** exposure surface, selected from under the `allowedToolIds` ceiling.
+   * Makes the narrow→wide progressive-disclosure shape expressible: start the run advertising only
+   * these tools, and let a skill activation widen the surface by exactly its declared
+   * `allowed_tools` (still ∩ the ceiling). Per turn:
+   *
+   *   `exposed = meta ∪ ((baseline ∪ stableCore ∪ ⋃ activeSkills.allowed_tools) ∩ ceiling)`
+   *
+   * An active skill that declares no `allowed_tools` contributes nothing — with a baseline set the
+   * surface stays narrow (strict; the legacy errs-open widening is deliberately not inherited).
+   *
+   * `undefined` ⇒ legacy behavior, byte-identical. `[]` is a legitimate, distinct value: the minimal
+   * surface (meta-tools + `stableCoreToolIds` only) — the `allowedToolIds` "empty means no gating"
+   * trap does NOT recur here. Entries outside the ceiling silently intersect away.
+   */
+  baselineToolIds?: string[]
+  /**
+   * Dispatch enforcement for the exposure surface. `"exposed"` (default) is fail-closed: a tool call
+   * the model was never advertised this turn never reaches the host — the kernel commits a
+   * model-visible `governance_denied` result instead, which feeds the repeat fuse like any other
+   * denial. Allowed siblings in the same batch still execute; `pace` and the meta-tool family always
+   * pass through. `"registered"` is the escape hatch restoring the pre-gate permissive behavior (any
+   * registered tool the model names executes, even if it was gated out of the tools schema).
+   */
+  toolDispatchGate?: "exposed" | "registered"
   /** P0-C: optional per-turn metrics sink for tool-gating telemetry (see `TurnMetrics`). Pure
    *  observation; invoked once per LLM turn. Never throws into the run loop (errors are swallowed). */
   onTurnMetrics?: (metrics: TurnMetrics) => void
@@ -864,20 +905,25 @@ export class RuntimeRunner {
       kind: "start_run",
       task: { goal, criteria },
     }
-    // P0-A: lower an explicit `runSpec` and/or the `allowedToolIds` profile to the kernel's
-    // `capability_filter` (reuses the existing run_spec wire — no new ABI). Unset on both ⇒ no
-    // gating (铁律: no config = old behavior).
+    // P0-A: lower an explicit `runSpec`, the `allowedToolIds` ceiling, and/or the `baselineToolIds`
+    // pre-activation surface to the kernel run spec (reuses the existing run_spec wire — no new
+    // ABI). Unset on all ⇒ no gating (铁律: no config = old behavior).
     const allowedToolIds = this.opts.allowedToolIds
     const hasProfile = allowedToolIds !== undefined && allowedToolIds.length > 0
-    if (this.opts.runSpec || hasProfile) {
+    // NOT the `length > 0` idiom above: `baselineToolIds: []` is the legitimate minimal surface
+    // (meta + stable-core only), so mere presence triggers the lowering.
+    const baselineToolIds = this.opts.baselineToolIds
+    const hasBaseline = baselineToolIds !== undefined
+    if (this.opts.runSpec || hasProfile || hasBaseline) {
       const baseSpec: AgentRunSpec = this.opts.runSpec ?? {
         identity: { agentId: this.opts.agentId ?? "root", sessionId, isSubAgent: false },
         role: "custom",
         goal,
       }
-      const spec: AgentRunSpec = hasProfile
+      let spec: AgentRunSpec = hasProfile
         ? { ...baseSpec, capabilityFilter: { ...baseSpec.capabilityFilter, allowedIds: allowedToolIds } }
         : baseSpec
+      if (hasBaseline) spec = { ...spec, exposureBaseline: baselineToolIds }
       startPayload.run_spec = agentRunSpecToKernel(spec)
     }
     this.applyKernelPolicies(runtime)
@@ -1784,6 +1830,11 @@ export class RuntimeRunner {
     // O4: turn-end criteria gate toggle (absent ⇒ kernel default: enabled).
     if (this.opts.criteriaGate !== undefined) {
       config.criteria_gate = this.opts.criteriaGate
+    }
+    // P1: fail-closed dispatch selector (absent ⇒ kernel default "exposed"). "registered" is the
+    // escape hatch back to permissive dispatch; the kernel rejects any other value.
+    if (this.opts.toolDispatchGate !== undefined) {
+      config.tool_dispatch_gate = this.opts.toolDispatchGate
     }
     // K2: knowledge budget ratio (absent ⇒ kernel default 0.25; 0 disables).
     if (this.opts.knowledgeBudgetRatio !== undefined) {

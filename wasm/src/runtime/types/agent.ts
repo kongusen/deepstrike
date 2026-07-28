@@ -55,6 +55,14 @@ export interface AgentRunSpec {
   /** ③ loop-agent rounds: presence makes this run ONE round of a paced loop (gates the
    *  kernel `pace` meta-tool and arms the pacing trap). */
   loopRound?: LoopRoundSpec
+  /** Exposure baseline — the PRE-ACTIVATION tool surface *under* the `capabilityFilter` ceiling.
+   *  The ceiling bounds what this run may EVER expose; the baseline selects which of those are
+   *  advertised before any skill activates, so `exposed = meta ∪ ((baseline ∪ stableCore ∪
+   *  ⋃ activeSkills.allowed_tools) ∩ ceiling)`. That makes narrow→wide progressive disclosure
+   *  expressible. Absent ⇒ legacy behavior. `[]` is meaningful and distinct from absent: the minimal
+   *  surface (meta-tools + stable-core only). Entries outside the ceiling silently intersect away.
+   *  Lowered from `RuntimeOptions.baselineToolIds`. */
+  exposureBaseline?: string[]
   /** M1/G3: per-agent model preference; the host resolves it via `RuntimeOptions.providerFor`.
    *  Host-side routing only — not sent to the kernel. */
   modelHint?: string
@@ -197,6 +205,10 @@ export function agentRunSpecToKernel(spec: AgentRunSpec): Record<string, unknown
       ...(spec.loopRound.defaultAction !== undefined ? { default_action: spec.loopRound.defaultAction } : {}),
     }
   }
+  // Exposure baseline: `undefined` ⇒ omit the field entirely (kernel `None` = legacy behavior);
+  // `[]` ⇒ send `[]` (kernel `Some([])` = the minimal surface). The unset/minimal distinction is
+  // load-bearing, so this is deliberately NOT the `length > 0` idiom `allowedToolIds` uses.
+  if (spec.exposureBaseline !== undefined) out.exposure_baseline = [...spec.exposureBaseline]
   return out
 }
 

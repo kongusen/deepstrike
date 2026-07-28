@@ -17,8 +17,11 @@ from deepstrike import (
     RuntimeRunner,
     SubAgentResult,
 )
+from deepstrike._kernel import ToolSchema
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta, ToolCallEvent
+from deepstrike.tools.registry import RegisteredTool
+from deepstrike.types.agent import start_workflow_tool
 
 
 class AuthoringProvider:
@@ -63,14 +66,25 @@ class _Stub:
         )
 
 
+async def _noop(**_kwargs) -> str:
+    return ""
+
+
 @pytest.mark.asyncio
 async def test_top_level_start_workflow_auto_pivots_and_resumes():
     orch = _Stub()
     provider = AuthoringProvider()
+    # Register start_workflow so it's offered to the model (fail-closed dispatch executes only tools
+    # this run advertised); its execute never runs — the runner intercepts the call. Mirrors node.
+    plane = LocalExecutionPlane().register(RegisteredTool(_noop, ToolSchema(
+        name=start_workflow_tool["name"],
+        description=start_workflow_tool["description"],
+        parameters=start_workflow_tool["parameters"],
+    )))
     runner = RuntimeRunner(RuntimeOptions(
         provider=provider,
         session_log=InMemorySessionLog(),
-        execution_plane=LocalExecutionPlane(),
+        execution_plane=plane,
         sub_agent_orchestrator=orch,
         max_tokens=8000,
         max_turns=5,

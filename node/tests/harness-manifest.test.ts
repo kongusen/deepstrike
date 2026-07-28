@@ -299,6 +299,7 @@ describe("tool/skill surface typing + bounds", () => {
       ...seed(),
       runtime: {
         allowedToolIds: ["read", "search"],
+        baselineToolIds: ["read"],
         stableCoreToolIds: ["read"],
         enablePlanTool: true,
         skillFilter: ["debug"],
@@ -309,6 +310,21 @@ describe("tool/skill surface typing + bounds", () => {
   it("rejects an EMPTY allowedToolIds / stableCoreToolIds (empty ⇒ runner reads as no-gating = WIDEN)", () => {
     expect(() => bad({ allowedToolIds: [] })).toThrow(/non-empty/)
     expect(() => bad({ stableCoreToolIds: [] })).toThrow(/non-empty/)
+  })
+
+  it("rejects an EMPTY baselineToolIds for a DIFFERENT reason (drastic, not widening)", () => {
+    // `[]` is a legitimate value at the RUNNER (the minimal meta-only surface) — so the rejection
+    // reason must NOT be the allowedToolIds "reads as no gating" one. It is barred on the harness
+    // surface only, because collapsing the pre-activation toolset is a human/host call.
+    expect(() => bad({ baselineToolIds: [] })).toThrow(/non-empty/)
+    expect(() => bad({ baselineToolIds: [] })).toThrow(/human\/host decision/)
+    expect(() => bad({ baselineToolIds: [] })).not.toThrow(/no gating/)
+  })
+
+  it("does NOT require baselineToolIds ⊆ allowedToolIds (D3: silent runtime intersection)", () => {
+    // Unlike stable-core, an out-of-ceiling baseline entry is not an authoring error — the kernel
+    // intersects it away at exposure time. Adding a throw here would contradict the adjudication.
+    expect(() => bad({ allowedToolIds: ["a", "b"], baselineToolIds: ["a", "zzz"] })).not.toThrow()
   })
 
   it("ACCEPTS an empty skillFilter (empty ⇒ no skills, a legitimate narrowing)", () => {
@@ -339,6 +355,45 @@ describe("tool/skill surface typing + bounds", () => {
     const m: HarnessManifest = { ...seed(), editableSurfaces: [...seed().editableSurfaces, "runtime.allowedToolIds"] }
     expect(() => applyPatch(m, patch({ targetSurface: "runtime.allowedToolIds", value: [] }))).toThrow(/non-empty/)
     expect(applyPatch(m, patch({ targetSurface: "runtime.allowedToolIds", value: ["read"] })).runtime?.allowedToolIds).toEqual(["read"])
+  })
+
+  it("applyPatch round-trips runtime.baselineToolIds (set / reject-empty / remove)", () => {
+    const m: HarnessManifest = { ...seed(), editableSurfaces: [...seed().editableSurfaces, "runtime.baselineToolIds"] }
+    const set = applyPatch(m, patch({ targetSurface: "runtime.baselineToolIds", value: ["read"] }))
+    expect(set.runtime?.baselineToolIds).toEqual(["read"])
+    expect(() => applyPatch(m, patch({ targetSurface: "runtime.baselineToolIds", value: [] }))).toThrow(/non-empty/)
+    const removed = applyPatch(set, patch({ targetSurface: "runtime.baselineToolIds", op: "remove" }))
+    expect(removed.runtime?.baselineToolIds).toBeUndefined()
+  })
+})
+
+/**
+ * `toolDispatchGate` is the ENFORCEMENT half of the exposure ceiling. It is deliberately NOT a
+ * harness surface: a proposer that could set it to `"registered"` would switch off the boundary it
+ * is otherwise structurally unable to widen. The absent-by-default whitelist (`RUNTIME_PATCH_KEYS`)
+ * is what keeps it out — assert that at every gate a patch could enter through.
+ */
+describe("toolDispatchGate is NOT an editable harness surface", () => {
+  it("validateManifest rejects it in a runtime patch", () => {
+    expect(() => validateManifest({
+      ...seed(),
+      runtime: { toolDispatchGate: "registered" } as unknown as HarnessManifest["runtime"],
+    })).toThrow(/whitelist/)
+  })
+
+  it("surfaceTier refuses to assign it a tier", () => {
+    expect(() => surfaceTier("runtime.toolDispatchGate")).toThrow(/whitelist/)
+  })
+
+  it("applyPatch rejects it even when a manifest lists it in editableSurfaces", () => {
+    // Belt and braces: the editable-surface list is manifest DATA, so it cannot be the only guard.
+    const m: HarnessManifest = { ...seed(), editableSurfaces: [...seed().editableSurfaces, "runtime.toolDispatchGate"] }
+    expect(() => applyPatch(m, patch({ targetSurface: "runtime.toolDispatchGate", value: "registered" }))).toThrow(/whitelist/)
+  })
+
+  it("applyManifest never folds it onto the runtime options", () => {
+    const m = { ...seed(), runtime: { toolDispatchGate: "registered" } } as unknown as HarnessManifest
+    expect(() => applyManifest(m, { maxTokens: 1 } as unknown as RuntimeOptions)).toThrow(/whitelist/)
   })
 })
 
@@ -371,6 +426,19 @@ describe("applyManifest intersection fold (capability ceiling)", () => {
     expect(applyManifest(m, baseWith({})).skillFilter).toEqual(["x", "y"]) // absent host ⇒ all skills
   })
 
+  it("baselineToolIds follows the skillFilter empty-convention, NOT the allowedToolIds one", () => {
+    // The deciding property is the RUNNER's empty-array semantics, not "is it a tool-id list":
+    // `baselineToolIds: []` is the minimal surface (kernel `Some([])`), never "no gating". So a
+    // present `[]` host baseline is a genuine maximally-tight ceiling and an empty result is fine.
+    const m: HarnessManifest = { ...seed(), runtime: { baselineToolIds: ["x", "y"] } }
+    expect(applyManifest(m, baseWith({ baselineToolIds: ["a", "b"] })).baselineToolIds).toEqual([]) // disjoint ⇒ empty, no throw
+    expect(applyManifest(m, baseWith({ baselineToolIds: [] })).baselineToolIds).toEqual([]) // [] host is a real ceiling
+    expect(applyManifest(m, baseWith({})).baselineToolIds).toEqual(["x", "y"]) // absent host ⇒ unset ⇒ manifest verbatim
+    // ...and it still narrows normally against a non-empty host baseline, in manifest order.
+    const n: HarnessManifest = { ...seed(), runtime: { baselineToolIds: ["c", "a", "z"] } }
+    expect(applyManifest(n, baseWith({ baselineToolIds: ["a", "b", "c"] })).baselineToolIds).toEqual(["c", "a"])
+  })
+
   it("enablePlanTool folds by plain assignment (both directions)", () => {
     expect(applyManifest({ ...seed(), runtime: { enablePlanTool: true } }, baseWith({ enablePlanTool: false })).enablePlanTool).toBe(true)
     expect(applyManifest({ ...seed(), runtime: { enablePlanTool: false } }, baseWith({ enablePlanTool: true })).enablePlanTool).toBe(false)
@@ -379,7 +447,7 @@ describe("applyManifest intersection fold (capability ceiling)", () => {
   it("NEVER-WIDEN property: whenever the host baseline was set, the effective set ⊆ it", () => {
     const base = ["a", "b", "c", "d"]
     for (const manifestList of [["a"], ["b", "d"], ["a", "b", "c"], ["a", "x"], ["c", "b", "a"]]) {
-      for (const key of ["allowedToolIds", "stableCoreToolIds", "skillFilter"] as const) {
+      for (const key of ["allowedToolIds", "baselineToolIds", "stableCoreToolIds", "skillFilter"] as const) {
         const out = applyManifest({ ...seed(), runtime: { [key]: manifestList } }, baseWith({ [key]: base }))
         const eff = (out as unknown as Record<string, string[]>)[key] ?? []
         for (const id of eff) expect(base).toContain(id) // effective ⊆ host base — never a new capability
@@ -393,8 +461,8 @@ describe("surfaceTier (promotion tiers)", () => {
   // Every whitelisted runtime.* surface is Tier A (auto): typed validation + the ceiling invariant guard it.
   const RUNTIME_SURFACES = [
     "maxTurns", "maxTotalTokens", "criteriaGate", "repeatFuse", "entropyWatch",
-    "knowledgeBudgetRatio", "skillLeaseTurns", "allowedToolIds", "stableCoreToolIds",
-    "enablePlanTool", "skillFilter", "retrievalTopK", "promotionRecallThreshold",
+    "knowledgeBudgetRatio", "skillLeaseTurns", "allowedToolIds", "baselineToolIds",
+    "stableCoreToolIds", "enablePlanTool", "skillFilter", "retrievalTopK", "promotionRecallThreshold",
   ]
 
   it("maps every runtime.* whitelist surface to auto", () => {

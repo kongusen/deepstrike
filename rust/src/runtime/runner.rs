@@ -148,12 +148,26 @@ pub struct RuntimeOptions {
     pub milestone_policy: MilestonePolicy,
     pub milestone_contract: Option<deepstrike_core::types::milestone::MilestoneContract>,
     pub run_spec: Option<deepstrike_core::types::agent::AgentRunSpec>,
-    /// P0-A tool gating: a static per-run tool profile — only these tool ids (plus the
-    /// skill/memory/knowledge/update_plan meta-tools) are exposed to the model each turn.
-    /// Lowers to the same `capability_filter` sub-agents use; byte-stable across the run, so it
-    /// never busts the prompt-cache prefix. Augments `run_spec`'s filter when both are set;
-    /// synthesizes a minimal top-level spec otherwise. `None`/empty ⇒ no gating (no config = old).
+    /// The run's **exposure ceiling** — the outer bound on what this run may EVER advertise. Not a
+    /// static profile: an INTERSECTION applied every turn (`exposed ⊆ ceiling`), so `baseline_tool_ids`,
+    /// `stable_core_tool_ids`, and skill `allowed_tools` all narrow *within* it and none can widen
+    /// past it. The kernel meta-tools (skill/memory/knowledge/update_plan/read_result) are exempt on
+    /// the id axis; the KIND axis still applies. Lowers to the same `capability_filter` sub-agents
+    /// use; byte-stable across the run, so it never busts the prompt-cache prefix. Augments
+    /// `run_spec`'s filter when both are set; synthesizes a minimal top-level spec otherwise.
+    /// `None`/empty ⇒ no ceiling (no config = old); use `baseline_tool_ids` for a minimal surface.
     pub allowed_tool_ids: Option<Vec<String>>,
+    /// The PRE-ACTIVATION exposure surface, selected from under the `allowed_tool_ids` ceiling
+    /// (`AgentRunSpec::exposure_baseline`). Makes narrow→wide progressive disclosure expressible:
+    /// `exposed = meta ∪ ((baseline ∪ stable_core ∪ ⋃ active skills' allowed_tools) ∩ ceiling)`.
+    /// `None` ⇒ legacy behavior; `Some(vec![])` is DISTINCT and legitimate — the minimal surface
+    /// (meta-tools + stable-core only). Entries outside the ceiling silently intersect away.
+    pub baseline_tool_ids: Option<Vec<String>>,
+    /// P1 dispatch enforcement (`RunConfig::tool_dispatch_gate`). `None` ⇒ the kernel default
+    /// `"exposed"`: fail-closed, a call to a tool this run never advertised commits a model-visible
+    /// `governance_denied` result instead of executing. `Some("registered")` is the escape hatch
+    /// restoring the pre-gate permissive dispatch.
+    pub tool_dispatch_gate: Option<String>,
     /// P0-C: optional per-turn metrics sink for tool-gating telemetry (see [`TurnMetrics`]). Pure
     /// observation; invoked once per LLM turn. Panics are not caught — keep the sink trivial.
     pub on_turn_metrics: Option<OnTurnMetricsHandler>,
@@ -163,20 +177,25 @@ pub struct RuntimeOptions {
     pub on_milestone_evaluate: Option<MilestoneEvaluationHandler>,
 }
 
-/// P0-A: compute the effective top-level run spec from an optional explicit `run_spec` and an
-/// optional `allowed_tool_ids` static profile. The profile sets the capability filter's allowed
-/// ids — augmenting an explicit spec, or synthesizing a minimal `custom`-role spec when none is
-/// given. Returns `None` when neither is set ⇒ no gating (no config = old behavior).
+/// P0-A: compute the effective top-level run spec from an optional explicit `run_spec`, an optional
+/// `allowed_tool_ids` ceiling, and an optional `baseline_tool_ids` pre-activation surface. Each
+/// augments an explicit spec, or synthesizes a minimal `custom`-role spec when none is given.
+/// Returns `None` when all are unset ⇒ no gating (no config = old behavior).
+///
+/// The two id-lists use DIFFERENT presence idioms on purpose: an empty `allowed_tool_ids` means
+/// "unset" (the runner-wide "empty = no gating" convention), while an empty `baseline_tool_ids` is
+/// the legitimate minimal surface and must reach the kernel as `Some(vec![])`.
 fn build_run_spec(
     explicit: Option<deepstrike_core::types::agent::AgentRunSpec>,
     allowed_tool_ids: Option<&[String]>,
+    baseline_tool_ids: Option<&[String]>,
     agent_id: Option<&str>,
     session_id: &str,
     goal: &str,
 ) -> Option<deepstrike_core::types::agent::AgentRunSpec> {
     use deepstrike_core::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
     let profile = allowed_tool_ids.filter(|ids| !ids.is_empty());
-    match (explicit, profile) {
+    let mut spec = match (explicit, profile) {
         (Some(mut spec), Some(ids)) => {
             spec.capability_filter.allowed_ids = ids.iter().map(|s| s.as_str().into()).collect();
             Some(spec)
@@ -191,8 +210,18 @@ fn build_run_spec(
             spec.capability_filter.allowed_ids = ids.iter().map(|s| s.as_str().into()).collect();
             Some(spec)
         }
-        (None, None) => None,
+        (None, None) => baseline_tool_ids.map(|_| {
+            AgentRunSpec::new(
+                AgentIdentity::new(agent_id.unwrap_or("root"), session_id),
+                AgentRole::Custom,
+                goal.to_string(),
+            )
+        }),
+    };
+    if let (Some(spec), Some(baseline)) = (spec.as_mut(), baseline_tool_ids) {
+        spec.exposure_baseline = Some(baseline.iter().map(|s| s.as_str().into()).collect());
     }
+    spec
 }
 
 /// Orchestrates the agentic turn loop via the runtime kernel + session event log.
@@ -427,10 +456,13 @@ impl RuntimeRunner {
                 policy: signal_policy.into_kernel(),
             }));
         }
-        if let Some(scheduler_policy) = self.opts.scheduler_policy {
+        if self.opts.scheduler_policy.is_some() || self.opts.tool_dispatch_gate.is_some() {
             kernel.step(KernelInput::new(KernelInputEvent::ConfigureRun {
                 config: RunConfig {
-                    scheduler_policy: Some(scheduler_policy),
+                    scheduler_policy: self.opts.scheduler_policy,
+                    // P1: absent ⇒ kernel default "exposed"; "registered" is the escape hatch back
+                    // to permissive dispatch. The kernel rejects any other value.
+                    tool_dispatch_gate: self.opts.tool_dispatch_gate.clone(),
                     ..RunConfig::default()
                 },
             }));
@@ -964,11 +996,13 @@ impl RuntimeRunner {
                     KernelInputEvent::Resume,
                 )
             } else {
-                // P0-A: fold an explicit `run_spec` and/or the `allowed_tool_ids` profile into the
-                // kernel's `capability_filter` (reuses the existing run_spec wire — no new ABI).
+                // P0-A: fold an explicit `run_spec`, the `allowed_tool_ids` ceiling, and/or the
+                // `baseline_tool_ids` pre-activation surface into the kernel run spec (reuses the
+                // existing run_spec wire — no new ABI).
                 let run_spec = build_run_spec(
                     self.opts.run_spec.clone(),
                     self.opts.allowed_tool_ids.as_deref(),
+                    self.opts.baseline_tool_ids.as_deref(),
                     self.opts.agent_id.as_deref(),
                     &session_id,
                     &goal,

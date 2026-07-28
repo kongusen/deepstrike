@@ -314,12 +314,41 @@ class RuntimeOptions:
   on_milestone_evaluate: Callable[[dict[str, Any]], Awaitable[Any] | Any] | None = None
   milestone_contract: "MilestoneContract | None" = None
   run_spec: "AgentRunSpec | None" = None
-  # P0-A tool gating: a static per-run tool profile — only these tool ids (plus the
-  # skill/memory/knowledge/update_plan/read_result meta-tools) are exposed to the model each turn.
-  # Lowers to the same ``capability_filter`` sub-agents use;
-  # byte-stable across the run, so it never busts the prompt-cache prefix. Augments ``run_spec``'s
-  # filter when both set; synthesizes a minimal spec otherwise. None/empty => no gating.
+  # The run's EXPOSURE CEILING — the outer bound on what this run may EVER advertise to the model.
+  # Not a static profile: it is an INTERSECTION applied on every turn (``exposed ⊆ ceiling``), so
+  # every narrowing mechanism operates *within* it and none can widen past it. Skills narrow inside
+  # the ceiling (``allowed_tools``), ``baseline_tool_ids`` selects which of the ceiling's tools are
+  # exposed before any skill activates, ``stable_core_tool_ids`` pins tools against skill narrowing,
+  # and the self-harness manifest surface folds by intersection for exactly this reason.
+  # Exempt on the ID axis: the kernel-owned meta-tools (skill/memory/knowledge/update_plan/
+  # read_result) stay exposed regardless of this list — a ceiling that hid ``skill`` would make
+  # progressive disclosure unreachable. The KIND axis (``run_spec.capability_filter.allowed_kinds``)
+  # still applies to them. Byte-stable across the run, so it never busts the prompt-cache prefix.
+  # Lowers to the same ``capability_filter`` sub-agents use: augments ``run_spec``'s filter when both
+  # set, else synthesizes a minimal spec. None OR empty ⇒ no ceiling (all registered tools) — the
+  # empty list is NOT a minimal surface here; use ``baseline_tool_ids=[]`` for that.
+  # Enforcement: ``tool_dispatch_gate`` (default "exposed") makes this a real boundary — a call to a
+  # tool outside the advertised set never executes.
   allowed_tool_ids: "list[str] | None" = None
+  # The PRE-ACTIVATION exposure surface, selected from under the ``allowed_tool_ids`` ceiling. Makes
+  # narrow→wide progressive disclosure expressible: start the run advertising only these tools, and
+  # let a skill activation widen the surface by exactly its declared ``allowed_tools`` (still
+  # ∩ the ceiling). Per turn:
+  #   exposed = meta ∪ ((baseline ∪ stable_core ∪ ⋃ active_skills.allowed_tools) ∩ ceiling)
+  # An active skill that declares no ``allowed_tools`` contributes nothing — with a baseline set the
+  # surface stays narrow (strict; the legacy errs-open widening is deliberately not inherited).
+  # None ⇒ legacy behavior, byte-identical. ``[]`` is a legitimate, DISTINCT value: the minimal
+  # surface (meta-tools + ``stable_core_tool_ids`` only) — the ``allowed_tool_ids`` "empty means no
+  # gating" trap does NOT recur here. Entries outside the ceiling silently intersect away.
+  baseline_tool_ids: "list[str] | None" = None
+  # Dispatch enforcement for the exposure surface. "exposed" (default) is fail-closed: a tool call
+  # the model was never advertised this turn never reaches the host — the kernel commits a
+  # model-visible governance_denied result instead, which feeds the repeat fuse like any other
+  # denial. Allowed siblings in the same batch still execute; ``pace`` and the meta-tool family
+  # always pass through. "registered" is the escape hatch restoring the pre-gate permissive behavior
+  # (any registered tool the model names executes, even if gated out of the tools schema). Set it
+  # only when a host deliberately relies on blind calls to unadvertised tools.
+  tool_dispatch_gate: "str | None" = None
   # P0-C: optional per-turn metrics sink for tool-gating telemetry (see ``TurnMetrics``). Pure
   # observation; invoked once per LLM turn. Never raises into the run loop (errors are swallowed).
   on_turn_metrics: "Callable[[TurnMetrics], None] | None" = None
@@ -2069,12 +2098,16 @@ class RuntimeRunner:
       "kind": "start_run",
       "task": {"goal": goal, "criteria": criteria},
     }
-    # P0-A: lower an explicit ``run_spec`` and/or the ``allowed_tool_ids`` profile to the kernel's
-    # ``capability_filter`` (reuses the existing run_spec wire — no new ABI). Unset on both => no
-    # gating (铁律: no config = old behavior).
+    # P0-A: lower an explicit ``run_spec``, the ``allowed_tool_ids`` ceiling, and/or the
+    # ``baseline_tool_ids`` pre-activation surface to the kernel run spec (reuses the existing
+    # run_spec wire — no new ABI). Unset on all => no gating (铁律: no config = old behavior).
     allowed_tool_ids = self._opts.allowed_tool_ids
     has_profile = bool(allowed_tool_ids)
-    if self._opts.run_spec or has_profile:
+    # NOT the truthiness idiom above: ``baseline_tool_ids=[]`` is the legitimate minimal surface
+    # (meta + stable-core only), so mere presence triggers the lowering.
+    baseline_tool_ids = self._opts.baseline_tool_ids
+    has_baseline = baseline_tool_ids is not None
+    if self._opts.run_spec or has_profile or has_baseline:
       import dataclasses
       from deepstrike.types.agent import (
         agent_run_spec_to_kernel,
@@ -2100,6 +2133,8 @@ class RuntimeRunner:
         )
       else:
         spec = base_spec
+      if has_baseline:
+        spec = dataclasses.replace(spec, exposure_baseline=list(baseline_tool_ids or []))
       start_payload["run_spec"] = agent_run_spec_to_kernel(spec)
 
     os_profile = assert_native_profile(self._opts.os_profile or "native")
@@ -2124,6 +2159,10 @@ class RuntimeRunner:
     scheduler_policy = _scheduler_policy_to_kernel(self._opts.scheduler_policy)
     if scheduler_policy is not None:
       config["scheduler_policy"] = scheduler_policy
+    # P1: fail-closed dispatch selector (absent ⇒ kernel default "exposed"). "registered" is the
+    # escape hatch back to permissive dispatch; the kernel rejects any other value.
+    if self._opts.tool_dispatch_gate is not None:
+      config["tool_dispatch_gate"] = str(self._opts.tool_dispatch_gate)
     kernel_apply(runtime, self._pending_observations, {
       "kind": "configure_run",
       "config": config,

@@ -17,6 +17,12 @@ describe("scheduler lifecycle (Phase 2)", () => {
     step(rt, governancePolicyToKernelEvent({
       rules: [{ pattern: "needs_approval", action: "ask_user" }],
     }))
+    // Fail-closed dispatch: the run must advertise the tool it then calls, otherwise the gate
+    // denies `needs_approval` before it ever reaches the governance trap under test.
+    step(rt, {
+      kind: "set_tools",
+      tools: [{ name: "needs_approval", description: "Needs approval", parameters: { type: "object" } }],
+    })
     step(rt, { kind: "start_run", task: { goal: "run", criteria: [] } })
     const proposed = step(rt, {
       kind: "provider_result",

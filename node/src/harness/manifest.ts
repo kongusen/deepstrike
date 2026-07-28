@@ -11,12 +11,16 @@
  * absent, so a proposer can never rewrite them (spec design principle: conservative promotion).
  *
  * Tool/skill surfaces add the SECOND safety invariant (spec design principle A — the capability
- * ceiling): `allowedToolIds`, `stableCoreToolIds`, and `skillFilter` fold onto the host baseline by
- * INTERSECTION, never assignment. A manifest can only NARROW the tools/skills the host already
- * exposes — never widen. Capability expansion (naming a tool the host does not expose) is therefore
- * structurally inexpressible, and the whole security audit stays O(1): read the whitelist, check the
- * one invariant. (`enablePlanTool` is exempt — it toggles a kernel-owned meta-tool, attention-shaping
- * not capability-granting, so it folds by plain assignment.)
+ * ceiling): `allowedToolIds`, `baselineToolIds`, `stableCoreToolIds`, and `skillFilter` fold onto the
+ * host baseline by INTERSECTION, never assignment. A manifest can only NARROW the tools/skills the
+ * host already exposes — never widen. Capability expansion (naming a tool the host does not expose) is
+ * therefore structurally inexpressible, and the whole security audit stays O(1): read the whitelist,
+ * check the one invariant. (`enablePlanTool` is exempt — it toggles a kernel-owned meta-tool,
+ * attention-shaping not capability-granting, so it folds by plain assignment.)
+ *
+ * `toolDispatchGate` is deliberately ABSENT from the whitelist and must stay so: it selects whether
+ * the kernel enforces the exposure surface at dispatch. A proposer that could set it to `"registered"`
+ * would disable the enforcement half of the ceiling it is otherwise structurally unable to widen.
  */
 import { createHash } from "node:crypto"
 import type { MemoryPolicy } from "../kernel.js"
@@ -81,6 +85,7 @@ export type HarnessRuntimePatch = Pick<
   | "knowledgeBudgetRatio"
   | "skillLeaseTurns"
   | "allowedToolIds"
+  | "baselineToolIds"
   | "stableCoreToolIds"
   | "enablePlanTool"
   | "skillFilter"
@@ -90,7 +95,12 @@ const MEMORY_POLICY_PATCH_KEYS = ["retrievalTopK", "promotionRecallThreshold"] a
 type MemoryPolicyPatchKey = (typeof MEMORY_POLICY_PATCH_KEYS)[number]
 
 /** Tool/skill surfaces whose fold is intersection-with-baseline (capability ceiling), not assignment. */
-const INTERSECTION_PATCH_KEYS = ["allowedToolIds", "stableCoreToolIds", "skillFilter"] as const
+const INTERSECTION_PATCH_KEYS = [
+  "allowedToolIds",
+  "baselineToolIds",
+  "stableCoreToolIds",
+  "skillFilter",
+] as const
 type IntersectionPatchKey = (typeof INTERSECTION_PATCH_KEYS)[number]
 
 const RUNTIME_PATCH_KEYS: readonly string[] = [
@@ -102,13 +112,14 @@ const RUNTIME_PATCH_KEYS: readonly string[] = [
   "knowledgeBudgetRatio",
   "skillLeaseTurns",
   "allowedToolIds",
+  "baselineToolIds",
   "stableCoreToolIds",
   "enablePlanTool",
   "skillFilter",
   ...MEMORY_POLICY_PATCH_KEYS,
 ]
 
-/** Bounds for the id-list surfaces (allowedToolIds / stableCoreToolIds / skillFilter). */
+/** Bounds for the id-list surfaces (allowedToolIds / baselineToolIds / stableCoreToolIds / skillFilter). */
 const MAX_TOOL_ID_CHARS = 128
 const MAX_TOOL_LIST_ENTRIES = 128
 
@@ -272,21 +283,35 @@ function validateRuntimePatch(runtime: HarnessRuntimePatch): void {
 }
 
 /**
- * Validate an id-list surface: array of unique, non-empty strings (each ≤128 chars), ≤128 entries.
- * `allowEmpty` is the load-bearing asymmetry. For the tool-id arrays it is FALSE: the runner reads an
- * empty/absent `allowedToolIds` as "no gating — expose ALL registered tools", so an empty array would
- * WIDEN exposure to everything if it reached the runner (and a zero-tool run is the v0.2.46 pathology).
- * For `skillFilter` it is TRUE: the runner's no-gating sentinel is ONLY `undefined`, and an empty array
- * legitimately means "no skills available" (a proposer may find skills are a distraction) — a narrowing.
+ * The per-surface empty-array policy — the load-bearing asymmetry of the id-list surfaces. The two
+ * rejections carry DIFFERENT reasons and must not be conflated:
+ *   - `"reject:widens"` (allowedToolIds / stableCoreToolIds) — the runner reads an empty/absent list
+ *     as "no gating — expose ALL registered tools", so an empty array would WIDEN exposure to
+ *     everything if it reached the runner (and a zero-tool run is the v0.2.46 pathology).
+ *   - `"reject:drastic"` (baselineToolIds) — `[]` is NOT a widening here: the runner reads it as a
+ *     legitimate minimal surface (meta-tools + stable-core only). It is rejected on the HARNESS
+ *     surface only, because collapsing the pre-activation toolset to meta-only is a drastic edit that
+ *     stays a human/host decision. Host code can still pass `[]` to `RuntimeOptions` directly.
+ *   - `"allow"` (skillFilter) — the runner's no-gating sentinel is ONLY `undefined`, and an empty
+ *     array legitimately means "no skills available" (a proposer may find skills a distraction) — a
+ *     narrowing.
  */
-function validateIdList(key: string, value: unknown, allowEmpty: boolean): void {
+type EmptyListPolicy = "allow" | "reject:widens" | "reject:drastic"
+
+/** Validate an id-list surface: array of unique, non-empty strings (each ≤128 chars), ≤128 entries. */
+function validateIdList(key: string, value: unknown, emptyPolicy: EmptyListPolicy): void {
   if (!Array.isArray(value)) throw new TypeError(`runtime.${key} must be a string[]`)
   if (value.length > MAX_TOOL_LIST_ENTRIES) {
     throw new RangeError(`runtime.${key} exceeds ${MAX_TOOL_LIST_ENTRIES} entries`)
   }
-  if (!allowEmpty && value.length === 0) {
+  if (emptyPolicy === "reject:widens" && value.length === 0) {
     throw new RangeError(
       `runtime.${key} must be a non-empty list — an empty array is read by the runner as "no gating" (expose all registered tools), which WIDENS exposure`,
+    )
+  }
+  if (emptyPolicy === "reject:drastic" && value.length === 0) {
+    throw new RangeError(
+      `runtime.${key} must be a non-empty list — an empty baseline collapses the pre-activation surface to meta-tools only, which stays a human/host decision`,
     )
   }
   const seen = new Set<string>()
@@ -323,10 +348,13 @@ function validateRuntimeValue(key: string, value: unknown): void {
       return
     case "allowedToolIds":
     case "stableCoreToolIds":
-      validateIdList(key, value, /* allowEmpty */ false)
+      validateIdList(key, value, "reject:widens")
+      return
+    case "baselineToolIds":
+      validateIdList(key, value, "reject:drastic")
       return
     case "skillFilter":
-      validateIdList(key, value, /* allowEmpty */ true)
+      validateIdList(key, value, "allow")
       return
     case "knowledgeBudgetRatio":
       if (typeof value !== "number" || !(value > 0 && value <= 1)) {
@@ -430,7 +458,9 @@ export function applyManifest(manifest: HarnessManifest, base: RuntimeOptions): 
 
 /**
  * Fold one intersection surface (capability ceiling): effective = manifest ∩ host-baseline, so a
- * manifest can only NARROW. The empty-baseline meaning is surface-specific and load-bearing:
+ * manifest can only NARROW. The empty-baseline meaning is surface-specific and load-bearing — it
+ * tracks whatever the RUNNER's own no-gating sentinel is for that option, not whether the option
+ * happens to hold tool ids:
  *
  *   - allowedToolIds / stableCoreToolIds — the runner reads an empty OR absent baseline as
  *     "no gating = all registered tools" (the universe), so a non-array/empty baseline yields the
@@ -438,23 +468,26 @@ export function applyManifest(manifest: HarnessManifest, base: RuntimeOptions): 
  *     empty intersection THROWS: a zero-tool run reprises the v0.2.46 pathology AND the runner would
  *     silently reinterpret the empty result as "no gating" (full exposure) — so we turn the candidate
  *     into a discardable error instead.
- *   - skillFilter — the runner's no-gating sentinel is ONLY `undefined`; an empty-array baseline is a
- *     genuine, maximally-tight ceiling (no skills). So ANY present array (even `[]`) is intersected,
- *     and an empty result is FINE (= no skills). This mirrors the validation asymmetry exactly.
+ *   - skillFilter / baselineToolIds — the runner's no-gating sentinel is ONLY `undefined`; an
+ *     empty-array baseline is a genuine, maximally-tight ceiling (no skills / the minimal meta-only
+ *     tool surface). So ANY present array (even `[]`) is intersected, and an empty result is FINE —
+ *     it reaches the runner as exactly that maximally-tight value, never as "no gating". This mirrors
+ *     the validation asymmetry exactly. `baselineToolIds` sits on THIS side despite being a tool-id
+ *     list: `[]` is its documented minimal surface (kernel `Some([])`), distinct from absent.
  */
 function foldIntersection(
   key: IntersectionPatchKey,
   manifestList: string[],
   baseList: string[] | undefined,
 ): string[] {
-  const skillLike = key === "skillFilter"
-  // Is the host baseline a real constraining set?  Tool ids: non-empty array only (empty == universe).
-  // skillFilter: any array (empty == the empty set).
-  const constrained = Array.isArray(baseList) && (skillLike || baseList.length > 0)
+  // Is an EMPTY host baseline a maximally-tight ceiling (intersect it, empty result fine) or the
+  // universe (ignore it, empty result is a bug)?
+  const emptyBaselineIsTight = key === "skillFilter" || key === "baselineToolIds"
+  const constrained = Array.isArray(baseList) && (emptyBaselineIsTight || baseList.length > 0)
   const effective = constrained
     ? manifestList.filter(id => (baseList as string[]).includes(id)) // manifest order → deterministic
     : manifestList
-  if (!skillLike && effective.length === 0) {
+  if (!emptyBaselineIsTight && effective.length === 0) {
     throw new RangeError(
       `applyManifest: runtime.${key} intersection is empty — manifest [${manifestList.join(", ")}] ∩ ` +
         `host [${(baseList ?? []).join(", ")}] names no shared tool. A zero-tool run is rejected (it ` +

@@ -32,6 +32,8 @@ export function createRunner(
     dreamSummarizer?: DreamSummarizer
     dreamProvider?: LLMProvider
     allowedToolIds?: string[]
+    baselineToolIds?: string[]
+    toolDispatchGate?: "exposed" | "registered"
     enablePlanTool?: boolean
     onTurnMetrics?: (m: import("../../src/runtime/runner.js").TurnMetrics) => void
     skillDir?: string
@@ -73,6 +75,8 @@ export function createRunner(
     dreamSummarizer: opts.dreamSummarizer,
     dreamProvider: opts.dreamProvider,
     allowedToolIds: opts.allowedToolIds,
+    baselineToolIds: opts.baselineToolIds,
+    toolDispatchGate: opts.toolDispatchGate,
     enablePlanTool: opts.enablePlanTool,
     onTurnMetrics: opts.onTurnMetrics,
     skillDir: opts.skillDir,
