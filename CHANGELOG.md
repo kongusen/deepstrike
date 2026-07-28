@@ -6,6 +6,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.49] - 2026-07-28
+
+### Fixed — kernel meta-tool exposure contract
+
+- **`allowedToolIds` no longer strips the kernel's own meta-tools** (kernel; all SDKs): the
+  run-level capability filter applied its id allow-list uniformly to every exposed tool, so any
+  non-empty profile silently dropped `skill` / `memory` / `knowledge` / `update_plan` /
+  `read_result` unless explicitly listed — breaking the documented contract ("only these tool ids
+  plus the meta-tools are exposed") and leaving skill activation to schema-less blind calls.
+  Kernel-owned meta surfaces are now exempt from the **id axis** via one canonical
+  `EXPOSURE_EXEMPT_META_TOOLS` set; the **kind axis** still applies, so a sub-agent isolation
+  filter admitting only `tool` capabilities keeps excluding skill/memory/knowledge. The epoch
+  skill filter reuses the same set, which adds the previously missing `read_result` exemption
+  (truncation markers explicitly instruct the model to call it). `FilteredExecutionPlane`
+  default meta lists (Node/Python/WASM) aligned to the same five names so the lists cannot drift.
+- **WASM: `update_plan` calls are actually dispatched** — the wasm runner exposed the plan tool
+  (`enablePlanTool` → kernel injects the `update_plan` schema) but had no dispatch branch for it,
+  so every call fell through to the execution plane as `unknown tool: update_plan`. Now resolved
+  as an `update_task` kernel apply with a `success` result, mirroring the Node/Python runners.
+
 ## [0.2.48] - 2026-07-20
 
 ### Added — self-harness v2: tool/skill surfaces, scope isolation, tiered promotion
