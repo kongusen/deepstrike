@@ -13,10 +13,21 @@ use deepstrike_core::types::skill::SkillMetadata;
 use deepstrike_core::types::task::RuntimeTask;
 
 fn default_sm() -> LoopStateMachine {
-    LoopStateMachine::new(SchedulerBudget {
+    let mut sm = LoopStateMachine::new(SchedulerBudget {
         max_tokens: 128_000,
         ..SchedulerBudget::default()
-    })
+    });
+    // Advertise the tools these fixtures call: fail-closed dispatch only executes tools the run
+    // actually exposed, so a fixture that registers nothing would exercise the denial path.
+    sm.tools = ["add", "write_file", "read_file", "search"]
+        .into_iter()
+        .map(|name| ToolSchema {
+            name: CompactString::new(name),
+            description: format!("{name} tool"),
+            parameters: serde_json::json!({"type": "object"}),
+        })
+        .collect();
+    sm
 }
 
 // ─── Basic lifecycle ────────────────────────────────────────────────────────

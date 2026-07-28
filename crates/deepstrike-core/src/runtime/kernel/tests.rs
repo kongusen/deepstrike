@@ -167,6 +167,87 @@ fn prompt_reservations_cannot_consume_the_entire_context_window() {
     ));
 }
 
+/// P1 ABI: `tool_dispatch_gate` is an additive `ConfigureRun` field. An unknown value is rejected
+/// like any other malformed config; `"registered"` lowers to the permissive escape hatch and
+/// `"exposed"` (and absence) keep the fail-closed default.
+#[test]
+fn tool_dispatch_gate_config_validates_and_lowers() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let rejected = runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            tool_dispatch_gate: Some("permissive".to_string()),
+            ..RunConfig::default()
+        },
+    }));
+    assert!(matches!(
+        rejected.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::InvalidConfig,
+            ..
+        }]
+    ));
+
+    // Default (field absent) = fail-closed: an unregistered call never reaches the host.
+    let mut fail_closed = KernelRuntime::new(SchedulerBudget::default());
+    register_tools(&mut fail_closed, &["echo"]);
+    fail_closed.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("do the thing"),
+        run_spec: None,
+    }));
+    let step = fail_closed.step(KernelInput::new(KernelInputEvent::ProviderResult {
+        effect_id: fail_closed.pending_provider_effect_id(),
+        message: assistant_calling("never_exposed"),
+        observed_input_tokens: None,
+        observed_output_tokens: None,
+        stop_reason: None,
+        now_ms: None,
+    }));
+    assert!(
+        matches!(
+            step.actions.as_slice(),
+            [KernelAction {
+                effect: KernelEffect::CallProvider { .. },
+                ..
+            }]
+        ),
+        "denied dispatch re-calls the provider instead of executing: {:?}",
+        step.actions
+    );
+
+    // `"registered"` restores permissive dispatch on the same shape.
+    let mut permissive = KernelRuntime::new(SchedulerBudget::default());
+    permissive.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            tool_dispatch_gate: Some("registered".to_string()),
+            ..RunConfig::default()
+        },
+    }));
+    register_tools(&mut permissive, &["echo"]);
+    permissive.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("do the thing"),
+        run_spec: None,
+    }));
+    let step = permissive.step(KernelInput::new(KernelInputEvent::ProviderResult {
+        effect_id: permissive.pending_provider_effect_id(),
+        message: assistant_calling("never_exposed"),
+        observed_input_tokens: None,
+        observed_output_tokens: None,
+        stop_reason: None,
+        now_ms: None,
+    }));
+    assert!(
+        matches!(
+            step.actions.as_slice(),
+            [KernelAction {
+                effect: KernelEffect::ExecuteTool { .. },
+                ..
+            }]
+        ),
+        "the escape hatch dispatches any named tool: {:?}",
+        step.actions
+    );
+}
+
 #[test]
 fn zero_token_budget_grant_is_rejected_at_configure() {
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
@@ -623,6 +704,20 @@ fn duplicate_effect_result_with_conflicting_payload_is_rejected() {
 fn deterministic_replay_preserves_the_next_effect_identity() {
     fn drive_to_tool_effect() -> KernelStep {
         let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+        // Advertise the tool this run is about to call (fail-closed dispatch), on the same
+        // operation so the replayed step sequence stays identical.
+        runtime.step(correlated_input(
+            "op-crash-replay",
+            "event-tools",
+            40,
+            KernelInputEvent::SetTools {
+                tools: vec![ToolSchema {
+                    name: "fetch".into(),
+                    description: "fetch tool".to_string(),
+                    parameters: serde_json::json!({"type": "object"}),
+                }],
+            },
+        ));
         let start = runtime.step(correlated_input(
             "op-crash-replay",
             "event-start",
@@ -1575,6 +1670,7 @@ fn budget_grant_enforces_local_token_cap() {
                 ..RunConfig::default()
             },
         }));
+        register_tools(&mut runtime, &["echo"]);
         runtime.step(KernelInput::new(KernelInputEvent::StartRun {
             task: RuntimeTask::new("task"),
             run_spec: None,
@@ -2483,6 +2579,7 @@ fn provider_result_now_ms_drives_wall_time_budget() {
         max_wall_ms: Some(10),
         ..SchedulerBudget::default()
     });
+    register_tools(&mut runtime, &["echo"]);
     runtime.step(KernelInput::new(KernelInputEvent::StartRun {
         task: RuntimeTask::new("ship it"),
         run_spec: None,
@@ -2501,10 +2598,44 @@ fn provider_result_now_ms_drives_wall_time_budget() {
         stop_reason: None,
         now_ms: Some(100),
     }));
+    // t=100 only establishes `started_at_ms`; the wall axis is evaluated at the NEXT turn
+    // boundary against the last observed clock, so this round still re-calls with a full toolset.
     let step = runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
         effect_id: runtime.pending_tool_effect_id(),
         results: vec![ToolResult {
             call_id: "call-1".into(),
+            output: crate::types::message::Content::Text("ok".into()),
+            is_error: false,
+            is_fatal: false,
+            error_kind: None,
+            token_count: None,
+        }],
+    }));
+    assert!(matches!(
+        step.actions.as_slice(),
+        [KernelAction { effect: KernelEffect::CallProvider { tools, .. }, .. }] if !tools.is_empty()
+    ));
+
+    // Second round at t=200: 100ms elapsed > max_wall_ms=10, so the boundary check forces the
+    // final no-tools report turn.
+    let mut msg2 = Message::assistant("");
+    msg2.tool_calls.push(ToolCall {
+        id: "call-2".into(),
+        name: "echo".into(),
+        arguments: serde_json::json!({}),
+    });
+    runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
+        effect_id: runtime.pending_provider_effect_id(),
+        message: msg2,
+        observed_input_tokens: None,
+        observed_output_tokens: None,
+        stop_reason: None,
+        now_ms: Some(200),
+    }));
+    let step = runtime.step(KernelInput::new(KernelInputEvent::ToolResults {
+        effect_id: runtime.pending_tool_effect_id(),
+        results: vec![ToolResult {
+            call_id: "call-2".into(),
             output: crate::types::message::Content::Text("ok".into()),
             is_error: false,
             is_fatal: false,
@@ -2786,12 +2917,30 @@ fn assistant_calling(tool: &str) -> Message {
     msg
 }
 
+/// Advertise `tools` as this run's toolset. Required wherever a fixture's provider then calls one
+/// of them: since the fail-closed dispatch gate shipped, a call to a tool the run never exposed is
+/// denied before `execute_tool` instead of dispatched. Registering keeps fixtures honest (the model
+/// calls a tool it was shown) rather than leaning on the `"registered"` escape hatch.
+fn register_tools(runtime: &mut KernelRuntime, tools: &[&str]) {
+    runtime.step(KernelInput::new(KernelInputEvent::SetTools {
+        tools: tools
+            .iter()
+            .map(|name| ToolSchema {
+                name: (*name).into(),
+                description: format!("{name} tool"),
+                parameters: serde_json::json!({"type": "object"}),
+            })
+            .collect(),
+    }));
+}
+
 /// Feed a tool-calling response and return the resulting step.
 fn run_with_tool_call(runtime: &mut KernelRuntime, tool: &str) -> KernelStep {
     run_with_tool_call_named(runtime, tool, "call-1")
 }
 
 fn run_with_tool_call_named(runtime: &mut KernelRuntime, tool: &str, _call_id: &str) -> KernelStep {
+    register_tools(runtime, &[tool]);
     runtime.step(KernelInput::new(KernelInputEvent::StartRun {
         task: RuntimeTask::new("do the thing"),
         run_spec: None,
@@ -3222,6 +3371,7 @@ fn governance_rate_limit_blocks_second_call() {
         }],
         constraints: vec![],
     }));
+    register_tools(&mut runtime, &["fetch"]);
     runtime.step(KernelInput::new(KernelInputEvent::StartRun {
         task: RuntimeTask::new("fetch twice"),
         run_spec: None,

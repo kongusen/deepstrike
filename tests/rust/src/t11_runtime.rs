@@ -24,6 +24,19 @@ use futures::StreamExt;
 #[test]
 fn kernel_effect_result_retry_keeps_the_same_next_action() {
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    // Fail-closed dispatch: advertise the tool this run then calls.
+    runtime.step(KernelInput::correlated(
+        "op-host-retry",
+        "event-tools",
+        0,
+        KernelInputEvent::SetTools {
+            tools: vec![ToolSchema {
+                name: "ping".into(),
+                description: "ping tool".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+        },
+    ));
     let start = runtime.step(KernelInput::correlated(
         "op-host-retry",
         "event-start",

@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use super::super::tcb::{TaskLifecycle, WaitReason};
 use super::{
-    ApprovalRequest, GateToolOutcome, KernelObservation, LoopAction, LoopEvent, LoopPhase,
-    LoopStateMachine, SuspendState,
+    ApprovalRequest, ExposureGateOutcome, GateToolOutcome, KernelObservation, LoopAction,
+    LoopEvent, LoopPhase, LoopStateMachine, SuspendState,
 };
 use crate::syscall::{Disposition, Syscall};
 use crate::types::agent::AgentIdentity;
@@ -320,6 +320,67 @@ impl LoopStateMachine {
         action
     }
 
+    /// P1 fail-closed dispatch: a call the model was never shown never reaches `ExecuteTools`.
+    ///
+    /// Exposure filtering used to be advertising only — `capability_filter` / skill narrowing shaped
+    /// the tools schema, but a model naming a gated-out tool still got it executed, so
+    /// `allowedToolIds` looked like a boundary without being one. This is the enforcement half:
+    /// the kernel remembers the toolset it advertised (`exposed_tool_names`) and partitions the
+    /// model's calls against it.
+    ///
+    /// Returns the calls that may proceed, or `Blocked` when the whole batch was denied. Denials
+    /// take the **same** channel as a governance denial — a committed, model-visible error result
+    /// (`ToolErrorKind::GovernanceDenied`) carried on `pending_denied_results` — so every tool_call
+    /// still gets a tool result (v0.2.42: the model-facing surface stays a training-set convention)
+    /// and the denial text says what to do next. Allowed siblings in the same batch still execute.
+    ///
+    /// Two deliberate pass-throughs:
+    /// - `pace` and the `EXPOSURE_EXEMPT_META_TOOLS` family are kernel-owned surfaces whose handlers
+    ///   already fail gracefully when genuinely unavailable (`read_result` with nothing evicted, a
+    ///   `pace` call outside a loop round). Denying them here would contradict ①'s exemption.
+    /// - `exposed_tool_names == None` ⇒ **unarmed, pass everything**. The gate arms only once this
+    ///   process has actually advertised a toolset; a rebuilt/resumed kernel replaying a pending
+    ///   tool call has advertised nothing, and denying that call would break resume. (The wake path
+    ///   itself — `resume_after_preload` — emits `ExecuteTools` directly and never reaches this
+    ///   adjudication point, so replayed history is untouched either way.)
+    pub(super) fn gate_exposed_tool_calls(&mut self, calls: Vec<ToolCall>) -> ExposureGateOutcome {
+        if !self.dispatch_gate_exposed {
+            return ExposureGateOutcome::Proceed(calls);
+        }
+        let Some(exposed) = self.exposed_tool_names.as_ref() else {
+            return ExposureGateOutcome::Proceed(calls);
+        };
+        let (allowed, denied): (Vec<ToolCall>, Vec<ToolCall>) =
+            calls.into_iter().partition(|call| {
+                exposed.contains(&call.name)
+                    || call.name.as_str() == "pace"
+                    || crate::context::manager::is_exposure_exempt_meta_tool(call.name.as_str())
+            });
+        if denied.is_empty() {
+            return ExposureGateOutcome::Proceed(allowed);
+        }
+        for call in &denied {
+            self.pending_denied_results.push(ToolResult {
+                call_id: call.id.clone(),
+                // 下一请求信息最大化: name what was refused AND where the valid choices are.
+                output: Content::Text(format!(
+                    "Tool '{}' is not part of this run's toolset. Choose from the tools listed in \
+                     your tools schema.",
+                    call.name
+                )),
+                is_error: true,
+                is_fatal: false,
+                error_kind: Some(ToolErrorKind::GovernanceDenied),
+                token_count: None,
+            });
+        }
+        if allowed.is_empty() {
+            let results = std::mem::take(&mut self.pending_denied_results);
+            return ExposureGateOutcome::Blocked(self.commit_synthetic_results(results));
+        }
+        ExposureGateOutcome::Proceed(allowed)
+    }
+
     /// Evaluate proposed tool calls through the syscall trap (governance gate).
     pub(super) fn gate_tool_calls(&mut self, calls: &[ToolCall]) -> GateToolOutcome {
         if self.governance.is_none() {
@@ -486,7 +547,11 @@ impl LoopStateMachine {
             }
         }
 
-        self.pending_denied_results = synthetic_results;
+        // Extend, never overwrite: a batch can carry denials from EARLIER stages of the same turn
+        // (a fail-closed dispatch denial, a governance deny) whose gated siblings then suspended
+        // here. Replacing the vec would drop those results and leave their tool_calls unpaired —
+        // an orphaned tool_use block the model was never answered on.
+        self.pending_denied_results.extend(synthetic_results);
 
         if to_execute.is_empty() {
             let results = std::mem::take(&mut self.pending_denied_results);

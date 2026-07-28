@@ -16,6 +16,16 @@ fn sm() -> LoopStateMachine {
     })
 }
 
+/// A machine that advertises `names` as its toolset. Any fixture whose provider then calls one of
+/// them must go through here: the fail-closed dispatch gate denies calls to tools the run never
+/// exposed, so a fixture that skipped registration would exercise the denial path instead of the
+/// behavior it claims to test.
+fn sm_with_tools(names: &[&str]) -> LoopStateMachine {
+    let mut sm = sm();
+    sm.tools = names.iter().map(|name| make_tool_schema(name)).collect();
+    sm
+}
+
 #[test]
 fn start_emits_call_llm() {
     let mut sm = sm();
@@ -977,6 +987,442 @@ fn skill_epoch_filter_keeps_read_result_meta_tool() {
     }
 }
 
+// ─── Exposure baseline: the pre-activation surface under the ceiling ──────────────────────
+
+/// Fixture for the baseline suite: four registered tools, a three-tool ceiling (`search` is
+/// ceiling-external), stable-core `bash`, and a skill that declares `write` + the ceiling-external
+/// `search`. Callers set `exposure_baseline` themselves so the None/Some distinction stays explicit.
+fn baseline_sm() -> LoopStateMachine {
+    use crate::types::agent::{AgentCapabilityFilter, AgentIdentity, AgentRole, AgentRunSpec};
+    let mut sm = sm();
+    sm.tools = vec![
+        make_tool_schema("read"),
+        make_tool_schema("write"),
+        make_tool_schema("bash"),
+        make_tool_schema("search"),
+    ];
+    sm.ctx
+        .set_stable_core_tools([compact_str::CompactString::new("bash")]);
+    let mut declaring = SkillMetadata::new("debug", "Debug helper");
+    declaring.allowed_tools = vec![
+        compact_str::CompactString::new("write"),
+        compact_str::CompactString::new("search"),
+    ];
+    // A second skill that declares nothing — the D2 case.
+    sm.ctx
+        .set_available_skills(vec![declaring, SkillMetadata::new("wander", "no tools")]);
+    let mut spec = AgentRunSpec::new(
+        AgentIdentity::new("root", "root-session"),
+        AgentRole::Custom,
+        "do the task",
+    );
+    spec.capability_filter = AgentCapabilityFilter {
+        allowed_kinds: Vec::new(),
+        allowed_ids: vec![
+            compact_str::CompactString::new("read"),
+            compact_str::CompactString::new("write"),
+            compact_str::CompactString::new("bash"),
+        ],
+    };
+    sm.run_spec = Some(spec);
+    sm
+}
+
+fn exposed_names(action: LoopAction) -> Vec<String> {
+    match action {
+        LoopAction::CallLLM { tools, .. } => {
+            let mut names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
+            names.sort();
+            names
+        }
+        other => panic!("expected CallLLM, got {other:?}"),
+    }
+}
+
+/// `exposed = META ∪ ((baseline ∪ stableCore) ∩ ceiling)` before any skill activates. A ceiling
+/// tool absent from the baseline is NOT exposed (that is the whole point — narrow first), and a
+/// ceiling-external baseline entry is silently dropped by filter A (D3, no error).
+#[test]
+fn exposure_baseline_narrows_the_preactivation_surface_under_the_ceiling() {
+    let mut sm = baseline_sm();
+    sm.run_spec.as_mut().unwrap().exposure_baseline = Some(vec![
+        compact_str::CompactString::new("read"),
+        compact_str::CompactString::new("search"), // outside the ceiling ⇒ silently intersected away
+    ]);
+
+    let names = exposed_names(sm.start(RuntimeTask::new("do the task")));
+    assert!(
+        names.contains(&"read".to_string()),
+        "baseline tool: {names:?}"
+    );
+    assert!(
+        names.contains(&"bash".to_string()),
+        "stable-core is honored pre-activation too: {names:?}"
+    );
+    assert!(
+        !names.contains(&"write".to_string()),
+        "in the ceiling but not the baseline ⇒ not exposed yet: {names:?}"
+    );
+    assert!(
+        !names.contains(&"search".to_string()),
+        "D3: a ceiling-external baseline entry never appears: {names:?}"
+    );
+    assert!(
+        names.contains(&"skill".to_string()),
+        "meta surfaces stay exempt: {names:?}"
+    );
+}
+
+/// Activation widens the surface by exactly the skill's declared tools (still ∩ ceiling), and
+/// deactivation narrows it back — the narrow→wide→narrow shape one knob could not express before.
+#[test]
+fn exposure_baseline_widens_on_skill_activation_and_narrows_on_deactivation() {
+    let mut sm = baseline_sm();
+    sm.run_spec.as_mut().unwrap().exposure_baseline =
+        Some(vec![compact_str::CompactString::new("read")]);
+    let before = exposed_names(sm.start(RuntimeTask::new("do the task")));
+
+    sm.ctx.activate_skill("debug");
+    let during = exposed_names(sm.emit_call_llm());
+    assert!(
+        during.contains(&"write".to_string()),
+        "the skill's declared tool becomes reachable: {during:?}"
+    );
+    assert!(
+        !during.contains(&"search".to_string()),
+        "declared but ceiling-external ⇒ still unreachable: {during:?}"
+    );
+    let widened: Vec<&String> = during.iter().filter(|n| !before.contains(n)).collect();
+    assert_eq!(
+        widened,
+        vec![&"write".to_string()],
+        "widening is EXACTLY the declared ∩ ceiling delta: {during:?} vs {before:?}"
+    );
+
+    sm.ctx.deactivate_skill("debug");
+    assert_eq!(
+        exposed_names(sm.emit_call_llm()),
+        before,
+        "deactivation returns to the baseline surface"
+    );
+}
+
+/// D2 (strict): with a baseline set, an active skill that declares NO `allowed_tools` contributes
+/// ∅. The legacy filter's errs-open widening ("undeclared skill ⇒ no narrowing") is deliberately
+/// not inherited — a baseline is an opt-in statement that the surface is narrow on purpose.
+#[test]
+fn exposure_baseline_ignores_a_skill_that_declares_no_tools() {
+    let mut sm = baseline_sm();
+    sm.run_spec.as_mut().unwrap().exposure_baseline =
+        Some(vec![compact_str::CompactString::new("read")]);
+    let before = exposed_names(sm.start(RuntimeTask::new("do the task")));
+
+    sm.ctx.activate_skill("wander");
+    assert_eq!(
+        exposed_names(sm.emit_call_llm()),
+        before,
+        "an undeclared skill must not widen the baseline surface"
+    );
+}
+
+/// `Some([])` is the minimal surface (meta + stable-core), and `None` on the SAME fixture is the
+/// legacy full-ceiling behavior — pinning that the `allowedToolIds` "[] means no gating" trap does
+/// not recur on this knob.
+#[test]
+fn exposure_baseline_empty_is_minimal_while_none_is_legacy() {
+    let mut minimal = baseline_sm();
+    minimal.run_spec.as_mut().unwrap().exposure_baseline = Some(Vec::new());
+    let names = exposed_names(minimal.start(RuntimeTask::new("do the task")));
+    assert!(
+        !names.contains(&"read".to_string()) && !names.contains(&"write".to_string()),
+        "empty baseline exposes no task tools: {names:?}"
+    );
+    assert!(
+        names.contains(&"bash".to_string()),
+        "stable-core survives the minimal surface: {names:?}"
+    );
+    assert!(
+        names.contains(&"skill".to_string()),
+        "meta surfaces survive the minimal surface: {names:?}"
+    );
+
+    let mut legacy = baseline_sm();
+    assert!(
+        legacy
+            .run_spec
+            .as_ref()
+            .unwrap()
+            .exposure_baseline
+            .is_none()
+    );
+    let names = exposed_names(legacy.start(RuntimeTask::new("do the task")));
+    for ceiling_tool in ["read", "write", "bash"] {
+        assert!(
+            names.contains(&ceiling_tool.to_string()),
+            "no baseline ⇒ the full ceiling is exposed pre-activation: {names:?}"
+        );
+    }
+    assert!(
+        !names.contains(&"search".to_string()),
+        "the ceiling still applies: {names:?}"
+    );
+}
+
+/// No ceiling (`allowed_ids` empty ⇒ filter A admits everything) does not disable the baseline: the
+/// formula still narrows against the full registered set.
+#[test]
+fn exposure_baseline_narrows_even_without_a_ceiling() {
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+    let mut sm = sm();
+    sm.tools = vec![
+        make_tool_schema("read"),
+        make_tool_schema("write"),
+        make_tool_schema("bash"),
+    ];
+    let mut spec = AgentRunSpec::new(
+        AgentIdentity::new("root", "root-session"),
+        AgentRole::Custom,
+        "do the task",
+    );
+    spec.exposure_baseline = Some(vec![compact_str::CompactString::new("read")]);
+    sm.run_spec = Some(spec);
+
+    let names = exposed_names(sm.start(RuntimeTask::new("do the task")));
+    assert_eq!(
+        names,
+        vec!["read".to_string()],
+        "the baseline alone narrows the registered set: {names:?}"
+    );
+}
+
+// ─── P1 fail-closed dispatch ──────────────────────────────────────────────────────────────
+
+fn call(id: &str, name: &str) -> ToolCall {
+    ToolCall {
+        id: compact_str::CompactString::new(id),
+        name: compact_str::CompactString::new(name),
+        arguments: serde_json::json!({}),
+    }
+}
+
+fn assistant_calling(calls: Vec<ToolCall>) -> Message {
+    Message {
+        role: Role::Assistant,
+        content: Content::Text(String::new()),
+        tool_calls: calls,
+        token_count: Some(3),
+    }
+}
+
+fn history_contains(sm: &LoopStateMachine, needle: &str) -> bool {
+    sm.ctx.partitions.history.messages.iter().any(|m| {
+        matches!(&m.content, Content::Parts(parts) if parts.iter().any(|p| matches!(
+            p,
+            ContentPart::ToolResult { output, .. } if output.contains(needle)
+        )))
+    })
+}
+
+/// The gate is on by default: a tool that is registered but was never exposed this run never
+/// reaches `ExecuteTools`. It comes back as a model-visible denied result while its exposed
+/// sibling in the same batch still executes.
+#[test]
+fn unexposed_tool_call_is_denied_while_exposed_sibling_executes() {
+    use crate::types::agent::{AgentCapabilityFilter, AgentIdentity, AgentRole, AgentRunSpec};
+    let mut sm = sm();
+    sm.tools = vec![make_tool_schema("read"), make_tool_schema("write")];
+    let mut spec = AgentRunSpec::new(
+        AgentIdentity::new("root", "root-session"),
+        AgentRole::Custom,
+        "do the task",
+    );
+    spec.capability_filter = AgentCapabilityFilter {
+        allowed_kinds: Vec::new(),
+        allowed_ids: vec![compact_str::CompactString::new("read")],
+    };
+    sm.run_spec = Some(spec);
+    sm.start(RuntimeTask::new("do the task"));
+
+    let action = sm.feed(LoopEvent::LLMResponse {
+        message: assistant_calling(vec![call("c1", "read"), call("c2", "write")]),
+    });
+    match action {
+        LoopAction::ExecuteTools { calls } => {
+            let names: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
+            assert_eq!(names, vec!["read"], "only the exposed call dispatches");
+        }
+        other => panic!("expected ExecuteTools, got {other:?}"),
+    }
+
+    // The denial merges into the same tool-results turn as its sibling's real result.
+    sm.feed(LoopEvent::ToolResults {
+        results: vec![ToolResult {
+            call_id: compact_str::CompactString::new("c1"),
+            output: Content::Text("file contents".into()),
+            is_error: false,
+            is_fatal: false,
+            error_kind: None,
+            token_count: None,
+        }],
+    });
+    assert!(
+        history_contains(&sm, "Tool 'write' is not part of this run's toolset"),
+        "the denial must be visible to the model with a next step"
+    );
+    assert!(
+        history_contains(&sm, "file contents"),
+        "the allowed sibling's real result still lands"
+    );
+}
+
+/// A denial from the dispatch gate must survive a sibling's approval suspend: both tool_calls in
+/// the batch end up answered, never leaving an orphaned tool_use the model was not replied to.
+#[test]
+fn dispatch_denial_survives_a_sibling_approval_suspend() {
+    use crate::governance::permission::{PermissionAction, PermissionRule};
+    use crate::governance::pipeline::GovernancePipeline;
+    let mut sm = sm();
+    sm.tools = vec![make_tool_schema("sensitive.read")];
+    let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
+    pipeline.permission.add_rule(PermissionRule {
+        tool_pattern: "sensitive.*".into(),
+        action: PermissionAction::AskUser,
+    });
+    sm.set_governance(pipeline);
+    sm.start(RuntimeTask::new("do the task"));
+
+    let action = sm.feed(LoopEvent::LLMResponse {
+        message: assistant_calling(vec![call("c1", "phantom"), call("c2", "sensitive.read")]),
+    });
+    assert!(matches!(action, LoopAction::RequestApproval { .. }));
+
+    // Approve the gated sibling: it executes, and the gate's denial is still pending for the
+    // tool-results turn rather than having been overwritten by the approval resolution.
+    match sm.resolve_approval(vec!["c2".to_string()], vec![]) {
+        LoopAction::ExecuteTools { calls } => assert_eq!(calls[0].name.as_str(), "sensitive.read"),
+        other => panic!("expected ExecuteTools, got {other:?}"),
+    }
+    sm.feed(LoopEvent::ToolResults {
+        results: vec![ToolResult {
+            call_id: compact_str::CompactString::new("c2"),
+            output: Content::Text("secret".into()),
+            is_error: false,
+            is_fatal: false,
+            error_kind: None,
+            token_count: None,
+        }],
+    });
+    assert!(
+        history_contains(&sm, "Tool 'phantom' is not part of this run's toolset"),
+        "the dispatch denial must still reach the model"
+    );
+}
+
+/// Kernel-owned surfaces bypass the gate: `pace` and the exposure-exempt meta family have their own
+/// graceful handling when genuinely unavailable, so the gate must never intercept them.
+#[test]
+fn dispatch_gate_passes_pace_and_meta_tools_that_were_not_exposed() {
+    let mut sm = sm();
+    sm.tools = vec![make_tool_schema("read")];
+    // memory/knowledge disabled and no loop round ⇒ neither `memory` nor `pace` is exposed.
+    sm.start(RuntimeTask::new("do the task"));
+    assert!(
+        !sm.exposed_tool_names
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|n| n == "memory" || n == "pace")
+    );
+
+    let action = sm.feed(LoopEvent::LLMResponse {
+        message: assistant_calling(vec![call("c1", "memory"), call("c2", "pace")]),
+    });
+    match action {
+        LoopAction::ExecuteTools { calls } => {
+            let names: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
+            assert_eq!(
+                names,
+                vec!["memory", "pace"],
+                "kernel surfaces pass the gate"
+            );
+        }
+        other => panic!("expected ExecuteTools, got {other:?}"),
+    }
+}
+
+/// The `"registered"` escape hatch restores the pre-gate permissive dispatch.
+#[test]
+fn registered_dispatch_gate_restores_permissive_execution() {
+    let mut sm = sm();
+    sm.tools = vec![make_tool_schema("read")];
+    sm.set_dispatch_gate_exposed(false);
+    sm.start(RuntimeTask::new("do the task"));
+
+    let action = sm.feed(LoopEvent::LLMResponse {
+        message: assistant_calling(vec![call("c1", "never_exposed")]),
+    });
+    match action {
+        LoopAction::ExecuteTools { calls } => {
+            assert_eq!(calls[0].name.as_str(), "never_exposed");
+        }
+        other => panic!("expected ExecuteTools, got {other:?}"),
+    }
+}
+
+/// Resume safety: the gate arms only once THIS process has advertised a toolset. A kernel that has
+/// not emitted a `CallLLM` yet (rebuilt/resumed session replaying a pending call) passes everything
+/// through — denying there would break resume.
+#[test]
+fn dispatch_gate_unarmed_before_the_first_call_llm() {
+    let mut sm = sm();
+    sm.tools = vec![make_tool_schema("read")];
+    assert!(
+        sm.exposed_tool_names.is_none(),
+        "no provider call emitted yet ⇒ unarmed"
+    );
+
+    let action = sm.feed(LoopEvent::LLMResponse {
+        message: assistant_calling(vec![call("c1", "anything")]),
+    });
+    match action {
+        LoopAction::ExecuteTools { calls } => assert_eq!(calls[0].name.as_str(), "anything"),
+        other => panic!("expected ExecuteTools, got {other:?}"),
+    }
+}
+
+/// A model that keeps re-issuing the same phantom tool burns the RepeatFuse exactly like a host
+/// denial: the fuse is evaluated before the gate, so denied calls still count as no progress.
+#[test]
+fn repeated_denied_dispatch_trips_the_repeat_fuse() {
+    let mut sm = sm();
+    sm.tools = vec![make_tool_schema("read")];
+    sm.set_repeat_fuse(crate::governance::repeat_fuse::RepeatFuseConfig {
+        enabled: true,
+        deny_after: 3,
+        terminate_after: 0,
+    });
+    sm.start(RuntimeTask::new("do the task"));
+
+    for turn in 0..3 {
+        let action = sm.feed(LoopEvent::LLMResponse {
+            message: assistant_calling(vec![call("c1", "phantom")]),
+        });
+        assert!(
+            matches!(action, LoopAction::CallLLM { .. }),
+            "the phantom call is denied and the loop re-calls, never executes (turn {turn}): {action:?}"
+        );
+        let tripped = sm.observations.iter().any(|o| matches!(
+            o,
+            KernelObservation::RepeatFuseTripped { action, count, .. } if action == "deny" && *count == 3
+        ));
+        assert_eq!(
+            tripped,
+            turn == 2,
+            "the fuse must count denied dispatches and trip on the third (turn {turn})"
+        );
+    }
+}
+
 #[test]
 fn compression_emits_observation() {
     let mut sm = LoopStateMachine::new(SchedulerBudget {
@@ -1388,7 +1834,7 @@ fn tool_result_content_parts_preserved_as_json() {
     use crate::types::message::Content;
     use compact_str::CompactString;
 
-    let mut sm = sm();
+    let mut sm = sm_with_tools(&["my_tool"]);
     sm.start(RuntimeTask::new("test"));
 
     // Simulate an LLM tool call
@@ -1728,7 +2174,7 @@ fn sm_with_deny_rule() -> LoopStateMachine {
     use crate::governance::permission::{PermissionAction, PermissionRule};
     use crate::governance::pipeline::GovernancePipeline;
 
-    let mut sm = sm();
+    let mut sm = sm_with_tools(&["write_file", "read_file"]);
     let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
     pipeline.permission.add_rule(PermissionRule {
         tool_pattern: "write_file".into(),
@@ -1840,7 +2286,7 @@ fn sm_with_ask_user_rule() -> LoopStateMachine {
     use crate::governance::permission::{PermissionAction, PermissionRule};
     use crate::governance::pipeline::GovernancePipeline;
 
-    let mut sm = sm();
+    let mut sm = sm_with_tools(&["sensitive.read"]);
     let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
     pipeline.permission.add_rule(PermissionRule {
         tool_pattern: "sensitive.*".into(),
@@ -3810,7 +4256,7 @@ fn single_spawn_path_leaves_workflow_inactive() {
 fn fatal_tool_error_commits_as_visible_error_result() {
     // Models are trained on "tool failed → error tool result stays in history"; erasing the
     // attempt (rollback) is out-of-distribution and the model cannot adapt to what it never saw.
-    let mut sm = sm();
+    let mut sm = sm_with_tools(&["write_file"]);
     sm.start(RuntimeTask::new("write the file"));
     let a = sm.feed(LoopEvent::LLMResponse {
         message: fuse_tool_turn("write_file", serde_json::json!({"path": "a.txt"})),
@@ -3848,7 +4294,7 @@ fn fatal_tool_error_commits_as_visible_error_result() {
 fn tool_batch_timeout_commits_timeout_error_results() {
     // Trained convention: a timed-out call surfaces as an error tool result ("timed out"), the
     // same shape every major harness produces — not an erased turn plus a volatile note.
-    let mut sm = sm();
+    let mut sm = sm_with_tools(&["run_job"]);
     sm.start(RuntimeTask::new("run the job"));
     let a = sm.feed(LoopEvent::LLMResponse {
         message: fuse_tool_turn("run_job", serde_json::json!({"id": 7})),
@@ -3986,7 +4432,7 @@ fn fuse_drive_turn(sm: &mut LoopStateMachine, args: serde_json::Value) -> LoopAc
 
 #[test]
 fn repeat_fuse_denies_at_threshold_and_feeds_directive_back() {
-    let mut sm = sm();
+    let mut sm = sm_with_tools(&["set_title"]);
     sm.set_repeat_fuse(crate::governance::repeat_fuse::RepeatFuseConfig {
         enabled: true,
         deny_after: 3,
@@ -4044,7 +4490,7 @@ fn repeat_fuse_denies_at_threshold_and_feeds_directive_back() {
 
 #[test]
 fn repeat_fuse_ignores_same_tool_with_different_args() {
-    let mut sm = sm();
+    let mut sm = sm_with_tools(&["set_title"]);
     sm.set_repeat_fuse(crate::governance::repeat_fuse::RepeatFuseConfig {
         enabled: true,
         deny_after: 3,
@@ -4071,7 +4517,7 @@ fn repeat_fuse_ignores_long_args_that_differ_past_the_display_cap() {
     // arguments. serde_json orders keys alphabetically, so an `edit`-style call renders
     // `{"file_path":"…"}` first and a long path swallows the whole display window — consecutive
     // legit edits to the SAME file (different old/new strings) must not read as a stall.
-    let mut sm = sm();
+    let mut sm = sm_with_tools(&["edit"]);
     sm.set_repeat_fuse(crate::governance::repeat_fuse::RepeatFuseConfig {
         enabled: true,
         deny_after: 3,
@@ -4108,7 +4554,7 @@ fn repeat_fuse_ignores_long_args_that_differ_past_the_display_cap() {
 
 #[test]
 fn repeat_fuse_still_trips_on_identical_long_args() {
-    let mut machine = sm();
+    let mut machine = sm_with_tools(&["edit"]);
     machine.set_repeat_fuse(crate::governance::repeat_fuse::RepeatFuseConfig {
         enabled: true,
         deny_after: 3,
@@ -4143,7 +4589,7 @@ fn repeat_fuse_still_trips_on_identical_long_args() {
 
 #[test]
 fn repeat_fuse_escalates_to_no_progress_termination() {
-    let mut sm = sm();
+    let mut sm = sm_with_tools(&["set_title"]);
     sm.set_repeat_fuse(crate::governance::repeat_fuse::RepeatFuseConfig {
         enabled: true,
         deny_after: 2,
@@ -4185,7 +4631,7 @@ fn repeat_fuse_escalates_to_no_progress_termination() {
 
 #[test]
 fn repeat_fuse_disabled_lets_identical_calls_run() {
-    let mut sm = sm();
+    let mut sm = sm_with_tools(&["set_title"]);
     sm.set_repeat_fuse(crate::governance::repeat_fuse::RepeatFuseConfig {
         enabled: false,
         deny_after: 2,
@@ -4645,7 +5091,7 @@ fn entropy_sample_of(obs: &[KernelObservation]) -> Option<(f64, f64, f64, u32)> 
 
 #[test]
 fn entropy_sample_emitted_every_completed_turn() {
-    let mut sm = sm();
+    let mut sm = sm_with_tools(&["step"]);
     sm.start(RuntimeTask::new("do things"));
     let obs = entropy_drive_turn(&mut sm, serde_json::json!({"n": 1}), false);
     let (score, repeat, failures, rollbacks) =
@@ -4658,7 +5104,7 @@ fn entropy_sample_emitted_every_completed_turn() {
 
 #[test]
 fn entropy_sample_reflects_repeats_and_failures() {
-    let mut sm = sm();
+    let mut sm = sm_with_tools(&["step"]);
     sm.start(RuntimeTask::new("loop badly"));
     // Identical failing call, 4 turns: repeat streak + failure window both climb.
     let mut last = Vec::new();
@@ -4679,7 +5125,7 @@ fn entropy_sample_reflects_repeats_and_failures() {
 
 #[test]
 fn entropy_watch_alerts_once_and_respects_optin() {
-    let mut sm = sm();
+    let mut sm = sm_with_tools(&["step"]);
     // Watch OFF (default): a fully disordered run emits samples but never alerts.
     sm.start(RuntimeTask::new("loop badly"));
     for _ in 0..4 {
@@ -4709,7 +5155,7 @@ fn entropy_watch_alerts_once_and_respects_optin() {
 }
 
 fn sm2_with_watch(threshold: f64, cooldown_turns: u32) -> LoopStateMachine {
-    let mut sm = sm();
+    let mut sm = sm_with_tools(&["step"]);
     sm.set_entropy_watch(crate::scheduler::entropy::EntropyWatchConfig {
         enabled: true,
         threshold,
@@ -4758,7 +5204,7 @@ fn entropy_watch_notify_model_routes_a_heartbeat_signal() {
 
 #[test]
 fn entropy_rollbacks_accrue_into_the_next_completed_turn() {
-    let mut sm = sm();
+    let mut sm = sm_with_tools(&["step"]);
     sm.start(RuntimeTask::new("interrupt then recover"));
     // Turn A: user-interrupt tool result ⇒ rollback (the one surviving tool-result rollback —
     // fatal/timeout errors now commit as visible error results), no boundary sample.

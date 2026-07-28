@@ -179,6 +179,17 @@ pub struct AgentRunSpec {
     /// it gates exposure of the `pace` meta-tool and arms the pacing trap. Additive ABI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_round: Option<LoopRoundSpec>,
+    /// **Exposure baseline** — the pre-activation tool surface *under* the
+    /// [`Self::capability_filter`] ceiling. `capability_filter.allowed_ids` bounds what this run may
+    /// EVER expose; the baseline selects which of those are exposed before any skill activates, so
+    /// the narrow→wide progressive-disclosure shape becomes expressible (a tool can be reachable
+    /// after `skill(x)` without being advertised beforehand).
+    ///
+    /// `None` (default) ⇒ exactly the pre-baseline behavior (ceiling filter + errs-open skill
+    /// narrowing). `Some([])` is legitimate and distinct: the minimal surface (meta-tools +
+    /// stable-core only). See the exposure formula in `emit_call_llm`. Additive ABI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure_baseline: Option<Vec<CompactString>>,
 }
 
 /// Round/pacing bounds for a loop-agent run (all optional; the kernel clamps and
@@ -213,6 +224,7 @@ impl AgentRunSpec {
             milestones: None,
             metadata: serde_json::Value::Null,
             loop_round: None,
+            exposure_baseline: None,
         }
     }
 
@@ -233,6 +245,16 @@ impl AgentRunSpec {
 
     pub fn with_capability_filter(mut self, filter: AgentCapabilityFilter) -> Self {
         self.capability_filter = filter;
+        self
+    }
+
+    /// Set the pre-activation exposure baseline (see [`Self::exposure_baseline`]). Passing an empty
+    /// list is meaningful: meta-tools + stable-core only.
+    pub fn with_exposure_baseline(
+        mut self,
+        ids: impl IntoIterator<Item = impl Into<CompactString>>,
+    ) -> Self {
+        self.exposure_baseline = Some(ids.into_iter().map(Into::into).collect());
         self
     }
 

@@ -319,6 +319,13 @@ fn compaction_fixture_snapshot() -> KernelSnapshot {
         KernelInputEvent::ConfigureRun {
             config: deepstrike_core::runtime::kernel::RunConfig {
                 context_policy: Some(policy(1)),
+                // The fixture's turn-1 response calls `search`; fail-closed dispatch only
+                // executes tools the run advertised, so the run must register it.
+                tools: Some(vec![deepstrike_core::types::message::ToolSchema {
+                    name: "search".into(),
+                    description: "search tool".to_string(),
+                    parameters: serde_json::json!({"type": "object"}),
+                }]),
                 ..Default::default()
             },
         },
@@ -602,6 +609,13 @@ fn image_compaction_fixture_snapshot() -> KernelSnapshot {
         KernelInputEvent::ConfigureRun {
             config: deepstrike_core::runtime::kernel::RunConfig {
                 context_policy: Some(policy(1)),
+                // The fixture's turn-1 response calls `search`; fail-closed dispatch only
+                // executes tools the run advertised, so the run must register it.
+                tools: Some(vec![deepstrike_core::types::message::ToolSchema {
+                    name: "search".into(),
+                    description: "search tool".to_string(),
+                    parameters: serde_json::json!({"type": "object"}),
+                }]),
                 ..Default::default()
             },
         },

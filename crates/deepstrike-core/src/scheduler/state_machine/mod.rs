@@ -1,4 +1,6 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+
+use compact_str::CompactString;
 
 use super::entropy::{EntropyTracker, EntropyWatchConfig};
 use super::milestone::MilestoneTracker;
@@ -248,6 +250,13 @@ pub(super) enum GateToolOutcome {
     ApprovalRequired(Vec<ApprovalRequest>),
 }
 
+/// Outcome of the P1 fail-closed exposure gate: the calls that survived, or the committed action
+/// when every call in the batch was denied.
+pub(super) enum ExposureGateOutcome {
+    Proceed(Vec<ToolCall>),
+    Blocked(LoopAction),
+}
+
 /// Snapshot of context lengths captured just before each LLM call.
 /// Used internally to restore state on rollback.
 #[derive(Debug, Clone, Default)]
@@ -314,6 +323,17 @@ pub struct LoopStateMachine {
     /// model is evaluated before `ExecuteTools` is emitted. `None` (default)
     /// skips the gate entirely, preserving the pre-governance behavior.
     pub(super) governance: Option<GovernancePipeline>,
+    /// P1 fail-closed dispatch: the toolset advertised to the model on the most recent `CallLLM`.
+    /// Refreshed at every emission (`call_llm_action`), consumed by `gate_exposed_tool_calls`.
+    ///
+    /// `None` = **unarmed**: this process has not advertised a toolset yet, so there is nothing to
+    /// enforce against. Deliberately NOT snapshotted — a rebuilt/resumed kernel starts unarmed and
+    /// arms itself on its first provider call.
+    pub(super) exposed_tool_names: Option<HashSet<CompactString>>,
+    /// P1 escape hatch (`ConfigureRun.tool_dispatch_gate`): `true` (default) = only the tools this
+    /// run exposed may be dispatched; `false` (`"registered"`) = the pre-gate permissive behavior,
+    /// any tool the model names reaches the host.
+    pub(super) dispatch_gate_exposed: bool,
     /// Optional resource quota evaluated at the syscall trap (M2). `None` (default) leaves spawn /
     /// memory syscalls unconditionally allowed, preserving pre-M2 behavior.
     pub(super) resource_quota: Option<crate::governance::quota::ResourceQuota>,
@@ -425,6 +445,8 @@ impl LoopStateMachine {
             run_spec: None,
             tasks,
             governance: None,
+            exposed_tool_names: None,
+            dispatch_gate_exposed: true,
             resource_quota: None,
             memory_write_times: Vec::new(),
             memory_policy: None,
@@ -454,6 +476,12 @@ impl LoopStateMachine {
     /// O4: enable/disable the turn-end criteria gate (default enabled; no-op without criteria).
     pub fn set_criteria_gate(&mut self, enabled: bool) {
         self.criteria_gate_enabled = enabled;
+    }
+
+    /// P1: select the dispatch gate. `true` (kernel default) = fail-closed against the toolset this
+    /// run actually exposed; `false` = the permissive `"registered"` escape hatch.
+    pub fn set_dispatch_gate_exposed(&mut self, exposed: bool) {
+        self.dispatch_gate_exposed = exposed;
     }
 
     pub(crate) fn set_scheduler_policy(
@@ -1057,6 +1085,16 @@ impl LoopStateMachine {
                     return action;
                 }
 
+                // P1 fail-closed dispatch: drop calls to tools this run never advertised, BEFORE the
+                // governance gate (a tool that was never exposed is not a policy question) and AFTER
+                // the fuse (a model retrying the same phantom tool must still burn the fuse, exactly
+                // like a repeated host denial). Denials commit as visible error results; surviving
+                // siblings execute this turn.
+                let calls = match self.gate_exposed_tool_calls(calls) {
+                    ExposureGateOutcome::Blocked(action) => return action,
+                    ExposureGateOutcome::Proceed(calls) => calls,
+                };
+
                 match self.gate_tool_calls(&calls) {
                     GateToolOutcome::Blocked(action) => return action,
                     GateToolOutcome::ApprovalRequired(requests) => {
@@ -1618,10 +1656,7 @@ impl LoopStateMachine {
             }
         }
         if self.pending_termination.is_some() {
-            return LoopAction::CallLLM {
-                context,
-                tools: Vec::new(),
-            };
+            return self.call_llm_action(context, Vec::new());
         }
         let mut tools = self.tools.clone();
         tools.extend(self.ctx.meta_tool_schemas());
@@ -1654,20 +1689,65 @@ impl LoopStateMachine {
             });
         }
 
-        // P1-B epoch skill gating (applied *after* the run-level filter ③, so A is the outer bound
-        // and B narrows within it — D6). When skills are active and declare tools, expose only
-        // `meta-tools ∪ stable-core ∪ ⋃(active skills' allowed_tools)`. `None` ⇒ no active/declared
-        // skill ⇒ no narrowing (D3, errs-open). Kernel-owned meta surfaces are always exempt (D5)
-        // so the model can still load more skills — and still re-read an evicted result, which the
-        // truncation marker explicitly instructs it to do. Byte-stable within an epoch: the set
-        // only changes on activation.
-        if let Some(allowed) = self.ctx.active_skill_tool_filter() {
-            let stable = &self.ctx.stable_core_tools;
-            tools.retain(|tool| {
-                crate::context::manager::is_exposure_exempt_meta_tool(&tool.name)
-                    || stable.contains(&tool.name)
-                    || allowed.contains(&tool.name)
-            });
+        // ─── Filter B: which of the ceiling-admitted tools are exposed *this* epoch ───
+        //
+        // Two modes, selected by `run_spec.exposure_baseline`:
+        //
+        // **No baseline (`None`, the default)** — the legacy P1-B epoch skill gating, unchanged
+        // (铁律: no config ⇒ old behavior). Applied *after* the run-level filter ③, so A is the
+        // outer bound and B narrows within it (D6). When skills are active and declare tools,
+        // expose only `meta-tools ∪ stable-core ∪ ⋃(active skills' allowed_tools)`. `None` from
+        // `active_skill_tool_filter` ⇒ no active/declared skill ⇒ no narrowing (errs-open).
+        //
+        // **Baseline set (`Some(baseline)`)** — one unified strict retain replaces the legacy
+        // narrowing. The baseline is the *pre-activation exposure policy under the ceiling*:
+        //
+        // ```text
+        // exposed = META ∪ ((baseline ∪ stableCore ∪ ⋃ activeSkills.allowed_tools) ∩ ceiling)
+        // ```
+        //
+        // - `ceiling` = the run-level capability filter, already applied above as filter A, so the
+        //   `∩ ceiling` term needs no code here: a baseline entry outside the ceiling was simply
+        //   never in `tools` to begin with (D3 — silent intersection, no start_run error, the same
+        //   fold every id-list surface uses).
+        // - `activeSkills.allowed_tools` covers only *declared* lists. An active skill that
+        //   declares nothing contributes ∅ and the surface stays at the baseline — D2: strict, the
+        //   legacy errs-open widening is deliberately NOT inherited, because a baseline is an
+        //   opt-in statement that the pre-activation surface is narrow on purpose.
+        // - `None` vs `Some([])` carries "unset vs minimal": an empty baseline is legitimate and
+        //   means meta-tools (+stable-core) only, so the `allowedToolIds` empty-array trap
+        //   ("[] = no gating") does not recur here.
+        //
+        // Both modes exempt kernel-owned meta surfaces (D5) so the model can still load a skill —
+        // and still re-read an evicted result, which the truncation marker explicitly instructs it
+        // to do. Byte-stable within an epoch either way: the set changes only at an
+        // activation/deactivation boundary.
+        match self
+            .run_spec
+            .as_ref()
+            .and_then(|s| s.exposure_baseline.as_ref())
+        {
+            Some(baseline) => {
+                let baseline: std::collections::HashSet<&CompactString> = baseline.iter().collect();
+                let declared = self.ctx.active_skill_tool_filter().unwrap_or_default();
+                let stable = &self.ctx.stable_core_tools;
+                tools.retain(|tool| {
+                    crate::context::manager::is_exposure_exempt_meta_tool(&tool.name)
+                        || baseline.contains(&tool.name)
+                        || stable.contains(&tool.name)
+                        || declared.contains(&tool.name)
+                });
+            }
+            None => {
+                if let Some(allowed) = self.ctx.active_skill_tool_filter() {
+                    let stable = &self.ctx.stable_core_tools;
+                    tools.retain(|tool| {
+                        crate::context::manager::is_exposure_exempt_meta_tool(&tool.name)
+                            || stable.contains(&tool.name)
+                            || allowed.contains(&tool.name)
+                    });
+                }
+            }
         }
 
         // ③ pace meta-tool: exposed ONLY when this run is a round of a paced loop
@@ -1683,6 +1763,17 @@ impl LoopStateMachine {
             tools.push(pace_tool_schema());
         }
 
+        self.call_llm_action(context, tools)
+    }
+
+    /// The single exit for every provider call. Records the advertised toolset (P1 fail-closed
+    /// dispatch arms against exactly what the model was shown this turn) and returns the action.
+    fn call_llm_action(
+        &mut self,
+        context: crate::context::renderer::RenderedContext,
+        tools: Vec<ToolSchema>,
+    ) -> LoopAction {
+        self.exposed_tool_names = Some(tools.iter().map(|tool| tool.name.clone()).collect());
         LoopAction::CallLLM { context, tools }
     }
 

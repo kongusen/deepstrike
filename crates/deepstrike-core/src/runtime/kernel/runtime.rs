@@ -1457,6 +1457,7 @@ impl KernelRuntime {
                     budget_grant,
                     repeat_fuse,
                     criteria_gate,
+                    tool_dispatch_gate,
                     knowledge_budget_ratio,
                     entropy_watch,
                     reliability,
@@ -1520,6 +1521,11 @@ impl KernelRuntime {
                 }
                 if let Some(enabled) = criteria_gate {
                     self.sm.set_criteria_gate(enabled);
+                }
+                if let Some(gate) = tool_dispatch_gate {
+                    // Validated in `validate_run_config`; anything but the escape hatch keeps the
+                    // fail-closed default.
+                    self.sm.set_dispatch_gate_exposed(gate != "registered");
                 }
                 if let Some(ratio) = knowledge_budget_ratio {
                     self.sm.ctx.config.knowledge_budget_ratio = ratio;
@@ -2458,6 +2464,11 @@ fn validate_run_config(config: &RunConfig, max_tokens: u32) -> Result<(), String
             && fuse.deny_after >= fuse.terminate_after
         {
             return Err("repeat_fuse terminate_after must be greater than deny_after".to_string());
+        }
+    }
+    if let Some(gate) = &config.tool_dispatch_gate {
+        if !matches!(gate.as_str(), "exposed" | "registered") {
+            return Err("tool_dispatch_gate must be \"exposed\" or \"registered\"".to_string());
         }
     }
     if let Some(watch) = config.entropy_watch {

@@ -343,6 +343,12 @@ pub struct RunConfig {
     /// O4: enable/disable the turn-end criteria gate. Absent ⇒ enabled (kernel default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub criteria_gate: Option<bool>,
+    /// P1 fail-closed dispatch: `"exposed"` (kernel default) executes only tools this run actually
+    /// advertised to the model — anything else commits a visible denied result instead of running.
+    /// `"registered"` is the escape hatch that restores the permissive pre-gate behavior (any
+    /// registered tool the model names executes). Absent ⇒ `"exposed"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_dispatch_gate: Option<String>,
     /// K2: max share of `max_tokens` the knowledge partition may occupy (see
     /// `ContextConfig::knowledge_budget_ratio`). Absent ⇒ kernel default (0.25); `0.0` disables.
     #[serde(default, skip_serializing_if = "Option::is_none")]

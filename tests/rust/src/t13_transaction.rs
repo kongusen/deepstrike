@@ -13,10 +13,20 @@ use deepstrike_core::types::message::*;
 use deepstrike_core::types::task::RuntimeTask;
 
 fn default_sm() -> LoopStateMachine {
-    LoopStateMachine::new(SchedulerBudget {
+    let mut sm = LoopStateMachine::new(SchedulerBudget {
         max_tokens: 128_000,
         ..SchedulerBudget::default()
-    })
+    });
+    // Fail-closed dispatch: the run must advertise the tools these fixtures call.
+    sm.tools = ["write_file", "read_file", "deploy"]
+        .into_iter()
+        .map(|name| ToolSchema {
+            name: CompactString::new(name),
+            description: format!("{name} tool"),
+            parameters: serde_json::json!({"type": "object"}),
+        })
+        .collect();
+    sm
 }
 
 fn make_llm_response_with_tool_call(call_id: &str, tool_name: &str) -> LoopEvent {
