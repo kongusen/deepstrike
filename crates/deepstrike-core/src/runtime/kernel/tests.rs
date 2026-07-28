@@ -248,6 +248,88 @@ fn tool_dispatch_gate_config_validates_and_lowers() {
     );
 }
 
+/// End-to-end over the real ABI: the mid-turn memory continuation
+/// (`query_memory` → `memory_query_result` → `resume_after_preload`) must not hand a denied call
+/// back to the host. The denial's result is still in flight at that point, so a history-only scan
+/// for "unanswered" calls would resurrect a tool the kernel just refused to dispatch.
+#[test]
+fn memory_continuation_does_not_resurrect_a_denied_call() {
+    use crate::mm::memory::{MemoryQuery, MemoryScope};
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    register_tools(&mut runtime, &["read"]);
+    runtime.step(KernelInput::new(KernelInputEvent::SetMemoryEnabled {
+        enabled: true,
+    }));
+    runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+        task: RuntimeTask::new("recall and act"),
+        run_spec: None,
+    }));
+
+    let mut msg = Message::assistant("");
+    msg.tool_calls.push(ToolCall {
+        id: "c1".into(),
+        name: "phantom".into(),
+        arguments: serde_json::json!({}),
+    });
+    msg.tool_calls.push(ToolCall {
+        id: "c2".into(),
+        name: "memory".into(),
+        arguments: serde_json::json!({"query": "codename"}),
+    });
+    let dispatched = runtime.step(KernelInput::new(KernelInputEvent::ProviderResult {
+        effect_id: runtime.pending_provider_effect_id(),
+        message: msg,
+        observed_input_tokens: None,
+        observed_output_tokens: None,
+        stop_reason: None,
+        now_ms: None,
+    }));
+    match dispatched.actions.as_slice() {
+        [
+            KernelAction {
+                effect: KernelEffect::ExecuteTool { calls },
+                ..
+            },
+        ] => {
+            let names: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
+            assert_eq!(names, vec!["memory"], "the unexposed call is denied");
+        }
+        other => panic!("expected execute_tool, got {other:?}"),
+    }
+
+    // The host routes the memory call through the kernel's own query lifecycle.
+    let requested = runtime.step(KernelInput::new(KernelInputEvent::QueryMemory {
+        query: MemoryQuery {
+            scope: MemoryScope::new("tenant-test", "kernel-tests"),
+            query: "codename".into(),
+            top_k: 2,
+            ..Default::default()
+        },
+    }));
+    let query_effect = requested.actions[0].effect_id.clone();
+    let continuation = runtime.step(KernelInput::new(KernelInputEvent::MemoryQueryResult {
+        effect_id: query_effect,
+        hits: Vec::new(),
+        error: None,
+    }));
+
+    match continuation.actions.as_slice() {
+        [
+            KernelAction {
+                effect: KernelEffect::ExecuteTool { calls },
+                ..
+            },
+        ] => {
+            let names: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
+            assert!(
+                !names.contains(&"phantom"),
+                "the denied call must not come back from the continuation: {names:?}"
+            );
+        }
+        other => panic!("expected execute_tool continuation, got {other:?}"),
+    }
+}
+
 #[test]
 fn zero_token_budget_grant_is_rejected_at_configure() {
     let mut runtime = KernelRuntime::new(SchedulerBudget::default());

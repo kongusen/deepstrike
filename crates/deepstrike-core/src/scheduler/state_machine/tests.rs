@@ -1318,6 +1318,152 @@ fn dispatch_denial_survives_a_sibling_approval_suspend() {
     );
 }
 
+fn history_tool_result_count(sm: &LoopStateMachine, needle: &str) -> usize {
+    sm.ctx
+        .partitions
+        .history
+        .messages
+        .iter()
+        .filter_map(|m| match &m.content {
+            Content::Parts(parts) => Some(parts),
+            _ => None,
+        })
+        .flatten()
+        .filter(|p| matches!(p, ContentPart::ToolResult { output, .. } if output.contains(needle)))
+        .count()
+}
+
+fn execute_tool_names(action: LoopAction) -> Vec<String> {
+    match action {
+        LoopAction::ExecuteTools { calls } => calls.iter().map(|c| c.name.to_string()).collect(),
+        other => panic!("expected ExecuteTools, got {other:?}"),
+    }
+}
+
+/// A denied call must not be resurrected by the mid-turn memory continuation. The kernel answers a
+/// `memory` call by pushing hits into history and continuing through `resume_after_preload`, which
+/// rebuilds the batch's still-unanswered calls FROM HISTORY — where a denial that is in flight on
+/// `pending_denied_results` is not yet visible. Without the filter the denied call is handed to the
+/// host (a gated-out tool executes after all) and the model then receives two results for one
+/// call_id.
+#[test]
+fn dispatch_denial_is_not_resurrected_by_the_memory_continuation() {
+    let mut sm = sm();
+    sm.tools = vec![make_tool_schema("read")];
+    sm.ctx.set_memory_enabled(true);
+    sm.start(RuntimeTask::new("do the task"));
+
+    // `phantom` was never exposed ⇒ denied; `memory` is a kernel surface ⇒ dispatched.
+    let dispatched = execute_tool_names(sm.feed(LoopEvent::LLMResponse {
+        message: assistant_calling(vec![call("c1", "phantom"), call("c2", "memory")]),
+    }));
+    assert_eq!(dispatched, vec!["memory".to_string()]);
+
+    // The host routes that call through the kernel's query lifecycle; the result continuation is
+    // exactly this call (runtime.rs `MemoryQueryResult` → `resume_after_preload`).
+    let resumed = execute_tool_names(sm.resume_after_preload());
+    assert!(
+        !resumed.contains(&"phantom".to_string()),
+        "a denied call must never be re-dispatched: {resumed:?}"
+    );
+    assert_eq!(
+        resumed,
+        vec!["memory".to_string()],
+        "the genuinely pending call still resumes: {resumed:?}"
+    );
+
+    // …and the denial reaches the model exactly once, with no orphaned tool_use left behind.
+    sm.feed(LoopEvent::ToolResults {
+        results: vec![ToolResult {
+            call_id: compact_str::CompactString::new("c2"),
+            output: Content::Text("recalled".into()),
+            is_error: false,
+            is_fatal: false,
+            error_kind: None,
+            token_count: None,
+        }],
+    });
+    assert_eq!(
+        history_tool_result_count(&sm, "Tool 'phantom' is not part of this run's toolset"),
+        1,
+        "exactly one denial result — no orphan, no duplicate"
+    );
+}
+
+/// The same protection for the pre-existing half of the bug: a GOVERNANCE denial rides the same
+/// `pending_denied_results` channel, so it was resurrectable by the memory continuation long
+/// before the dispatch gate existed.
+#[test]
+fn governance_denial_is_not_resurrected_by_the_memory_continuation() {
+    use crate::governance::permission::{PermissionAction, PermissionRule};
+    use crate::governance::pipeline::GovernancePipeline;
+    let mut sm = sm();
+    sm.tools = vec![make_tool_schema("write_file")];
+    sm.ctx.set_memory_enabled(true);
+    let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
+    pipeline.permission.add_rule(PermissionRule {
+        tool_pattern: "write_file".into(),
+        action: PermissionAction::Deny,
+    });
+    sm.set_governance(pipeline);
+    sm.start(RuntimeTask::new("do the task"));
+
+    let dispatched = execute_tool_names(sm.feed(LoopEvent::LLMResponse {
+        message: assistant_calling(vec![call("c1", "write_file"), call("c2", "memory")]),
+    }));
+    assert_eq!(dispatched, vec!["memory".to_string()]);
+
+    let resumed = execute_tool_names(sm.resume_after_preload());
+    assert_eq!(
+        resumed,
+        vec!["memory".to_string()],
+        "a governance-denied call must never be re-dispatched: {resumed:?}"
+    );
+
+    sm.feed(LoopEvent::ToolResults {
+        results: vec![ToolResult {
+            call_id: compact_str::CompactString::new("c2"),
+            output: Content::Text("recalled".into()),
+            is_error: false,
+            is_fatal: false,
+            error_kind: None,
+            token_count: None,
+        }],
+    });
+    assert_eq!(
+        history_tool_result_count(&sm, "permission denied"),
+        1,
+        "exactly one denial result — no orphan, no duplicate"
+    );
+}
+
+/// Control: the filter keys on *answered* call_ids only. A call that was never denied and never
+/// executed is still genuinely pending, and the continuation must re-dispatch it — the faithful
+/// wake-path behavior the resume tests pin.
+#[test]
+fn memory_continuation_still_resumes_genuinely_pending_calls() {
+    let mut sm = sm();
+    sm.tools = vec![make_tool_schema("read")];
+    sm.ctx.set_memory_enabled(true);
+    sm.start(RuntimeTask::new("do the task"));
+
+    let dispatched = execute_tool_names(sm.feed(LoopEvent::LLMResponse {
+        message: assistant_calling(vec![call("c1", "read"), call("c2", "memory")]),
+    }));
+    assert_eq!(dispatched, vec!["read".to_string(), "memory".to_string()]);
+    assert!(
+        sm.pending_denied_results.is_empty(),
+        "no denial in this batch"
+    );
+
+    let resumed = execute_tool_names(sm.resume_after_preload());
+    assert_eq!(
+        resumed,
+        vec!["read".to_string(), "memory".to_string()],
+        "both calls are unanswered ⇒ both resume: {resumed:?}"
+    );
+}
+
 /// Kernel-owned surfaces bypass the gate: `pace` and the exposure-exempt meta family have their own
 /// graceful handling when genuinely unavailable, so the gate must never intercept them.
 #[test]

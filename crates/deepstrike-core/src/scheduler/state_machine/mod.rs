@@ -823,11 +823,28 @@ impl LoopStateMachine {
     ///
     /// If the last assistant turn has tool calls without matching tool results,
     /// resumes with `ExecuteTools` instead of calling the LLM again.
+    ///
+    /// "Unanswered" is read from history PLUS the results already synthesized this turn but not yet
+    /// committed (`pending_denied_results`). Both matter because this is also the mid-turn
+    /// continuation point: the kernel answers a `memory`/`knowledge` call by pushing hits into
+    /// history and resuming here, while a denial from the same batch (fail-closed dispatch or a
+    /// governance verdict) is still in flight and therefore invisible to a history-only scan.
+    /// Re-dispatching such a call would execute a tool the kernel just refused AND give the model
+    /// two results for one call_id. The filter keys on answered call_ids only, so a call that was
+    /// never denied is still resumed — the wake-path behavior is untouched.
     pub fn resume_after_preload(&mut self) -> LoopAction {
         self.observations.clear();
-        let calls = crate::runtime::repair::pending_tool_calls_from_messages(
+        let mut calls = crate::runtime::repair::pending_tool_calls_from_messages(
             &self.ctx.partitions.history.messages,
         );
+        if !self.pending_denied_results.is_empty() {
+            let answered: HashSet<CompactString> = self
+                .pending_denied_results
+                .iter()
+                .map(|result| result.call_id.clone())
+                .collect();
+            calls.retain(|call| !answered.contains(&call.id));
+        }
         if !calls.is_empty() {
             self.phase = LoopPhase::Act {
                 tool_calls: calls.clone(),
