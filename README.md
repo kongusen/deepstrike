@@ -256,7 +256,7 @@ synthesis = out["synthesis"]
 
 ```toml
 [dependencies]
-deepstrike-sdk = "0.2.48"
+deepstrike-sdk = "0.2.49"
 ```
 
 ### WASM
