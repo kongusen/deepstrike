@@ -72,7 +72,8 @@ describe("Golden ABI Fixtures", () => {
     const process = requested.observations.find((o: { kind: string }) => o.kind === "agent_process_changed")
     expect(process).toBeDefined()
     expect(process.agent_id).toBe("worker")
-    expect(process.parent_session_id).toBe("parent-session-001")
+    expect(process.parent_task_id).toBe("root")
+    expect(process.parent_session_id).toBeUndefined()
     expect(process.state).toBe("running")
   })
 

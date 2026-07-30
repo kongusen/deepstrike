@@ -23,6 +23,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod binding;
 pub mod checkpoint;
 pub mod command;
 pub mod config;
@@ -42,6 +43,7 @@ pub mod transaction;
 #[cfg(test)]
 mod tests;
 
+pub use binding::CanonicalKernel;
 pub use checkpoint::*;
 pub use command::*;
 pub use config::*;

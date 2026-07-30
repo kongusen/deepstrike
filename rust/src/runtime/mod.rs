@@ -1,6 +1,7 @@
 //! Runtime v1 — session event log, execution planes, credential vault, and runner.
 
 pub mod archive;
+pub mod canonical_kernel;
 pub mod credential_vault;
 pub mod eval;
 pub mod execution_plane;
@@ -20,6 +21,10 @@ pub mod session_log;
 pub mod skill_watcher;
 
 pub use archive::{ArchiveStore, FileArchiveStore, NullArchiveStore};
+pub use canonical_kernel::{
+    CanonicalCheckpoint, CanonicalCheckpointCandidate, CanonicalCommit, CanonicalKernel,
+    CanonicalPreparation,
+};
 pub use credential_vault::{
     ChainedCredentialVault, CredentialVault, EnvCredentialVault, InMemoryCredentialVault,
 };

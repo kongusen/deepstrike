@@ -16,6 +16,19 @@ from deepstrike._kernel import (
     Verdict,
     SkillCandidate,
 )
+from deepstrike.kernel.canonical import (
+    KERNEL_ABI_VERSION,
+    CanonicalCheckpoint,
+    CanonicalCommit,
+    CanonicalKernel,
+    CanonicalKernelError,
+    CanonicalLifecycle,
+    CanonicalPreparation,
+    CanonicalPrepared,
+    CanonicalRejected,
+    CanonicalReplayed,
+    CanonicalRestoreCost,
+)
 
 try:
     from deepstrike._kernel import KernelRuntime
@@ -27,6 +40,17 @@ __all__ = [
     "LoopPolicy",
     "LoopResult",
     "KernelRuntime",
+    "KERNEL_ABI_VERSION",
+    "CanonicalKernel",
+    "CanonicalKernelError",
+    "CanonicalLifecycle",
+    "CanonicalPreparation",
+    "CanonicalPrepared",
+    "CanonicalReplayed",
+    "CanonicalRejected",
+    "CanonicalCommit",
+    "CanonicalCheckpoint",
+    "CanonicalRestoreCost",
     "SignalRouter",
     "build_eval_messages",
     "parse_verdict",

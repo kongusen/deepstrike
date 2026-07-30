@@ -62,6 +62,12 @@ use deepstrike_core::mm::memory::{
     MemoryScope as RustMemoryScope, MemoryTrustLevel as RustMemoryTrustLevel,
 };
 use deepstrike_core::runtime::KernelRuntime as RustKernelRuntime;
+use deepstrike_core::runtime::kernel::wire::{
+    CanonicalKernel as RustCanonicalKernel, CheckpointBoundary as RustCheckpointBoundary,
+    Digest as RustDigest, KernelCheckpoint as RustKernelCheckpoint,
+    KernelPreparation as RustKernelPreparation, OperationLifecycle as RustOperationLifecycle,
+    PrepareToken as RustPrepareToken, WireU64 as RustWireU64,
+};
 use deepstrike_core::scheduler::policy::SchedulerBudget as RustLoopPolicy;
 use deepstrike_core::scheduler::tcb::TaskLifecycle;
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
@@ -612,6 +618,294 @@ fn context_budget_overflow_from_rust(value: &RustContextBudgetOverflow) -> Conte
 #[napi]
 pub fn format_contract_for_system_prompt(contract: VerificationContract) -> String {
     verification_contract_to_rust(contract).format_for_system_prompt()
+}
+
+// ─────────────────────────────── Canonical Kernel ABI ───────────────────────────────
+
+/// The single ABI revision accepted by core. Hosts must read this export instead of copying it.
+#[napi]
+pub fn kernel_abi_version() -> u32 {
+    deepstrike_core::runtime::kernel::wire::KERNEL_ABI_VERSION
+}
+
+#[napi(object)]
+pub struct CanonicalPreparation {
+    /// `prepared` | `replayed` | `rejected`.
+    pub status: String,
+    pub prepare_token: Option<String>,
+    /// Decimal `WireU64`; never a JavaScript number.
+    pub step_seq: Option<String>,
+    pub expected_head: Option<String>,
+    pub record_digest: Option<String>,
+    /// Exact `KernelRecord::record_bytes()` from core.
+    pub record_bytes: Option<Buffer>,
+    pub planned_step_json: Option<String>,
+    pub fault_json: Option<String>,
+}
+
+#[napi(object)]
+pub struct CanonicalCommit {
+    /// Decimal `WireU64`; never a JavaScript number.
+    pub step_seq: String,
+    pub record_digest: String,
+    pub planned_step_json: String,
+    pub checkpoint_advice_json: Option<String>,
+}
+
+#[napi(object)]
+pub struct CanonicalCheckpoint {
+    pub checkpoint_bytes: Buffer,
+    /// Decimal `WireU64`; never a JavaScript number.
+    pub through_step_seq: String,
+    pub covered_head: String,
+    pub state_digest: String,
+    pub ack_token: String,
+}
+
+#[napi(object)]
+pub struct CanonicalRestoreCost {
+    pub records_before_checkpoint: String,
+    pub tail_inputs_replayed: String,
+    pub records_after_checkpoint: String,
+    pub bytes_read: String,
+}
+
+/// Durable canonical operation handle. It exposes no direct `step` method.
+#[napi]
+pub struct CanonicalKernel {
+    inner: RustCanonicalKernel,
+}
+
+#[napi]
+impl CanonicalKernel {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self {
+            inner: RustCanonicalKernel::default(),
+        }
+    }
+
+    /// Strictly decode and prepare one canonical envelope.
+    #[napi]
+    pub fn prepare(&mut self, input_json: String) -> Result<CanonicalPreparation> {
+        ffi_guard("CanonicalKernel.prepare", || {
+            canonical_preparation_from_rust(self.inner.prepare_json(&input_json))
+        })
+    }
+
+    /// Commit only after the journal appended the prepared record.
+    #[napi]
+    pub fn commit(
+        &mut self,
+        prepare_token: String,
+        appended_head: String,
+    ) -> Result<CanonicalCommit> {
+        ffi_guard("CanonicalKernel.commit", || {
+            let token = RustPrepareToken::new(prepare_token)
+                .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?;
+            let head = RustDigest::new(appended_head)
+                .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?;
+            let committed = self
+                .inner
+                .commit(&token, &head)
+                .map_err(canonical_kernel_error)?;
+            Ok(CanonicalCommit {
+                step_seq: committed.step_seq.to_string(),
+                record_digest: committed.record.record_digest().to_string(),
+                planned_step_json: serde_json::to_string(&committed.step).map_err(json_error)?,
+                checkpoint_advice_json: committed
+                    .checkpoint_advice
+                    .map(|advice| {
+                        serde_json::to_string(&serde_json::json!({
+                            "through_step_seq": advice.through_step_seq,
+                            "usage": {
+                                "records": advice.usage.records.to_string(),
+                                "bytes": advice.usage.bytes.to_string(),
+                            },
+                            "bounds": {
+                                "soft_records": advice.bounds.soft_records,
+                                "hard_records": advice.bounds.hard_records,
+                                "soft_bytes": advice.bounds.soft_bytes,
+                                "hard_bytes": advice.bounds.hard_bytes,
+                            },
+                        }))
+                    })
+                    .transpose()
+                    .map_err(json_error)?,
+            })
+        })
+    }
+
+    /// Abort a candidate that did not reach the journal.
+    #[napi]
+    pub fn abort(&mut self, prepare_token: String) -> Result<()> {
+        ffi_guard("CanonicalKernel.abort", || {
+            let token = RustPrepareToken::new(prepare_token)
+                .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?;
+            self.inner.abort(&token).map_err(canonical_kernel_error)?;
+            Ok(())
+        })
+    }
+
+    #[napi(js_name = "checkpointCandidate")]
+    pub fn checkpoint_candidate(&self) -> Result<CanonicalCheckpoint> {
+        self.inner
+            .checkpoint_candidate()
+            .map(canonical_checkpoint_from_rust)
+            .map_err(canonical_kernel_error)
+    }
+
+    #[napi(js_name = "checkpointRebase")]
+    pub fn checkpoint_rebase(&self, checkpoint_bytes: Buffer) -> Result<CanonicalCheckpoint> {
+        let checkpoint = RustKernelCheckpoint::from_checkpoint_bytes(checkpoint_bytes.as_ref())
+            .map_err(|error| canonical_kernel_error(error.fault()))?;
+        self.inner
+            .checkpoint_rebase(&checkpoint)
+            .map(canonical_checkpoint_from_rust)
+            .map_err(canonical_kernel_error)
+    }
+
+    #[napi(js_name = "ackCheckpoint")]
+    pub fn ack_checkpoint(&mut self, through_step_seq: String, covered_head: String) -> Result<()> {
+        let boundary = RustCheckpointBoundary {
+            through_step_seq: RustWireU64::parse(&through_step_seq)
+                .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?,
+            covered_head: RustDigest::new(covered_head)
+                .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?,
+        };
+        self.inner
+            .note_checkpoint_acked(&boundary)
+            .map(|_| ())
+            .map_err(canonical_kernel_error)
+    }
+
+    /// Replace this handle in place from checkpoint bytes plus post-checkpoint record bytes.
+    #[napi]
+    pub fn restore(
+        &mut self,
+        checkpoint_bytes: Option<Buffer>,
+        record_bytes: Vec<Buffer>,
+    ) -> Result<CanonicalRestoreCost> {
+        let records = record_bytes
+            .into_iter()
+            .map(|bytes| bytes.to_vec())
+            .collect::<Vec<_>>();
+        let cost = self
+            .inner
+            .restore_bytes(checkpoint_bytes.as_deref(), &records)
+            .map_err(canonical_kernel_error)?;
+        Ok(CanonicalRestoreCost {
+            records_before_checkpoint: cost.records_before_checkpoint.to_string(),
+            tail_inputs_replayed: cost.tail_inputs_replayed.to_string(),
+            records_after_checkpoint: cost.records_after_checkpoint.to_string(),
+            bytes_read: cost.bytes_read.to_string(),
+        })
+    }
+
+    #[napi]
+    pub fn lifecycle(&self) -> String {
+        match self.inner.lifecycle() {
+            RustOperationLifecycle::Created => "created",
+            RustOperationLifecycle::Configured => "configured",
+            RustOperationLifecycle::Running => "running",
+            RustOperationLifecycle::Suspended => "suspended",
+            RustOperationLifecycle::Completed => "completed",
+            RustOperationLifecycle::Cancelled => "cancelled",
+            RustOperationLifecycle::Failed => "failed",
+        }
+        .into()
+    }
+
+    #[napi(js_name = "pendingEffectsJson")]
+    pub fn pending_effects_json(&self) -> Result<String> {
+        serde_json::to_string(&self.inner.pending_effects().collect::<Vec<_>>()).map_err(json_error)
+    }
+
+    #[napi(js_name = "terminalJson")]
+    pub fn terminal_json(&self) -> Result<Option<String>> {
+        self.inner
+            .terminal()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(json_error)
+    }
+}
+
+fn canonical_preparation_from_rust(
+    preparation: RustKernelPreparation<
+        deepstrike_core::runtime::kernel::wire::KernelRecord,
+        deepstrike_core::runtime::kernel::wire::PlannedStep,
+    >,
+) -> Result<CanonicalPreparation> {
+    match preparation {
+        RustKernelPreparation::Prepared(prepared) => Ok(CanonicalPreparation {
+            status: "prepared".into(),
+            prepare_token: Some(prepared.token.to_string()),
+            step_seq: Some(prepared.record.step_seq().to_string()),
+            expected_head: prepared.record.expected_head().map(ToString::to_string),
+            record_digest: Some(prepared.record.record_digest().to_string()),
+            record_bytes: Some(Buffer::from(
+                prepared.record.record_bytes().as_slice().to_vec(),
+            )),
+            planned_step_json: Some(
+                serde_json::to_string(&prepared.planned_step).map_err(json_error)?,
+            ),
+            fault_json: None,
+        }),
+        RustKernelPreparation::Replayed(replayed) => Ok(CanonicalPreparation {
+            status: "replayed".into(),
+            prepare_token: None,
+            step_seq: Some(replayed.step_seq.to_string()),
+            expected_head: replayed
+                .record
+                .as_ref()
+                .and_then(|record| record.expected_head())
+                .map(ToString::to_string),
+            record_digest: Some(replayed.record_digest.to_string()),
+            record_bytes: replayed
+                .record
+                .map(|record| Buffer::from(record.record_bytes().as_slice().to_vec())),
+            planned_step_json: replayed
+                .committed_step
+                .map(|step| serde_json::to_string(&step))
+                .transpose()
+                .map_err(json_error)?,
+            fault_json: None,
+        }),
+        RustKernelPreparation::Rejected(rejected) => Ok(CanonicalPreparation {
+            status: "rejected".into(),
+            prepare_token: None,
+            step_seq: None,
+            expected_head: None,
+            record_digest: None,
+            record_bytes: None,
+            planned_step_json: None,
+            fault_json: Some(serde_json::to_string(&rejected.fault).map_err(json_error)?),
+        }),
+    }
+}
+
+fn canonical_checkpoint_from_rust(
+    checkpoint: deepstrike_core::runtime::kernel::wire::CheckpointCandidate,
+) -> CanonicalCheckpoint {
+    CanonicalCheckpoint {
+        checkpoint_bytes: Buffer::from(checkpoint.checkpoint_bytes.as_slice().to_vec()),
+        through_step_seq: checkpoint.through_step_seq.to_string(),
+        covered_head: checkpoint.covered_head.to_string(),
+        state_digest: checkpoint.state_digest.to_string(),
+        ack_token: checkpoint.ack_token.to_string(),
+    }
+}
+
+fn canonical_kernel_error(fault: deepstrike_core::runtime::kernel::wire::KernelFault) -> Error {
+    Error::new(
+        Status::InvalidArg,
+        serde_json::to_string(&fault).unwrap_or_else(|_| fault.to_string()),
+    )
+}
+
+fn json_error(error: serde_json::Error) -> Error {
+    Error::new(Status::GenericFailure, error.to_string())
 }
 
 // ─────────────────────────────────────────── KernelRuntime ───────────────────────────────────────────

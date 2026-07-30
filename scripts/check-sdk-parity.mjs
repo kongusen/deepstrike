@@ -10,6 +10,37 @@ const root = new URL("..", import.meta.url).pathname
 const marker = (...parts) => parts.join("")
 
 const CHECKS = [
+  // ── Canonical Kernel ABI Task 18: one core-owned record/digest contract in every binding. ──
+  {
+    id: "core-canonical-binding",
+    lang: "core",
+    path: "crates/deepstrike-core/src/runtime/kernel/wire/binding.rs",
+    patterns: ["pub struct CanonicalKernel", "pub fn prepare", "pub fn restore_bytes", "There is intentionally no `step` method"],
+  },
+  {
+    id: "rust-canonical-binding",
+    lang: "rust",
+    path: "rust/src/runtime/canonical_kernel.rs",
+    patterns: ["CanonicalPreparation", "KernelRecord::record_bytes", "CheckpointBoundary", "RestoreCost"],
+  },
+  {
+    id: "node-canonical-binding",
+    lang: "node",
+    path: "node/src/kernel.ts",
+    patterns: ["CanonicalPreparation", 'status: "prepared"', "recordBytes: Buffer", "CanonicalKernelInstance"],
+  },
+  {
+    id: "python-canonical-binding",
+    lang: "python",
+    path: "python/deepstrike/kernel/canonical.py",
+    patterns: ['Literal["prepared"]', "CanonicalPreparation", "record_bytes: bytes", "class CanonicalKernel"],
+  },
+  {
+    id: "wasm-canonical-binding",
+    lang: "wasm",
+    path: "crates/deepstrike-wasm/src/lib.rs",
+    patterns: ['tag = "status"', 'type = "Uint8Array"', "CanonicalRecordBytes", "pub struct CanonicalKernel"],
+  },
   {
     id: "node-memory-syscall",
     lang: "node",

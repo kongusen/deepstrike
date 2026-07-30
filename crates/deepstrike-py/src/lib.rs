@@ -34,6 +34,7 @@
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 
 use compact_str::CompactString;
 
@@ -54,6 +55,12 @@ use deepstrike_core::mm::memory::{
     MemoryScope as RustMemoryScope, MemoryTrustLevel as RustMemoryTrustLevel,
 };
 use deepstrike_core::runtime::KernelRuntime as RustKernelRuntime;
+use deepstrike_core::runtime::kernel::wire::{
+    CanonicalKernel as RustCanonicalKernel, CheckpointBoundary as RustCheckpointBoundary,
+    Digest as RustDigest, KernelCheckpoint as RustKernelCheckpoint,
+    KernelPreparation as RustKernelPreparation, OperationLifecycle as RustOperationLifecycle,
+    PrepareToken as RustPrepareToken, WireU64 as RustWireU64,
+};
 use deepstrike_core::scheduler::policy::SchedulerBudget as RustLoopPolicy;
 use deepstrike_core::scheduler::tcb::TaskLifecycle;
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
@@ -856,6 +863,297 @@ impl RenderedContext {
     }
 }
 
+// ─────────────────────────────── Canonical Kernel ABI ───────────────────────────────
+
+#[pyclass(name = "_CanonicalPreparation")]
+struct CanonicalPreparation {
+    #[pyo3(get)]
+    status: String,
+    #[pyo3(get)]
+    prepare_token: Option<String>,
+    /// Python's arbitrary-precision `int` projection of `WireU64`.
+    #[pyo3(get)]
+    step_seq: Option<u64>,
+    #[pyo3(get)]
+    expected_head: Option<String>,
+    #[pyo3(get)]
+    record_digest: Option<String>,
+    /// Exact `KernelRecord::record_bytes()` from core.
+    #[pyo3(get)]
+    record_bytes: Option<Py<PyBytes>>,
+    #[pyo3(get)]
+    planned_step_json: Option<String>,
+    #[pyo3(get)]
+    fault_json: Option<String>,
+}
+
+#[pyclass(name = "_CanonicalCommit")]
+struct CanonicalCommit {
+    #[pyo3(get)]
+    step_seq: u64,
+    #[pyo3(get)]
+    record_digest: String,
+    #[pyo3(get)]
+    planned_step_json: String,
+    #[pyo3(get)]
+    checkpoint_advice_json: Option<String>,
+}
+
+#[pyclass(name = "_CanonicalCheckpoint")]
+struct CanonicalCheckpoint {
+    #[pyo3(get)]
+    checkpoint_bytes: Py<PyBytes>,
+    #[pyo3(get)]
+    through_step_seq: u64,
+    #[pyo3(get)]
+    covered_head: String,
+    #[pyo3(get)]
+    state_digest: String,
+    #[pyo3(get)]
+    ack_token: String,
+}
+
+#[pyclass(name = "_CanonicalRestoreCost")]
+struct CanonicalRestoreCost {
+    #[pyo3(get)]
+    records_before_checkpoint: u64,
+    #[pyo3(get)]
+    tail_inputs_replayed: u64,
+    #[pyo3(get)]
+    records_after_checkpoint: u64,
+    #[pyo3(get)]
+    bytes_read: u64,
+}
+
+/// Durable canonical operation handle. It exposes no direct `step` method.
+#[pyclass(name = "_CanonicalKernel")]
+struct CanonicalKernel {
+    inner: RustCanonicalKernel,
+}
+
+#[pymethods]
+impl CanonicalKernel {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: RustCanonicalKernel::default(),
+        }
+    }
+
+    fn prepare(&mut self, py: Python<'_>, input_json: String) -> PyResult<CanonicalPreparation> {
+        canonical_preparation_from_rust(py, self.inner.prepare_json(&input_json))
+    }
+
+    fn commit(
+        &mut self,
+        prepare_token: String,
+        appended_head: String,
+    ) -> PyResult<CanonicalCommit> {
+        let token = RustPrepareToken::new(prepare_token)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let head = RustDigest::new(appended_head)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let committed = self
+            .inner
+            .commit(&token, &head)
+            .map_err(canonical_kernel_error)?;
+        Ok(CanonicalCommit {
+            step_seq: committed.step_seq.get(),
+            record_digest: committed.record.record_digest().to_string(),
+            planned_step_json: serde_json::to_string(&committed.step)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?,
+            checkpoint_advice_json: committed
+                .checkpoint_advice
+                .map(canonical_checkpoint_advice_json)
+                .transpose()?,
+        })
+    }
+
+    fn abort(&mut self, prepare_token: String) -> PyResult<()> {
+        let token = RustPrepareToken::new(prepare_token)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        self.inner
+            .abort(&token)
+            .map(|_| ())
+            .map_err(canonical_kernel_error)
+    }
+
+    fn checkpoint_candidate(&self, py: Python<'_>) -> PyResult<CanonicalCheckpoint> {
+        self.inner
+            .checkpoint_candidate()
+            .map(|checkpoint| canonical_checkpoint_from_rust(py, checkpoint))
+            .map_err(canonical_kernel_error)
+    }
+
+    fn checkpoint_rebase(
+        &self,
+        py: Python<'_>,
+        checkpoint_bytes: &Bound<'_, PyBytes>,
+    ) -> PyResult<CanonicalCheckpoint> {
+        let checkpoint = RustKernelCheckpoint::from_checkpoint_bytes(checkpoint_bytes.as_bytes())
+            .map_err(|error| canonical_kernel_error(error.fault()))?;
+        self.inner
+            .checkpoint_rebase(&checkpoint)
+            .map(|candidate| canonical_checkpoint_from_rust(py, candidate))
+            .map_err(canonical_kernel_error)
+    }
+
+    fn ack_checkpoint(&mut self, through_step_seq: u64, covered_head: String) -> PyResult<()> {
+        let boundary = RustCheckpointBoundary {
+            through_step_seq: RustWireU64::new(through_step_seq),
+            covered_head: RustDigest::new(covered_head)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?,
+        };
+        self.inner
+            .note_checkpoint_acked(&boundary)
+            .map(|_| ())
+            .map_err(canonical_kernel_error)
+    }
+
+    /// Replace this native object in place from a checkpoint plus post-checkpoint records.
+    #[pyo3(signature = (checkpoint_bytes, record_bytes))]
+    fn restore(
+        &mut self,
+        checkpoint_bytes: Option<&Bound<'_, PyBytes>>,
+        record_bytes: Vec<Bound<'_, PyBytes>>,
+    ) -> PyResult<CanonicalRestoreCost> {
+        let records = record_bytes
+            .iter()
+            .map(|bytes| bytes.as_bytes().to_vec())
+            .collect::<Vec<_>>();
+        let cost = self
+            .inner
+            .restore_bytes(checkpoint_bytes.map(|bytes| bytes.as_bytes()), &records)
+            .map_err(canonical_kernel_error)?;
+        Ok(CanonicalRestoreCost {
+            records_before_checkpoint: cost.records_before_checkpoint,
+            tail_inputs_replayed: cost.tail_inputs_replayed,
+            records_after_checkpoint: cost.records_after_checkpoint,
+            bytes_read: cost.bytes_read,
+        })
+    }
+
+    fn lifecycle(&self) -> &'static str {
+        match self.inner.lifecycle() {
+            RustOperationLifecycle::Created => "created",
+            RustOperationLifecycle::Configured => "configured",
+            RustOperationLifecycle::Running => "running",
+            RustOperationLifecycle::Suspended => "suspended",
+            RustOperationLifecycle::Completed => "completed",
+            RustOperationLifecycle::Cancelled => "cancelled",
+            RustOperationLifecycle::Failed => "failed",
+        }
+    }
+
+    fn pending_effects_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner.pending_effects().collect::<Vec<_>>())
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn terminal_json(&self) -> PyResult<Option<String>> {
+        self.inner
+            .terminal()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+}
+
+fn canonical_preparation_from_rust(
+    py: Python<'_>,
+    preparation: RustKernelPreparation<
+        deepstrike_core::runtime::kernel::wire::KernelRecord,
+        deepstrike_core::runtime::kernel::wire::PlannedStep,
+    >,
+) -> PyResult<CanonicalPreparation> {
+    match preparation {
+        RustKernelPreparation::Prepared(prepared) => Ok(CanonicalPreparation {
+            status: "prepared".into(),
+            prepare_token: Some(prepared.token.to_string()),
+            step_seq: Some(prepared.record.step_seq().get()),
+            expected_head: prepared.record.expected_head().map(ToString::to_string),
+            record_digest: Some(prepared.record.record_digest().to_string()),
+            record_bytes: Some(
+                PyBytes::new(py, prepared.record.record_bytes().as_slice()).unbind(),
+            ),
+            planned_step_json: Some(
+                serde_json::to_string(&prepared.planned_step)
+                    .map_err(|error| PyValueError::new_err(error.to_string()))?,
+            ),
+            fault_json: None,
+        }),
+        RustKernelPreparation::Replayed(replayed) => Ok(CanonicalPreparation {
+            status: "replayed".into(),
+            prepare_token: None,
+            step_seq: Some(replayed.step_seq.get()),
+            expected_head: replayed
+                .record
+                .as_ref()
+                .and_then(|record| record.expected_head())
+                .map(ToString::to_string),
+            record_digest: Some(replayed.record_digest.to_string()),
+            record_bytes: replayed
+                .record
+                .map(|record| PyBytes::new(py, record.record_bytes().as_slice()).unbind()),
+            planned_step_json: replayed
+                .committed_step
+                .map(|step| serde_json::to_string(&step))
+                .transpose()
+                .map_err(|error| PyValueError::new_err(error.to_string()))?,
+            fault_json: None,
+        }),
+        RustKernelPreparation::Rejected(rejected) => Ok(CanonicalPreparation {
+            status: "rejected".into(),
+            prepare_token: None,
+            step_seq: None,
+            expected_head: None,
+            record_digest: None,
+            record_bytes: None,
+            planned_step_json: None,
+            fault_json: Some(
+                serde_json::to_string(&rejected.fault)
+                    .map_err(|error| PyValueError::new_err(error.to_string()))?,
+            ),
+        }),
+    }
+}
+
+fn canonical_checkpoint_from_rust(
+    py: Python<'_>,
+    checkpoint: deepstrike_core::runtime::kernel::wire::CheckpointCandidate,
+) -> CanonicalCheckpoint {
+    CanonicalCheckpoint {
+        checkpoint_bytes: PyBytes::new(py, checkpoint.checkpoint_bytes.as_slice()).unbind(),
+        through_step_seq: checkpoint.through_step_seq.get(),
+        covered_head: checkpoint.covered_head.to_string(),
+        state_digest: checkpoint.state_digest.to_string(),
+        ack_token: checkpoint.ack_token.to_string(),
+    }
+}
+
+fn canonical_checkpoint_advice_json(
+    advice: deepstrike_core::runtime::kernel::wire::CheckpointAdvice,
+) -> PyResult<String> {
+    serde_json::to_string(&serde_json::json!({
+        "through_step_seq": advice.through_step_seq,
+        "usage": {
+            "records": advice.usage.records.to_string(),
+            "bytes": advice.usage.bytes.to_string(),
+        },
+        "bounds": {
+            "soft_records": advice.bounds.soft_records,
+            "hard_records": advice.bounds.hard_records,
+            "soft_bytes": advice.bounds.soft_bytes,
+            "hard_bytes": advice.bounds.hard_bytes,
+        },
+    }))
+    .map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
+fn canonical_kernel_error(fault: deepstrike_core::runtime::kernel::wire::KernelFault) -> PyErr {
+    PyValueError::new_err(serde_json::to_string(&fault).unwrap_or_else(|_| fault.to_string()))
+}
+
 // ──────────────────────────────────────── KernelRuntime ────────────────────────────────────
 
 // `weakref` so the SDK can key per-runtime wire state in a WeakKeyDictionary — a module dict
@@ -1640,6 +1938,10 @@ fn verdict_output_schema(extract_skill_on_pass: bool) -> String {
 
 #[pymodule]
 fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add(
+        "KERNEL_ABI_VERSION",
+        deepstrike_core::runtime::kernel::wire::KERNEL_ABI_VERSION,
+    )?;
     // POD types
     m.add_class::<ContentPartObj>()?;
     m.add_class::<Message>()?;
@@ -1653,6 +1955,11 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Skill types
     m.add_class::<SkillMetadata>()?;
     // Loop control
+    m.add_class::<CanonicalPreparation>()?;
+    m.add_class::<CanonicalCommit>()?;
+    m.add_class::<CanonicalCheckpoint>()?;
+    m.add_class::<CanonicalRestoreCost>()?;
+    m.add_class::<CanonicalKernel>()?;
     m.add_class::<KernelRuntime>()?;
     // Signal types
     m.add_class::<RuntimeSignal>()?;

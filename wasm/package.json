@@ -12,7 +12,8 @@
   "scripts": {
     "build:wasm": "wasm-pack build ../crates/deepstrike-wasm --target bundler --out-dir ../../wasm/pkg",
     "build": "tsc",
-    "test": "node --experimental-vm-modules node_modules/.bin/jest"
+    "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "test:canonical-binding": "wasm-pack build ../crates/deepstrike-wasm --target nodejs --dev --out-dir ../../wasm/pkg-node && node tests/canonical-binding.node.cjs"
   },
   "dependencies": {
     "@deepstrike/wasm-kernel": "0.2.50"

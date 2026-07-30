@@ -141,14 +141,79 @@ export interface KernelRuntimeInstance {
   preservedRefs(): string[]
 }
 
+export interface CanonicalPrepared {
+  status: "prepared"
+  prepareToken: string
+  stepSeq: string
+  expectedHead?: string
+  recordDigest: string
+  recordBytes: Buffer
+  plannedStepJson: string
+}
+
+export interface CanonicalReplayed {
+  status: "replayed"
+  stepSeq: string
+  expectedHead?: string
+  recordDigest: string
+  recordBytes?: Buffer
+  plannedStepJson?: string
+}
+
+export interface CanonicalRejected {
+  status: "rejected"
+  faultJson: string
+}
+
+/** Closed §7.13 result; only `prepared` carries a token that may be committed or aborted. */
+export type CanonicalPreparation = CanonicalPrepared | CanonicalReplayed | CanonicalRejected
+
+export interface CanonicalCommit {
+  stepSeq: string
+  recordDigest: string
+  plannedStepJson: string
+  checkpointAdviceJson?: string
+}
+
+export interface CanonicalCheckpoint {
+  checkpointBytes: Buffer
+  throughStepSeq: string
+  coveredHead: string
+  stateDigest: string
+  ackToken: string
+}
+
+export interface CanonicalRestoreCost {
+  recordsBeforeCheckpoint: string
+  tailInputsReplayed: string
+  recordsAfterCheckpoint: string
+  bytesRead: string
+}
+
+export interface CanonicalKernelInstance {
+  prepare(inputJson: string): CanonicalPreparation
+  commit(prepareToken: string, appendedHead: string): CanonicalCommit
+  abort(prepareToken: string): void
+  checkpointCandidate(): CanonicalCheckpoint
+  checkpointRebase(checkpointBytes: Buffer): CanonicalCheckpoint
+  ackCheckpoint(throughStepSeq: string, coveredHead: string): void
+  /** Replaces native state in place; the JavaScript handle retains its identity. */
+  restore(checkpointBytes: Buffer | undefined, recordBytes: Buffer[]): CanonicalRestoreCost
+  lifecycle(): "created" | "configured" | "running" | "suspended" | "completed" | "cancelled" | "failed"
+  pendingEffectsJson(): string
+  terminalJson(): string | undefined
+}
+
 interface KernelModule {
   Governance: new (defaultAction?: "allow" | "deny" | "ask_user") => GovernanceInstance
+  CanonicalKernel: new () => CanonicalKernelInstance
   KernelRuntime: new (policy: {
     maxTokens: number
     maxTurns?: number
     maxTotalTokens?: bigint
     timeoutMs?: bigint
   }) => KernelRuntimeInstance
+  kernelAbiVersion(): number
   SignalRouter: new (maxQueueSize: number) => SignalRouterInstance
   // Eval / harness quality gate (0.5.0 fold: free functions, was the EvalPipeline class).
   buildEvalMessages(goal: string, criteria: NativeCriterion[], result: string, attempt: number, extractSkillOnPass: boolean): Message[]

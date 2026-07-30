@@ -1,6 +1,7 @@
 #![allow(deprecated)]
 
 use compact_str::CompactString;
+use js_sys::Uint8Array;
 use serde::{Deserialize, Serialize};
 use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
@@ -25,6 +26,12 @@ use deepstrike_core::mm::memory::{
     MemoryScope as RustMemoryScope, MemoryTrustLevel as RustMemoryTrustLevel,
 };
 use deepstrike_core::runtime::KernelRuntime as RustKernelRuntime;
+use deepstrike_core::runtime::kernel::wire::{
+    CanonicalKernel as RustCanonicalKernel, CheckpointBoundary as RustCheckpointBoundary,
+    Digest as RustDigest, KernelCheckpoint as RustKernelCheckpoint,
+    KernelPreparation as RustKernelPreparation, OperationLifecycle as RustOperationLifecycle,
+    PrepareToken as RustPrepareToken, WireU64 as RustWireU64,
+};
 use deepstrike_core::scheduler::policy::SchedulerBudget as RustLoopPolicy;
 use deepstrike_core::scheduler::tcb::TaskLifecycle;
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
@@ -645,6 +652,356 @@ impl KernelRuntime {
     pub fn preserved_refs(&self) -> Vec<String> {
         self.inner.preserved_refs()
     }
+}
+
+// ─────────────────────────────── Canonical Kernel ABI ───────────────────────────────
+
+#[derive(Tsify, Serialize)]
+#[tsify(into_wasm_abi)]
+#[serde(
+    tag = "status",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum CanonicalPreparation {
+    Prepared {
+        prepare_token: String,
+        step_seq: String,
+        #[tsify(optional)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_head: Option<String>,
+        record_digest: String,
+        #[tsify(type = "Uint8Array")]
+        #[serde(serialize_with = "serialize_bytes")]
+        record_bytes: Vec<u8>,
+        planned_step_json: String,
+    },
+    Replayed {
+        step_seq: String,
+        #[tsify(optional)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_head: Option<String>,
+        record_digest: String,
+        #[tsify(optional, type = "Uint8Array")]
+        #[serde(
+            skip_serializing_if = "Option::is_none",
+            serialize_with = "serialize_optional_bytes"
+        )]
+        record_bytes: Option<Vec<u8>>,
+        #[tsify(optional)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        planned_step_json: Option<String>,
+    },
+    Rejected {
+        fault_json: String,
+    },
+}
+
+#[derive(Tsify, Serialize)]
+#[tsify(into_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct CanonicalCommit {
+    pub step_seq: String,
+    pub record_digest: String,
+    pub planned_step_json: String,
+    #[tsify(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_advice_json: Option<String>,
+}
+
+#[derive(Tsify, Serialize)]
+#[tsify(into_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct CanonicalCheckpoint {
+    #[tsify(type = "Uint8Array")]
+    #[serde(serialize_with = "serialize_bytes")]
+    pub checkpoint_bytes: Vec<u8>,
+    pub through_step_seq: String,
+    pub covered_head: String,
+    pub state_digest: String,
+    pub ack_token: String,
+}
+
+#[derive(Tsify, Serialize)]
+#[tsify(into_wasm_abi)]
+#[serde(rename_all = "camelCase")]
+pub struct CanonicalRestoreCost {
+    pub records_before_checkpoint: String,
+    pub tail_inputs_replayed: String,
+    pub records_after_checkpoint: String,
+    pub bytes_read: String,
+}
+
+#[derive(Tsify, Deserialize)]
+#[tsify(from_wasm_abi)]
+#[serde(transparent)]
+pub struct CanonicalRecordBytes(#[tsify(type = "Uint8Array[]")] Vec<Vec<u8>>);
+
+#[derive(Tsify, Serialize)]
+#[tsify(into_wasm_abi)]
+#[serde(rename_all = "snake_case")]
+pub enum CanonicalLifecycle {
+    Created,
+    Configured,
+    Running,
+    Suspended,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+/// The single ABI revision accepted by core. Hosts must read this export instead of copying it.
+#[wasm_bindgen(js_name = kernelAbiVersion)]
+pub fn kernel_abi_version() -> u32 {
+    deepstrike_core::runtime::kernel::wire::KERNEL_ABI_VERSION
+}
+
+/// Durable canonical operation handle. It exposes no direct `step` method.
+#[wasm_bindgen]
+pub struct CanonicalKernel {
+    inner: RustCanonicalKernel,
+}
+
+#[wasm_bindgen]
+impl CanonicalKernel {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self {
+            inner: RustCanonicalKernel::default(),
+        }
+    }
+
+    /// Strictly decode and prepare one canonical envelope.
+    #[wasm_bindgen]
+    pub fn prepare(&mut self, input_json: String) -> Result<CanonicalPreparation, JsValue> {
+        canonical_preparation_from_rust(self.inner.prepare_json(&input_json))
+    }
+
+    /// Commit only after the journal appended the prepared record.
+    #[wasm_bindgen]
+    pub fn commit(
+        &mut self,
+        prepare_token: String,
+        appended_head: String,
+    ) -> Result<CanonicalCommit, JsValue> {
+        let token = RustPrepareToken::new(prepare_token)
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        let head = RustDigest::new(appended_head)
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        let committed = self
+            .inner
+            .commit(&token, &head)
+            .map_err(canonical_kernel_error)?;
+
+        Ok(CanonicalCommit {
+            step_seq: committed.step_seq.to_string(),
+            record_digest: committed.record.record_digest().to_string(),
+            planned_step_json: serde_json::to_string(&committed.step).map_err(json_error)?,
+            checkpoint_advice_json: committed
+                .checkpoint_advice
+                .map(|advice| {
+                    serde_json::to_string(&serde_json::json!({
+                        "through_step_seq": advice.through_step_seq,
+                        "usage": {
+                            "records": advice.usage.records.to_string(),
+                            "bytes": advice.usage.bytes.to_string(),
+                        },
+                        "bounds": {
+                            "soft_records": advice.bounds.soft_records,
+                            "hard_records": advice.bounds.hard_records,
+                            "soft_bytes": advice.bounds.soft_bytes,
+                            "hard_bytes": advice.bounds.hard_bytes,
+                        },
+                    }))
+                })
+                .transpose()
+                .map_err(json_error)?,
+        })
+    }
+
+    /// Abort a candidate that did not reach the journal.
+    #[wasm_bindgen]
+    pub fn abort(&mut self, prepare_token: String) -> Result<(), JsValue> {
+        let token = RustPrepareToken::new(prepare_token)
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        self.inner
+            .abort(&token)
+            .map(|_| ())
+            .map_err(canonical_kernel_error)
+    }
+
+    #[wasm_bindgen(js_name = checkpointCandidate)]
+    pub fn checkpoint_candidate(&self) -> Result<CanonicalCheckpoint, JsValue> {
+        self.inner
+            .checkpoint_candidate()
+            .map_err(canonical_kernel_error)
+            .map(canonical_checkpoint_from_rust)
+    }
+
+    #[wasm_bindgen(js_name = checkpointRebase)]
+    pub fn checkpoint_rebase(
+        &self,
+        checkpoint_bytes: Uint8Array,
+    ) -> Result<CanonicalCheckpoint, JsValue> {
+        let checkpoint = RustKernelCheckpoint::from_checkpoint_bytes(&checkpoint_bytes.to_vec())
+            .map_err(|error| canonical_kernel_error(error.fault()))?;
+        self.inner
+            .checkpoint_rebase(&checkpoint)
+            .map_err(canonical_kernel_error)
+            .map(canonical_checkpoint_from_rust)
+    }
+
+    #[wasm_bindgen(js_name = ackCheckpoint)]
+    pub fn ack_checkpoint(
+        &mut self,
+        through_step_seq: String,
+        covered_head: String,
+    ) -> Result<(), JsValue> {
+        let boundary = RustCheckpointBoundary {
+            through_step_seq: RustWireU64::parse(&through_step_seq)
+                .map_err(|error| JsValue::from_str(&error.to_string()))?,
+            covered_head: RustDigest::new(covered_head)
+                .map_err(|error| JsValue::from_str(&error.to_string()))?,
+        };
+        self.inner
+            .note_checkpoint_acked(&boundary)
+            .map(|_| ())
+            .map_err(canonical_kernel_error)
+    }
+
+    /// Replace this handle in place from checkpoint bytes plus post-checkpoint record bytes.
+    #[wasm_bindgen]
+    pub fn restore(
+        &mut self,
+        checkpoint_bytes: Option<Uint8Array>,
+        record_bytes: CanonicalRecordBytes,
+    ) -> Result<CanonicalRestoreCost, JsValue> {
+        let checkpoint = checkpoint_bytes.as_ref().map(Uint8Array::to_vec);
+        let cost = self
+            .inner
+            .restore_bytes(checkpoint.as_deref(), &record_bytes.0)
+            .map_err(canonical_kernel_error)?;
+
+        Ok(CanonicalRestoreCost {
+            records_before_checkpoint: cost.records_before_checkpoint.to_string(),
+            tail_inputs_replayed: cost.tail_inputs_replayed.to_string(),
+            records_after_checkpoint: cost.records_after_checkpoint.to_string(),
+            bytes_read: cost.bytes_read.to_string(),
+        })
+    }
+
+    #[wasm_bindgen]
+    pub fn lifecycle(&self) -> CanonicalLifecycle {
+        match self.inner.lifecycle() {
+            RustOperationLifecycle::Created => CanonicalLifecycle::Created,
+            RustOperationLifecycle::Configured => CanonicalLifecycle::Configured,
+            RustOperationLifecycle::Running => CanonicalLifecycle::Running,
+            RustOperationLifecycle::Suspended => CanonicalLifecycle::Suspended,
+            RustOperationLifecycle::Completed => CanonicalLifecycle::Completed,
+            RustOperationLifecycle::Cancelled => CanonicalLifecycle::Cancelled,
+            RustOperationLifecycle::Failed => CanonicalLifecycle::Failed,
+        }
+    }
+
+    #[wasm_bindgen(js_name = pendingEffectsJson)]
+    pub fn pending_effects_json(&self) -> Result<String, JsValue> {
+        serde_json::to_string(&self.inner.pending_effects().collect::<Vec<_>>()).map_err(json_error)
+    }
+
+    #[wasm_bindgen(js_name = terminalJson)]
+    pub fn terminal_json(&self) -> Result<Option<String>, JsValue> {
+        self.inner
+            .terminal()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(json_error)
+    }
+}
+
+fn canonical_preparation_from_rust(
+    preparation: RustKernelPreparation<
+        deepstrike_core::runtime::kernel::wire::KernelRecord,
+        deepstrike_core::runtime::kernel::wire::PlannedStep,
+    >,
+) -> Result<CanonicalPreparation, JsValue> {
+    match preparation {
+        RustKernelPreparation::Prepared(prepared) => Ok(CanonicalPreparation::Prepared {
+            prepare_token: prepared.token.to_string(),
+            step_seq: prepared.record.step_seq().to_string(),
+            expected_head: prepared.record.expected_head().map(ToString::to_string),
+            record_digest: prepared.record.record_digest().to_string(),
+            record_bytes: prepared.record.record_bytes().as_slice().to_vec(),
+            planned_step_json: serde_json::to_string(&prepared.planned_step).map_err(json_error)?,
+        }),
+        RustKernelPreparation::Replayed(replayed) => Ok(CanonicalPreparation::Replayed {
+            step_seq: replayed.step_seq.to_string(),
+            expected_head: replayed
+                .record
+                .as_ref()
+                .and_then(|record| record.expected_head())
+                .map(ToString::to_string),
+            record_digest: replayed.record_digest.to_string(),
+            record_bytes: replayed
+                .record
+                .map(|record| record.record_bytes().as_slice().to_vec()),
+            planned_step_json: replayed
+                .committed_step
+                .map(|step| serde_json::to_string(&step))
+                .transpose()
+                .map_err(json_error)?,
+        }),
+        RustKernelPreparation::Rejected(rejected) => Ok(CanonicalPreparation::Rejected {
+            fault_json: serde_json::to_string(&rejected.fault).map_err(json_error)?,
+        }),
+    }
+}
+
+fn canonical_checkpoint_from_rust(
+    checkpoint: deepstrike_core::runtime::kernel::wire::CheckpointCandidate,
+) -> CanonicalCheckpoint {
+    CanonicalCheckpoint {
+        checkpoint_bytes: checkpoint.checkpoint_bytes.as_slice().to_vec(),
+        through_step_seq: checkpoint.through_step_seq.to_string(),
+        covered_head: checkpoint.covered_head.to_string(),
+        state_digest: checkpoint.state_digest.to_string(),
+        ack_token: checkpoint.ack_token.to_string(),
+    }
+}
+
+fn serialize_bytes<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_bytes(bytes)
+}
+
+fn serialize_optional_bytes<S>(bytes: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match bytes {
+        Some(bytes) => serializer.serialize_some(&Bytes(bytes)),
+        None => serializer.serialize_none(),
+    }
+}
+
+struct Bytes<'a>(&'a [u8]);
+
+impl Serialize for Bytes<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bytes(self.0)
+    }
+}
+
+fn canonical_kernel_error(fault: deepstrike_core::runtime::kernel::wire::KernelFault) -> JsValue {
+    JsValue::from_str(&serde_json::to_string(&fault).unwrap_or_else(|_| fault.to_string()))
+}
+
+fn json_error(error: serde_json::Error) -> JsValue {
+    JsValue::from_str(&error.to_string())
 }
 
 // ────────────────────────────────────────────── SignalRouter ──────────────────────────────────────────────

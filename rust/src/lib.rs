@@ -58,6 +58,10 @@ pub use runtime::replay_fixture::{
 };
 pub use runtime::replay_provider::{ReplayProvider, ReplayProviderOpts};
 pub use runtime::{
+    CanonicalCheckpoint, CanonicalCheckpointCandidate, CanonicalCommit, CanonicalKernel,
+    CanonicalPreparation,
+};
+pub use runtime::{
     ChainedCredentialVault, CredentialVault, EnvCredentialVault, InMemoryCredentialVault,
 };
 pub use runtime::{
